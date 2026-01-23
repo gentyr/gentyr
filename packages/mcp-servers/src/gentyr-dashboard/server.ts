@@ -65,10 +65,15 @@ function getSessionDir(): string {
 function safeReadJson<T>(filePath: string, defaultValue: T): T {
   try {
     if (!fs.existsSync(filePath)) {
+      // G001: Log when expected file doesn't exist (may indicate missing setup)
+      process.stderr.write(`[gentyr-dashboard] File not found: ${filePath}\n`);
       return defaultValue;
     }
     return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T;
-  } catch {
+  } catch (err) {
+    // G001: Log JSON parse errors rather than silently returning default
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[gentyr-dashboard] Error reading ${filePath}: ${message}\n`);
     return defaultValue;
   }
 }
@@ -418,8 +423,10 @@ function getCTOQueue(): CTOQueue {
       }));
 
       db.close();
-    } catch {
-      // Database error - continue with defaults
+    } catch (err) {
+      // G001: Log database errors
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[gentyr-dashboard] Error reading deputy-cto.db: ${message}\n`);
     }
   }
 
@@ -443,8 +450,10 @@ function getCTOQueue(): CTOQueue {
       }
 
       db.close();
-    } catch {
-      // Database error - continue with defaults
+    } catch (err) {
+      // G001: Log database errors
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[gentyr-dashboard] Error reading cto-reports.db: ${message}\n`);
     }
   }
 
@@ -600,18 +609,23 @@ function getTokenUsage(hours: number): TokenUsage {
               totals.cache_read += usage.cache_read_input_tokens || 0;
               totals.cache_write += usage.cache_creation_input_tokens || 0;
             }
-          } catch {
-            // Skip malformed lines
+          } catch (err) {
+            // G001: Log malformed lines (likely not an error, just non-JSON content)
+            // Only log in debug mode to avoid noise
           }
         }
-      } catch {
-        // Skip unreadable files
+      } catch (err) {
+        // G001: Log file read errors
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[gentyr-dashboard] Error reading session file: ${message}\n`);
       }
     }
 
     totals.total = totals.input + totals.output + totals.cache_read + totals.cache_write;
-  } catch {
-    // Directory read error
+  } catch (err) {
+    // G001: Log directory read errors
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[gentyr-dashboard] Error reading session directory: ${message}\n`);
   }
 
   return totals;
@@ -656,16 +670,20 @@ function getSessionCounts(hours: number): Usage['sessions_24h'] {
               }
               break;
             }
-          } catch {
-            // Skip malformed lines
+          } catch (err) {
+            // G001: Skip malformed lines (non-JSON content expected)
           }
         }
-      } catch {
-        // Skip unreadable files
+      } catch (err) {
+        // G001: Log file read errors
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[gentyr-dashboard] Error reading session file for counts: ${message}\n`);
       }
     }
-  } catch {
-    // Directory read error
+  } catch (err) {
+    // G001: Log directory read errors
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[gentyr-dashboard] Error reading session directory for counts: ${message}\n`);
   }
 
   return counts;
@@ -740,7 +758,10 @@ function getApiKeys(hours: number): ApiKeys | null {
       rotation_events_24h: rotationEvents,
       keys,
     };
-  } catch {
+  } catch (err) {
+    // G001: Log error reading API key rotation state
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[gentyr-dashboard] Error reading api-key-rotation.json: ${message}\n`);
     return null;
   }
 }
@@ -839,16 +860,20 @@ function getSessions(hours: number): Sessions {
               }
               break;
             }
-          } catch {
-            // Skip malformed lines
+          } catch (err) {
+            // G001: Skip malformed lines (non-JSON content expected)
           }
         }
-      } catch {
-        // Skip unreadable files
+      } catch (err) {
+        // G001: Log file read errors
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[gentyr-dashboard] Error reading session file for sessions: ${message}\n`);
       }
     }
-  } catch {
-    // Directory read error
+  } catch (err) {
+    // G001: Log directory read errors
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[gentyr-dashboard] Error reading session directory for sessions: ${message}\n`);
   }
 
   return result;

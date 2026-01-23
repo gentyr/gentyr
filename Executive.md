@@ -72,29 +72,38 @@ AI coding agents hallucinate, cut corners, and make autonomous decisions that un
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         YOUR PROJECT                                 │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  Source Code    │  Tests    │  Specs    │  CLAUDE.md         │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                              ↑                                       │
-│                     [Symlinks to Framework]                         │
-│                              ↓                                       │
-│  ┌─────────────────── .claude/ ─────────────────────────────────┐   │
-│  │  Databases (project-specific state)                           │   │
-│  │  • todo.db       - Task tracking                              │   │
-│  │  • deputy-cto.db - Decisions & approvals                      │   │
-│  │  • reports.db    - Agent escalations                          │   │
-│  └───────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
-                              ↓ symlinks
-┌─────────────────────────────────────────────────────────────────────┐
-│                    GENTYR FRAMEWORK                                  │
-│  Shared across ALL projects • Updated once, applies everywhere      │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────┐      ┌──────────────────────────────────┐
+│      GENTYR FRAMEWORK            │      │       YOUR PROJECT               │
+│      (central repo)              │      │       (any repo)                 │
+│                                  │      │                                  │
+│  packages/                       │      │  src/                            │
+│   └─ mcp-servers/                │      │  tests/                          │
+│       ├─ todo-db                 │      │  specs/                          │
+│       ├─ deputy-cto              │      │  CLAUDE.md                       │
+│       ├─ specs-browser           │      │                                  │
+│       └─ ...                     │      │  .claude/                        │
+│                                  │      │   ├─ agents/ ←───────────────────┼──── symlink
+│  .claude/                        │      │   ├─ hooks/ ←────────────────────┼──── symlink
+│   ├─ agents/   ─────────────────────────┼───→                              │
+│   ├─ hooks/    ─────────────────────────┼───→                              │
+│   └─ skills/   ─────────────────────────┼───→ skills/ ←────────────────────┼──── symlink
+│                                  │      │   │                              │
+│                                  │      │   └─ LOCAL DATA (not symlinked)  │
+│                                  │      │       ├─ todo.db                 │
+│                                  │      │       ├─ deputy-cto.db           │
+│                                  │      │       └─ reports.db              │
+└──────────────────────────────────┘      └──────────────────────────────────┘
+
+         SHARED CODE                              PROJECT STATE
+    (update once, all projects                (isolated per project,
+     get changes automatically)                never shared)
 ```
 
-**Key Point**: Framework updates don't require changes to each project. Project state stays isolated.
+**How it works:**
+1. Install GENTYR once on your machine
+2. Run install script in any project → creates symlinks to GENTYR's agents, hooks, and skills
+3. Claude Code in that project now uses GENTYR's governance
+4. Each project maintains its own databases (tasks, decisions, reports)
 
 ### MCP Servers (10 Tool APIs)
 - **todo-db** - Task tracking and cross-agent coordination
