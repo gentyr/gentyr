@@ -835,6 +835,7 @@ function spawnTaskAgent(task) {
  * Main entry point
  */
 async function main() {
+  const startTime = Date.now();
   log('=== Hourly Automation Starting ===');
 
   // Check config
@@ -842,6 +843,12 @@ async function main() {
 
   if (!config.enabled) {
     log('Autonomous Deputy CTO Mode is DISABLED. Exiting.');
+    registerHookExecution({
+      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+      status: 'skipped',
+      durationMs: Date.now() - startTime,
+      metadata: { reason: 'disabled' }
+    });
     process.exit(0);
   }
 
@@ -998,6 +1005,12 @@ async function main() {
     const minutesLeft = Math.ceil((HOURLY_COOLDOWN_MS - timeSinceLastRun) / 60000);
     log(`Hourly tasks cooldown active. ${minutesLeft} minutes until next run.`);
     log('=== Hourly Automation Complete ===');
+    registerHookExecution({
+      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+      status: 'success',
+      durationMs: Date.now() - startTime,
+      metadata: { fullRun: false, minutesUntilNext: minutesLeft }
+    });
     return;
   }
 
@@ -1048,6 +1061,13 @@ async function main() {
   }
 
   log('=== Hourly Automation Complete ===');
+
+  registerHookExecution({
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    status: 'success',
+    durationMs: Date.now() - startTime,
+    metadata: { fullRun: true }
+  });
 }
 
 main();

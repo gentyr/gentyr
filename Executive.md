@@ -90,16 +90,51 @@ AI coding agents hallucinate, cut corners, and make autonomous decisions that un
                               ↓ symlinks
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    GENTYR FRAMEWORK                                  │
-│  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐        │
-│  │  8 MCP Servers │  │  8 Agents      │  │  15 Hooks      │        │
-│  │  (Tools API)   │  │  (Specialists) │  │  (Automation)  │        │
-│  └────────────────┘  └────────────────┘  └────────────────┘        │
-│                                                                      │
 │  Shared across ALL projects • Updated once, applies everywhere      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 **Key Point**: Framework updates don't require changes to each project. Project state stays isolated.
+
+### MCP Servers (10 Tool APIs)
+- **todo-db** - Task tracking and cross-agent coordination
+- **deputy-cto** - Decision queue and approval management
+- **agent-reports** - Escalation and issue reporting
+- **specs-browser** - Specification lookup and compliance queries
+- **review-queue** - Code review tracking and status
+- **agent-tracker** - Agent spawn monitoring and audit trail
+- **session-events** - Session lifecycle and state management
+- **cto-report** - Executive status report generation
+- **cto-reports** - Historical report storage and retrieval
+- **gentyr-dashboard** - System-wide activity visualization
+
+### Specialized Agents (8 Domain Experts)
+- **investigator** - Root cause analysis and debugging
+- **code-writer** - Implementation with spec compliance
+- **test-writer** - Test coverage and validation
+- **code-reviewer** - Pre-commit quality review
+- **project-manager** - Task coordination and prioritization
+- **deputy-cto** - Escalation filtering and CTO briefings
+- **antipattern-hunter** - Spec violation detection
+- **repo-hygiene-expert** - Architecture and dead code analysis
+
+### Automation Hooks (16 Event Handlers)
+- **pre-commit-review** - Triggers deputy-cto review before commits
+- **block-no-verify** - Prevents git hook bypass attempts
+- **compliance-checker** - Scans code against spec mappings
+- **antipattern-hunter-hook** - Detects spec violations on file changes
+- **cto-notification-hook** - Displays status on every prompt
+- **hourly-automation** - Background task execution
+- **api-key-watcher** - Quota monitoring and key rotation
+- **usage-optimizer** - API cost optimization
+- **agent-tracker** - Logs all agent spawns
+- **plan-executor** - Runs approved implementation plans
+- **todo-maintenance** - Task list cleanup and updates
+- **bypass-approval-hook** - Emergency bypass authorization
+- **stop-continue-hook** - Session interruption handling
+- **mapping-validator** - Spec-to-code mapping verification
+- **schema-mapper-hook** - Automatic spec mapping suggestions
+- **config-reader** - Centralized configuration access
 
 ---
 

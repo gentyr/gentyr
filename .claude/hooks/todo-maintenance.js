@@ -22,7 +22,7 @@
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
-import { registerSpawn, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { registerSpawn, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { getCooldown } from './config-reader.js';
 
 // Try to import better-sqlite3 for database operations
@@ -405,6 +405,7 @@ function maybeSpawnClaude(projectDir, pendingCount, now = new Date()) {
  * Main entry point
  */
 async function main() {
+  const startTime = Date.now();
   const args = process.argv.slice(2);
   const mode = args[0] || 'cleanup';
 
@@ -423,6 +424,12 @@ async function main() {
   if (isSpawnedSession) {
     // Allow spawned sessions to run without triggering more spawns
     debugLog('Spawned session detected - skipping spawn logic');
+    registerHookExecution({
+      hookType: HOOK_TYPES.TODO_MAINTENANCE,
+      status: 'skipped',
+      durationMs: Date.now() - startTime,
+      metadata: { reason: 'spawned_session' }
+    });
     console.log(JSON.stringify({
       continue: true,
       suppressOutput: true,
@@ -488,6 +495,14 @@ async function main() {
     }
   };
   debugLog('Outputting cleanup response', output);
+
+  registerHookExecution({
+    hookType: HOOK_TYPES.TODO_MAINTENANCE,
+    status: 'success',
+    durationMs: Date.now() - startTime,
+    metadata: { pending: summary.pending, inProgress: summary.in_progress, completed: summary.completed }
+  });
+
   console.log(JSON.stringify(output));
 
   process.exit(0);
@@ -496,6 +511,12 @@ async function main() {
 // Run main
 main().catch(err => {
   debugLog('Uncaught error in main', { error: err.message, stack: err.stack });
+  registerHookExecution({
+    hookType: HOOK_TYPES.TODO_MAINTENANCE,
+    status: 'failure',
+    durationMs: 0,
+    metadata: { error: err.message }
+  });
   console.error(`Script error: ${err.message}`);
   process.exit(1);
 });
