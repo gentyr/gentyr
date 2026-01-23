@@ -1,4 +1,4 @@
-# GENTYR: Governed AI Engineering Teams
+# GENTYR: Autonomous AI Engineering Team
 **G**odlike **E**ntity, **N**ot **T**echnically **Y**our **R**eplacement
 
 ## The Problem
