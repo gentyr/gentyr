@@ -23,6 +23,7 @@ import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import { registerHookExecution, HOOK_TYPES } from './agent-tracker.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -354,8 +355,16 @@ function updateActiveCredentials(creds, keyData) {
  * Main entry point
  */
 async function main() {
+  const startTime = Date.now();
+
   // Skip for spawned sessions
   if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
+    registerHookExecution({
+      hookType: HOOK_TYPES.API_KEY_WATCHER,
+      status: 'skipped',
+      durationMs: Date.now() - startTime,
+      metadata: { reason: 'spawned_session' }
+    });
     console.log(JSON.stringify({
       continue: true,
       suppressOutput: true,
@@ -544,6 +553,13 @@ async function main() {
     }
   }
 
+  registerHookExecution({
+    hookType: HOOK_TYPES.API_KEY_WATCHER,
+    status: 'success',
+    durationMs: Date.now() - startTime,
+    metadata: { keyCount, switched: selectedKeyId !== state.active_key_id }
+  });
+
   console.log(JSON.stringify({
     continue: true,
     suppressOutput: !message,
@@ -553,6 +569,14 @@ async function main() {
 
 main().catch(err => {
   console.error(`[api-key-watcher] Error: ${err.message}`);
+
+  registerHookExecution({
+    hookType: HOOK_TYPES.API_KEY_WATCHER,
+    status: 'failure',
+    durationMs: 0,
+    metadata: { error: err.message }
+  });
+
   // Don't block on errors
   console.log(JSON.stringify({
     continue: true,

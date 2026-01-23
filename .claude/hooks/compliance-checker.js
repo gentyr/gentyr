@@ -42,7 +42,7 @@ import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
 import { validateMappings, formatValidationResult } from './mapping-validator.js';
-import { registerSpawn, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { registerSpawn, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 
 // Project directory
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -952,31 +952,62 @@ function showHistory(filter = 'all') {
  * Main entry point
  */
 async function main() {
+  const startTime = Date.now();
   const args = parseArgs(process.argv.slice(2));
 
   // Prevent chain reactions
   if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
     console.log('Spawned session detected - skipping compliance check');
+    registerHookExecution({
+      hookType: HOOK_TYPES.COMPLIANCE_CHECKER,
+      status: 'skipped',
+      durationMs: Date.now() - startTime,
+      metadata: { reason: 'spawned_session' }
+    });
     process.exit(0);
   }
 
   // Show status
   if (args.status) {
     showStatus();
+    registerHookExecution({
+      hookType: HOOK_TYPES.COMPLIANCE_CHECKER,
+      status: 'success',
+      durationMs: Date.now() - startTime,
+      metadata: { mode: 'status' }
+    });
     process.exit(0);
   }
 
   // Show history
   if (args.history) {
     showHistory('all');
+    registerHookExecution({
+      hookType: HOOK_TYPES.COMPLIANCE_CHECKER,
+      status: 'success',
+      durationMs: Date.now() - startTime,
+      metadata: { mode: 'history' }
+    });
     process.exit(0);
   }
   if (args.historyGlobal) {
     showHistory('global');
+    registerHookExecution({
+      hookType: HOOK_TYPES.COMPLIANCE_CHECKER,
+      status: 'success',
+      durationMs: Date.now() - startTime,
+      metadata: { mode: 'history-global' }
+    });
     process.exit(0);
   }
   if (args.historyLocal) {
     showHistory('local');
+    registerHookExecution({
+      hookType: HOOK_TYPES.COMPLIANCE_CHECKER,
+      status: 'success',
+      durationMs: Date.now() - startTime,
+      metadata: { mode: 'history-local' }
+    });
     process.exit(0);
   }
 
@@ -987,6 +1018,12 @@ async function main() {
 
     if (!validationResult.valid) {
       handleMappingValidationFailure(validationResult);
+      registerHookExecution({
+        hookType: HOOK_TYPES.COMPLIANCE_CHECKER,
+        status: 'failure',
+        durationMs: Date.now() - startTime,
+        metadata: { reason: 'mapping_validation_failed', errorCount: validationResult.errors?.length }
+      });
       process.exit(2);
     }
 
@@ -1019,10 +1056,23 @@ async function main() {
     console.log('═══════════════════════════════════════════════════════════════\n');
   }
 
+  registerHookExecution({
+    hookType: HOOK_TYPES.COMPLIANCE_CHECKER,
+    status: 'success',
+    durationMs: Date.now() - startTime,
+    metadata: { globalOnly: args.globalOnly, localOnly: args.localOnly, dryRun: args.dryRun }
+  });
+
   process.exit(0);
 }
 
 main().catch(err => {
   console.error(`Error: ${err.message}`);
+  registerHookExecution({
+    hookType: HOOK_TYPES.COMPLIANCE_CHECKER,
+    status: 'failure',
+    durationMs: 0,
+    metadata: { error: err.message }
+  });
   process.exit(1);
 });

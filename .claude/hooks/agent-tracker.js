@@ -67,6 +67,7 @@ export const HOOK_TYPES = {
   PLAN_EXECUTOR: 'plan-executor',
   HOURLY_AUTOMATION: 'hourly-automation',
   TASK_RUNNER: 'task-runner',
+  API_KEY_WATCHER: 'api-key-watcher',
 };
 
 /**

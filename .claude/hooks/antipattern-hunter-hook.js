@@ -19,7 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import { spawn, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { registerSpawn, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { registerSpawn, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { getCooldown } from './config-reader.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -341,12 +341,21 @@ Be THOROUGH with the commit files - this is a deep review, not a surface scan.`;
  * Main entry point
  */
 function main() {
+  const startTime = Date.now();
+
   // Check cooldown
   if (!isCooldownElapsed()) {
     const state = readState();
     const hoursSince = (Date.now() - new Date(state.lastSpawn).getTime()) / (1000 * 60 * 60);
     const hoursRemaining = CONFIG.cooldownHours - hoursSince;
     console.log(`[antipattern-hunter] Cooldown active (${hoursRemaining.toFixed(1)}h remaining)`);
+
+    registerHookExecution({
+      hookType: HOOK_TYPES.ANTIPATTERN_HUNTER,
+      status: 'skipped',
+      durationMs: Date.now() - startTime,
+      metadata: { reason: 'cooldown', hoursRemaining: hoursRemaining.toFixed(1) }
+    });
     return;
   }
 
@@ -362,6 +371,13 @@ function main() {
   console.log(`[antipattern-hunter] Spawned 2 hunters:`);
   console.log(`  - Repo-wide: ${repoAgentId}`);
   console.log(`  - Commit-focused: ${commitAgentId || 'skipped (no files)'}`);
+
+  registerHookExecution({
+    hookType: HOOK_TYPES.ANTIPATTERN_HUNTER,
+    status: 'success',
+    durationMs: Date.now() - startTime,
+    metadata: { repoAgentId, commitAgentId }
+  });
 }
 
 main();

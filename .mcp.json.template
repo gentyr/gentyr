@@ -55,6 +55,13 @@
       "env": {
         "CLAUDE_PROJECT_DIR": "."
       }
+    },
+    "gentyr-dashboard": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/gentyr-dashboard/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
     }
   }
 }
