@@ -22,6 +22,14 @@ import { registerSpawn, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { getCooldown } from './config-reader.js';
 import { runUsageOptimizer } from './usage-optimizer.js';
 
+// Try to import better-sqlite3 for task runner
+let Database = null;
+try {
+  Database = (await import('better-sqlite3')).default;
+} catch (err) {
+  // Non-fatal: task runner will be skipped if unavailable
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -34,6 +42,15 @@ const CTO_REPORTS_DB = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
 // Thresholds
 const CLAUDE_MD_SIZE_THRESHOLD = 25000; // 25K characters
 // Note: Per-item cooldown (1 hour) is now handled by the agent-reports MCP server
+
+// Task Runner: section-to-agent mapping
+const SECTION_AGENT_MAP = {
+  'CODE-REVIEWER': { agent: 'code-reviewer', agentType: AGENT_TYPES.TASK_RUNNER_CODE_REVIEWER },
+  'INVESTIGATOR & PLANNER': { agent: 'investigator', agentType: AGENT_TYPES.TASK_RUNNER_INVESTIGATOR },
+  'TEST-WRITER': { agent: 'test-writer', agentType: AGENT_TYPES.TASK_RUNNER_TEST_WRITER },
+  'PROJECT-MANAGER': { agent: 'project-manager', agentType: AGENT_TYPES.TASK_RUNNER_PROJECT_MANAGER },
+};
+const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 
 /**
  * Append to log file
@@ -58,6 +75,7 @@ function getConfig() {
     planExecutorEnabled: true,
     claudeMdRefactorEnabled: true,
     lintCheckerEnabled: true,
+    taskRunnerEnabled: true,
     lastModified: null,
   };
 
@@ -83,7 +101,7 @@ function getConfig() {
  */
 function getState() {
   if (!fs.existsSync(STATE_FILE)) {
-    return { lastRun: 0, lastClaudeMdRefactor: 0, lastTriageCheck: 0 };
+    return { lastRun: 0, lastClaudeMdRefactor: 0, lastTriageCheck: 0, lastTaskRunnerCheck: 0 };
   }
 
   try {
@@ -639,6 +657,180 @@ Report completion via mcp__agent-reports__report_to_deputy_cto with a summary of
   });
 }
 
+// =========================================================================
+// TASK RUNNER HELPERS
+// =========================================================================
+
+/**
+ * Query todo.db for the oldest pending task per section, excluding:
+ * - Sections with existing in_progress tasks
+ * - Tasks created < 2 minutes ago (chain reaction prevention)
+ * Returns at most 1 task per section.
+ */
+function getPendingTasksForRunner() {
+  if (!Database || !fs.existsSync(TODO_DB_PATH)) {
+    return [];
+  }
+
+  try {
+    const db = new Database(TODO_DB_PATH, { readonly: true });
+    const nowTimestamp = Math.floor(Date.now() / 1000);
+    const twoMinutesAgo = nowTimestamp - 120;
+
+    // Get sections that already have in_progress tasks
+    const busySections = db.prepare(
+      "SELECT DISTINCT section FROM tasks WHERE status = 'in_progress'"
+    ).all().map(r => r.section);
+
+    // Get oldest pending task per eligible section
+    const candidates = [];
+    for (const section of Object.keys(SECTION_AGENT_MAP)) {
+      if (busySections.includes(section)) continue;
+
+      const task = db.prepare(`
+        SELECT id, section, title, description
+        FROM tasks
+        WHERE status = 'pending'
+          AND section = ?
+          AND created_timestamp <= ?
+        ORDER BY created_timestamp ASC
+        LIMIT 1
+      `).get(section, twoMinutesAgo);
+
+      if (task) {
+        candidates.push(task);
+      }
+    }
+
+    db.close();
+    return candidates;
+  } catch (err) {
+    log(`Task runner: DB query error: ${err.message}`);
+    return [];
+  }
+}
+
+/**
+ * Mark a task as in_progress before spawning the agent
+ */
+function markTaskInProgress(taskId) {
+  if (!Database || !fs.existsSync(TODO_DB_PATH)) return false;
+
+  try {
+    const db = new Database(TODO_DB_PATH);
+    const now = new Date().toISOString();
+    db.prepare(
+      "UPDATE tasks SET status = 'in_progress', started_at = ? WHERE id = ?"
+    ).run(now, taskId);
+    db.close();
+    return true;
+  } catch (err) {
+    log(`Task runner: Failed to mark task ${taskId} in_progress: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Reset a task back to pending on spawn failure
+ */
+function resetTaskToPending(taskId) {
+  if (!Database || !fs.existsSync(TODO_DB_PATH)) return;
+
+  try {
+    const db = new Database(TODO_DB_PATH);
+    db.prepare(
+      "UPDATE tasks SET status = 'pending', started_at = NULL WHERE id = ?"
+    ).run(taskId);
+    db.close();
+  } catch (err) {
+    log(`Task runner: Failed to reset task ${taskId}: ${err.message}`);
+  }
+}
+
+/**
+ * Build the prompt for a task runner agent
+ */
+function buildTaskRunnerPrompt(task, agentName) {
+  return `[Task][task-runner-${agentName}] You are the ${agentName} agent processing a TODO task.
+
+## Task Details
+
+- **Task ID**: ${task.id}
+- **Section**: ${task.section}
+- **Title**: ${task.title}
+${task.description ? `- **Description**: ${task.description}` : ''}
+
+## Your Role
+
+You are the \`${agentName}\` agent. Complete the task described above using your expertise.
+
+## Process
+
+1. **Understand** the task requirements from the title and description
+2. **Investigate** the codebase as needed to understand context
+3. **Execute** the task using appropriate tools
+4. **Complete** the task by calling the MCP tool below
+
+## When Done
+
+You MUST call this MCP tool to mark the task as completed:
+
+\`\`\`
+mcp__todo-db__complete_task({ id: "${task.id}" })
+\`\`\`
+
+## Constraints
+
+- Focus only on this specific task
+- Do not create new tasks unless absolutely necessary
+- Report any issues via mcp__agent-reports__report_to_deputy_cto`;
+}
+
+/**
+ * Spawn a fire-and-forget Claude agent for a task
+ */
+function spawnTaskAgent(task) {
+  const mapping = SECTION_AGENT_MAP[task.section];
+  if (!mapping) return false;
+
+  const prompt = buildTaskRunnerPrompt(task, mapping.agent);
+
+  const agentId = registerSpawn({
+    type: mapping.agentType,
+    hookType: HOOK_TYPES.TASK_RUNNER,
+    description: `Task runner: ${mapping.agent} - ${task.title}`,
+    prompt: prompt,
+    metadata: { taskId: task.id, section: task.section },
+  });
+
+  try {
+    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+    const claude = spawn('claude', [
+      '--dangerously-skip-permissions',
+      '--mcp-config', mcpConfig,
+      '--output-format', 'json',
+      '-p',
+      prompt,
+    ], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: PROJECT_DIR,
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        CLAUDE_SPAWNED_SESSION: 'true',
+        CLAUDE_AGENT_ID: agentId,
+      },
+    });
+
+    claude.unref();
+    return true;
+  } catch (err) {
+    log(`Task runner: Failed to spawn ${mapping.agent} for task ${task.id}: ${err.message}`);
+    return false;
+  }
+}
+
 /**
  * Main entry point
  */
@@ -743,6 +935,58 @@ async function main() {
   } else {
     const minutesLeft = Math.ceil((LINT_COOLDOWN_MS - timeSinceLastLint) / 60000);
     log(`Lint check cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
+  // TASK RUNNER CHECK (15-min cooldown)
+  // Spawns agents for pending todo tasks (1 per section, max 4 concurrent)
+  // =========================================================================
+  const TASK_RUNNER_COOLDOWN_MS = getCooldown('task_runner', 15) * 60 * 1000;
+  const timeSinceLastTaskRunner = now - (state.lastTaskRunnerCheck || 0);
+
+  if (timeSinceLastTaskRunner >= TASK_RUNNER_COOLDOWN_MS && config.taskRunnerEnabled) {
+    if (!Database) {
+      log('Task runner: better-sqlite3 not available, skipping.');
+    } else {
+      log('Task runner: checking for pending tasks...');
+      const candidates = getPendingTasksForRunner();
+
+      if (candidates.length === 0) {
+        log('Task runner: no eligible pending tasks found.');
+      } else {
+        log(`Task runner: found ${candidates.length} candidate task(s).`);
+        let spawned = 0;
+
+        for (const task of candidates) {
+          const mapping = SECTION_AGENT_MAP[task.section];
+          if (!mapping) continue;
+
+          if (!markTaskInProgress(task.id)) {
+            log(`Task runner: skipping task ${task.id} (failed to mark in_progress).`);
+            continue;
+          }
+
+          const success = spawnTaskAgent(task);
+          if (success) {
+            log(`Task runner: spawning ${mapping.agent} for task "${task.title}" (${task.id})`);
+            spawned++;
+          } else {
+            resetTaskToPending(task.id);
+            log(`Task runner: spawn failed for task ${task.id}, reset to pending.`);
+          }
+        }
+
+        log(`Task runner: spawned ${spawned} agent(s) this cycle.`);
+      }
+    }
+
+    state.lastTaskRunnerCheck = now;
+    saveState(state);
+  } else if (!config.taskRunnerEnabled) {
+    log('Task Runner is disabled in config.');
+  } else {
+    const minutesLeft = Math.ceil((TASK_RUNNER_COOLDOWN_MS - timeSinceLastTaskRunner) / 60000);
+    log(`Task runner cooldown active. ${minutesLeft} minutes until next check.`);
   }
 
   // =========================================================================

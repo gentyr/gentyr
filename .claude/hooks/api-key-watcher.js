@@ -35,9 +35,9 @@ const ROTATION_LOG_PATH = path.join(PROJECT_DIR, '.claude', 'api-key-rotation.lo
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/api/oauth/usage';
 const ANTHROPIC_BETA_HEADER = 'oauth-2025-04-20';
 
-// Rotation thresholds
-const HIGH_USAGE_THRESHOLD = 0.90; // 90%
-const EXHAUSTED_THRESHOLD = 1.0;   // 100%
+// Rotation thresholds (API returns utilization as 0-100 percentages)
+const HIGH_USAGE_THRESHOLD = 90;  // 90%
+const EXHAUSTED_THRESHOLD = 100;  // 100%
 const MAX_LOG_ENTRIES = 100;
 
 /**
@@ -196,7 +196,7 @@ function logRotationEvent(state, entry) {
 
     if (entry.usage_snapshot) {
       const u = entry.usage_snapshot;
-      line += ` usage=(5h:${Math.round(u.five_hour * 100)}%, 7d:${Math.round(u.seven_day * 100)}%, sonnet:${Math.round(u.seven_day_sonnet * 100)}%)`;
+      line += ` usage=(5h:${Math.round(u.five_hour)}%, 7d:${Math.round(u.seven_day)}%, sonnet:${Math.round(u.seven_day_sonnet)}%)`;
     }
 
     fs.appendFileSync(ROTATION_LOG_PATH, line + '\n', 'utf8');
@@ -538,7 +538,7 @@ async function main() {
 
     if (usage) {
       const maxUsage = Math.max(usage.five_hour, usage.seven_day, usage.seven_day_sonnet);
-      message = `Keys: ${keyCount} tracked | Active: ${state.active_key_id.slice(0, 8)}... (${Math.round(maxUsage * 100)}% max usage)`;
+      message = `Keys: ${keyCount} tracked | Active: ${state.active_key_id.slice(0, 8)}... (${Math.round(maxUsage)}% max usage)`;
     } else {
       message = `Keys: ${keyCount} tracked | Active: ${state.active_key_id.slice(0, 8)}...`;
     }

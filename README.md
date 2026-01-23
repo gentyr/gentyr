@@ -130,7 +130,8 @@ A 10-minute timer service drives all background automation. Individual tasks hav
 1. **Usage optimizer** - Fetches API quota, projects usage trajectory, adjusts spawn rates to target 90% utilization at reset
 2. **Report triage** - Checks for pending CTO reports (5-min cooldown)
 3. **Lint checker** - Runs ESLint and fixes errors (30-min cooldown)
-4. **Hourly tasks** - Plan executor, CLAUDE.md refactoring (55-min cooldown)
+4. **Task runner** - Spawns agents for pending TODO tasks (15-min cooldown, 1 per section, max 4 concurrent)
+5. **Hourly tasks** - Plan executor, CLAUDE.md refactoring (55-min cooldown)
 
 **Configuration files:**
 - `autonomous-mode.json` - Master switch (`enabled: true/false`)
@@ -145,6 +146,45 @@ scripts/setup-automation-service.sh run --path /project     # Manual run
 ```
 
 The service is automatically installed/removed by `setup.sh`.
+
+### Task Runner
+
+The task runner automatically spawns agents to process pending tasks from the TODO database (todo.db). Every 15 minutes, it:
+
+1. Queries for the oldest pending task per section
+2. Excludes sections that already have in_progress tasks
+3. Skips tasks created less than 2 minutes ago (prevents chain reactions)
+4. Spawns agents in fire-and-forget mode (detached process)
+
+**Rate limiting:**
+- 1 task per section per 15-minute cycle
+- Maximum 4 concurrent spawns (code-reviewer, investigator, test-writer, project-manager)
+
+**Agent mapping:**
+- CODE-REVIEWER → code-reviewer agent
+- INVESTIGATOR & PLANNER → investigator agent
+- TEST-WRITER → test-writer agent
+- PROJECT-MANAGER → project-manager agent
+
+**Stale task cleanup:**
+Tasks stuck in_progress for more than 30 minutes are automatically reset to pending by the todo-maintenance hook.
+
+**Configuration:**
+Enable/disable in `autonomous-mode.json`:
+```json
+{
+  "taskRunnerEnabled": true
+}
+```
+
+Adjust cooldown in `.claude/state/automation-config.json`:
+```json
+{
+  "defaults": {
+    "task_runner": 15
+  }
+}
+```
 
 ### Antipattern Detection
 

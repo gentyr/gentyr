@@ -111,8 +111,9 @@ function hasPendingCtoItems() {
         }
         reportsDb.close();
       } catch {
-        // G001: If we can't read triage count, fail open (don't block commits on read error)
-        triageCount = 0;
+        // G001: Fail closed - if we can't read triage count, assume there are pending items
+        // This blocks commits when the database is corrupted/unreadable (safer default)
+        triageCount = 1;
       }
     }
 
@@ -120,8 +121,8 @@ function hasPendingCtoItems() {
     return { hasItems: totalCount > 0, count: totalCount, questionCount, triageCount, error: false };
   } catch (err) {
     console.error(`[pre-commit] Error checking CTO items: ${err.message}`);
-    // G001: On error reading DB, fail open (don't block commits)
-    return { hasItems: false, count: 0, error: true };
+    // G001: Fail closed - on error reading DB, block commits (safer default)
+    return { hasItems: true, count: 1, error: true };
   }
 }
 

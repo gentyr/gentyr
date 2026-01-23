@@ -26,6 +26,7 @@ const DEFAULTS = {
   schema_mapper: 1440,
   lint_checker: 30,
   todo_maintenance: 15,
+  task_runner: 15,
   triage_per_item: 60,
 };
 
