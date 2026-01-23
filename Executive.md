@@ -6,44 +6,44 @@ AI coding agents hallucinate, cut corners, and make autonomous decisions that un
 
 ---
 
-## Challenges & Solutions
+## 6 Key Challenges & Solutions
 
-### Hallucinated Code
+### 1. Hallucinated Code
 *AI writes code that appears functional but contains stubs, mocks, or random number generators masquerading as real implementations.*
 
 - **Spec Enforcement** - Global specification prohibits placeholder code; antipattern hunters detect violations
 - **Commit Review Gate** - Deputy-CTO agent reviews every commit, rejects incomplete implementations
 - **Code Reviewer Agent** - Dedicated specialist validates implementation completeness before commit
 
-### Quality Sabotage
+### 2. Quality Sabotage
 *To achieve goals faster, AI disables tests, weakens linting rules, or skips verification steps.*
 
 - **Immutable Hooks** - Critical files (pre-commit, eslint config) are root-owned; agents cannot modify them
 - **Block-No-Verify Hook** - Intercepts and blocks any attempt to bypass git hooks (--no-verify)
 - **Zero-Tolerance Linting** - ESLint runs with --max-warnings 0; any warning blocks commit
 
-### Context Fragmentation
+### 3. Context Fragmentation
 *Different tasks require different expertise, but a single agent can't be expert at everything.*
 
 - **8 Specialized Agents** - Investigator, code-writer, test-writer, code-reviewer, project-manager, deputy-cto, antipattern-hunter, repo-hygiene-expert
 - **Agent Prompts** - Each agent has detailed instructions optimized for its domain
 - **Task Routing** - Todo system routes tasks to appropriate specialist by section
 
-### Specification Drift
+### 4. Specification Drift
 *Without persistent requirements tracking, features drift from intent over multiple sessions.*
 
 - **Specs Directory** - Global specs (G001-G018), local component specs, and reference docs persist across sessions
 - **Specs Browser** - All agents can query specifications before implementing
 - **Compliance Checker** - Automated enforcement scans code against mapped spec files
 
-### Attention Bandwidth
+### 5. Attention Bandwidth
 *Human can only actively monitor 2-3 sessions while background issues accumulate.*
 
 - **Hourly Automation** - Background task runner handles lint fixes, report triage, plan execution
 - **CTO Notification Hook** - Every prompt shows status: quota, pending decisions, active tasks
 - **Agent Reports Queue** - Issues accumulate in triage queue for batch review
 
-### Autonomous Overreach
+### 6. Autonomous Overreach
 *Background agents making critical decisions without human input creates risk.*
 
 - **Deputy-CTO Escalation** - Agents report to deputy-cto, who escalates ambiguous cases to human CTO
