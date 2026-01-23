@@ -1,5 +1,5 @@
 # GENTYR: Governed AI Engineering Teams
-### *Godlike Entity, Not Technically Your Replacement*
+### [G]odlike [E]ntity, [N]ot [T]echnically [Y]our [R]eplacement
 
 ## The Problem
 
