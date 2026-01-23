@@ -1,0 +1,10 @@
+#!/bin/sh
+# Compliance checker runs after commit (rate limited, fire-and-forget)
+# This doesn't block the commit - it runs in the background
+node .claude/hooks/compliance-checker.js --post-commit &
+
+# Antipattern hunter runs after commit (6-hour cooldown, fire-and-forget)
+# Spawns Claude session to hunt for spec violations
+node .claude/hooks/antipattern-hunter-hook.js &
+
+exit 0

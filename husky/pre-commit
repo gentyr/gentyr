@@ -1,0 +1,40 @@
+#!/bin/sh
+echo "Running pre-commit checks..."
+echo ""
+
+# =============================================================================
+# LINT STAGED FILES
+# =============================================================================
+
+echo "Running lint-staged..."
+npm run lint-staged
+LINT_EXIT=$?
+if [ $LINT_EXIT -ne 0 ]; then
+  echo ""
+  echo "Lint-staged FAILED. Fix issues before committing."
+  exit 1
+fi
+echo "Lint-staged passed"
+echo ""
+
+# =============================================================================
+# DEPUTY-CTO COMMIT REVIEW (G020)
+# =============================================================================
+# Spawns deputy-cto agent to review staged changes.
+# Commits are blocked if:
+# - There are pending CTO questions (any type, not just rejections)
+# - There are untriaged agent reports
+# - Deputy-CTO rejects the current changes
+# =============================================================================
+
+echo "Running deputy-cto review..."
+node .claude/hooks/pre-commit-review.js
+REVIEW_EXIT=$?
+
+if [ $REVIEW_EXIT -ne 0 ]; then
+  exit $REVIEW_EXIT
+fi
+
+echo ""
+echo "Pre-commit checks passed"
+exit 0

@@ -1,0 +1,37 @@
+{
+  "name": "@context-unifier/mcp-servers",
+  "version": "1.0.0",
+  "description": "MCP servers for Claude Code integration",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "mcp-todo-db": "./dist/todo-db/server.js",
+    "mcp-specs-browser": "./dist/specs-browser/server.js",
+    "mcp-review-queue": "./dist/review-queue/server.js",
+    "mcp-agent-tracker": "./dist/agent-tracker/server.js",
+    "mcp-session-events": "./dist/session-events/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

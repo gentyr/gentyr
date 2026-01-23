@@ -1,0 +1,60 @@
+{
+  "mcpServers": {
+    "agent-tracker": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/agent-tracker/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "todo-db": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/todo-db/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "specs-browser": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/specs-browser/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "session-events": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/session-events/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "review-queue": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/review-queue/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "agent-reports": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/agent-reports/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "deputy-cto": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/deputy-cto/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "cto-report": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/cto-report/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    }
+  }
+}

@@ -1,0 +1,94 @@
+#!/bin/sh
+echo "Running pre-push checks..."
+echo ""
+
+# =============================================================================
+# FULL TEST SUITE ENFORCEMENT (Every Push)
+# =============================================================================
+# Per CLAUDE.md: "NEVER make tests easier to pass. Tests must validate actual
+# behavior under real conditions."
+#
+# This hook runs the FULL test suite (unit + integration) on every push to
+# ensure no broken code reaches the remote repository.
+# =============================================================================
+
+echo "=============================================="
+echo "FULL TEST SUITE"
+echo "=============================================="
+echo ""
+
+echo "Running unit tests..."
+pnpm run test:unit
+UNIT_EXIT=$?
+
+if [ $UNIT_EXIT -ne 0 ]; then
+  echo ""
+  echo "Unit tests FAILED. Push blocked."
+  echo "   Fix failing tests before pushing."
+  exit 1
+fi
+echo "Unit tests passed"
+echo ""
+
+echo "Running integration tests..."
+pnpm run test:integration
+INT_EXIT=$?
+
+if [ $INT_EXIT -ne 0 ]; then
+  echo ""
+  echo "Integration tests FAILED. Push blocked."
+  echo "   Fix failing tests before pushing."
+  exit 1
+fi
+echo "Integration tests passed"
+echo ""
+
+echo "=============================================="
+echo "Full test suite passed"
+echo "=============================================="
+echo ""
+
+# =============================================================================
+# REPO HYGIENE CHECK (Fire-and-Forget)
+# =============================================================================
+# Spawns repo-hygiene-expert agent to quickly review project structure.
+# This is non-blocking - runs in background after tests pass.
+# =============================================================================
+
+echo "Spawning repo-hygiene-expert for quick structure review..."
+
+# Spawn Claude with repo-hygiene-expert agent (fire-and-forget, detached)
+nohup claude --dangerously-skip-permissions -p "[Task] Use the repo-hygiene-expert sub-agent for a QUICK pre-push structure review.
+
+## CRITICAL WORKFLOW REQUIREMENTS
+
+This is a PRE-PUSH review. Be CONSERVATIVE and NOT trigger-happy with changes.
+
+### Review Scope (QUICK - focus on critical issues only)
+1. Check for obvious G016 violations (Project X importing from Acme App)
+2. Check for committed build artifacts (dist/, node_modules/)
+3. Check for obvious secrets in source files
+4. Check root directory cleanliness
+
+### If Issues Found
+DO NOT implement fixes yourself. Instead:
+1. Document the issues clearly
+2. Spawn code-reviewer agent to review your proposed fixes BEFORE implementation
+3. Only after code-reviewer approves, spawn code-writer to implement
+4. After implementation, spawn code-reviewer AGAIN for final sign-off
+5. Finally, spawn project-manager to sync documentation
+
+### If No Issues Found
+Simply report that the repository structure looks healthy.
+
+### Remember
+- You do NOT have Edit/Write permissions
+- Be MEASURED - only flag real violations per your Core Beliefs
+- This is a quick check, not a comprehensive audit
+- Do not create tasks for minor style issues" > /dev/null 2>&1 &
+
+echo "Repo hygiene check spawned (running in background)"
+echo ""
+
+echo "Pre-push checks complete"
+exit 0

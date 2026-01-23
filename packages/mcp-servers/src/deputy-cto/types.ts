@@ -1,0 +1,288 @@
+/**
+ * Types for the Deputy-CTO MCP Server
+ *
+ * Private toolset for the deputy-cto agent to manage CTO questions,
+ * commit approvals, and task spawning.
+ */
+
+import { z } from 'zod';
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+export const QUESTION_TYPES = [
+  'decision',        // Needs CTO to make a decision
+  'approval',        // Needs CTO approval
+  'rejection',       // Commit was rejected, needs resolution
+  'question',        // General question for CTO
+  'escalation',      // Escalated from agent report
+  'bypass-request',  // Agent requesting emergency bypass (CTO must approve)
+] as const;
+
+export type QuestionType = typeof QUESTION_TYPES[number];
+
+export const QUESTION_STATUS = ['pending', 'answered'] as const;
+export type QuestionStatus = typeof QUESTION_STATUS[number];
+
+// ============================================================================
+// Zod Schemas (G003 Compliance)
+// ============================================================================
+
+export const AddQuestionArgsSchema = z.object({
+  type: z.enum(QUESTION_TYPES).describe('Type of question/request'),
+  title: z.string().min(1).max(200).describe('Brief title (max 200 chars)'),
+  description: z.string().min(1).max(4000).describe('Detailed description with context (max 4000 chars)'),
+  context: z.string().max(2000).optional().describe('Additional context (file paths, commit info, etc.) - max 2000 chars'),
+  suggested_options: z.array(z.string().max(200)).max(10).optional().describe('Suggested options for CTO to choose from (max 10 options, 200 chars each)'),
+});
+
+export const ListQuestionsArgsSchema = z.object({
+  include_answered: z.boolean().optional().default(false).describe('Include answered questions'),
+  limit: z.number().optional().default(20).describe('Maximum questions to return'),
+});
+
+export const ReadQuestionArgsSchema = z.object({
+  id: z.string().describe('Question UUID'),
+});
+
+export const DECISION_MAKERS = ['cto', 'deputy-cto'] as const;
+export type DecisionMaker = typeof DECISION_MAKERS[number];
+
+export const AnswerQuestionArgsSchema = z.object({
+  id: z.string().describe('Question UUID'),
+  answer: z.string().min(1).describe('CTO answer/decision'),
+  decided_by: z.enum(DECISION_MAKERS).optional().default('cto').describe('Who made this decision (cto or deputy-cto)'),
+});
+
+export const ClearQuestionArgsSchema = z.object({
+  id: z.string().describe('Question UUID'),
+});
+
+export const ApproveCommitArgsSchema = z.object({
+  rationale: z.string().min(1).max(500).describe('Brief rationale for approval'),
+});
+
+export const RejectCommitArgsSchema = z.object({
+  title: z.string().min(1).max(200).describe('Title for the rejection entry'),
+  description: z.string().min(1).max(2000).describe('Detailed reason for rejection'),
+});
+
+export const GetCommitDecisionArgsSchema = z.object({});
+
+export const SpawnImplementationTaskArgsSchema = z.object({
+  prompt: z.string().min(1).describe('Full prompt for the spawned Claude instance'),
+  description: z.string().min(1).max(100).describe('Brief description of what this task does'),
+});
+
+export const GetPendingCountArgsSchema = z.object({});
+
+export const ToggleAutonomousModeArgsSchema = z.object({
+  enabled: z.boolean().describe('Whether to enable or disable autonomous mode'),
+});
+
+export const GetAutonomousModeStatusArgsSchema = z.object({});
+
+export const SearchClearedItemsArgsSchema = z.object({
+  query: z.string().min(1).max(200).describe('Substring to search for in cleared question titles/descriptions'),
+  limit: z.number().optional().default(10).describe('Maximum results to return'),
+});
+
+export const CleanupOldRecordsArgsSchema = z.object({});
+
+// Bypass governance schemas
+export const RequestBypassArgsSchema = z.object({
+  reason: z.string().min(1).max(1000).describe('Reason why bypass is needed (system error, timeout, etc.)'),
+  blocked_by: z.string().max(500).optional().describe('What is blocking the commit (error message, timeout info)'),
+  reporting_agent: z.string().describe('Agent requesting the bypass'),
+});
+
+export const ExecuteBypassArgsSchema = z.object({
+  bypass_code: z.string().length(6).describe('The 6-character bypass code from request_bypass'),
+});
+
+// ============================================================================
+// Type Definitions
+// ============================================================================
+
+export type AddQuestionArgs = z.infer<typeof AddQuestionArgsSchema>;
+export type ListQuestionsArgs = z.infer<typeof ListQuestionsArgsSchema>;
+export type ReadQuestionArgs = z.infer<typeof ReadQuestionArgsSchema>;
+export type AnswerQuestionArgs = z.infer<typeof AnswerQuestionArgsSchema>;
+export type ClearQuestionArgs = z.infer<typeof ClearQuestionArgsSchema>;
+export type ApproveCommitArgs = z.infer<typeof ApproveCommitArgsSchema>;
+export type RejectCommitArgs = z.infer<typeof RejectCommitArgsSchema>;
+export type GetCommitDecisionArgs = z.infer<typeof GetCommitDecisionArgsSchema>;
+export type SpawnImplementationTaskArgs = z.infer<typeof SpawnImplementationTaskArgsSchema>;
+export type GetPendingCountArgs = z.infer<typeof GetPendingCountArgsSchema>;
+export type ToggleAutonomousModeArgs = z.infer<typeof ToggleAutonomousModeArgsSchema>;
+export type GetAutonomousModeStatusArgs = z.infer<typeof GetAutonomousModeStatusArgsSchema>;
+export type SearchClearedItemsArgs = z.infer<typeof SearchClearedItemsArgsSchema>;
+export type CleanupOldRecordsArgs = z.infer<typeof CleanupOldRecordsArgsSchema>;
+export type RequestBypassArgs = z.infer<typeof RequestBypassArgsSchema>;
+export type ExecuteBypassArgs = z.infer<typeof ExecuteBypassArgsSchema>;
+
+export interface QuestionRecord {
+  id: string;
+  type: QuestionType;
+  status: QuestionStatus;
+  title: string;
+  description: string;
+  context: string | null;
+  suggested_options: string | null; // JSON array
+  answer: string | null;
+  created_at: string;
+  created_timestamp: number;
+  answered_at: string | null;
+  decided_by: DecisionMaker | null;
+}
+
+export interface QuestionListItem {
+  id: string;
+  type: QuestionType;
+  status: QuestionStatus;
+  title: string;
+  created_at: string;
+  is_rejection: boolean;
+}
+
+export interface ListQuestionsResult {
+  questions: QuestionListItem[];
+  total: number;
+  pending_count: number;
+  rejection_count: number;
+  commits_blocked: boolean;
+}
+
+export interface AddQuestionResult {
+  id: string;
+  message: string;
+}
+
+export interface ReadQuestionResult {
+  id: string;
+  type: QuestionType;
+  status: QuestionStatus;
+  title: string;
+  description: string;
+  context: string | null;
+  suggested_options: string[] | null;
+  answer: string | null;
+  created_at: string;
+  answered_at: string | null;
+}
+
+export interface AnswerQuestionResult {
+  id: string;
+  answered: boolean;
+  message: string;
+}
+
+export interface ClearQuestionResult {
+  id: string;
+  cleared: boolean;
+  message: string;
+  remaining_count: number;
+}
+
+export interface CommitDecisionRecord {
+  id: string;
+  decision: 'approved' | 'rejected';
+  rationale: string;
+  created_at: string;
+}
+
+export interface ApproveCommitResult {
+  approved: boolean;
+  decision_id: string;
+  message: string;
+}
+
+export interface RejectCommitResult {
+  rejected: boolean;
+  decision_id: string;
+  question_id: string;
+  message: string;
+}
+
+export interface GetCommitDecisionResult {
+  has_decision: boolean;
+  decision: 'approved' | 'rejected' | null;
+  rationale: string | null;
+  pending_rejections: number;
+  commits_blocked: boolean;
+  message: string;
+}
+
+export interface SpawnImplementationTaskResult {
+  spawned: boolean;
+  pid: number | null;
+  message: string;
+}
+
+export interface GetPendingCountResult {
+  pending_count: number;
+  rejection_count: number;
+  commits_blocked: boolean;
+}
+
+export interface ErrorResult {
+  error: string;
+}
+
+export interface AutonomousModeConfig {
+  enabled: boolean;
+  planExecutorEnabled: boolean;
+  claudeMdRefactorEnabled: boolean;
+  lastModified: string | null;
+  modifiedBy: string | null;
+}
+
+export interface ToggleAutonomousModeResult {
+  enabled: boolean;
+  message: string;
+  nextRunIn: number | null; // minutes until next run, null if disabled
+}
+
+export interface GetAutonomousModeStatusResult {
+  enabled: boolean;
+  planExecutorEnabled: boolean;
+  claudeMdRefactorEnabled: boolean;
+  lastModified: string | null;
+  nextRunIn: number | null; // minutes until next run, null if disabled
+  message: string;
+}
+
+export interface ClearedQuestionItem {
+  id: string;
+  type: string;
+  title: string;
+  answer: string | null;
+  answered_at: string | null;
+  decided_by: DecisionMaker | null;
+}
+
+export interface SearchClearedItemsResult {
+  items: ClearedQuestionItem[];
+  count: number;
+  message: string;
+}
+
+export interface CleanupOldRecordsResult {
+  commit_decisions_deleted: number;
+  cleared_questions_deleted: number;
+  message: string;
+}
+
+// Bypass governance result types
+export interface RequestBypassResult {
+  request_id: string;
+  bypass_code: string;
+  message: string;
+  instructions: string;
+}
+
+export interface ExecuteBypassResult {
+  executed: boolean;
+  message: string;
+}

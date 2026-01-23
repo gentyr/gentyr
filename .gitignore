@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+packages/mcp-servers/dist/
+*.tsbuildinfo
+
+# Runtime state files (project-specific)
+.claude/*.db
+.claude/*.db-shm
+.claude/*.db-wal
+.claude/*-state.json
+.claude/*.log
+.claude/api-key-rotation.json
+.claude/commit-approval-token.json
+.claude/autonomous-mode.json
+.claude/settings.local.json
+.claude/state/
+
+# Hook runtime state
+.claude/hooks/*-state.json
+.claude/hooks/*-history.json
+.claude/hooks/*.log
+.claude/hooks/test-*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
