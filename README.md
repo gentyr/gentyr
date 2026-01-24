@@ -4,7 +4,7 @@ A modular automation framework for Claude Code that provides MCP servers, specia
 
 ## Features
 
-- **8 MCP Servers**: Task tracking, specifications, session events, reviews, and more
+- **9 MCP Servers**: Task tracking, specifications, session events, reviews, reporting, and more
 - **8 Framework Agents**: Code reviewer, test writer, investigator, deputy-CTO, etc. (projects can add their own)
 - **2 Slash Commands**: `/cto-report`, `/deputy-cto`
 - **11 Automation Hooks**: Pre-commit review, antipattern detection, API key rotation, usage optimization
@@ -71,8 +71,16 @@ Once installed, the framework runs automatically. Here's what it looks like in p
 
 On each user prompt, a status bar displays live metrics:
 
+**Single API key:**
 ```
 Quota: 5-hour ████████░░ 78% (resets 2h) | 7-day ██████░░░░ 58% (resets 4d)
+Usage (30d): 12.4M tokens | 47 task / 12 user sessions | TODOs: 3 queued, 1 active | Deputy: ON (32min)
+Pending: 2 CTO decision(s), 1 unread report(s)
+```
+
+**Multiple API keys (aggregate quota):**
+```
+Quota (3 keys): 5h ██████░░ 45% avg (135% total) | 7d ██████░░░░ 60% avg (179% total)
 Usage (30d): 12.4M tokens | 47 task / 12 user sessions | TODOs: 3 queued, 1 active | Deputy: ON (32min)
 Pending: 2 CTO decision(s), 1 unread report(s)
 ```
@@ -80,7 +88,7 @@ Pending: 2 CTO decision(s), 1 unread report(s)
 When CTO rejections are blocking commits:
 
 ```
-COMMITS BLOCKED: 1 rejection(s) | Quota 5h: 45% 7d: 30% | 8.2M tokens | Deputy: ON. Use /deputy-cto to address.
+COMMITS BLOCKED: 1 rejection(s) | Quota (3k): 5h 45%avg 7d 60%avg | 8.2M tokens | Deputy: ON. Use /deputy-cto to address.
 ```
 
 ### Pre-Commit Review Gate
@@ -227,16 +235,24 @@ mcp__specs-browser__get_spec({ spec_id: "G001" })
 │   ├── mcp/                    # MCP documentation
 │   └── settings.json.template
 ├── packages/
-│   └── mcp-servers/            # 8 TypeScript MCP servers
+│   ├── mcp-servers/            # 9 TypeScript MCP servers
+│   │   ├── src/
+│   │   │   ├── agent-tracker/
+│   │   │   ├── todo-db/
+│   │   │   ├── specs-browser/
+│   │   │   ├── session-events/
+│   │   │   ├── review-queue/
+│   │   │   ├── agent-reports/
+│   │   │   ├── deputy-cto/
+│   │   │   ├── cto-report/
+│   │   │   └── cto-reports/
+│   │   ├── package.json
+│   │   └── tsconfig.json
+│   └── cto-dashboard/          # Ink-based CLI dashboard (invoked by /cto-report)
 │       ├── src/
-│       │   ├── agent-tracker/
-│       │   ├── todo-db/
-│       │   ├── specs-browser/
-│       │   ├── session-events/
-│       │   ├── review-queue/
-│       │   ├── agent-reports/
-│       │   ├── deputy-cto/
-│       │   └── cto-report/
+│       │   ├── components/
+│       │   ├── utils/
+│       │   └── App.tsx
 │       ├── package.json
 │       └── tsconfig.json
 ├── husky/                      # Git hook templates
@@ -289,7 +305,8 @@ When you run `setup.sh`, the following happens:
 | `review-queue` | Schema mapping review queue |
 | `agent-reports` | Agent report triage queue |
 | `deputy-cto` | Deputy-CTO decision management |
-| `cto-report` | CTO metrics and status |
+| `cto-report` | CTO metrics and status (data aggregation) |
+| `cto-reports` | Historical report storage and retrieval |
 
 ### Using MCP Tools
 
@@ -420,7 +437,7 @@ sudo scripts/setup.sh --path /path/to/project --unprotect-only
 ## Version History
 
 - **1.1.0**: Changed agent installation from directory symlink to individual file symlinks. Framework now provides 8 core agents; projects can add their own without conflicts.
-- **1.0.0**: Initial release with 8 MCP servers, 8 framework agents, 15 hooks
+- **1.0.0**: Initial release with 9 MCP servers, 8 framework agents, 15 hooks
 
 ## License
 

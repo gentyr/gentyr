@@ -1,89 +1,79 @@
-# /cto-report - Generate CTO Status Report
+# /cto-report - CTO Status Dashboard
 
-Generate a comprehensive CTO status report using the `mcp__cto-report__get_report` tool.
+Generate a comprehensive CTO status dashboard using the Ink-based dashboard app.
 
 ## What to Do
 
-1. Call `mcp__cto-report__get_report({ hours: 24 })` to get the full report data
-2. Format the output as a clean markdown summary
+The dashboard is installed in the GENTYR repo. Run this command to display it:
 
-## Output Format
-
-Present the report with these sections:
-
-```markdown
-## CTO Status Report
-
-**Generated:** {timestamp}
-**Period:** Last {hours} hours
-
-### Quota Status
-
-| Bucket | Usage | Resets In |
-|--------|-------|-----------|
-| 5-hour | {bar} {percent}% | {hours}h |
-| 7-day  | {bar} {percent}% | {days}d |
-
-{If error fetching quota, show: "Quota: Unable to fetch ({error})"}
-
-### Autonomous Deputy CTO
-- Status: {ENABLED/DISABLED}
-- Next run: {in X minutes / ready / N/A}
-
-### Token Usage (24h)
-
-| Type | Tokens | Description |
-|------|--------|-------------|
-| Input | {formatted} | Fresh tokens processed |
-| Output | {formatted} | Generated response tokens |
-| Cache read | {formatted} | Reused from cache (90% cheaper) |
-| Cache write | {formatted} | Added to cache (25% more expensive) |
-
-**Effective input:** {input + cache_read + cache_write} tokens
-**Cache hit rate:** {cache_read / (input + cache_read) * 100}%
-
-{Note: High cache read is good - it means CLAUDE.md, system prompts, and conversation history are being efficiently reused across API calls.}
-
-### Session Activity (24h)
-- Hook-triggered sessions: {count}
-  - todo-maintenance: {n}
-  - pre-commit-review: {n}
-  - compliance-checker: {n}
-  - antipattern-hunter: {n}
-  - schema-mapper: {n}
-  - plan-executor: {n}
-  - hourly-automation: {n}
-  - jest-reporter: {n}
-  - playwright-reporter: {n}
-  {Only show hook types with count > 0}
-- User-triggered sessions: {count}
-- **Total sessions:** {total}
-
-### Pending CTO Items
-- CTO questions: {count}
-- Commit rejections: {count}
-- Unread agent reports: {count}
-- **Commits blocked:** {YES/NO}
-
-{If commits blocked, add: "Use /deputy-cto to address blocking rejections."}
-
-### Task Status
-
-| Section | Pending | In Progress | Completed |
-|---------|---------|-------------|-----------|
-| {section} | {n} | {n} | {n} |
-...
-
-**Completed (24h):** {total} tasks
-- {breakdown by section}
-
----
-*Run /deputy-cto for interactive briefing session*
+```bash
+# Detect GENTYR installation path by following the symlink (3 levels up from .claude/commands/cto-report.md)
+GENTYR_PATH=$(dirname $(dirname $(dirname $(readlink -f .claude/commands/cto-report.md 2>/dev/null || echo ".claude/commands/cto-report.md"))))
+CLAUDE_PROJECT_DIR=$(pwd) node "$GENTYR_PATH/packages/cto-dashboard/dist/index.js"
 ```
+
+This will render a terminal dashboard with:
+- Rounded corner containers
+- Quota bars with color-coded percentages
+- System status (Deputy CTO, Protection, Commits)
+- Chronological timeline of sessions, hooks, reports, questions, and tasks
+- Metrics summary grid (Tokens, Sessions, Agents, Tasks, Hooks, Triage, CTO Queue, Cooldowns)
+
+## Optional: Custom Time Range
+
+For a different time period (default is 24 hours):
+
+```bash
+GENTYR_PATH=$(dirname $(dirname $(dirname $(readlink -f .claude/commands/cto-report.md 2>/dev/null || echo ".claude/commands/cto-report.md"))))
+CLAUDE_PROJECT_DIR=$(pwd) node "$GENTYR_PATH/packages/cto-dashboard/dist/index.js" --hours 8
+```
+
+Valid range: 1-168 hours.
+
+## Dashboard Layout
+
+```
+╭─────────────────────────────────────────────────────────────────────────────╮
+│                          GENTYR CTO DASHBOARD                                │
+│  Generated: 2026-01-23 16:45                             Period: Last 24h   │
+╰─────────────────────────────────────────────────────────────────────────────╯
+
+╭─ QUOTA & CAPACITY ──────────────╮  ╭─ SYSTEM STATUS ─────────────────────╮
+│  5-hour  ████████░░ 78%          │  │  Deputy CTO: ENABLED  (in 15m)       │
+│  7-day   ██████░░░░ 62%          │  │  Protection: PROTECTED               │
+╰──────────────────────────────────╯  ╰──────────────────────────────────────╯
+
+╭─ TIMELINE (24h) ────────────────────────────────────────────────────────────╮
+│  16:42  ● HOOK  pre-commit-review                                           │
+│         └─ deputy-cto-review: "Review commit abc123"                        │
+│  16:30  ◆ REPORT  Security concern [HIGH]                                   │
+│         └─ From: code-reviewer | Status: escalated                          │
+│  16:15  ○ SESSION  User session (manual)                                    │
+│  15:45  ● HOOK  todo-maintenance                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭─ METRICS SUMMARY ───────────────────────────────────────────────────────────╮
+│  ╭─ Tokens ──────╮  ╭─ Sessions ──╮  ╭─ Agents ───╮  ╭─ Tasks ─────╮        │
+│  │ In:    2.4M   │  │ Task:   12  │  │ Spawns: 8  │  │ Pending:  3 │        │
+│  │ Out:   456K   │  │ User:    4  │  │ Types:  5  │  │ Active:   1 │        │
+│  │ Cache: 89%    │  │ Total:  16  │  │            │  │ Done:     7 │        │
+│  ╰───────────────╯  ╰─────────────╯  ╰────────────╯  ╰─────────────╯        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+## Timeline Event Icons
+
+| Icon | Type | Source |
+|------|------|--------|
+| ● | HOOK | agent-tracker (hook spawns) |
+| ◆ | REPORT | cto-reports.db |
+| ◇ | QUESTION | deputy-cto.db |
+| ■ | TASK | todo.db (completed tasks) |
+| ○ | SESSION | Session JSONL files |
 
 ## Notes
 
 - This is a **read-only report** - it does not modify any state
 - For interactive decision-making, use `/deputy-cto` instead
-- The report uses the same data sources as the session-start notification
-- Quota data is fetched live from Anthropic API using OAuth credentials
+- Timeline shows the 20 most recent events
+- Quota shows aggregate across all active API keys (if key rotation is enabled)

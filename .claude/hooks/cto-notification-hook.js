@@ -33,6 +33,7 @@ const TODO_DB = path.join(PROJECT_DIR, '.claude', 'todo.db');
 const AGENT_TRACKER_HISTORY = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
 const AUTONOMOUS_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
+const KEY_ROTATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'api-key-rotation.json');
 const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/api/oauth/usage';
 const ANTHROPIC_BETA_HEADER = 'oauth-2025-04-20';
@@ -383,6 +384,50 @@ function progressBar(percent, width = 10) {
 }
 
 /**
+ * Get aggregate quota from api-key-rotation.json (active keys only)
+ * Returns { activeCount, fiveHourPct, sevenDayPct } or null
+ * Percentages are of total capacity (average across active keys)
+ */
+function getAggregateQuota() {
+  if (!fs.existsSync(KEY_ROTATION_STATE_PATH)) {
+    return null;
+  }
+
+  try {
+    const state = JSON.parse(fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8'));
+    if (!state || state.version !== 1 || !state.keys) {
+      return null;
+    }
+
+    let fiveHourSum = 0;
+    let sevenDaySum = 0;
+    let activeKeysWithData = 0;
+
+    for (const keyData of Object.values(state.keys)) {
+      // Only count active keys
+      if (keyData.status === 'active' && keyData.last_usage) {
+        fiveHourSum += keyData.last_usage.five_hour || 0;
+        sevenDaySum += keyData.last_usage.seven_day || 0;
+        activeKeysWithData++;
+      }
+    }
+
+    if (activeKeysWithData === 0) {
+      return null;
+    }
+
+    // Return % of total capacity (average = % of total when each key is 100% capacity)
+    return {
+      activeCount: activeKeysWithData,
+      fiveHourPct: Math.round(fiveHourSum / activeKeysWithData),
+      sevenDayPct: Math.round(sevenDaySum / activeKeysWithData),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch quota status from Anthropic API
  */
 async function getQuotaStatus() {
@@ -452,6 +497,7 @@ async function main() {
 
   // Gather all metrics (quota is async, session metrics use incremental cache)
   const sessionMetricsCached = getSessionMetricsCached();
+  const aggregateQuota = getAggregateQuota();
   const [quota, deputyCto, unreadReports, autonomousMode, todoCounts] = await Promise.all([
     getQuotaStatus(),
     Promise.resolve(getDeputyCtoCounts()),
@@ -479,12 +525,13 @@ async function main() {
     autonomousPart = 'Deputy: OFF';
   }
 
-  // Build quota status part
+  // Build quota status part (compact for critical mode)
   let quotaPart = '';
-  if (quota.error) {
-    quotaPart = '';
-  } else if (quota.five_hour && quota.seven_day) {
-    // Show the more critical bucket (higher utilization or shorter reset)
+  if (aggregateQuota && aggregateQuota.activeCount > 1) {
+    // Compact aggregate display for critical mode (% of total capacity)
+    quotaPart = `Quota (${aggregateQuota.activeCount} keys): 5h ${aggregateQuota.fiveHourPct}% 7d ${aggregateQuota.sevenDayPct}%`;
+  } else if (!quota.error && quota.five_hour && quota.seven_day) {
+    // Single key display
     const fiveHour = `5h: ${Math.round(quota.five_hour.utilization)}%`;
     const sevenDay = `7d: ${Math.round(quota.seven_day.utilization)}%`;
     quotaPart = `Quota ${fiveHour} ${sevenDay}`;
@@ -504,8 +551,14 @@ async function main() {
     // Normal CTO report format - multi-line for readability
     const lines = [];
 
-    // Line 1: Quota status (if available)
-    if (quota.five_hour && quota.seven_day) {
+    // Line 1: Quota status - use aggregate if available, otherwise single-key
+    if (aggregateQuota && aggregateQuota.activeCount > 1) {
+      // Multi-key aggregate display (% of total capacity)
+      const fhBar = progressBar(aggregateQuota.fiveHourPct, 8);
+      const sdBar = progressBar(aggregateQuota.sevenDayPct, 8);
+      lines.push(`Quota (${aggregateQuota.activeCount} keys): 5h ${fhBar} ${aggregateQuota.fiveHourPct}% | 7d ${sdBar} ${aggregateQuota.sevenDayPct}%`);
+    } else if (quota.five_hour && quota.seven_day) {
+      // Single-key display with reset times
       const fh = quota.five_hour;
       const sd = quota.seven_day;
       lines.push(`Quota: 5-hour ${progressBar(fh.utilization, 8)} ${Math.round(fh.utilization)}% (resets ${formatHours(fh.resets_in_hours)}) | 7-day ${progressBar(sd.utilization, 8)} ${Math.round(sd.utilization)}% (resets ${formatHours(sd.resets_in_hours)})`);

@@ -88,7 +88,7 @@ AI coding agents hallucinate, cut corners, and make autonomous decisions that un
 3. Claude Code in that project now uses GENTYR's governance
 4. Each project maintains its own databases (tasks, decisions, reports)
 
-### MCP Servers (10 Tool APIs)
+### MCP Servers (9 Tool APIs)
 - **todo-db** - Task tracking and cross-agent coordination
 - **deputy-cto** - Decision queue and approval management
 - **agent-reports** - Escalation and issue reporting
@@ -96,9 +96,8 @@ AI coding agents hallucinate, cut corners, and make autonomous decisions that un
 - **review-queue** - Code review tracking and status
 - **agent-tracker** - Agent spawn monitoring and audit trail
 - **session-events** - Session lifecycle and state management
-- **cto-report** - Executive status report generation
+- **cto-report** - Executive status dashboard and metrics
 - **cto-reports** - Historical report storage and retrieval
-- **gentyr-dashboard** - System-wide activity visualization
 
 ### Specialized Agents (8 Domain Experts)
 - **investigator** - Root cause analysis and debugging
@@ -142,111 +141,155 @@ This creates a trust hierarchy where agents operate within boundaries they canno
 
 ---
 
-## Activity Dashboard (`/gentyr`)
+## CTO Status Dashboard (`/cto-report`)
 
-The `/gentyr` command provides real-time visibility into the entire GENTYR system. Here's an example with representative data:
+The `/cto-report` command launches an Ink-based (React for CLIs) dashboard that provides real-time visibility into the entire GENTYR system. Features include:
+
+- **Rounded corner containers** using Ink's `borderStyle: 'round'`
+- **Color-coded quota bars** (green/yellow/red based on usage)
+- **Usage trend sparklines** showing 5h and 7d history
+- **Usage trajectory projections** with linear regression
+- **Automated instances table** with run counts and frequency adjustments
+- **Chronological timeline** of all system activity
+- **Metrics summary grid** with nested boxes
 
 ```
-================================================================================================================
-                                    G E N T Y R   D A S H B O A R D
-                               Godlike Entity, Not Technically Your Replacement
-================================================================================================================
- Generated: 2026-01-23 14:32:05                                                         Period: Last 24 hours
-================================================================================================================
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ GENTYR CTO DASHBOARD                                        Period: Last 24h │
+│ Generated: 2026-01-23 16:45                                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
 
-+-----------------------------------+-------------------------------------------+
-| SYSTEM HEALTH                     | QUOTA STATUS                              |
-+-----------------------------------+-------------------------------------------+
-| Autonomous Mode: ENABLED          | 5-hour  [========  ] 78% (resets 2.3h)    |
-| Protection:      PROTECTED        | 7-day   [======    ] 58% (resets 4.2d)    |
-| Next Automation: lint-check (12m) | Sonnet  [===       ] 29% (resets 4.2d)    |
-+-----------------------------------+-------------------------------------------+
+╭──────────────────────────────────╮ ╭──────────────────────────────────╮
+│ QUOTA & CAPACITY (3 keys)        │ │ SYSTEM STATUS                    │
+│ 5-hour   ████████░░░░░░░░  45%   │ │ Deputy CTO: ENABLED  (in 15m)    │
+│ 7-day    ██████░░░░░░░░░░  38%   │ │ Protection: PROTECTED            │
+│ Rotations (24h): 2               │ │ Commits:    ALLOWED              │
+╰──────────────────────────────────╯ ╰──────────────────────────────────╯
 
-+-----------------------------------------------------------------------------------------------+
-| AGENT ACTIVITY (24h)                                                                          |
-+-----------------------------------------------------------------------------------------------+
-| Total Spawns: 47 (24h) / 312 (7d) / 1,847 (all time)                                          |
-|                                                                                               |
-| By Type:                               By Hook:                                               |
-|   task-runner-investigator .. 12         hourly-automation ...... 28                          |
-|   deputy-cto-review ........ 8           pre-commit-review ...... 15                          |
-|   antipattern-hunter ....... 6           compliance-checker ..... 4                           |
-|   lint-fixer ............... 5           antipattern-hunter ..... 0                           |
-|   code-reviewer ............ 4                                                                |
-|   todo-processing .......... 3                                                                |
-|                                                                                               |
-| Recent:                                                                                       |
-|   * 14:12 lint-fixer - Fixing 8 lint errors in src/components                                 |
-|   * 13:45 deputy-cto-review - Triaging 3 pending CTO reports                                  |
-|   * 13:30 task-runner-investigator - Investigating auth flow bug                              |
-+-----------------------------------------------------------------------------------------------+
+╭────────────────────────────────────────────────────╮
+│ USAGE TRENDS                                       │
+│ 5-Hour Usage (30 snapshots, 5h ago to now)         │
+│                          ▁▁▁▁▁▁▁▃▃▃▃▃▃▆▆▆▆▆▆██████ │
+│              ▁▁▁▁▁▁▄▄▄▄▄▄█████████████████████████ │
+│        ▃▃▃▃▃▃█████████████████████████████████████ │
+│ Current: 45%  Min: 12%  Max: 45%                   │
+│                                                    │
+│ 7-Day Usage                                        │
+│                                 ▁▁▁▁▁▁▅▅▅▅▅▅██████ │
+│                    ▂▂▂▂▂▂▆▆▆▆▆▆▆██████████████████ │
+│        ▃▃▃▃▃▃▇▇▇▇▇▇███████████████████████████████ │
+│ Current: 38%  Min: 8%  Max: 38%                    │
+╰────────────────────────────────────────────────────╯
 
-+-----------------------------------------------------------------------------------------------+
-| HOOK EXECUTIONS (24h)                                                                         |
-+-----------------------------------------------------------------------------------------------+
-| Total: 156 executions | Success Rate: 94.2%                                                   |
-|                                                                                               |
-| Hook                    Total  Success  Fail  Skip   Avg Time                                 |
-| -----------------------+------+--------+------+------+----------                              |
-| pre-commit-review         45       43      2     0      1.2s                                  |
-| hourly-automation         24       24      0     0      8.5s                                  |
-| api-key-watcher           48       48      0     0      0.3s                                  |
-| compliance-checker         8        6      2     0     45.2s                                  |
-| todo-maintenance          31       30      1     0      0.8s                                  |
-|                                                                                               |
-| Recent Failures:                                                                              |
-|   * 10:45 pre-commit-review - MCP timeout after 30s                                           |
-|   * 09:12 compliance-checker - Spec file HEIMDALL.md not found                                |
-+-----------------------------------------------------------------------------------------------+
+╭──────────────────────────────────────────────────────────────────────╮
+│ USAGE TRAJECTORY                                                     │
+│ 5-Hour Window                       7-Day Window                     │
+│  ├─ Current:     45%                 ├─ Current:     38%             │
+│  ├─ At Reset:    72% ↑               ├─ At Reset:    52% ↑           │
+│  ├─ Reset In:    2h 15m              ├─ Reset In:    3d 4h           │
+│  └─ Trend:       +5.4%/hr ↑          └─ Trend:       +2.1%/day ↑     │
+│                                                                      │
+│ Projection Method: Linear regression on last 30 snapshots            │
+╰──────────────────────────────────────────────────────────────────────╯
 
-+-----------------------------------+-------------------------------------------+
-| TASK PIPELINE                     | CTO QUEUE                                 |
-+-----------------------------------+-------------------------------------------+
-| Pending: 12 | In Progress: 3      | Pending Questions: 2                      |
-| Completed (24h): 28               | Rejections: 1                             |
-| Stale (>30min): 0                 | Pending Reports: 0                        |
-|                                   |                                           |
-| By Section:          P | I | C    | COMMITS: ALLOWED                          |
-|   CODE-REVIEWER      3 | 1 | 8    |                                           |
-|   INVESTIGATOR       4 | 1 | 10   | Recent Escalations:                       |
-|   TEST-WRITER        2 | 0 | 5    |   * Security: SQL injection risk in API   |
-|   PROJECT-MANAGER    3 | 1 | 5    |   * Decision: Redis vs in-memory cache    |
-+-----------------------------------+-------------------------------------------+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ AUTOMATED INSTANCES                                                          │
+│ Type                  Runs (24h)  Next Run      Delta       Freq Adj         │
+│ ──────────────────────────────────────────────────────────────────────────── │
+│ CLAUDE.md Refactor    3           in 42m       +5m34s      +15% slower       │
+│ Todo Maintenance      8           in 18m       -2m10s      -10% faster       │
+│ Plan Executor         2           in 1h 05m    +12m00s     +25% slower       │
+│ Antipattern Hunter    4           in 55m        —          baseline          │
+│ Triage Check          24          in 3m         —          baseline          │
+│ Lint Checker          6           in 12m        —          baseline          │
+│ ──────────────────────────────────────────────────────────────────────────── │
+│ Pre-Commit Hook       12          on commit     —           —                │
+│ Test Suite            1           on failure    —           —                │
+│ Compliance Checker    5           on change     —           —                │
+│                                                                              │
+│ Usage Target: 90%  |  Current Projected: 87%  |  Adjusting: ↑ intervals      │
+╰──────────────────────────────────────────────────────────────────────────────╯
 
-+-----------------------------------------------------------------------------------------------+
-| TOKEN USAGE (24h)                                                                             |
-+-----------------------------------------------------------------------------------------------+
-| Input: 2.4M | Output: 890K | Cache Read: 12.1M | Cache Write: 450K                            |
-| Total: 15.8M tokens | Cache Hit Rate: 83.4%                                                   |
-|                                                                                               |
-| Sessions: 47 task-triggered | 12 user-triggered | 59 total                                    |
-+-----------------------------------------------------------------------------------------------+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ TIMELINE (24h)                                                               │
+│ 16:42  ● HOOK  pre-commit-review                                             │
+│         └─ deputy-cto-review: "Review commit abc123"                         │
+│                                                                              │
+│ 16:30  ◆ REPORT  Security concern [HIGH]                                     │
+│         └─ From: code-reviewer | Status: escalated                           │
+│                                                                              │
+│ 16:15  ○ SESSION  5b420f2c...                                                │
+│         └─ User session (manual)                                             │
+│                                                                              │
+│ 15:45  ■ TASK  Implement login flow                                          │
+│         └─ Section: CODE-REVIEWER                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
 
-+-----------------------------------+-------------------------------------------+
-| API KEY HEALTH                    | COMPLIANCE CHECKER                        |
-+-----------------------------------+-------------------------------------------+
-| Active Key: 3f8a92b1...           | Global Agents Today: 4 / 22               |
-| Total: 3 | Usable: 3 | Exhaust: 0 | Local Agents Today: 1 / 3                 |
-| Rotation Events (24h): 2          | Last Run: 6h ago                          |
-|                                   |                                           |
-| Key        5h    7d    Status     | Files Needing Check: 12                   |
-| 3f8a...    78%   58%   active     |                                           |
-| 9bc4...    45%   32%   standby    |                                           |
-| 2de7...    12%   89%   standby    |                                           |
-+-----------------------------------+-------------------------------------------+
-
-================================================================================================================
- Run /cto-report for detailed metrics | /deputy-cto for interactive briefing
-================================================================================================================
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ METRICS SUMMARY                                                              │
+│ ╭──────────────╮ ╭──────────────╮ ╭──────────────╮ ╭──────────────╮          │
+│ │ Tokens       │ │ Sessions     │ │ Agents       │ │ Tasks        │          │
+│ │ In: 2.4M     │ │ Task: 47     │ │ Spawns: 12   │ │ Pending: 3   │          │
+│ │ Out: 890K    │ │ User: 12     │ │ Types: 5     │ │ Active: 1    │          │
+│ │ Cache: 83%   │ │ Total: 59    │ │              │ │ Done: 28     │          │
+│ ╰──────────────╯ ╰──────────────╯ ╰──────────────╯ ╰──────────────╯          │
+│                                                                              │
+│ ╭───────────────╮ ╭──────────────╮ ╭───────────────╮ ╭──────────────╮        │
+│ │ Hooks (24h)   │ │ Triage       │ │ CTO Queue     │ │ Cooldowns    │        │
+│ │ Total: 156    │ │ Pending: 0   │ │ Questions: 2  │ │ Factor: 1.2x │        │
+│ │ Success: 94%  │ │ Handled: 12  │ │ Rejections: 1 │ │ Target: 90%  │        │
+│ │ Failures: 2   │ │ Escalated: 3 │ │ Triage: 0     │ │ Proj: 87%    │        │
+│ ╰───────────────╯ ╰──────────────╯ ╰───────────────╯ ╰──────────────╯        │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-**Key Metrics Explained:**
-- **System Health** - Shows if autonomous mode is running and critical files are protected
-- **Quota Status** - Real-time API usage with reset timers to prevent mid-task exhaustion
-- **Agent Activity** - Which specialized agents are working and what triggered them
-- **Hook Executions** - Success rate and performance of automation hooks
-- **Task Pipeline** - Cross-session task coordination status by specialist type
+### Timeline Event Icons
+
+| Icon | Type | Source |
+|------|------|--------|
+| ● | HOOK | Agent spawned by hook (agent-tracker) |
+| ◆ | REPORT | CTO report submitted (cto-reports.db) |
+| ◇ | QUESTION | CTO question created (deputy-cto.db) |
+| ■ | TASK | Task completed (todo.db) |
+| ○ | SESSION | Claude Code session (JSONL files) |
+
+### Dashboard Sections Explained
+
+#### Usage Trends
+- **Purpose**: Visualize API quota consumption history using ASCII sparkline charts
+- **Data Source**: `.claude/state/usage-snapshots.json` (collected by usage-optimizer every 10 minutes)
+- **Shows**: Sparkline charts for 5-hour and 7-day windows with current, min, and max values
+- **Graceful Degradation**: Section hides when no snapshot data available
+
+#### Usage Trajectory
+- **Purpose**: Project future API usage at reset time using trend analysis
+- **Algorithm**: Linear regression on last 30 snapshots
+- **Shows**:
+  - Current % - Current aggregate usage across all keys
+  - At Reset % - Projected usage when quota resets (with trend arrow)
+  - Reset In - Time remaining until quota reset
+  - Trend - Rate of change (% per hour for 5h, % per day for 7d)
+
+#### Automated Instances
+- **Purpose**: Monitor all automated Claude triggers with frequency adjustment visibility
+- **Columns**:
+  - Type - Automation name (Pre-Commit Hook, CLAUDE.md Refactor, etc.)
+  - Runs (24h) - Execution count from agent-tracker
+  - Next Run - Countdown or trigger type ("on commit", "on failure")
+  - Delta - Difference from baseline interval (+5m34s, -2m10s)
+  - Freq Adj - Percentage slower/faster from usage optimizer (+15% slower)
+- **Footer**: Shows usage target, current projected %, and adjusting direction (↑↓→)
+
+### Key Metrics Explained
+
+- **Quota & Capacity** - Aggregate usage across all API keys; shows rotation count if using multi-key
+- **System Status** - Deputy CTO mode, file protection status, commit gate status
+- **Timeline** - Chronological view of the 20 most recent events across all data sources
+- **Tokens** - Input/output token counts with cache hit rate (higher = better context reuse)
+- **Sessions** - Task-triggered (automated) vs user-triggered (manual) session counts
+- **Agents** - Specialized agent spawn counts by type
+- **Tasks** - Cross-session task pipeline status
+- **Hooks** - Automation hook execution success rate
+- **Triage** - Deputy-CTO triage activity (self-handled vs escalated)
 - **CTO Queue** - Items awaiting human decision (blocks commits when non-empty)
-- **Token Usage** - Cost visibility with cache efficiency metrics
-- **API Key Health** - Multi-key rotation status for quota resilience
-- **Compliance** - Spec enforcement activity and pending verifications
+- **Cooldowns** - Usage projection and dynamic cooldown factor

@@ -3,6 +3,7 @@ node_modules/
 
 # Build outputs
 packages/mcp-servers/dist/
+packages/cto-dashboard/dist/
 *.tsbuildinfo
 
 # Runtime state files (project-specific)
@@ -16,6 +17,9 @@ packages/mcp-servers/dist/
 .claude/autonomous-mode.json
 .claude/settings.local.json
 .claude/state/
+
+# MCP configuration (user-specific, use template)
+.mcp.json
 
 # Hook runtime state
 .claude/hooks/*-state.json
