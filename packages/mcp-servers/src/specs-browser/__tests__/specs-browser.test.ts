@@ -645,6 +645,15 @@ Some content here.`;
       }
     });
 
+    afterEach(() => {
+      // Clean up the entire .claude directory created for Suite Management tests
+      const projectDir = path.dirname(tempSpecsDir);
+      const claudeDir = path.join(projectDir, '.claude');
+      if (fs.existsSync(claudeDir)) {
+        fs.rmSync(claudeDir, { recursive: true, force: true });
+      }
+    });
+
     describe('List Suites', () => {
       it('should return empty array when suites-config.json does not exist', () => {
         expect(fs.existsSync(suitesConfigPath)).toBe(false);
