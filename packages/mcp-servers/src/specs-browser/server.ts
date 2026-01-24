@@ -16,16 +16,41 @@ import { McpServer, type ToolHandler } from '../shared/server.js';
 import {
   ListSpecsArgsSchema,
   GetSpecArgsSchema,
-  CATEGORY_INFO,
-  SPEC_CATEGORIES,
+  CreateSpecSchema,
+  EditSpecSchema,
+  DeleteSpecSchema,
+  CreateSuiteSchema,
+  GetSuiteSchema,
+  ListSuitesSchema,
+  EditSuiteSchema,
+  DeleteSuiteSchema,
+  FRAMEWORK_CATEGORY_INFO,
+  DEFAULT_PROJECT_CATEGORY_INFO,
+  SpecsConfigSchema,
   type ListSpecsArgs,
   type GetSpecArgs,
+  type CreateSpecArgs,
+  type EditSpecArgs,
+  type DeleteSpecArgs,
+  type CreateSuiteArgs,
+  type GetSuiteArgs,
+  type EditSuiteArgs,
+  type DeleteSuiteArgs,
   type ListSpecsResult,
   type GetSpecResult,
   type GetSpecErrorResult,
+  type CreateSpecResult,
+  type EditSpecResult,
+  type DeleteSpecResult,
+  type CreateSuiteResult,
+  type GetSuiteResult,
+  type ListSuitesResult,
+  type EditSuiteResult,
+  type DeleteSuiteResult,
   type SpecMetadata,
   type CategorySpecs,
-  type SpecCategory,
+  type CategoryInfoItem,
+  type SuitesConfig,
 } from './types.js';
 
 // ============================================================================
@@ -35,6 +60,50 @@ import {
 const PROJECT_DIR = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd());
 const PROJECT_SPECS_DIR = path.join(PROJECT_DIR, 'specs');
 const FRAMEWORK_SPECS_DIR = path.join(PROJECT_DIR, '.claude-framework', 'specs');
+const CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'specs-config.json');
+const SUITES_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'suites-config.json');
+
+// ============================================================================
+// Category Loading
+// ============================================================================
+
+/**
+ * Load categories from framework defaults + project config
+ * Merges: framework categories + default project categories + custom project categories
+ */
+function loadCategories(): Record<string, CategoryInfoItem> {
+  const categories: Record<string, CategoryInfoItem> = {
+    // Framework categories (always available)
+    ...FRAMEWORK_CATEGORY_INFO,
+    // Default project categories
+    ...DEFAULT_PROJECT_CATEGORY_INFO,
+  };
+
+  // Load project-specific additions from .claude/specs-config.json
+  if (fs.existsSync(CONFIG_PATH)) {
+    try {
+      const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+      const config = SpecsConfigSchema.parse(JSON.parse(raw));
+
+      for (const [key, value] of Object.entries(config.categories)) {
+        categories[key] = {
+          path: value.path,
+          description: value.description,
+          source: 'project',
+          prefix: value.prefix,
+        };
+      }
+    } catch (err) {
+      // G001: Log error but continue with defaults
+      console.error(`[specs-browser] Failed to load config from ${CONFIG_PATH}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return categories;
+}
+
+// Load categories at startup
+const CATEGORY_INFO = loadCategories();
 
 /**
  * Get the specs directory for a category based on its source
@@ -86,6 +155,38 @@ function parseSpecMetadata(content: string, filename: string): SpecMetadata {
 }
 
 // ============================================================================
+// Suite Config Loading
+// ============================================================================
+
+/**
+ * Load suites config from suites-config.json
+ * Returns null if file doesn't exist (optional feature)
+ */
+function loadSuitesConfig(): SuitesConfig | null {
+  if (!fs.existsSync(SUITES_CONFIG_PATH)) {
+    return null;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(SUITES_CONFIG_PATH, 'utf8'));
+  } catch (err) {
+    console.error(`[specs-browser] Failed to load suites-config.json: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/**
+ * Save suites config to suites-config.json
+ */
+function saveSuitesConfig(config: SuitesConfig): void {
+  // Ensure directory exists
+  const dir = path.dirname(SUITES_CONFIG_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(SUITES_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
+}
+
+// ============================================================================
 // Tool Implementations
 // ============================================================================
 
@@ -98,9 +199,19 @@ function listSpecs(args: ListSpecsArgs): ListSpecsResult {
     total: 0,
   };
 
-  const categoriesToProcess: SpecCategory[] = args.category
+  // Get available categories from loaded config
+  const availableCategories = Object.keys(CATEGORY_INFO);
+
+  // Runtime validation: check if category is valid
+  if (args.category && !availableCategories.includes(args.category)) {
+    throw new Error(
+      `Unknown category: "${args.category}". Available: ${availableCategories.join(', ')}`
+    );
+  }
+
+  const categoriesToProcess: string[] = args.category
     ? [args.category]
-    : [...SPEC_CATEGORIES];
+    : availableCategories;
 
   for (const catKey of categoriesToProcess) {
     const catInfo = CATEGORY_INFO[catKey];
@@ -159,8 +270,8 @@ function listSpecs(args: ListSpecsArgs): ListSpecsResult {
 function getSpec(args: GetSpecArgs): GetSpecResult | GetSpecErrorResult {
   const specId = args.spec_id.toUpperCase();
 
-  // Search in all categories (both project and framework)
-  for (const catKey of SPEC_CATEGORIES) {
+  // Search in all categories (framework + project + custom)
+  for (const catKey of Object.keys(CATEGORY_INFO)) {
     const catInfo = CATEGORY_INFO[catKey];
     const catDir = getSpecsDir(catInfo);
 
@@ -203,10 +314,274 @@ function getSpec(args: GetSpecArgs): GetSpecResult | GetSpecErrorResult {
     }
   }
 
+  const availableCategories = Object.keys(CATEGORY_INFO).join(', ');
   return {
     error: `Spec not found: ${args.spec_id}`,
-    hint: 'Use list_specs to see available specifications. Framework specs use F001-F005 prefixes.',
+    hint: `Use list_specs to see available specifications. Categories: ${availableCategories}`,
   };
+}
+
+/**
+ * Create a new spec file
+ */
+function createSpec(args: CreateSpecArgs): CreateSpecResult {
+  const { spec_id, category, suite, title, content } = args;
+
+  let targetDir: string;
+  let basePath: string;
+
+  if (suite) {
+    // Creating in a suite's spec dir
+    const suitesConfig = loadSuitesConfig();
+    if (!suitesConfig?.suites?.[suite]) {
+      throw new Error(`Suite not found: ${suite}`);
+    }
+    const suiteConfig = suitesConfig.suites[suite];
+    const specDir = suiteConfig.mappedSpecs?.dir || `specs/suites/${suite}`;
+    targetDir = path.join(PROJECT_DIR, specDir);
+    basePath = specDir;
+  } else {
+    // Creating in main category
+    const catInfo = CATEGORY_INFO[category];
+    if (!catInfo) {
+      throw new Error(`Unknown category: ${category}. Available: ${Object.keys(CATEGORY_INFO).join(', ')}`);
+    }
+    targetDir = getSpecsDir(catInfo);
+    basePath = catInfo.source === 'framework'
+      ? `.claude-framework/specs/${catInfo.path}`
+      : `specs/${catInfo.path}`;
+  }
+
+  // Create directory if needed
+  if (!fs.existsSync(targetDir)) {
+    fs.mkdirSync(targetDir, { recursive: true });
+  }
+
+  const filename = `${spec_id}.md`;
+  const filepath = path.join(targetDir, filename);
+
+  if (fs.existsSync(filepath)) {
+    throw new Error(`Spec already exists: ${spec_id}`);
+  }
+
+  // Build content with title as header
+  const fullContent = `# ${title}\n\n${content}`;
+  fs.writeFileSync(filepath, fullContent, 'utf8');
+
+  return { success: true, file: `${basePath}/${filename}` };
+}
+
+/**
+ * Edit an existing spec file
+ */
+function editSpec(args: EditSpecArgs): EditSpecResult {
+  // Find spec across all categories and suites
+  const result = getSpec({ spec_id: args.spec_id });
+  if ('error' in result) {
+    throw new Error(result.error);
+  }
+
+  const filepath = path.join(PROJECT_DIR, result.file);
+  let newContent: string;
+
+  if (args.content) {
+    // Full replacement
+    newContent = args.content;
+  } else if (args.append) {
+    // Append to existing
+    newContent = result.content + '\n' + args.append;
+  } else if (args.title) {
+    // Update title only
+    newContent = result.content.replace(/^# .+$/m, `# ${args.title}`);
+  } else {
+    throw new Error('Must provide content, append, or title');
+  }
+
+  fs.writeFileSync(filepath, newContent, 'utf8');
+  return { success: true, file: result.file };
+}
+
+/**
+ * Delete a spec file
+ */
+function deleteSpec(args: DeleteSpecArgs): DeleteSpecResult {
+  if (!args.confirm) {
+    throw new Error('Must set confirm: true to delete');
+  }
+
+  const result = getSpec({ spec_id: args.spec_id });
+  if ('error' in result) {
+    throw new Error(result.error);
+  }
+
+  const filepath = path.join(PROJECT_DIR, result.file);
+  fs.unlinkSync(filepath);
+
+  return { success: true, deleted: result.file };
+}
+
+/**
+ * List all configured suites
+ */
+function listSuites(): ListSuitesResult {
+  const config = loadSuitesConfig();
+  if (!config) {
+    return { suites: [] };
+  }
+
+  return {
+    suites: Object.entries(config.suites).map(([id, suite]) => ({
+      id,
+      description: suite.description,
+      scope: suite.scope,
+      enabled: suite.enabled ?? true,
+    })),
+  };
+}
+
+/**
+ * Get details of a specific suite
+ */
+function getSuite(args: GetSuiteArgs): GetSuiteResult {
+  const config = loadSuitesConfig();
+  if (!config?.suites?.[args.suite_id]) {
+    throw new Error(`Suite not found: ${args.suite_id}`);
+  }
+
+  const suite = config.suites[args.suite_id];
+  return {
+    suite_id: args.suite_id,
+    description: suite.description,
+    scope: suite.scope,
+    mappedSpecs: suite.mappedSpecs,
+    exploratorySpecs: suite.exploratorySpecs,
+    enabled: suite.enabled ?? true,
+  };
+}
+
+/**
+ * Create a new suite
+ */
+function createSuite(args: CreateSuiteArgs): CreateSuiteResult {
+  let config = loadSuitesConfig() || { version: 1, suites: {} };
+
+  if (config.suites[args.suite_id]) {
+    throw new Error(`Suite already exists: ${args.suite_id}`);
+  }
+
+  config.suites[args.suite_id] = {
+    description: args.description,
+    scope: args.scope,
+    mappedSpecs: args.mapped_specs_dir ? {
+      dir: args.mapped_specs_dir,
+      pattern: args.mapped_specs_pattern || '*.md',
+    } : null,
+    exploratorySpecs: args.exploratory_specs_dir ? {
+      dir: args.exploratory_specs_dir,
+      pattern: args.exploratory_specs_pattern || '*.md',
+    } : null,
+    enabled: true,
+  };
+
+  // Create directories if specified
+  if (args.mapped_specs_dir) {
+    const dir = path.join(PROJECT_DIR, args.mapped_specs_dir);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  }
+  if (args.exploratory_specs_dir) {
+    const dir = path.join(PROJECT_DIR, args.exploratory_specs_dir);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  }
+
+  saveSuitesConfig(config);
+  return { success: true, suite_id: args.suite_id };
+}
+
+/**
+ * Edit an existing suite
+ */
+function editSuite(args: EditSuiteArgs): EditSuiteResult {
+  const config = loadSuitesConfig();
+  if (!config?.suites?.[args.suite_id]) {
+    throw new Error(`Suite not found: ${args.suite_id}`);
+  }
+
+  const suite = config.suites[args.suite_id];
+
+  // Update fields that were provided
+  if (args.description !== undefined) {
+    suite.description = args.description;
+  }
+  if (args.scope !== undefined) {
+    suite.scope = args.scope;
+  }
+  if (args.enabled !== undefined) {
+    suite.enabled = args.enabled;
+  }
+
+  // Handle mappedSpecs updates
+  if (args.mapped_specs_dir !== undefined) {
+    if (args.mapped_specs_dir) {
+      suite.mappedSpecs = {
+        dir: args.mapped_specs_dir,
+        pattern: args.mapped_specs_pattern || suite.mappedSpecs?.pattern || '*.md',
+      };
+      // Create directory if it doesn't exist
+      const dir = path.join(PROJECT_DIR, args.mapped_specs_dir);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    } else {
+      suite.mappedSpecs = null;
+    }
+  } else if (args.mapped_specs_pattern !== undefined && suite.mappedSpecs) {
+    suite.mappedSpecs.pattern = args.mapped_specs_pattern;
+  }
+
+  // Handle exploratorySpecs updates
+  if (args.exploratory_specs_dir !== undefined) {
+    if (args.exploratory_specs_dir) {
+      suite.exploratorySpecs = {
+        dir: args.exploratory_specs_dir,
+        pattern: args.exploratory_specs_pattern || suite.exploratorySpecs?.pattern || '*.md',
+      };
+      // Create directory if it doesn't exist
+      const dir = path.join(PROJECT_DIR, args.exploratory_specs_dir);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    } else {
+      suite.exploratorySpecs = null;
+    }
+  } else if (args.exploratory_specs_pattern !== undefined && suite.exploratorySpecs) {
+    suite.exploratorySpecs.pattern = args.exploratory_specs_pattern;
+  }
+
+  saveSuitesConfig(config);
+  return { success: true, suite_id: args.suite_id };
+}
+
+/**
+ * Delete a suite (does not delete specs, just the config)
+ */
+function deleteSuite(args: DeleteSuiteArgs): DeleteSuiteResult {
+  if (!args.confirm) {
+    throw new Error('Must set confirm: true to delete');
+  }
+
+  const config = loadSuitesConfig();
+  if (!config?.suites?.[args.suite_id]) {
+    throw new Error(`Suite not found: ${args.suite_id}`);
+  }
+
+  delete config.suites[args.suite_id];
+  saveSuitesConfig(config);
+
+  return { success: true, deleted: args.suite_id };
 }
 
 // ============================================================================
@@ -214,6 +589,7 @@ function getSpec(args: GetSpecArgs): GetSpecResult | GetSpecErrorResult {
 // ============================================================================
 
 const tools: ToolHandler[] = [
+  // Existing tools
   {
     name: 'list_specs',
     description: 'List all specification files organized by category. Returns spec IDs, titles, and categories.',
@@ -225,6 +601,56 @@ const tools: ToolHandler[] = [
     description: 'Get the full content of a specification file. Use spec_id from list_specs.',
     schema: GetSpecArgsSchema,
     handler: getSpec,
+  },
+  // Spec management tools
+  {
+    name: 'create_spec',
+    description: 'Create a new spec file in a category or suite. Creates directories if needed.',
+    schema: CreateSpecSchema,
+    handler: createSpec,
+  },
+  {
+    name: 'edit_spec',
+    description: 'Edit an existing spec file. Supports full replacement, title update, or appending content.',
+    schema: EditSpecSchema,
+    handler: editSpec,
+  },
+  {
+    name: 'delete_spec',
+    description: 'Delete a spec file. Requires confirm: true to proceed.',
+    schema: DeleteSpecSchema,
+    handler: deleteSpec,
+  },
+  // Suite management tools
+  {
+    name: 'list_suites',
+    description: 'List all configured spec suites. Returns empty array if no suites-config.json exists.',
+    schema: ListSuitesSchema,
+    handler: listSuites,
+  },
+  {
+    name: 'get_suite',
+    description: 'Get full details of a spec suite including mappedSpecs and exploratorySpecs configuration.',
+    schema: GetSuiteSchema,
+    handler: getSuite,
+  },
+  {
+    name: 'create_suite',
+    description: 'Create a new spec suite for a directory pattern. Creates suites-config.json if needed.',
+    schema: CreateSuiteSchema,
+    handler: createSuite,
+  },
+  {
+    name: 'edit_suite',
+    description: 'Edit an existing suite configuration. Only updates specified fields.',
+    schema: EditSuiteSchema,
+    handler: editSuite,
+  },
+  {
+    name: 'delete_suite',
+    description: 'Delete a suite from config. Does not delete the spec files, just the suite configuration.',
+    schema: DeleteSuiteSchema,
+    handler: deleteSuite,
   },
 ];
 
