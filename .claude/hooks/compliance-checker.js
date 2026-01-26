@@ -47,6 +47,9 @@ import { registerSpawn, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from '.
 // Project directory
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
+// Suites config path (optional feature)
+const SUITES_CONFIG_PATH = path.join(projectDir, '.claude/hooks/suites-config.json');
+
 // Load configuration
 const configPath = path.join(projectDir, '.claude/hooks/compliance-config.json');
 let CONFIG;
@@ -85,6 +88,174 @@ try {
 const STATE_FILE = path.join(projectDir, CONFIG.stateFile);
 const LOG_FILE = path.join(projectDir, CONFIG.logFile);
 const MAPPING_FILE = path.join(projectDir, CONFIG.mappingFile);
+
+// ============================================================================
+// Suite Config Support (Optional Feature)
+// ============================================================================
+
+/**
+ * Load suites config from suites-config.json
+ * Returns null if file doesn't exist (feature is optional)
+ */
+function loadSuitesConfig() {
+  if (!fs.existsSync(SUITES_CONFIG_PATH)) {
+    return null;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(SUITES_CONFIG_PATH, 'utf8'));
+  } catch (err) {
+    console.error(`Failed to load suites-config.json: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Simple glob pattern matching (minimatch-like)
+ * Supports: *, **, ?
+ */
+function matchesGlob(filePath, pattern) {
+  // Convert glob pattern to regex
+  let regexStr = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')  // Escape special regex chars
+    .replace(/\*\*/g, '{{DOUBLESTAR}}')     // Placeholder for **
+    .replace(/\*/g, '[^/]*')                // * matches anything except /
+    .replace(/\?/g, '[^/]')                 // ? matches single char except /
+    .replace(/\{\{DOUBLESTAR\}\}/g, '.*');  // ** matches everything
+
+  const regex = new RegExp(`^${regexStr}$`);
+  return regex.test(filePath);
+}
+
+/**
+ * Get all suites that match a file path
+ * @param {string} filePath - Relative path to check
+ * @param {object} suitesConfig - Loaded suites config (or null)
+ * @returns {Array<{id: string, ...suite}>} Array of matching suites
+ */
+function getSuitesForFile(filePath, suitesConfig) {
+  if (!suitesConfig) return [];
+
+  const matches = [];
+  for (const [suiteId, suite] of Object.entries(suitesConfig.suites)) {
+    if (!suite.enabled) continue;
+    if (matchesGlob(filePath, suite.scope)) {
+      matches.push({ id: suiteId, ...suite });
+    }
+  }
+  return matches;
+}
+
+/**
+ * Get ALL specs that apply to a file (main specs + subspecs)
+ * Single function used by enforcement - DRY principle
+ *
+ * @param {string} filePath - Relative path to check
+ * @param {object} mappings - Loaded spec-file-mappings.json
+ * @param {object} suitesConfig - Loaded suites config (or null)
+ * @returns {Array<{name: string, dir: string, priority: string, lastVerified: string|null, suiteId: string|null, suiteScope: string|null}>}
+ */
+function getAllApplicableSpecs(filePath, mappings, suitesConfig) {
+  const specs = [];
+
+  // 1. Main specs from spec-file-mappings.json (existing behavior)
+  for (const [specName, specData] of Object.entries(mappings.specs || {})) {
+    const fileEntry = specData.files?.find(f => f.path === filePath);
+    if (fileEntry) {
+      specs.push({
+        name: specName,
+        dir: CONFIG.specsGlobalDir,  // specs/global by default
+        priority: specData.priority,
+        lastVerified: fileEntry.lastVerified,
+        suiteId: null,  // null = main spec
+        suiteScope: null
+      });
+    }
+  }
+
+  // 2. Subspecs from matching suites (extension)
+  if (suitesConfig) {
+    const matchingSuites = getSuitesForFile(filePath, suitesConfig);
+    for (const suite of matchingSuites) {
+      if (!suite.mappedSpecs) continue;
+      const specsDir = path.join(projectDir, suite.mappedSpecs.dir);
+      if (!fs.existsSync(specsDir)) continue;
+
+      const pattern = suite.mappedSpecs.pattern || '*.md';
+      const specFiles = fs.readdirSync(specsDir).filter(f => {
+        if (!f.endsWith('.md')) return false;
+        return matchesGlob(f, pattern);
+      });
+
+      for (const specFile of specFiles) {
+        specs.push({
+          name: specFile,
+          dir: suite.mappedSpecs.dir,
+          priority: suite.priority || 'medium',
+          lastVerified: null,  // TODO: track per-suite cooldowns
+          suiteId: suite.id,
+          suiteScope: suite.scope
+        });
+      }
+    }
+  }
+
+  return specs;
+}
+
+/**
+ * Get ALL exploratory specs (main local specs + suite exploratory specs)
+ * Single function used by local enforcement - DRY principle
+ *
+ * @param {object} suitesConfig - Loaded suites config (or null)
+ * @returns {Array<{name: string, dir: string, suiteId: string|null, suiteScope: string}>}
+ */
+function getAllExploratorySpecs(suitesConfig) {
+  const specs = [];
+
+  // 1. Main local specs (existing behavior)
+  const mainLocalDir = path.join(projectDir, CONFIG.specsLocalDir);
+  if (fs.existsSync(mainLocalDir)) {
+    const files = fs.readdirSync(mainLocalDir).filter(f => f.endsWith('.md'));
+    for (const f of files) {
+      specs.push({
+        name: f,
+        dir: CONFIG.specsLocalDir,
+        suiteId: null,
+        suiteScope: '**/*'  // main local specs explore entire codebase
+      });
+    }
+  }
+
+  // 2. Suite exploratory specs (extension)
+  if (suitesConfig) {
+    for (const [suiteId, suite] of Object.entries(suitesConfig.suites)) {
+      if (!suite.enabled || !suite.exploratorySpecs) continue;
+      const specsDir = path.join(projectDir, suite.exploratorySpecs.dir);
+      if (!fs.existsSync(specsDir)) continue;
+
+      const pattern = suite.exploratorySpecs.pattern || '*.md';
+      const specFiles = fs.readdirSync(specsDir).filter(f => {
+        if (!f.endsWith('.md')) return false;
+        return matchesGlob(f, pattern);
+      });
+
+      for (const specFile of specFiles) {
+        specs.push({
+          name: specFile,
+          dir: suite.exploratorySpecs.dir,
+          suiteId: suiteId,
+          suiteScope: suite.scope  // agent explores only within this scope
+        });
+      }
+    }
+  }
+
+  return specs;
+}
+
+// ============================================================================
+// Command Line Parsing
+// ============================================================================
 
 /**
  * Parse command line arguments
@@ -545,7 +716,7 @@ function handleMappingValidationSuccess(result) {
 }
 
 /**
- * Run global spec enforcement for files that need checking (uses spec-file-mappings.json)
+ * Run global spec enforcement for files that need checking (uses spec-file-mappings.json + suites)
  * @param {object} args - Command line arguments
  */
 function runGlobalEnforcement(args) {
@@ -560,30 +731,50 @@ function runGlobalEnforcement(args) {
 
   console.log(`[GLOBAL] Daily agent budget: ${agentCap.used}/${agentCap.limit} used, ${agentCap.remaining} remaining\n`);
 
-  // Load mappings
+  // Load mappings and suites config
   const mappings = JSON.parse(fs.readFileSync(MAPPING_FILE, 'utf8'));
+  const suitesConfig = loadSuitesConfig();  // null if not configured
 
-  // Collect files that need checking
+  if (suitesConfig) {
+    const suiteCount = Object.keys(suitesConfig.suites).length;
+    console.log(`[GLOBAL] Loaded ${suiteCount} suite(s) from suites-config.json\n`);
+  }
+
+  // Collect ALL files from mappings
+  const allFiles = new Set();
+  for (const specData of Object.values(mappings.specs || {})) {
+    for (const fileEntry of specData.files || []) {
+      allFiles.add(fileEntry.path);
+    }
+  }
+
+  // Collect files that need checking with their applicable specs
   const filesToCheck = [];
 
-  for (const [specName, specData] of Object.entries(mappings.specs)) {
-    for (const fileEntry of specData.files) {
-      // Skip if within cooldown
-      if (isWithinFileCooldown(fileEntry.lastVerified)) {
-        continue;
-      }
+  for (const filePath of allFiles) {
+    // Check if file exists
+    const fullPath = path.join(projectDir, filePath);
+    if (!fs.existsSync(fullPath)) {
+      console.warn(`Warning: File ${filePath} not found, skipping`);
+      continue;
+    }
 
-      // Check if file exists
-      const filePath = path.join(projectDir, fileEntry.path);
-      if (!fs.existsSync(filePath)) {
-        console.warn(`Warning: File ${fileEntry.path} not found, skipping`);
+    // Get ALL specs for this file (main + subspecs) - UNIFIED
+    const applicableSpecs = getAllApplicableSpecs(filePath, mappings, suitesConfig);
+
+    for (const spec of applicableSpecs) {
+      // Skip if within cooldown
+      if (isWithinFileCooldown(spec.lastVerified)) {
         continue;
       }
 
       filesToCheck.push({
-        spec: specName,
-        file: fileEntry.path,
-        priority: specData.priority
+        spec: spec.name,
+        specDir: spec.dir,
+        file: filePath,
+        priority: spec.priority,
+        suiteId: spec.suiteId,
+        suiteScope: spec.suiteScope
       });
     }
   }
@@ -613,7 +804,8 @@ function runGlobalEnforcement(args) {
   if (args.dryRun) {
     console.log('DRY RUN - would check these files:\n');
     for (const item of filesToCheck) {
-      console.log(`  [${item.priority.toUpperCase()}] ${item.spec}: ${item.file}`);
+      const suiteInfo = item.suiteId ? ` [suite: ${item.suiteId}]` : '';
+      console.log(`  [${item.priority.toUpperCase()}] ${item.spec}: ${item.file}${suiteInfo}`);
     }
     console.log(`\nTotal agents: ${filesToCheck.length}`);
     return;
@@ -629,65 +821,79 @@ function runGlobalEnforcement(args) {
     process.exit(1);
   }
 
-  // Read spec files and store their paths
+  // Read spec files and store their paths (keyed by dir+name for uniqueness)
   const specContents = {};
   const specPaths = {};
   for (const item of filesToCheck) {
-    if (!specContents[item.spec]) {
-      // Try local specs first, then global specs, then reference specs
-      let specPath = path.join(projectDir, 'specs/local', item.spec);
-      if (!fs.existsSync(specPath)) {
-        specPath = path.join(projectDir, 'specs/global', item.spec);
-      }
-      if (!fs.existsSync(specPath)) {
-        specPath = path.join(projectDir, 'specs/reference', item.spec);
+    const specKey = `${item.specDir}/${item.spec}`;
+    if (!specContents[specKey]) {
+      // Use the spec's directory (from suite or default)
+      let specPath = path.join(projectDir, item.specDir, item.spec);
+
+      // Fallback search order for main specs only (not suite specs)
+      if (!item.suiteId && !fs.existsSync(specPath)) {
+        specPath = path.join(projectDir, 'specs/local', item.spec);
+        if (!fs.existsSync(specPath)) {
+          specPath = path.join(projectDir, 'specs/global', item.spec);
+        }
+        if (!fs.existsSync(specPath)) {
+          specPath = path.join(projectDir, 'specs/reference', item.spec);
+        }
       }
 
       // Fail hard if spec file cannot be read (per CLAUDE.md - no graceful fallbacks)
       if (!fs.existsSync(specPath)) {
-        throw new Error(`CRITICAL: Spec file '${item.spec}' not found in specs/local/, specs/global/, or specs/reference/. Cannot proceed with compliance checking without spec definition.`);
+        throw new Error(`CRITICAL: Spec file '${item.spec}' not found in ${item.specDir}. Cannot proceed with compliance checking without spec definition.`);
       }
 
       try {
-        specContents[item.spec] = fs.readFileSync(specPath, 'utf8');
+        specContents[specKey] = fs.readFileSync(specPath, 'utf8');
         // Store relative path for the agent to use when updating specs
-        specPaths[item.spec] = specPath.replace(projectDir + '/', '');
+        specPaths[specKey] = specPath.replace(projectDir + '/', '');
       } catch (err) {
         throw new Error(`CRITICAL: Failed to read spec file '${item.spec}' at ${specPath}: ${err.message}. Per CLAUDE.md, no graceful fallbacks allowed.`);
       }
     }
   }
 
-  // Group by spec for logging
-  const bySpec = {};
-  for (const item of filesToCheck) {
-    if (!bySpec[item.spec]) bySpec[item.spec] = [];
-    bySpec[item.spec].push(item.file);
-  }
-
   // Spawn agents
   for (const item of filesToCheck) {
-    const prompt = buildPrompt(promptPath, {
+    const specKey = `${item.specDir}/${item.spec}`;
+
+    // Build prompt with optional suite context
+    const promptVars = {
       FILE_PATH: item.file,
       SPEC_NAME: item.spec,
-      SPEC_PATH: specPaths[item.spec],
-      SPEC_CONTENT: specContents[item.spec]
-    });
+      SPEC_PATH: specPaths[specKey],
+      SPEC_CONTENT: specContents[specKey]
+    };
 
+    // Add suite context if this is a subspec
+    if (item.suiteId) {
+      promptVars.SUITE_ID = item.suiteId;
+      promptVars.SUITE_SCOPE = item.suiteScope;
+    }
+
+    const prompt = buildPrompt(promptPath, promptVars);
+
+    const suiteInfo = item.suiteId ? ` [suite: ${item.suiteId}]` : '';
     spawnClaudeInstance(prompt, {
       COMPLIANCE_MODE: 'enforcement',
       COMPLIANCE_SPEC: item.spec,
-      COMPLIANCE_FILE: item.file
+      COMPLIANCE_FILE: item.file,
+      COMPLIANCE_SUITE: item.suiteId || ''
     }, {
       type: AGENT_TYPES.COMPLIANCE_GLOBAL,
-      description: `Global enforcement: ${item.file} against ${item.spec}`,
-      metadata: { spec: item.spec, file: item.file, priority: item.priority }
+      description: `Global enforcement: ${item.file} against ${item.spec}${suiteInfo}`,
+      metadata: { spec: item.spec, file: item.file, priority: item.priority, suiteId: item.suiteId }
     });
 
-    console.log(`  ✓ Spawned for ${item.file} (${item.spec})`);
+    console.log(`  ✓ Spawned for ${item.file} (${item.spec})${suiteInfo}`);
 
-    // Update lastVerified timestamp
-    updateFileVerificationTimestamp(item.spec, item.file);
+    // Update lastVerified timestamp (only for main specs)
+    if (!item.suiteId) {
+      updateFileVerificationTimestamp(item.spec, item.file);
+    }
   }
 
   // Record spawns in log (global specs enforcement)
@@ -698,7 +904,7 @@ function runGlobalEnforcement(args) {
 }
 
 /**
- * Run local spec enforcement (no file mappings, agent explores codebase)
+ * Run local spec enforcement (no file mappings, agent explores codebase + suites)
  * @param {object} args - Command line arguments
  */
 async function runLocalEnforcement(args) {
@@ -715,31 +921,37 @@ async function runLocalEnforcement(args) {
 
   console.log(`[LOCAL] Daily agent budget: ${agentCap.used}/${agentCap.limit} used, ${agentCap.remaining} remaining\n`);
 
-  // Read all .md files from specs/local/
-  const specsLocalDir = path.join(projectDir, CONFIG.specsLocalDir);
+  // Load suites config (optional)
+  const suitesConfig = loadSuitesConfig();
 
-  if (!fs.existsSync(specsLocalDir)) {
-    console.log(`[LOCAL] specs/local/ directory not found at ${specsLocalDir}`);
+  // Get ALL exploratory specs (main + suites) - UNIFIED
+  const allSpecs = getAllExploratorySpecs(suitesConfig);
+
+  if (allSpecs.length === 0) {
+    console.log('[LOCAL] No exploratory specs found');
     return;
   }
 
-  const allSpecFiles = fs.readdirSync(specsLocalDir).filter(f => f.endsWith('.md'));
-
-  if (allSpecFiles.length === 0) {
-    console.log('[LOCAL] No spec files found in specs/local/');
-    return;
+  if (suitesConfig) {
+    const suiteSpecs = allSpecs.filter(s => s.suiteId);
+    if (suiteSpecs.length > 0) {
+      console.log(`[LOCAL] Found ${allSpecs.length} specs (${allSpecs.length - suiteSpecs.length} main + ${suiteSpecs.length} from suites)\n`);
+    }
   }
 
   // Filter out specs within cooldown
   const specsToRun = [];
-  for (const specFile of allSpecFiles) {
-    if (isWithinSpecCooldown(specFile, state)) {
-      const lastRun = state.localSpecs.perSpecLastRun[specFile];
+  for (const spec of allSpecs) {
+    // Use suite:specName as cooldown key for suite specs
+    const cooldownKey = spec.suiteId ? `${spec.suiteId}:${spec.name}` : spec.name;
+    if (isWithinSpecCooldown(cooldownKey, state)) {
+      const lastRun = state.localSpecs.perSpecLastRun[cooldownKey];
       const daysSince = Math.round((Date.now() - new Date(lastRun)) / (1000 * 60 * 60 * 24));
-      console.log(`[LOCAL] Skipping ${specFile} (last run ${daysSince} days ago, cooldown: ${CONFIG.local.specCooldownDays} days)`);
+      const suiteInfo = spec.suiteId ? ` [suite: ${spec.suiteId}]` : '';
+      console.log(`[LOCAL] Skipping ${spec.name}${suiteInfo} (last run ${daysSince} days ago, cooldown: ${CONFIG.local.specCooldownDays} days)`);
       continue;
     }
-    specsToRun.push(specFile);
+    specsToRun.push(spec);
   }
 
   if (specsToRun.length === 0) {
@@ -758,8 +970,9 @@ async function runLocalEnforcement(args) {
 
   if (args.dryRun) {
     console.log('[LOCAL] DRY RUN - would enforce these specs:\n');
-    for (const specFile of specsToRunToday) {
-      console.log(`  - ${specFile}`);
+    for (const spec of specsToRunToday) {
+      const suiteInfo = spec.suiteId ? ` [suite: ${spec.suiteId}, scope: ${spec.suiteScope}]` : '';
+      console.log(`  - ${spec.name}${suiteInfo}`);
     }
     console.log(`\nTotal agents: ${specsToRunToday.length}`);
     return;
@@ -777,35 +990,48 @@ async function runLocalEnforcement(args) {
 
   const agentsSpawned = [];
 
-  for (const specFile of specsToRunToday) {
-    const specPath = path.join(specsLocalDir, specFile);
+  for (const spec of specsToRunToday) {
+    const specPath = path.join(projectDir, spec.dir, spec.name);
     const specContent = fs.readFileSync(specPath, 'utf8');
-    const specRelativePath = path.join(CONFIG.specsLocalDir, specFile);
+    const specRelativePath = path.join(spec.dir, spec.name);
 
-    const prompt = buildPrompt(promptPath, {
-      SPEC_NAME: specFile,
+    // Build prompt with optional suite context
+    const promptVars = {
+      SPEC_NAME: spec.name,
       SPEC_PATH: specRelativePath,
       SPEC_CONTENT: specContent
-    });
+    };
 
+    // Add suite context if this is a suite exploratory spec
+    if (spec.suiteId) {
+      promptVars.SUITE_ID = spec.suiteId;
+      promptVars.SUITE_SCOPE = spec.suiteScope;
+    }
+
+    const prompt = buildPrompt(promptPath, promptVars);
+
+    const suiteInfo = spec.suiteId ? ` [suite: ${spec.suiteId}]` : '';
     spawnClaudeInstance(prompt, {
       COMPLIANCE_MODE: 'local-enforcement',
-      COMPLIANCE_SPEC: specFile
+      COMPLIANCE_SPEC: spec.name,
+      COMPLIANCE_SUITE: spec.suiteId || ''
     }, {
       type: AGENT_TYPES.COMPLIANCE_LOCAL,
-      description: `Local enforcement: exploring codebase for ${specFile}`,
-      metadata: { spec: specFile, specPath: specRelativePath }
+      description: `Local enforcement: exploring for ${spec.name}${suiteInfo}`,
+      metadata: { spec: spec.name, specPath: specRelativePath, suiteId: spec.suiteId, suiteScope: spec.suiteScope }
     });
 
-    console.log(`  ✓ Spawned for ${specFile}`);
+    console.log(`  ✓ Spawned for ${spec.name}${suiteInfo}`);
 
-    // Update last run timestamp
-    updateSpecCooldown(specFile, state);
+    // Update last run timestamp (use suite:specName for suite specs)
+    const cooldownKey = spec.suiteId ? `${spec.suiteId}:${spec.name}` : spec.name;
+    updateSpecCooldown(cooldownKey, state);
 
     agentsSpawned.push({
-      spec: specFile,
-      file: 'N/A (agent explores)', // Local enforcement doesn't target specific files
-      priority: 'N/A'
+      spec: spec.name,
+      file: spec.suiteScope || '**/* (agent explores)',
+      priority: 'N/A',
+      suiteId: spec.suiteId
     });
   }
 

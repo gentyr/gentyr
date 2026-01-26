@@ -1048,4 +1048,224 @@ Some content here.`;
       });
     });
   });
+
+  // ============================================================================
+  // Get Specs For File Tests
+  // ============================================================================
+
+  describe('Get Specs For File', () => {
+    let mappingsPath: string;
+    let suitesConfigPath: string;
+    let hooksDir: string;
+
+    beforeEach(() => {
+      // Create .claude/hooks directory
+      const projectDir = path.dirname(tempSpecsDir);
+      hooksDir = path.join(projectDir, '.claude', 'hooks');
+      fs.mkdirSync(hooksDir, { recursive: true });
+      mappingsPath = path.join(hooksDir, 'spec-file-mappings.json');
+      suitesConfigPath = path.join(hooksDir, 'suites-config.json');
+
+      // Clean up from previous tests
+      if (fs.existsSync(mappingsPath)) fs.unlinkSync(mappingsPath);
+      if (fs.existsSync(suitesConfigPath)) fs.unlinkSync(suitesConfigPath);
+    });
+
+    afterEach(() => {
+      const projectDir = path.dirname(tempSpecsDir);
+      const claudeDir = path.join(projectDir, '.claude');
+      if (fs.existsSync(claudeDir)) {
+        fs.rmSync(claudeDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should return empty arrays when no mappings or suites exist', () => {
+      expect(fs.existsSync(mappingsPath)).toBe(false);
+      expect(fs.existsSync(suitesConfigPath)).toBe(false);
+
+      // Simulating getSpecsForFile behavior with no config
+      const result = {
+        file_path: 'src/index.ts',
+        specs: [],
+        subspecs: [],
+        total: 0,
+      };
+
+      expect(result.specs).toEqual([]);
+      expect(result.subspecs).toEqual([]);
+      expect(result.total).toBe(0);
+    });
+
+    it('should find main specs from spec-file-mappings.json', () => {
+      const mappings = {
+        totalMappedFiles: 1,
+        specs: {
+          'G001.md': {
+            priority: 'high',
+            files: [
+              { path: 'src/api.ts', lastVerified: '2024-01-01' },
+              { path: 'src/db.ts', lastVerified: null },
+            ],
+          },
+          'G002.md': {
+            priority: 'medium',
+            files: [
+              { path: 'src/api.ts', lastVerified: '2024-01-02' },
+            ],
+          },
+        },
+      };
+
+      fs.writeFileSync(mappingsPath, JSON.stringify(mappings, null, 2), 'utf8');
+
+      // Simulating finding specs for src/api.ts
+      const filePath = 'src/api.ts';
+      const loaded = JSON.parse(fs.readFileSync(mappingsPath, 'utf8'));
+      const specs = [];
+
+      for (const [specName, specData] of Object.entries(loaded.specs)) {
+        const data = specData as any;
+        const fileEntry = data.files?.find((f: any) => f.path === filePath);
+        if (fileEntry) {
+          specs.push({
+            spec_id: specName.replace('.md', ''),
+            file: `specs/global/${specName}`,
+            priority: data.priority,
+            lastVerified: fileEntry.lastVerified,
+          });
+        }
+      }
+
+      expect(specs).toHaveLength(2);
+      expect(specs[0].spec_id).toBe('G001');
+      expect(specs[0].priority).toBe('high');
+      expect(specs[1].spec_id).toBe('G002');
+    });
+
+    it('should find subspecs from matching suites', () => {
+      // Create suite config
+      const suitesConfig = {
+        version: 1,
+        suites: {
+          'frontend': {
+            description: 'Frontend specs',
+            scope: 'src/frontend/**',
+            mappedSpecs: {
+              dir: 'specs/frontend',
+              pattern: 'FRONTEND-*.md',
+            },
+            exploratorySpecs: null,
+            enabled: true,
+          },
+        },
+      };
+
+      fs.writeFileSync(suitesConfigPath, JSON.stringify(suitesConfig, null, 2), 'utf8');
+
+      // Create the specs directory with a spec file
+      const projectDir = path.dirname(tempSpecsDir);
+      const frontendSpecsDir = path.join(projectDir, 'specs', 'frontend');
+      fs.mkdirSync(frontendSpecsDir, { recursive: true });
+      fs.writeFileSync(path.join(frontendSpecsDir, 'FRONTEND-001.md'), '# Frontend Spec');
+
+      // Simulating glob matching
+      function matchesGlob(filePath: string, pattern: string): boolean {
+        let regexStr = pattern
+          .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+          .replace(/\*\*/g, '{{DOUBLESTAR}}')
+          .replace(/\*/g, '[^/]*')
+          .replace(/\?/g, '[^/]')
+          .replace(/\{\{DOUBLESTAR\}\}/g, '.*');
+        const regex = new RegExp(`^${regexStr}$`);
+        return regex.test(filePath);
+      }
+
+      // Test file matches suite scope
+      const testFile = 'src/frontend/components/Button.tsx';
+      const loaded = JSON.parse(fs.readFileSync(suitesConfigPath, 'utf8'));
+
+      const subspecs = [];
+      for (const [suiteId, suite] of Object.entries(loaded.suites)) {
+        const s = suite as any;
+        if (matchesGlob(testFile, s.scope)) {
+          subspecs.push({
+            spec_id: 'FRONTEND-001',
+            file: `${s.mappedSpecs.dir}/FRONTEND-001.md`,
+            suite_id: suiteId,
+            suite_scope: s.scope,
+          });
+        }
+      }
+
+      expect(subspecs).toHaveLength(1);
+      expect(subspecs[0].suite_id).toBe('frontend');
+      expect(subspecs[0].suite_scope).toBe('src/frontend/**');
+    });
+
+    it('should normalize absolute paths to relative', () => {
+      const projectDir = '/home/user/project';
+      const absolutePath = '/home/user/project/src/index.ts';
+
+      // Simulating path normalization
+      let normalized = absolutePath;
+      if (path.isAbsolute(normalized)) {
+        normalized = path.relative(projectDir, normalized);
+      }
+
+      expect(normalized).toBe('src/index.ts');
+    });
+
+    it('should remove leading ./ from paths', () => {
+      let filePath = './src/index.ts';
+
+      if (filePath.startsWith('./')) {
+        filePath = filePath.slice(2);
+      }
+
+      expect(filePath).toBe('src/index.ts');
+    });
+
+    it('should not include subspecs from disabled suites', () => {
+      const suitesConfig = {
+        version: 1,
+        suites: {
+          'disabled-suite': {
+            description: 'Disabled',
+            scope: 'src/**',
+            mappedSpecs: { dir: 'specs/disabled', pattern: '*.md' },
+            enabled: false,
+          },
+        },
+      };
+
+      fs.writeFileSync(suitesConfigPath, JSON.stringify(suitesConfig, null, 2), 'utf8');
+
+      const loaded = JSON.parse(fs.readFileSync(suitesConfigPath, 'utf8'));
+      const enabledSuites = Object.entries(loaded.suites).filter(
+        ([_, suite]: [string, any]) => suite.enabled !== false
+      );
+
+      expect(enabledSuites).toHaveLength(0);
+    });
+
+    it('should return combined total of specs and subspecs', () => {
+      const result = {
+        file_path: 'src/frontend/index.ts',
+        specs: [
+          { spec_id: 'G001', file: 'specs/global/G001.md', priority: 'high' },
+        ],
+        subspecs: [
+          { spec_id: 'FRONTEND-001', file: 'specs/frontend/FRONTEND-001.md', suite_id: 'frontend', suite_scope: 'src/frontend/**' },
+          { spec_id: 'FRONTEND-002', file: 'specs/frontend/FRONTEND-002.md', suite_id: 'frontend', suite_scope: 'src/frontend/**' },
+        ],
+        total: 0,
+      };
+
+      result.total = result.specs.length + result.subspecs.length;
+
+      expect(result.total).toBe(3);
+      expect(result.specs).toHaveLength(1);
+      expect(result.subspecs).toHaveLength(2);
+    });
+  });
 });

@@ -235,14 +235,156 @@ This ensures only the CTO (human user) can approve bypasses - agents cannot trig
 ### Compliance Checking
 
 #### `compliance-checker.js`
-**Purpose**: Enforce global and local specifications
+**Purpose**: Enforce global and local specifications (with optional spec suites)
 
 **Modes**:
-- `--global` - Check all files against global specs
-- `--local` - Check specific files against local specs
-- `--mapping` - Validate spec-file mappings
+- `--global-only` - Check mapped files against global specs + suite subspecs
+- `--local-only` - Check using local specs + suite exploratory specs
+- (default) - Run both global and local enforcement
 
 **Cooldown**: 7 days per file
+
+---
+
+### Spec Suites (Optional)
+
+Spec suites allow you to define **scoped subspecs** that apply to specific directory patterns. This is an additive feature - the main `specs/global/` and `specs/local/` specs continue to work exactly as before.
+
+#### Setup
+
+Create `.claude/hooks/suites-config.json`:
+
+```json
+{
+  "version": 1,
+  "suites": {
+    "frontend-connector": {
+      "description": "Frontend connector specs",
+      "scope": "integrations/*/frontend-connector/**",
+      "mappedSpecs": {
+        "dir": "specs/integrations",
+        "pattern": "INT-FRONTEND-*.md"
+      },
+      "exploratorySpecs": null,
+      "enabled": true
+    },
+    "backend-connector": {
+      "description": "Backend connector specs",
+      "scope": "integrations/*/backend-connector/**",
+      "mappedSpecs": null,
+      "exploratorySpecs": {
+        "dir": "specs/backend",
+        "pattern": "BACKEND-*.md"
+      },
+      "enabled": true
+    }
+  }
+}
+```
+
+#### Suite Configuration
+
+| Field | Description |
+|-------|-------------|
+| `description` | Human-readable description |
+| `scope` | Glob pattern for matching files (e.g., `src/components/**`) |
+| `mappedSpecs.dir` | Directory containing specs for mapped enforcement |
+| `mappedSpecs.pattern` | Pattern to match spec files (default: `*.md`) |
+| `exploratorySpecs.dir` | Directory containing specs for exploratory enforcement |
+| `exploratorySpecs.pattern` | Pattern to match spec files (default: `*.md`) |
+| `enabled` | Enable/disable the suite (default: `true`) |
+
+#### How It Works
+
+**Without `suites-config.json`** (current behavior):
+- Global enforcement checks `specs/global/*.md` against mapped files
+- Local enforcement checks `specs/local/*.md` with agent exploration
+- Nothing changes
+
+**With `suites-config.json`**:
+- Same as above, PLUS...
+- For each file being checked, find matching suites by scope pattern
+- Also check the file against specs from matching suites
+- Exploratory specs get a scope constraint (agent only explores within suite scope)
+
+#### Example
+
+File `integrations/azure/frontend-connector/src/index.ts`:
+1. Always checked against main specs (G001-G020 from `specs/global/`)
+2. Also checked against `INT-FRONTEND-*.md` from `specs/integrations/` (because it matches `frontend-connector` suite scope)
+
+#### MCP Tools
+
+The `specs-browser` MCP server provides tools for managing specs and suites:
+
+**Spec Management:**
+
+| Tool | Description |
+|------|-------------|
+| `list_specs` | List specs by category |
+| `get_spec` | Get full spec content by ID |
+| `create_spec` | Create a new spec file |
+| `edit_spec` | Edit spec content/title |
+| `delete_spec` | Delete a spec file |
+
+**Suite Management:**
+
+| Tool | Description |
+|------|-------------|
+| `list_suites` | List all configured suites |
+| `get_suite` | Get full suite configuration |
+| `create_suite` | Create a new suite |
+| `edit_suite` | Edit suite configuration |
+| `delete_suite` | Delete a suite (keeps spec files) |
+
+**Utilities:**
+
+| Tool | Description |
+|------|-------------|
+| `get_specs_for_file` | Find all specs that apply to a specific file |
+
+#### Using `get_specs_for_file`
+
+This utility helps agents discover which specs apply to any given file:
+
+```typescript
+// MCP call
+mcp__specs-browser__get_specs_for_file({
+  file_path: "src/components/Button.tsx"  // relative or absolute path
+})
+
+// Returns:
+{
+  "file_path": "src/components/Button.tsx",
+  "specs": [
+    {
+      "spec_id": "G001",
+      "file": "specs/global/G001.md",
+      "priority": "high",
+      "lastVerified": "2024-01-20T10:00:00Z"
+    }
+  ],
+  "subspecs": [
+    {
+      "spec_id": "INT-FRONTEND-001",
+      "file": "specs/integrations/INT-FRONTEND-001.md",
+      "suite_id": "frontend-connector",
+      "suite_scope": "src/components/**"
+    }
+  ],
+  "total": 2
+}
+```
+
+**Fields:**
+- `specs` - Main specs from `spec-file-mappings.json` (global enforcement)
+- `subspecs` - Specs from matching suites in `suites-config.json`
+- `total` - Combined count of applicable specs
+
+**Path handling:**
+- Accepts relative paths: `src/index.ts`
+- Accepts absolute paths: `/home/user/project/src/index.ts`
+- Normalizes paths internally (strips `./` prefix, converts absolute to relative)
 
 ---
 

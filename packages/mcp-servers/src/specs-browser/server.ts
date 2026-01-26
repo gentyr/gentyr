@@ -24,6 +24,7 @@ import {
   ListSuitesSchema,
   EditSuiteSchema,
   DeleteSuiteSchema,
+  GetSpecsForFileSchema,
   FRAMEWORK_CATEGORY_INFO,
   DEFAULT_PROJECT_CATEGORY_INFO,
   SpecsConfigSchema,
@@ -36,6 +37,7 @@ import {
   type GetSuiteArgs,
   type EditSuiteArgs,
   type DeleteSuiteArgs,
+  type GetSpecsForFileArgs,
   type ListSpecsResult,
   type GetSpecResult,
   type GetSpecErrorResult,
@@ -47,6 +49,9 @@ import {
   type ListSuitesResult,
   type EditSuiteResult,
   type DeleteSuiteResult,
+  type GetSpecsForFileResult,
+  type SpecForFile,
+  type SubspecForFile,
   type SpecMetadata,
   type CategorySpecs,
   type CategoryInfoItem,
@@ -62,6 +67,7 @@ const PROJECT_SPECS_DIR = path.join(PROJECT_DIR, 'specs');
 const FRAMEWORK_SPECS_DIR = path.join(PROJECT_DIR, '.claude-framework', 'specs');
 const CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'specs-config.json');
 const SUITES_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'suites-config.json');
+const MAPPING_FILE_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'spec-file-mappings.json');
 
 // ============================================================================
 // Category Loading
@@ -184,6 +190,48 @@ function saveSuitesConfig(config: SuitesConfig): void {
     fs.mkdirSync(dir, { recursive: true });
   }
   fs.writeFileSync(SUITES_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
+}
+
+/**
+ * Simple glob pattern matching
+ * Supports: *, **, ?
+ */
+function matchesGlob(filePath: string, pattern: string): boolean {
+  // Convert glob pattern to regex
+  let regexStr = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')  // Escape special regex chars
+    .replace(/\*\*/g, '{{DOUBLESTAR}}')     // Placeholder for **
+    .replace(/\*/g, '[^/]*')                // * matches anything except /
+    .replace(/\?/g, '[^/]')                 // ? matches single char except /
+    .replace(/\{\{DOUBLESTAR\}\}/g, '.*');  // ** matches everything
+
+  const regex = new RegExp(`^${regexStr}$`);
+  return regex.test(filePath);
+}
+
+/**
+ * Load spec-file-mappings.json
+ */
+interface SpecFileMappings {
+  specs: Record<string, {
+    priority: string;
+    files: Array<{
+      path: string;
+      lastVerified: string | null;
+    }>;
+  }>;
+}
+
+function loadSpecFileMappings(): SpecFileMappings | null {
+  if (!fs.existsSync(MAPPING_FILE_PATH)) {
+    return null;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(MAPPING_FILE_PATH, 'utf8'));
+  } catch (err) {
+    console.error(`[specs-browser] Failed to load spec-file-mappings.json: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
 }
 
 // ============================================================================
@@ -584,6 +632,104 @@ function deleteSuite(args: DeleteSuiteArgs): DeleteSuiteResult {
   return { success: true, deleted: args.suite_id };
 }
 
+/**
+ * Get all specs (main and subspecs) that apply to a file
+ */
+function getSpecsForFile(args: GetSpecsForFileArgs): GetSpecsForFileResult {
+  let filePath = args.file_path;
+
+  // Normalize to relative path
+  if (path.isAbsolute(filePath)) {
+    filePath = path.relative(PROJECT_DIR, filePath);
+  }
+
+  // Remove leading ./ if present
+  if (filePath.startsWith('./')) {
+    filePath = filePath.slice(2);
+  }
+
+  const specs: SpecForFile[] = [];
+  const subspecs: SubspecForFile[] = [];
+
+  // 1. Find main specs from spec-file-mappings.json
+  const mappings = loadSpecFileMappings();
+  if (mappings) {
+    for (const [specName, specData] of Object.entries(mappings.specs || {})) {
+      const fileEntry = specData.files?.find(f => f.path === filePath);
+      if (fileEntry) {
+        specs.push({
+          spec_id: specName.replace('.md', ''),
+          file: `specs/global/${specName}`,
+          priority: specData.priority,
+          lastVerified: fileEntry.lastVerified,
+        });
+      }
+    }
+  }
+
+  // 2. Find subspecs from matching suites
+  const suitesConfig = loadSuitesConfig();
+  if (suitesConfig) {
+    for (const [suiteId, suite] of Object.entries(suitesConfig.suites)) {
+      if (!suite.enabled) continue;
+
+      // Check if file matches suite scope
+      if (matchesGlob(filePath, suite.scope)) {
+        // Get specs from this suite's mappedSpecs directory
+        if (suite.mappedSpecs) {
+          const specsDir = path.join(PROJECT_DIR, suite.mappedSpecs.dir);
+          if (fs.existsSync(specsDir)) {
+            const pattern = suite.mappedSpecs.pattern || '*.md';
+            const specFiles = fs.readdirSync(specsDir).filter(f => {
+              if (!f.endsWith('.md')) return false;
+              return matchesGlob(f, pattern);
+            });
+
+            for (const specFile of specFiles) {
+              subspecs.push({
+                spec_id: specFile.replace('.md', ''),
+                file: `${suite.mappedSpecs.dir}/${specFile}`,
+                suite_id: suiteId,
+                suite_scope: suite.scope,
+                priority: 'medium',
+              });
+            }
+          }
+        }
+
+        // Also include exploratory specs that would apply
+        if (suite.exploratorySpecs) {
+          const specsDir = path.join(PROJECT_DIR, suite.exploratorySpecs.dir);
+          if (fs.existsSync(specsDir)) {
+            const pattern = suite.exploratorySpecs.pattern || '*.md';
+            const specFiles = fs.readdirSync(specsDir).filter(f => {
+              if (!f.endsWith('.md')) return false;
+              return matchesGlob(f, pattern);
+            });
+
+            for (const specFile of specFiles) {
+              subspecs.push({
+                spec_id: specFile.replace('.md', ''),
+                file: `${suite.exploratorySpecs.dir}/${specFile}`,
+                suite_id: suiteId,
+                suite_scope: suite.scope,
+                priority: 'medium',
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    file_path: filePath,
+    specs,
+    subspecs,
+    total: specs.length + subspecs.length,
+  };
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -651,6 +797,13 @@ const tools: ToolHandler[] = [
     description: 'Delete a suite from config. Does not delete the spec files, just the suite configuration.',
     schema: DeleteSuiteSchema,
     handler: deleteSuite,
+  },
+  // Utility tools
+  {
+    name: 'get_specs_for_file',
+    description: 'Find all specs that apply to a specific file. Returns main specs (from spec-file-mappings.json) and subspecs (from matching suites). Accepts relative or absolute paths.',
+    schema: GetSpecsForFileSchema,
+    handler: getSpecsForFile,
   },
 ];
 

@@ -7,6 +7,15 @@ You are enforcing compliance with a specification for the ODIN trading system.
 **Source File**: `{{FILE_PATH}}`
 **Specification**: {{SPEC_NAME}}
 **Spec File Path**: `{{SPEC_PATH}}`
+{{#if SUITE_ID}}
+
+### Suite Context
+
+**Suite**: `{{SUITE_ID}}`
+**Suite Scope**: `{{SUITE_SCOPE}}`
+
+This file is being checked against a **subspec** that applies specifically to files matching `{{SUITE_SCOPE}}`. This is in addition to any global specs that may also apply to this file.
+{{/if}}
 
 ## Specification Content
 

@@ -6,6 +6,15 @@ You are enforcing compliance with a local specification for the ODIN trading sys
 
 **Specification**: {{SPEC_NAME}}
 **Spec File Path**: `{{SPEC_PATH}}`
+{{#if SUITE_ID}}
+
+### Suite Context
+
+**Suite**: `{{SUITE_ID}}`
+**Suite Scope**: `{{SUITE_SCOPE}}`
+
+This is a **suite exploratory spec**. You must ONLY explore files matching the scope pattern above.
+{{/if}}
 
 ## Specification Content
 
@@ -31,9 +40,22 @@ Your task is to find the most relevant files in the codebase that should comply 
 
 **You have freedom to explore the codebase** to find files that should comply with this spec, but you are limited to checking **up to 10 files maximum** per run to stay within rate limits.
 
+{{#if SUITE_SCOPE}}
+### Scope Constraint
+
+⚠️ **You are enforcing this spec within suite `{{SUITE_ID}}`.**
+
+**ONLY explore files matching this pattern:**
+```
+{{SUITE_SCOPE}}
+```
+
+Use `Glob("{{SUITE_SCOPE}}")` to find relevant files. Do NOT check files outside this scope.
+{{/if}}
+
 **Exploration Strategy**:
 
-1. **Start Broad**: Use `Glob` to search by file patterns (e.g., `**/*Orchestrator*.js`)
+1. **Start Broad**: Use `Glob` to search by file patterns (e.g., `**/*Orchestrator*.js`){{#if SUITE_SCOPE}} - constrained to `{{SUITE_SCOPE}}`{{/if}}
 2. **Narrow Down**: Use `Grep` to search by content patterns (e.g., class names, function signatures)
 3. **Prioritize**: Read file names/paths to identify the most critical files
 4. **Select Wisely**: Choose up to 10 files that are most likely to have violations

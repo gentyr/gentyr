@@ -7,9 +7,10 @@ Generate a comprehensive CTO status dashboard using the Ink-based dashboard app.
 The dashboard is installed in the GENTYR repo. Run this command to display it:
 
 ```bash
-# Detect GENTYR installation path by following the symlink (3 levels up from .claude/commands/cto-report.md)
-GENTYR_PATH=$(dirname $(dirname $(dirname $(readlink -f .claude/commands/cto-report.md 2>/dev/null || echo ".claude/commands/cto-report.md"))))
-CLAUDE_PROJECT_DIR=$(pwd) node "$GENTYR_PATH/packages/cto-dashboard/dist/index.js"
+# Find project root (walk up until we find .claude/commands), then resolve symlink to GENTYR
+PROJECT_ROOT=$(d=$(pwd); while [ "$d" != "/" ] && [ ! -f "$d/.claude/commands/cto-report.md" ]; do d=$(dirname "$d"); done; echo "$d")
+GENTYR_PATH=$(dirname $(dirname $(dirname $(readlink -f "$PROJECT_ROOT/.claude/commands/cto-report.md" 2>/dev/null || echo "$PROJECT_ROOT"))))
+CLAUDE_PROJECT_DIR="$PROJECT_ROOT" node "$GENTYR_PATH/packages/cto-dashboard/dist/index.js"
 ```
 
 This will render a terminal dashboard with:
@@ -24,8 +25,9 @@ This will render a terminal dashboard with:
 For a different time period (default is 24 hours):
 
 ```bash
-GENTYR_PATH=$(dirname $(dirname $(dirname $(readlink -f .claude/commands/cto-report.md 2>/dev/null || echo ".claude/commands/cto-report.md"))))
-CLAUDE_PROJECT_DIR=$(pwd) node "$GENTYR_PATH/packages/cto-dashboard/dist/index.js" --hours 8
+PROJECT_ROOT=$(d=$(pwd); while [ "$d" != "/" ] && [ ! -f "$d/.claude/commands/cto-report.md" ]; do d=$(dirname "$d"); done; echo "$d")
+GENTYR_PATH=$(dirname $(dirname $(dirname $(readlink -f "$PROJECT_ROOT/.claude/commands/cto-report.md" 2>/dev/null || echo "$PROJECT_ROOT"))))
+CLAUDE_PROJECT_DIR="$PROJECT_ROOT" node "$GENTYR_PATH/packages/cto-dashboard/dist/index.js" --hours 8
 ```
 
 Valid range: 1-168 hours.

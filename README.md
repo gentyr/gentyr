@@ -200,12 +200,37 @@ Post-commit hook spawns the antipattern-hunter agent (with 6-hour cooldown) to s
 
 ### Specification Enforcement
 
-Project specs in `specs/` are browsable by all agents and enforced during code review:
+Project specs in `specs/` are browsable by all agents and enforced during code review. The specs-browser MCP server now supports spec suites for scoped enforcement:
 
 ```typescript
+// Browse specifications
 mcp__specs-browser__get_spec({ spec_id: "G001" })
 // → "Fail-Closed Error Handling: All error handling must fail-closed. Never fail-open."
+
+// Manage spec suites (scope specs to file patterns)
+mcp__specs-browser__listSuites()
+mcp__specs-browser__createSuite({
+  suite_id: "integration-frontend",
+  description: "Frontend connector specs",
+  scope: "integrations/*/frontend-connector/**",
+  global: {
+    specsDir: "specs/integrations",
+    pattern: "INT-FRONTEND-*.md"
+  },
+  enabled: true,
+  priority: 10
+})
+
+// Create and edit specs
+mcp__specs-browser__createSpec({
+  spec_id: "INT-001",
+  title: "Integration API Standards",
+  category: "integrations",
+  content: "# INT-001: Integration API Standards\n\n..."
+})
 ```
+
+**Spec Suites**: Group specifications that apply to specific directory patterns. For example, integration-specific specs only check integration files, reducing enforcement noise.
 
 ## Directory Structure
 
@@ -299,7 +324,7 @@ When you run `setup.sh`, the following happens:
 | Server | Purpose |
 |--------|---------|
 | `todo-db` | Task tracking with SQLite |
-| `specs-browser` | Read project specifications |
+| `specs-browser` | Manage project specifications and spec suites (CRUD) |
 | `agent-tracker` | Track spawned agent sessions |
 | `session-events` | Log session events |
 | `review-queue` | Schema mapping review queue |
@@ -316,9 +341,14 @@ mcp__todo-db__create_task({ section: "CODE-REVIEWER", title: "Review PR #42" })
 mcp__todo-db__start_task({ id: "uuid" })
 mcp__todo-db__complete_task({ id: "uuid" })
 
-// Read specifications
+// Manage specifications and suites
 mcp__specs-browser__list_specs()
 mcp__specs-browser__get_spec({ spec_id: "G001" })
+mcp__specs-browser__get_specs_for_file({ file_path: "src/auth.ts" })
+// → { specs: [{ spec_id: "G001", file: "specs/global/G001.md" }], subspecs: [...] }
+mcp__specs-browser__createSpec({ spec_id: "G020", title: "...", content: "..." })
+mcp__specs-browser__listSuites()
+mcp__specs-browser__createSuite({ suite_id: "...", scope: "**/*.ts", ... })
 
 // Report to deputy-cto
 mcp__agent-reports__report_to_deputy_cto({

@@ -307,3 +307,35 @@ export interface DeleteSuiteResult {
   success: boolean;
   deleted: string;
 }
+
+// ============================================================================
+// Utility Schemas
+// ============================================================================
+
+export const GetSpecsForFileSchema = z.object({
+  file_path: z.string().min(1).describe('File path (relative or absolute) to check for applicable specs'),
+});
+
+export type GetSpecsForFileArgs = z.infer<typeof GetSpecsForFileSchema>;
+
+export interface SpecForFile {
+  spec_id: string;
+  file: string;
+  priority?: string;
+  lastVerified?: string | null;
+}
+
+export interface SubspecForFile {
+  spec_id: string;
+  file: string;
+  suite_id: string;
+  suite_scope: string;
+  priority?: string;
+}
+
+export interface GetSpecsForFileResult {
+  file_path: string;
+  specs: SpecForFile[];
+  subspecs: SubspecForFile[];
+  total: number;
+}

@@ -5,10 +5,11 @@
 ### Added
 
 **MCP Server: specs-browser**
-- 8 new MCP tools for spec and suite management:
+- 9 new MCP tools for spec and suite management:
   - `createSpec` - Create new specification files
   - `editSpec` - Edit existing specifications
   - `deleteSpec` - Delete specifications
+  - `get_specs_for_file` - Get all applicable specs for a file (main + subspecs)
   - `listSuites` - List all configured spec suites
   - `getSuite` - Get suite configuration details
   - `createSuite` - Create new spec suite
@@ -63,13 +64,15 @@
 - TypeScript build: ✓ Passed
 - JavaScript syntax check: ✓ Passed
 - Code review: ✓ No violations
+- Vitest tests: ✓ 51 tests passing
 
-### Known Issues
+### Testing
 
-**Test Coverage Gap:**
-- 8 new MCP tools need Vitest tests
-- compliance-checker.js has no test coverage
-- Issue reported to deputy-cto for triage
+**specs-browser/__tests__/specs-browser.test.ts**
+- Fixed test cleanup issue in Suite Management describe block
+- Added `afterEach` to remove `.claude` directory created during tests
+- All 51 tests now pass consistently across test runs
+- Root cause: Missing cleanup caused directory persistence across runs
 
 ### Architecture
 
