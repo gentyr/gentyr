@@ -27,6 +27,10 @@ Protection is the default way to use this framework. Without it, agents can modi
 - `.claude/hooks/pre-commit-review.js` — commit approval gate
 - `.claude/hooks/bypass-approval-hook.js` — CTO bypass mechanism
 - `.claude/hooks/block-no-verify.js` — prevents `--no-verify`
+- `.claude/hooks/protected-action-gate.js` — MCP action approval gate (with `--protect-mcp`)
+- `.claude/hooks/protected-action-approval-hook.js` — MCP approval processor (with `--protect-mcp`)
+- `.claude/hooks/protected-actions.json` — MCP action protection config (with `--protect-mcp`)
+- `.claude/protected-action-approvals.json` — MCP approval state (with `--protect-mcp`)
 - `.claude/settings.json` — hook configuration
 - `.husky/pre-commit` — git hook entry point
 - `eslint.config.js` — lint rules
@@ -53,9 +57,10 @@ Automatically removes protection, then removes symlinks, generated configs, and 
 ```bash
 sudo scripts/setup.sh --path /path/to/project --protect-only
 sudo scripts/setup.sh --path /path/to/project --unprotect-only
+sudo scripts/setup.sh --path /path/to/project --protect-mcp  # MCP action protection only
 ```
 
-Toggle protection without reinstalling. Use `--unprotect-only` before making manual changes to protected files, then `--protect-only` to re-lock.
+Toggle protection without reinstalling. Use `--unprotect-only` before making manual changes to protected files, then `--protect-only` to re-lock. Use `--protect-mcp` to protect only MCP action configuration files.
 
 ### Verify
 
@@ -129,6 +134,47 @@ The deputy-cto can run autonomously, triaging reports and handling routine decis
 ```typescript
 mcp__deputy-cto__toggle_autonomous({ enabled: true })
 ```
+
+### CTO Approval System for MCP Actions
+
+Protect critical MCP actions (production deployments, database migrations, API key rotation) behind CTO approval gates. When an agent attempts a protected action:
+
+1. **Action blocked** - Agent receives message: "Action blocked. CTO must type: APPROVE PROD A7X9K2"
+2. **CTO approves** - User types the approval phrase in chat
+3. **Action executes** - Agent retries, action succeeds (one-time use, 5-minute expiry)
+
+**Setup:**
+
+```bash
+# Create protected-actions.json config
+cp .claude-framework/.claude/hooks/protected-actions.json.template .claude/hooks/protected-actions.json
+
+# Encrypt credential for approval phrase
+node .claude-framework/scripts/encrypt-credential.js
+
+# Generate spec file (optional, for agent reference)
+node .claude-framework/scripts/generate-protected-actions-spec.js
+
+# Enable protection (makes config root-owned)
+sudo scripts/setup.sh --path /path/to/project --protect-mcp
+```
+
+**Check protected actions:**
+
+```typescript
+// List all protected MCP actions
+mcp__deputy-cto__list_protections()
+
+// Get details of pending approval request
+mcp__deputy-cto__get_protected_action_request({ code: "A7X9K2" })
+```
+
+**Security features:**
+- Fail-closed design (blocks on any error)
+- One-time use approval tokens
+- 5-minute expiration
+- AES-256-GCM encrypted credentials
+- Cryptographically secure random codes
 
 ### Persistent Automation Service
 
@@ -428,9 +474,30 @@ specs/
 └── reference/        # Development guides
 ```
 
-### Custom CLAUDE.md
+### CLAUDE.md Agent Instructions
 
-Each project should have its own `CLAUDE.md` at the project root with project-specific instructions.
+The setup script automatically manages `CLAUDE.md` in target projects:
+
+**Install behavior:**
+- Creates `CLAUDE.md` if it doesn't exist (using framework template)
+- Appends GENTYR agent workflow section if file exists
+- Replaces existing GENTYR section on re-installs (no duplicates)
+- Section is marked with `<!-- GENTYR-FRAMEWORK-START/END -->` comments
+
+**Uninstall behavior:**
+- Removes GENTYR section from `CLAUDE.md`
+- Deletes `CLAUDE.md` if it becomes empty after removal
+- Preserves project-specific content above/below the GENTYR section
+
+**Template location:** `.claude-framework/CLAUDE.md.gentyr-section`
+
+The injected section provides agents with:
+- Golden rules for agent workflow
+- Standard development sequence (investigator → code-writer → test-writer → code-reviewer → project-manager)
+- CTO reporting guidelines
+- Available slash commands (`/cto-report`, `/deputy-cto`)
+
+Projects can add their own project-specific instructions above or below the GENTYR section.
 
 ## Requirements
 

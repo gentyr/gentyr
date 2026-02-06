@@ -1,0 +1,48 @@
+{
+  "version": "1.0.0",
+  "description": "CTO-protected MCP actions configuration. Protected actions require CTO approval before execution.",
+  "servers": {},
+  "settings": {
+    "codeLength": 6,
+    "expiryMinutes": 5,
+    "notifyOnBlock": true
+  },
+  "_examples": {
+    "supabase-prod": {
+      "protection": "credential-isolated",
+      "phrase": "APPROVE PROD",
+      "tools": "*",
+      "credentialKeys": ["SUPABASE_SERVICE_ROLE_KEY"],
+      "description": "Production Supabase - all tools require approval"
+    },
+    "stripe": {
+      "protection": "credential-isolated",
+      "phrase": "APPROVE PAYMENT",
+      "tools": ["create_charge", "create_refund", "delete_customer"],
+      "credentialKeys": ["STRIPE_SECRET_KEY"],
+      "description": "Stripe - only destructive/financial tools require approval"
+    },
+    "sendgrid": {
+      "protection": "approval-only",
+      "phrase": "APPROVE EMAIL",
+      "tools": ["send_email", "send_bulk"],
+      "description": "SendGrid - approval required but credentials not isolated"
+    }
+  },
+  "_schema": {
+    "servers": {
+      "<server-name>": {
+        "protection": "credential-isolated | approval-only",
+        "phrase": "APPROVE <WORD>",
+        "tools": "* | [list of tool names]",
+        "credentialKeys": ["ENV_VAR_NAMES_TO_ENCRYPT"],
+        "description": "Human-readable description"
+      }
+    },
+    "settings": {
+      "codeLength": "Number of characters in approval code (default: 6)",
+      "expiryMinutes": "How long approval codes are valid (default: 5)",
+      "notifyOnBlock": "Show notification when action is blocked (default: true)"
+    }
+  }
+}

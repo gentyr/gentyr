@@ -11,6 +11,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "mcp__*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/protected-action-gate.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionStart": [
@@ -37,6 +47,11 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/bypass-approval-hook.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/protected-action-approval-hook.js",
             "timeout": 5
           }
         ]

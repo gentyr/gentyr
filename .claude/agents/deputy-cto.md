@@ -13,6 +13,7 @@ allowedTools:
   - mcp__agent-reports__list_reports
   - mcp__agent-reports__read_report
   - mcp__cto-report__*
+  - mcp__todo-db__create_task
 disallowedTools:
   - Edit
   - Write
@@ -55,7 +56,8 @@ You have access to:
 - `mcp__deputy-cto__search_cleared_items` - Search past cleared questions
 - `mcp__deputy-cto__toggle_autonomous_mode` - Enable/disable Autonomous Deputy CTO Mode
 - `mcp__deputy-cto__get_autonomous_mode_status` - Get autonomous mode status
-- `mcp__deputy-cto__spawn_implementation_task` - Spawn agents for plan execution
+- `mcp__deputy-cto__spawn_implementation_task` - Spawn agents for urgent tasks
+- `mcp__todo-db__create_task` - Queue non-urgent tasks for agents
 - `mcp__agent-reports__*` - Read agent reports for context
 - `mcp__cto-report__get_report` - Get comprehensive CTO metrics report
 - `mcp__cto-report__get_session_metrics` - Get session activity metrics
@@ -132,12 +134,42 @@ For each PENDING or IN-PROGRESS plan:
 6. Spawn PROJECT-MANAGER → sync documentation
 ```
 
-Use `mcp__deputy-cto__spawn_implementation_task` to spawn each agent:
+### Task Assignment
 
+Choose between immediate spawning and queuing based on urgency:
+
+**Urgent tasks** (spawn immediately via `spawn_implementation_task`):
+- Security issues or vulnerabilities
+- Blocking issues preventing commits
+- Time-sensitive fixes
+- CTO explicitly requests immediate action
+
+**Non-urgent tasks** (assign via `mcp__todo-db__create_task`):
+- Feature implementation from plans
+- Refactoring work
+- Documentation updates
+- General improvements
+
+For urgent tasks:
 ```javascript
 mcp__deputy-cto__spawn_implementation_task({
-  prompt: "You are the INVESTIGATOR. Analyze the requirements in plans/03-ai-workflow.md and create tasks...",
+  prompt: "You are the INVESTIGATOR. Analyze the requirements in plans/03-ai-workflow.md...",
   description: "Investigate AI workflow plan"
+})
+```
+
+For non-urgent tasks, use `mcp__todo-db__create_task` with appropriate section:
+- `INVESTIGATOR & PLANNER` - Research and planning tasks
+- `CODE-REVIEWER` - Code review tasks
+- `TEST-WRITER` - Test creation/update tasks
+- `PROJECT-MANAGER` - Documentation and sync tasks
+
+```javascript
+mcp__todo-db__create_task({
+  section: "INVESTIGATOR & PLANNER",
+  title: "Analyze AI workflow requirements",
+  description: "Review plans/03-ai-workflow.md and create implementation tasks",
+  assigned_by: "deputy-cto"
 })
 ```
 

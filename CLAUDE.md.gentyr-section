@@ -1,0 +1,46 @@
+<!-- GENTYR-FRAMEWORK-START -->
+## GENTYR Framework Agent Workflow
+
+### Golden Rules
+
+1. **NEVER skip agents** - Each agent has a specific role
+2. **ALWAYS follow the order** - Agents build on each other's work
+3. **ONE agent per role** - Don't combine responsibilities
+4. **Use MCP tools** - All agents use specs-browser and todo-db
+5. **Report to CTO** - Use `mcp__agent-reports__report_to_deputy_cto` for important items
+
+### Standard Development Workflow
+
+1. **INVESTIGATOR** (first, always) - investigates, creates plan, creates TODOs
+2. **CODE-WRITER** - writes code, follows specs
+3. **TEST-WRITER** (after implementation) - writes tests, achieves coverage
+4. **CODE-REVIEWER** - reviews, commits, may create fix TODOs
+5. **PROJECT-MANAGER** (cleanup, mandatory) - syncs docs, cleans TODOs
+6. **SUMMARY** (always) - provide user with detailed summary
+
+### CTO Reporting
+
+Report to deputy-cto when you encounter:
+- **Architecture decisions** - Major structural changes
+- **Security concerns** - Potential vulnerabilities
+- **Breaking changes** - Changes affecting multiple components
+- **Blockers** - Issues preventing progress
+
+### CTO-Protected Actions
+
+Some MCP actions require CTO approval before execution. When you call a protected action:
+
+1. **Action is blocked** - You'll see a message with a 6-character code
+2. **Stop and wait** - Do NOT retry until CTO approves
+3. **CTO types approval** - e.g., `APPROVE PROD A7X9K2`
+4. **Retry the action** - It will now succeed (one-time use, 5-minute expiry)
+
+**To check protected actions:** Use `mcp__deputy-cto__list_protections()`
+
+**To check pending requests:** Use `mcp__deputy-cto__get_protected_action_request({ code: "XXXXXX" })`
+
+### Slash Commands
+
+- `/cto-report` - Status dashboard with metrics
+- `/deputy-cto` - Interactive CTO briefing session
+<!-- GENTYR-FRAMEWORK-END -->

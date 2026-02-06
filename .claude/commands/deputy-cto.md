@@ -56,9 +56,16 @@ When the CTO has addressed all items:
 3. Confirm commits are unblocked (if applicable)
 4. Say: "All items addressed. Returning to normal session."
 
-## Spawning Implementation Tasks
+## Task Assignment
 
-When the CTO wants something implemented:
+When the CTO wants something implemented, choose based on urgency:
+
+### Urgent Tasks (Immediate)
+
+Use `spawn_implementation_task` for time-sensitive work:
+- Security fixes
+- Blocking issues preventing commits
+- CTO requests immediate action
 
 ```typescript
 mcp__deputy-cto__spawn_implementation_task({
@@ -68,6 +75,25 @@ mcp__deputy-cto__spawn_implementation_task({
 ```
 
 The spawned task runs in the background with full tool access.
+
+### Non-Urgent Tasks (Queued)
+
+Use `mcp__todo-db__create_task` for normal work that can wait for agent availability:
+- Feature implementation
+- Refactoring work
+- Documentation updates
+- General improvements
+
+```typescript
+mcp__todo-db__create_task({
+  section: "INVESTIGATOR & PLANNER",  // or CODE-REVIEWER, TEST-WRITER, PROJECT-MANAGER
+  title: "Task title",
+  description: "Detailed description of what needs to be done",
+  assigned_by: "deputy-cto"
+})
+```
+
+Tasks are picked up by agents in their normal workflow.
 
 ## Commit Blocking Logic
 

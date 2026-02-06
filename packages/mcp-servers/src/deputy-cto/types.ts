@@ -18,6 +18,7 @@ export const QUESTION_TYPES = [
   'question',        // General question for CTO
   'escalation',      // Escalated from agent report
   'bypass-request',  // Agent requesting emergency bypass (CTO must approve)
+  'protected-action-request',  // Protected MCP action awaiting CTO approval
 ] as const;
 
 export type QuestionType = typeof QUESTION_TYPES[number];
@@ -101,6 +102,13 @@ export const ExecuteBypassArgsSchema = z.object({
   bypass_code: z.string().length(6).describe('The 6-character bypass code from request_bypass'),
 });
 
+// Protected action management schemas
+export const ListProtectionsArgsSchema = z.object({});
+
+export const GetProtectedActionRequestArgsSchema = z.object({
+  code: z.string().length(6).describe('The 6-character approval code'),
+});
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -121,6 +129,8 @@ export type SearchClearedItemsArgs = z.infer<typeof SearchClearedItemsArgsSchema
 export type CleanupOldRecordsArgs = z.infer<typeof CleanupOldRecordsArgsSchema>;
 export type RequestBypassArgs = z.infer<typeof RequestBypassArgsSchema>;
 export type ExecuteBypassArgs = z.infer<typeof ExecuteBypassArgsSchema>;
+export type ListProtectionsArgs = z.infer<typeof ListProtectionsArgsSchema>;
+export type GetProtectedActionRequestArgs = z.infer<typeof GetProtectedActionRequestArgsSchema>;
 
 export interface QuestionRecord {
   id: string;
@@ -284,5 +294,37 @@ export interface RequestBypassResult {
 
 export interface ExecuteBypassResult {
   executed: boolean;
+  message: string;
+}
+
+// Protected action management result types
+export interface ProtectionConfig {
+  server: string;
+  phrase: string;
+  tools: string | string[];
+  protection: string;
+  description?: string;
+}
+
+export interface ListProtectionsResult {
+  protections: ProtectionConfig[];
+  count: number;
+  message: string;
+}
+
+export interface ProtectedActionRequest {
+  code: string;
+  server: string;
+  tool: string;
+  args: Record<string, unknown>;
+  phrase: string;
+  status: 'pending' | 'approved';
+  created_at: string;
+  expires_at: string;
+}
+
+export interface GetProtectedActionRequestResult {
+  found: boolean;
+  request?: ProtectedActionRequest;
   message: string;
 }

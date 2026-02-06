@@ -1,0 +1,73 @@
+{
+  "version": "1.0.0",
+  "servers": {
+    "supabase": {
+      "protection": "approval-only",
+      "phrase": "APPROVE DB",
+      "tools": [
+        "supabase_sql",
+        "supabase_delete",
+        "supabase_delete_user",
+        "supabase_delete_bucket",
+        "supabase_delete_file"
+      ],
+      "branches": ["main"],
+      "description": "Database mutations require CTO approval"
+    },
+    "vercel": {
+      "protection": "approval-only",
+      "phrase": "APPROVE DEPLOY",
+      "tools": [
+        "vercel_delete_deployment",
+        "vercel_promote_deployment",
+        "vercel_rollback",
+        "vercel_remove_domain",
+        "vercel_redeploy"
+      ],
+      "description": "Production deployments require CTO approval"
+    },
+    "cloudflare": {
+      "protection": "approval-only",
+      "phrase": "APPROVE DNS",
+      "tools": [
+        "cloudflare_delete_dns_record",
+        "cloudflare_update_dns_record"
+      ],
+      "description": "DNS changes require CTO approval"
+    },
+    "render": {
+      "protection": "approval-only",
+      "phrase": "APPROVE RENDER",
+      "tools": [
+        "render_delete_service",
+        "render_trigger_deploy",
+        "render_update_service",
+        "render_suspend_service"
+      ],
+      "description": "Render service changes require CTO approval"
+    },
+    "resend": {
+      "protection": "approval-only",
+      "phrase": "APPROVE EMAIL",
+      "tools": [
+        "resend_delete_domain",
+        "resend_delete_api_key"
+      ],
+      "description": "Email infrastructure changes require CTO approval"
+    },
+    "github": {
+      "protection": "approval-only",
+      "phrase": "APPROVE GH",
+      "tools": [
+        "github_merge_pull_request",
+        "github_create_secret"
+      ],
+      "description": "Destructive GitHub actions require CTO approval"
+    }
+  },
+  "settings": {
+    "codeLength": 6,
+    "expiryMinutes": 5,
+    "notifyOnBlock": true
+  }
+}

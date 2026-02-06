@@ -43,6 +43,8 @@ import {
   CleanupOldRecordsArgsSchema,
   RequestBypassArgsSchema,
   ExecuteBypassArgsSchema,
+  ListProtectionsArgsSchema,
+  GetProtectedActionRequestArgsSchema,
   type AddQuestionArgs,
   type ListQuestionsArgs,
   type ReadQuestionArgs,
@@ -55,6 +57,7 @@ import {
   type SearchClearedItemsArgs,
   type RequestBypassArgs,
   type ExecuteBypassArgs,
+  type GetProtectedActionRequestArgs,
   type QuestionRecord,
   type QuestionListItem,
   type ListQuestionsResult,
@@ -73,6 +76,8 @@ import {
   type CleanupOldRecordsResult,
   type RequestBypassResult,
   type ExecuteBypassResult,
+  type ListProtectionsResult,
+  type GetProtectedActionRequestResult,
   type ClearedQuestionItem,
   type AutonomousModeConfig,
   type ErrorResult,
@@ -87,6 +92,8 @@ const DB_PATH = path.join(PROJECT_DIR, '.claude', 'deputy-cto.db');
 const CTO_REPORTS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
 const AUTONOMOUS_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
+const PROTECTED_ACTIONS_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'protected-actions.json');
+const PROTECTED_APPROVALS_PATH = path.join(PROJECT_DIR, '.claude', 'protected-action-approvals.json');
 const COOLDOWN_MINUTES = 55;
 
 // ============================================================================
@@ -965,6 +972,144 @@ function executeBypass(args: ExecuteBypassArgs): ExecuteBypassResult | ErrorResu
 }
 
 // ============================================================================
+// Protected Action Functions
+// ============================================================================
+
+interface ProtectedActionsConfig {
+  version: string;
+  servers: Record<string, {
+    protection: string;
+    phrase: string;
+    tools: string | string[];
+    credentialKeys?: string[];
+    description?: string;
+  }>;
+  settings?: {
+    codeLength?: number;
+    expiryMinutes?: number;
+    notifyOnBlock?: boolean;
+  };
+}
+
+interface ApprovalRequest {
+  server: string;
+  tool: string;
+  args: Record<string, unknown>;
+  phrase: string;
+  code: string;
+  status: 'pending' | 'approved';
+  created_at: string;
+  created_timestamp: number;
+  expires_at: string;
+  expires_timestamp: number;
+  approved_at?: string;
+  approved_timestamp?: number;
+}
+
+/**
+ * List all protected MCP actions and their configuration
+ */
+function listProtections(): ListProtectionsResult {
+  try {
+    if (!fs.existsSync(PROTECTED_ACTIONS_PATH)) {
+      return {
+        protections: [],
+        count: 0,
+        message: 'No protected actions configured. Use setup.sh --protect-mcp to configure.',
+      };
+    }
+
+    const config: ProtectedActionsConfig = JSON.parse(fs.readFileSync(PROTECTED_ACTIONS_PATH, 'utf8'));
+
+    if (!config.servers || Object.keys(config.servers).length === 0) {
+      return {
+        protections: [],
+        count: 0,
+        message: 'No protected actions configured.',
+      };
+    }
+
+    const protections = Object.entries(config.servers).map(([server, cfg]) => ({
+      server,
+      phrase: cfg.phrase,
+      tools: cfg.tools,
+      protection: cfg.protection,
+      description: cfg.description,
+    }));
+
+    return {
+      protections,
+      count: protections.length,
+      message: `Found ${protections.length} protected server(s).`,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      protections: [],
+      count: 0,
+      message: `Error reading protected actions config: ${message}`,
+    };
+  }
+}
+
+/**
+ * Get details of a pending protected action request by its code
+ */
+function getProtectedActionRequest(args: GetProtectedActionRequestArgs): GetProtectedActionRequestResult {
+  try {
+    if (!fs.existsSync(PROTECTED_APPROVALS_PATH)) {
+      return {
+        found: false,
+        message: 'No pending approval requests.',
+      };
+    }
+
+    const data = JSON.parse(fs.readFileSync(PROTECTED_APPROVALS_PATH, 'utf8'));
+    const approvals: Record<string, ApprovalRequest> = data.approvals || {};
+    const code = args.code.toUpperCase();
+
+    const request = approvals[code];
+    if (!request) {
+      return {
+        found: false,
+        message: `No request found with code: ${code}`,
+      };
+    }
+
+    // Check if expired
+    if (Date.now() > request.expires_timestamp) {
+      return {
+        found: false,
+        message: `Request with code ${code} has expired.`,
+      };
+    }
+
+    return {
+      found: true,
+      request: {
+        code: request.code,
+        server: request.server,
+        tool: request.tool,
+        args: request.args,
+        phrase: request.phrase,
+        status: request.status,
+        created_at: request.created_at,
+        expires_at: request.expires_at,
+      },
+      message: request.status === 'approved'
+        ? `Request ${code} is approved and ready to execute.`
+        : `Request ${code} is pending CTO approval. Type: ${request.phrase} ${code}`,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      found: false,
+      message: `Error reading approval requests: ${message}`,
+    };
+  }
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -1065,6 +1210,19 @@ const tools: ToolHandler[] = [
     description: 'Execute a bypass AFTER the CTO has typed "APPROVE BYPASS <code>" in the chat. The UserPromptSubmit hook creates an approval token when the CTO types the approval phrase. This tool verifies that token exists.',
     schema: ExecuteBypassArgsSchema,
     handler: executeBypass,
+  },
+  // Protected action tools
+  {
+    name: 'list_protections',
+    description: 'List all CTO-protected MCP actions. Shows which servers/tools require approval before execution.',
+    schema: ListProtectionsArgsSchema,
+    handler: listProtections,
+  },
+  {
+    name: 'get_protected_action_request',
+    description: 'Get details of a pending protected action request by its 6-character approval code. Use to check status before retrying a blocked action.',
+    schema: GetProtectedActionRequestArgsSchema,
+    handler: getProtectedActionRequest,
   },
 ];
 

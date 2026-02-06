@@ -850,4 +850,502 @@ describe('Deputy-CTO Server', () => {
       expect(result.message).toContain('commit decision');
     });
   });
+
+  // ==========================================================================
+  // Protected Action Management
+  // ==========================================================================
+
+  describe('Protected Action Management', () => {
+    let PROTECTED_ACTIONS_PATH: string;
+    let APPROVALS_PATH: string;
+
+    beforeEach(() => {
+      PROTECTED_ACTIONS_PATH = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      APPROVALS_PATH = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
+    });
+
+    interface ProtectedActionsConfig {
+      version: string;
+      servers: Record<string, {
+        protection: string;
+        phrase: string;
+        tools: string | string[];
+        credentialKeys?: string[];
+        description?: string;
+      }>;
+    }
+
+    interface ApprovalRequest {
+      code: string;
+      server: string;
+      tool: string;
+      args: Record<string, any>;
+      phrase: string;
+      status: 'pending' | 'approved';
+      created_at: string;
+      created_timestamp: number;
+      expires_at: string;
+      expires_timestamp: number;
+    }
+
+    const listProtections = () => {
+      try {
+        if (!fs.existsSync(PROTECTED_ACTIONS_PATH)) {
+          return {
+            protections: [],
+            count: 0,
+            message: 'No protected actions configured. Use setup.sh --protect-mcp to configure.',
+          };
+        }
+
+        const config: ProtectedActionsConfig = JSON.parse(fs.readFileSync(PROTECTED_ACTIONS_PATH, 'utf8'));
+
+        if (!config.servers || Object.keys(config.servers).length === 0) {
+          return {
+            protections: [],
+            count: 0,
+            message: 'No protected actions configured.',
+          };
+        }
+
+        const protections = Object.entries(config.servers).map(([server, cfg]) => ({
+          server,
+          phrase: cfg.phrase,
+          tools: cfg.tools,
+          protection: cfg.protection,
+          description: cfg.description,
+        }));
+
+        return {
+          protections,
+          count: protections.length,
+          message: `Found ${protections.length} protected server(s).`,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          protections: [],
+          count: 0,
+          message: `Error reading protected actions config: ${message}`,
+        };
+      }
+    };
+
+    const getProtectedActionRequest = (args: { code: string }) => {
+      try {
+        if (!fs.existsSync(APPROVALS_PATH)) {
+          return {
+            found: false,
+            message: 'No pending approval requests.',
+          };
+        }
+
+        const data = JSON.parse(fs.readFileSync(APPROVALS_PATH, 'utf8'));
+        const approvals: Record<string, ApprovalRequest> = data.approvals || {};
+        const code = args.code.toUpperCase();
+
+        const request = approvals[code];
+        if (!request) {
+          return {
+            found: false,
+            message: `No request found with code: ${code}`,
+          };
+        }
+
+        // Check if expired
+        if (Date.now() > request.expires_timestamp) {
+          return {
+            found: false,
+            message: `Request with code ${code} has expired.`,
+          };
+        }
+
+        return {
+          found: true,
+          request: {
+            code: request.code,
+            server: request.server,
+            tool: request.tool,
+            args: request.args,
+            phrase: request.phrase,
+            status: request.status,
+            created_at: request.created_at,
+            expires_at: request.expires_at,
+          },
+          message: request.status === 'approved'
+            ? `Request ${code} is approved and ready to execute.`
+            : `Request ${code} is pending CTO approval. Type: ${request.phrase} ${code}`,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          found: false,
+          message: `Error reading approval requests: ${message}`,
+        };
+      }
+    };
+
+    describe('list_protections', () => {
+      it('should return empty list when no config file exists', () => {
+        const result = listProtections();
+
+        expect(result.protections).toHaveLength(0);
+        expect(result.count).toBe(0);
+        expect(result.message).toContain('No protected actions configured');
+      });
+
+      it('should return empty list when config has no servers', () => {
+        const configDir = path.dirname(PROTECTED_ACTIONS_PATH);
+        if (!fs.existsSync(configDir)) {
+          fs.mkdirSync(configDir, { recursive: true });
+        }
+
+        const config: ProtectedActionsConfig = {
+          version: '1.0.0',
+          servers: {},
+        };
+
+        fs.writeFileSync(PROTECTED_ACTIONS_PATH, JSON.stringify(config));
+
+        const result = listProtections();
+
+        expect(result.protections).toHaveLength(0);
+        expect(result.count).toBe(0);
+        expect(result.message).toContain('No protected actions configured');
+      });
+
+      it('should list all protected servers', () => {
+        const configDir = path.dirname(PROTECTED_ACTIONS_PATH);
+        if (!fs.existsSync(configDir)) {
+          fs.mkdirSync(configDir, { recursive: true });
+        }
+
+        const config: ProtectedActionsConfig = {
+          version: '1.0.0',
+          servers: {
+            'supabase-prod': {
+              protection: 'credential-isolated',
+              phrase: 'APPROVE PROD',
+              tools: '*',
+              credentialKeys: ['SUPABASE_SERVICE_ROLE_KEY'],
+              description: 'Production Supabase - all tools require approval',
+            },
+            'stripe': {
+              protection: 'credential-isolated',
+              phrase: 'APPROVE PAYMENT',
+              tools: ['create_charge', 'create_refund', 'delete_customer'],
+              credentialKeys: ['STRIPE_SECRET_KEY'],
+              description: 'Stripe - only destructive/financial tools',
+            },
+            'sendgrid': {
+              protection: 'approval-only',
+              phrase: 'APPROVE EMAIL',
+              tools: ['send_email', 'send_bulk'],
+              description: 'SendGrid - approval required',
+            },
+          },
+        };
+
+        fs.writeFileSync(PROTECTED_ACTIONS_PATH, JSON.stringify(config));
+
+        const result = listProtections();
+
+        expect(result.count).toBe(3);
+        expect(result.protections).toHaveLength(3);
+        expect(result.message).toContain('Found 3 protected server(s)');
+
+        // Verify structure
+        const supabase = result.protections.find(p => p.server === 'supabase-prod');
+        expect(supabase).toBeDefined();
+        expect(supabase?.phrase).toBe('APPROVE PROD');
+        expect(supabase?.tools).toBe('*');
+        expect(supabase?.protection).toBe('credential-isolated');
+        expect(supabase?.description).toContain('Production Supabase');
+
+        const stripe = result.protections.find(p => p.server === 'stripe');
+        expect(stripe).toBeDefined();
+        expect(stripe?.phrase).toBe('APPROVE PAYMENT');
+        expect(Array.isArray(stripe?.tools)).toBe(true);
+        expect((stripe?.tools as string[]).length).toBe(3);
+      });
+
+      it('should handle wildcard tools protection', () => {
+        const configDir = path.dirname(PROTECTED_ACTIONS_PATH);
+        if (!fs.existsSync(configDir)) {
+          fs.mkdirSync(configDir, { recursive: true });
+        }
+
+        const config: ProtectedActionsConfig = {
+          version: '1.0.0',
+          servers: {
+            'test-server': {
+              protection: 'credential-isolated',
+              phrase: 'APPROVE TEST',
+              tools: '*',
+            },
+          },
+        };
+
+        fs.writeFileSync(PROTECTED_ACTIONS_PATH, JSON.stringify(config));
+
+        const result = listProtections();
+
+        expect(result.protections[0].tools).toBe('*');
+      });
+
+      it('should handle specific tools list protection', () => {
+        const configDir = path.dirname(PROTECTED_ACTIONS_PATH);
+        if (!fs.existsSync(configDir)) {
+          fs.mkdirSync(configDir, { recursive: true });
+        }
+
+        const config: ProtectedActionsConfig = {
+          version: '1.0.0',
+          servers: {
+            'test-server': {
+              protection: 'approval-only',
+              phrase: 'APPROVE TEST',
+              tools: ['create', 'delete', 'modify'],
+            },
+          },
+        };
+
+        fs.writeFileSync(PROTECTED_ACTIONS_PATH, JSON.stringify(config));
+
+        const result = listProtections();
+
+        expect(Array.isArray(result.protections[0].tools)).toBe(true);
+        expect((result.protections[0].tools as string[]).length).toBe(3);
+      });
+
+      it('should handle corrupted config file gracefully (G001)', () => {
+        const configDir = path.dirname(PROTECTED_ACTIONS_PATH);
+        if (!fs.existsSync(configDir)) {
+          fs.mkdirSync(configDir, { recursive: true });
+        }
+
+        // Write invalid JSON
+        fs.writeFileSync(PROTECTED_ACTIONS_PATH, '{ invalid json }');
+
+        const result = listProtections();
+
+        expect(result.protections).toHaveLength(0);
+        expect(result.count).toBe(0);
+        expect(result.message).toContain('Error reading protected actions config');
+      });
+    });
+
+    describe('get_protected_action_request', () => {
+      it('should return not found when no approvals file exists', () => {
+        const result = getProtectedActionRequest({ code: 'ABC123' });
+
+        expect(result.found).toBe(false);
+        expect(result.message).toContain('No pending approval requests');
+      });
+
+      it('should return not found for non-existent code', () => {
+        const approvalsDir = path.dirname(APPROVALS_PATH);
+        if (!fs.existsSync(approvalsDir)) {
+          fs.mkdirSync(approvalsDir, { recursive: true });
+        }
+
+        fs.writeFileSync(APPROVALS_PATH, JSON.stringify({ approvals: {} }));
+
+        const result = getProtectedActionRequest({ code: 'NOPE99' });
+
+        expect(result.found).toBe(false);
+        expect(result.message).toContain('No request found with code: NOPE99');
+      });
+
+      it('should return pending request details', () => {
+        const approvalsDir = path.dirname(APPROVALS_PATH);
+        if (!fs.existsSync(approvalsDir)) {
+          fs.mkdirSync(approvalsDir, { recursive: true });
+        }
+
+        const now = Date.now();
+        const approvals = {
+          approvals: {
+            ABC123: {
+              code: 'ABC123',
+              server: 'test-server',
+              tool: 'dangerous-operation',
+              args: { database: 'production', action: 'truncate' },
+              phrase: 'APPROVE PROD',
+              status: 'pending',
+              created_at: new Date(now).toISOString(),
+              created_timestamp: now,
+              expires_at: new Date(now + 5 * 60 * 1000).toISOString(),
+              expires_timestamp: now + 5 * 60 * 1000,
+            },
+          },
+        };
+
+        fs.writeFileSync(APPROVALS_PATH, JSON.stringify(approvals));
+
+        const result = getProtectedActionRequest({ code: 'ABC123' });
+
+        expect(result.found).toBe(true);
+        expect(result.request).toBeDefined();
+        expect(result.request?.code).toBe('ABC123');
+        expect(result.request?.server).toBe('test-server');
+        expect(result.request?.tool).toBe('dangerous-operation');
+        expect(result.request?.status).toBe('pending');
+        expect(result.message).toContain('pending CTO approval');
+        expect(result.message).toContain('APPROVE PROD ABC123');
+      });
+
+      it('should return approved request details', () => {
+        const approvalsDir = path.dirname(APPROVALS_PATH);
+        if (!fs.existsSync(approvalsDir)) {
+          fs.mkdirSync(approvalsDir, { recursive: true });
+        }
+
+        const now = Date.now();
+        const approvals = {
+          approvals: {
+            XYZ789: {
+              code: 'XYZ789',
+              server: 'test-server',
+              tool: 'test-tool',
+              args: {},
+              phrase: 'APPROVE TEST',
+              status: 'approved',
+              created_at: new Date(now).toISOString(),
+              created_timestamp: now,
+              expires_at: new Date(now + 5 * 60 * 1000).toISOString(),
+              expires_timestamp: now + 5 * 60 * 1000,
+            },
+          },
+        };
+
+        fs.writeFileSync(APPROVALS_PATH, JSON.stringify(approvals));
+
+        const result = getProtectedActionRequest({ code: 'XYZ789' });
+
+        expect(result.found).toBe(true);
+        expect(result.request?.status).toBe('approved');
+        expect(result.message).toContain('approved and ready to execute');
+      });
+
+      it('should return not found for expired request', () => {
+        const approvalsDir = path.dirname(APPROVALS_PATH);
+        if (!fs.existsSync(approvalsDir)) {
+          fs.mkdirSync(approvalsDir, { recursive: true });
+        }
+
+        const now = Date.now();
+        const approvals = {
+          approvals: {
+            EXPIRE: {
+              code: 'EXPIRE',
+              server: 'test-server',
+              tool: 'test-tool',
+              args: {},
+              phrase: 'APPROVE TEST',
+              status: 'pending',
+              created_at: new Date(now - 10 * 60 * 1000).toISOString(),
+              created_timestamp: now - 10 * 60 * 1000,
+              expires_at: new Date(now - 1000).toISOString(),
+              expires_timestamp: now - 1000, // Expired 1 second ago
+            },
+          },
+        };
+
+        fs.writeFileSync(APPROVALS_PATH, JSON.stringify(approvals));
+
+        const result = getProtectedActionRequest({ code: 'EXPIRE' });
+
+        expect(result.found).toBe(false);
+        expect(result.message).toContain('expired');
+      });
+
+      it('should handle case-insensitive code lookup', () => {
+        const approvalsDir = path.dirname(APPROVALS_PATH);
+        if (!fs.existsSync(approvalsDir)) {
+          fs.mkdirSync(approvalsDir, { recursive: true });
+        }
+
+        const now = Date.now();
+        const approvals = {
+          approvals: {
+            ABC123: {
+              code: 'ABC123',
+              server: 'test-server',
+              tool: 'test-tool',
+              args: {},
+              phrase: 'APPROVE TEST',
+              status: 'pending',
+              created_at: new Date(now).toISOString(),
+              created_timestamp: now,
+              expires_at: new Date(now + 5 * 60 * 1000).toISOString(),
+              expires_timestamp: now + 5 * 60 * 1000,
+            },
+          },
+        };
+
+        fs.writeFileSync(APPROVALS_PATH, JSON.stringify(approvals));
+
+        // Try with lowercase
+        const result = getProtectedActionRequest({ code: 'abc123' });
+
+        expect(result.found).toBe(true);
+        expect(result.request?.code).toBe('ABC123');
+      });
+
+      it('should include tool arguments in request', () => {
+        const approvalsDir = path.dirname(APPROVALS_PATH);
+        if (!fs.existsSync(approvalsDir)) {
+          fs.mkdirSync(approvalsDir, { recursive: true });
+        }
+
+        const now = Date.now();
+        const toolArgs = {
+          database: 'production',
+          action: 'delete',
+          table: 'users',
+          where: 'id > 1000',
+        };
+
+        const approvals = {
+          approvals: {
+            ARGS12: {
+              code: 'ARGS12',
+              server: 'postgres-prod',
+              tool: 'execute_query',
+              args: toolArgs,
+              phrase: 'APPROVE PROD',
+              status: 'pending',
+              created_at: new Date(now).toISOString(),
+              created_timestamp: now,
+              expires_at: new Date(now + 5 * 60 * 1000).toISOString(),
+              expires_timestamp: now + 5 * 60 * 1000,
+            },
+          },
+        };
+
+        fs.writeFileSync(APPROVALS_PATH, JSON.stringify(approvals));
+
+        const result = getProtectedActionRequest({ code: 'ARGS12' });
+
+        expect(result.found).toBe(true);
+        expect(result.request?.args).toEqual(toolArgs);
+      });
+
+      it('should handle corrupted approvals file gracefully (G001)', () => {
+        const approvalsDir = path.dirname(APPROVALS_PATH);
+        if (!fs.existsSync(approvalsDir)) {
+          fs.mkdirSync(approvalsDir, { recursive: true });
+        }
+
+        // Write invalid JSON
+        fs.writeFileSync(APPROVALS_PATH, '{ invalid json }');
+
+        const result = getProtectedActionRequest({ code: 'ABC123' });
+
+        expect(result.found).toBe(false);
+        expect(result.message).toContain('Error reading approval requests');
+      });
+    });
+  });
 });

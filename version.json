@@ -1,14 +1,14 @@
 {
   "name": "claude-code-framework",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Claude Code automation framework with MCP servers, hooks, and agents",
   "repository": "https://github.com/org/claude-code-framework",
   "minClaudeCodeVersion": "0.0.1",
   "components": {
-    "mcpServers": 8,
+    "mcpServers": 9,
     "frameworkAgents": 8,
     "commands": 2,
-    "hooks": 15
+    "hooks": 17
   },
-  "lastUpdated": "2026-01-22"
+  "lastUpdated": "2026-02-03"
 }
