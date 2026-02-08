@@ -26,6 +26,7 @@ MODE="install"
 PROTECT=false
 PROTECT_MCP=false
 RECONFIGURE_MCP=false
+CONFIGURE_CREDENTIALS=false
 PROJECT_DIR=""
 
 while [[ $# -gt 0 ]]; do
@@ -54,6 +55,10 @@ while [[ $# -gt 0 ]]; do
             RECONFIGURE_MCP=true
             shift
             ;;
+        --configure-credentials)
+            CONFIGURE_CREDENTIALS=true
+            shift
+            ;;
         --path)
             PROJECT_DIR="$(cd "$2" 2>/dev/null && pwd)" || {
                 echo -e "${RED}Error: directory does not exist: $2${NC}"
@@ -63,7 +68,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo -e "${RED}Unknown flag: $1${NC}"
-            echo "Usage: $0 --path <dir> [--protect] [--protect-mcp] [--reconfigure] [--uninstall] [--protect-only] [--unprotect-only]"
+            echo "Usage: $0 --path <dir> [--protect] [--protect-mcp] [--reconfigure] [--configure-credentials] [--uninstall] [--protect-only] [--unprotect-only]"
             exit 1
             ;;
     esac
@@ -134,6 +139,12 @@ get_original_user() {
     fi
 }
 
+get_original_group() {
+    local user="$(get_original_user)"
+    # Get primary group for the user
+    id -gn "$user" 2>/dev/null || echo "staff"
+}
+
 do_protect() {
     require_root "--protect"
     local hooks_dir="$(get_hooks_dir)"
@@ -146,9 +157,11 @@ do_protect() {
         "$hooks_dir/block-no-verify.js"
         "$hooks_dir/protected-action-gate.js"
         "$hooks_dir/protected-action-approval-hook.js"
+        "$hooks_dir/credential-file-guard.js"
         "$hooks_dir/protected-actions.json"
         "$PROJECT_DIR/.claude/settings.json"
         "$PROJECT_DIR/.claude/protection-key"
+        "$PROJECT_DIR/.mcp.json"
         "$PROJECT_DIR/eslint.config.js"
         "$PROJECT_DIR/.husky/pre-commit"
         "$PROJECT_DIR/package.json"
@@ -198,6 +211,7 @@ do_unprotect() {
     require_root "--unprotect-only"
     local hooks_dir="$(get_hooks_dir)"
     local original_user="$(get_original_user)"
+    local original_group="$(get_original_group)"
 
     echo -e "${YELLOW}Disabling protection...${NC}"
 
@@ -207,6 +221,7 @@ do_unprotect() {
         "$hooks_dir/block-no-verify.js"
         "$hooks_dir/protected-action-gate.js"
         "$hooks_dir/protected-action-approval-hook.js"
+        "$hooks_dir/credential-file-guard.js"
         "$hooks_dir/protected-actions.json"
         "$PROJECT_DIR/.claude/settings.json"
         "$PROJECT_DIR/.claude/TESTING.md"
@@ -227,7 +242,7 @@ do_unprotect() {
 
     for file in "${files[@]}"; do
         if [ -f "$file" ]; then
-            chown "$original_user:$original_user" "$file"
+            chown "$original_user:$original_group" "$file"
             chmod 644 "$file"
             echo "  Unprotected: $file"
         fi
@@ -235,7 +250,7 @@ do_unprotect() {
 
     for dir in "${dirs[@]}"; do
         if [ -d "$dir" ]; then
-            chown "$original_user:$original_user" "$dir"
+            chown "$original_user:$original_group" "$dir"
             chmod 755 "$dir"
             echo "  Unprotected dir: $dir"
         fi
@@ -243,13 +258,13 @@ do_unprotect() {
 
     # Bulk-fix any remaining root-owned files in project dirs (not following symlinks)
     if [ -d "$PROJECT_DIR/.husky" ]; then
-        find "$PROJECT_DIR/.husky" -maxdepth 1 -type f -user root -exec chown "$original_user:$original_user" {} \;
+        find "$PROJECT_DIR/.husky" -maxdepth 1 -type f -user root -exec chown "$original_user:$original_group" {} \;
     fi
     if [ -d "$PROJECT_DIR/.claude" ]; then
-        find "$PROJECT_DIR/.claude" -maxdepth 1 -type f -user root -exec chown "$original_user:$original_user" {} \;
+        find "$PROJECT_DIR/.claude" -maxdepth 1 -type f -user root -exec chown "$original_user:$original_group" {} \;
     fi
     if [ -d "$PROJECT_DIR/.claude/state" ]; then
-        find "$PROJECT_DIR/.claude/state" -maxdepth 1 -type f -user root -exec chown "$original_user:$original_user" {} \;
+        find "$PROJECT_DIR/.claude/state" -maxdepth 1 -type f -user root -exec chown "$original_user:$original_group" {} \;
     fi
 
     # Write state
@@ -263,6 +278,165 @@ EOF
 
     echo -e "${GREEN}Protection disabled.${NC}"
 }
+
+# =============================================================================
+# CONFIGURE CREDENTIALS (Fix 4)
+# =============================================================================
+
+do_configure_credentials() {
+    local gentyr_dir
+    if [ -L "$PROJECT_DIR/.claude-framework" ]; then
+        gentyr_dir="$(readlink -f "$PROJECT_DIR/.claude-framework")"
+    else
+        gentyr_dir="$PROJECT_DIR/.claude-framework"
+    fi
+    local providers_dir="$gentyr_dir/scripts/credential-providers"
+    local config_path="$PROJECT_DIR/.claude/credential-provider.json"
+    local protected_actions_path="$PROJECT_DIR/.claude/hooks/protected-actions.json"
+    local mcp_json_path="$PROJECT_DIR/.mcp.json"
+
+    echo -e "${YELLOW}Configuring credentials...${NC}"
+    echo ""
+
+    # 1. Read protected-actions.json to find servers with credentialKeys
+    if [ ! -f "$protected_actions_path" ]; then
+        echo -e "${RED}Error: $protected_actions_path not found.${NC}"
+        echo "  Run setup.sh --path $PROJECT_DIR first."
+        return 1
+    fi
+
+    # 2. Check for provider config or prompt to create one
+    local provider_name=""
+    if [ -f "$config_path" ]; then
+        provider_name=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$config_path','utf8')).provider || '')" 2>/dev/null)
+        echo -e "  Using provider from config: ${GREEN}${provider_name}${NC}"
+    fi
+
+    if [ -z "$provider_name" ]; then
+        echo "  No credential provider configured."
+        echo ""
+        echo "  Available providers:"
+        echo "    1) onepassword - Resolve from 1Password vaults (requires op CLI)"
+        echo "    2) manual      - Enter credentials interactively"
+        echo ""
+        read -p "  Select provider (1/2): " choice
+        case "$choice" in
+            1) provider_name="onepassword" ;;
+            2) provider_name="manual" ;;
+            *) echo -e "${RED}Invalid choice.${NC}"; return 1 ;;
+        esac
+
+        # Create provider config
+        mkdir -p "$(dirname "$config_path")"
+        echo "{\"provider\": \"$provider_name\", \"vaultMappings\": {}}" > "$config_path"
+        echo -e "  Created ${GREEN}$config_path${NC}"
+    fi
+
+    # 3. Use node to resolve credentials and inject into .mcp.json
+    node --input-type=module -e "
+import fs from 'fs';
+import path from 'path';
+
+const projectDir = '$PROJECT_DIR';
+const providersDir = '$providers_dir';
+const providerName = '$provider_name';
+const protectedActionsPath = '$protected_actions_path';
+const mcpJsonPath = '$mcp_json_path';
+const configPath = '$config_path';
+
+async function main() {
+  // Load protected actions to find credentialKeys
+  const config = JSON.parse(fs.readFileSync(protectedActionsPath, 'utf8'));
+  const providerConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+  // Load provider
+  const providerPath = path.join(providersDir, providerName + '.js');
+  if (!fs.existsSync(providerPath)) {
+    console.error('Provider not found: ' + providerPath);
+    process.exit(1);
+  }
+  const provider = await import(providerPath);
+
+  // Check availability
+  if (!(await provider.isAvailable())) {
+    console.error('Provider \"' + providerName + '\" is not available.');
+    console.error('Ensure prerequisites are met (see provider docs).');
+    process.exit(1);
+  }
+
+  console.log('  Provider: ' + provider.name);
+  console.log('');
+
+  // Load .mcp.json
+  if (!fs.existsSync(mcpJsonPath)) {
+    console.error('.mcp.json not found at: ' + mcpJsonPath);
+    process.exit(1);
+  }
+  const mcpJson = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
+
+  // Iterate over servers with credentialKeys
+  let credentialCount = 0;
+  for (const [serverName, serverConfig] of Object.entries(config.servers || {})) {
+    const keys = serverConfig.credentialKeys;
+    if (!keys || keys.length === 0) continue;
+
+    const mcpServer = mcpJson.mcpServers?.[serverName];
+    if (!mcpServer) {
+      console.log('  SKIP: MCP server \"' + serverName + '\" not in .mcp.json');
+      continue;
+    }
+
+    console.log('  Server: ' + serverName);
+    for (const key of keys) {
+      const vaultRef = providerConfig.vaultMappings?.[key] || '';
+      try {
+        const value = await provider.resolve(key, vaultRef);
+        if (!mcpServer.env) mcpServer.env = {};
+        mcpServer.env[key] = value;
+        credentialCount++;
+        console.log('    ✓ ' + key);
+      } catch (err) {
+        console.error('    ✗ ' + key + ': ' + err.message);
+      }
+    }
+  }
+
+  // Write updated .mcp.json
+  fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2) + '\\n');
+  console.log('');
+  console.log('  Injected ' + credentialCount + ' credential(s) into .mcp.json');
+
+  // Warn if credential env vars detected in shell
+  const envWarnings = [];
+  for (const [serverName, serverConfig] of Object.entries(config.servers || {})) {
+    for (const key of (serverConfig.credentialKeys || [])) {
+      if (process.env[key]) {
+        envWarnings.push(key);
+      }
+    }
+  }
+  if (envWarnings.length > 0) {
+    console.log('');
+    console.error('  ⚠ WARNING: Credential env vars detected in shell environment:');
+    envWarnings.forEach(k => console.error('    - ' + k));
+    console.error('  These should be removed from shell profiles for security.');
+    console.error('  Credentials are now in .mcp.json (accessible only to MCP servers).');
+  }
+}
+
+main().catch(err => { console.error(err.message); process.exit(1); });
+"
+
+    echo ""
+    echo -e "${GREEN}Credentials configured in .mcp.json.${NC}"
+    echo -e "${YELLOW}IMPORTANT: Root-protect .mcp.json to prevent agent access:${NC}"
+    echo "  sudo $0 --path $PROJECT_DIR --protect-only"
+}
+
+if [ "$CONFIGURE_CREDENTIALS" = true ]; then
+    do_configure_credentials
+    exit 0
+fi
 
 # =============================================================================
 # PROTECT-ONLY MODE
@@ -351,11 +525,12 @@ done
 # This allows MCP servers to write to these files after protection is applied
 if [ "$EUID" -eq 0 ]; then
     original_user="$(get_original_user)"
-    chown -R "$original_user:$original_user" "$PROJECT_DIR/.claude/state/"
-    chown "$original_user:$original_user" "$PROJECT_DIR/.claude"/*.json 2>/dev/null || true
-    chown "$original_user:$original_user" "$PROJECT_DIR/.claude"/*.db 2>/dev/null || true
-    chown "$original_user:$original_user" "$PROJECT_DIR/.claude"/*.db-shm 2>/dev/null || true
-    chown "$original_user:$original_user" "$PROJECT_DIR/.claude"/*.db-wal 2>/dev/null || true
+    original_group="$(get_original_group)"
+    chown -R "$original_user:$original_group" "$PROJECT_DIR/.claude/state/"
+    chown "$original_user:$original_group" "$PROJECT_DIR/.claude"/*.json 2>/dev/null || true
+    chown "$original_user:$original_group" "$PROJECT_DIR/.claude"/*.db 2>/dev/null || true
+    chown "$original_user:$original_group" "$PROJECT_DIR/.claude"/*.db-shm 2>/dev/null || true
+    chown "$original_user:$original_group" "$PROJECT_DIR/.claude"/*.db-wal 2>/dev/null || true
 fi
 
 # Pre-create automation config with defaults if not exists
@@ -686,8 +861,8 @@ if [ -f "$GENTYR_SECTION" ]; then
         echo -e "  ${YELLOW}Skipped CLAUDE.md (not writable, may be protected)${NC}"
     elif [ -f "$CLAUDE_MD" ]; then
         if grep -q "$MARKER_START" "$CLAUDE_MD"; then
-            # Replace existing section
-            sed -i "/^$MARKER_START$/,/^$MARKER_END$/d" "$CLAUDE_MD"
+            # Replace existing section (BSD sed compatible)
+            sed -i '' "/$MARKER_START/,/$MARKER_END/d" "$CLAUDE_MD"
             echo "  Replaced existing GENTYR section"
         fi
         # Append section (only add newline if file doesn't end with one)

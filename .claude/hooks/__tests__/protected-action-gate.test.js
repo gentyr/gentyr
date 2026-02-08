@@ -19,6 +19,7 @@ import assert from 'node:assert';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
@@ -32,11 +33,31 @@ const __dirname = path.dirname(__filename);
 // Test Utilities
 // ============================================================================
 
+// Static test protection key (base64-encoded 32 bytes)
+const TEST_PROTECTION_KEY = crypto.randomBytes(32).toString('base64');
+
 /**
- * Create a temporary directory for test files
+ * Compute HMAC-SHA256 matching the gate hook's algorithm.
+ * Used to create valid HMAC fields in test approval entries.
+ */
+function computeTestHmac(...fields) {
+  const keyBuffer = Buffer.from(TEST_PROTECTION_KEY, 'base64');
+  return crypto.createHmac('sha256', keyBuffer)
+    .update(fields.join('|'))
+    .digest('hex');
+}
+
+/**
+ * Create a temporary directory for test files.
+ * Automatically creates .claude/ dir and protection-key.
  */
 function createTempDir(prefix = 'protected-gate-test') {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+
+  // Create protection key (required by gate hook for HMAC verification)
+  const claudeDir = path.join(tmpDir, '.claude');
+  fs.mkdirSync(claudeDir, { recursive: true });
+  fs.writeFileSync(path.join(claudeDir, 'protection-key'), TEST_PROTECTION_KEY);
 
   return {
     path: tmpDir,
@@ -109,12 +130,14 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
       }
     });
 
-    it('should detect MCP tools by name pattern', async () => {
-      // Without config file, should pass through (not yet configured)
+    it('should block MCP tools when config is missing (G001 fail-closed)', async () => {
+      // Without config file, should block all MCP actions (A4/C5 defense)
       const result = await runHook('mcp__test-server__test-tool', {}, tempDir.path);
 
-      assert.strictEqual(result.exitCode, 0,
-        'MCP tools without config should pass through');
+      assert.strictEqual(result.exitCode, 1,
+        'MCP tools without config should be blocked (G001 fail-closed)');
+      assert.match(result.stderr, /config not found/i,
+        'Should indicate config is missing');
     });
   });
 
@@ -123,19 +146,21 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
   // ==========================================================================
 
   describe('Protection checking', () => {
-    it('should pass through when no config file exists', async () => {
+    it('should block when no config file exists (G001 fail-closed)', async () => {
       const result = await runHook('mcp__test-server__test-tool', {}, tempDir.path);
 
-      assert.strictEqual(result.exitCode, 0,
-        'Should pass through when config does not exist (fail-open for unconfigured)');
+      assert.strictEqual(result.exitCode, 1,
+        'Should block when config does not exist (G001 fail-closed, A4/C5 defense)');
+      assert.match(result.stderr, /config not found/i,
+        'Should indicate config is missing');
     });
 
-    it('should pass through unprotected MCP tools', async () => {
+    it('should block unknown MCP servers not in allowlist (Fix 3)', async () => {
       const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
 
       const config = {
-        version: '1.0.0',
+        version: '2.0.0',
         servers: {
           'other-server': {
             protection: 'credential-isolated',
@@ -143,6 +168,33 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
             tools: '*',
           },
         },
+        allowedUnprotectedServers: [],
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      const result = await runHook('mcp__test-server__test-tool', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 1,
+        'Should block unknown MCP server not in allowlist (Fix 3)');
+      assert.match(result.stderr, /unrecognized mcp server/i,
+        'Should indicate server is unrecognized');
+    });
+
+    it('should pass through servers in allowedUnprotectedServers (Fix 3)', async () => {
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '2.0.0',
+        servers: {
+          'other-server': {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE OTHER',
+            tools: '*',
+          },
+        },
+        allowedUnprotectedServers: ['test-server'],
       };
 
       fs.writeFileSync(configPath, JSON.stringify(config));
@@ -150,7 +202,7 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
       const result = await runHook('mcp__test-server__test-tool', {}, tempDir.path);
 
       assert.strictEqual(result.exitCode, 0,
-        'Should pass through unprotected server');
+        'Should pass through server in allowedUnprotectedServers');
     });
 
     it('should block protected server with wildcard tools', async () => {
@@ -349,8 +401,12 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
 
       fs.writeFileSync(configPath, JSON.stringify(config));
 
-      // Create a valid approval
+      // Create a valid approval with HMAC fields
       const now = Date.now();
+      const expiresTimestamp = now + 5 * 60 * 1000;
+      const pendingHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', String(expiresTimestamp));
+      const approvedHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', 'approved', String(expiresTimestamp));
+
       const approvals = {
         approvals: {
           ABC123: {
@@ -360,7 +416,9 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
             code: 'ABC123',
             status: 'approved',
             created_timestamp: now,
-            expires_timestamp: now + 5 * 60 * 1000,
+            expires_timestamp: expiresTimestamp,
+            pending_hmac: pendingHmac,
+            approved_hmac: approvedHmac,
           },
         },
       };
@@ -394,8 +452,12 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
 
       fs.writeFileSync(configPath, JSON.stringify(config));
 
-      // Create a valid approval
+      // Create a valid approval with HMAC fields
       const now = Date.now();
+      const expiresTimestamp = now + 5 * 60 * 1000;
+      const pendingHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', String(expiresTimestamp));
+      const approvedHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', 'approved', String(expiresTimestamp));
+
       const approvals = {
         approvals: {
           ABC123: {
@@ -404,7 +466,9 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
             code: 'ABC123',
             status: 'approved',
             created_timestamp: now,
-            expires_timestamp: now + 5 * 60 * 1000,
+            expires_timestamp: expiresTimestamp,
+            pending_hmac: pendingHmac,
+            approved_hmac: approvedHmac,
           },
         },
       };
@@ -511,7 +575,7 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
   // ==========================================================================
 
   describe('Error handling (G001)', () => {
-    it('should pass through on corrupted config (fail-open for unconfigured)', async () => {
+    it('should block on corrupted config (G001 fail-closed)', async () => {
       const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
 
@@ -520,9 +584,11 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
 
       const result = await runHook('mcp__test-server__test-tool', {}, tempDir.path);
 
-      // Should pass through (fail-safe for config issues)
-      assert.strictEqual(result.exitCode, 0,
-        'Should pass through on corrupted config (fail-safe)');
+      // G001: Fail-closed on corrupted config - block ALL MCP actions
+      assert.strictEqual(result.exitCode, 1,
+        'Should block on corrupted config (G001 fail-closed)');
+      assert.match(result.stderr, /FAIL-CLOSED/i,
+        'Should show G001 fail-closed message');
     });
 
     it('should handle malformed tool input gracefully', async () => {

@@ -109,6 +109,18 @@ export const GetProtectedActionRequestArgsSchema = z.object({
   code: z.string().length(6).describe('The 6-character approval code'),
 });
 
+// Deputy-CTO protected action approval schemas (Fix 8)
+export const ApproveProtectedActionArgsSchema = z.object({
+  code: z.string().length(6).describe('The 6-character approval code from the pending request'),
+});
+
+export const DenyProtectedActionArgsSchema = z.object({
+  code: z.string().length(6).describe('The 6-character approval code to deny'),
+  reason: z.string().min(1).max(1000).describe('Reason for denying the action'),
+});
+
+export const ListPendingActionRequestsArgsSchema = z.object({});
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -131,6 +143,9 @@ export type RequestBypassArgs = z.infer<typeof RequestBypassArgsSchema>;
 export type ExecuteBypassArgs = z.infer<typeof ExecuteBypassArgsSchema>;
 export type ListProtectionsArgs = z.infer<typeof ListProtectionsArgsSchema>;
 export type GetProtectedActionRequestArgs = z.infer<typeof GetProtectedActionRequestArgsSchema>;
+export type ApproveProtectedActionArgs = z.infer<typeof ApproveProtectedActionArgsSchema>;
+export type DenyProtectedActionArgs = z.infer<typeof DenyProtectedActionArgsSchema>;
+export type ListPendingActionRequestsArgs = z.infer<typeof ListPendingActionRequestsArgsSchema>;
 
 export interface QuestionRecord {
   id: string;
@@ -326,5 +341,38 @@ export interface ProtectedActionRequest {
 export interface GetProtectedActionRequestResult {
   found: boolean;
   request?: ProtectedActionRequest;
+  message: string;
+}
+
+// Deputy-CTO protected action approval results (Fix 8)
+export interface ApproveProtectedActionResult {
+  approved: boolean;
+  code: string;
+  server?: string;
+  tool?: string;
+  message: string;
+}
+
+export interface DenyProtectedActionResult {
+  denied: boolean;
+  code: string;
+  reason: string;
+  message: string;
+}
+
+export interface PendingActionRequestItem {
+  code: string;
+  server: string;
+  tool: string;
+  args: Record<string, unknown>;
+  approval_mode: string;
+  created_at: string;
+  expires_at: string;
+  expires_in_seconds: number;
+}
+
+export interface ListPendingActionRequestsResult {
+  requests: PendingActionRequestItem[];
+  count: number;
   message: string;
 }

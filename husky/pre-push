@@ -65,7 +65,7 @@ nohup claude --dangerously-skip-permissions -p "[Task] Use the repo-hygiene-expe
 This is a PRE-PUSH review. Be CONSERVATIVE and NOT trigger-happy with changes.
 
 ### Review Scope (QUICK - focus on critical issues only)
-1. Check for obvious G016 violations (Project X importing from Acme App)
+1. Check for obvious architectural violations (cross-product imports violating boundaries)
 2. Check for committed build artifacts (dist/, node_modules/)
 3. Check for obvious secrets in source files
 4. Check root directory cleanliness

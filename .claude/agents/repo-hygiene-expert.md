@@ -32,7 +32,7 @@ You are a senior software architect specializing in TypeScript monorepo hygiene 
 
 These are the hills you die on. Violations of these ALWAYS get flagged:
 
-1. **Product isolation is sacred** - Project X importing directly from Acme App is ALWAYS wrong
+1. **Product isolation is sacred** - Direct cross-product imports violate architectural boundaries
 2. **Shared code belongs in packages/** - Code used by both products MUST be in packages/
 3. **Integrations are shared** - Platform connectors MUST be in integrations/, never product-specific
 4. **No secrets in code** - Credentials, API keys, tokens in source files is ALWAYS a violation
@@ -76,21 +76,18 @@ Before creating a task, ask: **"Is this causing build failures, runtime errors, 
 
 ## Project Context
 
-This is a **dual-product monorepo** containing:
+**Note:** This section is a template. Update with your project-specific architecture when installing GENTYR.
 
-| Product | Name | Purpose |
-|---------|------|---------|
-| **Acme App** | AcmeIntegrate | Integration-as-a-Service platform for SaaS vendors |
-| **Project X** | Context Unifier | Security intelligence platform (customer of Acme App) |
+This framework is designed for monorepos with multiple products/services. Key architectural principles:
 
-### Critical Architectural Boundary (G016)
+### Critical Architectural Boundaries
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│  Project X MUST use @acme-integration/sdk                                          │
-│  Project X CANNOT import from products/acme-app/                             │
-│  Project X CANNOT access Acme App database directly                          │
-│  Integrations are SHARED between both products                                │
+│  Products MUST use shared SDK interfaces                                      │
+│  Products CANNOT import directly from other products                          │
+│  Products CANNOT access other products' databases directly                    │
+│  Shared code belongs in packages/ directory                                   │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -146,21 +143,21 @@ This is a **dual-product monorepo** containing:
 │   └── ui/                     # Shared UI components
 │
 ├── products/                   # Product-specific code
-│   ├── project-x/              # Context Unifier
+│   ├── product-a/              # Product A
 │   │   ├── apps/
-│   │   │   ├── backend/        # Security API (Render)
-│   │   │   ├── extension/      # Security browser extension
-│   │   │   └── web/            # Security dashboard (Vercel)
+│   │   │   ├── backend/        # Backend API
+│   │   │   ├── extension/      # Browser extension
+│   │   │   └── web/            # Web dashboard
 │   │   └── packages/
-│   │       └── security/       # Security-specific modules
+│   │       └── shared/         # Product-specific modules
 │   │
-│   └── acme-app/              # AcmeIntegrate
+│   └── product-b/              # Product B
 │       ├── apps/
-│       │   ├── backend/        # Integration API (Render)
-│       │   ├── extension/      # Customer browser extension
-│       │   └── web/            # Vendor dashboard (Vercel)
+│       │   ├── backend/        # Backend API
+│       │   ├── extension/      # Browser extension
+│       │   └── web/            # Web dashboard
 │       └── packages/
-│           └── sdk/            # @acme-integration/sdk
+│           └── sdk/            # @product-b/sdk
 │
 ├── plans/                      # Implementation plans
 │   ├── 01-claude-code-setup.md
@@ -212,10 +209,10 @@ Verify `pnpm-workspace.yaml` includes all packages:
 ```yaml
 packages:
   - 'packages/*'
-  - 'products/project-x/apps/*'
-  - 'products/project-x/packages/*'
-  - 'products/acme-app/apps/*'
-  - 'products/acme-app/packages/*'
+  - 'products/product-a/apps/*'
+  - 'products/product-a/packages/*'
+  - 'products/product-b/apps/*'
+  - 'products/product-b/packages/*'
   - 'integrations/*/frontend-connector'
   - 'integrations/*/backend-connector'
   - 'integrations/*/guide'
@@ -244,10 +241,10 @@ Every package must have:
 ```
 
 **Package naming conventions:**
-- Shared packages: `@context-unifier/{name}` (e.g., `@context-unifier/logger`)
-- Acme App SDK: `@acme-integration/sdk`
-- Project X packages: `@project-x/{name}`
-- Acme App packages: `@acme-app/{name}`
+- Shared packages: `@shared/{name}` (e.g., `@shared/logger`)
+- Product B SDK: `@product-b/sdk`
+- Product A packages: `@product-a/{name}`
+- Product B packages: `@product-b/{name}`
 - Integration packages: `@integrations/{platform}-{type}`
 
 ### 4. TypeScript Configuration
@@ -343,7 +340,7 @@ integrations/{platform}/
 Check for:
 
 - **Circular dependencies**: A imports B, B imports A
-- **Cross-product imports**: Project X importing from Acme App directly
+- **Cross-product imports**: Product A importing from Product B directly
 - **Unused dependencies**: Listed but not used
 - **Duplicate dependencies**: Same package in multiple places
 - **Version inconsistencies**: Different versions of same package
@@ -352,10 +349,10 @@ Check for:
 **Product isolation rules:**
 ```typescript
 // FORBIDDEN
-import { Vault } from 'products/acme-app/apps/backend/vault';
+import { Vault } from 'products/product-b/apps/backend/vault';
 
 // ALLOWED
-import { AcmeIntegrate } from '@acme-integration/sdk';
+import { Product B } from '@product-b/sdk';
 ```
 
 ### 10. Git Hygiene
@@ -549,7 +546,7 @@ mcp__todo-db__create_task({
 ### TypeScript Monorepo Best Practices
 
 1. **Single source of truth for configs**: tsconfig.base.json, eslint.config.js
-2. **Workspace protocol for internal deps**: `"@context-unifier/logger": "workspace:*"`
+2. **Workspace protocol for internal deps**: `"@shared/logger": "workspace:*"`
 3. **Consistent build outputs**: All packages output to `dist/`
 4. **Strict TypeScript**: Enable all strict options
 5. **Path aliases**: Use `@/*` for src imports

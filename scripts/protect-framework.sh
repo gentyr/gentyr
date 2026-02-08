@@ -66,12 +66,18 @@ else
     USE_FRAMEWORK=false
 fi
 
-# Files to protect
+# Files to protect (synced with setup.sh do_protect)
 PROTECTED_FILES=(
     "$HOOKS_DIR/pre-commit-review.js"
     "$HOOKS_DIR/bypass-approval-hook.js"
     "$HOOKS_DIR/block-no-verify.js"
+    "$HOOKS_DIR/protected-action-gate.js"
+    "$HOOKS_DIR/protected-action-approval-hook.js"
+    "$HOOKS_DIR/credential-file-guard.js"
+    "$HOOKS_DIR/protected-actions.json"
     "$PROJECT_DIR/.claude/settings.json"
+    "$PROJECT_DIR/.claude/protection-key"
+    "$PROJECT_DIR/.mcp.json"
     "$PROJECT_DIR/eslint.config.js"
     "$PROJECT_DIR/.husky/pre-commit"
     "$PROJECT_DIR/package.json"

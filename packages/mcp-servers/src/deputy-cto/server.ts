@@ -22,8 +22,10 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { randomUUID } from 'crypto';
+import * as crypto from 'crypto';
 import { spawn } from 'child_process';
+
+const { randomUUID } = crypto;
 import Database from 'better-sqlite3';
 import { McpServer, type ToolHandler } from '../shared/server.js';
 import {
@@ -45,6 +47,9 @@ import {
   ExecuteBypassArgsSchema,
   ListProtectionsArgsSchema,
   GetProtectedActionRequestArgsSchema,
+  ApproveProtectedActionArgsSchema,
+  DenyProtectedActionArgsSchema,
+  ListPendingActionRequestsArgsSchema,
   type AddQuestionArgs,
   type ListQuestionsArgs,
   type ReadQuestionArgs,
@@ -58,6 +63,8 @@ import {
   type RequestBypassArgs,
   type ExecuteBypassArgs,
   type GetProtectedActionRequestArgs,
+  type ApproveProtectedActionArgs,
+  type DenyProtectedActionArgs,
   type QuestionRecord,
   type QuestionListItem,
   type ListQuestionsResult,
@@ -78,6 +85,10 @@ import {
   type ExecuteBypassResult,
   type ListProtectionsResult,
   type GetProtectedActionRequestResult,
+  type ApproveProtectedActionResult,
+  type DenyProtectedActionResult,
+  type PendingActionRequestItem,
+  type ListPendingActionRequestsResult,
   type ClearedQuestionItem,
   type AutonomousModeConfig,
   type ErrorResult,
@@ -94,6 +105,7 @@ const AUTONOMOUS_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mod
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
 const PROTECTED_ACTIONS_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'protected-actions.json');
 const PROTECTED_APPROVALS_PATH = path.join(PROJECT_DIR, '.claude', 'protected-action-approvals.json');
+const PROTECTION_KEY_PATH = path.join(PROJECT_DIR, '.claude', 'protection-key');
 const COOLDOWN_MINUTES = 55;
 
 // ============================================================================
@@ -1110,6 +1122,189 @@ function getProtectedActionRequest(args: GetProtectedActionRequestArgs): GetProt
 }
 
 // ============================================================================
+// Deputy-CTO Protected Action Approval (Fix 8)
+// ============================================================================
+
+/**
+ * Load protection key for HMAC signing.
+ * @returns Base64-encoded key or null if not found
+ */
+function loadProtectionKey(): string | null {
+  try {
+    if (!fs.existsSync(PROTECTION_KEY_PATH)) {
+      return null;
+    }
+    return fs.readFileSync(PROTECTION_KEY_PATH, 'utf8').trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compute HMAC-SHA256 over pipe-delimited fields.
+ * Must match the gate hook's computeHmac function exactly.
+ */
+function computeHmac(key: string, ...fields: string[]): string {
+  const keyBuffer = Buffer.from(key, 'base64');
+  return crypto.createHmac('sha256', keyBuffer)
+    .update(fields.join('|'))
+    .digest('hex');
+}
+
+interface ApprovalsFile {
+  approvals: Record<string, ApprovalRequest & {
+    pending_hmac?: string;
+    approved_hmac?: string;
+    approval_mode?: string;
+  }>;
+}
+
+function loadApprovalsFile(): ApprovalsFile {
+  try {
+    if (!fs.existsSync(PROTECTED_APPROVALS_PATH)) {
+      return { approvals: {} };
+    }
+    return JSON.parse(fs.readFileSync(PROTECTED_APPROVALS_PATH, 'utf8'));
+  } catch {
+    return { approvals: {} };
+  }
+}
+
+function saveApprovalsFile(data: ApprovalsFile): void {
+  const dir = path.dirname(PROTECTED_APPROVALS_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(PROTECTED_APPROVALS_PATH, JSON.stringify(data, null, 2));
+}
+
+/**
+ * Approve a protected action request (deputy-cto only).
+ * Computes HMAC-signed approval that the gate hook will verify.
+ */
+function approveProtectedAction(args: ApproveProtectedActionArgs): ApproveProtectedActionResult | ErrorResult {
+  const code = args.code.toUpperCase();
+  const data = loadApprovalsFile();
+  const request = data.approvals[code];
+
+  if (!request) {
+    return { error: `No pending request found with code: ${code}` };
+  }
+
+  if (request.status === 'approved') {
+    return { error: `Request ${code} has already been approved.` };
+  }
+
+  if (Date.now() > request.expires_timestamp) {
+    delete data.approvals[code];
+    saveApprovalsFile(data);
+    return { error: `Request ${code} has expired.` };
+  }
+
+  // Only deputy-cto-approval mode requests can be approved by deputy-cto
+  if (request.approval_mode !== 'deputy-cto') {
+    return {
+      error: `Request ${code} requires CTO approval (mode: ${request.approval_mode || 'cto'}). Deputy-CTO cannot approve this action. Escalate to CTO queue.`,
+    };
+  }
+
+  // Verify pending_hmac with protection key
+  const key = loadProtectionKey();
+  if (key && request.pending_hmac) {
+    const expectedPendingHmac = computeHmac(key, code, request.server, request.tool, String(request.expires_timestamp));
+    if (request.pending_hmac !== expectedPendingHmac) {
+      // Forged request - delete it
+      delete data.approvals[code];
+      saveApprovalsFile(data);
+      return { error: `FORGERY DETECTED: Invalid pending signature for ${code}. Request deleted.` };
+    }
+  } else if (!key && request.pending_hmac) {
+    // G001 Fail-Closed: Request has HMAC but we can't verify (key missing)
+    return { error: `Cannot verify request signature for ${code} (protection key missing). Restore .claude/protection-key.` };
+  } else if (!key) {
+    // G001 Fail-Closed: No protection key at all — cannot sign approvals
+    return { error: `Protection key missing. Cannot create HMAC-signed approval. Restore .claude/protection-key.` };
+  }
+
+  // Compute approved_hmac (same algorithm as approval hook)
+  request.status = 'approved';
+  request.approved_at = new Date().toISOString();
+  request.approved_timestamp = Date.now();
+  request.approved_hmac = computeHmac(key, code, request.server, request.tool, 'approved', String(request.expires_timestamp));
+
+  saveApprovalsFile(data);
+
+  return {
+    approved: true,
+    code,
+    server: request.server,
+    tool: request.tool,
+    message: `Approved: ${request.server}.${request.tool} (code: ${code}). Agent can now retry the action.`,
+  };
+}
+
+/**
+ * Deny a protected action request (deputy-cto only).
+ * Removes the pending entry from the approvals file.
+ */
+function denyProtectedAction(args: DenyProtectedActionArgs): DenyProtectedActionResult | ErrorResult {
+  const code = args.code.toUpperCase();
+  const data = loadApprovalsFile();
+  const request = data.approvals[code];
+
+  if (!request) {
+    return { error: `No pending request found with code: ${code}` };
+  }
+
+  // Remove the request
+  const server = request.server;
+  const tool = request.tool;
+  delete data.approvals[code];
+  saveApprovalsFile(data);
+
+  return {
+    denied: true,
+    code,
+    reason: args.reason,
+    message: `Denied: ${server}.${tool} (code: ${code}). Reason: ${args.reason}`,
+  };
+}
+
+/**
+ * List all pending (non-expired) protected action requests.
+ * Used by deputy-cto during triage to discover pending requests.
+ */
+function listPendingActionRequests(): ListPendingActionRequestsResult {
+  const data = loadApprovalsFile();
+  const now = Date.now();
+  const requests: PendingActionRequestItem[] = [];
+
+  for (const [code, request] of Object.entries(data.approvals)) {
+    if (request.status !== 'pending') continue;
+    if (request.expires_timestamp < now) continue;
+
+    requests.push({
+      code,
+      server: request.server,
+      tool: request.tool,
+      args: request.args,
+      approval_mode: request.approval_mode || 'cto',
+      created_at: request.created_at,
+      expires_at: request.expires_at,
+      expires_in_seconds: Math.floor((request.expires_timestamp - now) / 1000),
+    });
+  }
+
+  return {
+    requests,
+    count: requests.length,
+    message: requests.length === 0
+      ? 'No pending protected action requests.'
+      : `Found ${requests.length} pending request(s).`,
+  };
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -1223,6 +1418,25 @@ const tools: ToolHandler[] = [
     description: 'Get details of a pending protected action request by its 6-character approval code. Use to check status before retrying a blocked action.',
     schema: GetProtectedActionRequestArgsSchema,
     handler: getProtectedActionRequest,
+  },
+  // Deputy-CTO protected action approval tools (Fix 8)
+  {
+    name: 'approve_protected_action',
+    description: 'Approve a pending deputy-cto-approval protected action. Only works for actions with approval_mode "deputy-cto". Creates HMAC-signed approval.',
+    schema: ApproveProtectedActionArgsSchema,
+    handler: approveProtectedAction,
+  },
+  {
+    name: 'deny_protected_action',
+    description: 'Deny a pending protected action request. Removes the pending entry. Include a clear reason.',
+    schema: DenyProtectedActionArgsSchema,
+    handler: denyProtectedAction,
+  },
+  {
+    name: 'list_pending_action_requests',
+    description: 'List all pending (non-expired) protected action requests. Shows code, server, tool, args, and approval mode for each.',
+    schema: ListPendingActionRequestsArgsSchema,
+    handler: listPendingActionRequests,
   },
 ];
 

@@ -42,7 +42,7 @@ You are typically spawned by the pre-commit hook to review staged changes before
 
 ### REJECT the commit if:
 - Security violations (hardcoded credentials, exposed secrets)
-- G016 violations (Project X accessing Acme App internals)
+- Architecture violations (improper cross-module dependencies, boundary violations)
 - Breaking changes without migration path
 - Obvious bugs or incomplete implementations
 - Missing required tests for critical paths

@@ -1,68 +1,79 @@
 {
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "allowedUnprotectedServers": [
+    "agent-tracker",
+    "todo-db",
+    "specs-browser",
+    "session-events",
+    "review-queue",
+    "agent-reports",
+    "cto-report",
+    "cto-reports",
+    "elastic-logs",
+    "claude-sessions"
+  ],
   "servers": {
     "supabase": {
-      "protection": "approval-only",
-      "phrase": "APPROVE DB",
-      "tools": [
-        "supabase_sql",
-        "supabase_delete",
-        "supabase_delete_user",
-        "supabase_delete_bucket",
-        "supabase_delete_file"
-      ],
-      "branches": ["main"],
-      "description": "Database mutations require CTO approval"
+      "protection": "credential-isolated",
+      "phrase": "APPROVE DATABASE",
+      "tools": ["executeSql", "deleteData", "deleteUser", "deleteFile"],
+      "credentialKeys": ["SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_URL"],
+      "description": "Production database - destructive operations require approval"
     },
     "vercel": {
-      "protection": "approval-only",
+      "protection": "credential-isolated",
       "phrase": "APPROVE DEPLOY",
-      "tools": [
-        "vercel_delete_deployment",
-        "vercel_promote_deployment",
-        "vercel_rollback",
-        "vercel_remove_domain",
-        "vercel_redeploy"
-      ],
-      "description": "Production deployments require CTO approval"
-    },
-    "cloudflare": {
-      "protection": "approval-only",
-      "phrase": "APPROVE DNS",
-      "tools": [
-        "cloudflare_delete_dns_record",
-        "cloudflare_update_dns_record"
-      ],
-      "description": "DNS changes require CTO approval"
+      "tools": ["vercel_promote_deployment", "vercel_rollback", "vercel_create_env_var", "vercel_delete_env_var"],
+      "credentialKeys": ["VERCEL_TOKEN"],
+      "description": "Production deployment - environment changes require approval"
     },
     "render": {
+      "protection": "credential-isolated",
+      "phrase": "APPROVE INFRA",
+      "tools": ["render_trigger_deploy", "render_delete_service", "render_suspend_service", "render_update_service", "render_create_env_var", "render_update_env_var", "render_delete_env_var"],
+      "credentialKeys": ["RENDER_API_KEY"],
+      "description": "Infrastructure management - service changes require approval"
+    },
+    "cloudflare": {
+      "protection": "credential-isolated",
+      "phrase": "APPROVE DNS",
+      "tools": ["create_dns_record", "update_dns_record", "delete_dns_record"],
+      "credentialKeys": ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ZONE_ID"],
+      "description": "DNS management - production changes require approval to prevent outages"
+    },
+    "github": {
       "protection": "approval-only",
-      "phrase": "APPROVE RENDER",
+      "phrase": "APPROVE GIT",
       "tools": [
-        "render_delete_service",
-        "render_trigger_deploy",
-        "render_update_service",
-        "render_suspend_service"
+        "github_merge_pull_request",
+        "github_create_secret",
+        "github_delete_secret",
+        "github_create_environment_secret",
+        "github_delete_environment_secret",
+        "github_delete_branch",
+        "github_update_branch_protection",
+        "github_delete_branch_protection"
       ],
-      "description": "Render service changes require CTO approval"
+      "description": "Production changes: merges to main, secrets management, branch protection, and branch deletion require CTO approval"
     },
     "resend": {
       "protection": "approval-only",
       "phrase": "APPROVE EMAIL",
-      "tools": [
-        "resend_delete_domain",
-        "resend_delete_api_key"
-      ],
-      "description": "Email infrastructure changes require CTO approval"
+      "tools": ["create_api_key", "delete_api_key", "delete_domain"],
+      "description": "Email service key management requires approval"
     },
-    "github": {
+    "onepassword": {
+      "protection": "credential-isolated",
+      "phrase": "APPROVE VAULT",
+      "tools": ["create_service_account"],
+      "credentialKeys": ["OP_SERVICE_ACCOUNT_TOKEN"],
+      "description": "Service account creation requires approval (security-sensitive)"
+    },
+    "deputy-cto": {
       "protection": "approval-only",
-      "phrase": "APPROVE GH",
-      "tools": [
-        "github_merge_pull_request",
-        "github_create_secret"
-      ],
-      "description": "Destructive GitHub actions require CTO approval"
+      "phrase": "APPROVE BYPASS",
+      "tools": ["request_bypass", "execute_bypass"],
+      "description": "Deputy-CTO bypass system - prevents autonomous approval overrides"
     }
   },
   "settings": {

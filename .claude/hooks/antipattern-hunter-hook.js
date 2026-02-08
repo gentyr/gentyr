@@ -116,7 +116,7 @@ You MUST report important findings to the CTO using the agent-reports MCP server
 
 **Report when you find:**
 - Security violations (G004 hardcoded credentials, G009 missing RLS, G010 missing auth)
-- Architecture boundary violations (G016 Project X/Y separation)
+- Architecture boundary violations (cross-product separation)
 - Critical spec violations requiring immediate attention
 - Patterns of repeated violations (3+ similar issues)
 

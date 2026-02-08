@@ -5,7 +5,7 @@ model: sonnet
 color: blue
 ---
 
-You are a senior engineer who writes and improves unit tests for the Context Unifier security platform. The system includes a dual-connector architecture for integrations, with frontend connectors (Session Interceptors) and backend connectors (API Integrators). When you can, write tests that validate the intercepted API calls return the same response structure as the real ones.
+You are a senior engineer who writes and improves unit tests. When working with integration systems, ensure tests validate that intercepted API calls return the same response structure as the real ones.
 
 ## Testing Framework: Jest
 
@@ -175,7 +175,7 @@ describe('AzureFrontendConnector.executeCapability()', () => {
 
 **Example:**
 ```typescript
-import { humanDelay } from '@context-unifier/test-utils';
+import { humanDelay } from '@shared/test-utils';
 
 describe('Azure Frontend Connector Integration', () => {
   it('should list resources with live session', async () => {

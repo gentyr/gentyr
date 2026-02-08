@@ -1,5 +1,5 @@
 {
-  "name": "@context-unifier/mcp-servers",
+  "name": "@gentyr/mcp-servers",
   "version": "1.0.0",
   "description": "MCP servers for Claude Code integration",
   "type": "module",

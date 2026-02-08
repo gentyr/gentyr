@@ -18,11 +18,12 @@
  *
  * SECURITY: This file should be root-owned via protect-framework.sh
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -31,6 +32,39 @@ const __dirname = path.dirname(__filename);
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
 const PROTECTED_ACTIONS_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'protected-actions.json');
 const APPROVALS_PATH = path.join(PROJECT_DIR, '.claude', 'protected-action-approvals.json');
+const PROTECTION_KEY_PATH = path.join(PROJECT_DIR, '.claude', 'protection-key');
+
+// ============================================================================
+// HMAC Signing (Fix 2: Anti-Forgery)
+// ============================================================================
+
+/**
+ * Load the protection key for HMAC signing.
+ * @returns {string|null} Base64-encoded key or null
+ */
+function loadProtectionKey() {
+  try {
+    if (!fs.existsSync(PROTECTION_KEY_PATH)) {
+      return null;
+    }
+    return fs.readFileSync(PROTECTION_KEY_PATH, 'utf8').trim();
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Compute HMAC-SHA256 over pipe-delimited fields.
+ * @param {string} key - Base64-encoded key
+ * @param {...string} fields - Fields to include in HMAC
+ * @returns {string} Hex-encoded HMAC
+ */
+function computeHmac(key, ...fields) {
+  const keyBuffer = Buffer.from(key, 'base64');
+  return crypto.createHmac('sha256', keyBuffer)
+    .update(fields.join('|'))
+    .digest('hex');
+}
 
 // Pattern to match: APPROVE <PHRASE> <CODE>
 // PHRASE can be one or more words (e.g., "PROD", "PROD DB", "PAYMENT")
@@ -136,7 +170,7 @@ function saveApprovals(approvals) {
 }
 
 /**
- * Validate and approve a request
+ * Validate and approve a request with HMAC verification (Fix 2).
  * @param {string} phrase - The approval phrase (e.g., "PROD")
  * @param {string} code - The 6-character code
  * @returns {object} Validation result
@@ -161,6 +195,23 @@ function validateAndApprove(phrase, code) {
     return { valid: false, reason: 'Approval code has expired' };
   }
 
+  // HMAC verification (Fix 2): Verify the pending request was created by the gate hook
+  const key = loadProtectionKey();
+  if (key && request.pending_hmac) {
+    const expectedPendingHmac = computeHmac(key, normalizedCode, request.server, request.tool, String(request.expires_timestamp));
+    if (request.pending_hmac !== expectedPendingHmac) {
+      // Forged pending request — delete and reject
+      console.error(`[protected-action-approval] FORGERY DETECTED: Invalid pending_hmac for ${normalizedCode}. Deleting.`);
+      delete approvals.approvals[normalizedCode];
+      saveApprovals(approvals);
+      return { valid: false, reason: 'FORGERY: Invalid request signature' };
+    }
+  } else if (!key && request.pending_hmac) {
+    // G001 Fail-Closed: Request has HMAC but we can't verify (key missing)
+    console.error(`[protected-action-approval] G001 FAIL-CLOSED: Cannot verify HMAC for ${normalizedCode} (protection key missing).`);
+    return { valid: false, reason: 'Cannot verify request signature (protection key missing)' };
+  }
+
   // Extract the expected phrase from the stored full phrase (e.g., "APPROVE PROD" -> "PROD")
   const storedPhrase = request.phrase.toUpperCase();
   const expectedPhrase = storedPhrase.replace(/^APPROVE\s+/i, '');
@@ -174,10 +225,13 @@ function validateAndApprove(phrase, code) {
     };
   }
 
-  // Mark as approved
+  // Mark as approved with HMAC signature (Fix 2)
   request.status = 'approved';
   request.approved_at = new Date().toISOString();
   request.approved_timestamp = Date.now();
+  if (key) {
+    request.approved_hmac = computeHmac(key, normalizedCode, request.server, request.tool, 'approved', String(request.expires_timestamp));
+  }
   saveApprovals(approvals);
 
   return {

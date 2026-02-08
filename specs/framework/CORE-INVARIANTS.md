@@ -150,7 +150,7 @@ try {
 The framework is designed to be portable across projects. Project-specific code belongs in the host repository.
 
 ### Prohibited in Framework
-- References to specific project names (e.g., "Context Unifier", "AcmeIntegrate")
+- References to specific project names from your private codebase
 - Hardcoded API endpoints or credentials
 - Project-specific file paths
 - Business logic specific to one project

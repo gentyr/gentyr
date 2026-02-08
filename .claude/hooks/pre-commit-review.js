@@ -208,7 +208,7 @@ ${stagedInfo.diff}
 
 1. Review the changes for:
    - Security issues (hardcoded credentials, exposed secrets) - CRITICAL
-   - G016 violations (Project X accessing Acme App internals) - CRITICAL
+   - Architectural violations (cross-product boundary violations) - CRITICAL
    - Breaking changes without documentation - IMPORTANT
    - Code quality issues - NOTE for later
 
