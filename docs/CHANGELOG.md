@@ -1,5 +1,33 @@
 # GENTYR Framework Changelog
 
+## 2026-02-15 - MCP Server Thread-Safety Improvements
+
+### Fixed
+
+**Feedback System MCP Server Refactoring:**
+
+1. **Thread-safety in McpServer base class**
+   - Eliminated instance-level mutable state (`_captureMode`, `_capturedResponse`)
+   - Refactored `handleRequest()` and `handleToolCall()` to return responses instead of using side-effect methods
+   - Replaced `sendResponse`/`sendSuccess`/`sendError` with pure `createSuccessResponse`/`createErrorResponse`/`writeResponse`
+   - Updated all 68 tests across server.test.ts and audited-server.test.ts
+
+2. **Resource cleanup in factories**
+   - Added `process.on('exit')` DB cleanup handler in `createUserFeedbackServer` factory
+   - Removed signal handler leaks from `createFeedbackReporterServer` and `createPlaywrightFeedbackServer`
+   - Moved SIGINT/SIGTERM handlers to auto-start guards only
+
+3. **Verification**
+   - TypeScript build: clean
+   - Unit tests: 529 passed (16 files)
+   - Integration tests: 21 passed (2 files)
+   - Zero regressions
+
+**Project Organization:**
+- Moved Executive.md, STUBBED-PROBLEM.md, and TESTING.md from root to `/docs`
+- Updated README.md reference to docs/TESTING.md
+- Root directory now contains only essential files (README, CLAUDE, LICENSE, package files, version.json, and CLAUDE.md.gentyr-section template)
+
 ## 2026-02-15 - AI User Feedback System
 
 ### Added

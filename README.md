@@ -720,4 +720,4 @@ sudo scripts/setup.sh --path /path/to/project --protect-only
 
 MIT
 
-See [TESTING.md](./TESTING.md) for the comprehensive end-to-end test plan. This file is copied into each project's `.claude/TESTING.md` during installation.
+See [TESTING.md](./docs/TESTING.md) for the comprehensive end-to-end test plan.
