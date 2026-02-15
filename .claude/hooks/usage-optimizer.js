@@ -32,6 +32,9 @@ const MIN_FACTOR = 0.5;
 const MAX_CHANGE_PER_CYCLE = 0.10; // ±10% per cycle
 const SNAPSHOT_RETENTION_DAYS = 7;
 const MIN_SNAPSHOTS_FOR_TRAJECTORY = 3;
+const MIN_EFFECTIVE_MINUTES = 2; // Floor: no cooldown can go below 2 minutes
+const SINGLE_KEY_WARNING_THRESHOLD = 0.80; // Warn when any key exceeds 80%
+const RESET_BOUNDARY_DROP_THRESHOLD = 0.30; // Detect reset when 5h drops >30pp
 
 /**
  * Main entry point - run the usage optimizer.
@@ -219,6 +222,23 @@ function calculateAndAdjust(log) {
     return false;
   }
 
+  // Reset-boundary detection: if 5h utilization dropped >30pp between consecutive
+  // recent snapshots, a window reset just happened. Skip this cycle to avoid
+  // the stale rate causing the factor to ramp up blindly.
+  if (data.snapshots.length >= 2) {
+    const prev = data.snapshots[data.snapshots.length - 2];
+    const curr = data.snapshots[data.snapshots.length - 1];
+    const prevAgg = calculateAggregate(prev, prev, 1); // just for current values
+    const currAgg = calculateAggregate(curr, curr, 1);
+    if (prevAgg && currAgg) {
+      const drop5h = prevAgg.current5h - currAgg.current5h;
+      if (drop5h >= RESET_BOUNDARY_DROP_THRESHOLD) {
+        log(`Usage optimizer: Reset boundary detected (5h dropped ${Math.round(drop5h * 100)}pp). Skipping adjustment cycle.`);
+        return false;
+      }
+    }
+  }
+
   // Get the most relevant metrics (aggregate across keys)
   const latest = data.snapshots[data.snapshots.length - 1];
   const earliest = data.snapshots[Math.max(0, data.snapshots.length - 30)]; // Use up to last 30 snapshots
@@ -229,8 +249,8 @@ function calculateAndAdjust(log) {
     return false;
   }
 
-  // Calculate aggregate metrics across all keys
-  const aggregate = calculateAggregate(latest, earliest, hoursBetween);
+  // Calculate aggregate metrics across all keys (with EMA from all snapshots)
+  const aggregate = calculateAggregate(latest, earliest, hoursBetween, data.snapshots);
   if (!aggregate) {
     log('Usage optimizer: Could not calculate aggregate metrics.');
     return false;
@@ -257,15 +277,34 @@ function calculateAndAdjust(log) {
   const currentRate = constraining === '5h' ? aggregate.rate5h : aggregate.rate7d;
   const hoursUntilReset = constraining === '5h' ? aggregate.hoursUntil5hReset : aggregate.hoursUntil7dReset;
 
+  // Per-key warnings: flag any key exceeding the warning threshold
+  if (aggregate.perKeyUtilization) {
+    for (const [keyId, util] of Object.entries(aggregate.perKeyUtilization)) {
+      if (util['5h'] >= SINGLE_KEY_WARNING_THRESHOLD) {
+        log(`Usage optimizer WARNING: Key ${keyId} at ${Math.round(util['5h'] * 100)}% 5h utilization`);
+      }
+      if (util['7d'] >= SINGLE_KEY_WARNING_THRESHOLD) {
+        log(`Usage optimizer WARNING: Key ${keyId} at ${Math.round(util['7d'] * 100)}% 7d utilization`);
+      }
+    }
+  }
+
+  // Bias currentUsage upward if any single key is near exhaustion
+  let effectiveUsage = currentUsage;
+  const maxKeyUsage = constraining === '5h' ? aggregate.maxKey5h : aggregate.maxKey7d;
+  if (maxKeyUsage >= SINGLE_KEY_WARNING_THRESHOLD) {
+    effectiveUsage = Math.max(effectiveUsage, maxKeyUsage * 0.8);
+  }
+
   // Edge case: already at or above target
-  if (currentUsage >= TARGET_UTILIZATION) {
+  if (effectiveUsage >= TARGET_UTILIZATION) {
     // Never speed up if already near cap - clamp factor to <= 1.0
     const newFactor = Math.min(currentFactor, 1.0);
     if (newFactor !== currentFactor) {
-      applyFactor(config, newFactor, constraining, projectedAtReset, log);
+      applyFactor(config, newFactor, constraining, projectedAtReset, log, hoursUntilReset);
       return true;
     }
-    log(`Usage optimizer: Already at ${Math.round(currentUsage * 100)}% usage. Holding steady.`);
+    log(`Usage optimizer: Already at ${Math.round(effectiveUsage * 100)}% usage. Holding steady. Reset in ${hoursUntilReset.toFixed(1)}h.`);
     return false;
   }
 
@@ -274,14 +313,14 @@ function calculateAndAdjust(log) {
     // Conservatively speed up toward 2.0
     const newFactor = Math.min(currentFactor * 1.05, MAX_FACTOR);
     if (Math.abs(newFactor - currentFactor) > 0.001) {
-      applyFactor(config, newFactor, constraining, projectedAtReset, log);
+      applyFactor(config, newFactor, constraining, projectedAtReset, log, hoursUntilReset);
       return true;
     }
     return false;
   }
 
   // Normal case: calculate desired rate to hit target at reset
-  const desiredRate = (TARGET_UTILIZATION - currentUsage) / hoursUntilReset;
+  const desiredRate = (TARGET_UTILIZATION - effectiveUsage) / hoursUntilReset;
   const rawRatio = desiredRate / currentRate;
 
   // Conservative bounds: max ±10% per cycle
@@ -293,34 +332,80 @@ function calculateAndAdjust(log) {
 
   // Only apply if meaningful change
   if (Math.abs(newFactor - currentFactor) < 0.01) {
-    log(`Usage optimizer: Factor unchanged (${currentFactor.toFixed(2)}). On track for ${Math.round(projectedAtReset * 100)}% at reset.`);
+    log(`Usage optimizer: Factor unchanged (${currentFactor.toFixed(2)}). On track for ${Math.round(projectedAtReset * 100)}% at reset. Reset in ${hoursUntilReset.toFixed(1)}h.`);
     return false;
   }
 
-  applyFactor(config, newFactor, constraining, projectedAtReset, log);
+  applyFactor(config, newFactor, constraining, projectedAtReset, log, hoursUntilReset);
   return true;
 }
 
 /**
- * Calculate aggregate metrics across all keys in a snapshot pair.
- * Only compares keys present in BOTH snapshots to avoid skewed rates.
+ * Calculate EMA-smoothed rate from an array of snapshots.
+ * Uses exponential moving average of per-interval deltas for smoother estimation.
+ *
+ * @param {Array} snapshots - Array of raw snapshots (must have .ts and .keys)
+ * @param {'5h'|'7d'} metricKey - Which metric to compute rate for
+ * @param {number} [alpha=0.3] - EMA smoothing factor (higher = more weight on recent)
+ * @returns {number} Smoothed rate per hour
  */
-function calculateAggregate(latest, earliest, hoursBetween) {
+function calculateEmaRate(snapshots, metricKey, alpha = 0.3) {
+  if (snapshots.length < 2) return 0;
+
+  let emaRate = null;
+
+  for (let i = 1; i < snapshots.length; i++) {
+    const prev = snapshots[i - 1];
+    const curr = snapshots[i];
+    const hoursDelta = (curr.ts - prev.ts) / (1000 * 60 * 60);
+    if (hoursDelta < 0.01) continue; // Skip near-zero intervals
+
+    // Average across common keys for this pair
+    const commonKeys = Object.keys(curr.keys).filter(k => k in prev.keys);
+    if (commonKeys.length === 0) continue;
+
+    let sumCurr = 0, sumPrev = 0;
+    for (const k of commonKeys) {
+      sumCurr += curr.keys[k][metricKey] ?? 0;
+      sumPrev += prev.keys[k][metricKey] ?? 0;
+    }
+    const avgCurr = sumCurr / commonKeys.length;
+    const avgPrev = sumPrev / commonKeys.length;
+    const intervalRate = (avgCurr - avgPrev) / hoursDelta;
+
+    if (emaRate === null) {
+      emaRate = intervalRate;
+    } else {
+      emaRate = alpha * intervalRate + (1 - alpha) * emaRate;
+    }
+  }
+
+  return emaRate ?? 0;
+}
+
+/**
+ * Calculate aggregate metrics across all keys in a snapshot pair.
+ * Uses EMA-smoothed rates from recent snapshots for stability.
+ * Also tracks per-key utilization and max values across keys.
+ */
+function calculateAggregate(latest, earliest, hoursBetween, allSnapshots) {
   const latestEntries = Object.entries(latest.keys);
   if (latestEntries.length === 0) return null;
 
-  // Find common keys between latest and earliest snapshots
-  const commonKeyIds = latestEntries
-    .map(([id]) => id)
-    .filter(id => id in earliest.keys);
-
-  // Use common keys for rate calculation, all latest keys for current state
+  // Use all latest keys for current state + per-key tracking
   let sum5h = 0, sum7d = 0;
+  let maxKey5h = 0, maxKey7d = 0;
   let resetAt5h = null, resetAt7d = null;
+  const perKeyUtilization = {};
 
-  for (const [, k] of latestEntries) {
-    sum5h += k['5h'] ?? 0;
-    sum7d += k['7d'] ?? 0;
+  for (const [id, k] of latestEntries) {
+    const val5h = k['5h'] ?? 0;
+    const val7d = k['7d'] ?? 0;
+    sum5h += val5h;
+    sum7d += val7d;
+    maxKey5h = Math.max(maxKey5h, val5h);
+    maxKey7d = Math.max(maxKey7d, val7d);
+    perKeyUtilization[id] = { '5h': val5h, '7d': val7d };
     if (k['5h_reset']) resetAt5h = k['5h_reset'];
     if (k['7d_reset']) resetAt7d = k['7d_reset'];
   }
@@ -329,26 +414,37 @@ function calculateAggregate(latest, earliest, hoursBetween) {
   const current5h = sum5h / numKeys;
   const current7d = sum7d / numKeys;
 
-  // Calculate rate only from keys present in both snapshots
+  // Calculate rates: use EMA from recent snapshots if available, fall back to two-point slope
   let rate5h = 0, rate7d = 0;
-  if (commonKeyIds.length > 0) {
-    let latestCommon5h = 0, latestCommon7d = 0;
-    let earliestCommon5h = 0, earliestCommon7d = 0;
+  if (allSnapshots && allSnapshots.length >= 3) {
+    const recentSnapshots = allSnapshots.slice(-30);
+    rate5h = calculateEmaRate(recentSnapshots, '5h');
+    rate7d = calculateEmaRate(recentSnapshots, '7d');
+  } else {
+    // Fallback: two-point slope from common keys
+    const commonKeyIds = latestEntries
+      .map(([id]) => id)
+      .filter(id => id in earliest.keys);
 
-    for (const id of commonKeyIds) {
-      latestCommon5h += latest.keys[id]['5h'] ?? 0;
-      latestCommon7d += latest.keys[id]['7d'] ?? 0;
-      earliestCommon5h += earliest.keys[id]['5h'] ?? 0;
-      earliestCommon7d += earliest.keys[id]['7d'] ?? 0;
+    if (commonKeyIds.length > 0 && hoursBetween > 0) {
+      let latestCommon5h = 0, latestCommon7d = 0;
+      let earliestCommon5h = 0, earliestCommon7d = 0;
+
+      for (const id of commonKeyIds) {
+        latestCommon5h += latest.keys[id]['5h'] ?? 0;
+        latestCommon7d += latest.keys[id]['7d'] ?? 0;
+        earliestCommon5h += earliest.keys[id]['5h'] ?? 0;
+        earliestCommon7d += earliest.keys[id]['7d'] ?? 0;
+      }
+
+      const avg5hNow = latestCommon5h / commonKeyIds.length;
+      const avg7dNow = latestCommon7d / commonKeyIds.length;
+      const avg5hPrev = earliestCommon5h / commonKeyIds.length;
+      const avg7dPrev = earliestCommon7d / commonKeyIds.length;
+
+      rate5h = (avg5hNow - avg5hPrev) / hoursBetween;
+      rate7d = (avg7dNow - avg7dPrev) / hoursBetween;
     }
-
-    const avg5hNow = latestCommon5h / commonKeyIds.length;
-    const avg7dNow = latestCommon7d / commonKeyIds.length;
-    const avg5hPrev = earliestCommon5h / commonKeyIds.length;
-    const avg7dPrev = earliestCommon7d / commonKeyIds.length;
-
-    rate5h = (avg5hNow - avg5hPrev) / hoursBetween;
-    rate7d = (avg7dNow - avg7dPrev) / hoursBetween;
   }
 
   // Calculate hours until reset
@@ -366,21 +462,27 @@ function calculateAggregate(latest, earliest, hoursBetween) {
     hoursUntil7dReset = Math.max(0.1, (resetTime - now) / (1000 * 60 * 60));
   }
 
-  return { current5h, current7d, rate5h, rate7d, hoursUntil5hReset, hoursUntil7dReset };
+  return {
+    current5h, current7d, rate5h, rate7d,
+    hoursUntil5hReset, hoursUntil7dReset,
+    maxKey5h, maxKey7d, perKeyUtilization,
+  };
 }
 
 /**
  * Apply a new factor to the config, recalculating all effective cooldowns.
  */
-function applyFactor(config, newFactor, constraining, projectedAtReset, log) {
+function applyFactor(config, newFactor, constraining, projectedAtReset, log, hoursUntilReset) {
   const previousFactor = config.adjustment?.factor ?? 1.0;
   const defaults = config.defaults || getDefaults();
 
   // Calculate effective cooldowns: higher factor = shorter cooldowns = more activity
   const effective = {};
   for (const [key, defaultVal] of Object.entries(defaults)) {
-    effective[key] = Math.round(defaultVal / newFactor);
+    effective[key] = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultVal / newFactor));
   }
+
+  const direction = newFactor > previousFactor + 0.005 ? 'ramping up' : newFactor < previousFactor - 0.005 ? 'ramping down' : 'holding';
 
   config.effective = effective;
   config.adjustment = {
@@ -388,13 +490,16 @@ function applyFactor(config, newFactor, constraining, projectedAtReset, log) {
     last_updated: new Date().toISOString(),
     constraining_metric: constraining,
     projected_at_reset: Math.round(projectedAtReset * 1000) / 1000,
+    direction,
+    hours_until_reset: hoursUntilReset != null ? Math.round(hoursUntilReset * 10) / 10 : null,
   };
 
   const configPath = getConfigPath();
   try {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    log(`Usage optimizer: Factor ${newFactor.toFixed(3)} (was ${previousFactor.toFixed(3)}). ` +
-        `Constraining: ${constraining}. Projected at reset: ${Math.round(projectedAtReset * 100)}%.`);
+    const resetStr = hoursUntilReset != null ? ` Reset in ${hoursUntilReset.toFixed(1)}h.` : '';
+    log(`Usage optimizer: Factor ${newFactor.toFixed(3)} (was ${previousFactor.toFixed(3)}), ${direction}. ` +
+        `Constraining: ${constraining}. Projected at reset: ${Math.round(projectedAtReset * 100)}%.${resetStr}`);
   } catch (err) {
     log(`Usage optimizer: Failed to write config: ${err.message}`);
   }

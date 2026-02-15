@@ -27,7 +27,7 @@ import { spawn } from 'child_process';
 
 const { randomUUID } = crypto;
 import Database from 'better-sqlite3';
-import { McpServer, type ToolHandler } from '../shared/server.js';
+import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   AddQuestionArgsSchema,
   ListQuestionsArgsSchema,
@@ -41,6 +41,7 @@ import {
   GetPendingCountArgsSchema,
   ToggleAutonomousModeArgsSchema,
   GetAutonomousModeStatusArgsSchema,
+  RecordCtoBriefingArgsSchema,
   SearchClearedItemsArgsSchema,
   CleanupOldRecordsArgsSchema,
   RequestBypassArgsSchema,
@@ -79,6 +80,7 @@ import {
   type GetPendingCountResult,
   type ToggleAutonomousModeResult,
   type GetAutonomousModeStatusResult,
+  type RecordCtoBriefingResult,
   type SearchClearedItemsResult,
   type CleanupOldRecordsResult,
   type RequestBypassResult,
@@ -649,10 +651,10 @@ function getPendingCountTool(): GetPendingCountResult {
 function getAutonomousConfig(): AutonomousModeConfig {
   const defaults: AutonomousModeConfig = {
     enabled: false,
-    planExecutorEnabled: true,
     claudeMdRefactorEnabled: true,
     lastModified: null,
     modifiedBy: null,
+    lastCtoBriefing: null,
   };
 
   if (!fs.existsSync(AUTONOMOUS_CONFIG_PATH)) {
@@ -717,7 +719,7 @@ function toggleAutonomousMode(args: ToggleAutonomousModeArgs): ToggleAutonomousM
   return {
     enabled: args.enabled,
     message: args.enabled
-      ? `Autonomous Deputy CTO Mode ENABLED. Plan execution and CLAUDE.md refactoring will run hourly.`
+      ? `Autonomous Deputy CTO Mode ENABLED. Automations will run on their configured schedules.`
       : `Autonomous Deputy CTO Mode DISABLED. No hourly automations will run.`,
     nextRunIn,
   };
@@ -727,9 +729,23 @@ function getAutonomousModeStatus(): GetAutonomousModeStatusResult {
   const config = getAutonomousConfig();
   const nextRunIn = config.enabled ? getNextRunMinutes() : null;
 
+  // Calculate CTO activity gate status
+  let hoursSinceLastBriefing: number | null = null;
+  let ctoGateOpen = false;
+  if (config.lastCtoBriefing) {
+    const briefingTime = new Date(config.lastCtoBriefing).getTime();
+    if (!isNaN(briefingTime)) {
+      hoursSinceLastBriefing = Math.floor((Date.now() - briefingTime) / (1000 * 60 * 60));
+      ctoGateOpen = hoursSinceLastBriefing < 24;
+    }
+  }
+
   let message: string;
   if (!config.enabled) {
     message = 'Autonomous Deputy CTO Mode is DISABLED.';
+  } else if (!ctoGateOpen) {
+    const ageStr = hoursSinceLastBriefing !== null ? `${hoursSinceLastBriefing}h ago` : 'never';
+    message = `Autonomous Deputy CTO Mode is ENABLED but CTO activity gate is CLOSED (last briefing: ${ageStr}). Run /deputy-cto to reactivate.`;
   } else if (nextRunIn === null) {
     message = 'Autonomous Deputy CTO Mode is ENABLED. Status unknown (state file error).';
   } else if (nextRunIn === 0) {
@@ -740,11 +756,38 @@ function getAutonomousModeStatus(): GetAutonomousModeStatusResult {
 
   return {
     enabled: config.enabled,
-    planExecutorEnabled: config.planExecutorEnabled,
     claudeMdRefactorEnabled: config.claudeMdRefactorEnabled,
     lastModified: config.lastModified,
     nextRunIn,
+    lastCtoBriefing: config.lastCtoBriefing,
+    ctoGateOpen,
+    hoursSinceLastBriefing,
     message,
+  };
+}
+
+function recordCtoBriefing(): RecordCtoBriefingResult {
+  const config = getAutonomousConfig();
+  const now = new Date().toISOString();
+  config.lastCtoBriefing = now;
+  config.lastModified = now;
+  config.modifiedBy = 'deputy-cto';
+
+  try {
+    fs.writeFileSync(AUTONOMOUS_CONFIG_PATH, JSON.stringify(config, null, 2));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      recorded: false,
+      timestamp: now,
+      message: `Failed to record CTO briefing timestamp: ${message}`,
+    };
+  }
+
+  return {
+    recorded: true,
+    timestamp: now,
+    message: `CTO briefing activity recorded at ${now}. Automation gate refreshed for 24 hours.`,
   };
 }
 
@@ -1308,7 +1351,7 @@ function listPendingActionRequests(): ListPendingActionRequestsResult {
 // Server Setup
 // ============================================================================
 
-const tools: ToolHandler[] = [
+const tools: AnyToolHandler[] = [
   {
     name: 'add_question',
     description: 'Add a question/decision request for the CTO. Use for decisions, approvals, or escalations from reports.',
@@ -1377,9 +1420,15 @@ const tools: ToolHandler[] = [
   },
   {
     name: 'get_autonomous_mode_status',
-    description: 'Get the current status of Autonomous Deputy CTO Mode, including when next run will occur.',
+    description: 'Get the current status of Autonomous Deputy CTO Mode, including when next run will occur and CTO activity gate status.',
     schema: GetAutonomousModeStatusArgsSchema,
     handler: getAutonomousModeStatus,
+  },
+  {
+    name: 'record_cto_briefing',
+    description: 'Record that the CTO has started a briefing session. Refreshes the 24-hour automation activity gate. Must be called at the start of every /deputy-cto session.',
+    schema: RecordCtoBriefingArgsSchema,
+    handler: recordCtoBriefing,
   },
   {
     name: 'search_cleared_items',

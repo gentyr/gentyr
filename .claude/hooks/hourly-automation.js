@@ -72,10 +72,11 @@ function log(message) {
 function getConfig() {
   const defaults = {
     enabled: false,
-    planExecutorEnabled: true,
     claudeMdRefactorEnabled: true,
     lintCheckerEnabled: true,
     taskRunnerEnabled: true,
+    standaloneAntipatternHunterEnabled: true,
+    standaloneComplianceCheckerEnabled: true,
     lastModified: null,
   };
 
@@ -96,12 +97,68 @@ function getConfig() {
 }
 
 /**
+ * Check CTO activity gate.
+ * G001: Fail-closed - if lastCtoBriefing is missing or older than 24h, automation is gated.
+ *
+ * @returns {{ open: boolean, reason: string, hoursSinceLastBriefing: number | null }}
+ */
+function checkCtoActivityGate(config) {
+  const lastCtoBriefing = config.lastCtoBriefing;
+
+  if (!lastCtoBriefing) {
+    return {
+      open: false,
+      reason: 'No CTO briefing recorded. Run /deputy-cto to activate automation.',
+      hoursSinceLastBriefing: null,
+    };
+  }
+
+  try {
+    const briefingTime = new Date(lastCtoBriefing).getTime();
+    if (isNaN(briefingTime)) {
+      return {
+        open: false,
+        reason: 'CTO briefing timestamp is invalid. Run /deputy-cto to reset.',
+        hoursSinceLastBriefing: null,
+      };
+    }
+
+    const hoursSince = (Date.now() - briefingTime) / (1000 * 60 * 60);
+    if (hoursSince >= 24) {
+      return {
+        open: false,
+        reason: `CTO briefing was ${Math.floor(hoursSince)}h ago (>24h). Run /deputy-cto to reactivate.`,
+        hoursSinceLastBriefing: Math.floor(hoursSince),
+      };
+    }
+
+    return {
+      open: true,
+      reason: `CTO briefing was ${Math.floor(hoursSince)}h ago. Gate is open.`,
+      hoursSinceLastBriefing: Math.floor(hoursSince),
+    };
+  } catch (err) {
+    // G001: Parse error = fail closed
+    return {
+      open: false,
+      reason: `Failed to parse CTO briefing timestamp: ${err.message}`,
+      hoursSinceLastBriefing: null,
+    };
+  }
+}
+
+/**
  * Get state
  * G001: Fail-closed if state file is corrupted
  */
 function getState() {
   if (!fs.existsSync(STATE_FILE)) {
-    return { lastRun: 0, lastClaudeMdRefactor: 0, lastTriageCheck: 0, lastTaskRunnerCheck: 0 };
+    return {
+      lastRun: 0, lastClaudeMdRefactor: 0, lastTriageCheck: 0, lastTaskRunnerCheck: 0,
+      lastPreviewPromotionCheck: 0, lastStagingPromotionCheck: 0,
+      lastStagingHealthCheck: 0, lastProductionHealthCheck: 0,
+      lastStandaloneAntipatternHunt: 0, lastStandaloneComplianceCheck: 0,
+    };
   }
 
   try {
@@ -662,10 +719,8 @@ Report completion via mcp__agent-reports__report_to_deputy_cto with a summary of
 // =========================================================================
 
 /**
- * Query todo.db for the oldest pending task per section, excluding:
- * - Sections with existing in_progress tasks
- * - Tasks created < 2 minutes ago (chain reaction prevention)
- * Returns at most 1 task per section.
+ * Query todo.db for ALL pending tasks older than 1 hour.
+ * Each task gets its own Claude session. No section limits.
  */
 function getPendingTasksForRunner() {
   if (!Database || !fs.existsSync(TODO_DB_PATH)) {
@@ -675,32 +730,16 @@ function getPendingTasksForRunner() {
   try {
     const db = new Database(TODO_DB_PATH, { readonly: true });
     const nowTimestamp = Math.floor(Date.now() / 1000);
-    const twoMinutesAgo = nowTimestamp - 120;
+    const oneHourAgo = nowTimestamp - 3600;
 
-    // Get sections that already have in_progress tasks
-    const busySections = db.prepare(
-      "SELECT DISTINCT section FROM tasks WHERE status = 'in_progress'"
-    ).all().map(r => r.section);
-
-    // Get oldest pending task per eligible section
-    const candidates = [];
-    for (const section of Object.keys(SECTION_AGENT_MAP)) {
-      if (busySections.includes(section)) continue;
-
-      const task = db.prepare(`
-        SELECT id, section, title, description
-        FROM tasks
-        WHERE status = 'pending'
-          AND section = ?
-          AND created_timestamp <= ?
-        ORDER BY created_timestamp ASC
-        LIMIT 1
-      `).get(section, twoMinutesAgo);
-
-      if (task) {
-        candidates.push(task);
-      }
-    }
+    const candidates = db.prepare(`
+      SELECT id, section, title, description
+      FROM tasks
+      WHERE status = 'pending'
+        AND section IN (${Object.keys(SECTION_AGENT_MAP).map(() => '?').join(',')})
+        AND created_timestamp <= ?
+      ORDER BY created_timestamp ASC
+    `).all(...Object.keys(SECTION_AGENT_MAP), oneHourAgo);
 
     db.close();
     return candidates;
@@ -831,6 +870,713 @@ function spawnTaskAgent(task) {
   }
 }
 
+// =========================================================================
+// PROMOTION & HEALTH MONITOR SPAWN FUNCTIONS
+// =========================================================================
+
+/**
+ * Check if a git branch exists on the remote
+ */
+function remoteBranchExists(branch) {
+  try {
+    execSync(`git rev-parse --verify origin/${branch}`, {
+      cwd: PROJECT_DIR,
+      encoding: 'utf8',
+      timeout: 10000,
+      stdio: 'pipe',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get commits on source not yet in target
+ */
+function getNewCommits(source, target) {
+  try {
+    const result = execSync(`git log origin/${target}..origin/${source} --oneline`, {
+      cwd: PROJECT_DIR,
+      encoding: 'utf8',
+      timeout: 10000,
+      stdio: 'pipe',
+    }).trim();
+    return result ? result.split('\n') : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Get Unix timestamp of last commit on a branch
+ */
+function getLastCommitTimestamp(branch) {
+  try {
+    const result = execSync(`git log origin/${branch} -1 --format=%ct`, {
+      cwd: PROJECT_DIR,
+      encoding: 'utf8',
+      timeout: 10000,
+      stdio: 'pipe',
+    }).trim();
+    return parseInt(result, 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Check if any commit messages contain bug-fix keywords
+ */
+function hasBugFixCommits(commits) {
+  const bugFixPattern = /\b(fix|bug|hotfix|patch|critical)\b/i;
+  return commits.some(line => bugFixPattern.test(line));
+}
+
+/**
+ * Spawn Preview -> Staging promotion orchestrator
+ */
+function spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix) {
+  const commitList = newCommits.join('\n');
+
+  const prompt = `[Task][preview-promotion] You are the PREVIEW -> STAGING Promotion Pipeline orchestrator.
+
+## Mission
+
+Evaluate whether commits on the \`preview\` branch are ready to be promoted to \`staging\`.
+
+## Context
+
+**New commits on preview (not in staging):**
+\`\`\`
+${commitList}
+\`\`\`
+
+**Hours since last staging merge:** ${hoursSinceLastStagingMerge}
+**Bug-fix commits detected:** ${hasBugFix ? 'YES (24h waiting period bypassed)' : 'No'}
+
+## Process
+
+### Step 1: Code Review
+
+Spawn a code-reviewer sub-agent (Task tool, subagent_type: code-reviewer) to review the commits:
+- Check for security issues, code quality, spec violations
+- Look for disabled tests, placeholder code, hardcoded credentials
+- Verify no spec violations (G001-G019)
+
+### Step 2: Test Assessment
+
+Spawn a test-writer sub-agent (Task tool, subagent_type: test-writer) to assess test quality:
+- Check if new code has adequate test coverage
+- Verify no tests were disabled or weakened
+
+### Step 3: Evaluate Results
+
+If EITHER agent reports issues:
+- Report findings via mcp__cto-reports__report_to_cto with category "decision", priority "normal"
+- Create TODO tasks for fixes
+- Do NOT proceed with promotion
+- Output: "Promotion blocked: [reasons]"
+
+### Step 4: Deputy-CTO Decision
+
+If both agents pass, spawn a deputy-cto sub-agent (Task tool, subagent_type: deputy-cto) with:
+- The review results from both agents
+- The commit list
+- Request: Evaluate stability and decide whether to promote
+
+The deputy-cto should:
+- **If approving**: Call \`mcp__deputy-cto__spawn_implementation_task\` with this prompt:
+  \`\`\`
+  Create a PR from preview to staging and merge it after CI passes:
+  1. Run: gh pr create --base staging --head preview --title "Promote preview to staging" --body "Automated promotion. Commits: ${newCommits.length} new commits. Reviewed by code-reviewer and test-writer agents."
+  2. Wait for CI: gh pr checks <number> --watch
+  3. If CI passes: gh pr merge <number> --merge
+  4. If CI fails: Report failure via mcp__cto-reports__report_to_cto
+  \`\`\`
+- **If rejecting**: Report issues via mcp__cto-reports__report_to_cto, create TODO tasks
+
+## Timeout
+
+Complete within 25 minutes. If blocked, report and exit.
+
+## Output
+
+Summarize the promotion decision and actions taken.`;
+
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.PREVIEW_PROMOTION,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Preview -> Staging promotion pipeline',
+    prompt: prompt,
+    metadata: { commitCount: newCommits.length, hoursSinceLastStagingMerge, hasBugFix },
+  });
+
+  try {
+    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+    const claude = spawn('claude', [
+      '--dangerously-skip-permissions',
+      '--mcp-config', mcpConfig,
+      '--output-format', 'json',
+      '-p',
+      prompt,
+    ], {
+      cwd: PROJECT_DIR,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        CLAUDE_SPAWNED_SESSION: 'true',
+        CLAUDE_AGENT_ID: agentId,
+      },
+    });
+
+    return new Promise((resolve, reject) => {
+      claude.on('close', (code) => {
+        resolve({ code, output: '(output sent to inherit stdio)' });
+      });
+      claude.on('error', (err) => reject(err));
+      setTimeout(() => {
+        claude.kill();
+        reject(new Error('Preview promotion timed out after 30 minutes'));
+      }, 30 * 60 * 1000);
+    });
+  } catch (err) {
+    log(`Preview promotion spawn error: ${err.message}`);
+    return Promise.resolve({ code: 1, output: err.message });
+  }
+}
+
+/**
+ * Spawn Staging -> Production promotion orchestrator
+ */
+function spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit) {
+  const commitList = newCommits.join('\n');
+
+  const prompt = `[Task][staging-promotion] You are the STAGING -> PRODUCTION Promotion Pipeline orchestrator.
+
+## Mission
+
+Evaluate whether commits on the \`staging\` branch are ready to be promoted to \`main\` (production).
+
+## Context
+
+**New commits on staging (not in main):**
+\`\`\`
+${commitList}
+\`\`\`
+
+**Hours since last staging commit:** ${hoursSinceLastStagingCommit} (must be >= 24 for stability)
+
+## Process
+
+### Step 1: Code Review
+
+Spawn a code-reviewer sub-agent (Task tool, subagent_type: code-reviewer) to review all staging commits:
+- Full security audit
+- Spec compliance check (G001-G019)
+- No placeholder code, disabled tests, or hardcoded credentials
+
+### Step 2: Test Assessment
+
+Spawn a test-writer sub-agent (Task tool, subagent_type: test-writer) to assess:
+- Test coverage meets thresholds (80% global, 100% critical paths)
+- No tests disabled or weakened
+
+### Step 3: Evaluate Results
+
+If EITHER agent reports issues:
+- Report via mcp__cto-reports__report_to_cto with priority "high"
+- Create TODO tasks for fixes
+- Do NOT proceed with promotion
+- Output: "Production promotion blocked: [reasons]"
+
+### Step 4: Deputy-CTO Decision
+
+If both agents pass, spawn a deputy-cto sub-agent (Task tool, subagent_type: deputy-cto) with:
+- The review results from both agents
+- The commit list
+- Request: Create the production release PR and CTO decision task
+
+The deputy-cto should:
+1. Call \`mcp__deputy-cto__spawn_implementation_task\` to create the PR:
+   \`\`\`
+   gh pr create --base main --head staging --title "Production Release: ${newCommits.length} commits" --body "Automated production promotion. Staging stable for ${hoursSinceLastStagingCommit}h. Reviewed by code-reviewer and test-writer."
+   \`\`\`
+
+2. Call \`mcp__deputy-cto__add_question\` with:
+   - type: "approval"
+   - title: "Production Release: Merge staging -> main (${newCommits.length} commits)"
+   - description: Include review results, commit list, stability assessment
+   - suggested_options: ["Approve merge to production", "Reject - needs more work"]
+
+3. Report via mcp__cto-reports__report_to_cto
+
+**CTO approval**: When CTO approves via /deputy-cto, deputy-cto calls spawn_implementation_task to merge:
+\`gh pr merge <number> --merge\`
+
+## Timeout
+
+Complete within 25 minutes. If blocked, report and exit.
+
+## Output
+
+Summarize the promotion decision and actions taken.`;
+
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.STAGING_PROMOTION,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Staging -> Production promotion pipeline',
+    prompt: prompt,
+    metadata: { commitCount: newCommits.length, hoursSinceLastStagingCommit },
+  });
+
+  try {
+    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+    const claude = spawn('claude', [
+      '--dangerously-skip-permissions',
+      '--mcp-config', mcpConfig,
+      '--output-format', 'json',
+      '-p',
+      prompt,
+    ], {
+      cwd: PROJECT_DIR,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        CLAUDE_SPAWNED_SESSION: 'true',
+        CLAUDE_AGENT_ID: agentId,
+      },
+    });
+
+    return new Promise((resolve, reject) => {
+      claude.on('close', (code) => {
+        resolve({ code, output: '(output sent to inherit stdio)' });
+      });
+      claude.on('error', (err) => reject(err));
+      setTimeout(() => {
+        claude.kill();
+        reject(new Error('Staging promotion timed out after 30 minutes'));
+      }, 30 * 60 * 1000);
+    });
+  } catch (err) {
+    log(`Staging promotion spawn error: ${err.message}`);
+    return Promise.resolve({ code: 1, output: err.message });
+  }
+}
+
+/**
+ * Spawn Staging Health Monitor (fire-and-forget)
+ */
+function spawnStagingHealthMonitor() {
+  const prompt = `[Task][staging-health-monitor] You are the STAGING Health Monitor.
+
+## Mission
+
+Check all deployment infrastructure for staging environment health. Query services, check for errors, and report any issues found.
+
+## Process
+
+### Step 1: Read Service Configuration
+
+Read \`.claude/config/services.json\` to get Render staging service ID and Vercel project ID.
+If the file doesn't exist, report this as an issue and exit.
+
+### Step 2: Check Render Staging
+
+- Use \`mcp__render__render_get_service\` with the staging service ID for service status
+- Use \`mcp__render__render_list_deploys\` to check for recent deploy failures
+- Flag: service down, deploy failures, stuck deploys
+
+### Step 3: Check Vercel Staging
+
+- Use \`mcp__vercel__vercel_list_deployments\` for recent staging deployments
+- Flag: build failures, deployment errors
+
+### Step 4: Query Elasticsearch for Errors
+
+- Use \`mcp__elastic-logs__query_logs\` with query: \`level:error\`, from: \`now-3h\`, to: \`now\`
+- Use \`mcp__elastic-logs__get_log_stats\` grouped by service for error counts
+- Flag: error spikes, new error types, critical errors
+
+### Step 5: Compile Health Report
+
+**If issues found:**
+1. Call \`mcp__cto-reports__report_to_cto\` with:
+   - reporting_agent: "staging-health-monitor"
+   - title: "Staging Health Issue: [summary]"
+   - summary: Full findings
+   - category: "performance" or "blocker" based on severity
+   - priority: "normal" or "high" based on severity
+
+2. For actionable issues, call \`mcp__deputy-cto__spawn_implementation_task\` with:
+   - Detailed prompt describing the issue and how to fix it
+   - Include all relevant context (error messages, service IDs, etc.)
+
+**If all clear:**
+- Log "Staging environment healthy" and exit
+
+## Timeout
+
+Complete within 10 minutes. This is a read-only monitoring check.`;
+
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.STAGING_HEALTH_MONITOR,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Staging health monitor check',
+    prompt: prompt,
+    metadata: {},
+  });
+
+  try {
+    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+    const claude = spawn('claude', [
+      '--dangerously-skip-permissions',
+      '--mcp-config', mcpConfig,
+      '--output-format', 'json',
+      '-p',
+      prompt,
+    ], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: PROJECT_DIR,
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        CLAUDE_SPAWNED_SESSION: 'true',
+        CLAUDE_AGENT_ID: agentId,
+      },
+    });
+
+    claude.unref();
+    return true;
+  } catch (err) {
+    log(`Staging health monitor spawn error: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Spawn Production Health Monitor (fire-and-forget)
+ */
+function spawnProductionHealthMonitor() {
+  const prompt = `[Task][production-health-monitor] You are the PRODUCTION Health Monitor.
+
+## Mission
+
+Check all deployment infrastructure for production environment health. This is CRITICAL -- production issues must be escalated to both deputy-CTO and CTO.
+
+## Process
+
+### Step 1: Read Service Configuration
+
+Read \`.claude/config/services.json\` to get Render production service ID and Vercel project ID.
+If the file doesn't exist, report this as an issue and exit.
+
+### Step 2: Check Render Production
+
+- Use \`mcp__render__render_get_service\` with the production service ID for service status
+- Use \`mcp__render__render_list_deploys\` to check for recent deploy failures
+- Flag: service down, deploy failures, stuck deploys
+
+### Step 3: Check Vercel Production
+
+- Use \`mcp__vercel__vercel_list_deployments\` for recent production deployments
+- Flag: build failures, deployment errors
+
+### Step 4: Query Elasticsearch for Errors
+
+- Use \`mcp__elastic-logs__query_logs\` with query: \`level:error\`, from: \`now-1h\`, to: \`now\`
+- Use \`mcp__elastic-logs__get_log_stats\` grouped by service for error counts
+- Flag: error spikes, new error types, critical errors
+
+### Step 5: Compile Health Report
+
+**If issues found:**
+1. Call \`mcp__cto-reports__report_to_cto\` with:
+   - reporting_agent: "production-health-monitor"
+   - title: "PRODUCTION Health Issue: [summary]"
+   - summary: Full findings
+   - category: "performance" or "blocker" based on severity
+   - priority: "high" or "critical" based on severity
+
+2. Call \`mcp__deputy-cto__add_question\` with:
+   - type: "escalation"
+   - title: "Production Health Issue: [summary]"
+   - description: Full health report findings
+   - This creates a CTO decision task visible in /deputy-cto
+
+3. For actionable issues, call \`mcp__deputy-cto__spawn_implementation_task\` with:
+   - Detailed prompt describing the issue and how to fix it
+   - Include all relevant context (error messages, service IDs, etc.)
+
+**If all clear:**
+- Log "Production environment healthy" and exit
+
+## Timeout
+
+Complete within 10 minutes. This is a read-only monitoring check.`;
+
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.PRODUCTION_HEALTH_MONITOR,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Production health monitor check',
+    prompt: prompt,
+    metadata: {},
+  });
+
+  try {
+    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+    const claude = spawn('claude', [
+      '--dangerously-skip-permissions',
+      '--mcp-config', mcpConfig,
+      '--output-format', 'json',
+      '-p',
+      prompt,
+    ], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: PROJECT_DIR,
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        CLAUDE_SPAWNED_SESSION: 'true',
+        CLAUDE_AGENT_ID: agentId,
+      },
+    });
+
+    claude.unref();
+    return true;
+  } catch (err) {
+    log(`Production health monitor spawn error: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Get random spec file for standalone compliance checker
+ * Reads specs/global/*.md and specs/local/*.md, returns a random one
+ */
+function getRandomSpec() {
+  const specsDir = path.join(PROJECT_DIR, 'specs');
+  const specs = [];
+
+  for (const subdir of ['global', 'local']) {
+    const dir = path.join(specsDir, subdir);
+    if (fs.existsSync(dir)) {
+      const files = fs.readdirSync(dir).filter(f => f.endsWith('.md'));
+      for (const f of files) {
+        specs.push({ path: `specs/${subdir}/${f}`, id: f.replace('.md', '') });
+      }
+    }
+  }
+
+  if (specs.length === 0) return null;
+  return specs[Math.floor(Math.random() * specs.length)];
+}
+
+/**
+ * Spawn Standalone Antipattern Hunter (fire-and-forget)
+ * Scans entire codebase for spec violations, independent of git hooks
+ */
+function spawnStandaloneAntipatternHunter() {
+  const prompt = `[Task][standalone-antipattern-hunter] STANDALONE ANTIPATTERN HUNT - Periodic repo-wide scan for spec violations.
+
+You are a STANDALONE antipattern hunter running on a 3-hour schedule. Your job is to systematically scan
+the ENTIRE codebase looking for spec violations and technical debt.
+
+## Your Focus Areas
+- Hunt across ALL directories: src/, packages/, products/, integrations/
+- Look for systemic patterns of violations
+- Prioritize high-severity specs (G001, G004, G009, G010, G016)
+
+## Workflow
+
+### Step 1: Load Specifications
+\`\`\`javascript
+mcp__specs-browser__list_specs({})
+mcp__specs-browser__get_spec({ spec_id: "G001" })  // No graceful fallbacks
+mcp__specs-browser__get_spec({ spec_id: "G004" })  // No hardcoded credentials
+mcp__specs-browser__get_spec({ spec_id: "G009" })  // RLS policies required
+mcp__specs-browser__get_spec({ spec_id: "G010" })  // Session auth validation
+mcp__specs-browser__get_spec({ spec_id: "G016" })  // Integration boundary
+\`\`\`
+
+### Step 2: Hunt for Violations
+Use Grep to systematically scan for violation patterns:
+- G001: \`|| null\`, \`|| undefined\`, \`?? 0\`, \`|| []\`, \`|| {}\`
+- G002: \`TODO\`, \`FIXME\`, \`throw new Error('Not implemented')\`
+- G004: Hardcoded API keys, credentials, secrets
+- G011: \`MOCK_MODE\`, \`isSimulation\`, \`isMockMode\`
+
+### Step 3: For Each Violation
+a. Create TODO item:
+   \`\`\`javascript
+   mcp__todo-db__create_task({
+     section: "CODE-REVIEWER",
+     title: "Fix [SPEC-ID] violation in [file]",
+     description: "[Details and location]",
+     assigned_by: "STANDALONE-ANTIPATTERN-HUNTER"
+   })
+   \`\`\`
+
+### Step 4: Report Critical Issues to CTO
+Report when you find:
+- Security violations (G004 hardcoded credentials, G009 missing RLS, G010 missing auth)
+- Architecture boundary violations (cross-product separation)
+- Critical spec violations requiring immediate attention
+- Patterns of repeated violations (3+ similar issues)
+
+\`\`\`javascript
+mcp__cto-reports__report_to_cto({
+  reporting_agent: "standalone-antipattern-hunter",
+  title: "Brief title (max 200 chars)",
+  summary: "Detailed summary with file paths, line numbers, and severity (max 2000 chars)",
+  category: "security" | "architecture" | "performance" | "other",
+  priority: "low" | "normal" | "high" | "critical"
+})
+\`\`\`
+
+### Step 5: END SESSION
+After creating TODO items and CTO reports, provide a summary and END YOUR SESSION.
+Do NOT implement fixes yourself.
+
+Focus on finding SYSTEMIC issues across the codebase, not just isolated violations.`;
+
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.STANDALONE_ANTIPATTERN_HUNTER,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Standalone antipattern hunt (3h schedule)',
+    prompt: prompt,
+    metadata: {},
+  });
+
+  try {
+    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+    const claude = spawn('claude', [
+      '--dangerously-skip-permissions',
+      '--mcp-config', mcpConfig,
+      '--output-format', 'json',
+      '-p',
+      prompt,
+    ], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: PROJECT_DIR,
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        CLAUDE_SPAWNED_SESSION: 'true',
+        CLAUDE_AGENT_ID: agentId,
+      },
+    });
+
+    claude.unref();
+    return true;
+  } catch (err) {
+    log(`Standalone antipattern hunter spawn error: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Spawn Standalone Compliance Checker (fire-and-forget)
+ * Picks a random spec and scans the codebase for violations of that specific spec
+ */
+function spawnStandaloneComplianceChecker(spec) {
+  const prompt = `[Task][standalone-compliance-checker] STANDALONE COMPLIANCE CHECK - Audit codebase against spec: ${spec.id}
+
+You are a STANDALONE compliance checker running on a 1-hour schedule. You have been assigned ONE specific spec to audit the codebase against.
+
+## Your Assigned Spec
+
+**Spec ID:** ${spec.id}
+**Spec Path:** ${spec.path}
+
+## Workflow
+
+### Step 1: Load Your Assigned Spec
+\`\`\`javascript
+mcp__specs-browser__get_spec({ spec_id: "${spec.id}" })
+\`\`\`
+
+Read the spec thoroughly. Understand every requirement, constraint, and rule it defines.
+
+### Step 2: Systematically Scan the Codebase
+Based on the spec requirements:
+1. Use Grep to search for patterns that violate the spec
+2. Use Glob to find files that should comply with the spec
+3. Read relevant files to check for compliance
+4. Focus on areas most likely to have violations
+
+### Step 3: For Each Violation Found
+Create a TODO item:
+\`\`\`javascript
+mcp__todo-db__create_task({
+  section: "CODE-REVIEWER",
+  title: "Fix ${spec.id} violation in [file]:[line]",
+  description: "[Violation details and what the spec requires]",
+  assigned_by: "STANDALONE-COMPLIANCE-CHECKER"
+})
+\`\`\`
+
+### Step 4: Report Critical Issues
+If you find critical violations (security, data exposure, architectural), report to CTO:
+\`\`\`javascript
+mcp__cto-reports__report_to_cto({
+  reporting_agent: "standalone-compliance-checker",
+  title: "${spec.id} compliance issue: [summary]",
+  summary: "Detailed findings with file paths and line numbers",
+  category: "security" | "architecture" | "other",
+  priority: "normal" | "high" | "critical"
+})
+\`\`\`
+
+### Step 5: END SESSION
+Provide a compliance summary:
+- Total files checked
+- Violations found (count and severity)
+- Overall compliance status for ${spec.id}
+
+Do NOT implement fixes yourself. Only report and create TODOs.`;
+
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.STANDALONE_COMPLIANCE_CHECKER,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: `Standalone compliance check: ${spec.id}`,
+    prompt: prompt,
+    metadata: { specId: spec.id, specPath: spec.path },
+  });
+
+  try {
+    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+    const claude = spawn('claude', [
+      '--dangerously-skip-permissions',
+      '--mcp-config', mcpConfig,
+      '--output-format', 'json',
+      '-p',
+      prompt,
+    ], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: PROJECT_DIR,
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        CLAUDE_SPAWNED_SESSION: 'true',
+        CLAUDE_AGENT_ID: agentId,
+      },
+    });
+
+    claude.unref();
+    return true;
+  } catch (err) {
+    log(`Standalone compliance checker spawn error: ${err.message}`);
+    return false;
+  }
+}
+
 /**
  * Main entry point
  */
@@ -852,7 +1598,20 @@ async function main() {
     process.exit(0);
   }
 
-  log('Autonomous Deputy CTO Mode is ENABLED.');
+  // CTO Activity Gate: require /deputy-cto within last 24h
+  const ctoGate = checkCtoActivityGate(config);
+  if (!ctoGate.open) {
+    log(`CTO Activity Gate CLOSED: ${ctoGate.reason}`);
+    registerHookExecution({
+      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+      status: 'skipped',
+      durationMs: Date.now() - startTime,
+      metadata: { reason: 'cto_activity_gate_closed', hoursSinceLastBriefing: ctoGate.hoursSinceLastBriefing }
+    });
+    process.exit(0);
+  }
+
+  log(`Autonomous Deputy CTO Mode is ENABLED. ${ctoGate.reason}`);
 
   const state = getState();
   const now = Date.now();
@@ -873,6 +1632,12 @@ async function main() {
   const TRIAGE_CHECK_INTERVAL_MS = getCooldown('triage_check', 5) * 60 * 1000;
   const HOURLY_COOLDOWN_MS = getCooldown('hourly_tasks', 55) * 60 * 1000;
   const LINT_COOLDOWN_MS = getCooldown('lint_checker', 30) * 60 * 1000;
+  const PREVIEW_PROMOTION_COOLDOWN_MS = getCooldown('preview_promotion', 360) * 60 * 1000;
+  const STAGING_PROMOTION_COOLDOWN_MS = getCooldown('staging_promotion', 1200) * 60 * 1000;
+  const STAGING_HEALTH_COOLDOWN_MS = getCooldown('staging_health_monitor', 180) * 60 * 1000;
+  const PRODUCTION_HEALTH_COOLDOWN_MS = getCooldown('production_health_monitor', 60) * 60 * 1000;
+  const STANDALONE_ANTIPATTERN_COOLDOWN_MS = getCooldown('standalone_antipattern_hunter', 180) * 60 * 1000;
+  const STANDALONE_COMPLIANCE_COOLDOWN_MS = getCooldown('standalone_compliance_checker', 60) * 60 * 1000;
 
   // =========================================================================
   // TRIAGE CHECK (dynamic interval, default 5 min)
@@ -945,10 +1710,10 @@ async function main() {
   }
 
   // =========================================================================
-  // TASK RUNNER CHECK (15-min cooldown)
-  // Spawns agents for pending todo tasks (1 per section, max 4 concurrent)
+  // TASK RUNNER CHECK (1h cooldown)
+  // Spawns a separate Claude session for every pending TODO item >1h old
   // =========================================================================
-  const TASK_RUNNER_COOLDOWN_MS = getCooldown('task_runner', 15) * 60 * 1000;
+  const TASK_RUNNER_COOLDOWN_MS = getCooldown('task_runner', 60) * 60 * 1000;
   const timeSinceLastTaskRunner = now - (state.lastTaskRunnerCheck || 0);
 
   if (timeSinceLastTaskRunner >= TASK_RUNNER_COOLDOWN_MS && config.taskRunnerEnabled) {
@@ -997,6 +1762,246 @@ async function main() {
   }
 
   // =========================================================================
+  // PREVIEW -> STAGING PROMOTION (6h cooldown)
+  // Checks for new commits on preview, spawns review + promotion pipeline
+  // =========================================================================
+  const timeSinceLastPreviewPromotion = now - (state.lastPreviewPromotionCheck || 0);
+  const previewPromotionEnabled = config.previewPromotionEnabled !== false;
+
+  if (timeSinceLastPreviewPromotion >= PREVIEW_PROMOTION_COOLDOWN_MS && previewPromotionEnabled) {
+    log('Preview promotion: checking for promotable commits...');
+
+    try {
+      // Fetch latest remote state
+      execSync('git fetch origin preview staging --quiet 2>/dev/null || true', {
+        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+      });
+    } catch {
+      log('Preview promotion: git fetch failed, skipping.');
+    }
+
+    if (remoteBranchExists('preview') && remoteBranchExists('staging')) {
+      const newCommits = getNewCommits('preview', 'staging');
+
+      if (newCommits.length === 0) {
+        log('Preview promotion: no new commits on preview.');
+      } else {
+        const lastStagingTimestamp = getLastCommitTimestamp('staging');
+        const hoursSinceLastStagingMerge = lastStagingTimestamp > 0
+          ? Math.floor((Date.now() / 1000 - lastStagingTimestamp) / 3600) : 999;
+        const hasBugFix = hasBugFixCommits(newCommits);
+
+        if (hoursSinceLastStagingMerge >= 24 || hasBugFix) {
+          log(`Preview promotion: ${newCommits.length} commits ready. Staging age: ${hoursSinceLastStagingMerge}h. Bug fix: ${hasBugFix}.`);
+
+          try {
+            const result = await spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix);
+            if (result.code === 0) {
+              log('Preview promotion pipeline completed successfully.');
+            } else {
+              log(`Preview promotion pipeline exited with code ${result.code}`);
+            }
+          } catch (err) {
+            log(`Preview promotion error: ${err.message}`);
+          }
+        } else {
+          log(`Preview promotion: ${newCommits.length} commits pending but staging only ${hoursSinceLastStagingMerge}h old (need 24h or bug fix).`);
+        }
+      }
+    } else {
+      log('Preview promotion: preview or staging branch does not exist on remote.');
+    }
+
+    state.lastPreviewPromotionCheck = now;
+    saveState(state);
+  } else if (!previewPromotionEnabled) {
+    log('Preview Promotion is disabled in config.');
+  } else {
+    const minutesLeft = Math.ceil((PREVIEW_PROMOTION_COOLDOWN_MS - timeSinceLastPreviewPromotion) / 60000);
+    log(`Preview promotion cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
+  // STAGING -> PRODUCTION PROMOTION (midnight window, 20h cooldown)
+  // Checks nightly for stable staging to promote to production
+  // =========================================================================
+  const timeSinceLastStagingPromotion = now - (state.lastStagingPromotionCheck || 0);
+  const stagingPromotionEnabled = config.stagingPromotionEnabled !== false;
+  const currentHour = new Date().getHours();
+  const currentMinute = new Date().getMinutes();
+  const isMidnightWindow = currentHour === 0 && currentMinute <= 30;
+
+  if (isMidnightWindow && timeSinceLastStagingPromotion >= STAGING_PROMOTION_COOLDOWN_MS && stagingPromotionEnabled) {
+    log('Staging promotion: midnight window - checking for promotable commits...');
+
+    try {
+      execSync('git fetch origin staging main --quiet 2>/dev/null || true', {
+        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+      });
+    } catch {
+      log('Staging promotion: git fetch failed, skipping.');
+    }
+
+    if (remoteBranchExists('staging') && remoteBranchExists('main')) {
+      const newCommits = getNewCommits('staging', 'main');
+
+      if (newCommits.length === 0) {
+        log('Staging promotion: no new commits on staging.');
+      } else {
+        const lastStagingTimestamp = getLastCommitTimestamp('staging');
+        const hoursSinceLastStagingCommit = lastStagingTimestamp > 0
+          ? Math.floor((Date.now() / 1000 - lastStagingTimestamp) / 3600) : 0;
+
+        if (hoursSinceLastStagingCommit >= 24) {
+          log(`Staging promotion: ${newCommits.length} commits ready. Staging stable for ${hoursSinceLastStagingCommit}h.`);
+
+          try {
+            const result = await spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit);
+            if (result.code === 0) {
+              log('Staging promotion pipeline completed successfully.');
+            } else {
+              log(`Staging promotion pipeline exited with code ${result.code}`);
+            }
+          } catch (err) {
+            log(`Staging promotion error: ${err.message}`);
+          }
+        } else {
+          log(`Staging promotion: staging only ${hoursSinceLastStagingCommit}h old (need 24h stability).`);
+        }
+      }
+    } else {
+      log('Staging promotion: staging or main branch does not exist on remote.');
+    }
+
+    state.lastStagingPromotionCheck = now;
+    saveState(state);
+  } else if (!stagingPromotionEnabled) {
+    log('Staging Promotion is disabled in config.');
+  } else if (!isMidnightWindow) {
+    // Only log this at debug level since it runs every 10 minutes
+  } else {
+    const minutesLeft = Math.ceil((STAGING_PROMOTION_COOLDOWN_MS - timeSinceLastStagingPromotion) / 60000);
+    log(`Staging promotion cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
+  // STAGING HEALTH MONITOR (3h cooldown, fire-and-forget)
+  // Checks staging infrastructure health
+  // =========================================================================
+  const timeSinceLastStagingHealth = now - (state.lastStagingHealthCheck || 0);
+  const stagingHealthEnabled = config.stagingHealthMonitorEnabled !== false;
+
+  if (timeSinceLastStagingHealth >= STAGING_HEALTH_COOLDOWN_MS && stagingHealthEnabled) {
+    try {
+      execSync('git fetch origin staging --quiet 2>/dev/null || true', {
+        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+      });
+    } catch {
+      log('Staging health monitor: git fetch failed.');
+    }
+
+    if (remoteBranchExists('staging')) {
+      log('Staging health monitor: spawning health check...');
+      const success = spawnStagingHealthMonitor();
+      if (success) {
+        log('Staging health monitor: spawned (fire-and-forget).');
+      } else {
+        log('Staging health monitor: spawn failed.');
+      }
+    } else {
+      log('Staging health monitor: staging branch does not exist, skipping.');
+    }
+
+    state.lastStagingHealthCheck = now;
+    saveState(state);
+  } else if (!stagingHealthEnabled) {
+    log('Staging Health Monitor is disabled in config.');
+  } else {
+    const minutesLeft = Math.ceil((STAGING_HEALTH_COOLDOWN_MS - timeSinceLastStagingHealth) / 60000);
+    log(`Staging health monitor cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
+  // PRODUCTION HEALTH MONITOR (1h cooldown, fire-and-forget)
+  // Checks production infrastructure health, escalates to CTO
+  // =========================================================================
+  const timeSinceLastProdHealth = now - (state.lastProductionHealthCheck || 0);
+  const prodHealthEnabled = config.productionHealthMonitorEnabled !== false;
+
+  if (timeSinceLastProdHealth >= PRODUCTION_HEALTH_COOLDOWN_MS && prodHealthEnabled) {
+    log('Production health monitor: spawning health check...');
+    const success = spawnProductionHealthMonitor();
+    if (success) {
+      log('Production health monitor: spawned (fire-and-forget).');
+    } else {
+      log('Production health monitor: spawn failed.');
+    }
+
+    state.lastProductionHealthCheck = now;
+    saveState(state);
+  } else if (!prodHealthEnabled) {
+    log('Production Health Monitor is disabled in config.');
+  } else {
+    const minutesLeft = Math.ceil((PRODUCTION_HEALTH_COOLDOWN_MS - timeSinceLastProdHealth) / 60000);
+    log(`Production health monitor cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
+  // STANDALONE ANTIPATTERN HUNTER (3h cooldown, fire-and-forget)
+  // Repo-wide spec violation scan, independent of git hooks
+  // =========================================================================
+  const timeSinceLastAntipatternHunt = now - (state.lastStandaloneAntipatternHunt || 0);
+  const antipatternHuntEnabled = config.standaloneAntipatternHunterEnabled !== false;
+
+  if (timeSinceLastAntipatternHunt >= STANDALONE_ANTIPATTERN_COOLDOWN_MS && antipatternHuntEnabled) {
+    log('Standalone antipattern hunter: spawning repo-wide scan...');
+    const success = spawnStandaloneAntipatternHunter();
+    if (success) {
+      log('Standalone antipattern hunter: spawned (fire-and-forget).');
+    } else {
+      log('Standalone antipattern hunter: spawn failed.');
+    }
+
+    state.lastStandaloneAntipatternHunt = now;
+    saveState(state);
+  } else if (!antipatternHuntEnabled) {
+    log('Standalone Antipattern Hunter is disabled in config.');
+  } else {
+    const minutesLeft = Math.ceil((STANDALONE_ANTIPATTERN_COOLDOWN_MS - timeSinceLastAntipatternHunt) / 60000);
+    log(`Standalone antipattern hunter cooldown active. ${minutesLeft} minutes until next hunt.`);
+  }
+
+  // =========================================================================
+  // STANDALONE COMPLIANCE CHECKER (1h cooldown, fire-and-forget)
+  // Picks a random spec and audits the codebase against it
+  // =========================================================================
+  const timeSinceLastComplianceCheck = now - (state.lastStandaloneComplianceCheck || 0);
+  const complianceCheckEnabled = config.standaloneComplianceCheckerEnabled !== false;
+
+  if (timeSinceLastComplianceCheck >= STANDALONE_COMPLIANCE_COOLDOWN_MS && complianceCheckEnabled) {
+    const randomSpec = getRandomSpec();
+    if (randomSpec) {
+      log(`Standalone compliance checker: spawning audit for spec ${randomSpec.id}...`);
+      const success = spawnStandaloneComplianceChecker(randomSpec);
+      if (success) {
+        log(`Standalone compliance checker: spawned for ${randomSpec.id} (fire-and-forget).`);
+      } else {
+        log('Standalone compliance checker: spawn failed.');
+      }
+    } else {
+      log('Standalone compliance checker: no specs found in specs/global/ or specs/local/.');
+    }
+
+    state.lastStandaloneComplianceCheck = now;
+    saveState(state);
+  } else if (!complianceCheckEnabled) {
+    log('Standalone Compliance Checker is disabled in config.');
+  } else {
+    const minutesLeft = Math.ceil((STANDALONE_COMPLIANCE_COOLDOWN_MS - timeSinceLastComplianceCheck) / 60000);
+    log(`Standalone compliance checker cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
   // HOURLY TASKS (dynamic cooldown, default 55 min)
   // =========================================================================
   const timeSinceLastRun = now - state.lastRun;
@@ -1017,22 +2022,6 @@ async function main() {
   // Update state for hourly tasks
   state.lastRun = now;
   saveState(state);
-
-  // Run plan executor if enabled
-  if (config.planExecutorEnabled) {
-    try {
-      const planExecutorScript = path.join(__dirname, 'plan-executor.js');
-      if (fs.existsSync(planExecutorScript)) {
-        await runScript(planExecutorScript, 'Plan Executor');
-      } else {
-        log('WARN: plan-executor.js not found, skipping.');
-      }
-    } catch (err) {
-      log(`Plan executor error: ${err.message}`);
-    }
-  } else {
-    log('Plan Executor is disabled in config.');
-  }
 
   // Check CLAUDE.md size and run refactor if needed
   if (config.claudeMdRefactorEnabled) {

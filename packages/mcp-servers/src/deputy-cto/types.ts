@@ -84,6 +84,8 @@ export const ToggleAutonomousModeArgsSchema = z.object({
 
 export const GetAutonomousModeStatusArgsSchema = z.object({});
 
+export const RecordCtoBriefingArgsSchema = z.object({});
+
 export const SearchClearedItemsArgsSchema = z.object({
   query: z.string().min(1).max(200).describe('Substring to search for in cleared question titles/descriptions'),
   limit: z.number().optional().default(10).describe('Maximum results to return'),
@@ -137,6 +139,7 @@ export type SpawnImplementationTaskArgs = z.infer<typeof SpawnImplementationTask
 export type GetPendingCountArgs = z.infer<typeof GetPendingCountArgsSchema>;
 export type ToggleAutonomousModeArgs = z.infer<typeof ToggleAutonomousModeArgsSchema>;
 export type GetAutonomousModeStatusArgs = z.infer<typeof GetAutonomousModeStatusArgsSchema>;
+export type RecordCtoBriefingArgs = z.infer<typeof RecordCtoBriefingArgsSchema>;
 export type SearchClearedItemsArgs = z.infer<typeof SearchClearedItemsArgsSchema>;
 export type CleanupOldRecordsArgs = z.infer<typeof CleanupOldRecordsArgsSchema>;
 export type RequestBypassArgs = z.infer<typeof RequestBypassArgsSchema>;
@@ -257,10 +260,10 @@ export interface ErrorResult {
 
 export interface AutonomousModeConfig {
   enabled: boolean;
-  planExecutorEnabled: boolean;
   claudeMdRefactorEnabled: boolean;
   lastModified: string | null;
   modifiedBy: string | null;
+  lastCtoBriefing: string | null;
 }
 
 export interface ToggleAutonomousModeResult {
@@ -271,10 +274,18 @@ export interface ToggleAutonomousModeResult {
 
 export interface GetAutonomousModeStatusResult {
   enabled: boolean;
-  planExecutorEnabled: boolean;
   claudeMdRefactorEnabled: boolean;
   lastModified: string | null;
   nextRunIn: number | null; // minutes until next run, null if disabled
+  lastCtoBriefing: string | null;
+  ctoGateOpen: boolean;
+  hoursSinceLastBriefing: number | null;
+  message: string;
+}
+
+export interface RecordCtoBriefingResult {
+  recorded: boolean;
+  timestamp: string;
   message: string;
 }
 

@@ -90,6 +90,24 @@ describe('usage-optimizer.js - Structure Validation', () => {
         /const MIN_SNAPSHOTS_FOR_TRAJECTORY = 3/,
         'Must define MIN_SNAPSHOTS_FOR_TRAJECTORY = 3'
       );
+
+      assert.match(
+        code,
+        /const MIN_EFFECTIVE_MINUTES = 2/,
+        'Must define MIN_EFFECTIVE_MINUTES = 2'
+      );
+
+      assert.match(
+        code,
+        /const SINGLE_KEY_WARNING_THRESHOLD = 0\.80/,
+        'Must define SINGLE_KEY_WARNING_THRESHOLD = 0.80'
+      );
+
+      assert.match(
+        code,
+        /const RESET_BOUNDARY_DROP_THRESHOLD = 0\.30/,
+        'Must define RESET_BOUNDARY_DROP_THRESHOLD = 0.30'
+      );
     });
 
     it('should define file paths', () => {
@@ -783,11 +801,11 @@ describe('usage-optimizer.js - Structure Validation', () => {
       const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
-      // Should check if current >= TARGET_UTILIZATION
+      // Should check if effectiveUsage >= TARGET_UTILIZATION
       assert.match(
         functionBody,
-        /if \(currentUsage >= TARGET_UTILIZATION\)/,
-        'Must check if already at target'
+        /if \(effectiveUsage >= TARGET_UTILIZATION\)/,
+        'Must check if already at target (using effectiveUsage)'
       );
 
       // Should clamp factor to <= 1.0 (never speed up)
@@ -825,11 +843,11 @@ describe('usage-optimizer.js - Structure Validation', () => {
       const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
-      // Should calculate desiredRate
+      // Should calculate desiredRate using effectiveUsage (biased by max key)
       assert.match(
         functionBody,
-        /desiredRate = \(TARGET_UTILIZATION - currentUsage\) \/ hoursUntilReset/,
-        'Must calculate desired rate to hit target'
+        /desiredRate = \(TARGET_UTILIZATION - effectiveUsage\) \/ hoursUntilReset/,
+        'Must calculate desired rate from effectiveUsage'
       );
 
       // Should calculate ratio
@@ -895,11 +913,11 @@ describe('usage-optimizer.js - Structure Validation', () => {
       const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
-      // Should call applyFactor
+      // Should call applyFactor (with hoursUntilReset as 6th arg)
       assert.match(
         functionBody,
-        /applyFactor\(config, newFactor, constraining, projectedAtReset, log\)/,
-        'Must call applyFactor with correct parameters'
+        /applyFactor\(config, newFactor, constraining, projectedAtReset, log, hoursUntilReset\)/,
+        'Must call applyFactor with correct parameters including hoursUntilReset'
       );
 
       // Should return true after adjustment
@@ -915,21 +933,21 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should average utilization across keys', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
       assert.ok(functionMatch, 'calculateAggregate function must exist');
 
       const functionBody = functionMatch[0];
 
-      // Should sum values across keys
+      // Should sum values across keys (via val5h/val7d intermediaries)
       assert.match(
         functionBody,
-        /sum5h \+= k\[['"]5h['"]\]/,
+        /sum5h \+= val5h/,
         'Must sum 5h utilization across keys'
       );
 
       assert.match(
         functionBody,
-        /sum7d \+= k\[['"]7d['"]\]/,
+        /sum7d \+= val7d/,
         'Must sum 7d utilization across keys'
       );
 
@@ -950,7 +968,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should calculate rates from common keys between earliest and latest', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should find common keys between snapshots
@@ -978,7 +996,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should calculate hours until reset from reset timestamps', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should parse reset timestamps
@@ -1005,21 +1023,27 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should return aggregate object with all metrics', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
-      // Should return object with all metrics
+      // Should return object with all metrics including max-key and per-key data
       assert.match(
         functionBody,
         /return \{[\s\S]*?current5h,[\s\S]*?current7d,[\s\S]*?rate5h,[\s\S]*?rate7d,[\s\S]*?hoursUntil5hReset,[\s\S]*?hoursUntil7dReset/s,
         'Must return aggregate with all required metrics'
+      );
+
+      assert.match(
+        functionBody,
+        /maxKey5h, maxKey7d, perKeyUtilization/,
+        'Must return maxKey5h, maxKey7d, and perKeyUtilization'
       );
     });
 
     it('should return null when no keys in snapshot', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should check if latestEntries.length === 0
@@ -1035,7 +1059,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should calculate effective cooldowns from defaults and factor', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log(?:, hoursUntilReset)?\) \{[\s\S]*?\n\}/);
       assert.ok(functionMatch, 'applyFactor function must exist');
 
       const functionBody = functionMatch[0];
@@ -1047,11 +1071,11 @@ describe('usage-optimizer.js - Structure Validation', () => {
         'Must get defaults from config or getDefaults()'
       );
 
-      // Should calculate effective values
+      // Should calculate effective values with MIN_EFFECTIVE_MINUTES floor
       assert.match(
         functionBody,
-        /effective\[key\] = Math\.round\(defaultVal \/ newFactor\)/,
-        'Must calculate effective by dividing default by factor'
+        /effective\[key\] = Math\.max\(MIN_EFFECTIVE_MINUTES, Math\.round\(defaultVal \/ newFactor\)\)/,
+        'Must calculate effective with MIN_EFFECTIVE_MINUTES floor'
       );
 
       // Higher factor = shorter cooldowns (more activity)
@@ -1061,7 +1085,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should update config.effective with new values', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log(?:, hoursUntilReset)?\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should set config.effective
@@ -1075,7 +1099,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should update config.adjustment with metadata', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log(?:, hoursUntilReset)?\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should set config.adjustment
@@ -1117,7 +1141,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should write updated config to file', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log(?:, hoursUntilReset)?\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should get config path
@@ -1138,7 +1162,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should log the adjustment', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log(?:, hoursUntilReset)?\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should log after write
@@ -1171,7 +1195,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should handle write errors gracefully', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log(?:, hoursUntilReset)?\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should wrap write in try-catch
@@ -1186,6 +1210,404 @@ describe('usage-optimizer.js - Structure Validation', () => {
         functionBody,
         /catch[\s\S]*?log\(/s,
         'Must log write errors'
+      );
+    });
+  });
+
+  describe('calculateEmaRate() - EMA Smoothing', () => {
+    it('should exist as a standalone function', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'calculateEmaRate function must exist with correct signature');
+    });
+
+    it('should return 0 for fewer than 2 snapshots', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /if \(snapshots\.length < 2\) return 0/,
+        'Must return 0 for fewer than 2 snapshots'
+      );
+    });
+
+    it('should compute EMA from consecutive snapshot pairs', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Should iterate with i=1 start
+      assert.match(
+        functionBody,
+        /for \(let i = 1; i < snapshots\.length; i\+\+\)/,
+        'Must iterate from index 1 through all snapshots'
+      );
+
+      // Should compute hours delta
+      assert.match(
+        functionBody,
+        /hoursDelta = \(curr\.ts - prev\.ts\) \/ \(1000 \* 60 \* 60\)/,
+        'Must compute time delta in hours'
+      );
+
+      // Should use EMA formula
+      assert.match(
+        functionBody,
+        /emaRate = alpha \* intervalRate \+ \(1 - alpha\) \* emaRate/,
+        'Must apply EMA smoothing formula'
+      );
+    });
+
+    it('should skip near-zero time intervals', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /if \(hoursDelta < 0\.01\) continue/,
+        'Must skip near-zero time intervals'
+      );
+    });
+
+    it('should find common keys between consecutive snapshots', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /Object\.keys\(curr\.keys\)\.filter\(k => k in prev\.keys\)/,
+        'Must filter for common keys between consecutive snapshots'
+      );
+    });
+  });
+
+  describe('Reset-Boundary Detection', () => {
+    it('should detect large 5h utilization drops between consecutive snapshots', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /Reset boundary detected/,
+        'Must log when reset boundary is detected'
+      );
+
+      assert.match(
+        functionBody,
+        /drop5h >= RESET_BOUNDARY_DROP_THRESHOLD/,
+        'Must compare drop against RESET_BOUNDARY_DROP_THRESHOLD'
+      );
+    });
+
+    it('should compare the last two snapshots for boundary detection', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /data\.snapshots\[data\.snapshots\.length - 2\]/,
+        'Must access second-to-last snapshot'
+      );
+
+      assert.match(
+        functionBody,
+        /const drop5h = prevAgg\.current5h - currAgg\.current5h/,
+        'Must calculate drop as previous minus current'
+      );
+    });
+
+    it('should skip adjustment cycle when reset detected', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // After detecting reset, should return false
+      const resetBlock = functionBody.match(/drop5h >= RESET_BOUNDARY_DROP_THRESHOLD[\s\S]*?return false/);
+      assert.ok(resetBlock, 'Must return false when reset boundary detected');
+    });
+  });
+
+  describe('Per-Key Warnings and Max-Key Biasing', () => {
+    it('should log warnings when any key exceeds 5h threshold', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /Usage optimizer WARNING: Key .* 5h utilization/,
+        'Must log per-key 5h utilization warnings'
+      );
+    });
+
+    it('should log warnings when any key exceeds 7d threshold', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /Usage optimizer WARNING: Key .* 7d utilization/,
+        'Must log per-key 7d utilization warnings'
+      );
+    });
+
+    it('should bias effectiveUsage upward when max key near threshold', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /let effectiveUsage = currentUsage/,
+        'Must initialize effectiveUsage from currentUsage'
+      );
+
+      assert.match(
+        functionBody,
+        /if \(maxKeyUsage >= SINGLE_KEY_WARNING_THRESHOLD\)/,
+        'Must check maxKeyUsage against threshold'
+      );
+
+      assert.match(
+        functionBody,
+        /effectiveUsage = Math\.max\(effectiveUsage, maxKeyUsage \* 0\.8\)/,
+        'Must bias effectiveUsage upward using max key value'
+      );
+    });
+
+    it('should use maxKey5h or maxKey7d based on constraining metric', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /const maxKeyUsage = constraining === ['"]5h['"] \? aggregate\.maxKey5h : aggregate\.maxKey7d/,
+        'Must select maxKey based on constraining metric'
+      );
+    });
+
+    it('should track per-key utilization in calculateAggregate', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /const perKeyUtilization = \{\}/,
+        'Must initialize perKeyUtilization object'
+      );
+
+      assert.match(
+        functionBody,
+        /perKeyUtilization\[id\] = \{ ['"]5h['"]:/,
+        'Must populate per-key utilization data'
+      );
+    });
+
+    it('should track max values across keys in calculateAggregate', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /maxKey5h = Math\.max\(maxKey5h, val5h\)/,
+        'Must track max 5h value across keys'
+      );
+
+      assert.match(
+        functionBody,
+        /maxKey7d = Math\.max\(maxKey7d, val7d\)/,
+        'Must track max 7d value across keys'
+      );
+    });
+  });
+
+  describe('EMA Rate Integration in calculateAggregate', () => {
+    it('should use EMA rate when allSnapshots available with 3+ entries', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /if \(allSnapshots && allSnapshots\.length >= 3\)/,
+        'Must check for allSnapshots availability'
+      );
+
+      assert.match(
+        functionBody,
+        /rate5h = calculateEmaRate\(recentSnapshots, ['"]5h['"]\)/,
+        'Must call calculateEmaRate for 5h rate'
+      );
+
+      assert.match(
+        functionBody,
+        /rate7d = calculateEmaRate\(recentSnapshots, ['"]7d['"]\)/,
+        'Must call calculateEmaRate for 7d rate'
+      );
+    });
+
+    it('should fall back to two-point slope when allSnapshots not available', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Should have else branch with original two-point calculation
+      assert.match(
+        functionBody,
+        /} else \{[\s\S]*?commonKeyIds[\s\S]*?rate5h = \(avg5hNow - avg5hPrev\) \/ hoursBetween/s,
+        'Must fall back to two-point slope calculation'
+      );
+    });
+
+    it('should pass allSnapshots from calculateAndAdjust', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /calculateAggregate\(latest, earliest, hoursBetween, data\.snapshots\)/,
+        'Must pass data.snapshots as allSnapshots parameter'
+      );
+    });
+  });
+
+  describe('applyFactor() - Direction Tracking and Reset Time', () => {
+    it('should accept hoursUntilReset as 6th parameter', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /function applyFactor\(config, newFactor, constraining, projectedAtReset, log, hoursUntilReset\)/,
+        'Must accept hoursUntilReset parameter'
+      );
+    });
+
+    it('should compute direction from previous and new factor', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log(?:, hoursUntilReset)?\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /const previousFactor = config\.adjustment\?\.factor \?\? 1\.0/,
+        'Must read previous factor from config'
+      );
+
+      assert.match(
+        functionBody,
+        /const direction = newFactor > previousFactor/,
+        'Must compute direction from factor comparison'
+      );
+
+      assert.match(
+        functionBody,
+        /['"]ramping up['"]/,
+        'Must include ramping up direction'
+      );
+
+      assert.match(
+        functionBody,
+        /['"]ramping down['"]/,
+        'Must include ramping down direction'
+      );
+
+      assert.match(
+        functionBody,
+        /['"]holding['"]/,
+        'Must include holding direction'
+      );
+    });
+
+    it('should store direction and hours_until_reset in config.adjustment', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log(?:, hoursUntilReset)?\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /direction,/,
+        'Must store direction in config.adjustment'
+      );
+
+      assert.match(
+        functionBody,
+        /hours_until_reset:/,
+        'Must store hours_until_reset in config.adjustment'
+      );
+    });
+
+    it('should include direction and reset time in log message', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function applyFactor\(config, newFactor, constraining, projectedAtReset, log(?:, hoursUntilReset)?\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /\$\{direction\}/,
+        'Must include direction in log output'
+      );
+
+      assert.match(
+        functionBody,
+        /Reset in/,
+        'Must include reset time in log output'
+      );
+    });
+
+    it('should include hoursUntilReset in factor unchanged log', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // The "Factor unchanged" log should include reset time
+      const unchangedLog = functionBody.match(/Factor unchanged[\s\S]*?hoursUntilReset/);
+      assert.ok(unchangedLog, 'Factor unchanged log must include hoursUntilReset');
+    });
+  });
+
+  describe('desiredRate uses effectiveUsage', () => {
+    it('should compute desiredRate from effectiveUsage not currentUsage', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /desiredRate = \(TARGET_UTILIZATION - effectiveUsage\) \/ hoursUntilReset/,
+        'Must use effectiveUsage in desiredRate calculation'
       );
     });
   });
@@ -1232,6 +1654,247 @@ describe('usage-optimizer.js - Structure Validation', () => {
       assert.match(code, /Snapshot:/i, 'Must document snapshot step');
       assert.match(code, /Trajectory:/i, 'Must document trajectory step');
       assert.match(code, /Adjustment:/i, 'Must document adjustment step');
+    });
+  });
+
+  describe('Behavioral Tests - MIN_EFFECTIVE_MINUTES Floor', () => {
+    it('should enforce 2-minute floor when factor would create shorter cooldowns', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      // Extract MIN_EFFECTIVE_MINUTES constant value
+      const minMatch = code.match(/const MIN_EFFECTIVE_MINUTES = (\d+)/);
+      assert.ok(minMatch, 'Must find MIN_EFFECTIVE_MINUTES constant');
+      const minMinutes = parseInt(minMatch[1], 10);
+      assert.strictEqual(minMinutes, 2, 'MIN_EFFECTIVE_MINUTES must be 2');
+
+      // Verify floor is applied in effective calculation
+      // Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultVal / newFactor))
+      // Example: defaultVal=60, newFactor=2.0 → Math.max(2, 30) = 30 ✓
+      // Example: defaultVal=3, newFactor=2.0 → Math.max(2, 1.5) = 2 ✓
+      const applyFactorMatch = code.match(/effective\[key\] = Math\.max\(MIN_EFFECTIVE_MINUTES, Math\.round\(defaultVal \/ newFactor\)\)/);
+      assert.ok(applyFactorMatch, 'Must apply MIN_EFFECTIVE_MINUTES floor in effective calculation');
+    });
+
+    it('should allow effective cooldowns above the floor', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      // Verify the formula allows values above floor
+      // If defaultVal=60 and newFactor=1.0, result should be 60, not clamped to 2
+      const formulaMatch = code.match(/Math\.max\(MIN_EFFECTIVE_MINUTES, Math\.round\(defaultVal \/ newFactor\)\)/);
+      assert.ok(formulaMatch, 'Formula must allow values above MIN_EFFECTIVE_MINUTES');
+    });
+  });
+
+  describe('Behavioral Tests - Reset-Boundary Detection', () => {
+    it('should skip adjustment when 5h drops by 30% or more', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      // Verify threshold value
+      const thresholdMatch = code.match(/const RESET_BOUNDARY_DROP_THRESHOLD = (0\.\d+)/);
+      assert.ok(thresholdMatch, 'Must find RESET_BOUNDARY_DROP_THRESHOLD');
+      const threshold = parseFloat(thresholdMatch[1]);
+      assert.strictEqual(threshold, 0.30, 'RESET_BOUNDARY_DROP_THRESHOLD must be 0.30');
+
+      // Verify detection logic
+      const detectionMatch = code.match(/if \(drop5h >= RESET_BOUNDARY_DROP_THRESHOLD\)[\s\S]*?return false/);
+      assert.ok(detectionMatch, 'Must skip adjustment when drop >= threshold');
+    });
+
+    it('should only check reset boundary with 2+ snapshots', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      // Verify guard condition
+      const guardMatch = code.match(/if \(data\.snapshots\.length >= 2\)[\s\S]*?drop5h >= RESET_BOUNDARY_DROP_THRESHOLD/s);
+      assert.ok(guardMatch, 'Must only check reset boundary with 2+ snapshots');
+    });
+
+    it('should compare consecutive snapshots for boundary detection', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      // Verify it compares last two snapshots
+      const comparisonMatch = code.match(/const prev = data\.snapshots\[data\.snapshots\.length - 2\][\s\S]*?const curr = data\.snapshots\[data\.snapshots\.length - 1\]/s);
+      assert.ok(comparisonMatch, 'Must compare last two snapshots');
+    });
+  });
+
+  describe('Behavioral Tests - EMA Rate Smoothing', () => {
+    it('should use alpha=0.3 as default smoothing factor', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const alphaMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = (0\.\d+)\)/);
+      assert.ok(alphaMatch, 'Must find calculateEmaRate function with alpha parameter');
+      const alphaDefault = parseFloat(alphaMatch[1]);
+      assert.strictEqual(alphaDefault, 0.3, 'Default alpha must be 0.3');
+    });
+
+    it('should skip EMA when fewer than 2 snapshots', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const earlyReturnMatch = code.match(/if \(snapshots\.length < 2\) return 0/);
+      assert.ok(earlyReturnMatch, 'Must return 0 for fewer than 2 snapshots');
+    });
+
+    it('should apply EMA formula: alpha * current + (1-alpha) * previous', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const emaFormulaMatch = code.match(/emaRate = alpha \* intervalRate \+ \(1 - alpha\) \* emaRate/);
+      assert.ok(emaFormulaMatch, 'Must apply correct EMA formula');
+    });
+
+    it('should prefer EMA rate over two-point slope when 3+ snapshots available', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      // Verify calculateAggregate calls calculateEmaRate when allSnapshots.length >= 3
+      const preferenceMatch = code.match(/if \(allSnapshots && allSnapshots\.length >= 3\)[\s\S]*?rate5h = calculateEmaRate\(recentSnapshots, ['"]5h['"]\)/s);
+      assert.ok(preferenceMatch, 'Must prefer EMA rate when 3+ snapshots available');
+    });
+  });
+
+  describe('Behavioral Tests - Max-Key Awareness', () => {
+    it('should track max utilization across all keys', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      // Verify maxKey tracking in calculateAggregate
+      const maxTrackingMatch = code.match(/maxKey5h = Math\.max\(maxKey5h, val5h\)[\s\S]*?maxKey7d = Math\.max\(maxKey7d, val7d\)/s);
+      assert.ok(maxTrackingMatch, 'Must track max values across keys');
+    });
+
+    it('should bias effectiveUsage upward when max key exceeds 80%', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      // Verify threshold
+      const thresholdMatch = code.match(/const SINGLE_KEY_WARNING_THRESHOLD = (0\.\d+)/);
+      assert.ok(thresholdMatch, 'Must find SINGLE_KEY_WARNING_THRESHOLD');
+      const threshold = parseFloat(thresholdMatch[1]);
+      assert.strictEqual(threshold, 0.80, 'SINGLE_KEY_WARNING_THRESHOLD must be 0.80');
+
+      // Verify biasing logic
+      const biasingMatch = code.match(/if \(maxKeyUsage >= SINGLE_KEY_WARNING_THRESHOLD\)[\s\S]*?effectiveUsage = Math\.max\(effectiveUsage, maxKeyUsage \* 0\.8\)/s);
+      assert.ok(biasingMatch, 'Must bias effectiveUsage when max key exceeds threshold');
+    });
+
+    it('should select max key based on constraining metric', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const selectionMatch = code.match(/const maxKeyUsage = constraining === ['"]5h['"] \? aggregate\.maxKey5h : aggregate\.maxKey7d/);
+      assert.ok(selectionMatch, 'Must select max key based on constraining metric');
+    });
+  });
+
+  describe('Behavioral Tests - Per-Key Rate Tracking', () => {
+    it('should track utilization for each key individually', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      // Verify perKeyUtilization structure
+      const trackingMatch = code.match(/perKeyUtilization\[id\] = \{ ['"]5h['"]:\s*val5h,\s*['"]7d['"]:\s*val7d \}/);
+      assert.ok(trackingMatch, 'Must track per-key utilization with 5h and 7d values');
+    });
+
+    it('should warn when any single key exceeds 80% on 5h window', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const warningMatch = code.match(/if \(util\[['"]5h['"]\] >= SINGLE_KEY_WARNING_THRESHOLD\)[\s\S]*?Usage optimizer WARNING:[\s\S]*?5h utilization/s);
+      assert.ok(warningMatch, 'Must warn for 5h utilization exceeding threshold');
+    });
+
+    it('should warn when any single key exceeds 80% on 7d window', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const warningMatch = code.match(/if \(util\[['"]7d['"]\] >= SINGLE_KEY_WARNING_THRESHOLD\)[\s\S]*?Usage optimizer WARNING:[\s\S]*?7d utilization/s);
+      assert.ok(warningMatch, 'Must warn for 7d utilization exceeding threshold');
+    });
+
+    it('should include key ID in warning messages', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const keyIdMatch = code.match(/Usage optimizer WARNING: Key \$\{keyId\}/);
+      assert.ok(keyIdMatch, 'Must include key ID in warning messages');
+    });
+  });
+
+  describe('Behavioral Tests - Enhanced Logging', () => {
+    it('should track direction as ramping up, ramping down, or holding', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const directionMatch = code.match(/const direction = newFactor > previousFactor \+ 0\.005 \? ['"]ramping up['"] : newFactor < previousFactor - 0\.005 \? ['"]ramping down['"] : ['"]holding['"]/);
+      assert.ok(directionMatch, 'Must compute direction with 0.005 threshold');
+    });
+
+    it('should store direction in config.adjustment', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const storageMatch = code.match(/config\.adjustment = \{[\s\S]*?direction,/s);
+      assert.ok(storageMatch, 'Must store direction in config.adjustment');
+    });
+
+    it('should store hours_until_reset in config.adjustment', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const storageMatch = code.match(/config\.adjustment = \{[\s\S]*?hours_until_reset:/s);
+      assert.ok(storageMatch, 'Must store hours_until_reset in config.adjustment');
+    });
+
+    it('should round hours_until_reset to 1 decimal place', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const roundingMatch = code.match(/hours_until_reset:[\s\S]*?Math\.round\(hoursUntilReset \* 10\) \/ 10/s);
+      assert.ok(roundingMatch, 'Must round hours_until_reset to 1 decimal');
+    });
+
+    it('should include direction in log output', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const logMatch = code.match(/log\(`Usage optimizer: Factor[\s\S]*?\$\{direction\}/s);
+      assert.ok(logMatch, 'Must include direction in log message');
+    });
+
+    it('should include reset time in log output', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const logMatch = code.match(/Reset in \$\{hoursUntilReset\.toFixed\(1\)\}h/);
+      assert.ok(logMatch, 'Must include formatted reset time in log');
+    });
+
+    it('should include reset time in "factor unchanged" message', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const unchangedMatch = code.match(/Factor unchanged[\s\S]*?Reset in \$\{hoursUntilReset\.toFixed\(1\)\}h/s);
+      assert.ok(unchangedMatch, 'Must include reset time in unchanged message');
+    });
+  });
+
+  describe('Integration Tests - Combined Behavior', () => {
+    it('should use effectiveUsage (biased by max key) for desiredRate calculation', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      // Verify effectiveUsage initialization and biasing
+      const effectiveMatch = code.match(/let effectiveUsage = currentUsage[\s\S]*?if \(maxKeyUsage >= SINGLE_KEY_WARNING_THRESHOLD\)[\s\S]*?effectiveUsage = Math\.max\(effectiveUsage, maxKeyUsage \* 0\.8\)/s);
+      assert.ok(effectiveMatch, 'Must initialize and bias effectiveUsage');
+
+      // Verify desiredRate uses effectiveUsage
+      const desiredRateMatch = code.match(/desiredRate = \(TARGET_UTILIZATION - effectiveUsage\) \/ hoursUntilReset/);
+      assert.ok(desiredRateMatch, 'Must use effectiveUsage in desiredRate calculation');
+    });
+
+    it('should pass allSnapshots to calculateAggregate for EMA calculation', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const passMatch = code.match(/calculateAggregate\(latest, earliest, hoursBetween, data\.snapshots\)/);
+      assert.ok(passMatch, 'Must pass data.snapshots to calculateAggregate');
+    });
+
+    it('should call applyFactor with hoursUntilReset as 6th parameter', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const callMatch = code.match(/applyFactor\(config, newFactor, constraining, projectedAtReset, log, hoursUntilReset\)/);
+      assert.ok(callMatch, 'Must pass hoursUntilReset to applyFactor');
+    });
+
+    it('should return aggregate with maxKey5h, maxKey7d, and perKeyUtilization', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const returnMatch = code.match(/return \{[\s\S]*?maxKey5h, maxKey7d, perKeyUtilization,/s);
+      assert.ok(returnMatch, 'Must return max key and per-key data from calculateAggregate');
     });
   });
 });

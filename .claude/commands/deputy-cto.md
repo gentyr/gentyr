@@ -23,9 +23,10 @@ Only escalated items appear in your queue.
 
 ### 1. Opening Briefing
 
-Start by checking the current status:
+Start by recording CTO activity and checking the current status:
 
 ```
+0. mcp__deputy-cto__record_cto_briefing() - Record CTO activity (refreshes 24h automation gate)
 1. mcp__deputy-cto__list_questions() - Get pending CTO questions (including escalations)
 2. mcp__deputy-cto__get_pending_count() - Check if commits are blocked
 3. mcp__agent-reports__get_triage_stats() - Get triage metrics overview
