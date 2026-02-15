@@ -53,8 +53,8 @@ describe('config-reader.js - Structure Validation', () => {
       // Should have key defaults
       assert.match(code, /hourly_tasks:\s*\d+/, 'Must have hourly_tasks default');
       assert.match(code, /triage_check:\s*\d+/, 'Must have triage_check default');
-      assert.match(code, /plan_executor:\s*\d+/, 'Must have plan_executor default');
       assert.match(code, /antipattern_hunter:\s*\d+/, 'Must have antipattern_hunter default');
+      assert.match(code, /task_runner:\s*\d+/, 'Must have task_runner default');
       assert.match(code, /schema_mapper:\s*\d+/, 'Must have schema_mapper default');
     });
 

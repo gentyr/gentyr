@@ -628,6 +628,308 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
   });
 
   // ==========================================================================
+  // HMAC Forgery Detection (Fix 2)
+  // ==========================================================================
+
+  describe('HMAC forgery detection', () => {
+    it('should reject approval with tampered pending_hmac', async () => {
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
+
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '1.0.0',
+        servers: {
+          'test-server': {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE TEST',
+            tools: '*',
+          },
+        },
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      // Create an approval with a forged pending_hmac
+      const now = Date.now();
+      const expiresTimestamp = now + 5 * 60 * 1000;
+      const forgedPendingHmac = 'deadbeef'.repeat(8); // 64-char hex, but wrong
+      const approvedHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', 'approved', String(expiresTimestamp));
+
+      const approvals = {
+        approvals: {
+          ABC123: {
+            server: 'test-server',
+            tool: 'test-tool',
+            phrase: 'APPROVE TEST',
+            code: 'ABC123',
+            status: 'approved',
+            created_timestamp: now,
+            expires_timestamp: expiresTimestamp,
+            pending_hmac: forgedPendingHmac,
+            approved_hmac: approvedHmac,
+          },
+        },
+      };
+
+      fs.writeFileSync(approvalsPath, JSON.stringify(approvals));
+
+      const result = await runHook('mcp__test-server__test-tool', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 1,
+        'Should block when pending_hmac is forged');
+      assert.match(result.stderr, /PROTECTED ACTION BLOCKED/,
+        'Should show block message for forged pending_hmac');
+
+      // Verify the forged entry was deleted
+      const updatedApprovals = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+      assert.strictEqual(updatedApprovals.approvals.ABC123, undefined,
+        'Forged entry should be deleted from approvals file');
+    });
+
+    it('should reject approval with tampered approved_hmac', async () => {
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
+
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '1.0.0',
+        servers: {
+          'test-server': {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE TEST',
+            tools: '*',
+          },
+        },
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      // Create an approval with valid pending_hmac but forged approved_hmac
+      const now = Date.now();
+      const expiresTimestamp = now + 5 * 60 * 1000;
+      const pendingHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', String(expiresTimestamp));
+      const forgedApprovedHmac = 'cafebabe'.repeat(8); // 64-char hex, but wrong
+
+      const approvals = {
+        approvals: {
+          ABC123: {
+            server: 'test-server',
+            tool: 'test-tool',
+            phrase: 'APPROVE TEST',
+            code: 'ABC123',
+            status: 'approved',
+            created_timestamp: now,
+            expires_timestamp: expiresTimestamp,
+            pending_hmac: pendingHmac,
+            approved_hmac: forgedApprovedHmac,
+          },
+        },
+      };
+
+      fs.writeFileSync(approvalsPath, JSON.stringify(approvals));
+
+      const result = await runHook('mcp__test-server__test-tool', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 1,
+        'Should block when approved_hmac is forged');
+      assert.match(result.stderr, /PROTECTED ACTION BLOCKED/,
+        'Should show block message for forged approved_hmac');
+
+      // Verify the forged entry was deleted
+      const updatedApprovals = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+      assert.strictEqual(updatedApprovals.approvals.ABC123, undefined,
+        'Forged entry should be deleted from approvals file');
+    });
+
+    it('should reject forged entry while preserving valid entries', async () => {
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
+
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '1.0.0',
+        servers: {
+          'test-server': {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE TEST',
+            tools: '*',
+          },
+        },
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      const now = Date.now();
+      const expiresTimestamp = now + 5 * 60 * 1000;
+
+      // Forged entry for our target tool
+      const forgedPendingHmac = 'deadbeef'.repeat(8);
+      const forgedApprovedHmac = 'cafebabe'.repeat(8);
+
+      // Legitimate pending entry for a different tool (should be preserved)
+      const legitimatePendingHmac = computeTestHmac('XYZ789', 'test-server', 'other-tool', String(expiresTimestamp));
+
+      const approvals = {
+        approvals: {
+          FORGED: {
+            server: 'test-server',
+            tool: 'test-tool',
+            code: 'FORGED',
+            status: 'approved',
+            created_timestamp: now,
+            expires_timestamp: expiresTimestamp,
+            pending_hmac: forgedPendingHmac,
+            approved_hmac: forgedApprovedHmac,
+          },
+          XYZ789: {
+            server: 'test-server',
+            tool: 'other-tool',
+            code: 'XYZ789',
+            status: 'pending',
+            created_timestamp: now,
+            expires_timestamp: expiresTimestamp,
+            pending_hmac: legitimatePendingHmac,
+          },
+        },
+      };
+
+      fs.writeFileSync(approvalsPath, JSON.stringify(approvals));
+
+      const result = await runHook('mcp__test-server__test-tool', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 1,
+        'Should block (forged entry rejected, no valid approval)');
+
+      // Verify forged entry was deleted but legitimate entry preserved
+      const updatedApprovals = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+      assert.strictEqual(updatedApprovals.approvals.FORGED, undefined,
+        'Forged entry should be deleted');
+      assert.ok(updatedApprovals.approvals.XYZ789,
+        'Legitimate entry for other tool should be preserved');
+    });
+  });
+
+  // ==========================================================================
+  // Missing Protection Key (G001 Fail-Closed)
+  // ==========================================================================
+
+  describe('Missing protection-key (G001 fail-closed)', () => {
+    it('should block protected action when protection-key is absent', async () => {
+      // Create a temp dir WITHOUT a protection-key
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-no-key-'));
+      const claudeDir = path.join(tmpDir, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      // Deliberately do NOT create protection-key file
+
+      const configPath = path.join(tmpDir, '.claude', 'hooks', 'protected-actions.json');
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '1.0.0',
+        servers: {
+          'test-server': {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE TEST',
+            tools: '*',
+          },
+        },
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      try {
+        const result = await runHook('mcp__test-server__test-tool', {}, tmpDir);
+
+        assert.strictEqual(result.exitCode, 1,
+          'Should block when protection-key is missing (G001 fail-closed)');
+        assert.match(result.stderr, /protection key missing/i,
+          'Should indicate protection key is missing');
+        assert.match(result.stderr, /FAIL-CLOSED/i,
+          'Should reference G001 fail-closed behavior');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should block even when valid approval exists but protection-key is absent', async () => {
+      // This tests that we cannot bypass HMAC verification by deleting the key
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-no-key-approval-'));
+      const claudeDir = path.join(tmpDir, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      // No protection-key
+
+      const configPath = path.join(tmpDir, '.claude', 'hooks', 'protected-actions.json');
+      const approvalsPath = path.join(tmpDir, '.claude', 'protected-action-approvals.json');
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '1.0.0',
+        servers: {
+          'test-server': {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE TEST',
+            tools: '*',
+          },
+        },
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      // Write an approval that looks valid (but cannot be HMAC-verified)
+      const now = Date.now();
+      const expiresTimestamp = now + 5 * 60 * 1000;
+      const approvals = {
+        approvals: {
+          ABC123: {
+            server: 'test-server',
+            tool: 'test-tool',
+            code: 'ABC123',
+            status: 'approved',
+            created_timestamp: now,
+            expires_timestamp: expiresTimestamp,
+            pending_hmac: 'some_hmac_value',
+            approved_hmac: 'some_approved_hmac',
+          },
+        },
+      };
+
+      fs.writeFileSync(approvalsPath, JSON.stringify(approvals));
+
+      try {
+        const result = await runHook('mcp__test-server__test-tool', {}, tmpDir);
+
+        assert.strictEqual(result.exitCode, 1,
+          'Should block even with approval present when protection-key missing');
+        assert.match(result.stderr, /protection key missing/i,
+          'Should indicate protection key is missing');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should allow non-MCP tools even without protection-key', async () => {
+      // Non-MCP tools should still pass through regardless of key presence
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-no-key-nonmcp-'));
+      const claudeDir = path.join(tmpDir, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      // No protection-key
+
+      try {
+        const result = await runHook('Read', {}, tmpDir);
+
+        assert.strictEqual(result.exitCode, 0,
+          'Non-MCP tools should pass through even without protection-key');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // ==========================================================================
   // Output Format
   // ==========================================================================
 

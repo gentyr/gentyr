@@ -4,25 +4,47 @@ A modular automation framework for Claude Code that provides MCP servers, specia
 
 ## Features
 
-- **9 MCP Servers**: Task tracking, specifications, session events, reviews, reporting, and more
+- **19 MCP Servers**: 9 core (task tracking, specs, reviews, reporting) + 10 infrastructure (Render, Vercel, GitHub, Supabase, Cloudflare, Resend, Elasticsearch, 1Password, Codecov, secret-sync)
 - **8 Framework Agents**: Code reviewer, test writer, investigator, deputy-CTO, etc. (projects can add their own)
-- **2 Slash Commands**: `/cto-report`, `/deputy-cto`
+- **4 Slash Commands**: `/cto-report`, `/deputy-cto`, `/setup-gentyr`, `/push-secrets`
 - **11 Automation Hooks**: Pre-commit review, antipattern detection, API key rotation, usage optimization
 - **Git Integration**: Husky hooks for pre-commit, post-commit, and pre-push
+- **Project Scaffolding**: `setup.sh --scaffold` creates new projects from templates with the full stack
 
 ## Setup
 
 All commands run from the framework directory. `--path` specifies the target project.
 
+### Scaffold a New Project
+
+```bash
+scripts/setup.sh --scaffold --path /path/to/new-project
+```
+
+Creates a new project from templates with pnpm workspace, TypeScript config, backend boilerplate, shared packages, and directory structure. After scaffolding, install GENTYR with the command below.
+
 ### Install
 
 ```bash
-sudo scripts/setup.sh --path /path/to/project --protect
+sudo scripts/reinstall.sh --path /path/to/project
 ```
 
-This creates a `.claude-framework` symlink in the target project, sets up `.claude/` symlinks, generates configs, installs husky hooks, builds MCP servers, and **makes critical files root-owned** so agents cannot bypass security mechanisms.
+This is the recommended single command for installing GENTYR. It handles everything:
 
-Protection is the default way to use this framework. Without it, agents can modify their own hook scripts, settings, and eslint config — defeating the point of the guardrails. Protected files:
+1. **Unprotects** existing files (safe on fresh installs)
+2. **Installs** framework — symlinks, configs, husky hooks, MCP server build, automation service
+3. **Protects** critical files — makes them root-owned so agents cannot bypass security mechanisms
+
+After installation:
+
+1. **Start a new Claude Code session**
+2. **Run `/setup-gentyr`** to configure credentials interactively
+   - Discovers your 1Password vaults
+   - Maps credential keys to `op://` references (no secrets on disk)
+   - Writes `.claude/vault-mappings.json` with only vault references
+3. **Restart Claude Code** to activate MCP servers with credentials
+
+**Protected files** (root-owned after install):
 
 - `.claude/hooks/pre-commit-review.js` — commit approval gate
 - `.claude/hooks/bypass-approval-hook.js` — CTO bypass mechanism
@@ -32,6 +54,8 @@ Protection is the default way to use this framework. Without it, agents can modi
 - `.claude/hooks/protected-actions.json` — MCP action protection config (with `--protect-mcp`)
 - `.claude/protected-action-approvals.json` — MCP approval state (with `--protect-mcp`)
 - `.claude/settings.json` — hook configuration
+- `.claude/protection-key` — HMAC key for approval signing
+- `.mcp.json` — MCP server config (launcher references, no credentials)
 - `.husky/pre-commit` — git hook entry point
 - `eslint.config.js` — lint rules
 - `package.json` — lint-staged config
@@ -129,10 +153,10 @@ mcp__agent-reports__report_to_deputy_cto({
 
 ### Autonomous Mode
 
-The deputy-cto can run autonomously, triaging reports and handling routine decisions without user intervention:
+Autonomous mode is **enabled by default** when GENTYR is installed. The `setup.sh` script pre-populates `autonomous-mode.json` with all automations active. To disable:
 
 ```typescript
-mcp__deputy-cto__toggle_autonomous({ enabled: true })
+mcp__deputy-cto__toggle_autonomous_mode({ enabled: false })
 ```
 
 ### CTO Approval System for MCP Actions
@@ -180,15 +204,22 @@ mcp__deputy-cto__get_protected_action_request({ code: "A7X9K2" })
 
 A 10-minute timer service drives all background automation. Individual tasks have their own cooldowns, so each invocation only runs what's due.
 
+**CTO Activity Gate (24-Hour Requirement):**
+All automation requires the CTO to have run `/deputy-cto` within the past 24 hours. This fail-closed safety mechanism prevents runaway automation when the CTO is not actively engaged with the project. If the gate is closed, the hourly service logs the reason and exits without running any automations.
+
 **What it does (in order):**
 1. **Usage optimizer** - Fetches API quota, projects usage trajectory, adjusts spawn rates to target 90% utilization at reset
 2. **Report triage** - Checks for pending CTO reports (5-min cooldown)
 3. **Lint checker** - Runs ESLint and fixes errors (30-min cooldown)
-4. **Task runner** - Spawns agents for pending TODO tasks (15-min cooldown, 1 per section, max 4 concurrent)
-5. **Hourly tasks** - Plan executor, CLAUDE.md refactoring (55-min cooldown)
+4. **Task runner** - Spawns a separate Claude session for every pending TODO item >1h old (1h cooldown)
+5. **Preview/staging promotion** - Automated PR creation for environment promotion (6h/midnight cooldowns)
+6. **Health monitors** - Staging (3h) and production (1h) infrastructure health checks
+7. **Standalone antipattern hunter** - Repo-wide spec violation scan (3h cooldown, independent of git hooks)
+8. **Standalone compliance checker** - Random spec compliance audit (1h cooldown, picks one spec per run)
+9. **CLAUDE.md refactoring** - Refactors CLAUDE.md when it exceeds 25K characters (55-min cooldown)
 
 **Configuration files:**
-- `autonomous-mode.json` - Master switch (`enabled: true/false`)
+- `autonomous-mode.json` - Master config with per-feature toggles (all enabled by default)
 - `.claude/state/automation-config.json` - Cooldown defaults + dynamic adjustments
 - `.claude/state/usage-snapshots.json` - API usage history (7-day retention)
 
@@ -292,9 +323,11 @@ mcp__specs-browser__createSpec({
 │   │   ├── project-manager.md
 │   │   ├── repo-hygiene-expert.md
 │   │   └── test-writer.md
-│   ├── commands/               # 2 slash commands (.md)
+│   ├── commands/               # 4 slash commands (.md)
 │   │   ├── cto-report.md
-│   │   └── deputy-cto.md
+│   │   ├── deputy-cto.md
+│   │   ├── setup-gentyr.md
+│   │   └── push-secrets.md
 │   ├── hooks/                  # 11 hooks + 5 utility modules (.js)
 │   │   ├── pre-commit-review.js
 │   │   ├── antipattern-hunter-hook.js
@@ -306,9 +339,9 @@ mcp__specs-browser__createSpec({
 │   ├── mcp/                    # MCP documentation
 │   └── settings.json.template
 ├── packages/
-│   ├── mcp-servers/            # 9 TypeScript MCP servers
+│   ├── mcp-servers/            # 19 TypeScript MCP servers
 │   │   ├── src/
-│   │   │   ├── agent-tracker/
+│   │   │   ├── agent-tracker/  # Core servers
 │   │   │   ├── todo-db/
 │   │   │   ├── specs-browser/
 │   │   │   ├── session-events/
@@ -316,7 +349,17 @@ mcp__specs-browser__createSpec({
 │   │   │   ├── agent-reports/
 │   │   │   ├── deputy-cto/
 │   │   │   ├── cto-report/
-│   │   │   └── cto-reports/
+│   │   │   ├── cto-reports/
+│   │   │   ├── render/         # Infrastructure servers
+│   │   │   ├── vercel/
+│   │   │   ├── github/
+│   │   │   ├── cloudflare/
+│   │   │   ├── supabase/
+│   │   │   ├── resend/
+│   │   │   ├── elastic-logs/
+│   │   │   ├── onepassword/
+│   │   │   ├── codecov/
+│   │   │   └── secret-sync/
 │   │   ├── package.json
 │   │   └── tsconfig.json
 │   └── cto-dashboard/          # Ink-based CLI dashboard (invoked by /cto-report)
@@ -330,10 +373,20 @@ mcp__specs-browser__createSpec({
 │   ├── pre-commit
 │   ├── post-commit
 │   └── pre-push
+├── templates/                  # Project scaffolding templates
+│   ├── config/                 # Config files (package.json, tsconfig, etc.)
+│   └── scaffold/               # Project structure (packages, products, specs)
+├── docs/                       # Stack reference docs
+│   ├── STACK.md                # Official stack definition
+│   ├── SECRET-PATHS.md         # Canonical 1Password op:// paths
+│   └── SETUP-GUIDE.md          # Step-by-step credential setup
 ├── scripts/
-│   ├── setup.sh                # Install/uninstall script
+│   ├── setup.sh                # Install/uninstall/scaffold script
+│   ├── mcp-launcher.js         # Runtime credential resolver (1Password → env vars)
+│   ├── hooks/                  # Staged hooks (deployed to .claude/hooks/ during install)
+│   │   └── credential-health-check.js
 │   └── setup-automation-service.sh  # 10-min timer service
-├── .mcp.json.template          # MCP config template
+├── .mcp.json.template          # MCP config template (19 servers)
 ├── version.json                # Framework version
 └── README.md
 ```
@@ -352,20 +405,28 @@ When you run `setup.sh`, the following happens:
    - `.claude/settings.json` from template
 
 3. **MCP config generated**:
-   - `.mcp.json` from template with correct paths
+   - `.mcp.json` from template with correct paths (infrastructure servers routed through launcher)
 
-4. **Husky hooks installed**:
+4. **Vault mappings created** (if not exists):
+   - `.claude/vault-mappings.json` — empty template, populated by `/setup-gentyr`
+
+5. **Husky hooks installed**:
    - `.husky/pre-commit`
    - `.husky/post-commit`
    - `.husky/pre-push`
 
-5. **MCP servers built**:
+6. **MCP servers built**:
    - `npm install && npm run build` in `packages/mcp-servers/`
 
-6. **Gitignore updated**:
+7. **Staged hooks deployed**:
+   - Copies hooks from `scripts/hooks/` to `.claude/hooks/`
+
+8. **Gitignore updated**:
    - Runtime files excluded (`.db`, `*-state.json`, etc.)
 
 ## MCP Servers
+
+### Core Servers (project-local state)
 
 | Server | Purpose |
 |--------|---------|
@@ -378,6 +439,48 @@ When you run `setup.sh`, the following happens:
 | `deputy-cto` | Deputy-CTO decision management |
 | `cto-report` | CTO metrics and status (data aggregation) |
 | `cto-reports` | Historical report storage and retrieval |
+
+### Infrastructure Servers (opinionated stack)
+
+| Server | Purpose | Env Vars |
+|--------|---------|----------|
+| `render` | Render service management | `RENDER_API_KEY` |
+| `vercel` | Vercel deployment management | `VERCEL_TOKEN`, `VERCEL_TEAM_ID` |
+| `github` | GitHub repository and workflow management | `GITHUB_TOKEN` |
+| `cloudflare` | Cloudflare DNS management | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID` |
+| `supabase` | Supabase project management | `SUPABASE_ACCESS_TOKEN` |
+| `resend` | Resend email service | `RESEND_API_KEY` |
+| `elastic-logs` | Elasticsearch log querying | `ELASTIC_CLOUD_ID`, `ELASTIC_API_KEY` |
+| `onepassword` | 1Password vault management | `OP_SERVICE_ACCOUNT_TOKEN` |
+| `codecov` | Codecov coverage management | `CODECOV_TOKEN` |
+| `secret-sync` | Sync secrets from 1Password to Render/Vercel (values never reach agent) | `OP_SERVICE_ACCOUNT_TOKEN`, `RENDER_API_KEY`, `VERCEL_TOKEN` |
+
+Infrastructure server credentials are resolved at runtime by the **MCP Launcher** from 1Password vault mappings. Servers launch without credentials and fail gracefully until configured via `/setup-gentyr`.
+
+### MCP Launcher (Runtime Credential Resolution)
+
+Infrastructure MCP servers are started through `scripts/mcp-launcher.js`, which resolves credentials from 1Password at runtime:
+
+1. Reads `.claude/vault-mappings.json` for `op://` references
+2. Reads `.claude/hooks/protected-actions.json` for which keys each server needs
+3. Resolves each credential via `op read` (1Password CLI)
+4. Sets credentials as environment variables in the server process
+5. Imports and runs the actual MCP server
+
+**Credentials only exist in process memory — never written to disk.**
+
+`.claude/vault-mappings.json` contains only `op://` vault references (not secrets):
+```json
+{
+  "provider": "1password",
+  "mappings": {
+    "GITHUB_TOKEN": "op://Production/GitHub/token",
+    "RENDER_API_KEY": "op://Production/Render/api-key"
+  }
+}
+```
+
+This file is populated interactively by `/setup-gentyr` and is NOT blocked by credential-file-guard (it contains no secrets). Core servers (todo-db, specs-browser, etc.) run directly without the launcher since they need no external credentials.
 
 ### Using MCP Tools
 
@@ -517,22 +620,41 @@ cd .claude-framework/packages/mcp-servers
 npm run build
 ```
 
-### Symlinks broken
+### MCP servers missing credentials
+
+If you see "GENTYR: X credential mapping(s) not configured" on session start:
+
+```
+Run /setup-gentyr to configure credentials via 1Password discovery.
+Then restart Claude Code to activate MCP servers.
+```
+
+### Symlinks broken or need to update
 
 ```bash
-scripts/setup.sh --path /path/to/project
+sudo scripts/reinstall.sh --path /path/to/project
 ```
 
 ### Permission denied errors
 
-Protection is active. Either use `sudo` or unprotect first:
+Protection is active. Reinstall handles unprotect/protect automatically:
+
+```bash
+sudo scripts/reinstall.sh --path /path/to/project
+```
+
+For one-off manual changes, unprotect first then re-protect:
 
 ```bash
 sudo scripts/setup.sh --path /path/to/project --unprotect-only
+# ... make changes ...
+sudo scripts/setup.sh --path /path/to/project --protect-only
 ```
 
 ## Version History
 
+- **2.1.0**: MCP Launcher architecture. Credentials resolved from 1Password at runtime via `mcp-launcher.js` — no secrets on disk. Interactive `/setup-gentyr` with 1Password vault auto-discovery. SessionStart health check for missing credentials. Removed `--with-credentials` flag (all credential config happens in-session).
+- **2.0.0**: Opinionated stack framework. Added 10 infrastructure MCP servers (Render, Vercel, GitHub, Cloudflare, Supabase, Resend, Elasticsearch, 1Password, Codecov, secret-sync). Added `/setup-gentyr` and `/push-secrets` commands. Added project scaffolding (`--scaffold`). Added stack reference docs. Secret values never reach agent context.
 - **1.1.0**: Changed agent installation from directory symlink to individual file symlinks. Framework now provides 8 core agents; projects can add their own without conflicts.
 - **1.0.0**: Initial release with 9 MCP servers, 8 framework agents, 15 hooks
 

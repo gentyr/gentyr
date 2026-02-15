@@ -51,11 +51,9 @@ Use Grep and Read tools to search for anti-patterns. Focus on:
 - G011: Non-idempotent MCP tools
 
 **Component Specification Violations (specs/local/):**
-- ACTION-EXECUTOR: MCP tool errors, schema violations
-- PAGE-OBSERVER: Content script issues, DOM observation errors
-- SESSION-INTERCEPTOR: Auth extraction failures, request interception issues
-- API-INTEGRATOR: Missing rate limiting, retry logic issues
-- INTEGRATION-STRUCTURE: Missing required files, incorrect patterns
+- Check each local spec for component-specific requirements
+- Common violations: missing error handling, schema violations, auth issues, rate limiting gaps
+- Use `mcp__specs-browser__list_specs({ category: "local" })` to discover all local specs
 
 ### Step 3: Call Code-Reviewer
 
@@ -100,14 +98,14 @@ Do NOT spawn code-writer. Do NOT implement fixes yourself.
 | Tool | Description |
 |------|-------------|
 | `mcp__specs-browser__list_specs` | List all specs by category (local/global/reference) |
-| `mcp__specs-browser__get_spec` | Get full content of a spec by ID (e.g., "G001", "ACTION-EXECUTOR") |
+| `mcp__specs-browser__get_spec` | Get full content of a spec by ID (e.g., "G001", or any local spec ID) |
 
 ### Categories
 
 | Category | Description |
 |----------|-------------|
 | `global` | System-wide invariants (G001-G011) - apply to ALL code |
-| `local` | Component specifications (ACTION-EXECUTOR, PAGE-OBSERVER, SESSION-INTERCEPTOR, API-INTEGRATOR, etc.) |
+| `local` | Component specifications - use `list_specs({ category: "local" })` to discover |
 | `reference` | Reference documentation (TESTING, INTEGRATION-RESEARCH, MCP-PATTERNS, OFFLINE-WORK) |
 
 ### Common Spec IDs
@@ -121,11 +119,8 @@ Do NOT spawn code-writer. Do NOT implement fixes yourself.
 - G010: Session auth validation
 
 **Local (Component-specific):**
-- ACTION-EXECUTOR: MCP server
-- PAGE-OBSERVER: Chrome extension
-- SESSION-INTERCEPTOR: Frontend connector
-- API-INTEGRATOR: Backend connector
-- INTEGRATION-STRUCTURE: Integration directory structure
+- Use `mcp__specs-browser__list_specs({ category: "local" })` to discover all local specs
+- Each local spec defines component-specific requirements and anti-patterns to check
 
 ## Task Management (MCP Database)
 

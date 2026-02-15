@@ -52,11 +52,7 @@ The following files were modified to import from the new config-reader.js module
    - Uses dynamic cooldowns for: `hourly_tasks`, `triage_check`, `lint_checker`
    - Also imports and calls `runUsageOptimizer()` from usage-optimizer.js
 
-2. **plan-executor.js**
-   - Imports: `getCooldown`
-   - Uses dynamic cooldown for: `plan_executor`
-
-3. **antipattern-hunter-hook.js**
+2. **antipattern-hunter-hook.js**
    - Imports: `getCooldown`
    - Uses dynamic cooldown for: `antipattern_hunter`
 

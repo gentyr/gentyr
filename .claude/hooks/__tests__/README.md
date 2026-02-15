@@ -5,16 +5,26 @@ This directory contains tests for Claude Code hooks that implement critical auto
 ## Running Tests
 
 ```bash
-# Run all tests
+# Run all hook tests
 node --test .claude/hooks/__tests__/*.test.js
+
+# Run all tests (hooks + scripts)
+node --test .claude/hooks/__tests__/*.test.js scripts/__tests__/*.test.js
 
 # Run specific test file
 node --test .claude/hooks/__tests__/pre-commit-review.test.js
 node --test .claude/hooks/__tests__/cto-notification-hook.test.js
+node --test scripts/__tests__/setup-check.test.js
 
 # Run with detailed output
 node --test --test-reporter=spec .claude/hooks/__tests__/*.test.js
 ```
+
+## Related Tests
+
+See also:
+- **Scripts Tests**: [`scripts/__tests__/`](../../../scripts/__tests__/) - Tests for standalone utility scripts
+  - `setup-check.test.js` - Tests for credential evaluation script
 
 ## Test Files
 

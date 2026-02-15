@@ -59,6 +59,7 @@ describe('Deputy-CTO Server', () => {
     claudeMdRefactorEnabled: boolean;
     lastModified: string | null;
     modifiedBy: string | null;
+    lastCtoBriefing: string | null;
   }
 
   const getAutonomousConfig = (filePath: string): AutonomousModeConfig => {
@@ -68,6 +69,7 @@ describe('Deputy-CTO Server', () => {
       claudeMdRefactorEnabled: true,
       lastModified: null,
       modifiedBy: null,
+      lastCtoBriefing: null,
     };
 
     if (!fs.existsSync(filePath)) {
@@ -114,9 +116,23 @@ describe('Deputy-CTO Server', () => {
     const config = getAutonomousConfig(cfgPath);
     const nextRunIn = config.enabled ? getNextRunMinutes(stPath) : null;
 
+    // Calculate CTO activity gate status
+    let hoursSinceLastBriefing: number | null = null;
+    let ctoGateOpen = false;
+    if (config.lastCtoBriefing) {
+      const briefingTime = new Date(config.lastCtoBriefing).getTime();
+      if (!isNaN(briefingTime)) {
+        hoursSinceLastBriefing = Math.floor((Date.now() - briefingTime) / (1000 * 60 * 60));
+        ctoGateOpen = hoursSinceLastBriefing < 24;
+      }
+    }
+
     let message: string;
     if (!config.enabled) {
       message = 'Autonomous Deputy CTO Mode is DISABLED.';
+    } else if (!ctoGateOpen) {
+      const ageStr = hoursSinceLastBriefing !== null ? `${hoursSinceLastBriefing}h ago` : 'never';
+      message = `Autonomous Deputy CTO Mode is ENABLED but CTO activity gate is CLOSED (last briefing: ${ageStr}). Run /deputy-cto to reactivate.`;
     } else if (nextRunIn === null) {
       message = 'Autonomous Deputy CTO Mode is ENABLED. Status unknown (state file error).';
     } else if (nextRunIn === 0) {
@@ -131,6 +147,9 @@ describe('Deputy-CTO Server', () => {
       claudeMdRefactorEnabled: config.claudeMdRefactorEnabled,
       lastModified: config.lastModified,
       nextRunIn,
+      lastCtoBriefing: config.lastCtoBriefing,
+      ctoGateOpen,
+      hoursSinceLastBriefing,
       message,
     };
   };
@@ -407,11 +426,19 @@ describe('Deputy-CTO Server', () => {
   });
 
   describe('G001 Fail-Closed: getAutonomousModeStatus()', () => {
-    it('should show "status unknown" when nextRunMinutes is null (state file corrupt)', () => {
-      // Create valid config (enabled)
+    it('should show "status unknown" when nextRunMinutes is null (state file corrupt) and gate is open', () => {
+      const now = Date.now();
+      const recentBriefing = new Date(now - 5 * 60 * 60 * 1000).toISOString(); // 5h ago
+
+      // Create valid config (enabled) with recent briefing
       fs.writeFileSync(
         configPath,
-        JSON.stringify({ enabled: true, planExecutorEnabled: true, claudeMdRefactorEnabled: true })
+        JSON.stringify({
+          enabled: true,
+          planExecutorEnabled: true,
+          claudeMdRefactorEnabled: true,
+          lastCtoBriefing: recentBriefing,
+        })
       );
 
       // Create corrupt state file
@@ -422,6 +449,7 @@ describe('Deputy-CTO Server', () => {
       const status = getAutonomousModeStatus(configPath, statePath);
 
       expect(status.enabled).toBe(true);
+      expect(status.ctoGateOpen).toBe(true);
       expect(status.nextRunIn).toBe(null);
       expect(status.message).toBe(
         'Autonomous Deputy CTO Mode is ENABLED. Status unknown (state file error).'
@@ -443,10 +471,13 @@ describe('Deputy-CTO Server', () => {
       expect(status.message).toBe('Autonomous Deputy CTO Mode is DISABLED.');
     });
 
-    it('should show ready to run when nextRunIn is 0', () => {
+    it('should show ready to run when nextRunIn is 0 and gate is open', () => {
+      const now = Date.now();
+      const recentBriefing = new Date(now - 1 * 60 * 60 * 1000).toISOString(); // 1h ago
+
       fs.writeFileSync(
         configPath,
-        JSON.stringify({ enabled: true })
+        JSON.stringify({ enabled: true, lastCtoBriefing: recentBriefing })
       );
       // No state file means first run (nextRunIn = 0)
 
@@ -454,24 +485,28 @@ describe('Deputy-CTO Server', () => {
 
       expect(status.enabled).toBe(true);
       expect(status.nextRunIn).toBe(0);
+      expect(status.ctoGateOpen).toBe(true);
       expect(status.message).toBe(
         'Autonomous Deputy CTO Mode is ENABLED. Ready to run (waiting for service trigger).'
       );
     });
 
-    it('should show minutes until next run', () => {
+    it('should show minutes until next run when gate is open', () => {
+      const now = Date.now();
+      const recentBriefing = new Date(now - 5 * 60 * 60 * 1000).toISOString(); // 5h ago
+
       fs.writeFileSync(
         configPath,
-        JSON.stringify({ enabled: true })
+        JSON.stringify({ enabled: true, lastCtoBriefing: recentBriefing })
       );
 
-      const now = Date.now();
       const lastRun = now - (30 * 60 * 1000); // 30 minutes ago
       fs.writeFileSync(statePath, JSON.stringify({ lastRun }));
 
       const status = getAutonomousModeStatus(configPath, statePath);
 
       expect(status.enabled).toBe(true);
+      expect(status.ctoGateOpen).toBe(true);
       expect(status.nextRunIn).toBeGreaterThan(0);
       expect(status.message).toContain('Next run in ~');
       expect(status.message).toContain('minute(s)');
@@ -490,6 +525,74 @@ describe('Deputy-CTO Server', () => {
       expect(status.message).toBe('Autonomous Deputy CTO Mode is DISABLED.');
 
       consoleErrorSpy.mockRestore();
+    });
+
+    it('should show CTO gate CLOSED when no briefing recorded (G001 fail-closed)', () => {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ enabled: true, lastCtoBriefing: null })
+      );
+
+      const status = getAutonomousModeStatus(configPath, statePath);
+
+      expect(status.enabled).toBe(true);
+      expect(status.ctoGateOpen).toBe(false);
+      expect(status.hoursSinceLastBriefing).toBe(null);
+      expect(status.lastCtoBriefing).toBe(null);
+      expect(status.message).toContain('CTO activity gate is CLOSED');
+      expect(status.message).toContain('last briefing: never');
+    });
+
+    it('should show CTO gate OPEN when briefing is recent (<24h)', () => {
+      const now = Date.now();
+      const recentBriefing = new Date(now - (12 * 60 * 60 * 1000)).toISOString(); // 12h ago
+
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ enabled: true, lastCtoBriefing: recentBriefing })
+      );
+
+      const status = getAutonomousModeStatus(configPath, statePath);
+
+      expect(status.enabled).toBe(true);
+      expect(status.ctoGateOpen).toBe(true);
+      expect(status.hoursSinceLastBriefing).toBe(12);
+      expect(status.lastCtoBriefing).toBe(recentBriefing);
+      // When gate is open and nextRunIn is 0 (no state file), should say "Ready to run"
+      expect(status.message).toContain('Autonomous Deputy CTO Mode is ENABLED');
+    });
+
+    it('should show CTO gate CLOSED when briefing is old (>=24h)', () => {
+      const now = Date.now();
+      const oldBriefing = new Date(now - (30 * 60 * 60 * 1000)).toISOString(); // 30h ago
+
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ enabled: true, lastCtoBriefing: oldBriefing })
+      );
+
+      const status = getAutonomousModeStatus(configPath, statePath);
+
+      expect(status.enabled).toBe(true);
+      expect(status.ctoGateOpen).toBe(false);
+      expect(status.hoursSinceLastBriefing).toBe(30);
+      expect(status.lastCtoBriefing).toBe(oldBriefing);
+      expect(status.message).toContain('CTO activity gate is CLOSED');
+      expect(status.message).toContain('last briefing: 30h ago');
+    });
+
+    it('should handle invalid briefing timestamp gracefully (G001 fail-closed)', () => {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ enabled: true, lastCtoBriefing: 'not-a-date' })
+      );
+
+      const status = getAutonomousModeStatus(configPath, statePath);
+
+      expect(status.enabled).toBe(true);
+      expect(status.ctoGateOpen).toBe(false);
+      expect(status.hoursSinceLastBriefing).toBe(null);
+      expect(status.message).toContain('CTO activity gate is CLOSED');
     });
   });
 
@@ -1346,6 +1449,177 @@ describe('Deputy-CTO Server', () => {
         expect(result.found).toBe(false);
         expect(result.message).toContain('Error reading approval requests');
       });
+    });
+  });
+
+  // ==========================================================================
+  // CTO Briefing Recording (CTO Activity Gate)
+  // ==========================================================================
+
+  describe('CTO Briefing Recording', () => {
+    const recordCtoBriefing = () => {
+      const config = getAutonomousConfig(configPath);
+      const now = new Date().toISOString();
+      config.lastCtoBriefing = now;
+      config.lastModified = now;
+      config.modifiedBy = 'deputy-cto';
+
+      try {
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        return {
+          recorded: true,
+          timestamp: now,
+          message: `CTO briefing activity recorded at ${now}. Automation gate refreshed for 24 hours.`,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          recorded: false,
+          timestamp: now,
+          message: `Failed to record CTO briefing timestamp: ${message}`,
+        };
+      }
+    };
+
+    it('should record CTO briefing timestamp on first call', () => {
+      // No config file exists yet
+      expect(fs.existsSync(configPath)).toBe(false);
+
+      const result = recordCtoBriefing();
+
+      expect(result.recorded).toBe(true);
+      expect(result.timestamp).toBeDefined();
+      expect(result.message).toContain('CTO briefing activity recorded');
+      expect(result.message).toContain('Automation gate refreshed for 24 hours');
+
+      // Verify config file was created
+      expect(fs.existsSync(configPath)).toBe(true);
+
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      expect(config.lastCtoBriefing).toBe(result.timestamp);
+      expect(config.lastModified).toBe(result.timestamp);
+      expect(config.modifiedBy).toBe('deputy-cto');
+    });
+
+    it('should update existing briefing timestamp', () => {
+      // Create initial config with old briefing
+      const oldBriefing = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(); // 25h ago
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ enabled: true, lastCtoBriefing: oldBriefing })
+      );
+
+      const result = recordCtoBriefing();
+
+      expect(result.recorded).toBe(true);
+
+      // Verify timestamp was updated
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      expect(config.lastCtoBriefing).not.toBe(oldBriefing);
+      expect(config.lastCtoBriefing).toBe(result.timestamp);
+
+      // Verify it's recent (within last minute)
+      const briefingTime = new Date(config.lastCtoBriefing).getTime();
+      const age = Date.now() - briefingTime;
+      expect(age).toBeLessThan(60 * 1000); // Less than 1 minute old
+    });
+
+    it('should preserve other config fields when recording briefing', () => {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          claudeMdRefactorEnabled: false,
+          lastModified: '2026-01-15T10:00:00Z',
+          modifiedBy: 'cto',
+        })
+      );
+
+      const result = recordCtoBriefing();
+
+      expect(result.recorded).toBe(true);
+
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      expect(config.enabled).toBe(true);
+      expect(config.claudeMdRefactorEnabled).toBe(false);
+      expect(config.lastCtoBriefing).toBe(result.timestamp);
+      expect(config.modifiedBy).toBe('deputy-cto'); // Updated
+    });
+
+    it('should handle missing config file (creates with defaults)', () => {
+      // Delete config file but leave directory
+      if (fs.existsSync(configPath)) {
+        fs.unlinkSync(configPath);
+      }
+
+      const result = recordCtoBriefing();
+
+      // Should succeed - getAutonomousConfig returns defaults which then get written
+      expect(result.recorded).toBe(true);
+      expect(fs.existsSync(configPath)).toBe(true);
+
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      expect(config.lastCtoBriefing).toBe(result.timestamp);
+    });
+
+    it('should fail gracefully when config file cannot be written (G001)', () => {
+      // Create config file as read-only
+      fs.writeFileSync(configPath, JSON.stringify({ enabled: true }));
+      fs.chmodSync(configPath, 0o444); // Read-only
+
+      const result = recordCtoBriefing();
+
+      // G001: Should fail-closed with error
+      expect(result.recorded).toBe(false);
+      expect(result.timestamp).toBeDefined();
+      expect(result.message).toContain('Failed to record CTO briefing timestamp');
+
+      // Restore permissions for cleanup
+      fs.chmodSync(configPath, 0o644);
+    });
+
+    it('should record timestamp in ISO 8601 format', () => {
+      const result = recordCtoBriefing();
+
+      expect(result.recorded).toBe(true);
+
+      // Verify ISO 8601 format
+      const isoRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+      expect(result.timestamp).toMatch(isoRegex);
+
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      expect(config.lastCtoBriefing).toMatch(isoRegex);
+
+      // Verify timestamp is parseable
+      const time = new Date(config.lastCtoBriefing).getTime();
+      expect(isNaN(time)).toBe(false);
+    });
+
+    it('should set modifiedBy to "deputy-cto"', () => {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ enabled: true, modifiedBy: 'cto' })
+      );
+
+      const result = recordCtoBriefing();
+
+      expect(result.recorded).toBe(true);
+
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      expect(config.modifiedBy).toBe('deputy-cto');
+    });
+
+    it('should result in CTO gate opening after recording', () => {
+      const result = recordCtoBriefing();
+
+      expect(result.recorded).toBe(true);
+
+      // Check status immediately after
+      const status = getAutonomousModeStatus(configPath, statePath);
+
+      expect(status.ctoGateOpen).toBe(true);
+      expect(status.hoursSinceLastBriefing).toBe(0);
+      expect(status.lastCtoBriefing).toBe(result.timestamp);
     });
   });
 });

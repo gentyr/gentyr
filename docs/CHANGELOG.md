@@ -1,5 +1,242 @@
 # GENTYR Framework Changelog
 
+## 2026-02-15 - Usage Optimizer Improvements
+
+### Enhanced
+
+**Six behavioral improvements to usage-optimizer.js:**
+
+1. **MIN_EFFECTIVE_MINUTES floor constant**
+   - Added 2-minute floor to prevent cooldowns from going below practical minimums
+   - `applyFactor()` clamps adjusted cooldowns to never go below 2 minutes
+   - Prevents impractical sub-minute cooldowns that cause scheduler thrashing
+
+2. **Reset-boundary detection**
+   - New `RESET_BOUNDARY_DROP_THRESHOLD = 0.30` constant
+   - Detects when 5-hour utilization drops >30pp between snapshots
+   - Indicates quota reset occurred, clears trajectory data to start fresh
+   - Prevents false trajectory calculations across reset boundaries
+
+3. **EMA rate smoothing**
+   - New `calculateEmaRate()` function with alpha=0.3
+   - Exponential moving average smooths noisy utilization rates
+   - Reduces overreaction to single anomalous snapshots
+   - More stable cooldown adjustments over time
+
+4. **Max-key awareness**
+   - `calculateAggregate()` now tracks `maxKey5h` and `maxKey7d`
+   - Uses highest utilization across all keys for trajectory projection
+   - Prevents underutilization when one key is saturated
+   - Ensures system doesn't spawn tasks on exhausted keys
+
+5. **Per-key rate tracking**
+   - New `perKeyUtilization` object tracks each key's 5h/7d rates
+   - Logs warnings when any individual key exceeds 80% utilization
+   - Helps identify single-key bottlenecks before hitting hard limits
+   - Provides visibility into multi-key quota distribution
+
+6. **Enhanced logging**
+   - Direction tracking: "projected-at-reset falling behind target" messages
+   - `hoursUntilReset` included in all adjustment logs and config writes
+   - More context for understanding optimizer behavior in production
+
+### Changed
+
+**Modified Files:**
+- `.claude/hooks/usage-optimizer.js` - All 6 improvements implemented
+- `.claude/hooks/__tests__/usage-optimizer.test.js` - 27 new behavioral tests added
+
+**Total Changes:** +412 lines added (including tests)
+
+### Testing
+
+**New Test Suite (27 behavioral tests):**
+- MIN_EFFECTIVE_MINUTES floor enforcement tests (4)
+- Reset-boundary detection tests (5)
+- EMA rate smoothing tests (5)
+- Max-key awareness tests (4)
+- Per-key utilization tracking tests (4)
+- Enhanced logging tests (5)
+
+**Test Results:**
+- All 107 usage-optimizer tests passing (80 existing + 27 new)
+- Code review: No violations
+- TypeScript compilation: Passed
+
+### Technical Details
+
+**Behavioral Examples:**
+
+**Floor Enforcement:**
+```
+Target: 1 min cooldown → Clamped to 2 min
+Target: 0.5 min cooldown → Clamped to 2 min
+Prevents scheduler thrashing
+```
+
+**Reset Detection:**
+```
+Snapshot 1: 5h=0.75 (75%)
+Snapshot 2: 5h=0.40 (40%)
+Drop = 35pp > 30pp threshold → Reset detected
+Action: Clear trajectory, start fresh
+```
+
+**EMA Smoothing:**
+```
+Snapshot 1: rate=8.0 (spike)
+Snapshot 2: rate=2.0 (normal)
+EMA rate = 0.3*8.0 + 0.7*2.0 = 3.8 (smoothed)
+Prevents overreaction to outliers
+```
+
+**Max-Key Awareness:**
+```
+Key A: 5h=0.60, 7d=0.50
+Key B: 5h=0.85, 7d=0.70 (saturated)
+Aggregate uses maxKey: 5h=0.85, 7d=0.70
+Prevents spawning tasks on exhausted keys
+```
+
+### Use Cases
+
+**Example 1: Quota Reset Boundary**
+- System samples quota at 11:58 AM (75% used)
+- Quota resets at 12:00 PM
+- Next sample at 12:08 PM (5% used)
+- Reset detector triggers, clears trajectory
+- Prevents false "rate slowed dramatically" calculation
+
+**Example 2: Single-Key Saturation**
+- Project has 3 API keys
+- Key #1 hits 90% utilization
+- Keys #2 and #3 at 40% utilization
+- Max-key tracking uses 90% for trajectory
+- System reduces spawn rate to avoid key exhaustion
+
+**Example 3: Noisy Environment**
+- Network glitch causes one anomalous sample (spike)
+- EMA smoothing reduces impact of outlier
+- Cooldown adjustment remains stable
+- Prevents unnecessary spawn rate swings
+
+### Backward Compatibility
+
+Fully backward compatible:
+- All changes are internal to usage-optimizer.js
+- No config schema changes
+- No MCP tool changes
+- Existing snapshots remain valid
+- No breaking changes to hourly-automation.js integration
+
+---
+
+## 2026-02-15 - CTO Activity Gate for Autonomous Automation
+
+### Added
+
+**24-Hour CTO Activity Gate**
+- New fail-closed safety mechanism for autonomous automation system
+- All timer-based automations (task runner, health monitors, promotion pipelines, etc.) require CTO briefing within past 24 hours
+- `checkCtoActivityGate()` function validates CTO activity before running any automation
+- Prevents runaway automation when CTO is not actively engaged with the project
+
+**Deputy-CTO MCP Tool**
+- `mcp__deputy-cto__record_cto_briefing` - Records timestamp when CTO runs `/deputy-cto`
+- Updates `lastCtoBriefing` in deputy-cto config database
+- Automatically refreshes the 24-hour automation window
+
+**Configuration Schema Extension**
+- Added `lastCtoBriefing` field to deputy-cto config (ISO 8601 timestamp)
+- Persisted in `.claude/deputy-cto-config.db` SQLite database
+
+**Status Reporting**
+- `mcp__deputy-cto__get_status` now includes gate status:
+  - `activityGate.open` - Whether automation is currently allowed
+  - `activityGate.hoursSinceLastBriefing` - Hours since last CTO activity
+  - `activityGate.reason` - Human-readable explanation
+
+### Changed
+
+**Hourly Automation Service**
+- Modified `hourly-automation.js` main() to check CTO activity gate before running
+- If gate is closed, logs reason and exits gracefully (no automations run)
+- Gate check happens immediately after config load
+
+**`/deputy-cto` Command**
+- Added `mcp__deputy-cto__record_cto_briefing()` as step 0 in opening briefing
+- CTO activity is automatically recorded at the start of every briefing session
+- Ensures automation window is refreshed each time CTO engages
+
+### Security Features (G001 Compliance)
+
+**Fail-Closed Design:**
+- Missing `lastCtoBriefing` field → automation gated
+- Invalid timestamp → automation gated
+- Parse errors → automation gated
+- Timestamp >24h old → automation gated
+
+**Why This Matters:**
+- Prevents autonomous agents from running indefinitely without human oversight
+- Ensures CTO remains engaged with automated decision-making
+- Creates natural checkpoint for reviewing autonomous actions (daily)
+- Reduces risk of automation drift from project goals
+
+### Technical Details
+
+**Files Modified (5 total):**
+- `packages/mcp-servers/src/deputy-cto/types.ts` - Added lastCtoBriefing to config type, new tool schemas
+- `packages/mcp-servers/src/deputy-cto/server.ts` - Added recordCtoBriefing() function, registered tool
+- `.claude/hooks/hourly-automation.js` - Added checkCtoActivityGate() and gate check in main()
+- `.claude/commands/deputy-cto.md` - Added record_cto_briefing() as step 0
+- `packages/mcp-servers/src/deputy-cto/__tests__/deputy-cto.test.ts` - 12 new tests for gate feature
+
+**Total Changes:** +203 lines added, -14 lines removed
+
+### Testing
+
+**New Test Suite (12 tests):**
+- `record_cto_briefing` tool functionality
+- `get_status` includes gate information
+- Gate opens when briefing is recent (<24h)
+- Gate closes when briefing is old (>24h)
+- Gate closes when briefing is missing
+- Gate closes on invalid timestamp
+- Fail-closed behavior on all error conditions
+
+**Test Results:**
+- TypeScript compilation: ✓ Passed
+- All 330 tests passing (318 existing + 12 new)
+- Code review: ✓ No violations
+
+### Use Cases
+
+**Example 1: Fresh Installation**
+- User installs GENTYR, autonomous mode enabled by default
+- Hourly automation runs, checks gate → closed (no briefing yet)
+- User runs `/deputy-cto` → briefing recorded
+- Hourly automation runs, checks gate → open (briefing fresh)
+
+**Example 2: Inactive Project**
+- User is away for 2 days
+- Hourly automation runs every hour → gate closed after 24h
+- No tasks spawned, no promotions, no health checks
+- User returns, runs `/deputy-cto` → automation resumes
+
+**Example 3: Active Development**
+- User runs `/deputy-cto` daily as part of workflow
+- Gate always open, automation runs normally
+- Natural cadence of human oversight and automated execution
+
+### Backward Compatibility
+
+Fully backward compatible:
+- Existing deputy-cto config database migrates seamlessly (lastCtoBriefing defaults to null)
+- First run of `/deputy-cto` populates the field
+- Projects without deputy-cto installed are unaffected (no automation anyway)
+
+---
+
 ## 2026-02-03 - CTO Approval System for MCP Actions
 
 ### Added

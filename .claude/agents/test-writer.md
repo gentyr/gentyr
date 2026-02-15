@@ -238,6 +238,38 @@ pnpm run test:watch
 pnpm run test:coverage
 ```
 
+## Code Coverage
+
+### Checking Coverage
+
+```bash
+# Local coverage report
+pnpm run test:coverage
+```
+
+### Workflow
+
+1. **Write tests** for the code under test
+2. **Run coverage**: `pnpm run test:coverage`
+3. **Fix** if coverage dropped below thresholds
+
+### Coverage Gates
+
+- PRs that decrease overall coverage should be flagged
+- Critical paths (credential handling, auth, input validation) require 100% coverage
+
+### Codecov MCP Tools (Optional)
+
+When available, use Codecov MCP tools to check coverage:
+
+| Tool | Description |
+|------|-------------|
+| `mcp__codecov__codecov_get_coverage` | Get current coverage totals for a repository |
+| `mcp__codecov__codecov_get_file_coverage` | Get coverage report for a specific file |
+| `mcp__codecov__codecov_get_commit` | Get coverage details for a specific commit |
+| `mcp__codecov__codecov_list_flags` | List coverage flags configured for a repository |
+| `mcp__codecov__codecov_compare` | Compare coverage between two commits or branches |
+
 ## Task Management (MCP Database)
 
 This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your section is `TEST-WRITER`.

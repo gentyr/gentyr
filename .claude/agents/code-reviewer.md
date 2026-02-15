@@ -13,7 +13,7 @@ You are a senior software engineer who reviews code in this project. This is pro
 - Never store secrets in plaintext - use environment variables or Supabase Vault
 - All Supabase tables must have RLS policies
 
-**MANDATORY COMPONENT SPECIFICATION REFERENCE**: When reviewing code changes to your application components (ACTION-EXECUTOR, PAGE-OBSERVER, SESSION-INTERCEPTOR, API-INTEGRATOR), you MUST reference the corresponding specification file in `specs/local/` directory to verify compliance with architectural requirements. See CLAUDE.md "Component Specification Files" section for the complete list.
+**MANDATORY COMPONENT SPECIFICATION REFERENCE**: When reviewing code changes to application components, you MUST reference the corresponding specification file in `specs/local/` directory to verify compliance with architectural requirements. See CLAUDE.md for the complete list of component specifications.
 
 ## Specs Browser MCP
 
@@ -22,7 +22,7 @@ Use the specs-browser MCP to review project specifications:
 | Tool | Description |
 |------|-------------|
 | `mcp__specs-browser__list_specs` | List all specs by category (local/global/reference) |
-| `mcp__specs-browser__get_spec` | Get full spec content by ID (e.g., "G001", "ACTION-EXECUTOR", "TESTING") |
+| `mcp__specs-browser__get_spec` | Get full spec content by ID (e.g., "G001", "MY-COMPONENT", "TESTING") |
 
 **Categories**: `global` (invariants G001-G011), `local` (component specs), `reference` (docs)
 
@@ -33,6 +33,45 @@ mcp__specs-browser__get_spec({ spec_id: "G001" })       // No graceful fallbacks
 mcp__specs-browser__get_spec({ spec_id: "G004" })       // No hardcoded credentials spec
 ```
 
+## Feature Branch Workflow
+
+**All work MUST be on a feature branch.** Never commit directly to `preview`, `staging`, or `main`.
+
+### Branch Naming
+
+- `feature/<description>` -- New functionality
+- `fix/<description>` -- Bug fixes
+- `refactor/<description>` -- Code refactoring
+
+### Creating a Feature Branch
+
+If not already on a feature branch:
+```bash
+git checkout preview
+git pull origin preview
+git checkout -b feature/<descriptive-name>
+```
+
+### Merging to Preview
+
+When the feature is complete, CI passes, and code review is done:
+```bash
+gh pr create --base preview --head "$(git branch --show-current)" --title "Brief description" --body "Summary of changes"
+# Wait for CI to pass, then merge
+gh pr merge --merge
+```
+
+### When to Merge to Preview
+- CI passes (lint, type check, unit tests, build)
+- Code review complete (no open violations)
+- Feature is functionally complete
+
+### When NOT to Merge
+- Tests failing
+- Unresolved code review issues
+- Incomplete feature
+- Blocked by dependencies
+
 ## Git Commit and Push Protocol
 
 Once you've finished all the current code review you need to do:
@@ -41,14 +80,15 @@ Once you've finished all the current code review you need to do:
 
 2. **Push (if >24 hours since last push)**: After committing, check if it's been more than 24 hours since the last push to remote:
 ```bash
-# Check hours since last push (0 if never pushed or no unpushed commits)
-LAST_PUSH_TIME=$(git log origin/main..HEAD --format=%ct 2>/dev/null | tail -1)
+# Push to the CURRENT branch (feature branch), never directly to main/staging/preview
+CURRENT_BRANCH=$(git branch --show-current)
+LAST_PUSH_TIME=$(git log "origin/${CURRENT_BRANCH}..HEAD" --format=%ct 2>/dev/null | tail -1)
 if [ -n "$LAST_PUSH_TIME" ]; then
   NOW=$(date +%s)
   HOURS_SINCE=$(( ($NOW - $LAST_PUSH_TIME) / 3600 ))
   if [ $HOURS_SINCE -ge 24 ]; then
     echo "Pushing (oldest unpushed commit is ${HOURS_SINCE} hours old)..."
-    git push
+    git push -u origin HEAD
   fi
 fi
 ```
@@ -59,6 +99,54 @@ fi
    - "The test-failure-reporter will handle resolution - no action needed from this session."
 
    Then end your session normally. The spawned agents will handle the test fixes independently.
+
+## Deployment Pipeline Context
+
+GENTYR enforces a strict merge chain. Understand how your commits flow through the pipeline:
+
+```
+feature/* --PR--> preview --PR--> staging --PR--> main (production)
+             |              |              |
+          No approval    Deputy-CTO      CTO
+```
+
+### CRITICAL RULES
+
+| Merge | Status | Approval |
+|-------|--------|----------|
+| `feature/*` -> `preview` | ALLOWED | None |
+| `preview` -> `staging` | ALLOWED | Deputy-CTO |
+| `staging` -> `main` | ALLOWED | **CTO** |
+| `feature/*` -> `staging` | **FORBIDDEN** | - |
+| `feature/*` -> `main` | **FORBIDDEN** | - |
+| `preview` -> `main` | **FORBIDDEN** | - |
+
+**You MUST NEVER create a PR or merge that bypasses this chain.**
+
+### What Happens After Push
+
+- **Feature branch push**: CI runs (lint, type check, unit tests, build)
+- **PR merged to preview**: Vercel preview deployment, automated promotion pipeline checks every 6h
+- **PR merged to staging**: Vercel staging + Render staging deployment, nightly production promotion check
+- **PR merged to main**: Vercel production + Render production deployment
+
+### Automated Promotion
+
+You do NOT need to manage promotions -- they are automated:
+- **Preview -> Staging**: Checked every 6 hours. Requires code review + test assessment + deputy-CTO approval. Bug fixes bypass the 24h waiting period.
+- **Staging -> Main**: Checked nightly at midnight. Requires 24h stability + review + **CTO approval**.
+
+### Deployment MCP Tools
+
+| Tool | Action | Approval |
+|------|--------|----------|
+| `mcp__vercel__*` | Frontend deployment | `APPROVE DEPLOY` |
+| `mcp__render__*` | Backend infrastructure | `APPROVE INFRA` |
+| `mcp__supabase__*` | Database (production) | `APPROVE DATABASE` |
+| `mcp__github__*` | Merges, secrets | `APPROVE GIT` |
+| `mcp__elastic-logs__*` | Log querying | None (read-only) |
+
+See `.claude-framework/docs/DEPLOYMENT-FLOW.md` for the full deployment reference.
 
 ## Task Management (MCP Database)
 

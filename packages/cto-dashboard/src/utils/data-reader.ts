@@ -156,7 +156,6 @@ export interface SystemHealth {
 export interface AutomationCooldowns {
   hourly_tasks: number;
   triage_check: number;
-  plan_executor: number;
   antipattern_hunter: number;
   schema_mapper: number;
   lint_checker: number;
@@ -954,12 +953,11 @@ export function getKeyRotationMetrics(hours: number): KeyRotationMetrics | null 
 const DEFAULT_COOLDOWNS: AutomationCooldowns = {
   hourly_tasks: 55,
   triage_check: 5,
-  plan_executor: 55,
   antipattern_hunter: 360,
   schema_mapper: 1440,
   lint_checker: 30,
   todo_maintenance: 15,
-  task_runner: 15,
+  task_runner: 60,
   triage_per_item: 60,
 };
 

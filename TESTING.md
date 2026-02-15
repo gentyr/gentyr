@@ -277,17 +277,17 @@ node .claude/hooks/cto-notification-hook.js
 **Expected:** Deputy-CTO spawned to triage; reports move to completed
 **Time Acceleration:** Modify `lastTriageCheck` in hourly-automation-state.json
 
-#### Test 4.3: Plan Execution
-**Natural Action:** Let hourly automation execute pending plans
+#### Test 4.3: Task Runner (Hourly TODO Processing)
+**Natural Action:** Let hourly automation process pending TODO items
 **Steps:**
 ```
-1. Enable autonomous mode with planExecutorEnabled: true
-2. Create PLAN.md with pending work items
-3. Set lastRun to 56+ minutes ago
+1. Enable autonomous mode with taskRunnerEnabled: true
+2. Create TODO items via mcp__todo-db__create_task (wait >1h or backdate)
+3. Set lastTaskRunnerCheck to 61+ minutes ago
 4. Run: node .claude/hooks/hourly-automation.js
 ```
-**Expected:** Agent workflow spawned (investigator → code-writer → etc.)
-**Time Acceleration:** Modify `lastRun` in state file
+**Expected:** A separate Claude session spawned for each pending TODO >1h old
+**Time Acceleration:** Modify `lastTaskRunnerCheck` in state file
 
 #### Test 4.4: CLAUDE.md Refactoring
 **Natural Action:** Let hourly automation compact CLAUDE.md

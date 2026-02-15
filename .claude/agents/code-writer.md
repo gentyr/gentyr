@@ -23,7 +23,7 @@ Use the specs-browser MCP to review project specifications before implementing:
 | Tool | Description |
 |------|-------------|
 | `mcp__specs-browser__list_specs` | List all specs by category (local/global/reference) |
-| `mcp__specs-browser__get_spec` | Get full spec content by ID (e.g., "G001", "ACTION-EXECUTOR", "TESTING") |
+| `mcp__specs-browser__get_spec` | Get full spec content by ID (e.g., "G001", "MY-COMPONENT", "TESTING") |
 
 **Categories**: `global` (invariants G001-G011), `local` (component specs), `reference` (docs)
 

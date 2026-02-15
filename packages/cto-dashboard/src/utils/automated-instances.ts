@@ -109,14 +109,6 @@ const INSTANCE_DEFINITIONS: Array<{
     defaultMinutes: 15,
   },
   {
-    type: 'Plan Executor',
-    agentTypes: ['plan-executor'],
-    trigger: 'scheduled',
-    stateKey: 'lastRun',
-    cooldownKey: 'plan_executor',
-    defaultMinutes: 55,
-  },
-  {
     type: 'Antipattern Hunter',
     agentTypes: ['antipattern-hunter', 'antipattern-hunter-repo', 'antipattern-hunter-commit'],
     trigger: 'scheduled',
@@ -326,12 +318,11 @@ function getAutomationConfig(): AutomationConfigFile {
   const defaults: Partial<AutomationCooldowns> = {
     hourly_tasks: 55,
     triage_check: 5,
-    plan_executor: 55,
     antipattern_hunter: 360,
     schema_mapper: 1440,
     lint_checker: 30,
     todo_maintenance: 15,
-    task_runner: 15,
+    task_runner: 60,
     triage_per_item: 60,
   };
 
