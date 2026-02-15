@@ -21,13 +21,18 @@ const CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-confi
 const DEFAULTS = {
   hourly_tasks: 55,
   triage_check: 5,
-  plan_executor: 55,
   antipattern_hunter: 360,
   schema_mapper: 1440,
   lint_checker: 30,
   todo_maintenance: 15,
-  task_runner: 15,
+  task_runner: 60,
   triage_per_item: 60,
+  preview_promotion: 360,
+  staging_promotion: 1200,
+  staging_health_monitor: 180,
+  production_health_monitor: 60,
+  standalone_antipattern_hunter: 180,  // 3 hours
+  standalone_compliance_checker: 60,   // 1 hour
 };
 
 /**
@@ -57,7 +62,7 @@ function readConfig() {
  *
  * Priority: effective (dynamic) > defaults (config) > fallbackMinutes (hardcoded)
  *
- * @param {string} key - The cooldown key (e.g., 'hourly_tasks', 'plan_executor')
+ * @param {string} key - The cooldown key (e.g., 'hourly_tasks', 'task_runner')
  * @param {number} [fallbackMinutes] - Hardcoded fallback if config is unavailable
  * @returns {number} Cooldown in minutes
  */

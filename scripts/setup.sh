@@ -2,15 +2,16 @@
 # GENTYR Setup Script
 #
 # Usage:
-#   scripts/setup.sh --path /path/to/project                # Install
-#   sudo scripts/setup.sh --path /path/to/project --protect # Install + protect
+#   scripts/setup.sh --path /path/to/project --op-token <token>  # Install with OP token
+#   sudo scripts/setup.sh --path /path/to/project --protect     # Install + protect
 #   sudo scripts/setup.sh --path /path/to/project --uninstall  # Uninstall (auto-unprotects)
 #   sudo scripts/setup.sh --path /path/to/project --protect-only   # Protect only
 #   sudo scripts/setup.sh --path /path/to/project --unprotect-only # Unprotect only
+#   scripts/setup.sh --scaffold --path /path/to/new-project   # Scaffold new project
 #
 # --path is required. Protection requires sudo.
 
-set -e
+set -eo pipefail
 
 # Colors
 RED='\033[0;31m'
@@ -26,8 +27,9 @@ MODE="install"
 PROTECT=false
 PROTECT_MCP=false
 RECONFIGURE_MCP=false
-CONFIGURE_CREDENTIALS=false
+SCAFFOLD=false
 PROJECT_DIR=""
+OP_TOKEN=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -55,20 +57,36 @@ while [[ $# -gt 0 ]]; do
             RECONFIGURE_MCP=true
             shift
             ;;
-        --configure-credentials)
-            CONFIGURE_CREDENTIALS=true
+        --scaffold)
+            SCAFFOLD=true
             shift
             ;;
-        --path)
-            PROJECT_DIR="$(cd "$2" 2>/dev/null && pwd)" || {
-                echo -e "${RED}Error: directory does not exist: $2${NC}"
+        --op-token)
+            if [ -z "$2" ] || [[ "$2" == --* ]]; then
+                echo -e "${RED}Error: --op-token requires a value${NC}"
                 exit 1
-            }
+            fi
+            OP_TOKEN="$2"
+            shift 2
+            ;;
+        --path)
+            if [ "$SCAFFOLD" = true ] && [ ! -d "$2" ]; then
+                # For scaffold mode, allow non-existent directory (will be created)
+                PROJECT_DIR="$(cd "$(dirname "$2")" 2>/dev/null && echo "$(pwd)/$(basename "$2")")" || {
+                    echo -e "${RED}Error: parent directory does not exist: $(dirname "$2")${NC}"
+                    exit 1
+                }
+            else
+                PROJECT_DIR="$(cd "$2" 2>/dev/null && pwd)" || {
+                    echo -e "${RED}Error: directory does not exist: $2${NC}"
+                    exit 1
+                }
+            fi
             shift 2
             ;;
         *)
             echo -e "${RED}Unknown flag: $1${NC}"
-            echo "Usage: $0 --path <dir> [--protect] [--protect-mcp] [--reconfigure] [--configure-credentials] [--uninstall] [--protect-only] [--unprotect-only]"
+            echo "Usage: $0 --path <dir> [--op-token <token>] [--protect] [--protect-mcp] [--reconfigure] [--scaffold] [--uninstall] [--protect-only] [--unprotect-only]"
             exit 1
             ;;
     esac
@@ -148,6 +166,11 @@ get_original_group() {
 do_protect() {
     require_root "--protect"
     local hooks_dir="$(get_hooks_dir)"
+    # macOS root group is "wheel", Linux is "root"
+    local root_group="root"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        root_group="wheel"
+    fi
 
     echo -e "${YELLOW}Enabling protection...${NC}"
 
@@ -158,6 +181,7 @@ do_protect() {
         "$hooks_dir/protected-action-gate.js"
         "$hooks_dir/protected-action-approval-hook.js"
         "$hooks_dir/credential-file-guard.js"
+        "$hooks_dir/secret-leak-detector.js"
         "$hooks_dir/protected-actions.json"
         "$PROJECT_DIR/.claude/settings.json"
         "$PROJECT_DIR/.claude/protection-key"
@@ -175,7 +199,7 @@ do_protect() {
 
     for dir in "${dirs[@]}"; do
         if [ -d "$dir" ]; then
-            chown root:root "$dir"
+            chown "root:$root_group" "$dir"
             chmod 1755 "$dir"
             echo "  Protected dir: $dir"
         fi
@@ -183,7 +207,7 @@ do_protect() {
 
     for file in "${files[@]}"; do
         if [ -f "$file" ]; then
-            chown root:root "$file"
+            chown "root:$root_group" "$file"
             # Husky hooks need execute permission to function as git hooks
             if [[ "$file" == *".husky/"* ]]; then
                 chmod 755 "$file"
@@ -222,6 +246,7 @@ do_unprotect() {
         "$hooks_dir/protected-action-gate.js"
         "$hooks_dir/protected-action-approval-hook.js"
         "$hooks_dir/credential-file-guard.js"
+        "$hooks_dir/secret-leak-detector.js"
         "$hooks_dir/protected-actions.json"
         "$PROJECT_DIR/.claude/settings.json"
         "$PROJECT_DIR/.claude/TESTING.md"
@@ -266,6 +291,31 @@ do_unprotect() {
     if [ -d "$PROJECT_DIR/.claude/state" ]; then
         find "$PROJECT_DIR/.claude/state" -maxdepth 1 -type f -user root -exec chown "$original_user:$original_group" {} \;
     fi
+    # Fix agents directory and symlinks within it
+    if [ -d "$PROJECT_DIR/.claude/agents" ]; then
+        chown "$original_user:$original_group" "$PROJECT_DIR/.claude/agents"
+        chmod 755 "$PROJECT_DIR/.claude/agents"
+        find "$PROJECT_DIR/.claude/agents" -maxdepth 1 -user root -exec chown -h "$original_user:$original_group" {} \;
+        echo "  Unprotected dir: $PROJECT_DIR/.claude/agents"
+    fi
+
+    # Fix framework build/install directories (may be root-owned from previous runs under sudo)
+    for framework_subdir in \
+        "$FRAMEWORK_DIR/packages/mcp-servers/dist" \
+        "$FRAMEWORK_DIR/packages/mcp-servers/node_modules" \
+        "$FRAMEWORK_DIR/node_modules"; do
+        if [ -d "$framework_subdir" ]; then
+            chown -R "$original_user:$original_group" "$framework_subdir"
+            echo "  Unprotected dir: $framework_subdir"
+        fi
+    done
+
+    # Fix LaunchAgents plist (macOS) - may be root-owned from previous sudo install
+    local plist_file="$REAL_HOME/Library/LaunchAgents/com.local.plan-executor.plist"
+    if [ -f "$plist_file" ] && [ "$(stat -f '%u' "$plist_file" 2>/dev/null)" = "0" ]; then
+        chown "$original_user:$original_group" "$plist_file"
+        echo "  Unprotected: $plist_file"
+    fi
 
     # Write state
     cat > "$PROJECT_DIR/.claude/protection-state.json" << EOF
@@ -279,162 +329,188 @@ EOF
     echo -e "${GREEN}Protection disabled.${NC}"
 }
 
+
 # =============================================================================
-# CONFIGURE CREDENTIALS (Fix 4)
+# SCAFFOLD MODE
 # =============================================================================
 
-do_configure_credentials() {
-    local gentyr_dir
-    if [ -L "$PROJECT_DIR/.claude-framework" ]; then
-        gentyr_dir="$(readlink -f "$PROJECT_DIR/.claude-framework")"
+if [ "$SCAFFOLD" = true ]; then
+    TEMPLATES_DIR="$FRAMEWORK_DIR/templates"
+
+    if [ ! -d "$TEMPLATES_DIR" ]; then
+        echo -e "${RED}Error: templates directory not found at $TEMPLATES_DIR${NC}"
+        exit 1
+    fi
+
+    # Check if project already has code
+    if [ -f "$PROJECT_DIR/package.json" ]; then
+        echo -e "${YELLOW}Warning: $PROJECT_DIR already has a package.json.${NC}"
+        read -p "This looks like an existing project. Continue scaffolding? (y/N): " confirm
+        if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+            echo "Aborted."
+            exit 0
+        fi
+    fi
+
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}GENTYR Project Scaffold${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo ""
+
+    # Collect project info
+    DEFAULT_PROJECT_NAME="$(basename "$PROJECT_DIR")"
+    read -p "Project name [$DEFAULT_PROJECT_NAME]: " PROJECT_NAME
+    PROJECT_NAME="${PROJECT_NAME:-$DEFAULT_PROJECT_NAME}"
+
+    read -p "Product name (e.g. my-app): " PRODUCT_NAME
+    if [ -z "$PRODUCT_NAME" ]; then
+        echo -e "${RED}Product name is required.${NC}"
+        exit 1
+    fi
+
+    read -p "GitHub org/user: " GITHUB_ORG
+    GITHUB_ORG="${GITHUB_ORG:-my-org}"
+
+    read -p "GitHub repo [$PROJECT_NAME]: " GITHUB_REPO
+    GITHUB_REPO="${GITHUB_REPO:-$PROJECT_NAME}"
+
+    read -p "Domain (e.g. example.com) [localhost]: " DOMAIN
+    DOMAIN="${DOMAIN:-localhost}"
+
+    echo ""
+    echo -e "${YELLOW}Scaffolding project...${NC}"
+    echo "  Project: $PROJECT_NAME"
+    echo "  Product: $PRODUCT_NAME"
+    echo "  GitHub:  $GITHUB_ORG/$GITHUB_REPO"
+    echo "  Domain:  $DOMAIN"
+    echo ""
+
+    # Create project directory
+    mkdir -p "$PROJECT_DIR"
+
+    # --- Config templates ---
+    echo -e "${YELLOW}Creating configuration files...${NC}"
+
+    # pnpm-workspace.yaml (no substitution needed)
+    if [ -f "$TEMPLATES_DIR/config/pnpm-workspace.yaml" ]; then
+        cp "$TEMPLATES_DIR/config/pnpm-workspace.yaml" "$PROJECT_DIR/pnpm-workspace.yaml"
+        echo "  Created pnpm-workspace.yaml"
+    fi
+
+    # tsconfig.base.json
+    if [ -f "$TEMPLATES_DIR/config/tsconfig.base.json" ]; then
+        cp "$TEMPLATES_DIR/config/tsconfig.base.json" "$PROJECT_DIR/tsconfig.base.json"
+        echo "  Created tsconfig.base.json"
+    fi
+
+    # package.json (with substitution)
+    if [ -f "$TEMPLATES_DIR/config/package.json.template" ]; then
+        sed -e "s|{{PROJECT_NAME}}|$PROJECT_NAME|g" \
+            -e "s|{{PRODUCT_NAME}}|$PRODUCT_NAME|g" \
+            -e "s|{{GITHUB_ORG}}|$GITHUB_ORG|g" \
+            -e "s|{{GITHUB_REPO}}|$GITHUB_REPO|g" \
+            -e "s|{{DOMAIN}}|$DOMAIN|g" \
+            "$TEMPLATES_DIR/config/package.json.template" > "$PROJECT_DIR/package.json"
+        echo "  Created package.json"
+    fi
+
+    # .gitignore
+    if [ -f "$TEMPLATES_DIR/config/gitignore.template" ]; then
+        cp "$TEMPLATES_DIR/config/gitignore.template" "$PROJECT_DIR/.gitignore"
+        echo "  Created .gitignore"
+    fi
+
+    # services.json
+    if [ -f "$TEMPLATES_DIR/config/services.json.template" ]; then
+        mkdir -p "$PROJECT_DIR/.claude/config"
+        sed -e "s|{{PRODUCT_NAME}}|$PRODUCT_NAME|g" \
+            "$TEMPLATES_DIR/config/services.json.template" > "$PROJECT_DIR/.claude/config/services.json"
+        echo "  Created .claude/config/services.json"
+    fi
+
+    # --- Scaffold templates ---
+    echo ""
+    echo -e "${YELLOW}Creating project structure...${NC}"
+
+    # Shared packages
+    if [ -d "$TEMPLATES_DIR/scaffold/packages" ]; then
+        for pkg_dir in "$TEMPLATES_DIR/scaffold/packages"/*/; do
+            [ -d "$pkg_dir" ] || continue
+            pkg_name="$(basename "$pkg_dir")"
+            mkdir -p "$PROJECT_DIR/packages/$pkg_name"
+
+            # Copy all files, performing substitution
+            while IFS= read -r -d '' file; do
+                rel_path="${file#$pkg_dir}"
+                dest_dir="$PROJECT_DIR/packages/$pkg_name/$(dirname "$rel_path")"
+                mkdir -p "$dest_dir"
+                sed -e "s|{{PROJECT_NAME}}|$PROJECT_NAME|g" \
+                    -e "s|{{PRODUCT_NAME}}|$PRODUCT_NAME|g" \
+                    -e "s|{{GITHUB_ORG}}|$GITHUB_ORG|g" \
+                    -e "s|{{GITHUB_REPO}}|$GITHUB_REPO|g" \
+                    -e "s|{{DOMAIN}}|$DOMAIN|g" \
+                    "$file" > "$dest_dir/$(basename "$file")"
+            done < <(find "$pkg_dir" -type f -print0)
+            echo "  Created packages/$pkg_name/"
+        done
+    fi
+
+    # Product directory (rename _product to actual product name)
+    if [ -d "$TEMPLATES_DIR/scaffold/products/_product" ]; then
+        while IFS= read -r -d '' file; do
+            rel_path="${file#$TEMPLATES_DIR/scaffold/products/_product/}"
+            dest_dir="$PROJECT_DIR/products/$PRODUCT_NAME/$(dirname "$rel_path")"
+            mkdir -p "$dest_dir"
+            sed -e "s|{{PROJECT_NAME}}|$PROJECT_NAME|g" \
+                -e "s|{{PRODUCT_NAME}}|$PRODUCT_NAME|g" \
+                -e "s|{{GITHUB_ORG}}|$GITHUB_ORG|g" \
+                -e "s|{{GITHUB_REPO}}|$GITHUB_REPO|g" \
+                -e "s|{{DOMAIN}}|$DOMAIN|g" \
+                "$file" > "$dest_dir/$(basename "$file")"
+        done < <(find "$TEMPLATES_DIR/scaffold/products/_product" -type f -print0)
+        echo "  Created products/$PRODUCT_NAME/"
+    fi
+
+    # Specs directories (just .gitkeep files)
+    if [ -d "$TEMPLATES_DIR/scaffold/specs" ]; then
+        for spec_dir in "$TEMPLATES_DIR/scaffold/specs"/*/; do
+            [ -d "$spec_dir" ] || continue
+            spec_name="$(basename "$spec_dir")"
+            mkdir -p "$PROJECT_DIR/specs/$spec_name"
+            touch "$PROJECT_DIR/specs/$spec_name/.gitkeep"
+        done
+        echo "  Created specs/{global,local,reference}/"
+    fi
+
+    # Integrations template directory
+    if [ -d "$TEMPLATES_DIR/scaffold/integrations" ]; then
+        mkdir -p "$PROJECT_DIR/integrations/_template"
+        touch "$PROJECT_DIR/integrations/_template/.gitkeep"
+        echo "  Created integrations/_template/"
+    fi
+
+    # --- Git init ---
+    echo ""
+    echo -e "${YELLOW}Initializing git...${NC}"
+    if [ ! -d "$PROJECT_DIR/.git" ]; then
+        cd "$PROJECT_DIR"
+        git init
+        echo "  Initialized git repository"
+        cd - > /dev/null
     else
-        gentyr_dir="$PROJECT_DIR/.claude-framework"
+        echo "  Git already initialized"
     fi
-    local providers_dir="$gentyr_dir/scripts/credential-providers"
-    local config_path="$PROJECT_DIR/.claude/credential-provider.json"
-    local protected_actions_path="$PROJECT_DIR/.claude/hooks/protected-actions.json"
-    local mcp_json_path="$PROJECT_DIR/.mcp.json"
-
-    echo -e "${YELLOW}Configuring credentials...${NC}"
-    echo ""
-
-    # 1. Read protected-actions.json to find servers with credentialKeys
-    if [ ! -f "$protected_actions_path" ]; then
-        echo -e "${RED}Error: $protected_actions_path not found.${NC}"
-        echo "  Run setup.sh --path $PROJECT_DIR first."
-        return 1
-    fi
-
-    # 2. Check for provider config or prompt to create one
-    local provider_name=""
-    if [ -f "$config_path" ]; then
-        provider_name=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$config_path','utf8')).provider || '')" 2>/dev/null)
-        echo -e "  Using provider from config: ${GREEN}${provider_name}${NC}"
-    fi
-
-    if [ -z "$provider_name" ]; then
-        echo "  No credential provider configured."
-        echo ""
-        echo "  Available providers:"
-        echo "    1) onepassword - Resolve from 1Password vaults (requires op CLI)"
-        echo "    2) manual      - Enter credentials interactively"
-        echo ""
-        read -p "  Select provider (1/2): " choice
-        case "$choice" in
-            1) provider_name="onepassword" ;;
-            2) provider_name="manual" ;;
-            *) echo -e "${RED}Invalid choice.${NC}"; return 1 ;;
-        esac
-
-        # Create provider config
-        mkdir -p "$(dirname "$config_path")"
-        echo "{\"provider\": \"$provider_name\", \"vaultMappings\": {}}" > "$config_path"
-        echo -e "  Created ${GREEN}$config_path${NC}"
-    fi
-
-    # 3. Use node to resolve credentials and inject into .mcp.json
-    node --input-type=module -e "
-import fs from 'fs';
-import path from 'path';
-
-const projectDir = '$PROJECT_DIR';
-const providersDir = '$providers_dir';
-const providerName = '$provider_name';
-const protectedActionsPath = '$protected_actions_path';
-const mcpJsonPath = '$mcp_json_path';
-const configPath = '$config_path';
-
-async function main() {
-  // Load protected actions to find credentialKeys
-  const config = JSON.parse(fs.readFileSync(protectedActionsPath, 'utf8'));
-  const providerConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-
-  // Load provider
-  const providerPath = path.join(providersDir, providerName + '.js');
-  if (!fs.existsSync(providerPath)) {
-    console.error('Provider not found: ' + providerPath);
-    process.exit(1);
-  }
-  const provider = await import(providerPath);
-
-  // Check availability
-  if (!(await provider.isAvailable())) {
-    console.error('Provider \"' + providerName + '\" is not available.');
-    console.error('Ensure prerequisites are met (see provider docs).');
-    process.exit(1);
-  }
-
-  console.log('  Provider: ' + provider.name);
-  console.log('');
-
-  // Load .mcp.json
-  if (!fs.existsSync(mcpJsonPath)) {
-    console.error('.mcp.json not found at: ' + mcpJsonPath);
-    process.exit(1);
-  }
-  const mcpJson = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
-
-  // Iterate over servers with credentialKeys
-  let credentialCount = 0;
-  for (const [serverName, serverConfig] of Object.entries(config.servers || {})) {
-    const keys = serverConfig.credentialKeys;
-    if (!keys || keys.length === 0) continue;
-
-    const mcpServer = mcpJson.mcpServers?.[serverName];
-    if (!mcpServer) {
-      console.log('  SKIP: MCP server \"' + serverName + '\" not in .mcp.json');
-      continue;
-    }
-
-    console.log('  Server: ' + serverName);
-    for (const key of keys) {
-      const vaultRef = providerConfig.vaultMappings?.[key] || '';
-      try {
-        const value = await provider.resolve(key, vaultRef);
-        if (!mcpServer.env) mcpServer.env = {};
-        mcpServer.env[key] = value;
-        credentialCount++;
-        console.log('    ✓ ' + key);
-      } catch (err) {
-        console.error('    ✗ ' + key + ': ' + err.message);
-      }
-    }
-  }
-
-  // Write updated .mcp.json
-  fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2) + '\\n');
-  console.log('');
-  console.log('  Injected ' + credentialCount + ' credential(s) into .mcp.json');
-
-  // Warn if credential env vars detected in shell
-  const envWarnings = [];
-  for (const [serverName, serverConfig] of Object.entries(config.servers || {})) {
-    for (const key of (serverConfig.credentialKeys || [])) {
-      if (process.env[key]) {
-        envWarnings.push(key);
-      }
-    }
-  }
-  if (envWarnings.length > 0) {
-    console.log('');
-    console.error('  ⚠ WARNING: Credential env vars detected in shell environment:');
-    envWarnings.forEach(k => console.error('    - ' + k));
-    console.error('  These should be removed from shell profiles for security.');
-    console.error('  Credentials are now in .mcp.json (accessible only to MCP servers).');
-  }
-}
-
-main().catch(err => { console.error(err.message); process.exit(1); });
-"
 
     echo ""
-    echo -e "${GREEN}Credentials configured in .mcp.json.${NC}"
-    echo -e "${YELLOW}IMPORTANT: Root-protect .mcp.json to prevent agent access:${NC}"
-    echo "  sudo $0 --path $PROJECT_DIR --protect-only"
-}
-
-if [ "$CONFIGURE_CREDENTIALS" = true ]; then
-    do_configure_credentials
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}Project scaffolded at: $PROJECT_DIR${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Install GENTYR:  $FRAMEWORK_DIR/scripts/setup.sh --path $PROJECT_DIR"
+    echo "  2. Install deps:    cd $PROJECT_DIR && pnpm install"
+    echo "  3. Configure creds: Run /setup-gentyr in Claude Code"
+    echo ""
     exit 0
 fi
 
@@ -501,12 +577,39 @@ for state_file in \
     "$PROJECT_DIR/.claude/state/usage-snapshots.json" \
     "$PROJECT_DIR/.claude/hourly-automation-state.json" \
     "$PROJECT_DIR/.claude/plan-executor-state.json" \
-    "$PROJECT_DIR/.claude/autonomous-mode.json" \
     "$PROJECT_DIR/.claude/bypass-approval-token.json" \
     "$PROJECT_DIR/.claude/protection-state.json" \
     "$PROJECT_DIR/.claude/protected-action-approvals.json"; do
     [ -f "$state_file" ] || echo '{}' > "$state_file"
 done
+
+# Pre-create autonomous-mode.json with all automations enabled by default
+# This eliminates the need for manual configuration after GENTYR installation
+auto_mode_file="$PROJECT_DIR/.claude/autonomous-mode.json"
+if [ ! -f "$auto_mode_file" ]; then
+    cat > "$auto_mode_file" << 'AUTOEOF'
+{
+  "enabled": true,
+  "claudeMdRefactorEnabled": true,
+  "lintCheckerEnabled": true,
+  "taskRunnerEnabled": true,
+  "previewPromotionEnabled": true,
+  "stagingPromotionEnabled": true,
+  "stagingHealthMonitorEnabled": true,
+  "productionHealthMonitorEnabled": true,
+  "standaloneAntipatternHunterEnabled": true,
+  "standaloneComplianceCheckerEnabled": true
+}
+AUTOEOF
+fi
+
+# Pre-create vault-mappings.json for MCP launcher credential resolution
+# This is populated interactively via /setup-gentyr in the Claude Code session
+vault_mappings="$PROJECT_DIR/.claude/vault-mappings.json"
+if [ ! -f "$vault_mappings" ]; then
+    echo '{"provider": "1password", "mappings": {}}' > "$vault_mappings"
+    echo "  Created vault-mappings.json (configure via /setup-gentyr)"
+fi
 
 # Pre-create SQLite database files for MCP servers
 # These must exist before protection since sticky bit prevents new file creation
@@ -541,21 +644,21 @@ if [ ! -f "$PROJECT_DIR/.claude/state/automation-config.json" ]; then
   "defaults": {
     "hourly_tasks": 55,
     "triage_check": 5,
-    "plan_executor": 55,
     "antipattern_hunter": 360,
     "schema_mapper": 1440,
     "lint_checker": 30,
     "todo_maintenance": 15,
+    "task_runner": 60,
     "triage_per_item": 60
   },
   "effective": {
     "hourly_tasks": 55,
     "triage_check": 5,
-    "plan_executor": 55,
     "antipattern_hunter": 360,
     "schema_mapper": 1440,
     "lint_checker": 30,
     "todo_maintenance": 15,
+    "task_runner": 60,
     "triage_per_item": 60
   },
   "adjustment": {
@@ -651,11 +754,75 @@ fi
 # --- 3. MCP config ---
 echo ""
 echo -e "${YELLOW}Generating .mcp.json...${NC}"
+# Preserve existing OP_SERVICE_ACCOUNT_TOKEN before regenerating .mcp.json
+EXISTING_OP_TOKEN=""
+if [ -z "$OP_TOKEN" ] && [ -f "$PROJECT_DIR/.mcp.json" ]; then
+    EXISTING_OP_TOKEN=$(node -e "
+      const fs = require('fs');
+      try {
+        const c = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+        for (const s of Object.values(c.mcpServers || {})) {
+          if (s.env && s.env.OP_SERVICE_ACCOUNT_TOKEN) {
+            console.log(s.env.OP_SERVICE_ACCOUNT_TOKEN);
+            break;
+          }
+        }
+      } catch {}
+    " "$PROJECT_DIR/.mcp.json" 2>/dev/null || true)
+fi
 if sed "s|\${FRAMEWORK_PATH}|$FRAMEWORK_REL|g" \
     "$FRAMEWORK_DIR/.mcp.json.template" > "$PROJECT_DIR/.mcp.json" 2>/dev/null; then
     echo "  Generated .mcp.json"
 else
     echo -e "  ${YELLOW}Skipped .mcp.json (file is root-owned, will update on next sudo install)${NC}"
+fi
+# Use preserved token if --op-token wasn't provided
+if [ -z "$OP_TOKEN" ] && [ -n "$EXISTING_OP_TOKEN" ]; then
+    OP_TOKEN="$EXISTING_OP_TOKEN"
+fi
+
+# --- 3b. Inject OP_SERVICE_ACCOUNT_TOKEN into .mcp.json launcher envs ---
+if [ -n "$OP_TOKEN" ]; then
+    echo -e "${YELLOW}Injecting OP_SERVICE_ACCOUNT_TOKEN into .mcp.json...${NC}"
+    INJECT_TOKEN="$OP_TOKEN" node -e "
+      const fs = require('fs');
+      const p = process.argv[1];
+      const token = process.env.INJECT_TOKEN;
+      const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+      for (const s of Object.values(c.mcpServers || {})) {
+        if (s.args && s.args.some(a => a.includes('mcp-launcher.js'))) {
+          s.env = s.env || {};
+          s.env.OP_SERVICE_ACCOUNT_TOKEN = token;
+        }
+      }
+      fs.writeFileSync(p, JSON.stringify(c, null, 2) + '\n');
+    " "$PROJECT_DIR/.mcp.json"
+    echo "  Injected OP_SERVICE_ACCOUNT_TOKEN into launcher-based MCP servers"
+else
+    # Check if token is already in existing .mcp.json
+    HAS_TOKEN=$(node -e "
+      const fs = require('fs');
+      try {
+        const c = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+        const has = Object.values(c.mcpServers || {}).some(s =>
+          s.env && s.env.OP_SERVICE_ACCOUNT_TOKEN
+        );
+        console.log(has ? 'yes' : 'no');
+      } catch { console.log('no'); }
+    " "$PROJECT_DIR/.mcp.json" 2>/dev/null || echo "no")
+    if [ "$HAS_TOKEN" != "yes" ]; then
+        echo ""
+        echo -e "${RED}ERROR: OP_SERVICE_ACCOUNT_TOKEN is required for 1Password credential resolution.${NC}"
+        echo ""
+        echo "To create a service account:"
+        echo "  1. Open 1Password web app > Settings > Service Accounts"
+        echo "  2. Create service account named \"Claude Code MCP\""
+        echo "  3. Grant read-only access to: Production, Staging, Preview vaults"
+        echo "  4. Copy the token"
+        echo "  5. Re-run with: --op-token <your-token>"
+        echo ""
+        exit 1
+    fi
 fi
 
 # --- 4. Husky hooks ---
@@ -674,18 +841,14 @@ done
 echo ""
 echo -e "${YELLOW}Installing hook dependencies...${NC}"
 cd "$FRAMEWORK_DIR"
-if [ ! -d "node_modules" ]; then
-    npm install
-fi
+npm install --no-fund --no-audit
 echo "  Hook dependencies ready"
 
 echo ""
 echo -e "${YELLOW}Building MCP servers...${NC}"
 cd "$FRAMEWORK_DIR/packages/mcp-servers"
-if [ ! -d "node_modules" ]; then
-    echo "  Installing dependencies..."
-    npm install
-fi
+echo "  Installing dependencies..."
+npm install --no-fund --no-audit
 echo "  Building TypeScript..."
 npm run build
 cd "$PROJECT_DIR"
@@ -712,6 +875,8 @@ GITIGNORE_ENTRIES="
 .claude/api-key-rotation.json
 .claude/commit-approval-token.json
 .claude/autonomous-mode.json
+.claude/vault-mappings.json
+.claude/credential-provider.json
 .claude/state/
 .claude/settings.local.json
 "
@@ -811,8 +976,8 @@ if [ -d "$PROJECT_DIR/packages" ]; then
         # Create reporters directory in package
         mkdir -p "$pkg_dir/.claude/reporters"
 
-        # Symlink - path goes up to package, then to project root's .claude-framework
-        ln -sf "../../../$FRAMEWORK_REL/.claude/hooks/reporters/vitest-failure-reporter.js" "$pkg_dir/.claude/reporters/vitest-failure-reporter.js"
+        # Symlink - path goes up 4 levels: reporters/ -> .claude/ -> pkg/ -> packages/ -> project root
+        ln -sf "../../../../$FRAMEWORK_REL/.claude/hooks/reporters/vitest-failure-reporter.js" "$pkg_dir/.claude/reporters/vitest-failure-reporter.js"
         echo "  Symlink: packages/$pkg_name/.claude/reporters/vitest-failure-reporter.js"
 
         if ! grep -q "vitest-failure-reporter" "$pkg_vitest" 2>/dev/null; then
@@ -832,8 +997,8 @@ if [ -d "$PROJECT_DIR/integrations" ]; then
         # Create reporters directory in integration
         mkdir -p "$int_dir/.claude/reporters"
 
-        # Symlink - path goes up 4 levels to project root's .claude-framework
-        ln -sf "../../../../$FRAMEWORK_REL/.claude/hooks/reporters/vitest-failure-reporter.js" "$int_dir/.claude/reporters/vitest-failure-reporter.js"
+        # Symlink - path goes up 5 levels: reporters/ -> .claude/ -> connector/ -> platform/ -> integrations/ -> project root
+        ln -sf "../../../../../$FRAMEWORK_REL/.claude/hooks/reporters/vitest-failure-reporter.js" "$int_dir/.claude/reporters/vitest-failure-reporter.js"
         echo "  Symlink: integrations/$int_name/.claude/reporters/vitest-failure-reporter.js"
 
         if ! grep -q "vitest-failure-reporter" "$int_vitest" 2>/dev/null; then
@@ -847,7 +1012,26 @@ if [ -z "$JEST_CONFIG" ] && [ -z "$VITEST_CONFIG" ] && [ ! -d "$PROJECT_DIR/pack
     echo "  No Jest or Vitest config found, skipping reporter setup"
 fi
 
-# --- 9. CLAUDE.md Agent Instructions ---
+# --- 9. Deploy staged hooks ---
+echo ""
+echo -e "${YELLOW}Deploying staged hooks...${NC}"
+STAGED_HOOKS_DIR="$FRAMEWORK_DIR/scripts/hooks"
+HOOKS_DIR="$(get_hooks_dir)"
+if [ -d "$STAGED_HOOKS_DIR" ]; then
+    for staged_hook in "$STAGED_HOOKS_DIR"/*.js; do
+        [ -f "$staged_hook" ] || continue
+        hook_name="$(basename "$staged_hook")"
+        if cp "$staged_hook" "$HOOKS_DIR/$hook_name" 2>/dev/null; then
+            echo "  Deployed: $hook_name"
+        else
+            echo -e "  ${YELLOW}Skipped $hook_name (hooks dir not writable, will deploy on next sudo install)${NC}"
+        fi
+    done
+else
+    echo "  No staged hooks to deploy"
+fi
+
+# --- 10. CLAUDE.md Agent Instructions ---
 echo ""
 echo -e "${YELLOW}Updating CLAUDE.md...${NC}"
 GENTYR_SECTION="$FRAMEWORK_DIR/CLAUDE.md.gentyr-section"

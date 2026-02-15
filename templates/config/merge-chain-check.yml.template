@@ -1,0 +1,51 @@
+# GENTYR Merge Chain Enforcement
+#
+# This workflow enforces the merge chain: feature/* -> preview -> staging -> main
+# GitHub has NO native rule to restrict PR source branches on any plan.
+# This CI check is the enforcement mechanism - make it a required status check.
+#
+# Install: Copy to .github/workflows/merge-chain-check.yml
+# Then: Settings > Branches > Add rule > Require status checks > "Validate Merge Chain"
+
+name: Merge Chain Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [preview, staging, main]
+
+jobs:
+  validate-merge-chain:
+    name: Validate Merge Chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Check merge chain
+        run: |
+          SOURCE="${{ github.head_ref }}"
+          TARGET="${{ github.base_ref }}"
+          echo "Checking merge chain: $SOURCE -> $TARGET"
+
+          if [ "$TARGET" = "preview" ]; then
+            if [ "$SOURCE" = "staging" ] || [ "$SOURCE" = "main" ] || [ "$SOURCE" = "preview" ]; then
+              echo "::error::FORBIDDEN: Cannot merge '$SOURCE' into preview. Only feature branches allowed."
+              exit 1
+            fi
+            echo "OK: Feature branch -> preview"
+          fi
+
+          if [ "$TARGET" = "staging" ]; then
+            if [ "$SOURCE" != "preview" ]; then
+              echo "::error::FORBIDDEN: Only 'preview' can merge into staging (got: '$SOURCE')"
+              exit 1
+            fi
+            echo "OK: preview -> staging"
+          fi
+
+          if [ "$TARGET" = "main" ]; then
+            if [ "$SOURCE" != "staging" ]; then
+              echo "::error::FORBIDDEN: Only 'staging' can merge into main (got: '$SOURCE')"
+              exit 1
+            fi
+            echo "OK: staging -> main"
+          fi

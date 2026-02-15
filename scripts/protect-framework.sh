@@ -114,8 +114,24 @@ get_original_user() {
     fi
 }
 
+get_original_group() {
+    local user="$(get_original_user)"
+    # Get primary group for the user (returns "staff" on macOS, user's group on Linux)
+    id -gn "$user" 2>/dev/null || echo "staff"
+}
+
+get_root_group() {
+    # macOS uses "wheel" for root group, Linux uses "root"
+    if [ "$(uname)" = "Darwin" ]; then
+        echo "wheel"
+    else
+        echo "root"
+    fi
+}
+
 protect_file() {
     local file="$1"
+    local root_group="$(get_root_group)"
 
     if [ ! -f "$file" ]; then
         echo -e "  ${YELLOW}Skip: $file (not found)${NC}"
@@ -123,7 +139,7 @@ protect_file() {
     fi
 
     # Change ownership to root
-    chown root:root "$file"
+    chown "root:$root_group" "$file"
 
     # Set permissions: readable by all, writable only by root
     # Husky hooks need execute permission to function as git hooks
@@ -139,6 +155,7 @@ protect_file() {
 unprotect_file() {
     local file="$1"
     local original_user="$2"
+    local original_group="$3"
 
     if [ ! -f "$file" ]; then
         echo -e "  ${YELLOW}Skip: $file (not found)${NC}"
@@ -146,7 +163,7 @@ unprotect_file() {
     fi
 
     # Change ownership back to original user
-    chown "$original_user:$original_user" "$file"
+    chown "$original_user:$original_group" "$file"
 
     # Set permissions: readable and writable by owner
     chmod 644 "$file"
@@ -162,8 +179,15 @@ check_file_protection() {
         return 2
     fi
 
-    local owner=$(stat -c '%U' "$file")
-    local perms=$(stat -c '%a' "$file")
+    # macOS uses stat -f, Linux uses stat -c
+    local owner perms
+    if [ "$(uname)" = "Darwin" ]; then
+        owner=$(stat -f '%Su' "$file")
+        perms=$(stat -f '%Lp' "$file")
+    else
+        owner=$(stat -c '%U' "$file")
+        perms=$(stat -c '%a' "$file")
+    fi
 
     if [ "$owner" = "root" ] && [ "$perms" = "644" ]; then
         echo -e "  ${GREEN}PROTECTED: $file (owner: root, perms: 644)${NC}"
@@ -176,6 +200,7 @@ check_file_protection() {
 
 protect_dir() {
     local dir="$1"
+    local root_group="$(get_root_group)"
 
     if [ ! -d "$dir" ]; then
         echo -e "  ${YELLOW}Skip: $dir (not found)${NC}"
@@ -183,7 +208,7 @@ protect_dir() {
     fi
 
     # Change ownership to root (prevents deletion by non-root)
-    chown root:root "$dir"
+    chown "root:$root_group" "$dir"
 
     # Set permissions: readable/executable by all, writable only by root
     # Sticky bit (1755) prevents users from deleting files they don't own
@@ -195,6 +220,7 @@ protect_dir() {
 unprotect_dir() {
     local dir="$1"
     local original_user="$2"
+    local original_group="$3"
 
     if [ ! -d "$dir" ]; then
         echo -e "  ${YELLOW}Skip: $dir (not found)${NC}"
@@ -202,7 +228,7 @@ unprotect_dir() {
     fi
 
     # Change ownership back to original user
-    chown "$original_user:$original_user" "$dir"
+    chown "$original_user:$original_group" "$dir"
 
     # Set permissions: standard directory permissions
     chmod 755 "$dir"
@@ -218,8 +244,15 @@ check_dir_protection() {
         return 2
     fi
 
-    local owner=$(stat -c '%U' "$dir")
-    local perms=$(stat -c '%a' "$dir")
+    # macOS uses stat -f, Linux uses stat -c
+    local owner perms
+    if [ "$(uname)" = "Darwin" ]; then
+        owner=$(stat -f '%Su' "$dir")
+        perms=$(stat -f '%Lp' "$dir")
+    else
+        owner=$(stat -c '%U' "$dir")
+        perms=$(stat -c '%a' "$dir")
+    fi
 
     if [ "$owner" = "root" ] && ([ "$perms" = "1755" ] || [ "$perms" = "755" ]); then
         echo -e "  ${GREEN}PROTECTED: $dir (owner: root, perms: $perms)${NC}"
@@ -349,21 +382,22 @@ cmd_disable() {
     check_root
 
     local original_user=$(get_original_user)
+    local original_group=$(get_original_group)
 
     echo -e "${YELLOW}Disabling framework protection...${NC}"
     echo ""
-    echo "Restoring ownership to: $original_user"
+    echo "Restoring ownership to: $original_user:$original_group"
     echo ""
 
     echo "Unprotecting files:"
     for file in "${PROTECTED_FILES[@]}"; do
-        unprotect_file "$file" "$original_user"
+        unprotect_file "$file" "$original_user" "$original_group"
     done
 
     echo ""
     echo "Unprotecting directories:"
     for dir in "${PROTECTED_DIRS[@]}"; do
-        unprotect_dir "$dir" "$original_user"
+        unprotect_dir "$dir" "$original_user" "$original_group"
     done
 
     write_state "false"

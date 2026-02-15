@@ -43,13 +43,18 @@ export const AGENT_TYPES = {
   ANTIPATTERN_HUNTER_COMMIT: 'antipattern-hunter-commit',
   FEDERATION_MAPPER: 'federation-mapper',
   DEPUTY_CTO_REVIEW: 'deputy-cto-review',
-  PLAN_EXECUTOR: 'plan-executor',
   CLAUDEMD_REFACTOR: 'claudemd-refactor',
   LINT_FIXER: 'lint-fixer',
   TASK_RUNNER_CODE_REVIEWER: 'task-runner-code-reviewer',
   TASK_RUNNER_INVESTIGATOR: 'task-runner-investigator',
   TASK_RUNNER_TEST_WRITER: 'task-runner-test-writer',
   TASK_RUNNER_PROJECT_MANAGER: 'task-runner-project-manager',
+  PREVIEW_PROMOTION: 'preview-promotion',
+  STAGING_PROMOTION: 'staging-promotion',
+  STAGING_HEALTH_MONITOR: 'staging-health-monitor',
+  PRODUCTION_HEALTH_MONITOR: 'production-health-monitor',
+  STANDALONE_ANTIPATTERN_HUNTER: 'standalone-antipattern-hunter',
+  STANDALONE_COMPLIANCE_CHECKER: 'standalone-compliance-checker',
 };
 
 /**
@@ -64,7 +69,6 @@ export const HOOK_TYPES = {
   ANTIPATTERN_HUNTER: 'antipattern-hunter',
   SCHEMA_MAPPER: 'schema-mapper',
   PRE_COMMIT_REVIEW: 'pre-commit-review',
-  PLAN_EXECUTOR: 'plan-executor',
   HOURLY_AUTOMATION: 'hourly-automation',
   TASK_RUNNER: 'task-runner',
   API_KEY_WATCHER: 'api-key-watcher',

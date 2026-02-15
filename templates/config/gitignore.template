@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+.claude/todo.db*
+.claude/config/
+.claude/protection-key
+.claude/protected-action-approvals.json
+.claude/protection-state.json
+coverage/

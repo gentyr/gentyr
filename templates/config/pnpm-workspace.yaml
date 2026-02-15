@@ -1,0 +1,5 @@
+packages:
+  - "packages/*"
+  - "products/*/apps/*"
+  - "products/*/packages/*"
+  - "integrations/*"

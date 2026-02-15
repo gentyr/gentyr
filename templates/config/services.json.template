@@ -1,0 +1,18 @@
+{
+  "render": {
+    "production": { "serviceId": "{{RENDER_PROD_SERVICE_ID}}", "label": "Production" },
+    "staging": { "serviceId": "{{RENDER_STAGING_SERVICE_ID}}", "label": "Staging" }
+  },
+  "vercel": {
+    "projectId": "{{VERCEL_PROJECT_ID}}"
+  },
+  "supabase": {
+    "migrationsDir": "supabase/migrations/"
+  },
+  "secrets": {
+    "renderProduction": {},
+    "renderStaging": {},
+    "vercel": {},
+    "manual": []
+  }
+}

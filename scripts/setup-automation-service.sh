@@ -378,7 +378,6 @@ case "$OS" in
         log_info "Automation service installed successfully!"
         log_info "The service will run every 10 minutes. Check status with: $0 status"
         log_info "Logs: $PROJECT_DIR/.claude/hourly-automation.log"
-        log_info "NOTE: Autonomous mode is DISABLED by default. Enable with /deputy-cto."
         ;;
       remove)
         remove_linux
@@ -404,7 +403,6 @@ case "$OS" in
         log_info "Automation service installed successfully!"
         log_info "The agent will run every 10 minutes. Check status with: $0 status"
         log_info "Logs: $PROJECT_DIR/.claude/hourly-automation.log"
-        log_info "NOTE: Autonomous mode is DISABLED by default. Enable with /deputy-cto."
         ;;
       remove)
         remove_macos

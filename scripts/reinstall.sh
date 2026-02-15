@@ -1,14 +1,17 @@
 #!/bin/bash
 # Reinstall GENTYR (unprotect → install → protect)
 #
-# Usage: sudo scripts/reinstall.sh --path /path/to/project
+# Usage: sudo scripts/reinstall.sh --path /path/to/project [--op-token <token>]
 #
 # Requires sudo since it handles protection.
+# After reinstall, start a new Claude Code session and run /setup-gentyr
+# to configure credentials interactively.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR=""
+OP_TOKEN=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -16,15 +19,19 @@ while [[ $# -gt 0 ]]; do
             PROJECT_DIR="$2"
             shift 2
             ;;
+        --op-token)
+            OP_TOKEN="$2"
+            shift 2
+            ;;
         *)
-            echo "Usage: sudo $0 --path /path/to/project"
+            echo "Usage: sudo $0 --path /path/to/project [--op-token <token>]"
             exit 1
             ;;
     esac
 done
 
 if [ -z "$PROJECT_DIR" ]; then
-    echo "Usage: sudo $0 --path /path/to/project"
+    echo "Usage: sudo $0 --path /path/to/project [--op-token <token>]"
     exit 1
 fi
 
@@ -40,6 +47,24 @@ echo "Reinstalling framework at: $PROJECT_DIR"
 echo "Running install step as: $ORIGINAL_USER"
 echo ""
 
+# 1. Unprotect (as root)
 "$SCRIPT_DIR/setup.sh" --path "$PROJECT_DIR" --unprotect-only 2>/dev/null || true
-sudo -u "$ORIGINAL_USER" "$SCRIPT_DIR/setup.sh" --path "$PROJECT_DIR"
+
+# 2. Install (as user)
+SETUP_ARGS=(--path "$PROJECT_DIR")
+if [ -n "$OP_TOKEN" ]; then
+    SETUP_ARGS+=(--op-token "$OP_TOKEN")
+fi
+sudo -u "$ORIGINAL_USER" "$SCRIPT_DIR/setup.sh" "${SETUP_ARGS[@]}"
+
+# 3. Protect (as root)
 "$SCRIPT_DIR/setup.sh" --path "$PROJECT_DIR" --protect-only
+
+echo ""
+echo "════════════════════════════════════════════════════════════"
+echo "  Reinstall complete!"
+echo ""
+echo "  Next steps:"
+echo "    1. Start a new Claude Code session"
+echo "    2. Run /setup-gentyr to configure credentials"
+echo "════════════════════════════════════════════════════════════"
