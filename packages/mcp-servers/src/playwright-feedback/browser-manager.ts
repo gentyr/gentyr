@@ -10,6 +10,13 @@
 
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 
+export interface BrowserManagerConfig {
+  baseUrl: string;
+  headless: boolean;
+  viewportWidth: number;
+  viewportHeight: number;
+}
+
 export class BrowserManager {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
@@ -19,17 +26,11 @@ export class BrowserManager {
   private viewportWidth: number;
   private viewportHeight: number;
 
-  constructor() {
-    // F001 Compliance: Environment variable configuration
-    const baseUrl = process.env['FEEDBACK_BASE_URL'];
-    if (!baseUrl) {
-      throw new Error('FEEDBACK_BASE_URL environment variable is required');
-    }
-    this.baseUrl = baseUrl;
-
-    this.headless = process.env['FEEDBACK_BROWSER_HEADLESS'] !== 'false';
-    this.viewportWidth = parseInt(process.env['FEEDBACK_BROWSER_VIEWPORT_WIDTH'] || '1280', 10);
-    this.viewportHeight = parseInt(process.env['FEEDBACK_BROWSER_VIEWPORT_HEIGHT'] || '720', 10);
+  constructor(config: BrowserManagerConfig) {
+    this.baseUrl = config.baseUrl;
+    this.headless = config.headless;
+    this.viewportWidth = config.viewportWidth;
+    this.viewportHeight = config.viewportHeight;
   }
 
   /**

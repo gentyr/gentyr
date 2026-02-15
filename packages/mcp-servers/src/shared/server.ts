@@ -145,6 +145,8 @@ export class McpServer {
   private readonly version: string;
   private readonly tools: Map<string, AnyToolHandler>;
   private readonly toolDefinitions: McpToolDefinition[];
+  private _capturedResponse: JsonRpcResponse | null = null;
+  private _captureMode = false;
 
   constructor(options: McpServerOptions) {
     this.name = options.name;
@@ -163,10 +165,14 @@ export class McpServer {
   }
 
   /**
-   * Send a JSON-RPC response to stdout
+   * Send a JSON-RPC response to stdout (or capture it in processRequest mode)
    */
   private sendResponse(response: JsonRpcResponse): void {
-    process.stdout.write(`${JSON.stringify(response)}\n`);
+    if (this._captureMode) {
+      this._capturedResponse = response;
+    } else {
+      process.stdout.write(`${JSON.stringify(response)}\n`);
+    }
   }
 
   /**
@@ -281,6 +287,42 @@ export class McpServer {
       };
       this.sendSuccess(id, result);
     }
+  }
+
+  /**
+   * Process a JSON-RPC request programmatically and return the response.
+   *
+   * Unlike `start()` which reads from stdin and writes to stdout, this method
+   * accepts a request object and returns the response directly. Used for testing
+   * MCP servers without stdio.
+   *
+   * Returns null for notification methods (e.g., notifications/initialized)
+   * that don't produce a response.
+   */
+  public async processRequest(request: unknown): Promise<JsonRpcResponse | null> {
+    // Validate JSON-RPC request
+    const parseResult = JsonRpcRequestSchema.safeParse(request);
+    if (!parseResult.success) {
+      const partial = request as { id?: unknown };
+      const id = (partial && typeof partial.id !== 'undefined')
+        ? (partial.id as string | number | null)
+        : null;
+      return {
+        jsonrpc: '2.0',
+        id,
+        error: { code: JSON_RPC_ERRORS.PARSE_ERROR, message: `Invalid request: ${parseResult.error.message}` },
+      };
+    }
+
+    this._captureMode = true;
+    this._capturedResponse = null;
+    try {
+      await this.handleRequest(parseResult.data);
+    } finally {
+      this._captureMode = false;
+    }
+
+    return this._capturedResponse;
   }
 
   /**

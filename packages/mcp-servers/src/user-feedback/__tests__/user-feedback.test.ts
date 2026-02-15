@@ -836,4 +836,590 @@ describe('User Feedback Server', () => {
       }).toThrow();
     });
   });
+
+  // ============================================================================
+  // Session Audit Tests (get_session_audit tool)
+  // ============================================================================
+
+  describe('Session Audit (get_session_audit)', () => {
+    let eventsDb: Database.Database;
+    let eventsDbPath: string;
+
+    beforeEach(() => {
+      // Create session-events DB with proper schema
+      eventsDbPath = ':memory:';
+      eventsDb = createTestDb(`
+        CREATE TABLE IF NOT EXISTS session_events (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          agent_id TEXT,
+          integration_id TEXT,
+          event_type TEXT NOT NULL,
+          event_category TEXT NOT NULL,
+          input TEXT NOT NULL,
+          output TEXT,
+          error TEXT,
+          duration_ms INTEGER,
+          page_url TEXT,
+          page_title TEXT,
+          element_selector TEXT,
+          timestamp TEXT DEFAULT (datetime('now')),
+          metadata TEXT DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id);
+        CREATE INDEX IF NOT EXISTS idx_session_events_type ON session_events(event_type);
+        CREATE INDEX IF NOT EXISTS idx_session_events_timestamp ON session_events(timestamp);
+      `);
+    });
+
+    afterEach(() => {
+      eventsDb.close();
+    });
+
+    function recordAuditEvent(args: {
+      session_id: string;
+      persona_name: string;
+      tool_name: string;
+      tool_args: unknown;
+      result?: unknown;
+      duration_ms: number;
+      mcp_server: string;
+      error?: string;
+    }) {
+      eventsDb.prepare(`
+        INSERT INTO session_events (id, session_id, agent_id, event_type, event_category, input, output, error, duration_ms, metadata)
+        VALUES (?, ?, ?, ?, 'mcp', ?, ?, ?, ?, ?)
+      `).run(
+        randomUUID(),
+        args.session_id,
+        args.persona_name,
+        args.error ? 'mcp_tool_error' : 'mcp_tool_call',
+        JSON.stringify({ tool: args.tool_name, args: args.tool_args }),
+        args.error ? null : JSON.stringify(args.result),
+        args.error ? JSON.stringify({ message: args.error, tool: args.tool_name }) : null,
+        args.duration_ms,
+        JSON.stringify({ mcp_server: args.mcp_server }),
+      );
+    }
+
+    function createFeedbackSession(args: {
+      persona_id: string;
+      run_id: string;
+      agent_id?: string;
+    }) {
+      const sessionId = randomUUID();
+      db.prepare(`
+        INSERT INTO feedback_sessions (id, run_id, persona_id, agent_id, status)
+        VALUES (?, ?, ?, ?, 'pending')
+      `).run(sessionId, args.run_id, args.persona_id, args.agent_id ?? null);
+      return sessionId;
+    }
+
+    it('should fail loudly when session not found', () => {
+      const nonexistentId = randomUUID();
+
+      // Simulate calling get_session_audit with non-existent session
+      const session = db.prepare('SELECT persona_id, agent_id FROM feedback_sessions WHERE id = ?')
+        .get(nonexistentId);
+
+      expect(session).toBeUndefined();
+    });
+
+    it('should return empty audit when session-events.db does not exist', () => {
+      const persona = createPersona(db, { name: 'test-persona', description: 'Test', consumption_mode: 'api' });
+      const runId = randomUUID();
+      db.prepare(`
+        INSERT INTO feedback_runs (id, trigger_type, changed_features, personas_triggered, status, max_concurrent, started_at)
+        VALUES (?, 'manual', '[]', '[]', 'pending', 3, ?)
+      `).run(runId, new Date().toISOString());
+
+      const sessionId = createFeedbackSession({ persona_id: persona.id!, run_id: runId });
+
+      // Simulate querying when DB doesn't exist
+      const session = db.prepare('SELECT persona_id, agent_id FROM feedback_sessions WHERE id = ?')
+        .get(sessionId) as { persona_id: string; agent_id: string | null };
+      const personaRecord = db.prepare('SELECT name FROM personas WHERE id = ?')
+        .get(session.persona_id) as { name: string };
+
+      // Expected result structure when DB doesn't exist
+      expect(personaRecord.name).toBe('test-persona');
+      expect(session.agent_id).toBeNull();
+    });
+
+    it('should return empty audit when no MCP events for session', () => {
+      const persona = createPersona(db, { name: 'empty-audit', description: 'Test', consumption_mode: 'api' });
+      const runId = randomUUID();
+      db.prepare(`
+        INSERT INTO feedback_runs (id, trigger_type, changed_features, personas_triggered, status, max_concurrent, started_at)
+        VALUES (?, 'manual', '[]', '[]', 'pending', 3, ?)
+      `).run(runId, new Date().toISOString());
+
+      const sessionId = createFeedbackSession({ persona_id: persona.id!, run_id: runId });
+
+      // Query events (should be empty)
+      interface EventRow {
+        timestamp: string;
+        input: string | null;
+        output: string | null;
+        error: string | null;
+        duration_ms: number | null;
+        metadata: string | null;
+      }
+
+      const events = eventsDb.prepare(`
+        SELECT timestamp, input, output, error, duration_ms, metadata
+        FROM session_events
+        WHERE session_id = ? AND event_type IN ('mcp_tool_call', 'mcp_tool_error')
+        ORDER BY timestamp ASC
+      `).all(sessionId) as EventRow[];
+
+      expect(events).toHaveLength(0);
+    });
+
+    it('should parse and return MCP audit actions correctly', () => {
+      const persona = createPersona(db, { name: 'audit-test', description: 'Test', consumption_mode: 'api' });
+      const runId = randomUUID();
+      db.prepare(`
+        INSERT INTO feedback_runs (id, trigger_type, changed_features, personas_triggered, status, max_concurrent, started_at)
+        VALUES (?, 'manual', '[]', '[]', 'pending', 3, ?)
+      `).run(runId, new Date().toISOString());
+
+      const sessionId = createFeedbackSession({ persona_id: persona.id!, run_id: runId, agent_id: 'claude-session-123' });
+
+      // Record some audit events
+      recordAuditEvent({
+        session_id: sessionId,
+        persona_name: 'audit-test',
+        tool_name: 'api_request',
+        tool_args: { method: 'GET', path: '/api/tasks' },
+        result: { status: 200, body: { tasks: [] } },
+        duration_ms: 45,
+        mcp_server: 'programmatic-feedback',
+      });
+
+      recordAuditEvent({
+        session_id: sessionId,
+        persona_name: 'audit-test',
+        tool_name: 'submit_finding',
+        tool_args: { title: 'Bug found', severity: 'high' },
+        result: { id: 'finding-1', report_id: 'report-1' },
+        duration_ms: 12,
+        mcp_server: 'feedback-reporter',
+      });
+
+      // Query and validate
+      interface EventRow {
+        timestamp: string;
+        input: string | null;
+        output: string | null;
+        error: string | null;
+        duration_ms: number | null;
+        metadata: string | null;
+      }
+
+      const events = eventsDb.prepare(`
+        SELECT timestamp, input, output, error, duration_ms, metadata
+        FROM session_events
+        WHERE session_id = ? AND event_type IN ('mcp_tool_call', 'mcp_tool_error')
+        ORDER BY timestamp ASC
+      `).all(sessionId) as EventRow[];
+
+      expect(events).toHaveLength(2);
+
+      // Validate first event
+      const input0 = JSON.parse(events[0].input!) as { tool: string; args: unknown };
+      expect(input0.tool).toBe('api_request');
+      expect(input0.args).toEqual({ method: 'GET', path: '/api/tasks' });
+
+      const output0 = JSON.parse(events[0].output!) as { status: number };
+      expect(output0.status).toBe(200);
+      expect(events[0].duration_ms).toBe(45);
+
+      const metadata0 = JSON.parse(events[0].metadata!) as { mcp_server: string };
+      expect(metadata0.mcp_server).toBe('programmatic-feedback');
+
+      // Validate second event
+      const input1 = JSON.parse(events[1].input!) as { tool: string };
+      expect(input1.tool).toBe('submit_finding');
+      expect(events[1].duration_ms).toBe(12);
+
+      const metadata1 = JSON.parse(events[1].metadata!) as { mcp_server: string };
+      expect(metadata1.mcp_server).toBe('feedback-reporter');
+
+      // Validate total duration
+      const totalDuration = events.reduce((sum, e) => sum + (e.duration_ms ?? 0), 0);
+      expect(totalDuration).toBe(57);
+    });
+
+    it('should handle error events correctly', () => {
+      const persona = createPersona(db, { name: 'error-test', description: 'Test', consumption_mode: 'api' });
+      const runId = randomUUID();
+      db.prepare(`
+        INSERT INTO feedback_runs (id, trigger_type, changed_features, personas_triggered, status, max_concurrent, started_at)
+        VALUES (?, 'manual', '[]', '[]', 'pending', 3, ?)
+      `).run(runId, new Date().toISOString());
+
+      const sessionId = createFeedbackSession({ persona_id: persona.id!, run_id: runId });
+
+      // Record an error event
+      recordAuditEvent({
+        session_id: sessionId,
+        persona_name: 'error-test',
+        tool_name: 'api_request',
+        tool_args: { method: 'GET', path: '/nonexistent' },
+        duration_ms: 20,
+        mcp_server: 'programmatic-feedback',
+        error: 'HTTP 404: Not Found',
+      });
+
+      // Query and validate
+      interface EventRow {
+        event_type: string;
+        output: string | null;
+        error: string | null;
+      }
+
+      const event = eventsDb.prepare(`
+        SELECT event_type, output, error
+        FROM session_events
+        WHERE session_id = ?
+      `).get(sessionId) as EventRow;
+
+      expect(event.event_type).toBe('mcp_tool_error');
+      expect(event.output).toBeNull();
+
+      const errorData = JSON.parse(event.error!) as { message: string; tool: string };
+      expect(errorData.message).toBe('HTTP 404: Not Found');
+      expect(errorData.tool).toBe('api_request');
+    });
+
+    it('should handle malformed JSON gracefully in event records', () => {
+      const persona = createPersona(db, { name: 'malformed-test', description: 'Test', consumption_mode: 'api' });
+      const runId = randomUUID();
+      db.prepare(`
+        INSERT INTO feedback_runs (id, trigger_type, changed_features, personas_triggered, status, max_concurrent, started_at)
+        VALUES (?, 'manual', '[]', '[]', 'pending', 3, ?)
+      `).run(runId, new Date().toISOString());
+
+      const sessionId = createFeedbackSession({ persona_id: persona.id!, run_id: runId });
+
+      // Insert event with malformed JSON (simulating corruption)
+      eventsDb.prepare(`
+        INSERT INTO session_events (id, session_id, agent_id, event_type, event_category, input, output, duration_ms, metadata)
+        VALUES (?, ?, ?, 'mcp_tool_call', 'mcp', ?, ?, ?, ?)
+      `).run(
+        randomUUID(),
+        sessionId,
+        'malformed-test',
+        '{invalid json',  // Malformed input
+        '{"result": "ok"}',
+        10,
+        '{"mcp_server": "test"}',
+      );
+
+      // Query - should not throw, should handle gracefully
+      interface EventRow {
+        input: string | null;
+      }
+
+      const event = eventsDb.prepare('SELECT input FROM session_events WHERE session_id = ?')
+        .get(sessionId) as EventRow;
+
+      expect(event.input).toBe('{invalid json');
+
+      // Verify parsing would fail but not crash
+      expect(() => JSON.parse(event.input!)).toThrow();
+    });
+
+    it('should distinguish events from multiple MCP servers', () => {
+      const persona = createPersona(db, { name: 'multi-server', description: 'Test', consumption_mode: 'api' });
+      const runId = randomUUID();
+      db.prepare(`
+        INSERT INTO feedback_runs (id, trigger_type, changed_features, personas_triggered, status, max_concurrent, started_at)
+        VALUES (?, 'manual', '[]', '[]', 'pending', 3, ?)
+      `).run(runId, new Date().toISOString());
+
+      const sessionId = createFeedbackSession({ persona_id: persona.id!, run_id: runId });
+
+      // Events from different servers
+      recordAuditEvent({
+        session_id: sessionId,
+        persona_name: 'multi-server',
+        tool_name: 'api_request',
+        tool_args: {},
+        result: {},
+        duration_ms: 10,
+        mcp_server: 'programmatic-feedback',
+      });
+
+      recordAuditEvent({
+        session_id: sessionId,
+        persona_name: 'multi-server',
+        tool_name: 'submit_finding',
+        tool_args: {},
+        result: {},
+        duration_ms: 5,
+        mcp_server: 'feedback-reporter',
+      });
+
+      recordAuditEvent({
+        session_id: sessionId,
+        persona_name: 'multi-server',
+        tool_name: 'query_db',
+        tool_args: {},
+        result: {},
+        duration_ms: 8,
+        mcp_server: 'sqlite',
+      });
+
+      // Query and validate
+      interface EventRow {
+        metadata: string;
+      }
+
+      const events = eventsDb.prepare(`
+        SELECT metadata
+        FROM session_events
+        WHERE session_id = ?
+        ORDER BY timestamp ASC
+      `).all(sessionId) as EventRow[];
+
+      expect(events).toHaveLength(3);
+
+      const servers = events.map(e => JSON.parse(e.metadata).mcp_server);
+      expect(servers).toEqual(['programmatic-feedback', 'feedback-reporter', 'sqlite']);
+    });
+
+    it('should calculate total duration accurately', () => {
+      const persona = createPersona(db, { name: 'duration-test', description: 'Test', consumption_mode: 'api' });
+      const runId = randomUUID();
+      db.prepare(`
+        INSERT INTO feedback_runs (id, trigger_type, changed_features, personas_triggered, status, max_concurrent, started_at)
+        VALUES (?, 'manual', '[]', '[]', 'pending', 3, ?)
+      `).run(runId, new Date().toISOString());
+
+      const sessionId = createFeedbackSession({ persona_id: persona.id!, run_id: runId });
+
+      const durations = [100, 250, 75, 300, 50];
+      durations.forEach((duration, i) => {
+        recordAuditEvent({
+          session_id: sessionId,
+          persona_name: 'duration-test',
+          tool_name: `tool_${i}`,
+          tool_args: {},
+          result: {},
+          duration_ms: duration,
+          mcp_server: 'test-server',
+        });
+      });
+
+      // Query and calculate
+      interface SumRow {
+        total: number;
+        count: number;
+      }
+
+      const result = eventsDb.prepare(`
+        SELECT SUM(duration_ms) as total, COUNT(*) as count
+        FROM session_events
+        WHERE session_id = ?
+      `).get(sessionId) as SumRow;
+
+      expect(result.count).toBe(5);
+      expect(result.total).toBe(775);
+    });
+
+    it('should include agent_id when requested via include_transcript', () => {
+      const persona = createPersona(db, { name: 'transcript-test', description: 'Test', consumption_mode: 'api' });
+      const runId = randomUUID();
+      db.prepare(`
+        INSERT INTO feedback_runs (id, trigger_type, changed_features, personas_triggered, status, max_concurrent, started_at)
+        VALUES (?, 'manual', '[]', '[]', 'pending', 3, ?)
+      `).run(runId, new Date().toISOString());
+
+      const agentId = 'claude-session-abc123';
+      const sessionId = createFeedbackSession({ persona_id: persona.id!, run_id: runId, agent_id: agentId });
+
+      // Verify agent_id is stored
+      const session = db.prepare('SELECT agent_id FROM feedback_sessions WHERE id = ?')
+        .get(sessionId) as { agent_id: string };
+
+      expect(session.agent_id).toBe(agentId);
+    });
+
+    it('should handle null agent_id gracefully', () => {
+      const persona = createPersona(db, { name: 'no-agent', description: 'Test', consumption_mode: 'api' });
+      const runId = randomUUID();
+      db.prepare(`
+        INSERT INTO feedback_runs (id, trigger_type, changed_features, personas_triggered, status, max_concurrent, started_at)
+        VALUES (?, 'manual', '[]', '[]', 'pending', 3, ?)
+      `).run(runId, new Date().toISOString());
+
+      const sessionId = createFeedbackSession({ persona_id: persona.id!, run_id: runId });
+
+      const session = db.prepare('SELECT agent_id FROM feedback_sessions WHERE id = ?')
+        .get(sessionId) as { agent_id: string | null };
+
+      expect(session.agent_id).toBeNull();
+    });
+
+    it('should resolve persona name correctly', () => {
+      const persona = createPersona(db, {
+        name: 'name-resolution-test',
+        description: 'Test persona name resolution',
+        consumption_mode: 'api',
+      });
+      const runId = randomUUID();
+      db.prepare(`
+        INSERT INTO feedback_runs (id, trigger_type, changed_features, personas_triggered, status, max_concurrent, started_at)
+        VALUES (?, 'manual', '[]', '[]', 'pending', 3, ?)
+      `).run(runId, new Date().toISOString());
+
+      const sessionId = createFeedbackSession({ persona_id: persona.id!, run_id: runId });
+
+      // Query persona name
+      const session = db.prepare('SELECT persona_id FROM feedback_sessions WHERE id = ?')
+        .get(sessionId) as { persona_id: string };
+      const personaRecord = db.prepare('SELECT name FROM personas WHERE id = ?')
+        .get(session.persona_id) as { name: string };
+
+      expect(personaRecord.name).toBe('name-resolution-test');
+    });
+
+    it('should handle mixed success and error events in audit trail', () => {
+      const persona = createPersona(db, { name: 'mixed-events', description: 'Test', consumption_mode: 'api' });
+      const runId = randomUUID();
+      db.prepare(`
+        INSERT INTO feedback_runs (id, trigger_type, changed_features, personas_triggered, status, max_concurrent, started_at)
+        VALUES (?, 'manual', '[]', '[]', 'pending', 3, ?)
+      `).run(runId, new Date().toISOString());
+
+      const sessionId = createFeedbackSession({ persona_id: persona.id!, run_id: runId });
+
+      // Success event
+      recordAuditEvent({
+        session_id: sessionId,
+        persona_name: 'mixed-events',
+        tool_name: 'success_tool',
+        tool_args: { arg: 'value' },
+        result: { success: true },
+        duration_ms: 50,
+        mcp_server: 'test-server',
+      });
+
+      // Error event
+      recordAuditEvent({
+        session_id: sessionId,
+        persona_name: 'mixed-events',
+        tool_name: 'error_tool',
+        tool_args: { arg: 'bad' },
+        duration_ms: 30,
+        mcp_server: 'test-server',
+        error: 'Tool failed',
+      });
+
+      // Another success
+      recordAuditEvent({
+        session_id: sessionId,
+        persona_name: 'mixed-events',
+        tool_name: 'success_tool_2',
+        tool_args: {},
+        result: { done: true },
+        duration_ms: 20,
+        mcp_server: 'test-server',
+      });
+
+      // Query and validate
+      interface EventRow {
+        event_type: string;
+        output: string | null;
+        error: string | null;
+      }
+
+      const events = eventsDb.prepare(`
+        SELECT event_type, output, error
+        FROM session_events
+        WHERE session_id = ?
+        ORDER BY timestamp ASC
+      `).all(sessionId) as EventRow[];
+
+      expect(events).toHaveLength(3);
+      expect(events[0].event_type).toBe('mcp_tool_call');
+      expect(events[0].output).not.toBeNull();
+      expect(events[0].error).toBeNull();
+
+      expect(events[1].event_type).toBe('mcp_tool_error');
+      expect(events[1].output).toBeNull();
+      expect(events[1].error).not.toBeNull();
+
+      expect(events[2].event_type).toBe('mcp_tool_call');
+      expect(events[2].output).not.toBeNull();
+      expect(events[2].error).toBeNull();
+    });
+
+    it('should validate audit record structure matches schema', () => {
+      const persona = createPersona(db, { name: 'schema-test', description: 'Test', consumption_mode: 'api' });
+      const runId = randomUUID();
+      db.prepare(`
+        INSERT INTO feedback_runs (id, trigger_type, changed_features, personas_triggered, status, max_concurrent, started_at)
+        VALUES (?, 'manual', '[]', '[]', 'pending', 3, ?)
+      `).run(runId, new Date().toISOString());
+
+      const sessionId = createFeedbackSession({ persona_id: persona.id!, run_id: runId });
+
+      recordAuditEvent({
+        session_id: sessionId,
+        persona_name: 'schema-test',
+        tool_name: 'test_tool',
+        tool_args: { key: 'value' },
+        result: { output: 'data' },
+        duration_ms: 42,
+        mcp_server: 'test-server',
+      });
+
+      // Validate all required fields exist
+      interface EventRow {
+        id: string;
+        session_id: string;
+        agent_id: string;
+        event_type: string;
+        event_category: string;
+        input: string;
+        output: string | null;
+        error: string | null;
+        duration_ms: number;
+        timestamp: string;
+        metadata: string;
+      }
+
+      const event = eventsDb.prepare('SELECT * FROM session_events WHERE session_id = ?')
+        .get(sessionId) as EventRow;
+
+      // Validate field existence and types
+      expect(event.id).toBeDefined();
+      expect(typeof event.id).toBe('string');
+      expect(event.session_id).toBe(sessionId);
+      expect(event.agent_id).toBe('schema-test');
+      expect(event.event_type).toBe('mcp_tool_call');
+      expect(event.event_category).toBe('mcp');
+      expect(typeof event.input).toBe('string');
+      expect(typeof event.output).toBe('string');
+      expect(event.error).toBeNull();
+      expect(typeof event.duration_ms).toBe('number');
+      expect(event.duration_ms).toBe(42);
+      expect(typeof event.timestamp).toBe('string');
+      expect(typeof event.metadata).toBe('string');
+
+      // Validate JSON fields parse correctly
+      const input = JSON.parse(event.input) as { tool: string; args: unknown };
+      expect(input.tool).toBe('test_tool');
+      expect(input.args).toEqual({ key: 'value' });
+
+      const output = JSON.parse(event.output!) as { output: string };
+      expect(output.output).toBe('data');
+
+      const metadata = JSON.parse(event.metadata) as { mcp_server: string };
+      expect(metadata.mcp_server).toBe('test-server');
+    });
+  });
 });

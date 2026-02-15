@@ -27,6 +27,18 @@ This guide walks through setting up credentials for each service in the GENTYR s
 - 1Password CLI (`op`) installed: `brew install --cask 1password-cli`
 - Claude Code installed
 
+## Browser Automation Notes
+
+These instructions are frequently consumed by AI agents using browser automation (e.g., Claude Cowork). The tips below each phase help agents avoid common pitfalls.
+
+**General patterns for all phases:**
+- Prefer `form_input` over `click` + `type` for filling form fields — it's more reliable and handles special characters (e.g., `/`, `@`) that `type` may misinterpret as keyboard shortcuts.
+- Use `read_page(filter="interactive")` to discover form elements and buttons before interacting with them.
+- Use `zoom` tool to verify small UI elements (checkboxes, toggles, dropdown states) before and after interaction.
+- Use `get_page_text` to extract values from the page (API keys, tokens, IDs) rather than trying to select/copy text via UI interactions.
+- **Chrome Extension interference**: Browser extensions (especially 1Password) can inject errors like `Cannot access a chrome-extension:// URL` across unrelated sites. Recovery: call `navigate()` to the current URL to refresh the page, then retry. If errors persist on a specific page, try navigating away and back.
+- When a page action triggers a new tab or popup, use `get_browser_state()` to check for the new tab, then `switch_tab()` to it.
+
 ## Phase 1: 1Password Service Account
 
 1. Open 1Password Desktop app
@@ -62,6 +74,10 @@ This guide walks through setting up credentials for each service in the GENTYR s
   - `token` = [paste the token]
 - Predefined path: `op://Production/GitHub/token`
 
+> **Browser automation tip — GitHub:** Use `form_input` (not `type`) for the token name field, especially if the name contains `/` or other special characters that browsers interpret as shortcuts.
+
+> **Browser automation tip — 1Password (applies to all phases):** When adding fields to a 1Password item, the `+ add another field` button and its dropdown chevron (`▼`) are **separate clickable controls**. Click the chevron first to select the field type (e.g., "password"), then click the `+` button to create the field. After creating the field, use `form_input` to set both the label and value. Verify the save completed by checking for a URL change or confirmation indicator — 1Password auto-saves on navigation but not always on field edit. Built-in template fields (e.g., "username", "password" on Login items) have pre-set names that may not match the required field name — always add a **new custom field** with the exact name specified (e.g., `token`, `api-key`).
+
 ## Phase 3: Render API Key
 
 1. Go to https://dashboard.render.com/account/api-keys
@@ -76,6 +92,8 @@ This guide walks through setting up credentials for each service in the GENTYR s
 - Fields:
   - `api-key` = [paste the API key]
 - Predefined path: `op://Production/Render/api-key`
+
+> **Browser automation tip — Render:** The API key is displayed once after creation. Use `get_page_text` immediately to capture it before navigating away.
 
 ## Phase 4: Vercel Token
 
@@ -98,6 +116,8 @@ To find your Team ID:
 2. Click your team
 3. Go to **Settings > General**
 4. Copy the Team ID
+
+> **Browser automation tip — Vercel:** The token is displayed once after creation. Use `get_page_text` to capture it. The Team ID on the Settings page can also be extracted via `get_page_text` — look for the string labeled "Team ID".
 
 ## Phase 5: Cloudflare API Token
 
@@ -122,6 +142,8 @@ To find your Zone ID:
 **Non-secret (share in chat during /setup-gentyr):**
 - Cloudflare Zone ID (32-character hex string)
   - Find at: Cloudflare Dashboard > your domain > right sidebar under "API"
+
+> **Browser automation tip — Cloudflare:** The Zone ID is visible on the domain overview page without clicking into any sub-menus. Use `get_page_text` to extract it — look for a 32-character hex string near "Zone ID" in the right sidebar. The token creation flow uses a multi-step wizard with dropdowns for zone selection; use `read_page(filter="interactive")` to find the correct selectors at each step.
 
 ## Phase 6: Supabase Credentials
 
@@ -158,6 +180,8 @@ To find your Zone ID:
 - Predefined path: `op://Production/Supabase/access-token`
 
 **What this enables:** `supabase_sql`, `supabase_push_migration`, `supabase_list_migrations`, `supabase_get_project` MCP tools. Without it, `supabase_list_tables` and `supabase_describe_table` use a PostgREST fallback with slightly less detail.
+
+> **Browser automation tip — Supabase:** The API page shows the `anon` key, `service_role` key, and URL all on one page. Use `get_page_text` to extract all three at once. The `service_role` key is hidden behind a "Reveal" button — click it first, then extract. For the management access token at `supabase.com/dashboard/account/tokens`, the token is displayed once after generation — capture immediately with `get_page_text`.
 
 ## Phase 7: Elastic Cloud Credentials
 
@@ -206,6 +230,27 @@ Provide **one** of the following (not both):
   - Find at: Elastic Cloud > Serverless > your project > Endpoints
   - Stored as: `ELASTIC_ENDPOINT` in vault-mappings.json
 
+> **Browser automation tip — Elastic Cloud:** The "Create API Key" UI has toggles and role selectors that are unreliable with browser automation. **Strongly prefer using the Dev Tools Console** (REST API) instead:
+>
+> 1. Navigate to your project's Dev Tools Console: `https://cloud.elastic.co/.../app/dev_tools#/console/shell`
+> 2. Run the following REST command to create each key:
+>    ```
+>    POST /_security/api_key
+>    {
+>      "name": "log-query-readonly",
+>      "role_descriptors": {
+>        "logs_reader": {
+>          "indices": [{ "names": ["logs-*"], "privileges": ["read"] }]
+>        }
+>      }
+>    }
+>    ```
+> 3. Use `get_page_text` to extract the JSON response from the console output panel.
+> 4. The response contains `id`, `api_key`, and `encoded` fields. **Store the `encoded` value** — this is the base64-encoded `id:api_key` string ready for use. A valid encoded key is ~60 characters. If it's ~36 characters or less, the key was likely truncated during copy.
+> 5. For the ingest key, change `"privileges": ["read"]` to `"privileges": ["index", "create_index"]`.
+>
+> The Endpoint URL for Serverless projects can be found at the project's Endpoints page — use `get_page_text` to extract it.
+
 ## Phase 8: Resend API Key
 
 1. Go to https://resend.com/api-keys
@@ -225,6 +270,8 @@ Provide **one** of the following (not both):
   - `api-key` = [paste the API key]
 - Predefined path: `op://Production/Resend/api-key`
 
+> **Browser automation tip — Resend:** The API key is displayed once after creation. Use `get_page_text` to capture it immediately. The permission dropdown ("Full access" vs "Sending access") should be selected before clicking "Create".
+
 ## Phase 9: Codecov Token
 
 1. Go to https://app.codecov.io
@@ -238,6 +285,8 @@ Provide **one** of the following (not both):
 - Fields:
   - `token` = [paste the upload token]
 - Predefined path: `op://Production/Codecov/token`
+
+> **Browser automation tip — Codecov:** Codecov uses GitHub OAuth for login, which can be disrupted by Chrome extensions. If the OAuth redirect fails or loops, ask the user to log in manually in the browser first, then navigate directly to the repository settings page. The Upload Token is visible on the settings page without any reveal/toggle interaction — use `get_page_text` to extract it.
 
 ## How Credentials Work
 

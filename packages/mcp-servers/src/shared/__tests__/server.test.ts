@@ -704,4 +704,312 @@ describe('McpServer', () => {
       expect(inputSchema.properties).toEqual({});
     });
   });
+
+  describe('processRequest() - Programmatic Request Handling', () => {
+    it('should process initialize request and return response', async () => {
+      const server = createTestServer();
+
+      const response = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {},
+      });
+
+      expect(response).toBeDefined();
+      expect(response).not.toBeNull();
+      expect(response!.jsonrpc).toBe('2.0');
+      expect(response!.id).toBe(1);
+      expect(response!.result).toEqual({
+        protocolVersion: '2024-11-05',
+        capabilities: { tools: {} },
+        serverInfo: { name: 'test-server', version: '1.0.0' },
+      });
+    });
+
+    it('should process tools/list request and return tools', async () => {
+      const tool: ToolHandler = {
+        name: 'test_tool',
+        description: 'A test tool',
+        schema: z.object({ value: z.string() }),
+        handler: async (args) => ({ result: args.value }),
+      };
+
+      const server = createTestServer([tool]);
+
+      const response = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/list',
+        params: {},
+      });
+
+      expect(response).toBeDefined();
+      expect(response!.result.tools).toHaveLength(1);
+      expect(response!.result.tools[0].name).toBe('test_tool');
+    });
+
+    it('should process tools/call request and return result', async () => {
+      const handler = vi.fn(async (args) => ({ result: args.value.toUpperCase() }));
+      const tool: ToolHandler = {
+        name: 'transform',
+        description: 'Transform value',
+        schema: z.object({ value: z.string() }),
+        handler,
+      };
+
+      const server = createTestServer([tool]);
+
+      const response = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: {
+          name: 'transform',
+          arguments: { value: 'hello' },
+        },
+      });
+
+      expect(handler).toHaveBeenCalledWith({ value: 'hello' });
+      expect(response).toBeDefined();
+      expect(response!.result.content).toHaveLength(1);
+      const result = JSON.parse(response!.result.content[0].text);
+      expect(result.result).toBe('HELLO');
+    });
+
+    it('should return null for notification methods', async () => {
+      const server = createTestServer();
+
+      const response = await server.processRequest({
+        jsonrpc: '2.0',
+        id: null,
+        method: 'notifications/initialized',
+      });
+
+      // Notifications should not produce a response
+      expect(response).toBeNull();
+    });
+
+    it('should return error response for invalid JSON-RPC request', async () => {
+      const server = createTestServer();
+
+      const response = await server.processRequest({
+        invalid: 'request',
+      });
+
+      expect(response).toBeDefined();
+      expect(response!.error).toBeDefined();
+      expect(response!.error!.code).toBe(JSON_RPC_ERRORS.PARSE_ERROR);
+      expect(response!.error!.message).toContain('Invalid request');
+    });
+
+    it('should return error response for missing jsonrpc field', async () => {
+      const server = createTestServer();
+
+      const response = await server.processRequest({
+        id: 1,
+        method: 'initialize',
+      });
+
+      expect(response).toBeDefined();
+      expect(response!.error).toBeDefined();
+      expect(response!.error!.code).toBe(JSON_RPC_ERRORS.PARSE_ERROR);
+    });
+
+    it('should return error response for unknown method', async () => {
+      const server = createTestServer();
+
+      const response = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'unknown/method',
+      });
+
+      expect(response).toBeDefined();
+      expect(response!.error).toBeDefined();
+      expect(response!.error!.code).toBe(JSON_RPC_ERRORS.METHOD_NOT_FOUND);
+      expect(response!.error!.message).toContain('Unknown method');
+    });
+
+    it('should validate tool call params (G003)', async () => {
+      const server = createTestServer();
+
+      const response = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 5,
+        method: 'tools/call',
+        params: { invalid: 'structure' }, // Missing 'name' field
+      });
+
+      expect(response).toBeDefined();
+      expect(response!.error).toBeDefined();
+      expect(response!.error!.code).toBe(JSON_RPC_ERRORS.INVALID_PARAMS);
+      expect(response!.error!.message).toContain('Invalid tool call params');
+    });
+
+    it('should validate tool arguments with Zod (G003)', async () => {
+      const tool: ToolHandler = {
+        name: 'validate_test',
+        description: 'Validation test',
+        schema: z.object({
+          requiredField: z.string(),
+          numberField: z.number(),
+        }),
+        handler: async () => ({ success: true }),
+      };
+
+      const server = createTestServer([tool]);
+
+      const response = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 6,
+        method: 'tools/call',
+        params: {
+          name: 'validate_test',
+          arguments: { requiredField: 'test' }, // Missing numberField
+        },
+      });
+
+      expect(response).toBeDefined();
+      expect(response!.result).toBeDefined();
+      const result = JSON.parse(response!.result.content[0].text);
+      expect(result.error).toContain('Invalid arguments');
+    });
+
+    it('should handle tool errors gracefully', async () => {
+      const tool: ToolHandler = {
+        name: 'failing_tool',
+        description: 'A tool that fails',
+        schema: z.object({}),
+        handler: async () => {
+          throw new Error('Tool execution failed');
+        },
+      };
+
+      const server = createTestServer([tool]);
+
+      const response = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: {
+          name: 'failing_tool',
+          arguments: {},
+        },
+      });
+
+      expect(response).toBeDefined();
+      expect(response!.result).toBeDefined();
+      const result = JSON.parse(response!.result.content[0].text);
+      expect(result.error).toBe('Tool execution failed');
+    });
+
+    it('should not write to stdout when using processRequest', async () => {
+      const server = createTestServer();
+      mockOutput = [];
+
+      await server.processRequest({
+        jsonrpc: '2.0',
+        id: 8,
+        method: 'initialize',
+        params: {},
+      });
+
+      // processRequest should capture responses, not write to stdout
+      expect(mockOutput).toHaveLength(0);
+    });
+
+    it('should preserve response ID from request', async () => {
+      const server = createTestServer();
+
+      const stringIdResponse = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 'custom-id-123',
+        method: 'initialize',
+        params: {},
+      });
+
+      expect(stringIdResponse!.id).toBe('custom-id-123');
+
+      const numericIdResponse = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 999,
+        method: 'initialize',
+        params: {},
+      });
+
+      expect(numericIdResponse!.id).toBe(999);
+    });
+
+    it('should handle multiple sequential processRequest calls', async () => {
+      const tool: ToolHandler = {
+        name: 'counter',
+        description: 'Counter tool',
+        schema: z.object({ increment: z.number() }),
+        handler: async (args) => ({ value: args.increment }),
+      };
+
+      const server = createTestServer([tool]);
+
+      const response1 = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'counter', arguments: { increment: 5 } },
+      });
+
+      const response2 = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'counter', arguments: { increment: 10 } },
+      });
+
+      expect(response1).toBeDefined();
+      expect(response2).toBeDefined();
+
+      const result1 = JSON.parse(response1!.result.content[0].text);
+      const result2 = JSON.parse(response2!.result.content[0].text);
+
+      expect(result1.value).toBe(5);
+      expect(result2.value).toBe(10);
+    });
+
+    it('should handle processRequest with null result from tool', async () => {
+      const tool: ToolHandler = {
+        name: 'null_return',
+        description: 'Returns null',
+        schema: z.object({}),
+        handler: async () => null,
+      };
+
+      const server = createTestServer([tool]);
+
+      const response = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 9,
+        method: 'tools/call',
+        params: { name: 'null_return', arguments: {} },
+      });
+
+      expect(response).toBeDefined();
+      expect(response!.result.content[0].text).toBeDefined();
+      const result = JSON.parse(response!.result.content[0].text);
+      expect(result).toBe(null);
+    });
+
+    it('should extract ID from partial invalid request for error response', async () => {
+      const server = createTestServer();
+
+      const response = await server.processRequest({
+        id: 'error-id-123',
+        invalid: 'request',
+      });
+
+      expect(response).toBeDefined();
+      expect(response!.id).toBe('error-id-123');
+      expect(response!.error).toBeDefined();
+      expect(response!.error!.code).toBe(JSON_RPC_ERRORS.PARSE_ERROR);
+    });
+  });
 });

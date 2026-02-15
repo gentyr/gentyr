@@ -1,21 +1,29 @@
 # GENTYR Test Suite
 
-This directory contains integration tests and test fixtures for the GENTYR AI User Feedback System.
+This directory contains integration tests, E2E tests, and test fixtures for the GENTYR AI User Feedback System.
 
 ## Structure
 
 ```
 tests/
 ├── fixtures/
-│   └── toy-app/          # Minimal test application with intentional bugs
-│       ├── server.js     # HTTP server (web UI + REST API)
-│       ├── cli.js        # Command-line interface
+│   └── toy-app/                    # Minimal test application with intentional bugs
+│       ├── server.js               # HTTP server (web UI + REST API)
+│       ├── cli.js                  # Command-line interface
 │       └── package.json
 ├── integration/
-│   ├── mocks/
-│   │   └── feedback-agent-stub.ts  # Stub for simulating feedback agents
-│   └── feedback-pipeline.test.ts   # End-to-end integration tests
-└── README.md             # This file
+│   ├── helpers/
+│   │   └── mcp-test-client.ts      # Convenience wrapper for processRequest
+│   ├── feedback-e2e.test.ts        # Integration tests (real MCP handlers)
+│   └── feedback-pipeline.test.ts   # Pipeline integration tests
+├── e2e/
+│   ├── helpers/
+│   │   ├── project-factory.ts      # Creates temp project dirs with seeded DBs
+│   │   ├── prerequisites.ts        # Checks for claude CLI and built MCP servers
+│   │   └── result-verifier.ts      # Reads DB files and verifies session results
+│   ├── feedback-agents.test.ts     # Real Claude agent E2E tests
+│   └── vitest.config.ts            # E2E vitest config with long timeouts
+└── README.md                       # This file
 ```
 
 ## Toy Application
@@ -51,136 +59,152 @@ node cli.js tasks create --title="New task" --api-url=http://localhost:PORT
 
 Default credentials: `admin` / `admin123`
 
-## Integration Tests
+## Integration Tests (Fast, No Claude)
 
-The integration tests verify the full feedback pipeline WITHOUT spawning real Claude sessions.
+The integration tests call real MCP handler code via server factories and `processRequest()`. No Claude sessions are spawned.
+
+### How It Works
+
+Each MCP server exports a factory function that returns a configured, unstarted server:
+
+```typescript
+import { createUserFeedbackServer } from '../../packages/mcp-servers/src/user-feedback/server.js';
+import { createFeedbackReporterServer } from '../../packages/mcp-servers/src/feedback-reporter/server.js';
+import { McpTestClient } from './helpers/mcp-test-client.js';
+
+const server = createUserFeedbackServer({ db: testDb, projectDir: tmpDir });
+const client = new McpTestClient(server);
+
+const persona = await client.callTool('create_persona', { name: 'tester', ... });
+```
 
 ### Test Coverage
 
 1. **Persona CRUD + Feature Registration Flow**
-   - Create personas (GUI, CLI, API)
-   - Register features with file patterns
-   - Map personas to features
+   - Create personas, register features, map them via real `user-feedback` MCP calls
    - Verify `get_personas_for_changes` returns correct personas
 
 2. **Feedback Run Lifecycle**
-   - Start feedback runs with changed files
-   - Create sessions for matching personas
-   - Complete sessions with findings
+   - Start feedback runs, track sessions, complete them via real MCP calls
    - Verify run status transitions (pending → in_progress → completed/partial/failed)
-   - Verify `get_feedback_run_summary` aggregates correctly
 
 3. **Feedback Reporter → Agent Reports Bridge**
-   - Submit findings via feedback-reporter functions
-   - Verify reports appear in agent-reports DB
-   - Verify category is 'user-feedback'
-   - Verify reporting_agent includes persona name
-   - Verify severity-to-priority mapping
+   - Submit findings and summaries via real `feedback-reporter` MCP calls
+   - Verify reports in agent-reports DB with correct category/priority mapping
 
-4. **Change Analysis Edge Cases**
-   - No matching features → empty personas
-   - Multiple features match → correct persona set
-   - Disabled personas excluded
-   - Feature with no mapped personas
+4. **Audit Trail Verification**
+   - Real `AuditedMcpServer` logging (no manual `recordAuditEvent` stubs)
+   - Verify events, error tracking, and cross-server audit trails
 
-### Running Tests
+5. **Change Analysis Edge Cases**
+   - No matching features, multiple feature matches, disabled personas, orphan features
+
+### Running Integration Tests
 
 ```bash
-# Run all integration tests
 npx vitest run tests/integration/
 
-# Run specific test file
+# Specific file
+npx vitest run tests/integration/feedback-e2e.test.ts
 npx vitest run tests/integration/feedback-pipeline.test.ts
-
-# Watch mode
-npx vitest tests/integration/
 ```
 
-## Feedback Agent Stub
+## E2E Tests (Real Claude Agents)
 
-The `feedback-agent-stub.ts` module simulates a feedback agent session by directly calling feedback-reporter functions with canned findings.
+E2E tests spawn actual Claude agent sessions against the toy app. These are opt-in and require:
 
-### Usage Example
+1. `claude` CLI installed and accessible
+2. MCP servers built (`cd packages/mcp-servers && npm run build`)
 
-```typescript
-import { simulateFeedbackSession } from './mocks/feedback-agent-stub.js';
+### What They Test
 
-const sessionDb = createTestDb(''); // In-memory session DB
-const reportsDb = createTestDb(AGENT_REPORTS_SCHEMA);
+- **Launcher functions**: `getPersona`, `generateMcpConfig`, `buildPrompt` with real project dirs
+- **API persona session**: Real Claude agent using `api_request` tool to test the toy app REST API
+- **CLI persona session**: Real Claude agent using `cli_run` tool to test the toy app CLI
+- **Full pipeline**: Multiple personas triggered by change detection, parallel Claude sessions
 
-const findings: StubFinding[] = [
-  {
-    title: 'Login button not responsive',
-    category: 'usability',
-    severity: 'high',
-    description: 'The login button does not respond to clicks on mobile',
-  },
-];
+### Running E2E Tests
 
-const result = simulateFeedbackSession(
-  sessionDb,
-  reportsDb,
-  'power-user',
-  findings
-);
+```bash
+# Build MCP servers first
+cd packages/mcp-servers && npm run build && cd ../..
 
-// result.findingIds - Array of finding IDs in session DB
-// result.reportIds - Array of report IDs in agent-reports DB
+# Run E2E tests (requires claude CLI)
+npm run test:e2e
 ```
+
+E2E tests have long timeouts (5 min per test) and will skip automatically if prerequisites are not met.
 
 ## Architecture
 
-The integration tests verify the feedback system without spawning real Claude sessions by:
+The test suite uses a two-layer approach:
 
-1. Creating in-memory SQLite databases for user-feedback and agent-reports
-2. Calling MCP server functions directly (not via stdio)
-3. Using the feedback agent stub to simulate feedback session behavior
-4. Verifying data flows correctly through all components
+### Integration Layer (Fast, CI-friendly)
+- Creates in-memory SQLite databases
+- Calls real MCP server handler code via `processRequest()`
+- Uses server factories (`createUserFeedbackServer`, `createFeedbackReporterServer`, etc.)
+- No stubs, no mocks — real handler logic with test-injected databases
+- Runs in seconds
 
-This approach:
-- ✅ Runs fast (no real Claude sessions)
-- ✅ Requires no network access
-- ✅ Tests the actual MCP server logic
-- ✅ Provides deterministic, reproducible results
-- ✅ Enables testing edge cases and error conditions
+### E2E Layer (Real Claude, Opt-in)
+- Creates temporary project directories with seeded databases (project factory)
+- Generates real MCP configs via the feedback launcher
+- Spawns real Claude agent sessions with `runFeedbackAgent`
+- Verifies findings, reports, and audit trails in actual DB files
+- Runs in minutes
 
 ## Adding New Tests
 
-When adding new test scenarios:
-
-1. Create helper functions that mirror the MCP server implementations
-2. Use `createTestDb` from `__testUtils__` for in-memory databases
-3. Use the feedback agent stub to simulate feedback sessions
-4. Verify both the feedback DB and agent-reports DB state
-5. Clean up databases in `afterEach` hooks
-
-Example:
+### Integration Tests
 
 ```typescript
+import { createUserFeedbackServer } from '../../packages/mcp-servers/src/user-feedback/server.js';
+import { McpTestClient } from './helpers/mcp-test-client.js';
+import Database from 'better-sqlite3';
+
 describe('New Feature', () => {
-  let feedbackDb: Database.Database;
-  let reportsDb: Database.Database;
+  let db: Database.Database;
+  let client: McpTestClient;
 
   beforeEach(() => {
-    feedbackDb = createTestDb(USER_FEEDBACK_SCHEMA);
-    reportsDb = createTestDb(AGENT_REPORTS_SCHEMA);
+    db = new Database(':memory:');
+    // Initialize schema...
+    const server = createUserFeedbackServer({ db, projectDir: '/tmp/test' });
+    client = new McpTestClient(server);
   });
 
   afterEach(() => {
-    feedbackDb.close();
-    reportsDb.close();
+    db.close();
   });
 
-  it('should test new functionality', () => {
-    // Test implementation
+  it('should test via real MCP handlers', async () => {
+    const result = await client.callTool('some_tool', { arg: 'value' });
+    expect(result).toBeDefined();
   });
 });
 ```
 
-## Future Enhancements
+### E2E Tests
 
-- [ ] Add E2E tests that spawn real Claude sessions
-- [ ] Add performance benchmarks for feedback pipeline
-- [ ] Add tests for concurrent feedback runs
-- [ ] Add tests for feedback session timeout handling
-- [ ] Add tests for feedback run cancellation
+```typescript
+import { createTestProject } from './helpers/project-factory.js';
+import { skipIfPrerequisitesNotMet } from './helpers/prerequisites.js';
+
+describe('New E2E Test', () => {
+  let skip: boolean;
+  let project: TestProject;
+
+  beforeAll(async () => {
+    skip = await skipIfPrerequisitesNotMet();
+    if (skip) return;
+    project = createTestProject({ personas: [...], features: [...], mappings: [...] });
+  });
+
+  afterAll(() => { project?.cleanup(); });
+
+  it('should test with real Claude', async () => {
+    if (skip) return;
+    // Use runFeedbackAgent to spawn real session...
+  });
+});
+```

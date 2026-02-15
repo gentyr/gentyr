@@ -15,7 +15,7 @@
  * 3. Spawns an isolated Claude session with --tools "" --strict-mcp-config
  * 4. Returns the spawned process info
  *
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 import * as fs from 'fs';
@@ -48,7 +48,7 @@ function parseArgs() {
 /**
  * Read persona details from user-feedback.db
  */
-async function getPersona(personaId) {
+async function getPersona(personaId, projectDir = PROJECT_DIR) {
   let Database;
   try {
     Database = (await import('better-sqlite3')).default;
@@ -57,7 +57,7 @@ async function getPersona(personaId) {
     process.exit(1);
   }
 
-  const dbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+  const dbPath = path.join(projectDir, '.claude', 'user-feedback.db');
   if (!fs.existsSync(dbPath)) {
     console.error(`User feedback DB not found: ${dbPath}`);
     process.exit(1);
@@ -104,7 +104,7 @@ async function getPersona(personaId) {
  * This is the key isolation mechanism - the feedback agent cannot access
  * any project MCP servers (todo-db, specs-browser, deputy-cto, etc.)
  */
-function generateMcpConfig(sessionId, persona) {
+function generateMcpConfig(sessionId, persona, projectDir = PROJECT_DIR) {
   const config = { mcpServers: {} };
 
   const mode = persona.consumption_mode;
@@ -114,9 +114,11 @@ function generateMcpConfig(sessionId, persona) {
       command: 'node',
       args: [path.join(MCP_SERVERS_DIST, 'playwright-feedback', 'server.js')],
       env: {
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        CLAUDE_PROJECT_DIR: projectDir,
         FEEDBACK_BASE_URL: persona.endpoints[0] || 'http://localhost:3000',
         FEEDBACK_BROWSER_HEADLESS: 'true',
+        FEEDBACK_SESSION_ID: sessionId,
+        FEEDBACK_PERSONA_NAME: persona.name,
       },
     };
   }
@@ -126,9 +128,11 @@ function generateMcpConfig(sessionId, persona) {
       command: 'node',
       args: [path.join(MCP_SERVERS_DIST, 'programmatic-feedback', 'server.js')],
       env: {
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        CLAUDE_PROJECT_DIR: projectDir,
         FEEDBACK_MODE: 'cli',
         FEEDBACK_CLI_COMMAND: persona.endpoints[0] || '',
+        FEEDBACK_SESSION_ID: sessionId,
+        FEEDBACK_PERSONA_NAME: persona.name,
       },
     };
   }
@@ -138,9 +142,11 @@ function generateMcpConfig(sessionId, persona) {
       command: 'node',
       args: [path.join(MCP_SERVERS_DIST, 'programmatic-feedback', 'server.js')],
       env: {
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        CLAUDE_PROJECT_DIR: projectDir,
         FEEDBACK_MODE: 'api',
         FEEDBACK_API_BASE_URL: persona.endpoints[0] || 'http://localhost:3000/api',
+        FEEDBACK_SESSION_ID: sessionId,
+        FEEDBACK_PERSONA_NAME: persona.name,
       },
     };
   }
@@ -150,9 +156,11 @@ function generateMcpConfig(sessionId, persona) {
       command: 'node',
       args: [path.join(MCP_SERVERS_DIST, 'programmatic-feedback', 'server.js')],
       env: {
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        CLAUDE_PROJECT_DIR: projectDir,
         FEEDBACK_MODE: 'sdk',
         FEEDBACK_SDK_PACKAGES: persona.endpoints[0] || '',
+        FEEDBACK_SESSION_ID: sessionId,
+        FEEDBACK_PERSONA_NAME: persona.name,
       },
     };
   }
@@ -162,7 +170,7 @@ function generateMcpConfig(sessionId, persona) {
     command: 'node',
     args: [path.join(MCP_SERVERS_DIST, 'feedback-reporter', 'server.js')],
     env: {
-      CLAUDE_PROJECT_DIR: PROJECT_DIR,
+      CLAUDE_PROJECT_DIR: projectDir,
       FEEDBACK_PERSONA_NAME: persona.name,
       FEEDBACK_SESSION_ID: sessionId,
     },
@@ -224,13 +232,16 @@ Do NOT try to debug or fix issues. Just report what you experience.`;
  * Spawn an isolated feedback agent session.
  * Fire-and-forget: the process is detached and unreferenced.
  */
-function spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName) {
+function spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, options = {}) {
+  const projectDir = options.projectDir || PROJECT_DIR;
+  const model = options.model || 'sonnet';
+
   const spawnArgs = [
     '--dangerously-skip-permissions',
     '--tools', '',
     '--strict-mcp-config',
     '--mcp-config', mcpConfigPath,
-    '--model', 'sonnet',
+    '--model', model,
     '--output-format', 'json',
     '-p',
     prompt,
@@ -239,10 +250,10 @@ function spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName) {
   const claude = spawn('claude', spawnArgs, {
     detached: true,
     stdio: 'ignore',
-    cwd: PROJECT_DIR,
+    cwd: projectDir,
     env: {
       ...process.env,
-      CLAUDE_PROJECT_DIR: PROJECT_DIR,
+      CLAUDE_PROJECT_DIR: projectDir,
       CLAUDE_SPAWNED_SESSION: 'true',
       FEEDBACK_SESSION_ID: sessionId,
       FEEDBACK_PERSONA_NAME: personaName,
@@ -255,6 +266,66 @@ function spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName) {
     pid: claude.pid,
     mcpConfigPath,
   };
+}
+
+/**
+ * Run a feedback agent session and wait for completion.
+ * Unlike spawnFeedbackAgent (fire-and-forget), this returns a promise
+ * that resolves when the Claude session finishes.
+ * Used by E2E tests to await session completion.
+ */
+function runFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, options = {}) {
+  const projectDir = options.projectDir || PROJECT_DIR;
+  const timeout = options.timeout || 120000;
+  const model = options.model || 'sonnet';
+
+  const spawnArgs = [
+    '--dangerously-skip-permissions',
+    '--tools', '',
+    '--strict-mcp-config',
+    '--mcp-config', mcpConfigPath,
+    '--model', model,
+    '--output-format', 'json',
+    '-p',
+    prompt,
+  ];
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn('claude', spawnArgs, {
+      cwd: projectDir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: projectDir,
+        CLAUDE_SPAWNED_SESSION: 'true',
+        FEEDBACK_SESSION_ID: sessionId,
+        FEEDBACK_PERSONA_NAME: personaName,
+      },
+    });
+
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    const timer = setTimeout(() => {
+      proc.kill('SIGTERM');
+      setTimeout(() => {
+        if (!proc.killed) proc.kill('SIGKILL');
+      }, 5000);
+      reject(new Error(`Feedback agent timed out after ${timeout}ms. stderr: ${stderr.slice(0, 500)}`));
+    }, timeout);
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      reject(new Error(`Failed to spawn Claude: ${err.message}`));
+    });
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ exitCode: code, stdout, stderr, pid: proc.pid });
+    });
+  });
 }
 
 /**
@@ -322,7 +393,7 @@ async function main() {
 }
 
 // Export for use by hourly-automation.js
-export { getPersona, generateMcpConfig, buildPrompt, spawnFeedbackAgent, cleanupOldConfigs };
+export { getPersona, generateMcpConfig, buildPrompt, spawnFeedbackAgent, runFeedbackAgent, cleanupOldConfigs };
 
 // Run if called directly
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename)) {

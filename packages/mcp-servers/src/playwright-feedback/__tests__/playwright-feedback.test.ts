@@ -14,6 +14,41 @@ import {
   ScrollArgsSchema,
   WaitForTextArgsSchema,
 } from '../types.js';
+import {
+  createPlaywrightFeedbackServer,
+  type PlaywrightFeedbackConfig,
+} from '../server.js';
+
+// ============================================================================
+// Factory Function Tests
+// ============================================================================
+
+describe('Server Factory', () => {
+  it('should create server with valid config', () => {
+    const config: PlaywrightFeedbackConfig = {
+      baseUrl: 'https://example.com',
+      headless: true,
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      auditSessionId: 'test-session',
+      auditPersonaName: 'test-persona',
+    };
+
+    const server = createPlaywrightFeedbackServer(config);
+    expect(server).toBeDefined();
+    expect(server.name).toBe('playwright-feedback');
+  });
+
+  it('should use default values for optional config', () => {
+    const config: PlaywrightFeedbackConfig = {
+      baseUrl: 'https://example.com',
+      auditSessionId: 'test-session',
+    };
+
+    const server = createPlaywrightFeedbackServer(config);
+    expect(server).toBeDefined();
+  });
+});
 
 // ============================================================================
 // Schema Validation Tests
