@@ -29,7 +29,7 @@ const CREDENTIALS = [
   { key: 'CLOUDFLARE_API_TOKEN',      type: 'secret',     opPath: 'op://Production/Cloudflare/api-token',      setupGuidePhase: 'Phase 5: Cloudflare API Token' },
   { key: 'SUPABASE_SERVICE_ROLE_KEY', type: 'secret',     opPath: 'op://Production/Supabase/service-role-key', setupGuidePhase: 'Phase 6: Supabase Credentials' },
   { key: 'RESEND_API_KEY',            type: 'secret',     opPath: 'op://Production/Resend/api-key',            setupGuidePhase: 'Phase 8: Resend API Key' },
-  { key: 'ELASTIC_API_KEY',           type: 'secret',     opPath: 'op://Production/Elastic/api-key',           setupGuidePhase: 'Phase 7: Elastic Cloud Credentials' },
+  { key: 'ELASTIC_API_KEY',           type: 'secret',     opPath: 'op://Production/Elastic/api-key-query',     setupGuidePhase: 'Phase 7: Elastic Cloud Credentials' },
   { key: 'CODECOV_TOKEN',             type: 'secret',     opPath: 'op://Production/Codecov/token',             setupGuidePhase: 'Phase 9: Codecov Token' },
   { key: 'OP_CONNECT_TOKEN',          type: 'secret',     opPath: 'op://Production/1Password/connect-token',   setupGuidePhase: 'Phase 1: 1Password Service Account' },
   { key: 'CLOUDFLARE_ZONE_ID',        type: 'identifier', opPath: null,                                        setupGuidePhase: 'Phase 5: Cloudflare API Token' },

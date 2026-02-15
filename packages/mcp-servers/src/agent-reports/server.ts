@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS reports (
     -- Legacy fields (for backward compatibility)
     triaged_at TEXT,
     triage_action TEXT,
-    CONSTRAINT valid_category CHECK (category IN ('architecture', 'security', 'performance', 'breaking-change', 'blocker', 'decision', 'other')),
+    CONSTRAINT valid_category CHECK (category IN ('architecture', 'security', 'performance', 'breaking-change', 'blocker', 'decision', 'user-feedback', 'other')),
     CONSTRAINT valid_priority CHECK (priority IN ('low', 'normal', 'high', 'critical')),
     CONSTRAINT valid_triage_status CHECK (triage_status IN ('pending', 'in_progress', 'self_handled', 'escalated', 'dismissed'))
 );

@@ -15,6 +15,8 @@ import type {
   ReportPriority,
   TriageStatus,
   QuestionType,
+  ConsumptionMode,
+  FeaturePriority,
 } from './schemas.js';
 
 // ============================================================================
@@ -496,5 +498,149 @@ export function insertCommitDecision(
     decision.question_id,
     decision.created_at,
     decision.created_timestamp
+  );
+}
+
+// ============================================================================
+// Persona Fixtures (user-feedback)
+// ============================================================================
+
+export interface PersonaFixture {
+  id: string;
+  name: string;
+  description: string;
+  consumption_mode: ConsumptionMode;
+  behavior_traits: string;
+  endpoints: string;
+  credentials_ref: string | null;
+  enabled: number;
+  created_at: string;
+  created_timestamp: number;
+  updated_at: string;
+}
+
+/**
+ * Creates a persona fixture with sensible defaults.
+ */
+export function createPersonaFixture(overrides: Partial<PersonaFixture> = {}): PersonaFixture {
+  const now = new Date();
+  const created_timestamp = Math.floor(now.getTime() / 1000);
+
+  return {
+    id: randomUUID(),
+    name: 'test-persona',
+    description: 'A test persona',
+    consumption_mode: 'gui',
+    behavior_traits: '[]',
+    endpoints: '[]',
+    credentials_ref: null,
+    enabled: 1,
+    created_at: now.toISOString(),
+    created_timestamp,
+    updated_at: now.toISOString(),
+    ...overrides,
+  };
+}
+
+/**
+ * Inserts a persona into the database.
+ */
+export function insertPersonaFixture(db: Database.Database, persona: PersonaFixture): void {
+  db.prepare(`
+    INSERT INTO personas (
+      id, name, description, consumption_mode, behavior_traits, endpoints,
+      credentials_ref, enabled, created_at, created_timestamp, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    persona.id,
+    persona.name,
+    persona.description,
+    persona.consumption_mode,
+    persona.behavior_traits,
+    persona.endpoints,
+    persona.credentials_ref,
+    persona.enabled,
+    persona.created_at,
+    persona.created_timestamp,
+    persona.updated_at
+  );
+}
+
+// ============================================================================
+// Feature Fixtures (user-feedback)
+// ============================================================================
+
+export interface FeatureFixture {
+  id: string;
+  name: string;
+  description: string | null;
+  file_patterns: string;
+  url_patterns: string;
+  category: string | null;
+  created_at: string;
+  created_timestamp: number;
+}
+
+/**
+ * Creates a feature fixture with sensible defaults.
+ */
+export function createFeatureFixture(overrides: Partial<FeatureFixture> = {}): FeatureFixture {
+  const now = new Date();
+  const created_timestamp = Math.floor(now.getTime() / 1000);
+
+  return {
+    id: randomUUID(),
+    name: 'test-feature',
+    description: null,
+    file_patterns: JSON.stringify(['src/**']),
+    url_patterns: '[]',
+    category: null,
+    created_at: now.toISOString(),
+    created_timestamp,
+    ...overrides,
+  };
+}
+
+/**
+ * Inserts a feature into the database.
+ */
+export function insertFeatureFixture(db: Database.Database, feature: FeatureFixture): void {
+  db.prepare(`
+    INSERT INTO features (
+      id, name, description, file_patterns, url_patterns, category,
+      created_at, created_timestamp
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    feature.id,
+    feature.name,
+    feature.description,
+    feature.file_patterns,
+    feature.url_patterns,
+    feature.category,
+    feature.created_at,
+    feature.created_timestamp
+  );
+}
+
+/**
+ * Inserts a persona-feature mapping.
+ */
+export function insertPersonaFeatureMapping(
+  db: Database.Database,
+  args: {
+    persona_id: string;
+    feature_id: string;
+    priority?: FeaturePriority;
+    test_scenarios?: string[];
+  }
+): void {
+  db.prepare(`
+    INSERT INTO persona_features (persona_id, feature_id, priority, test_scenarios)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    args.persona_id,
+    args.feature_id,
+    args.priority ?? 'normal',
+    JSON.stringify(args.test_scenarios ?? [])
   );
 }

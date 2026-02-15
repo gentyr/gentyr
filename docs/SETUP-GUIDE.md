@@ -187,8 +187,8 @@ To find your Zone ID:
   - `api-key` = [paste ingest API key]
   - `api-key-query` = [paste query API key]
 - Predefined paths:
-  - `op://Production/Elastic/api-key` (ingest)
-  - `op://Production/Elastic/api-key-query` (query)
+  - `op://Production/Elastic/api-key` (ingest — for backend logging, not used by GENTYR)
+  - `op://Production/Elastic/api-key-query` (query — **used by GENTYR MCP `elastic-logs` server**)
 
 ### Connection Identifier
 

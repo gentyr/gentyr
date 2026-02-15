@@ -26,7 +26,7 @@ The `setup-check.js` script is the authoritative source for credential classific
 | SUPABASE_ANON_KEY | identifier | (direct value — public key, no protected actions) |
 | SUPABASE_URL | identifier | (direct value) |
 | RESEND_API_KEY | secret | op://Production/Resend/api-key |
-| ELASTIC_API_KEY | secret | op://Production/Elastic/api-key |
+| ELASTIC_API_KEY | secret | op://Production/Elastic/api-key-query |
 | ELASTIC_CLOUD_ID | identifier | (direct value — hosted deployments) |
 | ELASTIC_ENDPOINT | identifier | (direct value — Serverless projects, alternative to ELASTIC_CLOUD_ID) |
 | CODECOV_TOKEN | secret | op://Production/Codecov/token |
@@ -155,7 +155,7 @@ File: `.claude/vault-mappings.json`
     "SUPABASE_URL": "https://abcdefghijklmnop.supabase.co",
     "SUPABASE_ANON_KEY": "eyJhbGci...",
     "RESEND_API_KEY": "op://Production/Resend/api-key",
-    "ELASTIC_API_KEY": "op://Production/Elastic/api-key",
+    "ELASTIC_API_KEY": "op://Production/Elastic/api-key-query",
     "ELASTIC_CLOUD_ID": "my-deployment:dXMtY2VudH...",
     "CODECOV_TOKEN": "op://Production/Codecov/token",
     "OP_CONNECT_TOKEN": "op://Production/1Password/connect-token",

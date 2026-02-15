@@ -24,7 +24,11 @@
     "mcp-elastic-logs": "./dist/elastic-logs/server.js",
     "mcp-onepassword": "./dist/onepassword/server.js",
     "mcp-codecov": "./dist/codecov/server.js",
-    "mcp-secret-sync": "./dist/secret-sync/server.js"
+    "mcp-secret-sync": "./dist/secret-sync/server.js",
+    "mcp-user-feedback": "./dist/user-feedback/server.js",
+    "mcp-programmatic-feedback": "./dist/programmatic-feedback/server.js",
+    "mcp-playwright-feedback": "./dist/playwright-feedback/server.js",
+    "mcp-feedback-reporter": "./dist/feedback-reporter/server.js"
   },
   "scripts": {
     "build": "tsc",
@@ -39,6 +43,7 @@
     "@elastic/elasticsearch": "^8.11.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "better-sqlite3": "^12.6.2",
+    "playwright": "^1.58.2",
     "tweetnacl": "^1.0.3",
     "zod": "^3.22.4"
   },

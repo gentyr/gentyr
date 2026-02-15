@@ -18,6 +18,7 @@ export const REPORT_CATEGORIES = [
   'breaking-change',
   'blocker',
   'decision',
+  'user-feedback',
   'other',
 ] as const;
 

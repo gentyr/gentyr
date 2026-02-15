@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS reports (
     -- Legacy fields (for backward compatibility)
     triaged_at TEXT,
     triage_action TEXT,
-    CONSTRAINT valid_category CHECK (category IN ('architecture', 'security', 'performance', 'breaking-change', 'blocker', 'decision', 'other')),
+    CONSTRAINT valid_category CHECK (category IN ('architecture', 'security', 'performance', 'breaking-change', 'blocker', 'decision', 'user-feedback', 'other')),
     CONSTRAINT valid_priority CHECK (priority IN ('low', 'normal', 'high', 'critical')),
     CONSTRAINT valid_triage_status CHECK (triage_status IN ('pending', 'in_progress', 'self_handled', 'escalated', 'dismissed'))
 );
@@ -179,6 +179,7 @@ export const REPORT_CATEGORIES = [
   'breaking-change',
   'blocker',
   'decision',
+  'user-feedback',
   'other',
 ] as const;
 
@@ -217,3 +218,118 @@ export const QUESTION_TYPES = [
 ] as const;
 
 export type QuestionType = (typeof QUESTION_TYPES)[number];
+
+// ============================================================================
+// User Feedback Database Schema
+// ============================================================================
+
+/**
+ * Schema for the user-feedback MCP server.
+ * Mirrors: packages/mcp-servers/src/user-feedback/server.ts
+ */
+export const USER_FEEDBACK_SCHEMA = `
+CREATE TABLE IF NOT EXISTS personas (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL,
+    consumption_mode TEXT NOT NULL DEFAULT 'gui',
+    behavior_traits TEXT NOT NULL DEFAULT '[]',
+    endpoints TEXT NOT NULL DEFAULT '[]',
+    credentials_ref TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    created_timestamp INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    CONSTRAINT valid_mode CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_personas_mode ON personas(consumption_mode);
+CREATE INDEX IF NOT EXISTS idx_personas_enabled ON personas(enabled);
+
+CREATE TABLE IF NOT EXISTS features (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    file_patterns TEXT NOT NULL DEFAULT '[]',
+    url_patterns TEXT NOT NULL DEFAULT '[]',
+    category TEXT,
+    created_at TEXT NOT NULL,
+    created_timestamp INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_features_category ON features(category);
+
+CREATE TABLE IF NOT EXISTS persona_features (
+    persona_id TEXT NOT NULL,
+    feature_id TEXT NOT NULL,
+    priority TEXT NOT NULL DEFAULT 'normal',
+    test_scenarios TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (persona_id, feature_id),
+    FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
+    FOREIGN KEY (feature_id) REFERENCES features(id) ON DELETE CASCADE,
+    CONSTRAINT valid_priority CHECK (priority IN ('low', 'normal', 'high', 'critical'))
+);
+
+CREATE TABLE IF NOT EXISTS feedback_runs (
+    id TEXT PRIMARY KEY,
+    trigger_type TEXT NOT NULL,
+    trigger_ref TEXT,
+    changed_features TEXT NOT NULL DEFAULT '[]',
+    personas_triggered TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'pending',
+    max_concurrent INTEGER NOT NULL DEFAULT 3,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    summary TEXT,
+    CONSTRAINT valid_status CHECK (status IN ('pending', 'in_progress', 'completed', 'failed', 'partial'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_runs_status ON feedback_runs(status);
+CREATE INDEX IF NOT EXISTS idx_runs_started ON feedback_runs(started_at);
+
+CREATE TABLE IF NOT EXISTS feedback_sessions (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    persona_id TEXT NOT NULL,
+    agent_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    started_at TEXT,
+    completed_at TEXT,
+    findings_count INTEGER DEFAULT 0,
+    report_ids TEXT DEFAULT '[]',
+    CONSTRAINT valid_status CHECK (status IN ('pending', 'queued', 'running', 'completed', 'failed', 'timeout')),
+    FOREIGN KEY (run_id) REFERENCES feedback_runs(id),
+    FOREIGN KEY (persona_id) REFERENCES personas(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_run ON feedback_sessions(run_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON feedback_sessions(status);
+`;
+
+/**
+ * Valid consumption modes for personas.
+ */
+export const CONSUMPTION_MODES = ['gui', 'cli', 'api', 'sdk'] as const;
+
+export type ConsumptionMode = (typeof CONSUMPTION_MODES)[number];
+
+/**
+ * Valid feature priorities.
+ */
+export const FEATURE_PRIORITIES = ['low', 'normal', 'high', 'critical'] as const;
+
+export type FeaturePriority = (typeof FEATURE_PRIORITIES)[number];
+
+/**
+ * Valid feedback run statuses.
+ */
+export const FEEDBACK_RUN_STATUSES = ['pending', 'in_progress', 'completed', 'failed', 'partial'] as const;
+
+export type FeedbackRunStatus = (typeof FEEDBACK_RUN_STATUSES)[number];
+
+/**
+ * Valid feedback session statuses.
+ */
+export const FEEDBACK_SESSION_STATUSES = ['pending', 'queued', 'running', 'completed', 'failed', 'timeout'] as const;
+
+export type FeedbackSessionStatus = (typeof FEEDBACK_SESSION_STATUSES)[number];
