@@ -10,35 +10,74 @@
     "cto-report",
     "cto-reports",
     "elastic-logs",
-    "claude-sessions"
+    "claude-sessions",
+    "codecov"
   ],
   "servers": {
     "supabase": {
       "protection": "credential-isolated",
       "phrase": "APPROVE DATABASE",
-      "tools": ["executeSql", "deleteData", "deleteUser", "deleteFile"],
-      "credentialKeys": ["SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_URL"],
+      "tools": [
+        "supabase_sql",
+        "supabase_delete",
+        "supabase_delete_user",
+        "supabase_delete_file",
+        "supabase_push_migration",
+        "supabase_get_migration"
+      ],
+      "credentialKeys": [
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_ACCESS_TOKEN"
+      ],
       "description": "Production database - destructive operations require approval"
     },
     "vercel": {
       "protection": "credential-isolated",
       "phrase": "APPROVE DEPLOY",
-      "tools": ["vercel_promote_deployment", "vercel_rollback", "vercel_create_env_var", "vercel_delete_env_var"],
-      "credentialKeys": ["VERCEL_TOKEN"],
+      "tools": [
+        "vercel_promote_deployment",
+        "vercel_rollback",
+        "vercel_create_env_var",
+        "vercel_delete_env_var"
+      ],
+      "credentialKeys": [
+        "VERCEL_TOKEN"
+      ],
       "description": "Production deployment - environment changes require approval"
     },
     "render": {
       "protection": "credential-isolated",
       "phrase": "APPROVE INFRA",
-      "tools": ["render_trigger_deploy", "render_delete_service", "render_suspend_service", "render_update_service", "render_create_env_var", "render_update_env_var", "render_delete_env_var"],
-      "credentialKeys": ["RENDER_API_KEY"],
+      "tools": [
+        "render_trigger_deploy",
+        "render_delete_service",
+        "render_suspend_service",
+        "render_update_service",
+        "render_create_env_var",
+        "render_update_env_var",
+        "render_delete_env_var",
+        "render_create_service",
+        "render_resume_service"
+      ],
+      "credentialKeys": [
+        "RENDER_API_KEY"
+      ],
       "description": "Infrastructure management - service changes require approval"
     },
     "cloudflare": {
       "protection": "credential-isolated",
       "phrase": "APPROVE DNS",
-      "tools": ["create_dns_record", "update_dns_record", "delete_dns_record"],
-      "credentialKeys": ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ZONE_ID"],
+      "tools": [
+        "cloudflare_create_dns_record",
+        "cloudflare_update_dns_record",
+        "cloudflare_delete_dns_record"
+      ],
+      "credentialKeys": [
+        "CLOUDFLARE_API_TOKEN",
+        "CLOUDFLARE_ZONE_ID"
+      ],
       "description": "DNS management - production changes require approval to prevent outages"
     },
     "github": {
@@ -52,28 +91,78 @@
         "github_delete_environment_secret",
         "github_delete_branch",
         "github_update_branch_protection",
-        "github_delete_branch_protection"
+        "github_delete_branch_protection",
+        "github_create_or_update_file",
+        "github_create_branch",
+        "github_create_pull_request",
+        "github_rerun_workflow",
+        "github_cancel_workflow_run"
       ],
-      "description": "Production changes: merges to main, secrets management, branch protection, and branch deletion require CTO approval"
+      "description": "Production changes: merges to main, secrets management, branch protection, branch deletion, file modifications, branch creation, PR creation, and workflow control require CTO approval",
+      "credentialKeys": [
+        "GITHUB_TOKEN",
+        "GITHUB_PAT"
+      ]
     },
     "resend": {
       "protection": "approval-only",
       "phrase": "APPROVE EMAIL",
-      "tools": ["create_api_key", "delete_api_key", "delete_domain"],
-      "description": "Email service key management requires approval"
+      "tools": [
+        "resend_create_api_key",
+        "resend_delete_api_key",
+        "resend_delete_domain"
+      ],
+      "description": "Email service key management requires approval",
+      "credentialKeys": [
+        "RESEND_API_KEY"
+      ]
     },
     "onepassword": {
       "protection": "credential-isolated",
       "phrase": "APPROVE VAULT",
-      "tools": ["create_service_account"],
-      "credentialKeys": ["OP_SERVICE_ACCOUNT_TOKEN"],
-      "description": "Service account creation requires approval (security-sensitive)"
+      "tools": [
+        "create_service_account",
+        "read_secret"
+      ],
+      "credentialKeys": [
+        "OP_SERVICE_ACCOUNT_TOKEN",
+        "OP_CONNECT_TOKEN"
+      ],
+      "description": "1Password vault — secret reading and admin operations require CTO approval"
+    },
+    "secret-sync": {
+      "protection": "credential-isolated",
+      "phrase": "APPROVE SYNC",
+      "tools": [
+        "secret_sync_secrets"
+      ],
+      "credentialKeys": [
+        "OP_SERVICE_ACCOUNT_TOKEN",
+        "RENDER_API_KEY",
+        "VERCEL_TOKEN"
+      ],
+      "description": "Secret syncing — reads from 1Password and pushes to Render/Vercel"
     },
     "deputy-cto": {
       "protection": "approval-only",
       "phrase": "APPROVE BYPASS",
-      "tools": ["request_bypass", "execute_bypass"],
+      "tools": [
+        "request_bypass",
+        "execute_bypass"
+      ],
       "description": "Deputy-CTO bypass system - prevents autonomous approval overrides"
+    },
+    "elastic-logs": {
+      "credentialKeys": [
+        "ELASTIC_API_KEY",
+        "ELASTIC_CLOUD_ID",
+        "ELASTIC_ENDPOINT"
+      ]
+    },
+    "codecov": {
+      "credentialKeys": [
+        "CODECOV_TOKEN"
+      ]
     }
   },
   "settings": {

@@ -9,6 +9,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/block-no-verify.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-file-guard.js",
+            "timeout": 5
           }
         ]
       },
@@ -59,6 +64,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-health-check.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/api-key-watcher.js",
             "timeout": 10
           }
@@ -73,6 +83,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/cto-notification-hook.js",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/secret-leak-detector.js",
+            "timeout": 5
           },
           {
             "type": "command",

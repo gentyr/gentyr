@@ -21,7 +21,7 @@
  *
  * SECURITY: This file should be root-owned via protect-framework.sh
  *
- * @version 2.0.0
+ * @version 2.1.0
  */
 
 import fs from 'node:fs';
@@ -89,6 +89,12 @@ const FILE_COPY_COMMANDS = new Set(['cp', 'mv']);
 const ENV_DUMP_COMMANDS = /(?:^|\s)(env|printenv|export\s+-p)(?:\s|$|\|)/;
 
 /**
+ * Shell operator tokens emitted by tokenize().
+ * Used by splitOnOperators() to split token arrays into sub-commands.
+ */
+const OPERATOR_TOKENS = new Set(['|', '||', '&&', ';']);
+
+/**
  * Load protected credential key names from protected-actions.json
  * @param {string} projectDir
  * @returns {Set<string>}
@@ -119,7 +125,13 @@ function loadCredentialKeys(projectDir) {
 }
 
 /**
- * Simple shell tokenizer that respects single and double quotes.
+ * Shell tokenizer that respects single/double quotes and emits shell
+ * operators (|, ||, &&, ;, <, >, >>) as separate tokens.
+ *
+ * This ensures pipes/semicolons inside quoted strings are NOT treated
+ * as command separators — the full command is tokenized first, then
+ * split on operator tokens.
+ *
  * @param {string} str
  * @returns {string[]}
  */
@@ -129,8 +141,12 @@ function tokenize(str) {
   let inSingle = false;
   let inDouble = false;
   let escaped = false;
+  const chars = [...str];
 
-  for (const ch of str) {
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    const next = i + 1 < chars.length ? chars[i + 1] : '';
+
     if (escaped) {
       current += ch;
       escaped = false;
@@ -148,13 +164,60 @@ function tokenize(str) {
       inDouble = !inDouble;
       continue;
     }
-    if ((ch === ' ' || ch === '\t') && !inSingle && !inDouble) {
+
+    // Inside quotes: everything is literal
+    if (inSingle || inDouble) {
+      current += ch;
+      continue;
+    }
+
+    // Outside quotes: check for operators and whitespace
+    if (ch === ' ' || ch === '\t') {
       if (current) {
         tokens.push(current);
         current = '';
       }
       continue;
     }
+
+    // Shell operators (only outside quotes)
+    if (ch === '|') {
+      if (current) { tokens.push(current); current = ''; }
+      if (next === '|') {
+        tokens.push('||');
+        i++;
+      } else {
+        tokens.push('|');
+      }
+      continue;
+    }
+    if (ch === '&' && next === '&') {
+      if (current) { tokens.push(current); current = ''; }
+      tokens.push('&&');
+      i++;
+      continue;
+    }
+    if (ch === ';') {
+      if (current) { tokens.push(current); current = ''; }
+      tokens.push(';');
+      continue;
+    }
+    if (ch === '>') {
+      if (current) { tokens.push(current); current = ''; }
+      if (next === '>') {
+        tokens.push('>>');
+        i++;
+      } else {
+        tokens.push('>');
+      }
+      continue;
+    }
+    if (ch === '<') {
+      if (current) { tokens.push(current); current = ''; }
+      tokens.push('<');
+      continue;
+    }
+
     current += ch;
   }
   if (current) {
@@ -164,23 +227,39 @@ function tokenize(str) {
 }
 
 /**
+ * Split a token array into sub-command groups at operator boundaries.
+ * @param {string[]} tokens
+ * @returns {string[][]}
+ */
+function splitOnOperators(tokens) {
+  const groups = [[]];
+  for (const token of tokens) {
+    if (OPERATOR_TOKENS.has(token)) {
+      groups.push([]);
+    } else {
+      groups[groups.length - 1].push(token);
+    }
+  }
+  return groups;
+}
+
+/**
  * Extract file paths from a bash command that may access protected files.
- * Splits on pipes, semicolons, && and || to process individual sub-commands.
+ * Tokenizes the full command first (preserving quoted strings), then splits
+ * on operator tokens to process individual sub-commands.
  * @param {string} command
  * @returns {string[]} Array of file paths found
  */
 function extractFilePathsFromCommand(command) {
   const paths = [];
 
-  // Split on pipe, semicolons, && and || to get individual commands
-  const subCommands = command.split(/\s*(?:\|(?!\|)|\|\||&&|;)\s*/);
+  // Tokenize the full command first — operators inside quotes stay literal
+  const allTokens = tokenize(command);
 
-  for (const sub of subCommands) {
-    const trimmed = sub.trim();
-    if (!trimmed) continue;
+  // Split tokens into sub-commands at operator boundaries
+  const subCommands = splitOnOperators(allTokens);
 
-    // Tokenize: split on whitespace but respect quotes
-    const tokens = tokenize(trimmed);
+  for (const tokens of subCommands) {
     if (tokens.length === 0) continue;
 
     const cmd = path.basename(tokens[0]); // Handle /usr/bin/cat etc.
@@ -195,7 +274,7 @@ function extractFilePathsFromCommand(command) {
         if (token.startsWith('-') && !token.startsWith('./') && !token.startsWith('../')) {
           continue;
         }
-        // Skip output redirection targets
+        // Skip output redirection targets (now handled as separate tokens)
         if (token === '>' || token === '>>') {
           i++; // skip the target path
           continue;
@@ -207,10 +286,11 @@ function extractFilePathsFromCommand(command) {
       }
     }
 
-    // Check for input redirection: < filepath
-    const redirectMatch = trimmed.match(/<\s+(\S+)/);
-    if (redirectMatch) {
-      paths.push(redirectMatch[1]);
+    // Check for input redirection: '<' token followed by path token
+    for (let i = 0; i < tokens.length; i++) {
+      if (tokens[i] === '<' && i + 1 < tokens.length) {
+        paths.push(tokens[i + 1]);
+      }
     }
   }
 

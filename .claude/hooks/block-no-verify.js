@@ -37,6 +37,19 @@ const lintWeakeningPatterns = [
   { pattern: /eslint.*--no-error-on-unmatched-pattern/i, reason: 'This flag can silently skip linting of files' },
 ];
 
+// Patterns blocking direct credential/secret access via CLI tools
+// Even if OP_SERVICE_ACCOUNT_TOKEN is in the shell environment, agents cannot use
+// the 1Password CLI to extract secrets. Secrets flow only through MCP server env
+// fields (which are spawned by MCP infrastructure, not by Bash).
+const credentialAccessPatterns = [
+  { pattern: /\bop\s+(run|read|item|inject|signin|signout|whoami|vault|document|connect|account|group|user|service-account|events-api|plugin)\b/i,
+    reason: '1Password CLI access blocked — secrets must only flow through MCP server env fields, not Bash' },
+  { pattern: /\bop\s+--/i,
+    reason: '1Password CLI access blocked — global op flags indicate CLI usage' },
+  { pattern: /(?:^|[\/\s])op\s+(run|read|item|inject|signin|signout|whoami|vault|document|connect|account|group|user|service-account|events-api|plugin)\b/i,
+    reason: '1Password CLI access blocked (full-path variant) — secrets must only flow through MCP server env fields' },
+];
+
 /**
  * Check if a valid CTO bypass token exists.
  */
@@ -174,6 +187,19 @@ process.stdin.on('end', () => {
           reason,
           'Lint Enforcement Weakening Attempt',
           'Explain why lint relaxation is needed'
+        );
+        return;
+      }
+    }
+
+    // Check for credential/secret access via CLI
+    for (const { pattern, reason } of credentialAccessPatterns) {
+      if (pattern.test(command)) {
+        blockCommand(
+          command,
+          reason,
+          'Credential Access Attempt',
+          'Explain why direct 1Password CLI access is needed'
         );
         return;
       }

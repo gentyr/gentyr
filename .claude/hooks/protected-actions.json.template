@@ -35,6 +35,20 @@
       "phrase": "APPROVE EMAIL",
       "tools": ["send_email", "send_bulk"],
       "description": "SendGrid - CTO approval required but credentials not isolated"
+    },
+    "onepassword": {
+      "protection": "credential-isolated",
+      "phrase": "APPROVE VAULT",
+      "tools": ["create_service_account", "read_secret"],
+      "credentialKeys": ["OP_SERVICE_ACCOUNT_TOKEN", "OP_CONNECT_TOKEN"],
+      "description": "1Password vault — secret reading and admin operations require CTO approval"
+    },
+    "secret-sync": {
+      "protection": "credential-isolated",
+      "phrase": "APPROVE SYNC",
+      "tools": ["secret_sync_secrets"],
+      "credentialKeys": ["OP_SERVICE_ACCOUNT_TOKEN", "RENDER_API_KEY", "VERCEL_TOKEN"],
+      "description": "Secret syncing — reads from 1Password and pushes to Render/Vercel"
     }
   },
   "_allowedUnprotectedServers_note": "Framework/internal MCP servers that don't need protection. Any server NOT in 'servers' and NOT in this list will be BLOCKED.",
