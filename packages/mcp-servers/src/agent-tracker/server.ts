@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { McpServer, type ToolHandler } from '../shared/server.js';
+import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   ListSpawnedAgentsArgsSchema,
   GetAgentPromptArgsSchema,
@@ -835,7 +835,7 @@ function getSessionSummary(args: GetSessionSummaryArgs): SessionSummaryResult | 
 // Server Setup
 // ============================================================================
 
-const tools: ToolHandler[] = [
+const tools: AnyToolHandler[] = [
   {
     name: 'list_spawned_agents',
     description: 'List all Claude agents spawned by hooks. Returns agent ID, type, description, timestamp, and prompt preview.',

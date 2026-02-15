@@ -21,7 +21,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { McpServer, type ToolHandler } from '../shared/server.js';
+import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   ReportToCtoArgsSchema,
   ListReportsArgsSchema,
@@ -602,7 +602,7 @@ function getReportsForTriage(args: GetReportsForTriageArgs): GetReportsForTriage
 // Server Setup
 // ============================================================================
 
-const tools: ToolHandler[] = [
+const tools: AnyToolHandler[] = [
   {
     name: 'report_to_cto',
     description: 'Submit a report to the CTO. Use for major tasks, plans, problems, breaking changes, or important decisions. All agents should use this to keep the CTO informed.',

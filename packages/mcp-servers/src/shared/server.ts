@@ -20,25 +20,130 @@ import {
   type McpToolCallResult,
 } from './types.js';
 
-export interface ToolHandler<TArgs = Record<string, unknown>, TResult = unknown> {
+export interface ToolHandler<TArgs = unknown, TResult = unknown> {
   name: string;
   description: string;
   schema: ZodSchema<TArgs>;
-  // Method syntax is bivariant, allowing specific handlers to be assigned to generic arrays
-  // while Zod validation at runtime ensures type safety (F002)
-  handler(args: TArgs): TResult | Promise<TResult>;
+  handler: (args: TArgs) => TResult | Promise<TResult>;
 }
+
+/**
+ * Type alias for heterogeneous tool arrays.
+ *
+ * We use `any` here (not `unknown`) because each tool in the array has different
+ * concrete types for TArgs and TResult. Using `unknown` breaks type inference
+ * and causes compilation errors when assigning typed handlers to the array.
+ *
+ * This is a legitimate use of `any` for generic collection types where we need
+ * to preserve type information at runtime but accept heterogeneous compile-time types.
+ *
+ * @see https://github.com/microsoft/TypeScript/issues/14520
+ */
+export type AnyToolHandler = ToolHandler<any, any>;
 
 export interface McpServerOptions {
   name: string;
   version: string;
-  tools: ToolHandler[];
+  tools: AnyToolHandler[];
+}
+
+/**
+ * Convert a single Zod type to JSON Schema representation
+ */
+function zodTypeToJsonSchema(schema: ZodSchema): Record<string, unknown> {
+  // Handle optional wrapper
+  if (schema instanceof z.ZodOptional) {
+    return zodTypeToJsonSchema(schema.unwrap());
+  }
+
+  // Handle common types
+  if (schema instanceof z.ZodString) {
+    const result: Record<string, unknown> = { type: 'string' };
+    if (schema.description) {
+      result.description = schema.description;
+    }
+    return result;
+  }
+
+  if (schema instanceof z.ZodNumber) {
+    const result: Record<string, unknown> = { type: 'number' };
+    if (schema.description) {
+      result.description = schema.description;
+    }
+    return result;
+  }
+
+  if (schema instanceof z.ZodBoolean) {
+    const result: Record<string, unknown> = { type: 'boolean' };
+    if (schema.description) {
+      result.description = schema.description;
+    }
+    return result;
+  }
+
+  if (schema instanceof z.ZodArray) {
+    return {
+      type: 'array',
+      items: zodTypeToJsonSchema(schema.element),
+      description: schema.description,
+    };
+  }
+
+  if (schema instanceof z.ZodEnum) {
+    return {
+      type: 'string',
+      enum: schema.options,
+      description: schema.description,
+    };
+  }
+
+  if (schema instanceof z.ZodDefault) {
+    const inner = zodTypeToJsonSchema(schema._def.innerType);
+    return { ...inner, default: schema._def.defaultValue() };
+  }
+
+  // Fallback
+  return { type: 'string', description: schema.description };
+}
+
+/**
+ * Convert Zod schema to JSON Schema for MCP tool definitions.
+ * Exported for use by MCP servers that don't extend McpServer.
+ */
+export function zodToJsonSchema(schema: ZodSchema): McpToolDefinition['inputSchema'] {
+  // For object schemas, extract properties
+  if (schema instanceof z.ZodObject) {
+    const shape = schema.shape as Record<string, ZodSchema>;
+    const properties: Record<string, unknown> = {};
+    const required: string[] = [];
+
+    for (const [key, value] of Object.entries(shape)) {
+      properties[key] = zodTypeToJsonSchema(value);
+
+      // Check if field is required (not optional)
+      if (!(value instanceof z.ZodOptional)) {
+        required.push(key);
+      }
+    }
+
+    return {
+      type: 'object',
+      properties,
+      required: required.length > 0 ? required : undefined,
+    };
+  }
+
+  // Fallback for non-object schemas
+  return {
+    type: 'object',
+    properties: {},
+  };
 }
 
 export class McpServer {
   private readonly name: string;
   private readonly version: string;
-  private readonly tools: Map<string, ToolHandler>;
+  private readonly tools: Map<string, AnyToolHandler>;
   private readonly toolDefinitions: McpToolDefinition[];
 
   constructor(options: McpServerOptions) {
@@ -52,109 +157,16 @@ export class McpServer {
       this.toolDefinitions.push({
         name: tool.name,
         description: tool.description,
-        inputSchema: this.zodToJsonSchema(tool.schema),
+        inputSchema: zodToJsonSchema(tool.schema),
       });
     }
-  }
-
-  /**
-   * Convert Zod schema to JSON Schema for MCP tool definitions
-   * This is a simplified conversion - handles common cases
-   */
-  private zodToJsonSchema(schema: ZodSchema): McpToolDefinition['inputSchema'] {
-
-    // For object schemas, extract properties
-    if (schema instanceof z.ZodObject) {
-      const shape = schema.shape as Record<string, ZodSchema>;
-      const properties: Record<string, unknown> = {};
-      const required: string[] = [];
-
-      for (const [key, value] of Object.entries(shape)) {
-        properties[key] = this.zodTypeToJsonSchema(value);
-
-        // Check if field is required (not optional)
-        if (!(value instanceof z.ZodOptional)) {
-          required.push(key);
-        }
-      }
-
-      return {
-        type: 'object',
-        properties,
-        required: required.length > 0 ? required : undefined,
-      };
-    }
-
-    // Fallback for non-object schemas
-    return {
-      type: 'object',
-      properties: {},
-    };
-  }
-
-  private zodTypeToJsonSchema(schema: ZodSchema): Record<string, unknown> {
-    // Handle optional wrapper
-    if (schema instanceof z.ZodOptional) {
-      return this.zodTypeToJsonSchema(schema.unwrap());
-    }
-
-    // Handle common types
-    if (schema instanceof z.ZodString) {
-      const result: Record<string, unknown> = { type: 'string' };
-      if (schema.description) {result.description = schema.description;}
-      return result;
-    }
-
-    if (schema instanceof z.ZodNumber) {
-      const result: Record<string, unknown> = { type: 'number' };
-      if (schema.description) {result.description = schema.description;}
-      return result;
-    }
-
-    if (schema instanceof z.ZodBoolean) {
-      const result: Record<string, unknown> = { type: 'boolean' };
-      if (schema.description) {result.description = schema.description;}
-      return result;
-    }
-
-    if (schema instanceof z.ZodArray) {
-      return {
-        type: 'array',
-        items: this.zodTypeToJsonSchema(schema.element),
-        description: schema.description,
-      };
-    }
-
-    if (schema instanceof z.ZodEnum) {
-      return {
-        type: 'string',
-        enum: schema.options,
-        description: schema.description,
-      };
-    }
-
-    if (schema instanceof z.ZodDefault) {
-      const inner = this.zodTypeToJsonSchema(schema._def.innerType);
-      return { ...inner, default: schema._def.defaultValue() };
-    }
-
-    if (schema instanceof z.ZodRecord) {
-      return {
-        type: 'object',
-        additionalProperties: true,
-        description: schema.description,
-      };
-    }
-
-    // Fallback
-    return { type: 'string', description: schema.description };
   }
 
   /**
    * Send a JSON-RPC response to stdout
    */
   private sendResponse(response: JsonRpcResponse): void {
-    process.stdout.write(`${JSON.stringify(response)  }\n`);
+    process.stdout.write(`${JSON.stringify(response)}\n`);
   }
 
   /**
@@ -285,7 +297,7 @@ export class McpServer {
 
     rl.on('line', async (line) => {
       // Skip empty lines
-      if (!line.trim()) {return;}
+      if (!line.trim()) { return; }
 
       // Parse JSON first
       let parsed: unknown;

@@ -15,7 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import Database from 'better-sqlite3';
-import { McpServer, type ToolHandler } from '../shared/server.js';
+import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   GetReportArgsSchema,
   GetSessionMetricsArgsSchema,
@@ -903,12 +903,11 @@ function getKeyRotationMetrics(hours: number): KeyRotationMetrics | null {
 const DEFAULT_COOLDOWNS: AutomationCooldowns = {
   hourly_tasks: 55,
   triage_check: 5,
-  plan_executor: 55,
   antipattern_hunter: 360,
   schema_mapper: 1440,
   lint_checker: 30,
   todo_maintenance: 15,
-  task_runner: 15,
+  task_runner: 60,
   triage_per_item: 60,
 };
 
@@ -1037,7 +1036,7 @@ function getTaskMetrics(args: GetTaskMetricsArgs): TaskMetricsResult {
 // Server Setup
 // ============================================================================
 
-const tools: ToolHandler[] = [
+const tools: AnyToolHandler[] = [
   {
     name: 'get_report',
     description: 'Generate comprehensive CTO report with token usage, session metrics, pending items, and task status.',

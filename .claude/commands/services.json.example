@@ -1,0 +1,30 @@
+{
+  "_comment": "Project-specific service configuration for GENTYR slash commands (/push-secrets, /push-migrations). Copy to .claude/config/services.json and fill in your values.",
+  "render": {
+    "production": { "serviceId": "srv-YOUR_PROD_SERVICE_ID", "label": "Production" },
+    "staging": { "serviceId": "srv-YOUR_STAGING_SERVICE_ID", "label": "Staging" }
+  },
+  "vercel": {
+    "projectId": "prj_YOUR_PROJECT_ID"
+  },
+  "supabase": {
+    "migrationsDir": "supabase/migrations/"
+  },
+  "secrets": {
+    "renderProduction": {
+      "SUPABASE_URL": "op://Production/Supabase/url",
+      "SUPABASE_SERVICE_ROLE_KEY": "op://Production/Supabase/service-role-key",
+      "SUPABASE_ANON_KEY": "op://Production/Supabase/anon-key"
+    },
+    "renderStaging": {
+      "SUPABASE_URL": "op://Staging/Supabase/url",
+      "SUPABASE_SERVICE_ROLE_KEY": "op://Staging/Supabase/service-role-key",
+      "SUPABASE_ANON_KEY": "op://Staging/Supabase/anon-key"
+    },
+    "vercel": {
+      "NEXT_PUBLIC_SUPABASE_URL": { "ref": "op://Production/Supabase/url", "target": ["production", "preview", "development"], "type": "plain" },
+      "NEXT_PUBLIC_SUPABASE_ANON_KEY": { "ref": "op://Production/Supabase/anon-key", "target": ["production", "preview", "development"], "type": "plain" }
+    },
+    "manual": []
+  }
+}

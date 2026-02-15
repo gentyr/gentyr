@@ -62,6 +62,76 @@
       "env": {
         "CLAUDE_PROJECT_DIR": "."
       }
+    },
+    "render": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/scripts/mcp-launcher.js", "render", "${FRAMEWORK_PATH}/packages/mcp-servers/dist/render/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "vercel": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/scripts/mcp-launcher.js", "vercel", "${FRAMEWORK_PATH}/packages/mcp-servers/dist/vercel/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "github": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/scripts/mcp-launcher.js", "github", "${FRAMEWORK_PATH}/packages/mcp-servers/dist/github/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "cloudflare": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/scripts/mcp-launcher.js", "cloudflare", "${FRAMEWORK_PATH}/packages/mcp-servers/dist/cloudflare/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "supabase": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/scripts/mcp-launcher.js", "supabase", "${FRAMEWORK_PATH}/packages/mcp-servers/dist/supabase/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "resend": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/scripts/mcp-launcher.js", "resend", "${FRAMEWORK_PATH}/packages/mcp-servers/dist/resend/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "elastic-logs": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/scripts/mcp-launcher.js", "elastic-logs", "${FRAMEWORK_PATH}/packages/mcp-servers/dist/elastic-logs/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "onepassword": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/scripts/mcp-launcher.js", "onepassword", "${FRAMEWORK_PATH}/packages/mcp-servers/dist/onepassword/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "codecov": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/scripts/mcp-launcher.js", "codecov", "${FRAMEWORK_PATH}/packages/mcp-servers/dist/codecov/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "secret-sync": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/scripts/mcp-launcher.js", "secret-sync", "${FRAMEWORK_PATH}/packages/mcp-servers/dist/secret-sync/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
     }
   }
 }

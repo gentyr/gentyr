@@ -33,19 +33,26 @@ import {
 // ============================================================================
 
 const {ELASTIC_CLOUD_ID} = process.env;
+const {ELASTIC_ENDPOINT} = process.env; // Direct endpoint URL (Serverless projects)
 const {ELASTIC_API_KEY} = process.env; // Read-only key
 
-if (!ELASTIC_CLOUD_ID || !ELASTIC_API_KEY) {
+if (!ELASTIC_API_KEY) {
   throw new Error(
-    'Missing Elasticsearch configuration. Required: ELASTIC_CLOUD_ID and ELASTIC_API_KEY'
+    'Missing ELASTIC_API_KEY. Required for Elasticsearch authentication.'
   );
 }
 
-// Initialize Elasticsearch client
+if (!ELASTIC_CLOUD_ID && !ELASTIC_ENDPOINT) {
+  throw new Error(
+    'Missing Elasticsearch connection. Required: ELASTIC_CLOUD_ID (hosted) or ELASTIC_ENDPOINT (Serverless)'
+  );
+}
+
+// Initialize Elasticsearch client — supports both hosted (Cloud ID) and Serverless (endpoint URL)
 const client = new Client({
-  cloud: {
-    id: ELASTIC_CLOUD_ID,
-  },
+  ...(ELASTIC_CLOUD_ID
+    ? { cloud: { id: ELASTIC_CLOUD_ID } }
+    : { node: ELASTIC_ENDPOINT }),
   auth: {
     apiKey: ELASTIC_API_KEY,
   },

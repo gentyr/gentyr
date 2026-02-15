@@ -130,7 +130,6 @@ export interface SystemHealth {
 export interface AutomationCooldowns {
   hourly_tasks: number;
   triage_check: number;
-  plan_executor: number;
   antipattern_hunter: number;
   schema_mapper: number;
   lint_checker: number;

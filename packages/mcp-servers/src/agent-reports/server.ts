@@ -23,7 +23,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { McpServer, type ToolHandler } from '../shared/server.js';
+import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   ReportToCtoArgsSchema,
   ListReportsArgsSchema,
@@ -634,7 +634,7 @@ function getReportsForTriage(args: GetReportsForTriageArgs): GetReportsForTriage
 // Server Setup
 // ============================================================================
 
-const tools: ToolHandler[] = [
+const tools: AnyToolHandler[] = [
   {
     name: 'report_to_deputy_cto',
     description: 'Report an issue to the deputy-cto for triage. Deputy-cto reviews and may escalate to CTO queue. Use for architecture decisions, security concerns, blockers, or important changes.',

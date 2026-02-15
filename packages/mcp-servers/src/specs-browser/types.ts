@@ -49,17 +49,17 @@ export const FRAMEWORK_CATEGORY_INFO: Record<FrameworkCategory, CategoryInfoItem
 export const DEFAULT_PROJECT_CATEGORY_INFO: Record<DefaultProjectCategory, CategoryInfoItem> = {
   local: {
     path: 'local',
-    description: 'Component specifications (ACTION-EXECUTOR, PAGE-OBSERVER, SESSION-INTERCEPTOR, API-INTEGRATOR, OPPORTUNITY-TESTER, INTEGRATION-STRUCTURE, GUIDE-FLOW, DASHBOARD-COMPOSER, FLOW-AUTOMATOR)',
+    description: 'Component-level specifications for individual modules and subsystems',
     source: 'project',
   },
   global: {
     path: 'global',
-    description: 'System-wide invariants and rules (G001-G020) that apply to ALL code',
+    description: 'System-wide invariants and rules that apply to ALL code',
     source: 'project',
   },
   reference: {
     path: 'reference',
-    description: 'Reference documentation (TESTING, INTEGRATION-RESEARCH, MCP-PATTERNS, OFFLINE-WORK)',
+    description: 'Reference documentation and development guides',
     source: 'project',
   },
 };

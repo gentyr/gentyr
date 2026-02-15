@@ -12,7 +12,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { McpServer, type ToolHandler } from '../shared/server.js';
+import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   ListSpecsArgsSchema,
   GetSpecArgsSchema,
@@ -734,7 +734,7 @@ function getSpecsForFile(args: GetSpecsForFileArgs): GetSpecsForFileResult {
 // Server Setup
 // ============================================================================
 
-const tools: ToolHandler[] = [
+const tools: AnyToolHandler[] = [
   // Existing tools
   {
     name: 'list_specs',

@@ -13,7 +13,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { McpServer, type ToolHandler } from '../shared/server.js';
+import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   ListPendingReviewsArgsSchema,
   GetReviewDetailsArgsSchema,
@@ -373,7 +373,7 @@ function getReviewStats(): ReviewStats {
 // Server Setup
 // ============================================================================
 
-const tools: ToolHandler[] = [
+const tools: AnyToolHandler[] = [
   {
     name: 'list_pending_reviews',
     description: 'List schema mapping reviews awaiting human oversight. Non-blocking queue for security/quality reviews.',

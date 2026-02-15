@@ -10,7 +10,21 @@
     "mcp-specs-browser": "./dist/specs-browser/server.js",
     "mcp-review-queue": "./dist/review-queue/server.js",
     "mcp-agent-tracker": "./dist/agent-tracker/server.js",
-    "mcp-session-events": "./dist/session-events/server.js"
+    "mcp-session-events": "./dist/session-events/server.js",
+    "mcp-agent-reports": "./dist/agent-reports/server.js",
+    "mcp-deputy-cto": "./dist/deputy-cto/server.js",
+    "mcp-cto-report": "./dist/cto-report/server.js",
+    "mcp-cto-reports": "./dist/cto-reports/server.js",
+    "mcp-render": "./dist/render/server.js",
+    "mcp-vercel": "./dist/vercel/server.js",
+    "mcp-github": "./dist/github/server.js",
+    "mcp-cloudflare": "./dist/cloudflare/server.js",
+    "mcp-supabase": "./dist/supabase/server.js",
+    "mcp-resend": "./dist/resend/server.js",
+    "mcp-elastic-logs": "./dist/elastic-logs/server.js",
+    "mcp-onepassword": "./dist/onepassword/server.js",
+    "mcp-codecov": "./dist/codecov/server.js",
+    "mcp-secret-sync": "./dist/secret-sync/server.js"
   },
   "scripts": {
     "build": "tsc",
@@ -22,7 +36,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@elastic/elasticsearch": "^8.11.0",
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "better-sqlite3": "^12.6.2",
+    "tweetnacl": "^1.0.3",
     "zod": "^3.22.4"
   },
   "devDependencies": {

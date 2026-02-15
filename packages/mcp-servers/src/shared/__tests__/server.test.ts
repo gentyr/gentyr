@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { z } from 'zod';
-import { McpServer, type ToolHandler } from '../server.js';
+import { McpServer, type AnyToolHandler, type ToolHandler } from '../server.js';
 import { JSON_RPC_ERRORS } from '../types.js';
 
 interface TestServer {
@@ -42,7 +42,7 @@ describe('McpServer', () => {
     mockStdoutWrite.mockRestore();
   });
 
-  const createTestServer = (tools: ToolHandler[] = []) => {
+  const createTestServer = (tools: AnyToolHandler[] = []) => {
     return new McpServer({
       name: 'test-server',
       version: '1.0.0',

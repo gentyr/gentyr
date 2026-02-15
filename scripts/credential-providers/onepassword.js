@@ -34,7 +34,7 @@ export async function isAvailable() {
     }
 
     // Try to list vaults to check auth status
-    execSync('op vault list --limit 1', { stdio: 'pipe', timeout: 10000 });
+    execSync('op vault list --format json', { stdio: 'pipe', timeout: 10000 });
     return true;
   } catch {
     return false;

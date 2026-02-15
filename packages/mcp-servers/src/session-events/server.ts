@@ -12,7 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { McpServer, type ToolHandler } from '../shared/server.js';
+import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   ListEventsArgsSchema,
   GetEventArgsSchema,
@@ -314,7 +314,7 @@ function recordEvent(args: RecordEventArgs): RecordEventResult {
 // Server Setup
 // ============================================================================
 
-const tools: ToolHandler[] = [
+const tools: AnyToolHandler[] = [
   {
     name: 'session_events_list',
     description: 'List all events for a session with filtering',

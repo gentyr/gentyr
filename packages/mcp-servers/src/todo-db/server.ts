@@ -15,7 +15,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { McpServer, type ToolHandler } from '../shared/server.js';
+import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   ListTasksArgsSchema,
   GetTaskArgsSchema,
@@ -573,7 +573,7 @@ function getCompletedSince(args: GetCompletedSinceArgs): GetCompletedSinceResult
 // Server Setup
 // ============================================================================
 
-const tools: ToolHandler[] = [
+const tools: AnyToolHandler[] = [
   {
     name: 'list_tasks',
     description: 'List tasks with optional filters. Agents should filter by their section.',
