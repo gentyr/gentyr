@@ -16,10 +16,6 @@ import Database from 'better-sqlite3';
 import { AuditedMcpServer, type AuditedMcpServerOptions } from '../audited-server.js';
 import type { ToolHandler } from '../server.js';
 
-interface TestServer {
-  handleRequest: (request: unknown) => Promise<void>;
-}
-
 interface JsonRpcResponse {
   jsonrpc: string;
   id: number | string | null;
@@ -53,7 +49,10 @@ interface AuditEntry {
 }
 
 describe('AuditedMcpServer', () => {
-  // Mock stdout.write to capture responses
+  // Capture responses from processRequest/sendRequest calls
+  let capturedResponses: (JsonRpcResponse | null)[] = [];
+
+  // Mock stdout.write (only needed for tests that verify no stdout output)
   let mockOutput: string[] = [];
   let mockStdoutWrite: ReturnType<typeof vi.spyOn>;
   let mockStderrWrite: ReturnType<typeof vi.spyOn>;
@@ -63,6 +62,7 @@ describe('AuditedMcpServer', () => {
   let tempFiles: string[] = [];
 
   beforeEach(() => {
+    capturedResponses = [];
     mockOutput = [];
     stderrOutput = [];
     tempFiles = [];
@@ -107,14 +107,14 @@ describe('AuditedMcpServer', () => {
   };
 
   const sendRequest = async (server: AuditedMcpServer, request: unknown) => {
-    const serverAny = server as unknown as TestServer;
-    const parsed = JSON.parse(JSON.stringify(request)) as unknown;
-    await serverAny.handleRequest(parsed);
+    const response = await server.processRequest(request);
+    capturedResponses.push(response);
   };
 
   const getLastResponse = (): JsonRpcResponse => {
-    const lastOutput = mockOutput[mockOutput.length - 1];
-    return JSON.parse(lastOutput) as JsonRpcResponse;
+    const response = capturedResponses[capturedResponses.length - 1];
+    if (!response) throw new Error('No response captured (notification?)');
+    return response;
   };
 
   const parseResponse = (): JsonRpcResponse => getLastResponse();
@@ -774,6 +774,302 @@ describe('AuditedMcpServer', () => {
 
       expect(input.tool).toBe('complex_tool');
       expect(input.args).toEqual(complexArgs);
+    });
+  });
+
+  describe('processRequest() - Programmatic Request Handling with Auditing', () => {
+    it('should audit tool calls made via processRequest', async () => {
+      const dbPath = createTempDbPath();
+      const sessionId = randomUUID();
+
+      const tool: ToolHandler = {
+        name: 'test_tool',
+        description: 'Test tool',
+        schema: z.object({ value: z.string() }),
+        handler: async (args) => ({ result: args.value.toUpperCase() }),
+      };
+
+      const server = createTestServer({
+        tools: [tool],
+        auditDbPath: dbPath,
+        auditSessionId: sessionId,
+      });
+
+      const response = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'test_tool',
+          arguments: { value: 'hello' },
+        },
+      });
+
+      expect(response).toBeDefined();
+      expect(response!.result).toBeDefined();
+
+      const entries = getAuditEntries(dbPath);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].session_id).toBe(sessionId);
+      expect(entries[0].event_type).toBe('mcp_tool_call');
+
+      const input = JSON.parse(entries[0].input);
+      expect(input.tool).toBe('test_tool');
+      expect(input.args).toEqual({ value: 'hello' });
+    });
+
+    it('should audit tool errors made via processRequest', async () => {
+      const dbPath = createTempDbPath();
+      const sessionId = randomUUID();
+
+      const tool: ToolHandler = {
+        name: 'failing_tool',
+        description: 'Failing tool',
+        schema: z.object({}),
+        handler: async () => {
+          throw new Error('Tool failed');
+        },
+      };
+
+      const server = createTestServer({
+        tools: [tool],
+        auditDbPath: dbPath,
+        auditSessionId: sessionId,
+      });
+
+      const response = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'failing_tool',
+          arguments: {},
+        },
+      });
+
+      expect(response).toBeDefined();
+      expect(response!.result).toBeDefined();
+
+      const entries = getAuditEntries(dbPath);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].event_type).toBe('mcp_tool_error');
+
+      // Error field is stored as JSON with message and tool name
+      const errorData = JSON.parse(entries[0].error!);
+      expect(errorData.message).toBe('Tool failed');
+      expect(errorData.tool).toBe('failing_tool');
+    });
+
+    it('should not audit non-tool-call methods via processRequest', async () => {
+      const dbPath = createTempDbPath();
+      const sessionId = randomUUID();
+
+      const server = createTestServer({
+        tools: [],
+        auditDbPath: dbPath,
+        auditSessionId: sessionId,
+      });
+
+      // Initialize should not create audit entries
+      await server.processRequest({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {},
+      });
+
+      // tools/list should not create audit entries
+      await server.processRequest({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/list',
+        params: {},
+      });
+
+      // Check if DB exists and has table before querying
+      // If no tools were called, the DB may not have been initialized yet
+      const db = new Database(dbPath);
+      const tableExists = db.prepare(`
+        SELECT name FROM sqlite_master WHERE type='table' AND name='session_events'
+      `).get();
+
+      if (tableExists) {
+        const entries = db.prepare('SELECT * FROM session_events').all();
+        expect(entries).toHaveLength(0);
+      }
+      db.close();
+    });
+
+    it('should not write to stdout when using processRequest', async () => {
+      const dbPath = createTempDbPath();
+      const sessionId = randomUUID();
+
+      const tool: ToolHandler = {
+        name: 'test_tool',
+        description: 'Test tool',
+        schema: z.object({}),
+        handler: async () => ({ success: true }),
+      };
+
+      const server = createTestServer({
+        tools: [tool],
+        auditDbPath: dbPath,
+        auditSessionId: sessionId,
+      });
+
+      mockOutput = [];
+
+      await server.processRequest({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'test_tool', arguments: {} },
+      });
+
+      // processRequest should capture responses, not write to stdout
+      expect(mockOutput).toHaveLength(0);
+    });
+
+    it('should handle multiple sequential processRequest calls with auditing', async () => {
+      const dbPath = createTempDbPath();
+      const sessionId = randomUUID();
+
+      const tool: ToolHandler = {
+        name: 'counter',
+        description: 'Counter tool',
+        schema: z.object({ value: z.number() }),
+        handler: async (args) => ({ count: args.value }),
+      };
+
+      const server = createTestServer({
+        tools: [tool],
+        auditDbPath: dbPath,
+        auditSessionId: sessionId,
+      });
+
+      await server.processRequest({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'counter', arguments: { value: 1 } },
+      });
+
+      await server.processRequest({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'counter', arguments: { value: 2 } },
+      });
+
+      await server.processRequest({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'counter', arguments: { value: 3 } },
+      });
+
+      const entries = getAuditEntries(dbPath);
+      expect(entries).toHaveLength(3);
+
+      // Verify each call was audited with correct args
+      expect(JSON.parse(entries[0].input).args.value).toBe(1);
+      expect(JSON.parse(entries[1].input).args.value).toBe(2);
+      expect(JSON.parse(entries[2].input).args.value).toBe(3);
+    });
+
+    it('should include persona name in audit when provided', async () => {
+      const dbPath = createTempDbPath();
+      const sessionId = randomUUID();
+      const personaName = 'test-persona';
+
+      const tool: ToolHandler = {
+        name: 'test_tool',
+        description: 'Test tool',
+        schema: z.object({}),
+        handler: async () => ({ success: true }),
+      };
+
+      const server = createTestServer({
+        tools: [tool],
+        auditDbPath: dbPath,
+        auditSessionId: sessionId,
+        auditPersonaName: personaName,
+      });
+
+      await server.processRequest({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'test_tool', arguments: {} },
+      });
+
+      const entries = getAuditEntries(dbPath);
+      expect(entries[0].agent_id).toBe(personaName);
+    });
+
+    it('should return null for notifications and not audit', async () => {
+      const dbPath = createTempDbPath();
+      const sessionId = randomUUID();
+
+      const server = createTestServer({
+        tools: [],
+        auditDbPath: dbPath,
+        auditSessionId: sessionId,
+      });
+
+      const response = await server.processRequest({
+        jsonrpc: '2.0',
+        id: null,
+        method: 'notifications/initialized',
+      });
+
+      expect(response).toBeNull();
+
+      // Check if DB exists and has table before querying
+      const db = new Database(dbPath);
+      const tableExists = db.prepare(`
+        SELECT name FROM sqlite_master WHERE type='table' AND name='session_events'
+      `).get();
+
+      if (tableExists) {
+        const entries = db.prepare('SELECT * FROM session_events').all();
+        expect(entries).toHaveLength(0);
+      }
+      db.close();
+    });
+
+    it('should measure and record duration_ms in audit entries', async () => {
+      const dbPath = createTempDbPath();
+      const sessionId = randomUUID();
+
+      const tool: ToolHandler = {
+        name: 'slow_tool',
+        description: 'Slow tool',
+        schema: z.object({}),
+        handler: async () => {
+          // Simulate some work
+          await new Promise(resolve => setTimeout(resolve, 10));
+          return { success: true };
+        },
+      };
+
+      const server = createTestServer({
+        tools: [tool],
+        auditDbPath: dbPath,
+        auditSessionId: sessionId,
+      });
+
+      await server.processRequest({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'slow_tool', arguments: {} },
+      });
+
+      const entries = getAuditEntries(dbPath);
+      expect(entries[0].duration_ms).toBeGreaterThanOrEqual(0);
+      expect(typeof entries[0].duration_ms).toBe('number');
+      expect(entries[0].duration_ms).not.toBeNaN();
     });
   });
 });

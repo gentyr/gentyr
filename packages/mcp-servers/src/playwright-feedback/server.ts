@@ -612,15 +612,9 @@ export function createPlaywrightFeedbackServer(config: PlaywrightFeedbackConfig)
     auditDbPath: config.auditDbPath,
   });
 
-  // Handle cleanup on exit
-  process.on('SIGINT', async () => {
-    await browserManager.close();
-    process.exit(0);
-  });
-
-  process.on('SIGTERM', async () => {
-    await browserManager.close();
-    process.exit(0);
+  // Clean up browser on process exit (sync-only — best effort)
+  process.on('exit', () => {
+    browserManager.close().catch(() => { /* best-effort */ });
   });
 
   return server;
@@ -648,5 +642,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename
   };
 
   const server = createPlaywrightFeedbackServer(config);
+
+  process.on('SIGINT', () => process.exit(0));
+  process.on('SIGTERM', () => process.exit(0));
+
   server.start();
 }

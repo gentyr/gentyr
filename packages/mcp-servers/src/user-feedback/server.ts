@@ -223,6 +223,13 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   // Use provided DB or initialize new one
   const db = config.db ?? initializeDatabase(config.projectDir);
 
+  // Close DB we created (not test-provided) on process exit
+  if (!config.db) {
+    process.on('exit', () => {
+      try { db.close(); } catch { /* ignore */ }
+    });
+  }
+
   // ============================================================================
   // Helper: Record to Result Conversion
   // ============================================================================

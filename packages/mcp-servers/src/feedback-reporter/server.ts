@@ -482,16 +482,10 @@ export function createFeedbackReporterServer(config: FeedbackReporterConfig): Au
     auditDbPath: config.auditDbPath,
   });
 
-  // Handle cleanup on exit
-  process.on('SIGINT', () => {
-    closeDbs();
-    process.exit(0);
-  });
-
-  process.on('SIGTERM', () => {
-    closeDbs();
-    process.exit(0);
-  });
+  // Close DBs we created (not test-provided ones) on process exit
+  if (!config.sessionDb || !config.reportsDb) {
+    process.on('exit', () => { closeDbs(); });
+  }
 
   return server;
 }
@@ -516,5 +510,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename
   }
 
   const server = createFeedbackReporterServer({ personaName, sessionId, projectDir });
+
+  process.on('SIGINT', () => process.exit(0));
+  process.on('SIGTERM', () => process.exit(0));
+
   server.start();
 }

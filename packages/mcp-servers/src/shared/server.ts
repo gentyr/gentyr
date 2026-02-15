@@ -145,8 +145,6 @@ export class McpServer {
   private readonly version: string;
   private readonly tools: Map<string, AnyToolHandler>;
   private readonly toolDefinitions: McpToolDefinition[];
-  private _capturedResponse: JsonRpcResponse | null = null;
-  private _captureMode = false;
 
   constructor(options: McpServerOptions) {
     this.name = options.name;
@@ -165,92 +163,76 @@ export class McpServer {
   }
 
   /**
-   * Send a JSON-RPC response to stdout (or capture it in processRequest mode)
+   * Create a success JSON-RPC response object
    */
-  private sendResponse(response: JsonRpcResponse): void {
-    if (this._captureMode) {
-      this._capturedResponse = response;
-    } else {
-      process.stdout.write(`${JSON.stringify(response)}\n`);
-    }
+  private createSuccessResponse(id: string | number | null, result: unknown): JsonRpcResponse {
+    return { jsonrpc: '2.0', id, result };
   }
 
   /**
-   * Send a success response
+   * Create an error JSON-RPC response object
    */
-  private sendSuccess(id: string | number | null, result: unknown): void {
-    this.sendResponse({
-      jsonrpc: '2.0',
-      id,
-      result,
-    });
+  private createErrorResponse(id: string | number | null, code: number, message: string): JsonRpcResponse {
+    return { jsonrpc: '2.0', id, error: { code, message } };
   }
 
   /**
-   * Send an error response
+   * Write a JSON-RPC response to stdout (used by start() only)
    */
-  private sendError(id: string | number | null, code: number, message: string): void {
-    this.sendResponse({
-      jsonrpc: '2.0',
-      id,
-      error: { code, message },
-    });
+  private writeResponse(response: JsonRpcResponse): void {
+    process.stdout.write(`${JSON.stringify(response)}\n`);
   }
 
   /**
-   * Handle a JSON-RPC request
+   * Handle a JSON-RPC request and return the response.
+   * Returns null for notification methods that don't produce a response.
    */
-  private async handleRequest(request: JsonRpcRequest): Promise<void> {
+  private async handleRequest(request: JsonRpcRequest): Promise<JsonRpcResponse | null> {
     const { id, method, params } = request;
 
     try {
       switch (method) {
         case 'initialize':
-          this.sendSuccess(id, {
+          return this.createSuccessResponse(id, {
             protocolVersion: '2024-11-05',
             capabilities: { tools: {} },
             serverInfo: { name: this.name, version: this.version },
           });
-          break;
 
         case 'notifications/initialized':
           // No response needed for notifications
-          break;
+          return null;
 
         case 'tools/list':
-          this.sendSuccess(id, { tools: this.toolDefinitions });
-          break;
+          return this.createSuccessResponse(id, { tools: this.toolDefinitions });
 
         case 'tools/call':
-          await this.handleToolCall(id, params);
-          break;
+          return await this.handleToolCall(id, params);
 
         default:
-          this.sendError(id, JSON_RPC_ERRORS.METHOD_NOT_FOUND, `Unknown method: ${method}`);
+          return this.createErrorResponse(id, JSON_RPC_ERRORS.METHOD_NOT_FOUND, `Unknown method: ${method}`);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.sendError(id, JSON_RPC_ERRORS.INTERNAL_ERROR, message);
+      return this.createErrorResponse(id, JSON_RPC_ERRORS.INTERNAL_ERROR, message);
     }
   }
 
   /**
-   * Handle a tool call
+   * Handle a tool call and return the response
    */
-  protected async handleToolCall(id: string | number | null, params: unknown): Promise<void> {
+  protected async handleToolCall(id: string | number | null, params: unknown): Promise<JsonRpcResponse> {
     // Validate tool call params (G003)
     const parseResult = McpToolCallParamsSchema.safeParse(params);
     if (!parseResult.success) {
-      this.sendError(id, JSON_RPC_ERRORS.INVALID_PARAMS, `Invalid tool call params: ${parseResult.error.message}`);
-      return;
+      return this.createErrorResponse(id, JSON_RPC_ERRORS.INVALID_PARAMS, `Invalid tool call params: ${parseResult.error.message}`);
     }
 
     const { name, arguments: args } = parseResult.data;
     const tool = this.tools.get(name);
 
     if (!tool) {
-      this.sendError(id, JSON_RPC_ERRORS.METHOD_NOT_FOUND, `Unknown tool: ${name}`);
-      return;
+      return this.createErrorResponse(id, JSON_RPC_ERRORS.METHOD_NOT_FOUND, `Unknown tool: ${name}`);
     }
 
     // Validate tool arguments with Zod (G003)
@@ -264,8 +246,7 @@ export class McpServer {
           }, null, 2),
         }],
       };
-      this.sendSuccess(id, result);
-      return;
+      return this.createSuccessResponse(id, result);
     }
 
     try {
@@ -276,7 +257,7 @@ export class McpServer {
           text: JSON.stringify(toolResult, null, 2),
         }],
       };
-      this.sendSuccess(id, result);
+      return this.createSuccessResponse(id, result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const result: McpToolCallResult = {
@@ -285,7 +266,7 @@ export class McpServer {
           text: JSON.stringify({ error: message }, null, 2),
         }],
       };
-      this.sendSuccess(id, result);
+      return this.createSuccessResponse(id, result);
     }
   }
 
@@ -295,6 +276,8 @@ export class McpServer {
    * Unlike `start()` which reads from stdin and writes to stdout, this method
    * accepts a request object and returns the response directly. Used for testing
    * MCP servers without stdio.
+   *
+   * Thread-safe: no instance-level mutable state is used during request processing.
    *
    * Returns null for notification methods (e.g., notifications/initialized)
    * that don't produce a response.
@@ -314,15 +297,7 @@ export class McpServer {
       };
     }
 
-    this._captureMode = true;
-    this._capturedResponse = null;
-    try {
-      await this.handleRequest(parseResult.data);
-    } finally {
-      this._captureMode = false;
-    }
-
-    return this._capturedResponse;
+    return this.handleRequest(parseResult.data);
   }
 
   /**
@@ -349,7 +324,7 @@ export class McpServer {
         // G001: Log parse errors
         const message = jsonErr instanceof Error ? jsonErr.message : String(jsonErr);
         process.stderr.write(`[mcp-server] JSON parse error: ${message}\n`);
-        this.sendError(null, JSON_RPC_ERRORS.PARSE_ERROR, 'Parse error');
+        this.writeResponse(this.createErrorResponse(null, JSON_RPC_ERRORS.PARSE_ERROR, 'Parse error'));
         return;
       }
 
@@ -360,18 +335,21 @@ export class McpServer {
         // Try to extract ID for error response
         const partial = parsed as { id?: unknown };
         if (partial && typeof partial.id !== 'undefined') {
-          this.sendError(
+          this.writeResponse(this.createErrorResponse(
             partial.id as string | number | null,
             JSON_RPC_ERRORS.PARSE_ERROR,
             `Invalid request: ${parseResult.error.message}`
-          );
+          ));
           return;
         }
-        this.sendError(null, JSON_RPC_ERRORS.PARSE_ERROR, 'Invalid request');
+        this.writeResponse(this.createErrorResponse(null, JSON_RPC_ERRORS.PARSE_ERROR, 'Invalid request'));
         return;
       }
 
-      await this.handleRequest(parseResult.data);
+      const response = await this.handleRequest(parseResult.data);
+      if (response) {
+        this.writeResponse(response);
+      }
     });
 
     rl.on('close', () => {

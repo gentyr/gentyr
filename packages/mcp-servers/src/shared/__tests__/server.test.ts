@@ -10,10 +10,6 @@ import { z } from 'zod';
 import { McpServer, type AnyToolHandler, type ToolHandler } from '../server.js';
 import { JSON_RPC_ERRORS } from '../types.js';
 
-interface TestServer {
-  handleRequest: (request: unknown) => Promise<void>;
-}
-
 interface JsonRpcResponse {
   jsonrpc: string;
   id: number | string | null;
@@ -26,11 +22,15 @@ interface JsonRpcResponse {
 }
 
 describe('McpServer', () => {
-  // Mock stdout.write to capture responses
+  // Capture responses from processRequest calls
+  let capturedResponses: (JsonRpcResponse | null)[] = [];
+
+  // Mock stdout.write (only needed for tests that verify no stdout output)
   let mockOutput: string[] = [];
   let mockStdoutWrite: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    capturedResponses = [];
     mockOutput = [];
     mockStdoutWrite = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
       mockOutput.push(chunk.toString());
@@ -51,15 +51,14 @@ describe('McpServer', () => {
   };
 
   const sendRequest = async (server: McpServer, request: unknown) => {
-    // Access private method via type assertion
-    const serverAny = server as unknown as TestServer;
-    const parsed = JSON.parse(JSON.stringify(request)) as unknown;
-    await serverAny.handleRequest(parsed);
+    const response = await server.processRequest(request);
+    capturedResponses.push(response);
   };
 
   const getLastResponse = (): JsonRpcResponse => {
-    const lastOutput = mockOutput[mockOutput.length - 1];
-    return JSON.parse(lastOutput) as JsonRpcResponse;
+    const response = capturedResponses[capturedResponses.length - 1];
+    if (!response) throw new Error('No response captured (notification?)');
+    return response;
   };
 
   describe('Initialization', () => {
@@ -412,7 +411,6 @@ describe('McpServer', () => {
   describe('MCP Protocol - notifications', () => {
     it('should handle notifications/initialized without response', async () => {
       const server = createTestServer();
-      mockOutput = [];
 
       await sendRequest(server, {
         jsonrpc: '2.0',
@@ -420,8 +418,8 @@ describe('McpServer', () => {
         method: 'notifications/initialized',
       });
 
-      // Notifications should not produce a response
-      expect(mockOutput).toHaveLength(0);
+      // Notifications should return null (no response)
+      expect(capturedResponses[capturedResponses.length - 1]).toBeNull();
     });
   });
 
