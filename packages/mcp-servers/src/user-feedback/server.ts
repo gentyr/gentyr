@@ -38,6 +38,7 @@ import {
   ListFeedbackRunsArgsSchema,
   CompleteFeedbackSessionArgsSchema,
   GetFeedbackRunSummaryArgsSchema,
+  GetSessionAuditArgsSchema,
   type CreatePersonaArgs,
   type UpdatePersonaArgs,
   type DeletePersonaArgs,
@@ -54,6 +55,7 @@ import {
   type ListFeedbackRunsArgs,
   type CompleteFeedbackSessionArgs,
   type GetFeedbackRunSummaryArgs,
+  type GetSessionAuditArgs,
   type PersonaRecord,
   type FeatureRecord,
   type PersonaFeatureRecord,
@@ -65,6 +67,8 @@ import {
   type PersonaForChangeResult,
   type FeedbackRunResult,
   type FeedbackRunSummaryResult,
+  type GetSessionAuditResult,
+  type McpAuditAction,
   type ConsumptionMode,
   type FeedbackRunStatus,
 } from './types.js';
@@ -850,6 +854,138 @@ function getFeedbackRunSummary(args: GetFeedbackRunSummaryArgs): FeedbackRunSumm
   };
 }
 
+function getSessionAudit(args: GetSessionAuditArgs): GetSessionAuditResult | ErrorResult {
+  const db = getDb();
+
+  // Lookup the feedback session to get persona name and agent_id
+  const session = db.prepare('SELECT persona_id, agent_id FROM feedback_sessions WHERE id = ?')
+    .get(args.feedback_session_id) as Pick<FeedbackSessionRecord, 'persona_id' | 'agent_id'> | undefined;
+
+  if (!session) {
+    return { error: `Feedback session not found: ${args.feedback_session_id}` };
+  }
+
+  // Get persona name
+  const persona = db.prepare('SELECT name FROM personas WHERE id = ?')
+    .get(session.persona_id) as { name: string } | undefined;
+
+  // Open session-events.db to query MCP events
+  const sessionEventsDbPath = path.join(PROJECT_DIR, '.claude', 'session-events.db');
+
+  // If the database doesn't exist, return empty result
+  if (!fs.existsSync(sessionEventsDbPath)) {
+    return {
+      session_id: args.feedback_session_id,
+      persona_name: persona?.name ?? null,
+      mcp_actions: [],
+      total_actions: 0,
+      total_duration_ms: 0,
+      ...(args.include_transcript && session.agent_id ? { transcript_session_id: session.agent_id } : {}),
+    };
+  }
+
+  // Query session events
+  let eventsDb: Database.Database | null = null;
+  try {
+    eventsDb = new Database(sessionEventsDbPath, { readonly: true });
+
+    interface EventRow {
+      timestamp: string;
+      input: string | null;
+      output: string | null;
+      error: string | null;
+      duration_ms: number | null;
+      metadata: string | null;
+    }
+
+    const events = eventsDb.prepare(`
+      SELECT timestamp, input, output, error, duration_ms, metadata
+      FROM session_events
+      WHERE session_id = ? AND event_type IN ('mcp_tool_call', 'mcp_tool_error')
+      ORDER BY timestamp ASC
+    `).all(args.feedback_session_id) as EventRow[];
+
+    // Parse events to extract tool calls
+    const mcpActions: McpAuditAction[] = [];
+    let totalDuration = 0;
+
+    for (const event of events) {
+      let inputData: any = {};
+      let outputData: any = null;
+      let errorData: any = null;
+      let metadataData: any = {};
+
+      try {
+        if (event.input) {
+          inputData = JSON.parse(event.input);
+        }
+      } catch {
+        inputData = {};
+      }
+
+      try {
+        if (event.output) {
+          outputData = JSON.parse(event.output);
+        }
+      } catch {
+        outputData = null;
+      }
+
+      try {
+        if (event.error) {
+          errorData = JSON.parse(event.error);
+        }
+      } catch {
+        errorData = null;
+      }
+
+      try {
+        if (event.metadata) {
+          metadataData = JSON.parse(event.metadata);
+        }
+      } catch {
+        metadataData = {};
+      }
+
+      mcpActions.push({
+        timestamp: event.timestamp,
+        tool: inputData.tool || inputData.name || 'unknown',
+        args: inputData.args || inputData.arguments || null,
+        result: outputData,
+        error: errorData,
+        duration_ms: event.duration_ms,
+        mcp_server: metadataData.mcp_server || null,
+      });
+
+      if (event.duration_ms) {
+        totalDuration += event.duration_ms;
+      }
+    }
+
+    const result: GetSessionAuditResult = {
+      session_id: args.feedback_session_id,
+      persona_name: persona?.name ?? null,
+      mcp_actions: mcpActions,
+      total_actions: mcpActions.length,
+      total_duration_ms: totalDuration,
+    };
+
+    // Include transcript session ID if requested and available
+    if (args.include_transcript && session.agent_id) {
+      result.transcript_session_id = session.agent_id;
+    }
+
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to query session events: ${message}` };
+  } finally {
+    if (eventsDb) {
+      eventsDb.close();
+    }
+  }
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -955,6 +1091,12 @@ const tools: AnyToolHandler[] = [
     description: 'Get aggregate statistics for a completed feedback run: sessions, findings, report IDs.',
     schema: GetFeedbackRunSummaryArgsSchema,
     handler: getFeedbackRunSummary,
+  },
+  {
+    name: 'get_session_audit',
+    description: 'Get MCP tool call audit trail for a feedback session. Shows all MCP tools called during the session with arguments, results, and timing.',
+    schema: GetSessionAuditArgsSchema,
+    handler: getSessionAudit,
   },
 ];
 

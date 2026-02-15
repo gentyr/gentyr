@@ -21,6 +21,7 @@ import { spawn, execSync } from 'child_process';
 import { registerSpawn, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { getCooldown } from './config-reader.js';
 import { runUsageOptimizer } from './usage-optimizer.js';
+import { runFeedbackPipeline } from './feedback-orchestrator.js';
 
 // Try to import better-sqlite3 for task runner
 let Database = null;
@@ -158,6 +159,7 @@ function getState() {
       lastPreviewPromotionCheck: 0, lastStagingPromotionCheck: 0,
       lastStagingHealthCheck: 0, lastProductionHealthCheck: 0,
       lastStandaloneAntipatternHunt: 0, lastStandaloneComplianceCheck: 0,
+      lastFeedbackCheck: 0, lastFeedbackSha: null,
     };
   }
 
@@ -1638,6 +1640,7 @@ async function main() {
   const PRODUCTION_HEALTH_COOLDOWN_MS = getCooldown('production_health_monitor', 60) * 60 * 1000;
   const STANDALONE_ANTIPATTERN_COOLDOWN_MS = getCooldown('standalone_antipattern_hunter', 180) * 60 * 1000;
   const STANDALONE_COMPLIANCE_COOLDOWN_MS = getCooldown('standalone_compliance_checker', 60) * 60 * 1000;
+  const USER_FEEDBACK_COOLDOWN_MS = getCooldown('user_feedback', 120) * 60 * 1000;
 
   // =========================================================================
   // TRIAGE CHECK (dynamic interval, default 5 min)
@@ -1999,6 +2002,34 @@ async function main() {
   } else {
     const minutesLeft = Math.ceil((STANDALONE_COMPLIANCE_COOLDOWN_MS - timeSinceLastComplianceCheck) / 60000);
     log(`Standalone compliance checker cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
+  // USER FEEDBACK PIPELINE (2h cooldown, fire-and-forget agents)
+  // Detects staging changes, matches personas, spawns feedback agents
+  // =========================================================================
+  const userFeedbackEnabled = config.userFeedbackEnabled !== false;
+
+  if (userFeedbackEnabled) {
+    try {
+      const feedbackResult = await runFeedbackPipeline(log, state, saveState, USER_FEEDBACK_COOLDOWN_MS);
+      if (feedbackResult.ran) {
+        log(`User feedback: ${feedbackResult.reason}`);
+        registerSpawn({
+          type: AGENT_TYPES.FEEDBACK_ORCHESTRATOR,
+          hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+          description: feedbackResult.reason,
+          prompt: '',
+          metadata: { personasTriggered: feedbackResult.personasTriggered },
+        });
+      } else {
+        log(`User feedback: skipped - ${feedbackResult.reason}`);
+      }
+    } catch (err) {
+      log(`User feedback pipeline error (non-fatal): ${err.message}`);
+    }
+  } else {
+    log('User Feedback Pipeline is disabled in config.');
   }
 
   // =========================================================================

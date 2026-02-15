@@ -139,6 +139,28 @@
       "env": {
         "CLAUDE_PROJECT_DIR": "."
       }
+    },
+    "playwright-feedback": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/playwright-feedback/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "programmatic-feedback": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/programmatic-feedback/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "feedback-reporter": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/feedback-reporter/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": ".",
+        "AGENT_REPORTS_DB_PATH": "${CLAUDE_PROJECT_DIR}/.claude/agent-reports.db"
+      }
     }
   }
 }

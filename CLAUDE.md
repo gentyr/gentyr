@@ -50,6 +50,17 @@ Removes root ownership from critical files. Use before making manual changes to 
 cd /path/to/project && claude mcp list
 ```
 
+## AI User Feedback System
+
+Configure user personas to automatically test your app when staging changes are detected:
+
+```bash
+# In a Claude Code session after GENTYR is installed:
+/configure-personas
+```
+
+Creates personas (GUI/CLI/API/SDK modes), registers features with file patterns, and maps personas to features. Feedback agents spawn on staging changes and report findings to deputy-CTO triage pipeline.
+
 ## Automation Service
 
 ```bash

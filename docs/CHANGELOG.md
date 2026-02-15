@@ -1,5 +1,90 @@
 # GENTYR Framework Changelog
 
+## 2026-02-15 - AI User Feedback System
+
+### Added
+
+**AI User Feedback System (Phase 1-8 complete):**
+
+1. **Data Layer** - `user-feedback` MCP server
+   - 16 tools for persona/feature CRUD, persona-feature mapping, feedback run lifecycle, and session management
+   - SQLite schema with personas, features, persona_features, feedback_runs, and feedback_sessions tables
+   - Support for 4 consumption modes: gui, cli, api, sdk
+   - Persona cooldown tracking and rate limiting (4h default, max 5 per run)
+   - 43 unit tests passing
+
+2. **Configuration Interface** - `/configure-personas` slash command
+   - Interactive persona management (create, edit, delete)
+   - Feature registration with file/URL glob patterns
+   - Persona-feature mapping with priority and test scenarios
+   - Dry run: `get_personas_for_changes` previews which personas would trigger
+
+3. **GUI Testing** - `playwright-feedback` MCP server
+   - 20 user-perspective-only tools (navigate, click, type, screenshot, read_text)
+   - No developer tools (no evaluate_javascript, get_page_source, etc.)
+   - Browser context isolation per session
+   - 34 unit tests passing
+
+4. **Programmatic Testing** - `programmatic-feedback` MCP server
+   - CLI mode: execFile with shell injection prevention
+   - API mode: HTTP fetch with base URL validation
+   - SDK mode: worker thread sandbox with blocked dangerous modules
+   - 12 tools supporting 3 testing modes
+   - 47 unit tests passing
+
+5. **Reporting Bridge** - `feedback-reporter` MCP server
+   - Bridges findings from feedback sessions to agent-reports pipeline
+   - Severity-to-priority mapping (critical→critical, high→high, medium→normal, low/info→low)
+   - Persona-named reporting agents (e.g., "feedback-agent [power-user]")
+   - Category: 'user-feedback' (added to REPORT_CATEGORIES)
+   - 21 unit tests passing
+
+6. **Feedback Agent** - `feedback-agent.md`
+   - Restricted tool access: only playwright-feedback, programmatic-feedback, feedback-reporter
+   - Disallowed: Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch, Task, NotebookEdit
+   - Persona-driven instructions: stays in character, tests as real user
+   - Reports findings via feedback-reporter tools
+
+7. **Session Launcher** - `scripts/feedback-launcher.js`
+   - Generates isolated .mcp.json configs for feedback sessions
+   - Spawns Claude Code sessions with feedback-agent
+   - Passes persona config and test scenarios via chat prompt
+   - Detached process spawning for fire-and-forget execution
+
+8. **Orchestration Pipeline** - `scripts/feedback-orchestrator.js`
+   - Detects staging changes and matches affected features
+   - Selects personas mapped to matched features
+   - Respects 4h per-persona cooldown and max-5-per-run limit
+   - Creates feedback_run and feedback_session records
+   - Spawns feedback agents via feedback-launcher
+
+**Testing Infrastructure:**
+
+- Toy app (server.js, cli.js) with 5 intentional bugs for end-to-end testing
+- 9 integration tests covering full pipeline: persona CRUD → feature registration → change analysis → feedback run lifecycle → reporter bridge
+- Feedback agent stub for simulating sessions without spawning real Claude sessions
+- 475 MCP server unit tests: ALL PASSING
+- 9 integration tests: ALL PASSING
+
+**Modified Files:**
+
+- `.mcp.json.template` - Added user-feedback, playwright-feedback, programmatic-feedback, feedback-reporter servers
+- `packages/mcp-servers/src/agent-reports/types.ts` - Added 'user-feedback' category
+- `.claude/agents/feedback-agent.md` - New agent definition
+- `.claude/commands/configure-personas.md` - New slash command
+- `scripts/feedback-launcher.js` - New launcher script
+- `scripts/feedback-orchestrator.js` - New orchestration pipeline
+- `tests/README.md` - Documentation for feedback system tests
+- `tests/fixtures/toy-app/` - Toy application with intentional bugs
+- `tests/integration/feedback-pipeline.test.ts` - Integration tests
+- `tests/integration/mocks/feedback-agent-stub.ts` - Agent simulation stub
+
+**Known Remaining Work (not in scope):**
+
+- Move feedback-launcher.js and feedback-orchestrator.js to .claude/hooks/ after unprotect
+- Add feedback pipeline block to hourly-automation.js
+- Add `user_feedback: 120` cooldown default to config-reader.js
+
 ## 2026-02-15 - Usage Optimizer Improvements
 
 ### Enhanced

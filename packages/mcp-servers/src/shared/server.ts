@@ -231,7 +231,7 @@ export class McpServer {
   /**
    * Handle a tool call
    */
-  private async handleToolCall(id: string | number | null, params: unknown): Promise<void> {
+  protected async handleToolCall(id: string | number | null, params: unknown): Promise<void> {
     // Validate tool call params (G003)
     const parseResult = McpToolCallParamsSchema.safeParse(params);
     if (!parseResult.success) {

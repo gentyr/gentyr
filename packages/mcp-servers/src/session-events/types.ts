@@ -23,6 +23,8 @@ export const EVENT_CATEGORIES: Record<string, string> = {
   api_discovered: 'research',
   auth_pattern_found: 'research',
   selector_identified: 'research',
+  mcp_tool_call: 'mcp',
+  mcp_tool_error: 'mcp',
 };
 
 // ============================================================================

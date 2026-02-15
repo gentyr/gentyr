@@ -22,7 +22,8 @@
  */
 
 import type { Page, Locator } from 'playwright';
-import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { type AnyToolHandler } from '../shared/server.js';
+import { AuditedMcpServer } from '../shared/audited-server.js';
 import { BrowserManager } from './browser-manager.js';
 import {
   NavigateArgsSchema,
@@ -579,7 +580,7 @@ const tools: AnyToolHandler[] = [
 // Server Setup
 // ============================================================================
 
-const server = new McpServer({
+const server = new AuditedMcpServer({
   name: 'playwright-feedback',
   version: '1.0.0',
   tools,

@@ -4,10 +4,11 @@ A modular automation framework for Claude Code that provides MCP servers, specia
 
 ## Features
 
-- **19 MCP Servers**: 9 core (task tracking, specs, reviews, reporting) + 10 infrastructure (Render, Vercel, GitHub, Supabase, Cloudflare, Resend, Elasticsearch, 1Password, Codecov, secret-sync)
-- **8 Framework Agents**: Code reviewer, test writer, investigator, deputy-CTO, etc. (projects can add their own)
-- **4 Slash Commands**: `/cto-report`, `/deputy-cto`, `/setup-gentyr`, `/push-secrets`
-- **11 Automation Hooks**: Pre-commit review, antipattern detection, API key rotation, usage optimization
+- **23 MCP Servers**: 9 core (task tracking, specs, reviews, reporting) + 10 infrastructure (Render, Vercel, GitHub, Supabase, Cloudflare, Resend, Elasticsearch, 1Password, Codecov, secret-sync) + 4 AI user feedback (persona management, GUI testing, programmatic testing, reporting bridge)
+- **9 Framework Agents**: Code reviewer, test writer, investigator, deputy-CTO, feedback-agent, etc. (projects can add their own)
+- **7 Slash Commands**: `/configure-personas`, `/cto-report`, `/deputy-cto`, `/push-migrations`, `/push-secrets`, `/setup-gentyr`, `/toggle-automation-gentyr`
+- **AI User Feedback System**: Automated user persona testing triggered by staging changes with configurable personas, features, and test scenarios
+- **11 Automation Hooks**: Pre-commit review, antipattern detection, API key rotation, usage optimization, AI user feedback pipeline
 - **Git Integration**: Husky hooks for pre-commit, post-commit, and pre-push
 - **Project Scaffolding**: `setup.sh --scaffold` creates new projects from templates with the full stack
 
@@ -232,6 +233,47 @@ scripts/setup-automation-service.sh run --path /project     # Manual run
 
 The service is automatically installed/removed by `setup.sh`.
 
+### AI User Feedback System
+
+The AI User Feedback System automatically spawns feedback agents that test your application as real user personas whenever you push changes to staging. This catch usability, functionality, and UX issues before they reach production.
+
+**Architecture:**
+
+1. **Persona Configuration** - Define user personas with `/configure-personas`:
+   - **GUI personas** test web apps with Playwright (no source code access, user-perspective only)
+   - **CLI personas** test command-line tools with execFile (CLI mode)
+   - **API personas** test REST/GraphQL endpoints with HTTP fetch (API mode)
+   - **SDK personas** test programming libraries in worker thread sandboxes (SDK mode)
+
+2. **Feature Registration** - Map features to file patterns and URL patterns
+3. **Change Detection** - Orchestrator detects staging changes and matches affected features
+4. **Persona Selection** - Selects personas mapped to affected features (respects cooldowns and rate limits)
+5. **Agent Spawning** - Feedback agents test as real users with restricted tool access (no Read/Write/Bash)
+6. **Finding Submission** - Issues funnel to deputy-CTO triage pipeline via `feedback-reporter`
+
+**Cooldowns and rate limits:**
+- 4-hour per-persona cooldown (configurable)
+- Maximum 5 personas per feedback run (prevents cost overruns)
+- Only runs when staging changes detected
+
+**MCP Servers:**
+- `user-feedback` - Persona/feature CRUD, mapping, feedback run lifecycle (16 tools)
+- `playwright-feedback` - GUI testing with Playwright (20 user-perspective tools, no developer tools)
+- `programmatic-feedback` - CLI/API/SDK testing with shell injection prevention (12 tools)
+- `feedback-reporter` - Bridge findings to agent-reports pipeline with severity mapping (6 tools)
+
+**Slash Command:**
+- `/configure-personas` - Interactive persona and feature configuration
+
+**Agent:**
+- `feedback-agent` - Tests as a real user with no source code access (restricted tool set)
+
+**Scripts:**
+- `scripts/feedback-launcher.js` - Generates isolated MCP configs and spawns Claude sessions
+- `scripts/feedback-orchestrator.js` - Pipeline logic: change detection → persona selection → agent spawning
+
+See `tests/README.md` for the full integration test suite and toy app with intentional bugs.
+
 ### Task Runner
 
 The task runner automatically spawns agents to process pending tasks from the TODO database (todo.db). Every 15 minutes, it:
@@ -314,20 +356,24 @@ mcp__specs-browser__createSpec({
 ```
 .claude-framework/
 ├── .claude/
-│   ├── agents/                 # 8 framework agent definitions (.md)
+│   ├── agents/                 # 9 framework agent definitions (.md)
 │   │   ├── antipattern-hunter.md
 │   │   ├── code-reviewer.md
 │   │   ├── code-writer.md
 │   │   ├── deputy-cto.md
+│   │   ├── feedback-agent.md
 │   │   ├── investigator.md
 │   │   ├── project-manager.md
 │   │   ├── repo-hygiene-expert.md
 │   │   └── test-writer.md
-│   ├── commands/               # 4 slash commands (.md)
+│   ├── commands/               # 7 slash commands (.md)
+│   │   ├── configure-personas.md
 │   │   ├── cto-report.md
 │   │   ├── deputy-cto.md
+│   │   ├── push-migrations.md
+│   │   ├── push-secrets.md
 │   │   ├── setup-gentyr.md
-│   │   └── push-secrets.md
+│   │   └── toggle-automation-gentyr.md
 │   ├── hooks/                  # 11 hooks + 5 utility modules (.js)
 │   │   ├── pre-commit-review.js
 │   │   ├── antipattern-hunter-hook.js
@@ -350,6 +396,10 @@ mcp__specs-browser__createSpec({
 │   │   │   ├── deputy-cto/
 │   │   │   ├── cto-report/
 │   │   │   ├── cto-reports/
+│   │   │   ├── user-feedback/  # AI user feedback servers
+│   │   │   ├── playwright-feedback/
+│   │   │   ├── programmatic-feedback/
+│   │   │   ├── feedback-reporter/
 │   │   │   ├── render/         # Infrastructure servers
 │   │   │   ├── vercel/
 │   │   │   ├── github/
@@ -383,10 +433,12 @@ mcp__specs-browser__createSpec({
 ├── scripts/
 │   ├── setup.sh                # Install/uninstall/scaffold script
 │   ├── mcp-launcher.js         # Runtime credential resolver (1Password → env vars)
+│   ├── feedback-launcher.js    # Feedback agent session spawner
+│   ├── feedback-orchestrator.js # Feedback pipeline: change detection → persona selection → spawning
 │   ├── hooks/                  # Staged hooks (deployed to .claude/hooks/ during install)
 │   │   └── credential-health-check.js
 │   └── setup-automation-service.sh  # 10-min timer service
-├── .mcp.json.template          # MCP config template (19 servers)
+├── .mcp.json.template          # MCP config template (23 servers)
 ├── version.json                # Framework version
 └── README.md
 ```
@@ -439,6 +491,10 @@ When you run `setup.sh`, the following happens:
 | `deputy-cto` | Deputy-CTO decision management |
 | `cto-report` | CTO metrics and status (data aggregation) |
 | `cto-reports` | Historical report storage and retrieval |
+| `user-feedback` | AI user feedback persona/feature management |
+| `playwright-feedback` | GUI testing with Playwright (feedback agent only) |
+| `programmatic-feedback` | CLI/API/SDK testing (feedback agent only) |
+| `feedback-reporter` | Bridge feedback findings to agent-reports |
 
 ### Infrastructure Servers (opinionated stack)
 
@@ -523,6 +579,7 @@ The framework provides 8 core agents (installed as individual symlinks):
 | `deputy-cto` | CTO's executive assistant |
 | `antipattern-hunter` | Spec violation detection |
 | `repo-hygiene-expert` | Repository structure |
+| `feedback-agent` | AI user persona testing (restricted tools) |
 
 Projects can define additional project-specific agents by adding `.md` files directly to `.claude/agents/`. The setup script preserves these files and only manages framework agent symlinks.
 
@@ -653,6 +710,7 @@ sudo scripts/setup.sh --path /path/to/project --protect-only
 
 ## Version History
 
+- **2.2.0**: AI User Feedback System. Added 4 MCP servers (user-feedback, playwright-feedback, programmatic-feedback, feedback-reporter) for automated user persona testing. Added feedback-agent with restricted tools (no source code access). Added `/configure-personas` slash command. Added feedback-launcher and feedback-orchestrator scripts. Added 'user-feedback' category to agent-reports. Tests include 9 integration tests and toy app with intentional bugs.
 - **2.1.0**: MCP Launcher architecture. Credentials resolved from 1Password at runtime via `mcp-launcher.js` — no secrets on disk. Interactive `/setup-gentyr` with 1Password vault auto-discovery. SessionStart health check for missing credentials. Removed `--with-credentials` flag (all credential config happens in-session).
 - **2.0.0**: Opinionated stack framework. Added 10 infrastructure MCP servers (Render, Vercel, GitHub, Cloudflare, Supabase, Resend, Elasticsearch, 1Password, Codecov, secret-sync). Added `/setup-gentyr` and `/push-secrets` commands. Added project scaffolding (`--scaffold`). Added stack reference docs. Secret values never reach agent context.
 - **1.1.0**: Changed agent installation from directory symlink to individual file symlinks. Framework now provides 8 core agents; projects can add their own without conflicts.

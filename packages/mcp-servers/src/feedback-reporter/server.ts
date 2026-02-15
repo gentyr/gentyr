@@ -25,7 +25,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { type AnyToolHandler } from '../shared/server.js';
+import { AuditedMcpServer } from '../shared/audited-server.js';
 import {
   SubmitFindingArgsSchema,
   SubmitSummaryArgsSchema,
@@ -468,7 +469,7 @@ const tools: AnyToolHandler[] = [
   },
 ];
 
-const server = new McpServer({
+const server = new AuditedMcpServer({
   name: 'feedback-reporter',
   version: '1.0.0',
   tools,

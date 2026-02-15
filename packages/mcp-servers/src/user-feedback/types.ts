@@ -147,6 +147,11 @@ export const GetFeedbackRunSummaryArgsSchema = z.object({
   id: z.string().describe('Feedback run UUID'),
 });
 
+export const GetSessionAuditArgsSchema = z.object({
+  feedback_session_id: z.string().describe('The feedback session ID to get audit trail for'),
+  include_transcript: z.boolean().optional().default(false).describe('Include Claude session transcript hint'),
+});
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -167,6 +172,7 @@ export type GetFeedbackRunArgs = z.infer<typeof GetFeedbackRunArgsSchema>;
 export type ListFeedbackRunsArgs = z.infer<typeof ListFeedbackRunsArgsSchema>;
 export type CompleteFeedbackSessionArgs = z.infer<typeof CompleteFeedbackSessionArgsSchema>;
 export type GetFeedbackRunSummaryArgs = z.infer<typeof GetFeedbackRunSummaryArgsSchema>;
+export type GetSessionAuditArgs = z.infer<typeof GetSessionAuditArgsSchema>;
 
 // ============================================================================
 // Record Types
@@ -306,4 +312,23 @@ export interface FeedbackRunSummaryResult {
   total_findings: number;
   total_report_ids: string[];
   personas_tested: string[];
+}
+
+export interface McpAuditAction {
+  timestamp: string;
+  tool: string;
+  args: unknown;
+  result: unknown;
+  error: unknown;
+  duration_ms: number | null;
+  mcp_server: string | null;
+}
+
+export interface GetSessionAuditResult {
+  session_id: string;
+  persona_name: string | null;
+  mcp_actions: McpAuditAction[];
+  total_actions: number;
+  total_duration_ms: number;
+  transcript_session_id?: string;
 }

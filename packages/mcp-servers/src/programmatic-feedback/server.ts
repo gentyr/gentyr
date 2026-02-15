@@ -24,7 +24,8 @@
 
 import { execFile, spawn } from 'child_process';
 import { URL } from 'url';
-import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { type AnyToolHandler } from '../shared/server.js';
+import { AuditedMcpServer } from '../shared/audited-server.js';
 import { evaluateInSandbox } from './sandbox.js';
 import {
   CliRunArgsSchema,
@@ -509,7 +510,7 @@ if (FEEDBACK_MODE === 'all') {
   tools = allTools.filter(t => t.name.startsWith('sdk_'));
 }
 
-const server = new McpServer({
+const server = new AuditedMcpServer({
   name: 'programmatic-feedback',
   version: '1.0.0',
   tools,

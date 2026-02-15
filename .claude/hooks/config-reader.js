@@ -33,6 +33,7 @@ const DEFAULTS = {
   production_health_monitor: 60,
   standalone_antipattern_hunter: 180,  // 3 hours
   standalone_compliance_checker: 60,   // 1 hour
+  user_feedback: 120,                  // 2 hours
 };
 
 /**

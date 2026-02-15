@@ -55,6 +55,7 @@ export const AGENT_TYPES = {
   PRODUCTION_HEALTH_MONITOR: 'production-health-monitor',
   STANDALONE_ANTIPATTERN_HUNTER: 'standalone-antipattern-hunter',
   STANDALONE_COMPLIANCE_CHECKER: 'standalone-compliance-checker',
+  FEEDBACK_ORCHESTRATOR: 'feedback-orchestrator',
 };
 
 /**

@@ -12,12 +12,6 @@
  * 4. Spawn isolated feedback agent sessions via feedback-launcher
  * 5. Track session completion and update run status
  *
- * NOTE: This file should be moved to .claude/hooks/ during setup:
- *   sudo scripts/setup.sh --path . --unprotect-only
- *   cp scripts/feedback-orchestrator.js .claude/hooks/feedback-orchestrator.js
- *   cp scripts/feedback-launcher.js .claude/hooks/feedback-launcher.js
- *   sudo scripts/setup.sh --path . --protect-only
- *
  * @version 1.0.0
  */
 
