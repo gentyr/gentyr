@@ -109,4 +109,9 @@ if (credentialKeys.length > 0) {
 // 4. Import and run the actual MCP server
 // ---------------------------------------------------------------------------
 const absoluteScript = path.resolve(serverScript);
-await import(absoluteScript);
+try {
+  await import(absoluteScript);
+} catch (err) {
+  console.error(`[mcp-launcher:${serverName}] Failed to start: ${err.message}`);
+  process.exit(1);
+}
