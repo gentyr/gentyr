@@ -323,8 +323,13 @@ EOF
   # Load the agent
   launchctl unload "$PLIST_FILE" 2>/dev/null || true
   launchctl load "$PLIST_FILE"
-
   log_info "Agent loaded."
+
+  # Start the agent immediately so the first run happens while the user is watching.
+  # If TCC hasn't been granted yet, the prompt appears now rather than randomly later.
+  # Safe because hourly-automation.js has its own cooldowns and concurrency guards.
+  launchctl start "com.local.${SERVICE_NAME}" 2>/dev/null || true
+  log_info "First run triggered (supervised)."
 }
 
 remove_macos() {
