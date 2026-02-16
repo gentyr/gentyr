@@ -171,7 +171,7 @@
     },
     "playwright": {
       "command": "node",
-      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/playwright/server.js"],
+      "args": ["${FRAMEWORK_PATH}/scripts/mcp-launcher.js", "playwright", "${FRAMEWORK_PATH}/packages/mcp-servers/dist/playwright/server.js"],
       "env": {
         "CLAUDE_PROJECT_DIR": "."
       }

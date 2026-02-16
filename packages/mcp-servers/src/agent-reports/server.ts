@@ -126,46 +126,9 @@ function initializeDatabase(): Database.Database {
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA);
 
-  // Migration: Add columns if they don't exist
-  interface ColumnInfo { name: string }
-  const columns = db.pragma('table_info(reports)') as ColumnInfo[];
-  const columnNames = columns.map(c => c.name);
-
-  // Legacy columns
-  if (!columnNames.includes('triaged_at')) {
-    db.exec('ALTER TABLE reports ADD COLUMN triaged_at TEXT');
-  }
-  if (!columnNames.includes('triage_action')) {
-    db.exec('ALTER TABLE reports ADD COLUMN triage_action TEXT');
-  }
-
-  // New triage lifecycle columns
-  if (!columnNames.includes('triage_status')) {
-    db.exec("ALTER TABLE reports ADD COLUMN triage_status TEXT NOT NULL DEFAULT 'pending'");
-  }
-  if (!columnNames.includes('triage_started_at')) {
-    db.exec('ALTER TABLE reports ADD COLUMN triage_started_at TEXT');
-  }
-  if (!columnNames.includes('triage_completed_at')) {
-    db.exec('ALTER TABLE reports ADD COLUMN triage_completed_at TEXT');
-  }
-  if (!columnNames.includes('triage_session_id')) {
-    db.exec('ALTER TABLE reports ADD COLUMN triage_session_id TEXT');
-  }
-  if (!columnNames.includes('triage_outcome')) {
-    db.exec('ALTER TABLE reports ADD COLUMN triage_outcome TEXT');
-  }
-  if (!columnNames.includes('triage_attempted_at')) {
-    db.exec('ALTER TABLE reports ADD COLUMN triage_attempted_at TEXT');
-  }
-
-  // Create new indexes if needed
-  try {
-    db.exec('CREATE INDEX IF NOT EXISTS idx_reports_triage_status ON reports(triage_status)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_reports_triage_completed ON reports(triage_completed_at)');
-  } catch {
-    // Indexes may already exist
-  }
+  // Idempotent index creation
+  db.exec('CREATE INDEX IF NOT EXISTS idx_reports_triage_status ON reports(triage_status)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_reports_triage_completed ON reports(triage_completed_at)');
 
   return db;
 }

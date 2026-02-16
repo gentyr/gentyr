@@ -220,12 +220,6 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     db.pragma('foreign_keys = ON');
     db.exec(SCHEMA);
 
-    // Migration: add satisfaction_level column if missing (for pre-existing DBs)
-    const columns = db.pragma('table_info(feedback_sessions)') as { name: string }[];
-    if (!columns.some(c => c.name === 'satisfaction_level')) {
-      db.exec('ALTER TABLE feedback_sessions ADD COLUMN satisfaction_level TEXT');
-    }
-
     return db;
   }
 
@@ -863,16 +857,8 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     // Open session-events.db to query MCP events
     const sessionEventsDbPath = path.join(config.projectDir, '.claude', 'session-events.db');
 
-    // If the database doesn't exist, return empty result
     if (!fs.existsSync(sessionEventsDbPath)) {
-      return {
-        session_id: args.feedback_session_id,
-        persona_name: persona?.name ?? null,
-        mcp_actions: [],
-        total_actions: 0,
-        total_duration_ms: 0,
-        ...(args.include_transcript && session.agent_id ? { transcript_session_id: session.agent_id } : {}),
-      };
+      throw new Error(`session-events.db not found at ${sessionEventsDbPath}`);
     }
 
     // Query session events

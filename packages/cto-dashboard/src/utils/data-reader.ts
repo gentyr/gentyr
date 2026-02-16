@@ -417,46 +417,38 @@ export function getTokenUsage(hours: number): TokenUsage {
     return totals;
   }
 
-  try {
-    const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
+  const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
 
-    for (const file of files) {
-      const filePath = path.join(sessionDir, file);
-      const stat = fs.statSync(filePath);
-      if (stat.mtime.getTime() < since) continue;
+  for (const file of files) {
+    const filePath = path.join(sessionDir, file);
+    const stat = fs.statSync(filePath);
+    if (stat.mtime.getTime() < since) continue;
 
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split('\n').filter(l => l.trim());
+
+    for (const line of lines) {
       try {
-        const content = fs.readFileSync(filePath, 'utf8');
-        const lines = content.split('\n').filter(l => l.trim());
+        const entry = JSON.parse(line) as SessionEntry;
+        if (entry.timestamp) {
+          const entryTime = new Date(entry.timestamp).getTime();
+          if (entryTime < since) continue;
+        }
 
-        for (const line of lines) {
-          try {
-            const entry = JSON.parse(line) as SessionEntry;
-            if (entry.timestamp) {
-              const entryTime = new Date(entry.timestamp).getTime();
-              if (entryTime < since) continue;
-            }
-
-            const usage = entry.message?.usage;
-            if (usage) {
-              totals.input += usage.input_tokens || 0;
-              totals.output += usage.output_tokens || 0;
-              totals.cache_read += usage.cache_read_input_tokens || 0;
-              totals.cache_creation += usage.cache_creation_input_tokens || 0;
-            }
-          } catch {
-            // Skip malformed lines
-          }
+        const usage = entry.message?.usage;
+        if (usage) {
+          totals.input += usage.input_tokens || 0;
+          totals.output += usage.output_tokens || 0;
+          totals.cache_read += usage.cache_read_input_tokens || 0;
+          totals.cache_creation += usage.cache_creation_input_tokens || 0;
         }
       } catch {
-        // Skip unreadable files
+        // Skip malformed lines
       }
     }
-
-    totals.total = totals.input + totals.output + totals.cache_read + totals.cache_creation;
-  } catch {
-    // Ignore errors
   }
+
+  totals.total = totals.input + totals.output + totals.cache_read + totals.cache_creation;
 
   return totals;
 }
@@ -469,30 +461,22 @@ export function getAutonomousModeStatus(): AutonomousModeStatus {
   let enabled = false;
 
   if (fs.existsSync(AUTONOMOUS_CONFIG_PATH)) {
-    try {
-      const config = JSON.parse(fs.readFileSync(AUTONOMOUS_CONFIG_PATH, 'utf8')) as { enabled?: boolean };
-      enabled = config.enabled === true;
-    } catch {
-      // Config parse error
-    }
+    const config = JSON.parse(fs.readFileSync(AUTONOMOUS_CONFIG_PATH, 'utf8')) as { enabled?: boolean };
+    enabled = config.enabled === true;
   }
 
   let next_run_time: Date | null = null;
   let seconds_until_next: number | null = null;
 
   if (enabled && fs.existsSync(AUTOMATION_STATE_PATH)) {
-    try {
-      const state = JSON.parse(fs.readFileSync(AUTOMATION_STATE_PATH, 'utf8')) as { lastRun?: number };
-      const lastRun = state.lastRun || 0;
-      const now = Date.now();
-      const cooldownMs = COOLDOWN_MINUTES * 60 * 1000;
-      const nextRunMs = lastRun + cooldownMs;
+    const state = JSON.parse(fs.readFileSync(AUTOMATION_STATE_PATH, 'utf8')) as { lastRun?: number };
+    const lastRun = state.lastRun || 0;
+    const now = Date.now();
+    const cooldownMs = COOLDOWN_MINUTES * 60 * 1000;
+    const nextRunMs = lastRun + cooldownMs;
 
-      next_run_time = new Date(nextRunMs);
-      seconds_until_next = Math.max(0, Math.floor((nextRunMs - now) / 1000));
-    } catch {
-      // State file error
-    }
+    next_run_time = new Date(nextRunMs);
+    seconds_until_next = Math.max(0, Math.floor((nextRunMs - now) / 1000));
   } else if (enabled) {
     // First run - ready now
     next_run_time = new Date();
@@ -530,49 +514,41 @@ export function getSessionMetrics(hours: number): SessionMetrics {
 
   if (!fs.existsSync(sessionDir)) return metrics;
 
-  try {
-    const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
+  const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
 
-    for (const file of files) {
-      const filePath = path.join(sessionDir, file);
-      const stat = fs.statSync(filePath);
-      if (stat.mtime.getTime() < since) continue;
+  for (const file of files) {
+    const filePath = path.join(sessionDir, file);
+    const stat = fs.statSync(filePath);
+    if (stat.mtime.getTime() < since) continue;
 
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split('\n').filter(l => l.trim());
+
+    let taskType: string | null = null;
+    for (const line of lines) {
       try {
-        const content = fs.readFileSync(filePath, 'utf8');
-        const lines = content.split('\n').filter(l => l.trim());
+        const entry = JSON.parse(line) as SessionEntry;
+        if (entry.type === 'human' || entry.type === 'user') {
+          const messageContent = typeof entry.message?.content === 'string'
+            ? entry.message.content
+            : entry.content;
 
-        let taskType: string | null = null;
-        for (const line of lines) {
-          try {
-            const entry = JSON.parse(line) as SessionEntry;
-            if (entry.type === 'human' || entry.type === 'user') {
-              const messageContent = typeof entry.message?.content === 'string'
-                ? entry.message.content
-                : entry.content;
-
-              if (messageContent) {
-                taskType = parseTaskType(messageContent);
-              }
-              break;
-            }
-          } catch {
-            // Skip malformed lines
+          if (messageContent) {
+            taskType = parseTaskType(messageContent);
           }
-        }
-
-        if (taskType !== null) {
-          metrics.task_triggered++;
-          metrics.task_by_type[taskType] = (metrics.task_by_type[taskType] || 0) + 1;
-        } else {
-          metrics.user_triggered++;
+          break;
         }
       } catch {
-        // Skip unreadable files
+        // Skip malformed lines
       }
     }
-  } catch {
-    // Ignore errors
+
+    if (taskType !== null) {
+      metrics.task_triggered++;
+      metrics.task_by_type[taskType] = (metrics.task_by_type[taskType] || 0) + 1;
+    } else {
+      metrics.user_triggered++;
+    }
   }
 
   return metrics;
@@ -591,44 +567,26 @@ export function getPendingItems(): PendingItems {
   };
 
   if (fs.existsSync(DEPUTY_CTO_DB_PATH)) {
-    try {
-      const db = new Database(DEPUTY_CTO_DB_PATH, { readonly: true });
-      const pending = db.prepare(
-        "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
-      ).get() as CountResult | undefined;
-      const rejections = db.prepare(
-        "SELECT COUNT(*) as count FROM questions WHERE type = 'rejection' AND status = 'pending'"
-      ).get() as CountResult | undefined;
-      db.close();
+    const db = new Database(DEPUTY_CTO_DB_PATH, { readonly: true });
+    const pending = db.prepare(
+      "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
+    ).get() as CountResult | undefined;
+    const rejections = db.prepare(
+      "SELECT COUNT(*) as count FROM questions WHERE type = 'rejection' AND status = 'pending'"
+    ).get() as CountResult | undefined;
+    db.close();
 
-      items.cto_questions = pending?.count || 0;
-      items.commit_rejections = rejections?.count || 0;
-    } catch {
-      // Database error
-    }
+    items.cto_questions = pending?.count || 0;
+    items.commit_rejections = rejections?.count || 0;
   }
 
   if (fs.existsSync(CTO_REPORTS_DB_PATH)) {
-    try {
-      const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
-      const columns = db.pragma('table_info(reports)') as { name: string }[];
-      const hasTriageStatus = columns.some(c => c.name === 'triage_status');
-
-      if (hasTriageStatus) {
-        const pending = db.prepare(
-          "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'pending'"
-        ).get() as CountResult | undefined;
-        items.pending_triage = pending?.count || 0;
-      } else {
-        const pending = db.prepare(
-          "SELECT COUNT(*) as count FROM reports WHERE triaged_at IS NULL"
-        ).get() as CountResult | undefined;
-        items.pending_triage = pending?.count || 0;
-      }
-      db.close();
-    } catch {
-      // Database error
-    }
+    const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
+    const pending = db.prepare(
+      "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'pending'"
+    ).get() as CountResult | undefined;
+    items.pending_triage = pending?.count || 0;
+    db.close();
   }
 
   items.commits_blocked = items.cto_questions > 0 || items.pending_triage > 0;
@@ -653,66 +611,52 @@ export function getTriageMetrics(): TriageMetrics {
 
   if (!fs.existsSync(CTO_REPORTS_DB_PATH)) return metrics;
 
-  try {
-    const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
-    const now = Date.now();
-    const cutoff24h = new Date(now - 24 * 60 * 60 * 1000).toISOString();
-    const cutoff7d = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
+  const now = Date.now();
+  const cutoff24h = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+  const cutoff7d = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-    const columns = db.pragma('table_info(reports)') as { name: string }[];
-    const hasTriageStatus = columns.some(c => c.name === 'triage_status');
+  const pending = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'pending'"
+  ).get() as CountResult | undefined;
+  metrics.pending = pending?.count || 0;
 
-    if (hasTriageStatus) {
-      const pending = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'pending'"
-      ).get() as CountResult | undefined;
-      metrics.pending = pending?.count || 0;
+  const inProgress = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'in_progress'"
+  ).get() as CountResult | undefined;
+  metrics.in_progress = inProgress?.count || 0;
 
-      const inProgress = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'in_progress'"
-      ).get() as CountResult | undefined;
-      metrics.in_progress = inProgress?.count || 0;
+  const selfHandled24h = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'self_handled' AND triage_completed_at >= ?"
+  ).get(cutoff24h) as CountResult | undefined;
+  metrics.self_handled_24h = selfHandled24h?.count || 0;
 
-      const selfHandled24h = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'self_handled' AND triage_completed_at >= ?"
-      ).get(cutoff24h) as CountResult | undefined;
-      metrics.self_handled_24h = selfHandled24h?.count || 0;
+  const selfHandled7d = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'self_handled' AND triage_completed_at >= ?"
+  ).get(cutoff7d) as CountResult | undefined;
+  metrics.self_handled_7d = selfHandled7d?.count || 0;
 
-      const selfHandled7d = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'self_handled' AND triage_completed_at >= ?"
-      ).get(cutoff7d) as CountResult | undefined;
-      metrics.self_handled_7d = selfHandled7d?.count || 0;
+  const escalated24h = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'escalated' AND triage_completed_at >= ?"
+  ).get(cutoff24h) as CountResult | undefined;
+  metrics.escalated_24h = escalated24h?.count || 0;
 
-      const escalated24h = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'escalated' AND triage_completed_at >= ?"
-      ).get(cutoff24h) as CountResult | undefined;
-      metrics.escalated_24h = escalated24h?.count || 0;
+  const escalated7d = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'escalated' AND triage_completed_at >= ?"
+  ).get(cutoff7d) as CountResult | undefined;
+  metrics.escalated_7d = escalated7d?.count || 0;
 
-      const escalated7d = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'escalated' AND triage_completed_at >= ?"
-      ).get(cutoff7d) as CountResult | undefined;
-      metrics.escalated_7d = escalated7d?.count || 0;
+  const dismissed24h = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'dismissed' AND triage_completed_at >= ?"
+  ).get(cutoff24h) as CountResult | undefined;
+  metrics.dismissed_24h = dismissed24h?.count || 0;
 
-      const dismissed24h = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'dismissed' AND triage_completed_at >= ?"
-      ).get(cutoff24h) as CountResult | undefined;
-      metrics.dismissed_24h = dismissed24h?.count || 0;
+  const dismissed7d = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'dismissed' AND triage_completed_at >= ?"
+  ).get(cutoff7d) as CountResult | undefined;
+  metrics.dismissed_7d = dismissed7d?.count || 0;
 
-      const dismissed7d = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'dismissed' AND triage_completed_at >= ?"
-      ).get(cutoff7d) as CountResult | undefined;
-      metrics.dismissed_7d = dismissed7d?.count || 0;
-    } else {
-      const pending = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triaged_at IS NULL"
-      ).get() as CountResult | undefined;
-      metrics.pending = pending?.count || 0;
-    }
-
-    db.close();
-  } catch {
-    // Ignore errors
-  }
+  db.close();
 
   return metrics;
 }
@@ -733,47 +677,43 @@ export function getTaskMetrics(hours: number): TaskMetrics {
 
   if (!fs.existsSync(TODO_DB_PATH)) return metrics;
 
-  try {
-    const db = new Database(TODO_DB_PATH, { readonly: true });
+  const db = new Database(TODO_DB_PATH, { readonly: true });
 
-    const tasks = db.prepare(`
-      SELECT section, status, COUNT(*) as count
-      FROM tasks
-      GROUP BY section, status
-    `).all() as TaskCountRow[];
+  const tasks = db.prepare(`
+    SELECT section, status, COUNT(*) as count
+    FROM tasks
+    GROUP BY section, status
+  `).all() as TaskCountRow[];
 
-    for (const row of tasks) {
-      if (!metrics.by_section[row.section]) {
-        metrics.by_section[row.section] = { pending: 0, in_progress: 0, completed: 0 };
-      }
-      (metrics.by_section[row.section] as SectionTaskCounts)[row.status as keyof SectionTaskCounts] = row.count;
-
-      if (row.status === 'pending') metrics.pending_total += row.count;
-      else if (row.status === 'in_progress') metrics.in_progress_total += row.count;
-      else if (row.status === 'completed') metrics.completed_total += row.count;
+  for (const row of tasks) {
+    if (!metrics.by_section[row.section]) {
+      metrics.by_section[row.section] = { pending: 0, in_progress: 0, completed: 0 };
     }
+    (metrics.by_section[row.section] as SectionTaskCounts)[row.status as keyof SectionTaskCounts] = row.count;
 
-    const since = Date.now() - (hours * 60 * 60 * 1000);
-    const sinceTimestamp = Math.floor(since / 1000);
-
-    const completed = db.prepare(`
-      SELECT section, COUNT(*) as count
-      FROM tasks
-      WHERE status = 'completed' AND completed_timestamp >= ?
-      GROUP BY section
-    `).all(sinceTimestamp) as CompletedCountRow[];
-
-    let total = 0;
-    for (const row of completed) {
-      metrics.completed_24h_by_section[row.section] = row.count;
-      total += row.count;
-    }
-    metrics.completed_24h = total;
-
-    db.close();
-  } catch {
-    // Ignore errors
+    if (row.status === 'pending') metrics.pending_total += row.count;
+    else if (row.status === 'in_progress') metrics.in_progress_total += row.count;
+    else if (row.status === 'completed') metrics.completed_total += row.count;
   }
+
+  const since = Date.now() - (hours * 60 * 60 * 1000);
+  const sinceTimestamp = Math.floor(since / 1000);
+
+  const completed = db.prepare(`
+    SELECT section, COUNT(*) as count
+    FROM tasks
+    WHERE status = 'completed' AND completed_timestamp >= ?
+    GROUP BY section
+  `).all(sinceTimestamp) as CompletedCountRow[];
+
+  let total = 0;
+  for (const row of completed) {
+    metrics.completed_24h_by_section[row.section] = row.count;
+    total += row.count;
+  }
+  metrics.completed_24h = total;
+
+  db.close();
 
   return metrics;
 }
@@ -819,27 +759,23 @@ export function getAgentActivity(): AgentActivity {
 
   if (!fs.existsSync(AGENT_TRACKER_PATH)) return result;
 
-  try {
-    const content = fs.readFileSync(AGENT_TRACKER_PATH, 'utf8');
-    const history = JSON.parse(content) as AgentHistory;
+  const content = fs.readFileSync(AGENT_TRACKER_PATH, 'utf8');
+  const history = JSON.parse(content) as AgentHistory;
 
-    const now = Date.now();
-    const cutoff24h = now - 24 * 60 * 60 * 1000;
-    const cutoff7d = now - 7 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const cutoff24h = now - 24 * 60 * 60 * 1000;
+  const cutoff7d = now - 7 * 24 * 60 * 60 * 1000;
 
-    for (const agent of history.agents || []) {
-      const agentTime = new Date(agent.timestamp).getTime();
+  for (const agent of history.agents || []) {
+    const agentTime = new Date(agent.timestamp).getTime();
 
-      if (agentTime >= cutoff7d) {
-        result.spawns_7d++;
-        if (agentTime >= cutoff24h) {
-          result.spawns_24h++;
-          result.by_type[agent.type] = (result.by_type[agent.type] || 0) + 1;
-        }
+    if (agentTime >= cutoff7d) {
+      result.spawns_7d++;
+      if (agentTime >= cutoff24h) {
+        result.spawns_24h++;
+        result.by_type[agent.type] = (result.by_type[agent.type] || 0) + 1;
       }
     }
-  } catch {
-    // Ignore errors
   }
 
   return result;
@@ -859,43 +795,39 @@ export function getHookExecutions(): HookExecutions {
 
   if (!fs.existsSync(AGENT_TRACKER_PATH)) return result;
 
-  try {
-    const content = fs.readFileSync(AGENT_TRACKER_PATH, 'utf8');
-    const history = JSON.parse(content) as HookHistory;
+  const content = fs.readFileSync(AGENT_TRACKER_PATH, 'utf8');
+  const history = JSON.parse(content) as HookHistory;
 
-    const now = Date.now();
-    const cutoff24h = now - 24 * 60 * 60 * 1000;
-    let successCount = 0;
+  const now = Date.now();
+  const cutoff24h = now - 24 * 60 * 60 * 1000;
+  let successCount = 0;
 
-    for (const exec of history.hookExecutions || []) {
-      const execTime = new Date(exec.timestamp).getTime();
-      if (execTime < cutoff24h) continue;
+  for (const exec of history.hookExecutions || []) {
+    const execTime = new Date(exec.timestamp).getTime();
+    if (execTime < cutoff24h) continue;
 
-      result.total_24h++;
-      if (exec.status === 'success') successCount++;
+    result.total_24h++;
+    if (exec.status === 'success') successCount++;
 
-      if (!result.by_hook[exec.hookType]) {
-        result.by_hook[exec.hookType] = { total: 0, success: 0, failure: 0 };
-      }
-      const stats = result.by_hook[exec.hookType];
-      stats.total++;
-      if (exec.status === 'success') stats.success++;
-      if (exec.status === 'failure') stats.failure++;
-
-      if (exec.status === 'failure' && result.recent_failures.length < 5) {
-        result.recent_failures.push({
-          hook: exec.hookType,
-          error: exec.metadata?.error || 'Unknown error',
-          timestamp: exec.timestamp,
-        });
-      }
+    if (!result.by_hook[exec.hookType]) {
+      result.by_hook[exec.hookType] = { total: 0, success: 0, failure: 0 };
     }
+    const stats = result.by_hook[exec.hookType];
+    stats.total++;
+    if (exec.status === 'success') stats.success++;
+    if (exec.status === 'failure') stats.failure++;
 
-    if (result.total_24h > 0) {
-      result.success_rate = Math.round((successCount / result.total_24h) * 100);
+    if (exec.status === 'failure' && result.recent_failures.length < 5) {
+      result.recent_failures.push({
+        hook: exec.hookType,
+        error: exec.metadata?.error || 'Unknown error',
+        timestamp: exec.timestamp,
+      });
     }
-  } catch {
-    // Ignore errors
+  }
+
+  if (result.total_24h > 0) {
+    result.success_rate = Math.round((successCount / result.total_24h) * 100);
   }
 
   return result;
@@ -908,59 +840,58 @@ export function getHookExecutions(): HookExecutions {
 export function getKeyRotationMetrics(hours: number): KeyRotationMetrics | null {
   if (!fs.existsSync(KEY_ROTATION_STATE_PATH)) return null;
 
-  try {
-    const content = fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8');
-    const state = JSON.parse(content) as KeyRotationState;
+  const content = fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8');
+  const state = JSON.parse(content) as KeyRotationState;
 
-    if (!state || state.version !== 1 || typeof state.keys !== 'object') return null;
-
-    const now = Date.now();
-    const since = now - (hours * 60 * 60 * 1000);
-
-    const keys: TrackedKeyInfo[] = [];
-    let fiveHourSum = 0;
-    let sevenDaySum = 0;
-    let activeKeysWithData = 0;
-
-    for (const [keyId, keyData] of Object.entries(state.keys)) {
-      if (keyData.status !== 'active') continue;
-      const isCurrent = keyId === state.active_key_id;
-
-      keys.push({
-        key_id: `${keyId.slice(0, 8)}...`,
-        subscription_type: keyData.subscriptionType || 'unknown',
-        five_hour_pct: keyData.last_usage?.five_hour ?? null,
-        seven_day_pct: keyData.last_usage?.seven_day ?? null,
-        is_current: isCurrent,
-      });
-
-      if (keyData.last_usage) {
-        fiveHourSum += keyData.last_usage.five_hour ?? 0;
-        sevenDaySum += keyData.last_usage.seven_day ?? 0;
-        activeKeysWithData++;
-      }
-    }
-
-    const rotationEvents24h = state.rotation_log.filter(
-      entry => entry.timestamp >= since && entry.event === 'key_switched'
-    ).length;
-
-    const aggregate: AggregateQuota | null = activeKeysWithData > 0 ? {
-      active_keys: activeKeysWithData,
-      five_hour_pct: Math.round(fiveHourSum / activeKeysWithData),
-      seven_day_pct: Math.round(sevenDaySum / activeKeysWithData),
-    } : null;
-
-    return {
-      current_key_id: state.active_key_id ? `${state.active_key_id.slice(0, 8)}...` : null,
-      active_keys: keys.length,
-      keys,
-      rotation_events_24h: rotationEvents24h,
-      aggregate,
-    };
-  } catch {
+  if (!state || state.version !== 1 || typeof state.keys !== 'object') {
+    process.stderr.write(`[data-reader] Invalid key rotation state format at ${KEY_ROTATION_STATE_PATH}\n`);
     return null;
   }
+
+  const now = Date.now();
+  const since = now - (hours * 60 * 60 * 1000);
+
+  const keys: TrackedKeyInfo[] = [];
+  let fiveHourSum = 0;
+  let sevenDaySum = 0;
+  let activeKeysWithData = 0;
+
+  for (const [keyId, keyData] of Object.entries(state.keys)) {
+    if (keyData.status !== 'active') continue;
+    const isCurrent = keyId === state.active_key_id;
+
+    keys.push({
+      key_id: `${keyId.slice(0, 8)}...`,
+      subscription_type: keyData.subscriptionType || 'unknown',
+      five_hour_pct: keyData.last_usage?.five_hour ?? null,
+      seven_day_pct: keyData.last_usage?.seven_day ?? null,
+      is_current: isCurrent,
+    });
+
+    if (keyData.last_usage) {
+      fiveHourSum += keyData.last_usage.five_hour ?? 0;
+      sevenDaySum += keyData.last_usage.seven_day ?? 0;
+      activeKeysWithData++;
+    }
+  }
+
+  const rotationEvents24h = state.rotation_log.filter(
+    entry => entry.timestamp >= since && entry.event === 'key_switched'
+  ).length;
+
+  const aggregate: AggregateQuota | null = activeKeysWithData > 0 ? {
+    active_keys: activeKeysWithData,
+    five_hour_pct: Math.round(fiveHourSum / activeKeysWithData),
+    seven_day_pct: Math.round(sevenDaySum / activeKeysWithData),
+  } : null;
+
+  return {
+    current_key_id: state.active_key_id ? `${state.active_key_id.slice(0, 8)}...` : null,
+    active_keys: keys.length,
+    keys,
+    rotation_events_24h: rotationEvents24h,
+    aggregate,
+  };
 }
 
 // ============================================================================
@@ -994,31 +925,30 @@ export function getUsageProjection(): UsageProjection {
 
   if (!fs.existsSync(AUTOMATION_CONFIG_PATH)) return result;
 
-  try {
-    const content = fs.readFileSync(AUTOMATION_CONFIG_PATH, 'utf8');
-    const config = JSON.parse(content) as AutomationConfigFile;
+  const content = fs.readFileSync(AUTOMATION_CONFIG_PATH, 'utf8');
+  const config = JSON.parse(content) as AutomationConfigFile;
 
-    if (!config || config.version !== 1) return result;
+  if (!config || config.version !== 1) {
+    process.stderr.write(`[data-reader] Invalid automation config format at ${AUTOMATION_CONFIG_PATH}\n`);
+    return result;
+  }
 
-    if (config.defaults) {
-      Object.assign(defaults, config.defaults);
-      result.default_cooldowns = defaults;
-    }
+  if (config.defaults) {
+    Object.assign(defaults, config.defaults);
+    result.default_cooldowns = defaults;
+  }
 
-    if (config.effective) {
-      Object.assign(effective, config.defaults || {}, config.effective);
-      result.effective_cooldowns = effective;
-    }
+  if (config.effective) {
+    Object.assign(effective, config.defaults || {}, config.effective);
+    result.effective_cooldowns = effective;
+  }
 
-    if (config.adjustment) {
-      result.factor = config.adjustment.factor ?? 1.0;
-      result.target_pct = config.adjustment.target_pct ?? 90;
-      result.projected_at_reset_pct = config.adjustment.projected_at_reset ?? null;
-      result.constraining_metric = config.adjustment.constraining_metric ?? null;
-      result.last_updated = config.adjustment.last_updated ?? null;
-    }
-  } catch {
-    // Ignore errors
+  if (config.adjustment) {
+    result.factor = config.adjustment.factor ?? 1.0;
+    result.target_pct = config.adjustment.target_pct ?? 90;
+    result.projected_at_reset_pct = config.adjustment.projected_at_reset ?? null;
+    result.constraining_metric = config.adjustment.constraining_metric ?? null;
+    result.last_updated = config.adjustment.last_updated ?? null;
   }
 
   return result;
@@ -1120,11 +1050,7 @@ export function getAutomations(): AutomationInfo[] {
   // Read automation state
   let state: AutomationState = {};
   if (fs.existsSync(AUTOMATION_STATE_PATH)) {
-    try {
-      state = JSON.parse(fs.readFileSync(AUTOMATION_STATE_PATH, 'utf8')) as AutomationState;
-    } catch {
-      // Ignore parse errors
-    }
+    state = JSON.parse(fs.readFileSync(AUTOMATION_STATE_PATH, 'utf8')) as AutomationState;
   }
 
   return AUTOMATION_DEFINITIONS.map(def => {
@@ -1170,74 +1096,63 @@ export function getAutomations(): AutomationInfo[] {
 // ============================================================================
 
 export function getFeedbackPersonas(): FeedbackPersonasData {
-  const empty: FeedbackPersonasData = { personas: [], total_sessions: 0, total_findings: 0 };
-  if (!fs.existsSync(USER_FEEDBACK_DB_PATH)) return empty;
-
-  try {
-    const db = new Database(USER_FEEDBACK_DB_PATH, { readonly: true });
-
-    // Check if satisfaction_level column exists
-    const columns = db.pragma('table_info(feedback_sessions)') as { name: string }[];
-    const hasSatisfaction = columns.some(c => c.name === 'satisfaction_level');
-
-    // Query personas with aggregated session data
-    interface PersonaRow {
-      name: string;
-      consumption_mode: string;
-      enabled: number;
-      session_count: number;
-      findings_count: number;
-    }
-
-    const personas = db.prepare(`
-      SELECT p.name, p.consumption_mode, p.enabled,
-             COUNT(fs.id) as session_count,
-             COALESCE(SUM(fs.findings_count), 0) as findings_count
-      FROM personas p
-      LEFT JOIN feedback_sessions fs ON fs.persona_id = p.id
-      GROUP BY p.id
-      ORDER BY p.name
-    `).all() as PersonaRow[];
-
-    // Get latest satisfaction per persona (separate query if column exists)
-    const satisfactionMap = new Map<string, string>();
-    if (hasSatisfaction) {
-      interface SatisfactionRow { name: string; satisfaction_level: string }
-      const satRows = db.prepare(`
-        SELECT p.name, fs.satisfaction_level
-        FROM personas p
-        JOIN feedback_sessions fs ON fs.persona_id = p.id
-        WHERE fs.satisfaction_level IS NOT NULL
-        AND fs.completed_at = (
-          SELECT MAX(fs2.completed_at) FROM feedback_sessions fs2
-          WHERE fs2.persona_id = p.id AND fs2.satisfaction_level IS NOT NULL
-        )
-      `).all() as SatisfactionRow[];
-      for (const row of satRows) {
-        satisfactionMap.set(row.name, row.satisfaction_level);
-      }
-    }
-
-    const result: FeedbackPersonaSummary[] = personas.map((p) => ({
-      name: p.name,
-      consumption_mode: p.consumption_mode,
-      enabled: p.enabled === 1,
-      session_count: p.session_count,
-      last_satisfaction: satisfactionMap.get(p.name) ?? null,
-      findings_count: p.findings_count,
-    }));
-
-    db.close();
-    return {
-      personas: result,
-      total_sessions: result.reduce((s, p) => s + p.session_count, 0),
-      total_findings: result.reduce((s, p) => s + p.findings_count, 0),
-    };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[cto-dashboard] Failed to read feedback personas: ${message}\n`);
-    return empty;
+  if (!fs.existsSync(USER_FEEDBACK_DB_PATH)) {
+    throw new Error(`User feedback database not found at ${USER_FEEDBACK_DB_PATH}`);
   }
+
+  const db = new Database(USER_FEEDBACK_DB_PATH, { readonly: true });
+
+  // Query personas with aggregated session data
+  interface PersonaRow {
+    name: string;
+    consumption_mode: string;
+    enabled: number;
+    session_count: number;
+    findings_count: number;
+  }
+
+  const personas = db.prepare(`
+    SELECT p.name, p.consumption_mode, p.enabled,
+           COUNT(fs.id) as session_count,
+           COALESCE(SUM(fs.findings_count), 0) as findings_count
+    FROM personas p
+    LEFT JOIN feedback_sessions fs ON fs.persona_id = p.id
+    GROUP BY p.id
+    ORDER BY p.name
+  `).all() as PersonaRow[];
+
+  // Get latest satisfaction per persona
+  const satisfactionMap = new Map<string, string>();
+  interface SatisfactionRow { name: string; satisfaction_level: string }
+  const satRows = db.prepare(`
+    SELECT p.name, fs.satisfaction_level
+    FROM personas p
+    JOIN feedback_sessions fs ON fs.persona_id = p.id
+    WHERE fs.satisfaction_level IS NOT NULL
+    AND fs.completed_at = (
+      SELECT MAX(fs2.completed_at) FROM feedback_sessions fs2
+      WHERE fs2.persona_id = p.id AND fs2.satisfaction_level IS NOT NULL
+    )
+  `).all() as SatisfactionRow[];
+  for (const row of satRows) {
+    satisfactionMap.set(row.name, row.satisfaction_level);
+  }
+
+  const result: FeedbackPersonaSummary[] = personas.map((p) => ({
+    name: p.name,
+    consumption_mode: p.consumption_mode,
+    enabled: p.enabled === 1,
+    session_count: p.session_count,
+    last_satisfaction: satisfactionMap.get(p.name) ?? null,
+    findings_count: p.findings_count,
+  }));
+
+  db.close();
+  return {
+    personas: result,
+    total_sessions: result.reduce((s, p) => s + p.session_count, 0),
+    total_findings: result.reduce((s, p) => s + p.findings_count, 0),
+  };
 }
 
 // ============================================================================
