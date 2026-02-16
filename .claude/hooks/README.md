@@ -638,10 +638,10 @@ All spawned Claude sessions create `.jsonl` files in `~/.claude/projects/{projec
 
 ```bash
 # List recent sessions
-ls -lt ~/.claude/projects/-home-user-git-test-project/*.jsonl | head -10
+ls -lt ~/.claude/projects/-home-user-git-your-project/*.jsonl | head -10
 
 # Search for specific session content
-grep -l "deputy-cto agent" ~/.claude/projects/-home-user-git-test-project/*.jsonl
+grep -l "deputy-cto agent" ~/.claude/projects/-home-user-git-your-project/*.jsonl
 ```
 
 Session files are created even if the hook doesn't capture output.

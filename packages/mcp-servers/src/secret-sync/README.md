@@ -33,7 +33,7 @@ Render/Vercel Services
 
 ```bash
 # Required for all operations
-CLAUDE_PROJECT_DIR=/path/to/project
+CLAUDE_PROJECT_DIR=/path/to/your-project
 
 # Required for 1Password
 OP_SERVICE_ACCOUNT_TOKEN=ops_xxxxx
@@ -248,13 +248,13 @@ pnpm build
   "mcpServers": {
     "secret-sync": {
       "command": "node",
-      "args": ["/path/to/project/packages/mcp-servers/dist/secret-sync/server.js"],
+      "args": ["/path/to/your-project/packages/mcp-servers/dist/secret-sync/server.js"],
       "env": {
         "OP_SERVICE_ACCOUNT_TOKEN": "ops_xxxxx",
         "RENDER_API_KEY": "rnd_xxxxx",
         "VERCEL_TOKEN": "xxxxx",
         "VERCEL_TEAM_ID": "team_xxxxx",
-        "CLAUDE_PROJECT_DIR": "/path/to/project"
+        "CLAUDE_PROJECT_DIR": "/path/to/your-project"
       }
     }
   }

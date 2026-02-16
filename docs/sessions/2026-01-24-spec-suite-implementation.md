@@ -15,8 +15,8 @@ Implemented the spec suite system for the specs-browser MCP server and complianc
 Added full CRUD operations for both specs and suites to the specs-browser MCP server.
 
 **Files Modified:**
-- `/path/to/gentyr/packages/mcp-servers/src/specs-browser/types.ts`
-- `/path/to/gentyr/packages/mcp-servers/src/specs-browser/server.ts`
+- `packages/mcp-servers/src/specs-browser/types.ts`
+- `packages/mcp-servers/src/specs-browser/server.ts`
 
 **New MCP Tools (8 total):**
 
@@ -45,10 +45,10 @@ Added full CRUD operations for both specs and suites to the specs-browser MCP se
 Updated the compliance-checker hook to use the new suite system for enforcement.
 
 **Files Modified:**
-- `/path/to/gentyr/.claude/hooks/compliance-checker.js`
-- `/path/to/gentyr/.claude/hooks/prompts/spec-enforcement.md`
-- `/path/to/gentyr/.claude/hooks/prompts/local-spec-enforcement.md`
-- `/path/to/gentyr/.claude/hooks/README.md`
+- `.claude/hooks/compliance-checker.js`
+- `.claude/hooks/prompts/spec-enforcement.md`
+- `.claude/hooks/prompts/local-spec-enforcement.md`
+- `.claude/hooks/README.md`
 
 **Key Functions Added:**
 - `loadSuitesConfig()` - Load suite configuration from JSON
@@ -65,7 +65,7 @@ Updated the compliance-checker hook to use the new suite system for enforcement.
 ### Phase 3: Documentation
 
 **Files Updated:**
-- `/path/to/gentyr/.claude/hooks/README.md` - Added comprehensive Spec Suites section
+- `.claude/hooks/README.md` - Added comprehensive Spec Suites section
 
 **Documentation Includes:**
 - Setup instructions for suites-config.json
@@ -105,14 +105,14 @@ The system maintains full backward compatibility:
 
 ### Build Verification
 ```bash
-cd /path/to/gentyr/packages/mcp-servers
+cd packages/mcp-servers
 npm run build
 ```
 Result: TypeScript compilation passed with no errors
 
 ### JavaScript Syntax Check
 ```bash
-node --check /path/to/gentyr/.claude/hooks/compliance-checker.js
+node --check .claude/hooks/compliance-checker.js
 ```
 Result: No syntax errors
 
@@ -138,15 +138,15 @@ Result: No syntax errors
 ## Related Files
 
 ### Implementation Files
-- `/path/to/gentyr/packages/mcp-servers/src/specs-browser/types.ts`
-- `/path/to/gentyr/packages/mcp-servers/src/specs-browser/server.ts`
-- `/path/to/gentyr/.claude/hooks/compliance-checker.js`
-- `/path/to/gentyr/.claude/hooks/prompts/spec-enforcement.md`
-- `/path/to/gentyr/.claude/hooks/prompts/local-spec-enforcement.md`
+- `packages/mcp-servers/src/specs-browser/types.ts`
+- `packages/mcp-servers/src/specs-browser/server.ts`
+- `.claude/hooks/compliance-checker.js`
+- `.claude/hooks/prompts/spec-enforcement.md`
+- `.claude/hooks/prompts/local-spec-enforcement.md`
 
 ### Documentation Files
-- `/path/to/gentyr/.claude/hooks/README.md`
-- `/path/to/gentyr/docs/SPEC-SUITE-SYSTEM-PLAN.md` (planning document)
+- `.claude/hooks/README.md`
+- `docs/SPEC-SUITE-SYSTEM-PLAN.md` (planning document)
 
 ### Configuration Files
 - `.claude/hooks/suites-config.json` (runtime, created by projects)
