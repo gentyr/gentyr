@@ -10,7 +10,7 @@
 # Run after: brew upgrade node
 # Run during: GENTYR setup (called automatically by setup.sh)
 #
-# Usage: scripts/resign-node.sh [--check]
+# Usage: scripts/resign-node.sh [--check] [--trigger-tcc]
 
 set -eo pipefail
 
@@ -48,6 +48,70 @@ if [ "$1" = "--check" ]; then
         echo "  Binary: $NODE_PATH"
         exit 1
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# TCC trigger: run op through node so macOS attributes the access to node
+# ---------------------------------------------------------------------------
+trigger_tcc_prompt() {
+    # Check if op is installed
+    if ! command -v op &>/dev/null; then
+        echo -e "  ${YELLOW}1Password CLI (op) not found - skipping TCC trigger${NC}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}Triggering macOS TCC permission for 1Password access...${NC}"
+    echo -e "  (If a macOS dialog appears, click Allow to grant permission)"
+
+    # Run op through node so macOS attributes the IPC access to node's code identity.
+    # This mirrors what hourly-automation.js does with execFileSync('op', ...).
+    TCC_RESULT=$("$NODE_PATH" -e "
+        const { execFileSync } = require('child_process');
+        try {
+            execFileSync('op', ['vault', 'list', '--format', 'json'], {
+                encoding: 'utf-8',
+                timeout: 30000,
+                stdio: 'pipe',
+            });
+            process.stdout.write('ok');
+        } catch (err) {
+            process.stderr.write(err.message || 'failed');
+            process.exit(1);
+        }
+    " 2>/dev/null) || true
+
+    if [ "$TCC_RESULT" = "ok" ]; then
+        echo -e "  ${GREEN}TCC permission granted - verifying persistence...${NC}"
+        # Run a second time to confirm no new prompt appears
+        VERIFY_RESULT=$("$NODE_PATH" -e "
+            const { execFileSync } = require('child_process');
+            try {
+                execFileSync('op', ['vault', 'list', '--format', 'json'], {
+                    encoding: 'utf-8',
+                    timeout: 15000,
+                    stdio: 'pipe',
+                });
+                process.stdout.write('persisted');
+            } catch {
+                process.stdout.write('failed');
+            }
+        " 2>/dev/null) || true
+
+        if [ "$VERIFY_RESULT" = "persisted" ]; then
+            echo -e "  ${GREEN}TCC permission verified and persisted - no future prompts expected${NC}"
+        else
+            echo -e "  ${YELLOW}TCC verification inconclusive - permission may need re-granting${NC}"
+        fi
+    else
+        echo -e "  ${YELLOW}1Password access check failed (may not be signed in)${NC}"
+        echo -e "  ${YELLOW}TCC prompt will appear on first automation run instead${NC}"
+    fi
+}
+
+# --trigger-tcc mode: just trigger and verify TCC without re-signing
+if [ "$1" = "--trigger-tcc" ]; then
+    trigger_tcc_prompt
+    exit 0
 fi
 
 echo -e "${YELLOW}Re-signing node for macOS TCC persistence...${NC}"
@@ -101,7 +165,8 @@ fi
 # Check current signature
 CURRENT_AUTHORITY=$(codesign -dvv "$NODE_PATH" 2>&1 | grep "^Authority=" | head -1 | cut -d= -f2)
 if [ "$CURRENT_AUTHORITY" = "$CERT_NAME" ]; then
-    echo -e "  ${GREEN}Already signed with $CERT_NAME - no action needed${NC}"
+    echo -e "  ${GREEN}Already signed with $CERT_NAME - no re-signing needed${NC}"
+    trigger_tcc_prompt
     exit 0
 fi
 
@@ -113,4 +178,8 @@ echo -e "  ${GREEN}Signed: $NODE_PATH${NC}"
 VERIFY=$(codesign -dvv "$NODE_PATH" 2>&1 | grep "^Authority=" | head -1)
 echo -e "  ${GREEN}Verified: $VERIFY${NC}"
 echo ""
-echo -e "${GREEN}Done. The next macOS TCC prompt for node will persist after granting.${NC}"
+echo -e "${GREEN}Done. Node re-signed with $CERT_NAME.${NC}"
+
+# Trigger TCC prompt so the user grants permission now (during setup),
+# not randomly later during background automation.
+trigger_tcc_prompt

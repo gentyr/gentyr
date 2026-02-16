@@ -677,16 +677,25 @@ GENTYR's MCP launcher uses the 1Password CLI (`op`) to resolve credentials at ru
 **The setup script handles this automatically** by:
 1. Creating a self-signed codesigning certificate (`NodeLocalDev`) in the login keychain
 2. Re-signing the Homebrew node binary with this certificate
-3. After the first TCC prompt is granted, the permission persists
+3. Triggering the TCC prompt during setup so you grant permission once
+4. Verifying the permission persists before continuing
+
+After setup, the automation service runs without any permission dialogs.
 
 **After `brew upgrade node`**, re-run the signing script:
 ```bash
 scripts/resign-node.sh
 ```
+You will see one TCC prompt. Grant it, and all future automation runs silently.
 
 **Check current signing status:**
 ```bash
 scripts/resign-node.sh --check
+```
+
+**Trigger TCC without re-signing:**
+```bash
+scripts/resign-node.sh --trigger-tcc
 ```
 
 ## Troubleshooting
@@ -699,11 +708,11 @@ If you see "node would like to access data from other apps" repeatedly:
 # Check if node is properly signed
 scripts/resign-node.sh --check
 
-# Re-sign if needed
+# Re-sign and trigger TCC permission in one step
 scripts/resign-node.sh
 ```
 
-This happens after `brew upgrade node` replaces the binary. The setup script runs this automatically on install/reinstall.
+This typically happens after `brew upgrade node` replaces the binary with a new ad-hoc signed version. The setup script runs this automatically on install/reinstall. After re-signing, you will see one TCC prompt - grant it, and the automation service runs silently from then on.
 
 ### MCP servers not showing
 
