@@ -48,6 +48,26 @@
         ]
       },
       {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-file-guard.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-file-guard.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "mcp__*",
         "hooks": [
           {

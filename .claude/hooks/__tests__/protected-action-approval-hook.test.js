@@ -674,14 +674,17 @@ describe('protected-action-approval-hook.js (UserPromptSubmit Hook)', () => {
         CLAUDE_PROJECT_DIR: tempDir.path,
       };
 
-      // Run without stdin
-      const { exitCode } = await execAsync(
-        `node "${hookPath}" < /dev/null`,
-        { env, shell: true }
-      );
-
-      assert.strictEqual(exitCode, 0,
-        'Should handle empty stdin gracefully');
+      // Run without stdin -- execAsync resolves on success (exit 0), rejects on failure
+      try {
+        await execAsync(
+          `node "${hookPath}" < /dev/null`,
+          { env, shell: true }
+        );
+        // If we get here, it exited 0
+        assert.ok(true, 'Should handle empty stdin gracefully');
+      } catch (err) {
+        assert.fail(`Hook should exit 0 on empty stdin, got exit code ${err.code}: ${err.stderr}`);
+      }
     });
   });
 });
