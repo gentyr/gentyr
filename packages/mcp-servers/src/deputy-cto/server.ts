@@ -44,6 +44,8 @@ import {
   RecordCtoBriefingArgsSchema,
   SearchClearedItemsArgsSchema,
   CleanupOldRecordsArgsSchema,
+  SetAutomationModeArgsSchema,
+  ListAutomationConfigArgsSchema,
   RequestBypassArgsSchema,
   ExecuteBypassArgsSchema,
   ListProtectionsArgsSchema,
@@ -61,6 +63,7 @@ import {
   type SpawnImplementationTaskArgs,
   type ToggleAutonomousModeArgs,
   type SearchClearedItemsArgs,
+  type SetAutomationModeArgs,
   type RequestBypassArgs,
   type ExecuteBypassArgs,
   type GetProtectedActionRequestArgs,
@@ -83,6 +86,10 @@ import {
   type RecordCtoBriefingResult,
   type SearchClearedItemsResult,
   type CleanupOldRecordsResult,
+  type SetAutomationModeResult,
+  type AutomationConfigItem,
+  type ListAutomationConfigResult,
+  type AutomationModeEntry,
   type RequestBypassResult,
   type ExecuteBypassResult,
   type ListProtectionsResult,
@@ -104,6 +111,7 @@ const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cw
 const DB_PATH = path.join(PROJECT_DIR, '.claude', 'deputy-cto.db');
 const CTO_REPORTS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
 const AUTONOMOUS_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
+const AUTOMATION_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
 const PROTECTED_ACTIONS_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'protected-actions.json');
 const PROTECTED_APPROVALS_PATH = path.join(PROJECT_DIR, '.claude', 'protected-action-approvals.json');
@@ -123,12 +131,13 @@ CREATE TABLE IF NOT EXISTS questions (
     description TEXT NOT NULL,
     context TEXT,
     suggested_options TEXT,
+    recommendation TEXT,
     answer TEXT,
     created_at TEXT NOT NULL,
     created_timestamp INTEGER NOT NULL,
     answered_at TEXT,
     decided_by TEXT,
-    CONSTRAINT valid_type CHECK (type IN ('decision', 'approval', 'rejection', 'question', 'escalation', 'bypass-request')),
+    CONSTRAINT valid_type CHECK (type IN ('decision', 'approval', 'rejection', 'question', 'escalation', 'bypass-request', 'protected-action-request')),
     CONSTRAINT valid_status CHECK (status IN ('pending', 'answered')),
     CONSTRAINT valid_decided_by CHECK (decided_by IS NULL OR decided_by IN ('cto', 'deputy-cto'))
 );
@@ -148,6 +157,7 @@ CREATE TABLE IF NOT EXISTS cleared_questions (
     type TEXT NOT NULL,
     title TEXT NOT NULL,
     description TEXT NOT NULL,
+    recommendation TEXT,
     answer TEXT,
     answered_at TEXT,
     decided_by TEXT,
@@ -183,9 +193,15 @@ function initializeDatabase(): Database.Database {
   if (!questionsColumns.some(c => c.name === 'decided_by')) {
     db.exec('ALTER TABLE questions ADD COLUMN decided_by TEXT');
   }
+  if (!questionsColumns.some(c => c.name === 'recommendation')) {
+    db.exec('ALTER TABLE questions ADD COLUMN recommendation TEXT');
+  }
   const clearedColumns = db.pragma('table_info(cleared_questions)') as { name: string }[];
   if (!clearedColumns.some(c => c.name === 'decided_by')) {
     db.exec('ALTER TABLE cleared_questions ADD COLUMN decided_by TEXT');
+  }
+  if (!clearedColumns.some(c => c.name === 'recommendation')) {
+    db.exec('ALTER TABLE cleared_questions ADD COLUMN recommendation TEXT');
   }
 
   // Run cleanup on startup to prevent unbounded database growth
@@ -290,8 +306,13 @@ function clearLatestCommitDecision(): void {
 // Tool Implementations
 // ============================================================================
 
-function addQuestion(args: AddQuestionArgs): AddQuestionResult {
+function addQuestion(args: AddQuestionArgs): AddQuestionResult | ErrorResult {
   const db = getDb();
+
+  // Require recommendation for escalations
+  if (args.type === 'escalation' && !args.recommendation) {
+    return { error: 'Escalations require a recommendation. Provide a concise statement of what you recommend and why.' };
+  }
 
   const id = randomUUID();
   const now = new Date();
@@ -299,8 +320,8 @@ function addQuestion(args: AddQuestionArgs): AddQuestionResult {
   const created_timestamp = Math.floor(now.getTime() / 1000);
 
   db.prepare(`
-    INSERT INTO questions (id, type, status, title, description, context, suggested_options, created_at, created_timestamp)
-    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+    INSERT INTO questions (id, type, status, title, description, context, suggested_options, recommendation, created_at, created_timestamp)
+    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     args.type,
@@ -308,6 +329,7 @@ function addQuestion(args: AddQuestionArgs): AddQuestionResult {
     args.description,
     args.context ?? null,
     args.suggested_options ? JSON.stringify(args.suggested_options) : null,
+    args.recommendation ?? null,
     created_at,
     created_timestamp
   );
@@ -372,6 +394,7 @@ function readQuestion(args: ReadQuestionArgs): ReadQuestionResult | ErrorResult 
     description: question.description,
     context: question.context,
     suggested_options: question.suggested_options ? JSON.parse(question.suggested_options) : null,
+    recommendation: question.recommendation,
     answer: question.answer,
     created_at: question.created_at,
     answered_at: question.answered_at,
@@ -422,13 +445,14 @@ function clearQuestion(args: ClearQuestionArgs): ClearQuestionResult | ErrorResu
 
   // Archive the question before deleting
   db.prepare(`
-    INSERT INTO cleared_questions (id, type, title, description, answer, answered_at, decided_by, cleared_at, cleared_timestamp)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO cleared_questions (id, type, title, description, recommendation, answer, answered_at, decided_by, cleared_at, cleared_timestamp)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     question.id,
     question.type,
     question.title,
     question.description,
+    question.recommendation,
     question.answer,
     question.answered_at,
     question.decided_by,
@@ -873,6 +897,148 @@ function cleanupOldRecordsInternal(db: Database.Database): CleanupOldRecordsResu
 function cleanupOldRecords(): CleanupOldRecordsResult {
   const db = getDb();
   return cleanupOldRecordsInternal(db);
+}
+
+// ============================================================================
+// Automation Mode Functions
+// ============================================================================
+
+const AUTOMATION_DEFAULTS: Record<string, number> = {
+  hourly_tasks: 55, triage_check: 5, antipattern_hunter: 360,
+  schema_mapper: 1440, lint_checker: 30, todo_maintenance: 15,
+  task_runner: 60, triage_per_item: 60, preview_promotion: 360,
+  staging_promotion: 1200, staging_health_monitor: 180,
+  production_health_monitor: 60, standalone_antipattern_hunter: 180,
+  standalone_compliance_checker: 60, user_feedback: 120,
+};
+
+interface AutomationConfig {
+  version: number;
+  defaults: Record<string, number>;
+  effective: Record<string, number>;
+  adjustment: { factor: number; last_updated: string | null; [key: string]: unknown };
+  modes?: Record<string, AutomationModeEntry>;
+}
+
+function readAutomationConfig(): AutomationConfig {
+  const defaults: AutomationConfig = {
+    version: 1,
+    defaults: { ...AUTOMATION_DEFAULTS },
+    effective: { ...AUTOMATION_DEFAULTS },
+    adjustment: { factor: 1.0, last_updated: null },
+  };
+
+  if (!fs.existsSync(AUTOMATION_CONFIG_PATH)) return defaults;
+
+  try {
+    const config = JSON.parse(fs.readFileSync(AUTOMATION_CONFIG_PATH, 'utf8')) as AutomationConfig;
+    if (!config || config.version !== 1) return defaults;
+    return config;
+  } catch {
+    return defaults;
+  }
+}
+
+function writeAutomationConfig(config: AutomationConfig): void {
+  const dir = path.dirname(AUTOMATION_CONFIG_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(AUTOMATION_CONFIG_PATH, JSON.stringify(config, null, 2));
+}
+
+function setAutomationMode(args: SetAutomationModeArgs): SetAutomationModeResult | ErrorResult {
+  const key = args.automation_name;
+
+  // Validate the automation name exists
+  if (!AUTOMATION_DEFAULTS[key]) {
+    const validKeys = Object.keys(AUTOMATION_DEFAULTS).join(', ');
+    return { error: `Unknown automation: "${key}". Valid names: ${validKeys}` };
+  }
+
+  if (args.mode === 'static' && args.static_minutes == null) {
+    return { error: 'static_minutes is required when mode is "static".' };
+  }
+
+  const config = readAutomationConfig();
+
+  // Initialize modes if not present
+  if (!config.modes) config.modes = {};
+
+  const entry: AutomationModeEntry = {
+    mode: args.mode,
+    set_at: new Date().toISOString(),
+  };
+
+  if (args.mode === 'static' && args.static_minutes != null) {
+    entry.static_minutes = args.static_minutes;
+    // Also set the effective cooldown immediately
+    if (!config.effective) config.effective = { ...config.defaults };
+    config.effective[key] = args.static_minutes;
+  } else {
+    // Switching back to load_balanced: reset effective to what the optimizer would set
+    const factor = config.adjustment?.factor ?? 1.0;
+    const defaultVal = config.defaults?.[key] ?? AUTOMATION_DEFAULTS[key];
+    if (!config.effective) config.effective = { ...config.defaults };
+    config.effective[key] = Math.max(5, Math.round(defaultVal / factor));
+  }
+
+  config.modes[key] = entry;
+
+  try {
+    writeAutomationConfig(config);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to write config: ${message}` };
+  }
+
+  const effectiveMinutes = config.effective[key];
+
+  return {
+    automation_name: key,
+    mode: args.mode,
+    effective_minutes: effectiveMinutes,
+    message: args.mode === 'static'
+      ? `Set ${key} to static mode: runs every ${args.static_minutes}m (fixed, optimizer will not adjust).`
+      : `Set ${key} to load_balanced mode: currently ${effectiveMinutes}m (optimizer will adjust dynamically).`,
+  };
+}
+
+function listAutomationConfig(): ListAutomationConfigResult {
+  const config = readAutomationConfig();
+  const automations: AutomationConfigItem[] = [];
+
+  const allKeys = new Set([
+    ...Object.keys(AUTOMATION_DEFAULTS),
+    ...Object.keys(config.defaults || {}),
+    ...Object.keys(config.effective || {}),
+  ]);
+
+  for (const key of allKeys) {
+    const defaultMinutes = config.defaults?.[key] ?? AUTOMATION_DEFAULTS[key] ?? 0;
+    const effectiveMinutes = config.effective?.[key] ?? defaultMinutes;
+    const modeEntry = config.modes?.[key];
+    const mode = modeEntry?.mode ?? 'load_balanced';
+    const staticMinutes = modeEntry?.static_minutes ?? null;
+
+    automations.push({
+      name: key,
+      mode,
+      default_minutes: defaultMinutes,
+      effective_minutes: effectiveMinutes,
+      static_minutes: staticMinutes,
+    });
+  }
+
+  // Sort by name
+  automations.sort((a, b) => a.name.localeCompare(b.name));
+
+  return {
+    automations,
+    factor: config.adjustment?.factor ?? 1.0,
+    last_updated: config.adjustment?.last_updated ?? null,
+    message: `${automations.length} automation(s) configured. Factor: ${(config.adjustment?.factor ?? 1.0).toFixed(3)}.`,
+  };
 }
 
 // ============================================================================
@@ -1354,7 +1520,7 @@ function listPendingActionRequests(): ListPendingActionRequestsResult {
 const tools: AnyToolHandler[] = [
   {
     name: 'add_question',
-    description: 'Add a question/decision request for the CTO. Use for decisions, approvals, or escalations from reports.',
+    description: 'Add a question/decision request for the CTO. Use for decisions, approvals, or escalations from reports. Escalations REQUIRE a recommendation field.',
     schema: AddQuestionArgsSchema,
     handler: addQuestion,
   },
@@ -1441,6 +1607,19 @@ const tools: AnyToolHandler[] = [
     description: 'Clean up old records to prevent unbounded database growth. Retains last 100 commit decisions and cleared questions within 30 days (minimum 500). Automatically runs on startup.',
     schema: CleanupOldRecordsArgsSchema,
     handler: cleanupOldRecords,
+  },
+  // Automation mode tools
+  {
+    name: 'set_automation_mode',
+    description: 'Toggle an automation between load_balanced (dynamic optimizer) and static (fixed interval) modes. Use to lock a specific automation at a fixed frequency.',
+    schema: SetAutomationModeArgsSchema,
+    handler: setAutomationMode,
+  },
+  {
+    name: 'list_automation_config',
+    description: 'List all automations with their mode, default/effective cooldowns, optimizer factor, and static overrides.',
+    schema: ListAutomationConfigArgsSchema,
+    handler: listAutomationConfig,
   },
   // Bypass governance tools
   {

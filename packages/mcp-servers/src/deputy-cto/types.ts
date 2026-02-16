@@ -36,6 +36,7 @@ export const AddQuestionArgsSchema = z.object({
   description: z.string().min(1).max(4000).describe('Detailed description with context (max 4000 chars)'),
   context: z.string().max(2000).optional().describe('Additional context (file paths, commit info, etc.) - max 2000 chars'),
   suggested_options: z.array(z.string().max(200)).max(10).optional().describe('Suggested options for CTO to choose from (max 10 options, 200 chars each)'),
+  recommendation: z.string().min(1).max(500).optional().describe('Agent recommendation for the CTO (required for escalations). Concise statement of what the agent recommends and why.'),
 });
 
 export const ListQuestionsArgsSchema = z.object({
@@ -93,6 +94,18 @@ export const SearchClearedItemsArgsSchema = z.object({
 
 export const CleanupOldRecordsArgsSchema = z.object({});
 
+// Automation mode schemas
+export const AUTOMATION_MODES = ['load_balanced', 'static'] as const;
+export type AutomationMode = typeof AUTOMATION_MODES[number];
+
+export const SetAutomationModeArgsSchema = z.object({
+  automation_name: z.string().min(1).describe('Cooldown key of the automation (e.g., "lint_checker", "task_runner")'),
+  mode: z.enum(AUTOMATION_MODES).describe('Mode: "load_balanced" (dynamic optimizer) or "static" (fixed interval)'),
+  static_minutes: z.coerce.number().min(5).max(10080).optional().describe('Fixed interval in minutes (required when mode is "static", min 5, max 10080)'),
+});
+
+export const ListAutomationConfigArgsSchema = z.object({});
+
 // Bypass governance schemas
 export const RequestBypassArgsSchema = z.object({
   reason: z.string().min(1).max(1000).describe('Reason why bypass is needed (system error, timeout, etc.)'),
@@ -142,6 +155,8 @@ export type GetAutonomousModeStatusArgs = z.infer<typeof GetAutonomousModeStatus
 export type RecordCtoBriefingArgs = z.infer<typeof RecordCtoBriefingArgsSchema>;
 export type SearchClearedItemsArgs = z.infer<typeof SearchClearedItemsArgsSchema>;
 export type CleanupOldRecordsArgs = z.infer<typeof CleanupOldRecordsArgsSchema>;
+export type SetAutomationModeArgs = z.infer<typeof SetAutomationModeArgsSchema>;
+export type ListAutomationConfigArgs = z.infer<typeof ListAutomationConfigArgsSchema>;
 export type RequestBypassArgs = z.infer<typeof RequestBypassArgsSchema>;
 export type ExecuteBypassArgs = z.infer<typeof ExecuteBypassArgsSchema>;
 export type ListProtectionsArgs = z.infer<typeof ListProtectionsArgsSchema>;
@@ -158,6 +173,7 @@ export interface QuestionRecord {
   description: string;
   context: string | null;
   suggested_options: string | null; // JSON array
+  recommendation: string | null;
   answer: string | null;
   created_at: string;
   created_timestamp: number;
@@ -195,6 +211,7 @@ export interface ReadQuestionResult {
   description: string;
   context: string | null;
   suggested_options: string[] | null;
+  recommendation: string | null;
   answer: string | null;
   created_at: string;
   answered_at: string | null;
@@ -307,6 +324,34 @@ export interface SearchClearedItemsResult {
 export interface CleanupOldRecordsResult {
   commit_decisions_deleted: number;
   cleared_questions_deleted: number;
+  message: string;
+}
+
+export interface AutomationModeEntry {
+  mode: AutomationMode;
+  static_minutes?: number;
+  set_at: string;
+}
+
+export interface SetAutomationModeResult {
+  automation_name: string;
+  mode: AutomationMode;
+  effective_minutes: number;
+  message: string;
+}
+
+export interface AutomationConfigItem {
+  name: string;
+  mode: AutomationMode;
+  default_minutes: number;
+  effective_minutes: number;
+  static_minutes: number | null;
+}
+
+export interface ListAutomationConfigResult {
+  automations: AutomationConfigItem[];
+  factor: number;
+  last_updated: string | null;
   message: string;
 }
 

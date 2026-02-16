@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import Database from 'better-sqlite3';
 
@@ -93,6 +94,22 @@ export interface KeyRotationMetrics {
   aggregate: AggregateQuota | null;
 }
 
+export interface VerifiedKey {
+  key_id: string;
+  subscription_type: string;
+  is_current: boolean;
+  healthy: boolean;
+  quota: QuotaStatus | null;
+}
+
+export interface VerifiedQuotaResult {
+  keys: VerifiedKey[];
+  healthy_count: number;
+  total_attempted: number;
+  aggregate: QuotaStatus;
+  rotation_events_24h: number;
+}
+
 export interface SessionMetrics {
   task_triggered: number;
   user_triggered: number;
@@ -136,10 +153,12 @@ export interface HookStats {
   total: number;
   success: number;
   failure: number;
+  skipped: number;
 }
 
 export interface HookExecutions {
   total_24h: number;
+  skipped_24h: number;
   success_rate: number;
   by_hook: Record<string, HookStats>;
   recent_failures: Array<{ hook: string; error: string; timestamp: string }>;
@@ -164,6 +183,13 @@ export interface AutomationCooldowns {
   todo_maintenance: number;
   task_runner: number;
   triage_per_item: number;
+  preview_promotion: number;
+  staging_promotion: number;
+  staging_health_monitor: number;
+  production_health_monitor: number;
+  standalone_antipattern_hunter: number;
+  standalone_compliance_checker: number;
+  user_feedback: number;
 }
 
 export interface UsageProjection {
@@ -210,6 +236,7 @@ export interface DashboardData {
   system_health: SystemHealth;
   autonomous_mode: AutonomousModeStatus;
   quota: QuotaStatus;
+  verified_quota: VerifiedQuotaResult;
   token_usage: TokenUsage;
   usage_projection: UsageProjection;
   key_rotation: KeyRotationMetrics | null;
@@ -324,6 +351,17 @@ interface AutomationConfigFile {
 }
 
 // ============================================================================
+// Key ID Generation (matches api-key-watcher.js:89-98)
+// ============================================================================
+
+function generateKeyId(accessToken: string): string {
+  const cleanToken = accessToken
+    .replace(/^sk-ant-oat01-/, '')
+    .replace(/^sk-ant-/, '');
+  return crypto.createHash('sha256').update(cleanToken).digest('hex').substring(0, 16);
+}
+
+// ============================================================================
 // Quota Status
 // ============================================================================
 
@@ -354,14 +392,10 @@ function extractTokenFromCreds(creds: CredentialsFile): string | null {
 }
 
 /**
- * Get an access token from all available sources, in priority order:
- *   1. CLAUDE_CODE_OAUTH_TOKEN env var (documented override)
- *   2. macOS Keychain (Claude Code stores OAuth here on Mac)
- *   3. $CLAUDE_CONFIG_DIR/.credentials.json (config dir override)
- *   4. ~/.claude/.credentials.json (standard Linux location, Mac fallback)
- *   5. api-key-rotation.json (project-level, active keys only)
+ * Get a credential token from non-rotation sources (env, keychain, creds file).
+ * Sources 1-4 in priority order. Used by both getAccessToken() and collectAllKeys().
  */
-function getAccessToken(): string | null {
+function getCredentialToken(): string | null {
   // Source 1: Environment variable override
   const envToken = process.env['CLAUDE_CODE_OAUTH_TOKEN'];
   if (envToken) return envToken;
@@ -407,12 +441,23 @@ function getAccessToken(): string | null {
     // Fall through
   }
 
+  return null;
+}
+
+/**
+ * Get an access token from all available sources, in priority order:
+ *   1-4. Credential sources (env, keychain, config dir, standard creds)
+ *   5. api-key-rotation.json (project-level, active keys only)
+ */
+function getAccessToken(): string | null {
+  const credToken = getCredentialToken();
+  if (credToken) return credToken;
+
   // Source 5: Key rotation state (project-level, active keys only)
   if (fs.existsSync(KEY_ROTATION_STATE_PATH)) {
     try {
       const state = JSON.parse(fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8')) as KeyRotationState;
       if (state?.version === 1 && state.keys) {
-        // Only use keys with active status
         const activeKeyData = state.active_key_id ? state.keys[state.active_key_id] : undefined;
         if (activeKeyData?.accessToken && activeKeyData.status === 'active') {
           return activeKeyData.accessToken;
@@ -431,19 +476,14 @@ function getAccessToken(): string | null {
   return null;
 }
 
-export async function getQuotaStatus(): Promise<QuotaStatus> {
-  const emptyStatus: QuotaStatus = {
-    five_hour: null,
-    seven_day: null,
-    extra_usage_enabled: false,
-    error: null,
-  };
+const EMPTY_QUOTA: QuotaStatus = {
+  five_hour: null,
+  seven_day: null,
+  extra_usage_enabled: false,
+  error: null,
+};
 
-  const accessToken = getAccessToken();
-  if (!accessToken) {
-    return { ...emptyStatus, error: 'No credentials found' };
-  }
-
+async function fetchQuotaForToken(accessToken: string): Promise<QuotaStatus> {
   try {
     const response = await fetch(ANTHROPIC_API_URL, {
       method: 'GET',
@@ -456,7 +496,7 @@ export async function getQuotaStatus(): Promise<QuotaStatus> {
     });
 
     if (!response.ok) {
-      return { ...emptyStatus, error: `API error: ${response.status}` };
+      return { ...EMPTY_QUOTA, error: `API error: ${response.status}` };
     }
 
     const data = await response.json() as UsageApiResponse;
@@ -469,8 +509,162 @@ export async function getQuotaStatus(): Promise<QuotaStatus> {
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { ...emptyStatus, error: `Fetch error: ${message}` };
+    return { ...EMPTY_QUOTA, error: `Fetch error: ${message}` };
   }
+}
+
+export async function getQuotaStatus(): Promise<QuotaStatus> {
+  const accessToken = getAccessToken();
+  if (!accessToken) {
+    return { ...EMPTY_QUOTA, error: 'No credentials found' };
+  }
+  return fetchQuotaForToken(accessToken);
+}
+
+// ============================================================================
+// Per-Key Verified Quota
+// ============================================================================
+
+interface CollectedKey {
+  key_id: string;
+  access_token: string;
+  subscription_type: string;
+  is_current: boolean;
+}
+
+/**
+ * Collect all unique keys from rotation state + credentials.
+ * Keys are deduplicated by key ID (SHA256 hash of token).
+ */
+function collectAllKeys(): { keys: CollectedKey[]; rotationState: KeyRotationState | null } {
+  const keyMap = new Map<string, CollectedKey>();
+  let rotationState: KeyRotationState | null = null;
+
+  // Source A: Key rotation state file — include active and exhausted keys
+  // (exhausted keys may have recovered since the last watcher run)
+  if (fs.existsSync(KEY_ROTATION_STATE_PATH)) {
+    try {
+      const content = fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8');
+      const state = JSON.parse(content) as KeyRotationState;
+      if (state?.version === 1 && typeof state.keys === 'object') {
+        rotationState = state;
+        for (const [keyId, keyData] of Object.entries(state.keys)) {
+          if (keyData.status === 'invalid' || keyData.status === 'expired') continue;
+          if (!keyData.accessToken) continue;
+          keyMap.set(keyId, {
+            key_id: keyId,
+            access_token: keyData.accessToken,
+            subscription_type: keyData.subscriptionType || 'unknown',
+            is_current: keyId === state.active_key_id,
+          });
+        }
+      }
+    } catch (err) {
+      process.stderr.write(`[data-reader] Failed to parse key rotation state at ${KEY_ROTATION_STATE_PATH}: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
+
+  // Source B: Current credentials (env, keychain, creds file)
+  // Skip rotation state source (source 5 in getAccessToken) to avoid double-count —
+  // we read those directly above. Check env, keychain, and creds file sources.
+  const credToken = getCredentialToken();
+  if (credToken) {
+    const credKeyId = generateKeyId(credToken);
+    if (!keyMap.has(credKeyId)) {
+      keyMap.set(credKeyId, {
+        key_id: credKeyId,
+        access_token: credToken,
+        subscription_type: 'unknown',
+        is_current: !rotationState,
+      });
+    }
+  }
+
+  return { keys: Array.from(keyMap.values()), rotationState };
+}
+
+/**
+ * Fetch quota for all keys in parallel, return verified results.
+ * Only keys that successfully authenticate are counted as healthy.
+ */
+export async function getVerifiedQuota(hours: number): Promise<VerifiedQuotaResult> {
+  const { keys, rotationState } = collectAllKeys();
+
+  if (keys.length === 0) {
+    return {
+      keys: [],
+      healthy_count: 0,
+      total_attempted: 0,
+      aggregate: { ...EMPTY_QUOTA, error: 'No keys found' },
+      rotation_events_24h: 0,
+    };
+  }
+
+  // Fetch quota for all keys in parallel
+  const results = await Promise.all(
+    keys.map(async (key): Promise<VerifiedKey> => {
+      const quota = await fetchQuotaForToken(key.access_token);
+      return {
+        key_id: `${key.key_id.slice(0, 8)}...`,
+        subscription_type: key.subscription_type,
+        is_current: key.is_current,
+        healthy: !quota.error,
+        quota: quota.error ? null : quota,
+      };
+    })
+  );
+
+  const healthyKeys = results.filter(k => k.healthy && k.quota);
+
+  // Aggregate: average utilization across healthy keys
+  const aggregate = buildAggregate(healthyKeys);
+
+  // Rotation events from state file
+  let rotationEvents24h = 0;
+  if (rotationState) {
+    const since = Date.now() - (hours * 60 * 60 * 1000);
+    rotationEvents24h = rotationState.rotation_log.filter(
+      entry => entry.timestamp >= since && entry.event === 'key_switched'
+    ).length;
+  }
+
+  return {
+    keys: results,
+    healthy_count: healthyKeys.length,
+    total_attempted: keys.length,
+    aggregate,
+    rotation_events_24h: rotationEvents24h,
+  };
+}
+
+function buildAggregate(healthyKeys: VerifiedKey[]): QuotaStatus {
+  if (healthyKeys.length === 0) {
+    return { ...EMPTY_QUOTA, error: 'No healthy keys' };
+  }
+
+  const avgBucket = (getBucket: (q: QuotaStatus) => QuotaBucket | null): QuotaBucket | null => {
+    const buckets = healthyKeys
+      .map(k => getBucket(k.quota!))
+      .filter((b): b is QuotaBucket => b !== null);
+    if (buckets.length === 0) return null;
+    const avgUtil = Math.round(buckets.reduce((s, b) => s + b.utilization, 0) / buckets.length);
+    // Use earliest reset time
+    const earliest = buckets.reduce((a, b) =>
+      new Date(a.resets_at).getTime() < new Date(b.resets_at).getTime() ? a : b
+    );
+    return {
+      utilization: avgUtil,
+      resets_at: earliest.resets_at,
+      resets_in_hours: earliest.resets_in_hours,
+    };
+  };
+
+  return {
+    five_hour: avgBucket(q => q.five_hour),
+    seven_day: avgBucket(q => q.seven_day),
+    extra_usage_enabled: healthyKeys.some(k => k.quota!.extra_usage_enabled),
+    error: null,
+  };
 }
 
 // ============================================================================
@@ -864,6 +1058,7 @@ export function getAgentActivity(): AgentActivity {
 export function getHookExecutions(): HookExecutions {
   const result: HookExecutions = {
     total_24h: 0,
+    skipped_24h: 0,
     success_rate: 100,
     by_hook: {},
     recent_failures: [],
@@ -877,6 +1072,7 @@ export function getHookExecutions(): HookExecutions {
   const now = Date.now();
   const cutoff24h = now - 24 * 60 * 60 * 1000;
   let successCount = 0;
+  let skippedCount = 0;
 
   for (const exec of history.hookExecutions || []) {
     const execTime = new Date(exec.timestamp).getTime();
@@ -884,14 +1080,16 @@ export function getHookExecutions(): HookExecutions {
 
     result.total_24h++;
     if (exec.status === 'success') successCount++;
+    else if (exec.status === 'skipped') skippedCount++;
 
     if (!result.by_hook[exec.hookType]) {
-      result.by_hook[exec.hookType] = { total: 0, success: 0, failure: 0 };
+      result.by_hook[exec.hookType] = { total: 0, success: 0, failure: 0, skipped: 0 };
     }
     const stats = result.by_hook[exec.hookType];
     stats.total++;
     if (exec.status === 'success') stats.success++;
-    if (exec.status === 'failure') stats.failure++;
+    else if (exec.status === 'failure') stats.failure++;
+    else if (exec.status === 'skipped') stats.skipped++;
 
     if (exec.status === 'failure' && result.recent_failures.length < 5) {
       result.recent_failures.push({
@@ -902,8 +1100,11 @@ export function getHookExecutions(): HookExecutions {
     }
   }
 
-  if (result.total_24h > 0) {
-    result.success_rate = Math.round((successCount / result.total_24h) * 100);
+  result.skipped_24h = skippedCount;
+  // Calculate success rate excluding skipped executions
+  const relevantTotal = result.total_24h - skippedCount;
+  if (relevantTotal > 0) {
+    result.success_rate = Math.round((successCount / relevantTotal) * 100);
   }
 
   return result;
@@ -983,6 +1184,13 @@ const DEFAULT_COOLDOWNS: AutomationCooldowns = {
   todo_maintenance: 15,
   task_runner: 60,
   triage_per_item: 60,
+  preview_promotion: 360,
+  staging_promotion: 1200,
+  staging_health_monitor: 180,
+  production_health_monitor: 60,
+  standalone_antipattern_hunter: 180,
+  standalone_compliance_checker: 60,
+  user_feedback: 120,
 };
 
 export function getUsageProjection(): UsageProjection {
@@ -1237,14 +1445,15 @@ export function getFeedbackPersonas(): FeedbackPersonasData {
 
 export async function getDashboardData(hours: number = 24): Promise<DashboardData> {
   const tokenUsage = getTokenUsage(hours);
-  const quotaStatus = await getQuotaStatus();
+  const verifiedQuota = await getVerifiedQuota(hours);
 
   return {
     generated_at: new Date(),
     hours,
     system_health: getSystemHealth(),
     autonomous_mode: getAutonomousModeStatus(),
-    quota: quotaStatus,
+    quota: verifiedQuota.aggregate,
+    verified_quota: verifiedQuota,
     token_usage: tokenUsage,
     usage_projection: getUsageProjection(),
     key_rotation: getKeyRotationMetrics(hours),

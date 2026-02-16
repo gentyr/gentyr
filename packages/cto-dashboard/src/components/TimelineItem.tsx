@@ -42,6 +42,15 @@ const EVENT_LABELS: Record<TimelineEventType, string> = {
   session: 'SESSION',
 };
 
+// Visual column widths for icons (◆ and ◇ render as 2 columns in most terminals)
+const ICON_VISUAL_WIDTHS: Record<TimelineEventType, number> = {
+  hook: 1,
+  report: 2,
+  question: 2,
+  task: 1,
+  session: 1,
+};
+
 const PRIORITY_COLORS: Record<string, string> = {
   critical: 'red',
   high: 'yellow',
@@ -61,16 +70,20 @@ export function TimelineItem({ event }: { event: TimelineEvent }): React.ReactEl
   const icon = EVENT_ICONS[event.type];
   const color = EVENT_COLORS[event.type];
   const label = EVENT_LABELS[event.type];
+  const iconWidth = ICON_VISUAL_WIDTHS[event.type];
   const priorityTag = event.priority && event.priority !== 'normal'
     ? ` [${event.priority.toUpperCase()}]`
     : '';
   const priorityColor = event.priority ? PRIORITY_COLORS[event.priority] : 'white';
 
+  // Reduce post-time spacing by 1 for 2-column-wide icons to keep alignment consistent
+  const postTimeSpaces = iconWidth === 2 ? ' ' : '  ';
+
   return (
     <Box flexDirection="column" marginBottom={1}>
       {/* Main line: time, icon, type, title */}
       <Box>
-        <Text color="gray">{formatTime(event.timestamp)}  </Text>
+        <Text color="gray">{formatTime(event.timestamp)}{postTimeSpaces}</Text>
         <Text color={color}>{icon} </Text>
         <Text color={color} bold>{label}</Text>
         <Text color="white">  {event.title}</Text>

@@ -16,6 +16,8 @@ import { getDashboardData } from './utils/data-reader.js';
 import { aggregateTimeline } from './utils/timeline-aggregator.js';
 import { getUsageTrajectory } from './utils/trajectory.js';
 import { getAutomatedInstances } from './utils/automated-instances.js';
+import { getDeputyCtoData } from './utils/deputy-cto-reader.js';
+import { getTestingData, getCodecovData } from './utils/testing-reader.js';
 
 // ============================================================================
 // CLI Argument Parsing
@@ -54,6 +56,14 @@ async function main(): Promise<void> {
     const timelineEvents = aggregateTimeline({ hours, maxEvents: 20 });
     const trajectory = getUsageTrajectory();
     const automatedInstances = getAutomatedInstances();
+    const deputyCto = getDeputyCtoData();
+    const testing = getTestingData();
+
+    // Fetch optional async data (Codecov)
+    const codecovData = await getCodecovData();
+    if (codecovData) {
+      testing.codecov = codecovData;
+    }
 
     // Render dashboard (static mode - prints once and exits)
     const { unmount, waitUntilExit } = render(
@@ -62,6 +72,8 @@ async function main(): Promise<void> {
         timelineEvents={timelineEvents}
         trajectory={trajectory}
         automatedInstances={automatedInstances}
+        deputyCto={deputyCto}
+        testing={testing}
       />,
       { exitOnCtrlC: true }
     );

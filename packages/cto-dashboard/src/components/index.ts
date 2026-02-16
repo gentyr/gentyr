@@ -13,3 +13,5 @@ export { UsageTrends, type UsageTrendsProps } from './UsageTrends.js';
 export { UsageTrajectory, type UsageTrajectoryProps } from './UsageTrajectory.js';
 export { AutomatedInstances, type AutomatedInstancesProps } from './AutomatedInstances.js';
 export { FeedbackPersonas } from './FeedbackPersonas.js';
+export { DeputyCtoSection, type DeputyCtoSectionProps } from './DeputyCtoSection.js';
+export { TestingSection, type TestingSectionProps } from './TestingSection.js';

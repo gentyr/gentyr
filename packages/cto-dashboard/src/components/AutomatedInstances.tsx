@@ -2,11 +2,10 @@
  * Automated Instances Component
  *
  * Table showing all automated Claude triggers:
- * - Type (Pre-Commit Hook, CLAUDE.md Refactor, Todo Maintenance, etc.)
+ * - Type (name of the automation)
  * - Runs (24h) - count from agent-tracker
- * - Next Run - time until next scheduled run (or "on commit"/"on failure")
- * - Delta - change in interval from baseline
- * - Freq Adj - percentage slower/faster from usage optimizer
+ * - Until Next - time until next scheduled run (or "on commit"/"on failure")
+ * - Freq Adj - frequency adjustment from usage optimizer or static mode
  *
  * Footer shows: Usage Target, Current Projected, Adjusting direction
  */
@@ -23,9 +22,8 @@ export interface AutomatedInstancesProps {
 // Column widths for alignment
 const COL_TYPE = 22;
 const COL_RUNS = 12;
-const COL_NEXT = 14;
-const COL_DELTA = 12;
-const COL_FREQ = 16;
+const COL_UNTIL = 14;
+const COL_FREQ = 18;
 
 function HeaderRow(): React.ReactElement {
   return (
@@ -36,11 +34,8 @@ function HeaderRow(): React.ReactElement {
       <Box width={COL_RUNS}>
         <Text color="gray" bold>Runs (24h)</Text>
       </Box>
-      <Box width={COL_NEXT}>
-        <Text color="gray" bold>Next Run</Text>
-      </Box>
-      <Box width={COL_DELTA}>
-        <Text color="gray" bold>Delta</Text>
+      <Box width={COL_UNTIL}>
+        <Text color="gray" bold>Until Next</Text>
       </Box>
       <Box width={COL_FREQ}>
         <Text color="gray" bold>Freq Adj</Text>
@@ -50,7 +45,7 @@ function HeaderRow(): React.ReactElement {
 }
 
 function Separator(): React.ReactElement {
-  const totalWidth = COL_TYPE + COL_RUNS + COL_NEXT + COL_DELTA + COL_FREQ;
+  const totalWidth = COL_TYPE + COL_RUNS + COL_UNTIL + COL_FREQ;
   return (
     <Box>
       <Text color="gray">{'─'.repeat(totalWidth)}</Text>
@@ -66,27 +61,22 @@ function InstanceRow({ instance }: InstanceRowProps): React.ReactElement {
   // Color for run count
   const runsColor = instance.runs24h > 10 ? 'cyan' : instance.runs24h > 0 ? 'white' : 'gray';
 
-  // Color for next run
-  let nextColor = 'gray';
-  if (instance.nextRun === 'now') nextColor = 'yellow';
-  else if (instance.nextRun.startsWith('in ')) nextColor = 'cyan';
-  else if (instance.nextRun.startsWith('on ')) nextColor = 'magenta';
-
-  // Color for delta
-  let deltaColor = 'gray';
-  let deltaText = instance.delta || '—';
-  if (instance.delta) {
-    if (instance.delta.startsWith('+')) deltaColor = 'yellow';
-    else if (instance.delta.startsWith('-')) deltaColor = 'green';
-  }
+  // Color for until next
+  let untilColor = 'gray';
+  if (instance.untilNext === 'now') untilColor = 'yellow';
+  else if (instance.untilNext === 'pending') untilColor = 'gray';
+  else if (instance.untilNext.startsWith('on ')) untilColor = 'magenta';
+  else if (instance.untilNext !== '-') untilColor = 'cyan';
 
   // Color for freq adj
   let freqColor = 'gray';
-  let freqText = instance.freqAdj || '—';
+  const freqText = instance.freqAdj || '—';
   if (instance.freqAdj) {
     if (instance.freqAdj.includes('slower')) freqColor = 'yellow';
     else if (instance.freqAdj.includes('faster')) freqColor = 'green';
+    else if (instance.freqAdj.startsWith('static')) freqColor = 'blue';
     else if (instance.freqAdj === 'baseline') freqColor = 'gray';
+    else if (instance.freqAdj === 'no data') freqColor = 'gray';
   }
 
   return (
@@ -97,11 +87,8 @@ function InstanceRow({ instance }: InstanceRowProps): React.ReactElement {
       <Box width={COL_RUNS}>
         <Text color={runsColor}>{instance.runs24h}</Text>
       </Box>
-      <Box width={COL_NEXT}>
-        <Text color={nextColor}>{instance.nextRun}</Text>
-      </Box>
-      <Box width={COL_DELTA}>
-        <Text color={deltaColor}>{deltaText}</Text>
+      <Box width={COL_UNTIL}>
+        <Text color={untilColor}>{instance.untilNext}</Text>
       </Box>
       <Box width={COL_FREQ}>
         <Text color={freqColor}>{freqText}</Text>

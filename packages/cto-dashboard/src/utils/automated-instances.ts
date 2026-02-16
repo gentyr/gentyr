@@ -23,15 +23,14 @@ export type InstanceTrigger = 'scheduled' | 'commit' | 'failure' | 'prompt' | 'f
 export interface AutomatedInstance {
   type: string;                          // Display name
   runs24h: number;                       // Count from agent-tracker
-  nextRun: string;                       // "in Xm" or "on commit" etc.
-  delta: string | null;                  // "+5m34s" or "-2m10s" or null
-  freqAdj: string | null;                // "+15% slower" or "baseline" or null
+  untilNext: string;                     // "23m", "1h15m", "now", "on commit", "-"
+  freqAdj: string | null;                // "+15% slower", "static 45m", "baseline", "no data", or null
   trigger: InstanceTrigger;              // Type of trigger
 }
 
 export interface AutomatedInstancesData {
   instances: AutomatedInstance[];
-  usageTarget: number;                   // Target % (e.g., 85)
+  usageTarget: number;                   // Target % (e.g., 90)
   currentProjected: number | null;       // Current projected % at reset
   adjustingDirection: 'up' | 'down' | 'stable';  // Which way intervals are adjusting
   hasData: boolean;
@@ -54,6 +53,19 @@ interface AutomationState {
   lastTriageCheck?: number;
   lastTaskRunnerCheck?: number;
   lastLintCheck?: number;
+  lastPreviewPromotionCheck?: number;
+  lastStagingPromotionCheck?: number;
+  lastStagingHealthCheck?: number;
+  lastProductionHealthCheck?: number;
+  lastStandaloneAntipatternHunt?: number;
+  lastStandaloneComplianceCheck?: number;
+  lastFeedbackCheck?: number;
+}
+
+interface AutomationModeEntry {
+  mode: 'load_balanced' | 'static';
+  static_minutes?: number;
+  set_at?: string;
 }
 
 interface AutomationConfigFile {
@@ -67,6 +79,7 @@ interface AutomationConfigFile {
     constraining_metric?: '5h' | '7d';
     last_updated?: string;
   };
+  modes?: Record<string, AutomationModeEntry>;
 }
 
 // ============================================================================
@@ -83,6 +96,7 @@ const INSTANCE_DEFINITIONS: Array<{
   cooldownKey: keyof AutomationCooldowns | null;
   defaultMinutes: number | null;
 }> = [
+  // --- Event-triggered automations ---
   {
     type: 'Pre-Commit Hook',
     agentTypes: ['deputy-cto-review'],
@@ -93,32 +107,33 @@ const INSTANCE_DEFINITIONS: Array<{
     defaultMinutes: null,
   },
   {
-    type: 'CLAUDE.md Refactor',
-    agentTypes: ['claudemd-refactor'],
-    trigger: 'scheduled',
-    stateKey: 'lastClaudeMdRefactor',
-    cooldownKey: 'hourly_tasks',
-    defaultMinutes: 55,
+    type: 'Test Suite',
+    agentTypes: ['test-failure-jest', 'test-failure-vitest', 'test-failure-playwright'],
+    trigger: 'failure',
+    stateKey: null,
+    cooldownKey: null,
+    defaultMinutes: null,
+  },
+  {
+    type: 'Compliance (Hook)',
+    agentTypes: ['compliance-global', 'compliance-local', 'compliance-mapping-fix', 'compliance-mapping-review'],
+    trigger: 'file-change',
+    stateKey: null,
+    cooldownKey: null,
+    defaultMinutes: null,
   },
   {
     type: 'Todo Maintenance',
     agentTypes: ['todo-processing', 'todo-syntax-fix'],
-    trigger: 'scheduled',
-    stateKey: 'lastTaskRunnerCheck',
-    cooldownKey: 'todo_maintenance',
-    defaultMinutes: 15,
-  },
-  {
-    type: 'Antipattern Hunter',
-    agentTypes: ['antipattern-hunter', 'antipattern-hunter-repo', 'antipattern-hunter-commit'],
-    trigger: 'scheduled',
+    trigger: 'file-change',
     stateKey: null,
-    cooldownKey: 'antipattern_hunter',
-    defaultMinutes: 360,
+    cooldownKey: null,
+    defaultMinutes: null,
   },
+  // --- Scheduled automations ---
   {
     type: 'Triage Check',
-    agentTypes: [],  // Tracked differently
+    agentTypes: [],
     trigger: 'scheduled',
     stateKey: 'lastTriageCheck',
     cooldownKey: 'triage_check',
@@ -133,20 +148,76 @@ const INSTANCE_DEFINITIONS: Array<{
     defaultMinutes: 30,
   },
   {
-    type: 'Test Suite',
-    agentTypes: ['test-failure-jest', 'test-failure-vitest', 'test-failure-playwright'],
-    trigger: 'failure',
-    stateKey: null,
-    cooldownKey: null,
-    defaultMinutes: null,
+    type: 'CLAUDE.md Refactor',
+    agentTypes: ['claudemd-refactor'],
+    trigger: 'scheduled',
+    stateKey: 'lastClaudeMdRefactor',
+    cooldownKey: 'hourly_tasks',
+    defaultMinutes: 55,
   },
   {
-    type: 'Compliance Checker',
-    agentTypes: ['compliance-global', 'compliance-local', 'compliance-mapping-fix', 'compliance-mapping-review'],
-    trigger: 'file-change',
-    stateKey: null,
-    cooldownKey: null,
-    defaultMinutes: null,
+    type: 'Task Runner',
+    agentTypes: ['task-runner-code-reviewer', 'task-runner-investigator', 'task-runner-test-writer', 'task-runner-project-manager'],
+    trigger: 'scheduled',
+    stateKey: 'lastTaskRunnerCheck',
+    cooldownKey: 'task_runner',
+    defaultMinutes: 60,
+  },
+  {
+    type: 'Production Health',
+    agentTypes: ['production-health-monitor'],
+    trigger: 'scheduled',
+    stateKey: 'lastProductionHealthCheck',
+    cooldownKey: 'production_health_monitor',
+    defaultMinutes: 60,
+  },
+  {
+    type: 'Compliance (Sched.)',
+    agentTypes: ['standalone-compliance-checker'],
+    trigger: 'scheduled',
+    stateKey: 'lastStandaloneComplianceCheck',
+    cooldownKey: 'standalone_compliance_checker',
+    defaultMinutes: 60,
+  },
+  {
+    type: 'User Feedback',
+    agentTypes: ['feedback-orchestrator'],
+    trigger: 'scheduled',
+    stateKey: 'lastFeedbackCheck',
+    cooldownKey: 'user_feedback',
+    defaultMinutes: 120,
+  },
+  {
+    type: 'Antipattern Hunter',
+    agentTypes: ['antipattern-hunter', 'antipattern-hunter-repo', 'antipattern-hunter-commit', 'standalone-antipattern-hunter'],
+    trigger: 'scheduled',
+    stateKey: 'lastStandaloneAntipatternHunt',
+    cooldownKey: 'standalone_antipattern_hunter',
+    defaultMinutes: 180,
+  },
+  {
+    type: 'Staging Health',
+    agentTypes: ['staging-health-monitor'],
+    trigger: 'scheduled',
+    stateKey: 'lastStagingHealthCheck',
+    cooldownKey: 'staging_health_monitor',
+    defaultMinutes: 180,
+  },
+  {
+    type: 'Preview Promotion',
+    agentTypes: ['preview-promotion'],
+    trigger: 'scheduled',
+    stateKey: 'lastPreviewPromotionCheck',
+    cooldownKey: 'preview_promotion',
+    defaultMinutes: 360,
+  },
+  {
+    type: 'Staging Promotion',
+    agentTypes: ['staging-promotion'],
+    trigger: 'scheduled',
+    stateKey: 'lastStagingPromotionCheck',
+    cooldownKey: 'staging_promotion',
+    defaultMinutes: 1200,
   },
 ];
 
@@ -155,20 +226,15 @@ const INSTANCE_DEFINITIONS: Array<{
 // ============================================================================
 
 /**
- * Get automated instances data including run counts, next run times,
- * deltas from baseline, and frequency adjustments.
+ * Get automated instances data including run counts, time until next run,
+ * and frequency adjustments.
  */
 export function getAutomatedInstances(): AutomatedInstancesData {
-  // Get agent run counts
   const runCounts = getAgentRunCounts();
-
-  // Get automation state
   const state = getAutomationState();
-
-  // Get config (defaults and effective cooldowns)
   const config = getAutomationConfig();
+  const optimizerHasRun = config.adjustment?.last_updated != null;
 
-  // Calculate instances
   const now = Date.now();
   const instances: AutomatedInstance[] = [];
 
@@ -179,63 +245,62 @@ export function getAutomatedInstances(): AutomatedInstancesData {
       runs24h += runCounts[agentType] || 0;
     }
 
-    // Build next run string
-    let nextRun = '';
-    let delta: string | null = null;
+    let untilNext = '-';
     let freqAdj: string | null = null;
 
     if (def.trigger === 'commit') {
-      nextRun = 'on commit';
+      untilNext = 'on commit';
     } else if (def.trigger === 'failure') {
-      nextRun = 'on failure';
+      untilNext = 'on failure';
     } else if (def.trigger === 'file-change') {
-      nextRun = 'on change';
+      untilNext = 'on change';
     } else if (def.trigger === 'prompt') {
-      nextRun = 'on prompt';
+      untilNext = 'on prompt';
     } else if (def.trigger === 'scheduled' && def.stateKey && def.cooldownKey) {
-      // Calculate next run for scheduled tasks
       const lastRun = state[def.stateKey];
       const effectiveMinutes = config.effective?.[def.cooldownKey] ?? def.defaultMinutes ?? 0;
       const defaultMinutes = config.defaults?.[def.cooldownKey] ?? def.defaultMinutes ?? 0;
+
+      // Check if this automation is in static mode
+      const modeEntry = config.modes?.[def.cooldownKey];
+      const isStatic = modeEntry?.mode === 'static';
 
       if (lastRun && effectiveMinutes > 0) {
         const nextRunMs = lastRun + (effectiveMinutes * 60 * 1000);
         const secondsUntil = Math.floor((nextRunMs - now) / 1000);
 
         if (secondsUntil <= 0) {
-          nextRun = 'now';
+          untilNext = 'now';
         } else {
-          nextRun = `in ${formatDelta(secondsUntil)}`;
+          untilNext = formatDuration(secondsUntil);
         }
 
-        // Calculate delta from default
-        const deltaMinutes = effectiveMinutes - defaultMinutes;
-        if (deltaMinutes !== 0) {
-          const sign = deltaMinutes > 0 ? '+' : '';
-          delta = `${sign}${formatDelta(Math.abs(deltaMinutes) * 60)}`;
-        }
-
-        // Calculate frequency adjustment percentage
-        if (defaultMinutes > 0 && effectiveMinutes !== defaultMinutes) {
+        // Frequency adjustment display
+        if (isStatic) {
+          freqAdj = `static ${modeEntry?.static_minutes ?? effectiveMinutes}m`;
+        } else if (defaultMinutes > 0 && effectiveMinutes !== defaultMinutes) {
           const pctChange = Math.round(((effectiveMinutes - defaultMinutes) / defaultMinutes) * 100);
           if (pctChange !== 0) {
             const direction = pctChange > 0 ? 'slower' : 'faster';
             freqAdj = `${pctChange > 0 ? '+' : ''}${pctChange}% ${direction}`;
           }
+        } else {
+          freqAdj = optimizerHasRun ? 'baseline' : 'no data';
         }
       } else {
-        nextRun = 'N/A';
+        untilNext = 'pending';
+        freqAdj = isStatic ? `static ${modeEntry?.static_minutes ?? effectiveMinutes}m` : (optimizerHasRun ? 'baseline' : 'no data');
       }
     } else if (def.trigger === 'scheduled') {
-      nextRun = 'scheduled';
-      freqAdj = 'baseline';
+      // Scheduled but missing stateKey or cooldownKey
+      untilNext = 'pending';
+      freqAdj = optimizerHasRun ? 'baseline' : 'no data';
     }
 
     instances.push({
       type: def.type,
       runs24h,
-      nextRun,
-      delta,
+      untilNext,
       freqAdj,
       trigger: def.trigger,
     });
@@ -324,6 +389,13 @@ function getAutomationConfig(): AutomationConfigFile {
     todo_maintenance: 15,
     task_runner: 60,
     triage_per_item: 60,
+    preview_promotion: 360,
+    staging_promotion: 1200,
+    staging_health_monitor: 180,
+    production_health_monitor: 60,
+    standalone_antipattern_hunter: 180,
+    standalone_compliance_checker: 60,
+    user_feedback: 120,
   };
 
   const config: AutomationConfigFile = {
@@ -349,6 +421,9 @@ function getAutomationConfig(): AutomationConfigFile {
     if (loaded.adjustment) {
       config.adjustment = loaded.adjustment;
     }
+    if (loaded.modes) {
+      config.modes = loaded.modes;
+    }
 
     return config;
   } catch {
@@ -359,18 +434,17 @@ function getAutomationConfig(): AutomationConfigFile {
 /**
  * Format seconds as compact duration.
  */
-function formatDelta(seconds: number): string {
+function formatDuration(seconds: number): string {
   if (seconds < 0) return '0s';
 
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
 
   if (hours > 0) {
     return minutes > 0 ? `${hours}h${minutes}m` : `${hours}h`;
   }
   if (minutes > 0) {
-    return secs > 0 ? `${minutes}m${secs}s` : `${minutes}m`;
+    return `${minutes}m`;
   }
-  return `${secs}s`;
+  return `${seconds}s`;
 }

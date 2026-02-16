@@ -479,6 +479,11 @@ function applyFactor(config, newFactor, constraining, projectedAtReset, log, hou
   // Calculate effective cooldowns: higher factor = shorter cooldowns = more activity
   const effective = {};
   for (const [key, defaultVal] of Object.entries(defaults)) {
+    // Skip static-mode automations - they keep their fixed interval
+    if (config.modes?.[key]?.mode === 'static') {
+      effective[key] = config.modes[key].static_minutes ?? defaultVal;
+      continue;
+    }
     effective[key] = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultVal / newFactor));
   }
 
