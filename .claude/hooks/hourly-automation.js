@@ -58,20 +58,54 @@ const MAX_CONCURRENT_AGENTS = 5;
 const MAX_TASKS_PER_CYCLE = 3;
 
 // ---------------------------------------------------------------------------
-// CREDENTIAL CACHE: Pre-resolve 1Password credentials once per cycle.
+// CREDENTIAL CACHE: Lazily resolve 1Password credentials on first agent spawn.
 // Credentials exist only in this process's memory and are passed to child
 // processes via environment variables. mcp-launcher.js skips `op read` when
 // the credential is already in process.env (line 71).
+//
+// Lazy resolution means credentials are NOT resolved on cycles where all
+// tasks hit cooldowns and no agents are spawned (~90% of cycles). This
+// eliminates unnecessary `op` CLI calls that trigger macOS TCC prompts
+// ("node would like to access data from other apps") and 1Password Touch ID
+// prompts in background/launchd contexts.
 // ---------------------------------------------------------------------------
 let resolvedCredentials = {};
+let credentialsResolved = false;
+
+/**
+ * Ensure credentials have been resolved (lazy, called only when spawning).
+ * Wraps preResolveCredentials() with a guard flag so it runs at most once
+ * per automation cycle.
+ */
+function ensureCredentials() {
+  if (credentialsResolved) return;
+  credentialsResolved = true;
+  preResolveCredentials();
+}
 
 /**
  * Pre-resolve all 1Password credentials needed by infrastructure MCP servers.
  * Reads vault-mappings.json for op:// references and protected-actions.json
  * for which keys each server needs. Calls `op read` once per unique reference.
  * Results are cached in `resolvedCredentials` (in-memory only, never on disk).
+ *
+ * In headless contexts (launchd/systemd), skips `op read` calls unless
+ * OP_SERVICE_ACCOUNT_TOKEN is set, to prevent macOS permission prompts.
  */
 function preResolveCredentials() {
+  // Headless guard: In launchd/systemd contexts, `op` communicates with the
+  // 1Password desktop app via IPC, triggering macOS TCC and Touch ID prompts.
+  // OP_SERVICE_ACCOUNT_TOKEN uses the 1Password API directly (no desktop app).
+  const hasServiceAccount = !!process.env.OP_SERVICE_ACCOUNT_TOKEN;
+  const isLaunchdService = process.env.GENTYR_LAUNCHD_SERVICE === 'true';
+
+  if (isLaunchdService && !hasServiceAccount) {
+    log('Credential cache: headless mode without OP_SERVICE_ACCOUNT_TOKEN — skipping op read to prevent macOS prompts.');
+    log('Credential cache: spawned agents will start MCP servers without pre-resolved credentials.');
+    log('Credential cache: for full headless credentials, reinstall with: setup-automation-service.sh setup --op-token <TOKEN>');
+    return;
+  }
+
   const mappingsPath = path.join(PROJECT_DIR, '.claude', 'vault-mappings.json');
   const actionsPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'protected-actions.json');
 
@@ -147,9 +181,11 @@ function preResolveCredentials() {
 
 /**
  * Build the env object for spawning claude processes.
- * Includes pre-resolved credentials so MCP servers skip `op read`.
+ * Lazily resolves credentials on first call, then includes them so
+ * MCP servers skip `op read`.
  */
 function buildSpawnEnv(agentId) {
+  ensureCredentials();
   return {
     ...process.env,
     ...resolvedCredentials,
@@ -1684,8 +1720,8 @@ async function main() {
 
   log(`Autonomous Deputy CTO Mode is ENABLED. ${ctoGate.reason}`);
 
-  // Pre-resolve credentials once for all spawns in this cycle
-  preResolveCredentials();
+  // Credentials are resolved lazily on first agent spawn via ensureCredentials().
+  // This avoids unnecessary `op` CLI calls on cycles where all tasks hit cooldowns.
 
   // Concurrency guard: skip cycle if too many agents are already running
   const runningAgents = countRunningAgents();

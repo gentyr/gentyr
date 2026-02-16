@@ -10,10 +10,18 @@
 # - macOS: launchd plist
 #
 # Usage:
-#   ./scripts/setup-automation-service.sh setup [--path /project]  # Install/update service
-#   ./scripts/setup-automation-service.sh remove [--path /project] # Remove service
-#   ./scripts/setup-automation-service.sh status [--path /project] # Check status
-#   ./scripts/setup-automation-service.sh run [--path /project]    # Run manually
+#   ./scripts/setup-automation-service.sh setup [--path /project]                  # Install/update service
+#   ./scripts/setup-automation-service.sh setup [--path /project] --op-token TOKEN # Install with 1Password service account
+#   ./scripts/setup-automation-service.sh remove [--path /project]                 # Remove service
+#   ./scripts/setup-automation-service.sh status [--path /project]                 # Check status
+#   ./scripts/setup-automation-service.sh run [--path /project]                    # Run manually
+#
+# Options:
+#   --op-token TOKEN  Include OP_SERVICE_ACCOUNT_TOKEN in the service environment.
+#                     Enables headless 1Password credential resolution without
+#                     macOS TCC prompts or Touch ID prompts. Without this, the
+#                     automation service skips credential resolution in background
+#                     mode and spawned agents run without infrastructure credentials.
 #
 # If --path is not provided, infers project dir from script location
 # (framework dir -> parent = project root).
@@ -26,12 +34,19 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="plan-executor"
 
-# Parse --path argument (can appear after action)
+# Parse --path and --op-token arguments (can appear after action)
 EXPLICIT_PATH=""
+OP_TOKEN_FOR_SERVICE=""
 ARGS=()
+EXPECT_PATH=false
+EXPECT_OP_TOKEN=false
 for arg in "$@"; do
   if [ "$arg" = "--path" ]; then
     EXPECT_PATH=true
+    continue
+  fi
+  if [ "$arg" = "--op-token" ]; then
+    EXPECT_OP_TOKEN=true
     continue
   fi
   if [ "$EXPECT_PATH" = true ]; then
@@ -42,12 +57,21 @@ for arg in "$@"; do
     EXPECT_PATH=false
     continue
   fi
+  if [ "$EXPECT_OP_TOKEN" = true ]; then
+    OP_TOKEN_FOR_SERVICE="$arg"
+    EXPECT_OP_TOKEN=false
+    continue
+  fi
   ARGS+=("$arg")
 done
 
-# Check for dangling --path flag (no value provided)
+# Check for dangling flags (no value provided)
 if [ "$EXPECT_PATH" = true ]; then
   echo -e "\033[0;31m[ERROR]\033[0m --path requires a directory argument"
+  exit 1
+fi
+if [ "$EXPECT_OP_TOKEN" = true ]; then
+  echo -e "\033[0;31m[ERROR]\033[0m --op-token requires a 1Password service account token"
   exit 1
 fi
 
@@ -157,6 +181,13 @@ setup_linux() {
     chown "$SUDO_USER:$SUDO_USER" "$SYSTEMD_USER_DIR"
   fi
 
+  # Build optional OP_SERVICE_ACCOUNT_TOKEN env line
+  OP_TOKEN_ENV=""
+  if [ -n "$OP_TOKEN_FOR_SERVICE" ]; then
+    OP_TOKEN_ENV="Environment=OP_SERVICE_ACCOUNT_TOKEN=$OP_TOKEN_FOR_SERVICE"
+    log_info "Including OP_SERVICE_ACCOUNT_TOKEN in systemd service (API-based credential resolution, no prompts)."
+  fi
+
   # Create service file
   cat > "$SERVICE_FILE" << EOF
 [Unit]
@@ -168,6 +199,8 @@ Type=oneshot
 WorkingDirectory=$PROJECT_DIR
 ExecStart=/usr/bin/node $PROJECT_DIR/.claude/hooks/hourly-automation.js
 Environment=CLAUDE_PROJECT_DIR=$PROJECT_DIR
+Environment=GENTYR_LAUNCHD_SERVICE=true
+$OP_TOKEN_ENV
 StandardOutput=append:$PROJECT_DIR/.claude/hourly-automation.log
 StandardError=append:$PROJECT_DIR/.claude/hourly-automation.log
 
@@ -277,6 +310,14 @@ setup_macos() {
   fi
   log_info "Using node at: $NODE_PATH"
 
+  # Build optional OP_SERVICE_ACCOUNT_TOKEN plist entry
+  OP_TOKEN_PLIST=""
+  if [ -n "$OP_TOKEN_FOR_SERVICE" ]; then
+    OP_TOKEN_PLIST="        <key>OP_SERVICE_ACCOUNT_TOKEN</key>
+        <string>$OP_TOKEN_FOR_SERVICE</string>"
+    log_info "Including OP_SERVICE_ACCOUNT_TOKEN in plist (API-based credential resolution, no prompts)."
+  fi
+
   # Create plist file
   cat > "$PLIST_FILE" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -301,6 +342,9 @@ setup_macos() {
         <string>$PROJECT_DIR</string>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>GENTYR_LAUNCHD_SERVICE</key>
+        <string>true</string>
+$OP_TOKEN_PLIST
     </dict>
 
     <key>StartInterval</key>

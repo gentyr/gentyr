@@ -1611,13 +1611,13 @@ const tools: AnyToolHandler[] = [
   // Automation mode tools
   {
     name: 'set_automation_mode',
-    description: 'Toggle an automation between load_balanced (dynamic optimizer) and static (fixed interval) modes. Use to lock a specific automation at a fixed frequency.',
+    description: 'ALWAYS use this tool (not manual file edits) to change automation frequency, interval, or schedule. Sets an automation to load_balanced (dynamic) or static (fixed interval) mode. Call list_automation_config first to see current values.',
     schema: SetAutomationModeArgsSchema,
     handler: setAutomationMode,
   },
   {
     name: 'list_automation_config',
-    description: 'List all automations with their mode, default/effective cooldowns, optimizer factor, and static overrides.',
+    description: 'ALWAYS use this tool (not manual file reads) to view automation frequencies, intervals, schedules, or cooldowns. Lists all automations with their mode, effective intervals, and static overrides.',
     schema: ListAutomationConfigArgsSchema,
     handler: listAutomationConfig,
   },

@@ -882,7 +882,13 @@ cd "$PROJECT_DIR"
 echo ""
 echo -e "${YELLOW}Setting up automation service (10-min timer)...${NC}"
 if [ -x "$FRAMEWORK_DIR/scripts/setup-automation-service.sh" ]; then
-    "$FRAMEWORK_DIR/scripts/setup-automation-service.sh" setup --path "$PROJECT_DIR"
+    # Pass OP_SERVICE_ACCOUNT_TOKEN to automation service if available,
+    # enabling headless credential resolution without macOS prompts.
+    AUTOMATION_OP_TOKEN_FLAG=""
+    if [ -n "$OP_TOKEN" ]; then
+        AUTOMATION_OP_TOKEN_FLAG="--op-token $OP_TOKEN"
+    fi
+    "$FRAMEWORK_DIR/scripts/setup-automation-service.sh" setup --path "$PROJECT_DIR" $AUTOMATION_OP_TOKEN_FLAG
 else
     echo -e "  ${YELLOW}setup-automation-service.sh not found or not executable, skipping.${NC}"
 fi

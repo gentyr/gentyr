@@ -17,6 +17,8 @@ This will render a terminal dashboard with:
 - Rounded corner containers
 - Quota bars with color-coded percentages
 - System status (Deputy CTO, Protection, Commits)
+- Deputy CTO triage pipeline (untriaged reports, escalated items, pending questions, 24h summary)
+- Testing health (failing suites with fix attempts, agent breakdown by framework, resolved suites, unique failures, 7-day activity, optional Codecov)
 - Chronological timeline of sessions, hooks, reports, questions, and tasks
 - Metrics summary grid (Tokens, Sessions, Agents, Tasks, Hooks, Triage, CTO Queue, Cooldowns)
 
@@ -62,6 +64,30 @@ Valid range: 1-168 hours.
 │  ╰───────────────╯  ╰─────────────╯  ╰────────────╯  ╰─────────────╯        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
+
+## Dashboard Sections
+
+### Deputy CTO Section
+Shows the triage pipeline status:
+- **Untriaged reports**: Agent reports pending CTO review
+- **Escalated reports**: High-priority items requiring immediate attention
+- **Pending questions**: CTO questions awaiting answers (blocks commits)
+- **Recently triaged**: 24h summary of handled/dismissed reports
+
+### Testing Section
+Shows test health metrics derived from test-failure-state.json and agent-tracker:
+- **Failing suites**: Name, age (color-coded: white <1h, yellow 1-6h, red >6h), framework (jest/vitest/playwright), fix attempt pips (●●●○○)
+- **Agent breakdown (24h)**: Per-framework agent counts (jest, vitest, playwright, test-writer)
+- **Resolved suites**: Suites targeted by agents in 24h but no longer failing
+- **Unique failures**: Distinct failure hashes across all test-failure-state files (including workspace-level)
+- **7-day activity**: Sparkline of test failure agent spawns
+- **Codecov (optional)**: Current coverage % and 7-day trend sparkline (requires CODECOV_TOKEN, CODECOV_OWNER, CODECOV_REPO env vars)
+
+### Timeline
+Chronological view of the last 20 events across all data sources.
+
+### Metrics Summary
+Grid of metric boxes showing token usage, sessions, agents, tasks, hooks, triage, CTO queue, and cooldowns.
 
 ## Timeline Event Icons
 

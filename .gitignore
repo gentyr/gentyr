@@ -6,6 +6,10 @@ packages/mcp-servers/dist/
 packages/cto-dashboard/dist/
 *.tsbuildinfo
 
+# Test outputs
+coverage/
+*.lcov
+
 # Runtime state files (project-specific)
 .claude/*.db
 .claude/*.db-shm

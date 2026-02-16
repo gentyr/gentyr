@@ -120,11 +120,93 @@ function createTestHandler(frameworkDir: string, projectDir: string) {
       args.protect_mcp !== undefined;
 
     if (!simpleActions.includes(action) && !hasAnyOption) {
+      const questions: Array<{ question: string; header: string; param_name: string; required: boolean; options: Array<{ label: string; description: string }> }> = [];
+
+      if (action === 'install') {
+        if (args.protect === undefined) {
+          questions.push({
+            question: 'Do you want to enable file protection?',
+            header: 'Protection',
+            param_name: 'protect',
+            required: false,
+            options: [
+              { label: 'Yes (Recommended)', description: 'Makes critical files root-owned.' },
+              { label: 'No', description: 'Development only.' },
+            ],
+          });
+        }
+        if (args.with_op_token === undefined) {
+          questions.push({
+            question: 'Do you have a 1Password service account token?',
+            header: '1Password',
+            param_name: 'with_op_token',
+            required: false,
+            options: [
+              { label: 'Yes', description: 'Include a secure token entry step.' },
+              { label: 'Skip for now', description: 'Configure later.' },
+            ],
+          });
+        }
+        if (args.makerkit === undefined) {
+          questions.push({
+            question: 'Makerkit integration mode?',
+            header: 'Makerkit',
+            param_name: 'makerkit',
+            required: false,
+            options: [
+              { label: 'auto (Recommended)', description: 'Auto-detect.' },
+              { label: 'force', description: 'Force enable.' },
+              { label: 'skip', description: 'Skip entirely.' },
+            ],
+          });
+        }
+        if (args.protect_mcp === undefined) {
+          questions.push({
+            question: 'Enable MCP server protection?',
+            header: 'MCP protection',
+            param_name: 'protect_mcp',
+            required: false,
+            options: [
+              { label: 'Yes', description: 'Configure protected MCP actions.' },
+              { label: 'No', description: 'Skip MCP protection setup.' },
+            ],
+          });
+        }
+      }
+
+      if (action === 'reinstall') {
+        if (args.with_op_token === undefined) {
+          questions.push({
+            question: 'Do you have a 1Password service account token?',
+            header: '1Password',
+            param_name: 'with_op_token',
+            required: false,
+            options: [
+              { label: 'Yes', description: 'Include a secure token entry step.' },
+              { label: 'Skip', description: 'Re-use existing token if present.' },
+            ],
+          });
+        }
+        if (args.makerkit === undefined) {
+          questions.push({
+            question: 'Makerkit integration mode?',
+            header: 'Makerkit',
+            param_name: 'makerkit',
+            required: false,
+            options: [
+              { label: 'auto (Recommended)', description: 'Auto-detect.' },
+              { label: 'force', description: 'Force enable.' },
+              { label: 'skip', description: 'Skip entirely.' },
+            ],
+          });
+        }
+      }
+
       return {
         status: 'needs_input',
         action,
         description: '',
-        questions: [],
+        questions,
       };
     }
 
@@ -353,6 +435,50 @@ describe('Setup Helper Server', () => {
         const result = await callTool(server, { action });
         expect(result.status).toBe('ready');
       }
+    });
+
+    it('should ask about OP token even when project already has one configured (install)', async () => {
+      // Setup: project with existing OP token
+      fs.writeFileSync(
+        path.join(projectDir, '.mcp.json'),
+        JSON.stringify({
+          mcpServers: {
+            vercel: { env: { OP_SERVICE_ACCOUNT_TOKEN: 'existing-token' } },
+          },
+        }),
+      );
+
+      const result = await callTool(server, { action: 'install' });
+
+      if (result.status !== 'needs_input') throw new Error('Expected needs_input');
+      expect(result.questions).toBeDefined();
+
+      // Verify OP token question is present
+      const opTokenQuestion = result.questions.find(q => q.param_name === 'with_op_token');
+      expect(opTokenQuestion).toBeDefined();
+      expect(opTokenQuestion?.header).toBe('1Password');
+    });
+
+    it('should ask about OP token even when project already has one configured (reinstall)', async () => {
+      // Setup: project with existing OP token
+      fs.writeFileSync(
+        path.join(projectDir, '.mcp.json'),
+        JSON.stringify({
+          mcpServers: {
+            vercel: { env: { OP_SERVICE_ACCOUNT_TOKEN: 'existing-token' } },
+          },
+        }),
+      );
+
+      const result = await callTool(server, { action: 'reinstall' });
+
+      if (result.status !== 'needs_input') throw new Error('Expected needs_input');
+      expect(result.questions).toBeDefined();
+
+      // Verify OP token question is present
+      const opTokenQuestion = result.questions.find(q => q.param_name === 'with_op_token');
+      expect(opTokenQuestion).toBeDefined();
+      expect(opTokenQuestion?.header).toBe('1Password');
     });
   });
 

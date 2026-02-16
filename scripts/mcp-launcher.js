@@ -79,6 +79,14 @@ for (const key of credentialKeys) {
   }
 
   if (ref.startsWith('op://')) {
+    // In headless automation without a service account token, skip op read
+    // to prevent macOS TCC prompts and 1Password Touch ID prompts.
+    // The automation service sets GENTYR_LAUNCHD_SERVICE=true in its env.
+    if (process.env.GENTYR_LAUNCHD_SERVICE === 'true' && !process.env.OP_SERVICE_ACCOUNT_TOKEN) {
+      console.error(`[mcp-launcher:${serverName}] Skipping ${key}: headless automation, no OP_SERVICE_ACCOUNT_TOKEN`);
+      continue;
+    }
+
     // Resolve from 1Password
     try {
       const value = execFileSync('op', ['read', ref], {
