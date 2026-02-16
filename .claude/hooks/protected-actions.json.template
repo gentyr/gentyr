@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "description": "CTO-protected MCP actions configuration. Protected actions require CTO or deputy-CTO approval before execution. Unknown MCP servers are blocked by default (Fix 3: server allowlist).",
   "servers": {},
-  "allowedUnprotectedServers": [],
+  "allowedUnprotectedServers": ["setup-helper"],
   "settings": {
     "codeLength": 6,
     "expiryMinutes": 5,

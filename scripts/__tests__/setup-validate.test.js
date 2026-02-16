@@ -624,43 +624,76 @@ describe('Service Validator Credential Keys', { concurrency: true }, () => {
 describe('validateOnePassword() implementation', () => {
   const SCRIPT_PATH = path.join(__dirname, '..', 'setup-validate.js');
 
-  it('should use "op vault list" command instead of "op item list"', () => {
+  it('should check for OP_SERVICE_ACCOUNT_TOKEN environment variable first', () => {
     const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
 
-    // Verify the function uses 'vault list' command
-    assert.match(code, /execFileSync\('op',\s*\['vault',\s*'list'/,
-      'validateOnePassword must use "op vault list" command');
+    // Verify the function checks for OP_SERVICE_ACCOUNT_TOKEN before calling op CLI
+    assert.match(code, /if \(!process\.env\.OP_SERVICE_ACCOUNT_TOKEN\)/,
+      'validateOnePassword must check for OP_SERVICE_ACCOUNT_TOKEN environment variable');
 
-    // Verify it does NOT use 'item list'
-    assert.doesNotMatch(code, /execFileSync\('op',\s*\['item',\s*'list'/,
-      'validateOnePassword must NOT use "op item list" command');
+    // Verify it returns fail status when token is not set
+    assert.match(code, /return \{\s*status:\s*'fail',\s*message:\s*'1Password service account token not configured'/,
+      'validateOnePassword must return fail when OP_SERVICE_ACCOUNT_TOKEN is not set');
   });
 
-  it('should include --format json flag in op vault list command', () => {
+  it('should use "op whoami" as primary authentication check', () => {
     const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
 
-    // Verify JSON format is requested
-    assert.match(code, /\['vault',\s*'list'[^\]]*'--format',\s*'json'\]/,
-      'op vault list command must include --format json');
+    // Verify the function uses 'whoami' command as primary check
+    assert.match(code, /execFileSync\('op',\s*\['whoami',\s*'--format',\s*'json'\]/,
+      'validateOnePassword must use "op whoami --format json" as primary auth check');
+  });
+
+  it('should optionally try "op vault list" for richer status message', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    // Verify the function uses 'vault list' command as optional enhancement
+    assert.match(code, /execFileSync\('op',\s*\['vault',\s*'list',\s*'--format',\s*'json'\]/,
+      'validateOnePassword must use "op vault list" as optional check');
+
+    // Verify it's wrapped in a try-catch (optional behavior)
+    assert.match(code, /try\s*\{[\s\S]*vault list[\s\S]*\}\s*catch/i,
+      'validateOnePassword must wrap vault list in try-catch since it is optional');
+  });
+
+  it('should parse JSON output from op whoami', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    // Check that the whoami output is parsed as JSON
+    assert.match(code, /JSON\.parse\(whoamiOutput\)/,
+      'validateOnePassword must parse JSON output from op whoami');
   });
 
   it('should parse JSON output from op vault list', () => {
     const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
 
-    // Check that the output is parsed as JSON
-    assert.match(code, /JSON\.parse\(output\)/,
+    // Check that the vault list output is parsed as JSON
+    assert.match(code, /JSON\.parse\(vaultOutput\)/,
       'validateOnePassword must parse JSON output from op vault list');
   });
 
-  it('should check for 403/Forbidden errors', () => {
+  it('should return pass when whoami succeeds but vault list fails (403)', () => {
     const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
 
-    // Verify 403 handling
-    assert.match(code, /403.*Forbidden/i,
-      'validateOnePassword must check for 403/Forbidden errors');
+    // Verify that when vault list fails (403) but whoami succeeded, it returns pass
+    // This is in the catch block for vault list, inside the try block for whoami
+    assert.match(code, /catch.*vault list.*return \{\s*status:\s*'pass'/s,
+      'validateOnePassword must return pass when vault list fails but whoami succeeded');
+
+    // Verify the message mentions vault enumeration not permitted
+    assert.match(code, /Vault enumeration not permitted.*op read still works/i,
+      'validateOnePassword must explain that vault enumeration is not permitted but op read works');
   });
 
-  it('should return warn status when no vaults are accessible', () => {
+  it('should check for 403/Forbidden errors in whoami catch block', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    // Verify 403 handling in the whoami catch block
+    assert.match(code, /403.*Forbidden/i,
+      'validateOnePassword must check for 403/Forbidden errors in whoami catch block');
+  });
+
+  it('should return warn status when whoami succeeds but no vaults are accessible', () => {
     const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
 
     // Check for warn status when vaults array is empty
@@ -684,12 +717,12 @@ describe('validateOnePassword() implementation', () => {
       'validateOnePassword must capture stderr from op command errors');
   });
 
-  it('should handle "not signed in" error message', () => {
+  it('should handle "not signed in" error message in whoami catch block', () => {
     const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
 
     // Check for "not signed in" error handling
     assert.match(code, /not signed in.*unauthorized.*401/i,
-      'validateOnePassword must handle "not signed in" errors');
+      'validateOnePassword must handle "not signed in" errors in whoami catch block');
   });
 
   it('should provide remediation for authentication errors', () => {
@@ -700,7 +733,7 @@ describe('validateOnePassword() implementation', () => {
       'validateOnePassword must provide remediation for auth errors');
   });
 
-  it('should provide remediation for 403 service account errors', () => {
+  it('should provide remediation for 403 service account errors in whoami catch block', () => {
     const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
 
     // Verify remediation for 403 errors suggests token regeneration
@@ -708,7 +741,7 @@ describe('validateOnePassword() implementation', () => {
       'validateOnePassword must provide remediation for 403 service account errors');
   });
 
-  it('should check array length and verify vaults exist', () => {
+  it('should check array length and verify vaults exist when vault list succeeds', () => {
     const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
 
     // Verify that the code checks if vaults array has items
@@ -720,7 +753,7 @@ describe('validateOnePassword() implementation', () => {
     const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
 
     // Verify pass status when authenticated with vaults
-    assert.match(code, /status:\s*'pass'.*Authenticated.*vault accessible/,
+    assert.match(code, /status:\s*'pass'.*Authenticated.*vault.*accessible/i,
       'validateOnePassword must return pass status when vaults accessible');
   });
 
@@ -730,6 +763,14 @@ describe('validateOnePassword() implementation', () => {
     // Verify fallback error handling
     assert.match(code, /1Password CLI error/,
       'validateOnePassword must handle generic CLI errors');
+  });
+
+  it('should provide remediation when OP_SERVICE_ACCOUNT_TOKEN is not set', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    // Verify remediation message for missing token
+    assert.match(code, /remediation:.*setup\.sh.*--op-token.*OP_SERVICE_ACCOUNT_TOKEN/,
+      'validateOnePassword must provide remediation for missing OP_SERVICE_ACCOUNT_TOKEN');
   });
 });
 

@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import Database from 'better-sqlite3';
 
 // ============================================================================
@@ -369,11 +369,10 @@ function getAccessToken(): string | null {
   // Source 2: macOS Keychain
   if (process.platform === 'darwin') {
     try {
-      const username = os.userInfo().username;
-      const raw = execSync(
-        `security find-generic-password -s "Claude Code-credentials" -a "${username}" -w`,
-        { encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] },
-      ).trim();
+      const { username } = os.userInfo();
+      const raw = execFileSync('security', [
+        'find-generic-password', '-s', 'Claude Code-credentials', '-a', username, '-w',
+      ], { encoding: 'utf8', timeout: 3000 }).trim();
       const creds = JSON.parse(raw) as CredentialsFile;
       const token = extractTokenFromCreds(creds);
       if (token) return token;
