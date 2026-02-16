@@ -158,6 +158,7 @@ CREATE TABLE IF NOT EXISTS feedback_sessions (
     completed_at TEXT,
     findings_count INTEGER DEFAULT 0,
     report_ids TEXT DEFAULT '[]',
+    satisfaction_level TEXT,
     CONSTRAINT valid_status CHECK (status IN ('pending', 'queued', 'running', 'completed', 'failed', 'timeout')),
     FOREIGN KEY (run_id) REFERENCES feedback_runs(id),
     FOREIGN KEY (persona_id) REFERENCES personas(id)
@@ -217,6 +218,13 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     db.exec(SCHEMA);
+
+    // Migration: add satisfaction_level column if missing (for pre-existing DBs)
+    const columns = db.pragma('table_info(feedback_sessions)') as { name: string }[];
+    if (!columns.some(c => c.name === 'satisfaction_level')) {
+      db.exec('ALTER TABLE feedback_sessions ADD COLUMN satisfaction_level TEXT');
+    }
+
     return db;
   }
 
@@ -757,13 +765,14 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     const now = new Date().toISOString();
     db.prepare(`
       UPDATE feedback_sessions
-      SET status = ?, completed_at = ?, findings_count = ?, report_ids = ?
+      SET status = ?, completed_at = ?, findings_count = ?, report_ids = ?, satisfaction_level = ?
       WHERE id = ?
     `).run(
       args.status,
       now,
       args.findings_count ?? 0,
       JSON.stringify(args.report_ids ?? []),
+      args.satisfaction_level ?? null,
       args.session_id,
     );
 

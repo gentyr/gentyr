@@ -135,12 +135,17 @@ export const ListFeedbackRunsArgsSchema = z.object({
   limit: z.number().optional().default(20),
 });
 
+export const SATISFACTION_LEVEL = ['very_satisfied', 'satisfied', 'neutral', 'dissatisfied', 'very_dissatisfied'] as const;
+export type SatisfactionLevel = (typeof SATISFACTION_LEVEL)[number];
+
 export const CompleteFeedbackSessionArgsSchema = z.object({
   session_id: z.string().describe('Feedback session UUID'),
   status: z.enum(['completed', 'failed', 'timeout']),
   findings_count: z.number().optional(),
   report_ids: z.array(z.string()).optional()
     .describe('IDs of agent-reports submitted during this session'),
+  satisfaction_level: z.enum(SATISFACTION_LEVEL).optional()
+    .describe('Satisfaction level reported by the persona'),
 });
 
 export const GetFeedbackRunSummaryArgsSchema = z.object({
@@ -233,6 +238,7 @@ export interface FeedbackSessionRecord {
   completed_at: string | null;
   findings_count: number;
   report_ids: string; // JSON array
+  satisfaction_level: string | null;
 }
 
 // ============================================================================

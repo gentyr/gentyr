@@ -90,9 +90,11 @@ CREATE TABLE IF NOT EXISTS session_summary (
     areas_not_tested TEXT NOT NULL DEFAULT '[]',
     confidence TEXT NOT NULL,
     summary_notes TEXT,
+    satisfaction_level TEXT,
     created_at TEXT NOT NULL,
     CONSTRAINT valid_impression CHECK (overall_impression IN ('positive', 'neutral', 'negative', 'unusable')),
-    CONSTRAINT valid_confidence CHECK (confidence IN ('high', 'medium', 'low'))
+    CONSTRAINT valid_confidence CHECK (confidence IN ('high', 'medium', 'low')),
+    CONSTRAINT valid_satisfaction CHECK (satisfaction_level IS NULL OR satisfaction_level IN ('very_satisfied', 'satisfied', 'neutral', 'dissatisfied', 'very_dissatisfied'))
 );
 `;
 
@@ -355,8 +357,8 @@ export function createFeedbackReporterServer(config: FeedbackReporterConfig): Au
     try {
       // 1. Store summary in local session DB
       sessionDb.prepare(`
-        INSERT OR REPLACE INTO session_summary (id, overall_impression, areas_tested, areas_not_tested, confidence, summary_notes, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO session_summary (id, overall_impression, areas_tested, areas_not_tested, confidence, summary_notes, satisfaction_level, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         summaryId,
         args.overall_impression,
@@ -364,13 +366,14 @@ export function createFeedbackReporterServer(config: FeedbackReporterConfig): Au
         JSON.stringify(args.areas_not_tested ?? []),
         args.confidence,
         args.summary_notes ?? null,
+        args.satisfaction_level ?? null,
         created_at,
       );
 
       // 2. Build summary for agent-reports
       const title = `Feedback Summary: ${config.personaName} - ${args.overall_impression}`;
 
-      let summary = `Overall Impression: ${args.overall_impression}\nConfidence: ${args.confidence}\n\n`;
+      let summary = `Overall Impression: ${args.overall_impression}\nConfidence: ${args.confidence}\nSatisfaction: ${args.satisfaction_level ?? 'not reported'}\n\n`;
 
       summary += `Areas Tested (${args.areas_tested.length}):\n` + args.areas_tested.map(a => `- ${a}`).join('\n');
 
@@ -384,8 +387,13 @@ export function createFeedbackReporterServer(config: FeedbackReporterConfig): Au
 
       summary += `\n\nSession ID: ${config.sessionId}`;
 
-      // 3. Submit to agent-reports DB
-      const priority = impressionToPriority(args.overall_impression);
+      // 3. Submit to agent-reports DB (bump priority if persona is dissatisfied)
+      let priority = impressionToPriority(args.overall_impression);
+      if (args.satisfaction_level === 'dissatisfied' || args.satisfaction_level === 'very_dissatisfied') {
+        if (priority === 'low') priority = 'normal';
+        else if (priority === 'normal') priority = 'high';
+        else if (priority === 'high') priority = 'critical';
+      }
       const reportingAgent = `feedback-${config.personaName}`;
 
       reportsDb.prepare(`

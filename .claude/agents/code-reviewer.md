@@ -78,6 +78,8 @@ Once you've finished all the current code review you need to do:
 
 1. **Commit**: Run `git add .`, then `git commit -m "code-reviewer checkpoint"`. Always use "code-reviewer checkpoint" as your exact commit description. Don't ask permission, just make the commit and mention that you did. Address any linter or test failures that result from the hook on commits.
 
+   **E2E verification (optional):** Before committing UI changes, consider running `mcp__playwright__run_tests` to verify E2E tests still pass.
+
 2. **Push (if >24 hours since last push)**: After committing, check if it's been more than 24 hours since the last push to remote:
 ```bash
 # Push to the CURRENT branch (feature branch), never directly to main/staging/preview

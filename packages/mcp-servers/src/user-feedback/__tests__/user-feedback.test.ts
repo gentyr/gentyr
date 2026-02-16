@@ -89,6 +89,7 @@ interface SessionRow {
   completed_at: string | null;
   findings_count: number;
   report_ids: string;
+  satisfaction_level: string | null;
 }
 
 interface CountResult {

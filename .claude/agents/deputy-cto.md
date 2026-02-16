@@ -14,6 +14,7 @@ allowedTools:
   - mcp__agent-reports__read_report
   - mcp__cto-report__*
   - mcp__todo-db__create_task
+  - mcp__playwright__launch_ui_mode
 disallowedTools:
   - Edit
   - Write
@@ -80,6 +81,10 @@ You do NOT have:
    - APPROVE with brief rationale
    - Commit proceeds
 ```
+
+## Demo Mode
+
+If the user requests to see a demo of the platform, use `mcp__playwright__launch_ui_mode` to launch Playwright in interactive UI mode. Recommended project: `manual` (opens any dashboard page with `page.pause()` for human interaction). For role-specific demos, use `vendor-owner`, `vendor-admin`, `vendor-dev`, or `vendor-viewer`.
 
 ## Executive Decisions
 

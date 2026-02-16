@@ -12,3 +12,4 @@ export { Automations, type AutomationsProps } from './Automations.js';
 export { UsageTrends, type UsageTrendsProps } from './UsageTrends.js';
 export { UsageTrajectory, type UsageTrajectoryProps } from './UsageTrajectory.js';
 export { AutomatedInstances, type AutomatedInstancesProps } from './AutomatedInstances.js';
+export { FeedbackPersonas } from './FeedbackPersonas.js';

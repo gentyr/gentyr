@@ -28,7 +28,8 @@
     "mcp-user-feedback": "./dist/user-feedback/server.js",
     "mcp-programmatic-feedback": "./dist/programmatic-feedback/server.js",
     "mcp-playwright-feedback": "./dist/playwright-feedback/server.js",
-    "mcp-feedback-reporter": "./dist/feedback-reporter/server.js"
+    "mcp-feedback-reporter": "./dist/feedback-reporter/server.js",
+    "mcp-playwright": "./dist/playwright/server.js"
   },
   "scripts": {
     "build": "tsc",

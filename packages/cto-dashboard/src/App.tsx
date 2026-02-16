@@ -19,6 +19,7 @@ import {
   UsageTrends,
   UsageTrajectory,
   AutomatedInstances,
+  FeedbackPersonas,
   type MetricBoxData,
 } from './components/index.js';
 import type { DashboardData } from './utils/data-reader.js';
@@ -251,6 +252,13 @@ export function App({ data, timelineEvents, trajectory, automatedInstances }: Ap
       {!automatedInstances.hasData && (
         <Box marginTop={1}>
           <Automations automations={data.automations} />
+        </Box>
+      )}
+
+      {/* Feedback Personas */}
+      {data.feedback_personas.personas.length > 0 && (
+        <Box marginTop={1}>
+          <FeedbackPersonas data={data.feedback_personas} />
         </Box>
       )}
 

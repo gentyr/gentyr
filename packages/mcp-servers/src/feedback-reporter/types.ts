@@ -39,6 +39,9 @@ export type OverallImpression = (typeof OVERALL_IMPRESSION)[number];
 export const CONFIDENCE_LEVEL = ['high', 'medium', 'low'] as const;
 export type ConfidenceLevel = (typeof CONFIDENCE_LEVEL)[number];
 
+export const SATISFACTION_LEVEL = ['very_satisfied', 'satisfied', 'neutral', 'dissatisfied', 'very_dissatisfied'] as const;
+export type SatisfactionLevel = (typeof SATISFACTION_LEVEL)[number];
+
 // ============================================================================
 // Zod Schemas (G003 Compliance)
 // ============================================================================
@@ -72,6 +75,8 @@ export const SubmitSummaryArgsSchema = z.object({
     .describe('Confidence in the test coverage'),
   summary_notes: z.string().max(2000).optional()
     .describe('Overall notes about the testing session'),
+  satisfaction_level: z.enum(SATISFACTION_LEVEL).optional()
+    .describe('Overall satisfaction with the product experience'),
 });
 
 export type SubmitSummaryArgs = z.infer<typeof SubmitSummaryArgsSchema>;
@@ -109,6 +114,7 @@ export interface SessionSummaryRecord {
   areas_not_tested: string; // JSON array
   confidence: ConfidenceLevel;
   summary_notes: string | null;
+  satisfaction_level: string | null;
   created_at: string;
 }
 
@@ -144,6 +150,7 @@ export interface SummaryResult {
   areas_not_tested?: string[];
   confidence: ConfidenceLevel;
   summary_notes?: string;
+  satisfaction_level?: SatisfactionLevel;
   created_at: string;
 }
 

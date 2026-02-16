@@ -238,6 +238,20 @@ pnpm run test:watch
 pnpm run test:coverage
 ```
 
+## Playwright E2E Tools (MCP)
+
+When E2E test coverage needs to be verified or tests need to be run, use these MCP tools:
+
+| Tool | Description |
+|------|-------------|
+| `mcp__playwright__run_tests` | Run E2E tests headlessly (filter by project/persona) |
+| `mcp__playwright__seed_data` | Seed the E2E test database before running tests |
+| `mcp__playwright__cleanup_data` | Clean up E2E test data after testing |
+| `mcp__playwright__get_report` | Get the last test report with pass/fail details |
+| `mcp__playwright__get_coverage_status` | Check which personas and pages have E2E coverage |
+
+**Persona projects:** vendor-owner (SaaS Vendor), vendor-admin, vendor-dev, vendor-viewer, cross-persona, auth-flows.
+
 ## Code Coverage
 
 ### Checking Coverage

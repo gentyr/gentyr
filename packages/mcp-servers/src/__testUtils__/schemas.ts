@@ -297,6 +297,7 @@ CREATE TABLE IF NOT EXISTS feedback_sessions (
     completed_at TEXT,
     findings_count INTEGER DEFAULT 0,
     report_ids TEXT DEFAULT '[]',
+    satisfaction_level TEXT,
     CONSTRAINT valid_status CHECK (status IN ('pending', 'queued', 'running', 'completed', 'failed', 'timeout')),
     FOREIGN KEY (run_id) REFERENCES feedback_runs(id),
     FOREIGN KEY (persona_id) REFERENCES personas(id)

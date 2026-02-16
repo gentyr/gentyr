@@ -64,9 +64,11 @@ CREATE TABLE IF NOT EXISTS session_summary (
     areas_not_tested TEXT NOT NULL DEFAULT '[]',
     confidence TEXT NOT NULL,
     summary_notes TEXT,
+    satisfaction_level TEXT,
     created_at TEXT NOT NULL,
     CONSTRAINT valid_impression CHECK (overall_impression IN ('positive', 'neutral', 'negative', 'unusable')),
-    CONSTRAINT valid_confidence CHECK (confidence IN ('high', 'medium', 'low'))
+    CONSTRAINT valid_confidence CHECK (confidence IN ('high', 'medium', 'low')),
+    CONSTRAINT valid_satisfaction CHECK (satisfaction_level IS NULL OR satisfaction_level IN ('very_satisfied', 'satisfied', 'neutral', 'dissatisfied', 'very_dissatisfied'))
 );
 `;
 
@@ -200,8 +202,8 @@ function submitSummary(
 
   // 1. Store summary in local session DB
   sessionDb.prepare(`
-    INSERT OR REPLACE INTO session_summary (id, overall_impression, areas_tested, areas_not_tested, confidence, summary_notes, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO session_summary (id, overall_impression, areas_tested, areas_not_tested, confidence, summary_notes, satisfaction_level, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     summaryId,
     args.overall_impression,
@@ -209,13 +211,14 @@ function submitSummary(
     JSON.stringify(args.areas_not_tested ?? []),
     args.confidence,
     args.summary_notes ?? null,
+    args.satisfaction_level ?? null,
     created_at,
   );
 
   // 2. Build summary for agent-reports
   const title = `Feedback Summary: ${personaName} - ${args.overall_impression}`;
 
-  let summary = `Overall Impression: ${args.overall_impression}\nConfidence: ${args.confidence}\n\n`;
+  let summary = `Overall Impression: ${args.overall_impression}\nConfidence: ${args.confidence}\nSatisfaction: ${args.satisfaction_level ?? 'not reported'}\n\n`;
 
   summary += `Areas Tested (${args.areas_tested.length}):\n` + args.areas_tested.map(a => `- ${a}`).join('\n');
 
@@ -229,8 +232,13 @@ function submitSummary(
 
   summary += `\n\nSession ID: ${sessionId}`;
 
-  // 3. Submit to agent-reports DB
-  const priority = impressionToPriority(args.overall_impression);
+  // 3. Submit to agent-reports DB (bump priority if persona is dissatisfied)
+  let priority = impressionToPriority(args.overall_impression);
+  if (args.satisfaction_level === 'dissatisfied' || args.satisfaction_level === 'very_dissatisfied') {
+    if (priority === 'low') priority = 'normal';
+    else if (priority === 'normal') priority = 'high';
+    else if (priority === 'high') priority = 'critical';
+  }
   const reportingAgent = `feedback-${personaName}`;
 
   reportsDb.prepare(`
@@ -534,6 +542,104 @@ describe('feedback-reporter MCP server', () => {
       const summaries = sessionDb.prepare('SELECT * FROM session_summary').all() as SessionSummaryRecord[];
       expect(summaries.length).toBe(1);
       expect(summaries[0].overall_impression).toBe('positive');
+    });
+
+    it('should store satisfaction_level and include it in CTO report text', () => {
+      const args: SubmitSummaryArgs = {
+        overall_impression: 'neutral',
+        areas_tested: ['Authentication', 'Dashboard'],
+        confidence: 'high',
+        satisfaction_level: 'satisfied',
+      };
+
+      const result = submitSummary(args, sessionDb, reportsDb, personaName, sessionId);
+
+      expect(result.id).toBe('summary');
+      expect(result.report_id).toBeTruthy();
+
+      // Verify local storage includes satisfaction_level
+      const summary = sessionDb.prepare('SELECT * FROM session_summary WHERE id = ?').get(result.id) as SessionSummaryRecord;
+      expect(summary).toBeTruthy();
+      expect(summary.satisfaction_level).toBe('satisfied');
+
+      // Verify agent-reports bridge includes satisfaction in summary text
+      const report = reportsDb.prepare('SELECT * FROM reports WHERE id = ?').get(result.report_id) as ReportRecord;
+      expect(report).toBeTruthy();
+      expect(report.summary).toContain('Satisfaction: satisfied');
+    });
+
+    it('should store NULL satisfaction_level and include "not reported" in CTO report text for backward compatibility', () => {
+      const args: SubmitSummaryArgs = {
+        overall_impression: 'positive',
+        areas_tested: ['Feature X'],
+        confidence: 'medium',
+        // No satisfaction_level provided
+      };
+
+      const result = submitSummary(args, sessionDb, reportsDb, personaName, sessionId);
+
+      expect(result.id).toBe('summary');
+      expect(result.report_id).toBeTruthy();
+
+      // Verify local storage has NULL satisfaction_level
+      const summary = sessionDb.prepare('SELECT * FROM session_summary WHERE id = ?').get(result.id) as SessionSummaryRecord;
+      expect(summary).toBeTruthy();
+      expect(summary.satisfaction_level).toBeNull();
+
+      // Verify agent-reports bridge includes "not reported" in summary text
+      const report = reportsDb.prepare('SELECT * FROM reports WHERE id = ?').get(result.report_id) as ReportRecord;
+      expect(report).toBeTruthy();
+      expect(report.summary).toContain('Satisfaction: not reported');
+    });
+
+    it('should bump priority up one level when satisfaction_level is dissatisfied or very_dissatisfied', () => {
+      // Test case 1: positive impression (normally 'low') + very_dissatisfied => 'normal'
+      const args1: SubmitSummaryArgs = {
+        overall_impression: 'positive',
+        areas_tested: ['Feature A'],
+        confidence: 'high',
+        satisfaction_level: 'very_dissatisfied',
+      };
+
+      const result1 = submitSummary(args1, sessionDb, reportsDb, personaName, sessionId);
+      const report1 = reportsDb.prepare('SELECT * FROM reports WHERE id = ?').get(result1.report_id) as ReportRecord;
+      expect(report1.priority).toBe('normal'); // bumped from 'low'
+
+      // Test case 2: neutral impression (normally 'normal') + dissatisfied => 'high'
+      const args2: SubmitSummaryArgs = {
+        overall_impression: 'neutral',
+        areas_tested: ['Feature B'],
+        confidence: 'medium',
+        satisfaction_level: 'dissatisfied',
+      };
+
+      const result2 = submitSummary(args2, sessionDb, reportsDb, personaName, sessionId);
+      const report2 = reportsDb.prepare('SELECT * FROM reports WHERE id = ?').get(result2.report_id) as ReportRecord;
+      expect(report2.priority).toBe('high'); // bumped from 'normal'
+
+      // Test case 3: negative impression (normally 'high') + very_dissatisfied => 'critical'
+      const args3: SubmitSummaryArgs = {
+        overall_impression: 'negative',
+        areas_tested: ['Feature C'],
+        confidence: 'low',
+        satisfaction_level: 'very_dissatisfied',
+      };
+
+      const result3 = submitSummary(args3, sessionDb, reportsDb, personaName, sessionId);
+      const report3 = reportsDb.prepare('SELECT * FROM reports WHERE id = ?').get(result3.report_id) as ReportRecord;
+      expect(report3.priority).toBe('critical'); // bumped from 'high'
+
+      // Test case 4: positive impression + satisfied => no bump (stays 'low')
+      const args4: SubmitSummaryArgs = {
+        overall_impression: 'positive',
+        areas_tested: ['Feature D'],
+        confidence: 'high',
+        satisfaction_level: 'satisfied',
+      };
+
+      const result4 = submitSummary(args4, sessionDb, reportsDb, personaName, sessionId);
+      const report4 = reportsDb.prepare('SELECT * FROM reports WHERE id = ?').get(result4.report_id) as ReportRecord;
+      expect(report4.priority).toBe('low'); // no bump for satisfied
     });
   });
 

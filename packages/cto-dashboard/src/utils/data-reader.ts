@@ -16,6 +16,7 @@ const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cw
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 const DEPUTY_CTO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'deputy-cto.db');
 const CTO_REPORTS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
+const USER_FEEDBACK_DB_PATH = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
 const AUTONOMOUS_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
 const KEY_ROTATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'api-key-rotation.json');
@@ -187,6 +188,21 @@ export interface AutomationInfo {
   seconds_until_next: number | null;
 }
 
+export interface FeedbackPersonaSummary {
+  name: string;
+  consumption_mode: string;
+  enabled: boolean;
+  session_count: number;
+  last_satisfaction: string | null;
+  findings_count: number;
+}
+
+export interface FeedbackPersonasData {
+  personas: FeedbackPersonaSummary[];
+  total_sessions: number;
+  total_findings: number;
+}
+
 export interface DashboardData {
   generated_at: Date;
   hours: number;
@@ -203,6 +219,7 @@ export interface DashboardData {
   pending_items: PendingItems;
   triage: TriageMetrics;
   tasks: TaskMetrics;
+  feedback_personas: FeedbackPersonasData;
 }
 
 // ============================================================================
@@ -1149,6 +1166,79 @@ export function getAutomations(): AutomationInfo[] {
 }
 
 // ============================================================================
+// Feedback Personas
+// ============================================================================
+
+export function getFeedbackPersonas(): FeedbackPersonasData {
+  const empty: FeedbackPersonasData = { personas: [], total_sessions: 0, total_findings: 0 };
+  if (!fs.existsSync(USER_FEEDBACK_DB_PATH)) return empty;
+
+  try {
+    const db = new Database(USER_FEEDBACK_DB_PATH, { readonly: true });
+
+    // Check if satisfaction_level column exists
+    const columns = db.pragma('table_info(feedback_sessions)') as { name: string }[];
+    const hasSatisfaction = columns.some(c => c.name === 'satisfaction_level');
+
+    // Query personas with aggregated session data
+    interface PersonaRow {
+      name: string;
+      consumption_mode: string;
+      enabled: number;
+      session_count: number;
+      findings_count: number;
+    }
+
+    const personas = db.prepare(`
+      SELECT p.name, p.consumption_mode, p.enabled,
+             COUNT(fs.id) as session_count,
+             COALESCE(SUM(fs.findings_count), 0) as findings_count
+      FROM personas p
+      LEFT JOIN feedback_sessions fs ON fs.persona_id = p.id
+      GROUP BY p.id
+      ORDER BY p.name
+    `).all() as PersonaRow[];
+
+    // Get latest satisfaction per persona (separate query if column exists)
+    const satisfactionMap = new Map<string, string>();
+    if (hasSatisfaction) {
+      interface SatisfactionRow { name: string; satisfaction_level: string }
+      const satRows = db.prepare(`
+        SELECT p.name, fs.satisfaction_level
+        FROM personas p
+        JOIN feedback_sessions fs ON fs.persona_id = p.id
+        WHERE fs.satisfaction_level IS NOT NULL
+        AND fs.completed_at = (
+          SELECT MAX(fs2.completed_at) FROM feedback_sessions fs2
+          WHERE fs2.persona_id = p.id AND fs2.satisfaction_level IS NOT NULL
+        )
+      `).all() as SatisfactionRow[];
+      for (const row of satRows) {
+        satisfactionMap.set(row.name, row.satisfaction_level);
+      }
+    }
+
+    const result: FeedbackPersonaSummary[] = personas.map((p) => ({
+      name: p.name,
+      consumption_mode: p.consumption_mode,
+      enabled: p.enabled === 1,
+      session_count: p.session_count,
+      last_satisfaction: satisfactionMap.get(p.name) ?? null,
+      findings_count: p.findings_count,
+    }));
+
+    db.close();
+    return {
+      personas: result,
+      total_sessions: result.reduce((s, p) => s + p.session_count, 0),
+      total_findings: result.reduce((s, p) => s + p.findings_count, 0),
+    };
+  } catch {
+    return empty;
+  }
+}
+
+// ============================================================================
 // Main Data Fetcher
 // ============================================================================
 
@@ -1172,5 +1262,6 @@ export async function getDashboardData(hours: number = 24): Promise<DashboardDat
     pending_items: getPendingItems(),
     triage: getTriageMetrics(),
     tasks: getTaskMetrics(hours),
+    feedback_personas: getFeedbackPersonas(),
   };
 }
