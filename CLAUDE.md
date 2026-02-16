@@ -71,3 +71,22 @@ scripts/setup-automation-service.sh setup --path /project --op-token TOKEN  # In
 ```
 
 By default, the automation service runs without 1Password credentials in background mode to avoid macOS permission prompts. Provide `--op-token` with a 1Password service account token to enable headless credential resolution for infrastructure MCP servers.
+
+## Chrome Browser Automation
+
+The chrome-bridge MCP server provides access to Claude for Chrome extension capabilities:
+
+```bash
+# Chrome extension must be installed and running
+# Server auto-discovers browser instances via Unix domain socket at:
+# /tmp/claude-mcp-browser-bridge-{username}/*.sock
+```
+
+**18 Available Tools:**
+- Tab management: `tabs_context_mcp`, `tabs_create_mcp`, `navigate`, `switch_browser`
+- Page interaction: `read_page`, `get_page_text`, `find`, `form_input`, `computer`, `javascript_tool`
+- Debugging: `read_console_messages`, `read_network_requests`
+- Media: `gif_creator`, `upload_image`, `resize_window`
+- Workflows: `shortcuts_list`, `shortcuts_execute`, `update_plan`
+
+No credentials required - communicates via local Unix domain socket with length-prefixed JSON framing protocol.

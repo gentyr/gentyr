@@ -43,16 +43,9 @@ export type ChromeBridgeResponse =
   | ChromeBridgeErrorResponse;
 
 // ============================================================================
-// MCP Tool Definition (raw JSON Schema, not Zod)
+// MCP Tool Definition (extends shared type with optional title)
 // ============================================================================
 
-export interface ChromeToolDefinition {
-  name: string;
-  title?: string;
-  description: string;
-  inputSchema: {
-    type: 'object';
-    properties: Record<string, unknown>;
-    required?: string[];
-  };
-}
+import type { McpToolDefinition } from '../shared/types.js';
+
+export type ChromeToolDefinition = McpToolDefinition & { title?: string };

@@ -1,5 +1,98 @@
 # GENTYR Framework Changelog
 
+## 2026-02-16 - Chrome Extension Bridge
+
+### Added
+
+**Chrome Bridge MCP Server:**
+
+1. **Protocol Reverse Engineering**
+   - Extracted Claude for Chrome extension protocol from Claude Desktop app.asar
+   - Discovered Unix domain socket bridge at `/tmp/claude-mcp-browser-bridge-{username}/*.sock`
+   - Binary framing protocol: 4-byte LE uint32 length prefix + UTF-8 JSON payload
+   - Archived extraction to `~/Documents/archives/claude-desktop-app-extract-2026-02-16/`
+
+2. **18 Chrome Extension Tools**
+   - **Tab management** (4): `tabs_context_mcp`, `tabs_create_mcp`, `navigate`, `switch_browser`
+   - **Page interaction** (6): `read_page`, `get_page_text`, `find`, `form_input`, `computer`, `javascript_tool`
+   - **Debugging** (2): `read_console_messages`, `read_network_requests`
+   - **Media** (3): `gif_creator`, `upload_image`, `resize_window`
+   - **Workflows** (3): `shortcuts_list`, `shortcuts_execute`, `update_plan`
+
+3. **Standalone MCP Server** (`chrome-bridge`)
+   - Pure proxy architecture (no Zod validation, Chrome handles its own validation)
+   - Multi-socket support (connects to all available Chrome instances)
+   - Tab routing (remembers which socket owns which tab)
+   - Connection resilience (exponential backoff, max 100 reconnect attempts)
+   - Request serialization (per-socket queuing prevents response interleaving)
+   - Proper timeout handling (2s for tabs_context_mcp, 120s for other tools)
+   - Windows-compatible (null-safe `process.getuid` check)
+
+4. **Integration**
+   - Added to `.mcp.json.template` as direct server (no launcher needed)
+   - Added `mcp-chrome-bridge` bin entry to package.json
+   - Re-exported as ChromeBridge in packages/mcp-servers/src/index.ts
+
+### Technical Details
+
+**Files Created (3 total):**
+- `packages/mcp-servers/src/chrome-bridge/types.ts` (51 lines) - Protocol types
+- `packages/mcp-servers/src/chrome-bridge/server.ts` (997 lines) - Socket client + JSON-RPC server
+- `packages/mcp-servers/src/chrome-bridge/index.ts` (4 lines) - Re-exports
+
+**Files Modified:**
+- `packages/mcp-servers/package.json` - Added bin entry
+- `.mcp.json.template` - Added chrome-bridge server config
+- `packages/mcp-servers/src/index.ts` - Added ChromeBridge export
+- `README.md` - Updated server count, directory structure, MCP server list, version history
+- `CLAUDE.md` - Added Chrome Browser Automation section
+
+**Total Changes:** +1,052 lines added
+
+### Testing
+
+**Manual Testing:**
+- TypeScript compilation: Clean
+- MCP server initialization: Successful
+- Live connection test: Retrieved tab context from 9 Chrome tabs
+- Socket discovery: Detected Chrome extension socket
+- Tool execution: `tabs_context_mcp` returned complete tab list
+
+### Architecture Decisions
+
+**Why not use McpServer base class:**
+- Chrome extension handles its own validation (no need for Zod schemas)
+- Binary content support (screenshots) incompatible with text-only base class
+- Proxy pattern requires custom content normalization
+- Simpler to implement raw JSON-RPC for pure proxy use case
+
+**Security:**
+- Socket ownership validation (only connects to user's own sockets via UID check)
+- No credential storage (local socket communication only)
+- Fail-safe reconnection logic (prevents infinite loops)
+
+### Use Cases
+
+**Example: Multi-Browser Testing**
+- Developer has Chrome instances on multiple displays
+- chrome-bridge discovers all sockets automatically
+- Routes tab operations to correct browser instance
+- Maintains tab-to-socket mapping for efficient targeting
+
+**Example: Long-Running Automation**
+- Browser crashes mid-automation
+- Socket connection lost
+- chrome-bridge reconnects with exponential backoff
+- Automation resumes when browser restarts
+
+### Requirements
+
+- Claude for Chrome extension installed and running
+- Chrome browser with extension socket active
+- Unix-like OS with domain socket support (macOS, Linux)
+
+---
+
 ## 2026-02-15 - MCP Server Thread-Safety Improvements
 
 ### Fixed

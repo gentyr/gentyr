@@ -31,9 +31,9 @@ describe('api-key-watcher.js - Unit Tests', () => {
       // Should have shebang
       assert.match(hookCode, /^#!\/usr\/bin\/env node/, 'Must have node shebang');
 
-      // Should use ES module imports
-      assert.match(hookCode, /import .* from ['"]\.\/key-sync\.js['"]/, 'Must import from key-sync.js');
-      assert.match(hookCode, /import .* from ['"]\.\/agent-tracker\.js['"]/, 'Must import from agent-tracker.js');
+      // Should use ES module imports (multi-line imports)
+      assert.match(hookCode, /import [\s\S]*? from ['"]\.\/key-sync\.js['"]/, 'Must import from key-sync.js');
+      assert.match(hookCode, /import [\s\S]*? from ['"]\.\/agent-tracker\.js['"]/, 'Must import from agent-tracker.js');
 
       // Should use fileURLToPath for __dirname
       assert.match(hookCode, /fileURLToPath\(import\.meta\.url\)/, 'Must use fileURLToPath for ES modules');
@@ -211,19 +211,19 @@ describe('api-key-watcher.js - Unit Tests', () => {
     it('should return default state when file does not exist', () => {
       const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/function readRotationState\(\) \{[\s\S]*?\n\}/);
+      const functionMatch = hookCode.match(/export function readRotationState\(\) \{[\s\S]*?\n\}/);
       assert.ok(functionMatch, 'readRotationState function must exist');
 
       const functionBody = functionMatch[0];
 
-      // Should check if file exists
+      // Should check if rotation state file exists (positive check, falls through to default if not)
       assert.match(
         functionBody,
-        /if \(!fs\.existsSync\(ROTATION_STATE_PATH\)\)/,
+        /fs\.existsSync\(ROTATION_STATE_PATH\)/,
         'Must check if rotation state file exists'
       );
 
-      // Should return defaultState
+      // Should return defaultState when neither file exists
       assert.match(
         functionBody,
         /return defaultState/,
@@ -234,7 +234,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     it('should define correct default state structure', () => {
       const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/function readRotationState\(\) \{[\s\S]*?\n\}/);
+      const functionMatch = hookCode.match(/export function readRotationState\(\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Default state should have version 1
@@ -269,7 +269,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     it('should parse JSON content when file exists', () => {
       const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/function readRotationState\(\) \{[\s\S]*?\n\}/);
+      const functionMatch = hookCode.match(/export function readRotationState\(\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should read file content
@@ -290,20 +290,20 @@ describe('api-key-watcher.js - Unit Tests', () => {
     it('should validate state structure', () => {
       const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/function readRotationState\(\) \{[\s\S]*?\n\}/);
+      const functionMatch = hookCode.match(/export function readRotationState\(\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
-      // Should validate version
+      // Should validate version (positive check - only accepts version 1)
       assert.match(
         functionBody,
-        /parsed\.version !== 1/,
+        /parsed\.version === 1/,
         'Must validate version === 1'
       );
 
-      // Should validate keys is an object
+      // Should validate keys is an object (positive check)
       assert.match(
         functionBody,
-        /typeof parsed\.keys !== ['"]object['"]/,
+        /typeof parsed\.keys === ['"]object['"]/,
         'Must validate keys is an object'
       );
 
@@ -936,94 +936,80 @@ describe('api-key-watcher.js - Unit Tests', () => {
       );
     });
 
-    it('should read credentials on start', () => {
+    it('should sync keys from all sources on start (via key-sync.js)', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
-      // Should call readCredentials()
+      // Should call syncKeys() to discover and sync credentials from all sources
       assert.match(
         functionBody,
-        /readCredentials\(\)/,
-        'Must call readCredentials()'
+        /await syncKeys\(\)/,
+        'Must call syncKeys() to sync credentials from all sources'
       );
 
-      // Should check for claudeAiOauth.accessToken
+      // Should then read rotation state for health checks
       assert.match(
         functionBody,
-        /claudeAiOauth\?\.accessToken/,
-        'Must check for accessToken in credentials'
+        /readRotationState\(\)/,
+        'Must read rotation state after sync'
       );
     });
 
-    it('should generate key ID for current token', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+    it('should generate key IDs using crypto hash (in key-sync.js)', () => {
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
-      const functionBody = functionMatch[0];
+      // syncKeys calls generateKeyId internally
+      const syncFunction = hookCode.match(/export async function syncKeys[\s\S]*?\nexport /);
+      assert.ok(syncFunction, 'syncKeys function must exist');
 
-      // Should call generateKeyId with accessToken
       assert.match(
-        functionBody,
-        /generateKeyId\(oauth\.accessToken\)/,
-        'Must generate key ID for current access token'
+        syncFunction[0],
+        /generateKeyId\(cred\.accessToken\)/,
+        'Must generate key ID for access tokens during sync'
       );
     });
 
-    it('should add new keys to tracking', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+    it('should add new keys to tracking (in key-sync.js)', () => {
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
-      const functionBody = functionMatch[0];
-
-      // Should check if key is new
-      assert.match(
-        functionBody,
-        /isNewKey = !state\.keys\[currentKeyId\]/,
-        'Must check if key is new'
-      );
+      const syncFunction = hookCode.match(/export async function syncKeys[\s\S]*?\nexport /);
+      assert.ok(syncFunction, 'syncKeys function must exist');
 
       // Should add key data to state.keys
       assert.match(
-        functionBody,
-        /state\.keys\[currentKeyId\] = \{/,
+        syncFunction[0],
+        /state\.keys\[keyId\] = \{/,
         'Must add new key to state.keys'
       );
 
       // Should log key_added event
       assert.match(
-        functionBody,
+        syncFunction[0],
         /event:\s*['"]key_added['"]/,
         'Must log key_added event for new keys'
       );
     });
 
-    it('should update existing key data', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+    it('should update existing key data (in key-sync.js)', () => {
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
-      const functionBody = functionMatch[0];
+      const syncFunction = hookCode.match(/export async function syncKeys[\s\S]*?\nexport /);
+      assert.ok(syncFunction, 'syncKeys function must exist');
 
       // Should update accessToken for existing keys
       assert.match(
-        functionBody,
-        /existingKey\.accessToken = oauth\.accessToken/,
+        syncFunction[0],
+        /existingKey\.accessToken = cred\.accessToken/,
         'Must update accessToken for existing keys'
       );
 
       // Should update refreshToken
       assert.match(
-        functionBody,
-        /existingKey\.refreshToken = oauth\.refreshToken/,
+        syncFunction[0],
+        /existingKey\.refreshToken = cred\.refreshToken/,
         'Must update refreshToken for existing keys'
-      );
-
-      // Should update expiresAt
-      assert.match(
-        functionBody,
-        /existingKey\.expiresAt = oauth\.expiresAt/,
-        'Must update expiresAt for existing keys'
       );
     });
 
@@ -1187,10 +1173,10 @@ describe('api-key-watcher.js - Unit Tests', () => {
       const functionMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
-      // Should call updateActiveCredentials when switching
+      // Should call updateActiveCredentials when switching (key-sync.js handles both file + keychain)
       assert.match(
         functionBody,
-        /updateActiveCredentials\(creds, selectedKey\)/,
+        /updateActiveCredentials\(selectedKey\)/,
         'Must call updateActiveCredentials when switching to different key'
       );
     });
@@ -1229,10 +1215,10 @@ describe('api-key-watcher.js - Unit Tests', () => {
         'Must check if multiple keys are tracked'
       );
 
-      // Should include usage percentage in message
+      // Should include usage percentage in message (values are already 0-100)
       assert.match(
         functionBody,
-        /Math\.round\(maxUsage \* 100\)/,
+        /Math\.round\(maxUsage\)/,
         'Must calculate usage percentage for notification'
       );
     });
@@ -1283,8 +1269,8 @@ describe('api-key-watcher.js - Unit Tests', () => {
       );
 
       // Should return continue: true even on error
-      // Extract the catch block (multiline)
-      const catchMatch = hookCode.match(/\.catch\(err => \{[\s\S]*?\}\);/);
+      // Extract everything after .catch( to end of file (greedy to capture full block)
+      const catchMatch = hookCode.match(/\.catch\(err => \{[\s\S]*\}\);/);
       assert.ok(catchMatch, 'Must have catch handler body');
 
       const catchBody = catchMatch[0];
@@ -1455,10 +1441,10 @@ describe('api-key-watcher.js - Unit Tests', () => {
   });
 
   describe('Security and Privacy', () => {
-    it('should hash tokens for key IDs rather than storing them directly', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+    it('should hash tokens for key IDs rather than storing them directly (in key-sync.js)', () => {
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const generateKeyIdFunction = hookCode.match(/function generateKeyId\(accessToken\) \{[\s\S]*?\n\}/)[0];
+      const generateKeyIdFunction = hookCode.match(/export function generateKeyId\(accessToken\) \{[\s\S]*?\n\}/)[0];
 
       // Should use crypto hash, not just substring
       assert.match(

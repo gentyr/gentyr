@@ -77,8 +77,10 @@ class ChromeBridgeClient {
 
   private validateSocketOwnership(socketPath: string): boolean {
     try {
+      const getuid = process.getuid;
+      if (!getuid) return false; // Not available on Windows
       const stats = fs.statSync(socketPath);
-      return stats.uid === process.getuid!();
+      return stats.uid === getuid();
     } catch {
       return false;
     }
