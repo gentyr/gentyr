@@ -4,7 +4,7 @@ A modular automation framework for Claude Code that provides MCP servers, specia
 
 ## Features
 
-- **24 MCP Servers**: 9 core (task tracking, specs, reviews, reporting) + 10 infrastructure (Render, Vercel, GitHub, Supabase, Cloudflare, Resend, Elasticsearch, 1Password, Codecov, secret-sync) + 5 AI user feedback (persona management, GUI testing, programmatic testing, reporting bridge, feedback exploration)
+- **25 MCP Servers**: 9 core (task tracking, specs, reviews, reporting) + 10 infrastructure (Render, Vercel, GitHub, Supabase, Cloudflare, Resend, Elasticsearch, 1Password, Codecov, secret-sync) + 5 AI user feedback (persona management, GUI testing, programmatic testing, reporting bridge, feedback exploration) + 1 browser automation (chrome-bridge)
 - **9 Framework Agents**: Code reviewer, test writer, investigator, deputy-CTO, feedback-agent, etc. (projects can add their own)
 - **7 Slash Commands**: `/configure-personas`, `/cto-report`, `/deputy-cto`, `/push-migrations`, `/push-secrets`, `/setup-gentyr`, `/toggle-automation-gentyr`
 - **AI User Feedback System**: Automated user persona testing triggered by staging changes with configurable personas, features, and test scenarios
@@ -420,6 +420,7 @@ mcp__specs-browser__createSpec({
 │   │   │   ├── playwright-feedback/
 │   │   │   ├── programmatic-feedback/
 │   │   │   ├── feedback-reporter/
+│   │   │   ├── chrome-bridge/  # Browser automation
 │   │   │   ├── render/         # Infrastructure servers
 │   │   │   ├── vercel/
 │   │   │   ├── github/
@@ -477,7 +478,7 @@ When you run `setup.sh`, the following happens:
    - `.claude/settings.json` from template
 
 3. **MCP config generated**:
-   - `.mcp.json` from template with correct paths (infrastructure servers routed through launcher)
+   - `.mcp.json` from template with correct paths (infrastructure servers routed through launcher, chrome-bridge connects to Unix domain socket)
 
 4. **Vault mappings created** (if not exists):
    - `.claude/vault-mappings.json` — empty template, populated by `/setup-gentyr`
@@ -516,6 +517,7 @@ When you run `setup.sh`, the following happens:
 | `programmatic-feedback` | CLI/API/SDK testing (feedback agent only) |
 | `feedback-reporter` | Bridge feedback findings to agent-reports with satisfaction levels |
 | `feedback-explorer` | Read-only exploration of feedback data across all personas and sessions |
+| `chrome-bridge` | Proxy to Claude for Chrome extension (18 tools: tabs, navigation, interaction, debugging, media, workflows) |
 
 ### Infrastructure Servers (opinionated stack)
 
@@ -777,6 +779,7 @@ sudo scripts/setup.sh --path /path/to/project --protect-only
 
 ## Version History
 
+- **2.3.0**: Chrome Extension Bridge. Added chrome-bridge MCP server that proxies 18 tools from Claude for Chrome extension via Unix domain socket. Supports multi-browser instances, tab routing, connection resilience, and binary framing protocol. No credentials required (local socket communication).
 - **2.2.0**: AI User Feedback System. Added 4 MCP servers (user-feedback, playwright-feedback, programmatic-feedback, feedback-reporter) for automated user persona testing. Added feedback-agent with restricted tools (no source code access). Added `/configure-personas` slash command. Added feedback-launcher and feedback-orchestrator scripts. Added 'user-feedback' category to agent-reports. Tests include 9 integration tests and toy app with intentional bugs.
 - **2.1.0**: MCP Launcher architecture. Credentials resolved from 1Password at runtime via `mcp-launcher.js` — no secrets on disk. Interactive `/setup-gentyr` with 1Password vault auto-discovery. SessionStart health check for missing credentials. Removed `--with-credentials` flag (all credential config happens in-session).
 - **2.0.0**: Opinionated stack framework. Added 10 infrastructure MCP servers (Render, Vercel, GitHub, Cloudflare, Supabase, Resend, Elasticsearch, 1Password, Codecov, secret-sync). Added `/setup-gentyr` and `/push-secrets` commands. Added project scaffolding (`--scaffold`). Added stack reference docs. Secret values never reach agent context.
