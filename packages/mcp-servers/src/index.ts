@@ -29,3 +29,4 @@ export * as CtoReports from './cto-reports/index.js';
 export * as DeputyCto from './deputy-cto/index.js';
 export * as CtoReport from './cto-report/index.js';
 export * as MakerkitDocs from './makerkit-docs/index.js';
+export * as SetupHelper from './setup-helper/index.js';

@@ -460,19 +460,42 @@ async function validateCodecov(creds, options) {
 }
 
 function validateOnePassword() {
+  if (!process.env.OP_SERVICE_ACCOUNT_TOKEN) {
+    return { status: 'fail', message: '1Password service account token not configured',
+      remediation: 'Run setup.sh with --op-token or set OP_SERVICE_ACCOUNT_TOKEN' };
+  }
+
+  // Use `op whoami` as primary auth check — works with all permission levels.
+  // `op vault list` can return 403 for scoped service account tokens that have
+  // read access to specific vaults but not vault enumeration permissions.
   try {
-    const output = execFileSync('op', ['vault', 'list', '--format', 'json'], {
+    const whoamiOutput = execFileSync('op', ['whoami', '--format', 'json'], {
       encoding: 'utf-8',
       timeout: 10000,
       env: process.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    const vaults = JSON.parse(output);
-    if (Array.isArray(vaults) && vaults.length > 0) {
-      return { status: 'pass', message: 'Authenticated and vault accessible' };
+    const whoami = JSON.parse(whoamiOutput);
+    const identity = whoami.url || whoami.email || 'service account';
+
+    // Optional: try vault list for richer status message
+    try {
+      const vaultOutput = execFileSync('op', ['vault', 'list', '--format', 'json'], {
+        encoding: 'utf-8',
+        timeout: 10000,
+        env: process.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      const vaults = JSON.parse(vaultOutput);
+      if (Array.isArray(vaults) && vaults.length > 0) {
+        return { status: 'pass', message: `Authenticated as ${identity}. ${vaults.length} vault(s) accessible.` };
+      }
+      return { status: 'warn', message: `Authenticated as ${identity} but no vaults accessible`,
+        remediation: 'Grant the service account access to at least one vault in 1Password Settings > Integrations > Service Accounts' };
+    } catch {
+      // vault list failed but whoami succeeded — token is valid with scoped permissions
+      return { status: 'pass', message: `Authenticated as ${identity}. Vault enumeration not permitted (op read still works).` };
     }
-    return { status: 'warn', message: 'Authenticated but no vaults accessible',
-      remediation: 'Grant the service account access to at least one vault in 1Password Settings > Integrations > Service Accounts' };
   } catch (err) {
     const stderr = err.stderr || '';
     const message = (err.message || '') + ' ' + stderr;

@@ -650,6 +650,10 @@ if [ "$EUID" -eq 0 ]; then
     chown "$original_user:$original_group" "$PROJECT_DIR/.claude"/*.db 2>/dev/null || true
     chown "$original_user:$original_group" "$PROJECT_DIR/.claude"/*.db-shm 2>/dev/null || true
     chown "$original_user:$original_group" "$PROJECT_DIR/.claude"/*.db-wal 2>/dev/null || true
+    # Fix ownership of .mcp.json (generated in project root, not in .claude/)
+    if [ -f "$PROJECT_DIR/.mcp.json" ]; then
+        chown "$original_user:$original_group" "$PROJECT_DIR/.mcp.json"
+    fi
 fi
 
 # Pre-create automation config with defaults if not exists
