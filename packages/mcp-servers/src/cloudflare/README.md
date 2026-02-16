@@ -36,7 +36,7 @@ Add to your Claude Code MCP settings:
 
 ```bash
 # After building the package
-claude mcp add cloudflare-dns node /path/to/xy/packages/mcp-servers/dist/cloudflare/server.js
+claude mcp add cloudflare-dns node /path/to/gentyr/packages/mcp-servers/dist/cloudflare/server.js
 ```
 
 Or add to `.claude/mcp.json` manually:
@@ -46,7 +46,7 @@ Or add to `.claude/mcp.json` manually:
   "mcpServers": {
     "cloudflare-dns": {
       "command": "node",
-      "args": ["/path/to/xy/packages/mcp-servers/dist/cloudflare/server.js"],
+      "args": ["/path/to/gentyr/packages/mcp-servers/dist/cloudflare/server.js"],
       "env": {
         "CLOUDFLARE_API_TOKEN": "your-api-token",
         "CLOUDFLARE_ZONE_ID": "your-zone-id"

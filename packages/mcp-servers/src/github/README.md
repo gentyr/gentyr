@@ -60,8 +60,8 @@ Arguments:
 Example:
 ```typescript
 {
-  "owner": "EXAMPLE-ORG",
-  "repo": "xy"
+  "owner": "your-org",
+  "repo": "your-repo"
 }
 ```
 
@@ -353,16 +353,16 @@ Arguments:
 ```typescript
 // Create a new branch
 await github_create_branch({
-  owner: "EXAMPLE-ORG",
-  repo: "xy",
+  owner: "your-org",
+  repo: "your-repo",
   branch: "feature/new-integration",
   from_branch: "main"
 });
 
 // Create or update files
 await github_create_or_update_file({
-  owner: "EXAMPLE-ORG",
-  repo: "xy",
+  owner: "your-org",
+  repo: "your-repo",
   path: "integrations/newplatform/index.ts",
   content: "export const platform = 'newplatform';",
   message: "Add new platform integration",
@@ -371,8 +371,8 @@ await github_create_or_update_file({
 
 // Create a pull request
 await github_create_pull_request({
-  owner: "EXAMPLE-ORG",
-  repo: "xy",
+  owner: "your-org",
+  repo: "your-repo",
   title: "Add new platform integration",
   body: "Implements support for new platform",
   head: "feature/new-integration",
@@ -385,22 +385,22 @@ await github_create_pull_request({
 ```typescript
 // List recent workflow runs
 const runs = await github_list_workflow_runs({
-  owner: "EXAMPLE-ORG",
-  repo: "xy",
+  owner: "your-org",
+  repo: "your-repo",
   limit: 5
 });
 
 // Get details of a failed run
 const run = await github_get_workflow_run({
-  owner: "EXAMPLE-ORG",
-  repo: "xy",
+  owner: "your-org",
+  repo: "your-repo",
   run_id: runs[0].id
 });
 
 // Rerun if needed
 await github_rerun_workflow({
-  owner: "EXAMPLE-ORG",
-  repo: "xy",
+  owner: "your-org",
+  repo: "your-repo",
   run_id: runs[0].id
 });
 ```

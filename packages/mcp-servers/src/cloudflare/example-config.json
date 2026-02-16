@@ -3,7 +3,7 @@
     "cloudflare-dns": {
       "command": "node",
       "args": [
-        "/absolute/path/to/xy/packages/mcp-servers/dist/cloudflare/server.js"
+        "/absolute/path/to/gentyr/packages/mcp-servers/dist/cloudflare/server.js"
       ],
       "env": {
         "CLOUDFLARE_API_TOKEN": "your-cloudflare-api-token-here",
