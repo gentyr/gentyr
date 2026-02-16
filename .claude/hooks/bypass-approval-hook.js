@@ -16,6 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -24,6 +25,7 @@ const __dirname = path.dirname(__filename);
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
 const DEPUTY_CTO_DB = path.join(PROJECT_DIR, '.claude', 'deputy-cto.db');
 const APPROVAL_TOKEN_FILE = path.join(PROJECT_DIR, '.claude', 'bypass-approval-token.json');
+const PROTECTION_KEY_PATH = path.join(PROJECT_DIR, '.claude', 'protection-key');
 
 // Token expires after 5 minutes
 const TOKEN_EXPIRY_MS = 5 * 60 * 1000;
@@ -99,17 +101,56 @@ async function validateBypassCode(code) {
 }
 
 /**
- * Write approval token
+ * Load the protection key for HMAC signing.
+ * @returns {string|null} Base64-encoded key or null
+ */
+function loadProtectionKey() {
+  try {
+    if (!fs.existsSync(PROTECTION_KEY_PATH)) {
+      return null;
+    }
+    return fs.readFileSync(PROTECTION_KEY_PATH, 'utf8').trim();
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Compute HMAC-SHA256 over pipe-delimited fields.
+ * @param {string} key - Base64-encoded key
+ * @param {...string} fields - Fields to include in HMAC
+ * @returns {string} Hex-encoded HMAC
+ */
+function computeHmac(key, ...fields) {
+  const keyBuffer = Buffer.from(key, 'base64');
+  return crypto.createHmac('sha256', keyBuffer)
+    .update(fields.join('|'))
+    .digest('hex');
+}
+
+/**
+ * Write approval token with HMAC signature to prevent forgery.
+ *
+ * SECURITY FIX (H1): Token now includes HMAC-SHA256 signature computed from
+ * code, request_id, and expires_timestamp using the protection key.
+ * block-no-verify.js verifies this signature before accepting the token.
  */
 function writeApprovalToken(code, requestId, userMessage) {
   const now = Date.now();
+  const expiresTimestamp = now + TOKEN_EXPIRY_MS;
+
+  // Compute HMAC signature to prevent agent forgery
+  const key = loadProtectionKey();
+  const hmac = key ? computeHmac(key, code, requestId, String(expiresTimestamp), 'bypass-approved') : undefined;
+
   const token = {
     code,
     request_id: requestId,
     user_message: userMessage,
     created_at: new Date(now).toISOString(),
-    expires_at: new Date(now + TOKEN_EXPIRY_MS).toISOString(),
-    expires_timestamp: now + TOKEN_EXPIRY_MS,
+    expires_at: new Date(expiresTimestamp).toISOString(),
+    expires_timestamp: expiresTimestamp,
+    ...(hmac && { hmac }),
   };
 
   try {

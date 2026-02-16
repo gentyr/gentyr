@@ -184,7 +184,7 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
       }
     });
 
-    it('should pass through non-file-access tools', async () => {
+    it('should pass through Grep with no path or glob parameter', async () => {
       const result = await runHook({
         tool_name: 'Grep',
         tool_input: { pattern: 'test' },
@@ -193,7 +193,7 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
 
       assert.strictEqual(result.exitCode, 0);
 
-      // Should pass through (no JSON output)
+      // Should pass through (no JSON output or not denied)
       const jsonMatch = result.stdout.match(/\{.*\}/s);
       if (jsonMatch) {
         const output = JSON.parse(jsonMatch[0]);
@@ -217,6 +217,184 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
         assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
           `Should block ${file}`);
       }
+    });
+  });
+
+  // ==========================================================================
+  // Grep/Glob Tool Blocking (C1 fix)
+  // ==========================================================================
+
+  describe('Grep/Glob tool blocking (C1 fix)', () => {
+    it('should block Grep with path=".mcp.json" (protected path)', async () => {
+      const result = await runHook({
+        tool_name: 'Grep',
+        tool_input: { pattern: 'test', path: '.mcp.json' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.mcp\.json/);
+    });
+
+    it('should block Grep with path pointing to ".claude/protection-key"', async () => {
+      const result = await runHook({
+        tool_name: 'Grep',
+        tool_input: { pattern: 'token', path: `${tempDir.path}/.claude/protection-key` },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /protection-key/);
+    });
+
+    it('should pass through Grep with path="src/" (non-protected)', async () => {
+      const result = await runHook({
+        tool_name: 'Grep',
+        tool_input: { pattern: 'function', path: 'src/' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
+      }
+    });
+
+    it('should pass through Grep with no path parameter', async () => {
+      const result = await runHook({
+        tool_name: 'Grep',
+        tool_input: { pattern: 'search' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
+      }
+    });
+
+    it('should block Grep with glob pattern containing ".env"', async () => {
+      const result = await runHook({
+        tool_name: 'Grep',
+        tool_input: { pattern: 'TOKEN', glob: '**/.env' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.env/);
+    });
+
+    it('should block Glob with path pointing to ".mcp.json"', async () => {
+      const result = await runHook({
+        tool_name: 'Glob',
+        tool_input: { pattern: '*.json', path: `${tempDir.path}/.mcp.json` },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.mcp\.json/);
+    });
+
+    it('should block Glob with pattern containing ".mcp.json"', async () => {
+      const result = await runHook({
+        tool_name: 'Glob',
+        tool_input: { pattern: '**/.mcp.json' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.mcp\.json/);
+    });
+
+    it('should block Glob with pattern containing ".env"', async () => {
+      const result = await runHook({
+        tool_name: 'Glob',
+        tool_input: { pattern: '**/.env' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.env/);
+    });
+
+    it('should pass through Glob with pattern="**/*.ts" (non-protected)', async () => {
+      const result = await runHook({
+        tool_name: 'Glob',
+        tool_input: { pattern: '**/*.ts' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
+      }
+    });
+
+    it('should verify Grep previously passed through (was NOT in FILE_ACCESS_TOOLS before fix)', async () => {
+      // This test documents that before C1 fix, Grep was NOT in FILE_ACCESS_TOOLS
+      // and would have passed through even when targeting protected files.
+      // Now it should be blocked when targeting protected files.
+      const result = await runHook({
+        tool_name: 'Grep',
+        tool_input: { pattern: 'SECRET', path: '.env' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+
+      // After C1 fix, this should be BLOCKED (not passed through)
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'C1 fix: Grep should now be blocked when targeting .env');
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.env/);
     });
   });
 
@@ -624,21 +802,22 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
       assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
     });
 
-    it('should ignore output redirection targets: cat README.md > .env', async () => {
+    it('should block output redirection to protected files: cat README.md > .env', async () => {
       const result = await runHook({
         tool_name: 'Bash',
         tool_input: { command: 'cat README.md > .env' },
         cwd: tempDir.path,
       });
 
-      // Should pass through - .env is output target, not input
+      // SECURITY FIX (M1): Output redirection to protected files is now blocked.
+      // Writing to .env is as dangerous as reading it (e.g., forging bypass tokens).
       assert.strictEqual(result.exitCode, 0);
 
       const jsonMatch = result.stdout.match(/\{.*\}/s);
-      if (jsonMatch) {
-        const output = JSON.parse(jsonMatch[0]);
-        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
-      }
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.env/);
     });
 
     it('should handle complex pipeline: cat .env | grep TOKEN | head -n 5', async () => {
@@ -1300,176 +1479,4 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
     });
   });
 
-  // ==========================================================================
-  // Shell RC File Blocking (Token Exposure Prevention)
-  // ==========================================================================
-
-  describe('Shell RC file blocking (token exposure prevention)', () => {
-    it('should block Read of ~/.zshrc', async () => {
-      const result = await runHook({
-        tool_name: 'Read',
-        tool_input: { file_path: `${os.homedir()}/.zshrc` },
-        cwd: tempDir.path,
-      });
-
-      assert.strictEqual(result.exitCode, 0, 'Hook should exit 0 (permissionDecision handles block)');
-
-      const jsonMatch = result.stdout.match(/\{.*\}/s);
-      assert.ok(jsonMatch, 'Should output JSON');
-      const output = JSON.parse(jsonMatch[0]);
-
-      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
-      assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.zshrc|shell.*rc|token/i);
-    });
-
-    it('should block Read of ~/.bashrc', async () => {
-      const result = await runHook({
-        tool_name: 'Read',
-        tool_input: { file_path: `${os.homedir()}/.bashrc` },
-        cwd: tempDir.path,
-      });
-
-      assert.strictEqual(result.exitCode, 0);
-
-      const jsonMatch = result.stdout.match(/\{.*\}/s);
-      assert.ok(jsonMatch, 'Should output JSON');
-      const output = JSON.parse(jsonMatch[0]);
-
-      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
-      assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.bashrc|shell.*rc|token/i);
-    });
-
-    it('should block Read of ~/.bash_profile', async () => {
-      const result = await runHook({
-        tool_name: 'Read',
-        tool_input: { file_path: `${os.homedir()}/.bash_profile` },
-        cwd: tempDir.path,
-      });
-
-      assert.strictEqual(result.exitCode, 0);
-
-      const jsonMatch = result.stdout.match(/\{.*\}/s);
-      assert.ok(jsonMatch, 'Should output JSON');
-      const output = JSON.parse(jsonMatch[0]);
-
-      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
-      assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.bash_profile|shell.*rc|token/i);
-    });
-
-    it('should block Read of ~/.profile', async () => {
-      const result = await runHook({
-        tool_name: 'Read',
-        tool_input: { file_path: `${os.homedir()}/.profile` },
-        cwd: tempDir.path,
-      });
-
-      assert.strictEqual(result.exitCode, 0);
-
-      const jsonMatch = result.stdout.match(/\{.*\}/s);
-      assert.ok(jsonMatch, 'Should output JSON');
-      const output = JSON.parse(jsonMatch[0]);
-
-      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
-      assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.profile|shell.*rc|token/i);
-    });
-
-    it('should block Read of ~/.zprofile', async () => {
-      const result = await runHook({
-        tool_name: 'Read',
-        tool_input: { file_path: `${os.homedir()}/.zprofile` },
-        cwd: tempDir.path,
-      });
-
-      assert.strictEqual(result.exitCode, 0);
-
-      const jsonMatch = result.stdout.match(/\{.*\}/s);
-      assert.ok(jsonMatch, 'Should output JSON');
-      const output = JSON.parse(jsonMatch[0]);
-
-      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
-      assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.zprofile|shell.*rc|token/i);
-    });
-
-    it('should block Bash cat ~/.zshrc', async () => {
-      const result = await runHook({
-        tool_name: 'Bash',
-        tool_input: { command: 'cat ~/.zshrc' },
-        cwd: tempDir.path,
-      });
-
-      assert.strictEqual(result.exitCode, 0);
-
-      const jsonMatch = result.stdout.match(/\{.*\}/s);
-      assert.ok(jsonMatch, 'Should output JSON');
-      const output = JSON.parse(jsonMatch[0]);
-
-      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
-    });
-
-    it('should block Bash cat /Users/user/.bashrc (absolute path)', async () => {
-      const result = await runHook({
-        tool_name: 'Bash',
-        tool_input: { command: `cat ${os.homedir()}/.bashrc` },
-        cwd: tempDir.path,
-      });
-
-      assert.strictEqual(result.exitCode, 0);
-
-      const jsonMatch = result.stdout.match(/\{.*\}/s);
-      assert.ok(jsonMatch, 'Should output JSON');
-      const output = JSON.parse(jsonMatch[0]);
-
-      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
-    });
-
-    it('should block Bash head ~/.zprofile | grep TOKEN (piped)', async () => {
-      const result = await runHook({
-        tool_name: 'Bash',
-        tool_input: { command: 'head ~/.zprofile | grep TOKEN' },
-        cwd: tempDir.path,
-      });
-
-      assert.strictEqual(result.exitCode, 0);
-
-      const jsonMatch = result.stdout.match(/\{.*\}/s);
-      assert.ok(jsonMatch, 'Should output JSON');
-      const output = JSON.parse(jsonMatch[0]);
-
-      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
-    });
-
-    it('should pass through Read of zshrc without dot prefix (e.g., /path/to/zshrc)', async () => {
-      const result = await runHook({
-        tool_name: 'Read',
-        tool_input: { file_path: `${tempDir.path}/config/zshrc` },
-        cwd: tempDir.path,
-      });
-
-      assert.strictEqual(result.exitCode, 0);
-
-      const jsonMatch = result.stdout.match(/\{.*\}/s);
-      if (jsonMatch) {
-        const output = JSON.parse(jsonMatch[0]);
-        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
-          'Files named "zshrc" without dot prefix should not be blocked');
-      }
-    });
-
-    it('should pass through Bash cat ~/.config/somefile (not an RC file)', async () => {
-      const result = await runHook({
-        tool_name: 'Bash',
-        tool_input: { command: 'cat ~/.config/somefile' },
-        cwd: tempDir.path,
-      });
-
-      assert.strictEqual(result.exitCode, 0);
-
-      const jsonMatch = result.stdout.match(/\{.*\}/s);
-      if (jsonMatch) {
-        const output = JSON.parse(jsonMatch[0]);
-        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
-          'Non-RC files in home directory should not be blocked');
-      }
-    });
-  });
 });

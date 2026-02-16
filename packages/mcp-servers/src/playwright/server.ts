@@ -41,6 +41,42 @@ const PROJECT_DIR = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd()
 const REPORT_DIR = path.join(PROJECT_DIR, 'playwright-report');
 const RUN_TIMEOUT = 300_000; // 5 minutes for test runs
 
+// Map standard env names to NEXT_PUBLIC_ variants for Next.js webServer.
+// Credentials are injected by mcp-launcher.js from 1Password at runtime.
+if (process.env.SUPABASE_URL && !process.env.NEXT_PUBLIC_SUPABASE_URL) {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = process.env.SUPABASE_URL;
+}
+if (process.env.SUPABASE_ANON_KEY && !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+}
+
+/**
+ * Kill any processes listening on the dev server port (default 3000).
+ * Prevents zombie servers from previous runs causing port conflicts.
+ */
+function cleanupDevServerPort(port = 3000): void {
+  try {
+    const lsofOutput = execFileSync('lsof', ['-ti', `:${port}`], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+
+    if (lsofOutput) {
+      const pids = lsofOutput.split('\n').filter(Boolean);
+      for (const pid of pids) {
+        try {
+          process.kill(Number(pid), 'SIGTERM');
+        } catch {
+          // Process may have already exited
+        }
+      }
+    }
+  } catch {
+    // No processes on port — nothing to clean up
+  }
+}
+
 /** Persona descriptions for coverage reporting */
 const PERSONA_MAP: Record<string, string> = {
   'vendor-owner': 'SaaS Vendor (Owner)',
@@ -62,6 +98,9 @@ const PERSONA_MAP: Record<string, string> = {
  */
 function launchUiMode(args: LaunchUiModeArgs): LaunchUiModeResult {
   const { project, base_url } = args;
+
+  // Clean up zombie dev servers from previous runs
+  cleanupDevServerPort();
 
   const cmdArgs = ['playwright', 'test', '--project', project, '--ui'];
   const env: Record<string, string> = { ...process.env as Record<string, string> };
@@ -100,6 +139,9 @@ function launchUiMode(args: LaunchUiModeArgs): LaunchUiModeResult {
  * Run E2E tests headlessly and return results.
  */
 function runTests(args: RunTestsArgs): RunTestsResult {
+  // Clean up zombie dev servers from previous runs
+  cleanupDevServerPort();
+
   const cmdArgs = ['playwright', 'test'];
 
   if (args.project) {
@@ -161,6 +203,9 @@ function runTests(args: RunTestsArgs): RunTestsResult {
  * Seed the E2E test database.
  */
 function seedData(): SeedDataResult {
+  // Clean up zombie dev servers from previous runs
+  cleanupDevServerPort();
+
   try {
     const output = execFileSync('npx', ['playwright', 'test', '--project=seed'], {
       cwd: PROJECT_DIR,

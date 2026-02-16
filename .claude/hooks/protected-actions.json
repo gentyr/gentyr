@@ -163,6 +163,13 @@
       "credentialKeys": [
         "CODECOV_TOKEN"
       ]
+    },
+    "playwright": {
+      "credentialKeys": [
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY"
+      ]
     }
   },
   "settings": {

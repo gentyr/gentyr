@@ -1,0 +1,80 @@
+{
+  "approvals": {
+    "DX2M5V": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {
+        "arg1": "value1"
+      },
+      "phrase": "APPROVE TEST",
+      "code": "DX2M5V",
+      "status": "pending",
+      "created_at": "2026-02-16T03:43:52.300Z",
+      "created_timestamp": 1771213432300,
+      "expires_at": "2026-02-16T03:48:52.300Z",
+      "expires_timestamp": 1771213732300
+    },
+    "WRDBU3": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "WRDBU3",
+      "status": "pending",
+      "created_at": "2026-02-16T03:43:52.302Z",
+      "created_timestamp": 1771213432302,
+      "expires_at": "2026-02-16T03:48:52.302Z",
+      "expires_timestamp": 1771213732302
+    },
+    "2TNHKE": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "2TNHKE",
+      "status": "pending",
+      "created_at": "2026-02-16T03:43:52.303Z",
+      "created_timestamp": 1771213432303,
+      "expires_at": "2026-02-16T03:48:52.303Z",
+      "expires_timestamp": 1771213732303
+    },
+    "AJUMQD": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {
+        "arg1": "value1"
+      },
+      "phrase": "APPROVE TEST",
+      "code": "AJUMQD",
+      "status": "pending",
+      "created_at": "2026-02-16T03:43:59.837Z",
+      "created_timestamp": 1771213439837,
+      "expires_at": "2026-02-16T03:48:59.837Z",
+      "expires_timestamp": 1771213739837
+    },
+    "GHRCDG": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "GHRCDG",
+      "status": "pending",
+      "created_at": "2026-02-16T03:43:59.838Z",
+      "created_timestamp": 1771213439838,
+      "expires_at": "2026-02-16T03:48:59.838Z",
+      "expires_timestamp": 1771213739838
+    },
+    "VMUBWQ": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "VMUBWQ",
+      "status": "pending",
+      "created_at": "2026-02-16T03:43:59.839Z",
+      "created_timestamp": 1771213439839,
+      "expires_at": "2026-02-16T03:48:59.839Z",
+      "expires_timestamp": 1771213739839
+    }
+  }
+}

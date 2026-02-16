@@ -2,11 +2,13 @@
 /**
  * PreToolUse Hook: Credential File Guard
  *
- * Intercepts Read, Write, Edit, and Bash tool calls and blocks access to files
- * containing credentials, secrets, or sensitive configuration.
+ * Intercepts Read, Write, Edit, Grep, Glob, and Bash tool calls and blocks
+ * access to files containing credentials, secrets, or sensitive configuration.
  *
  * For Bash commands, also detects:
- *   - File-reading commands targeting protected files (cat, head, tail, etc.)
+ *   - ANY command argument referencing protected files (not just known read commands)
+ *   - Output redirection targets (>, >>)
+ *   - Embedded file path references in code strings (raw command scan)
  *   - References to protected credential environment variables ($TOKEN, etc.)
  *   - Environment dump commands (env, printenv, export -p)
  *
@@ -21,7 +23,7 @@
  *
  * SECURITY: This file should be root-owned via protect-framework.sh
  *
- * @version 2.0.0
+ * @version 3.0.0
  */
 
 import fs from 'node:fs';
@@ -54,6 +56,8 @@ const BLOCKED_PATH_SUFFIXES = [
   '.claude/bypass-approval-token.json',
   '.claude/commit-approval-token.json',
   '.claude/credential-provider.json',
+  '.claude/protected-action-approvals.json',
+  '.claude/vault-mappings.json',
   '.mcp.json',
 ];
 
@@ -69,17 +73,82 @@ const BLOCKED_PATH_PATTERNS = [
 // ============================================================================
 
 /**
- * Commands that read file contents
+ * Commands that read file contents.
+ *
+ * SECURITY FIX (C2): Significantly expanded from the original 14 commands.
+ * Previously only: cat, head, tail, less, more, strings, xxd, hexdump, base64,
+ * open, source, bat, nl. This allowed bypass via grep, awk, python3, node, etc.
  */
 const FILE_READ_COMMANDS = new Set([
+  // Original commands
   'cat', 'head', 'tail', 'less', 'more', 'strings', 'xxd',
   'hexdump', 'base64', 'open', 'source', 'bat', 'nl',
+  // Search tools (C2: these read file contents)
+  'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack',
+  // Text processing (C2: these read and transform file contents)
+  'awk', 'gawk', 'mawk', 'nawk',
+  'sed', 'gsed',
+  'sort', 'uniq', 'cut', 'paste', 'join', 'comm',
+  'wc', 'tr', 'rev', 'tac', 'fmt', 'fold', 'column',
+  'expand', 'unexpand', 'pr', 'colrm',
+  // Diff tools (C2: read and compare files)
+  'diff', 'sdiff', 'vimdiff', 'cmp',
+  // Binary inspection (C2: read raw file bytes)
+  'od', 'dd', 'file',
+  // Archive/compression tools (C2: read files for archiving)
+  'tar', 'zip', 'gzip', 'gunzip', 'bzip2', 'bunzip2', 'xz',
+  'zcat', 'bzcat', 'xzcat', 'lz4cat',
+  // Crypto/checksum tools (C2: read file contents for hashing)
+  'openssl', 'gpg', 'sha256sum', 'sha1sum', 'md5sum', 'md5',
+  // Scripting language interpreters (C2: can execute code that reads files)
+  'python', 'python3', 'node', 'ruby', 'perl', 'php', 'lua',
+  // HTTP clients (C2: file:// protocol can read local files)
+  'curl', 'wget',
+  // Editors in non-interactive mode (C2: can dump file contents)
+  'vim', 'vi', 'nano', 'emacs',
+  // File splitting (C2: reads files to split them)
+  'split', 'csplit',
+  // Paging (C2: reads file contents)
+  'pg',
 ]);
 
 /**
  * Commands that copy/move files (source file is first path argument)
  */
 const FILE_COPY_COMMANDS = new Set(['cp', 'mv']);
+
+/**
+ * Commands that do NOT access files via their arguments, so their arguments
+ * should NOT be checked as file paths. This prevents false positives like
+ * "echo .env" (which just prints the text ".env", not reading any file).
+ *
+ * All other commands have their arguments checked against protected paths.
+ */
+const NON_FILE_COMMANDS = new Set([
+  'echo', 'printf',           // Output text, don't access files
+  'mkdir', 'rmdir',           // Create/remove directories
+  'cd', 'pushd', 'popd',     // Change directory
+  'touch',                    // Create/update timestamps (not reading)
+  'chmod', 'chown', 'chgrp',  // Change permissions (not reading contents)
+  'ln',                       // Create links
+  'alias', 'unalias',        // Shell aliases
+  'export', 'set', 'unset',  // Shell variables
+  'type', 'which', 'whereis', 'command', // Command location
+  'hash', 'history',         // Shell builtins
+  'true', 'false',           // No-ops
+  'test', '[',               // Conditionals
+  'kill', 'killall',         // Process signals
+  'sleep', 'wait',           // Timing
+  'exit', 'return',          // Flow control
+  'npm', 'npx', 'pnpm', 'yarn', 'bun',  // Package managers (install commands)
+  'pip', 'pip3',             // Python package manager
+  'gem',                     // Ruby package manager
+  'cargo',                   // Rust package manager
+  'go',                      // Go toolchain
+  'git',                     // Git (has its own security checks)
+  'docker', 'docker-compose', // Container tools
+  'brew', 'apt', 'yum',     // System package managers
+]);
 
 /**
  * Commands that dump all environment variables.
@@ -166,6 +235,16 @@ function tokenize(str) {
 /**
  * Extract file paths from a bash command that may access protected files.
  * Splits on pipes, semicolons, && and || to process individual sub-commands.
+ *
+ * SECURITY FIX (C2): Uses universal argument scanning for ALL commands except
+ * those in NON_FILE_COMMANDS (echo, printf, mkdir, etc.). Previously only
+ * checked 14 specific file-reading commands, allowing bypass via grep, awk,
+ * python3, node, sort, diff, or any other command.
+ *
+ * SECURITY FIX (M1): Checks output redirection targets (>, >>) in addition
+ * to input redirection (<). This prevents writing to protected files via
+ * echo/printf redirection.
+ *
  * @param {string} command
  * @returns {string[]} Array of file paths found
  */
@@ -185,36 +264,75 @@ function extractFilePathsFromCommand(command) {
 
     const cmd = path.basename(tokens[0]); // Handle /usr/bin/cat etc.
 
-    if (FILE_READ_COMMANDS.has(cmd) || FILE_COPY_COMMANDS.has(cmd)) {
-      // Extract non-flag arguments as potential file paths
+    // Check arguments as file paths for ALL commands EXCEPT known non-file commands.
+    // This is safer than maintaining a blocklist of file-reading commands (C2 fix).
+    if (!NON_FILE_COMMANDS.has(cmd)) {
       for (let i = 1; i < tokens.length; i++) {
         const token = tokens[i];
         // Skip flags (but not paths starting with ./ or ../)
-        // Don't try to skip flag values - it's safer to over-check
-        // (non-paths like "10" won't match any blocked pattern)
         if (token.startsWith('-') && !token.startsWith('./') && !token.startsWith('../')) {
           continue;
         }
-        // Skip output redirection targets
-        if (token === '>' || token === '>>') {
-          i++; // skip the target path
+        // Skip redirection operators (targets handled below)
+        if (token === '>' || token === '>>' || token === '<' || token === '2>' || token === '2>>') {
+          i++; // skip the target
           continue;
         }
-        // This looks like a file path argument
-        if (token && !token.startsWith('$')) {
+        // Skip variable references (checked separately)
+        if (token.startsWith('$')) {
+          continue;
+        }
+        // This looks like a potential file path argument
+        if (token) {
           paths.push(token);
         }
       }
     }
 
-    // Check for input redirection: < filepath
-    const redirectMatch = trimmed.match(/<\s+(\S+)/);
-    if (redirectMatch) {
-      paths.push(redirectMatch[1]);
+    // Check ALL output and input redirection targets regardless of command (M1 fix).
+    // This catches: echo '{}' > .claude/bypass-approval-token.json
+    // and: grep secret < .env
+    const redirectMatches = trimmed.matchAll(/(?:^|[^<>])(>>?|2>>?|<)\s*(\S+)/g);
+    for (const match of redirectMatches) {
+      const target = match[2];
+      if (target && !target.startsWith('$') && !target.startsWith('&')) {
+        paths.push(target);
+      }
     }
   }
 
   return paths;
+}
+
+/**
+ * Scan the raw command string for embedded references to protected file paths.
+ * This catches cases where file paths are embedded inside code strings
+ * (e.g., python3 -c "open('.mcp.json').read()") that token-based extraction misses.
+ *
+ * Only checks BLOCKED_PATH_SUFFIXES (longer, more specific paths like .mcp.json,
+ * .claude/protection-key). Does NOT check BLOCKED_BASENAMES (short names like .env)
+ * to avoid false positives with commands like "echo .env" or "npm install .env-parser".
+ * Basename detection for known commands is handled by the expanded FILE_READ_COMMANDS.
+ *
+ * SECURITY FIX (C2): Provides a second layer of defense against bypass via
+ * scripting language interpreters.
+ *
+ * @param {string} command
+ * @returns {{ blocked: boolean, reason: string }}
+ */
+function scanRawCommandForProtectedPaths(command) {
+  // Check for blocked path suffixes as substrings in the command.
+  // These are specific enough to not cause false positives.
+  for (const suffix of BLOCKED_PATH_SUFFIXES) {
+    if (command.includes(suffix)) {
+      return {
+        blocked: true,
+        reason: `Command references protected path "${suffix}"`,
+      };
+    }
+  }
+
+  return { blocked: false, reason: '' };
 }
 
 /**
@@ -319,9 +437,13 @@ function checkFilePath(filePath, projectDir) {
 }
 
 /**
- * Tools that access files and should be blocked for credential files
+ * Tools that access files and should be blocked for credential files.
+ *
+ * SECURITY FIX (C1): Added Grep and Glob which can also access file contents.
+ * Grep with output_mode="content" returns matching lines from files.
+ * Glob returns file paths (not contents) but is blocked for defense-in-depth.
  */
-const FILE_ACCESS_TOOLS = new Set(['Read', 'Write', 'Edit', 'Bash']);
+const FILE_ACCESS_TOOLS = new Set(['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob']);
 
 // ============================================================================
 // Blocking Functions
@@ -439,7 +561,7 @@ process.stdin.on('end', () => {
         process.exit(0);
       }
 
-      // Check 1: File paths in bash command
+      // Check 1: File paths extracted from command tokens
       const filePaths = extractFilePathsFromCommand(command);
       for (const fp of filePaths) {
         const result = checkFilePath(fp, projectDir);
@@ -449,7 +571,15 @@ process.stdin.on('end', () => {
         }
       }
 
-      // Check 2: Credential env var references
+      // Check 2: Raw command scan for embedded protected path references
+      // Catches: python3 -c "open('.mcp.json')", node -e "fs.readFileSync('.env')", etc.
+      const rawScanResult = scanRawCommandForProtectedPaths(command);
+      if (rawScanResult.blocked) {
+        blockBash(command, rawScanResult.reason);
+        return;
+      }
+
+      // Check 3: Credential env var references
       const credentialKeys = loadCredentialKeys(projectDir);
       const envResult = checkBashEnvAccess(command, credentialKeys);
       if (envResult.blocked) {
@@ -458,6 +588,58 @@ process.stdin.on('end', () => {
       }
 
       // Bash command is allowed
+      process.exit(0);
+    }
+
+    // --- Grep tool: check path parameter ---
+    if (toolName === 'Grep') {
+      const grepPath = toolInput.path || '';
+      if (grepPath) {
+        const result = checkFilePath(grepPath, projectDir);
+        if (result.blocked) {
+          blockRead(grepPath, result.reason);
+          return;
+        }
+      }
+      // Also check glob parameter for protected file patterns
+      const grepGlob = toolInput.glob || '';
+      if (grepGlob) {
+        for (const basename of BLOCKED_BASENAMES) {
+          if (grepGlob.includes(basename)) {
+            blockRead(grepGlob, `Grep glob pattern targets protected file "${basename}"`);
+            return;
+          }
+        }
+      }
+      process.exit(0);
+    }
+
+    // --- Glob tool: check path parameter ---
+    if (toolName === 'Glob') {
+      const globPath = toolInput.path || '';
+      if (globPath) {
+        const result = checkFilePath(globPath, projectDir);
+        if (result.blocked) {
+          blockRead(globPath, result.reason);
+          return;
+        }
+      }
+      // Check pattern for protected file names
+      const globPattern = toolInput.pattern || '';
+      if (globPattern) {
+        for (const basename of BLOCKED_BASENAMES) {
+          if (globPattern.includes(basename)) {
+            blockRead(globPattern, `Glob pattern targets protected file "${basename}"`);
+            return;
+          }
+        }
+        for (const suffix of BLOCKED_PATH_SUFFIXES) {
+          if (globPattern.includes(suffix)) {
+            blockRead(globPattern, `Glob pattern targets protected path "${suffix}"`);
+            return;
+          }
+        }
+      }
       process.exit(0);
     }
 

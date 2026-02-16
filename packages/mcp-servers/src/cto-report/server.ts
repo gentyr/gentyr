@@ -204,59 +204,47 @@ function getTokenUsage(hours: number): TokenUsage {
     return totals;
   }
 
-  try {
-    const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
+  const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
 
-    for (const file of files) {
-      const filePath = path.join(sessionDir, file);
+  for (const file of files) {
+    const filePath = path.join(sessionDir, file);
 
-      // Check file modification time first - skip files not modified in time range
-      const stat = fs.statSync(filePath);
-      if (stat.mtime.getTime() < since) {
-        continue;
-      }
-
-      try {
-        const content = fs.readFileSync(filePath, 'utf8');
-        const lines = content.split('\n').filter(l => l.trim());
-
-        for (const line of lines) {
-          try {
-            const entry = JSON.parse(line) as SessionEntry;
-
-            // Check timestamp
-            if (entry.timestamp) {
-              const entryTime = new Date(entry.timestamp).getTime();
-              if (entryTime < since) {
-                continue;
-              }
-            }
-
-            // Extract usage
-            const usage = entry.message?.usage;
-            if (usage) {
-              totals.input += usage.input_tokens || 0;
-              totals.output += usage.output_tokens || 0;
-              totals.cache_read += usage.cache_read_input_tokens || 0;
-              totals.cache_creation += usage.cache_creation_input_tokens || 0;
-            }
-          } catch {
-            // Skip malformed lines
-          }
-        }
-      } catch (err) {
-        // G001: Log file read errors but continue
-        const message = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[cto-report] Error reading ${file}: ${message}\n`);
-      }
+    // Check file modification time first - skip files not modified in time range
+    const stat = fs.statSync(filePath);
+    if (stat.mtime.getTime() < since) {
+      continue;
     }
 
-    totals.total = totals.input + totals.output + totals.cache_read + totals.cache_creation;
-  } catch (err) {
-    // G001: Log directory read errors
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[cto-report] Error reading session dir: ${message}\n`);
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split('\n').filter(l => l.trim());
+
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as SessionEntry;
+
+        // Check timestamp
+        if (entry.timestamp) {
+          const entryTime = new Date(entry.timestamp).getTime();
+          if (entryTime < since) {
+            continue;
+          }
+        }
+
+        // Extract usage
+        const usage = entry.message?.usage;
+        if (usage) {
+          totals.input += usage.input_tokens || 0;
+          totals.output += usage.output_tokens || 0;
+          totals.cache_read += usage.cache_read_input_tokens || 0;
+          totals.cache_creation += usage.cache_creation_input_tokens || 0;
+        }
+      } catch {
+        // Skip malformed JSONL lines
+      }
+    }
   }
+
+  totals.total = totals.input + totals.output + totals.cache_read + totals.cache_creation;
 
   return totals;
 }
@@ -270,31 +258,23 @@ function getAutonomousModeStatus(): AutonomousModeStatus {
 
   // Get config
   if (fs.existsSync(AUTONOMOUS_CONFIG_PATH)) {
-    try {
-      const config = JSON.parse(fs.readFileSync(AUTONOMOUS_CONFIG_PATH, 'utf8')) as { enabled?: boolean };
-      enabled = config.enabled === true;
-    } catch {
-      // Config parse error
-    }
+    const config = JSON.parse(fs.readFileSync(AUTONOMOUS_CONFIG_PATH, 'utf8')) as { enabled?: boolean };
+    enabled = config.enabled === true;
   }
 
   // Get next run time
   let next_run_minutes: number | null = null;
   if (enabled && fs.existsSync(AUTOMATION_STATE_PATH)) {
-    try {
-      const state = JSON.parse(fs.readFileSync(AUTOMATION_STATE_PATH, 'utf8')) as { lastRun?: number };
-      const lastRun = state.lastRun || 0;
-      const now = Date.now();
-      const timeSinceLastRun = now - lastRun;
-      const cooldownMs = COOLDOWN_MINUTES * 60 * 1000;
+    const state = JSON.parse(fs.readFileSync(AUTOMATION_STATE_PATH, 'utf8')) as { lastRun?: number };
+    const lastRun = state.lastRun || 0;
+    const now = Date.now();
+    const timeSinceLastRun = now - lastRun;
+    const cooldownMs = COOLDOWN_MINUTES * 60 * 1000;
 
-      if (timeSinceLastRun >= cooldownMs) {
-        next_run_minutes = 0;
-      } else {
-        next_run_minutes = Math.ceil((cooldownMs - timeSinceLastRun) / 60000);
-      }
-    } catch {
-      // State file error
+    if (timeSinceLastRun >= cooldownMs) {
+      next_run_minutes = 0;
+    } else {
+      next_run_minutes = Math.ceil((cooldownMs - timeSinceLastRun) / 60000);
     }
   } else if (enabled) {
     next_run_minutes = 0; // First run
@@ -342,60 +322,48 @@ function getSessionMetricsData(hours: number): SessionMetrics {
     return metrics;
   }
 
-  try {
-    const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
+  const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
 
-    for (const file of files) {
-      const filePath = path.join(sessionDir, file);
+  for (const file of files) {
+    const filePath = path.join(sessionDir, file);
 
-      // Check file modification time - only count recent sessions
-      const stat = fs.statSync(filePath);
-      if (stat.mtime.getTime() < since) {
-        continue;
-      }
+    // Check file modification time - only count recent sessions
+    const stat = fs.statSync(filePath);
+    if (stat.mtime.getTime() < since) {
+      continue;
+    }
 
-      // Read file and detect task session by checking if first user message starts with [Task]
+    // Read file and detect task session by checking if first user message starts with [Task]
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split('\n').filter(l => l.trim());
+
+    let taskType: string | null = null;
+    for (const line of lines) {
       try {
-        const content = fs.readFileSync(filePath, 'utf8');
-        const lines = content.split('\n').filter(l => l.trim());
+        const entry = JSON.parse(line) as SessionEntry;
 
-        let taskType: string | null = null;
-        for (const line of lines) {
-          try {
-            const entry = JSON.parse(line) as SessionEntry;
+        // Look for first user message
+        if (entry.type === 'human' || entry.type === 'user') {
+          const messageContent = typeof entry.message?.content === 'string'
+            ? entry.message.content
+            : entry.content;
 
-            // Look for first user message
-            if (entry.type === 'human' || entry.type === 'user') {
-              const messageContent = typeof entry.message?.content === 'string'
-                ? entry.message.content
-                : entry.content;
-
-              if (messageContent) {
-                taskType = parseTaskType(messageContent);
-              }
-              break; // Stop after first user message
-            }
-          } catch {
-            // Skip malformed lines
+          if (messageContent) {
+            taskType = parseTaskType(messageContent);
           }
+          break; // Stop after first user message
         }
-
-        if (taskType !== null) {
-          metrics.task_triggered++;
-          metrics.task_by_type[taskType] = (metrics.task_by_type[taskType] || 0) + 1;
-        } else {
-          metrics.user_triggered++;
-        }
-      } catch (err) {
-        // G001: Log file read errors but continue
-        const message = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[cto-report] Error reading ${file}: ${message}\n`);
+      } catch {
+        // Skip malformed JSONL lines
       }
     }
-  } catch (err) {
-    // G001: Log directory read errors
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[cto-report] Error reading session dir: ${message}\n`);
+
+    if (taskType !== null) {
+      metrics.task_triggered++;
+      metrics.task_by_type[taskType] = (metrics.task_by_type[taskType] || 0) + 1;
+    } else {
+      metrics.user_triggered++;
+    }
   }
 
   return metrics;
@@ -419,53 +387,32 @@ function getPendingItems(): PendingItems {
 
   // Check deputy-cto database
   if (fs.existsSync(DEPUTY_CTO_DB_PATH)) {
-    try {
-      const db = new Database(DEPUTY_CTO_DB_PATH, { readonly: true });
+    const db = new Database(DEPUTY_CTO_DB_PATH, { readonly: true });
 
-      const pending = db.prepare(
-        "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
-      ).get() as CountResult | undefined;
+    const pending = db.prepare(
+      "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
+    ).get() as CountResult | undefined;
 
-      const rejections = db.prepare(
-        "SELECT COUNT(*) as count FROM questions WHERE type = 'rejection' AND status = 'pending'"
-      ).get() as CountResult | undefined;
+    const rejections = db.prepare(
+      "SELECT COUNT(*) as count FROM questions WHERE type = 'rejection' AND status = 'pending'"
+    ).get() as CountResult | undefined;
 
-      db.close();
+    db.close();
 
-      items.cto_questions = pending?.count || 0;
-      items.commit_rejections = rejections?.count || 0;
-      // Note: commits_blocked is set after we have all pending counts
-    } catch {
-      // Database error
-    }
+    items.cto_questions = pending?.count || 0;
+    items.commit_rejections = rejections?.count || 0;
   }
 
   // Check cto-reports database for pending triage (deputy-cto responsibility, not CTO)
   if (fs.existsSync(CTO_REPORTS_DB_PATH)) {
-    try {
-      const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
+    const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
 
-      // Check if triage_status column exists
-      const columns = db.pragma('table_info(reports)') as { name: string }[];
-      const hasTriageStatus = columns.some(c => c.name === 'triage_status');
+    const pending = db.prepare(
+      "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'pending'"
+    ).get() as CountResult | undefined;
+    items.pending_triage = pending?.count || 0;
 
-      if (hasTriageStatus) {
-        const pending = db.prepare(
-          "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'pending'"
-        ).get() as CountResult | undefined;
-        items.pending_triage = pending?.count || 0;
-      } else {
-        // Fallback for databases without triage_status
-        const pending = db.prepare(
-          "SELECT COUNT(*) as count FROM reports WHERE triaged_at IS NULL"
-        ).get() as CountResult | undefined;
-        items.pending_triage = pending?.count || 0;
-      }
-
-      db.close();
-    } catch {
-      // Database error
-    }
+    db.close();
   }
 
   // G020: Block commits when ANY pending items exist (questions OR triage)
@@ -494,73 +441,52 @@ function getTriageMetrics(): TriageMetrics {
     return metrics;
   }
 
-  try {
-    const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
-    const now = Date.now();
-    const cutoff24h = new Date(now - 24 * 60 * 60 * 1000).toISOString();
-    const cutoff7d = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
+  const now = Date.now();
+  const cutoff24h = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+  const cutoff7d = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-    // Check if triage_status column exists (migration may not have run)
-    const columns = db.pragma('table_info(reports)') as { name: string }[];
-    const hasTriageStatus = columns.some(c => c.name === 'triage_status');
+  const pending = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'pending'"
+  ).get() as CountResult | undefined;
+  metrics.pending = pending?.count || 0;
 
-    if (hasTriageStatus) {
-      // Current status counts
-      const pending = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'pending'"
-      ).get() as CountResult | undefined;
-      metrics.pending = pending?.count || 0;
+  const inProgress = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'in_progress'"
+  ).get() as CountResult | undefined;
+  metrics.in_progress = inProgress?.count || 0;
 
-      const inProgress = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'in_progress'"
-      ).get() as CountResult | undefined;
-      metrics.in_progress = inProgress?.count || 0;
+  const selfHandled24h = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'self_handled' AND triage_completed_at >= ?"
+  ).get(cutoff24h) as CountResult | undefined;
+  metrics.self_handled_24h = selfHandled24h?.count || 0;
 
-      // Self-handled counts
-      const selfHandled24h = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'self_handled' AND triage_completed_at >= ?"
-      ).get(cutoff24h) as CountResult | undefined;
-      metrics.self_handled_24h = selfHandled24h?.count || 0;
+  const selfHandled7d = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'self_handled' AND triage_completed_at >= ?"
+  ).get(cutoff7d) as CountResult | undefined;
+  metrics.self_handled_7d = selfHandled7d?.count || 0;
 
-      const selfHandled7d = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'self_handled' AND triage_completed_at >= ?"
-      ).get(cutoff7d) as CountResult | undefined;
-      metrics.self_handled_7d = selfHandled7d?.count || 0;
+  const escalated24h = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'escalated' AND triage_completed_at >= ?"
+  ).get(cutoff24h) as CountResult | undefined;
+  metrics.escalated_24h = escalated24h?.count || 0;
 
-      // Escalated counts
-      const escalated24h = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'escalated' AND triage_completed_at >= ?"
-      ).get(cutoff24h) as CountResult | undefined;
-      metrics.escalated_24h = escalated24h?.count || 0;
+  const escalated7d = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'escalated' AND triage_completed_at >= ?"
+  ).get(cutoff7d) as CountResult | undefined;
+  metrics.escalated_7d = escalated7d?.count || 0;
 
-      const escalated7d = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'escalated' AND triage_completed_at >= ?"
-      ).get(cutoff7d) as CountResult | undefined;
-      metrics.escalated_7d = escalated7d?.count || 0;
+  const dismissed24h = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'dismissed' AND triage_completed_at >= ?"
+  ).get(cutoff24h) as CountResult | undefined;
+  metrics.dismissed_24h = dismissed24h?.count || 0;
 
-      // Dismissed counts
-      const dismissed24h = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'dismissed' AND triage_completed_at >= ?"
-      ).get(cutoff24h) as CountResult | undefined;
-      metrics.dismissed_24h = dismissed24h?.count || 0;
+  const dismissed7d = db.prepare(
+    "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'dismissed' AND triage_completed_at >= ?"
+  ).get(cutoff7d) as CountResult | undefined;
+  metrics.dismissed_7d = dismissed7d?.count || 0;
 
-      const dismissed7d = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'dismissed' AND triage_completed_at >= ?"
-      ).get(cutoff7d) as CountResult | undefined;
-      metrics.dismissed_7d = dismissed7d?.count || 0;
-    } else {
-      // Fallback for databases without triage_status column
-      const pending = db.prepare(
-        "SELECT COUNT(*) as count FROM reports WHERE triaged_at IS NULL"
-      ).get() as CountResult | undefined;
-      metrics.pending = pending?.count || 0;
-    }
-
-    db.close();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[cto-report] Error reading triage metrics: ${message}\n`);
-  }
+  db.close();
 
   return metrics;
 }
@@ -594,56 +520,50 @@ function getTaskMetricsData(hours: number): TaskMetrics {
     return metrics;
   }
 
-  try {
-    const db = new Database(TODO_DB_PATH, { readonly: true });
+  const db = new Database(TODO_DB_PATH, { readonly: true });
 
-    // Get current task counts by section and status
-    const tasks = db.prepare(`
-      SELECT section, status, COUNT(*) as count
-      FROM tasks
-      GROUP BY section, status
-    `).all() as TaskCountRow[];
+  // Get current task counts by section and status
+  const tasks = db.prepare(`
+    SELECT section, status, COUNT(*) as count
+    FROM tasks
+    GROUP BY section, status
+  `).all() as TaskCountRow[];
 
-    for (const row of tasks) {
-      if (!metrics.by_section[row.section]) {
-        metrics.by_section[row.section] = { pending: 0, in_progress: 0, completed: 0 };
-      }
-      (metrics.by_section[row.section] as SectionTaskCounts)[row.status as keyof SectionTaskCounts] = row.count;
-
-      // Accumulate totals
-      if (row.status === 'pending') {
-        metrics.pending_total += row.count;
-      } else if (row.status === 'in_progress') {
-        metrics.in_progress_total += row.count;
-      } else if (row.status === 'completed') {
-        metrics.completed_total += row.count;
-      }
+  for (const row of tasks) {
+    if (!metrics.by_section[row.section]) {
+      metrics.by_section[row.section] = { pending: 0, in_progress: 0, completed: 0 };
     }
+    (metrics.by_section[row.section] as SectionTaskCounts)[row.status as keyof SectionTaskCounts] = row.count;
 
-    // Get completed tasks within time range
-    const since = Date.now() - (hours * 60 * 60 * 1000);
-    const sinceTimestamp = Math.floor(since / 1000);
-
-    const completed = db.prepare(`
-      SELECT section, COUNT(*) as count
-      FROM tasks
-      WHERE status = 'completed' AND completed_timestamp >= ?
-      GROUP BY section
-    `).all(sinceTimestamp) as CompletedCountRow[];
-
-    let total = 0;
-    for (const row of completed) {
-      metrics.completed_24h_by_section[row.section] = row.count;
-      total += row.count;
+    // Accumulate totals
+    if (row.status === 'pending') {
+      metrics.pending_total += row.count;
+    } else if (row.status === 'in_progress') {
+      metrics.in_progress_total += row.count;
+    } else if (row.status === 'completed') {
+      metrics.completed_total += row.count;
     }
-    metrics.completed_24h = total;
-
-    db.close();
-  } catch (err) {
-    // G001: Log errors
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[cto-report] Error reading todo db: ${message}\n`);
   }
+
+  // Get completed tasks within time range
+  const since = Date.now() - (hours * 60 * 60 * 1000);
+  const sinceTimestamp = Math.floor(since / 1000);
+
+  const completed = db.prepare(`
+    SELECT section, COUNT(*) as count
+    FROM tasks
+    WHERE status = 'completed' AND completed_timestamp >= ?
+    GROUP BY section
+  `).all(sinceTimestamp) as CompletedCountRow[];
+
+  let total = 0;
+  for (const row of completed) {
+    metrics.completed_24h_by_section[row.section] = row.count;
+    total += row.count;
+  }
+  metrics.completed_24h = total;
+
+  db.close();
 
   return metrics;
 }
@@ -704,29 +624,24 @@ function getAgentActivity(): AgentActivity {
     return result;
   }
 
-  try {
-    const content = fs.readFileSync(AGENT_TRACKER_PATH, 'utf8');
-    const history = JSON.parse(content) as AgentHistory;
+  const content = fs.readFileSync(AGENT_TRACKER_PATH, 'utf8');
+  const history = JSON.parse(content) as AgentHistory;
 
-    const now = Date.now();
-    const cutoff24h = now - 24 * 60 * 60 * 1000;
-    const cutoff7d = now - 7 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const cutoff24h = now - 24 * 60 * 60 * 1000;
+  const cutoff7d = now - 7 * 24 * 60 * 60 * 1000;
 
-    for (const agent of history.agents || []) {
-      const agentTime = new Date(agent.timestamp).getTime();
+  for (const agent of history.agents || []) {
+    const agentTime = new Date(agent.timestamp).getTime();
 
-      if (agentTime >= cutoff7d) {
-        result.spawns_7d++;
+    if (agentTime >= cutoff7d) {
+      result.spawns_7d++;
 
-        if (agentTime >= cutoff24h) {
-          result.spawns_24h++;
-          result.by_type[agent.type] = (result.by_type[agent.type] || 0) + 1;
-        }
+      if (agentTime >= cutoff24h) {
+        result.spawns_24h++;
+        result.by_type[agent.type] = (result.by_type[agent.type] || 0) + 1;
       }
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[cto-report] Error reading agent tracker: ${message}\n`);
   }
 
   return result;
@@ -759,47 +674,42 @@ function getHookExecutions(): HookExecutions {
     return result;
   }
 
-  try {
-    const content = fs.readFileSync(AGENT_TRACKER_PATH, 'utf8');
-    const history = JSON.parse(content) as HookHistory;
+  const content = fs.readFileSync(AGENT_TRACKER_PATH, 'utf8');
+  const history = JSON.parse(content) as HookHistory;
 
-    const now = Date.now();
-    const cutoff24h = now - 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const cutoff24h = now - 24 * 60 * 60 * 1000;
 
-    let successCount = 0;
+  let successCount = 0;
 
-    for (const exec of history.hookExecutions || []) {
-      const execTime = new Date(exec.timestamp).getTime();
-      if (execTime < cutoff24h) continue;
+  for (const exec of history.hookExecutions || []) {
+    const execTime = new Date(exec.timestamp).getTime();
+    if (execTime < cutoff24h) continue;
 
-      result.total_24h++;
-      if (exec.status === 'success') successCount++;
+    result.total_24h++;
+    if (exec.status === 'success') successCount++;
 
-      // Aggregate by hook
-      if (!result.by_hook[exec.hookType]) {
-        result.by_hook[exec.hookType] = { total: 0, success: 0, failure: 0 };
-      }
-      const stats = result.by_hook[exec.hookType];
-      stats.total++;
-      if (exec.status === 'success') stats.success++;
-      if (exec.status === 'failure') stats.failure++;
-
-      // Collect recent failures
-      if (exec.status === 'failure' && result.recent_failures.length < 5) {
-        result.recent_failures.push({
-          hook: exec.hookType,
-          error: exec.metadata?.error || 'Unknown error',
-          timestamp: exec.timestamp,
-        });
-      }
+    // Aggregate by hook
+    if (!result.by_hook[exec.hookType]) {
+      result.by_hook[exec.hookType] = { total: 0, success: 0, failure: 0 };
     }
+    const stats = result.by_hook[exec.hookType];
+    stats.total++;
+    if (exec.status === 'success') stats.success++;
+    if (exec.status === 'failure') stats.failure++;
 
-    if (result.total_24h > 0) {
-      result.success_rate = Math.round((successCount / result.total_24h) * 100);
+    // Collect recent failures
+    if (exec.status === 'failure' && result.recent_failures.length < 5) {
+      result.recent_failures.push({
+        hook: exec.hookType,
+        error: exec.metadata?.error || 'Unknown error',
+        timestamp: exec.timestamp,
+      });
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[cto-report] Error reading hook executions: ${message}\n`);
+  }
+
+  if (result.total_24h > 0) {
+    result.success_rate = Math.round((successCount / result.total_24h) * 100);
   }
 
   return result;
@@ -831,69 +741,63 @@ function getKeyRotationMetrics(hours: number): KeyRotationMetrics | null {
     return null;
   }
 
-  try {
-    const content = fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8');
-    const state = JSON.parse(content) as KeyRotationState;
+  const content = fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8');
+  const state = JSON.parse(content) as KeyRotationState;
 
-    if (!state || state.version !== 1 || typeof state.keys !== 'object') {
-      return null;
-    }
-
-    const now = Date.now();
-    const since = now - (hours * 60 * 60 * 1000);
-
-    // Only include active keys
-    const keys: TrackedKeyInfo[] = [];
-    let fiveHourSum = 0;
-    let sevenDaySum = 0;
-    let activeKeysWithData = 0;
-
-    for (const [keyId, keyData] of Object.entries(state.keys)) {
-      // Skip non-active keys
-      if (keyData.status !== 'active') continue;
-
-      const isCurrent = keyId === state.active_key_id;
-
-      keys.push({
-        key_id: `${keyId.slice(0, 8)}...`,
-        subscription_type: keyData.subscriptionType || 'unknown',
-        five_hour_pct: keyData.last_usage?.five_hour ?? null,
-        seven_day_pct: keyData.last_usage?.seven_day ?? null,
-        is_current: isCurrent,
-      });
-
-      // Accumulate for aggregate
-      if (keyData.last_usage) {
-        fiveHourSum += keyData.last_usage.five_hour ?? 0;
-        sevenDaySum += keyData.last_usage.seven_day ?? 0;
-        activeKeysWithData++;
-      }
-    }
-
-    // Count rotation events in time range
-    const rotationEvents24h = state.rotation_log.filter(
-      entry => entry.timestamp >= since && entry.event === 'key_switched'
-    ).length;
-
-    // Compute aggregate (% of total capacity)
-    const aggregate: AggregateQuota | null = activeKeysWithData > 0 ? {
-      active_keys: activeKeysWithData,
-      five_hour_pct: Math.round(fiveHourSum / activeKeysWithData),
-      seven_day_pct: Math.round(sevenDaySum / activeKeysWithData),
-    } : null;
-
-    return {
-      current_key_id: state.active_key_id ? `${state.active_key_id.slice(0, 8)}...` : null,
-      active_keys: keys.length,
-      keys,
-      rotation_events_24h: rotationEvents24h,
-      aggregate,
-    };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[cto-report] Error reading key rotation state: ${message}\n`);
-    return null;
+  if (!state || state.version !== 1 || typeof state.keys !== 'object') {
+    throw new Error(`Invalid key rotation state file at ${KEY_ROTATION_STATE_PATH}`);
   }
+
+  const now = Date.now();
+  const since = now - (hours * 60 * 60 * 1000);
+
+  // Only include active keys
+  const keys: TrackedKeyInfo[] = [];
+  let fiveHourSum = 0;
+  let sevenDaySum = 0;
+  let activeKeysWithData = 0;
+
+  for (const [keyId, keyData] of Object.entries(state.keys)) {
+    // Skip non-active keys
+    if (keyData.status !== 'active') continue;
+
+    const isCurrent = keyId === state.active_key_id;
+
+    keys.push({
+      key_id: `${keyId.slice(0, 8)}...`,
+      subscription_type: keyData.subscriptionType || 'unknown',
+      five_hour_pct: keyData.last_usage?.five_hour ?? null,
+      seven_day_pct: keyData.last_usage?.seven_day ?? null,
+      is_current: isCurrent,
+    });
+
+    // Accumulate for aggregate
+    if (keyData.last_usage) {
+      fiveHourSum += keyData.last_usage.five_hour ?? 0;
+      sevenDaySum += keyData.last_usage.seven_day ?? 0;
+      activeKeysWithData++;
+    }
+  }
+
+  // Count rotation events in time range
+  const rotationEvents24h = state.rotation_log.filter(
+    entry => entry.timestamp >= since && entry.event === 'key_switched'
+  ).length;
+
+  // Compute aggregate (% of total capacity)
+  const aggregate: AggregateQuota | null = activeKeysWithData > 0 ? {
+    active_keys: activeKeysWithData,
+    five_hour_pct: Math.round(fiveHourSum / activeKeysWithData),
+    seven_day_pct: Math.round(sevenDaySum / activeKeysWithData),
+  } : null;
+
+  return {
+    current_key_id: state.active_key_id ? `${state.active_key_id.slice(0, 8)}...` : null,
+    active_keys: keys.length,
+    keys,
+    rotation_events_24h: rotationEvents24h,
+    aggregate,
+  };
 }
 
 // ============================================================================
@@ -942,37 +846,32 @@ function getUsageProjection(): UsageProjection {
     return result;
   }
 
-  try {
-    const content = fs.readFileSync(AUTOMATION_CONFIG_PATH, 'utf8');
-    const config = JSON.parse(content) as AutomationConfigFile;
+  const content = fs.readFileSync(AUTOMATION_CONFIG_PATH, 'utf8');
+  const config = JSON.parse(content) as AutomationConfigFile;
 
-    if (!config || config.version !== 1) {
-      return result;
-    }
+  if (!config || config.version !== 1) {
+    throw new Error(`Invalid automation config at ${AUTOMATION_CONFIG_PATH}`);
+  }
 
-    // Merge defaults from config
-    if (config.defaults) {
-      Object.assign(defaults, config.defaults);
-      result.default_cooldowns = defaults;
-    }
+  // Merge defaults from config
+  if (config.defaults) {
+    Object.assign(defaults, config.defaults);
+    result.default_cooldowns = defaults;
+  }
 
-    // Merge effective (dynamically adjusted) values
-    if (config.effective) {
-      Object.assign(effective, config.defaults || {}, config.effective);
-      result.effective_cooldowns = effective;
-    }
+  // Merge effective (dynamically adjusted) values
+  if (config.effective) {
+    Object.assign(effective, config.defaults || {}, config.effective);
+    result.effective_cooldowns = effective;
+  }
 
-    // Extract adjustment info
-    if (config.adjustment) {
-      result.factor = config.adjustment.factor ?? 1.0;
-      result.target_pct = config.adjustment.target_pct ?? 90;
-      result.projected_at_reset_pct = config.adjustment.projected_at_reset ?? null;
-      result.constraining_metric = config.adjustment.constraining_metric ?? null;
-      result.last_updated = config.adjustment.last_updated ?? null;
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[cto-report] Error reading automation config: ${message}\n`);
+  // Extract adjustment info
+  if (config.adjustment) {
+    result.factor = config.adjustment.factor ?? 1.0;
+    result.target_pct = config.adjustment.target_pct ?? 90;
+    result.projected_at_reset_pct = config.adjustment.projected_at_reset ?? null;
+    result.constraining_metric = config.adjustment.constraining_metric ?? null;
+    result.last_updated = config.adjustment.last_updated ?? null;
   }
 
   return result;

@@ -10,8 +10,7 @@
  * - get_report_details
  * - get_feedback_overview
  *
- * Covers database reads, per-session DB access, satisfaction level handling,
- * and graceful degradation when satisfaction_level column is missing.
+ * Covers database reads, per-session DB access, and satisfaction level handling.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -96,66 +95,6 @@ CREATE TABLE IF NOT EXISTS feedback_sessions (
   findings_count INTEGER NOT NULL DEFAULT 0,
   report_ids TEXT NOT NULL DEFAULT '[]',
   satisfaction_level TEXT
-);
-`;
-
-const USER_FEEDBACK_SCHEMA_NO_SATISFACTION = `
-CREATE TABLE IF NOT EXISTS personas (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  description TEXT NOT NULL,
-  consumption_mode TEXT NOT NULL CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk')),
-  behavior_traits TEXT NOT NULL DEFAULT '[]',
-  endpoints TEXT NOT NULL DEFAULT '[]',
-  credentials_ref TEXT,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL,
-  created_timestamp INTEGER NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS features (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  description TEXT,
-  file_patterns TEXT NOT NULL DEFAULT '[]',
-  url_patterns TEXT NOT NULL DEFAULT '[]',
-  category TEXT,
-  created_at TEXT NOT NULL,
-  created_timestamp INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS persona_features (
-  persona_id TEXT NOT NULL REFERENCES personas(id),
-  feature_id TEXT NOT NULL REFERENCES features(id),
-  priority TEXT NOT NULL DEFAULT 'normal',
-  test_scenarios TEXT NOT NULL DEFAULT '[]',
-  PRIMARY KEY (persona_id, feature_id)
-);
-
-CREATE TABLE IF NOT EXISTS feedback_runs (
-  id TEXT PRIMARY KEY,
-  trigger_type TEXT NOT NULL,
-  trigger_ref TEXT,
-  changed_features TEXT NOT NULL DEFAULT '[]',
-  personas_triggered TEXT NOT NULL DEFAULT '[]',
-  status TEXT NOT NULL DEFAULT 'pending',
-  max_concurrent INTEGER NOT NULL DEFAULT 3,
-  started_at TEXT NOT NULL,
-  completed_at TEXT,
-  summary TEXT
-);
-
-CREATE TABLE IF NOT EXISTS feedback_sessions (
-  id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL REFERENCES feedback_runs(id),
-  persona_id TEXT NOT NULL REFERENCES personas(id),
-  agent_id TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',
-  started_at TEXT,
-  completed_at TEXT,
-  findings_count INTEGER NOT NULL DEFAULT 0,
-  report_ids TEXT NOT NULL DEFAULT '[]'
 );
 `;
 
@@ -324,38 +263,19 @@ function createSession(db: Database.Database, data: {
 }) {
   const id = data.id || randomUUID();
 
-  // Check if satisfaction_level column exists
-  const columns = db.pragma('table_info(feedback_sessions)') as { name: string }[];
-  const hasSatisfaction = columns.some(c => c.name === 'satisfaction_level');
-
-  if (hasSatisfaction) {
-    db.prepare(`
-      INSERT INTO feedback_sessions (id, run_id, persona_id, status, started_at, completed_at, findings_count, satisfaction_level)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      data.run_id,
-      data.persona_id,
-      data.status ?? 'pending',
-      data.started_at ?? null,
-      data.completed_at ?? null,
-      data.findings_count ?? 0,
-      data.satisfaction_level ?? null
-    );
-  } else {
-    db.prepare(`
-      INSERT INTO feedback_sessions (id, run_id, persona_id, status, started_at, completed_at, findings_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      data.run_id,
-      data.persona_id,
-      data.status ?? 'pending',
-      data.started_at ?? null,
-      data.completed_at ?? null,
-      data.findings_count ?? 0
-    );
-  }
+  db.prepare(`
+    INSERT INTO feedback_sessions (id, run_id, persona_id, status, started_at, completed_at, findings_count, satisfaction_level)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    data.run_id,
+    data.persona_id,
+    data.status ?? 'pending',
+    data.started_at ?? null,
+    data.completed_at ?? null,
+    data.findings_count ?? 0,
+    data.satisfaction_level ?? null
+  );
 
   return id;
 }
@@ -764,6 +684,12 @@ describe('Feedback Explorer MCP Server', () => {
         persona_id: personaId,
       });
 
+      // Create per-session DB (required since openSessionDb throws on missing)
+      const sessionDbPath = path.join(tempDir, '.claude', 'feedback-sessions', `${sessionId}.db`);
+      const sessionDb = new Database(sessionDbPath);
+      sessionDb.exec(SESSION_DB_SCHEMA);
+      sessionDb.close();
+
       // Insert session events
       sessionEventsDb.prepare(`
         INSERT INTO session_events (session_id, event_type, timestamp, input, output, duration_ms, metadata)
@@ -996,74 +922,53 @@ describe('Feedback Explorer MCP Server', () => {
   });
 
   // ==========================================================================
-  // Graceful Degradation Tests
+  // Fail-Loud Tests
   // ==========================================================================
 
-  describe('graceful degradation without satisfaction_level column', () => {
-    it('should handle missing satisfaction_level column in list_feedback_personas', () => {
-      const oldDb = createTestDb(USER_FEEDBACK_SCHEMA_NO_SATISFACTION);
-      const config: FeedbackExplorerConfig = { projectDir, userFeedbackDb: oldDb, ctoReportsDb, sessionEventsDb };
+  describe('fail-loud behavior', () => {
+    it('should return error when per-session DB is missing', () => {
+      const config: FeedbackExplorerConfig = { projectDir, userFeedbackDb, ctoReportsDb, sessionEventsDb };
       const server = createFeedbackExplorerServer(config);
 
-      const personaId = createPersona(oldDb, { name: 'test-user', description: 'Test', consumption_mode: 'gui' });
-      const runId = createRun(oldDb, {});
-      createSession(oldDb, { run_id: runId, persona_id: personaId, findings_count: 5 });
+      const personaId = createPersona(userFeedbackDb, { name: 'test-user', description: 'Test', consumption_mode: 'gui' });
+      const runId = createRun(userFeedbackDb, {});
+      const sessionId = createSession(userFeedbackDb, { run_id: runId, persona_id: personaId });
 
-      const result = callTool<ListFeedbackPersonasResult>(server, 'list_feedback_personas', {});
-
-      expect(result.personas).toHaveLength(1);
-      expect(result.personas[0].latest_satisfaction).toBeNull();
-      expect(result.personas[0].session_count).toBe(1);
-
-      oldDb.close();
-    });
-
-    it('should handle missing satisfaction_level column in get_persona_details', () => {
-      const oldDb = createTestDb(USER_FEEDBACK_SCHEMA_NO_SATISFACTION);
-      const config: FeedbackExplorerConfig = { projectDir, userFeedbackDb: oldDb, ctoReportsDb, sessionEventsDb };
-      const server = createFeedbackExplorerServer(config);
-
-      const personaId = createPersona(oldDb, { name: 'test-user', description: 'Test', consumption_mode: 'gui' });
-      const runId = createRun(oldDb, {});
-      createSession(oldDb, {
-        run_id: runId,
-        persona_id: personaId,
-        completed_at: new Date().toISOString(),
+      // Session exists in main DB but no per-session DB file on disk
+      const result = callTool<GetSessionDetailsResult | ErrorResult>(server, 'get_session_details', {
+        session_id: sessionId,
       });
 
-      const result = callTool<PersonaDetails>(server, 'get_persona_details', { persona_id: personaId });
-
-      expect(result.recent_sessions).toHaveLength(1);
-      expect(result.recent_sessions[0].satisfaction_level).toBeNull();
-      expect(result.satisfaction_history).toHaveLength(0);
-
-      oldDb.close();
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('Session database not found');
+      }
     });
 
-    it('should handle missing satisfaction_level column in get_feedback_overview', () => {
-      const oldDb = createTestDb(USER_FEEDBACK_SCHEMA_NO_SATISFACTION);
-      const config: FeedbackExplorerConfig = { projectDir, userFeedbackDb: oldDb, ctoReportsDb, sessionEventsDb };
+    it('should return error when session-events.db is missing and audit is requested', () => {
+      // Create server WITHOUT sessionEventsDb override — it will look for file on disk
+      const config: FeedbackExplorerConfig = { projectDir, userFeedbackDb, ctoReportsDb };
       const server = createFeedbackExplorerServer(config);
 
-      const personaId = createPersona(oldDb, { name: 'test-user', description: 'Test', consumption_mode: 'gui' });
-      const runId = createRun(oldDb, {});
-      createSession(oldDb, {
-        run_id: runId,
-        persona_id: personaId,
-        started_at: new Date().toISOString(),
+      const personaId = createPersona(userFeedbackDb, { name: 'test-user', description: 'Test', consumption_mode: 'gui' });
+      const runId = createRun(userFeedbackDb, {});
+      const sessionId = createSession(userFeedbackDb, { run_id: runId, persona_id: personaId });
+
+      // Create per-session DB so openSessionDb doesn't throw
+      const sessionDbPath = path.join(tempDir, '.claude', 'feedback-sessions', `${sessionId}.db`);
+      const sessionDb = new Database(sessionDbPath);
+      sessionDb.exec(SESSION_DB_SCHEMA);
+      sessionDb.close();
+
+      const result = callTool<GetSessionDetailsResult | ErrorResult>(server, 'get_session_details', {
+        session_id: sessionId,
+        include_audit: true,
       });
 
-      const result = callTool<GetFeedbackOverviewResult>(server, 'get_feedback_overview', { hours: 168 });
-
-      expect(result.satisfaction_distribution.very_satisfied).toBe(0);
-      expect(result.satisfaction_distribution.satisfied).toBe(0);
-      expect(result.satisfaction_distribution.neutral).toBe(0);
-      expect(result.satisfaction_distribution.dissatisfied).toBe(0);
-      expect(result.satisfaction_distribution.very_dissatisfied).toBe(0);
-
-      expect(result.recent_session_list[0].satisfaction_level).toBeNull();
-
-      oldDb.close();
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('session-events.db not found');
+      }
     });
   });
 });

@@ -114,14 +114,14 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
     return _ctoReportsDb;
   }
 
-  function getSessionEventsDb(): Database.Database | null {
+  function getSessionEventsDb(): Database.Database {
     if (!_sessionEventsDb) {
       if (config.sessionEventsDb) {
         _sessionEventsDb = config.sessionEventsDb;
       } else {
         const dbPath = path.join(config.projectDir, '.claude', 'session-events.db');
         if (!fs.existsSync(dbPath)) {
-          return null;
+          throw new Error(`session-events.db not found at ${dbPath}`);
         }
         _sessionEventsDb = new Database(dbPath, { readonly: true });
       }
@@ -144,19 +144,13 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
     }
   }
 
-  function openSessionDb(sessionId: string): Database.Database | null {
+  function openSessionDb(sessionId: string): Database.Database {
     const sessionsDir = path.join(config.projectDir, '.claude', 'feedback-sessions');
     const sessionDbPath = path.join(sessionsDir, `${sessionId}.db`);
     if (!fs.existsSync(sessionDbPath)) {
-      return null;
+      throw new Error(`Session database not found at ${sessionDbPath}`);
     }
     return new Database(sessionDbPath, { readonly: true });
-  }
-
-  function hasSatisfactionLevelColumn(db: Database.Database): boolean {
-    interface ColumnInfo { name: string }
-    const columns = db.pragma('table_info(feedback_sessions)') as ColumnInfo[];
-    return columns.some(c => c.name === 'satisfaction_level');
   }
 
   // ============================================================================
@@ -166,7 +160,6 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
   function listFeedbackPersonas(args: ListFeedbackPersonasArgs): ListFeedbackPersonasResult | ErrorResult {
     try {
       const db = getUserFeedbackDb();
-      const hasSatisfaction = hasSatisfactionLevelColumn(db);
 
       let sql = `
         SELECT
@@ -177,8 +170,8 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
           p.enabled,
           p.created_at,
           COUNT(DISTINCT fs.id) as session_count,
-          COALESCE(SUM(fs.findings_count), 0) as findings_count
-          ${hasSatisfaction ? `, (SELECT fs2.satisfaction_level FROM feedback_sessions fs2 WHERE fs2.persona_id = p.id AND fs2.satisfaction_level IS NOT NULL AND fs2.completed_at IS NOT NULL ORDER BY fs2.completed_at DESC LIMIT 1) as latest_satisfaction` : ''}
+          COALESCE(SUM(fs.findings_count), 0) as findings_count,
+          (SELECT fs2.satisfaction_level FROM feedback_sessions fs2 WHERE fs2.persona_id = p.id AND fs2.satisfaction_level IS NOT NULL AND fs2.completed_at IS NOT NULL ORDER BY fs2.completed_at DESC LIMIT 1) as latest_satisfaction
         FROM personas p
         LEFT JOIN feedback_sessions fs ON fs.persona_id = p.id
       `;
@@ -222,7 +215,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
         enabled: row.enabled === 1,
         session_count: row.session_count,
         findings_count: row.findings_count,
-        latest_satisfaction: hasSatisfaction ? (row.latest_satisfaction ?? null) : null,
+        latest_satisfaction: row.latest_satisfaction ?? null,
         created_at: row.created_at,
       }));
 
@@ -236,7 +229,6 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
   function getPersonaDetails(args: GetPersonaDetailsArgs): PersonaDetails | ErrorResult {
     try {
       const db = getUserFeedbackDb();
-      const hasSatisfaction = hasSatisfactionLevelColumn(db);
 
       const persona = db.prepare('SELECT * FROM personas WHERE id = ?').get(args.persona_id) as PersonaRecord | undefined;
 
@@ -274,9 +266,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
       }));
 
       // Get recent sessions (last 5)
-      const sessionSql = hasSatisfaction
-        ? 'SELECT id, status, started_at, completed_at, findings_count, satisfaction_level FROM feedback_sessions WHERE persona_id = ? ORDER BY started_at DESC LIMIT 5'
-        : 'SELECT id, status, started_at, completed_at, findings_count FROM feedback_sessions WHERE persona_id = ? ORDER BY started_at DESC LIMIT 5';
+      const sessionSql = 'SELECT id, status, started_at, completed_at, findings_count, satisfaction_level FROM feedback_sessions WHERE persona_id = ? ORDER BY started_at DESC LIMIT 5';
 
       interface SessionRow {
         id: string;
@@ -295,32 +285,29 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
         started_at: s.started_at,
         completed_at: s.completed_at,
         findings_count: s.findings_count,
-        satisfaction_level: hasSatisfaction ? (s.satisfaction_level ?? null) : null,
+        satisfaction_level: s.satisfaction_level ?? null,
       }));
 
       // Get satisfaction history
-      const satisfaction_history: SatisfactionHistory[] = [];
-      if (hasSatisfaction) {
-        interface SatisfactionRow {
-          id: string;
-          satisfaction_level: SatisfactionLevel;
-          completed_at: string;
-        }
-
-        const satisfactionRows = db.prepare(`
-          SELECT id, satisfaction_level, completed_at
-          FROM feedback_sessions
-          WHERE persona_id = ? AND satisfaction_level IS NOT NULL
-          ORDER BY completed_at DESC
-          LIMIT 10
-        `).all(args.persona_id) as SatisfactionRow[];
-
-        satisfaction_history.push(...satisfactionRows.map(s => ({
-          session_id: s.id,
-          satisfaction_level: s.satisfaction_level,
-          completed_at: s.completed_at,
-        })));
+      interface SatisfactionRow {
+        id: string;
+        satisfaction_level: SatisfactionLevel;
+        completed_at: string;
       }
+
+      const satisfactionRows = db.prepare(`
+        SELECT id, satisfaction_level, completed_at
+        FROM feedback_sessions
+        WHERE persona_id = ? AND satisfaction_level IS NOT NULL
+        ORDER BY completed_at DESC
+        LIMIT 10
+      `).all(args.persona_id) as SatisfactionRow[];
+
+      const satisfaction_history: SatisfactionHistory[] = satisfactionRows.map(s => ({
+        session_id: s.id,
+        satisfaction_level: s.satisfaction_level,
+        completed_at: s.completed_at,
+      }));
 
       return {
         id: persona.id,
@@ -346,11 +333,8 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
   function listPersonaSessions(args: ListPersonaSessionsArgs): ListPersonaSessionsResult | ErrorResult {
     try {
       const db = getUserFeedbackDb();
-      const hasSatisfaction = hasSatisfactionLevelColumn(db);
 
-      const sessionSql = hasSatisfaction
-        ? 'SELECT id, run_id, status, started_at, completed_at, findings_count, satisfaction_level FROM feedback_sessions WHERE persona_id = ? ORDER BY started_at DESC LIMIT ? OFFSET ?'
-        : 'SELECT id, run_id, status, started_at, completed_at, findings_count FROM feedback_sessions WHERE persona_id = ? ORDER BY started_at DESC LIMIT ? OFFSET ?';
+      const sessionSql = 'SELECT id, run_id, status, started_at, completed_at, findings_count, satisfaction_level FROM feedback_sessions WHERE persona_id = ? ORDER BY started_at DESC LIMIT ? OFFSET ?';
 
       interface SessionRow {
         id: string;
@@ -371,7 +355,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
         started_at: row.started_at,
         completed_at: row.completed_at,
         findings_count: row.findings_count,
-        satisfaction_level: hasSatisfaction ? (row.satisfaction_level ?? null) : null,
+        satisfaction_level: row.satisfaction_level ?? null,
       }));
 
       return { sessions, total: sessions.length };
@@ -397,14 +381,10 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
       // Open per-session DB to read findings and summary
       const sessionDb = openSessionDb(args.session_id);
 
-      let findings: Finding[] = [];
-      let summary: Summary | null = null;
+      // Read findings
+      const findingRows = sessionDb.prepare('SELECT * FROM findings ORDER BY created_at ASC').all() as FindingRecord[];
 
-      if (sessionDb) {
-        // Read findings
-        const findingRows = sessionDb.prepare('SELECT * FROM findings ORDER BY created_at ASC').all() as FindingRecord[];
-
-        findings = findingRows.map(f => {
+      const findings = findingRows.map(f => {
           const finding: Finding = {
             id: f.id,
             title: f.title,
@@ -442,29 +422,29 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
           return finding;
         });
 
-        // Read summary
-        const summaryRow = sessionDb.prepare('SELECT * FROM session_summary WHERE id = ?').get('summary') as SessionSummaryRecord | undefined;
+      // Read summary
+      const summaryRow = sessionDb.prepare('SELECT * FROM session_summary WHERE id = ?').get('summary') as SessionSummaryRecord | undefined;
 
-        if (summaryRow) {
-          summary = {
-            overall_impression: summaryRow.overall_impression,
-            areas_tested: JSON.parse(summaryRow.areas_tested) as string[],
-            areas_not_tested: JSON.parse(summaryRow.areas_not_tested) as string[],
-            confidence: summaryRow.confidence,
-            created_at: summaryRow.created_at,
-          };
+      let summary: Summary | null = null;
+      if (summaryRow) {
+        summary = {
+          overall_impression: summaryRow.overall_impression,
+          areas_tested: JSON.parse(summaryRow.areas_tested) as string[],
+          areas_not_tested: JSON.parse(summaryRow.areas_not_tested) as string[],
+          confidence: summaryRow.confidence,
+          created_at: summaryRow.created_at,
+        };
 
-          if (summaryRow.summary_notes) {
-            summary.summary_notes = summaryRow.summary_notes;
-          }
-
-          if (summaryRow.satisfaction_level) {
-            summary.satisfaction_level = summaryRow.satisfaction_level;
-          }
+        if (summaryRow.summary_notes) {
+          summary.summary_notes = summaryRow.summary_notes;
         }
 
-        sessionDb.close();
+        if (summaryRow.satisfaction_level) {
+          summary.satisfaction_level = summaryRow.satisfaction_level;
+        }
       }
+
+      sessionDb.close();
 
       const result: GetSessionDetailsResult = {
         session_id: args.session_id,
@@ -481,89 +461,88 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
       // Include audit trail if requested
       if (args.include_audit) {
         const eventsDb = getSessionEventsDb();
-        if (eventsDb) {
-          interface EventRow {
-            timestamp: string;
-            input: string | null;
-            output: string | null;
-            error: string | null;
-            duration_ms: number | null;
-            metadata: string | null;
-          }
 
-          const eventRows = eventsDb.prepare(`
-            SELECT timestamp, input, output, error, duration_ms, metadata
-            FROM session_events
-            WHERE session_id = ? AND event_type IN ('mcp_tool_call', 'mcp_tool_error')
-            ORDER BY timestamp ASC
-          `).all(args.session_id) as EventRow[];
-
-          const events: AuditEvent[] = [];
-          let totalDuration = 0;
-
-          for (const event of eventRows) {
-            let inputData: Record<string, unknown> = {};
-            let outputData: unknown = null;
-            let errorData: unknown = null;
-            let metadataData: Record<string, unknown> = {};
-
-            try {
-              if (event.input) {
-                inputData = JSON.parse(event.input) as Record<string, unknown>;
-              }
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              process.stderr.write(`[feedback-explorer] Failed to parse audit input JSON: ${msg}\n`);
-            }
-
-            try {
-              if (event.output) {
-                outputData = JSON.parse(event.output) as unknown;
-              }
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              process.stderr.write(`[feedback-explorer] Failed to parse audit output JSON: ${msg}\n`);
-            }
-
-            try {
-              if (event.error) {
-                errorData = JSON.parse(event.error) as unknown;
-              }
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              process.stderr.write(`[feedback-explorer] Failed to parse audit error JSON: ${msg}\n`);
-            }
-
-            try {
-              if (event.metadata) {
-                metadataData = JSON.parse(event.metadata) as Record<string, unknown>;
-              }
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              process.stderr.write(`[feedback-explorer] Failed to parse audit metadata JSON: ${msg}\n`);
-            }
-
-            events.push({
-              timestamp: event.timestamp,
-              tool: (inputData.tool as string) || (inputData.name as string) || 'unknown',
-              args: inputData.args || inputData.arguments || null,
-              result: outputData,
-              error: errorData,
-              duration_ms: event.duration_ms,
-              mcp_server: (metadataData.mcp_server as string) || null,
-            });
-
-            if (event.duration_ms) {
-              totalDuration += event.duration_ms;
-            }
-          }
-
-          result.audit_trail = {
-            total_actions: events.length,
-            total_duration_ms: totalDuration,
-            events,
-          };
+        interface EventRow {
+          timestamp: string;
+          input: string | null;
+          output: string | null;
+          error: string | null;
+          duration_ms: number | null;
+          metadata: string | null;
         }
+
+        const eventRows = eventsDb.prepare(`
+          SELECT timestamp, input, output, error, duration_ms, metadata
+          FROM session_events
+          WHERE session_id = ? AND event_type IN ('mcp_tool_call', 'mcp_tool_error')
+          ORDER BY timestamp ASC
+        `).all(args.session_id) as EventRow[];
+
+        const events: AuditEvent[] = [];
+        let totalDuration = 0;
+
+        for (const event of eventRows) {
+          let inputData: Record<string, unknown> = {};
+          let outputData: unknown = null;
+          let errorData: unknown = null;
+          let metadataData: Record<string, unknown> = {};
+
+          try {
+            if (event.input) {
+              inputData = JSON.parse(event.input) as Record<string, unknown>;
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`[feedback-explorer] Failed to parse audit input JSON: ${msg}\n`);
+          }
+
+          try {
+            if (event.output) {
+              outputData = JSON.parse(event.output) as unknown;
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`[feedback-explorer] Failed to parse audit output JSON: ${msg}\n`);
+          }
+
+          try {
+            if (event.error) {
+              errorData = JSON.parse(event.error) as unknown;
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`[feedback-explorer] Failed to parse audit error JSON: ${msg}\n`);
+          }
+
+          try {
+            if (event.metadata) {
+              metadataData = JSON.parse(event.metadata) as Record<string, unknown>;
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`[feedback-explorer] Failed to parse audit metadata JSON: ${msg}\n`);
+          }
+
+          events.push({
+            timestamp: event.timestamp,
+            tool: (inputData.tool as string) || (inputData.name as string) || 'unknown',
+            args: inputData.args || inputData.arguments || null,
+            result: outputData,
+            error: errorData,
+            duration_ms: event.duration_ms,
+            mcp_server: (metadataData.mcp_server as string) || null,
+          });
+
+          if (event.duration_ms) {
+            totalDuration += event.duration_ms;
+          }
+        }
+
+        result.audit_trail = {
+          total_actions: events.length,
+          total_duration_ms: totalDuration,
+          events,
+        };
       }
 
       return result;
@@ -650,7 +629,6 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
   function getFeedbackOverview(args: GetFeedbackOverviewArgs): GetFeedbackOverviewResult | ErrorResult {
     try {
       const db = getUserFeedbackDb();
-      const hasSatisfaction = hasSatisfactionLevelColumn(db);
 
       // Time window
       const cutoffTime = new Date(Date.now() - args.hours * 60 * 60 * 1000).toISOString();
@@ -678,40 +656,29 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
         very_dissatisfied: 0,
       };
 
-      if (hasSatisfaction) {
-        interface SatisfactionCount { satisfaction_level: SatisfactionLevel; count: number }
-        const satisfactionCounts = db.prepare(`
-          SELECT satisfaction_level, COUNT(*) as count
-          FROM feedback_sessions
-          WHERE satisfaction_level IS NOT NULL
-          GROUP BY satisfaction_level
-        `).all() as SatisfactionCount[];
+      interface SatisfactionCount { satisfaction_level: SatisfactionLevel; count: number }
+      const satisfactionCounts = db.prepare(`
+        SELECT satisfaction_level, COUNT(*) as count
+        FROM feedback_sessions
+        WHERE satisfaction_level IS NOT NULL
+        GROUP BY satisfaction_level
+      `).all() as SatisfactionCount[];
 
-        for (const row of satisfactionCounts) {
-          if (row.satisfaction_level in satisfaction_distribution) {
-            satisfaction_distribution[row.satisfaction_level] = row.count;
-          }
+      for (const row of satisfactionCounts) {
+        if (row.satisfaction_level in satisfaction_distribution) {
+          satisfaction_distribution[row.satisfaction_level] = row.count;
         }
       }
 
       // Recent session list
-      const sessionSql = hasSatisfaction
-        ? `
-          SELECT fs.id, p.name as persona_name, fs.status, fs.completed_at, fs.findings_count, fs.satisfaction_level
-          FROM feedback_sessions fs
-          JOIN personas p ON p.id = fs.persona_id
-          WHERE fs.started_at >= ?
-          ORDER BY fs.started_at DESC
-          LIMIT 10
-        `
-        : `
-          SELECT fs.id, p.name as persona_name, fs.status, fs.completed_at, fs.findings_count
-          FROM feedback_sessions fs
-          JOIN personas p ON p.id = fs.persona_id
-          WHERE fs.started_at >= ?
-          ORDER BY fs.started_at DESC
-          LIMIT 10
-        `;
+      const sessionSql = `
+        SELECT fs.id, p.name as persona_name, fs.status, fs.completed_at, fs.findings_count, fs.satisfaction_level
+        FROM feedback_sessions fs
+        JOIN personas p ON p.id = fs.persona_id
+        WHERE fs.started_at >= ?
+        ORDER BY fs.started_at DESC
+        LIMIT 10
+      `;
 
       interface SessionRow {
         id: string;
@@ -730,7 +697,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
         status: s.status,
         completed_at: s.completed_at,
         findings_count: s.findings_count,
-        satisfaction_level: hasSatisfaction ? (s.satisfaction_level ?? null) : null,
+        satisfaction_level: s.satisfaction_level ?? null,
       }));
 
       return {

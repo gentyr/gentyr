@@ -18,6 +18,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 // Patterns that indicate hook bypass attempts
 const forbiddenPatterns = [
@@ -51,7 +52,44 @@ const credentialAccessPatterns = [
 ];
 
 /**
- * Check if a valid CTO bypass token exists.
+ * Load the protection key for HMAC verification.
+ * @param {string} projectDir
+ * @returns {string|null} Base64-encoded key or null
+ */
+function loadProtectionKey(projectDir) {
+  try {
+    const keyPath = path.join(projectDir, '.claude', 'protection-key');
+    if (!fs.existsSync(keyPath)) {
+      return null;
+    }
+    return fs.readFileSync(keyPath, 'utf8').trim();
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Compute HMAC-SHA256 over pipe-delimited fields.
+ * @param {string} key - Base64-encoded key
+ * @param {...string} fields - Fields to include in HMAC
+ * @returns {string} Hex-encoded HMAC
+ */
+function computeHmac(key, ...fields) {
+  const keyBuffer = Buffer.from(key, 'base64');
+  return crypto.createHmac('sha256', keyBuffer)
+    .update(fields.join('|'))
+    .digest('hex');
+}
+
+/**
+ * Check if a valid, HMAC-verified CTO bypass token exists.
+ * Consumes the token on successful verification (one-time use).
+ *
+ * SECURITY FIX (H1): Now verifies HMAC-SHA256 signature to prevent agent forgery.
+ * Previously only checked expiry, allowing agents to write fake tokens.
+ *
+ * SECURITY FIX (H2): Token is consumed (deleted) on use, preventing reuse
+ * across different blocked actions.
  */
 function hasValidBypassToken(projectDir) {
   try {
@@ -63,12 +101,41 @@ function hasValidBypassToken(projectDir) {
 
     const token = JSON.parse(fs.readFileSync(tokenPath, 'utf-8'));
 
+    // Check expiry
     if (token.expires_timestamp && Date.now() > token.expires_timestamp) {
+      // Clean up expired token
+      try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
       return false;
     }
     if (token.expires_at && new Date(token.expires_at).getTime() < Date.now()) {
+      try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
       return false;
     }
+
+    // Verify required fields
+    if (!token.code || !token.request_id || !token.expires_timestamp) {
+      console.error('[block-no-verify] FORGERY DETECTED: Token missing required fields. Deleting.');
+      try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
+      return false;
+    }
+
+    // HMAC verification: ensure token was created by the bypass-approval-hook
+    const key = loadProtectionKey(projectDir);
+    if (key) {
+      const expectedHmac = computeHmac(key, token.code, token.request_id, String(token.expires_timestamp), 'bypass-approved');
+      if (token.hmac !== expectedHmac) {
+        console.error('[block-no-verify] FORGERY DETECTED: Invalid HMAC on bypass token. Deleting.');
+        try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
+        return false;
+      }
+    } else if (token.hmac) {
+      // G001 Fail-Closed: Token has HMAC but we can't verify (protection key missing)
+      console.error('[block-no-verify] G001 FAIL-CLOSED: Cannot verify bypass token HMAC (protection key missing). Rejecting.');
+      return false;
+    }
+
+    // Token is valid - consume it (one-time use)
+    try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
 
     return true;
   } catch {
