@@ -11,7 +11,7 @@ import { z } from 'zod';
 // ============================================================================
 
 export const ListFeedbackPersonasArgsSchema = z.object({
-  enabled_only: z.boolean().optional().default(false)
+  enabled_only: z.coerce.boolean().optional().default(false)
     .describe('Only show enabled personas'),
   consumption_mode: z.enum(['gui', 'cli', 'api', 'sdk']).optional()
     .describe('Filter by consumption mode'),
@@ -23,19 +23,19 @@ export const GetPersonaDetailsArgsSchema = z.object({
 
 export const ListPersonaSessionsArgsSchema = z.object({
   persona_id: z.string().describe('Persona UUID'),
-  limit: z.number().min(1).max(100).optional().default(20),
-  offset: z.number().min(0).optional().default(0),
+  limit: z.coerce.number().min(1).max(100).optional().default(20),
+  offset: z.coerce.number().min(0).optional().default(0),
 });
 
 export const GetSessionDetailsArgsSchema = z.object({
   session_id: z.string().describe('Feedback session UUID'),
-  include_audit: z.boolean().optional().default(false)
+  include_audit: z.coerce.boolean().optional().default(false)
     .describe('Include audit trail summary (tool calls made during session)'),
 });
 
 export const ListPersonaReportsArgsSchema = z.object({
   persona_name: z.string().describe('Persona name (matches reporting_agent pattern)'),
-  limit: z.number().min(1).max(100).optional().default(20),
+  limit: z.coerce.number().min(1).max(100).optional().default(20),
 });
 
 export const GetReportDetailsArgsSchema = z.object({
@@ -43,7 +43,7 @@ export const GetReportDetailsArgsSchema = z.object({
 });
 
 export const GetFeedbackOverviewArgsSchema = z.object({
-  hours: z.number().min(1).max(720).optional().default(168)
+  hours: z.coerce.number().min(1).max(720).optional().default(168)
     .describe('Time window for recent activity (default: 168 = 7 days)'),
 });
 

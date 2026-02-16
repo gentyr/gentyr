@@ -23,7 +23,7 @@ export type FeedbackMode = (typeof FEEDBACK_MODES)[number];
 
 export const CliRunArgsSchema = z.object({
   args: z.array(z.string()).describe('Command-line arguments to pass to the CLI'),
-  timeout: z.number().min(1000).max(300000).optional().default(30000)
+  timeout: z.coerce.number().min(1000).max(300000).optional().default(30000)
     .describe('Timeout in milliseconds (default: 30000ms, max: 300000ms)'),
 });
 
@@ -31,7 +31,7 @@ export const CliRunInteractiveArgsSchema = z.object({
   args: z.array(z.string()).describe('Command-line arguments to pass to the CLI'),
   input_lines: z.array(z.string()).max(100)
     .describe('Lines of input to send to stdin (for interactive CLI sessions)'),
-  timeout: z.number().min(1000).max(300000).optional().default(30000)
+  timeout: z.coerce.number().min(1000).max(300000).optional().default(30000)
     .describe('Timeout in milliseconds (default: 30000ms, max: 300000ms)'),
 });
 
@@ -39,26 +39,37 @@ export const CliRunInteractiveArgsSchema = z.object({
 // API Tool Schemas
 // ============================================================================
 
+/**
+ * Preprocess values that may arrive as JSON strings (e.g. from Sonnet)
+ * into parsed objects before Zod validation.
+ */
+const jsonStringToObject = (val: unknown) => {
+  if (typeof val === 'string') {
+    try { return JSON.parse(val); } catch { return val; }
+  }
+  return val;
+};
+
 export const ApiRequestArgsSchema = z.object({
   method: z.enum(HTTP_METHODS).describe('HTTP method'),
   path: z.string().max(2000)
     .describe('Request path (prepended with FEEDBACK_API_BASE_URL, must stay within base URL)'),
-  body: z.record(z.unknown()).optional()
-    .describe('Request body (JSON object)'),
-  headers: z.record(z.string()).optional()
-    .describe('Additional request headers'),
-  timeout: z.number().min(1000).max(300000).optional().default(30000)
+  body: z.preprocess(jsonStringToObject, z.record(z.unknown()).optional())
+    .describe('Request body (JSON object or JSON string)'),
+  headers: z.preprocess(jsonStringToObject, z.record(z.string()).optional())
+    .describe('Additional request headers (object or JSON string)'),
+  timeout: z.coerce.number().min(1000).max(300000).optional().default(30000)
     .describe('Timeout in milliseconds (default: 30000ms, max: 300000ms)'),
 });
 
 export const ApiGraphqlArgsSchema = z.object({
   query: z.string().max(50000)
     .describe('GraphQL query or mutation'),
-  variables: z.record(z.unknown()).optional()
-    .describe('GraphQL variables'),
-  headers: z.record(z.string()).optional()
-    .describe('Additional request headers'),
-  timeout: z.number().min(1000).max(300000).optional().default(30000)
+  variables: z.preprocess(jsonStringToObject, z.record(z.unknown()).optional())
+    .describe('GraphQL variables (object or JSON string)'),
+  headers: z.preprocess(jsonStringToObject, z.record(z.string()).optional())
+    .describe('Additional request headers (object or JSON string)'),
+  timeout: z.coerce.number().min(1000).max(300000).optional().default(30000)
     .describe('Timeout in milliseconds (default: 30000ms, max: 300000ms)'),
 });
 
@@ -69,7 +80,7 @@ export const ApiGraphqlArgsSchema = z.object({
 export const SdkEvalArgsSchema = z.object({
   code: z.string().max(100000)
     .describe('JavaScript/TypeScript code snippet to execute in sandboxed environment'),
-  timeout: z.number().min(1000).max(60000).optional().default(10000)
+  timeout: z.coerce.number().min(1000).max(60000).optional().default(10000)
     .describe('Timeout in milliseconds (default: 10000ms, max: 60000ms)'),
 });
 

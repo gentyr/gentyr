@@ -45,7 +45,7 @@ export const ListPendingReviewsArgsSchema = z.object({
   reason: z.enum(REVIEW_REASON_VALUES)
     .optional()
     .describe('Filter by review reason'),
-  limit: z.number()
+  limit: z.coerce.number()
     .optional()
     .default(20)
     .describe('Maximum items to return'),

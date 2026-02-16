@@ -72,7 +72,7 @@ export async function checkPrerequisites(): Promise<PrerequisiteResult> {
     );
   }
 
-  // Check Playwright browsers
+  // Check Playwright browsers (required for GUI persona tests)
   try {
     let defaultCacheDir: string;
     const platform = os.platform();
@@ -110,6 +110,12 @@ export async function checkPrerequisites(): Promise<PrerequisiteResult> {
     result.playwrightAvailable = false;
   }
 
+  if (!result.playwrightAvailable) {
+    result.errors.push(
+      'Playwright browsers not installed. Run: cd packages/mcp-servers && npx playwright install chromium'
+    );
+  }
+
   return result;
 }
 
@@ -129,21 +135,16 @@ export async function skipIfPrerequisitesNotMet(): Promise<boolean> {
 }
 
 /**
- * Check test capabilities including optional features like Playwright.
- * Returns structured result for selective test skipping.
+ * Check all test prerequisites including Playwright.
+ * All prerequisites are required — missing any causes tests to skip.
  */
-export async function checkTestCapabilities(): Promise<{ skip: boolean; playwrightAvailable: boolean }> {
+export async function checkTestCapabilities(): Promise<{ skip: boolean }> {
   const prereqs = await checkPrerequisites();
 
-  if (!prereqs.claudeAvailable || !prereqs.mcpServersBuilt) {
+  if (!prereqs.claudeAvailable || !prereqs.mcpServersBuilt || !prereqs.playwrightAvailable) {
     console.warn(`\n  Skipping E2E tests: ${prereqs.errors.join('; ')}\n`);
-    return { skip: true, playwrightAvailable: false };
+    return { skip: true };
   }
 
-  if (!prereqs.playwrightAvailable) {
-    console.warn('\n  Playwright browsers not installed. GUI tests will be skipped.');
-    console.warn('  To install: npx playwright install chromium\n');
-  }
-
-  return { skip: false, playwrightAvailable: prereqs.playwrightAvailable };
+  return { skip: false };
 }

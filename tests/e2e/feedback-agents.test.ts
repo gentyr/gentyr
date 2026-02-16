@@ -18,7 +18,7 @@
  * Requirements:
  * - `claude` CLI installed
  * - MCP servers built (npm run build in packages/mcp-servers)
- * - Playwright browsers installed for GUI tests (npx playwright install chromium)
+ * - Playwright browsers installed (npx playwright install chromium)
  *
  * Run: npx vitest run --config tests/e2e/vitest.config.ts
  */
@@ -46,7 +46,6 @@ let runFeedbackAgent: (
 let cleanupOldConfigs: () => void;
 
 let skip = false;
-let playwrightAvailable = false;
 
 describe('Feedback System E2E (Real Claude Agents)', () => {
   let toyApp: ToyAppInstance;
@@ -56,7 +55,6 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
     // Check prerequisites first
     const capabilities = await checkTestCapabilities();
     skip = capabilities.skip;
-    playwrightAvailable = capabilities.playwrightAvailable;
     if (skip) return;
 
     // Import launcher dynamically (it's an ESM JS file)
@@ -270,147 +268,60 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       expect(prompt).toContain('submit_finding');
       expect(prompt).toContain('You are NOT a developer');
     });
-  });
 
-  // ==========================================================================
-  // Real Claude Agent Tests (slow, opt-in)
-  // ==========================================================================
-
-  describe('API Persona Session', () => {
-    it('should spawn API persona, interact with toy app, and produce findings', async () => {
+    it('should build GUI-specific prompt with navigation guidance', async () => {
       if (skip) return;
 
-      const sessionId = randomUUID();
-      const personaId = testProject.getPersonaId('api-consumer');
-
-      // Use REAL launcher functions
-      const persona = await getPersona(personaId, testProject.dir);
-      const mcpConfigPath = generateMcpConfig(sessionId, persona, testProject.dir);
-      const prompt = buildPrompt(persona as Parameters<typeof buildPrompt>[0], sessionId);
-
-      // Spawn REAL Claude agent (awaitable)
-      const result = await runFeedbackAgent(mcpConfigPath, prompt, sessionId, 'api-consumer', {
-        projectDir: testProject.dir,
-        timeout: 180000, // 3 min
-      });
-
-      expect(result.exitCode).toBe(0);
-
-      // Verify session produced results
-      const results = getSessionResults(testProject.dir, sessionId, 'api-consumer');
-
-      // Claude should have found SOMETHING (non-deterministic what)
-      expect(results.findings.length).toBeGreaterThan(0);
-
-      // Reports should be in agent-reports DB
-      expect(results.reports.length).toBeGreaterThan(0);
-      expect(results.reports.every(r => r.category === 'user-feedback')).toBe(true);
-      expect(results.reports.every(r => r.reporting_agent === 'feedback-api-consumer')).toBe(true);
-
-      // Audit trail should exist (AuditedMcpServer logged tool calls)
-      expect(results.auditEvents.length).toBeGreaterThan(0);
-    }, 240000); // 4 min timeout
-  });
-
-  describe('CLI Persona Session', () => {
-    it('should spawn CLI persona, test CLI, and produce findings', async () => {
-      if (skip) return;
-
-      const sessionId = randomUUID();
-      const personaId = testProject.getPersonaId('cli-expert');
-
-      const persona = await getPersona(personaId, testProject.dir);
-      const mcpConfigPath = generateMcpConfig(sessionId, persona, testProject.dir);
-      const prompt = buildPrompt(persona as Parameters<typeof buildPrompt>[0], sessionId);
-
-      const result = await runFeedbackAgent(mcpConfigPath, prompt, sessionId, 'cli-expert', {
-        projectDir: testProject.dir,
-        timeout: 180000,
-      });
-
-      expect(result.exitCode).toBe(0);
-
-      const results = getSessionResults(testProject.dir, sessionId, 'cli-expert');
-
-      expect(results.findings.length).toBeGreaterThan(0);
-      expect(results.reports.length).toBeGreaterThan(0);
-      expect(results.reports.every(r => r.reporting_agent === 'feedback-cli-expert')).toBe(true);
-    }, 240000);
-  });
-
-  describe('GUI Persona Session', () => {
-    it('should spawn GUI persona, test web UI with Playwright, and produce findings', async (ctx) => {
-      if (skip) return;
-      if (!playwrightAvailable) {
-        ctx.skip();
-        return;
-      }
-
-      const sessionId = randomUUID();
       const personaId = testProject.getPersonaId('gui-tester');
-
       const persona = await getPersona(personaId, testProject.dir);
-      const mcpConfigPath = generateMcpConfig(sessionId, persona, testProject.dir);
-      const prompt = buildPrompt(persona as Parameters<typeof buildPrompt>[0], sessionId);
-
-      const result = await runFeedbackAgent(mcpConfigPath, prompt, sessionId, 'gui-tester', {
-        projectDir: testProject.dir,
-        timeout: 300000, // 5 min — browser operations are slower
-      });
-
-      expect(result.exitCode).toBe(0);
-
-      const results = getSessionResults(testProject.dir, sessionId, 'gui-tester');
-
-      expect(results.findings.length).toBeGreaterThan(0);
-      expect(results.reports.length).toBeGreaterThan(0);
-      expect(results.reports.every(r => r.reporting_agent === 'feedback-gui-tester')).toBe(true);
-
-      // Audit trail should exist
-      expect(results.auditEvents.length).toBeGreaterThan(0);
-    }, 360000); // 6 min timeout
-  });
-
-  describe('SDK Persona Session', () => {
-    it('should spawn SDK persona, test SDK module, and produce findings', async () => {
-      if (skip) return;
-
       const sessionId = randomUUID();
-      const personaId = testProject.getPersonaId('sdk-developer');
 
-      const persona = await getPersona(personaId, testProject.dir);
-      const mcpConfigPath = generateMcpConfig(sessionId, persona, testProject.dir);
       const prompt = buildPrompt(persona as Parameters<typeof buildPrompt>[0], sessionId);
 
-      const result = await runFeedbackAgent(mcpConfigPath, prompt, sessionId, 'sdk-developer', {
-        projectDir: testProject.dir,
-        timeout: 180000, // 3 min
-      });
+      expect(prompt).toContain('gui-tester');
+      expect(prompt).toContain('GUI Testing Notes');
+      expect(prompt).toContain('Your browser starts on a blank page');
+      expect(prompt).toContain('navigate');
+      expect(prompt).toContain('read_visible_text');
+      expect(prompt).toContain('you cannot use CSS selectors');
+    });
 
-      expect(result.exitCode).toBe(0);
-
-      const results = getSessionResults(testProject.dir, sessionId, 'sdk-developer');
-
-      expect(results.findings.length).toBeGreaterThan(0);
-      expect(results.reports.length).toBeGreaterThan(0);
-      expect(results.reports.every(r => r.reporting_agent === 'feedback-sdk-developer')).toBe(true);
-
-      // Audit trail should exist
-      expect(results.auditEvents.length).toBeGreaterThan(0);
-    }, 240000); // 4 min timeout
-  });
-
-  describe('Full Pipeline (Multi-Persona)', () => {
-    it('should run multiple persona sessions and verify cross-persona reports', async () => {
+    it('should build SDK-specific prompt with sandbox isolation guidance', async () => {
       if (skip) return;
 
-      // Always include api, cli, sdk. Conditionally include gui.
-      const personaNames = ['api-consumer', 'cli-expert', 'sdk-developer'];
-      if (playwrightAvailable) {
-        personaNames.push('gui-tester');
-      }
+      const personaId = testProject.getPersonaId('sdk-developer');
+      const persona = await getPersona(personaId, testProject.dir);
+      const sessionId = randomUUID();
 
-      // Run all personas in parallel
+      const prompt = buildPrompt(persona as Parameters<typeof buildPrompt>[0], sessionId);
+
+      expect(prompt).toContain('sdk-developer');
+      expect(prompt).toContain('SDK Testing Notes');
+      expect(prompt).toContain('isolated sandbox');
+      expect(prompt).toContain('Module state does NOT persist');
+      expect(prompt).toContain('SINGLE `sdk_eval` call');
+    });
+  });
+
+  // ==========================================================================
+  // Real Claude Agent Tests — all 4 personas run in parallel
+  // ==========================================================================
+
+  describe('All Persona Sessions (Parallel)', () => {
+    interface AgentResult {
+      personaName: string;
+      sessionId: string;
+      agentResult: { exitCode: number; stdout: string; stderr: string; pid: number };
+    }
+
+    let agentResults: Map<string, AgentResult>;
+
+    it('should spawn all 4 personas in parallel and produce findings', async () => {
+      if (skip) return;
+
+      const personaNames = ['api-consumer', 'cli-expert', 'gui-tester', 'sdk-developer'];
+
+      // Launch all 4 agents in parallel
       const promises = personaNames.map(async (personaName) => {
         const sessionId = randomUUID();
         const personaId = testProject.getPersonaId(personaName);
@@ -419,19 +330,89 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
         const mcpConfigPath = generateMcpConfig(sessionId, persona, testProject.dir);
         const prompt = buildPrompt(persona as Parameters<typeof buildPrompt>[0], sessionId);
 
-        return runFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, {
+        const agentResult = await runFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, {
           projectDir: testProject.dir,
-          timeout: 300000, // 5 min per agent
+          timeout: 420000, // 7 min per agent
         });
+
+        return { personaName, sessionId, agentResult };
       });
 
-      const results = await Promise.allSettled(promises);
+      const settled = await Promise.allSettled(promises);
 
-      // At least two must succeed to verify cross-persona behavior
-      const fulfilled = results.filter(r => r.status === 'fulfilled');
-      expect(fulfilled.length).toBeGreaterThanOrEqual(2);
+      // Store results for per-persona verification
+      agentResults = new Map();
+      const errors: string[] = [];
 
-      // Check cross-persona reports
+      for (const result of settled) {
+        if (result.status === 'fulfilled') {
+          agentResults.set(result.value.personaName, result.value);
+        } else {
+          errors.push(result.reason?.message || String(result.reason));
+        }
+      }
+
+      // All 4 must succeed
+      expect(errors).toEqual([]);
+      expect(agentResults.size).toBe(4);
+
+      // All exit codes should be 0
+      for (const [name, r] of agentResults) {
+        expect(r.agentResult.exitCode, `${name} should exit with code 0`).toBe(0);
+      }
+    }, 600000); // 10 min — all run in parallel so wall time is max of 4
+
+    it('should produce API persona findings and reports', () => {
+      if (skip || !agentResults?.has('api-consumer')) return;
+
+      const { sessionId } = agentResults.get('api-consumer')!;
+      const results = getSessionResults(testProject.dir, sessionId, 'api-consumer');
+
+      expect(results.findings.length).toBeGreaterThan(0);
+      expect(results.reports.length).toBeGreaterThan(0);
+      expect(results.reports.every(r => r.category === 'user-feedback')).toBe(true);
+      expect(results.reports.every(r => r.reporting_agent === 'feedback-api-consumer')).toBe(true);
+      expect(results.auditEvents.length).toBeGreaterThan(0);
+    });
+
+    it('should produce CLI persona findings and reports', () => {
+      if (skip || !agentResults?.has('cli-expert')) return;
+
+      const { sessionId } = agentResults.get('cli-expert')!;
+      const results = getSessionResults(testProject.dir, sessionId, 'cli-expert');
+
+      expect(results.findings.length).toBeGreaterThan(0);
+      expect(results.reports.length).toBeGreaterThan(0);
+      expect(results.reports.every(r => r.reporting_agent === 'feedback-cli-expert')).toBe(true);
+    });
+
+    it('should produce GUI persona findings and reports', () => {
+      if (skip || !agentResults?.has('gui-tester')) return;
+
+      const { sessionId } = agentResults.get('gui-tester')!;
+      const results = getSessionResults(testProject.dir, sessionId, 'gui-tester');
+
+      expect(results.findings.length).toBeGreaterThan(0);
+      expect(results.reports.length).toBeGreaterThan(0);
+      expect(results.reports.every(r => r.reporting_agent === 'feedback-gui-tester')).toBe(true);
+      expect(results.auditEvents.length).toBeGreaterThan(0);
+    });
+
+    it('should produce SDK persona findings and reports', () => {
+      if (skip || !agentResults?.has('sdk-developer')) return;
+
+      const { sessionId } = agentResults.get('sdk-developer')!;
+      const results = getSessionResults(testProject.dir, sessionId, 'sdk-developer');
+
+      expect(results.findings.length).toBeGreaterThan(0);
+      expect(results.reports.length).toBeGreaterThan(0);
+      expect(results.reports.every(r => r.reporting_agent === 'feedback-sdk-developer')).toBe(true);
+      expect(results.auditEvents.length).toBeGreaterThan(0);
+    });
+
+    it('should have cross-persona reports in the shared database', async () => {
+      if (skip || !agentResults || agentResults.size < 2) return;
+
       const Database = (await import('better-sqlite3')).default;
       const reportsDb = new Database(testProject.reportsDbPath, { readonly: true });
 
@@ -442,9 +423,9 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       expect(allReports.length).toBeGreaterThan(0);
       expect(allReports.every(r => r.category === 'user-feedback')).toBe(true);
 
-      // Should have reports from multiple personas (consistent with requiring 2+ successes)
+      // Should have reports from multiple personas
       const agents = [...new Set(allReports.map(r => r.reporting_agent))];
       expect(agents.length).toBeGreaterThan(1);
-    }, 900000); // 15 min for all concurrent sessions
+    });
   });
 });

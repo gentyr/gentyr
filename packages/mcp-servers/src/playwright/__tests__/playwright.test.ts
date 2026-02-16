@@ -101,6 +101,15 @@ describe('Playwright MCP Server - Zod Schemas', () => {
         expect(result.data.base_url).toBeUndefined();
       }
     });
+
+    it('should reject invalid base_url (G003 URL validation)', () => {
+      const result = LaunchUiModeArgsSchema.safeParse({
+        project: 'vendor-owner',
+        base_url: 'not-a-url',
+      });
+
+      expect(result.success).toBe(false);
+    });
   });
 
   describe('RunTestsArgsSchema', () => {

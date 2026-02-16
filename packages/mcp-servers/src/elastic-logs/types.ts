@@ -19,7 +19,7 @@ export const QueryLogsArgsSchema = z.object({
   query: z.string().describe('Lucene query string (e.g., "level:error AND service:my-backend")'),
   from: z.string().optional().describe('Start time (ISO8601 or relative like "now-1h", default: "now-1h")'),
   to: z.string().optional().describe('End time (ISO8601 or "now", default: "now")'),
-  size: z.number().optional().describe('Maximum number of results (default: 100, max: 1000)'),
+  size: z.coerce.number().optional().describe('Maximum number of results (default: 100, max: 1000)'),
   sort: z.enum(['asc', 'desc']).optional().describe('Sort order by timestamp (default: "desc")'),
 });
 

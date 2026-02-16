@@ -12,8 +12,8 @@ export const SelectArgsSchema = z.object({
   select: z.string().optional().default('*'),
   filter: z.string().optional(),
   order: z.string().optional(),
-  limit: z.number().optional(),
-  offset: z.number().optional(),
+  limit: z.coerce.number().optional(),
+  offset: z.coerce.number().optional(),
 });
 
 export const InsertArgsSchema = z.object({
@@ -41,7 +41,7 @@ export const RpcArgsSchema = z.object({
 export const ListTablesArgsSchema = z.object({});
 
 export const DescribeTableArgsSchema = z.object({
-  table: z.string(),
+  table: z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, 'Invalid table name: must be a valid SQL identifier'),
 });
 
 export const SqlArgsSchema = z.object({
@@ -53,7 +53,7 @@ export const ListBucketsArgsSchema = z.object({});
 export const ListFilesArgsSchema = z.object({
   bucket: z.string(),
   path: z.string().optional().default(''),
-  limit: z.number().optional().default(100),
+  limit: z.coerce.number().optional().default(100),
 });
 
 export const DeleteFileArgsSchema = z.object({
@@ -67,8 +67,8 @@ export const GetPublicUrlArgsSchema = z.object({
 });
 
 export const ListUsersArgsSchema = z.object({
-  page: z.number().optional().default(1),
-  perPage: z.number().optional().default(50),
+  page: z.coerce.number().optional().default(1),
+  perPage: z.coerce.number().optional().default(50),
 });
 
 export const GetUserArgsSchema = z.object({

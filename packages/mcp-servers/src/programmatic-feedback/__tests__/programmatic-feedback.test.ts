@@ -82,7 +82,7 @@ describe('Schema Validation', () => {
       expect(result.success).toBe(true);
     });
 
-    it('should validate POST request with body', () => {
+    it('should validate POST request with body object', () => {
       const result = ApiRequestArgsSchema.safeParse({
         method: 'POST',
         path: '/users',
@@ -90,6 +90,50 @@ describe('Schema Validation', () => {
         headers: { 'X-Custom': 'value' },
       });
       expect(result.success).toBe(true);
+    });
+
+    it('should parse body from JSON string', () => {
+      const result = ApiRequestArgsSchema.safeParse({
+        method: 'POST',
+        path: '/users',
+        body: '{"name":"John","age":30}',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.body).toEqual({ name: 'John', age: 30 });
+      }
+    });
+
+    it('should parse headers from JSON string', () => {
+      const result = ApiRequestArgsSchema.safeParse({
+        method: 'POST',
+        path: '/users',
+        headers: '{"X-Custom":"value","Authorization":"Bearer token"}',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.headers).toEqual({ 'X-Custom': 'value', Authorization: 'Bearer token' });
+      }
+    });
+
+    it('should handle invalid JSON string in body gracefully', () => {
+      const result = ApiRequestArgsSchema.safeParse({
+        method: 'POST',
+        path: '/users',
+        body: '{invalid json}',
+      });
+      // Invalid JSON string is kept as-is (preprocess returns original value on parse failure)
+      expect(result.success).toBe(false);
+    });
+
+    it('should handle invalid JSON string in headers gracefully', () => {
+      const result = ApiRequestArgsSchema.safeParse({
+        method: 'POST',
+        path: '/users',
+        headers: '{not valid json',
+      });
+      // Invalid JSON string is kept as-is, which should fail the record validation
+      expect(result.success).toBe(false);
     });
 
     it('should reject invalid HTTP method', () => {
@@ -110,12 +154,32 @@ describe('Schema Validation', () => {
   });
 
   describe('ApiGraphqlArgsSchema', () => {
-    it('should validate GraphQL query', () => {
+    it('should validate GraphQL query with variables object', () => {
       const result = ApiGraphqlArgsSchema.safeParse({
         query: 'query { users { id name } }',
         variables: { limit: 10 },
       });
       expect(result.success).toBe(true);
+    });
+
+    it('should parse headers from JSON string', () => {
+      const result = ApiGraphqlArgsSchema.safeParse({
+        query: 'query { users { id name } }',
+        headers: '{"X-Custom":"value","Authorization":"Bearer token"}',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.headers).toEqual({ 'X-Custom': 'value', Authorization: 'Bearer token' });
+      }
+    });
+
+    it('should handle invalid JSON string in headers gracefully', () => {
+      const result = ApiGraphqlArgsSchema.safeParse({
+        query: 'query { users { id name } }',
+        headers: '{not valid json',
+      });
+      // Invalid JSON string should fail the record validation
+      expect(result.success).toBe(false);
     });
 
     it('should reject query exceeding max length', () => {

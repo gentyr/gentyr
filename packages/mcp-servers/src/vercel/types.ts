@@ -8,7 +8,7 @@ import { z } from 'zod';
 
 // Tool argument schemas
 export const ListDeploymentsArgsSchema = z.object({
-  limit: z.number().optional().default(10),
+  limit: z.coerce.number().optional().default(10),
   projectId: z.string().optional(),
   state: z.enum(['BUILDING', 'ERROR', 'INITIALIZING', 'QUEUED', 'READY', 'CANCELED']).optional(),
 });
@@ -31,7 +31,7 @@ export const RedeployArgsSchema = z.object({
 });
 
 export const ListProjectsArgsSchema = z.object({
-  limit: z.number().optional().default(20),
+  limit: z.coerce.number().optional().default(20),
 });
 
 export const GetProjectArgsSchema = z.object({

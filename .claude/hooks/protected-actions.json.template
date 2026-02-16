@@ -9,12 +9,29 @@
     "notifyOnBlock": true
   },
   "_examples": {
-    "supabase-prod": {
+    "supabase": {
       "protection": "credential-isolated",
-      "phrase": "APPROVE PROD",
-      "tools": "*",
-      "credentialKeys": ["SUPABASE_SERVICE_ROLE_KEY"],
-      "description": "Production Supabase - all tools require CTO approval"
+      "phrase": "APPROVE DATABASE",
+      "tools": ["executeSql", "deleteData", "deleteUser", "deleteFile"],
+      "credentialKeys": ["SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_URL", "SUPABASE_ANON_KEY", "SUPABASE_ACCESS_TOKEN"],
+      "description": "Supabase with branch-aware protection (G024)",
+      "environments": {
+        "production": {
+          "branchPattern": "main",
+          "requireApproval": true,
+          "description": "Production (main branch) - destructive operations require CTO approval"
+        },
+        "staging": {
+          "branchPattern": "staging",
+          "requireApproval": false,
+          "description": "Staging branch - destructive operations allowed without approval"
+        },
+        "preview": {
+          "branchPattern": "preview/*",
+          "requireApproval": false,
+          "description": "Preview branches - ephemeral, no approval needed"
+        }
+      }
     },
     "vercel": {
       "protection": "deputy-cto-approval",
@@ -59,7 +76,14 @@
         "phrase": "APPROVE <WORD>",
         "tools": "* | [list of tool names]",
         "credentialKeys": ["ENV_VAR_NAMES_TO_ENCRYPT"],
-        "description": "Human-readable description"
+        "description": "Human-readable description",
+        "environments": {
+          "<env-name>": {
+            "branchPattern": "Branch glob pattern (e.g., 'main', 'staging', 'preview/*')",
+            "requireApproval": "Boolean: whether CTO approval is required for this environment",
+            "description": "Human-readable description of this environment"
+          }
+        }
       }
     },
     "allowedUnprotectedServers": ["List of MCP server names that are allowed without protection (e.g., framework servers like agent-tracker, todo-db)"],

@@ -49,7 +49,8 @@ const SECRET_PATTERNS = [
   {
     name: 'Vercel Token',
     pattern: /(?:^|\s)([A-Za-z0-9]{24,})\s*$/,
-    skip: true, // Too generic — only match with context below
+    contextRequired: /vercel/i,
+    advice: 'Regenerate at vercel.com/account/tokens.',
   },
   // Resend
   {

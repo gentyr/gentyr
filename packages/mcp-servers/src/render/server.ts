@@ -102,6 +102,65 @@ async function renderFetch(endpoint: string, options: RequestInit = {}): Promise
 }
 
 // ============================================================================
+// Render API Response Types
+// ============================================================================
+
+/**
+ * Actual Render API response shape for a service.
+ * Key differences from what was previously assumed:
+ * - autoDeploy is a top-level field (not in serviceDetails)
+ * - branch is a top-level field
+ * - rootDir is a top-level field
+ * - buildCommand/startCommand are nested under serviceDetails.envSpecificDetails
+ */
+interface RenderServiceResponse {
+  id: string;
+  name: string;
+  type: string;
+  ownerId: string;
+  autoDeploy: string;
+  branch?: string;
+  repo?: string;
+  rootDir?: string;
+  serviceDetails: {
+    url?: string;
+    env?: string;
+    envSpecificDetails?: {
+      buildCommand?: string;
+      startCommand?: string;
+    };
+    plan?: string;
+    region?: string;
+  };
+  suspended?: string;
+  state?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function mapServiceResponse(data: RenderServiceResponse): ServiceDetails {
+  return {
+    id: data.id,
+    name: data.name,
+    type: data.type,
+    state: data.state || 'unknown',
+    ownerId: data.ownerId,
+    repo: data.repo,
+    branch: data.branch,
+    autoDeploy: data.autoDeploy === 'yes',
+    suspended: data.suspended === 'suspended',
+    rootDir: data.rootDir,
+    buildCommand: data.serviceDetails.envSpecificDetails?.buildCommand,
+    startCommand: data.serviceDetails.envSpecificDetails?.startCommand,
+    plan: data.serviceDetails.plan || 'unknown',
+    region: data.serviceDetails.region || 'unknown',
+    createdAt: data.createdAt,
+    updatedAt: data.updatedAt,
+    serviceUrl: data.serviceDetails.url,
+  };
+}
+
+// ============================================================================
 // Service Handler Functions
 // ============================================================================
 
@@ -112,25 +171,9 @@ async function listServices(args: ListServicesArgs): Promise<ServiceSummary[]> {
   if (args.name) { params.set('name', args.name); }
   if (args.type) { params.set('type', args.type); }
 
+  // List endpoint wraps each service in a { service: {...} } object
   const data = await renderFetch(`/services?${params}`) as Array<{
-    service: {
-      id: string;
-      name: string;
-      type: string;
-      serviceDetails: {
-        url?: string;
-        buildCommand?: string;
-        startCommand?: string;
-        env?: string;
-        autoDeploy?: string;
-        branch?: string;
-        repo?: string;
-      };
-      suspended?: string;
-      state?: string;
-      createdAt: string;
-      updatedAt: string;
-    };
+    service: RenderServiceResponse;
   }>;
 
   return data.map(item => {
@@ -140,9 +183,9 @@ async function listServices(args: ListServicesArgs): Promise<ServiceSummary[]> {
       name: s.name,
       type: s.type,
       state: s.state || 'unknown',
-      repo: s.serviceDetails.repo,
-      branch: s.serviceDetails.branch,
-      autoDeploy: s.serviceDetails.autoDeploy === 'yes',
+      repo: s.repo,
+      branch: s.branch,
+      autoDeploy: s.autoDeploy === 'yes',
       suspended: s.suspended === 'suspended',
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
@@ -152,125 +195,44 @@ async function listServices(args: ListServicesArgs): Promise<ServiceSummary[]> {
 }
 
 async function getService(args: GetServiceArgs): Promise<ServiceDetails> {
-  const data = await renderFetch(`/services/${args.serviceId}`) as {
-    id: string;
-    name: string;
-    type: string;
-    ownerId: string;
-    serviceDetails: {
-      url?: string;
-      buildCommand?: string;
-      startCommand?: string;
-      env?: string;
-      autoDeploy?: string;
-      branch?: string;
-      repo?: string;
-      rootDir?: string;
-      plan?: string;
-      region?: string;
-    };
-    suspended?: string;
-    state?: string;
-    createdAt: string;
-    updatedAt: string;
-  };
-
-  return {
-    id: data.id,
-    name: data.name,
-    type: data.type,
-    state: data.state || 'unknown',
-    ownerId: data.ownerId,
-    repo: data.serviceDetails.repo,
-    branch: data.serviceDetails.branch,
-    autoDeploy: data.serviceDetails.autoDeploy === 'yes',
-    suspended: data.suspended === 'suspended',
-    rootDir: data.serviceDetails.rootDir,
-    buildCommand: data.serviceDetails.buildCommand,
-    startCommand: data.serviceDetails.startCommand,
-    plan: data.serviceDetails.plan || 'unknown',
-    region: data.serviceDetails.region || 'unknown',
-    createdAt: data.createdAt,
-    updatedAt: data.updatedAt,
-    serviceUrl: data.serviceDetails.url,
-  };
+  const data = await renderFetch(`/services/${args.serviceId}`) as RenderServiceResponse;
+  return mapServiceResponse(data);
 }
 
 async function createService(args: CreateServiceArgs): Promise<ServiceDetails> {
+  const serviceDetails: Record<string, unknown> = {
+    plan: args.plan,
+    region: args.region,
+  };
+
+  // Build/start commands go under envSpecificDetails
+  if (args.buildCommand || args.startCommand) {
+    const envSpecificDetails: Record<string, unknown> = {};
+    if (args.buildCommand) { envSpecificDetails.buildCommand = args.buildCommand; }
+    if (args.startCommand) { envSpecificDetails.startCommand = args.startCommand; }
+    serviceDetails.envSpecificDetails = envSpecificDetails;
+  }
+
   const body: Record<string, unknown> = {
     type: args.type,
     name: args.name,
     ownerId: args.ownerId,
     autoDeploy: args.autoDeploy ? 'yes' : 'no',
-    serviceDetails: {
-      plan: args.plan,
-      region: args.region,
-    },
+    serviceDetails,
   };
 
-  if (args.repo) {
-    body.repo = args.repo;
-  }
-  if (args.branch) {
-    body.branch = args.branch;
-  }
-  if (args.rootDir) {
-    (body.serviceDetails as Record<string, unknown>).rootDir = args.rootDir;
-  }
-  if (args.buildCommand) {
-    (body.serviceDetails as Record<string, unknown>).buildCommand = args.buildCommand;
-  }
-  if (args.startCommand) {
-    (body.serviceDetails as Record<string, unknown>).startCommand = args.startCommand;
-  }
-  if (args.envVars) {
-    (body.serviceDetails as Record<string, unknown>).envVars = args.envVars;
-  }
+  // Top-level fields (not nested in serviceDetails per Render API spec)
+  if (args.repo) { body.repo = args.repo; }
+  if (args.branch) { body.branch = args.branch; }
+  if (args.rootDir) { body.rootDir = args.rootDir; }
+  if (args.envVars) { body.envVars = args.envVars; }
 
   const data = await renderFetch('/services', {
     method: 'POST',
     body: JSON.stringify(body),
-  }) as {
-    id: string;
-    name: string;
-    type: string;
-    ownerId: string;
-    serviceDetails: {
-      url?: string;
-      buildCommand?: string;
-      startCommand?: string;
-      autoDeploy?: string;
-      branch?: string;
-      repo?: string;
-      rootDir?: string;
-      plan?: string;
-      region?: string;
-    };
-    suspended?: string;
-    state?: string;
-    createdAt: string;
-    updatedAt: string;
-  };
+  }) as RenderServiceResponse;
 
-  return {
-    id: data.id,
-    name: data.name,
-    type: data.type,
-    state: data.state || 'unknown',
-    ownerId: data.ownerId,
-    repo: data.serviceDetails.repo,
-    branch: data.serviceDetails.branch,
-    autoDeploy: data.serviceDetails.autoDeploy === 'yes',
-    suspended: data.suspended === 'suspended',
-    rootDir: data.serviceDetails.rootDir,
-    buildCommand: data.serviceDetails.buildCommand,
-    startCommand: data.serviceDetails.startCommand,
-    plan: data.serviceDetails.plan || 'unknown',
-    region: data.serviceDetails.region || 'unknown',
-    createdAt: data.createdAt,
-    updatedAt: data.updatedAt,
-    serviceUrl: data.serviceDetails.url,
-  };
+  return mapServiceResponse(data);
 }
 
 async function updateService(args: UpdateServiceArgs): Promise<ServiceDetails> {
@@ -278,65 +240,35 @@ async function updateService(args: UpdateServiceArgs): Promise<ServiceDetails> {
 
   if (args.name !== undefined) { body.name = args.name; }
   if (args.branch !== undefined) { body.branch = args.branch; }
+  if (args.rootDir !== undefined) { body.rootDir = args.rootDir; }
   if (args.autoDeploy !== undefined) { body.autoDeploy = args.autoDeploy ? 'yes' : 'no'; }
 
-  if (args.buildCommand !== undefined || args.startCommand !== undefined || args.plan !== undefined) {
-    body.serviceDetails = {};
-    if (args.buildCommand !== undefined) {
-      (body.serviceDetails as Record<string, unknown>).buildCommand = args.buildCommand;
-    }
-    if (args.startCommand !== undefined) {
-      (body.serviceDetails as Record<string, unknown>).startCommand = args.startCommand;
-    }
+  // Render API nests build/start commands under serviceDetails.envSpecificDetails
+  const hasServiceDetails = args.buildCommand !== undefined || args.startCommand !== undefined || args.plan !== undefined;
+  if (hasServiceDetails) {
+    const serviceDetails: Record<string, unknown> = {};
     if (args.plan !== undefined) {
-      (body.serviceDetails as Record<string, unknown>).plan = args.plan;
+      serviceDetails.plan = args.plan;
     }
+    if (args.buildCommand !== undefined || args.startCommand !== undefined) {
+      const envSpecificDetails: Record<string, unknown> = {};
+      if (args.buildCommand !== undefined) {
+        envSpecificDetails.buildCommand = args.buildCommand;
+      }
+      if (args.startCommand !== undefined) {
+        envSpecificDetails.startCommand = args.startCommand;
+      }
+      serviceDetails.envSpecificDetails = envSpecificDetails;
+    }
+    body.serviceDetails = serviceDetails;
   }
 
   const data = await renderFetch(`/services/${args.serviceId}`, {
     method: 'PATCH',
     body: JSON.stringify(body),
-  }) as {
-    id: string;
-    name: string;
-    type: string;
-    ownerId: string;
-    serviceDetails: {
-      url?: string;
-      buildCommand?: string;
-      startCommand?: string;
-      autoDeploy?: string;
-      branch?: string;
-      repo?: string;
-      rootDir?: string;
-      plan?: string;
-      region?: string;
-    };
-    suspended?: string;
-    state?: string;
-    createdAt: string;
-    updatedAt: string;
-  };
+  }) as RenderServiceResponse;
 
-  return {
-    id: data.id,
-    name: data.name,
-    type: data.type,
-    state: data.state || 'unknown',
-    ownerId: data.ownerId,
-    repo: data.serviceDetails.repo,
-    branch: data.serviceDetails.branch,
-    autoDeploy: data.serviceDetails.autoDeploy === 'yes',
-    suspended: data.suspended === 'suspended',
-    rootDir: data.serviceDetails.rootDir,
-    buildCommand: data.serviceDetails.buildCommand,
-    startCommand: data.serviceDetails.startCommand,
-    plan: data.serviceDetails.plan || 'unknown',
-    region: data.serviceDetails.region || 'unknown',
-    createdAt: data.createdAt,
-    updatedAt: data.updatedAt,
-    serviceUrl: data.serviceDetails.url,
-  };
+  return mapServiceResponse(data);
 }
 
 async function deleteService(args: DeleteServiceArgs): Promise<SuccessResult> {

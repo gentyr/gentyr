@@ -6,7 +6,7 @@
  *
  * Persona mapping tied to AcmeIntegrate's three-persona architecture:
  * - SaaS Vendor (owner, admin, developer, viewer roles)
- * - End Customer (deferred — requires --load-extension)
+ * - End Customer (extension — headed Chromium with --load-extension)
  * - Platform Operator (deferred — requires operator panel)
  *
  * @see playwright.config.ts
@@ -33,6 +33,10 @@ export const PLAYWRIGHT_PROJECTS = {
   // Manual QA — interactive inspection with page.pause()
   MANUAL: 'manual',
 
+  // Browser extension (headed Chromium with --load-extension)
+  EXTENSION: 'extension',
+  EXTENSION_MANUAL: 'extension-manual',
+
   // Infrastructure
   SEED: 'seed',
   AUTH_SETUP: 'auth-setup',
@@ -51,6 +55,8 @@ const UI_MODE_PROJECTS = [
   'vendor-dev',
   'vendor-viewer',
   'manual',
+  'extension',
+  'extension-manual',
   'cross-persona',
   'auth-flows',
 ] as const;
@@ -61,6 +67,7 @@ const TEST_PROJECTS = [
   'vendor-admin',
   'vendor-dev',
   'vendor-viewer',
+  'extension',
   'cross-persona',
   'auth-flows',
 ] as const;
@@ -78,10 +85,13 @@ export const LaunchUiModeArgsSchema = z.object({
       'vendor-dev: SaaS Vendor (Developer) — API-focused features, limited admin access. ' +
       'vendor-viewer: SaaS Vendor (Viewer) — Read-only access to all dashboard pages. ' +
       'manual: Manual QA — Navigates to page with page.pause() for human inspection. Best for demos. ' +
+      'extension: Extension E2E — Browser extension tests with --load-extension (headed Chromium). ' +
+      'extension-manual: Extension Manual QA — Extension scaffolds with page.pause() for interactive inspection. ' +
       'cross-persona: Cross-Persona — Multi-context workflows testing interactions between roles. ' +
       'auth-flows: Auth Flows — Signup/signin tests without pre-loaded auth state.'
     ),
   base_url: z.string()
+    .url()
     .optional()
     .describe('Override the base URL (default: http://localhost:3000)'),
 });
@@ -95,6 +105,7 @@ export const RunTestsArgsSchema = z.object({
       'vendor-admin: SaaS Vendor (Admin). ' +
       'vendor-dev: SaaS Vendor (Developer). ' +
       'vendor-viewer: SaaS Vendor (Viewer) — Read-only. ' +
+      'extension: Extension E2E — Browser extension tests (headed Chromium). ' +
       'cross-persona: Multi-context workflows. ' +
       'auth-flows: Signup/signin tests.'
     ),
@@ -103,13 +114,13 @@ export const RunTestsArgsSchema = z.object({
     .regex(/^[a-zA-Z0-9\s\-_.*()[\]|]+$/, 'grep pattern must contain only safe characters')
     .optional()
     .describe('Filter tests by title pattern (passed to --grep). Max 200 chars, alphanumeric and basic regex only.'),
-  retries: z.number()
+  retries: z.coerce.number()
     .int()
     .min(0)
     .max(5)
     .optional()
     .describe('Number of retries for failed tests (0-5, default: 0 locally, 2 in CI)'),
-  workers: z.number()
+  workers: z.coerce.number()
     .int()
     .min(1)
     .max(16)

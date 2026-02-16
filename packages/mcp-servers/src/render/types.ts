@@ -12,7 +12,7 @@ import { z } from 'zod';
 // ============================================================================
 
 export const ListServicesArgsSchema = z.object({
-  limit: z.number().optional().default(20).describe('Maximum number of services to return'),
+  limit: z.coerce.number().optional().default(20).describe('Maximum number of services to return'),
   cursor: z.string().optional().describe('Cursor for pagination'),
   name: z.string().optional().describe('Filter by service name'),
   type: z.enum([
@@ -35,7 +35,7 @@ export const CreateServiceArgsSchema = z.object({
   ownerId: z.string().describe('Owner ID (user or team)'),
   repo: z.string().optional().describe('GitHub repository URL'),
   branch: z.string().optional().default('main').describe('Git branch'),
-  autoDeploy: z.boolean().optional().default(true).describe('Enable auto-deploy on push'),
+  autoDeploy: z.coerce.boolean().optional().default(true).describe('Enable auto-deploy on push'),
   rootDir: z.string().optional().describe('Root directory for the service'),
   buildCommand: z.string().optional().describe('Build command'),
   startCommand: z.string().optional().describe('Start command'),
@@ -53,9 +53,10 @@ export const UpdateServiceArgsSchema = z.object({
   serviceId: z.string().describe('The service ID'),
   name: z.string().optional().describe('New service name'),
   branch: z.string().optional().describe('New branch'),
-  autoDeploy: z.boolean().optional().describe('Enable/disable auto-deploy'),
+  autoDeploy: z.coerce.boolean().optional().describe('Enable/disable auto-deploy'),
   buildCommand: z.string().optional().describe('New build command'),
   startCommand: z.string().optional().describe('New start command'),
+  rootDir: z.string().optional().describe('Root directory (empty string to clear, relative path to set)'),
   plan: z.enum(['starter', 'standard', 'pro', 'pro_plus', 'free'])
     .optional().describe('New service plan'),
 });
@@ -78,7 +79,7 @@ export const ResumeServiceArgsSchema = z.object({
 
 export const ListDeploysArgsSchema = z.object({
   serviceId: z.string().describe('The service ID'),
-  limit: z.number().optional().default(20).describe('Maximum number of deployments to return'),
+  limit: z.coerce.number().optional().default(20).describe('Maximum number of deployments to return'),
   cursor: z.string().optional().describe('Cursor for pagination'),
 });
 
@@ -88,7 +89,7 @@ export const GetDeployArgsSchema = z.object({
 
 export const TriggerDeployArgsSchema = z.object({
   serviceId: z.string().describe('The service ID'),
-  clearCache: z.boolean().optional().default(false).describe('Clear build cache before deploying'),
+  clearCache: z.coerce.boolean().optional().default(false).describe('Clear build cache before deploying'),
 });
 
 // ============================================================================

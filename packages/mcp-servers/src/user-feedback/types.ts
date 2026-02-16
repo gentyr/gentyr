@@ -47,7 +47,7 @@ export const UpdatePersonaArgsSchema = z.object({
   behavior_traits: z.array(z.string().max(200)).max(10).optional(),
   endpoints: z.array(z.string().max(500)).max(20).optional(),
   credentials_ref: z.string().max(200).optional(),
-  enabled: z.boolean().optional(),
+  enabled: z.coerce.boolean().optional(),
 });
 
 export const DeletePersonaArgsSchema = z.object({
@@ -59,9 +59,9 @@ export const GetPersonaArgsSchema = z.object({
 });
 
 export const ListPersonasArgsSchema = z.object({
-  enabled_only: z.boolean().optional().default(false),
+  enabled_only: z.coerce.boolean().optional().default(false),
   consumption_mode: z.enum(CONSUMPTION_MODES).optional(),
-  limit: z.number().optional().default(50),
+  limit: z.coerce.number().optional().default(50),
 });
 
 // ============================================================================
@@ -80,7 +80,7 @@ export const RegisterFeatureArgsSchema = z.object({
 
 export const ListFeaturesArgsSchema = z.object({
   category: z.string().optional(),
-  limit: z.number().optional().default(50),
+  limit: z.coerce.number().optional().default(50),
 });
 
 export const DeleteFeatureArgsSchema = z.object({
@@ -122,7 +122,7 @@ export const StartFeedbackRunArgsSchema = z.object({
   changed_features: z.array(z.string()).optional(),
   persona_ids: z.array(z.string()).optional()
     .describe('Override: specific personas to trigger (bypasses change analysis)'),
-  max_concurrent: z.number().min(1).max(5).optional().default(3)
+  max_concurrent: z.coerce.number().min(1).max(5).optional().default(3)
     .describe('Maximum concurrent feedback sessions'),
 });
 
@@ -132,7 +132,7 @@ export const GetFeedbackRunArgsSchema = z.object({
 
 export const ListFeedbackRunsArgsSchema = z.object({
   status: z.string().optional(),
-  limit: z.number().optional().default(20),
+  limit: z.coerce.number().optional().default(20),
 });
 
 export const SATISFACTION_LEVEL = ['very_satisfied', 'satisfied', 'neutral', 'dissatisfied', 'very_dissatisfied'] as const;
@@ -141,7 +141,7 @@ export type SatisfactionLevel = (typeof SATISFACTION_LEVEL)[number];
 export const CompleteFeedbackSessionArgsSchema = z.object({
   session_id: z.string().describe('Feedback session UUID'),
   status: z.enum(['completed', 'failed', 'timeout']),
-  findings_count: z.number().optional(),
+  findings_count: z.coerce.number().optional(),
   report_ids: z.array(z.string()).optional()
     .describe('IDs of agent-reports submitted during this session'),
   satisfaction_level: z.enum(SATISFACTION_LEVEL).optional()
@@ -154,7 +154,7 @@ export const GetFeedbackRunSummaryArgsSchema = z.object({
 
 export const GetSessionAuditArgsSchema = z.object({
   feedback_session_id: z.string().describe('The feedback session ID to get audit trail for'),
-  include_transcript: z.boolean().optional().default(false).describe('Include Claude session transcript hint'),
+  include_transcript: z.coerce.boolean().optional().default(false).describe('Include Claude session transcript hint'),
 });
 
 // ============================================================================

@@ -20,9 +20,9 @@ const ServiceSchema = z.enum(['github', 'gitlab', 'bitbucket']).default('github'
 export const ListReposArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner (org or username)'),
-  active: z.boolean().optional().describe('Filter by active repositories only'),
-  page: z.number().optional().default(1).describe('Page number'),
-  page_size: z.number().optional().default(20).describe('Results per page (max 100)'),
+  active: z.coerce.boolean().optional().describe('Filter by active repositories only'),
+  page: z.coerce.number().optional().default(1).describe('Page number'),
+  page_size: z.coerce.number().optional().default(20).describe('Results per page (max 100)'),
 });
 
 export const GetRepoArgsSchema = z.object({
@@ -67,8 +67,8 @@ export const ListCommitsArgsSchema = z.object({
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
   branch: z.string().optional().describe('Filter by branch'),
-  page: z.number().optional().default(1).describe('Page number'),
-  page_size: z.number().optional().default(20).describe('Results per page'),
+  page: z.coerce.number().optional().default(1).describe('Page number'),
+  page_size: z.coerce.number().optional().default(20).describe('Results per page'),
 });
 
 export const GetCommitArgsSchema = z.object({
@@ -86,8 +86,8 @@ export const ListBranchesArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
-  page: z.number().optional().default(1).describe('Page number'),
-  page_size: z.number().optional().default(20).describe('Results per page'),
+  page: z.coerce.number().optional().default(1).describe('Page number'),
+  page_size: z.coerce.number().optional().default(20).describe('Results per page'),
 });
 
 export const GetBranchArgsSchema = z.object({
@@ -106,15 +106,15 @@ export const ListPullsArgsSchema = z.object({
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
   state: z.enum(['open', 'closed', 'merged']).optional().describe('Filter by PR state'),
-  page: z.number().optional().default(1).describe('Page number'),
-  page_size: z.number().optional().default(20).describe('Results per page'),
+  page: z.coerce.number().optional().default(1).describe('Page number'),
+  page_size: z.coerce.number().optional().default(20).describe('Results per page'),
 });
 
 export const GetPullArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
-  pullid: z.number().describe('Pull request number'),
+  pullid: z.coerce.number().describe('Pull request number'),
 });
 
 // ============================================================================
@@ -137,8 +137,8 @@ export const ListFlagsArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
-  page: z.number().optional().default(1).describe('Page number'),
-  page_size: z.number().optional().default(20).describe('Results per page'),
+  page: z.coerce.number().optional().default(1).describe('Page number'),
+  page_size: z.coerce.number().optional().default(20).describe('Results per page'),
 });
 
 // ============================================================================

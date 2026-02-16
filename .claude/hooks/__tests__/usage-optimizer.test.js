@@ -93,8 +93,8 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       assert.match(
         code,
-        /const MIN_EFFECTIVE_MINUTES = 2/,
-        'Must define MIN_EFFECTIVE_MINUTES = 2'
+        /const MIN_EFFECTIVE_MINUTES = 5/,
+        'Must define MIN_EFFECTIVE_MINUTES = 5'
       );
 
       assert.match(
@@ -1658,19 +1658,19 @@ describe('usage-optimizer.js - Structure Validation', () => {
   });
 
   describe('Behavioral Tests - MIN_EFFECTIVE_MINUTES Floor', () => {
-    it('should enforce 2-minute floor when factor would create shorter cooldowns', () => {
+    it('should enforce 5-minute floor when factor would create shorter cooldowns', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       // Extract MIN_EFFECTIVE_MINUTES constant value
       const minMatch = code.match(/const MIN_EFFECTIVE_MINUTES = (\d+)/);
       assert.ok(minMatch, 'Must find MIN_EFFECTIVE_MINUTES constant');
       const minMinutes = parseInt(minMatch[1], 10);
-      assert.strictEqual(minMinutes, 2, 'MIN_EFFECTIVE_MINUTES must be 2');
+      assert.strictEqual(minMinutes, 5, 'MIN_EFFECTIVE_MINUTES must be 5');
 
       // Verify floor is applied in effective calculation
       // Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultVal / newFactor))
-      // Example: defaultVal=60, newFactor=2.0 → Math.max(2, 30) = 30 ✓
-      // Example: defaultVal=3, newFactor=2.0 → Math.max(2, 1.5) = 2 ✓
+      // Example: defaultVal=60, newFactor=2.0 → Math.max(5, 30) = 30 ✓
+      // Example: defaultVal=8, newFactor=2.0 → Math.max(5, 4) = 5 ✓
       const applyFactorMatch = code.match(/effective\[key\] = Math\.max\(MIN_EFFECTIVE_MINUTES, Math\.round\(defaultVal \/ newFactor\)\)/);
       assert.ok(applyFactorMatch, 'Must apply MIN_EFFECTIVE_MINUTES floor in effective calculation');
     });

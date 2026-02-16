@@ -183,6 +183,19 @@ mcp__deputy-cto__clear_question({ id: "<bypass-request-id>" })
 - The bypass request must already be answered/approved by CTO
 - Only works for `bypass-request` type questions
 
+## Demo Mode
+
+When the CTO asks to "run a demo", "show me a demo", or "launch Playwright", use the Playwright MCP tools — do NOT run `npx playwright` via Bash. Available MCP tools:
+- `mcp__playwright__launch_ui_mode` — Launch interactive UI mode (recommended for demos)
+- `mcp__playwright__run_tests` — Run tests headlessly
+- `mcp__playwright__get_coverage_status` — Show test coverage matrix
+
+Recommended projects for `launch_ui_mode`:
+- `manual` — Dashboard pages with `page.pause()` for human interaction
+- `extension-manual` — Browser extension scaffolds with `page.pause()` for interactive inspection
+- `vendor-owner`, `vendor-admin`, `vendor-dev`, `vendor-viewer` — Role-specific dashboard demos
+- `extension` — Automated extension E2E tests (headed Chromium with `--load-extension`)
+
 ## Remember
 
 - You are in an INTERACTIVE session - wait for CTO input

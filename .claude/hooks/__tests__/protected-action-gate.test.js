@@ -1051,4 +1051,266 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
         'Should show expiry warning');
     });
   });
+
+  // ==========================================================================
+  // Blocked Action Audit Logging (G024)
+  // ==========================================================================
+
+  describe('Blocked action audit logging (G024)', () => {
+    it('should log blocked action to blocked array when no approval exists', async () => {
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
+
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '1.0.0',
+        servers: {
+          'test-server': {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE TEST',
+            tools: '*',
+          },
+        },
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      await runHook('mcp__test-server__test-tool', {}, tempDir.path);
+
+      const data = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+
+      assert.ok(Array.isArray(data.blocked), 'Should have a blocked array');
+      assert.ok(data.blocked.length > 0, 'Should have at least one blocked entry');
+
+      const entry = data.blocked[0];
+      assert.strictEqual(entry.server, 'test-server', 'Should log server name');
+      assert.strictEqual(entry.tool, 'test-tool', 'Should log tool name');
+      assert.strictEqual(entry.reason, 'No valid approval exists', 'Should log reason');
+      assert.ok(entry.code, 'Should include the approval code');
+      assert.ok(entry.blockedAt, 'Should include blockedAt timestamp');
+
+      // Verify blockedAt is a valid ISO timestamp
+      const parsedDate = new Date(entry.blockedAt);
+      assert.ok(!isNaN(parsedDate.getTime()), 'blockedAt should be a valid ISO date');
+    });
+
+    it('should log blocked action for unrecognized MCP server', async () => {
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
+
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '2.0.0',
+        servers: {
+          'other-server': {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE OTHER',
+            tools: '*',
+          },
+        },
+        allowedUnprotectedServers: [],
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      await runHook('mcp__unknown-server__some-tool', {}, tempDir.path);
+
+      const data = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+
+      assert.ok(Array.isArray(data.blocked), 'Should have a blocked array');
+      assert.ok(data.blocked.length > 0, 'Should have at least one blocked entry');
+
+      const entry = data.blocked[0];
+      assert.strictEqual(entry.server, 'unknown-server');
+      assert.strictEqual(entry.tool, 'some-tool');
+      assert.match(entry.reason, /unrecognized/i, 'Should indicate unrecognized server');
+      assert.ok(entry.blockedAt, 'Should include blockedAt timestamp');
+    });
+
+    it('should log blocked action when protection key is missing', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-audit-nokey-'));
+      const claudeDir = path.join(tmpDir, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      // No protection-key
+
+      const configPath = path.join(tmpDir, '.claude', 'hooks', 'protected-actions.json');
+      const approvalsPath = path.join(tmpDir, '.claude', 'protected-action-approvals.json');
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '1.0.0',
+        servers: {
+          'test-server': {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE TEST',
+            tools: '*',
+          },
+        },
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      try {
+        await runHook('mcp__test-server__test-tool', {}, tmpDir);
+
+        const data = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+
+        assert.ok(Array.isArray(data.blocked), 'Should have a blocked array');
+        assert.ok(data.blocked.length > 0, 'Should have at least one blocked entry');
+
+        const entry = data.blocked[0];
+        assert.strictEqual(entry.server, 'test-server');
+        assert.strictEqual(entry.tool, 'test-tool');
+        assert.match(entry.reason, /protection key missing/i);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should preserve existing blocked entries when adding new ones', async () => {
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
+
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '1.0.0',
+        servers: {
+          'test-server': {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE TEST',
+            tools: '*',
+          },
+        },
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      // Pre-seed with an existing blocked entry
+      const existingData = {
+        approvals: {},
+        blocked: [
+          {
+            server: 'old-server',
+            tool: 'old-tool',
+            reason: 'Previous block',
+            blockedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      };
+
+      fs.writeFileSync(approvalsPath, JSON.stringify(existingData));
+
+      await runHook('mcp__test-server__test-tool', {}, tempDir.path);
+
+      const data = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+
+      assert.strictEqual(data.blocked.length, 2, 'Should have both old and new blocked entries');
+      assert.strictEqual(data.blocked[0].server, 'old-server', 'Old entry should be preserved');
+      assert.strictEqual(data.blocked[1].server, 'test-server', 'New entry should be appended');
+    });
+
+    it('should not create blocked entry when action is approved', async () => {
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
+
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '1.0.0',
+        servers: {
+          'test-server': {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE TEST',
+            tools: '*',
+          },
+        },
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      // Create a valid approval
+      const now = Date.now();
+      const expiresTimestamp = now + 5 * 60 * 1000;
+      const emptyArgsHash = computeArgsHash({});
+      const pendingHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', emptyArgsHash, String(expiresTimestamp));
+      const approvedHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', 'approved', emptyArgsHash, String(expiresTimestamp));
+
+      const approvals = {
+        approvals: {
+          ABC123: {
+            server: 'test-server',
+            tool: 'test-tool',
+            phrase: 'APPROVE TEST',
+            code: 'ABC123',
+            status: 'approved',
+            argsHash: emptyArgsHash,
+            created_timestamp: now,
+            expires_timestamp: expiresTimestamp,
+            pending_hmac: pendingHmac,
+            approved_hmac: approvedHmac,
+          },
+        },
+        blocked: [],
+      };
+
+      fs.writeFileSync(approvalsPath, JSON.stringify(approvals));
+
+      const result = await runHook('mcp__test-server__test-tool', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 0, 'Should pass with valid approval');
+
+      const data = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+      assert.strictEqual(data.blocked.length, 0, 'Should not log blocked entry for approved action');
+    });
+
+    it('should cap blocked array at 500 entries', async () => {
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
+
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '1.0.0',
+        servers: {
+          'test-server': {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE TEST',
+            tools: '*',
+          },
+        },
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      // Pre-seed with 500 entries
+      const existingBlocked = [];
+      for (let i = 0; i < 500; i++) {
+        existingBlocked.push({
+          server: 'old-server',
+          tool: `tool-${i}`,
+          reason: 'Old block',
+          blockedAt: `2026-01-01T00:00:${String(i % 60).padStart(2, '0')}.000Z`,
+        });
+      }
+
+      fs.writeFileSync(approvalsPath, JSON.stringify({
+        approvals: {},
+        blocked: existingBlocked,
+      }));
+
+      await runHook('mcp__test-server__test-tool', {}, tempDir.path);
+
+      const data = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+
+      assert.ok(data.blocked.length <= 500, 'Should cap blocked array at 500 entries');
+      // The newest entry should be the one we just added
+      const lastEntry = data.blocked[data.blocked.length - 1];
+      assert.strictEqual(lastEntry.server, 'test-server', 'Newest entry should be at the end');
+      // The oldest entries should have been trimmed
+      assert.strictEqual(data.blocked[0].tool, 'tool-1', 'Oldest entry (tool-0) should be trimmed');
+    });
+  });
 });

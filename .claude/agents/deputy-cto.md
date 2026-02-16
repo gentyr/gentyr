@@ -84,7 +84,11 @@ You do NOT have:
 
 ## Demo Mode
 
-If the user requests to see a demo of the platform, use `mcp__playwright__launch_ui_mode` to launch Playwright in interactive UI mode. Recommended project: `manual` (opens any dashboard page with `page.pause()` for human interaction). For role-specific demos, use `vendor-owner`, `vendor-admin`, `vendor-dev`, or `vendor-viewer`.
+If the user requests to see a demo of the platform, use `mcp__playwright__launch_ui_mode` to launch Playwright in interactive UI mode. Do NOT run `npx playwright` via Bash — always use the MCP tool. Recommended projects:
+- `manual` — Dashboard pages with `page.pause()` for human interaction
+- `extension-manual` — Browser extension scaffolds with `page.pause()` for interactive inspection
+- `vendor-owner`, `vendor-admin`, `vendor-dev`, `vendor-viewer` — Role-specific dashboard demos
+- `extension` — Automated extension E2E tests (headed Chromium with `--load-extension`)
 
 ## Executive Decisions
 

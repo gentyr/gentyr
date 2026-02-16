@@ -56,6 +56,10 @@ These are not sensitive. They can optionally be in 1Password OR provided directl
 
 Use these references in `.claude/config/services.json` under the `secrets` key:
 
+> **Note:** `ELASTIC_API_KEY` maps to different 1Password fields depending on context:
+> the backend (Render) uses the **ingest** key (`api-key`), while the MCP `elastic-logs`
+> server uses the **read-only query** key (`api-key-query`). See the table above for details.
+
 ```json
 {
   "secrets": {

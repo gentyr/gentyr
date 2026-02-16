@@ -63,7 +63,7 @@ export const GetCurrentUrlArgsSchema = z.object({});
 // ============================================================================
 
 export const ScreenshotArgsSchema = z.object({
-  full_page: z.boolean().optional().default(false)
+  full_page: z.coerce.boolean().optional().default(false)
     .describe('Capture full page screenshot (default: false for viewport only)'),
 });
 
@@ -82,7 +82,7 @@ const ElementLocatorBase = {
     .describe('ARIA role of the element'),
   name: z.string().optional()
     .describe('Accessible name (aria-label, aria-labelledby, or label text)'),
-  index: z.number().optional()
+  index: z.coerce.number().optional()
     .describe('Index when multiple matching elements exist (0-based)'),
 };
 
@@ -98,7 +98,7 @@ export const ClickArgsSchema = z.object(ElementLocatorBase).refine(
 export const TypeTextArgsSchema = z.object({
   ...ElementLocatorBase,
   value: z.string().describe('Text to type into the field'),
-  clear: z.boolean().optional().default(false)
+  clear: z.coerce.boolean().optional().default(false)
     .describe('Clear existing text before typing (default: false)'),
 }).refine(
   (data) => data.text !== undefined || data.role !== undefined,
@@ -115,7 +115,7 @@ export const SelectOptionArgsSchema = z.object({
 
 export const CheckArgsSchema = z.object({
   ...ElementLocatorBase,
-  checked: z.boolean().describe('True to check, false to uncheck'),
+  checked: z.coerce.boolean().describe('True to check, false to uncheck'),
 }).refine(
   (data) => data.text !== undefined || data.role !== undefined,
   { message: 'Must specify either text or role to identify an element' }
@@ -149,7 +149,7 @@ export const DragAndDropArgsSchema = z.object({
 
 export const ScrollArgsSchema = z.object({
   direction: z.enum(SCROLL_DIRECTIONS).describe('Direction to scroll'),
-  amount: z.number().optional().default(300)
+  amount: z.coerce.number().optional().default(300)
     .describe('Pixels to scroll (default: 300)'),
 });
 
@@ -163,12 +163,12 @@ export const ScrollToTextArgsSchema = z.object({
 
 export const WaitForTextArgsSchema = z.object({
   text: z.string().describe('Text to wait for'),
-  timeout: z.number().optional().default(5000)
+  timeout: z.coerce.number().optional().default(5000)
     .describe('Timeout in milliseconds (default: 5000)'),
 });
 
 export const WaitForIdleArgsSchema = z.object({
-  timeout: z.number().optional().default(5000)
+  timeout: z.coerce.number().optional().default(5000)
     .describe('Timeout in milliseconds (default: 5000)'),
 });
 

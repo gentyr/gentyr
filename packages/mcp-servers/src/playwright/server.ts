@@ -86,6 +86,8 @@ const PERSONA_MAP: Record<string, string> = {
   'cross-persona': 'Cross-Persona Workflows',
   'auth-flows': 'Auth Flows (No Pre-auth)',
   'manual': 'Manual QA Scaffolds',
+  'extension': 'End Customer (Extension)',
+  'extension-manual': 'Extension Manual QA',
 };
 
 // ============================================================================
@@ -332,6 +334,8 @@ function getCoverageStatus(): GetCoverageStatusResult {
     'cross-persona': 'e2e/cross-persona',
     'auth-flows': 'e2e/auth',
     'manual': 'e2e/manual',
+    'extension': 'e2e/extension',
+    'extension-manual': 'e2e/extension/manual',
   };
 
   for (const [project, testDir] of Object.entries(activeDirs)) {
@@ -356,7 +360,6 @@ function getCoverageStatus(): GetCoverageStatusResult {
 
   // Deferred test directories
   const deferredDirs: Record<string, string> = {
-    'extension': 'e2e/_deferred/extension',
     'operator': 'e2e/_deferred/operator',
   };
 
@@ -364,7 +367,7 @@ function getCoverageStatus(): GetCoverageStatusResult {
     const fullDir = path.join(PROJECT_DIR, testDir);
     const testCount = countTestFiles(fullDir);
 
-    const personaLabel = name === 'extension' ? 'End Customer (Extension)' : 'Platform Operator';
+    const personaLabel = 'Platform Operator';
 
     personas.push({
       project: `deferred-${name}`,
@@ -392,29 +395,29 @@ function getCoverageStatus(): GetCoverageStatusResult {
 // ============================================================================
 
 /**
- * Count test files (*.spec.ts) in a directory.
+ * Count test files in a directory.
+ * Matches *.spec.ts for automated tests, *.manual.ts for manual scaffolds.
  */
 function countTestFiles(dir: string, projectFilter?: string): number {
   if (!fs.existsSync(dir)) return 0;
 
-  try {
-    const files = fs.readdirSync(dir, { recursive: true }) as string[];
-    return files.filter(f => {
-      const filename = String(f);
-      if (!filename.endsWith('.spec.ts')) return false;
+  const files = fs.readdirSync(dir, { recursive: true }) as string[];
+  return files.filter(f => {
+    const filename = String(f);
+    const isSpec = filename.endsWith('.spec.ts');
+    const isManual = filename.endsWith('.manual.ts');
+    if (!isSpec && !isManual) return false;
 
-      // For role-specific projects, filter by matching spec file
-      if (projectFilter === 'vendor-admin') return filename.includes('admin');
-      if (projectFilter === 'vendor-dev') return filename.includes('developer');
-      if (projectFilter === 'vendor-viewer') return filename.includes('viewer');
+    // Exclude manual/ subdirectory for the extension project (counted separately as extension-manual)
+    if (projectFilter === 'extension' && filename.includes('manual/')) return false;
 
-      return true;
-    }).length;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[playwright] Failed to read test directory ${dir}: ${message}\n`);
-    return 0;
-  }
+    // For role-specific projects, filter by matching spec file
+    if (projectFilter === 'vendor-admin') return filename.includes('admin');
+    if (projectFilter === 'vendor-dev') return filename.includes('developer');
+    if (projectFilter === 'vendor-viewer') return filename.includes('viewer');
+
+    return true;
+  }).length;
 }
 
 /**
@@ -459,6 +462,7 @@ const tools: AnyToolHandler[] = [
       'Launch Playwright in interactive UI mode for manual testing and demos. ' +
       'Opens a browser with the Playwright test runner UI. ' +
       'Use project "manual" for demos (page.pause() for human interaction), ' +
+      '"extension-manual" for extension demos, ' +
       'or a vendor role project to test as a specific persona.',
     schema: LaunchUiModeArgsSchema,
     handler: launchUiMode,

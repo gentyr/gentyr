@@ -13,7 +13,7 @@ import { z } from 'zod';
 
 export const SearchDocsSchema = z.object({
   query: z.string().min(1).describe('Search query for Makerkit documentation'),
-  max_results: z.number().min(1).max(20).default(5).describe('Maximum results to return (1-20, default 5)'),
+  max_results: z.coerce.number().min(1).max(20).default(5).describe('Maximum results to return (1-20, default 5)'),
 });
 
 export const ListDocsSchema = z.object({});
