@@ -48,6 +48,15 @@ function computeTestHmac(...fields) {
 }
 
 /**
+ * Compute args hash matching the gate hook's algorithm.
+ */
+function computeArgsHash(args) {
+  return crypto.createHash('sha256')
+    .update(JSON.stringify(args || {}))
+    .digest('hex');
+}
+
+/**
  * Create a temporary directory for test files.
  * Automatically creates .claude/ dir and protection-key.
  */
@@ -401,11 +410,12 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
 
       fs.writeFileSync(configPath, JSON.stringify(config));
 
-      // Create a valid approval with HMAC fields
+      // Create a valid approval with HMAC fields (including argsHash for empty args)
       const now = Date.now();
       const expiresTimestamp = now + 5 * 60 * 1000;
-      const pendingHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', String(expiresTimestamp));
-      const approvedHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', 'approved', String(expiresTimestamp));
+      const emptyArgsHash = computeArgsHash({});
+      const pendingHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', emptyArgsHash, String(expiresTimestamp));
+      const approvedHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', 'approved', emptyArgsHash, String(expiresTimestamp));
 
       const approvals = {
         approvals: {
@@ -415,6 +425,7 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
             phrase: 'APPROVE TEST',
             code: 'ABC123',
             status: 'approved',
+            argsHash: emptyArgsHash,
             created_timestamp: now,
             expires_timestamp: expiresTimestamp,
             pending_hmac: pendingHmac,
@@ -452,11 +463,12 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
 
       fs.writeFileSync(configPath, JSON.stringify(config));
 
-      // Create a valid approval with HMAC fields
+      // Create a valid approval with HMAC fields (including argsHash for empty args)
       const now = Date.now();
       const expiresTimestamp = now + 5 * 60 * 1000;
-      const pendingHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', String(expiresTimestamp));
-      const approvedHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', 'approved', String(expiresTimestamp));
+      const emptyArgsHash = computeArgsHash({});
+      const pendingHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', emptyArgsHash, String(expiresTimestamp));
+      const approvedHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', 'approved', emptyArgsHash, String(expiresTimestamp));
 
       const approvals = {
         approvals: {
@@ -465,6 +477,7 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
             tool: 'test-tool',
             code: 'ABC123',
             status: 'approved',
+            argsHash: emptyArgsHash,
             created_timestamp: now,
             expires_timestamp: expiresTimestamp,
             pending_hmac: pendingHmac,
@@ -483,6 +496,63 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
       const result2 = await runHook('mcp__test-server__test-tool', {}, tempDir.path);
       assert.strictEqual(result2.exitCode, 1,
         'Second call should be blocked (approval consumed)');
+    });
+
+    it('should block bait-and-switch (approval args mismatch - Fix 3)', async () => {
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
+
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '1.0.0',
+        servers: {
+          'test-server': {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE TEST',
+            tools: '*',
+          },
+        },
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      // Create a valid approval for safe query args
+      const safeArgs = { query: 'SELECT count(*) FROM users' };
+      const safeArgsHash = computeArgsHash(safeArgs);
+      const now = Date.now();
+      const expiresTimestamp = now + 5 * 60 * 1000;
+      const pendingHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', safeArgsHash, String(expiresTimestamp));
+      const approvedHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', 'approved', safeArgsHash, String(expiresTimestamp));
+
+      const approvals = {
+        approvals: {
+          ABC123: {
+            server: 'test-server',
+            tool: 'test-tool',
+            phrase: 'APPROVE TEST',
+            code: 'ABC123',
+            status: 'approved',
+            args: safeArgs,
+            argsHash: safeArgsHash,
+            created_timestamp: now,
+            expires_timestamp: expiresTimestamp,
+            pending_hmac: pendingHmac,
+            approved_hmac: approvedHmac,
+          },
+        },
+      };
+
+      fs.writeFileSync(approvalsPath, JSON.stringify(approvals));
+
+      // Attempt bait-and-switch: call with DIFFERENT args (dangerous query)
+      const maliciousArgs = { query: 'DROP TABLE users CASCADE' };
+      const result = await runHook('mcp__test-server__test-tool', maliciousArgs, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 1,
+        'Should block when args do not match approved args (bait-and-switch prevention)');
+      assert.match(result.stderr, /PROTECTED ACTION BLOCKED/,
+        'Should show block message for args mismatch');
     });
 
     it('should block with pending (not approved) approval', async () => {

@@ -73,51 +73,6 @@ const BLOCKED_PATH_PATTERNS = [
 // ============================================================================
 
 /**
- * Commands that read file contents.
- *
- * SECURITY FIX (C2): Significantly expanded from the original 14 commands.
- * Previously only: cat, head, tail, less, more, strings, xxd, hexdump, base64,
- * open, source, bat, nl. This allowed bypass via grep, awk, python3, node, etc.
- */
-const FILE_READ_COMMANDS = new Set([
-  // Original commands
-  'cat', 'head', 'tail', 'less', 'more', 'strings', 'xxd',
-  'hexdump', 'base64', 'open', 'source', 'bat', 'nl',
-  // Search tools (C2: these read file contents)
-  'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack',
-  // Text processing (C2: these read and transform file contents)
-  'awk', 'gawk', 'mawk', 'nawk',
-  'sed', 'gsed',
-  'sort', 'uniq', 'cut', 'paste', 'join', 'comm',
-  'wc', 'tr', 'rev', 'tac', 'fmt', 'fold', 'column',
-  'expand', 'unexpand', 'pr', 'colrm',
-  // Diff tools (C2: read and compare files)
-  'diff', 'sdiff', 'vimdiff', 'cmp',
-  // Binary inspection (C2: read raw file bytes)
-  'od', 'dd', 'file',
-  // Archive/compression tools (C2: read files for archiving)
-  'tar', 'zip', 'gzip', 'gunzip', 'bzip2', 'bunzip2', 'xz',
-  'zcat', 'bzcat', 'xzcat', 'lz4cat',
-  // Crypto/checksum tools (C2: read file contents for hashing)
-  'openssl', 'gpg', 'sha256sum', 'sha1sum', 'md5sum', 'md5',
-  // Scripting language interpreters (C2: can execute code that reads files)
-  'python', 'python3', 'node', 'ruby', 'perl', 'php', 'lua',
-  // HTTP clients (C2: file:// protocol can read local files)
-  'curl', 'wget',
-  // Editors in non-interactive mode (C2: can dump file contents)
-  'vim', 'vi', 'nano', 'emacs',
-  // File splitting (C2: reads files to split them)
-  'split', 'csplit',
-  // Paging (C2: reads file contents)
-  'pg',
-]);
-
-/**
- * Commands that copy/move files (source file is first path argument)
- */
-const FILE_COPY_COMMANDS = new Set(['cp', 'mv']);
-
-/**
  * Commands that do NOT access files via their arguments, so their arguments
  * should NOT be checked as file paths. This prevents false positives like
  * "echo .env" (which just prints the text ".env", not reading any file).
@@ -233,8 +188,84 @@ function tokenize(str) {
 }
 
 /**
+ * Split a command string on shell operators (|, ||, &&, ;) while respecting
+ * single and double quotes. This prevents mangling paths like 'path;with;semicolons/.env'.
+ *
+ * @param {string} command
+ * @returns {string[]} Array of sub-command strings
+ */
+function splitOnShellOperators(command) {
+  const parts = [];
+  let current = '';
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  let i = 0;
+
+  while (i < command.length) {
+    const ch = command[i];
+
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      i++;
+      continue;
+    }
+    if (ch === '\\' && !inSingle) {
+      escaped = true;
+      current += ch;
+      i++;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      current += ch;
+      i++;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      current += ch;
+      i++;
+      continue;
+    }
+
+    // Only split on operators when outside quotes
+    if (!inSingle && !inDouble) {
+      // Check for && or ||
+      if ((ch === '&' || ch === '|') && i + 1 < command.length && command[i + 1] === ch) {
+        if (current.trim()) parts.push(current.trim());
+        current = '';
+        i += 2;
+        continue;
+      }
+      // Check for single | (not ||)
+      if (ch === '|') {
+        if (current.trim()) parts.push(current.trim());
+        current = '';
+        i++;
+        continue;
+      }
+      // Check for ;
+      if (ch === ';') {
+        if (current.trim()) parts.push(current.trim());
+        current = '';
+        i++;
+        continue;
+      }
+    }
+
+    current += ch;
+    i++;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+/**
  * Extract file paths from a bash command that may access protected files.
- * Splits on pipes, semicolons, && and || to process individual sub-commands.
+ * Splits on pipes, semicolons, && and || to process individual sub-commands,
+ * respecting shell quoting to avoid mangling quoted paths.
  *
  * SECURITY FIX (C2): Uses universal argument scanning for ALL commands except
  * those in NON_FILE_COMMANDS (echo, printf, mkdir, etc.). Previously only
@@ -251,8 +282,8 @@ function tokenize(str) {
 function extractFilePathsFromCommand(command) {
   const paths = [];
 
-  // Split on pipe, semicolons, && and || to get individual commands
-  const subCommands = command.split(/\s*(?:\|(?!\|)|\|\||&&|;)\s*/);
+  // Split on pipe, semicolons, && and || respecting quotes
+  const subCommands = splitOnShellOperators(command);
 
   for (const sub of subCommands) {
     const trimmed = sub.trim();
@@ -312,7 +343,7 @@ function extractFilePathsFromCommand(command) {
  * Only checks BLOCKED_PATH_SUFFIXES (longer, more specific paths like .mcp.json,
  * .claude/protection-key). Does NOT check BLOCKED_BASENAMES (short names like .env)
  * to avoid false positives with commands like "echo .env" or "npm install .env-parser".
- * Basename detection for known commands is handled by the expanded FILE_READ_COMMANDS.
+ * Basename detection is handled by the universal argument scanning in extractFilePathsFromCommand().
  *
  * SECURITY FIX (C2): Provides a second layer of defense against bypass via
  * scripting language interpreters.
@@ -610,6 +641,20 @@ process.stdin.on('end', () => {
             return;
           }
         }
+        for (const suffix of BLOCKED_PATH_SUFFIXES) {
+          if (grepGlob.includes(suffix)) {
+            blockRead(grepGlob, `Grep glob pattern targets protected path "${suffix}"`);
+            return;
+          }
+        }
+      }
+      // When no path and no glob, Grep searches the entire directory tree
+      // which includes protected credential files. Block to prevent exposure.
+      if (!grepPath && !grepGlob) {
+        blockRead('(recursive search)',
+          'Grep without path or glob would search all files including protected credential files. ' +
+          'Specify a path (e.g., path: "src/") or glob (e.g., glob: "*.ts") to restrict the search.');
+        return;
       }
       process.exit(0);
     }

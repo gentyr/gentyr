@@ -233,9 +233,10 @@ function saveApprovals(approvals) {
  * Uses file locking to prevent TOCTOU race conditions on approval consumption.
  * @param {string} server - MCP server name
  * @param {string} tool - Tool name
+ * @param {object} args - Tool arguments (used to verify approval is scoped to these exact args)
  * @returns {object|null} Approval if valid, null otherwise
  */
-function checkApproval(server, tool) {
+function checkApproval(server, tool, args) {
   // Acquire lock to prevent TOCTOU race: two concurrent checks consuming same approval
   if (!acquireLock()) {
     console.error('[protected-action-gate] G001 FAIL-CLOSED: Could not acquire approvals lock. Blocking action.');
@@ -248,16 +249,27 @@ function checkApproval(server, tool) {
     const key = loadProtectionKey();
     let dirty = false;
 
+    // Hash the current call's arguments to verify they match the approved args
+    const argsHash = crypto.createHash('sha256')
+      .update(JSON.stringify(args || {}))
+      .digest('hex');
+
     for (const [code, request] of Object.entries(approvals.approvals)) {
       if (request.status !== 'approved') continue;
       if (request.expires_timestamp < now) continue;
       if (request.server !== server) continue;
       if (request.tool !== tool) continue;
 
+      // Verify args match what was approved (prevents bait-and-switch attack)
+      if (request.argsHash && request.argsHash !== argsHash) {
+        continue; // Args don't match the approved request
+      }
+
       // HMAC verification (Fix 2): Verify signatures to prevent agent forgery
+      // argsHash is included in HMAC to bind approval to specific arguments
       if (key) {
-        // Verify pending_hmac (was this request created by this hook?)
-        const expectedPendingHmac = computeHmac(key, code, server, tool, String(request.expires_timestamp));
+        // Verify pending_hmac (was this request created by this hook with these args?)
+        const expectedPendingHmac = computeHmac(key, code, server, tool, request.argsHash || argsHash, String(request.expires_timestamp));
         if (request.pending_hmac !== expectedPendingHmac) {
           // Forged pending request - delete it
           console.error(`[protected-action-gate] FORGERY DETECTED: Invalid pending_hmac for ${code}. Deleting.`);
@@ -267,7 +279,7 @@ function checkApproval(server, tool) {
         }
 
         // Verify approved_hmac (was this approval created by the approval hook?)
-        const expectedApprovedHmac = computeHmac(key, code, server, tool, 'approved', String(request.expires_timestamp));
+        const expectedApprovedHmac = computeHmac(key, code, server, tool, 'approved', request.argsHash || argsHash, String(request.expires_timestamp));
         if (request.approved_hmac !== expectedApprovedHmac) {
           // Forged approval - delete it
           console.error(`[protected-action-gate] FORGERY DETECTED: Invalid approved_hmac for ${code}. Deleting.`);
@@ -330,9 +342,15 @@ function createRequest(server, tool, args, phrase, options = {}) {
   const expiryMs = 5 * 60 * 1000; // 5 minutes
   const expiresTimestamp = now + expiryMs;
 
+  // Hash the args to bind the approval to these specific arguments (prevents bait-and-switch)
+  const argsHash = crypto.createHash('sha256')
+    .update(JSON.stringify(args || {}))
+    .digest('hex');
+
   // Compute HMAC for pending request (prevents agent forgery)
+  // Includes argsHash so approval is bound to exact arguments shown to CTO
   const key = loadProtectionKey();
-  const pendingHmac = key ? computeHmac(key, code, server, tool, String(expiresTimestamp)) : undefined;
+  const pendingHmac = key ? computeHmac(key, code, server, tool, argsHash, String(expiresTimestamp)) : undefined;
 
   // Acquire lock for atomic read-modify-write
   if (!acquireLock()) {
@@ -345,6 +363,7 @@ function createRequest(server, tool, args, phrase, options = {}) {
       server,
       tool,
       args,
+      argsHash,
       phrase,
       code,
       status: 'pending',
@@ -477,8 +496,8 @@ function main() {
     process.exit(1);
   }
 
-  // Check for valid approval (HMAC-verified)
-  const approval = checkApproval(mcpInfo.server, mcpInfo.tool);
+  // Check for valid approval (HMAC-verified, args-scoped)
+  const approval = checkApproval(mcpInfo.server, mcpInfo.tool, args);
   if (approval) {
     // Has valid, HMAC-verified approval, allow
     console.error(`[protected-action-gate] Approval verified for ${mcpInfo.server}:${mcpInfo.tool}`);

@@ -184,7 +184,7 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
       }
     });
 
-    it('should pass through Grep with no path or glob parameter', async () => {
+    it('should block Grep with no path or glob parameter (searches entire tree)', async () => {
       const result = await runHook({
         tool_name: 'Grep',
         tool_input: { pattern: 'test' },
@@ -193,12 +193,11 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
 
       assert.strictEqual(result.exitCode, 0);
 
-      // Should pass through (no JSON output or not denied)
       const jsonMatch = result.stdout.match(/\{.*\}/s);
-      if (jsonMatch) {
-        const output = JSON.parse(jsonMatch[0]);
-        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
-      }
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Grep without path or glob should be blocked (searches entire tree including credential files)');
     });
 
     it('should block any .env.* variant', async () => {
@@ -275,7 +274,7 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
       }
     });
 
-    it('should pass through Grep with no path parameter', async () => {
+    it('should block Grep with no path parameter (searches entire tree)', async () => {
       const result = await runHook({
         tool_name: 'Grep',
         tool_input: { pattern: 'search' },
@@ -285,10 +284,10 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
       assert.strictEqual(result.exitCode, 0);
 
       const jsonMatch = result.stdout.match(/\{.*\}/s);
-      if (jsonMatch) {
-        const output = JSON.parse(jsonMatch[0]);
-        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
-      }
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Grep without path should be blocked (searches entire tree including credential files)');
     });
 
     it('should block Grep with glob pattern containing ".env"', async () => {

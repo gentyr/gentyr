@@ -198,7 +198,7 @@ function validateAndApprove(phrase, code) {
   // HMAC verification (Fix 2): Verify the pending request was created by the gate hook
   const key = loadProtectionKey();
   if (key && request.pending_hmac) {
-    const expectedPendingHmac = computeHmac(key, normalizedCode, request.server, request.tool, String(request.expires_timestamp));
+    const expectedPendingHmac = computeHmac(key, normalizedCode, request.server, request.tool, request.argsHash || '', String(request.expires_timestamp));
     if (request.pending_hmac !== expectedPendingHmac) {
       // Forged pending request — delete and reject
       console.error(`[protected-action-approval] FORGERY DETECTED: Invalid pending_hmac for ${normalizedCode}. Deleting.`);
@@ -230,7 +230,7 @@ function validateAndApprove(phrase, code) {
   request.approved_at = new Date().toISOString();
   request.approved_timestamp = Date.now();
   if (key) {
-    request.approved_hmac = computeHmac(key, normalizedCode, request.server, request.tool, 'approved', String(request.expires_timestamp));
+    request.approved_hmac = computeHmac(key, normalizedCode, request.server, request.tool, 'approved', request.argsHash || '', String(request.expires_timestamp));
   }
   saveApprovals(approvals);
 

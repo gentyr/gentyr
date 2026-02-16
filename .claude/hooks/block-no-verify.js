@@ -122,15 +122,21 @@ function hasValidBypassToken(projectDir) {
     // HMAC verification: ensure token was created by the bypass-approval-hook
     const key = loadProtectionKey(projectDir);
     if (key) {
+      if (!token.hmac) {
+        console.error('[block-no-verify] FORGERY DETECTED: Token missing HMAC field. Deleting.');
+        try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
+        return false;
+      }
       const expectedHmac = computeHmac(key, token.code, token.request_id, String(token.expires_timestamp), 'bypass-approved');
       if (token.hmac !== expectedHmac) {
         console.error('[block-no-verify] FORGERY DETECTED: Invalid HMAC on bypass token. Deleting.');
         try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
         return false;
       }
-    } else if (token.hmac) {
-      // G001 Fail-Closed: Token has HMAC but we can't verify (protection key missing)
-      console.error('[block-no-verify] G001 FAIL-CLOSED: Cannot verify bypass token HMAC (protection key missing). Rejecting.');
+    } else {
+      // G001 Fail-Closed: No protection key available -- cannot verify token authenticity
+      console.error('[block-no-verify] G001 FAIL-CLOSED: Protection key missing, cannot verify bypass token. Rejecting.');
+      try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
       return false;
     }
 
@@ -275,8 +281,15 @@ process.stdin.on('end', () => {
     // Command is allowed
     process.exit(0);
   } catch (err) {
-    // G001: fail-closed on parse errors
-    console.error(`[block-no-verify] Error parsing input: ${err.message}`);
-    process.exit(2);
+    // G001: fail-closed on parse errors — output deny JSON so Claude Code blocks the action
+    console.error(`[block-no-verify] G001 FAIL-CLOSED: Error parsing input: ${err.message}`);
+    console.log(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: `G001 FAIL-CLOSED: Hook error - ${err.message}`,
+      },
+    }));
+    process.exit(0);
   }
 });
