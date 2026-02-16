@@ -64,7 +64,10 @@ Creates personas (GUI/CLI/API/SDK modes), registers features with file patterns,
 ## Automation Service
 
 ```bash
-scripts/setup-automation-service.sh status --path /project  # Check service status
-scripts/setup-automation-service.sh remove --path /project  # Remove service
-scripts/setup-automation-service.sh run --path /project     # Manual run
+scripts/setup-automation-service.sh status --path /project                  # Check service status
+scripts/setup-automation-service.sh remove --path /project                  # Remove service
+scripts/setup-automation-service.sh run --path /project                     # Manual run
+scripts/setup-automation-service.sh setup --path /project --op-token TOKEN  # Install with 1Password service account
 ```
+
+By default, the automation service runs without 1Password credentials in background mode to avoid macOS permission prompts. Provide `--op-token` with a 1Password service account token to enable headless credential resolution for infrastructure MCP servers.

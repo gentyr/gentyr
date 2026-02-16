@@ -22,14 +22,12 @@ describe('Automated Instances - Basic Structure', () => {
   let tempDir: string;
   let agentTrackerPath: string;
   let automationStatePath: string;
-  let automationConfigPath: string;
 
   beforeEach(() => {
     tempDir = path.join('/tmp', `automated-instances-test-${randomUUID()}`);
     fs.mkdirSync(path.join(tempDir, '.claude', 'state'), { recursive: true });
     agentTrackerPath = path.join(tempDir, '.claude', 'state', 'agent-tracker-history.json');
     automationStatePath = path.join(tempDir, '.claude', 'hourly-automation-state.json');
-    automationConfigPath = path.join(tempDir, '.claude', 'state', 'automation-config.json');
 
     // Set PROJECT_DIR env var for the module under test
     process.env['CLAUDE_PROJECT_DIR'] = tempDir;
@@ -49,35 +47,6 @@ describe('Automated Instances - Basic Structure', () => {
 
   interface AgentHistory {
     agents: AgentHistoryEntry[];
-  }
-
-  interface AutomationState {
-    lastRun?: number;
-    lastClaudeMdRefactor?: number;
-    lastTriageCheck?: number;
-    lastTaskRunnerCheck?: number;
-    lastLintCheck?: number;
-    lastPreviewPromotionCheck?: number;
-    lastStagingPromotionCheck?: number;
-    lastStagingHealthCheck?: number;
-    lastProductionHealthCheck?: number;
-    lastStandaloneAntipatternHunt?: number;
-    lastStandaloneComplianceCheck?: number;
-    lastFeedbackCheck?: number;
-  }
-
-  interface AutomationConfigFile {
-    version: number;
-    defaults?: Partial<AutomationCooldowns>;
-    effective?: Partial<AutomationCooldowns>;
-    adjustment?: {
-      factor?: number;
-      target_pct?: number;
-      projected_at_reset?: number;
-      constraining_metric?: '5h' | '7d';
-      last_updated?: string;
-    };
-    modes?: Record<string, { mode: 'load_balanced' | 'static'; static_minutes?: number }>;
   }
 
   type InstanceTrigger = 'scheduled' | 'commit' | 'failure' | 'prompt' | 'file-change';
@@ -251,13 +220,11 @@ describe('Automated Instances - Run Counting', () => {
 describe('Automated Instances - Time Until Next Run', () => {
   let tempDir: string;
   let automationStatePath: string;
-  let automationConfigPath: string;
 
   beforeEach(() => {
     tempDir = path.join('/tmp', `automated-instances-time-${randomUUID()}`);
     fs.mkdirSync(path.join(tempDir, '.claude', 'state'), { recursive: true });
     automationStatePath = path.join(tempDir, '.claude', 'hourly-automation-state.json');
-    automationConfigPath = path.join(tempDir, '.claude', 'state', 'automation-config.json');
     process.env['CLAUDE_PROJECT_DIR'] = tempDir;
   });
 
@@ -270,11 +237,6 @@ describe('Automated Instances - Time Until Next Run', () => {
 
   interface AutomationState {
     lastTriageCheck?: number;
-  }
-
-  interface AutomationConfigFile {
-    version: number;
-    effective?: Partial<AutomationCooldowns>;
   }
 
   const formatDuration = (seconds: number): string => {
@@ -366,12 +328,9 @@ describe('Automated Instances - Time Until Next Run', () => {
 
 describe('Automated Instances - Frequency Adjustment', () => {
   let tempDir: string;
-  let automationConfigPath: string;
-
   beforeEach(() => {
     tempDir = path.join('/tmp', `automated-instances-freq-${randomUUID()}`);
     fs.mkdirSync(path.join(tempDir, '.claude', 'state'), { recursive: true });
-    automationConfigPath = path.join(tempDir, '.claude', 'state', 'automation-config.json');
     process.env['CLAUDE_PROJECT_DIR'] = tempDir;
   });
 
@@ -382,18 +341,8 @@ describe('Automated Instances - Frequency Adjustment', () => {
     delete process.env['CLAUDE_PROJECT_DIR'];
   });
 
-  interface AutomationConfigFile {
-    version: number;
-    defaults?: Partial<AutomationCooldowns>;
-    effective?: Partial<AutomationCooldowns>;
-    adjustment?: {
-      last_updated?: string;
-    };
-    modes?: Record<string, { mode: 'load_balanced' | 'static'; static_minutes?: number }>;
-  }
-
   const getFreqAdjDisplay = (
-    cooldownKey: keyof AutomationCooldowns,
+    _cooldownKey: keyof AutomationCooldowns,
     defaultMinutes: number,
     effectiveMinutes: number,
     isStatic: boolean,
@@ -475,7 +424,7 @@ describe('Automated Instances - Trigger Types', () => {
       prompt: 'on prompt',
     };
 
-    for (const [trigger, display] of Object.entries(triggerDisplayMap)) {
+    for (const [_trigger, display] of Object.entries(triggerDisplayMap)) {
       expect(display).toMatch(/^on /);
     }
   });
@@ -600,7 +549,7 @@ describe('Automated Instances - Instance Definitions', () => {
       'Antipattern Hunter': ['antipattern-hunter', 'antipattern-hunter-repo', 'antipattern-hunter-commit', 'standalone-antipattern-hunter'],
     };
 
-    for (const [instance, agentTypes] of Object.entries(agentTypeMap)) {
+    for (const [_instance, agentTypes] of Object.entries(agentTypeMap)) {
       expect(Array.isArray(agentTypes)).toBe(true);
       expect(agentTypes.length).toBeGreaterThan(0);
       for (const agentType of agentTypes) {

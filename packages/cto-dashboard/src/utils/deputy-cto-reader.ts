@@ -31,6 +31,7 @@ export interface PendingQuestion {
   type: string;
   title: string;
   description: string;
+  recommendation: string | null;
   created_at: string;
 }
 
@@ -147,7 +148,7 @@ export function getDeputyCtoData(): DeputyCtoData {
 
       // Pending questions
       result.pendingQuestions = db.prepare(`
-        SELECT id, type, title, description, created_at
+        SELECT id, type, title, description, recommendation, created_at
         FROM questions
         WHERE status = 'pending'
         ORDER BY created_timestamp DESC

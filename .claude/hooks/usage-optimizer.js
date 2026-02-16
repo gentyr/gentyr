@@ -17,6 +17,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFileSync } from 'child_process';
 import { getConfigPath, getDefaults } from './config-reader.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -112,7 +113,13 @@ function getApiKeys() {
   const keys = [];
   const now = Date.now();
 
-  // Try rotation state first (multiple keys)
+  // Source 1: Environment variable override (highest priority)
+  const envToken = process.env['CLAUDE_CODE_OAUTH_TOKEN'];
+  if (envToken) {
+    return [{ id: 'env', accessToken: envToken }];
+  }
+
+  // Source 2: Rotation state (multiple keys)
   if (fs.existsSync(ROTATION_STATE_PATH)) {
     try {
       const state = JSON.parse(fs.readFileSync(ROTATION_STATE_PATH, 'utf8'));
@@ -130,7 +137,26 @@ function getApiKeys() {
     }
   }
 
-  // Fall back to single credentials file
+  // Source 3: macOS Keychain (matches data-reader.ts:getCredentialToken)
+  if (keys.length === 0 && process.platform === 'darwin') {
+    try {
+      const { username } = os.userInfo();
+      const raw = execFileSync('security', [
+        'find-generic-password', '-s', 'Claude Code-credentials', '-a', username, '-w',
+      ], { encoding: 'utf8', timeout: 3000 }).trim();
+      const creds = JSON.parse(raw);
+      if (creds?.claudeAiOauth?.accessToken) {
+        const expiresAt = creds.claudeAiOauth.expiresAt;
+        if (!expiresAt || expiresAt > now) {
+          keys.push({ id: 'keychain', accessToken: creds.claudeAiOauth.accessToken });
+        }
+      }
+    } catch {
+      // Keychain not available (locked, no entry, or non-macOS)
+    }
+  }
+
+  // Source 4: Credentials file (~/.claude/.credentials.json)
   if (keys.length === 0 && fs.existsSync(CREDENTIALS_PATH)) {
     try {
       const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));

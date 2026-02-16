@@ -150,19 +150,27 @@ function QuestionRow({ question }: { question: PendingQuestion }): React.ReactEl
   const timeStr = formatTimeAgo(question.created_at);
 
   return (
-    <Box flexDirection="row">
-      <Box width={COL_ICON}>
-        <Text color="yellow">? </Text>
+    <Box flexDirection="column">
+      <Box flexDirection="row">
+        <Box width={COL_ICON}>
+          <Text color="yellow">? </Text>
+        </Box>
+        <Box width={COL_TITLE}>
+          <Text color="yellow">{truncate(question.title, COL_TITLE - 2)}</Text>
+        </Box>
+        <Box width={COL_PRIORITY}>
+          <Text color="cyan">{question.type}</Text>
+        </Box>
+        <Box width={COL_TIME}>
+          <Text color="gray">{timeStr}</Text>
+        </Box>
       </Box>
-      <Box width={COL_TITLE}>
-        <Text color="yellow">{truncate(question.title, COL_TITLE - 2)}</Text>
-      </Box>
-      <Box width={COL_PRIORITY}>
-        <Text color="cyan">{question.type}</Text>
-      </Box>
-      <Box width={COL_TIME}>
-        <Text color="gray">{timeStr}</Text>
-      </Box>
+      {question.recommendation && (
+        <Box marginLeft={COL_ICON}>
+          <Text color="gray">{'\u2514\u2500 '}</Text>
+          <Text color="cyan">{truncate(question.recommendation, COL_TITLE + COL_PRIORITY - 4)}</Text>
+        </Box>
+      )}
     </Box>
   );
 }

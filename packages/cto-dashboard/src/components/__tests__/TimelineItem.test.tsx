@@ -8,7 +8,6 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import React from 'react';
 import { render } from 'ink-testing-library';
 import { TimelineItem, type TimelineEvent, type TimelineEventType } from '../TimelineItem.js';
 

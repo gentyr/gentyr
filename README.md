@@ -233,12 +233,24 @@ All automation requires the CTO to have run `/deputy-cto` within the past 24 hou
 
 **Service management:**
 ```bash
-scripts/setup-automation-service.sh status --path /project  # Check service status
-scripts/setup-automation-service.sh remove --path /project  # Remove service
-scripts/setup-automation-service.sh run --path /project     # Manual run
+scripts/setup-automation-service.sh status --path /project                  # Check service status
+scripts/setup-automation-service.sh remove --path /project                  # Remove service
+scripts/setup-automation-service.sh run --path /project                     # Manual run
+scripts/setup-automation-service.sh setup --path /project --op-token TOKEN  # Install with 1Password service account
 ```
 
 The service is automatically installed/removed by `setup.sh`.
+
+**Headless credential resolution:**
+
+By default, the automation service runs without 1Password credentials in background mode to avoid macOS permission prompts and Touch ID prompts. Agents spawned by the service will run MCP servers without infrastructure credentials unless you provide a 1Password service account token:
+
+```bash
+# Install automation service with headless credentials
+scripts/setup-automation-service.sh setup --path /project --op-token $OP_SERVICE_ACCOUNT_TOKEN
+```
+
+The service account token enables API-based credential resolution without desktop app prompts. If not provided, the service uses lazy credential resolution - credentials are only resolved when agents are actually spawned, and only if the environment supports interactive 1Password authentication.
 
 ### AI User Feedback System
 

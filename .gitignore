@@ -20,6 +20,7 @@ coverage/
 .claude/commit-approval-token.json
 .claude/autonomous-mode.json
 .claude/settings.local.json
+.claude/protected-action-approvals.json
 .claude/state/
 
 # MCP configuration (user-specific, use template)

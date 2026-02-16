@@ -42,14 +42,10 @@ const EVENT_LABELS: Record<TimelineEventType, string> = {
   session: 'SESSION',
 };
 
-// Visual column widths for icons (◆ and ◇ render as 2 columns in most terminals)
-const ICON_VISUAL_WIDTHS: Record<TimelineEventType, number> = {
-  hook: 1,
-  report: 2,
-  question: 2,
-  task: 1,
-  session: 1,
-};
+// Column widths for consistent alignment
+const COL_TIME = 7;    // "HH:MM" + padding
+const COL_ICON = 3;    // icon (1-2 visual cols) + space, box enforces width
+const COL_LABEL = 10;  // longest label "QUESTION" = 8 chars + padding
 
 const PRIORITY_COLORS: Record<string, string> = {
   critical: 'red',
@@ -70,29 +66,33 @@ export function TimelineItem({ event }: { event: TimelineEvent }): React.ReactEl
   const icon = EVENT_ICONS[event.type];
   const color = EVENT_COLORS[event.type];
   const label = EVENT_LABELS[event.type];
-  const iconWidth = ICON_VISUAL_WIDTHS[event.type];
   const priorityTag = event.priority && event.priority !== 'normal'
     ? ` [${event.priority.toUpperCase()}]`
     : '';
   const priorityColor = event.priority ? PRIORITY_COLORS[event.priority] : 'white';
 
-  // Reduce post-time spacing by 1 for 2-column-wide icons to keep alignment consistent
-  const postTimeSpaces = iconWidth === 2 ? ' ' : '  ';
+  const indentWidth = COL_TIME + COL_ICON + COL_LABEL;
 
   return (
     <Box flexDirection="column" marginBottom={1}>
       {/* Main line: time, icon, type, title */}
-      <Box>
-        <Text color="gray">{formatTime(event.timestamp)}{postTimeSpaces}</Text>
-        <Text color={color}>{icon} </Text>
-        <Text color={color} bold>{label}</Text>
-        <Text color="white">  {event.title}</Text>
+      <Box flexDirection="row">
+        <Box width={COL_TIME}>
+          <Text color="gray">{formatTime(event.timestamp)}</Text>
+        </Box>
+        <Box width={COL_ICON}>
+          <Text color={color}>{icon}</Text>
+        </Box>
+        <Box width={COL_LABEL}>
+          <Text color={color} bold>{label}</Text>
+        </Box>
+        <Text color="white">{event.title}</Text>
         {priorityTag && <Text color={priorityColor}>{priorityTag}</Text>}
       </Box>
 
       {/* Subtitle line with tree connector */}
       {event.subtitle && (
-        <Box marginLeft={8}>
+        <Box marginLeft={indentWidth}>
           <Text color="gray">{'\u2514\u2500 '}</Text>
           <Text color="white">{event.subtitle}</Text>
         </Box>
@@ -100,7 +100,7 @@ export function TimelineItem({ event }: { event: TimelineEvent }): React.ReactEl
 
       {/* Details line */}
       {event.details && (
-        <Box marginLeft={11}>
+        <Box marginLeft={indentWidth + 3}>
           <Text color="gray">{event.details}</Text>
         </Box>
       )}
