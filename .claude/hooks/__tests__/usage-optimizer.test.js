@@ -369,17 +369,17 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       const functionBody = functionMatch[0];
 
-      // Should check ROTATION_STATE_PATH
+      // Should check ROTATION_STATE_PATH (may use ternary or if)
       assert.match(
         functionBody,
-        /if \(fs\.existsSync\(ROTATION_STATE_PATH\)\)/,
+        /fs\.existsSync\(ROTATION_STATE_PATH\)/,
         'Must check rotation state file existence'
       );
 
-      // Should parse rotation state
+      // Should parse rotation state (from rotationPath variable or ROTATION_STATE_PATH directly)
       assert.match(
         functionBody,
-        /JSON\.parse\(fs\.readFileSync\(ROTATION_STATE_PATH/,
+        /JSON\.parse\(fs\.readFileSync\(rotation/i,
         'Must read and parse rotation state'
       );
     });

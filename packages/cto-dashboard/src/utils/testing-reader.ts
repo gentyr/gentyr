@@ -276,16 +276,12 @@ function resolveCodecovCredentials(): { token: string; owner: string; repo: stri
       if (fs.existsSync(vaultPath)) {
         const data = JSON.parse(fs.readFileSync(vaultPath, 'utf8')) as { mappings?: Record<string, string> };
         const ref = data.mappings?.['CODECOV_TOKEN'];
-        if (ref) {
-          if (ref.startsWith('op://')) {
-            token = execFileSync('op', ['read', ref], { timeout: 10000, encoding: 'utf8' }).trim();
-          } else {
-            token = ref;
-          }
+        if (ref && ref.startsWith('op://')) {
+          token = execFileSync('op', ['read', ref], { timeout: 10000, encoding: 'utf8' }).trim();
         }
       }
-    } catch {
-      // 1Password CLI not available or vault read failed
+    } catch (e) {
+      console.error('Codecov credential resolution failed:', e instanceof Error ? e.message : e);
     }
   }
   if (!token) return null;

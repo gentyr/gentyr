@@ -60,6 +60,8 @@ const BLOCKED_PATH_SUFFIXES = [
   '.claude/vault-mappings.json',
   '.mcp.json',
 ];
+// Note: The suffix '.claude/api-key-rotation.json' also blocks the user-level
+// path at ~/.claude/api-key-rotation.json since both end with the same suffix.
 
 /**
  * Patterns matched against the full path

@@ -182,6 +182,13 @@
       "env": {
         "CLAUDE_PROJECT_DIR": "."
       }
+    },
+    "chrome-bridge": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/chrome-bridge/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
     }
   }
 }

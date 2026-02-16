@@ -6,40 +6,39 @@
  * rotate between them based on utilization thresholds.
  *
  * Features:
- * - Captures new keys when users log in with different accounts
+ * - Captures new keys from all sources (env var, macOS Keychain, credentials file)
  * - Monitors usage via Anthropic Usage API
  * - Rotates to lower-utilization keys when current key hits 90%+ usage
+ * - Attempts OAuth token refresh for expired keys
  * - Logs all rotation events for debugging
  *
  * Storage:
- * - .claude/api-key-rotation.json - Tracked keys and state
- * - .claude/api-key-rotation.log - Human-readable event log
+ * - ~/.claude/api-key-rotation.json - Tracked keys and state (user-level, cross-project)
+ * - <project>/.claude/api-key-rotation.log - Human-readable event log (project-level)
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { registerHookExecution, HOOK_TYPES } from './agent-tracker.js';
+import {
+  syncKeys,
+  readRotationState,
+  writeRotationState,
+  logRotationEvent,
+  updateActiveCredentials,
+  refreshExpiredToken,
+} from './key-sync.js';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Configuration
-const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
-const ROTATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'api-key-rotation.json');
-const ROTATION_LOG_PATH = path.join(PROJECT_DIR, '.claude', 'api-key-rotation.log');
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/api/oauth/usage';
 const ANTHROPIC_BETA_HEADER = 'oauth-2025-04-20';
 
 // Rotation thresholds (API returns utilization as 0-100 percentages)
 const HIGH_USAGE_THRESHOLD = 90;  // 90%
 const EXHAUSTED_THRESHOLD = 100;  // 100%
-const MAX_LOG_ENTRIES = 100;
 
 /**
  * @typedef {Object} UsageData
@@ -79,132 +78,6 @@ const MAX_LOG_ENTRIES = 100;
  * @property {Record<string, KeyData>} keys
  * @property {RotationLogEntry[]} rotation_log
  */
-
-/**
- * Generate a stable key ID from an access token.
- * Uses first 16 chars after prefix for identification.
- * @param {string} accessToken
- * @returns {string}
- */
-function generateKeyId(accessToken) {
-  // Remove common prefix patterns and hash for privacy
-  const cleanToken = accessToken
-    .replace(/^sk-ant-oat01-/, '')
-    .replace(/^sk-ant-/, '');
-
-  // Create a short hash for identification (8 chars)
-  const hash = crypto.createHash('sha256').update(cleanToken).digest('hex');
-  return hash.substring(0, 16);
-}
-
-/**
- * Read the current credentials file
- * @returns {{claudeAiOauth: {accessToken: string, refreshToken: string, expiresAt: number, subscriptionType?: string, rateLimitTier?: string, scopes?: string[]}} | null}
- */
-function readCredentials() {
-  if (!fs.existsSync(CREDENTIALS_PATH)) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
-  } catch (err) {
-    console.error(`[api-key-watcher] Failed to read credentials: ${err.message}`);
-    return null;
-  }
-}
-
-/**
- * Write credentials back to file
- * @param {object} creds
- */
-function writeCredentials(creds) {
-  try {
-    fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(creds, null, 2), 'utf8');
-  } catch (err) {
-    console.error(`[api-key-watcher] Failed to write credentials: ${err.message}`);
-  }
-}
-
-/**
- * Read the rotation state file
- * @returns {KeyRotationState}
- */
-function readRotationState() {
-  const defaultState = {
-    version: 1,
-    active_key_id: null,
-    keys: {},
-    rotation_log: []
-  };
-
-  if (!fs.existsSync(ROTATION_STATE_PATH)) {
-    return defaultState;
-  }
-
-  try {
-    const content = fs.readFileSync(ROTATION_STATE_PATH, 'utf8');
-    const parsed = JSON.parse(content);
-
-    // Validate structure
-    if (!parsed || parsed.version !== 1 || typeof parsed.keys !== 'object') {
-      return defaultState;
-    }
-
-    return parsed;
-  } catch (err) {
-    console.error(`[api-key-watcher] Failed to read rotation state: ${err.message}`);
-    return defaultState;
-  }
-}
-
-/**
- * Write the rotation state file
- * @param {KeyRotationState} state
- */
-function writeRotationState(state) {
-  try {
-    const dir = path.dirname(ROTATION_STATE_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(ROTATION_STATE_PATH, JSON.stringify(state, null, 2), 'utf8');
-  } catch (err) {
-    console.error(`[api-key-watcher] Failed to write rotation state: ${err.message}`);
-  }
-}
-
-/**
- * Log a rotation event to both state and human-readable log file
- * @param {KeyRotationState} state
- * @param {RotationLogEntry} entry
- */
-function logRotationEvent(state, entry) {
-  // Add to state log (keep last MAX_LOG_ENTRIES)
-  state.rotation_log.unshift(entry);
-  if (state.rotation_log.length > MAX_LOG_ENTRIES) {
-    state.rotation_log = state.rotation_log.slice(0, MAX_LOG_ENTRIES);
-  }
-
-  // Append to human-readable log file
-  try {
-    const timestamp = new Date(entry.timestamp).toISOString();
-    let line = `[${timestamp}] ${entry.event}: key=${entry.key_id.slice(0, 8)}...`;
-
-    if (entry.reason) {
-      line += ` reason=${entry.reason}`;
-    }
-
-    if (entry.usage_snapshot) {
-      const u = entry.usage_snapshot;
-      line += ` usage=(5h:${Math.round(u.five_hour)}%, 7d:${Math.round(u.seven_day)}%, sonnet:${Math.round(u.seven_day_sonnet)}%)`;
-    }
-
-    fs.appendFileSync(ROTATION_LOG_PATH, line + '\n', 'utf8');
-  } catch {
-    // Ignore log file errors
-  }
-}
 
 /**
  * Check the health/usage of a key via Anthropic API
@@ -334,24 +207,6 @@ function selectActiveKey(state) {
 }
 
 /**
- * Update the active credentials file with the selected key
- * @param {object} creds - Current credentials object
- * @param {KeyData} keyData - Key data to apply
- */
-function updateActiveCredentials(creds, keyData) {
-  creds.claudeAiOauth = {
-    ...creds.claudeAiOauth,
-    accessToken: keyData.accessToken,
-    refreshToken: keyData.refreshToken,
-    expiresAt: keyData.expiresAt,
-    subscriptionType: keyData.subscriptionType,
-    rateLimitTier: keyData.rateLimitTier,
-  };
-
-  writeCredentials(creds);
-}
-
-/**
  * Main entry point
  */
 async function main() {
@@ -372,10 +227,15 @@ async function main() {
     return;
   }
 
-  // Read current credentials
-  const creds = readCredentials();
-  if (!creds?.claudeAiOauth?.accessToken) {
-    // No credentials, nothing to do
+  // Step 1: Sync keys from all credential sources (env, keychain, file)
+  const syncResult = await syncKeys();
+
+  // Step 2: Read the synced rotation state for health checks + rotation
+  const state = readRotationState();
+  const now = Date.now();
+
+  if (Object.keys(state.keys).length === 0) {
+    // No keys tracked, nothing to do
     console.log(JSON.stringify({
       continue: true,
       suppressOutput: true,
@@ -383,64 +243,41 @@ async function main() {
     return;
   }
 
-  const oauth = creds.claudeAiOauth;
-  const currentKeyId = generateKeyId(oauth.accessToken);
-
-  // Read rotation state
-  const state = readRotationState();
-  const now = Date.now();
-
-  // Check if this key is already tracked
-  const isNewKey = !state.keys[currentKeyId];
-
-  if (isNewKey) {
-    // Add new key to tracking
-    state.keys[currentKeyId] = {
-      accessToken: oauth.accessToken,
-      refreshToken: oauth.refreshToken,
-      expiresAt: oauth.expiresAt,
-      subscriptionType: oauth.subscriptionType || 'unknown',
-      rateLimitTier: oauth.rateLimitTier || 'unknown',
-      added_at: now,
-      last_used_at: null,
-      last_health_check: null,
-      last_usage: null,
-      status: 'active',
-    };
-
-    logRotationEvent(state, {
-      timestamp: now,
-      event: 'key_added',
-      key_id: currentKeyId,
-      reason: `new_key_captured_${oauth.subscriptionType || 'unknown'}`,
-    });
-  } else {
-    // Update existing key data (token might have been refreshed)
-    const existingKey = state.keys[currentKeyId];
-    existingKey.accessToken = oauth.accessToken;
-    existingKey.refreshToken = oauth.refreshToken;
-    existingKey.expiresAt = oauth.expiresAt;
-    if (oauth.subscriptionType) existingKey.subscriptionType = oauth.subscriptionType;
-    if (oauth.rateLimitTier) existingKey.rateLimitTier = oauth.rateLimitTier;
-  }
-
-  // Run health checks on all tracked keys
+  // Step 3: Run health checks on all tracked keys (with token refresh for expired)
   const healthCheckPromises = Object.entries(state.keys).map(async ([keyId, keyData]) => {
-    // Skip invalid/expired keys
-    if (keyData.status === 'invalid' || keyData.status === 'expired') {
+    // Skip invalid keys
+    if (keyData.status === 'invalid') {
       return { keyId, result: null };
     }
 
-    // Check if token is expired
+    // Check if token is expired - attempt refresh first
     if (keyData.expiresAt && keyData.expiresAt < now) {
-      keyData.status = 'expired';
-      logRotationEvent(state, {
-        timestamp: now,
-        event: 'key_removed',
-        key_id: keyId,
-        reason: 'token_expired',
-      });
-      return { keyId, result: null };
+      if (keyData.status !== 'expired') {
+        const refreshed = await refreshExpiredToken(keyData);
+        if (refreshed) {
+          keyData.accessToken = refreshed.accessToken;
+          keyData.refreshToken = refreshed.refreshToken;
+          keyData.expiresAt = refreshed.expiresAt;
+          keyData.status = 'active';
+          logRotationEvent(state, {
+            timestamp: now,
+            event: 'key_added',
+            key_id: keyId,
+            reason: 'token_refreshed_during_health_check',
+          });
+        } else {
+          keyData.status = 'expired';
+          logRotationEvent(state, {
+            timestamp: now,
+            event: 'key_removed',
+            key_id: keyId,
+            reason: 'token_expired',
+          });
+          return { keyId, result: null };
+        }
+      } else {
+        return { keyId, result: null };
+      }
     }
 
     // Run health check
@@ -498,7 +335,7 @@ async function main() {
     }
   }
 
-  // Select the best key
+  // Step 4: Select the best key
   const selectedKeyId = selectActiveKey(state);
 
   // Check if we need to switch keys
@@ -521,9 +358,9 @@ async function main() {
       } : undefined,
     });
 
-    // Update credentials file if switching to a different key
-    if (previousKeyId && selectedKeyId !== currentKeyId) {
-      updateActiveCredentials(creds, selectedKey);
+    // Update credentials in all stores if switching to a different key
+    if (previousKeyId) {
+      updateActiveCredentials(selectedKey);
     }
   } else if (!state.active_key_id && selectedKeyId) {
     // First time setting active key
@@ -557,7 +394,12 @@ async function main() {
     hookType: HOOK_TYPES.API_KEY_WATCHER,
     status: 'success',
     durationMs: Date.now() - startTime,
-    metadata: { keyCount, switched: selectedKeyId !== state.active_key_id }
+    metadata: {
+      keyCount,
+      switched: selectedKeyId !== state.active_key_id,
+      keysAdded: syncResult.keysAdded,
+      tokensRefreshed: syncResult.tokensRefreshed,
+    }
   });
 
   console.log(JSON.stringify({

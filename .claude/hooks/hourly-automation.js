@@ -21,6 +21,7 @@ import { spawn, execSync, execFileSync } from 'child_process';
 import { registerSpawn, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { getCooldown } from './config-reader.js';
 import { runUsageOptimizer } from './usage-optimizer.js';
+import { syncKeys } from './key-sync.js';
 import { runFeedbackPipeline } from './feedback-orchestrator.js';
 
 // Try to import better-sqlite3 for task runner
@@ -1750,6 +1751,22 @@ async function main() {
     }
   } catch (err) {
     log(`Usage optimizer error (non-fatal): ${err.message}`);
+  }
+
+  // =========================================================================
+  // KEY SYNC (runs after usage optimizer - discovers keys from all sources)
+  // Triggered by both 10-min timer and WatchPaths file change events
+  // =========================================================================
+  try {
+    const syncResult = await syncKeys(log);
+    if (syncResult.keysAdded > 0) {
+      log(`Key sync: ${syncResult.keysAdded} new key(s) discovered.`);
+    }
+    if (syncResult.tokensRefreshed > 0) {
+      log(`Key sync: ${syncResult.tokensRefreshed} token(s) refreshed.`);
+    }
+  } catch (err) {
+    log(`Key sync error (non-fatal): ${err.message}`);
   }
 
   // Dynamic cooldowns from config

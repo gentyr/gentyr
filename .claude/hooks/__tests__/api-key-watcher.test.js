@@ -22,6 +22,7 @@ import crypto from 'crypto';
 describe('api-key-watcher.js - Unit Tests', () => {
   const PROJECT_DIR = process.cwd();
   const HOOK_PATH = path.join(PROJECT_DIR, '.claude/hooks/api-key-watcher.js');
+  const KEY_SYNC_PATH = path.join(PROJECT_DIR, '.claude/hooks/key-sync.js');
 
   describe('Code Structure Validation', () => {
     it('should be a valid ES module with proper shebang', () => {
@@ -31,10 +32,8 @@ describe('api-key-watcher.js - Unit Tests', () => {
       assert.match(hookCode, /^#!\/usr\/bin\/env node/, 'Must have node shebang');
 
       // Should use ES module imports
-      assert.match(hookCode, /import .* from ['"]fs['"]/, 'Must import fs');
-      assert.match(hookCode, /import .* from ['"]path['"]/, 'Must import path');
-      assert.match(hookCode, /import .* from ['"]os['"]/, 'Must import os');
-      assert.match(hookCode, /import .* from ['"]crypto['"]/, 'Must import crypto');
+      assert.match(hookCode, /import .* from ['"]\.\/key-sync\.js['"]/, 'Must import from key-sync.js');
+      assert.match(hookCode, /import .* from ['"]\.\/agent-tracker\.js['"]/, 'Must import from agent-tracker.js');
 
       // Should use fileURLToPath for __dirname
       assert.match(hookCode, /fileURLToPath\(import\.meta\.url\)/, 'Must use fileURLToPath for ES modules');
@@ -44,15 +43,10 @@ describe('api-key-watcher.js - Unit Tests', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
       const requiredConstants = [
-        'PROJECT_DIR',
-        'CREDENTIALS_PATH',
-        'ROTATION_STATE_PATH',
-        'ROTATION_LOG_PATH',
         'ANTHROPIC_API_URL',
         'ANTHROPIC_BETA_HEADER',
         'HIGH_USAGE_THRESHOLD',
         'EXHAUSTED_THRESHOLD',
-        'MAX_LOG_ENTRIES'
       ];
 
       for (const constant of requiredConstants) {
@@ -68,15 +62,8 @@ describe('api-key-watcher.js - Unit Tests', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
       const requiredFunctions = [
-        'generateKeyId',
-        'readCredentials',
-        'writeCredentials',
-        'readRotationState',
-        'writeRotationState',
-        'logRotationEvent',
         'checkKeyHealth',
         'selectActiveKey',
-        'updateActiveCredentials',
         'main'
       ];
 
@@ -92,32 +79,25 @@ describe('api-key-watcher.js - Unit Tests', () => {
     it('should define correct threshold constants', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // High usage threshold should be 0.90 (90%)
+      // High usage threshold should be 90 (90%)
       assert.match(
         hookCode,
-        /const HIGH_USAGE_THRESHOLD = 0\.90/,
-        'HIGH_USAGE_THRESHOLD must be 0.90'
+        /const HIGH_USAGE_THRESHOLD = 90/,
+        'HIGH_USAGE_THRESHOLD must be 90'
       );
 
-      // Exhausted threshold should be 1.0 (100%)
+      // Exhausted threshold should be 100 (100%)
       assert.match(
         hookCode,
-        /const EXHAUSTED_THRESHOLD = 1\.0/,
-        'EXHAUSTED_THRESHOLD must be 1.0'
-      );
-
-      // Max log entries should be 100
-      assert.match(
-        hookCode,
-        /const MAX_LOG_ENTRIES = 100/,
-        'MAX_LOG_ENTRIES must be 100'
+        /const EXHAUSTED_THRESHOLD = 100/,
+        'EXHAUSTED_THRESHOLD must be 100'
       );
     });
   });
 
-  describe('generateKeyId() - Key ID Generation', () => {
+  describe('generateKeyId() - Key ID Generation (in key-sync.js)', () => {
     it('should exist and accept accessToken parameter', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       assert.match(
         hookCode,
@@ -127,7 +107,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should remove common token prefixes', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function generateKeyId\(accessToken\) \{[\s\S]*?\n\}/);
       assert.ok(functionMatch, 'generateKeyId function must exist');
@@ -150,7 +130,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should use SHA256 hash for key ID', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function generateKeyId\(accessToken\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
@@ -178,7 +158,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should return 16 character hash', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function generateKeyId\(accessToken\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
@@ -227,9 +207,9 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
   });
 
-  describe('readRotationState() - State File Reading', () => {
+  describe('readRotationState() - State File Reading (in key-sync.js)', () => {
     it('should return default state when file does not exist', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function readRotationState\(\) \{[\s\S]*?\n\}/);
       assert.ok(functionMatch, 'readRotationState function must exist');
@@ -252,7 +232,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should define correct default state structure', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function readRotationState\(\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
@@ -287,7 +267,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should parse JSON content when file exists', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function readRotationState\(\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
@@ -308,7 +288,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should validate state structure', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function readRotationState\(\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
@@ -336,7 +316,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should handle read errors gracefully', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function readRotationState\(\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
@@ -350,15 +330,8 @@ describe('api-key-watcher.js - Unit Tests', () => {
 
       assert.match(
         functionBody,
-        /catch \(err\)/,
+        /catch \{/,
         'Must have catch block for error handling'
-      );
-
-      // Should log error
-      assert.match(
-        functionBody,
-        /console\.error\(/,
-        'Must log errors'
       );
 
       // Should return defaultState in catch
@@ -370,9 +343,9 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
   });
 
-  describe('writeRotationState() - State File Writing', () => {
+  describe('writeRotationState() - State File Writing (in key-sync.js)', () => {
     it('should create directory if it does not exist', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function writeRotationState\(state\) \{[\s\S]*?\n\}/);
       assert.ok(functionMatch, 'writeRotationState function must exist');
@@ -402,7 +375,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should write JSON with proper formatting', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function writeRotationState\(state\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
@@ -430,7 +403,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should handle write errors gracefully', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function writeRotationState\(state\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
@@ -457,9 +430,9 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
   });
 
-  describe('logRotationEvent() - Event Logging', () => {
+  describe('logRotationEvent() - Event Logging (in key-sync.js)', () => {
     it('should add event to state rotation_log', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function logRotationEvent\(state, entry\) \{[\s\S]*?\n\}/);
       assert.ok(functionMatch, 'logRotationEvent function must exist');
@@ -475,7 +448,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should limit rotation_log to MAX_LOG_ENTRIES', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function logRotationEvent\(state, entry\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
@@ -496,7 +469,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should format human-readable log entry', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function logRotationEvent\(state, entry\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
@@ -524,7 +497,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should append to log file', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function logRotationEvent\(state, entry\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
@@ -545,7 +518,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should handle log file errors gracefully', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/function logRotationEvent\(state, entry\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
@@ -1503,7 +1476,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should truncate key IDs in log messages', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const logRotationEventFunction = hookCode.match(/function logRotationEvent\(state, entry\) \{[\s\S]*?\n\}/)[0];
 
@@ -1515,23 +1488,23 @@ describe('api-key-watcher.js - Unit Tests', () => {
       );
     });
 
-    it('should store full tokens in state (needed for rotation)', () => {
+    it('should sync keys from all credential sources', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
       const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
 
-      // Should store accessToken in key data
+      // Should call syncKeys() to discover and sync keys from all sources
       assert.match(
         mainFunction,
-        /accessToken:\s*oauth\.accessToken/,
-        'Must store full accessToken in key data (required for rotation)'
+        /await syncKeys\(\)/,
+        'Must call syncKeys() to discover keys from all credential sources'
       );
 
-      // Should store refreshToken in key data
+      // Should call readRotationState() after sync
       assert.match(
         mainFunction,
-        /refreshToken:\s*oauth\.refreshToken/,
-        'Must store full refreshToken in key data (required for rotation)'
+        /readRotationState\(\)/,
+        'Must read rotation state after key sync'
       );
     });
 
@@ -1561,8 +1534,8 @@ describe('api-key-watcher.js - Unit Tests', () => {
   });
 
   describe('File Path Configuration', () => {
-    it('should read credentials from home directory', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+    it('should read credentials from home directory (in key-sync.js)', () => {
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       assert.match(
         hookCode,
@@ -1577,24 +1550,25 @@ describe('api-key-watcher.js - Unit Tests', () => {
       );
     });
 
-    it('should store rotation state in project directory', () => {
+    it('should import rotation state management from key-sync.js', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
+      // Should import key sync functions
       assert.match(
         hookCode,
-        /ROTATION_STATE_PATH = path\.join\(PROJECT_DIR,\s*['"]\.claude['"]/,
-        'ROTATION_STATE_PATH must be in PROJECT_DIR/.claude/'
+        /import \{[\s\S]*syncKeys[\s\S]*\} from ['"]\.\/key-sync\.js['"]/,
+        'Must import syncKeys from key-sync.js'
       );
 
       assert.match(
         hookCode,
-        /['"]api-key-rotation\.json['"]\)/,
-        'ROTATION_STATE_PATH must point to api-key-rotation.json'
+        /import \{[\s\S]*readRotationState[\s\S]*\} from ['"]\.\/key-sync\.js['"]/,
+        'Must import readRotationState from key-sync.js'
       );
     });
 
-    it('should store rotation log in project directory', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+    it('should store rotation log in project directory (in key-sync.js)', () => {
+      const hookCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       assert.match(
         hookCode,
