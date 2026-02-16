@@ -21,7 +21,7 @@ const CTO_REPORTS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
 const USER_FEEDBACK_DB_PATH = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
 const AUTONOMOUS_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
-const KEY_ROTATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'api-key-rotation.json');
+const KEY_ROTATION_STATE_PATH = path.join(os.homedir(), '.claude', 'api-key-rotation.json');
 const AGENT_TRACKER_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
 const AUTOMATION_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
 const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
@@ -447,7 +447,7 @@ function getCredentialToken(): string | null {
 /**
  * Get an access token from all available sources, in priority order:
  *   1-4. Credential sources (env, keychain, config dir, standard creds)
- *   5. api-key-rotation.json (project-level, active keys only)
+ *   5. api-key-rotation.json (user-level, active keys only)
  */
 function getAccessToken(): string | null {
   const credToken = getCredentialToken();

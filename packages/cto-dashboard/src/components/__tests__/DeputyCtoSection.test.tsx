@@ -334,6 +334,114 @@ describe('DeputyCtoSection', () => {
       expect(output).toContain('clarifi');
     });
 
+    it('should render recommendation subtitle when provided', () => {
+      const data: DeputyCtoData = {
+        hasData: true,
+        untriaged: [],
+        untriagedCount: 0,
+        recentlyTriaged: [],
+        escalated: [],
+        selfHandled24h: 0,
+        escalated24h: 0,
+        dismissed24h: 0,
+        pendingQuestions: [
+          {
+            id: 'q1',
+            type: 'decision',
+            title: 'Should we migrate to new framework?',
+            description: 'Current framework is deprecated',
+            recommendation: 'Recommend migration to React 19 - breaking changes are minimal',
+            created_at: new Date('2026-02-16T08:00:00').toISOString(),
+          },
+        ],
+        pendingQuestionCount: 1,
+        answeredQuestions: [],
+      };
+
+      const { lastFrame } = render(<DeputyCtoSection data={data} />);
+      const output = lastFrame();
+
+      expect(output).toContain('PENDING QUESTIONS');
+      expect(output).toContain('Should we migrate to new framework?');
+      expect(output).toContain('Recommend migration to React 19');
+      // Verify tree connector is present
+      expect(output).toContain('\u2514\u2500');
+    });
+
+    it('should not render recommendation subtitle when null', () => {
+      const data: DeputyCtoData = {
+        hasData: true,
+        untriaged: [],
+        untriagedCount: 0,
+        recentlyTriaged: [],
+        escalated: [],
+        selfHandled24h: 0,
+        escalated24h: 0,
+        dismissed24h: 0,
+        pendingQuestions: [
+          {
+            id: 'q1',
+            type: 'decision',
+            title: 'Question without recommendation',
+            description: 'Description',
+            recommendation: null,
+            created_at: new Date('2026-02-16T08:00:00').toISOString(),
+          },
+        ],
+        pendingQuestionCount: 1,
+        answeredQuestions: [],
+      };
+
+      const { lastFrame } = render(<DeputyCtoSection data={data} />);
+      const output = lastFrame();
+
+      expect(output).toContain('Question without recommendation');
+      // Should not contain tree connector since no recommendation
+      const lines = output!.split('\n');
+      const questionLine = lines.find((line) => line.includes('Question without recommendation'));
+      const questionLineIndex = lines.indexOf(questionLine!);
+      const nextLine = lines[questionLineIndex + 1];
+      // Next line should not contain tree connector
+      expect(nextLine).not.toContain('\u2514\u2500');
+    });
+
+    it('should truncate very long recommendations', () => {
+      const longRecommendation = 'A'.repeat(200);
+      const data: DeputyCtoData = {
+        hasData: true,
+        untriaged: [],
+        untriagedCount: 0,
+        recentlyTriaged: [],
+        escalated: [],
+        selfHandled24h: 0,
+        escalated24h: 0,
+        dismissed24h: 0,
+        pendingQuestions: [
+          {
+            id: 'q1',
+            type: 'decision',
+            title: 'Question with long recommendation',
+            description: 'Description',
+            recommendation: longRecommendation,
+            created_at: new Date('2026-02-16T08:00:00').toISOString(),
+          },
+        ],
+        pendingQuestionCount: 1,
+        answeredQuestions: [],
+      };
+
+      const { lastFrame } = render(<DeputyCtoSection data={data} />);
+      const output = lastFrame();
+
+      expect(output).toContain('Question with long recommendation');
+      expect(output).toContain('AAA');
+      expect(output).toContain('\u2026'); // Truncation ellipsis
+      // Verify full recommendation is not displayed
+      const consecutiveAs = output!.match(/A+/g);
+      const longestASequence = consecutiveAs ? Math.max(...consecutiveAs.map((s) => s.length)) : 0;
+      expect(longestASequence).toBeLessThan(longRecommendation.length);
+    });
+
     it('should handle empty pending questions list', () => {
       const data: DeputyCtoData = {
         hasData: true,

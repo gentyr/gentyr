@@ -350,6 +350,12 @@ $OP_TOKEN_PLIST
     <key>StartInterval</key>
     <integer>600</integer>
 
+    <key>WatchPaths</key>
+    <array>
+        <string>$HOME/.claude/.credentials.json</string>
+        <string>$HOME/.claude/api-key-rotation.json</string>
+    </array>
+
     <key>StandardOutPath</key>
     <string>$PROJECT_DIR/.claude/hourly-automation.log</string>
 

@@ -21,7 +21,8 @@ import { execFileSync } from 'child_process';
 import { getConfigPath, getDefaults } from './config-reader.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-const ROTATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'api-key-rotation.json');
+const ROTATION_STATE_PATH = path.join(os.homedir(), '.claude', 'api-key-rotation.json');
+const OLD_PROJECT_ROTATION_PATH = path.join(PROJECT_DIR, '.claude', 'api-key-rotation.json');
 const SNAPSHOTS_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'usage-snapshots.json');
 const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/api/oauth/usage';
@@ -119,10 +120,13 @@ function getApiKeys() {
     return [{ id: 'env', accessToken: envToken }];
   }
 
-  // Source 2: Rotation state (multiple keys)
-  if (fs.existsSync(ROTATION_STATE_PATH)) {
+  // Source 2: Rotation state (multiple keys) - check user-level, fallback to project-level
+  const rotationPath = fs.existsSync(ROTATION_STATE_PATH) ? ROTATION_STATE_PATH
+    : fs.existsSync(OLD_PROJECT_ROTATION_PATH) ? OLD_PROJECT_ROTATION_PATH
+    : null;
+  if (rotationPath) {
     try {
-      const state = JSON.parse(fs.readFileSync(ROTATION_STATE_PATH, 'utf8'));
+      const state = JSON.parse(fs.readFileSync(rotationPath, 'utf8'));
       if (state && state.keys && typeof state.keys === 'object') {
         for (const [id, data] of Object.entries(state.keys)) {
           if (!data.accessToken) continue;
