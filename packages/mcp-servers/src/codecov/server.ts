@@ -80,7 +80,7 @@ async function codecovFetch(endpoint: string, params?: Record<string, string | n
 
   const response = await fetch(url.toString(), {
     headers: {
-      Authorization: `bearer ${CODECOV_TOKEN}`,
+      Authorization: `token ${CODECOV_TOKEN}`,
       Accept: 'application/json',
     },
   });

@@ -229,12 +229,14 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       {/* Header */}
       <Header data={data} />
 
-      {/* Quota & System Status - full width */}
-      <Box marginTop={1}>
-        <QuotaSection data={data} />
-      </Box>
-      <Box marginTop={1}>
-        <SystemStatusSection data={data} />
+      {/* Quota & System Status - side by side */}
+      <Box marginTop={1} flexDirection="row" gap={1}>
+        <Box flexGrow={1} flexBasis={0}>
+          <QuotaSection data={data} />
+        </Box>
+        <Box flexGrow={1} flexBasis={0}>
+          <SystemStatusSection data={data} />
+        </Box>
       </Box>
 
       {/* Usage Trends - line graphs (only if data available) */}

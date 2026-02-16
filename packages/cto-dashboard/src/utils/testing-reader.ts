@@ -7,6 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { execFileSync } from 'child_process';
 
 const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
 const AGENT_TRACKER_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
@@ -264,16 +265,64 @@ export function getTestingData(): TestingData {
 }
 
 /**
- * Fetch Codecov coverage data (optional, async).
- * Returns null if CODECOV_TOKEN is not set or request fails.
+ * Resolve Codecov credentials from env vars, vault-mappings.json, and git remote.
  */
-export async function getCodecovData(): Promise<{ coveragePercent: number; trend: number[] } | null> {
-  const token = process.env['CODECOV_TOKEN'];
-  const owner = process.env['CODECOV_OWNER'];
-  const repo = process.env['CODECOV_REPO'];
-  if (!token || !owner || !repo) return null;
+function resolveCodecovCredentials(): { token: string; owner: string; repo: string; service: string } | null {
+  // Token: env var first, then vault-mappings.json
+  let token = process.env['CODECOV_TOKEN'] || '';
+  if (!token) {
+    try {
+      const vaultPath = path.join(PROJECT_DIR, '.claude', 'vault-mappings.json');
+      if (fs.existsSync(vaultPath)) {
+        const data = JSON.parse(fs.readFileSync(vaultPath, 'utf8')) as { mappings?: Record<string, string> };
+        const ref = data.mappings?.['CODECOV_TOKEN'];
+        if (ref) {
+          if (ref.startsWith('op://')) {
+            token = execFileSync('op', ['read', ref], { timeout: 10000, encoding: 'utf8' }).trim();
+          } else {
+            token = ref;
+          }
+        }
+      }
+    } catch {
+      // 1Password CLI not available or vault read failed
+    }
+  }
+  if (!token) return null;
+
+  // Owner/repo: env vars first, then git remote
+  let owner = process.env['CODECOV_OWNER'] || '';
+  let repo = process.env['CODECOV_REPO'] || '';
+  if (!owner || !repo) {
+    try {
+      const remoteUrl = execFileSync('git', ['-C', PROJECT_DIR, 'remote', 'get-url', 'origin'], {
+        timeout: 5000, encoding: 'utf8',
+      }).trim();
+      // Handle SSH (git@github.com:owner/repo.git) and HTTPS (https://github.com/owner/repo.git)
+      const match = remoteUrl.match(/[:/]([^/]+)\/([^/]+?)(?:\.git)?$/);
+      if (match) {
+        if (!owner) owner = match[1];
+        if (!repo) repo = match[2];
+      }
+    } catch {
+      // Not a git repo or no remote
+    }
+  }
+  if (!owner || !repo) return null;
 
   const service = process.env['CODECOV_SERVICE'] || 'github';
+  return { token, owner, repo, service };
+}
+
+/**
+ * Fetch Codecov coverage data (optional, async).
+ * Auto-discovers credentials from vault-mappings.json and git remote.
+ */
+export async function getCodecovData(): Promise<{ coveragePercent: number; trend: number[] } | null> {
+  const creds = resolveCodecovCredentials();
+  if (!creds) return null;
+
+  const { token, owner, repo, service } = creds;
   const baseUrl = 'https://api.codecov.io/api/v2';
   const headers = { Authorization: `bearer ${token}`, Accept: 'application/json' };
 

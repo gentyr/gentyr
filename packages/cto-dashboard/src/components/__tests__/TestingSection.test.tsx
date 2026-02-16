@@ -14,10 +14,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import React from 'react';
 import { render } from 'ink-testing-library';
 import { TestingSection } from '../TestingSection.js';
-import type { TestingData, FailingSuite } from '../../utils/testing-reader.js';
+import type { TestingData } from '../../utils/testing-reader.js';
 
 describe('TestingSection', () => {
   describe('Empty State', () => {

@@ -15,7 +15,6 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import React from 'react';
 import { render } from 'ink-testing-library';
 import { DeputyCtoSection } from '../DeputyCtoSection.js';
 import type { DeputyCtoData } from '../../utils/deputy-cto-reader.js';
@@ -228,7 +227,7 @@ describe('DeputyCtoSection', () => {
       expect(output).toContain('\u2026'); // Contains truncation ellipsis
       expect(output).toBeTruthy();
       // Output should not contain the full untruncated title
-      const consecutiveAs = output.match(/A+/g);
+      const consecutiveAs = output!.match(/A+/g);
       const longestASequence = consecutiveAs ? Math.max(...consecutiveAs.map(s => s.length)) : 0;
       expect(longestASequence).toBeLessThan(longTitle.length);
     });
@@ -307,6 +306,7 @@ describe('DeputyCtoSection', () => {
             type: 'decision',
             title: 'Should we migrate to new framework?',
             description: 'Current framework is deprecated',
+            recommendation: null,
             created_at: new Date('2026-02-16T08:00:00').toISOString(),
           },
           {
@@ -314,6 +314,7 @@ describe('DeputyCtoSection', () => {
             type: 'clarification',
             title: 'What is the target deployment date?',
             description: 'Need to plan sprint',
+            recommendation: null,
             created_at: new Date('2026-02-16T07:30:00').toISOString(),
           },
         ],
@@ -563,6 +564,7 @@ describe('DeputyCtoSection', () => {
             type: 'decision',
             title: 'Pending question',
             description: 'Description',
+            recommendation: null,
             created_at: new Date('2026-02-16T08:00:00').toISOString(),
           },
         ],
