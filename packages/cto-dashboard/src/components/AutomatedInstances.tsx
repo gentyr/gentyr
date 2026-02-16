@@ -23,7 +23,7 @@ export interface AutomatedInstancesProps {
 const COL_TYPE = 22;
 const COL_RUNS = 12;
 const COL_UNTIL = 14;
-const COL_FREQ = 18;
+const COL_FREQ = 19;
 
 function HeaderRow(): React.ReactElement {
   return (
@@ -151,7 +151,7 @@ export function AutomatedInstances({ data }: AutomatedInstancesProps): React.Rea
   const eventTriggered = data.instances.filter(i => i.trigger !== 'scheduled');
 
   return (
-    <Section title="AUTOMATED INSTANCES" borderColor="magenta">
+    <Section title="AUTOMATED INSTANCES" borderColor="magenta" width="100%">
       <Box flexDirection="column">
         {/* Header */}
         <HeaderRow />

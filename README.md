@@ -8,7 +8,7 @@ A modular automation framework for Claude Code that provides MCP servers, specia
 - **9 Framework Agents**: Code reviewer, test writer, investigator, deputy-CTO, feedback-agent, etc. (projects can add their own)
 - **7 Slash Commands**: `/configure-personas`, `/cto-report`, `/deputy-cto`, `/push-migrations`, `/push-secrets`, `/setup-gentyr`, `/toggle-automation-gentyr`
 - **AI User Feedback System**: Automated user persona testing triggered by staging changes with configurable personas, features, and test scenarios
-- **11 Automation Hooks**: Pre-commit review, antipattern detection, API key rotation, usage optimization, AI user feedback pipeline
+- **13 Automation Hooks**: Pre-commit review, antipattern detection, multi-layer credential detection, CTO notification, secret leak detection, protected actions, AI user feedback pipeline
 - **Git Integration**: Husky hooks for pre-commit, post-commit, and pre-push
 - **Project Scaffolding**: `setup.sh --scaffold` creates new projects from templates with the full stack
 
@@ -252,6 +252,37 @@ scripts/setup-automation-service.sh setup --path /project --op-token $OP_SERVICE
 
 The service account token enables API-based credential resolution without desktop app prompts. If not provided, the service uses lazy credential resolution - credentials are only resolved when agents are actually spawned, and only if the environment supports interactive 1Password authentication.
 
+### Multi-Layer Credential Detection
+
+The framework continuously monitors for Claude API key changes across multiple sources to detect account switches and credential rotations. This provides seamless multi-account support and instant credential updates without restarting sessions.
+
+**4-Layer Detection Architecture:**
+
+1. **launchd WatchPaths** (macOS) - Instant file change detection on `~/.claude/.credentials.json` triggers automation service run
+2. **10-minute StartInterval** - Automation service calls key-sync module to check all sources
+3. **SessionStart Hook** (`api-key-watcher.js`) - Full credential discovery when Claude Code starts
+4. **PreToolUse Hook** (`credential-sync-hook.js`) - Throttled mid-session checks (30-minute cooldown, Bash tool only)
+
+**Multi-Source Discovery:**
+
+The `key-sync.js` module reads credentials from all available sources:
+
+- **Environment variable** - `CLAUDE_CODE_OAUTH_TOKEN` (highest priority)
+- **macOS Keychain** - `security find-generic-password` for "Claude Code-credentials"
+- **Credentials file** - `~/.claude/.credentials.json` (fallback)
+
+All discovered keys are aggregated into a user-level rotation state registry at `~/.claude/api-key-rotation.json` shared across all projects.
+
+**Features:**
+
+- OAuth token refresh for expired credentials
+- Subscription tier detection (Free, Pro, Team)
+- Rate limit tier tracking (tier-1 through tier-5)
+- Rotation event logging per project
+- Automatic health checks and capacity alerts
+
+See `/path/to/gentyr/docs/CREDENTIAL-DETECTION.md` for test coverage details.
+
 ### AI User Feedback System
 
 The AI User Feedback System automatically spawns feedback agents that test your application as real user personas whenever you push changes to staging. This catch usability, functionality, and UX issues before they reach production.
@@ -394,10 +425,12 @@ mcp__specs-browser__createSpec({
 │   │   ├── push-secrets.md
 │   │   ├── setup-gentyr.md
 │   │   └── toggle-automation-gentyr.md
-│   ├── hooks/                  # 11 hooks + 5 utility modules (.js)
+│   ├── hooks/                  # 13 hooks + 6 utility modules (.js)
 │   │   ├── pre-commit-review.js
 │   │   ├── antipattern-hunter-hook.js
 │   │   ├── api-key-watcher.js
+│   │   ├── credential-sync-hook.js  # PreToolUse throttled credential check
+│   │   ├── key-sync.js          # Shared multi-source credential reader
 │   │   ├── config-reader.js
 │   │   ├── usage-optimizer.js
 │   │   ├── __tests__/
@@ -779,6 +812,7 @@ sudo scripts/setup.sh --path /path/to/project --protect-only
 
 ## Version History
 
+- **2.4.0**: Multi-Layer Credential Detection. 4-layer system (launchd WatchPaths, 10-min timer, SessionStart, throttled PreToolUse) for instant account switch detection. Shared key-sync module reads env var + macOS Keychain + credentials file. User-level rotation state registry at ~/.claude/api-key-rotation.json. OAuth token refresh, subscription/tier tracking, rotation logging.
 - **2.3.0**: Chrome Extension Bridge. Added chrome-bridge MCP server that proxies 18 tools from Claude for Chrome extension via Unix domain socket. Supports multi-browser instances, tab routing, connection resilience, and binary framing protocol. No credentials required (local socket communication).
 - **2.2.0**: AI User Feedback System. Added 4 MCP servers (user-feedback, playwright-feedback, programmatic-feedback, feedback-reporter) for automated user persona testing. Added feedback-agent with restricted tools (no source code access). Added `/configure-personas` slash command. Added feedback-launcher and feedback-orchestrator scripts. Added 'user-feedback' category to agent-reports. Tests include 9 integration tests and toy app with intentional bugs.
 - **2.1.0**: MCP Launcher architecture. Credentials resolved from 1Password at runtime via `mcp-launcher.js` — no secrets on disk. Interactive `/setup-gentyr` with 1Password vault auto-discovery. SessionStart health check for missing credentials. Removed `--with-credentials` flag (all credential config happens in-session).

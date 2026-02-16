@@ -1,5 +1,105 @@
 # GENTYR Framework Changelog
 
+## 2026-02-16 - Multi-Layer Credential Detection
+
+### Added
+
+**4-Layer Credential Detection Architecture:**
+
+1. **Shared Key Sync Module** (`key-sync.js`)
+   - Multi-source credential reading (env var, macOS Keychain, credentials file)
+   - User-level rotation state I/O at `~/.claude/api-key-rotation.json`
+   - OAuth token refresh for expired credentials
+   - Subscription tier detection (Free, Pro, Team)
+   - Rate limit tier tracking (tier-1 through tier-5)
+
+2. **Detection Layers**
+   - Layer 1: launchd `WatchPaths` - instant file change detection on `~/.claude/.credentials.json`
+   - Layer 2: 10-minute `StartInterval` - automation service key-sync calls
+   - Layer 3: SessionStart hook (`api-key-watcher.js`) - full discovery on Claude Code start
+   - Layer 4: PreToolUse hook (`credential-sync-hook.js`) - throttled mid-session checks (30-min)
+
+3. **Key Features**
+   - Aggregates credentials from all sources without short-circuiting
+   - Shared rotation state registry across all projects (user-level)
+   - Per-project rotation event logging
+   - Automatic OAuth token refresh before expiration
+   - Health checks and capacity alerts
+
+**Files Created (2 total):**
+- `.claude/hooks/key-sync.js` (328 lines) - Shared credential detection module
+- `.claude/hooks/credential-sync-hook.js` (80 lines) - Throttled PreToolUse hook
+
+**Files Modified (11 total):**
+- `.claude/hooks/api-key-watcher.js` - Refactored to thin wrapper around key-sync.js (v2.0.0)
+- `.claude/hooks/usage-optimizer.js` - Updated rotation state path to user-level
+- `.claude/hooks/cto-notification-hook.js` - Updated rotation state path
+- `.claude/hooks/credential-file-guard.js` - Added comment about user-level path coverage
+- `.claude/hooks/hourly-automation.js` - Added key-sync step after usage optimizer
+- `.claude/settings.json.template` - Added credential-sync-hook PreToolUse entry
+- `scripts/setup-automation-service.sh` - Added WatchPaths to launchd plist template
+- `packages/cto-dashboard/src/utils/data-reader.ts` - Updated rotation state path
+- `packages/mcp-servers/src/cto-report/server.ts` - Updated rotation state path
+- `.claude/hooks/__tests__/api-key-watcher.test.js` - Multiple test updates (75 tests passing)
+- `.claude/hooks/__tests__/usage-optimizer.test.js` - Updated assertion (107 tests passing)
+
+**Documentation:**
+- `docs/CREDENTIAL-DETECTION.md` - Test coverage details for 4-layer architecture
+- `README.md` - Added Multi-Layer Credential Detection section
+- `CLAUDE.md` - (unchanged, no agent-facing updates needed)
+
+**Total Changes:** +408 lines added, 11 files modified, 182 tests passing
+
+### Code Review Findings
+
+**9 Issues Identified:**
+
+1. **CRITICAL**: Plaintext token aggregation without restrictive file permissions
+2. **HIGH**: Race condition on rotation state file (3 concurrent callers, no file locking)
+3. **HIGH**: Missing Zod validation on external API responses (OAuth token endpoint)
+4. **MEDIUM**: Timeout mismatch in credential-sync-hook (5s timeout but OAuth refresh can exceed)
+5. **MEDIUM**: Error swallowing in key-sync.js catch blocks (no telemetry)
+6. **MEDIUM**: No retry logic for transient Keychain failures
+7. **LOW**: Magic number for throttle cooldown (30 * 60 * 1000 should be constant)
+8. **LOW**: Missing JSDoc for public functions in key-sync.js
+9. **LOW**: No telemetry for credential source usage patterns
+
+### Test Coverage
+
+**Coverage Status:**
+- `api-key-watcher.js` - 75 tests passing (full coverage)
+- `usage-optimizer.js` - 107 tests passing (full coverage)
+- `key-sync.js` - 0% coverage (new module, tests recommended)
+- `credential-sync-hook.js` - 0% coverage (new hook, tests recommended)
+
+**Coverage Gaps:**
+- `refreshExpiredToken()` - 0% coverage (security-critical OAuth flow)
+- `updateActiveCredentials()` - 0% behavioral coverage (dual-write to state)
+- `readCredentialSources()` - indirect coverage only
+- Recommendation: Create `.claude/hooks/__tests__/key-sync.test.js`
+
+### Architecture Decisions
+
+**Why user-level rotation state:**
+- Supports multi-project workflows (same API key across multiple repos)
+- Prevents state desync when same key used in multiple projects
+- Enables global key tracking and quota aggregation
+- Backward compatible with project-level fallback
+
+**Why 4 detection layers:**
+- Layer 1 (WatchPaths): Instant response to file changes (macOS only)
+- Layer 2 (StartInterval): Cross-platform periodic checks
+- Layer 3 (SessionStart): Initial discovery on new sessions
+- Layer 4 (PreToolUse): Detects mid-session changes without restart
+
+**Why shared key-sync module:**
+- DRY principle (single source of truth for credential logic)
+- Consistent behavior across all detection layers
+- Easier testing and maintenance
+- Supports future OAuth flow changes
+
+---
+
 ## 2026-02-16 - Chrome Extension Bridge
 
 ### Added
