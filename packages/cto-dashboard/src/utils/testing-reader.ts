@@ -232,18 +232,29 @@ export function getTestingData(): TestingData {
   result.suitesFixedRecently = [...allTargetedSuites24h]
     .filter(name => !currentlyFailing.has(name)).length;
 
-  // Count unique failure signatures in 24h from state files
+  // Count unique failure signatures in 24h from all state files
   const cutoff24hISO = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  for (const statePath of TEST_FAILURE_STATE_PATHS) {
+  const countedHashes = new Set<string>();
+
+  const allStatePaths = [...TEST_FAILURE_STATE_PATHS];
+  try {
+    allStatePaths.push(...findWorkspaceTestStates());
+  } catch {
+    // Ignore workspace discovery errors
+  }
+
+  for (const statePath of allStatePaths) {
     if (!fs.existsSync(statePath)) continue;
     try {
       const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as TestFailureState;
       if (state.failureHashes) {
-        for (const ts of Object.values(state.failureHashes)) {
-          if (ts >= cutoff24hISO) result.uniqueFailureSignatures24h++;
+        for (const [hash, ts] of Object.entries(state.failureHashes)) {
+          if (ts >= cutoff24hISO && !countedHashes.has(hash)) {
+            countedHashes.add(hash);
+            result.uniqueFailureSignatures24h++;
+          }
         }
       }
-      break; // Only count from one state file to avoid double-counting
     } catch {
       // Ignore
     }

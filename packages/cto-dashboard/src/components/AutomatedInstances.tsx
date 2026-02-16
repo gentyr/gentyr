@@ -180,6 +180,11 @@ export function AutomatedInstances({ data }: AutomatedInstancesProps): React.Rea
           currentProjected={data.currentProjected}
           adjustingDirection={data.adjustingDirection}
         />
+
+        {/* Hint */}
+        <Box marginTop={1}>
+          <Text color="gray" dimColor>Tip: Ask Claude Code to adjust frequency or switch modes (load balanced / static).</Text>
+        </Box>
       </Box>
     </Section>
   );

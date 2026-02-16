@@ -149,7 +149,14 @@ mcp__agent-reports__report_to_deputy_cto({
 
 ### CTO Commands
 
-- **`/cto-report`** — Full metrics dashboard: token usage, session history, agent activity, task status, quota utilization
+- **`/cto-report`** — Full metrics dashboard with sections for:
+  - Quota & capacity (aggregate across all API keys)
+  - System status (Deputy CTO mode, protection status, commit blocks)
+  - Deputy CTO triage pipeline (untriaged reports, escalated items, pending questions, 24h summary)
+  - Testing health (failing suites with fix attempts, agent breakdown by framework, resolved suites, unique failures, 7-day activity, optional Codecov)
+  - Automated instances (active agent sessions with spawn reasons and durations)
+  - Timeline (chronological view of sessions, hooks, reports, questions, tasks)
+  - Metrics summary (tokens, sessions, agents, tasks, hooks, triage, CTO queue)
 - **`/deputy-cto`** — Review and answer pending CTO decisions (batch review mode with up to 4 items at once), triage agent reports with recommendations, manage autonomous mode
 
 ### Autonomous Mode

@@ -31,7 +31,7 @@ export const GentyrSetupArgsSchema = z.object({
   action: z.enum(ACTIONS)
     .optional()
     .describe(
-      'The setup action to perform. Omit to get an overview of all available actions.'
+      'The setup action: install | uninstall | reinstall | protect (enable file protection) | unprotect (disable file protection) | status (check automation service) | scaffold (new project from templates). Omit for overview.'
     ),
   project_path: z.string()
     .optional()

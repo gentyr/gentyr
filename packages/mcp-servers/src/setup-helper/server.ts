@@ -183,7 +183,6 @@ function handleQuestions(
   args: GentyrSetupArgs,
   projectPath: string,
 ): NeedsInputResponse {
-  const state = detectState(projectPath);
   const questions: Question[] = [];
 
   // All actions need project_path if not resolved
@@ -222,7 +221,7 @@ function handleQuestions(
           ],
         });
       }
-      if (args.with_op_token === undefined && !state.has_op_token) {
+      if (args.with_op_token === undefined) {
         questions.push({
           question: 'Do you have a 1Password service account token to configure?',
           header: '1Password',
@@ -275,7 +274,7 @@ function handleQuestions(
     }
 
     case 'reinstall': {
-      if (args.with_op_token === undefined && !state.has_op_token) {
+      if (args.with_op_token === undefined) {
         questions.push({
           question: 'Do you have a 1Password service account token to configure?',
           header: '1Password',
@@ -496,18 +495,14 @@ function handleSetup(args: GentyrSetupArgs): SetupResponse {
 // Tool Definition & Server
 // ============================================================================
 
-const TOOL_DESCRIPTION = `Generate GENTYR framework setup commands with absolute paths.
+const TOOL_DESCRIPTION = `ALWAYS use this tool instead of manually constructing setup.sh commands or grepping for GENTYR scripts. This generates correct commands with absolute paths for any GENTYR framework operation: install, uninstall, reinstall, protect, unprotect, status, or scaffold.
 
-Usage pattern:
-1. Call with no arguments to see available actions and detected installation state.
-2. Call with an action (e.g., "install") to get questions about options.
-3. Call with action + resolved options to get the exact command(s) to run.
+Three-phase workflow:
+1. No arguments → overview of actions and detected state. Present to user with AskUserQuestion.
+2. Action only (e.g. action="unprotect") → returns questions if options are needed. Present via AskUserQuestion, then re-call with answers mapped to param_name fields.
+3. Action + options → returns exact shell command(s) to run. Present to user.
 
-When status is "overview": present the available actions and detected state to the user. Use AskUserQuestion to ask which action they want.
-
-When status is "needs_input": present the questions to the user using AskUserQuestion (the questions array maps directly to AskUserQuestion format). Then call this tool again with their answers mapped to the corresponding param_name fields.
-
-When status is "ready": present the command(s) and explanation to the user. The commands use absolute paths and clearly indicate when sudo is required. For OP token commands, instruct the user to run the commands directly in their terminal (not through Claude) so the token stays private.`;
+For OP token commands, instruct the user to run in their terminal (not through Claude) so the token stays private.`;
 
 const tools: AnyToolHandler[] = [
   {

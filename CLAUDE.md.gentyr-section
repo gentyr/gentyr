@@ -1,0 +1,11 @@
+<!-- GENTYR-FRAMEWORK-START -->
+
+## GENTYR Framework
+
+This project uses the GENTYR automation framework.
+
+**IMPORTANT**: Do NOT manually construct setup.sh commands or grep for GENTYR scripts. Instead:
+- To install, uninstall, reinstall, protect, unprotect, scaffold, or check status: call the `gentyr_setup` MCP tool (from setup-helper server). It generates the correct command with all flags and paths.
+- To view or change automation frequencies/intervals/schedules: call `list_automation_config` then `set_automation_mode` MCP tools (from deputy-cto server).
+
+<!-- GENTYR-FRAMEWORK-END -->
