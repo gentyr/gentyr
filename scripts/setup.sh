@@ -30,6 +30,7 @@ RECONFIGURE_MCP=false
 SCAFFOLD=false
 PROJECT_DIR=""
 OP_TOKEN=""
+MAKERKIT_FLAG=""  # "", "force", or "skip"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -61,6 +62,14 @@ while [[ $# -gt 0 ]]; do
             SCAFFOLD=true
             shift
             ;;
+        --makerkit)
+            MAKERKIT_FLAG="force"
+            shift
+            ;;
+        --no-makerkit)
+            MAKERKIT_FLAG="skip"
+            shift
+            ;;
         --op-token)
             if [ -z "$2" ] || [[ "$2" == --* ]]; then
                 echo -e "${RED}Error: --op-token requires a value${NC}"
@@ -86,7 +95,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo -e "${RED}Unknown flag: $1${NC}"
-            echo "Usage: $0 --path <dir> [--op-token <token>] [--protect] [--protect-mcp] [--reconfigure] [--scaffold] [--uninstall] [--protect-only] [--unprotect-only]"
+            echo "Usage: $0 --path <dir> [--op-token <token>] [--protect] [--protect-mcp] [--reconfigure] [--scaffold] [--makerkit] [--no-makerkit] [--uninstall] [--protect-only] [--unprotect-only]"
             exit 1
             ;;
     esac
@@ -297,6 +306,13 @@ do_unprotect() {
         chmod 755 "$PROJECT_DIR/.claude/agents"
         find "$PROJECT_DIR/.claude/agents" -maxdepth 1 -user root -exec chown -h "$original_user:$original_group" {} \;
         echo "  Unprotected dir: $PROJECT_DIR/.claude/agents"
+    fi
+    # Fix reporters directory and symlinks within it
+    if [ -d "$PROJECT_DIR/.claude/reporters" ]; then
+        chown "$original_user:$original_group" "$PROJECT_DIR/.claude/reporters"
+        chmod 755 "$PROJECT_DIR/.claude/reporters"
+        find "$PROJECT_DIR/.claude/reporters" -maxdepth 1 -user root -exec chown -h "$original_user:$original_group" {} \;
+        echo "  Unprotected dir: $PROJECT_DIR/.claude/reporters"
     fi
 
     # Fix framework build/install directories (may be root-owned from previous runs under sudo)
@@ -916,6 +932,7 @@ echo -e "${YELLOW}Configuring test failure reporters...${NC}"
 # Detect test framework and configure reporter
 JEST_CONFIG=""
 VITEST_CONFIG=""
+PLAYWRIGHT_CONFIG=""
 
 # Check for Jest
 if [ -f "$PROJECT_DIR/jest.config.js" ]; then
@@ -933,6 +950,13 @@ elif [ -f "$PROJECT_DIR/vitest.config.ts" ]; then
     VITEST_CONFIG="$PROJECT_DIR/vitest.config.ts"
 elif [ -f "$PROJECT_DIR/vitest.config.mjs" ]; then
     VITEST_CONFIG="$PROJECT_DIR/vitest.config.mjs"
+fi
+
+# Check for Playwright
+if [ -f "$PROJECT_DIR/playwright.config.ts" ]; then
+    PLAYWRIGHT_CONFIG="$PROJECT_DIR/playwright.config.ts"
+elif [ -f "$PROJECT_DIR/playwright.config.js" ]; then
+    PLAYWRIGHT_CONFIG="$PROJECT_DIR/playwright.config.js"
 fi
 
 # Create reporters symlink directory
@@ -963,6 +987,20 @@ if [ -n "$VITEST_CONFIG" ]; then
     else
         echo -e "  ${YELLOW}NOTE: Add to $VITEST_CONFIG:${NC}"
         echo "    reporters: ['default', './.claude/reporters/vitest-failure-reporter.js']"
+    fi
+fi
+
+if [ -n "$PLAYWRIGHT_CONFIG" ]; then
+    # Symlink Playwright reporter
+    ln -sf "../../$FRAMEWORK_REL/.claude/hooks/reporters/playwright-failure-reporter.js" "$PROJECT_DIR/.claude/reporters/playwright-failure-reporter.js"
+    echo "  Symlink: .claude/reporters/playwright-failure-reporter.js"
+
+    # Check if reporter is already configured
+    if grep -q "playwright-failure-reporter" "$PLAYWRIGHT_CONFIG" 2>/dev/null; then
+        echo "  Playwright reporter already configured in $(basename "$PLAYWRIGHT_CONFIG")"
+    else
+        echo -e "  ${YELLOW}NOTE: Add to $PLAYWRIGHT_CONFIG reporter array:${NC}"
+        echo "    reporter: [['list'], ['./.claude/reporters/playwright-failure-reporter.js']]"
     fi
 fi
 
@@ -1008,8 +1046,8 @@ if [ -d "$PROJECT_DIR/integrations" ]; then
     done
 fi
 
-if [ -z "$JEST_CONFIG" ] && [ -z "$VITEST_CONFIG" ] && [ ! -d "$PROJECT_DIR/packages" ] && [ ! -d "$PROJECT_DIR/integrations" ]; then
-    echo "  No Jest or Vitest config found, skipping reporter setup"
+if [ -z "$JEST_CONFIG" ] && [ -z "$VITEST_CONFIG" ] && [ -z "$PLAYWRIGHT_CONFIG" ] && [ ! -d "$PROJECT_DIR/packages" ] && [ ! -d "$PROJECT_DIR/integrations" ]; then
+    echo "  No Jest, Vitest, or Playwright config found, skipping reporter setup"
 fi
 
 # --- 9. Deploy staged hooks ---
@@ -1062,6 +1100,185 @@ if [ -f "$GENTYR_SECTION" ]; then
     fi
 else
     echo "  Skipped CLAUDE.md (template not found)"
+fi
+
+# --- 10b. Makerkit Integration ---
+echo ""
+echo -e "${YELLOW}Checking for Makerkit integration...${NC}"
+
+MAKERKIT_DETECTED=false
+MAKERKIT_MCP_PATH=""
+
+if [ "$MAKERKIT_FLAG" = "skip" ]; then
+    echo "  Skipped (--no-makerkit flag)"
+elif [ "$MAKERKIT_FLAG" = "force" ]; then
+    MAKERKIT_DETECTED=true
+    # Try to find the MCP server path even without auto-detection
+    if [ -d "$PROJECT_DIR/packages/mcp-server" ]; then
+        MAKERKIT_MCP_PATH="packages/mcp-server/build/index.js"
+    elif [ -d "$PROJECT_DIR/tooling/mcp-server" ]; then
+        MAKERKIT_MCP_PATH="tooling/mcp-server/build/index.js"
+    fi
+    echo "  Forced via --makerkit flag"
+else
+    # Auto-detect: Check for Makerkit MCP server in project
+    if [ -d "$PROJECT_DIR/packages/mcp-server" ] && \
+       grep -q "@kit/mcp-server\|makerkit" "$PROJECT_DIR/packages/mcp-server/package.json" 2>/dev/null; then
+        MAKERKIT_DETECTED=true
+        MAKERKIT_MCP_PATH="packages/mcp-server/build/index.js"
+        echo "  Auto-detected Makerkit (packages/mcp-server/)"
+    elif [ -d "$PROJECT_DIR/tooling/mcp-server" ] && \
+       grep -q "@kit/mcp-server\|makerkit" "$PROJECT_DIR/tooling/mcp-server/package.json" 2>/dev/null; then
+        MAKERKIT_DETECTED=true
+        MAKERKIT_MCP_PATH="tooling/mcp-server/build/index.js"
+        echo "  Auto-detected Makerkit (tooling/mcp-server/)"
+    else
+        echo "  No Makerkit detected (use --makerkit to force)"
+    fi
+fi
+
+if [ "$MAKERKIT_DETECTED" = true ]; then
+    VENDOR_DIR="$FRAMEWORK_DIR/vendor/makerkit"
+    DOCS_REPO="$VENDOR_DIR/documentation"
+    DOCS_GENERATED="$VENDOR_DIR/docs-generated"
+
+    # --- Clone or update documentation repo ---
+    if [ -d "$DOCS_REPO/.git" ]; then
+        echo "  Updating Makerkit documentation..."
+        PREV_DIR="$(pwd)"
+        cd "$DOCS_REPO"
+        git pull --ff-only origin main 2>/dev/null || \
+            echo -e "  ${YELLOW}Warning: Could not update docs (offline or auth issue)${NC}"
+        cd "$PREV_DIR"
+    else
+        echo "  Cloning Makerkit documentation..."
+        mkdir -p "$VENDOR_DIR"
+        if git clone --depth 1 https://github.com/makerkit/documentation.git "$DOCS_REPO" 2>/dev/null; then
+            echo "  Cloned Makerkit documentation repo"
+        else
+            echo -e "  ${YELLOW}Warning: Could not clone docs repo (check GitHub access)${NC}"
+            echo "  You can manually clone: git clone https://github.com/makerkit/documentation.git $DOCS_REPO"
+        fi
+    fi
+
+    # --- Generate LLM-optimized docs ---
+    if [ -f "$DOCS_REPO/index.js" ]; then
+        echo "  Generating LLM-optimized documentation..."
+        PREV_DIR="$(pwd)"
+        cd "$DOCS_REPO"
+        # Install deps if needed
+        if [ ! -d "node_modules" ]; then
+            npm install --no-fund --no-audit 2>/dev/null || true
+        fi
+        node index.js kits/next-supabase-turbo 2>/dev/null || \
+            echo -e "  ${YELLOW}Warning: Doc generation failed${NC}"
+        cd "$PREV_DIR"
+
+        # Copy generated docs to stable location
+        if [ -d "$DOCS_REPO/dist" ]; then
+            rm -rf "$DOCS_GENERATED"
+            cp -r "$DOCS_REPO/dist" "$DOCS_GENERATED"
+            DOC_COUNT=$(ls "$DOCS_GENERATED"/*.md 2>/dev/null | wc -l | tr -d ' ')
+            echo "  Generated $DOC_COUNT doc files"
+        fi
+    fi
+
+    # --- Build Makerkit's built-in MCP server ---
+    if [ -n "$MAKERKIT_MCP_PATH" ]; then
+        MCP_PKG_DIR="$(dirname "$PROJECT_DIR/$MAKERKIT_MCP_PATH")"
+        # Go up from build/ to the mcp-server package root
+        MCP_PKG_DIR="$(dirname "$MCP_PKG_DIR")"
+        if [ -f "$MCP_PKG_DIR/package.json" ]; then
+            echo "  Building Makerkit MCP server..."
+            PREV_DIR="$(pwd)"
+            cd "$MCP_PKG_DIR"
+            npm install --no-fund --no-audit 2>/dev/null || true
+            npm run build 2>/dev/null || \
+                echo -e "  ${YELLOW}Warning: Makerkit MCP server build failed${NC}"
+            cd "$PREV_DIR"
+        fi
+    fi
+
+    # --- Inject Makerkit MCP servers into .mcp.json ---
+    if [ -f "$PROJECT_DIR/.mcp.json" ]; then
+        echo "  Adding Makerkit MCP servers to .mcp.json..."
+        MAKERKIT_MCP_REL="$MAKERKIT_MCP_PATH" \
+        FRAMEWORK_REL_PATH="$FRAMEWORK_REL" \
+        node -e "
+          const fs = require('fs');
+          const p = process.argv[1];
+          const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+
+          // Add Makerkit built-in MCP server (project-relative path)
+          if (process.env.MAKERKIT_MCP_REL) {
+            c.mcpServers['makerkit'] = {
+              command: 'node',
+              args: [process.env.MAKERKIT_MCP_REL],
+              env: { CLAUDE_PROJECT_DIR: '.' }
+            };
+          }
+
+          // Add GENTYR makerkit-docs server
+          c.mcpServers['makerkit-docs'] = {
+            command: 'node',
+            args: [process.env.FRAMEWORK_REL_PATH + '/packages/mcp-servers/dist/makerkit-docs/server.js'],
+            env: {
+              CLAUDE_PROJECT_DIR: '.',
+              MAKERKIT_DOCS_PATH: process.env.FRAMEWORK_REL_PATH + '/vendor/makerkit/docs-generated'
+            }
+          };
+
+          fs.writeFileSync(p, JSON.stringify(c, null, 2) + '\n');
+        " "$PROJECT_DIR/.mcp.json"
+        echo "  Added makerkit + makerkit-docs servers"
+    fi
+
+    # --- Inject Makerkit section into CLAUDE.md ---
+    MAKERKIT_SECTION="$FRAMEWORK_DIR/CLAUDE.md.makerkit-section"
+    MK_MARKER_START="<!-- MAKERKIT-SECTION-START -->"
+    MK_MARKER_END="<!-- MAKERKIT-SECTION-END -->"
+
+    if [ -f "$MAKERKIT_SECTION" ] && [ -f "$CLAUDE_MD" ] && [ -w "$CLAUDE_MD" ]; then
+        # Remove existing Makerkit section if present
+        if grep -q "$MK_MARKER_START" "$CLAUDE_MD" 2>/dev/null; then
+            sed -i '' "/$MK_MARKER_START/,/$MK_MARKER_END/d" "$CLAUDE_MD"
+        fi
+        # Insert before GENTYR-FRAMEWORK-END marker
+        if grep -q "$MARKER_END" "$CLAUDE_MD" 2>/dev/null; then
+            # Use temp file approach (BSD sed compatible)
+            TEMP_CLAUDE="$(mktemp)"
+            while IFS= read -r line; do
+                if [ "$line" = "$MARKER_END" ]; then
+                    cat "$MAKERKIT_SECTION" >> "$TEMP_CLAUDE"
+                    echo "" >> "$TEMP_CLAUDE"
+                fi
+                echo "$line" >> "$TEMP_CLAUDE"
+            done < "$CLAUDE_MD"
+            mv "$TEMP_CLAUDE" "$CLAUDE_MD"
+            echo "  Added Makerkit section to CLAUDE.md"
+        fi
+    fi
+
+    # --- Write vendor config ---
+    mkdir -p "$VENDOR_DIR"
+    cat > "$VENDOR_DIR/config.json" << VENDOREOF
+{
+    "version": "1.0.0",
+    "lastUpdated": "$(date -Iseconds 2>/dev/null || date)",
+    "docsPath": "$DOCS_GENERATED",
+    "mcpServerPath": "$MAKERKIT_MCP_PATH",
+    "kit": "next-supabase-turbo"
+}
+VENDOREOF
+
+    # Fix ownership if running under sudo
+    if [ "$EUID" -eq 0 ] && [ -d "$VENDOR_DIR" ]; then
+        original_user="$(get_original_user)"
+        original_group="$(get_original_group)"
+        chown -R "$original_user:$original_group" "$VENDOR_DIR"
+    fi
+
+    echo -e "${GREEN}  Makerkit integration complete${NC}"
 fi
 
 # --- 10. MCP Protection Setup (if requested) ---

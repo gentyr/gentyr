@@ -28,3 +28,4 @@ export * as SessionEvents from './session-events/index.js';
 export * as CtoReports from './cto-reports/index.js';
 export * as DeputyCto from './deputy-cto/index.js';
 export * as CtoReport from './cto-report/index.js';
+export * as MakerkitDocs from './makerkit-docs/index.js';

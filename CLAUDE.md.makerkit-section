@@ -1,0 +1,30 @@
+<!-- MAKERKIT-SECTION-START -->
+### Makerkit Integration
+
+This project uses [MakerKit](https://makerkit.dev) (Teams license) as its SaaS framework foundation.
+
+**MCP Tools Available:**
+- `mcp__makerkit__*` - Built-in Makerkit tools (components, scripts, database, PRDs, migrations)
+- `mcp__makerkit-docs__*` - Makerkit documentation search and retrieval
+
+**Key Makerkit MCP Tools:**
+- `mcp__makerkit__get_components` - List all UI components with metadata
+- `mcp__makerkit__components_search` - Search components by keyword
+- `mcp__makerkit__get_scripts` - List available pnpm scripts
+- `mcp__makerkit__run_checks` - Run code quality checks (typecheck, lint, format)
+- `mcp__makerkit__get_database_resources` - Database schema introspection
+- `mcp__makerkit__get_migrations` / `create_migration` / `diff_migrations` - Migration management
+- `mcp__makerkit__prd_manager` - PRD management with user stories
+- `mcp__makerkit__deps_upgrade_advisor` - Dependency upgrade recommendations
+- `mcp__makerkit-docs__makerkit_docs_search` - Search Makerkit documentation
+- `mcp__makerkit-docs__makerkit_docs_read` - Read specific doc files
+
+**Generated Docs Location:** `.claude-framework/vendor/makerkit/docs-generated/` (33 files, ~188K words)
+
+**Usage Guidelines:**
+- ALWAYS check `mcp__makerkit__get_components` before creating custom UI components
+- ALWAYS run `mcp__makerkit__run_checks` after major changes
+- Use `mcp__makerkit-docs__makerkit_docs_search` to find Makerkit patterns before implementing
+- Follow Makerkit conventions for routing, layouts, and data fetching
+- MakerKit is a pattern reference, NOT a runtime dependency -- study patterns via MCP, build with project UI library
+<!-- MAKERKIT-SECTION-END -->

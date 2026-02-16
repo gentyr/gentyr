@@ -648,12 +648,15 @@ process.stdin.on('end', () => {
           }
         }
       }
-      // When no path and no glob, Grep searches the entire directory tree
-      // which includes protected credential files. Block to prevent exposure.
-      if (!grepPath && !grepGlob) {
+      // When no path, no glob, and no type filter, Grep searches the entire
+      // directory tree which includes protected credential files.
+      // A type filter (e.g., type: "js") restricts to specific file extensions,
+      // which won't match .env or .mcp.json, so those are safe to allow.
+      const grepType = toolInput.type || '';
+      if (!grepPath && !grepGlob && !grepType) {
         blockRead('(recursive search)',
-          'Grep without path or glob would search all files including protected credential files. ' +
-          'Specify a path (e.g., path: "src/") or glob (e.g., glob: "*.ts") to restrict the search.');
+          'Grep without path, glob, or type would search all files including protected credential files. ' +
+          'Specify a path (e.g., path: "src/"), glob (e.g., glob: "*.ts"), or type (e.g., type: "js") to restrict the search.');
         return;
       }
       process.exit(0);

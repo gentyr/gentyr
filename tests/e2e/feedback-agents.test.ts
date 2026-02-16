@@ -9,9 +9,16 @@
  * 3. Use real feedback-launcher functions to configure and spawn agents
  * 4. Verify findings, reports, and audit trails in the database
  *
+ * Covers all 4 consumption modes:
+ * - API (api-consumer): REST API testing via programmatic-feedback
+ * - CLI (cli-expert): CLI testing via programmatic-feedback
+ * - GUI (gui-tester): Web UI testing via playwright-feedback
+ * - SDK (sdk-developer): SDK testing via programmatic-feedback
+ *
  * Requirements:
  * - `claude` CLI installed
  * - MCP servers built (npm run build in packages/mcp-servers)
+ * - Playwright browsers installed for GUI tests (npx playwright install chromium)
  *
  * Run: npx vitest run --config tests/e2e/vitest.config.ts
  */
@@ -20,7 +27,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 
-import { skipIfPrerequisitesNotMet } from './helpers/prerequisites.js';
+import { checkTestCapabilities } from './helpers/prerequisites.js';
 import { createTestProject, type TestProject } from './helpers/project-factory.js';
 import { getSessionResults } from './helpers/result-verifier.js';
 import { startToyApp, type ToyAppInstance } from '../integration/helpers/toy-app-runner.js';
@@ -39,6 +46,7 @@ let runFeedbackAgent: (
 let cleanupOldConfigs: () => void;
 
 let skip = false;
+let playwrightAvailable = false;
 
 describe('Feedback System E2E (Real Claude Agents)', () => {
   let toyApp: ToyAppInstance;
@@ -46,7 +54,9 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
 
   beforeAll(async () => {
     // Check prerequisites first
-    skip = await skipIfPrerequisitesNotMet();
+    const capabilities = await checkTestCapabilities();
+    skip = capabilities.skip;
+    playwrightAvailable = capabilities.playwrightAvailable;
     if (skip) return;
 
     // Import launcher dynamically (it's an ESM JS file)
@@ -66,7 +76,7 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
     // Start toy app
     toyApp = await startToyApp();
 
-    // Create test project with personas
+    // Create test project with all 4 persona types
     testProject = createTestProject({
       personas: [
         {
@@ -83,10 +93,26 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
           behavior_traits: ['tries --help first', 'tests edge cases', 'checks error messages'],
           endpoints: [`node ${path.resolve(__dirname, '../fixtures/toy-app/cli.js')} --api-url=${toyApp.baseUrl}`],
         },
+        {
+          name: 'gui-tester',
+          description: 'A non-technical user who clicks through the web UI. Expects clear visual feedback, intuitive navigation, and no broken links.',
+          consumption_mode: 'gui',
+          behavior_traits: ['clicks every link', 'tries wrong passwords', 'looks for visual feedback', 'checks navigation'],
+          endpoints: [`${toyApp.baseUrl}`],
+        },
+        {
+          name: 'sdk-developer',
+          description: 'A developer integrating the SDK into their application. Reads exports, tests each function, validates return types and error handling.',
+          consumption_mode: 'sdk',
+          behavior_traits: ['reads API surface first', 'tests edge cases', 'checks return types', 'validates error messages'],
+          endpoints: [path.resolve(__dirname, '../fixtures/toy-app/lib.cjs')],
+        },
       ],
       features: [
         { name: 'task-api', description: 'REST API for task CRUD', file_patterns: ['**/api/**', 'server.js'] },
         { name: 'cli-interface', description: 'CLI tool', file_patterns: ['cli.js', '**/cli/**'] },
+        { name: 'web-ui', description: 'Web interface for task management', file_patterns: ['server.js', '**/views/**'] },
+        { name: 'task-sdk', description: 'SDK for programmatic task management', file_patterns: ['lib.cjs', '**/sdk/**'] },
       ],
       mappings: [
         {
@@ -96,6 +122,14 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
         {
           persona_name: 'cli-expert', feature_name: 'cli-interface', priority: 'high',
           test_scenarios: ['Run --help', 'List tasks', 'Create and complete a task'],
+        },
+        {
+          persona_name: 'gui-tester', feature_name: 'web-ui', priority: 'high',
+          test_scenarios: ['Log in with correct credentials', 'Try wrong password and check for error message', 'Navigate to settings', 'Click privacy policy link', 'Create and delete a task'],
+        },
+        {
+          persona_name: 'sdk-developer', feature_name: 'task-sdk', priority: 'high',
+          test_scenarios: ['List exports', 'Create a task', 'Get a task by ID', 'Delete a task', 'Test error handling for invalid inputs'],
         },
       ],
     });
@@ -164,6 +198,58 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       expect(config.mcpServers['deputy-cto']).toBeUndefined();
 
       // Clean up
+      fs.unlinkSync(configPath);
+    });
+
+    it('should generate GUI MCP config with playwright-feedback server', async () => {
+      if (skip) return;
+
+      const personaId = testProject.getPersonaId('gui-tester');
+      const persona = await getPersona(personaId, testProject.dir);
+      const sessionId = randomUUID();
+
+      const configPath = generateMcpConfig(sessionId, persona, testProject.dir);
+
+      const fs = await import('fs');
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
+        mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
+      };
+
+      // GUI mode should have playwright-feedback, NOT programmatic-feedback
+      expect(config.mcpServers['playwright-feedback']).toBeDefined();
+      expect(config.mcpServers['programmatic-feedback']).toBeUndefined();
+      expect(config.mcpServers['feedback-reporter']).toBeDefined();
+
+      // Verify base URL is set
+      const pwEnv = config.mcpServers['playwright-feedback'].env;
+      expect(pwEnv.FEEDBACK_BASE_URL).toContain('http://localhost');
+      expect(pwEnv.FEEDBACK_BROWSER_HEADLESS).toBe('true');
+
+      fs.unlinkSync(configPath);
+    });
+
+    it('should generate SDK MCP config with programmatic-feedback in sdk mode', async () => {
+      if (skip) return;
+
+      const personaId = testProject.getPersonaId('sdk-developer');
+      const persona = await getPersona(personaId, testProject.dir);
+      const sessionId = randomUUID();
+
+      const configPath = generateMcpConfig(sessionId, persona, testProject.dir);
+
+      const fs = await import('fs');
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
+        mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
+      };
+
+      // SDK mode should have programmatic-feedback with sdk mode
+      expect(config.mcpServers['programmatic-feedback']).toBeDefined();
+      expect(config.mcpServers['feedback-reporter']).toBeDefined();
+
+      const pfEnv = config.mcpServers['programmatic-feedback'].env;
+      expect(pfEnv.FEEDBACK_MODE).toBe('sdk');
+      expect(pfEnv.FEEDBACK_SDK_PACKAGES).toContain('lib.cjs');
+
       fs.unlinkSync(configPath);
     });
 
@@ -252,14 +338,80 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
     }, 240000);
   });
 
+  describe('GUI Persona Session', () => {
+    it('should spawn GUI persona, test web UI with Playwright, and produce findings', async (ctx) => {
+      if (skip) return;
+      if (!playwrightAvailable) {
+        ctx.skip();
+        return;
+      }
+
+      const sessionId = randomUUID();
+      const personaId = testProject.getPersonaId('gui-tester');
+
+      const persona = await getPersona(personaId, testProject.dir);
+      const mcpConfigPath = generateMcpConfig(sessionId, persona, testProject.dir);
+      const prompt = buildPrompt(persona as Parameters<typeof buildPrompt>[0], sessionId);
+
+      const result = await runFeedbackAgent(mcpConfigPath, prompt, sessionId, 'gui-tester', {
+        projectDir: testProject.dir,
+        timeout: 300000, // 5 min — browser operations are slower
+      });
+
+      expect(result.exitCode).toBe(0);
+
+      const results = getSessionResults(testProject.dir, sessionId, 'gui-tester');
+
+      expect(results.findings.length).toBeGreaterThan(0);
+      expect(results.reports.length).toBeGreaterThan(0);
+      expect(results.reports.every(r => r.reporting_agent === 'feedback-gui-tester')).toBe(true);
+
+      // Audit trail should exist
+      expect(results.auditEvents.length).toBeGreaterThan(0);
+    }, 360000); // 6 min timeout
+  });
+
+  describe('SDK Persona Session', () => {
+    it('should spawn SDK persona, test SDK module, and produce findings', async () => {
+      if (skip) return;
+
+      const sessionId = randomUUID();
+      const personaId = testProject.getPersonaId('sdk-developer');
+
+      const persona = await getPersona(personaId, testProject.dir);
+      const mcpConfigPath = generateMcpConfig(sessionId, persona, testProject.dir);
+      const prompt = buildPrompt(persona as Parameters<typeof buildPrompt>[0], sessionId);
+
+      const result = await runFeedbackAgent(mcpConfigPath, prompt, sessionId, 'sdk-developer', {
+        projectDir: testProject.dir,
+        timeout: 180000, // 3 min
+      });
+
+      expect(result.exitCode).toBe(0);
+
+      const results = getSessionResults(testProject.dir, sessionId, 'sdk-developer');
+
+      expect(results.findings.length).toBeGreaterThan(0);
+      expect(results.reports.length).toBeGreaterThan(0);
+      expect(results.reports.every(r => r.reporting_agent === 'feedback-sdk-developer')).toBe(true);
+
+      // Audit trail should exist
+      expect(results.auditEvents.length).toBeGreaterThan(0);
+    }, 240000); // 4 min timeout
+  });
+
   describe('Full Pipeline (Multi-Persona)', () => {
     it('should run multiple persona sessions and verify cross-persona reports', async () => {
       if (skip) return;
 
-      const sessions: Array<{ sessionId: string; personaName: string }> = [];
+      // Always include api, cli, sdk. Conditionally include gui.
+      const personaNames = ['api-consumer', 'cli-expert', 'sdk-developer'];
+      if (playwrightAvailable) {
+        personaNames.push('gui-tester');
+      }
 
-      // Run both personas in parallel
-      const promises = ['api-consumer', 'cli-expert'].map(async (personaName) => {
+      // Run all personas in parallel
+      const promises = personaNames.map(async (personaName) => {
         const sessionId = randomUUID();
         const personaId = testProject.getPersonaId(personaName);
 
@@ -267,19 +419,17 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
         const mcpConfigPath = generateMcpConfig(sessionId, persona, testProject.dir);
         const prompt = buildPrompt(persona as Parameters<typeof buildPrompt>[0], sessionId);
 
-        sessions.push({ sessionId, personaName });
-
         return runFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, {
           projectDir: testProject.dir,
-          timeout: 180000,
+          timeout: 300000, // 5 min per agent
         });
       });
 
       const results = await Promise.allSettled(promises);
 
-      // At least one should succeed
+      // At least two must succeed to verify cross-persona behavior
       const fulfilled = results.filter(r => r.status === 'fulfilled');
-      expect(fulfilled.length).toBeGreaterThan(0);
+      expect(fulfilled.length).toBeGreaterThanOrEqual(2);
 
       // Check cross-persona reports
       const Database = (await import('better-sqlite3')).default;
@@ -292,9 +442,9 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       expect(allReports.length).toBeGreaterThan(0);
       expect(allReports.every(r => r.category === 'user-feedback')).toBe(true);
 
-      // Should have reports from at least one persona
+      // Should have reports from multiple personas (consistent with requiring 2+ successes)
       const agents = [...new Set(allReports.map(r => r.reporting_agent))];
-      expect(agents.length).toBeGreaterThan(0);
-    }, 600000); // 10 min for multiple Claude sessions
+      expect(agents.length).toBeGreaterThan(1);
+    }, 900000); // 15 min for all concurrent sessions
   });
 });
