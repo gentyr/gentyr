@@ -1,0 +1,10 @@
+src/**
+node_modules/**
+!node_modules/better-sqlite3/**
+.gitignore
+tsconfig.json
+tsconfig.webview.json
+esbuild.config.js
+**/*.ts
+**/*.tsx
+**/*.map
