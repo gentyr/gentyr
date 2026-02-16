@@ -41,8 +41,8 @@ export const ListEventsArgsSchema = z.object({
   eventTypes: z.array(z.string()).optional().describe('Filter by event types'),
   integrationId: z.string().optional().describe('Filter by integration ID'),
   timeRange: TimeRangeSchema.optional(),
-  limit: z.number().optional().default(100).describe('Max results'),
-  offset: z.number().optional().default(0).describe('Pagination offset'),
+  limit: z.coerce.number().optional().default(100).describe('Max results'),
+  offset: z.coerce.number().optional().default(0).describe('Pagination offset'),
 });
 
 export const GetEventArgsSchema = z.object({
@@ -71,7 +71,7 @@ export const RecordEventArgsSchema = z.object({
   input: z.record(z.unknown()),
   output: z.record(z.unknown()).optional(),
   error: z.record(z.unknown()).optional(),
-  durationMs: z.number().optional(),
+  durationMs: z.coerce.number().optional(),
   pageUrl: z.string().optional(),
   pageTitle: z.string().optional(),
   elementSelector: z.string().optional(),

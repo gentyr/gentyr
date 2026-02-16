@@ -203,7 +203,7 @@ function buildPrompt(persona, sessionId) {
     return `  **${f.name}**${f.description ? ` - ${f.description}` : ''}\n  Test scenarios:\n${scenarios}`;
   }).join('\n\n');
 
-  return `[Task][feedback-persona-${persona.name}] You are "${persona.name}": ${persona.description}
+  let prompt = `[Task][feedback-persona-${persona.name}] You are "${persona.name}": ${persona.description}
 
 ## Your Behavioral Traits
 ${traits}
@@ -226,6 +226,22 @@ You are NOT a developer. You are a real user testing this product.
 
 If something is confusing or broken, REPORT IT. That's your job.
 Do NOT try to debug or fix issues. Just report what you experience.`;
+
+  // Mode-specific guidance
+  if (persona.consumption_mode === 'gui') {
+    prompt += `\n\n## GUI Testing Notes\n\nYour browser starts on a blank page. Your FIRST action must be to navigate to the application:\n`;
+    prompt += `- Use the \`navigate\` tool with URL: ${persona.endpoints[0] || 'http://localhost:3000'}\n`;
+    prompt += `- After navigating, use \`read_visible_text\` or \`screenshot\` to see what's on the page\n`;
+    prompt += `- Interact with elements using their visible text or ARIA roles — you cannot use CSS selectors`;
+  }
+
+  if (persona.consumption_mode === 'sdk') {
+    prompt += `\n\n## SDK Testing Notes\n\nEach \`sdk_eval\` call runs in an isolated sandbox. Module state does NOT persist between calls.\n`;
+    prompt += `To test stateful operations (create then get, create then delete), put ALL related operations in a SINGLE \`sdk_eval\` call.\n`;
+    prompt += `Example: require the module, create a task, then immediately get it — all in one code block.`;
+  }
+
+  return prompt;
 }
 
 /**
@@ -293,7 +309,7 @@ function runFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, options
   return new Promise((resolve, reject) => {
     const proc = spawn('claude', spawnArgs, {
       cwd: projectDir,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
         CLAUDE_PROJECT_DIR: projectDir,
@@ -313,7 +329,11 @@ function runFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, options
       setTimeout(() => {
         if (!proc.killed) proc.kill('SIGKILL');
       }, 5000);
-      reject(new Error(`Feedback agent timed out after ${timeout}ms. stderr: ${stderr.slice(0, 500)}`));
+      reject(new Error(
+        `Feedback agent timed out after ${timeout}ms.\n` +
+        `stderr: ${stderr.slice(0, 500)}\n` +
+        `stdout (last 500 chars): ${stdout.slice(-500)}`
+      ));
     }, timeout);
 
     proc.on('error', (err) => {

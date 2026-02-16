@@ -24,8 +24,8 @@ export const ListDnsRecordsArgsSchema = z.object({
   type: DnsRecordTypeSchema.optional().describe('Filter by DNS record type'),
   name: z.string().optional().describe('Filter by DNS record name'),
   content: z.string().optional().describe('Filter by DNS record content'),
-  page: z.number().optional().default(1).describe('Page number for pagination'),
-  per_page: z.number().optional().default(100).describe('Number of records per page'),
+  page: z.coerce.number().optional().default(1).describe('Page number for pagination'),
+  per_page: z.coerce.number().optional().default(100).describe('Number of records per page'),
 });
 
 export const GetDnsRecordArgsSchema = z.object({
@@ -36,9 +36,9 @@ export const CreateDnsRecordArgsSchema = z.object({
   type: DnsRecordTypeSchema.describe('DNS record type'),
   name: z.string().describe('DNS record name (e.g., example.com or subdomain.example.com)'),
   content: z.string().describe('DNS record content (e.g., IP address, CNAME target)'),
-  ttl: z.number().optional().default(1).describe('Time to live (1 = automatic)'),
-  proxied: z.boolean().optional().default(false).describe('Whether the record is proxied through Cloudflare'),
-  priority: z.number().optional().describe('Priority for MX and SRV records'),
+  ttl: z.coerce.number().optional().default(1).describe('Time to live (1 = automatic)'),
+  proxied: z.coerce.boolean().optional().default(false).describe('Whether the record is proxied through Cloudflare'),
+  priority: z.coerce.number().optional().describe('Priority for MX and SRV records'),
   comment: z.string().optional().describe('Comments or notes about the DNS record'),
 });
 
@@ -47,9 +47,9 @@ export const UpdateDnsRecordArgsSchema = z.object({
   type: DnsRecordTypeSchema.optional().describe('DNS record type'),
   name: z.string().optional().describe('DNS record name'),
   content: z.string().optional().describe('DNS record content'),
-  ttl: z.number().optional().describe('Time to live'),
-  proxied: z.boolean().optional().describe('Whether the record is proxied through Cloudflare'),
-  priority: z.number().optional().describe('Priority for MX and SRV records'),
+  ttl: z.coerce.number().optional().describe('Time to live'),
+  proxied: z.coerce.boolean().optional().describe('Whether the record is proxied through Cloudflare'),
+  priority: z.coerce.number().optional().describe('Priority for MX and SRV records'),
   comment: z.string().optional().describe('Comments or notes about the DNS record'),
 });
 

@@ -87,7 +87,7 @@ async function runSetupCheck(projectDir, env = {}) {
   try {
     const { stdout, stderr } = await execAsync(`node "${scriptPath}"`, {
       env: execEnv,
-      timeout: 15000, // 15 second timeout (op vault list has 8s internal timeout)
+      timeout: 25000, // 25 second timeout (op vault list has 5s internal timeout)
     });
 
     let json = null;

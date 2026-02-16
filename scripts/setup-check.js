@@ -107,7 +107,7 @@ function checkOpCli() {
   try {
     const vaultRaw = execFileSync('op', ['vault', 'list', '--format', 'json'], {
       encoding: 'utf-8',
-      timeout: 8000,
+      timeout: 5000,
       env: process.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();

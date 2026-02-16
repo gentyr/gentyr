@@ -32,8 +32,8 @@ export const GetEmailArgsSchema = z.object({
 });
 
 export const ListEmailsArgsSchema = z.object({
-  limit: z.number().optional().default(10).describe('Number of emails to return (max 100)'),
-  offset: z.number().optional().default(0).describe('Number of emails to skip'),
+  limit: z.coerce.number().optional().default(10).describe('Number of emails to return (max 100)'),
+  offset: z.coerce.number().optional().default(0).describe('Number of emails to skip'),
 });
 
 // Tool argument schemas - Domains

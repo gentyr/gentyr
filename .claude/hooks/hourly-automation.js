@@ -17,7 +17,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, execFileSync } from 'child_process';
 import { registerSpawn, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { getCooldown } from './config-reader.js';
 import { runUsageOptimizer } from './usage-optimizer.js';
@@ -53,6 +53,128 @@ const SECTION_AGENT_MAP = {
 };
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 
+// Concurrency guard: max simultaneous automation agents
+const MAX_CONCURRENT_AGENTS = 5;
+const MAX_TASKS_PER_CYCLE = 3;
+
+// ---------------------------------------------------------------------------
+// CREDENTIAL CACHE: Pre-resolve 1Password credentials once per cycle.
+// Credentials exist only in this process's memory and are passed to child
+// processes via environment variables. mcp-launcher.js skips `op read` when
+// the credential is already in process.env (line 71).
+// ---------------------------------------------------------------------------
+let resolvedCredentials = {};
+
+/**
+ * Pre-resolve all 1Password credentials needed by infrastructure MCP servers.
+ * Reads vault-mappings.json for op:// references and protected-actions.json
+ * for which keys each server needs. Calls `op read` once per unique reference.
+ * Results are cached in `resolvedCredentials` (in-memory only, never on disk).
+ */
+function preResolveCredentials() {
+  const mappingsPath = path.join(PROJECT_DIR, '.claude', 'vault-mappings.json');
+  const actionsPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'protected-actions.json');
+
+  let mappings = {};
+  let servers = {};
+
+  try {
+    const data = JSON.parse(fs.readFileSync(mappingsPath, 'utf8'));
+    mappings = data.mappings || {};
+  } catch {
+    log('Credential cache: no vault-mappings.json, skipping pre-resolution.');
+    return;
+  }
+
+  try {
+    const actions = JSON.parse(fs.readFileSync(actionsPath, 'utf8'));
+    servers = actions.servers || {};
+  } catch {
+    log('Credential cache: no protected-actions.json, skipping pre-resolution.');
+    return;
+  }
+
+  // Collect all unique credential keys across all servers
+  const allKeys = new Set();
+  for (const server of Object.values(servers)) {
+    if (server.credentialKeys) {
+      for (const key of server.credentialKeys) {
+        allKeys.add(key);
+      }
+    }
+  }
+
+  let resolved = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const key of allKeys) {
+    // Skip if already in environment
+    if (process.env[key]) {
+      skipped++;
+      continue;
+    }
+
+    const ref = mappings[key];
+    if (!ref) continue;
+
+    if (ref.startsWith('op://')) {
+      try {
+        const value = execFileSync('op', ['read', ref], {
+          encoding: 'utf-8',
+          timeout: 15000,
+          stdio: 'pipe',
+        }).trim();
+
+        if (value) {
+          resolvedCredentials[key] = value;
+          resolved++;
+        }
+      } catch {
+        failed++;
+      }
+    } else {
+      // Direct value (non-secret like URL, zone ID)
+      resolvedCredentials[key] = ref;
+      resolved++;
+    }
+  }
+
+  if (allKeys.size > 0) {
+    log(`Credential cache: resolved ${resolved}/${allKeys.size} credentials (${skipped} from env, ${failed} failed).`);
+  }
+}
+
+/**
+ * Build the env object for spawning claude processes.
+ * Includes pre-resolved credentials so MCP servers skip `op read`.
+ */
+function buildSpawnEnv(agentId) {
+  return {
+    ...process.env,
+    ...resolvedCredentials,
+    CLAUDE_PROJECT_DIR: PROJECT_DIR,
+    CLAUDE_SPAWNED_SESSION: 'true',
+    CLAUDE_AGENT_ID: agentId,
+  };
+}
+
+/**
+ * Count running automation agents to prevent process accumulation
+ */
+function countRunningAgents() {
+  try {
+    const result = execSync(
+      "pgrep -cf 'claude.*--dangerously-skip-permissions'",
+      { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
+    ).trim();
+    return parseInt(result, 10) || 0;
+  } catch {
+    // pgrep returns exit code 1 when no processes match
+    return 0;
+  }
+}
+
 /**
  * Append to log file
  */
@@ -60,7 +182,6 @@ function log(message) {
   const timestamp = new Date().toISOString();
   const logLine = `[${timestamp}] ${message}\n`;
   fs.appendFileSync(LOG_FILE, logLine);
-  console.log(logLine.trim());
 }
 
 /**
@@ -215,19 +336,15 @@ function getClaudeMdSize() {
  * Uses simple sqlite3 query - MCP server handles cooldown filtering
  */
 function hasReportsReadyForTriage() {
-  if (!fs.existsSync(CTO_REPORTS_DB)) {
+  if (!Database || !fs.existsSync(CTO_REPORTS_DB)) {
     return false;
   }
 
   try {
-    // Quick check for any pending reports
-    // The MCP server's get_reports_for_triage handles cooldown filtering
-    const result = execSync(
-      `sqlite3 "${CTO_REPORTS_DB}" "SELECT COUNT(*) FROM reports WHERE triage_status = 'pending'"`,
-      { encoding: 'utf8', timeout: 5000 }
-    ).trim();
-
-    return parseInt(result, 10) > 0;
+    const db = new Database(CTO_REPORTS_DB, { readonly: true });
+    const row = db.prepare("SELECT COUNT(*) as cnt FROM reports WHERE triage_status = 'pending'").get();
+    db.close();
+    return (row?.cnt || 0) > 0;
   } catch (err) {
     log(`WARN: Failed to check for pending reports: ${err.message}`);
     return false;
@@ -408,12 +525,7 @@ After processing all reports, output a summary:
     const claude = spawn('claude', [...spawnArgs, '--output-format', 'json'], {
       cwd: PROJECT_DIR,
       stdio: 'inherit',
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        CLAUDE_SPAWNED_SESSION: 'true',
-        CLAUDE_AGENT_ID: agentId,
-      },
+      env: buildSpawnEnv(agentId),
     });
 
     claude.on('close', (code) => {
@@ -573,12 +685,7 @@ Key tools: \`page_get_snapshot\`, \`page_click\`, \`mcp__todo-db__*\`, \`mcp__sp
     const claude = spawn('claude', [...spawnArgs, '--output-format', 'json'], {
       cwd: PROJECT_DIR,
       stdio: 'inherit',
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        CLAUDE_SPAWNED_SESSION: 'true',
-        CLAUDE_AGENT_ID: agentId,
-      },
+      env: buildSpawnEnv(agentId),
     });
 
     claude.on('close', (code) => {
@@ -692,12 +799,7 @@ Report completion via mcp__agent-reports__report_to_deputy_cto with a summary of
     const claude = spawn('claude', [...spawnArgs, '--output-format', 'json'], {
       cwd: PROJECT_DIR,
       stdio: 'inherit',
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        CLAUDE_SPAWNED_SESSION: 'true',
-        CLAUDE_AGENT_ID: agentId,
-      },
+      env: buildSpawnEnv(agentId),
     });
 
     claude.on('close', (code) => {
@@ -856,12 +958,7 @@ function spawnTaskAgent(task) {
       detached: true,
       stdio: 'ignore',
       cwd: PROJECT_DIR,
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        CLAUDE_SPAWNED_SESSION: 'true',
-        CLAUDE_AGENT_ID: agentId,
-      },
+      env: buildSpawnEnv(agentId),
     });
 
     claude.unref();
@@ -1025,12 +1122,7 @@ Summarize the promotion decision and actions taken.`;
     ], {
       cwd: PROJECT_DIR,
       stdio: 'inherit',
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        CLAUDE_SPAWNED_SESSION: 'true',
-        CLAUDE_AGENT_ID: agentId,
-      },
+      env: buildSpawnEnv(agentId),
     });
 
     return new Promise((resolve, reject) => {
@@ -1144,12 +1236,7 @@ Summarize the promotion decision and actions taken.`;
     ], {
       cwd: PROJECT_DIR,
       stdio: 'inherit',
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        CLAUDE_SPAWNED_SESSION: 'true',
-        CLAUDE_AGENT_ID: agentId,
-      },
+      env: buildSpawnEnv(agentId),
     });
 
     return new Promise((resolve, reject) => {
@@ -1243,12 +1330,7 @@ Complete within 10 minutes. This is a read-only monitoring check.`;
       detached: true,
       stdio: 'ignore',
       cwd: PROJECT_DIR,
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        CLAUDE_SPAWNED_SESSION: 'true',
-        CLAUDE_AGENT_ID: agentId,
-      },
+      env: buildSpawnEnv(agentId),
     });
 
     claude.unref();
@@ -1340,12 +1422,7 @@ Complete within 10 minutes. This is a read-only monitoring check.`;
       detached: true,
       stdio: 'ignore',
       cwd: PROJECT_DIR,
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        CLAUDE_SPAWNED_SESSION: 'true',
-        CLAUDE_AGENT_ID: agentId,
-      },
+      env: buildSpawnEnv(agentId),
     });
 
     claude.unref();
@@ -1466,12 +1543,7 @@ Focus on finding SYSTEMIC issues across the codebase, not just isolated violatio
       detached: true,
       stdio: 'ignore',
       cwd: PROJECT_DIR,
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        CLAUDE_SPAWNED_SESSION: 'true',
-        CLAUDE_AGENT_ID: agentId,
-      },
+      env: buildSpawnEnv(agentId),
     });
 
     claude.unref();
@@ -1563,12 +1635,7 @@ Do NOT implement fixes yourself. Only report and create TODOs.`;
       detached: true,
       stdio: 'ignore',
       cwd: PROJECT_DIR,
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        CLAUDE_SPAWNED_SESSION: 'true',
-        CLAUDE_AGENT_ID: agentId,
-      },
+      env: buildSpawnEnv(agentId),
     });
 
     claude.unref();
@@ -1614,6 +1681,23 @@ async function main() {
   }
 
   log(`Autonomous Deputy CTO Mode is ENABLED. ${ctoGate.reason}`);
+
+  // Pre-resolve credentials once for all spawns in this cycle
+  preResolveCredentials();
+
+  // Concurrency guard: skip cycle if too many agents are already running
+  const runningAgents = countRunningAgents();
+  if (runningAgents >= MAX_CONCURRENT_AGENTS) {
+    log(`Concurrency limit reached (${runningAgents}/${MAX_CONCURRENT_AGENTS} agents running). Skipping this cycle.`);
+    registerHookExecution({
+      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+      status: 'skipped',
+      durationMs: Date.now() - startTime,
+      metadata: { reason: 'concurrency_limit', runningAgents }
+    });
+    process.exit(0);
+  }
+  log(`Running agents: ${runningAgents}/${MAX_CONCURRENT_AGENTS}`);
 
   const state = getState();
   const now = Date.now();
@@ -1733,6 +1817,11 @@ async function main() {
         let spawned = 0;
 
         for (const task of candidates) {
+          if (spawned >= MAX_TASKS_PER_CYCLE) {
+            log(`Task runner: reached batch limit (${MAX_TASKS_PER_CYCLE}), deferring ${candidates.length - spawned} remaining tasks.`);
+            break;
+          }
+
           const mapping = SECTION_AGENT_MAP[task.section];
           if (!mapping) continue;
 

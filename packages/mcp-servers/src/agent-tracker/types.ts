@@ -45,7 +45,7 @@ export const ListSpawnedAgentsArgsSchema = z.object({
   since: z.string()
     .optional()
     .describe('Filter agents spawned after this ISO timestamp'),
-  limit: z.number()
+  limit: z.coerce.number()
     .optional()
     .default(50)
     .describe('Maximum number of agents to return (default: 50)'),
@@ -57,7 +57,7 @@ export const GetAgentPromptArgsSchema = z.object({
 
 export const GetAgentSessionArgsSchema = z.object({
   agentId: z.string().describe('The agent ID from list_spawned_agents'),
-  limit: z.number()
+  limit: z.coerce.number()
     .optional()
     .default(100)
     .describe('Maximum number of messages to return'),
@@ -76,11 +76,11 @@ export const SESSION_SORT_VALUES = ['newest', 'oldest', 'largest'] as const;
 export type SessionSort = typeof SESSION_SORT_VALUES[number];
 
 export const ListSessionsArgsSchema = z.object({
-  limit: z.number()
+  limit: z.coerce.number()
     .optional()
     .default(50)
     .describe('Maximum number of sessions to return (default: 50)'),
-  offset: z.number()
+  offset: z.coerce.number()
     .optional()
     .default(0)
     .describe('Number of sessions to skip for pagination'),
@@ -91,7 +91,7 @@ export const ListSessionsArgsSchema = z.object({
   hookType: z.string()
     .optional()
     .describe('Filter by specific hook type (e.g., "todo-maintenance")'),
-  maxAgeDays: z.number()
+  maxAgeDays: z.coerce.number()
     .optional()
     .default(30)
     .describe('Only include sessions from the last N days (default: 30). Set to 0 for all sessions.'),
@@ -111,7 +111,7 @@ export const SearchSessionsArgsSchema = z.object({
   query: z.string()
     .min(1)
     .describe('Text to search for in session content'),
-  limit: z.number()
+  limit: z.coerce.number()
     .optional()
     .default(20)
     .describe('Maximum number of sessions to return (default: 20)'),
@@ -122,7 +122,7 @@ export const SearchSessionsArgsSchema = z.object({
   hookType: z.string()
     .optional()
     .describe('Filter by specific hook type'),
-  maxAgeDays: z.number()
+  maxAgeDays: z.coerce.number()
     .optional()
     .default(30)
     .describe('Only search sessions from the last N days (default: 30). Set to 0 for all sessions.'),

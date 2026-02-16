@@ -14,7 +14,7 @@ export const listItemsSchema = z.object({
 export const createServiceAccountSchema = z.object({
   name: z.string().describe('Service account name'),
   vaults: z.array(z.string()).describe('Vault access list'),
-  expiresInDays: z.number().optional().describe('Token expiry (default: never)'),
+  expiresInDays: z.coerce.number().optional().describe('Token expiry (default: never)'),
 });
 
 export const getAuditLogSchema = z.object({

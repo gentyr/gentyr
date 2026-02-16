@@ -500,7 +500,7 @@ export function createProgrammaticFeedbackServer(config: ProgrammaticFeedbackCon
     // SDK tools
     {
       name: 'sdk_eval',
-      description: 'Execute code snippet in sandboxed Node.js worker. Only configured SDK packages are importable. No fs, child_process, net, os, path.',
+      description: 'Execute code snippet in sandboxed Node.js worker. Each call is isolated — module state does NOT persist between calls. To test stateful workflows (create then read), include all steps in one code block. Only configured SDK packages are importable. No fs, child_process, net, os, path.',
       schema: SdkEvalArgsSchema,
       handler: sdkEval,
     },

@@ -666,7 +666,44 @@ Projects can add their own project-specific instructions above or below the GENT
 - Node.js 18+
 - Claude Code CLI
 
+## macOS Configuration
+
+### TCC Permission Persistence (Node.js Code Signing)
+
+On macOS, the Transparency, Consent, and Control (TCC) framework requires binaries to have a stable code identity to remember permission grants. Homebrew's Node.js binary is ad-hoc signed (no team identifier or certificate chain), which means macOS re-prompts "node would like to access data from other apps" on every new process.
+
+GENTYR's MCP launcher uses the 1Password CLI (`op`) to resolve credentials at runtime. When `op` communicates with the 1Password app via IPC, macOS attributes the data access to the parent `node` process. Without a stable signature, TCC cannot persist the grant.
+
+**The setup script handles this automatically** by:
+1. Creating a self-signed codesigning certificate (`NodeLocalDev`) in the login keychain
+2. Re-signing the Homebrew node binary with this certificate
+3. After the first TCC prompt is granted, the permission persists
+
+**After `brew upgrade node`**, re-run the signing script:
+```bash
+scripts/resign-node.sh
+```
+
+**Check current signing status:**
+```bash
+scripts/resign-node.sh --check
+```
+
 ## Troubleshooting
+
+### Repeated macOS permission dialogs
+
+If you see "node would like to access data from other apps" repeatedly:
+
+```bash
+# Check if node is properly signed
+scripts/resign-node.sh --check
+
+# Re-sign if needed
+scripts/resign-node.sh
+```
+
+This happens after `brew upgrade node` replaces the binary. The setup script runs this automatically on install/reinstall.
 
 ### MCP servers not showing
 

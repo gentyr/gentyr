@@ -179,7 +179,7 @@ export const EditSpecSchema = z.object({
 
 export const DeleteSpecSchema = z.object({
   spec_id: z.string().min(1).describe('Spec ID to delete'),
-  confirm: z.boolean().describe('Must be true to confirm deletion'),
+  confirm: z.coerce.boolean().describe('Must be true to confirm deletion'),
 });
 
 // ============================================================================
@@ -210,12 +210,12 @@ export const EditSuiteSchema = z.object({
   mapped_specs_pattern: z.string().optional().describe('Pattern for mapped specs'),
   exploratory_specs_dir: z.string().optional().describe('Dir for exploratory specs'),
   exploratory_specs_pattern: z.string().optional().describe('Pattern for exploratory specs'),
-  enabled: z.boolean().optional().describe('Enable or disable the suite'),
+  enabled: z.coerce.boolean().optional().describe('Enable or disable the suite'),
 });
 
 export const DeleteSuiteSchema = z.object({
   suite_id: z.string().min(1).describe('Suite ID to delete'),
-  confirm: z.boolean().describe('Must be true to confirm deletion'),
+  confirm: z.coerce.boolean().describe('Must be true to confirm deletion'),
 });
 
 // ============================================================================

@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execSync } from 'child_process';
 import Database from 'better-sqlite3';
 
 // ============================================================================
@@ -295,6 +296,7 @@ interface KeyRotationState {
   version: number;
   active_key_id: string | null;
   keys: Record<string, {
+    accessToken?: string;
     subscriptionType: string;
     last_usage: {
       five_hour: number;
@@ -341,6 +343,95 @@ function parseBucket(bucket: { utilization: number; resets_at: string } | null |
   };
 }
 
+/**
+ * Extract a valid access token from a credentials JSON object.
+ * Returns null if missing or expired.
+ */
+function extractTokenFromCreds(creds: CredentialsFile): string | null {
+  if (!creds.claudeAiOauth?.accessToken) return null;
+  if (creds.claudeAiOauth.expiresAt && creds.claudeAiOauth.expiresAt < Date.now()) return null;
+  return creds.claudeAiOauth.accessToken;
+}
+
+/**
+ * Get an access token from all available sources, in priority order:
+ *   1. CLAUDE_CODE_OAUTH_TOKEN env var (documented override)
+ *   2. macOS Keychain (Claude Code stores OAuth here on Mac)
+ *   3. $CLAUDE_CONFIG_DIR/.credentials.json (config dir override)
+ *   4. ~/.claude/.credentials.json (standard Linux location, Mac fallback)
+ *   5. api-key-rotation.json (project-level, active keys only)
+ */
+function getAccessToken(): string | null {
+  // Source 1: Environment variable override
+  const envToken = process.env['CLAUDE_CODE_OAUTH_TOKEN'];
+  if (envToken) return envToken;
+
+  // Source 2: macOS Keychain
+  if (process.platform === 'darwin') {
+    try {
+      const username = os.userInfo().username;
+      const raw = execSync(
+        `security find-generic-password -s "Claude Code-credentials" -a "${username}" -w`,
+        { encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] },
+      ).trim();
+      const creds = JSON.parse(raw) as CredentialsFile;
+      const token = extractTokenFromCreds(creds);
+      if (token) return token;
+    } catch {
+      // Keychain entry not found or parse error — fall through
+    }
+  }
+
+  // Source 3: CLAUDE_CONFIG_DIR override
+  const configDir = process.env['CLAUDE_CONFIG_DIR'];
+  if (configDir) {
+    const configCredsPath = path.join(configDir, '.credentials.json');
+    try {
+      if (fs.existsSync(configCredsPath)) {
+        const creds = JSON.parse(fs.readFileSync(configCredsPath, 'utf8')) as CredentialsFile;
+        const token = extractTokenFromCreds(creds);
+        if (token) return token;
+      }
+    } catch {
+      // Fall through
+    }
+  }
+
+  // Source 4: Standard credentials file (~/.claude/.credentials.json)
+  try {
+    if (fs.existsSync(CREDENTIALS_PATH)) {
+      const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8')) as CredentialsFile;
+      const token = extractTokenFromCreds(creds);
+      if (token) return token;
+    }
+  } catch {
+    // Fall through
+  }
+
+  // Source 5: Key rotation state (project-level, active keys only)
+  if (fs.existsSync(KEY_ROTATION_STATE_PATH)) {
+    try {
+      const state = JSON.parse(fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8')) as KeyRotationState;
+      if (state?.version === 1 && state.keys) {
+        // Only use keys with active status
+        const activeKeyData = state.active_key_id ? state.keys[state.active_key_id] : undefined;
+        if (activeKeyData?.accessToken && activeKeyData.status === 'active') {
+          return activeKeyData.accessToken;
+        }
+        for (const keyData of Object.values(state.keys)) {
+          if (keyData.accessToken && keyData.status === 'active') {
+            return keyData.accessToken;
+          }
+        }
+      }
+    } catch {
+      // Fall through
+    }
+  }
+
+  return null;
+}
+
 export async function getQuotaStatus(): Promise<QuotaStatus> {
   const emptyStatus: QuotaStatus = {
     five_hour: null,
@@ -349,23 +440,9 @@ export async function getQuotaStatus(): Promise<QuotaStatus> {
     error: null,
   };
 
-  if (!fs.existsSync(CREDENTIALS_PATH)) {
-    return { ...emptyStatus, error: 'No credentials file' };
-  }
-
-  let accessToken: string;
-  try {
-    const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8')) as CredentialsFile;
-    if (!creds.claudeAiOauth?.accessToken) {
-      return { ...emptyStatus, error: 'No OAuth token' };
-    }
-    if (creds.claudeAiOauth.expiresAt && creds.claudeAiOauth.expiresAt < Date.now()) {
-      return { ...emptyStatus, error: 'Token expired' };
-    }
-    ({ accessToken } = creds.claudeAiOauth);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ...emptyStatus, error: `Credentials error: ${message}` };
+  const accessToken = getAccessToken();
+  if (!accessToken) {
+    return { ...emptyStatus, error: 'No credentials found' };
   }
 
   try {
@@ -1097,7 +1174,7 @@ export function getAutomations(): AutomationInfo[] {
 
 export function getFeedbackPersonas(): FeedbackPersonasData {
   if (!fs.existsSync(USER_FEEDBACK_DB_PATH)) {
-    throw new Error(`User feedback database not found at ${USER_FEEDBACK_DB_PATH}`);
+    return { personas: [], total_sessions: 0, total_findings: 0 };
   }
 
   const db = new Database(USER_FEEDBACK_DB_PATH, { readonly: true });

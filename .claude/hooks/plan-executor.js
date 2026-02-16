@@ -209,6 +209,7 @@ BEFORE implementing any plan:
 4. **Report progress** - Use \`mcp__agent-reports__report_to_deputy_cto\` to log what you're doing
 5. **Don't rush** - Better to do one plan well than many poorly
 6. **Improve as you go** - Fix plan issues when you find them
+7. **Demos use MCP tools** - When a plan step says "run a demo" or "launch Playwright", use the Playwright MCP tools (\`mcp__playwright__launch_ui_mode\`, \`mcp__playwright__run_tests\`, \`mcp__playwright__get_coverage_status\`, etc.) — do NOT run \`npx playwright\` via Bash
 
 ## Rate Limiting
 

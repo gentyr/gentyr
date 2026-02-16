@@ -20,7 +20,7 @@ export const ListTasksArgsSchema = z.object({
   status: z.enum(TASK_STATUS)
     .optional()
     .describe('Filter by status'),
-  limit: z.number()
+  limit: z.coerce.number()
     .optional()
     .default(50)
     .describe('Maximum tasks to return'),
@@ -59,14 +59,14 @@ export const GetSessionsForTaskArgsSchema = z.object({
 
 export const BrowseSessionArgsSchema = z.object({
   session_id: z.string().describe('Session UUID from get_sessions_for_task or agent-tracker'),
-  limit: z.number()
+  limit: z.coerce.number()
     .optional()
     .default(100)
     .describe('Maximum number of messages to return'),
 });
 
 export const GetCompletedSinceArgsSchema = z.object({
-  hours: z.number()
+  hours: z.coerce.number()
     .min(1)
     .max(168)
     .default(24)

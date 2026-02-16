@@ -35,9 +35,9 @@ export const ReportToCtoArgsSchema = z.object({
 });
 
 export const ListReportsArgsSchema = z.object({
-  unread_only: z.boolean().optional().default(false).describe('Only show unread reports'),
-  untriaged_only: z.boolean().optional().default(false).describe('Only show reports not yet triaged by deputy-cto'),
-  limit: z.number().optional().default(20).describe('Maximum reports to return'),
+  unread_only: z.coerce.boolean().optional().default(false).describe('Only show unread reports'),
+  untriaged_only: z.coerce.boolean().optional().default(false).describe('Only show reports not yet triaged by deputy-cto'),
+  limit: z.coerce.number().optional().default(20).describe('Maximum reports to return'),
 });
 
 export const GetUntriagedCountArgsSchema = z.object({});
@@ -68,12 +68,12 @@ export const CompleteTriageArgsSchema = z.object({
 });
 
 export const GetTriageStatsArgsSchema = z.object({
-  hours_24h: z.number().optional().default(24).describe('Hours to look back for 24h stats'),
-  hours_7d: z.number().optional().default(168).describe('Hours to look back for 7d stats (168 = 7 days)'),
+  hours_24h: z.coerce.number().optional().default(24).describe('Hours to look back for 24h stats'),
+  hours_7d: z.coerce.number().optional().default(168).describe('Hours to look back for 7d stats (168 = 7 days)'),
 });
 
 export const GetReportsForTriageArgsSchema = z.object({
-  limit: z.number().optional().default(10).describe('Maximum reports to return'),
+  limit: z.coerce.number().optional().default(10).describe('Maximum reports to return'),
 });
 
 // ============================================================================

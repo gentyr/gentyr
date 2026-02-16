@@ -9,7 +9,7 @@ import { z } from 'zod';
 // ============================================================================
 
 export const GetReportArgsSchema = z.object({
-  hours: z.number()
+  hours: z.coerce.number()
     .min(1)
     .max(168)
     .default(24)
@@ -17,7 +17,7 @@ export const GetReportArgsSchema = z.object({
 });
 
 export const GetSessionMetricsArgsSchema = z.object({
-  hours: z.number()
+  hours: z.coerce.number()
     .min(1)
     .max(168)
     .default(24)
@@ -25,7 +25,7 @@ export const GetSessionMetricsArgsSchema = z.object({
 });
 
 export const GetTaskMetricsArgsSchema = z.object({
-  hours: z.number()
+  hours: z.coerce.number()
     .min(1)
     .max(168)
     .default(24)

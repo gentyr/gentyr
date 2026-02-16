@@ -39,8 +39,8 @@ export const AddQuestionArgsSchema = z.object({
 });
 
 export const ListQuestionsArgsSchema = z.object({
-  include_answered: z.boolean().optional().default(false).describe('Include answered questions'),
-  limit: z.number().optional().default(20).describe('Maximum questions to return'),
+  include_answered: z.coerce.boolean().optional().default(false).describe('Include answered questions'),
+  limit: z.coerce.number().optional().default(20).describe('Maximum questions to return'),
 });
 
 export const ReadQuestionArgsSchema = z.object({
@@ -79,7 +79,7 @@ export const SpawnImplementationTaskArgsSchema = z.object({
 export const GetPendingCountArgsSchema = z.object({});
 
 export const ToggleAutonomousModeArgsSchema = z.object({
-  enabled: z.boolean().describe('Whether to enable or disable autonomous mode'),
+  enabled: z.coerce.boolean().describe('Whether to enable or disable autonomous mode'),
 });
 
 export const GetAutonomousModeStatusArgsSchema = z.object({});
@@ -88,7 +88,7 @@ export const RecordCtoBriefingArgsSchema = z.object({});
 
 export const SearchClearedItemsArgsSchema = z.object({
   query: z.string().min(1).max(200).describe('Substring to search for in cleared question titles/descriptions'),
-  limit: z.number().optional().default(10).describe('Maximum results to return'),
+  limit: z.coerce.number().optional().default(10).describe('Maximum results to return'),
 });
 
 export const CleanupOldRecordsArgsSchema = z.object({});

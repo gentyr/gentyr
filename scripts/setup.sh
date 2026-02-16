@@ -853,6 +853,11 @@ for hook in pre-commit post-commit pre-push; do
     fi
 done
 
+# Ensure git knows to use .husky/ for hooks
+cd "$PROJECT_DIR"
+git config --local core.hooksPath .husky
+echo "  Set core.hooksPath = .husky"
+
 # --- 5. Install dependencies ---
 echo ""
 echo -e "${YELLOW}Installing hook dependencies...${NC}"
@@ -876,6 +881,17 @@ if [ -x "$FRAMEWORK_DIR/scripts/setup-automation-service.sh" ]; then
     "$FRAMEWORK_DIR/scripts/setup-automation-service.sh" setup --path "$PROJECT_DIR"
 else
     echo -e "  ${YELLOW}setup-automation-service.sh not found or not executable, skipping.${NC}"
+fi
+
+# --- 6b. macOS TCC: Re-sign Node.js for persistent permissions ---
+echo ""
+if [[ "$(uname)" == "Darwin" ]]; then
+    echo -e "${YELLOW}Configuring macOS TCC permissions...${NC}"
+    if [ -x "$FRAMEWORK_DIR/scripts/resign-node.sh" ]; then
+        "$FRAMEWORK_DIR/scripts/resign-node.sh" || echo -e "  ${YELLOW}Node re-signing skipped (non-fatal)${NC}"
+    fi
+else
+    echo -e "${YELLOW}Skipping macOS TCC setup (not macOS)${NC}"
 fi
 
 # --- 7. Gitignore ---
@@ -1544,6 +1560,14 @@ for hook in pre-commit post-commit pre-push; do
         echo "  Removed .husky/$hook"
     fi
 done
+
+# Unset core.hooksPath if it points to .husky
+cd "$PROJECT_DIR"
+current_hooks_path=$(git config --local --get core.hooksPath 2>/dev/null || true)
+if [ "$current_hooks_path" = ".husky" ]; then
+    git config --local --unset core.hooksPath
+    echo "  Unset core.hooksPath"
+fi
 echo ""
 
 # --- Remove framework symlink ---

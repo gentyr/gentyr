@@ -110,6 +110,53 @@ function parseBucket(bucket: { utilization: number; resets_at: string } | null |
   };
 }
 
+/**
+ * Get an access token from available sources.
+ * Checks rotation state first (project-level, accumulates keys from multiple accounts),
+ * then falls back to credentials file (user-level, current session only).
+ */
+function getAccessToken(): string | null {
+  // Source 1: Rotation state (project-level, has accumulated keys)
+  if (fs.existsSync(KEY_ROTATION_STATE_PATH)) {
+    try {
+      const state = JSON.parse(fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8')) as KeyRotationState;
+      if (state?.version === 1 && state.keys) {
+        // Prefer the active key
+        const activeToken = state.active_key_id ? state.keys[state.active_key_id]?.accessToken : undefined;
+        if (activeToken) return activeToken;
+        // Fall back to any key with a token (prefer active, then try any)
+        let fallbackToken: string | null = null;
+        for (const keyData of Object.values(state.keys)) {
+          if (keyData.accessToken) {
+            if (keyData.status === 'active') return keyData.accessToken;
+            if (!fallbackToken) fallbackToken = keyData.accessToken;
+          }
+        }
+        if (fallbackToken) return fallbackToken;
+      }
+    } catch {
+      // Silently fall through to next source
+    }
+  }
+
+  // Source 2: Credentials file (user-level, current session)
+  if (fs.existsSync(CREDENTIALS_PATH)) {
+    try {
+      const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8')) as CredentialsFile;
+      if (creds.claudeAiOauth?.accessToken) {
+        if (creds.claudeAiOauth.expiresAt && creds.claudeAiOauth.expiresAt < Date.now()) {
+          return null;
+        }
+        return creds.claudeAiOauth.accessToken;
+      }
+    } catch {
+      // Silently return null
+    }
+  }
+
+  return null;
+}
+
 async function getQuotaStatus(): Promise<QuotaStatus> {
   const emptyStatus: QuotaStatus = {
     five_hour: null,
@@ -118,28 +165,11 @@ async function getQuotaStatus(): Promise<QuotaStatus> {
     error: null,
   };
 
-  // Read credentials
-  if (!fs.existsSync(CREDENTIALS_PATH)) {
-    return { ...emptyStatus, error: 'No credentials file' };
+  const accessToken = getAccessToken();
+  if (!accessToken) {
+    return { ...emptyStatus, error: 'No credentials found' };
   }
 
-  let accessToken: string;
-  try {
-    const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8')) as CredentialsFile;
-    if (!creds.claudeAiOauth?.accessToken) {
-      return { ...emptyStatus, error: 'No OAuth token' };
-    }
-    // Check if token is expired
-    if (creds.claudeAiOauth.expiresAt && creds.claudeAiOauth.expiresAt < Date.now()) {
-      return { ...emptyStatus, error: 'Token expired' };
-    }
-    ({ accessToken } = creds.claudeAiOauth);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ...emptyStatus, error: `Credentials error: ${message}` };
-  }
-
-  // Call Anthropic API
   try {
     const response = await fetch(ANTHROPIC_API_URL, {
       method: 'GET',
@@ -723,6 +753,7 @@ interface KeyRotationState {
   version: number;
   active_key_id: string | null;
   keys: Record<string, {
+    accessToken?: string;
     subscriptionType: string;
     last_usage: {
       five_hour: number;

@@ -219,12 +219,15 @@ async function listTables(): Promise<unknown | InfoMessage> {
         if (p.startsWith('/rpc/')) continue;
         const tableName = p.replace(/^\//, '');
         if (tableName) {
-          tables.push({ table_name: tableName, table_type: 'BASE TABLE' });
+          tables.push({ table_name: tableName, table_type: 'TABLE OR VIEW' });
         }
       }
     }
 
-    return tables.sort((a, b) => a.table_name.localeCompare(b.table_name));
+    return {
+      note: 'PostgREST fallback: table_type cannot distinguish tables from views. Set SUPABASE_ACCESS_TOKEN for accurate types.',
+      tables: tables.sort((a, b) => a.table_name.localeCompare(b.table_name)),
+    };
   } catch {
     return { message: 'To list tables with full details, set SUPABASE_ACCESS_TOKEN.' };
   }

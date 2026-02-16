@@ -18,7 +18,7 @@ export const GetRepoArgsSchema = z.object({
 export const ListBranchesArgsSchema = z.object({
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
-  protected: z.boolean().optional().describe('Filter by protected status'),
+  protected: z.coerce.boolean().optional().describe('Filter by protected status'),
 });
 
 export const CreateBranchArgsSchema = z.object({
@@ -59,13 +59,13 @@ export const ListPullRequestsArgsSchema = z.object({
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
   state: z.enum(['open', 'closed', 'all']).optional().default('open').describe('PR state filter'),
-  limit: z.number().optional().default(30).describe('Maximum number of PRs to return'),
+  limit: z.coerce.number().optional().default(30).describe('Maximum number of PRs to return'),
 });
 
 export const GetPullRequestArgsSchema = z.object({
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
-  pull_number: z.number().describe('Pull request number'),
+  pull_number: z.coerce.number().describe('Pull request number'),
 });
 
 export const CreatePullRequestArgsSchema = z.object({
@@ -75,13 +75,13 @@ export const CreatePullRequestArgsSchema = z.object({
   body: z.string().optional().describe('PR description'),
   head: z.string().describe('Branch containing changes'),
   base: z.string().describe('Branch to merge into'),
-  draft: z.boolean().optional().default(false).describe('Create as draft PR'),
+  draft: z.coerce.boolean().optional().default(false).describe('Create as draft PR'),
 });
 
 export const MergePullRequestArgsSchema = z.object({
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
-  pull_number: z.number().describe('Pull request number'),
+  pull_number: z.coerce.number().describe('Pull request number'),
   merge_method: z.enum(['merge', 'squash', 'rebase']).optional().default('merge').describe('Merge method'),
   commit_title: z.string().optional().describe('Custom commit title'),
   commit_message: z.string().optional().describe('Custom commit message'),
@@ -90,7 +90,7 @@ export const MergePullRequestArgsSchema = z.object({
 export const GetPullRequestFilesArgsSchema = z.object({
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
-  pull_number: z.number().describe('Pull request number'),
+  pull_number: z.coerce.number().describe('Pull request number'),
 });
 
 // ============================================================================
@@ -102,13 +102,13 @@ export const ListIssuesArgsSchema = z.object({
   repo: z.string().describe('Repository name'),
   state: z.enum(['open', 'closed', 'all']).optional().default('open').describe('Issue state filter'),
   labels: z.string().optional().describe('Comma-separated list of label names'),
-  limit: z.number().optional().default(30).describe('Maximum number of issues to return'),
+  limit: z.coerce.number().optional().default(30).describe('Maximum number of issues to return'),
 });
 
 export const GetIssueArgsSchema = z.object({
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
-  issue_number: z.number().describe('Issue number'),
+  issue_number: z.coerce.number().describe('Issue number'),
 });
 
 export const CreateIssueArgsSchema = z.object({
@@ -123,7 +123,7 @@ export const CreateIssueArgsSchema = z.object({
 export const CreateIssueCommentArgsSchema = z.object({
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
-  issue_number: z.number().describe('Issue number'),
+  issue_number: z.coerce.number().describe('Issue number'),
   body: z.string().describe('Comment body'),
 });
 
@@ -137,25 +137,25 @@ export const ListWorkflowRunsArgsSchema = z.object({
   workflow_id: z.string().optional().describe('Workflow ID or filename (e.g., "ci.yml")'),
   branch: z.string().optional().describe('Filter by branch'),
   status: z.enum(['queued', 'in_progress', 'completed']).optional().describe('Filter by status'),
-  limit: z.number().optional().default(20).describe('Maximum number of runs to return'),
+  limit: z.coerce.number().optional().default(20).describe('Maximum number of runs to return'),
 });
 
 export const GetWorkflowRunArgsSchema = z.object({
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
-  run_id: z.number().describe('Workflow run ID'),
+  run_id: z.coerce.number().describe('Workflow run ID'),
 });
 
 export const RerunWorkflowArgsSchema = z.object({
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
-  run_id: z.number().describe('Workflow run ID'),
+  run_id: z.coerce.number().describe('Workflow run ID'),
 });
 
 export const CancelWorkflowRunArgsSchema = z.object({
   owner: z.string().describe('Repository owner'),
   repo: z.string().describe('Repository name'),
-  run_id: z.number().describe('Workflow run ID'),
+  run_id: z.coerce.number().describe('Workflow run ID'),
 });
 
 // ============================================================================
@@ -219,22 +219,22 @@ export const UpdateBranchProtectionArgsSchema = z.object({
   repo: z.string().describe('Repository name'),
   branch: z.string().describe('Branch name'),
   required_status_checks: z.object({
-    strict: z.boolean().describe('Require branches to be up to date before merging'),
+    strict: z.coerce.boolean().describe('Require branches to be up to date before merging'),
     contexts: z.array(z.string()).describe('Status checks that must pass'),
   }).optional().describe('Required status checks configuration'),
-  enforce_admins: z.boolean().optional().describe('Enforce restrictions for administrators'),
+  enforce_admins: z.coerce.boolean().optional().describe('Enforce restrictions for administrators'),
   required_pull_request_reviews: z.object({
-    required_approving_review_count: z.number().min(1).max(6).describe('Number of approvals required'),
-    dismiss_stale_reviews: z.boolean().optional().describe('Dismiss stale reviews on new commits'),
-    require_code_owner_reviews: z.boolean().optional().describe('Require review from code owners'),
+    required_approving_review_count: z.coerce.number().min(1).max(6).describe('Number of approvals required'),
+    dismiss_stale_reviews: z.coerce.boolean().optional().describe('Dismiss stale reviews on new commits'),
+    require_code_owner_reviews: z.coerce.boolean().optional().describe('Require review from code owners'),
   }).optional().describe('Pull request review requirements'),
   restrictions: z.object({
     users: z.array(z.string()).optional().describe('Users with push access'),
     teams: z.array(z.string()).optional().describe('Teams with push access'),
   }).optional().describe('Push access restrictions'),
-  required_linear_history: z.boolean().optional().describe('Require linear history (no merge commits)'),
-  allow_force_pushes: z.boolean().optional().describe('Allow force pushes'),
-  allow_deletions: z.boolean().optional().describe('Allow branch deletion'),
+  required_linear_history: z.coerce.boolean().optional().describe('Require linear history (no merge commits)'),
+  allow_force_pushes: z.coerce.boolean().optional().describe('Allow force pushes'),
+  allow_deletions: z.coerce.boolean().optional().describe('Allow branch deletion'),
 });
 
 export const DeleteBranchProtectionArgsSchema = z.object({

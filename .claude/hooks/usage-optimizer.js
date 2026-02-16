@@ -32,7 +32,7 @@ const MIN_FACTOR = 0.5;
 const MAX_CHANGE_PER_CYCLE = 0.10; // ±10% per cycle
 const SNAPSHOT_RETENTION_DAYS = 7;
 const MIN_SNAPSHOTS_FOR_TRAJECTORY = 3;
-const MIN_EFFECTIVE_MINUTES = 2; // Floor: no cooldown can go below 2 minutes
+const MIN_EFFECTIVE_MINUTES = 5; // Floor: no cooldown can go below 5 minutes
 const SINGLE_KEY_WARNING_THRESHOLD = 0.80; // Warn when any key exceeds 80%
 const RESET_BOUNDARY_DROP_THRESHOLD = 0.30; // Detect reset when 5h drops >30pp
 
