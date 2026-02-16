@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "main": "server.js",
+  "exports": {
+    ".": "./server.js",
+    "./sdk": "./lib.cjs"
+  },
   "scripts": {
     "start": "node server.js",
     "cli": "node cli.js"

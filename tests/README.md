@@ -33,17 +33,27 @@ The toy app is a minimal Node.js application used to test the feedback system en
 - **Web UI**: Login, task dashboard, settings pages
 - **REST API**: Authentication and task management endpoints
 - **CLI**: Command-line task management tool
-- **Intentional Bugs**: Seeded bugs for feedback agents to discover
+- **SDK**: CommonJS module for programmatic task management
+- **Intentional Bugs**: Seeded bugs for feedback agents to discover across all consumption modes
 
 ### Intentional Bugs
 
-The toy app contains these intentional bugs:
+The toy app contains these intentional bugs across different consumption modes:
 
+**Web UI / API (server.js):**
 1. Login form shows no error on wrong password (just redirects back to login)
 2. No confirmation dialog before deleting tasks
 3. Settings page has a broken link to "Privacy Policy"
 4. API returns 200 instead of 201 for successful task creation
+
+**CLI (cli.js):**
 5. CLI has no `--help` flag
+
+**SDK (lib.cjs):**
+6. `createTask()` accepts null/undefined/empty title without validation
+7. `getTask()` returns property "complted" instead of "completed" (typo)
+8. `deleteTask()` returns success even for non-existent task IDs
+9. `listTasks({ completed: true })` filter fails with integer 1/0 values (strict equality bug)
 
 ### Running the Toy App
 
@@ -55,6 +65,9 @@ node server.js
 # Test the CLI
 node cli.js tasks list --api-url=http://localhost:PORT
 node cli.js tasks create --title="New task" --api-url=http://localhost:PORT
+
+# Test the SDK
+node -e "const sdk = require('./lib.cjs'); console.log(sdk.listTasks());"
 ```
 
 Default credentials: `admin` / `admin123`
@@ -115,13 +128,18 @@ E2E tests spawn actual Claude agent sessions against the toy app. These are opt-
 
 1. `claude` CLI installed and accessible
 2. MCP servers built (`cd packages/mcp-servers && npm run build`)
+3. Playwright browsers installed for GUI tests (optional): `npx playwright install chromium`
+
+GUI tests will be automatically skipped if Playwright browsers are not installed.
 
 ### What They Test
 
 - **Launcher functions**: `getPersona`, `generateMcpConfig`, `buildPrompt` with real project dirs
 - **API persona session**: Real Claude agent using `api_request` tool to test the toy app REST API
 - **CLI persona session**: Real Claude agent using `cli_run` tool to test the toy app CLI
-- **Full pipeline**: Multiple personas triggered by change detection, parallel Claude sessions
+- **GUI persona session**: Real Claude agent using Playwright to test the web UI (requires `npx playwright install chromium`)
+- **SDK persona session**: Real Claude agent using SDK tools to test the programmatic interface
+- **Full pipeline**: Multiple personas triggered by change detection, parallel Claude sessions across all consumption modes
 
 ### Running E2E Tests
 

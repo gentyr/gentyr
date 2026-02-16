@@ -12,5 +12,9 @@
     "ajv-formats": "^2.1.1",
     "better-sqlite3": "^12.6.2",
     "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
   }
 }

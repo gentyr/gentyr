@@ -9,6 +9,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 const execFileAsync = promisify(execFile);
@@ -20,6 +21,7 @@ export interface PrerequisiteResult {
   claudeAvailable: boolean;
   claudeVersion?: string;
   mcpServersBuilt: boolean;
+  playwrightAvailable: boolean;
   missingServers: string[];
   errors: string[];
 }
@@ -37,6 +39,7 @@ export async function checkPrerequisites(): Promise<PrerequisiteResult> {
   const result: PrerequisiteResult = {
     claudeAvailable: false,
     mcpServersBuilt: false,
+    playwrightAvailable: false,
     missingServers: [],
     errors: [],
   };
@@ -69,6 +72,44 @@ export async function checkPrerequisites(): Promise<PrerequisiteResult> {
     );
   }
 
+  // Check Playwright browsers
+  try {
+    let defaultCacheDir: string;
+    const platform = os.platform();
+    if (platform === 'darwin') {
+      defaultCacheDir = path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright');
+    } else if (platform === 'win32') {
+      defaultCacheDir = path.join(process.env['LOCALAPPDATA'] || os.homedir(), 'ms-playwright');
+    } else {
+      defaultCacheDir = path.join(os.homedir(), '.cache', 'ms-playwright');
+    }
+
+    const cacheDir = process.env['PLAYWRIGHT_BROWSERS_PATH'] || defaultCacheDir;
+    if (fs.existsSync(cacheDir)) {
+      const entries = fs.readdirSync(cacheDir);
+      const chromiumDir = entries.find(e => e.startsWith('chromium-'));
+      if (chromiumDir) {
+        // Verify actual browser binary exists (not just a partial download)
+        const chromiumPath = path.join(cacheDir, chromiumDir);
+        const binaryPaths = platform === 'darwin'
+          ? [
+              'chrome-mac/Chromium.app',
+              'chrome-mac-arm64/Chromium.app',
+              'chrome-mac/Google Chrome for Testing.app',
+              'chrome-mac-arm64/Google Chrome for Testing.app',
+            ]
+          : platform === 'win32'
+            ? ['chrome-win/chrome.exe']
+            : ['chrome-linux/chrome'];
+        result.playwrightAvailable = binaryPaths.some(
+          bp => fs.existsSync(path.join(chromiumPath, bp))
+        );
+      }
+    }
+  } catch {
+    result.playwrightAvailable = false;
+  }
+
   return result;
 }
 
@@ -85,4 +126,24 @@ export async function skipIfPrerequisitesNotMet(): Promise<boolean> {
   }
 
   return false;
+}
+
+/**
+ * Check test capabilities including optional features like Playwright.
+ * Returns structured result for selective test skipping.
+ */
+export async function checkTestCapabilities(): Promise<{ skip: boolean; playwrightAvailable: boolean }> {
+  const prereqs = await checkPrerequisites();
+
+  if (!prereqs.claudeAvailable || !prereqs.mcpServersBuilt) {
+    console.warn(`\n  Skipping E2E tests: ${prereqs.errors.join('; ')}\n`);
+    return { skip: true, playwrightAvailable: false };
+  }
+
+  if (!prereqs.playwrightAvailable) {
+    console.warn('\n  Playwright browsers not installed. GUI tests will be skipped.');
+    console.warn('  To install: npx playwright install chromium\n');
+  }
+
+  return { skip: false, playwrightAvailable: prereqs.playwrightAvailable };
 }

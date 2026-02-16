@@ -29,7 +29,8 @@
     "mcp-programmatic-feedback": "./dist/programmatic-feedback/server.js",
     "mcp-playwright-feedback": "./dist/playwright-feedback/server.js",
     "mcp-feedback-reporter": "./dist/feedback-reporter/server.js",
-    "mcp-playwright": "./dist/playwright/server.js"
+    "mcp-playwright": "./dist/playwright/server.js",
+    "mcp-makerkit-docs": "./dist/makerkit-docs/server.js"
   },
   "scripts": {
     "build": "tsc",

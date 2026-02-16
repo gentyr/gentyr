@@ -75,22 +75,36 @@ CREATE TABLE IF NOT EXISTS feedback_sessions (
 );
 `;
 
-// Schema from agent-reports MCP server
+// Schema must match feedback-reporter/server.ts REPORTS_SCHEMA exactly
 const AGENT_REPORTS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS reports (
   id TEXT PRIMARY KEY,
   reporting_agent TEXT NOT NULL,
   title TEXT NOT NULL,
   summary TEXT NOT NULL,
-  category TEXT NOT NULL DEFAULT 'general',
+  category TEXT NOT NULL DEFAULT 'other',
   priority TEXT NOT NULL DEFAULT 'normal',
-  triage_status TEXT NOT NULL DEFAULT 'pending',
-  triage_notes TEXT,
-  triage_assignee TEXT,
   created_at TEXT NOT NULL,
   created_timestamp INTEGER NOT NULL,
-  triaged_at TEXT
+  read_at TEXT,
+  acknowledged_at TEXT,
+  triage_status TEXT NOT NULL DEFAULT 'pending',
+  triage_started_at TEXT,
+  triage_completed_at TEXT,
+  triage_session_id TEXT,
+  triage_outcome TEXT,
+  triage_attempted_at TEXT,
+  triaged_at TEXT,
+  triage_action TEXT,
+  CONSTRAINT valid_category CHECK (category IN ('architecture', 'security', 'performance', 'breaking-change', 'blocker', 'decision', 'user-feedback', 'other')),
+  CONSTRAINT valid_priority CHECK (priority IN ('low', 'normal', 'high', 'critical')),
+  CONSTRAINT valid_triage_status CHECK (triage_status IN ('pending', 'in_progress', 'self_handled', 'escalated', 'dismissed'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_reports_acknowledged ON reports(acknowledged_at);
+CREATE INDEX IF NOT EXISTS idx_reports_triage_status ON reports(triage_status);
+CREATE INDEX IF NOT EXISTS idx_reports_triage_completed ON reports(triage_completed_at);
 `;
 
 export interface PersonaInput {

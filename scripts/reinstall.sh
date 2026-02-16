@@ -1,7 +1,7 @@
 #!/bin/bash
 # Reinstall GENTYR (unprotect → install → protect)
 #
-# Usage: sudo scripts/reinstall.sh --path /path/to/project [--op-token <token>]
+# Usage: sudo scripts/reinstall.sh --path /path/to/project [--op-token <token>] [--makerkit|--no-makerkit]
 #
 # Requires sudo since it handles protection.
 # After reinstall, start a new Claude Code session and run /setup-gentyr
@@ -12,6 +12,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR=""
 OP_TOKEN=""
+MAKERKIT_FLAG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -23,15 +24,23 @@ while [[ $# -gt 0 ]]; do
             OP_TOKEN="$2"
             shift 2
             ;;
+        --makerkit)
+            MAKERKIT_FLAG="--makerkit"
+            shift
+            ;;
+        --no-makerkit)
+            MAKERKIT_FLAG="--no-makerkit"
+            shift
+            ;;
         *)
-            echo "Usage: sudo $0 --path /path/to/project [--op-token <token>]"
+            echo "Usage: sudo $0 --path /path/to/project [--op-token <token>] [--makerkit|--no-makerkit]"
             exit 1
             ;;
     esac
 done
 
 if [ -z "$PROJECT_DIR" ]; then
-    echo "Usage: sudo $0 --path /path/to/project [--op-token <token>]"
+    echo "Usage: sudo $0 --path /path/to/project [--op-token <token>] [--makerkit|--no-makerkit]"
     exit 1
 fi
 
@@ -54,6 +63,9 @@ echo ""
 SETUP_ARGS=(--path "$PROJECT_DIR")
 if [ -n "$OP_TOKEN" ]; then
     SETUP_ARGS+=(--op-token "$OP_TOKEN")
+fi
+if [ -n "$MAKERKIT_FLAG" ]; then
+    SETUP_ARGS+=("$MAKERKIT_FLAG")
 fi
 sudo -u "$ORIGINAL_USER" "$SCRIPT_DIR/setup.sh" "${SETUP_ARGS[@]}"
 

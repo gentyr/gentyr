@@ -724,8 +724,9 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
       // Create an approval with a forged pending_hmac
       const now = Date.now();
       const expiresTimestamp = now + 5 * 60 * 1000;
+      const emptyArgsHash = computeArgsHash({});
       const forgedPendingHmac = 'deadbeef'.repeat(8); // 64-char hex, but wrong
-      const approvedHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', 'approved', String(expiresTimestamp));
+      const approvedHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', 'approved', emptyArgsHash, String(expiresTimestamp));
 
       const approvals = {
         approvals: {
@@ -735,6 +736,7 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
             phrase: 'APPROVE TEST',
             code: 'ABC123',
             status: 'approved',
+            argsHash: emptyArgsHash,
             created_timestamp: now,
             expires_timestamp: expiresTimestamp,
             pending_hmac: forgedPendingHmac,
@@ -780,7 +782,8 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
       // Create an approval with valid pending_hmac but forged approved_hmac
       const now = Date.now();
       const expiresTimestamp = now + 5 * 60 * 1000;
-      const pendingHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', String(expiresTimestamp));
+      const emptyArgsHash = computeArgsHash({});
+      const pendingHmac = computeTestHmac('ABC123', 'test-server', 'test-tool', emptyArgsHash, String(expiresTimestamp));
       const forgedApprovedHmac = 'cafebabe'.repeat(8); // 64-char hex, but wrong
 
       const approvals = {
@@ -791,6 +794,7 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
             phrase: 'APPROVE TEST',
             code: 'ABC123',
             status: 'approved',
+            argsHash: emptyArgsHash,
             created_timestamp: now,
             expires_timestamp: expiresTimestamp,
             pending_hmac: pendingHmac,
@@ -841,7 +845,8 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
       const forgedApprovedHmac = 'cafebabe'.repeat(8);
 
       // Legitimate pending entry for a different tool (should be preserved)
-      const legitimatePendingHmac = computeTestHmac('XYZ789', 'test-server', 'other-tool', String(expiresTimestamp));
+      const otherArgsHash = computeArgsHash({});
+      const legitimatePendingHmac = computeTestHmac('XYZ789', 'test-server', 'other-tool', otherArgsHash, String(expiresTimestamp));
 
       const approvals = {
         approvals: {
