@@ -84,8 +84,9 @@ export function getDeputyCtoData(): DeputyCtoData {
 
   // Query cto-reports.db
   if (fs.existsSync(CTO_REPORTS_DB_PATH)) {
+    let db: ReturnType<typeof Database> | null = null;
     try {
-      const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
+      db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
 
       // Untriaged reports
       const pending = db.prepare(
@@ -130,17 +131,19 @@ export function getDeputyCtoData(): DeputyCtoData {
       ).get(cutoff24h) as { cnt: number };
       result.dismissed24h = dismissed.cnt;
 
-      db.close();
       result.hasData = true;
     } catch {
       // Database may not exist or be corrupted
+    } finally {
+      db?.close();
     }
   }
 
   // Query deputy-cto.db for questions
   if (fs.existsSync(DEPUTY_CTO_DB_PATH)) {
+    let db: ReturnType<typeof Database> | null = null;
     try {
-      const db = new Database(DEPUTY_CTO_DB_PATH, { readonly: true });
+      db = new Database(DEPUTY_CTO_DB_PATH, { readonly: true });
 
       // Pending questions
       result.pendingQuestions = db.prepare(`
@@ -163,10 +166,11 @@ export function getDeputyCtoData(): DeputyCtoData {
         LIMIT 5
       `).all(cutoff24h) as AnsweredQuestion[];
 
-      db.close();
       result.hasData = true;
     } catch {
       // Database may not exist or be corrupted
+    } finally {
+      db?.close();
     }
   }
 

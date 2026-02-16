@@ -3,7 +3,8 @@
  *
  * Layout:
  * - Header with title and timestamp
- * - Quota & Capacity | System Status (side by side)
+ * - Quota & Capacity (full width)
+ * - System Status (full width)
  * - Timeline (full width)
  * - Metrics Summary (grid of metric boxes)
  */
@@ -67,7 +68,7 @@ function QuotaSection({ data }: { data: DashboardData }): React.ReactElement {
   const title = `QUOTA & CAPACITY (${activeKeys} key${activeKeys !== 1 ? 's' : ''})`;
 
   return (
-    <Section title={title} minWidth={36}>
+    <Section title={title}>
       {aggregate.error ? (
         <Text color="red">Error: {aggregate.error}</Text>
       ) : (
@@ -107,7 +108,7 @@ function SystemStatusSection({ data }: { data: DashboardData }): React.ReactElem
   const commitColor = pending_items.commits_blocked ? 'red' : 'green';
 
   return (
-    <Section title="SYSTEM STATUS" minWidth={36}>
+    <Section title="SYSTEM STATUS">
       <Box flexDirection="column">
         <Box>
           <Text color="gray">Deputy CTO: </Text>
@@ -228,9 +229,11 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       {/* Header */}
       <Header data={data} />
 
-      {/* Quota & System Status - side by side */}
-      <Box flexDirection="row" gap={1} marginTop={1}>
+      {/* Quota & System Status - full width */}
+      <Box marginTop={1}>
         <QuotaSection data={data} />
+      </Box>
+      <Box marginTop={1}>
         <SystemStatusSection data={data} />
       </Box>
 

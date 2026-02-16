@@ -233,7 +233,8 @@ export function getAutomatedInstances(): AutomatedInstancesData {
   const runCounts = getAgentRunCounts();
   const state = getAutomationState();
   const config = getAutomationConfig();
-  const optimizerHasRun = config.adjustment?.last_updated != null;
+  // getAutomationConfig() always provides hardcoded defaults in effective,
+  // so we always know the baseline frequencies.
 
   const now = Date.now();
   const instances: AutomatedInstance[] = [];
@@ -285,16 +286,16 @@ export function getAutomatedInstances(): AutomatedInstancesData {
             freqAdj = `${pctChange > 0 ? '+' : ''}${pctChange}% ${direction}`;
           }
         } else {
-          freqAdj = optimizerHasRun ? 'baseline' : 'no data';
+          freqAdj = 'baseline';
         }
       } else {
         untilNext = 'pending';
-        freqAdj = isStatic ? `static ${modeEntry?.static_minutes ?? effectiveMinutes}m` : (optimizerHasRun ? 'baseline' : 'no data');
+        freqAdj = isStatic ? `static ${modeEntry?.static_minutes ?? effectiveMinutes}m` : 'baseline';
       }
     } else if (def.trigger === 'scheduled') {
       // Scheduled but missing stateKey or cooldownKey
       untilNext = 'pending';
-      freqAdj = optimizerHasRun ? 'baseline' : 'no data';
+      freqAdj = 'baseline';
     }
 
     instances.push({

@@ -28,7 +28,7 @@ export const ListReposArgsSchema = z.object({
 export const GetRepoArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
-  repo: z.string().describe('Repository name'),
+  repo: z.string().optional().describe('Repository name (defaults to CODECOV_REPO env var)'),
 });
 
 // ============================================================================
@@ -38,14 +38,14 @@ export const GetRepoArgsSchema = z.object({
 export const GetCoverageArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
-  repo: z.string().describe('Repository name'),
+  repo: z.string().optional().describe('Repository name (defaults to CODECOV_REPO env var)'),
   branch: z.string().optional().describe('Branch name (default: repo default branch)'),
 });
 
 export const GetCoverageTrendArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
-  repo: z.string().describe('Repository name'),
+  repo: z.string().optional().describe('Repository name (defaults to CODECOV_REPO env var)'),
   branch: z.string().optional().describe('Branch name'),
   interval: z.enum(['1d', '7d', '30d']).optional().default('7d').describe('Trend interval'),
 });
@@ -53,7 +53,7 @@ export const GetCoverageTrendArgsSchema = z.object({
 export const GetFileCoverageArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
-  repo: z.string().describe('Repository name'),
+  repo: z.string().optional().describe('Repository name (defaults to CODECOV_REPO env var)'),
   path: z.string().describe('File path within the repository'),
   branch: z.string().optional().describe('Branch name'),
 });
@@ -65,7 +65,7 @@ export const GetFileCoverageArgsSchema = z.object({
 export const ListCommitsArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
-  repo: z.string().describe('Repository name'),
+  repo: z.string().optional().describe('Repository name (defaults to CODECOV_REPO env var)'),
   branch: z.string().optional().describe('Filter by branch'),
   page: z.coerce.number().optional().default(1).describe('Page number'),
   page_size: z.coerce.number().optional().default(20).describe('Results per page'),
@@ -74,7 +74,7 @@ export const ListCommitsArgsSchema = z.object({
 export const GetCommitArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
-  repo: z.string().describe('Repository name'),
+  repo: z.string().optional().describe('Repository name (defaults to CODECOV_REPO env var)'),
   commitid: z.string().describe('Commit SHA'),
 });
 
@@ -85,7 +85,7 @@ export const GetCommitArgsSchema = z.object({
 export const ListBranchesArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
-  repo: z.string().describe('Repository name'),
+  repo: z.string().optional().describe('Repository name (defaults to CODECOV_REPO env var)'),
   page: z.coerce.number().optional().default(1).describe('Page number'),
   page_size: z.coerce.number().optional().default(20).describe('Results per page'),
 });
@@ -93,7 +93,7 @@ export const ListBranchesArgsSchema = z.object({
 export const GetBranchArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
-  repo: z.string().describe('Repository name'),
+  repo: z.string().optional().describe('Repository name (defaults to CODECOV_REPO env var)'),
   branch: z.string().describe('Branch name'),
 });
 
@@ -104,7 +104,7 @@ export const GetBranchArgsSchema = z.object({
 export const ListPullsArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
-  repo: z.string().describe('Repository name'),
+  repo: z.string().optional().describe('Repository name (defaults to CODECOV_REPO env var)'),
   state: z.enum(['open', 'closed', 'merged']).optional().describe('Filter by PR state'),
   page: z.coerce.number().optional().default(1).describe('Page number'),
   page_size: z.coerce.number().optional().default(20).describe('Results per page'),
@@ -113,7 +113,7 @@ export const ListPullsArgsSchema = z.object({
 export const GetPullArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
-  repo: z.string().describe('Repository name'),
+  repo: z.string().optional().describe('Repository name (defaults to CODECOV_REPO env var)'),
   pullid: z.coerce.number().describe('Pull request number'),
 });
 
@@ -124,7 +124,7 @@ export const GetPullArgsSchema = z.object({
 export const CompareArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
-  repo: z.string().describe('Repository name'),
+  repo: z.string().optional().describe('Repository name (defaults to CODECOV_REPO env var)'),
   base: z.string().describe('Base commit SHA or branch'),
   head: z.string().describe('Head commit SHA or branch'),
 });
@@ -136,7 +136,7 @@ export const CompareArgsSchema = z.object({
 export const ListFlagsArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
-  repo: z.string().describe('Repository name'),
+  repo: z.string().optional().describe('Repository name (defaults to CODECOV_REPO env var)'),
   page: z.coerce.number().optional().default(1).describe('Page number'),
   page_size: z.coerce.number().optional().default(20).describe('Results per page'),
 });
@@ -148,7 +148,7 @@ export const ListFlagsArgsSchema = z.object({
 export const ListComponentsArgsSchema = z.object({
   service: ServiceSchema,
   owner: z.string().describe('Repository owner'),
-  repo: z.string().describe('Repository name'),
+  repo: z.string().optional().describe('Repository name (defaults to CODECOV_REPO env var)'),
 });
 
 // ============================================================================

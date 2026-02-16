@@ -110,6 +110,7 @@ async function collectSnapshot(log) {
  */
 function getApiKeys() {
   const keys = [];
+  const now = Date.now();
 
   // Try rotation state first (multiple keys)
   if (fs.existsSync(ROTATION_STATE_PATH)) {
@@ -117,9 +118,11 @@ function getApiKeys() {
       const state = JSON.parse(fs.readFileSync(ROTATION_STATE_PATH, 'utf8'));
       if (state && state.keys && typeof state.keys === 'object') {
         for (const [id, data] of Object.entries(state.keys)) {
-          if (data.accessToken) {
-            keys.push({ id: id.substring(0, 8), accessToken: data.accessToken });
-          }
+          if (!data.accessToken) continue;
+          // Skip expired keys
+          if (data.status === 'expired') continue;
+          if (data.expiresAt && data.expiresAt < now) continue;
+          keys.push({ id: id.substring(0, 8), accessToken: data.accessToken });
         }
       }
     } catch (err) {

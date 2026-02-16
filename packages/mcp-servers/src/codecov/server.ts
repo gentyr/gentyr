@@ -12,6 +12,7 @@
  *
  * Optional env vars:
  * - CODECOV_OWNER: Default repository owner (avoids repeating in every call)
+ * - CODECOV_REPO: Default repository name (avoids repeating in every call)
  * - CODECOV_SERVICE: Default git service (default: github)
  *
  * @version 1.0.0
@@ -53,7 +54,7 @@ import {
 // Configuration
 // ============================================================================
 
-const { CODECOV_TOKEN, CODECOV_OWNER, CODECOV_SERVICE } = process.env;
+const { CODECOV_TOKEN, CODECOV_OWNER, CODECOV_REPO, CODECOV_SERVICE } = process.env;
 const BASE_URL = 'https://api.codecov.io/api/v2';
 const DEFAULT_SERVICE = CODECOV_SERVICE || 'github';
 
@@ -134,7 +135,9 @@ async function getRepo(args: GetRepoArgs) {
   const owner = args.owner || CODECOV_OWNER;
   if (!owner) {throw new Error('owner is required');}
 
-  return codecovFetch(`${repoPath(service, owner, args.repo)  }/`);
+  const repo = args.repo || CODECOV_REPO;
+  if (!repo) {throw new Error('repo is required (or set CODECOV_REPO env var)');}
+  return codecovFetch(`${repoPath(service, owner, repo)}/`);
 }
 
 async function getCoverage(args: GetCoverageArgs) {
@@ -142,7 +145,9 @@ async function getCoverage(args: GetCoverageArgs) {
   const owner = args.owner || CODECOV_OWNER;
   if (!owner) {throw new Error('owner is required');}
 
-  return codecovFetch(`${repoPath(service, owner, args.repo)  }/totals/`, {
+  const repo = args.repo || CODECOV_REPO;
+  if (!repo) {throw new Error('repo is required (or set CODECOV_REPO env var)');}
+  return codecovFetch(`${repoPath(service, owner, repo)}/totals/`, {
     branch: args.branch,
   });
 }
@@ -152,7 +157,9 @@ async function getCoverageTrend(args: GetCoverageTrendArgs) {
   const owner = args.owner || CODECOV_OWNER;
   if (!owner) {throw new Error('owner is required');}
 
-  return codecovFetch(`${repoPath(service, owner, args.repo)  }/coverage/`, {
+  const repo = args.repo || CODECOV_REPO;
+  if (!repo) {throw new Error('repo is required (or set CODECOV_REPO env var)');}
+  return codecovFetch(`${repoPath(service, owner, repo)}/coverage/`, {
     branch: args.branch,
     interval: args.interval,
   });
@@ -163,7 +170,9 @@ async function getFileCoverage(args: GetFileCoverageArgs) {
   const owner = args.owner || CODECOV_OWNER;
   if (!owner) {throw new Error('owner is required');}
 
-  return codecovFetch(`${repoPath(service, owner, args.repo)  }/file-report/`, {
+  const repo = args.repo || CODECOV_REPO;
+  if (!repo) {throw new Error('repo is required (or set CODECOV_REPO env var)');}
+  return codecovFetch(`${repoPath(service, owner, repo)}/file-report/`, {
     path: args.path,
     branch: args.branch,
   });
@@ -174,7 +183,9 @@ async function listCommits(args: ListCommitsArgs) {
   const owner = args.owner || CODECOV_OWNER;
   if (!owner) {throw new Error('owner is required');}
 
-  return codecovFetch(`${repoPath(service, owner, args.repo)  }/commits/`, {
+  const repo = args.repo || CODECOV_REPO;
+  if (!repo) {throw new Error('repo is required (or set CODECOV_REPO env var)');}
+  return codecovFetch(`${repoPath(service, owner, repo)}/commits/`, {
     branch: args.branch,
     page: args.page,
     page_size: args.page_size,
@@ -186,7 +197,9 @@ async function getCommit(args: GetCommitArgs) {
   const owner = args.owner || CODECOV_OWNER;
   if (!owner) {throw new Error('owner is required');}
 
-  return codecovFetch(`${repoPath(service, owner, args.repo)  }/commits/${encodeURIComponent(args.commitid)}/`);
+  const repo = args.repo || CODECOV_REPO;
+  if (!repo) {throw new Error('repo is required (or set CODECOV_REPO env var)');}
+  return codecovFetch(`${repoPath(service, owner, repo)}/commits/${encodeURIComponent(args.commitid)}/`);
 }
 
 async function listBranches(args: ListBranchesArgs) {
@@ -194,7 +207,9 @@ async function listBranches(args: ListBranchesArgs) {
   const owner = args.owner || CODECOV_OWNER;
   if (!owner) {throw new Error('owner is required');}
 
-  return codecovFetch(`${repoPath(service, owner, args.repo)  }/branches/`, {
+  const repo = args.repo || CODECOV_REPO;
+  if (!repo) {throw new Error('repo is required (or set CODECOV_REPO env var)');}
+  return codecovFetch(`${repoPath(service, owner, repo)}/branches/`, {
     page: args.page,
     page_size: args.page_size,
   });
@@ -205,7 +220,9 @@ async function getBranch(args: GetBranchArgs) {
   const owner = args.owner || CODECOV_OWNER;
   if (!owner) {throw new Error('owner is required');}
 
-  return codecovFetch(`${repoPath(service, owner, args.repo)  }/branches/${encodeURIComponent(args.branch)}/`);
+  const repo = args.repo || CODECOV_REPO;
+  if (!repo) {throw new Error('repo is required (or set CODECOV_REPO env var)');}
+  return codecovFetch(`${repoPath(service, owner, repo)}/branches/${encodeURIComponent(args.branch)}/`);
 }
 
 async function listPulls(args: ListPullsArgs) {
@@ -213,7 +230,9 @@ async function listPulls(args: ListPullsArgs) {
   const owner = args.owner || CODECOV_OWNER;
   if (!owner) {throw new Error('owner is required');}
 
-  return codecovFetch(`${repoPath(service, owner, args.repo)  }/pulls/`, {
+  const repo = args.repo || CODECOV_REPO;
+  if (!repo) {throw new Error('repo is required (or set CODECOV_REPO env var)');}
+  return codecovFetch(`${repoPath(service, owner, repo)}/pulls/`, {
     state: args.state,
     page: args.page,
     page_size: args.page_size,
@@ -225,7 +244,9 @@ async function getPull(args: GetPullArgs) {
   const owner = args.owner || CODECOV_OWNER;
   if (!owner) {throw new Error('owner is required');}
 
-  return codecovFetch(`${repoPath(service, owner, args.repo)  }/pulls/${encodeURIComponent(String(args.pullid))}/`);
+  const repo = args.repo || CODECOV_REPO;
+  if (!repo) {throw new Error('repo is required (or set CODECOV_REPO env var)');}
+  return codecovFetch(`${repoPath(service, owner, repo)}/pulls/${encodeURIComponent(String(args.pullid))}/`);
 }
 
 async function compare(args: CompareArgs) {
@@ -233,7 +254,9 @@ async function compare(args: CompareArgs) {
   const owner = args.owner || CODECOV_OWNER;
   if (!owner) {throw new Error('owner is required');}
 
-  return codecovFetch(`${repoPath(service, owner, args.repo)  }/compare/`, {
+  const repo = args.repo || CODECOV_REPO;
+  if (!repo) {throw new Error('repo is required (or set CODECOV_REPO env var)');}
+  return codecovFetch(`${repoPath(service, owner, repo)}/compare/`, {
     base: args.base,
     head: args.head,
   });
@@ -244,7 +267,9 @@ async function listFlags(args: ListFlagsArgs) {
   const owner = args.owner || CODECOV_OWNER;
   if (!owner) {throw new Error('owner is required');}
 
-  return codecovFetch(`${repoPath(service, owner, args.repo)  }/flags/`, {
+  const repo = args.repo || CODECOV_REPO;
+  if (!repo) {throw new Error('repo is required (or set CODECOV_REPO env var)');}
+  return codecovFetch(`${repoPath(service, owner, repo)}/flags/`, {
     page: args.page,
     page_size: args.page_size,
   });
@@ -255,7 +280,9 @@ async function listComponents(args: ListComponentsArgs) {
   const owner = args.owner || CODECOV_OWNER;
   if (!owner) {throw new Error('owner is required');}
 
-  return codecovFetch(`${repoPath(service, owner, args.repo)  }/components/`);
+  const repo = args.repo || CODECOV_REPO;
+  if (!repo) {throw new Error('repo is required (or set CODECOV_REPO env var)');}
+  return codecovFetch(`${repoPath(service, owner, repo)}/components/`);
 }
 
 // ============================================================================

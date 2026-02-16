@@ -93,6 +93,22 @@ export function formatDateTime(date: Date): string {
 }
 
 /**
+ * Format an ISO timestamp as relative time (e.g., "5m ago", "2h ago", "3d ago")
+ */
+export function formatTimeAgo(isoStr: string): string {
+  const now = Date.now();
+  const then = new Date(isoStr).getTime();
+  const diffMs = now - then;
+  const diffMins = Math.floor(diffMs / (60 * 1000));
+  const diffHours = Math.floor(diffMs / (60 * 60 * 1000));
+  const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return `${diffDays}d ago`;
+}
+
+/**
  * Calculate cache hit rate from token usage
  */
 export function calculateCacheRate(cacheRead: number, input: number): number {
