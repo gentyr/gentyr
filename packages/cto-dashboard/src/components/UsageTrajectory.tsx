@@ -148,7 +148,7 @@ export function UsageTrajectory({ trajectory }: UsageTrajectoryProps): React.Rea
   const current7d = latest.sevenDay;
 
   return (
-    <Section title="USAGE TRAJECTORY" borderColor="yellow">
+    <Section title="USAGE TRAJECTORY" borderColor="yellow" width="100%">
       <Box flexDirection="column">
         {/* Side-by-side windows */}
         <Box flexDirection="row" gap={4}>

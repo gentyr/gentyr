@@ -68,7 +68,7 @@ function QuotaSection({ data }: { data: DashboardData }): React.ReactElement {
   const title = `QUOTA & CAPACITY (${activeKeys} key${activeKeys !== 1 ? 's' : ''})`;
 
   return (
-    <Section title={title}>
+    <Section title={title} width="100%">
       {aggregate.error ? (
         <Text color="red">Error: {aggregate.error}</Text>
       ) : (
@@ -108,7 +108,7 @@ function SystemStatusSection({ data }: { data: DashboardData }): React.ReactElem
   const commitColor = pending_items.commits_blocked ? 'red' : 'green';
 
   return (
-    <Section title="SYSTEM STATUS">
+    <Section title="SYSTEM STATUS" width="100%">
       <Box flexDirection="column">
         <Box>
           <Text color="gray">Deputy CTO: </Text>

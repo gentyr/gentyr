@@ -125,7 +125,7 @@ export function UsageTrends({ snapshots, hasData }: UsageTrendsProps): React.Rea
   const max7d = Math.max(...sevenDayData);
 
   return (
-    <Section title="USAGE TRENDS" borderColor="blue">
+    <Section title="USAGE TRENDS" borderColor="blue" width="100%">
       <Box flexDirection="column" gap={1}>
         {/* 5-Hour Usage Chart */}
         <Box flexDirection="column">
@@ -136,7 +136,7 @@ export function UsageTrends({ snapshots, hasData }: UsageTrendsProps): React.Rea
           </Box>
 
           <Box marginTop={0}>
-            <Sparkline data={fiveHourData} width={50} height={3} color="cyan" />
+            <Sparkline data={fiveHourData} width={74} height={3} color="cyan" />
           </Box>
 
           <Box gap={2}>
@@ -162,7 +162,7 @@ export function UsageTrends({ snapshots, hasData }: UsageTrendsProps): React.Rea
           </Box>
 
           <Box marginTop={0}>
-            <Sparkline data={sevenDayData} width={50} height={3} color="magenta" />
+            <Sparkline data={sevenDayData} width={74} height={3} color="magenta" />
           </Box>
 
           <Box gap={2}>

@@ -103,7 +103,7 @@ export function TestingSection({ data }: TestingSectionProps): React.ReactElemen
   const hasSummaryMetrics = hasAgentActivity || data.suitesFixedRecently > 0 || data.uniqueFailureSignatures24h > 0;
 
   return (
-    <Section title="TESTING" borderColor="red">
+    <Section title="TESTING" borderColor="red" width="100%">
       <Box flexDirection="column">
         {/* Failing suites */}
         {hasFailingSuites && (
