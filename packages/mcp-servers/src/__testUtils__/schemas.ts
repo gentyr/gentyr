@@ -63,12 +63,13 @@ CREATE TABLE IF NOT EXISTS questions (
     description TEXT NOT NULL,
     context TEXT,
     suggested_options TEXT,
+    recommendation TEXT,
     answer TEXT,
     created_at TEXT NOT NULL,
     created_timestamp INTEGER NOT NULL,
     answered_at TEXT,
     decided_by TEXT,
-    CONSTRAINT valid_type CHECK (type IN ('decision', 'approval', 'rejection', 'question', 'escalation', 'bypass-request')),
+    CONSTRAINT valid_type CHECK (type IN ('decision', 'approval', 'rejection', 'question', 'escalation', 'bypass-request', 'protected-action-request')),
     CONSTRAINT valid_status CHECK (status IN ('pending', 'answered')),
     CONSTRAINT valid_decided_by CHECK (decided_by IS NULL OR decided_by IN ('cto', 'deputy-cto'))
 );
@@ -88,6 +89,7 @@ CREATE TABLE IF NOT EXISTS cleared_questions (
     type TEXT NOT NULL,
     title TEXT NOT NULL,
     description TEXT NOT NULL,
+    recommendation TEXT,
     answer TEXT,
     answered_at TEXT,
     decided_by TEXT,
@@ -215,6 +217,7 @@ export const QUESTION_TYPES = [
   'question',
   'escalation',
   'bypass-request',
+  'protected-action-request',
 ] as const;
 
 export type QuestionType = (typeof QUESTION_TYPES)[number];

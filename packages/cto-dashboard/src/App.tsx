@@ -20,12 +20,16 @@ import {
   UsageTrajectory,
   AutomatedInstances,
   FeedbackPersonas,
+  DeputyCtoSection,
+  TestingSection,
   type MetricBoxData,
 } from './components/index.js';
 import type { DashboardData } from './utils/data-reader.js';
 import type { TimelineEvent } from './components/TimelineItem.js';
 import type { TrajectoryResult } from './utils/trajectory.js';
 import type { AutomatedInstancesData } from './utils/automated-instances.js';
+import type { DeputyCtoData } from './utils/deputy-cto-reader.js';
+import type { TestingData } from './utils/testing-reader.js';
 import { formatNumber, formatDateTime, formatTime12h, formatDelta, calculateCacheRate } from './utils/formatters.js';
 
 interface AppProps {
@@ -33,6 +37,8 @@ interface AppProps {
   timelineEvents: TimelineEvent[];
   trajectory: TrajectoryResult;
   automatedInstances: AutomatedInstancesData;
+  deputyCto: DeputyCtoData;
+  testing: TestingData;
 }
 
 function Header({ data }: { data: DashboardData }): React.ReactElement {
@@ -52,32 +58,24 @@ function Header({ data }: { data: DashboardData }): React.ReactElement {
 }
 
 function QuotaSection({ data }: { data: DashboardData }): React.ReactElement {
-  const keyRotation = data.key_rotation;
-  const quota = data.quota;
+  const { verified_quota } = data;
+  const { aggregate } = verified_quota;
 
-  // Use aggregate quota if available, otherwise fall back to direct quota
-  const fiveHourPct = keyRotation?.aggregate?.five_hour_pct
-    ?? quota.five_hour?.utilization
-    ?? 0;
-  const sevenDayPct = keyRotation?.aggregate?.seven_day_pct
-    ?? quota.seven_day?.utilization
-    ?? 0;
-
-  const activeKeys = keyRotation?.active_keys ?? 1;
-  const title = keyRotation
-    ? `QUOTA & CAPACITY (${activeKeys} key${activeKeys > 1 ? 's' : ''})`
-    : 'QUOTA & CAPACITY';
+  const activeKeys = verified_quota.healthy_count;
+  const fiveHourPct = aggregate.five_hour?.utilization ?? 0;
+  const sevenDayPct = aggregate.seven_day?.utilization ?? 0;
+  const title = `QUOTA & CAPACITY (${activeKeys} key${activeKeys !== 1 ? 's' : ''})`;
 
   return (
     <Section title={title} minWidth={36}>
-      {quota.error ? (
-        <Text color="red">Error: {quota.error}</Text>
+      {aggregate.error ? (
+        <Text color="red">Error: {aggregate.error}</Text>
       ) : (
         <Box flexDirection="column">
           <QuotaBar label="5-hour" percentage={fiveHourPct} width={16} />
           <QuotaBar label="7-day" percentage={sevenDayPct} width={16} />
-          {keyRotation && keyRotation.rotation_events_24h > 0 && (
-            <Text color="gray">Rotations (24h): {keyRotation.rotation_events_24h}</Text>
+          {verified_quota.rotation_events_24h > 0 && (
+            <Text color="gray">Rotations (24h): {verified_quota.rotation_events_24h}</Text>
           )}
         </Box>
       )}
@@ -179,6 +177,7 @@ function MetricsSummary({ data }: { data: DashboardData }): React.ReactElement {
       metrics: [
         { label: 'Total', value: hooks.total_24h, color: 'white' },
         { label: 'Success', value: `${hooks.success_rate}%`, color: hooks.success_rate >= 95 ? 'green' : 'yellow' },
+        { label: 'Skipped', value: hooks.skipped_24h, color: hooks.skipped_24h > 0 ? 'gray' : 'green' },
         { label: 'Failures', value: hooks.recent_failures.length, color: hooks.recent_failures.length > 0 ? 'red' : 'green' },
       ],
     },
@@ -203,7 +202,15 @@ function MetricsSummary({ data }: { data: DashboardData }): React.ReactElement {
       metrics: [
         { label: 'Factor', value: `${usage_projection.factor.toFixed(1)}x`, color: usage_projection.factor > 1 ? 'yellow' : 'green' },
         { label: 'Target', value: `${usage_projection.target_pct}%`, color: 'white' },
-        { label: 'Proj', value: usage_projection.projected_at_reset_pct != null ? `${usage_projection.projected_at_reset_pct}%` : 'N/A', color: 'gray' },
+        {
+          label: 'Proj',
+          value: usage_projection.projected_at_reset_pct != null
+            ? `${usage_projection.projected_at_reset_pct}%`
+            : (usage_projection.last_updated != null ? 'N/A' : 'No data'),
+          color: usage_projection.projected_at_reset_pct != null
+            ? (usage_projection.projected_at_reset_pct > usage_projection.target_pct + 5 ? 'yellow' : 'cyan')
+            : 'gray',
+        },
       ],
     },
   ];
@@ -215,7 +222,7 @@ function MetricsSummary({ data }: { data: DashboardData }): React.ReactElement {
   );
 }
 
-export function App({ data, timelineEvents, trajectory, automatedInstances }: AppProps): React.ReactElement {
+export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing }: AppProps): React.ReactElement {
   return (
     <Box flexDirection="column" padding={0}>
       {/* Header */}
@@ -252,6 +259,20 @@ export function App({ data, timelineEvents, trajectory, automatedInstances }: Ap
       {!automatedInstances.hasData && (
         <Box marginTop={1}>
           <Automations automations={data.automations} />
+        </Box>
+      )}
+
+      {/* Deputy CTO triage pipeline */}
+      {deputyCto.hasData && (
+        <Box marginTop={1}>
+          <DeputyCtoSection data={deputyCto} />
+        </Box>
+      )}
+
+      {/* Testing health */}
+      {testing.hasData && (
+        <Box marginTop={1}>
+          <TestingSection data={testing} />
         </Box>
       )}
 

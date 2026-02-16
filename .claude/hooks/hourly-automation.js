@@ -456,7 +456,8 @@ mcp__deputy-cto__add_question({
   type: "escalation",  // or "decision" if CTO needs to choose
   title: "Brief title of the issue",
   description: "Context from investigation + why CTO input needed",
-  suggested_options: ["Option A", "Option B"]  // if applicable
+  suggested_options: ["Option A", "Option B"],  // if applicable
+  recommendation: "Your recommended course of action and why"  // REQUIRED for escalations
 })
 
 // Complete the triage
@@ -1389,6 +1390,7 @@ If the file doesn't exist, report this as an issue and exit.
    - type: "escalation"
    - title: "Production Health Issue: [summary]"
    - description: Full health report findings
+   - recommendation: Your recommended fix or action based on the health findings
    - This creates a CTO decision task visible in /deputy-cto
 
 3. For actionable issues, call \`mcp__deputy-cto__spawn_implementation_task\` with:

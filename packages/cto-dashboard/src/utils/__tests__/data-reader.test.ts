@@ -7,6 +7,7 @@
  * - Session metrics (task vs user triggered)
  * - Pending items from databases
  * - Task metrics
+ * - Hook executions (including skipped tracking)
  *
  * Uses in-memory databases and mock file systems for isolation.
  */
@@ -566,5 +567,314 @@ describe('Data Reader - Pending Items', () => {
     expect(typeof result.commit_rejections).toBe('number');
     expect(typeof result.pending_triage).toBe('number');
     expect(typeof result.commits_blocked).toBe('boolean');
+  });
+});
+
+describe('Data Reader - Hook Executions', () => {
+  let tempDir: string;
+  let agentTrackerPath: string;
+
+  beforeEach(() => {
+    tempDir = path.join('/tmp', `hook-exec-test-${randomUUID()}`);
+    fs.mkdirSync(path.join(tempDir, 'state'), { recursive: true });
+    agentTrackerPath = path.join(tempDir, 'state', 'agent-tracker-history.json');
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  interface HookExecutionEntry {
+    hookType: string;
+    status: 'success' | 'failure' | 'skipped';
+    timestamp: string;
+    metadata?: { error?: string };
+  }
+
+  interface HookHistory {
+    hookExecutions: HookExecutionEntry[];
+  }
+
+  interface HookStats {
+    total: number;
+    success: number;
+    failure: number;
+    skipped: number;
+  }
+
+  interface HookExecutions {
+    total_24h: number;
+    skipped_24h: number;
+    success_rate: number;
+    by_hook: Record<string, HookStats>;
+    recent_failures: Array<{ hook: string; error: string; timestamp: string }>;
+  }
+
+  const getHookExecutions = (): HookExecutions => {
+    const result: HookExecutions = {
+      total_24h: 0,
+      skipped_24h: 0,
+      success_rate: 100,
+      by_hook: {},
+      recent_failures: [],
+    };
+
+    if (!fs.existsSync(agentTrackerPath)) return result;
+
+    try {
+      const content = fs.readFileSync(agentTrackerPath, 'utf8');
+      const history = JSON.parse(content) as HookHistory;
+
+      const now = Date.now();
+      const cutoff24h = now - 24 * 60 * 60 * 1000;
+      let successCount = 0;
+      let skippedCount = 0;
+
+      for (const exec of history.hookExecutions || []) {
+        const execTime = new Date(exec.timestamp).getTime();
+        if (execTime < cutoff24h) continue;
+
+        result.total_24h++;
+        if (exec.status === 'success') successCount++;
+        else if (exec.status === 'skipped') skippedCount++;
+
+        if (!result.by_hook[exec.hookType]) {
+          result.by_hook[exec.hookType] = { total: 0, success: 0, failure: 0, skipped: 0 };
+        }
+        const stats = result.by_hook[exec.hookType];
+        stats.total++;
+        if (exec.status === 'success') stats.success++;
+        else if (exec.status === 'failure') stats.failure++;
+        else if (exec.status === 'skipped') stats.skipped++;
+
+        if (exec.status === 'failure' && result.recent_failures.length < 5) {
+          result.recent_failures.push({
+            hook: exec.hookType,
+            error: exec.metadata?.error || 'Unknown error',
+            timestamp: exec.timestamp,
+          });
+        }
+      }
+
+      result.skipped_24h = skippedCount;
+      // Calculate success rate excluding skipped executions
+      const relevantTotal = result.total_24h - skippedCount;
+      if (relevantTotal > 0) {
+        result.success_rate = Math.round((successCount / relevantTotal) * 100);
+      }
+    } catch {
+      // Ignore errors
+    }
+
+    return result;
+  };
+
+  it('should return empty results when agent tracker does not exist', () => {
+    const result = getHookExecutions();
+
+    expect(result.total_24h).toBe(0);
+    expect(result.skipped_24h).toBe(0);
+    expect(result.success_rate).toBe(100);
+    expect(Object.keys(result.by_hook).length).toBe(0);
+    expect(result.recent_failures.length).toBe(0);
+  });
+
+  it('should count hook executions by status', () => {
+    const now = Date.now();
+    const history: HookHistory = {
+      hookExecutions: [
+        { hookType: 'PreCommit', status: 'success', timestamp: new Date(now - 1000).toISOString() },
+        { hookType: 'PreCommit', status: 'success', timestamp: new Date(now - 2000).toISOString() },
+        { hookType: 'PreCommit', status: 'failure', timestamp: new Date(now - 3000).toISOString(), metadata: { error: 'Failed' } },
+        { hookType: 'PreCommit', status: 'skipped', timestamp: new Date(now - 4000).toISOString() },
+      ],
+    };
+    fs.writeFileSync(agentTrackerPath, JSON.stringify(history));
+
+    const result = getHookExecutions();
+
+    expect(result.total_24h).toBe(4);
+    expect(result.skipped_24h).toBe(1);
+    expect(result.by_hook['PreCommit']).toEqual({
+      total: 4,
+      success: 2,
+      failure: 1,
+      skipped: 1,
+    });
+  });
+
+  it('should calculate success rate excluding skipped executions', () => {
+    const now = Date.now();
+    const history: HookHistory = {
+      hookExecutions: [
+        { hookType: 'PreCommit', status: 'success', timestamp: new Date(now - 1000).toISOString() },
+        { hookType: 'PreCommit', status: 'success', timestamp: new Date(now - 2000).toISOString() },
+        { hookType: 'PreCommit', status: 'success', timestamp: new Date(now - 3000).toISOString() },
+        { hookType: 'PreCommit', status: 'success', timestamp: new Date(now - 4000).toISOString() },
+        { hookType: 'PreCommit', status: 'failure', timestamp: new Date(now - 5000).toISOString(), metadata: { error: 'Test' } },
+        { hookType: 'PreCommit', status: 'skipped', timestamp: new Date(now - 6000).toISOString() },
+        { hookType: 'PreCommit', status: 'skipped', timestamp: new Date(now - 7000).toISOString() },
+        { hookType: 'PreCommit', status: 'skipped', timestamp: new Date(now - 8000).toISOString() },
+      ],
+    };
+    fs.writeFileSync(agentTrackerPath, JSON.stringify(history));
+
+    const result = getHookExecutions();
+
+    expect(result.total_24h).toBe(8);
+    expect(result.skipped_24h).toBe(3);
+    // Success rate should be 4/(8-3) = 4/5 = 80%
+    expect(result.success_rate).toBe(80);
+  });
+
+  it('should maintain 100% success rate when all non-skipped executions succeed', () => {
+    const now = Date.now();
+    const history: HookHistory = {
+      hookExecutions: [
+        { hookType: 'PreCommit', status: 'success', timestamp: new Date(now - 1000).toISOString() },
+        { hookType: 'PreCommit', status: 'success', timestamp: new Date(now - 2000).toISOString() },
+        { hookType: 'PreCommit', status: 'skipped', timestamp: new Date(now - 3000).toISOString() },
+        { hookType: 'PreCommit', status: 'skipped', timestamp: new Date(now - 4000).toISOString() },
+      ],
+    };
+    fs.writeFileSync(agentTrackerPath, JSON.stringify(history));
+
+    const result = getHookExecutions();
+
+    expect(result.total_24h).toBe(4);
+    expect(result.skipped_24h).toBe(2);
+    // Success rate should be 2/(4-2) = 2/2 = 100%
+    expect(result.success_rate).toBe(100);
+  });
+
+  it('should maintain 100% success rate when only skipped executions exist', () => {
+    const now = Date.now();
+    const history: HookHistory = {
+      hookExecutions: [
+        { hookType: 'PreCommit', status: 'skipped', timestamp: new Date(now - 1000).toISOString() },
+        { hookType: 'PreCommit', status: 'skipped', timestamp: new Date(now - 2000).toISOString() },
+      ],
+    };
+    fs.writeFileSync(agentTrackerPath, JSON.stringify(history));
+
+    const result = getHookExecutions();
+
+    expect(result.total_24h).toBe(2);
+    expect(result.skipped_24h).toBe(2);
+    // When all executions are skipped, success_rate should remain 100
+    expect(result.success_rate).toBe(100);
+  });
+
+  it('should track recent failures with error messages', () => {
+    const now = Date.now();
+    const history: HookHistory = {
+      hookExecutions: [
+        { hookType: 'PreCommit', status: 'failure', timestamp: new Date(now - 1000).toISOString(), metadata: { error: 'Error 1' } },
+        { hookType: 'PreCommit', status: 'failure', timestamp: new Date(now - 2000).toISOString(), metadata: { error: 'Error 2' } },
+        { hookType: 'Compliance', status: 'failure', timestamp: new Date(now - 3000).toISOString() },
+      ],
+    };
+    fs.writeFileSync(agentTrackerPath, JSON.stringify(history));
+
+    const result = getHookExecutions();
+
+    expect(result.recent_failures.length).toBe(3);
+    expect(result.recent_failures[0].hook).toBe('PreCommit');
+    expect(result.recent_failures[0].error).toBe('Error 1');
+    expect(result.recent_failures[2].error).toBe('Unknown error'); // Missing error metadata
+  });
+
+  it('should limit recent failures to 5 entries', () => {
+    const now = Date.now();
+    const history: HookHistory = {
+      hookExecutions: Array.from({ length: 10 }, (_, i) => ({
+        hookType: 'PreCommit',
+        status: 'failure' as const,
+        timestamp: new Date(now - i * 1000).toISOString(),
+        metadata: { error: `Error ${i}` },
+      })),
+    };
+    fs.writeFileSync(agentTrackerPath, JSON.stringify(history));
+
+    const result = getHookExecutions();
+
+    expect(result.recent_failures.length).toBe(5);
+  });
+
+  it('should filter by 24-hour time window', () => {
+    const now = Date.now();
+    const history: HookHistory = {
+      hookExecutions: [
+        { hookType: 'PreCommit', status: 'success', timestamp: new Date(now - 1 * 60 * 60 * 1000).toISOString() }, // 1h ago
+        { hookType: 'PreCommit', status: 'success', timestamp: new Date(now - 12 * 60 * 60 * 1000).toISOString() }, // 12h ago
+        { hookType: 'PreCommit', status: 'success', timestamp: new Date(now - 25 * 60 * 60 * 1000).toISOString() }, // 25h ago (excluded)
+      ],
+    };
+    fs.writeFileSync(agentTrackerPath, JSON.stringify(history));
+
+    const result = getHookExecutions();
+
+    expect(result.total_24h).toBe(2);
+  });
+
+  it('should aggregate stats by hook type', () => {
+    const now = Date.now();
+    const history: HookHistory = {
+      hookExecutions: [
+        { hookType: 'PreCommit', status: 'success', timestamp: new Date(now - 1000).toISOString() },
+        { hookType: 'PreCommit', status: 'failure', timestamp: new Date(now - 2000).toISOString(), metadata: { error: 'Err' } },
+        { hookType: 'Compliance', status: 'success', timestamp: new Date(now - 3000).toISOString() },
+        { hookType: 'Compliance', status: 'skipped', timestamp: new Date(now - 4000).toISOString() },
+      ],
+    };
+    fs.writeFileSync(agentTrackerPath, JSON.stringify(history));
+
+    const result = getHookExecutions();
+
+    expect(result.by_hook['PreCommit']).toEqual({
+      total: 2,
+      success: 1,
+      failure: 1,
+      skipped: 0,
+    });
+    expect(result.by_hook['Compliance']).toEqual({
+      total: 2,
+      success: 1,
+      failure: 0,
+      skipped: 1,
+    });
+  });
+
+  it('should validate structure of returned hook executions', () => {
+    const result = getHookExecutions();
+
+    expect(result).toHaveProperty('total_24h');
+    expect(result).toHaveProperty('skipped_24h');
+    expect(result).toHaveProperty('success_rate');
+    expect(result).toHaveProperty('by_hook');
+    expect(result).toHaveProperty('recent_failures');
+
+    expect(typeof result.total_24h).toBe('number');
+    expect(typeof result.skipped_24h).toBe('number');
+    expect(typeof result.success_rate).toBe('number');
+    expect(typeof result.by_hook).toBe('object');
+    expect(Array.isArray(result.recent_failures)).toBe(true);
+
+    // Validate success rate is a percentage
+    expect(result.success_rate).toBeGreaterThanOrEqual(0);
+    expect(result.success_rate).toBeLessThanOrEqual(100);
+    expect(Number.isNaN(result.success_rate)).toBe(false);
+  });
+
+  it('should handle malformed agent tracker file gracefully', () => {
+    fs.writeFileSync(agentTrackerPath, 'invalid json');
+
+    const result = getHookExecutions();
+
+    // Should return default empty state on parse error
+    expect(result.total_24h).toBe(0);
+    expect(result.success_rate).toBe(100);
   });
 });

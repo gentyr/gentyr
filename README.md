@@ -150,7 +150,7 @@ mcp__agent-reports__report_to_deputy_cto({
 ### CTO Commands
 
 - **`/cto-report`** — Full metrics dashboard: token usage, session history, agent activity, task status, quota utilization
-- **`/deputy-cto`** — Review and answer pending CTO decisions, triage agent reports, manage autonomous mode
+- **`/deputy-cto`** — Review and answer pending CTO decisions (batch review mode with up to 4 items at once), triage agent reports with recommendations, manage autonomous mode
 
 ### Autonomous Mode
 

@@ -24,6 +24,7 @@ interface QuestionRow {
   title: string;
   description: string;
   context?: string;
+  recommendation?: string;
   created_at: string;
   created_timestamp: number;
   answered_at?: string;
@@ -160,15 +161,21 @@ describe('Deputy-CTO Server', () => {
     description: string;
     context?: string;
     suggested_options?: string[];
+    recommendation?: string;
   }) => {
+    // Require recommendation for escalations (mirrors server validation)
+    if (args.type === 'escalation' && !args.recommendation) {
+      return { error: 'Escalations require a recommendation. Provide a concise statement of what you recommend and why.' };
+    }
+
     const id = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
     const created_timestamp = Math.floor(now.getTime() / 1000);
 
     db.prepare(`
-      INSERT INTO questions (id, type, status, title, description, context, suggested_options, created_at, created_timestamp)
-      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+      INSERT INTO questions (id, type, status, title, description, context, suggested_options, recommendation, created_at, created_timestamp)
+      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       args.type,
@@ -176,6 +183,7 @@ describe('Deputy-CTO Server', () => {
       args.description,
       args.context ?? null,
       args.suggested_options ? JSON.stringify(args.suggested_options) : null,
+      args.recommendation ?? null,
       created_at,
       created_timestamp
     );
@@ -613,6 +621,59 @@ describe('Deputy-CTO Server', () => {
       expect(question.type).toBe('decision');
       expect(question.status).toBe('pending');
       expect(question.title).toBe('Should we proceed with this change?');
+    });
+
+    it('should store recommendation when provided', () => {
+      const result = addQuestion({
+        type: 'decision',
+        title: 'Caching strategy',
+        description: 'Redis vs in-memory for sessions',
+        recommendation: 'Use Redis for multi-instance support',
+      });
+
+      expect(result.id).toBeDefined();
+
+      const question = db.prepare('SELECT * FROM questions WHERE id = ?').get(result.id) as QuestionRow | undefined;
+      expect(question?.recommendation).toBe('Use Redis for multi-instance support');
+    });
+
+    it('should require recommendation for escalation type', () => {
+      const result = addQuestion({
+        type: 'escalation',
+        title: 'G001 violations found',
+        description: '3 modules failing open on errors',
+      });
+
+      expect(result).toHaveProperty('error');
+      expect((result as { error: string }).error).toContain('Escalations require a recommendation');
+    });
+
+    it('should accept escalation with recommendation', () => {
+      const result = addQuestion({
+        type: 'escalation',
+        title: 'G001 violations found',
+        description: '3 modules failing open on errors',
+        recommendation: 'Fix all 3 modules to fail-closed before next release',
+      });
+
+      expect(result.id).toBeDefined();
+
+      const question = db.prepare('SELECT * FROM questions WHERE id = ?').get(result.id) as QuestionRow | undefined;
+      expect(question?.type).toBe('escalation');
+      expect(question?.recommendation).toBe('Fix all 3 modules to fail-closed before next release');
+    });
+
+    it('should allow null recommendation for non-escalation types', () => {
+      const result = addQuestion({
+        type: 'decision',
+        title: 'API versioning approach',
+        description: 'URL vs header based',
+      });
+
+      expect(result.id).toBeDefined();
+
+      const question = db.prepare('SELECT * FROM questions WHERE id = ?').get(result.id) as QuestionRow | undefined;
+      expect(question?.recommendation).toBeNull();
     });
 
     it('should enforce valid question type constraint', () => {

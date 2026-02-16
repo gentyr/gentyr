@@ -344,13 +344,16 @@ function generateCommand(
   const reinstallScript = path.join(FRAMEWORK_DIR, 'scripts', 'reinstall.sh');
   const automationScript = path.join(FRAMEWORK_DIR, 'scripts', 'setup-automation-service.sh');
 
-  // Helper: build OP token two-part commands
+  // Helper: build OP token three-step commands
   function addOpTokenCommands(mainCommand: string): void {
     commands.push('# Step 1 - Securely enter your 1Password token (paste and press Enter):');
     commands.push('read -rs OP_TOKEN');
     commands.push('');
     commands.push('# Step 2 - Run setup:');
-    commands.push(`${mainCommand} --op-token "$OP_TOKEN"; unset OP_TOKEN`);
+    commands.push(`${mainCommand} --op-token "$OP_TOKEN"`);
+    commands.push('');
+    commands.push('# Step 3 - Clean up the token from memory:');
+    commands.push('unset OP_TOKEN');
   }
 
   switch (action) {
