@@ -460,7 +460,7 @@ describe('Feedback Explorer MCP Server', () => {
         persona_id: persona1Id,
         findings_count: 5,
         satisfaction_level: 'satisfied',
-        completed_at: new Date().toISOString(),
+        completed_at: '2026-01-01T00:00:00.000Z',
       });
 
       createSession(userFeedbackDb, {
@@ -468,7 +468,7 @@ describe('Feedback Explorer MCP Server', () => {
         persona_id: persona1Id,
         findings_count: 3,
         satisfaction_level: 'very_satisfied',
-        completed_at: new Date().toISOString(),
+        completed_at: '2026-01-02T00:00:00.000Z',
       });
 
       const result = callTool<ListFeedbackPersonasResult>(server, 'list_feedback_personas', {});

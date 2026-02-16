@@ -178,7 +178,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
           p.created_at,
           COUNT(DISTINCT fs.id) as session_count,
           COALESCE(SUM(fs.findings_count), 0) as findings_count
-          ${hasSatisfaction ? ', MAX(fs.satisfaction_level) as latest_satisfaction' : ''}
+          ${hasSatisfaction ? `, (SELECT fs2.satisfaction_level FROM feedback_sessions fs2 WHERE fs2.persona_id = p.id AND fs2.satisfaction_level IS NOT NULL AND fs2.completed_at IS NOT NULL ORDER BY fs2.completed_at DESC LIMIT 1) as latest_satisfaction` : ''}
         FROM personas p
         LEFT JOIN feedback_sessions fs ON fs.persona_id = p.id
       `;

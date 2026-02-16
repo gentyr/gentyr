@@ -4,7 +4,7 @@ A modular automation framework for Claude Code that provides MCP servers, specia
 
 ## Features
 
-- **23 MCP Servers**: 9 core (task tracking, specs, reviews, reporting) + 10 infrastructure (Render, Vercel, GitHub, Supabase, Cloudflare, Resend, Elasticsearch, 1Password, Codecov, secret-sync) + 4 AI user feedback (persona management, GUI testing, programmatic testing, reporting bridge)
+- **24 MCP Servers**: 9 core (task tracking, specs, reviews, reporting) + 10 infrastructure (Render, Vercel, GitHub, Supabase, Cloudflare, Resend, Elasticsearch, 1Password, Codecov, secret-sync) + 5 AI user feedback (persona management, GUI testing, programmatic testing, reporting bridge, feedback exploration)
 - **9 Framework Agents**: Code reviewer, test writer, investigator, deputy-CTO, feedback-agent, etc. (projects can add their own)
 - **7 Slash Commands**: `/configure-personas`, `/cto-report`, `/deputy-cto`, `/push-migrations`, `/push-secrets`, `/setup-gentyr`, `/toggle-automation-gentyr`
 - **AI User Feedback System**: Automated user persona testing triggered by staging changes with configurable personas, features, and test scenarios
@@ -257,10 +257,11 @@ The AI User Feedback System automatically spawns feedback agents that test your 
 - Only runs when staging changes detected
 
 **MCP Servers:**
-- `user-feedback` - Persona/feature CRUD, mapping, feedback run lifecycle (16 tools)
+- `user-feedback` - Persona/feature CRUD, mapping, feedback run lifecycle with satisfaction tracking (16 tools)
 - `playwright-feedback` - GUI testing with Playwright (20 user-perspective tools, no developer tools)
 - `programmatic-feedback` - CLI/API/SDK testing with shell injection prevention (12 tools)
-- `feedback-reporter` - Bridge findings to agent-reports pipeline with severity mapping (6 tools)
+- `feedback-reporter` - Bridge findings to agent-reports pipeline with severity mapping and satisfaction levels (6 tools)
+- `feedback-explorer` - Read-only exploration of personas, sessions, findings, and satisfaction data (7 tools)
 
 **Slash Command:**
 - `/configure-personas` - Interactive persona and feature configuration
@@ -491,10 +492,11 @@ When you run `setup.sh`, the following happens:
 | `deputy-cto` | Deputy-CTO decision management |
 | `cto-report` | CTO metrics and status (data aggregation) |
 | `cto-reports` | Historical report storage and retrieval |
-| `user-feedback` | AI user feedback persona/feature management |
+| `user-feedback` | AI user feedback persona/feature management with satisfaction tracking |
 | `playwright-feedback` | GUI testing with Playwright (feedback agent only) |
 | `programmatic-feedback` | CLI/API/SDK testing (feedback agent only) |
-| `feedback-reporter` | Bridge feedback findings to agent-reports |
+| `feedback-reporter` | Bridge feedback findings to agent-reports with satisfaction levels |
+| `feedback-explorer` | Read-only exploration of feedback data across all personas and sessions |
 
 ### Infrastructure Servers (opinionated stack)
 

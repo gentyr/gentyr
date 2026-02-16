@@ -1233,7 +1233,9 @@ export function getFeedbackPersonas(): FeedbackPersonasData {
       total_sessions: result.reduce((s, p) => s + p.session_count, 0),
       total_findings: result.reduce((s, p) => s + p.findings_count, 0),
     };
-  } catch {
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[cto-dashboard] Failed to read feedback personas: ${message}\n`);
     return empty;
   }
 }

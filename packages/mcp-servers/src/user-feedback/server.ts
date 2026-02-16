@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS feedback_sessions (
     report_ids TEXT DEFAULT '[]',
     satisfaction_level TEXT,
     CONSTRAINT valid_status CHECK (status IN ('pending', 'queued', 'running', 'completed', 'failed', 'timeout')),
+    CONSTRAINT valid_satisfaction CHECK (satisfaction_level IS NULL OR satisfaction_level IN ('very_satisfied', 'satisfied', 'neutral', 'dissatisfied', 'very_dissatisfied')),
     FOREIGN KEY (run_id) REFERENCES feedback_runs(id),
     FOREIGN KEY (persona_id) REFERENCES personas(id)
 );
