@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { vscode } from './vscode-api';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { StatusHeader } from './components/StatusHeader';
 import { QuotaSection } from './components/QuotaSection';
 import { SystemStatus } from './components/SystemStatus';
@@ -27,30 +28,32 @@ export function App(): React.ReactElement {
   }
 
   return (
-    <div className="dashboard">
-      <StatusHeader generatedAt={data.generated_at} />
+    <ErrorBoundary>
+      <div className="dashboard">
+        <StatusHeader generatedAt={data.generated_at} />
 
-      <div className="row">
-        <QuotaSection data={data.verified_quota} />
-        <SystemStatus
-          autonomousMode={data.autonomous_mode}
-          systemHealth={data.system_health}
+        <div className="row">
+          <QuotaSection data={data.verified_quota} />
+          <SystemStatus
+            autonomousMode={data.autonomous_mode}
+            systemHealth={data.system_health}
+            pendingItems={data.pending_items}
+          />
+        </div>
+
+        <MetricsGrid
+          tokenUsage={data.token_usage}
+          sessions={data.sessions}
+          tasks={data.tasks}
           pendingItems={data.pending_items}
         />
+
+        {data.deputy_cto.hasData && (
+          <DeputyCtoSection data={data.deputy_cto} />
+        )}
+
+        <TodoSection tasks={data.tasks} />
       </div>
-
-      <MetricsGrid
-        tokenUsage={data.token_usage}
-        sessions={data.sessions}
-        tasks={data.tasks}
-        pendingItems={data.pending_items}
-      />
-
-      {data.deputy_cto.hasData && (
-        <DeputyCtoSection data={data.deputy_cto} />
-      )}
-
-      <TodoSection tasks={data.tasks} />
-    </div>
+    </ErrorBoundary>
   );
 }

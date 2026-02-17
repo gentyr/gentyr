@@ -189,6 +189,13 @@
       "env": {
         "CLAUDE_PROJECT_DIR": "."
       }
+    },
+    "session-restart": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/session-restart/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
     }
   }
 }

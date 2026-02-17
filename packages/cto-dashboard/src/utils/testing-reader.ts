@@ -265,12 +265,34 @@ export function getTestingData(): TestingData {
 }
 
 /**
+ * Ensure OP_SERVICE_ACCOUNT_TOKEN is in the environment before calling `op read`.
+ * When the dashboard runs as a standalone Node script (not via MCP launcher),
+ * OP_SERVICE_ACCOUNT_TOKEN is not inherited. Load it from .mcp.json (source of truth).
+ */
+function loadOpTokenFromMcpJson(): void {
+  if (process.env['OP_SERVICE_ACCOUNT_TOKEN']) return;
+  const mcpPath = path.join(PROJECT_DIR, '.mcp.json');
+  try {
+    const config = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+    for (const server of Object.values(config.mcpServers || {}) as Array<{ env?: Record<string, string> }>) {
+      if (server.env?.['OP_SERVICE_ACCOUNT_TOKEN']) {
+        process.env['OP_SERVICE_ACCOUNT_TOKEN'] = server.env['OP_SERVICE_ACCOUNT_TOKEN'];
+        return;
+      }
+    }
+  } catch {
+    // .mcp.json not readable — op read will rely on desktop session or fail gracefully
+  }
+}
+
+/**
  * Resolve Codecov credentials from env vars, vault-mappings.json, and git remote.
  */
 function resolveCodecovCredentials(): { token: string; owner: string; repo: string; service: string } | null {
   // Token: env var first, then vault-mappings.json
   let token = process.env['CODECOV_TOKEN'] || '';
   if (!token) {
+    loadOpTokenFromMcpJson();
     try {
       const vaultPath = path.join(PROJECT_DIR, '.claude', 'vault-mappings.json');
       if (fs.existsSync(vaultPath)) {

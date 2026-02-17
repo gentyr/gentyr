@@ -66,10 +66,17 @@ try {
     process.exit(0);
   }
 
+  // Known alternative keys — only one of each pair needs to be configured
+  const ALTERNATIVES = {
+    'ELASTIC_CLOUD_ID': 'ELASTIC_ENDPOINT',
+    'ELASTIC_ENDPOINT': 'ELASTIC_CLOUD_ID',
+  };
+
   // Check vault mappings
   let configuredCount = 0;
-  const missingKeys = [];
+  let missingKeys = [];
   let hasOpRefs = false;
+  const configuredKeys = new Set();
 
   try {
     const data = JSON.parse(fs.readFileSync(mappingsPath, 'utf8'));
@@ -78,6 +85,7 @@ try {
       if (mappings[key]) {
         // Both op:// references and direct values count as configured
         configuredCount++;
+        configuredKeys.add(key);
         if (typeof mappings[key] === 'string' && mappings[key].startsWith('op://')) {
           hasOpRefs = true;
         }
@@ -88,6 +96,39 @@ try {
   } catch {
     // No vault-mappings.json — all keys are missing
     missingKeys.push(...requiredKeys);
+  }
+
+  // Also check .mcp.json env blocks for missing keys (e.g. OP_SERVICE_ACCOUNT_TOKEN
+  // is injected into .mcp.json by the installer, not stored in vault-mappings).
+  // Also load OP_SERVICE_ACCOUNT_TOKEN into process.env for the op whoami check below.
+  if (missingKeys.length > 0 || !process.env.OP_SERVICE_ACCOUNT_TOKEN) {
+    const mcpPath = path.join(projectDir, '.mcp.json');
+    try {
+      const mcpConfig = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+      const mcpEnvKeys = new Set();
+      for (const server of Object.values(mcpConfig.mcpServers || {})) {
+        if (server.env) {
+          for (const k of Object.keys(server.env)) {
+            if (server.env[k]) mcpEnvKeys.add(k);
+          }
+          // Load OP_SERVICE_ACCOUNT_TOKEN for op whoami connectivity check
+          if (!process.env.OP_SERVICE_ACCOUNT_TOKEN && server.env.OP_SERVICE_ACCOUNT_TOKEN) {
+            process.env.OP_SERVICE_ACCOUNT_TOKEN = server.env.OP_SERVICE_ACCOUNT_TOKEN;
+          }
+        }
+      }
+      missingKeys = missingKeys.filter(k => !mcpEnvKeys.has(k));
+    } catch {
+      // .mcp.json not readable — skip this check
+    }
+  }
+
+  // Handle alternative keys — if one of a pair is configured, the other is not missing
+  if (missingKeys.length > 0) {
+    missingKeys = missingKeys.filter(key => {
+      const alt = ALTERNATIVES[key];
+      return !alt || !configuredKeys.has(alt);
+    });
   }
 
   if (missingKeys.length > 0) {

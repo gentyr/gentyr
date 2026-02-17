@@ -28,13 +28,13 @@ export interface McpContent {
 
 export interface ChromeBridgeSuccessResponse {
   result: {
-    content: McpContent[];
+    content: McpContent[] | McpContent | string;
   };
 }
 
 export interface ChromeBridgeErrorResponse {
   error: {
-    content: McpContent[];
+    content: McpContent[] | McpContent | string;
   };
 }
 

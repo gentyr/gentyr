@@ -130,32 +130,21 @@ async function renderFetch(endpoint: string, options: RequestInit = {}): Promise
 }
 
 /**
- * Push env var to Render (creates if not exists, updates if exists)
+ * Push env var to Render (creates if not exists, updates if exists).
+ * Render API uses PUT as an upsert: PUT /services/{id}/env-vars/{key}
  */
 async function renderSetEnvVar(serviceId: string, key: string, value: string): Promise<'created' | 'updated'> {
-  const body = { key, value };
+  // Check if key already exists for accurate reporting
+  const existingKeys = await renderListEnvVars(serviceId);
+  const exists = existingKeys.includes(key);
 
-  try {
-    // Try POST first (create)
-    await renderFetch(`/services/${serviceId}/env-vars`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-    return 'created';
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+  // Render API PUT /services/{id}/env-vars/{key} is an upsert
+  await renderFetch(`/services/${serviceId}/env-vars/${key}`, {
+    method: 'PUT',
+    body: JSON.stringify({ value }),
+  });
 
-    // If 409 conflict, update with PUT
-    if (message.includes('409') || message.includes('already exists')) {
-      await renderFetch(`/services/${serviceId}/env-vars/${key}`, {
-        method: 'PUT',
-        body: JSON.stringify({ value }),
-      });
-      return 'updated';
-    }
-
-    throw err;
-  }
+  return exists ? 'updated' : 'created';
 }
 
 /**

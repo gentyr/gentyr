@@ -38,6 +38,7 @@ class ChromeBridgeClient {
   private reconnectAttempts = new Map<string, number>();
   private requestQueues = new Map<string, Promise<void>>();
   private tabRoutes = new Map<number, string>(); // tabId -> socketPath
+  private tabUrls = new Map<number, string>(); // tabId -> last known URL
   private readonly socketDir: string;
 
   private static readonly CLIENT_ID = 'gentyr';
@@ -278,6 +279,15 @@ class ChromeBridgeClient {
     }
   }
 
+  private isContentScriptError(result: { content: McpContent[]; isError?: boolean }): boolean {
+    return result.isError === true && result.content.some(
+      (c) => c.type === 'text' && (
+        (c.text?.includes('Cannot access contents')) ||
+        (c.text?.includes('must request permission'))
+      ),
+    );
+  }
+
   async executeTool(
     toolName: string,
     args: Record<string, unknown>,
@@ -329,9 +339,40 @@ class ChromeBridgeClient {
       };
     }
 
+    // Inject a tabId for tools that don't require one but need tab context
+    // (e.g., update_plan, switch_browser). The extension needs a tab to anchor its UI.
+    if (tabId === undefined) {
+      for (const [knownTabId, socketPath] of this.tabRoutes) {
+        if (socketPath === targetSocket) {
+          args = { ...args, tabId: knownTabId };
+          break;
+        }
+      }
+    }
+
     try {
       const response = await this.executeOnSocketSerialized(targetSocket, toolName, args);
-      return this.normalizeResponse(response);
+      const result = this.normalizeResponse(response);
+
+      // Content script injection retry: if the tab was loaded before the MCP
+      // tab group was created, the accessibility tree content script won't be
+      // injected yet. Reload the page to trigger injection, then retry once.
+      if (this.isContentScriptError(result) && tabId !== undefined) {
+        const cachedUrl = this.tabUrls.get(tabId);
+        if (cachedUrl) {
+          log(`Content script missing on tab ${tabId}, reloading ${cachedUrl} and retrying...`);
+          try {
+            await this.executeOnSocketSerialized(targetSocket, 'navigate', { url: cachedUrl, tabId });
+            await new Promise((r) => setTimeout(r, 2000));
+            const retryResponse = await this.executeOnSocketSerialized(targetSocket, toolName, args);
+            return this.normalizeResponse(retryResponse);
+          } catch {
+            // Retry failed, fall through to return the original error
+          }
+        }
+      }
+
+      return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return {
@@ -402,6 +443,9 @@ class ChromeBridgeClient {
           for (const tab of tabs) {
             if (typeof tab === 'object' && tab !== null && typeof tab.tabId === 'number') {
               this.tabRoutes.set(tab.tabId, socketPath);
+              if (typeof tab.url === 'string' && tab.url) {
+                this.tabUrls.set(tab.tabId, tab.url);
+              }
             }
           }
         }
@@ -415,7 +459,8 @@ class ChromeBridgeClient {
     response: ChromeBridgeResponse,
   ): { content: McpContent[]; isError?: boolean } {
     if ('error' in response && response.error) {
-      const content = response.error.content ?? [];
+      const rawErrorContent = response.error.content;
+      const content = Array.isArray(rawErrorContent) ? rawErrorContent : rawErrorContent != null ? [rawErrorContent] : [];
       return {
         content: content.map((c) =>
           typeof c === 'object' && c !== null && 'type' in c
@@ -427,7 +472,8 @@ class ChromeBridgeClient {
     }
 
     if ('result' in response && response.result) {
-      const content = response.result.content ?? [];
+      const rawContent = response.result.content;
+      const content = Array.isArray(rawContent) ? rawContent : rawContent != null ? [rawContent] : [];
       return {
         content: content.map((c) => {
           if (typeof c === 'object' && c !== null && 'type' in c) {
@@ -457,6 +503,7 @@ class ChromeBridgeClient {
     }
     this.connections.clear();
     this.tabRoutes.clear();
+    this.tabUrls.clear();
     this.requestQueues.clear();
     this.reconnectAttempts.clear();
   }

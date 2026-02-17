@@ -904,6 +904,18 @@ else
     echo -e "${YELLOW}Skipping macOS TCC setup (not macOS)${NC}"
 fi
 
+# --- 6c. Chrome Extension Host Permissions ---
+echo ""
+if [[ "$(uname)" == "Darwin" ]]; then
+    echo -e "${YELLOW}Configuring Chrome extension permissions...${NC}"
+    if [ -x "$FRAMEWORK_DIR/scripts/grant-chrome-ext-permissions.sh" ]; then
+        "$FRAMEWORK_DIR/scripts/grant-chrome-ext-permissions.sh" || \
+            echo -e "  ${YELLOW}Chrome permission setup skipped (non-fatal)${NC}"
+    fi
+else
+    echo -e "${YELLOW}Skipping Chrome extension permissions (not macOS)${NC}"
+fi
+
 # --- 7. Gitignore ---
 echo ""
 echo -e "${YELLOW}Updating .gitignore...${NC}"

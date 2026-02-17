@@ -72,6 +72,34 @@ scripts/setup-automation-service.sh setup --path /project --op-token TOKEN  # In
 
 By default, the automation service runs without 1Password credentials in background mode to avoid macOS permission prompts. Provide `--op-token` with a 1Password service account token to enable headless credential resolution for infrastructure MCP servers.
 
+## VS Code Companion Extension
+
+The GENTYR VS Code extension provides a real-time dashboard for developers who use VS Code as their primary editor. It displays the same metrics as the CLI dashboard but in a persistent, always-visible format.
+
+**Features:**
+- **Status bar item** - Always-visible quota/usage summary
+- **Dashboard panel** - Full metrics view with quota bars, deputy CTO status, task breakdown, and system health
+- **Real-time updates** - File watchers monitor SQLite databases and state files for changes
+- **No configuration** - Reads same data sources as CLI dashboard
+
+**Installation:**
+```bash
+cd packages/vscode-extension
+npm install
+npm run build          # Development build
+npm run package        # Create VSIX package for installation
+```
+
+Install the generated `.vsix` file in VS Code via Extensions > Install from VSIX.
+
+**Architecture:**
+- Extension host (Node.js/CommonJS) handles data aggregation and file watching
+- Webview (React/ESM) renders the dashboard UI
+- Self-contained DataService (~700 lines) aggregates data from:
+  - SQLite databases (todo.db, agent-tracker.db, agent-reports.db, deputy-cto.db)
+  - JSON state files (quota snapshots, autonomous mode, usage optimizer)
+  - Anthropic API (quota and usage data)
+
 ## Chrome Browser Automation
 
 The chrome-bridge MCP server provides access to Claude for Chrome extension capabilities:

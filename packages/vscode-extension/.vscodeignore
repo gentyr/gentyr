@@ -1,6 +1,4 @@
 src/**
-node_modules/**
-!node_modules/better-sqlite3/**
 .gitignore
 tsconfig.json
 tsconfig.webview.json
@@ -8,3 +6,14 @@ esbuild.config.js
 **/*.ts
 **/*.tsx
 **/*.map
+
+# Exclude all node_modules except native deps needed at runtime
+node_modules/**
+!node_modules/better-sqlite3/**
+!node_modules/bindings/**
+!node_modules/file-uri-to-path/**
+
+# Exclude build artifacts from better-sqlite3
+node_modules/better-sqlite3/deps/**
+node_modules/better-sqlite3/src/**
+node_modules/better-sqlite3/binding.gyp

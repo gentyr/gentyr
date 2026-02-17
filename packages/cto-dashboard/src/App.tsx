@@ -239,6 +239,13 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
         </Box>
       </Box>
 
+      {/* Deputy CTO triage pipeline */}
+      {deputyCto.hasData && (
+        <Box marginTop={1}>
+          <DeputyCtoSection data={deputyCto} />
+        </Box>
+      )}
+
       {/* Usage Trends - line graphs (only if data available) */}
       {trajectory.hasData && (
         <Box marginTop={1}>
@@ -264,13 +271,6 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       {!automatedInstances.hasData && (
         <Box marginTop={1}>
           <Automations automations={data.automations} />
-        </Box>
-      )}
-
-      {/* Deputy CTO triage pipeline */}
-      {deputyCto.hasData && (
-        <Box marginTop={1}>
-          <DeputyCtoSection data={deputyCto} />
         </Box>
       )}
 

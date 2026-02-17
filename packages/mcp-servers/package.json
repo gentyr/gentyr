@@ -32,7 +32,8 @@
     "mcp-playwright": "./dist/playwright/server.js",
     "mcp-makerkit-docs": "./dist/makerkit-docs/server.js",
     "mcp-setup-helper": "./dist/setup-helper/server.js",
-    "mcp-chrome-bridge": "./dist/chrome-bridge/server.js"
+    "mcp-chrome-bridge": "./dist/chrome-bridge/server.js",
+    "mcp-session-restart": "./dist/session-restart/server.js"
   },
   "scripts": {
     "build": "tsc",
