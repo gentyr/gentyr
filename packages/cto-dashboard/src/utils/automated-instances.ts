@@ -103,32 +103,32 @@ const INSTANCE_DEFINITIONS: Array<{
     hookTypes: ['PreCommit'],
     trigger: 'commit',
     stateKey: null,
-    cooldownKey: null,
-    defaultMinutes: null,
+    cooldownKey: 'pre_commit_review',
+    defaultMinutes: 5,
   },
   {
     type: 'Test Suite',
     agentTypes: ['test-failure-jest', 'test-failure-vitest', 'test-failure-playwright'],
     trigger: 'failure',
     stateKey: null,
-    cooldownKey: null,
-    defaultMinutes: null,
+    cooldownKey: 'test_failure_reporter',
+    defaultMinutes: 120,
   },
   {
     type: 'Compliance (Hook)',
     agentTypes: ['compliance-global', 'compliance-local', 'compliance-mapping-fix', 'compliance-mapping-review'],
     trigger: 'file-change',
     stateKey: null,
-    cooldownKey: null,
-    defaultMinutes: null,
+    cooldownKey: 'compliance_checker_file',
+    defaultMinutes: 10080,
   },
   {
     type: 'Todo Maintenance',
     agentTypes: ['todo-processing', 'todo-syntax-fix'],
     trigger: 'file-change',
     stateKey: null,
-    cooldownKey: null,
-    defaultMinutes: null,
+    cooldownKey: 'todo_maintenance',
+    defaultMinutes: 15,
   },
   // --- Scheduled automations ---
   {
@@ -262,9 +262,7 @@ export function getAutomatedInstances(): AutomatedInstancesData {
       const effectiveMinutes = config.effective?.[def.cooldownKey] ?? def.defaultMinutes ?? 0;
       const defaultMinutes = config.defaults?.[def.cooldownKey] ?? def.defaultMinutes ?? 0;
 
-      // Check if this automation is in static mode
       const modeEntry = config.modes?.[def.cooldownKey];
-      const isStatic = modeEntry?.mode === 'static';
 
       if (lastRun && effectiveMinutes > 0) {
         const nextRunMs = lastRun + (effectiveMinutes * 60 * 1000);
@@ -276,26 +274,23 @@ export function getAutomatedInstances(): AutomatedInstancesData {
           untilNext = formatDuration(secondsUntil);
         }
 
-        // Frequency adjustment display
-        if (isStatic) {
-          freqAdj = `static ${modeEntry?.static_minutes ?? effectiveMinutes}m`;
-        } else if (defaultMinutes > 0 && effectiveMinutes !== defaultMinutes) {
-          const pctChange = Math.round(((effectiveMinutes - defaultMinutes) / defaultMinutes) * 100);
-          if (pctChange !== 0) {
-            const direction = pctChange > 0 ? 'slower' : 'faster';
-            freqAdj = `${pctChange > 0 ? '+' : ''}${pctChange}% ${direction}`;
-          }
-        } else {
-          freqAdj = 'baseline';
-        }
+        freqAdj = computeFreqAdj(effectiveMinutes, defaultMinutes, modeEntry);
       } else {
         untilNext = 'pending';
-        freqAdj = isStatic ? `static ${modeEntry?.static_minutes ?? effectiveMinutes}m` : 'baseline';
+        freqAdj = computeFreqAdj(effectiveMinutes, defaultMinutes, modeEntry);
       }
     } else if (def.trigger === 'scheduled') {
       // Scheduled but missing stateKey or cooldownKey
       untilNext = 'pending';
       freqAdj = 'baseline';
+    }
+
+    // For event-triggered hooks with a cooldownKey, compute freqAdj from optimizer data
+    if (def.trigger !== 'scheduled' && def.cooldownKey && def.defaultMinutes !== null) {
+      const effectiveMinutes = config.effective?.[def.cooldownKey] ?? def.defaultMinutes;
+      const defaultMinutes = config.defaults?.[def.cooldownKey] ?? def.defaultMinutes;
+      const modeEntry = config.modes?.[def.cooldownKey];
+      freqAdj = computeFreqAdj(effectiveMinutes, defaultMinutes, modeEntry);
     }
 
     instances.push({
@@ -397,6 +392,10 @@ function getAutomationConfig(): AutomationConfigFile {
     standalone_antipattern_hunter: 180,
     standalone_compliance_checker: 60,
     user_feedback: 120,
+    test_failure_reporter: 120,
+    pre_commit_review: 5,
+    compliance_checker_file: 10080,
+    compliance_checker_spec: 10080,
   };
 
   const config: AutomationConfigFile = {
@@ -430,6 +429,27 @@ function getAutomationConfig(): AutomationConfigFile {
   } catch {
     return config;
   }
+}
+
+/**
+ * Compute frequency adjustment display string.
+ */
+function computeFreqAdj(
+  effectiveMinutes: number,
+  defaultMinutes: number,
+  modeEntry: AutomationModeEntry | undefined,
+): string {
+  if (modeEntry?.mode === 'static') {
+    return `static ${modeEntry?.static_minutes ?? effectiveMinutes}m`;
+  }
+  if (defaultMinutes > 0 && effectiveMinutes !== defaultMinutes) {
+    const pctChange = Math.round(((effectiveMinutes - defaultMinutes) / defaultMinutes) * 100);
+    if (pctChange !== 0) {
+      const direction = pctChange > 0 ? 'slower' : 'faster';
+      return `${pctChange > 0 ? '+' : ''}${pctChange}% ${direction}`;
+    }
+  }
+  return 'baseline';
 }
 
 /**

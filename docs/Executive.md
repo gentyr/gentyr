@@ -256,10 +256,14 @@ The `/cto-report` command launches an Ink-based (React for CLIs) dashboard that 
 ### Dashboard Sections Explained
 
 #### Usage Trends
-- **Purpose**: Visualize API quota consumption history using ASCII sparkline charts
+- **Purpose**: Visualize API quota consumption history using high-resolution line graphs
 - **Data Source**: `.claude/state/usage-snapshots.json` (collected by usage-optimizer every 10 minutes)
-- **Shows**: Sparkline charts for 5-hour and 7-day windows with current, min, and max values
-- **Graceful Degradation**: Section hides when no snapshot data available
+- **Shows**:
+  - **5-Hour Usage Chart**: Historical line graph with current, min, and max values
+  - **7-Day Usage Chart**: Historical line graph with current, min, and max values
+  - **Trajectory Forecast Chart**: Combined visualization showing history (left side) transitioning to linear projections (right side) for both windows, with 90% target line overlay
+- **X-Axis Labels**: Forecast chart displays "[timeAgo] → now → reset: Xh" to visually separate historical data from projections
+- **Graceful Degradation**: Section hides when no snapshot data available; forecast chart only renders when projection data exists
 
 #### Usage Trajectory
 - **Purpose**: Project future API usage at reset time using trend analysis
@@ -269,6 +273,7 @@ The `/cto-report` command launches an Ink-based (React for CLIs) dashboard that 
   - At Reset % - Projected usage when quota resets (with trend arrow)
   - Reset In - Time remaining until quota reset
   - Trend - Rate of change (% per hour for 5h, % per day for 7d)
+- **Note**: This text-based projection section complements the visual Trajectory Forecast chart in Usage Trends
 
 #### Automated Instances
 - **Purpose**: Monitor all automated Claude triggers with frequency adjustment visibility

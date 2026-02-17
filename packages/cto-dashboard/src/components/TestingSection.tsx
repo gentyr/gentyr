@@ -11,6 +11,7 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
+import { LineGraph } from '@pppp606/ink-chart';
 import { Section } from './Section.js';
 import { formatTimeAgo } from '../utils/formatters.js';
 import type { TestingData, FailingSuite } from '../utils/testing-reader.js';
@@ -96,7 +97,7 @@ export function TestingSection({ data }: TestingSectionProps): React.ReactElemen
   if (!data.hasData) return null;
 
   const hasFailingSuites = data.failingSuites.length > 0;
-  const hasActivity = data.dailyTestActivity.length > 0;
+  const hasTimeseries = data.testActivityTimeseries.length > 0 && data.testActivityTimeseries.some(v => v > 0);
   const hasCodecov = data.codecov !== null;
   const bd = data.agentBreakdown24h;
   const hasAgentActivity = data.testAgentSpawns24h > 0;
@@ -153,31 +154,37 @@ export function TestingSection({ data }: TestingSectionProps): React.ReactElemen
           </Box>
         )}
 
-        {/* Sparkline + Codecov footer */}
-        <Box flexDirection="row" marginTop={1} gap={3}>
-          {hasActivity && (
+        {/* Test Agent Activity LineGraph */}
+        {hasTimeseries && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color="cyan" bold>Test Agent Activity (7d)</Text>
+            <LineGraph
+              data={[{ values: data.testActivityTimeseries, color: 'cyan' }]}
+              height={5}
+              width={72}
+              yDomain={[0, Math.max(...data.testActivityTimeseries, 1)]}
+              showYAxis
+            />
+          </Box>
+        )}
+
+        {/* Codecov footer */}
+        {hasCodecov && data.codecov && (
+          <Box flexDirection="row" marginTop={1} gap={3}>
             <Box>
-              <Text color="gray">7d activity: </Text>
-              {miniSparkline(data.dailyTestActivity, 'cyan')}
+              <Text color="gray">Coverage: </Text>
+              <Text color={data.codecov.coveragePercent >= 80 ? 'green' : data.codecov.coveragePercent >= 60 ? 'yellow' : 'red'}>
+                {Math.round(data.codecov.coveragePercent)}%
+              </Text>
             </Box>
-          )}
-          {hasCodecov && data.codecov && (
-            <>
+            {data.codecov.trend.length > 0 && (
               <Box>
-                <Text color="gray">Coverage: </Text>
-                <Text color={data.codecov.coveragePercent >= 80 ? 'green' : data.codecov.coveragePercent >= 60 ? 'yellow' : 'red'}>
-                  {Math.round(data.codecov.coveragePercent)}%
-                </Text>
+                <Text color="gray">7d trend: </Text>
+                {miniSparkline(data.codecov.trend, 'green')}
               </Box>
-              {data.codecov.trend.length > 0 && (
-                <Box>
-                  <Text color="gray">7d trend: </Text>
-                  {miniSparkline(data.codecov.trend, 'green')}
-                </Box>
-              )}
-            </>
-          )}
-        </Box>
+            )}
+          </Box>
+        )}
       </Box>
     </Section>
   );

@@ -23,6 +23,8 @@ import {
   FeedbackPersonas,
   DeputyCtoSection,
   TestingSection,
+  DeploymentsSection,
+  InfraSection,
   type MetricBoxData,
 } from './components/index.js';
 import type { DashboardData } from './utils/data-reader.js';
@@ -31,6 +33,8 @@ import type { TrajectoryResult } from './utils/trajectory.js';
 import type { AutomatedInstancesData } from './utils/automated-instances.js';
 import type { DeputyCtoData } from './utils/deputy-cto-reader.js';
 import type { TestingData } from './utils/testing-reader.js';
+import type { DeploymentsData } from './utils/deployments-reader.js';
+import type { InfraData } from './utils/infra-reader.js';
 import { formatNumber, formatDateTime, formatTime12h, formatDelta, calculateCacheRate } from './utils/formatters.js';
 
 interface AppProps {
@@ -40,6 +44,8 @@ interface AppProps {
   automatedInstances: AutomatedInstancesData;
   deputyCto: DeputyCtoData;
   testing: TestingData;
+  deployments: DeploymentsData;
+  infra: InfraData;
 }
 
 function Header({ data }: { data: DashboardData }): React.ReactElement {
@@ -223,7 +229,7 @@ function MetricsSummary({ data }: { data: DashboardData }): React.ReactElement {
   );
 }
 
-export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing }: AppProps): React.ReactElement {
+export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra }: AppProps): React.ReactElement {
   return (
     <Box flexDirection="column" padding={0}>
       {/* Header */}
@@ -278,6 +284,20 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       {testing.hasData && (
         <Box marginTop={1}>
           <TestingSection data={testing} />
+        </Box>
+      )}
+
+      {/* Deployments */}
+      {deployments.hasData && (
+        <Box marginTop={1}>
+          <DeploymentsSection data={deployments} />
+        </Box>
+      )}
+
+      {/* Infrastructure */}
+      {infra.hasData && (
+        <Box marginTop={1}>
+          <InfraSection data={infra} />
         </Box>
       )}
 

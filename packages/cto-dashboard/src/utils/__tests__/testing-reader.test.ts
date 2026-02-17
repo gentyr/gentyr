@@ -90,6 +90,7 @@ describe('Testing Reader', () => {
       expect(result.suitesFixedRecently).toBe(0);
       expect(result.uniqueFailureSignatures24h).toBe(0);
       expect(result.dailyTestActivity).toEqual([]);
+      expect(result.testActivityTimeseries).toEqual([]);
       expect(result.codecov).toBeNull();
     });
 
@@ -103,6 +104,7 @@ describe('Testing Reader', () => {
       expect(result).toHaveProperty('suitesFixedRecently');
       expect(result).toHaveProperty('uniqueFailureSignatures24h');
       expect(result).toHaveProperty('dailyTestActivity');
+      expect(result).toHaveProperty('testActivityTimeseries');
       expect(result).toHaveProperty('codecov');
 
       expect(typeof result.hasData).toBe('boolean');
@@ -112,6 +114,7 @@ describe('Testing Reader', () => {
       expect(typeof result.suitesFixedRecently).toBe('number');
       expect(typeof result.uniqueFailureSignatures24h).toBe('number');
       expect(Array.isArray(result.dailyTestActivity)).toBe(true);
+      expect(Array.isArray(result.testActivityTimeseries)).toBe(true);
     });
   });
 

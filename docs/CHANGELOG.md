@@ -1,5 +1,42 @@
 # GENTYR Framework Changelog
 
+## 2026-02-16 - CTO Dashboard Trajectory Forecast Graph
+
+### Added
+
+**Visual Trajectory Forecasting:**
+
+1. **Trajectory Forecast Chart** (UsageTrends component)
+   - Combined visualization showing historical usage transitioning to linear projections
+   - 3 series: cyan 5h line, magenta 7d line, gray 90% target overlay
+   - X-axis labels: "[timeAgo] → now → reset: Xh" to separate history from forecast
+   - Projection point generation using linear extrapolation clamped to [0, 100]
+   - Graceful degradation (only renders when projection data exists)
+
+### Fixed
+
+**Multi-Account Reset Time Bug:**
+- Previously: `trajectory.ts` arbitrarily took the last API key's reset time during iteration
+- Now: Picks the **earliest** reset time across all keys (most conservative estimate for aggregate quota tracking)
+
+### Modified
+
+**Files Changed (3 total):**
+- `packages/cto-dashboard/src/utils/trajectory.ts` (lines 174-175) - Fixed reset time selection logic
+- `packages/cto-dashboard/src/components/UsageTrends.tsx` - Added forecast chart with projection helpers
+- `packages/cto-dashboard/src/App.tsx` - Updated props from `{snapshots, hasData}` to `{trajectory: TrajectoryResult}`
+
+**Tests Added (2 files, 48 tests):**
+- `packages/cto-dashboard/src/utils/__tests__/trajectory.test.ts` (21 tests)
+- `packages/cto-dashboard/src/components/__tests__/UsageTrends.test.tsx` (27 tests)
+
+**Documentation:**
+- `docs/Executive.md` - Updated Usage Trends section to describe forecast chart and distinguish from text-based trajectory section
+
+**Total Changes:** +165 lines added, 3 files modified, 48 tests added, 330 total tests passing
+
+---
+
 ## 2026-02-16 - Multi-Layer Credential Detection
 
 ### Added

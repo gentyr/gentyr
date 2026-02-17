@@ -29,6 +29,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -47,6 +48,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 2,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [1, 2, 3, 1, 2, 1, 0],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -83,6 +85,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 2,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -121,6 +124,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -171,6 +175,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -201,6 +206,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -244,6 +250,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -267,6 +274,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -294,6 +302,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -315,6 +324,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -337,6 +347,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 5,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -356,6 +367,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 12,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -375,6 +387,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 1,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -404,6 +417,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -426,6 +440,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [1, 2, 3, 5, 4, 2, 1],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -445,6 +460,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [0, 0, 0, 0, 0, 0, 0],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -463,6 +479,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -483,6 +500,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: {
           coveragePercent: 85.5,
           trend: [80, 82, 83, 84, 85, 85, 85.5]
@@ -513,6 +531,7 @@ describe('TestingSection', () => {
           suitesFixedRecently: 0,
           uniqueFailureSignatures24h: 0,
           dailyTestActivity: [],
+          testActivityTimeseries: [],
           codecov: {
             coveragePercent: percent,
             trend: []
@@ -536,6 +555,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: {
           coveragePercent: 75,
           trend: []
@@ -559,6 +579,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [1, 2, 3, 4, 5, 6, 7],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -595,6 +616,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 3,
         uniqueFailureSignatures24h: 5,
         dailyTestActivity: [2, 3, 5, 4, 3, 2, 1],
+        testActivityTimeseries: [],
         codecov: {
           coveragePercent: 82.5,
           trend: [78, 79, 80, 81, 81.5, 82, 82.5]
@@ -639,6 +661,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -657,6 +680,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 2,
         uniqueFailureSignatures24h: 3,
         dailyTestActivity: [1, 2, 3, 4, 5, 6, 7],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -685,6 +709,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -703,6 +728,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 100000,
         uniqueFailureSignatures24h: 50000,
         dailyTestActivity: [10000, 20000, 30000, 40000, 50000, 60000, 70000],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -731,6 +757,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -758,6 +785,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 
@@ -786,6 +814,7 @@ describe('TestingSection', () => {
           suitesFixedRecently: 0,
           uniqueFailureSignatures24h: 0,
           dailyTestActivity: [],
+          testActivityTimeseries: [],
           codecov: {
             coveragePercent: percent,
             trend: []
@@ -816,6 +845,7 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
+        testActivityTimeseries: [],
         codecov: null
       };
 

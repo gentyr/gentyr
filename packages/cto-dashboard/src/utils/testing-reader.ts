@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
+import { resolveCredential } from './credentials.js';
 
 const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
 const AGENT_TRACKER_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
@@ -53,6 +54,8 @@ export interface TestingData {
   uniqueFailureSignatures24h: number;   // distinct failure hashes in 24h
   // 7-day test failure agent activity (daily counts for sparkline)
   dailyTestActivity: number[];
+  // 4-hour bucket timeseries for LineGraph (42 values = 7 days * 6 buckets/day)
+  testActivityTimeseries: number[];
   // Codecov (optional)
   codecov: {
     coveragePercent: number;
@@ -106,6 +109,7 @@ export function getTestingData(): TestingData {
     suitesFixedRecently: 0,
     uniqueFailureSignatures24h: 0,
     dailyTestActivity: [],
+    testActivityTimeseries: [],
     codecov: null,
   };
 
@@ -169,6 +173,11 @@ export function getTestingData(): TestingData {
       // Buckets for 7-day sparkline (index 0 = 7 days ago, index 6 = today)
       const dailyCounts = new Array(7).fill(0);
 
+      // 4-hour buckets for LineGraph (42 values = 7 days * 6 buckets/day)
+      const BUCKET_HOURS = 4;
+      const BUCKET_COUNT = 42;
+      const fourHourBuckets = new Array(BUCKET_COUNT).fill(0);
+
       for (const agent of history.agents || []) {
         if (!TEST_AGENT_TYPES.includes(agent.type)) continue;
 
@@ -205,10 +214,18 @@ export function getTestingData(): TestingData {
           const daysAgo = Math.floor((now - agentTime) / (24 * 60 * 60 * 1000));
           const bucketIdx = 6 - Math.min(daysAgo, 6);
           dailyCounts[bucketIdx]++;
+
+          // 4-hour bucket
+          const hoursAgo = (now - agentTime) / (3600 * 1000);
+          if (hoursAgo < BUCKET_COUNT * BUCKET_HOURS) {
+            const idx = BUCKET_COUNT - 1 - Math.floor(hoursAgo / BUCKET_HOURS);
+            fourHourBuckets[Math.max(0, idx)]++;
+          }
         }
       }
 
       result.dailyTestActivity = dailyCounts;
+      result.testActivityTimeseries = fourHourBuckets;
       result.hasData = true;
     } catch {
       // Ignore
@@ -265,48 +282,11 @@ export function getTestingData(): TestingData {
 }
 
 /**
- * Ensure OP_SERVICE_ACCOUNT_TOKEN is in the environment before calling `op read`.
- * When the dashboard runs as a standalone Node script (not via MCP launcher),
- * OP_SERVICE_ACCOUNT_TOKEN is not inherited. Load it from .mcp.json (source of truth).
- */
-function loadOpTokenFromMcpJson(): void {
-  // Always read .mcp.json (source of truth, updated by reinstall.sh) — the env
-  // may have a stale token from a previous session that predates a token rotation.
-  const mcpPath = path.join(PROJECT_DIR, '.mcp.json');
-  try {
-    const config = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
-    for (const server of Object.values(config.mcpServers || {}) as Array<{ env?: Record<string, string> }>) {
-      if (server.env?.['OP_SERVICE_ACCOUNT_TOKEN']) {
-        process.env['OP_SERVICE_ACCOUNT_TOKEN'] = server.env['OP_SERVICE_ACCOUNT_TOKEN'];
-        return;
-      }
-    }
-  } catch {
-    // .mcp.json not readable — op read will rely on env token or desktop session
-  }
-}
-
-/**
  * Resolve Codecov credentials from env vars, vault-mappings.json, and git remote.
  */
 function resolveCodecovCredentials(): { token: string; owner: string; repo: string; service: string } | null {
-  // Token: env var first, then vault-mappings.json
-  let token = process.env['CODECOV_TOKEN'] || '';
-  if (!token) {
-    loadOpTokenFromMcpJson();
-    try {
-      const vaultPath = path.join(PROJECT_DIR, '.claude', 'vault-mappings.json');
-      if (fs.existsSync(vaultPath)) {
-        const data = JSON.parse(fs.readFileSync(vaultPath, 'utf8')) as { mappings?: Record<string, string> };
-        const ref = data.mappings?.['CODECOV_TOKEN'];
-        if (ref && ref.startsWith('op://')) {
-          token = execFileSync('op', ['read', ref], { timeout: 10000, encoding: 'utf8' }).trim();
-        }
-      }
-    } catch (e) {
-      console.error('Codecov credential resolution failed:', e instanceof Error ? e.message : e);
-    }
-  }
+  // Token: shared credential resolution (env → vault-mappings → op read)
+  const token = resolveCredential('CODECOV_TOKEN') || '';
   if (!token) return null;
 
   // Owner/repo: env vars first, then git remote

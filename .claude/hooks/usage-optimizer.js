@@ -47,8 +47,9 @@ function revertOverdrive(config, log) {
     config.effective = prev.effective;
   }
   if (prev?.factor !== undefined) {
+    const restoredFactor = Math.max(MIN_FACTOR, Math.min(MAX_FACTOR, prev.factor));
     config.adjustment = config.adjustment || {};
-    config.adjustment.factor = prev.factor;
+    config.adjustment.factor = restoredFactor;
     config.adjustment.last_updated = new Date().toISOString();
     config.adjustment.direction = 'overdrive-reverted';
   }
@@ -566,7 +567,7 @@ function calculateAggregate(latest, earliest, hoursBetween, allSnapshots) {
  */
 function applyFactor(config, newFactor, constraining, projectedAtReset, log, hoursUntilReset) {
   const previousFactor = config.adjustment?.factor ?? 1.0;
-  const defaults = config.defaults || getDefaults();
+  const defaults = getDefaults();
 
   // Calculate effective cooldowns: higher factor = shorter cooldowns = more activity
   const effective = {};

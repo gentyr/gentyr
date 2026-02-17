@@ -15,3 +15,5 @@ export { AutomatedInstances, type AutomatedInstancesProps } from './AutomatedIns
 export { FeedbackPersonas } from './FeedbackPersonas.js';
 export { DeputyCtoSection, type DeputyCtoSectionProps } from './DeputyCtoSection.js';
 export { TestingSection, type TestingSectionProps } from './TestingSection.js';
+export { DeploymentsSection, type DeploymentsSectionProps } from './DeploymentsSection.js';
+export { InfraSection, type InfraSectionProps } from './InfraSection.js';

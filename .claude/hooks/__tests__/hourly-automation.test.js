@@ -315,3 +315,98 @@ describe('CTO Activity Gate (hourly-automation.js)', () => {
     });
   });
 });
+
+describe('Overdrive Concurrency Override', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should check for overdrive.active in autonomous-mode.json', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Should read autonomous-mode.json config
+    assert.match(
+      code,
+      /autoConfig\.overdrive\?\.active/,
+      'Must check for overdrive.active in config'
+    );
+  });
+
+  it('should verify overdrive has not expired', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Should compare current time with expires_at
+    assert.match(
+      code,
+      /new Date\(\) < new Date\(autoConfig\.overdrive\.expires_at\)/,
+      'Must check if overdrive has expired'
+    );
+  });
+
+  it('should override MAX_CONCURRENT_AGENTS when overdrive active', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Should read max_concurrent_override from overdrive config
+    assert.match(
+      code,
+      /const override = autoConfig\.overdrive\.max_concurrent_override/,
+      'Must read max_concurrent_override from overdrive config'
+    );
+
+    // Should validate and use the override value
+    assert.match(
+      code,
+      /effectiveMaxConcurrent = \(typeof override === ['"]number['"] && override >= 1 && override <= 20\)/,
+      'Must validate override is a number between 1 and 20'
+    );
+  });
+
+  it('should fall back to MAX_CONCURRENT_AGENTS if override invalid', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Should use ternary to provide fallback
+    assert.match(
+      code,
+      /\? override : MAX_CONCURRENT_AGENTS/,
+      'Must fall back to MAX_CONCURRENT_AGENTS if override invalid'
+    );
+  });
+
+  it('should log when concurrency limit is raised', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Should log the new concurrency limit
+    assert.match(
+      code,
+      /log\(`Overdrive active: concurrency limit raised to \$\{effectiveMaxConcurrent\}`\)/,
+      'Must log when concurrency limit is raised by overdrive'
+    );
+  });
+
+  it('should define effectiveMaxConcurrent variable before overdrive check', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Should initialize effectiveMaxConcurrent to MAX_CONCURRENT_AGENTS
+    assert.match(
+      code,
+      /let effectiveMaxConcurrent = MAX_CONCURRENT_AGENTS/,
+      'Must initialize effectiveMaxConcurrent to MAX_CONCURRENT_AGENTS'
+    );
+  });
+
+  it('should use effectiveMaxConcurrent in concurrency checks', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Should check runningAgents against effectiveMaxConcurrent (not hardcoded MAX_CONCURRENT_AGENTS)
+    assert.match(
+      code,
+      /runningAgents >= effectiveMaxConcurrent/,
+      'Must use effectiveMaxConcurrent in concurrency check'
+    );
+
+    // Should log the dynamic limit
+    assert.match(
+      code,
+      /\$\{runningAgents\}\/\$\{effectiveMaxConcurrent\}/,
+      'Must log dynamic concurrency limit'
+    );
+  });
+});

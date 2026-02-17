@@ -151,7 +151,7 @@ describe('UsageTrends', () => {
       const { lastFrame } = render(<UsageTrends trajectory={trajectory} />);
       const output = lastFrame();
 
-      expect(output).not.toContain('Trajectory Forecast');
+      expect(output).not.toContain('Forecast');
     });
 
     it('should render forecast when reset times are in the future', () => {
@@ -177,7 +177,8 @@ describe('UsageTrends', () => {
       const { lastFrame } = render(<UsageTrends trajectory={trajectory} />);
       const output = lastFrame();
 
-      expect(output).toContain('Trajectory Forecast');
+      expect(output).toContain('5-Hour Forecast');
+      expect(output).toContain('7-Day Forecast');
       expect(output).toContain('history → projection');
     });
 
@@ -204,7 +205,7 @@ describe('UsageTrends', () => {
       const { lastFrame } = render(<UsageTrends trajectory={trajectory} />);
       const output = lastFrame();
 
-      expect(output).not.toContain('Trajectory Forecast');
+      expect(output).not.toContain('Forecast');
     });
 
     it('should show reset time label in forecast', () => {
@@ -333,8 +334,9 @@ describe('UsageTrends', () => {
       const { lastFrame } = render(<UsageTrends trajectory={trajectory} />);
       const output = lastFrame();
 
-      // Should render forecast graph
-      expect(output).toContain('Trajectory Forecast');
+      // Should render separate forecast graphs
+      expect(output).toContain('5-Hour Forecast');
+      expect(output).toContain('7-Day Forecast');
     });
 
     it('should not generate forecast when trend is null', () => {
@@ -358,7 +360,7 @@ describe('UsageTrends', () => {
       const { lastFrame } = render(<UsageTrends trajectory={trajectory} />);
       const output = lastFrame();
 
-      expect(output).not.toContain('Trajectory Forecast');
+      expect(output).not.toContain('Forecast');
     });
 
     it('should not generate forecast when reset time is null', () => {
@@ -381,7 +383,7 @@ describe('UsageTrends', () => {
       const { lastFrame } = render(<UsageTrends trajectory={trajectory} />);
       const output = lastFrame();
 
-      expect(output).not.toContain('Trajectory Forecast');
+      expect(output).not.toContain('Forecast');
     });
   });
 
@@ -409,7 +411,7 @@ describe('UsageTrends', () => {
       const output = lastFrame();
 
       // Should show forecast with reset time around 1h
-      expect(output).toContain('Trajectory Forecast');
+      expect(output).toContain('5-Hour Forecast');
       expect(output).toMatch(/reset:\s*1h/);
     });
 
@@ -436,7 +438,7 @@ describe('UsageTrends', () => {
       const output = lastFrame();
 
       // Should show forecast using the future reset time
-      expect(output).toContain('Trajectory Forecast');
+      expect(output).toContain('5-Hour Forecast');
     });
   });
 
@@ -505,7 +507,8 @@ describe('UsageTrends', () => {
       const output = lastFrame();
 
       // Should still render forecast with decreasing trend
-      expect(output).toContain('Trajectory Forecast');
+      expect(output).toContain('5-Hour Forecast');
+      expect(output).toContain('7-Day Forecast');
     });
 
     it('should handle fractional percentages correctly', () => {

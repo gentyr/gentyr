@@ -6,7 +6,7 @@ A modular automation framework for Claude Code that provides MCP servers, specia
 
 - **25 MCP Servers**: 9 core (task tracking, specs, reviews, reporting) + 10 infrastructure (Render, Vercel, GitHub, Supabase, Cloudflare, Resend, Elasticsearch, 1Password, Codecov, secret-sync) + 5 AI user feedback (persona management, GUI testing, programmatic testing, reporting bridge, feedback exploration) + 1 browser automation (chrome-bridge)
 - **9 Framework Agents**: Code reviewer, test writer, investigator, deputy-CTO, feedback-agent, etc. (projects can add their own)
-- **7 Slash Commands**: `/configure-personas`, `/cto-report`, `/deputy-cto`, `/push-migrations`, `/push-secrets`, `/setup-gentyr`, `/toggle-automation-gentyr`
+- **8 Slash Commands**: `/configure-personas`, `/cto-report`, `/deputy-cto`, `/overdrive-gentyr`, `/push-migrations`, `/push-secrets`, `/setup-gentyr`, `/toggle-automation-gentyr`
 - **VS Code Companion Extension**: Real-time dashboard with quota usage, deputy CTO status, task tracking, and metrics display (always-visible status bar + webview panel)
 - **AI User Feedback System**: Automated user persona testing triggered by staging changes with configurable personas, features, and test scenarios
 - **13 Automation Hooks**: Pre-commit review, antipattern detection, multi-layer credential detection, CTO notification, secret leak detection, protected actions, AI user feedback pipeline
@@ -175,6 +175,7 @@ mcp__agent-reports__report_to_deputy_cto({
   - Timeline (chronological view of sessions, hooks, reports, questions, tasks)
   - Metrics summary (tokens, sessions, agents, tasks, hooks, triage, CTO queue)
 - **`/deputy-cto`** — Review and answer pending CTO decisions (batch review mode with up to 4 items at once), triage agent reports with recommendations, manage autonomous mode
+- **`/overdrive-gentyr`** — Activate overdrive mode to max out automation frequencies for rapid iteration (1-hour default duration, extensible, usage optimizer paused during overdrive)
 
 ### Autonomous Mode
 
@@ -245,8 +246,19 @@ All automation requires the CTO to have run `/deputy-cto` within the past 24 hou
 
 **Configuration files:**
 - `autonomous-mode.json` - Master config with per-feature toggles (all enabled by default)
-- `.claude/state/automation-config.json` - Cooldown defaults + dynamic adjustments
+- `.claude/state/automation-config.json` - Centralized cooldown configuration with defaults, dynamic adjustments from usage optimizer, and overdrive state
 - `.claude/state/usage-snapshots.json` - API usage history (7-day retention)
+
+**Centralized configuration:**
+All automation cooldowns are managed through `.claude/state/automation-config.json`, which is read by the shared `config-reader.js` module. Event-triggered cooldowns (test failure reporters, pre-commit review, compliance checker) now use the same centralized system. The usage optimizer dynamically adjusts cooldowns to target 90% quota utilization, and overdrive mode can temporarily override all cooldowns for rapid iteration.
+
+**Overdrive mode:**
+Use `/overdrive-gentyr` to activate overdrive for 1 hour. During overdrive:
+- All automation cooldowns are reduced to aggressive minimums (e.g., hourly_tasks: 55min → 10min, antipattern: 360min → 60min, compliance: 7d → 1d)
+- Concurrency limit raised from 5 to 8 agents
+- Usage optimizer is paused (no automatic cooldown adjustments)
+- Previous state is preserved and automatically restored when overdrive expires
+- Can extend duration or deactivate early via `/overdrive-gentyr`
 
 **Service management:**
 ```bash
@@ -434,10 +446,11 @@ mcp__specs-browser__createSpec({
 │   │   ├── project-manager.md
 │   │   ├── repo-hygiene-expert.md
 │   │   └── test-writer.md
-│   ├── commands/               # 7 slash commands (.md)
+│   ├── commands/               # 8 slash commands (.md)
 │   │   ├── configure-personas.md
 │   │   ├── cto-report.md
 │   │   ├── deputy-cto.md
+│   │   ├── overdrive-gentyr.md
 │   │   ├── push-migrations.md
 │   │   ├── push-secrets.md
 │   │   ├── setup-gentyr.md
@@ -745,7 +758,7 @@ The injected section provides agents with:
 - Golden rules for agent workflow
 - Standard development sequence (investigator → code-writer → test-writer → code-reviewer → project-manager)
 - CTO reporting guidelines
-- Available slash commands (`/cto-report`, `/deputy-cto`)
+- Available slash commands (`/cto-report`, `/deputy-cto`, `/overdrive-gentyr`)
 
 Projects can add their own project-specific instructions above or below the GENTYR section.
 
@@ -846,6 +859,7 @@ sudo scripts/setup.sh --path /path/to/project --protect-only
 
 ## Version History
 
+- **2.5.0**: Centralized Config & Overdrive System. Unified all automation cooldowns under shared `config-reader.js` module with centralized `.claude/state/automation-config.json`. Event-triggered cooldowns (test failure reporters, pre-commit review, compliance checker) now use dynamic config. Added `/overdrive-gentyr` slash command for 1-hour aggressive automation mode with concurrency boost (5→8 agents) and usage optimizer pause. Overdrive auto-reverts on expiry with factor bounds validation.
 - **2.4.0**: Multi-Layer Credential Detection. 4-layer system (launchd WatchPaths, 10-min timer, SessionStart, throttled PreToolUse) for instant account switch detection. Shared key-sync module reads env var + macOS Keychain + credentials file. User-level rotation state registry at ~/.claude/api-key-rotation.json. OAuth token refresh, subscription/tier tracking, rotation logging.
 - **2.3.0**: Chrome Extension Bridge. Added chrome-bridge MCP server that proxies 18 tools from Claude for Chrome extension via Unix domain socket. Supports multi-browser instances, tab routing, connection resilience, and binary framing protocol. No credentials required (local socket communication).
 - **2.2.0**: AI User Feedback System. Added 4 MCP servers (user-feedback, playwright-feedback, programmatic-feedback, feedback-reporter) for automated user persona testing. Added feedback-agent with restricted tools (no source code access). Added `/configure-personas` slash command. Added feedback-launcher and feedback-orchestrator scripts. Added 'user-feedback' category to agent-reports. Tests include 9 integration tests and toy app with intentional bugs.
