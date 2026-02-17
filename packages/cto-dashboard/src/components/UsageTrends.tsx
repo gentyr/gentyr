@@ -2,7 +2,7 @@
  * Usage Trends Component
  *
  * Displays historical line graphs for 5-hour and 7-day usage.
- * Uses @pppp606/ink-chart LineGraph component.
+ * Uses custom AreaChart with line on top and shaded fill below.
  * Only shows actual historical data (no projections on graph).
  */
 
@@ -17,13 +17,13 @@ export interface UsageTrendsProps {
 }
 
 /**
- * Simple ASCII sparkline chart using block characters.
- * More reliable than external packages and works in all terminals.
+ * ASCII area chart with line on top and shaded fill below.
+ * Shows Y-axis percentage values on the left.
  */
-function Sparkline({
+function AreaChart({
   data,
   width = 40,
-  height = 3,
+  height = 5,
   color = 'cyan',
 }: {
   data: number[];
@@ -35,52 +35,73 @@ function Sparkline({
     return <Text color="gray">No data</Text>;
   }
 
-  const min = Math.min(...data);
-  const max = Math.max(...data);
+  // Auto-scale Y-axis: floor to 0, ceiling to nearest 10 above max (or 100)
+  const dataMin = Math.min(...data);
+  const dataMax = Math.max(...data);
+  const min = Math.max(0, Math.floor(dataMin / 10) * 10 - 10);
+  const max = Math.min(100, Math.ceil(dataMax / 10) * 10 + 10);
   const range = max - min || 1;
 
   // Normalize data to 0-1
-  const normalized = data.map(v => (v - min) / range);
+  const normalized = data.map(v => Math.max(0, Math.min(1, (v - min) / range)));
 
-  // Resample to fit width
+  // Resample to fit width (excluding Y-axis labels)
+  const chartWidth = width - 5; // Reserve 5 chars for Y-axis labels
   const resampled: number[] = [];
-  for (let i = 0; i < width; i++) {
-    const srcIdx = Math.floor((i / width) * data.length);
+  for (let i = 0; i < chartWidth; i++) {
+    const srcIdx = Math.floor((i / chartWidth) * data.length);
     resampled.push(normalized[srcIdx]);
   }
 
-  // Block characters from empty to full (8 levels)
-  const blocks = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+  // Build multi-row chart (labels separate from chart content for color control)
+  const labels: string[] = [];
+  const chartLines: string[] = [];
+  for (let row = 0; row < height; row++) {
+    const rowValue = Math.round(max - (row / (height - 1)) * range);
 
-  // Build multi-row chart
-  const rows: string[] = [];
-  for (let row = height - 1; row >= 0; row--) {
-    let line = '';
-    for (let col = 0; col < width; col++) {
+    // Y-axis label (right-aligned in 4 chars + separator)
+    labels.push(`${rowValue}%`.padStart(4) + '│');
+
+    // Build chart row
+    let chartLine = '';
+    for (let col = 0; col < chartWidth; col++) {
       const val = resampled[col];
-      const rowBottom = row / height;
-      const rowTop = (row + 1) / height;
+      const rowTop = 1 - (row / height);
+      const rowBottom = 1 - ((row + 1) / height);
+      // Check previous value for line slope
+      const prevVal = col > 0 ? resampled[col - 1] : val;
 
-      if (val >= rowTop) {
-        // Full block
-        line += '█';
-      } else if (val > rowBottom) {
-        // Partial block
-        const fraction = (val - rowBottom) * height;
-        const blockIdx = Math.round(fraction * 8);
-        line += blocks[Math.min(8, Math.max(0, blockIdx))];
+      // Determine if this position is on the line or below it
+      const isOnLine = val >= rowBottom && val <= rowTop;
+      const isBelowLine = val > rowTop;
+
+      if (isOnLine) {
+        // Draw line character based on slope
+        if (Math.abs(val - prevVal) < 0.02) {
+          chartLine += '─';
+        } else if (val > prevVal) {
+          chartLine += '╱';
+        } else {
+          chartLine += '╲';
+        }
+      } else if (isBelowLine) {
+        // Solid fill below the line
+        chartLine += '█';
       } else {
-        // Empty
-        line += ' ';
+        chartLine += ' ';
       }
     }
-    rows.push(line);
+
+    chartLines.push(chartLine);
   }
 
   return (
     <Box flexDirection="column">
-      {rows.map((row, idx) => (
-        <Text key={idx} color={color}>{row}</Text>
+      {labels.map((label, idx) => (
+        <Box key={idx}>
+          <Text color="gray">{label}</Text>
+          <Text color={color} dimColor={idx === 0 || idx === labels.length - 1}>{chartLines[idx]}</Text>
+        </Box>
       ))}
     </Box>
   );
@@ -136,7 +157,7 @@ export function UsageTrends({ snapshots, hasData }: UsageTrendsProps): React.Rea
           </Box>
 
           <Box marginTop={0}>
-            <Sparkline data={fiveHourData} width={74} height={3} color="cyan" />
+            <AreaChart data={fiveHourData} width={74} height={5} color="cyan" />
           </Box>
 
           <Box gap={2}>
@@ -162,7 +183,7 @@ export function UsageTrends({ snapshots, hasData }: UsageTrendsProps): React.Rea
           </Box>
 
           <Box marginTop={0}>
-            <Sparkline data={sevenDayData} width={74} height={3} color="magenta" />
+            <AreaChart data={sevenDayData} width={74} height={5} color="magenta" />
           </Box>
 
           <Box gap={2}>

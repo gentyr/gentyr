@@ -421,14 +421,10 @@ async function listEnvVars(args: ListEnvVarsArgs): Promise<EnvVarSummary[]> {
 }
 
 async function createEnvVar(args: CreateEnvVarArgs): Promise<EnvVarSummary> {
-  const body = {
-    key: args.key,
-    value: args.value,
-  };
-
-  const data = await renderFetch(`/services/${args.serviceId}/env-vars`, {
-    method: 'POST',
-    body: JSON.stringify(body),
+  // Render API: PUT /services/{id}/env-vars/{key} is an upsert (create or update)
+  const data = await renderFetch(`/services/${args.serviceId}/env-vars/${args.key}`, {
+    method: 'PUT',
+    body: JSON.stringify({ value: args.value }),
   }) as {
     key: string;
     value?: string;

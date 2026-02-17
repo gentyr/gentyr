@@ -175,9 +175,13 @@ function calculateAggregate(raw: RawSnapshot): AggregateResult | null {
     if (k['7d_reset']) reset7d = k['7d_reset'];
   }
 
+  // Snapshot values are 0-1 fractions; convert to 0-100 percentages for display
+  const avg5h = sum5h / entries.length;
+  const avg7d = sum7d / entries.length;
+
   return {
-    fiveHour: sum5h / entries.length,
-    sevenDay: sum7d / entries.length,
+    fiveHour: avg5h <= 1 ? avg5h * 100 : avg5h,
+    sevenDay: avg7d <= 1 ? avg7d * 100 : avg7d,
     reset5h,
     reset7d,
   };

@@ -4,6 +4,8 @@ node_modules/
 # Build outputs
 packages/mcp-servers/dist/
 packages/cto-dashboard/dist/
+packages/vscode-extension/dist/
+packages/vscode-extension/*.vsix
 *.tsbuildinfo
 
 # Test outputs

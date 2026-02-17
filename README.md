@@ -7,6 +7,7 @@ A modular automation framework for Claude Code that provides MCP servers, specia
 - **25 MCP Servers**: 9 core (task tracking, specs, reviews, reporting) + 10 infrastructure (Render, Vercel, GitHub, Supabase, Cloudflare, Resend, Elasticsearch, 1Password, Codecov, secret-sync) + 5 AI user feedback (persona management, GUI testing, programmatic testing, reporting bridge, feedback exploration) + 1 browser automation (chrome-bridge)
 - **9 Framework Agents**: Code reviewer, test writer, investigator, deputy-CTO, feedback-agent, etc. (projects can add their own)
 - **7 Slash Commands**: `/configure-personas`, `/cto-report`, `/deputy-cto`, `/push-migrations`, `/push-secrets`, `/setup-gentyr`, `/toggle-automation-gentyr`
+- **VS Code Companion Extension**: Real-time dashboard with quota usage, deputy CTO status, task tracking, and metrics display (always-visible status bar + webview panel)
 - **AI User Feedback System**: Automated user persona testing triggered by staging changes with configurable personas, features, and test scenarios
 - **13 Automation Hooks**: Pre-commit review, antipattern detection, multi-layer credential detection, CTO notification, secret leak detection, protected actions, AI user feedback pipeline
 - **Git Integration**: Husky hooks for pre-commit, post-commit, and pre-push
@@ -97,7 +98,9 @@ cd /path/to/project && claude mcp list
 
 Once installed, the framework runs automatically. Here's what it looks like in practice:
 
-### CTO Dashboard (every prompt)
+### CTO Dashboard
+
+**CLI Dashboard (every prompt)**
 
 On each user prompt, a status bar displays live metrics:
 
@@ -120,6 +123,20 @@ When CTO rejections are blocking commits:
 ```
 COMMITS BLOCKED: 1 rejection(s) | Quota (3k): 5h 45%avg 7d 60%avg | 8.2M tokens | Deputy: ON. Use /deputy-cto to address.
 ```
+
+**VS Code Companion Extension**
+
+For developers who use VS Code, the GENTYR companion extension provides a persistent dashboard with real-time metrics:
+
+- **Status bar item** - Always-visible quota/usage summary
+- **Dashboard panel** - Full metrics view with sections for:
+  - Quota usage (5-hour and 7-day with progress bars and reset timers)
+  - System status (deputy CTO mode, protection status, commit blocks)
+  - Deputy CTO triage (untriaged reports, escalated items, pending questions)
+  - Task breakdown (by section: CODE-REVIEWER, INVESTIGATOR, TEST-WRITER, PROJECT-MANAGER)
+  - Metrics summary (tokens, sessions, tasks, CTO queue counts)
+
+The extension reads the same SQLite databases and state files as the CLI dashboard - no additional configuration required. Install from `packages/vscode-extension/` (build with `npm run build`, package with `npm run package`).
 
 ### Pre-Commit Review Gate
 
@@ -466,13 +483,30 @@ mcp__specs-browser__createSpec({
 │   │   │   └── secret-sync/
 │   │   ├── package.json
 │   │   └── tsconfig.json
-│   └── cto-dashboard/          # Ink-based CLI dashboard (invoked by /cto-report)
+│   ├── cto-dashboard/          # Ink-based CLI dashboard (invoked by /cto-report)
+│   │   ├── src/
+│   │   │   ├── components/
+│   │   │   ├── utils/
+│   │   │   └── App.tsx
+│   │   ├── package.json
+│   │   └── tsconfig.json
+│   └── vscode-extension/       # VS Code companion extension
 │       ├── src/
-│       │   ├── components/
-│       │   ├── utils/
-│       │   └── App.tsx
+│       │   ├── extension/      # Extension host (Node.js/CommonJS)
+│       │   │   ├── extension.ts
+│       │   │   ├── DataService.ts
+│       │   │   ├── StatusBarManager.ts
+│       │   │   └── WebviewProvider.ts
+│       │   └── webview/        # Webview (React/ESM)
+│       │       ├── index.tsx
+│       │       ├── App.tsx
+│       │       ├── components/
+│       │       ├── types.ts
+│       │       └── vscode-api.ts
 │       ├── package.json
-│       └── tsconfig.json
+│       ├── tsconfig.json       # Extension host config (CommonJS)
+│       ├── tsconfig.webview.json # Webview config (ESM/DOM)
+│       └── esbuild.config.js   # Dual-bundle build
 ├── husky/                      # Git hook templates
 │   ├── pre-commit
 │   ├── post-commit

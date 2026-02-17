@@ -53,7 +53,12 @@ export function activate(context: vscode.ExtensionContext): void {
     refreshDashboard,
     watcher,
     statusBarManager,
-    { dispose: () => dataService?.dispose() }
+    {
+      dispose: () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        dataService?.dispose();
+      }
+    }
   );
 }
 

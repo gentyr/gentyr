@@ -338,6 +338,27 @@ describe('usage-optimizer.js - Structure Validation', () => {
       );
     });
 
+    it('should normalize API utilization values from 0-100 to 0-1 fractions', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/async function collectSnapshot\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Should divide 5h utilization by 100
+      assert.match(
+        functionBody,
+        /['"]5h['"]\s*:\s*\(usage\.fiveHour\.utilization[\s\S]*?\)\s*\/\s*100/,
+        'Must divide 5h utilization by 100 to normalize to 0-1 fraction'
+      );
+
+      // Should divide 7d utilization by 100
+      assert.match(
+        functionBody,
+        /['"]7d['"]\s*:\s*\(usage\.sevenDay\.utilization[\s\S]*?\)\s*\/\s*100/,
+        'Must divide 7d utilization by 100 to normalize to 0-1 fraction'
+      );
+    });
+
     it('should handle fetch errors gracefully per key', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
@@ -594,6 +615,50 @@ describe('usage-optimizer.js - Structure Validation', () => {
   });
 
   describe('storeSnapshot() - Snapshot Storage', () => {
+    it('should migrate old-format snapshots from 0-100 scale to 0-1 fractions', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function storeSnapshot\(snapshot, log\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'storeSnapshot function must exist');
+
+      const functionBody = functionMatch[0];
+
+      // Should iterate over existing snapshots for migration
+      assert.match(
+        functionBody,
+        /for \(const s of data\.snapshots\)/,
+        'Must iterate over existing snapshots'
+      );
+
+      // Should check for values > 1.0 in 5h metric
+      assert.match(
+        functionBody,
+        /if \(\(k\[['"]5h['"]\][\s\S]*?\) > 1\.0\)/,
+        'Must check if 5h value is >1.0 (old format)'
+      );
+
+      // Should divide old 5h values by 100
+      assert.match(
+        functionBody,
+        /k\[['"]5h['"]\] = k\[['"]5h['"]\] \/ 100/,
+        'Must divide old 5h values by 100'
+      );
+
+      // Should check for values > 1.0 in 7d metric
+      assert.match(
+        functionBody,
+        /if \(\(k\[['"]7d['"]\][\s\S]*?\) > 1\.0\)/,
+        'Must check if 7d value is >1.0 (old format)'
+      );
+
+      // Should divide old 7d values by 100
+      assert.match(
+        functionBody,
+        /k\[['"]7d['"]\] = k\[['"]7d['"]\] \/ 100/,
+        'Must divide old 7d values by 100'
+      );
+    });
+
     it('should append snapshot to snapshots array', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 

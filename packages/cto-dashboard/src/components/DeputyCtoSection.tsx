@@ -26,11 +26,11 @@ function truncate(str: string, maxLen: number): string {
 
 // Column widths
 const COL_ICON = 3;
-const COL_TITLE = 42;
+const COL_TITLE = 35;
 const COL_PRIORITY = 10;
 const COL_TIME = 12;
 const COL_OUTCOME = 12;
-const COL_ANSWER = 32;
+const COL_ANSWER = 26;
 
 const TOTAL_WIDTH = COL_ICON + COL_TITLE + COL_PRIORITY + COL_TIME;
 

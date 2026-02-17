@@ -87,9 +87,9 @@ async function collectSnapshot(log) {
       const usage = await fetchUsage(key.accessToken);
       if (usage) {
         keyData[key.id] = {
-          '5h': usage.fiveHour.utilization,
+          '5h': (usage.fiveHour.utilization ?? 0) / 100,
           '5h_reset': usage.fiveHour.resetsAt,
-          '7d': usage.sevenDay.utilization,
+          '7d': (usage.sevenDay.utilization ?? 0) / 100,
           '7d_reset': usage.sevenDay.resetsAt,
         };
       }
@@ -225,6 +225,15 @@ function storeSnapshot(snapshot, log) {
     }
   }
 
+  // Migrate old-format snapshots (0-100 scale → 0-1 fraction)
+  for (const s of data.snapshots) {
+    if (!s.keys) continue;
+    for (const k of Object.values(s.keys)) {
+      if ((k['5h'] ?? 0) > 1.0) k['5h'] = k['5h'] / 100;
+      if ((k['7d'] ?? 0) > 1.0) k['7d'] = k['7d'] / 100;
+    }
+  }
+
   data.snapshots.push(snapshot);
 
   // Prune entries older than retention period
@@ -258,13 +267,18 @@ function calculateAndAdjust(log) {
   // Reset-boundary detection: if 5h utilization dropped >30pp between consecutive
   // recent snapshots, a window reset just happened. Skip this cycle to avoid
   // the stale rate causing the factor to ramp up blindly.
+  // Compare only COMMON keys to avoid false positives when keys are added/removed.
   if (data.snapshots.length >= 2) {
     const prev = data.snapshots[data.snapshots.length - 2];
     const curr = data.snapshots[data.snapshots.length - 1];
-    const prevAgg = calculateAggregate(prev, prev, 1); // just for current values
-    const currAgg = calculateAggregate(curr, curr, 1);
-    if (prevAgg && currAgg) {
-      const drop5h = prevAgg.current5h - currAgg.current5h;
+    const commonKeys = Object.keys(curr.keys).filter(k => k in prev.keys);
+    if (commonKeys.length > 0) {
+      let prevSum5h = 0, currSum5h = 0;
+      for (const k of commonKeys) {
+        prevSum5h += prev.keys[k]['5h'] ?? 0;
+        currSum5h += curr.keys[k]['5h'] ?? 0;
+      }
+      const drop5h = (prevSum5h / commonKeys.length) - (currSum5h / commonKeys.length);
       if (drop5h >= RESET_BOUNDARY_DROP_THRESHOLD) {
         log(`Usage optimizer: Reset boundary detected (5h dropped ${Math.round(drop5h * 100)}pp). Skipping adjustment cycle.`);
         return false;

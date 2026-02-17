@@ -2386,9 +2386,9 @@
           if (typeof __REACT_DEVTOOLS_GLOBAL_HOOK__ !== "undefined" && typeof __REACT_DEVTOOLS_GLOBAL_HOOK__.registerInternalModuleStart === "function") {
             __REACT_DEVTOOLS_GLOBAL_HOOK__.registerInternalModuleStart(new Error());
           }
-          var React9 = require_react();
+          var React10 = require_react();
           var Scheduler = require_scheduler();
-          var ReactSharedInternals = React9.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
+          var ReactSharedInternals = React10.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
           var suppressWarning = false;
           function setSuppressWarning(newSuppressWarning) {
             {
@@ -3995,7 +3995,7 @@
             {
               if (props.value == null) {
                 if (typeof props.children === "object" && props.children !== null) {
-                  React9.Children.forEach(props.children, function(child) {
+                  React10.Children.forEach(props.children, function(child) {
                     if (child == null) {
                       return;
                     }
@@ -23585,14 +23585,42 @@
   });
 
   // src/webview/index.tsx
-  var import_react8 = __toESM(require_react());
+  var import_react9 = __toESM(require_react());
   var import_client = __toESM(require_client());
 
   // src/webview/App.tsx
-  var import_react7 = __toESM(require_react());
+  var import_react8 = __toESM(require_react());
+
+  // src/webview/components/ErrorBoundary.tsx
+  var import_react = __toESM(require_react());
+  var ErrorBoundary = class extends import_react.default.Component {
+    constructor() {
+      super(...arguments);
+      __publicField(this, "state", { hasError: false, error: null });
+    }
+    static getDerivedStateFromError(error) {
+      return { hasError: true, error };
+    }
+    componentDidCatch(error, info) {
+      console.error("[GENTYR Dashboard] Render error:", error, info);
+    }
+    render() {
+      if (this.state.hasError) {
+        return /* @__PURE__ */ import_react.default.createElement("div", { className: "section", style: { margin: "20px" } }, /* @__PURE__ */ import_react.default.createElement("div", { className: "section-title text-red" }, "Dashboard Error"), /* @__PURE__ */ import_react.default.createElement("p", { className: "text-muted", style: { marginBottom: "8px" } }, this.state.error?.message || "An unexpected error occurred"), /* @__PURE__ */ import_react.default.createElement(
+          "button",
+          {
+            className: "refresh-btn",
+            onClick: () => this.setState({ hasError: false, error: null })
+          },
+          "Reset Dashboard"
+        ));
+      }
+      return this.props.children;
+    }
+  };
 
   // src/webview/components/StatusHeader.tsx
-  var import_react = __toESM(require_react());
+  var import_react2 = __toESM(require_react());
 
   // src/webview/vscode-api.ts
   var VSCodeAPI = class {
@@ -23619,7 +23647,7 @@
       second: "2-digit",
       hour12: false
     });
-    return /* @__PURE__ */ import_react.default.createElement("div", { className: "header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "header-title" }, "GENTYR Dashboard"), /* @__PURE__ */ import_react.default.createElement("div", { className: "header-meta" }, "Last updated: ", timeStr)), /* @__PURE__ */ import_react.default.createElement(
+    return /* @__PURE__ */ import_react2.default.createElement("div", { className: "header" }, /* @__PURE__ */ import_react2.default.createElement("div", null, /* @__PURE__ */ import_react2.default.createElement("div", { className: "header-title" }, "GENTYR Dashboard"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "header-meta" }, "Last updated: ", timeStr)), /* @__PURE__ */ import_react2.default.createElement(
       "button",
       {
         className: "refresh-btn",
@@ -23630,39 +23658,39 @@
   }
 
   // src/webview/components/QuotaSection.tsx
-  var import_react2 = __toESM(require_react());
+  var import_react3 = __toESM(require_react());
   function QuotaBar({ label, percentage, resetsIn }) {
     const colorClass = percentage > 80 ? "bg-red" : percentage > 60 ? "bg-yellow" : "bg-green";
     const textClass = percentage > 80 ? "text-red" : percentage > 60 ? "text-yellow" : "text-green";
-    return /* @__PURE__ */ import_react2.default.createElement("div", { className: "quota-bar-container" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "quota-bar-header" }, /* @__PURE__ */ import_react2.default.createElement("span", { className: "quota-bar-label" }, label), /* @__PURE__ */ import_react2.default.createElement("span", null, /* @__PURE__ */ import_react2.default.createElement("span", { className: textClass }, percentage, "%"), /* @__PURE__ */ import_react2.default.createElement("span", { className: "text-gray" }, " (resets ", resetsIn, "h)"))), /* @__PURE__ */ import_react2.default.createElement("div", { className: "quota-bar-track" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: `quota-bar-fill ${colorClass}`, style: { width: `${Math.min(100, percentage)}%` } })));
+    return /* @__PURE__ */ import_react3.default.createElement("div", { className: "quota-bar-container" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "quota-bar-header" }, /* @__PURE__ */ import_react3.default.createElement("span", { className: "quota-bar-label" }, label), /* @__PURE__ */ import_react3.default.createElement("span", null, /* @__PURE__ */ import_react3.default.createElement("span", { className: textClass }, percentage, "%"), /* @__PURE__ */ import_react3.default.createElement("span", { className: "text-gray" }, " (resets ", resetsIn, "h)"))), /* @__PURE__ */ import_react3.default.createElement("div", { className: "quota-bar-track" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: `quota-bar-fill ${colorClass}`, style: { width: `${Math.min(100, percentage)}%` } })));
   }
   function QuotaSection({ data }) {
     const { aggregate, healthy_count, rotation_events_24h } = data;
     const title = `Quota & Capacity (${healthy_count} key${healthy_count !== 1 ? "s" : ""})`;
     if (aggregate.error) {
-      return /* @__PURE__ */ import_react2.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "section-title" }, title), /* @__PURE__ */ import_react2.default.createElement("div", { className: "text-red" }, aggregate.error));
+      return /* @__PURE__ */ import_react3.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "section-title" }, title), /* @__PURE__ */ import_react3.default.createElement("div", { className: "text-red" }, aggregate.error));
     }
     const fiveHour = aggregate.five_hour;
     const sevenDay = aggregate.seven_day;
-    return /* @__PURE__ */ import_react2.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "section-title" }, title), fiveHour && /* @__PURE__ */ import_react2.default.createElement(
+    return /* @__PURE__ */ import_react3.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "section-title" }, title), fiveHour && /* @__PURE__ */ import_react3.default.createElement(
       QuotaBar,
       {
         label: "5-hour",
         percentage: fiveHour.utilization,
         resetsIn: fiveHour.resets_in_hours
       }
-    ), sevenDay && /* @__PURE__ */ import_react2.default.createElement(
+    ), sevenDay && /* @__PURE__ */ import_react3.default.createElement(
       QuotaBar,
       {
         label: "7-day",
         percentage: sevenDay.utilization,
         resetsIn: sevenDay.resets_in_hours
       }
-    ), rotation_events_24h > 0 && /* @__PURE__ */ import_react2.default.createElement("div", { className: "text-gray", style: { fontSize: "11px", marginTop: "4px" } }, "Key rotations (24h): ", rotation_events_24h));
+    ), rotation_events_24h > 0 && /* @__PURE__ */ import_react3.default.createElement("div", { className: "text-gray", style: { fontSize: "11px", marginTop: "4px" } }, "Key rotations (24h): ", rotation_events_24h));
   }
 
   // src/webview/components/SystemStatus.tsx
-  var import_react3 = __toESM(require_react());
+  var import_react4 = __toESM(require_react());
   function formatDelta(seconds) {
     if (seconds < 0) return "0s";
     const h = Math.floor(seconds / 3600);
@@ -23678,11 +23706,11 @@
     const commitColor = pendingItems.commits_blocked ? "text-red" : "text-green";
     const nextTime = autonomousMode.next_run_time ? new Date(autonomousMode.next_run_time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }).replace(" ", "") : "N/A";
     const delta = autonomousMode.seconds_until_next != null ? formatDelta(autonomousMode.seconds_until_next) : "N/A";
-    return /* @__PURE__ */ import_react3.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "section-title" }, "System Status"), /* @__PURE__ */ import_react3.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react3.default.createElement("span", { className: "status-label" }, "Deputy CTO"), /* @__PURE__ */ import_react3.default.createElement("span", { className: `status-value ${deputyColor}` }, autonomousMode.enabled ? "ENABLED" : "DISABLED")), autonomousMode.enabled && /* @__PURE__ */ import_react3.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react3.default.createElement("span", { className: "status-label", style: { paddingLeft: "12px" } }, "Next run"), /* @__PURE__ */ import_react3.default.createElement("span", { className: "status-value" }, /* @__PURE__ */ import_react3.default.createElement("span", { className: "text-cyan" }, nextTime), /* @__PURE__ */ import_react3.default.createElement("span", { className: "text-gray" }, " ("), /* @__PURE__ */ import_react3.default.createElement("span", { className: "text-yellow" }, delta), /* @__PURE__ */ import_react3.default.createElement("span", { className: "text-gray" }, ")"))), /* @__PURE__ */ import_react3.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react3.default.createElement("span", { className: "status-label" }, "Protection"), /* @__PURE__ */ import_react3.default.createElement("span", { className: `status-value ${protectionColor}` }, systemHealth.protection_status.toUpperCase())), /* @__PURE__ */ import_react3.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react3.default.createElement("span", { className: "status-label" }, "Commits"), /* @__PURE__ */ import_react3.default.createElement("span", { className: `status-value ${commitColor}` }, pendingItems.commits_blocked ? "BLOCKED" : "ALLOWED")));
+    return /* @__PURE__ */ import_react4.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "section-title" }, "System Status"), /* @__PURE__ */ import_react4.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "status-label" }, "Deputy CTO"), /* @__PURE__ */ import_react4.default.createElement("span", { className: `status-value ${deputyColor}` }, autonomousMode.enabled ? "ENABLED" : "DISABLED")), autonomousMode.enabled && /* @__PURE__ */ import_react4.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "status-label", style: { paddingLeft: "12px" } }, "Next run"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "status-value" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "text-cyan" }, nextTime), /* @__PURE__ */ import_react4.default.createElement("span", { className: "text-gray" }, " ("), /* @__PURE__ */ import_react4.default.createElement("span", { className: "text-yellow" }, delta), /* @__PURE__ */ import_react4.default.createElement("span", { className: "text-gray" }, ")"))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "status-label" }, "Protection"), /* @__PURE__ */ import_react4.default.createElement("span", { className: `status-value ${protectionColor}` }, systemHealth.protection_status.toUpperCase())), /* @__PURE__ */ import_react4.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "status-label" }, "Commits"), /* @__PURE__ */ import_react4.default.createElement("span", { className: `status-value ${commitColor}` }, pendingItems.commits_blocked ? "BLOCKED" : "ALLOWED")));
   }
 
   // src/webview/components/DeputyCtoSection.tsx
-  var import_react4 = __toESM(require_react());
+  var import_react5 = __toESM(require_react());
   function formatTimeAgo(isoStr) {
     const diffMs = Date.now() - new Date(isoStr).getTime();
     const mins = Math.floor(diffMs / 6e4);
@@ -23694,24 +23722,24 @@
   }
   function PriorityBadge({ priority }) {
     const colorClass = priority === "critical" ? "text-red" : priority === "high" ? "text-yellow" : "text-gray";
-    return /* @__PURE__ */ import_react4.default.createElement("span", { className: `report-meta ${colorClass}` }, priority);
+    return /* @__PURE__ */ import_react5.default.createElement("span", { className: `report-meta ${colorClass}` }, priority);
   }
   function DeputyCtoSection({ data }) {
-    return /* @__PURE__ */ import_react4.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "section-title" }, "Deputy CTO", data.untriagedCount + data.pendingQuestionCount > 0 && /* @__PURE__ */ import_react4.default.createElement("span", { className: "badge" }, data.untriagedCount + data.pendingQuestionCount)), /* @__PURE__ */ import_react4.default.createElement("div", { className: "grid-3", style: { marginBottom: "12px" } }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "metric-box" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "metric-label" }, "Untriaged"), /* @__PURE__ */ import_react4.default.createElement("div", { className: `metric-value ${data.untriagedCount > 0 ? "text-yellow" : "text-gray"}` }, data.untriagedCount)), /* @__PURE__ */ import_react4.default.createElement("div", { className: "metric-box" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "metric-label" }, "Escalated"), /* @__PURE__ */ import_react4.default.createElement("div", { className: `metric-value ${data.escalated.length > 0 ? "text-red" : "text-gray"}` }, data.escalated.length)), /* @__PURE__ */ import_react4.default.createElement("div", { className: "metric-box" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "metric-label" }, "Pending Q"), /* @__PURE__ */ import_react4.default.createElement("div", { className: `metric-value ${data.pendingQuestionCount > 0 ? "text-yellow" : "text-gray"}` }, data.pendingQuestionCount))), /* @__PURE__ */ import_react4.default.createElement("div", { style: { fontSize: "11px", marginBottom: "8px" } }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "text-gray" }, "24h: "), /* @__PURE__ */ import_react4.default.createElement("span", { className: "text-green" }, data.selfHandled24h, " handled"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "text-gray" }, " / "), /* @__PURE__ */ import_react4.default.createElement("span", { className: data.escalated24h > 0 ? "text-yellow" : "text-gray" }, data.escalated24h, " escalated"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "text-gray" }, " / "), /* @__PURE__ */ import_react4.default.createElement("span", { className: "text-gray" }, data.dismissed24h, " dismissed")), data.untriaged.length > 0 && /* @__PURE__ */ import_react4.default.createElement("div", { style: { marginBottom: "8px" } }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "section-title", style: { fontSize: "10px", marginBottom: "4px" } }, "Untriaged Reports"), data.untriaged.slice(0, 5).map((report) => /* @__PURE__ */ import_react4.default.createElement("div", { key: report.id, className: "report-item" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "report-title" }, report.title), /* @__PURE__ */ import_react4.default.createElement(PriorityBadge, { priority: report.priority }), /* @__PURE__ */ import_react4.default.createElement("span", { className: "report-meta" }, formatTimeAgo(report.created_at)))), data.untriagedCount > 5 && /* @__PURE__ */ import_react4.default.createElement("div", { className: "text-gray", style: { fontSize: "11px", marginTop: "4px" } }, "+", data.untriagedCount - 5, " more")), data.pendingQuestions.length > 0 && /* @__PURE__ */ import_react4.default.createElement("div", null, /* @__PURE__ */ import_react4.default.createElement("div", { className: "section-title", style: { fontSize: "10px", marginBottom: "4px" } }, "Pending Questions"), data.pendingQuestions.slice(0, 5).map((q) => /* @__PURE__ */ import_react4.default.createElement("div", { key: q.id, className: "report-item" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "report-title" }, q.title), /* @__PURE__ */ import_react4.default.createElement("span", { className: "report-meta" }, q.type), /* @__PURE__ */ import_react4.default.createElement("span", { className: "report-meta" }, formatTimeAgo(q.created_at)))), data.pendingQuestionCount > 5 && /* @__PURE__ */ import_react4.default.createElement("div", { className: "text-gray", style: { fontSize: "11px", marginTop: "4px" } }, "+", data.pendingQuestionCount - 5, " more")), data.untriaged.length === 0 && data.pendingQuestions.length === 0 && data.escalated.length === 0 && /* @__PURE__ */ import_react4.default.createElement("div", { className: "empty-state text-green" }, "All clear - no pending items"));
+    return /* @__PURE__ */ import_react5.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "section-title" }, "Deputy CTO", data.untriagedCount + data.pendingQuestionCount > 0 && /* @__PURE__ */ import_react5.default.createElement("span", { className: "badge" }, data.untriagedCount + data.pendingQuestionCount)), /* @__PURE__ */ import_react5.default.createElement("div", { className: "grid-3", style: { marginBottom: "12px" } }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "metric-box" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "metric-label" }, "Untriaged"), /* @__PURE__ */ import_react5.default.createElement("div", { className: `metric-value ${data.untriagedCount > 0 ? "text-yellow" : "text-gray"}` }, data.untriagedCount)), /* @__PURE__ */ import_react5.default.createElement("div", { className: "metric-box" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "metric-label" }, "Escalated"), /* @__PURE__ */ import_react5.default.createElement("div", { className: `metric-value ${data.escalated.length > 0 ? "text-red" : "text-gray"}` }, data.escalated.length)), /* @__PURE__ */ import_react5.default.createElement("div", { className: "metric-box" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "metric-label" }, "Pending Q"), /* @__PURE__ */ import_react5.default.createElement("div", { className: `metric-value ${data.pendingQuestionCount > 0 ? "text-yellow" : "text-gray"}` }, data.pendingQuestionCount))), /* @__PURE__ */ import_react5.default.createElement("div", { style: { fontSize: "11px", marginBottom: "8px" } }, /* @__PURE__ */ import_react5.default.createElement("span", { className: "text-gray" }, "24h: "), /* @__PURE__ */ import_react5.default.createElement("span", { className: "text-green" }, data.selfHandled24h, " handled"), /* @__PURE__ */ import_react5.default.createElement("span", { className: "text-gray" }, " / "), /* @__PURE__ */ import_react5.default.createElement("span", { className: data.escalated24h > 0 ? "text-yellow" : "text-gray" }, data.escalated24h, " escalated"), /* @__PURE__ */ import_react5.default.createElement("span", { className: "text-gray" }, " / "), /* @__PURE__ */ import_react5.default.createElement("span", { className: "text-gray" }, data.dismissed24h, " dismissed")), data.untriaged.length > 0 && /* @__PURE__ */ import_react5.default.createElement("div", { style: { marginBottom: "8px" } }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "section-title", style: { fontSize: "10px", marginBottom: "4px" } }, "Untriaged Reports"), data.untriaged.slice(0, 5).map((report) => /* @__PURE__ */ import_react5.default.createElement("div", { key: report.id, className: "report-item" }, /* @__PURE__ */ import_react5.default.createElement("span", { className: "report-title" }, report.title), /* @__PURE__ */ import_react5.default.createElement(PriorityBadge, { priority: report.priority }), /* @__PURE__ */ import_react5.default.createElement("span", { className: "report-meta" }, formatTimeAgo(report.created_at)))), data.untriagedCount > 5 && /* @__PURE__ */ import_react5.default.createElement("div", { className: "text-gray", style: { fontSize: "11px", marginTop: "4px" } }, "+", data.untriagedCount - 5, " more")), data.pendingQuestions.length > 0 && /* @__PURE__ */ import_react5.default.createElement("div", null, /* @__PURE__ */ import_react5.default.createElement("div", { className: "section-title", style: { fontSize: "10px", marginBottom: "4px" } }, "Pending Questions"), data.pendingQuestions.slice(0, 5).map((q) => /* @__PURE__ */ import_react5.default.createElement("div", { key: q.id, className: "report-item" }, /* @__PURE__ */ import_react5.default.createElement("span", { className: "report-title" }, q.title), /* @__PURE__ */ import_react5.default.createElement("span", { className: "report-meta" }, q.type), /* @__PURE__ */ import_react5.default.createElement("span", { className: "report-meta" }, formatTimeAgo(q.created_at)))), data.pendingQuestionCount > 5 && /* @__PURE__ */ import_react5.default.createElement("div", { className: "text-gray", style: { fontSize: "11px", marginTop: "4px" } }, "+", data.pendingQuestionCount - 5, " more")), data.untriaged.length === 0 && data.pendingQuestions.length === 0 && data.escalated.length === 0 && /* @__PURE__ */ import_react5.default.createElement("div", { className: "empty-state text-green" }, "All clear - no pending items"));
   }
 
   // src/webview/components/TodoSection.tsx
-  var import_react5 = __toESM(require_react());
+  var import_react6 = __toESM(require_react());
   function TodoSection({ tasks }) {
     const sections = Object.entries(tasks.by_section);
     if (sections.length === 0) {
-      return /* @__PURE__ */ import_react5.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "section-title" }, "Tasks"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "empty-state" }, "No tasks configured"));
+      return /* @__PURE__ */ import_react6.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "section-title" }, "Tasks"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "empty-state" }, "No tasks configured"));
     }
-    return /* @__PURE__ */ import_react5.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "section-title" }, "Tasks by Section", tasks.pending_total > 0 && /* @__PURE__ */ import_react5.default.createElement("span", { className: "badge" }, tasks.pending_total)), /* @__PURE__ */ import_react5.default.createElement("div", { style: { fontSize: "11px", marginBottom: "8px" } }, /* @__PURE__ */ import_react5.default.createElement("span", { className: "text-yellow" }, tasks.pending_total, " queued"), /* @__PURE__ */ import_react5.default.createElement("span", { className: "text-gray" }, " / "), /* @__PURE__ */ import_react5.default.createElement("span", { className: "text-cyan" }, tasks.in_progress_total, " active"), /* @__PURE__ */ import_react5.default.createElement("span", { className: "text-gray" }, " / "), /* @__PURE__ */ import_react5.default.createElement("span", { className: "text-green" }, tasks.completed_24h, " done (24h)")), sections.map(([section, counts]) => /* @__PURE__ */ import_react5.default.createElement("div", { key: section, className: "status-row" }, /* @__PURE__ */ import_react5.default.createElement("span", { className: "status-label", style: { flex: 1 } }, section), /* @__PURE__ */ import_react5.default.createElement("span", { style: { display: "flex", gap: "12px", fontSize: "12px" } }, counts.pending > 0 && /* @__PURE__ */ import_react5.default.createElement("span", { className: "text-yellow" }, counts.pending, "q"), counts.in_progress > 0 && /* @__PURE__ */ import_react5.default.createElement("span", { className: "text-cyan" }, counts.in_progress, "a"), /* @__PURE__ */ import_react5.default.createElement("span", { className: "text-gray" }, counts.completed, "d")))));
+    return /* @__PURE__ */ import_react6.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "section-title" }, "Tasks by Section", tasks.pending_total > 0 && /* @__PURE__ */ import_react6.default.createElement("span", { className: "badge" }, tasks.pending_total)), /* @__PURE__ */ import_react6.default.createElement("div", { style: { fontSize: "11px", marginBottom: "8px" } }, /* @__PURE__ */ import_react6.default.createElement("span", { className: "text-yellow" }, tasks.pending_total, " queued"), /* @__PURE__ */ import_react6.default.createElement("span", { className: "text-gray" }, " / "), /* @__PURE__ */ import_react6.default.createElement("span", { className: "text-cyan" }, tasks.in_progress_total, " active"), /* @__PURE__ */ import_react6.default.createElement("span", { className: "text-gray" }, " / "), /* @__PURE__ */ import_react6.default.createElement("span", { className: "text-green" }, tasks.completed_24h, " done (24h)")), sections.map(([section, counts]) => /* @__PURE__ */ import_react6.default.createElement("div", { key: section, className: "status-row" }, /* @__PURE__ */ import_react6.default.createElement("span", { className: "status-label", style: { flex: 1 } }, section), /* @__PURE__ */ import_react6.default.createElement("span", { style: { display: "flex", gap: "12px", fontSize: "12px" } }, counts.pending > 0 && /* @__PURE__ */ import_react6.default.createElement("span", { className: "text-yellow" }, counts.pending, "q"), counts.in_progress > 0 && /* @__PURE__ */ import_react6.default.createElement("span", { className: "text-cyan" }, counts.in_progress, "a"), /* @__PURE__ */ import_react6.default.createElement("span", { className: "text-gray" }, counts.completed, "d")))));
   }
 
   // src/webview/components/MetricsGrid.tsx
-  var import_react6 = __toESM(require_react());
+  var import_react7 = __toESM(require_react());
   function formatNumber(num) {
     if (num >= 1e9) return (num / 1e9).toFixed(1) + "B";
     if (num >= 1e6) return (num / 1e6).toFixed(1) + "M";
@@ -23719,11 +23747,11 @@
     return num.toString();
   }
   function MetricBox({ title, items }) {
-    return /* @__PURE__ */ import_react6.default.createElement("div", { className: "metric-box" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "metric-label" }, title), /* @__PURE__ */ import_react6.default.createElement("div", { style: { display: "flex", gap: "12px", marginTop: "4px", flexWrap: "wrap" } }, items.map((item, i) => /* @__PURE__ */ import_react6.default.createElement("div", { key: i }, /* @__PURE__ */ import_react6.default.createElement("div", { className: `metric-value ${item.colorClass || ""}` }, item.value), /* @__PURE__ */ import_react6.default.createElement("div", { className: "metric-label" }, item.label)))));
+    return /* @__PURE__ */ import_react7.default.createElement("div", { className: "metric-box" }, /* @__PURE__ */ import_react7.default.createElement("div", { className: "metric-label" }, title), /* @__PURE__ */ import_react7.default.createElement("div", { style: { display: "flex", gap: "12px", marginTop: "4px", flexWrap: "wrap" } }, items.map((item, i) => /* @__PURE__ */ import_react7.default.createElement("div", { key: i }, /* @__PURE__ */ import_react7.default.createElement("div", { className: `metric-value ${item.colorClass || ""}` }, item.value), /* @__PURE__ */ import_react7.default.createElement("div", { className: "metric-label" }, item.label)))));
   }
   function MetricsGrid({ tokenUsage, sessions, tasks, pendingItems }) {
     const cacheRate = tokenUsage.cache_read + tokenUsage.input > 0 ? Math.round(tokenUsage.cache_read / (tokenUsage.cache_read + tokenUsage.input) * 100) : 0;
-    return /* @__PURE__ */ import_react6.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "section-title" }, "Metrics (24h)"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "grid-4" }, /* @__PURE__ */ import_react6.default.createElement(
+    return /* @__PURE__ */ import_react7.default.createElement("div", { className: "section" }, /* @__PURE__ */ import_react7.default.createElement("div", { className: "section-title" }, "Metrics (24h)"), /* @__PURE__ */ import_react7.default.createElement("div", { className: "grid-4" }, /* @__PURE__ */ import_react7.default.createElement(
       MetricBox,
       {
         title: "Tokens",
@@ -23732,7 +23760,7 @@
           { label: "Cache", value: `${cacheRate}%`, colorClass: cacheRate >= 80 ? "text-green" : "text-yellow" }
         ]
       }
-    ), /* @__PURE__ */ import_react6.default.createElement(
+    ), /* @__PURE__ */ import_react7.default.createElement(
       MetricBox,
       {
         title: "Sessions",
@@ -23741,7 +23769,7 @@
           { label: "User", value: sessions.user_triggered, colorClass: "text-blue" }
         ]
       }
-    ), /* @__PURE__ */ import_react6.default.createElement(
+    ), /* @__PURE__ */ import_react7.default.createElement(
       MetricBox,
       {
         title: "Tasks",
@@ -23751,7 +23779,7 @@
           { label: "Done", value: tasks.completed_24h, colorClass: "text-green" }
         ]
       }
-    ), /* @__PURE__ */ import_react6.default.createElement(
+    ), /* @__PURE__ */ import_react7.default.createElement(
       MetricBox,
       {
         title: "CTO Queue",
@@ -23766,8 +23794,8 @@
 
   // src/webview/App.tsx
   function App() {
-    const [data, setData] = (0, import_react7.useState)(null);
-    (0, import_react7.useEffect)(() => {
+    const [data, setData] = (0, import_react8.useState)(null);
+    (0, import_react8.useEffect)(() => {
       const handleMessage = (event) => {
         if (event.data.type === "update" && event.data.data) {
           setData(event.data.data);
@@ -23777,16 +23805,16 @@
       return () => window.removeEventListener("message", handleMessage);
     }, []);
     if (!data) {
-      return /* @__PURE__ */ import_react7.default.createElement("div", { className: "loading" }, "Loading GENTYR Dashboard...");
+      return /* @__PURE__ */ import_react8.default.createElement("div", { className: "loading" }, "Loading GENTYR Dashboard...");
     }
-    return /* @__PURE__ */ import_react7.default.createElement("div", { className: "dashboard" }, /* @__PURE__ */ import_react7.default.createElement(StatusHeader, { generatedAt: data.generated_at }), /* @__PURE__ */ import_react7.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react7.default.createElement(QuotaSection, { data: data.verified_quota }), /* @__PURE__ */ import_react7.default.createElement(
+    return /* @__PURE__ */ import_react8.default.createElement(ErrorBoundary, null, /* @__PURE__ */ import_react8.default.createElement("div", { className: "dashboard" }, /* @__PURE__ */ import_react8.default.createElement(StatusHeader, { generatedAt: data.generated_at }), /* @__PURE__ */ import_react8.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react8.default.createElement(QuotaSection, { data: data.verified_quota }), /* @__PURE__ */ import_react8.default.createElement(
       SystemStatus,
       {
         autonomousMode: data.autonomous_mode,
         systemHealth: data.system_health,
         pendingItems: data.pending_items
       }
-    )), /* @__PURE__ */ import_react7.default.createElement(
+    )), /* @__PURE__ */ import_react8.default.createElement(
       MetricsGrid,
       {
         tokenUsage: data.token_usage,
@@ -23794,13 +23822,13 @@
         tasks: data.tasks,
         pendingItems: data.pending_items
       }
-    ), data.deputy_cto.hasData && /* @__PURE__ */ import_react7.default.createElement(DeputyCtoSection, { data: data.deputy_cto }), /* @__PURE__ */ import_react7.default.createElement(TodoSection, { tasks: data.tasks }));
+    ), data.deputy_cto.hasData && /* @__PURE__ */ import_react8.default.createElement(DeputyCtoSection, { data: data.deputy_cto }), /* @__PURE__ */ import_react8.default.createElement(TodoSection, { tasks: data.tasks })));
   }
 
   // src/webview/index.tsx
   var container = document.getElementById("root");
   var root = (0, import_client.createRoot)(container);
-  root.render(/* @__PURE__ */ import_react8.default.createElement(App, null));
+  root.render(/* @__PURE__ */ import_react9.default.createElement(App, null));
 })();
 /*! Bundled license information:
 

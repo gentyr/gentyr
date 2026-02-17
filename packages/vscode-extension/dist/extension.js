@@ -141,7 +141,8 @@ var DataService = class {
         const creds = JSON.parse(raw);
         const token = this.extractToken(creds);
         if (token) return token;
-      } catch {
+      } catch (err) {
+        console.warn("[GENTYR] Keychain credential read failed:", err instanceof Error ? err.message : String(err));
       }
     }
     try {
@@ -150,7 +151,8 @@ var DataService = class {
         const token = this.extractToken(creds);
         if (token) return token;
       }
-    } catch {
+    } catch (err) {
+      console.warn("[GENTYR] Credentials file read failed:", err instanceof Error ? err.message : String(err));
     }
     return null;
   }
@@ -574,9 +576,9 @@ var WebviewProvider = class {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; font-src ${webview.cspSource};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}' 'unsafe-inline'; font-src ${webview.cspSource};">
   <title>GENTYR Dashboard</title>
-  <style>
+  <style nonce="${nonce}">
     ${getBaseStyles()}
   </style>
 </head>
@@ -879,7 +881,12 @@ function activate(context) {
     refreshDashboard,
     watcher,
     statusBarManager,
-    { dispose: () => dataService?.dispose() }
+    {
+      dispose: () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        dataService?.dispose();
+      }
+    }
   );
 }
 function deactivate() {

@@ -263,7 +263,8 @@ describe('DeputyCtoSection', () => {
       const output = lastFrame();
 
       expect(output).toContain('ESCALATED');
-      expect(output).toContain('Security vulnerability CVE-2024-1234');
+      // Title is truncated due to COL_TITLE = 35
+      expect(output).toContain('Security vulnerability CVE-2024-');
       expect(output).toContain('critical');
     });
 
@@ -327,8 +328,9 @@ describe('DeputyCtoSection', () => {
 
       expect(output).toContain('PENDING QUESTIONS');
       expect(output).toContain('(2)');
-      expect(output).toContain('Should we migrate to new framework?');
-      expect(output).toContain('What is the target deployment date?');
+      // Titles are truncated due to COL_TITLE = 35
+      expect(output).toContain('Should we migrate to new framewo');
+      expect(output).toContain('What is the target deployment da');
       expect(output).toContain('decision');
       // "clarification" may wrap due to column width - check for partial match
       expect(output).toContain('clarifi');
@@ -362,7 +364,8 @@ describe('DeputyCtoSection', () => {
       const output = lastFrame();
 
       expect(output).toContain('PENDING QUESTIONS');
-      expect(output).toContain('Should we migrate to new framework?');
+      // Title is truncated due to COL_TITLE = 35
+      expect(output).toContain('Should we migrate to new framewo');
       expect(output).toContain('Recommend migration to React 19');
       // Verify tree connector is present
       expect(output).toContain('\u2514\u2500');
@@ -567,9 +570,11 @@ describe('DeputyCtoSection', () => {
       const output = lastFrame();
 
       expect(output).toContain('Answered Questions');
-      expect(output).toContain('Approved migration to TypeScript 5.3');
-      expect(output).toContain('Deployment scheduled for next week');
-      expect(output).toContain('Yes, proceed with migration');
+      // Titles are truncated due to COL_TITLE = 35
+      expect(output).toContain('Approved migration to TypeScript');
+      expect(output).toContain('Deployment scheduled for next we');
+      // Answer truncated due to COL_ANSWER = 26
+      expect(output).toContain('Yes, proceed with migra');
     });
 
     it('should handle null answer field', () => {

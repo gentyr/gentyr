@@ -286,7 +286,9 @@ export class DataService implements vscode.Disposable {
         const creds = JSON.parse(raw) as CredentialsFile;
         const token = this.extractToken(creds);
         if (token) return token;
-      } catch { /* fall through */ }
+      } catch (err) {
+        console.warn('[GENTYR] Keychain credential read failed:', err instanceof Error ? err.message : String(err));
+      }
     }
 
     try {
@@ -295,7 +297,9 @@ export class DataService implements vscode.Disposable {
         const token = this.extractToken(creds);
         if (token) return token;
       }
-    } catch { /* fall through */ }
+    } catch (err) {
+      console.warn('[GENTYR] Credentials file read failed:', err instanceof Error ? err.message : String(err));
+    }
 
     return null;
   }

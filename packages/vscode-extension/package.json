@@ -26,7 +26,7 @@
     "build": "node esbuild.config.js",
     "build:production": "node esbuild.config.js --production",
     "watch": "node esbuild.config.js --watch",
-    "package": "npm run build:production && vsce package --no-dependencies",
+    "package": "npm run build:production && vsce package",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json"
   },
   "dependencies": {

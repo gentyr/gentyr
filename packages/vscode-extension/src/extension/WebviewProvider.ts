@@ -76,9 +76,9 @@ export class WebviewProvider {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; font-src ${webview.cspSource};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}' 'unsafe-inline'; font-src ${webview.cspSource};">
   <title>GENTYR Dashboard</title>
-  <style>
+  <style nonce="${nonce}">
     ${getBaseStyles()}
   </style>
 </head>
