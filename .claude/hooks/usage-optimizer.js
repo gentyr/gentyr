@@ -39,6 +39,27 @@ const SINGLE_KEY_WARNING_THRESHOLD = 0.80; // Warn when any key exceeds 80%
 const RESET_BOUNDARY_DROP_THRESHOLD = 0.30; // Detect reset when 5h drops >30pp
 
 /**
+ * Revert overdrive state, restoring previous effective values and factor.
+ */
+function revertOverdrive(config, log) {
+  const prev = config.overdrive.previous_state;
+  if (prev?.effective) {
+    config.effective = prev.effective;
+  }
+  if (prev?.factor !== undefined) {
+    config.adjustment = config.adjustment || {};
+    config.adjustment.factor = prev.factor;
+    config.adjustment.last_updated = new Date().toISOString();
+    config.adjustment.direction = 'overdrive-reverted';
+  }
+  config.overdrive.active = false;
+
+  const configPath = getConfigPath();
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  log(`Usage optimizer: Overdrive expired, reverted to previous state (factor: ${prev?.factor ?? 1.0})`);
+}
+
+/**
  * Main entry point - run the usage optimizer.
  * Designed to be cheap and fast (one API call + math).
  *
@@ -49,6 +70,30 @@ export async function runUsageOptimizer(logFn) {
   const log = logFn || console.log;
 
   try {
+    // Overdrive check: skip adjustment if overdrive is active
+    try {
+      const configPath = getConfigPath();
+      if (fs.existsSync(configPath)) {
+        const overdriveConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (overdriveConfig.overdrive?.active) {
+          if (new Date() > new Date(overdriveConfig.overdrive.expires_at)) {
+            // Expired - revert and continue with normal adjustment
+            revertOverdrive(overdriveConfig, log);
+          } else {
+            // Active - take snapshot but skip adjustment
+            log(`Usage optimizer: Overdrive active until ${overdriveConfig.overdrive.expires_at}, skipping cooldown adjustment.`);
+            const snapshot = await collectSnapshot(log);
+            if (snapshot) {
+              storeSnapshot(snapshot, log);
+            }
+            return { success: true, snapshotTaken: !!snapshot, adjustmentMade: false };
+          }
+        }
+      }
+    } catch (err) {
+      log(`Usage optimizer: Overdrive check failed (non-fatal): ${err.message}`);
+    }
+
     // Step 1: Collect usage snapshot
     const snapshot = await collectSnapshot(log);
     if (!snapshot) {

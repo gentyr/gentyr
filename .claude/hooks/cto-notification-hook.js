@@ -385,8 +385,9 @@ function progressBar(percent, width = 10) {
 
 /**
  * Get aggregate quota from api-key-rotation.json (active keys only)
- * Returns { activeCount, fiveHourPct, sevenDayPct } or null
- * Percentages are of total capacity (average across active keys)
+ * Groups keys by account_uuid to deduplicate same-account tokens.
+ * Returns { activeCount, fiveHourPct, sevenDayPct, accounts } or null
+ * Percentages are of total capacity (average across unique accounts)
  */
 function getAggregateQuota() {
   if (!fs.existsSync(KEY_ROTATION_STATE_PATH)) {
@@ -399,28 +400,35 @@ function getAggregateQuota() {
       return null;
     }
 
-    let fiveHourSum = 0;
-    let sevenDaySum = 0;
-    let activeKeysWithData = 0;
+    // Group by account_uuid to deduplicate same-account tokens
+    const accountMap = new Map();
 
     for (const keyData of Object.values(state.keys)) {
-      // Only count active keys
       if (keyData.status === 'active' && keyData.last_usage) {
-        fiveHourSum += keyData.last_usage.five_hour || 0;
-        sevenDaySum += keyData.last_usage.seven_day || 0;
-        activeKeysWithData++;
+        const dedupeKey = keyData.account_uuid || `fp:${keyData.last_usage.seven_day}:${keyData.last_usage.seven_day_sonnet}`;
+        if (!accountMap.has(dedupeKey)) {
+          accountMap.set(dedupeKey, {
+            email: keyData.account_email || null,
+            fiveHour: keyData.last_usage.five_hour || 0,
+            sevenDay: keyData.last_usage.seven_day || 0,
+          });
+        }
       }
     }
 
-    if (activeKeysWithData === 0) {
+    if (accountMap.size === 0) {
       return null;
     }
 
-    // Return % of total capacity (average = % of total when each key is 100% capacity)
+    const accounts = Array.from(accountMap.values());
+    const fiveHourSum = accounts.reduce((sum, a) => sum + a.fiveHour, 0);
+    const sevenDaySum = accounts.reduce((sum, a) => sum + a.sevenDay, 0);
+
     return {
-      activeCount: activeKeysWithData,
-      fiveHourPct: Math.round(fiveHourSum / activeKeysWithData),
-      sevenDayPct: Math.round(sevenDaySum / activeKeysWithData),
+      activeCount: accounts.length,
+      fiveHourPct: Math.round(fiveHourSum / accounts.length),
+      sevenDayPct: Math.round(sevenDaySum / accounts.length),
+      accounts,
     };
   } catch {
     return null;
@@ -529,7 +537,7 @@ async function main() {
   let quotaPart = '';
   if (aggregateQuota && aggregateQuota.activeCount > 1) {
     // Compact aggregate display for critical mode (% of total capacity)
-    quotaPart = `Quota (${aggregateQuota.activeCount} keys): 5h ${aggregateQuota.fiveHourPct}% 7d ${aggregateQuota.sevenDayPct}%`;
+    quotaPart = `Quota (${aggregateQuota.activeCount} accounts): 5h ${aggregateQuota.fiveHourPct}% 7d ${aggregateQuota.sevenDayPct}%`;
   } else if (!quota.error && quota.five_hour && quota.seven_day) {
     // Single key display
     const fiveHour = `5h: ${Math.round(quota.five_hour.utilization)}%`;
@@ -553,10 +561,19 @@ async function main() {
 
     // Line 1: Quota status - use aggregate if available, otherwise single-key
     if (aggregateQuota && aggregateQuota.activeCount > 1) {
-      // Multi-key aggregate display (% of total capacity)
+      // Multi-account aggregate display (% of total capacity)
       const fhBar = progressBar(aggregateQuota.fiveHourPct, 8);
       const sdBar = progressBar(aggregateQuota.sevenDayPct, 8);
-      lines.push(`Quota (${aggregateQuota.activeCount} keys): 5h ${fhBar} ${aggregateQuota.fiveHourPct}% | 7d ${sdBar} ${aggregateQuota.sevenDayPct}%`);
+      lines.push(`Quota (${aggregateQuota.activeCount} accounts): 5h ${fhBar} ${aggregateQuota.fiveHourPct}% | 7d ${sdBar} ${aggregateQuota.sevenDayPct}%`);
+
+      // Accounts line with emails and per-account 5h usage
+      if (aggregateQuota.accounts) {
+        const accountParts = aggregateQuota.accounts.map(a => {
+          const label = a.email || 'unknown';
+          return `${label} (${Math.round(a.fiveHour)}% 5h)`;
+        });
+        lines.push(`Accounts: ${accountParts.join(' | ')}`);
+      }
     } else if (quota.five_hour && quota.seven_day) {
       // Single-key display with reset times
       const fh = quota.five_hour;

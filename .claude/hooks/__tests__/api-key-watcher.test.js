@@ -63,6 +63,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
 
       const requiredFunctions = [
         'checkKeyHealth',
+        'fetchAccountProfile',
         'selectActiveKey',
         'main'
       ];
@@ -723,6 +724,86 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
   });
 
+  describe('fetchAccountProfile() - Account Profile Fetch', () => {
+    it('should make GET request to Anthropic profile API', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      const functionMatch = hookCode.match(/async function fetchAccountProfile\(accessToken\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'fetchAccountProfile function must be async');
+
+      const functionBody = functionMatch[0];
+
+      // Should fetch from profile endpoint
+      assert.match(
+        functionBody,
+        /fetch\(['"]https:\/\/api\.anthropic\.com\/api\/oauth\/profile['"]/,
+        'Must fetch from /api/oauth/profile endpoint'
+      );
+
+      // Should use Bearer auth
+      assert.match(
+        functionBody,
+        /['"]Authorization['"]\s*:\s*`Bearer \$\{accessToken\}`/,
+        'Must set Authorization header with Bearer token'
+      );
+    });
+
+    it('should return account_uuid and email on success', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      const functionMatch = hookCode.match(/async function fetchAccountProfile\(accessToken\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Should extract account uuid
+      assert.match(
+        functionBody,
+        /data\.account\?\.uuid/,
+        'Must extract account UUID from response'
+      );
+
+      // Should extract account email
+      assert.match(
+        functionBody,
+        /data\.account\?\.email/,
+        'Must extract account email from response'
+      );
+
+      // Should return object with both fields
+      assert.match(
+        functionBody,
+        /account_uuid:\s*data\.account\.uuid/,
+        'Must return account_uuid field'
+      );
+
+      assert.match(
+        functionBody,
+        /email:\s*data\.account\.email/,
+        'Must return email field'
+      );
+    });
+
+    it('should return null on failure without blocking', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      const functionMatch = hookCode.match(/async function fetchAccountProfile\(accessToken\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Should return null on non-OK response
+      assert.match(
+        functionBody,
+        /if \(!response\.ok\) return null/,
+        'Must return null on non-OK response'
+      );
+
+      // Should catch errors and return null
+      assert.match(
+        functionBody,
+        /catch[\s\S]*?return null/,
+        'Must return null on error'
+      );
+    });
+  });
+
   describe('selectActiveKey() - Rotation Logic', () => {
     it('should exist and accept state parameter', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
@@ -1195,24 +1276,38 @@ describe('api-key-watcher.js - Unit Tests', () => {
       );
     });
 
-    it('should build notification message for multiple keys', () => {
+    it('should build notification message for multiple accounts', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
-      // Should count active/exhausted keys
+      // Should filter to responding keys with usage data
       assert.match(
         functionBody,
-        /keyCount = Object\.keys\(state\.keys\)/,
-        'Must count tracked keys'
+        /respondingKeys = Object\.entries\(state\.keys\)/,
+        'Must filter to keys that responded to health checks'
       );
 
-      // Should check if keyCount > 1
+      // Should deduplicate by account_uuid (with fallback to usage fingerprint)
       assert.match(
         functionBody,
-        /keyCount > 1/,
-        'Must check if multiple keys are tracked'
+        /account_uuid/,
+        'Must deduplicate by account_uuid'
+      );
+
+      // Should check if accountCount > 1
+      assert.match(
+        functionBody,
+        /accountCount > 1/,
+        'Must check if multiple accounts are tracked'
+      );
+
+      // Should use "Accounts" label in message
+      assert.match(
+        functionBody,
+        /Accounts:.*tracked/,
+        'Must use "Accounts" label in notification message'
       );
 
       // Should include usage percentage in message (values are already 0-100)
@@ -1220,6 +1315,250 @@ describe('api-key-watcher.js - Unit Tests', () => {
         functionBody,
         /Math\.round\(maxUsage\)/,
         'Must calculate usage percentage for notification'
+      );
+    });
+
+    it('should deduplicate keys from same account by account_uuid (behavioral)', () => {
+      // Simulate deduplication logic with account_uuid
+      const state = {
+        keys: {
+          'key-1': {
+            status: 'active',
+            account_uuid: 'acct-uuid-1',
+            account_email: 'user@example.com',
+            last_usage: {
+              five_hour: 10,
+              seven_day: 50,
+              seven_day_sonnet: 30,
+              checked_at: Date.now()
+            }
+          },
+          'key-2': {
+            status: 'active',
+            account_uuid: 'acct-uuid-1', // Same account
+            account_email: 'user@example.com',
+            last_usage: {
+              five_hour: 15,
+              seven_day: 50,
+              seven_day_sonnet: 30,
+              checked_at: Date.now()
+            }
+          },
+        }
+      };
+
+      // Filter to responding keys (same as hook)
+      const respondingKeys = Object.entries(state.keys)
+        .filter(([_, k]) => k.last_usage && (k.status === 'active' || k.status === 'exhausted'));
+
+      // Deduplicate by account_uuid (same as hook)
+      const seen = new Set();
+      const uniqueAccounts = respondingKeys.filter(([_, k]) => {
+        const dedupeKey = k.account_uuid || `fp:${k.last_usage.seven_day}:${k.last_usage.seven_day_sonnet}`;
+        if (seen.has(dedupeKey)) return false;
+        seen.add(dedupeKey);
+        return true;
+      });
+
+      // Should deduplicate to 1 account (same account_uuid)
+      assert.strictEqual(
+        uniqueAccounts.length,
+        1,
+        'Must deduplicate keys with same account_uuid'
+      );
+    });
+
+    it('should count different accounts separately (behavioral)', () => {
+      // Simulate different accounts with different account_uuids
+      const state = {
+        keys: {
+          'key-account-a': {
+            status: 'active',
+            account_uuid: 'acct-uuid-1',
+            account_email: 'user@example.com',
+            last_usage: {
+              five_hour: 10,
+              seven_day: 50,
+              seven_day_sonnet: 30,
+              checked_at: Date.now()
+            }
+          },
+          'key-account-b': {
+            status: 'active',
+            account_uuid: 'acct-uuid-2',
+            account_email: 'user2@example.com',
+            last_usage: {
+              five_hour: 20,
+              seven_day: 60,
+              seven_day_sonnet: 40,
+              checked_at: Date.now()
+            }
+          },
+        }
+      };
+
+      // Filter and deduplicate (same as hook)
+      const respondingKeys = Object.entries(state.keys)
+        .filter(([_, k]) => k.last_usage && (k.status === 'active' || k.status === 'exhausted'));
+
+      const seen = new Set();
+      const uniqueAccounts = respondingKeys.filter(([_, k]) => {
+        const dedupeKey = k.account_uuid || `fp:${k.last_usage.seven_day}:${k.last_usage.seven_day_sonnet}`;
+        if (seen.has(dedupeKey)) return false;
+        seen.add(dedupeKey);
+        return true;
+      });
+
+      // Should count 2 separate accounts
+      assert.strictEqual(
+        uniqueAccounts.length,
+        2,
+        'Must count keys with different account_uuids as separate accounts'
+      );
+    });
+
+    it('should handle keys with no usage data (behavioral)', () => {
+      // Simulate keys without health check data
+      const state = {
+        keys: {
+          'key-no-usage': {
+            status: 'active',
+            last_usage: null // No health check yet
+          },
+          'key-with-usage': {
+            status: 'active',
+            last_usage: {
+              five_hour: 10,
+              seven_day: 50,
+              seven_day_sonnet: 30,
+              checked_at: Date.now()
+            }
+          },
+        }
+      };
+
+      // Filter to responding keys (same as hook)
+      const respondingKeys = Object.entries(state.keys)
+        .filter(([_, k]) => k.last_usage && (k.status === 'active' || k.status === 'exhausted'));
+
+      // Should only include key with usage data
+      assert.strictEqual(
+        respondingKeys.length,
+        1,
+        'Must exclude keys without last_usage from account count'
+      );
+      assert.strictEqual(
+        respondingKeys[0][0],
+        'key-with-usage',
+        'Responding keys must only include keys with usage data'
+      );
+    });
+
+    it('should handle all keys from same account (behavioral)', () => {
+      // Edge case: Multiple tokens for same account, all with same account_uuid
+      const state = {
+        keys: {
+          'token-1': {
+            status: 'active',
+            account_uuid: 'acct-uuid-1',
+            account_email: 'user@example.com',
+            last_usage: {
+              five_hour: 10,
+              seven_day: 50,
+              seven_day_sonnet: 30,
+              checked_at: Date.now()
+            }
+          },
+          'token-2': {
+            status: 'active',
+            account_uuid: 'acct-uuid-1',
+            account_email: 'user@example.com',
+            last_usage: {
+              five_hour: 10,
+              seven_day: 50,
+              seven_day_sonnet: 30,
+              checked_at: Date.now()
+            }
+          },
+          'token-3': {
+            status: 'active',
+            account_uuid: 'acct-uuid-1',
+            account_email: 'user@example.com',
+            last_usage: {
+              five_hour: 10,
+              seven_day: 50,
+              seven_day_sonnet: 30,
+              checked_at: Date.now()
+            }
+          },
+        }
+      };
+
+      // Filter and deduplicate
+      const respondingKeys = Object.entries(state.keys)
+        .filter(([_, k]) => k.last_usage && (k.status === 'active' || k.status === 'exhausted'));
+
+      const seen = new Set();
+      const uniqueAccounts = respondingKeys.filter(([_, k]) => {
+        const dedupeKey = k.account_uuid || `fp:${k.last_usage.seven_day}:${k.last_usage.seven_day_sonnet}`;
+        if (seen.has(dedupeKey)) return false;
+        seen.add(dedupeKey);
+        return true;
+      });
+
+      // Should deduplicate to 1 account
+      assert.strictEqual(
+        uniqueAccounts.length,
+        1,
+        'Must deduplicate multiple tokens from same account_uuid to 1 account'
+      );
+    });
+
+    it('should fall back to usage fingerprint when account_uuid is missing (behavioral)', () => {
+      // Keys without account_uuid should fall back to usage fingerprint dedup
+      const state = {
+        keys: {
+          'key-no-profile-1': {
+            status: 'active',
+            account_uuid: null,
+            account_email: null,
+            last_usage: {
+              five_hour: 10,
+              seven_day: 50,
+              seven_day_sonnet: 30,
+              checked_at: Date.now()
+            }
+          },
+          'key-no-profile-2': {
+            status: 'active',
+            account_uuid: null,
+            account_email: null,
+            last_usage: {
+              five_hour: 15,
+              seven_day: 50, // Same 7-day
+              seven_day_sonnet: 30, // Same sonnet
+              checked_at: Date.now()
+            }
+          },
+        }
+      };
+
+      const respondingKeys = Object.entries(state.keys)
+        .filter(([_, k]) => k.last_usage && (k.status === 'active' || k.status === 'exhausted'));
+
+      const seen = new Set();
+      const uniqueAccounts = respondingKeys.filter(([_, k]) => {
+        const dedupeKey = k.account_uuid || `fp:${k.last_usage.seven_day}:${k.last_usage.seven_day_sonnet}`;
+        if (seen.has(dedupeKey)) return false;
+        seen.add(dedupeKey);
+        return true;
+      });
+
+      // Should deduplicate to 1 via usage fingerprint fallback
+      assert.strictEqual(
+        uniqueAccounts.length,
+        1,
+        'Must fall back to usage fingerprint dedup when account_uuid is null'
       );
     });
 

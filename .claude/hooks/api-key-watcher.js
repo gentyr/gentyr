@@ -120,6 +120,39 @@ async function checkKeyHealth(accessToken) {
 }
 
 /**
+ * Fetch account profile to get account UUID and email for deduplication.
+ * Uses the same OAuth Bearer auth as the usage endpoint.
+ * @param {string} accessToken
+ * @returns {Promise<{account_uuid: string, email: string}|null>}
+ */
+async function fetchAccountProfile(accessToken) {
+  try {
+    const response = await fetch('https://api.anthropic.com/api/oauth/profile', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'claude-code/2.1.14',
+        'anthropic-beta': ANTHROPIC_BETA_HEADER,
+      },
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    if (data.account?.uuid && data.account?.email) {
+      return {
+        account_uuid: data.account.uuid,
+        email: data.account.email,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Select the best key to use based on current usage levels
  * @param {KeyRotationState} state
  * @returns {string|null}
@@ -282,6 +315,16 @@ async function main() {
 
     // Run health check
     const result = await checkKeyHealth(keyData.accessToken);
+
+    // Fetch account profile if not already known (non-blocking)
+    if (result.valid && !keyData.account_uuid) {
+      const profile = await fetchAccountProfile(keyData.accessToken);
+      if (profile) {
+        keyData.account_uuid = profile.account_uuid;
+        keyData.account_email = profile.email;
+      }
+    }
+
     return { keyId, result };
   });
 
@@ -371,22 +414,32 @@ async function main() {
   // Save state
   writeRotationState(state);
 
-  // Build notification message if there are multiple keys or rotation happened
-  const keyCount = Object.keys(state.keys).filter(id =>
-    state.keys[id].status === 'active' || state.keys[id].status === 'exhausted'
-  ).length;
+  // Build notification message — only count keys that responded to health checks,
+  // deduplicated per account (prefer account_uuid, fall back to usage fingerprint).
+  const respondingKeys = Object.entries(state.keys)
+    .filter(([_, k]) => k.last_usage && (k.status === 'active' || k.status === 'exhausted'));
 
+  // Deduplicate by account: prefer account_uuid, fall back to usage fingerprint
+  const seen = new Set();
+  const uniqueAccounts = respondingKeys.filter(([_, k]) => {
+    const dedupeKey = k.account_uuid || `fp:${k.last_usage.seven_day}:${k.last_usage.seven_day_sonnet}`;
+    if (seen.has(dedupeKey)) return false;
+    seen.add(dedupeKey);
+    return true;
+  });
+
+  const accountCount = uniqueAccounts.length;
   let message = null;
 
-  if (keyCount > 1) {
+  if (accountCount > 1) {
     const activeKey = state.keys[state.active_key_id];
     const usage = activeKey?.last_usage;
 
     if (usage) {
       const maxUsage = Math.max(usage.five_hour, usage.seven_day, usage.seven_day_sonnet);
-      message = `Keys: ${keyCount} tracked | Active: ${state.active_key_id.slice(0, 8)}... (${Math.round(maxUsage)}% max usage)`;
+      message = `Accounts: ${accountCount} tracked | Active: ${state.active_key_id.slice(0, 8)}... (${Math.round(maxUsage)}% max usage)`;
     } else {
-      message = `Keys: ${keyCount} tracked | Active: ${state.active_key_id.slice(0, 8)}...`;
+      message = `Accounts: ${accountCount} tracked | Active: ${state.active_key_id.slice(0, 8)}...`;
     }
   }
 
@@ -395,7 +448,7 @@ async function main() {
     status: 'success',
     durationMs: Date.now() - startTime,
     metadata: {
-      keyCount,
+      keyCount: accountCount,
       switched: selectedKeyId !== state.active_key_id,
       keysAdded: syncResult.keysAdded,
       tokensRefreshed: syncResult.tokensRefreshed,

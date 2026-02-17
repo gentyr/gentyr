@@ -130,9 +130,12 @@ class ChromeBridgeClient {
     const attempts = this.reconnectAttempts.get(socketPath) ?? 0;
     if (attempts >= ChromeBridgeClient.MAX_RECONNECT_ATTEMPTS) {
       this.reconnectAttempts.delete(socketPath);
-      // Remove stale tab routes
+      // Remove stale tab routes and cached URLs
       for (const [tabId, sp] of this.tabRoutes) {
-        if (sp === socketPath) this.tabRoutes.delete(tabId);
+        if (sp === socketPath) {
+          this.tabRoutes.delete(tabId);
+          this.tabUrls.delete(tabId);
+        }
       }
       return;
     }
@@ -360,7 +363,8 @@ class ChromeBridgeClient {
       if (this.isContentScriptError(result) && tabId !== undefined) {
         const cachedUrl = this.tabUrls.get(tabId);
         if (cachedUrl) {
-          log(`Content script missing on tab ${tabId}, reloading ${cachedUrl} and retrying...`);
+          const urlHost = (() => { try { return new URL(cachedUrl).hostname; } catch { return '(unknown)'; } })();
+          log(`Content script missing on tab ${tabId}, reloading ${urlHost} and retrying...`);
           try {
             await this.executeOnSocketSerialized(targetSocket, 'navigate', { url: cachedUrl, tabId });
             await new Promise((r) => setTimeout(r, 2000));

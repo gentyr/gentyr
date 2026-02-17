@@ -43,6 +43,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { validateMappings, formatValidationResult } from './mapping-validator.js';
 import { registerSpawn, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { getCooldown } from './config-reader.js';
 
 // Project directory
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -83,6 +84,10 @@ try {
   console.error(`Failed to load compliance-config.json: ${err.message}`);
   process.exit(1);
 }
+
+// Overlay dynamic cooldowns from usage-optimizer (allows overdrive to scale these)
+CONFIG.global.fileVerificationCooldownDays = getCooldown('compliance_checker_file', 10080) / (60 * 24);
+CONFIG.local.specCooldownDays = getCooldown('compliance_checker_spec', 10080) / (60 * 24);
 
 // State file paths
 const STATE_FILE = path.join(projectDir, CONFIG.stateFile);

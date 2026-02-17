@@ -100,8 +100,9 @@ try {
 
   // Also check .mcp.json env blocks for missing keys (e.g. OP_SERVICE_ACCOUNT_TOKEN
   // is injected into .mcp.json by the installer, not stored in vault-mappings).
-  // Also load OP_SERVICE_ACCOUNT_TOKEN into process.env for the op whoami check below.
-  if (missingKeys.length > 0 || !process.env.OP_SERVICE_ACCOUNT_TOKEN) {
+  // Always load OP_SERVICE_ACCOUNT_TOKEN from .mcp.json (source of truth) — the env
+  // may have a stale token from a previous session that predates a token rotation.
+  {
     const mcpPath = path.join(projectDir, '.mcp.json');
     try {
       const mcpConfig = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
@@ -111,8 +112,8 @@ try {
           for (const k of Object.keys(server.env)) {
             if (server.env[k]) mcpEnvKeys.add(k);
           }
-          // Load OP_SERVICE_ACCOUNT_TOKEN for op whoami connectivity check
-          if (!process.env.OP_SERVICE_ACCOUNT_TOKEN && server.env.OP_SERVICE_ACCOUNT_TOKEN) {
+          // Always prefer .mcp.json token — it's updated by reinstall.sh
+          if (server.env.OP_SERVICE_ACCOUNT_TOKEN) {
             process.env.OP_SERVICE_ACCOUNT_TOKEN = server.env.OP_SERVICE_ACCOUNT_TOKEN;
           }
         }
@@ -144,7 +145,7 @@ try {
       // Connected — no message needed
       output(null);
     } catch {
-      output('GENTYR: 1Password is not authenticated. Run `op signin` or set OP_SERVICE_ACCOUNT_TOKEN. MCP servers will start without credentials.');
+      output('GENTYR: 1Password is not authenticated. Run `sudo scripts/setup.sh --path <project> --op-token <TOKEN>` to configure. MCP servers will start without credentials.');
     }
   } else {
     // All mappings are direct values — no 1Password needed

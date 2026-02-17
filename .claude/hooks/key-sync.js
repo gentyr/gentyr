@@ -367,6 +367,8 @@ export async function syncKeys(log) {
         last_used_at: null,
         last_health_check: null,
         last_usage: null,
+        account_uuid: null,
+        account_email: null,
         status: 'active',
       };
 

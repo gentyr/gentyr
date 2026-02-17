@@ -71,6 +71,21 @@ function getPromptPath() {
 }
 
 /**
+ * Get the configured cooldown from centralized config-reader.
+ * Uses dynamic import since reporters live in a subdirectory accessed via symlinks.
+ * @returns {Promise<number>} Cooldown in minutes
+ */
+async function getConfiguredCooldown() {
+  try {
+    const configReaderPath = path.join(getFrameworkDir(), '.claude', 'hooks', 'config-reader.js');
+    const { getCooldown } = await import(configReaderPath);
+    return getCooldown('test_failure_reporter', 120);
+  } catch {
+    return 120;
+  }
+}
+
+/**
  * Dynamically import agent-tracker
  * @returns {Promise<{registerSpawn: Function, AGENT_TYPES: object, HOOK_TYPES: object}>}
  */
@@ -126,17 +141,18 @@ function writeState(state) {
  * Check if a suite is in cooldown
  * @param {object} state
  * @param {string} suiteName
+ * @param {number} cooldownMinutes - Cooldown in minutes
  * @param {Date} now
  * @returns {boolean}
  */
-function isInCooldown(state, suiteName, now = new Date()) {
+function isInCooldown(state, suiteName, cooldownMinutes = CONFIG.COOLDOWN_MINUTES, now = new Date()) {
   const lastSpawn = state.suites[suiteName];
   if (!lastSpawn) return false;
 
   const lastSpawnDate = new Date(lastSpawn);
   const minutesSince = (now - lastSpawnDate) / (1000 * 60);
 
-  return minutesSince < CONFIG.COOLDOWN_MINUTES;
+  return minutesSince < cooldownMinutes;
 }
 
 /**
@@ -378,12 +394,13 @@ export default class VitestFailureReporter {
       return;
     }
 
+    const cooldownMinutes = await getConfiguredCooldown();
     const suiteNames = Array.from(failedFiles.keys()).map(fp => path.basename(fp));
 
     const state = readState();
     const now = new Date();
 
-    const suitesToProcess = suiteNames.filter(suite => !isInCooldown(state, suite, now));
+    const suitesToProcess = suiteNames.filter(suite => !isInCooldown(state, suite, cooldownMinutes, now));
 
     if (suitesToProcess.length === 0) {
       if (this._options.verbose) {

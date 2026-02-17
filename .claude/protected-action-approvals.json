@@ -1,3 +1,42 @@
 {
-  "approvals": {}
+  "approvals": {
+    "TURRM4": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {
+        "arg1": "value1"
+      },
+      "phrase": "APPROVE TEST",
+      "code": "TURRM4",
+      "status": "pending",
+      "created_at": "2026-02-17T01:57:05.036Z",
+      "created_timestamp": 1771293425036,
+      "expires_at": "2026-02-17T02:02:05.036Z",
+      "expires_timestamp": 1771293725036
+    },
+    "2X5PDB": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "2X5PDB",
+      "status": "pending",
+      "created_at": "2026-02-17T01:57:05.045Z",
+      "created_timestamp": 1771293425045,
+      "expires_at": "2026-02-17T02:02:05.045Z",
+      "expires_timestamp": 1771293725045
+    },
+    "4X6AP8": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "4X6AP8",
+      "status": "pending",
+      "created_at": "2026-02-17T01:57:05.046Z",
+      "created_timestamp": 1771293425046,
+      "expires_at": "2026-02-17T02:02:05.046Z",
+      "expires_timestamp": 1771293725046
+    }
+  }
 }

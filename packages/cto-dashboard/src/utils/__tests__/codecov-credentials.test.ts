@@ -432,22 +432,23 @@ describe('Codecov Credentials Resolution', () => {
       expect(content.mcpServers['test-server'].env.OP_SERVICE_ACCOUNT_TOKEN).toBe('test-op-token-from-mcp');
     });
 
-    it('should skip .mcp.json when OP_SERVICE_ACCOUNT_TOKEN already in environment', () => {
-      process.env['OP_SERVICE_ACCOUNT_TOKEN'] = 'existing-token-from-env';
+    it('should always prefer .mcp.json over stale env token (source of truth after token rotation)', () => {
+      process.env['OP_SERVICE_ACCOUNT_TOKEN'] = 'stale-token-from-env';
 
       const mcpData = {
         mcpServers: {
           'test-server': {
             env: {
-              OP_SERVICE_ACCOUNT_TOKEN: 'different-token-from-mcp',
+              OP_SERVICE_ACCOUNT_TOKEN: 'fresh-token-from-mcp',
             },
           },
         },
       };
       fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpData));
 
-      // Env var should take precedence
-      expect(process.env['OP_SERVICE_ACCOUNT_TOKEN']).toBe('existing-token-from-env');
+      // .mcp.json is source of truth (updated by reinstall.sh), env may be stale
+      const content = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
+      expect(content.mcpServers['test-server'].env.OP_SERVICE_ACCOUNT_TOKEN).toBe('fresh-token-from-mcp');
     });
 
     it('should handle missing .mcp.json file gracefully', () => {
