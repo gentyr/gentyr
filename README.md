@@ -170,7 +170,9 @@ mcp__agent-reports__report_to_deputy_cto({
   - Quota & capacity (aggregate across all API keys)
   - System status (Deputy CTO mode, protection status, commit blocks)
   - Deputy CTO triage pipeline (untriaged reports, escalated items, pending questions, 24h summary)
-  - Testing health (failing suites with fix attempts, agent breakdown by framework, resolved suites, unique failures, 7-day activity, optional Codecov)
+  - Testing health (failing suites with fix attempts, agent breakdown by framework, resolved suites, unique failures, 42-bucket 4h-resolution activity graph, optional Codecov)
+  - Deployments (Render services + Vercel projects side-by-side, combined recent deploy timeline, pipeline promotion state)
+  - Infrastructure health (5-provider status: Render, Vercel, Supabase, Elasticsearch, Cloudflare — each independently degradable)
   - Automated instances (active agent sessions with spawn reasons and durations)
   - Timeline (chronological view of sessions, hooks, reports, questions, tasks)
   - Metrics summary (tokens, sessions, agents, tasks, hooks, triage, CTO queue)
@@ -498,8 +500,8 @@ mcp__specs-browser__createSpec({
 │   │   └── tsconfig.json
 │   ├── cto-dashboard/          # Ink-based CLI dashboard (invoked by /cto-report)
 │   │   ├── src/
-│   │   │   ├── components/
-│   │   │   ├── utils/
+│   │   │   ├── components/     # DeploymentsSection, InfraSection, TestingSection, etc.
+│   │   │   ├── utils/          # credentials.ts, deployments-reader.ts, infra-reader.ts, etc.
 │   │   │   └── App.tsx
 │   │   ├── package.json
 │   │   └── tsconfig.json

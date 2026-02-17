@@ -1,5 +1,66 @@
 # GENTYR Framework Changelog
 
+## 2026-02-17 - CTO Dashboard: Deployments, Infrastructure, and Testing Graph
+
+### Added
+
+**CTO Dashboard — New Sections and Shared Utilities:**
+
+1. **Shared credential resolution module** (`packages/cto-dashboard/src/utils/credentials.ts`)
+   - Common `resolveCredential()` function: env var → vault-mappings.json → `op read` chain
+   - Shared `fetchWithTimeout()` helper used by all data readers
+   - `loadOpTokenFromMcpJson()` for headless token resolution
+
+2. **Deployments data reader** (`packages/cto-dashboard/src/utils/deployments-reader.ts`)
+   - Fetches Render services and deploys, Vercel projects and deployments in parallel
+   - All calls via `Promise.allSettled` with 10s timeouts (independently degradable)
+   - Reads pipeline promotion state from local automation state file
+   - Combines and sorts deploys from both platforms (newest first, up to 8)
+
+3. **Infrastructure health reader** (`packages/cto-dashboard/src/utils/infra-reader.ts`)
+   - 5-provider health queries: Render, Vercel, Supabase, Elasticsearch, Cloudflare
+   - Each provider independently degradable — missing credentials or API failures return `{ available: false }`
+   - Elasticsearch aggregation query returns 1h log totals, error/warn counts, top services
+
+4. **DeploymentsSection component** (`packages/cto-dashboard/src/components/DeploymentsSection.tsx`)
+   - Side-by-side Render service list and Vercel project list
+   - Combined recent deploy timeline with platform badge and status color
+   - Pipeline promotion state footer
+
+5. **InfraSection component** (`packages/cto-dashboard/src/components/InfraSection.tsx`)
+   - 5-provider health status row with colored dots
+   - Elasticsearch logs detail row when available
+
+### Modified
+
+6. **TestingSection** (`packages/cto-dashboard/src/components/TestingSection.tsx`)
+   - Replaced old 7-day sparkline with LineGraph using 42 x 4h buckets for higher resolution
+   - Codecov sparkline retained
+
+7. **testing-reader.ts** (`packages/cto-dashboard/src/utils/testing-reader.ts`)
+   - Added `testActivityTimeseries` field (42 buckets, 4h resolution, ~7-day window)
+   - Switched to shared credentials module
+
+8. **App.tsx** — Renders DeploymentsSection and InfraSection between Testing and FeedbackPersonas
+
+9. **index.tsx** — Fetches deployments and infra data in parallel at startup
+
+10. **components/index.ts** — Added exports for DeploymentsSection and InfraSection
+
+### Fixed
+
+- **Vercel availability bug** (`infra-reader.ts`): `errorDeploys >= 0` always-true check replaced with `available: true` inside success path
+
+### Tests
+
+- Updated 3 test cases in `TestingSection.test.tsx` to match LineGraph (replaces sparkline)
+- All 343 tests pass across 12 test files
+- TypeScript build compiles clean
+
+**Total Changes:** 5 new files, 5 modified files, 343 tests passing
+
+---
+
 ## 2026-02-16 - CTO Dashboard Trajectory Forecast Graph
 
 ### Added

@@ -24,9 +24,9 @@ export interface TestingSectionProps {
 const SPARK_BLOCKS = ['\u2581', '\u2582', '\u2583', '\u2584', '\u2585', '\u2586', '\u2587', '\u2588'];
 
 // Column widths for tabular layout
-const COL_NAME = 35;
-const COL_AGE = 9;
-const COL_FW = 9;
+const COL_NAME = 34;
+const COL_AGE = 10;
+const COL_FW = 11;
 
 function miniSparkline(data: number[], color: string): React.ReactElement {
   if (data.length === 0 || data.every(d => d === 0)) {
@@ -130,9 +130,8 @@ export function TestingSection({ data }: TestingSectionProps): React.ReactElemen
               <Text color={hasAgentActivity ? 'cyan' : 'gray'}>{data.testAgentSpawns24h}</Text>
               {hasAgentActivity && (
                 <>
-                  <Text color="gray">  Jest: </Text><Text color="magenta">{bd.jest}</Text>
                   <Text color="gray">  Vitest: </Text><Text color="green">{bd.vitest}</Text>
-                  <Text color="gray">  PW: </Text><Text color="blue">{bd.playwright}</Text>
+                  <Text color="gray">  Playwright: </Text><Text color="blue">{bd.playwright}</Text>
                   <Text color="gray">  Writer: </Text><Text color="cyan">{bd.testWriter}</Text>
                 </>
               )}

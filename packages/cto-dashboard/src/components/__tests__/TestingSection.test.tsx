@@ -283,11 +283,10 @@ describe('TestingSection', () => {
 
       expect(output).toContain('Agents (24h)');
       expect(output).toContain('15');
-      expect(output).toContain('Jest');
-      expect(output).toContain('8');
+      expect(output).not.toContain('Jest');
       expect(output).toContain('Vitest');
       expect(output).toContain('4');
-      expect(output).toContain('PW');
+      expect(output).toContain('Playwright');
       expect(output).toContain('2');
       expect(output).toContain('Writer');
       expect(output).toContain('1');
@@ -311,7 +310,7 @@ describe('TestingSection', () => {
 
       expect(output).not.toContain('Jest');
       expect(output).not.toContain('Vitest');
-      expect(output).not.toContain('PW');
+      expect(output).not.toContain('Playwright');
       expect(output).not.toContain('Writer');
     });
 
@@ -320,7 +319,7 @@ describe('TestingSection', () => {
         hasData: true,
         failingSuites: [],
         testAgentSpawns24h: 5,
-        agentBreakdown24h: { jest: 5, vitest: 0, playwright: 0, testWriter: 0 },
+        agentBreakdown24h: { jest: 0, vitest: 5, playwright: 0, testWriter: 0 },
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [],
@@ -332,7 +331,9 @@ describe('TestingSection', () => {
       const output = lastFrame();
 
       expect(output).toContain('5');
-      expect(output).toContain('Jest');
+      expect(output).not.toContain('Jest');
+      expect(output).toContain('Vitest');
+      expect(output).toContain('Playwright');
       expect(output).toContain('0'); // Zero counts still shown
     });
   });
@@ -430,8 +431,14 @@ describe('TestingSection', () => {
     });
   });
 
-  describe('Activity Sparkline', () => {
-    it('should display 7-day activity sparkline', () => {
+  describe('Activity Graph', () => {
+    it('should display test agent activity graph when timeseries has non-zero values', () => {
+      // Produce 42 4-hour buckets with some non-zero values
+      const timeseries = new Array(42).fill(0);
+      timeseries[41] = 3;
+      timeseries[40] = 1;
+      timeseries[35] = 2;
+
       const data: TestingData = {
         hasData: true,
         failingSuites: [],
@@ -440,18 +447,18 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [1, 2, 3, 5, 4, 2, 1],
-        testActivityTimeseries: [],
+        testActivityTimeseries: timeseries,
         codecov: null
       };
 
       const { lastFrame } = render(<TestingSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain('7d activity');
+      expect(output).toContain('Test Agent Activity (7d)');
       expect(output).toBeTruthy();
     });
 
-    it('should show "no data" for empty activity', () => {
+    it('should not render activity graph when testActivityTimeseries is all zeros', () => {
       const data: TestingData = {
         hasData: true,
         failingSuites: [],
@@ -460,17 +467,17 @@ describe('TestingSection', () => {
         suitesFixedRecently: 0,
         uniqueFailureSignatures24h: 0,
         dailyTestActivity: [0, 0, 0, 0, 0, 0, 0],
-        testActivityTimeseries: [],
+        testActivityTimeseries: new Array(42).fill(0),
         codecov: null
       };
 
       const { lastFrame } = render(<TestingSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain('no data');
+      expect(output).not.toContain('Test Agent Activity (7d)');
     });
 
-    it('should not render sparkline when dailyTestActivity is empty array', () => {
+    it('should not render activity graph when testActivityTimeseries is empty array', () => {
       const data: TestingData = {
         hasData: true,
         failingSuites: [],
@@ -486,7 +493,7 @@ describe('TestingSection', () => {
       const { lastFrame } = render(<TestingSection data={data} />);
       const output = lastFrame();
 
-      expect(output).not.toContain('7d activity');
+      expect(output).not.toContain('Test Agent Activity (7d)');
     });
   });
 
@@ -616,7 +623,11 @@ describe('TestingSection', () => {
         suitesFixedRecently: 3,
         uniqueFailureSignatures24h: 5,
         dailyTestActivity: [2, 3, 5, 4, 3, 2, 1],
-        testActivityTimeseries: [],
+        testActivityTimeseries: (() => {
+          const ts = new Array(42).fill(0);
+          ts[41] = 2; ts[40] = 3; ts[35] = 5;
+          return ts;
+        })(),
         codecov: {
           coveragePercent: 82.5,
           trend: [78, 79, 80, 81, 81.5, 82, 82.5]
@@ -641,8 +652,8 @@ describe('TestingSection', () => {
       expect(output).toContain('Unique failures');
       expect(output).toContain('5');
 
-      // Activity sparkline
-      expect(output).toContain('7d activity');
+      // Activity line graph (replaces old sparkline)
+      expect(output).toContain('Test Agent Activity (7d)');
 
       // Codecov
       expect(output).toContain('Coverage');

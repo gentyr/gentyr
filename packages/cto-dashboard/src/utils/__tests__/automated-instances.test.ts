@@ -65,6 +65,7 @@ describe('Automated Instances - Basic Structure', () => {
     currentProjected: number | null;
     adjustingDirection: 'up' | 'down' | 'stable';
     hasData: boolean;
+    tokensByType: Record<string, number>;
   }
 
   // Minimal implementation for testing structure validation
@@ -75,6 +76,7 @@ describe('Automated Instances - Basic Structure', () => {
       currentProjected: null,
       adjustingDirection: 'stable',
       hasData: false,
+      tokensByType: {},
     };
 
     // If no files exist, return empty data
@@ -113,12 +115,16 @@ describe('Automated Instances - Basic Structure', () => {
     expect(result).toHaveProperty('currentProjected');
     expect(result).toHaveProperty('adjustingDirection');
     expect(result).toHaveProperty('hasData');
+    expect(result).toHaveProperty('tokensByType');
 
     expect(Array.isArray(result.instances)).toBe(true);
     expect(typeof result.usageTarget).toBe('number');
     expect(result.currentProjected === null || typeof result.currentProjected === 'number').toBe(true);
     expect(['up', 'down', 'stable'].includes(result.adjustingDirection)).toBe(true);
     expect(typeof result.hasData).toBe('boolean');
+    expect(typeof result.tokensByType).toBe('object');
+    expect(result.tokensByType).not.toBeNull();
+    expect(Array.isArray(result.tokensByType)).toBe(false);
   });
 });
 

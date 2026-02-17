@@ -15,7 +15,7 @@ import { App } from './App.js';
 import { getDashboardData } from './utils/data-reader.js';
 import { aggregateTimeline } from './utils/timeline-aggregator.js';
 import { getUsageTrajectory } from './utils/trajectory.js';
-import { getAutomatedInstances } from './utils/automated-instances.js';
+import { getAutomatedInstances, getAutomationTokenUsage } from './utils/automated-instances.js';
 import { getDeputyCtoData } from './utils/deputy-cto-reader.js';
 import { getTestingData, getCodecovData } from './utils/testing-reader.js';
 import { getDeploymentsData } from './utils/deployments-reader.js';
@@ -62,10 +62,11 @@ async function main(): Promise<void> {
     const testing = getTestingData();
 
     // Fetch optional async data in parallel
-    const [codecovResult, deploymentsResult, infraResult] = await Promise.allSettled([
+    const [codecovResult, deploymentsResult, infraResult, tokenUsageResult] = await Promise.allSettled([
       getCodecovData(),
       getDeploymentsData(),
       getInfraData(),
+      getAutomationTokenUsage(),
     ]);
 
     if (codecovResult.status === 'fulfilled' && codecovResult.value) {
@@ -79,6 +80,10 @@ async function main(): Promise<void> {
     const infra = infraResult.status === 'fulfilled'
       ? infraResult.value
       : { hasData: false, render: { serviceCount: 0, suspendedCount: 0, available: false }, vercel: { projectCount: 0, errorDeploys: 0, available: false }, supabase: { healthy: false, available: false }, elastic: { available: false, totalLogs1h: 0, errorCount1h: 0, warnCount1h: 0, topServices: [] }, cloudflare: { status: 'unavailable', nameServers: [], available: false } };
+
+    if (tokenUsageResult.status === 'fulfilled' && tokenUsageResult.value) {
+      automatedInstances.tokensByType = tokenUsageResult.value;
+    }
 
     // Render dashboard (static mode - prints once and exits)
     const { unmount, waitUntilExit } = render(

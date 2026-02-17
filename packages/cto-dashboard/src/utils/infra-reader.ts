@@ -6,7 +6,7 @@
  * result in { available: false } for that provider.
  */
 
-import { resolveCredential } from './credentials.js';
+import { resolveCredential, fetchWithTimeout } from './credentials.js';
 
 // ============================================================================
 // Types
@@ -25,20 +25,6 @@ export interface InfraData {
     topServices: Array<{ name: string; count: number }>;
   };
   cloudflare: { status: string; nameServers: string[]; available: boolean };
-}
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 10000): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 // ============================================================================
@@ -85,7 +71,7 @@ async function queryVercel(): Promise<InfraData['vercel']> {
     errorDeploys = (data.deployments || []).filter(d => d.created > cutoff24h).length;
   }
 
-  return { projectCount, errorDeploys, available: projectCount > 0 || errorDeploys >= 0 };
+  return { projectCount, errorDeploys, available: true };
 }
 
 async function querySupabase(): Promise<InfraData['supabase']> {
