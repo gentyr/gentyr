@@ -1,6 +1,9 @@
 /**
  * Section component with rounded corners (borderStyle: 'round')
- * Provides consistent container styling across the dashboard
+ * Provides consistent container styling across the dashboard.
+ *
+ * Title is rendered inline in the top border: ╭─ TITLE ──────╮
+ * Uses borderTop={false} and a custom top line to achieve this.
  */
 
 import React from 'react';
@@ -29,6 +32,35 @@ export function Section({
   borderColor = 'gray',
   titleColor = 'cyan',
 }: SectionProps): React.ReactElement {
+  if (title) {
+    // Compute fill width for the top border line
+    // Terminal width minus: ╭─ (2) + space (1) + title + space (1) + ─...─╮ (1)
+    const termWidth = typeof width === 'number' ? width : (process.stdout.columns || 80);
+    const overhead = 5; // "╭─ " (3) + " " (1) + "╮" (1)
+    const fillWidth = Math.max(1, termWidth - title.length - overhead);
+
+    return (
+      <Box flexDirection="column" width={width} minWidth={minWidth} flexGrow={flexGrow}>
+        {/* Custom top border with embedded title */}
+        <Text color={borderColor}>
+          {'\u256D\u2500 '}<Text color={titleColor} bold>{title}</Text>{' ' + '\u2500'.repeat(fillWidth) + '\u256E'}
+        </Text>
+        {/* Box with no top border — left/right/bottom still render */}
+        <Box
+          flexDirection="column"
+          borderStyle="round"
+          borderTop={false}
+          borderColor={borderColor}
+          width="100%"
+          paddingX={paddingX}
+          paddingY={paddingY}
+        >
+          {children}
+        </Box>
+      </Box>
+    );
+  }
+
   return (
     <Box
       flexDirection="column"
@@ -40,13 +72,6 @@ export function Section({
       paddingX={paddingX}
       paddingY={paddingY}
     >
-      {title && (
-        <Box marginBottom={0}>
-          <Text color={titleColor} bold>
-            {title}
-          </Text>
-        </Box>
-      )}
       {children}
     </Box>
   );

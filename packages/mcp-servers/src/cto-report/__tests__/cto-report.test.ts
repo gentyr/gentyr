@@ -74,6 +74,9 @@ describe('CTO Report Server', () => {
         metadata TEXT,
         created_timestamp INTEGER NOT NULL,
         completed_timestamp INTEGER,
+        followup_enabled INTEGER NOT NULL DEFAULT 0,
+        followup_section TEXT,
+        followup_prompt TEXT,
         CONSTRAINT valid_status CHECK (status IN ('pending', 'in_progress', 'completed')),
         CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO'))
       );

@@ -1,6 +1,9 @@
+<!-- HOOK:GENTYR:setup-gentyr -->
 # /setup-gentyr - GENTYR Framework Setup
 
 One command for full GENTYR project setup. Runs a programmatic check script, displays results, guides through missing credentials using the setup documentation, and writes vault mappings for the MCP launcher to resolve at runtime.
+
+The prefetch hook has pre-run `setup-check.js` and injected its JSON output as a `[PREFETCH:setup-gentyr]` systemMessage above. Use that data for Phase 1 instead of running the script. If the prefetch data is missing, run the script directly.
 
 ## Security Architecture
 

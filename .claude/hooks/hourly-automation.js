@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn, execSync, execFileSync } from 'child_process';
-import { registerSpawn, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { registerSpawn, updateAgent, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { getCooldown } from './config-reader.js';
 import { runUsageOptimizer } from './usage-optimizer.js';
 import { syncKeys } from './key-sync.js';
@@ -396,7 +396,16 @@ function hasReportsReadyForTriage() {
  * The agent will discover reports via MCP tools (which handle cooldown filtering)
  */
 function spawnReportTriage() {
-  const prompt = `[Task][report-triage] You are the deputy-cto performing REPORT TRIAGE.
+  // Register spawn first to get agentId for prompt embedding
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.DEPUTY_CTO_REVIEW,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Triaging pending CTO reports',
+    prompt: '',
+    metadata: {},
+  });
+
+  const prompt = `[Task][report-triage][AGENT:${agentId}] You are the deputy-cto performing REPORT TRIAGE.
 
 ## Mission
 
@@ -543,14 +552,8 @@ After processing all reports, output a summary:
 - How many self-handled vs escalated vs dismissed
 - Brief description of each action taken`;
 
-  // Register spawn with agent tracker
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.DEPUTY_CTO_REVIEW,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Triaging pending CTO reports',
-    prompt: prompt,
-    metadata: {},
-  });
+  // Store prompt now that it's built
+  updateAgent(agentId, { prompt });
 
   return new Promise((resolve, reject) => {
     const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
@@ -589,7 +592,16 @@ After processing all reports, output a summary:
  * Spawn Claude for CLAUDE.md refactoring
  */
 function spawnClaudeMdRefactor() {
-  const prompt = `[Task][claudemd-refactor] You are the deputy-cto performing CLAUDE.md REFACTORING.
+  // Register spawn first to get agentId for prompt embedding
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.CLAUDEMD_REFACTOR,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Refactoring oversized CLAUDE.md',
+    prompt: '',
+    metadata: {},
+  });
+
+  const prompt = `[Task][claudemd-refactor][AGENT:${agentId}] You are the deputy-cto performing CLAUDE.md REFACTORING.
 
 ## Mission
 
@@ -654,14 +666,8 @@ Key tools: \`page_get_snapshot\`, \`page_click\`, \`mcp__todo-db__*\`, \`mcp__sp
 3. Create sub-files and update CLAUDE.md
 4. Report what you refactored via mcp__agent-reports__report_to_deputy_cto`;
 
-  // Register spawn with agent tracker
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.CLAUDEMD_REFACTOR,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Refactoring oversized CLAUDE.md',
-    prompt: prompt,
-    metadata: {},
-  });
+  // Store prompt now that it's built
+  updateAgent(agentId, { prompt });
 
   return new Promise((resolve, reject) => {
     const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
@@ -737,7 +743,16 @@ function spawnLintFixer(lintOutput) {
     .slice(0, 50) // Limit to first 50 error lines
     .join('\n');
 
-  const prompt = `[Task][lint-fixer] You are the code-reviewer agent fixing LINT ERRORS.
+  // Register spawn first to get agentId for prompt embedding
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.LINT_FIXER,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Fixing lint errors',
+    prompt: '',
+    metadata: { errorCount: errorLines.split('\n').length },
+  });
+
+  const prompt = `[Task][lint-fixer][AGENT:${agentId}] You are the code-reviewer agent fixing LINT ERRORS.
 
 ## Mission
 
@@ -767,16 +782,8 @@ ${errorLines}
 
 Report completion via mcp__agent-reports__report_to_deputy_cto with a summary of what was fixed.`;
 
-  // Register spawn with agent tracker
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.LINT_FIXER,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Fixing lint errors',
-    prompt: prompt,
-    metadata: {
-      errorCount: errorLines.split('\n').length,
-    },
-  });
+  // Store prompt now that it's built
+  updateAgent(agentId, { prompt });
 
   return new Promise((resolve, reject) => {
     const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
@@ -885,8 +892,8 @@ function resetTaskToPending(taskId) {
 /**
  * Build the prompt for a deputy-cto task orchestrator agent
  */
-function buildDeputyCtoTaskPrompt(task) {
-  return `[Task][task-runner-deputy-cto] You are the Deputy-CTO processing a high-level task assignment.
+function buildDeputyCtoTaskPrompt(task, agentId) {
+  return `[Task][task-runner-deputy-cto][AGENT:${agentId}] You are the Deputy-CTO processing a high-level task assignment.
 
 ## Task Details
 
@@ -960,8 +967,8 @@ This will automatically create a follow-up verification task.
 /**
  * Build the prompt for a task runner agent
  */
-function buildTaskRunnerPrompt(task, agentName) {
-  return `[Task][task-runner-${agentName}] You are the ${agentName} agent processing a TODO task.
+function buildTaskRunnerPrompt(task, agentName, agentId) {
+  return `[Task][task-runner-${agentName}][AGENT:${agentId}] You are the ${agentName} agent processing a TODO task.
 
 ## Task Details
 
@@ -1003,17 +1010,21 @@ function spawnTaskAgent(task) {
   const mapping = SECTION_AGENT_MAP[task.section];
   if (!mapping) return false;
 
-  const prompt = mapping.agent === 'deputy-cto'
-    ? buildDeputyCtoTaskPrompt(task)
-    : buildTaskRunnerPrompt(task, mapping.agent);
-
+  // Register first to get agentId for prompt embedding
   const agentId = registerSpawn({
     type: mapping.agentType,
     hookType: HOOK_TYPES.TASK_RUNNER,
     description: `Task runner: ${mapping.agent} - ${task.title}`,
-    prompt: prompt,
+    prompt: '',
     metadata: { taskId: task.id, section: task.section },
   });
+
+  const prompt = mapping.agent === 'deputy-cto'
+    ? buildDeputyCtoTaskPrompt(task, agentId)
+    : buildTaskRunnerPrompt(task, mapping.agent, agentId);
+
+  // Store prompt now that it's built
+  updateAgent(agentId, { prompt });
 
   try {
     const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
@@ -1031,6 +1042,10 @@ function spawnTaskAgent(task) {
     });
 
     claude.unref();
+
+    // Store PID for reaper tracking
+    updateAgent(agentId, { pid: claude.pid, status: 'running' });
+
     return true;
   } catch (err) {
     log(`Task runner: Failed to spawn ${mapping.agent} for task ${task.id}: ${err.message}`);
@@ -1107,7 +1122,15 @@ function hasBugFixCommits(commits) {
 function spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix) {
   const commitList = newCommits.join('\n');
 
-  const prompt = `[Task][preview-promotion] You are the PREVIEW -> STAGING Promotion Pipeline orchestrator.
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.PREVIEW_PROMOTION,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Preview -> Staging promotion pipeline',
+    prompt: '',
+    metadata: { commitCount: newCommits.length, hoursSinceLastStagingMerge, hasBugFix },
+  });
+
+  const prompt = `[Task][preview-promotion][AGENT:${agentId}] You are the PREVIEW -> STAGING Promotion Pipeline orchestrator.
 
 ## Mission
 
@@ -1172,13 +1195,8 @@ Complete within 25 minutes. If blocked, report and exit.
 
 Summarize the promotion decision and actions taken.`;
 
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.PREVIEW_PROMOTION,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Preview -> Staging promotion pipeline',
-    prompt: prompt,
-    metadata: { commitCount: newCommits.length, hoursSinceLastStagingMerge, hasBugFix },
-  });
+  // Store prompt now that it's built
+  updateAgent(agentId, { prompt });
 
   try {
     const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
@@ -1216,7 +1234,15 @@ Summarize the promotion decision and actions taken.`;
 function spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit) {
   const commitList = newCommits.join('\n');
 
-  const prompt = `[Task][staging-promotion] You are the STAGING -> PRODUCTION Promotion Pipeline orchestrator.
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.STAGING_PROMOTION,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Staging -> Production promotion pipeline',
+    prompt: '',
+    metadata: { commitCount: newCommits.length, hoursSinceLastStagingCommit },
+  });
+
+  const prompt = `[Task][staging-promotion][AGENT:${agentId}] You are the STAGING -> PRODUCTION Promotion Pipeline orchestrator.
 
 ## Mission
 
@@ -1286,13 +1312,8 @@ Complete within 25 minutes. If blocked, report and exit.
 
 Summarize the promotion decision and actions taken.`;
 
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.STAGING_PROMOTION,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Staging -> Production promotion pipeline',
-    prompt: prompt,
-    metadata: { commitCount: newCommits.length, hoursSinceLastStagingCommit },
-  });
+  // Store prompt now that it's built
+  updateAgent(agentId, { prompt });
 
   try {
     const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
@@ -1328,7 +1349,15 @@ Summarize the promotion decision and actions taken.`;
  * Spawn Staging Health Monitor (fire-and-forget)
  */
 function spawnStagingHealthMonitor() {
-  const prompt = `[Task][staging-health-monitor] You are the STAGING Health Monitor.
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.STAGING_HEALTH_MONITOR,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Staging health monitor check',
+    prompt: '',
+    metadata: {},
+  });
+
+  const prompt = `[Task][staging-health-monitor][AGENT:${agentId}] You are the STAGING Health Monitor.
 
 ## Mission
 
@@ -1379,13 +1408,8 @@ If the file doesn't exist, report this as an issue and exit.
 
 Complete within 10 minutes. This is a read-only monitoring check.`;
 
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.STAGING_HEALTH_MONITOR,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Staging health monitor check',
-    prompt: prompt,
-    metadata: {},
-  });
+  // Store prompt now that it's built
+  updateAgent(agentId, { prompt });
 
   try {
     const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
@@ -1403,6 +1427,7 @@ Complete within 10 minutes. This is a read-only monitoring check.`;
     });
 
     claude.unref();
+    updateAgent(agentId, { pid: claude.pid, status: 'running' });
     return true;
   } catch (err) {
     log(`Staging health monitor spawn error: ${err.message}`);
@@ -1414,7 +1439,15 @@ Complete within 10 minutes. This is a read-only monitoring check.`;
  * Spawn Production Health Monitor (fire-and-forget)
  */
 function spawnProductionHealthMonitor() {
-  const prompt = `[Task][production-health-monitor] You are the PRODUCTION Health Monitor.
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.PRODUCTION_HEALTH_MONITOR,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Production health monitor check',
+    prompt: '',
+    metadata: {},
+  });
+
+  const prompt = `[Task][production-health-monitor][AGENT:${agentId}] You are the PRODUCTION Health Monitor.
 
 ## Mission
 
@@ -1472,14 +1505,6 @@ If the file doesn't exist, report this as an issue and exit.
 
 Complete within 10 minutes. This is a read-only monitoring check.`;
 
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.PRODUCTION_HEALTH_MONITOR,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Production health monitor check',
-    prompt: prompt,
-    metadata: {},
-  });
-
   try {
     const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
     const claude = spawn('claude', [
@@ -1496,6 +1521,7 @@ Complete within 10 minutes. This is a read-only monitoring check.`;
     });
 
     claude.unref();
+    updateAgent(agentId, { pid: claude.pid, status: 'running', prompt });
     return true;
   } catch (err) {
     log(`Production health monitor spawn error: ${err.message}`);
@@ -1530,7 +1556,15 @@ function getRandomSpec() {
  * Scans entire codebase for spec violations, independent of git hooks
  */
 function spawnStandaloneAntipatternHunter() {
-  const prompt = `[Task][standalone-antipattern-hunter] STANDALONE ANTIPATTERN HUNT - Periodic repo-wide scan for spec violations.
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.STANDALONE_ANTIPATTERN_HUNTER,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Standalone antipattern hunt (3h schedule)',
+    prompt: '',
+    metadata: {},
+  });
+
+  const prompt = `[Task][standalone-antipattern-hunter][AGENT:${agentId}] STANDALONE ANTIPATTERN HUNT - Periodic repo-wide scan for spec violations.
 
 You are a STANDALONE antipattern hunter running on a 3-hour schedule. Your job is to systematically scan
 the ENTIRE codebase looking for spec violations and technical debt.
@@ -1593,13 +1627,8 @@ Do NOT implement fixes yourself.
 
 Focus on finding SYSTEMIC issues across the codebase, not just isolated violations.`;
 
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.STANDALONE_ANTIPATTERN_HUNTER,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Standalone antipattern hunt (3h schedule)',
-    prompt: prompt,
-    metadata: {},
-  });
+  // Store prompt now that it's built
+  updateAgent(agentId, { prompt });
 
   try {
     const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
@@ -1617,6 +1646,7 @@ Focus on finding SYSTEMIC issues across the codebase, not just isolated violatio
     });
 
     claude.unref();
+    updateAgent(agentId, { pid: claude.pid, status: 'running' });
     return true;
   } catch (err) {
     log(`Standalone antipattern hunter spawn error: ${err.message}`);
@@ -1629,7 +1659,15 @@ Focus on finding SYSTEMIC issues across the codebase, not just isolated violatio
  * Picks a random spec and scans the codebase for violations of that specific spec
  */
 function spawnStandaloneComplianceChecker(spec) {
-  const prompt = `[Task][standalone-compliance-checker] STANDALONE COMPLIANCE CHECK - Audit codebase against spec: ${spec.id}
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.STANDALONE_COMPLIANCE_CHECKER,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: `Standalone compliance check: ${spec.id}`,
+    prompt: '',
+    metadata: { specId: spec.id, specPath: spec.path },
+  });
+
+  const prompt = `[Task][standalone-compliance-checker][AGENT:${agentId}] STANDALONE COMPLIANCE CHECK - Audit codebase against spec: ${spec.id}
 
 You are a STANDALONE compliance checker running on a 1-hour schedule. You have been assigned ONE specific spec to audit the codebase against.
 
@@ -1685,13 +1723,8 @@ Provide a compliance summary:
 
 Do NOT implement fixes yourself. Only report and create TODOs.`;
 
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.STANDALONE_COMPLIANCE_CHECKER,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: `Standalone compliance check: ${spec.id}`,
-    prompt: prompt,
-    metadata: { specId: spec.id, specPath: spec.path },
-  });
+  // Store prompt now that it's built
+  updateAgent(agentId, { prompt });
 
   try {
     const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
@@ -1709,6 +1742,7 @@ Do NOT implement fixes yourself. Only report and create TODOs.`;
     });
 
     claude.unref();
+    updateAgent(agentId, { pid: claude.pid, status: 'running' });
     return true;
   } catch (err) {
     log(`Standalone compliance checker spawn error: ${err.message}`);
@@ -1770,6 +1804,18 @@ async function main() {
     }
   } catch {
     // Fail safe - use default
+  }
+
+  // Reap completed agents before counting to free concurrency slots
+  try {
+    const { reapCompletedAgents } = await import(path.resolve(__dirname, '..', '..', 'scripts', 'reap-completed-agents.js'));
+    const reapResult = reapCompletedAgents(PROJECT_DIR);
+    if (reapResult.reaped.length > 0) {
+      log(`Reaper: cleaned up ${reapResult.reaped.length} completed agent(s).`);
+    }
+  } catch (err) {
+    // Non-fatal — count will be conservative
+    log(`Reaper: skipped (${err.message})`);
   }
 
   // Concurrency guard: skip cycle if too many agents are already running

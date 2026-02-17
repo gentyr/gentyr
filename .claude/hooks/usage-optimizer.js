@@ -350,8 +350,12 @@ function calculateAndAdjust(log) {
   }
 
   // Determine constraining metric
-  const projected5h = aggregate.current5h + (aggregate.rate5h * aggregate.hoursUntil5hReset);
-  const projected7d = aggregate.current7d + (aggregate.rate7d * aggregate.hoursUntil7dReset);
+  // Cap projections to prevent runaway extrapolation — linear rate projection
+  // over long horizons (e.g. 155h for 7d) produces nonsensical values that
+  // pin the factor at MIN_FACTOR permanently.
+  const MAX_PROJECTION = 1.5;
+  const projected5h = Math.min(MAX_PROJECTION, aggregate.current5h + (aggregate.rate5h * aggregate.hoursUntil5hReset));
+  const projected7d = Math.min(MAX_PROJECTION, aggregate.current7d + (aggregate.rate7d * aggregate.hoursUntil7dReset));
   const constraining = projected5h > projected7d ? '5h' : '7d';
   const projectedAtReset = Math.max(projected5h, projected7d);
 
@@ -369,6 +373,15 @@ function calculateAndAdjust(log) {
   const currentUsage = constraining === '5h' ? aggregate.current5h : aggregate.current7d;
   const currentRate = constraining === '5h' ? aggregate.rate5h : aggregate.rate7d;
   const hoursUntilReset = constraining === '5h' ? aggregate.hoursUntil5hReset : aggregate.hoursUntil7dReset;
+
+  // Recovery: if factor is stuck at minimum but current usage is well below
+  // target, the projection model was unreliable. Reset factor to baseline so
+  // automations aren't permanently throttled.
+  if (currentFactor <= MIN_FACTOR + 0.01 && currentUsage < TARGET_UTILIZATION * 0.5) {
+    applyFactor(config, 1.0, constraining, projectedAtReset, log, hoursUntilReset);
+    log(`Usage optimizer: Factor recovery — usage at ${Math.round(currentUsage * 100)}% (well below ${Math.round(TARGET_UTILIZATION * 100)}% target) but factor stuck at minimum. Reset to 1.0.`);
+    return true;
+  }
 
   // Per-key warnings: flag any key exceeding the warning threshold
   if (aggregate.perKeyUtilization) {

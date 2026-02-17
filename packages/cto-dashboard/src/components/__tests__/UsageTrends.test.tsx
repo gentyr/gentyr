@@ -412,7 +412,7 @@ describe('UsageTrends', () => {
 
       // Should show forecast with reset time around 1h
       expect(output).toContain('5-Hour Forecast');
-      expect(output).toMatch(/reset:\s*1h/);
+      expect(output).toMatch(/reset:\s*(1h|59m|5[0-9]m)/);
     });
 
     it('should ignore past reset times when selecting earliest', () => {

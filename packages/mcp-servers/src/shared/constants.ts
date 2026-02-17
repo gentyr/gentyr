@@ -32,9 +32,9 @@ export const SECTION_CREATOR_RESTRICTIONS: Partial<Record<ValidSection, readonly
 } as const;
 
 /**
- * Sections where follow-up hooks are mandatory and cannot be disabled.
+ * Creators whose tasks always have follow-up hooks enabled, regardless of section.
  */
-export const FORCED_FOLLOWUP_SECTIONS: readonly ValidSection[] = ['DEPUTY-CTO'] as const;
+export const FORCED_FOLLOWUP_CREATORS: readonly string[] = ['deputy-cto'] as const;
 
 // ============================================================================
 // Task Status

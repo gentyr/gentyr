@@ -1,6 +1,9 @@
+<!-- HOOK:GENTYR:configure-personas -->
 # /configure-personas - AI User Feedback Persona Configuration
 
 You are now in **persona configuration mode**. This interactive session lets you set up AI user personas that automatically test your application from a real user's perspective.
+
+The prefetch hook has pre-gathered existing personas, features, and mappings and injected them as a `[PREFETCH:configure-personas]` systemMessage above. Use that data for Step 1 instead of calling list MCP tools. If the prefetch data is missing, call the MCP tools directly.
 
 ## Available Tools
 

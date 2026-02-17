@@ -37,6 +37,9 @@ export const PLAYWRIGHT_PROJECTS = {
   EXTENSION: 'extension',
   EXTENSION_MANUAL: 'extension-manual',
 
+  // Unified demo (dashboard + extension in single session)
+  DEMO: 'demo',
+
   // Infrastructure
   SEED: 'seed',
   AUTH_SETUP: 'auth-setup',
@@ -57,6 +60,7 @@ const UI_MODE_PROJECTS = [
   'manual',
   'extension',
   'extension-manual',
+  'demo',
   'cross-persona',
   'auth-flows',
 ] as const;
@@ -87,6 +91,7 @@ export const LaunchUiModeArgsSchema = z.object({
       'manual: Manual QA — Navigates to page with page.pause() for human inspection. Best for demos. ' +
       'extension: Extension E2E — Browser extension tests with --load-extension (headed Chromium). ' +
       'extension-manual: Extension Manual QA — Extension scaffolds with page.pause() for interactive inspection. ' +
+      'demo: Unified Demo — Dashboard + extension in a single Chromium session for full product demos. ' +
       'cross-persona: Cross-Persona — Multi-context workflows testing interactions between roles. ' +
       'auth-flows: Auth Flows — Signup/signin tests without pre-loaded auth state.'
     ),

@@ -30,7 +30,7 @@ import {
   GetCompletedSinceArgsSchema,
   VALID_SECTIONS,
   SECTION_CREATOR_RESTRICTIONS,
-  FORCED_FOLLOWUP_SECTIONS,
+  FORCED_FOLLOWUP_CREATORS,
   type ListTasksArgs,
   type GetTaskArgs,
   type CreateTaskArgs,
@@ -264,12 +264,11 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
   let followup_prompt = args.followup_prompt ?? null;
   let warning: string | undefined;
 
-  if ((FORCED_FOLLOWUP_SECTIONS as readonly string[]).includes(args.section)) {
+  if (args.assigned_by && (FORCED_FOLLOWUP_CREATORS as readonly string[]).includes(args.assigned_by)) {
     if (args.followup_enabled === false) {
-      warning = `Follow-up hooks cannot be disabled for ${args.section} section. Enabled automatically.`;
+      warning = `Follow-up hooks cannot be disabled for tasks created by ${args.assigned_by}. Enabled automatically.`;
     }
     followup_enabled = true;
-    followup_section = followup_section ?? args.section;
 
     // Auto-generate verification prompt if not provided
     if (!followup_prompt) {
@@ -691,7 +690,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'create_task',
-    description: 'Create a new task. Restricted sections (e.g., DEPUTY-CTO) require assigned_by to match allowed creators. DEPUTY-CTO tasks always have follow-up verification enabled (followup_prompt auto-generated if left empty).',
+    description: 'Create a new task. Restricted sections (e.g., DEPUTY-CTO) require assigned_by to match allowed creators. Tasks created by deputy-cto always have follow-up verification enabled.',
     schema: CreateTaskArgsSchema,
     handler: createTask,
   },

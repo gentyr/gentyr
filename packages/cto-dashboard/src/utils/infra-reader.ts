@@ -6,7 +6,7 @@
  * result in { available: false } for that provider.
  */
 
-import { resolveCredential, fetchWithTimeout } from './credentials.js';
+import { resolveCredential, resolveElasticEndpoint, fetchWithTimeout } from './credentials.js';
 
 // ============================================================================
 // Types
@@ -14,8 +14,8 @@ import { resolveCredential, fetchWithTimeout } from './credentials.js';
 
 export interface InfraData {
   hasData: boolean;
-  render: { serviceCount: number; suspendedCount: number; available: boolean };
-  vercel: { projectCount: number; errorDeploys: number; available: boolean };
+  render: { serviceCount: number; suspendedCount: number; available: boolean; lastDeployAt: string | null };
+  vercel: { projectCount: number; errorDeploys: number; buildingCount: number; available: boolean };
   supabase: { healthy: boolean; available: boolean };
   elastic: {
     available: boolean;
@@ -24,7 +24,7 @@ export interface InfraData {
     warnCount1h: number;
     topServices: Array<{ name: string; count: number }>;
   };
-  cloudflare: { status: string; nameServers: string[]; available: boolean };
+  cloudflare: { status: string; nameServers: string[]; planName: string | null; available: boolean };
 }
 
 // ============================================================================
@@ -33,29 +33,36 @@ export interface InfraData {
 
 async function queryRender(): Promise<InfraData['render']> {
   const apiKey = resolveCredential('RENDER_API_KEY');
-  if (!apiKey) return { serviceCount: 0, suspendedCount: 0, available: false };
+  if (!apiKey) return { serviceCount: 0, suspendedCount: 0, available: false, lastDeployAt: null };
 
   const resp = await fetchWithTimeout(
     'https://api.render.com/v1/services?limit=50',
     { headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' } },
   );
-  if (!resp.ok) return { serviceCount: 0, suspendedCount: 0, available: false };
+  if (!resp.ok) return { serviceCount: 0, suspendedCount: 0, available: false, lastDeployAt: null };
 
-  const services = await resp.json() as Array<{ service: { suspended: string } }>;
+  const services = await resp.json() as Array<{ service: { suspended: string; updatedAt?: string } }>;
   const suspendedCount = services.filter(s => s.service.suspended === 'suspended').length;
 
-  return { serviceCount: services.length, suspendedCount, available: true };
+  // Approximate lastDeployAt from the most recently updated service
+  const updatedTimes = services.map(s => s.service.updatedAt).filter(Boolean) as string[];
+  const lastDeployAt = updatedTimes.length > 0
+    ? updatedTimes.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0]
+    : null;
+
+  return { serviceCount: services.length, suspendedCount, available: true, lastDeployAt };
 }
 
 async function queryVercel(): Promise<InfraData['vercel']> {
   const token = resolveCredential('VERCEL_TOKEN');
-  if (!token) return { projectCount: 0, errorDeploys: 0, available: false };
+  if (!token) return { projectCount: 0, errorDeploys: 0, buildingCount: 0, available: false };
 
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
 
-  const [projectsResult, errorsResult] = await Promise.allSettled([
+  const [projectsResult, errorsResult, buildingResult] = await Promise.allSettled([
     fetchWithTimeout('https://api.vercel.com/v9/projects?limit=50', { headers }),
     fetchWithTimeout('https://api.vercel.com/v6/deployments?state=ERROR&limit=5', { headers }),
+    fetchWithTimeout('https://api.vercel.com/v6/deployments?state=BUILDING&limit=5', { headers }),
   ]);
 
   let projectCount = 0;
@@ -71,7 +78,13 @@ async function queryVercel(): Promise<InfraData['vercel']> {
     errorDeploys = (data.deployments || []).filter(d => d.created > cutoff24h).length;
   }
 
-  return { projectCount, errorDeploys, available: true };
+  let buildingCount = 0;
+  if (buildingResult.status === 'fulfilled' && buildingResult.value.ok) {
+    const data = await buildingResult.value.json() as { deployments?: unknown[] };
+    buildingCount = (data.deployments || []).length;
+  }
+
+  return { projectCount, errorDeploys, buildingCount, available: true };
 }
 
 async function querySupabase(): Promise<InfraData['supabase']> {
@@ -101,7 +114,7 @@ interface ElasticAggResponse {
 }
 
 async function queryElastic(): Promise<InfraData['elastic']> {
-  const endpoint = resolveCredential('ELASTIC_ENDPOINT');
+  const endpoint = resolveElasticEndpoint();
   const apiKey = resolveCredential('ELASTIC_API_KEY');
   if (!endpoint || !apiKey) return { available: false, totalLogs1h: 0, errorCount1h: 0, warnCount1h: 0, topServices: [] };
 
@@ -109,8 +122,8 @@ async function queryElastic(): Promise<InfraData['elastic']> {
     size: 0,
     query: { range: { '@timestamp': { gte: 'now-1h' } } },
     aggs: {
-      by_level: { terms: { field: 'level' } },
-      by_service: { terms: { field: 'service', size: 5 } },
+      by_level: { terms: { field: 'level.keyword' } },
+      by_service: { terms: { field: 'service.keyword', size: 5 } },
     },
   });
 
@@ -142,24 +155,25 @@ async function queryElastic(): Promise<InfraData['elastic']> {
 }
 
 async function queryCloudflare(): Promise<InfraData['cloudflare']> {
-  const token = resolveCredential('CF_API_TOKEN');
+  const token = resolveCredential('CLOUDFLARE_API_TOKEN');
   const zoneId = resolveCredential('CLOUDFLARE_ZONE_ID');
-  if (!token || !zoneId) return { status: 'unavailable', nameServers: [], available: false };
+  if (!token || !zoneId) return { status: 'unavailable', nameServers: [], planName: null, available: false };
 
   const resp = await fetchWithTimeout(
     `https://api.cloudflare.com/client/v4/zones/${zoneId}`,
     { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } },
   );
 
-  if (!resp.ok) return { status: 'unavailable', nameServers: [], available: false };
+  if (!resp.ok) return { status: 'unavailable', nameServers: [], planName: null, available: false };
 
   const data = await resp.json() as {
-    result?: { status?: string; name_servers?: string[] };
+    result?: { status?: string; name_servers?: string[]; plan?: { name?: string } };
   };
 
   return {
     status: data.result?.status || 'unknown',
     nameServers: data.result?.name_servers || [],
+    planName: data.result?.plan?.name || null,
     available: true,
   };
 }
@@ -180,11 +194,11 @@ export async function getInfraData(): Promise<InfraData> {
 
   const render = renderResult.status === 'fulfilled'
     ? renderResult.value
-    : { serviceCount: 0, suspendedCount: 0, available: false };
+    : { serviceCount: 0, suspendedCount: 0, available: false, lastDeployAt: null };
 
   const vercel = vercelResult.status === 'fulfilled'
     ? vercelResult.value
-    : { projectCount: 0, errorDeploys: 0, available: false };
+    : { projectCount: 0, errorDeploys: 0, buildingCount: 0, available: false };
 
   const supabase = supabaseResult.status === 'fulfilled'
     ? supabaseResult.value
@@ -196,7 +210,7 @@ export async function getInfraData(): Promise<InfraData> {
 
   const cloudflare = cloudflareResult.status === 'fulfilled'
     ? cloudflareResult.value
-    : { status: 'unavailable', nameServers: [], available: false };
+    : { status: 'unavailable', nameServers: [], planName: null, available: false };
 
   const hasData = render.available || vercel.available || supabase.available
     || elastic.available || cloudflare.available;

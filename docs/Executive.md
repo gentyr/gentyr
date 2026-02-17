@@ -150,9 +150,10 @@ The `/cto-report` command launches an Ink-based (React for CLIs) dashboard that 
 - **Usage trend line graphs** showing 5h and 7d history with trajectory forecast overlay
 - **Usage trajectory projections** with linear regression
 - **Testing health section** with 42-bucket activity graph (4h resolution), Codecov sparkline, agent framework breakdown
-- **Deployments section** showing Render services and Vercel projects side-by-side with combined deploy timeline and pipeline state
-- **Infrastructure health section** with 5-provider status dots (Render, Vercel, Supabase, Elasticsearch, Cloudflare)
-- **Automated instances table** with run counts and frequency adjustments
+- **Deployments section** with 3-stage pipeline header, per-platform deploy tables (Render/Vercel, 5 entries each), combined deploy timeline, and DeployStats footer (success rate, failure count, frequency)
+- **Infrastructure health section** with 5-provider status dots (Render, Vercel, Supabase, Elasticsearch, Cloudflare), per-platform event tables, Cloudflare nameservers, and load metrics
+- **Logging section** with Elasticsearch log volume timeseries graph, level/service bar charts, top errors/warnings tables, source coverage assessment dots, and storage estimates
+- **Automated instances table** with 24h run counts, time-until-next, frequency adjustments, and token usage bar chart by automation type
 - **Chronological timeline** of all system activity
 - **Metrics summary grid** with nested boxes
 
@@ -289,27 +290,46 @@ The `/cto-report` command launches an Ink-based (React for CLIs) dashboard that 
 - **Data Source**: `testing-reader.ts` — aggregates test failure events from agent-tracker database and Codecov API
 
 #### Deployments
-- **Purpose**: Live deployment status for Render and Vercel platforms
+- **Purpose**: Live deployment status for Render and Vercel platforms with pipeline visibility
 - **Shows**:
-  - Render services list (name, status, type, suspension state)
-  - Vercel projects list (name, framework)
-  - Combined recent deploy timeline (newest first, up to 8 entries from both platforms)
-  - Pipeline promotion state (last preview/staging check and last promotion timestamp)
-- **Data Source**: `deployments-reader.ts` — parallel Render and Vercel API calls, all via `Promise.allSettled` with 10s timeouts
+  - PipelineDetail header: 3-stage pipeline (preview → staging → production) with timestamps for each stage
+  - Per-platform deploy tables: Render and Vercel each show 5 most recent deploys (service, status, age, commit message)
+  - Combined recent deploy timeline (newest first, up to 8 entries from both platforms, with platform badge)
+  - DeployStats footer: total deploys, success rate, failure count, and deploy frequency
+  - Pipeline promotion state: last preview/staging check and last promotion timestamp
+- **Data Source**: `deployments-reader.ts` — parallel Render and Vercel API calls, all via `Promise.allSettled` with 10s timeouts; `lastPreviewCheck`, `lastStagingCheck`, and stats computed from deploy history
 - **Graceful Degradation**: Section hidden when neither `RENDER_API_KEY` nor `VERCEL_TOKEN` available
 
 #### Infrastructure Health
-- **Purpose**: At-a-glance operational status across 5 infrastructure providers
+- **Purpose**: At-a-glance operational status across 5 infrastructure providers with event-level detail
 - **Providers**: Render, Vercel, Supabase, Elasticsearch, Cloudflare — each independently degradable
 - **Shows**:
   - Per-provider status dot (green = healthy, red = unavailable)
-  - Render: service count and suspended count
-  - Vercel: project count and error deploy count (24h)
+  - Render: service count, suspended count, and last deploy timestamp
+  - Vercel: project count, error deploy count (24h), and currently-building count
   - Supabase: API reachability health check
-  - Elasticsearch: 1h log totals, error and warn counts, top services by volume
-  - Cloudflare: zone status and nameservers
-- **Data Source**: `infra-reader.ts` — 5 concurrent provider queries, independent failure isolation
+  - Cloudflare: plan name, zone status, and nameserver list
+  - Per-platform event tables (Render deploy events, Vercel deployment events)
+  - Note: Elasticsearch log detail moved to dedicated LOGGING section
+- **Data Source**: `infra-reader.ts` — 5 concurrent provider queries, independent failure isolation; accepts optional `deployments` prop to avoid duplicate API calls
+- **Credential fix**: `CF_API_TOKEN` corrected to `CLOUDFLARE_API_TOKEN`
 - **Graceful Degradation**: Section hidden when no providers return data
+
+#### Logging
+- **Purpose**: Centralized log observability from Elasticsearch covering volume, errors, coverage, and cost
+- **Shows**:
+  - Log volume timeseries line graph (24 hourly data points)
+  - Summary stats: total logs (24h and 1h), error count, warning count
+  - By Level bar chart: breakdown of log levels (error, warn, info, debug) with color coding
+  - By Service bar chart: top 8 services by log volume
+  - Top Errors table: 5 most frequent error messages with service attribution and occurrence count
+  - Top Warnings table: 5 most frequent warning messages with service attribution and occurrence count
+  - Source Coverage dots: 9 expected sources (api, worker, deployment, ci-cd, testing, database, cdn, auth, cron) assessed as active (green), low-volume (yellow), or missing (gray)
+  - Storage footer: estimated daily GB, monthly cost estimate, and index count
+- **Data Source**: `logging-reader.ts` — Elasticsearch queries for volume timeseries, level/service/source breakdowns, top errors/warnings, and `_cat/indices` for storage; `ELASTIC_API_KEY` credential required; endpoint resolved via `resolveElasticEndpoint()` which tries `ELASTIC_ENDPOINT` first then decodes `ELASTIC_CLOUD_ID` (base64 Cloud ID format) as fallback
+- **Field Mapping Note**: All terms aggregations use `.keyword` suffix (e.g., `level.keyword`, `service.keyword`) to support Elastic Serverless deployments where these fields are mapped as `text` type
+- **Storage Fallback**: When `_cat/indices` returns 403 (read-only API key lacks monitor privilege), storage is estimated from document count instead
+- **Graceful Degradation**: Section hidden when no log data available (`hasData: false`)
 
 #### Automated Instances
 - **Purpose**: Monitor all automated Claude triggers with frequency adjustment visibility

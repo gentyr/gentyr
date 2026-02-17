@@ -20,6 +20,7 @@ import { getDeputyCtoData } from './utils/deputy-cto-reader.js';
 import { getTestingData, getCodecovData } from './utils/testing-reader.js';
 import { getDeploymentsData } from './utils/deployments-reader.js';
 import { getInfraData } from './utils/infra-reader.js';
+import { getLoggingData } from './utils/logging-reader.js';
 
 // ============================================================================
 // CLI Argument Parsing
@@ -62,11 +63,12 @@ async function main(): Promise<void> {
     const testing = getTestingData();
 
     // Fetch optional async data in parallel
-    const [codecovResult, deploymentsResult, infraResult, tokenUsageResult] = await Promise.allSettled([
+    const [codecovResult, deploymentsResult, infraResult, tokenUsageResult, loggingResult] = await Promise.allSettled([
       getCodecovData(),
       getDeploymentsData(),
       getInfraData(),
       getAutomationTokenUsage(),
+      getLoggingData(),
     ]);
 
     if (codecovResult.status === 'fulfilled' && codecovResult.value) {
@@ -75,11 +77,15 @@ async function main(): Promise<void> {
 
     const deployments = deploymentsResult.status === 'fulfilled'
       ? deploymentsResult.value
-      : { hasData: false, render: { services: [], recentDeploys: [] }, vercel: { projects: [], recentDeploys: [] }, pipeline: { previewStatus: null, stagingStatus: null, lastPromotionAt: null }, combined: [] };
+      : { hasData: false, render: { services: [], recentDeploys: [] }, vercel: { projects: [], recentDeploys: [] }, pipeline: { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null }, combined: [], byEnvironment: { preview: [], staging: [], production: [] }, stats: { totalDeploys24h: 0, successCount24h: 0, failedCount24h: 0 } };
 
     const infra = infraResult.status === 'fulfilled'
       ? infraResult.value
-      : { hasData: false, render: { serviceCount: 0, suspendedCount: 0, available: false }, vercel: { projectCount: 0, errorDeploys: 0, available: false }, supabase: { healthy: false, available: false }, elastic: { available: false, totalLogs1h: 0, errorCount1h: 0, warnCount1h: 0, topServices: [] }, cloudflare: { status: 'unavailable', nameServers: [], available: false } };
+      : { hasData: false, render: { serviceCount: 0, suspendedCount: 0, available: false, lastDeployAt: null }, vercel: { projectCount: 0, errorDeploys: 0, buildingCount: 0, available: false }, supabase: { healthy: false, available: false }, elastic: { available: false, totalLogs1h: 0, errorCount1h: 0, warnCount1h: 0, topServices: [] }, cloudflare: { status: 'unavailable', nameServers: [], planName: null, available: false } };
+
+    const logging = loggingResult.status === 'fulfilled'
+      ? loggingResult.value
+      : { hasData: false, totalLogs1h: 0, totalLogs24h: 0, volumeTimeseries: [], byLevel: [], byService: [], bySource: [], topErrors: [], topWarnings: [], storage: { estimatedDailyGB: 0, estimatedMonthlyCost: 0, indexCount: 0 }, sourceCoverage: [] };
 
     if (tokenUsageResult.status === 'fulfilled' && tokenUsageResult.value) {
       automatedInstances.tokensByType = tokenUsageResult.value;
@@ -96,6 +102,7 @@ async function main(): Promise<void> {
         testing={testing}
         deployments={deployments}
         infra={infra}
+        logging={logging}
       />,
       { exitOnCtrlC: true }
     );

@@ -209,14 +209,13 @@ describe('usage-optimizer.js - Structure Validation', () => {
       const functionMatch = code.match(/export async function runUsageOptimizer[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
-      // In catch block, should return error
-      const catchBlock = functionBody.match(/catch \(err\) \{[\s\S]*?\n  \}/);
-      assert.ok(catchBlock, 'Must have catch block');
-
+      // The outer catch block is the one that returns { success: false, error: ... }.
+      // Match it by finding the return with success: false and error field anywhere
+      // in the function body (the outer catch wraps the full try block).
       assert.match(
-        catchBlock[0],
+        functionBody,
         /return \{[\s\S]*?success: false[\s\S]*?error:/,
-        'Must return success: false and error message in catch block'
+        'Must return success: false and error message in outer catch block'
       );
     });
 
@@ -826,23 +825,24 @@ describe('usage-optimizer.js - Structure Validation', () => {
       );
     });
 
-    it('should calculate projected usage at reset time', () => {
+    it('should calculate projected usage at reset time with projection cap', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
-      // Should calculate projections
+      // Projections are capped at MAX_PROJECTION to prevent runaway extrapolation
+      // on long horizons (e.g. 7d window with 155h until reset).
       assert.match(
         functionBody,
-        /projected5h = aggregate\.current5h \+ \(aggregate\.rate5h \* aggregate\.hoursUntil5hReset\)/,
-        'Must calculate projected 5h usage'
+        /projected5h = Math\.min\(MAX_PROJECTION, aggregate\.current5h \+ \(aggregate\.rate5h \* aggregate\.hoursUntil5hReset\)\)/,
+        'Must cap projected 5h usage at MAX_PROJECTION'
       );
 
       assert.match(
         functionBody,
-        /projected7d = aggregate\.current7d \+ \(aggregate\.rate7d \* aggregate\.hoursUntil7dReset\)/,
-        'Must calculate projected 7d usage'
+        /projected7d = Math\.min\(MAX_PROJECTION, aggregate\.current7d \+ \(aggregate\.rate7d \* aggregate\.hoursUntil7dReset\)\)/,
+        'Must cap projected 7d usage at MAX_PROJECTION'
       );
     });
 
@@ -1129,11 +1129,11 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       const functionBody = functionMatch[0];
 
-      // Should get defaults
+      // Should get defaults from getDefaults()
       assert.match(
         functionBody,
-        /const defaults = config\.defaults \|\| getDefaults\(\)/,
-        'Must get defaults from config or getDefaults()'
+        /const defaults = getDefaults\(\)/,
+        'Must get defaults from getDefaults()'
       );
 
       // Should calculate effective values with MIN_EFFECTIVE_MINUTES floor
@@ -1387,10 +1387,12 @@ describe('usage-optimizer.js - Structure Validation', () => {
         'Must access second-to-last snapshot'
       );
 
+      // drop5h is computed by summing across common keys and averaging:
+      // (prevSum5h / commonKeys.length) - (currSum5h / commonKeys.length)
       assert.match(
         functionBody,
-        /const drop5h = prevAgg\.current5h - currAgg\.current5h/,
-        'Must calculate drop as previous minus current'
+        /const drop5h = \(prevSum5h \/ commonKeys\.length\) - \(currSum5h \/ commonKeys\.length\)/,
+        'Must calculate drop as averaged previous minus averaged current across common keys'
       );
     });
 
@@ -2201,6 +2203,187 @@ describe('usage-optimizer.js - Structure Validation', () => {
         /log\(`Usage optimizer: Overdrive check failed \(non-fatal\)/,
         'Must log overdrive check errors as non-fatal'
       );
+    });
+  });
+
+  describe('Behavioral Tests - Projection Cap (MAX_PROJECTION)', () => {
+    it('should define MAX_PROJECTION as a local constant inside calculateAndAdjust', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'calculateAndAdjust must exist');
+
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /const MAX_PROJECTION = 1\.5/,
+        'Must define MAX_PROJECTION = 1.5 to cap runaway projections'
+      );
+    });
+
+    it('should cap projected5h at MAX_PROJECTION to prevent runaway extrapolation', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /const projected5h = Math\.min\(MAX_PROJECTION,/,
+        'Must clamp projected5h to MAX_PROJECTION'
+      );
+    });
+
+    it('should cap projected7d at MAX_PROJECTION to prevent runaway extrapolation', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /const projected7d = Math\.min\(MAX_PROJECTION,/,
+        'Must clamp projected7d to MAX_PROJECTION'
+      );
+    });
+
+    it('should use Math.max of the two capped projections as projectedAtReset', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // After capping both, the constraining metric is the larger of the two.
+      assert.match(
+        functionBody,
+        /const projectedAtReset = Math\.max\(projected5h, projected7d\)/,
+        'Must use Math.max of capped projections for projectedAtReset'
+      );
+    });
+
+    it('should mathematically cap at 1.5 (150% utilization)', () => {
+      // Verify the numeric value of the cap is correct: 1.5 means the optimizer
+      // will never think usage can exceed 150% of quota at reset time.
+      // This prevents the factor from being pinned at MIN_FACTOR due to
+      // nonsensical projections on long horizons (e.g., 7d window ~155h away).
+      const MAX_PROJECTION = 1.5;
+
+      // Example: current=0.1, rate=0.05/h, hoursUntilReset=155 (7d window)
+      // Raw projection = 0.1 + 0.05 * 155 = 7.85 (nonsensical)
+      // Capped projection = Math.min(1.5, 7.85) = 1.5 (sensible)
+      const rawProjection = 0.1 + 0.05 * 155;
+      const cappedProjection = Math.min(MAX_PROJECTION, rawProjection);
+
+      assert.strictEqual(cappedProjection, 1.5, 'Cap must clip runaway projections to 1.5');
+      assert.ok(rawProjection > MAX_PROJECTION, 'Raw projection must exceed cap for this scenario');
+
+      // Example: current=0.5, rate=0.05/h, hoursUntilReset=3 (5h window)
+      // Raw projection = 0.5 + 0.05 * 3 = 0.65 (not affected by cap)
+      const shortHorizonProjection = 0.5 + 0.05 * 3;
+      const shortHorizonCapped = Math.min(MAX_PROJECTION, shortHorizonProjection);
+
+      assert.strictEqual(shortHorizonCapped, shortHorizonProjection, 'Short-horizon projections must not be affected by cap');
+    });
+  });
+
+  describe('Behavioral Tests - Factor Recovery Clause', () => {
+    it('should define the factor recovery condition in calculateAndAdjust', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'calculateAndAdjust must exist');
+
+      const functionBody = functionMatch[0];
+
+      // Recovery triggers when factor is at or near minimum AND usage is well below target.
+      // This handles the case where the projection cap allows the optimizer to re-evaluate
+      // after being stuck at MIN_FACTOR due to previously uncapped runaway projections.
+      assert.match(
+        functionBody,
+        /currentFactor <= MIN_FACTOR \+ 0\.01 && currentUsage < TARGET_UTILIZATION \* 0\.5/,
+        'Must check for factor stuck at minimum with usage well below target'
+      );
+    });
+
+    it('should reset factor to 1.0 on recovery', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Find the recovery block and verify it calls applyFactor with 1.0
+      const recoveryBlock = functionBody.match(
+        /if \(currentFactor <= MIN_FACTOR \+ 0\.01 && currentUsage < TARGET_UTILIZATION \* 0\.5\)[\s\S]*?return true/
+      );
+      assert.ok(recoveryBlock, 'Must have factor recovery block');
+
+      assert.match(
+        recoveryBlock[0],
+        /applyFactor\(config, 1\.0,/,
+        'Must reset factor to 1.0 on recovery'
+      );
+    });
+
+    it('should log a factor recovery message', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /Factor recovery/,
+        'Must log factor recovery message'
+      );
+    });
+
+    it('should return true after applying factor recovery', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // After recovery, return true to signal an adjustment was made.
+      const recoveryBlock = functionBody.match(
+        /if \(currentFactor <= MIN_FACTOR \+ 0\.01[\s\S]*?return true/
+      );
+      assert.ok(recoveryBlock, 'Factor recovery block must return true');
+    });
+
+    it('should include current usage percentage in recovery log message', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /Math\.round\(currentUsage \* 100\)\}%/,
+        'Recovery log must include current usage as a percentage'
+      );
+    });
+
+    it('should verify recovery threshold is at half of TARGET_UTILIZATION', () => {
+      // Recovery only fires when usage is well below target (less than 45% = 90% * 0.5).
+      // This ensures the recovery does not trigger in normal operating ranges.
+      const TARGET_UTILIZATION = 0.90;
+      const recoveryThreshold = TARGET_UTILIZATION * 0.5;
+
+      assert.strictEqual(recoveryThreshold, 0.45, 'Recovery threshold must be 0.45 (half of 0.90 target)');
+
+      // At 44% usage with factor stuck at MIN_FACTOR, recovery fires.
+      const MIN_FACTOR = 0.5;
+      const stuckFactor = MIN_FACTOR;
+      const currentUsage44pct = 0.44;
+
+      const shouldRecover = stuckFactor <= MIN_FACTOR + 0.01 && currentUsage44pct < recoveryThreshold;
+      assert.strictEqual(shouldRecover, true, 'Recovery must fire at 44% usage with factor at minimum');
+
+      // At 50% usage (exactly at threshold), recovery must NOT fire.
+      const currentUsage50pct = 0.50;
+      const shouldNotRecover = stuckFactor <= MIN_FACTOR + 0.01 && currentUsage50pct < recoveryThreshold;
+      assert.strictEqual(shouldNotRecover, false, 'Recovery must not fire at or above 50% usage');
     });
   });
 });

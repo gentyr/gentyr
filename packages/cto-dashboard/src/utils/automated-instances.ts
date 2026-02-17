@@ -316,7 +316,9 @@ export function getAutomatedInstances(): AutomatedInstancesData {
   return {
     instances,
     usageTarget: config.adjustment?.target_pct ?? 90,
-    currentProjected: config.adjustment?.projected_at_reset ?? null,
+    currentProjected: config.adjustment?.projected_at_reset != null
+      ? Math.round(config.adjustment.projected_at_reset * 100)
+      : null,
     adjustingDirection,
     hasData: instances.length > 0,
     tokensByType: {},

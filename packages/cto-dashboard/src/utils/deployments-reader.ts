@@ -16,6 +16,8 @@ const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'hourly
 // Types
 // ============================================================================
 
+export type DeployEnvironment = 'preview' | 'staging' | 'production';
+
 export interface DeploymentEntry {
   service: string;
   platform: 'render' | 'vercel';
@@ -24,6 +26,7 @@ export interface DeploymentEntry {
   commitMessage?: string;
   commitSha?: string;
   url?: string;
+  environment: DeployEnvironment;
 }
 
 export interface DeploymentsData {
@@ -40,8 +43,20 @@ export interface DeploymentsData {
     previewStatus: string | null;
     stagingStatus: string | null;
     lastPromotionAt: string | null;
+    lastPreviewCheck: string | null;
+    lastStagingCheck: string | null;
   };
   combined: DeploymentEntry[];
+  byEnvironment: {
+    preview: DeploymentEntry[];
+    staging: DeploymentEntry[];
+    production: DeploymentEntry[];
+  };
+  stats: {
+    totalDeploys24h: number;
+    successCount24h: number;
+    failedCount24h: number;
+  };
 }
 
 // ============================================================================
@@ -63,6 +78,15 @@ function normalizeVercelStatus(state: string): string {
   if (state === 'ERROR' || state === 'CANCELED') return 'failed';
   if (state === 'BUILDING' || state === 'QUEUED' || state === 'INITIALIZING') return 'building';
   return state.toLowerCase();
+}
+
+function inferEnvironment(serviceName: string, target?: string): DeployEnvironment {
+  if (target === 'production') return 'production';
+  if (target === 'preview' || target === 'development') return 'preview';
+  const lower = serviceName.toLowerCase();
+  if (lower.includes('staging') || lower.includes('stg')) return 'staging';
+  if (lower.includes('preview') || lower.includes('dev')) return 'preview';
+  return 'production';
 }
 
 function truncateMessage(msg: string | undefined | null, maxLen = 60): string | undefined {
@@ -128,6 +152,7 @@ async function fetchRenderData(apiKey: string): Promise<{
         commitMessage: truncateMessage(d.deploy.commit?.message),
         commitSha: d.deploy.commit?.id?.slice(0, 7),
         url: s.service.serviceDetails?.url,
+        environment: inferEnvironment(s.service.name),
       }));
     } catch {
       return [];
@@ -160,6 +185,7 @@ interface VercelDeployment {
   name: string;
   state: string;
   created: number;
+  target?: string;
   meta?: { githubCommitMessage?: string; githubCommitSha?: string };
   url?: string;
 }
@@ -193,6 +219,7 @@ async function fetchVercelData(token: string): Promise<{
       commitMessage: truncateMessage(d.meta?.githubCommitMessage),
       commitSha: d.meta?.githubCommitSha?.slice(0, 7),
       url: d.url ? `https://${d.url}` : undefined,
+      environment: inferEnvironment(d.name, d.target),
     }));
   }
 
@@ -215,16 +242,18 @@ interface AutomationState {
 function readPipelineState(): DeploymentsData['pipeline'] {
   try {
     if (!fs.existsSync(AUTOMATION_STATE_PATH)) {
-      return { previewStatus: null, stagingStatus: null, lastPromotionAt: null };
+      return { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null };
     }
     const state = JSON.parse(fs.readFileSync(AUTOMATION_STATE_PATH, 'utf8')) as AutomationState;
     return {
       previewStatus: state.lastPreviewPromotionCheck ? 'checked' : null,
       stagingStatus: state.lastStagingPromotionCheck ? 'checked' : null,
       lastPromotionAt: state.lastPromotionAt || null,
+      lastPreviewCheck: state.lastPreviewPromotionCheck || null,
+      lastStagingCheck: state.lastStagingPromotionCheck || null,
     };
   } catch {
-    return { previewStatus: null, stagingStatus: null, lastPromotionAt: null };
+    return { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null };
   }
 }
 
@@ -239,6 +268,8 @@ export async function getDeploymentsData(): Promise<DeploymentsData> {
     vercel: { projects: [], recentDeploys: [] },
     pipeline: readPipelineState(),
     combined: [],
+    byEnvironment: { preview: [], staging: [], production: [] },
+    stats: { totalDeploys24h: 0, successCount24h: 0, failedCount24h: 0 },
   };
 
   const renderKey = resolveCredential('RENDER_API_KEY');
@@ -270,6 +301,30 @@ export async function getDeploymentsData(): Promise<DeploymentsData> {
   ]
     .sort((a, b) => new Date(b.deployedAt).getTime() - new Date(a.deployedAt).getTime())
     .slice(0, 8);
+
+  // Group deploys by environment (newest first, limit 5 each)
+  const allDeploysSorted = [
+    ...result.render.recentDeploys,
+    ...result.vercel.recentDeploys,
+  ].sort((a, b) => new Date(b.deployedAt).getTime() - new Date(a.deployedAt).getTime());
+
+  result.byEnvironment = {
+    preview: allDeploysSorted.filter(d => d.environment === 'preview').slice(0, 5),
+    staging: allDeploysSorted.filter(d => d.environment === 'staging').slice(0, 5),
+    production: allDeploysSorted.filter(d => d.environment === 'production').slice(0, 5),
+  };
+
+  // Compute 24h deploy stats
+  const cutoff24h = Date.now() - 24 * 60 * 60 * 1000;
+  const allDeploys = [...result.render.recentDeploys, ...result.vercel.recentDeploys];
+  const deploys24h = allDeploys.filter(d => new Date(d.deployedAt).getTime() > cutoff24h);
+  const successStatuses = new Set(['live', 'ready', 'active']);
+  const failedStatuses = new Set(['failed', 'error']);
+  result.stats = {
+    totalDeploys24h: deploys24h.length,
+    successCount24h: deploys24h.filter(d => successStatuses.has(d.status)).length,
+    failedCount24h: deploys24h.filter(d => failedStatuses.has(d.status)).length,
+  };
 
   return result;
 }

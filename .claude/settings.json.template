@@ -123,6 +123,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/protected-action-approval-hook.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/slash-command-prefetch.js",
+            "timeout": 15
           }
         ]
       }

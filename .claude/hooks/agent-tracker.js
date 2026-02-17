@@ -376,10 +376,53 @@ export function getHookExecutionStats(hours = 24) {
   return stats;
 }
 
+/**
+ * Update an existing agent record with new fields.
+ * Used to store PIDs at spawn time and reap status after cleanup.
+ *
+ * @param {string} agentId - The agent ID to update
+ * @param {object} updates - Fields to update
+ * @param {number} [updates.pid] - Process ID of the spawned agent
+ * @param {string} [updates.status] - 'running' | 'completed' | 'reaped'
+ * @param {string} [updates.sessionFile] - Path to the session JSONL file
+ * @param {string} [updates.reapedAt] - ISO timestamp when agent was reaped
+ * @param {string} [updates.reapReason] - Why the agent was reaped (e.g. 'session_complete')
+ * @returns {boolean} Whether the update succeeded
+ */
+export function updateAgent(agentId, updates) {
+  if (!agentId) {
+    console.error('[agent-tracker] updateAgent: missing agentId');
+    return false;
+  }
+
+  const allowedFields = ['pid', 'status', 'sessionFile', 'reapedAt', 'reapReason', 'prompt'];
+  const filtered = {};
+  for (const key of allowedFields) {
+    if (updates[key] !== undefined) {
+      filtered[key] = updates[key];
+    }
+  }
+
+  if (Object.keys(filtered).length === 0) {
+    return false;
+  }
+
+  const history = readHistory();
+  const agent = history.agents.find(a => a.id === agentId);
+  if (!agent) {
+    return false;
+  }
+
+  Object.assign(agent, filtered);
+  writeHistory(history);
+  return true;
+}
+
 export default {
   AGENT_TYPES,
   HOOK_TYPES,
   registerSpawn,
+  updateAgent,
   getRecentSpawns,
   findRecentSpawn,
   registerHookExecution,
