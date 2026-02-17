@@ -56,6 +56,10 @@ describe('config-reader.js - Structure Validation', () => {
       assert.match(code, /antipattern_hunter:\s*\d+/, 'Must have antipattern_hunter default');
       assert.match(code, /task_runner:\s*\d+/, 'Must have task_runner default');
       assert.match(code, /schema_mapper:\s*\d+/, 'Must have schema_mapper default');
+      assert.match(code, /test_failure_reporter:\s*\d+/, 'Must have test_failure_reporter default');
+      assert.match(code, /pre_commit_review:\s*\d+/, 'Must have pre_commit_review default');
+      assert.match(code, /compliance_checker_file:\s*\d+/, 'Must have compliance_checker_file default');
+      assert.match(code, /compliance_checker_spec:\s*\d+/, 'Must have compliance_checker_spec default');
     });
 
     it('should define CONFIG_PATH constant', () => {
@@ -540,7 +544,7 @@ describe('config-reader.js - Structure Validation', () => {
       for (const match of valueMatches) {
         const value = parseInt(match[1], 10);
         assert.ok(value > 0, `Default cooldown ${value} must be positive`);
-        assert.ok(value <= 1440, `Default cooldown ${value} must be <= 1440 minutes (24 hours)`);
+        assert.ok(value <= 10080, `Default cooldown ${value} must be <= 10080 minutes (7 days)`);
       }
     });
 

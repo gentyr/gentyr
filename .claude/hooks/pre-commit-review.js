@@ -18,6 +18,7 @@ import crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { registerSpawn, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { getCooldown } from './config-reader.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,8 +27,8 @@ const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const DEPUTY_CTO_DB = path.join(PROJECT_DIR, '.claude', 'deputy-cto.db');
 const APPROVAL_TOKEN_FILE = path.join(PROJECT_DIR, '.claude', 'commit-approval-token.json');
 
-// Token expires after 5 minutes
-const TOKEN_EXPIRY_MS = 5 * 60 * 1000;
+// Token expires after configured minutes (default 5)
+const TOKEN_EXPIRY_MS = getCooldown('pre_commit_review', 5) * 60 * 1000;
 
 // Try to import better-sqlite3
 let Database = null;
