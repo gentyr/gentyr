@@ -1732,7 +1732,9 @@ async function main() {
     if (fs.existsSync(autoConfigPath)) {
       const autoConfig = JSON.parse(fs.readFileSync(autoConfigPath, 'utf8'));
       if (autoConfig.overdrive?.active && new Date() < new Date(autoConfig.overdrive.expires_at)) {
-        effectiveMaxConcurrent = autoConfig.overdrive.max_concurrent_override || MAX_CONCURRENT_AGENTS;
+        const override = autoConfig.overdrive.max_concurrent_override;
+        effectiveMaxConcurrent = (typeof override === 'number' && override >= 1 && override <= 20)
+          ? override : MAX_CONCURRENT_AGENTS;
         log(`Overdrive active: concurrency limit raised to ${effectiveMaxConcurrent}`);
       }
     }

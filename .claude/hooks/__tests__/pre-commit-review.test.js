@@ -278,6 +278,56 @@ describe('pre-commit-review.js - G001 Fail-Closed Behavior', () => {
     });
   });
 
+  describe('Dynamic Cooldown Configuration', () => {
+    it('should import getCooldown from config-reader', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        hookCode,
+        /import \{[\s\S]*?getCooldown[\s\S]*?\} from ['"]\.\/config-reader\.js['"]/,
+        'Must import getCooldown from config-reader.js'
+      );
+    });
+
+    it('should use getCooldown for TOKEN_EXPIRY_MS with default of 5 minutes', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        hookCode,
+        /const TOKEN_EXPIRY_MS = getCooldown\(['"]pre_commit_review['"], 5\) \* 60 \* 1000/,
+        'Must use getCooldown for TOKEN_EXPIRY_MS with 5 minute default'
+      );
+    });
+
+    it('should allow usage optimizer to dynamically adjust token expiry', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // Verify TOKEN_EXPIRY_MS is calculated from getCooldown (not a hardcoded constant)
+      assert.match(
+        hookCode,
+        /TOKEN_EXPIRY_MS = getCooldown/,
+        'TOKEN_EXPIRY_MS must be dynamically calculated'
+      );
+
+      // Verify it's not a const literal like "const TOKEN_EXPIRY_MS = 300000"
+      assert.doesNotMatch(
+        hookCode,
+        /const TOKEN_EXPIRY_MS = \d+/,
+        'TOKEN_EXPIRY_MS must not be a hardcoded number'
+      );
+    });
+
+    it('should convert cooldown from minutes to milliseconds', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        hookCode,
+        /getCooldown\(['"]pre_commit_review['"], 5\) \* 60 \* 1000/,
+        'Must convert minutes to milliseconds (* 60 * 1000)'
+      );
+    });
+  });
+
   describe('Database Module Unavailable - G001 Fail-Closed', () => {
     it('should have fail-closed behavior when better-sqlite3 is missing', () => {
       // This is validated by checking the code structure

@@ -616,7 +616,7 @@ async function main() {
   console.log(`  Review spawned (agent: ${agentId})`);
   console.log('');
   console.log('  → Wait for approval, then retry your commit');
-  console.log('  → Token expires in 5 minutes after approval');
+  console.log(`  → Token expires in ${Math.round(TOKEN_EXPIRY_MS / 60000)} minutes after approval`);
   console.log('');
   console.log('══════════════════════════════════════════════════════════════');
   console.log('');

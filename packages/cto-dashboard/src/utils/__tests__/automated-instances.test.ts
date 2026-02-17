@@ -560,3 +560,81 @@ describe('Automated Instances - Instance Definitions', () => {
   });
 });
 
+describe('Automated Instances - Event-Triggered Frequency Adjustment', () => {
+  let tempDir: string;
+  let automationConfigPath: string;
+
+  beforeEach(() => {
+    tempDir = path.join('/tmp', `automated-instances-event-freq-${randomUUID()}`);
+    fs.mkdirSync(path.join(tempDir, '.claude', 'state'), { recursive: true });
+    automationConfigPath = path.join(tempDir, '.claude', 'state', 'automation-config.json');
+    process.env['CLAUDE_PROJECT_DIR'] = tempDir;
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+    delete process.env['CLAUDE_PROJECT_DIR'];
+  });
+
+  const getFreqAdjForEventTriggered = (
+    cooldownKey: keyof AutomationCooldowns,
+    defaultMinutes: number,
+    effectiveMinutes: number,
+    isStatic: boolean,
+    staticMinutes: number | undefined
+  ): string | null => {
+    if (isStatic) {
+      return `static ${staticMinutes ?? effectiveMinutes}m`;
+    }
+    if (defaultMinutes > 0 && effectiveMinutes !== defaultMinutes) {
+      const pctChange = Math.round(((effectiveMinutes - defaultMinutes) / defaultMinutes) * 100);
+      if (pctChange !== 0) {
+        const direction = pctChange > 0 ? 'slower' : 'faster';
+        return `${pctChange > 0 ? '+' : ''}${pctChange}% ${direction}`;
+      } else {
+        return 'baseline';
+      }
+    }
+    return 'baseline';
+  };
+
+  it('should show baseline for event-triggered hooks with no adjustment', () => {
+    const result = getFreqAdjForEventTriggered('pre_commit_review', 5, 5, false, undefined);
+
+    expect(result).toBe('baseline');
+  });
+
+  it('should show percentage increase for event-triggered hooks with slower intervals', () => {
+    const result = getFreqAdjForEventTriggered('test_failure_reporter', 120, 144, false, undefined);
+
+    expect(result).toBe('+20% slower');
+  });
+
+  it('should show percentage decrease for event-triggered hooks with faster intervals', () => {
+    const result = getFreqAdjForEventTriggered('compliance_checker_file', 10080, 8064, false, undefined);
+
+    expect(result).toBe('-20% faster');
+  });
+
+  it('should show static mode for event-triggered hooks', () => {
+    const result = getFreqAdjForEventTriggered('pre_commit_review', 5, 10, true, 10);
+
+    expect(result).toBe('static 10m');
+  });
+
+  it('should handle zero default minutes for event-triggered hooks', () => {
+    const result = getFreqAdjForEventTriggered('pre_commit_review', 0, 5, false, undefined);
+
+    expect(result).toBe('baseline');
+  });
+
+  it('should show percentage when change is small but non-zero', () => {
+    // 120 to 121 = 0.83% change, rounds to 1%
+    const result = getFreqAdjForEventTriggered('test_failure_reporter', 120, 121, false, undefined);
+
+    expect(result).toBe('+1% slower');
+  });
+});
+

@@ -18,12 +18,15 @@ export interface TimelineEvent {
   status?: string;
 }
 
+// ASCII icons — guaranteed single-width in all terminals.
+// The geometric shapes (●, ◆, ◇, ■, ○) are "East Asian Ambiguous" width
+// and render as 2 columns in many terminals, breaking vertical alignment.
 const EVENT_ICONS: Record<TimelineEventType, string> = {
-  hook: '\u25CF',     // Black circle (filled)
-  report: '\u25C6',   // Black diamond
-  question: '\u25C7', // White diamond
-  task: '\u25A0',     // Black square
-  session: '\u25CB',  // White circle
+  hook: '*',      // event trigger
+  report: '!',    // alert / report
+  question: '?',  // needs answer
+  task: '+',      // work item
+  session: 'o',   // neutral / informational
 };
 
 const EVENT_COLORS: Record<TimelineEventType, string> = {
@@ -44,7 +47,7 @@ const EVENT_LABELS: Record<TimelineEventType, string> = {
 
 // Column widths for consistent alignment
 const COL_TIME = 7;    // "HH:MM" + padding
-const COL_ICON = 3;    // icon (1-2 visual cols) + space, box enforces width
+const COL_ICON = 3;    // 1-char ASCII icon + padding
 const COL_LABEL = 10;  // longest label "QUESTION" = 8 chars + padding
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -77,17 +80,19 @@ export function TimelineItem({ event }: { event: TimelineEvent }): React.ReactEl
     <Box flexDirection="column" marginBottom={1}>
       {/* Main line: time, icon, type, title */}
       <Box flexDirection="row">
-        <Box width={COL_TIME}>
+        <Box width={COL_TIME} flexShrink={0}>
           <Text color="gray">{formatTime(event.timestamp)}</Text>
         </Box>
-        <Box width={COL_ICON}>
+        <Box width={COL_ICON} flexShrink={0}>
           <Text color={color}>{icon}</Text>
         </Box>
-        <Box width={COL_LABEL}>
+        <Box width={COL_LABEL} flexShrink={0}>
           <Text color={color} bold>{label}</Text>
         </Box>
-        <Text color="white">{event.title}</Text>
-        {priorityTag && <Text color={priorityColor}>{priorityTag}</Text>}
+        <Box flexShrink={1}>
+          <Text color="white" wrap="truncate-end">{event.title}{priorityTag ? ' ' : ''}</Text>
+          {priorityTag && <Text color={priorityColor}>{priorityTag.trim()}</Text>}
+        </Box>
       </Box>
 
       {/* Subtitle line with tree connector */}

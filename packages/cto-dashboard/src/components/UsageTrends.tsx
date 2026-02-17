@@ -2,7 +2,7 @@
  * Usage Trends Component
  *
  * Displays historical line graphs for 5-hour and 7-day usage,
- * plus a combined trajectory forecast graph showing history + projections.
+ * plus separate trajectory forecast graphs showing history + projections.
  * Uses @pppp606/ink-chart LineGraph for high-resolution rendering.
  */
 
@@ -138,13 +138,14 @@ export function UsageTrends({ trajectory }: UsageTrendsProps): React.ReactElemen
     projectionPointCount,
   );
 
-  const hasForecast = projection5h.length > 0 || projection7d.length > 0;
-
-  // Build combined series: history + projection as continuous lines
+  // Build separate forecast series: history + projection per metric
   const combined5h = [...fiveHourData, ...projection5h];
   const combined7d = [...sevenDayData, ...projection7d];
-  const totalPoints = combined5h.length;
-  const targetLine = Array(totalPoints).fill(90);
+  const targetLine5h = Array(combined5h.length).fill(90);
+  const targetLine7d = Array(combined7d.length).fill(90);
+
+  const hasForecast5h = projection5h.length > 0;
+  const hasForecast7d = projection7d.length > 0;
 
   // X-axis labels: [timeAgo, "now", "reset: Xh"]
   const resetLabel = earliestReset ? `reset: ${formatTimeUntil(earliestReset)}` : 'reset: N/A';
@@ -217,21 +218,20 @@ export function UsageTrends({ trajectory }: UsageTrendsProps): React.ReactElemen
           </Box>
         </Box>
 
-        {/* Trajectory Forecast Chart */}
-        {hasForecast && (
+        {/* 5-Hour Trajectory Forecast */}
+        {hasForecast5h && (
           <Box flexDirection="column">
             <Box>
-              <Text color="yellow" bold>Trajectory Forecast</Text>
+              <Text color="cyan" bold>5-Hour Forecast</Text>
               <Text color="gray"> (history → projection)</Text>
             </Box>
 
             <LineGraph
               data={[
                 { values: combined5h, color: 'cyan' },
-                { values: combined7d, color: 'magenta' },
-                { values: targetLine, color: 'gray' },
+                { values: targetLine5h, color: 'gray' },
               ]}
-              height={7}
+              height={5}
               width={72}
               yDomain={[0, 100]}
               showYAxis
@@ -240,8 +240,36 @@ export function UsageTrends({ trajectory }: UsageTrendsProps): React.ReactElemen
             />
 
             <Box gap={2}>
-              <Text color="cyan">━ 5h</Text>
-              <Text color="magenta">━ 7d</Text>
+              <Text color="cyan">━ 5h usage</Text>
+              <Text color="gray">━ 90% target</Text>
+              <Text color="gray">  │  left: history  │  right: projected</Text>
+            </Box>
+          </Box>
+        )}
+
+        {/* 7-Day Trajectory Forecast */}
+        {hasForecast7d && (
+          <Box flexDirection="column">
+            <Box>
+              <Text color="magenta" bold>7-Day Forecast</Text>
+              <Text color="gray"> (history → projection)</Text>
+            </Box>
+
+            <LineGraph
+              data={[
+                { values: combined7d, color: 'magenta' },
+                { values: targetLine7d, color: 'gray' },
+              ]}
+              height={5}
+              width={72}
+              yDomain={[0, 100]}
+              showYAxis
+              yLabels={[0, 25, 50, 75, 100]}
+              xLabels={forecastXLabels}
+            />
+
+            <Box gap={2}>
+              <Text color="magenta">━ 7d usage</Text>
               <Text color="gray">━ 90% target</Text>
               <Text color="gray">  │  left: history  │  right: projected</Text>
             </Box>

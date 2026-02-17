@@ -1962,4 +1962,245 @@ describe('usage-optimizer.js - Structure Validation', () => {
       assert.ok(returnMatch, 'Must return max key and per-key data from calculateAggregate');
     });
   });
+
+  describe('Overdrive Mode Support', () => {
+    it('should define revertOverdrive() function', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /function revertOverdrive\(config, log\)/,
+        'Must define revertOverdrive function'
+      );
+    });
+
+    it('should restore previous_state.effective when reverting', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function revertOverdrive\(config, log\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'revertOverdrive must exist');
+
+      const functionBody = functionMatch[0];
+
+      // Should access previous_state from config.overdrive
+      assert.match(
+        functionBody,
+        /const prev = config\.overdrive\.previous_state/,
+        'Must access previous_state'
+      );
+
+      // Should restore effective values
+      assert.match(
+        functionBody,
+        /if \(prev\?\.effective\)[\s\S]*?config\.effective = prev\.effective/s,
+        'Must restore previous effective values'
+      );
+    });
+
+    it('should restore previous_state.factor when reverting', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function revertOverdrive\(config, log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Should check if previous factor exists
+      assert.match(
+        functionBody,
+        /if \(prev\?\.factor !== undefined\)/,
+        'Must check if previous factor exists'
+      );
+
+      // Should clamp and restore factor to config.adjustment
+      assert.match(
+        functionBody,
+        /const restoredFactor = Math\.max\(MIN_FACTOR, Math\.min\(MAX_FACTOR, prev\.factor\)\)/,
+        'Must clamp previous factor to MIN_FACTOR/MAX_FACTOR bounds'
+      );
+
+      assert.match(
+        functionBody,
+        /config\.adjustment\.factor = restoredFactor/,
+        'Must restore clamped factor to config.adjustment'
+      );
+
+      // Should set direction to indicate reversion
+      assert.match(
+        functionBody,
+        /config\.adjustment\.direction = ['"]overdrive-reverted['"]/,
+        'Must set direction to overdrive-reverted'
+      );
+    });
+
+    it('should set overdrive.active to false when reverting', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function revertOverdrive\(config, log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /config\.overdrive\.active = false/,
+        'Must set overdrive.active to false'
+      );
+    });
+
+    it('should write updated config to file after reverting', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function revertOverdrive\(config, log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Should get config path
+      assert.match(
+        functionBody,
+        /const configPath = getConfigPath\(\)/,
+        'Must get config path'
+      );
+
+      // Should write config
+      assert.match(
+        functionBody,
+        /fs\.writeFileSync\(configPath, JSON\.stringify\(config, null, 2\)\)/,
+        'Must write updated config'
+      );
+    });
+
+    it('should log overdrive reversion', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function revertOverdrive\(config, log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /log\(`Usage optimizer: Overdrive expired, reverted/,
+        'Must log reversion message'
+      );
+
+      // Should include previous factor in log
+      assert.match(
+        functionBody,
+        /prev\?\.factor/,
+        'Must include previous factor in log message'
+      );
+    });
+
+    it('should check for active overdrive at start of runUsageOptimizer', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/export async function runUsageOptimizer\(logFn\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'runUsageOptimizer must exist');
+
+      const functionBody = functionMatch[0];
+
+      // Should check overdrive.active
+      assert.match(
+        functionBody,
+        /overdriveConfig\.overdrive\?\.active/,
+        'Must check for overdrive.active'
+      );
+    });
+
+    it('should check if overdrive has expired', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/export async function runUsageOptimizer\(logFn\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Should compare current time with expires_at
+      assert.match(
+        functionBody,
+        /new Date\(\) > new Date\(overdriveConfig\.overdrive\.expires_at\)/,
+        'Must check if overdrive has expired'
+      );
+    });
+
+    it('should call revertOverdrive when overdrive has expired', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/export async function runUsageOptimizer\(logFn\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Should call revertOverdrive
+      assert.match(
+        functionBody,
+        /revertOverdrive\(overdriveConfig, log\)/,
+        'Must call revertOverdrive when expired'
+      );
+    });
+
+    it('should skip adjustment when overdrive is active', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/export async function runUsageOptimizer\(logFn\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Should log and skip when active
+      assert.match(
+        functionBody,
+        /log\(`Usage optimizer: Overdrive active until/,
+        'Must log when overdrive is active'
+      );
+
+      // Should return early with adjustmentMade: false
+      assert.match(
+        functionBody,
+        /return \{[\s\S]*?adjustmentMade: false/s,
+        'Must return with adjustmentMade false when overdrive active'
+      );
+    });
+
+    it('should take snapshots even when overdrive is active', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/export async function runUsageOptimizer\(logFn\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Within overdrive active block, should still collect snapshot
+      const overdriveBlock = functionBody.match(/} else \{[\s\S]*?Overdrive active[\s\S]*?return \{[\s\S]*?\}/s);
+      assert.ok(overdriveBlock, 'Must have overdrive active block');
+
+      // Should call collectSnapshot
+      assert.match(
+        overdriveBlock[0],
+        /const snapshot = await collectSnapshot\(log\)/,
+        'Must collect snapshot even during overdrive'
+      );
+
+      // Should store snapshot
+      assert.match(
+        overdriveBlock[0],
+        /storeSnapshot\(snapshot, log\)/,
+        'Must store snapshot even during overdrive'
+      );
+
+      // Should return snapshotTaken: true if snapshot was taken
+      assert.match(
+        overdriveBlock[0],
+        /snapshotTaken: !!\s*snapshot/,
+        'Must return snapshotTaken based on whether snapshot was taken'
+      );
+    });
+
+    it('should handle overdrive check errors gracefully', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/export async function runUsageOptimizer\(logFn\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Should wrap overdrive check in try-catch
+      assert.match(
+        functionBody,
+        /try \{[\s\S]*?overdriveConfig\.overdrive[\s\S]*?\} catch \(err\)/s,
+        'Must wrap overdrive check in try-catch'
+      );
+
+      // Should log error and continue
+      assert.match(
+        functionBody,
+        /log\(`Usage optimizer: Overdrive check failed \(non-fatal\)/,
+        'Must log overdrive check errors as non-fatal'
+      );
+    });
+  });
 });

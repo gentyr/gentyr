@@ -190,6 +190,10 @@ export interface AutomationCooldowns {
   standalone_antipattern_hunter: number;
   standalone_compliance_checker: number;
   user_feedback: number;
+  pre_commit_review: number;
+  test_failure_reporter: number;
+  compliance_checker_file: number;
+  compliance_checker_spec: number;
 }
 
 export interface UsageProjection {
@@ -1191,6 +1195,10 @@ const DEFAULT_COOLDOWNS: AutomationCooldowns = {
   standalone_antipattern_hunter: 180,
   standalone_compliance_checker: 60,
   user_feedback: 120,
+  pre_commit_review: 5,
+  test_failure_reporter: 120,
+  compliance_checker_file: 10080,
+  compliance_checker_spec: 10080,
 };
 
 export function getUsageProjection(): UsageProjection {

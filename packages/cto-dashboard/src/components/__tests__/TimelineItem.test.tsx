@@ -366,6 +366,105 @@ describe('TimelineItem', () => {
     });
   });
 
+  describe('Title and Priority Tag Layout', () => {
+    it('should separate title and priority tag with a single space', () => {
+      // When a priority tag is present the title Text gets a trailing space so the
+      // two sibling Text nodes do not run together in the rendered output.
+      const event: TimelineEvent = {
+        type: 'report',
+        timestamp: new Date('2026-02-16T10:30:00'),
+        title: 'Security alert',
+        priority: 'high',
+      };
+
+      const { lastFrame } = render(<TimelineItem event={event} />);
+      const output = lastFrame();
+
+      // The rendered line must contain the title immediately followed by exactly
+      // one space and then the opening bracket of the tag.
+      expect(output).toMatch(/Security alert \[HIGH\]/);
+    });
+
+    it('should not prepend a space to the priority tag text itself', () => {
+      // priorityTag.trim() is used so the tag node starts with "[" not " [".
+      // This ensures the separator space lives solely in the title node.
+      const event: TimelineEvent = {
+        type: 'report',
+        timestamp: new Date('2026-02-16T10:30:00'),
+        title: 'Alert',
+        priority: 'critical',
+      };
+
+      const { lastFrame } = render(<TimelineItem event={event} />);
+      const output = lastFrame();
+
+      // Should contain "[CRITICAL]" without a leading space attached to the bracket.
+      // We check that "  [CRITICAL]" (two spaces) does not appear, which would
+      // indicate both the title space and a tag-internal leading space are present.
+      expect(output).not.toMatch(/ {2}\[CRITICAL\]/);
+      expect(output).toContain('[CRITICAL]');
+    });
+
+    it('should not add a trailing space to the title when no priority tag exists', () => {
+      // When priority is absent the conditional space in the title Text must not fire.
+      const event: TimelineEvent = {
+        type: 'task',
+        timestamp: new Date('2026-02-16T10:30:00'),
+        title: 'Plain task',
+      };
+
+      const { lastFrame } = render(<TimelineItem event={event} />);
+      const output = lastFrame();
+
+      // The title should appear followed by end-of-field, not "Plain task ".
+      // We assert the title text is present and no stray bracket follows it.
+      expect(output).toContain('Plain task');
+      expect(output).not.toContain('[');
+    });
+
+    it('should preserve full label text when title is extremely long', () => {
+      // flexShrink={0} on the label box means the label column never gives up
+      // space to the title even when the title is very long.
+      const eventTypes: Array<{ type: TimelineEventType; label: string }> = [
+        { type: 'hook', label: 'HOOK' },
+        { type: 'report', label: 'REPORT' },
+        { type: 'question', label: 'QUESTION' },
+        { type: 'task', label: 'TASK' },
+        { type: 'session', label: 'SESSION' },
+      ];
+
+      eventTypes.forEach(({ type, label }) => {
+        const event: TimelineEvent = {
+          type,
+          timestamp: new Date('2026-02-16T10:30:00'),
+          title: 'X'.repeat(300),
+        };
+
+        const { lastFrame } = render(<TimelineItem event={event} />);
+        const output = lastFrame();
+
+        // The full label must be present - no partial truncation like "REPO" or "QUES".
+        expect(output).toContain(label);
+        // The timestamp must also be fully present.
+        expect(output).toContain('10:30');
+      });
+    });
+
+    it('should preserve full timestamp text when title is extremely long', () => {
+      // flexShrink={0} on the time box means the time column never truncates.
+      const event: TimelineEvent = {
+        type: 'hook',
+        timestamp: new Date('2026-02-16T23:59:00'),
+        title: 'Y'.repeat(300),
+      };
+
+      const { lastFrame } = render(<TimelineItem event={event} />);
+      const output = lastFrame();
+
+      expect(output).toContain('23:59');
+    });
+  });
+
   describe('Edge Cases', () => {
     it('should handle empty title string', () => {
       const event: TimelineEvent = {
@@ -392,10 +491,9 @@ describe('TimelineItem', () => {
       const { lastFrame } = render(<TimelineItem event={event} />);
       const output = lastFrame();
 
-      // Long titles may wrap and label may be truncated, check for basic structure
+      // With flexShrink={0}, label columns never truncate
       expect(output).toContain('10:30');
-      expect(output).toContain('REPOR'); // Label may be truncated in terminal
-      expect(output).toContain('AAA'); // Check for partial title
+      expect(output).toContain('REPORT');
       expect(output).toBeTruthy();
     });
 

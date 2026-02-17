@@ -7,7 +7,7 @@
   "components": {
     "mcpServers": 25,
     "frameworkAgents": 9,
-    "commands": 7,
+    "commands": 8,
     "hooks": 13,
     "packages": 3
   },
