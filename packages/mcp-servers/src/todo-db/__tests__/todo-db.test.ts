@@ -13,6 +13,7 @@ import { randomUUID } from 'crypto';
 
 import { createTestDb, createTempDir } from '../../__testUtils__/index.js';
 import { TODO_DB_SCHEMA } from '../../__testUtils__/schemas.js';
+import { SECTION_CREATOR_RESTRICTIONS, FORCED_FOLLOWUP_SECTIONS } from '../../shared/constants.js';
 
 // Database row types for type safety
 interface TaskRow {
@@ -28,6 +29,9 @@ interface TaskRow {
   completed_at: string | null;
   completed_timestamp: number | null;
   linked_session_id: string | null;
+  followup_enabled: number;
+  followup_section: string | null;
+  followup_prompt: string | null;
 }
 
 interface SectionStatusCount {
@@ -57,6 +61,7 @@ interface CompleteTaskResult {
   id: string;
   status: string;
   completed_at: string;
+  followup_task_id?: string;
 }
 
 interface DeleteTaskResult {
@@ -110,20 +115,69 @@ describe('TODO Database Server', () => {
     return { tasks, total: tasks.length };
   };
 
+  function buildDefaultFollowupPrompt(title: string, description: string | null): string {
+    const originalTask = description
+      ? `Title: ${title}\nDescription: ${description}`
+      : `Title: ${title}`;
+
+    return `[Follow-up Verification] Earlier, you spawned agents or created to-do items to complete the following task. This is a reminder to verify that the task was completed.
+
+If the task wasn't worked on at all, just stop here without further action — you'll be re-spawned later with this same prompt.
+
+If it was partially completed but not to your satisfaction, spawn sessions or create to-do items for the appropriate agents to resolve the discrepancies.
+
+If fully completed, mark this follow-up task as complete.
+
+[Original Task]:
+${originalTask}`;
+  }
+
   const createTask = (args: {
     section: string;
     title: string;
     description?: string;
     assigned_by?: string;
-  }) => {
+    followup_enabled?: boolean;
+    followup_section?: string;
+    followup_prompt?: string;
+  }): TaskRow & { warning?: string } | ErrorResult => {
+    // Soft access control
+    const restrictions = SECTION_CREATOR_RESTRICTIONS[args.section as keyof typeof SECTION_CREATOR_RESTRICTIONS];
+    if (restrictions) {
+      if (!args.assigned_by || !restrictions.includes(args.assigned_by)) {
+        const gotValue = args.assigned_by ?? '(none)';
+        return {
+          error: `Section '${args.section}' requires assigned_by to be one of: ${restrictions.join(', ')}. Got: '${gotValue}'`,
+        };
+      }
+    }
+
+    // Follow-up enforcement for forced sections
+    let followup_enabled = args.followup_enabled ?? false;
+    let followup_section = args.followup_section ?? args.section;
+    let followup_prompt = args.followup_prompt ?? null;
+    let warning: string | undefined;
+
+    if ((FORCED_FOLLOWUP_SECTIONS as readonly string[]).includes(args.section)) {
+      if (args.followup_enabled === false) {
+        warning = `Follow-up hooks cannot be disabled for ${args.section} section. Enabled automatically.`;
+      }
+      followup_enabled = true;
+      followup_section = followup_section ?? args.section;
+
+      if (!followup_prompt) {
+        followup_prompt = buildDefaultFollowupPrompt(args.title, args.description ?? null);
+      }
+    }
+
     const id = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
     const created_timestamp = Math.floor(now.getTime() / 1000);
 
     db.prepare(`
-      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp)
-      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?)
+      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt)
+      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       args.section,
@@ -131,7 +185,10 @@ describe('TODO Database Server', () => {
       args.description ?? null,
       args.assigned_by ?? null,
       created_at,
-      created_timestamp
+      created_timestamp,
+      followup_enabled ? 1 : 0,
+      followup_section,
+      followup_prompt
     );
 
     return {
@@ -144,6 +201,13 @@ describe('TODO Database Server', () => {
       started_at: null,
       completed_at: null,
       assigned_by: args.assigned_by ?? null,
+      created_timestamp,
+      completed_timestamp: null,
+      linked_session_id: null,
+      followup_enabled: followup_enabled ? 1 : 0,
+      followup_section,
+      followup_prompt,
+      warning,
     };
   };
 
@@ -181,7 +245,26 @@ describe('TODO Database Server', () => {
       WHERE id = ?
     `).run(completed_at, completed_timestamp, id);
 
-    return { id, status: 'completed', completed_at };
+    let followup_task_id: string | undefined;
+
+    // Trigger follow-up hook
+    if (task.followup_enabled) {
+      const followupId = randomUUID();
+      const section = task.followup_section ?? task.section;
+      const title = `[Follow-up] ${task.title}`;
+      const description = task.followup_prompt;
+      const followup_created_at = now.toISOString();
+      const followup_timestamp = Math.floor(now.getTime() / 1000);
+
+      db.prepare(`
+        INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt)
+        VALUES (?, ?, 'pending', ?, ?, 'system-followup', ?, ?, 0, NULL, NULL)
+      `).run(followupId, section, title, description, followup_created_at, followup_timestamp);
+
+      followup_task_id = followupId;
+    }
+
+    return { id, status: 'completed', completed_at, followup_task_id };
   };
 
   const deleteTask = (id: string) => {
@@ -201,7 +284,7 @@ describe('TODO Database Server', () => {
       by_section: {} as Record<string, SectionStats>,
     };
 
-    const sections = ['TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER'];
+    const sections = ['TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO'];
     for (const section of sections) {
       result.by_section[section] = { pending: 0, in_progress: 0, completed: 0 };
     }
@@ -532,6 +615,7 @@ describe('TODO Database Server', () => {
       expect(result.by_section['INVESTIGATOR & PLANNER']).toBeDefined();
       expect(result.by_section['CODE-REVIEWER']).toBeDefined();
       expect(result.by_section['PROJECT-MANAGER']).toBeDefined();
+      expect(result.by_section['DEPUTY-CTO']).toBeDefined();
     });
   });
 
@@ -984,6 +1068,208 @@ describe('TODO Database Server', () => {
       expect(result.total).toBe(100);
       // Query should be fast with index (< 10ms even on slower systems)
       expect(queryTime).toBeLessThan(100);
+    });
+  });
+
+  describe('DEPUTY-CTO Section & Follow-up Hooks', () => {
+    it('should create DEPUTY-CTO task with assigned_by: deputy-cto', () => {
+      const result = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'High-level integration task',
+        assigned_by: 'deputy-cto',
+      });
+
+      expect('error' in result).toBe(false);
+      if (!('error' in result)) {
+        expect(result.section).toBe('DEPUTY-CTO');
+        expect(result.followup_enabled).toBe(1);
+      }
+    });
+
+    it('should reject DEPUTY-CTO task without assigned_by', () => {
+      const result = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'No author',
+      });
+
+      expect('error' in result).toBe(true);
+      if ('error' in result) {
+        expect(result.error).toContain('requires assigned_by');
+        expect(result.error).toContain('deputy-cto');
+      }
+    });
+
+    it('should reject DEPUTY-CTO task with unauthorized assigned_by', () => {
+      const result = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'Wrong author',
+        assigned_by: 'code-reviewer',
+      });
+
+      expect('error' in result).toBe(true);
+      if ('error' in result) {
+        expect(result.error).toContain('requires assigned_by');
+      }
+    });
+
+    it('should warn but still enable follow-up when followup_enabled: false for DEPUTY-CTO', () => {
+      const result = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'Forced followup',
+        assigned_by: 'deputy-cto',
+        followup_enabled: false,
+      });
+
+      expect('error' in result).toBe(false);
+      if (!('error' in result)) {
+        expect(result.followup_enabled).toBe(1);
+        expect(result.warning).toContain('cannot be disabled');
+      }
+    });
+
+    it('should use custom followup_prompt when provided for DEPUTY-CTO', () => {
+      const customPrompt = 'Custom verification instructions';
+      const result = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'Custom prompt task',
+        assigned_by: 'deputy-cto',
+        followup_prompt: customPrompt,
+      });
+
+      expect('error' in result).toBe(false);
+      if (!('error' in result)) {
+        expect(result.followup_prompt).toBe(customPrompt);
+      }
+    });
+
+    it('should auto-generate followup_prompt when not provided for DEPUTY-CTO', () => {
+      const result = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'Auto prompt task',
+        description: 'Detailed task description',
+        assigned_by: 'deputy-cto',
+      });
+
+      expect('error' in result).toBe(false);
+      if (!('error' in result)) {
+        expect(result.followup_prompt).toContain('[Follow-up Verification]');
+        expect(result.followup_prompt).toContain('Auto prompt task');
+        expect(result.followup_prompt).toContain('Detailed task description');
+      }
+    });
+
+    it('should create follow-up task when completing a task with followup_enabled', () => {
+      const task = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'Completable task',
+        assigned_by: 'deputy-cto',
+      });
+
+      expect('error' in task).toBe(false);
+      if (!('error' in task)) {
+        const result = completeTask(task.id) as CompleteOrError;
+
+        expect('error' in result).toBe(false);
+        if (!('error' in result)) {
+          expect(result.followup_task_id).toBeDefined();
+
+          // Verify the follow-up task was created
+          const followup = getTask(result.followup_task_id!) as TaskOrError;
+          expect('error' in followup).toBe(false);
+          if (!('error' in followup)) {
+            expect(followup.title).toContain('[Follow-up]');
+            expect(followup.title).toContain('Completable task');
+            expect(followup.status).toBe('pending');
+          }
+        }
+      }
+    });
+
+    it('should NOT create follow-up task when completing a task without followup_enabled', () => {
+      const task = createTask({
+        section: 'TEST-WRITER',
+        title: 'No followup task',
+      });
+
+      expect('error' in task).toBe(false);
+      if (!('error' in task)) {
+        const result = completeTask(task.id) as CompleteOrError;
+
+        expect('error' in result).toBe(false);
+        if (!('error' in result)) {
+          expect(result.followup_task_id).toBeUndefined();
+        }
+      }
+    });
+
+    it('should create follow-up task with followup_enabled: 0 (no chaining)', () => {
+      const task = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'Chain test',
+        assigned_by: 'deputy-cto',
+      });
+
+      expect('error' in task).toBe(false);
+      if (!('error' in task)) {
+        const result = completeTask(task.id) as CompleteOrError;
+
+        expect('error' in result).toBe(false);
+        if (!('error' in result)) {
+          const followup = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.followup_task_id!) as TaskRow;
+          expect(followup.followup_enabled).toBe(0);
+        }
+      }
+    });
+
+    it('should create follow-up task with title starting with [Follow-up]', () => {
+      const task = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'Build AWS integration',
+        assigned_by: 'deputy-cto',
+      });
+
+      expect('error' in task).toBe(false);
+      if (!('error' in task)) {
+        const result = completeTask(task.id) as CompleteOrError;
+
+        expect('error' in result).toBe(false);
+        if (!('error' in result)) {
+          const followup = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.followup_task_id!) as TaskRow;
+          expect(followup.title).toBe('[Follow-up] Build AWS integration');
+        }
+      }
+    });
+
+    it('should still work for non-restricted sections without assigned_by', () => {
+      const result = createTask({
+        section: 'TEST-WRITER',
+        title: 'Unrestricted task',
+      });
+
+      expect('error' in result).toBe(false);
+      if (!('error' in result)) {
+        expect(result.section).toBe('TEST-WRITER');
+        expect(result.followup_enabled).toBe(0);
+      }
+    });
+
+    it('should set follow-up task assigned_by to system-followup', () => {
+      const task = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'Followup author test',
+        assigned_by: 'deputy-cto',
+      });
+
+      expect('error' in task).toBe(false);
+      if (!('error' in task)) {
+        const result = completeTask(task.id) as CompleteOrError;
+
+        expect('error' in result).toBe(false);
+        if (!('error' in result)) {
+          const followup = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.followup_task_id!) as TaskRow;
+          expect(followup.assigned_by).toBe('system-followup');
+        }
+      }
     });
   });
 });

@@ -49,6 +49,7 @@ export const AGENT_TYPES = {
   TASK_RUNNER_INVESTIGATOR: 'task-runner-investigator',
   TASK_RUNNER_TEST_WRITER: 'task-runner-test-writer',
   TASK_RUNNER_PROJECT_MANAGER: 'task-runner-project-manager',
+  TASK_RUNNER_DEPUTY_CTO: 'task-runner-deputy-cto',
   PREVIEW_PROMOTION: 'preview-promotion',
   STAGING_PROMOTION: 'staging-promotion',
   STAGING_HEALTH_MONITOR: 'staging-health-monitor',

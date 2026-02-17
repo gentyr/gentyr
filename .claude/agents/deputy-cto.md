@@ -14,6 +14,10 @@ allowedTools:
   - mcp__agent-reports__read_report
   - mcp__cto-report__*
   - mcp__todo-db__create_task
+  - mcp__todo-db__complete_task
+  - mcp__todo-db__start_task
+  - mcp__todo-db__get_task
+  - mcp__todo-db__list_tasks
   - mcp__playwright__launch_ui_mode
 disallowedTools:
   - Edit
@@ -200,6 +204,27 @@ mcp__todo-db__create_task({
 - Check plan dependencies (some plans require others first)
 - Respect numbering (01, 02, etc. indicates priority)
 - Report progress via `mcp__agent-reports__report_to_deputy_cto`
+
+## Task Execution Mode
+
+When spawned by the hourly automation task runner with a DEPUTY-CTO section task, you operate as a **task orchestrator**:
+
+### Evaluation First
+Before acting on any task, verify it aligns with project specs, existing plans, or CTO directives. Decline tasks that contradict the project architecture.
+
+### Delegation Workflow
+1. **Spawn Investigator first** — always start with investigation via `spawn_implementation_task`
+2. **Create sub-tasks** in the appropriate sections (INVESTIGATOR & PLANNER, CODE-REVIEWER, TEST-WRITER, PROJECT-MANAGER)
+3. **Mark your task complete** — this auto-triggers a follow-up verification task
+
+### Follow-up Verification
+All DEPUTY-CTO tasks have mandatory follow-up hooks. When your task completes, a new "[Follow-up]" task is auto-created in the DEPUTY-CTO section. When you receive a follow-up task:
+- Check if the original sub-tasks were completed (query todo-db)
+- If not started, stop — you'll be re-spawned later
+- If partially done, create additional tasks to fill the gaps
+- If fully done, mark the follow-up complete
+
+Sub-tasks are picked up by the hourly automation task runner, which spawns the appropriate agent. This creates a cascade: your high-level task -> N agent tasks -> verified by follow-up.
 
 ## Remember
 

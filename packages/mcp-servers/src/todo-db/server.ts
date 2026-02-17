@@ -29,6 +29,8 @@ import {
   BrowseSessionArgsSchema,
   GetCompletedSinceArgsSchema,
   VALID_SECTIONS,
+  SECTION_CREATOR_RESTRICTIONS,
+  FORCED_FOLLOWUP_SECTIONS,
   type ListTasksArgs,
   type GetTaskArgs,
   type CreateTaskArgs,
@@ -53,6 +55,7 @@ import {
   type GetCompletedSinceResult,
   type SessionMessage,
   type ErrorResult,
+  type ValidSection,
 } from './types.js';
 
 // ============================================================================
@@ -81,8 +84,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     metadata TEXT,
     created_timestamp INTEGER NOT NULL,
     completed_timestamp INTEGER,
+    followup_enabled INTEGER NOT NULL DEFAULT 0,
+    followup_section TEXT,
+    followup_prompt TEXT,
     CONSTRAINT valid_status CHECK (status IN ('pending', 'in_progress', 'completed')),
-    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER'))
+    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_section ON tasks(section);
@@ -111,6 +117,29 @@ function initializeDatabase(): Database.Database {
   const db = new Database(DB_PATH);
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA);
+
+  // Auto-migration: add followup columns if missing (existing databases)
+  try {
+    db.prepare("SELECT followup_enabled FROM tasks LIMIT 0").run();
+  } catch {
+    db.exec("ALTER TABLE tasks ADD COLUMN followup_enabled INTEGER NOT NULL DEFAULT 0");
+    db.exec("ALTER TABLE tasks ADD COLUMN followup_section TEXT");
+    db.exec("ALTER TABLE tasks ADD COLUMN followup_prompt TEXT");
+  }
+
+  // Auto-migration: ensure DEPUTY-CTO is in CHECK constraint
+  try {
+    const testId = 'migration-check-' + Date.now();
+    db.prepare("INSERT INTO tasks (id, section, status, title, created_at, created_timestamp) VALUES (?, 'DEPUTY-CTO', 'pending', '_migration_test', ?, ?)").run(testId, new Date().toISOString(), Math.floor(Date.now() / 1000));
+    db.prepare("DELETE FROM tasks WHERE id = ?").run(testId);
+  } catch {
+    // Old CHECK constraint — recreate table preserving data
+    db.exec("ALTER TABLE tasks RENAME TO tasks_old");
+    db.exec(SCHEMA);
+    db.exec(`INSERT INTO tasks (id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt) SELECT id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, COALESCE(followup_enabled, 0), followup_section, followup_prompt FROM tasks_old`);
+    db.exec("DROP TABLE tasks_old");
+  }
+
   return db;
 }
 
@@ -143,7 +172,29 @@ function taskToResponse(task: TaskRecord): TaskResponse {
     started_at: task.started_at,
     completed_at: task.completed_at,
     assigned_by: task.assigned_by,
+    followup_enabled: task.followup_enabled === 1,
   };
+}
+
+// ============================================================================
+// Follow-up Prompt Builder
+// ============================================================================
+
+function buildDefaultFollowupPrompt(title: string, description: string | null): string {
+  const originalTask = description
+    ? `Title: ${title}\nDescription: ${description}`
+    : `Title: ${title}`;
+
+  return `[Follow-up Verification] Earlier, you spawned agents or created to-do items to complete the following task. This is a reminder to verify that the task was completed.
+
+If the task wasn't worked on at all, just stop here without further action — you'll be re-spawned later with this same prompt.
+
+If it was partially completed but not to your satisfaction, spawn sessions or create to-do items for the appropriate agents to resolve the discrepancies.
+
+If fully completed, mark this follow-up task as complete.
+
+[Original Task]:
+${originalTask}`;
 }
 
 // ============================================================================
@@ -196,15 +247,45 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     return { error: `Invalid section: ${args.section}. Must be one of: ${VALID_SECTIONS.join(', ')}` };
   }
 
+  // Soft access control
+  const restrictions = SECTION_CREATOR_RESTRICTIONS[args.section as ValidSection];
+  if (restrictions) {
+    if (!args.assigned_by || !restrictions.includes(args.assigned_by)) {
+      const gotValue = args.assigned_by ?? '(none)';
+      return {
+        error: `Section '${args.section}' requires assigned_by to be one of: ${restrictions.join(', ')}. Got: '${gotValue}'`,
+      };
+    }
+  }
+
+  // Follow-up enforcement for forced sections
+  let followup_enabled = args.followup_enabled ?? false;
+  let followup_section = args.followup_section ?? args.section;
+  let followup_prompt = args.followup_prompt ?? null;
+  let warning: string | undefined;
+
+  if ((FORCED_FOLLOWUP_SECTIONS as readonly string[]).includes(args.section)) {
+    if (args.followup_enabled === false) {
+      warning = `Follow-up hooks cannot be disabled for ${args.section} section. Enabled automatically.`;
+    }
+    followup_enabled = true;
+    followup_section = followup_section ?? args.section;
+
+    // Auto-generate verification prompt if not provided
+    if (!followup_prompt) {
+      followup_prompt = buildDefaultFollowupPrompt(args.title, args.description ?? null);
+    }
+  }
+
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
   const created_timestamp = Math.floor(now.getTime() / 1000);
 
   db.prepare(`
-    INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp)
-    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?)
-  `).run(id, args.section, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp);
+    INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt)
+    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, args.section, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt);
 
   return {
     id,
@@ -216,6 +297,8 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     started_at: null,
     completed_at: null,
     assigned_by: args.assigned_by ?? null,
+    followup_enabled,
+    warning,
   };
 }
 
@@ -271,10 +354,30 @@ function completeTask(args: CompleteTaskArgs): CompleteTaskResult | ErrorResult 
     WHERE id = ?
   `).run(completed_at, completed_timestamp, args.id);
 
+  let followup_task_id: string | undefined;
+
+  // Trigger follow-up hook
+  if (task.followup_enabled) {
+    const followupId = randomUUID();
+    const section = task.followup_section ?? task.section;
+    const title = `[Follow-up] ${task.title}`;
+    const description = task.followup_prompt;
+    const followup_created_at = now.toISOString();
+    const followup_timestamp = Math.floor(now.getTime() / 1000);
+
+    db.prepare(`
+      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt)
+      VALUES (?, ?, 'pending', ?, ?, 'system-followup', ?, ?, 0, NULL, NULL)
+    `).run(followupId, section, title, description, followup_created_at, followup_timestamp);
+
+    followup_task_id = followupId;
+  }
+
   return {
     id: args.id,
     status: 'completed',
     completed_at,
+    followup_task_id,
   };
 }
 
@@ -588,7 +691,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'create_task',
-    description: 'Create a new task. Agents should only create in their own section (PROJECT-MANAGER can create in any section).',
+    description: 'Create a new task. Restricted sections (e.g., DEPUTY-CTO) require assigned_by to match allowed creators. DEPUTY-CTO tasks always have follow-up verification enabled (followup_prompt auto-generated if left empty).',
     schema: CreateTaskArgsSchema,
     handler: createTask,
   },
