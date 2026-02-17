@@ -159,6 +159,11 @@ export interface AgentRecord {
   prompt: string | null;
   projectDir: string;
   metadata?: Record<string, unknown>;
+  pid?: number;
+  status?: 'running' | 'completed' | 'reaped';
+  sessionFile?: string;
+  reapedAt?: string;
+  reapReason?: string;
 }
 
 export interface AgentHistory {
@@ -175,6 +180,10 @@ export interface ListAgentItem {
   timestamp: string;
   promptPreview: string;
   hasSession: boolean;
+  pid?: number;
+  status?: 'running' | 'completed' | 'reaped';
+  reapedAt?: string;
+  reapReason?: string;
 }
 
 export interface ListSpawnedAgentsResult {
@@ -235,6 +244,8 @@ export interface AgentStats {
   last7Days: number;
   oldestSpawn: string | null;
   newestSpawn: string | null;
+  byStatus: Record<string, number>;
+  totalReaped: number;
 }
 
 export interface ErrorResult {

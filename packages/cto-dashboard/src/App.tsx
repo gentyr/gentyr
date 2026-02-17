@@ -25,6 +25,7 @@ import {
   TestingSection,
   DeploymentsSection,
   InfraSection,
+  LoggingSection,
   type MetricBoxData,
 } from './components/index.js';
 import type { DashboardData } from './utils/data-reader.js';
@@ -35,6 +36,7 @@ import type { DeputyCtoData } from './utils/deputy-cto-reader.js';
 import type { TestingData } from './utils/testing-reader.js';
 import type { DeploymentsData } from './utils/deployments-reader.js';
 import type { InfraData } from './utils/infra-reader.js';
+import type { LoggingData } from './utils/logging-reader.js';
 import { formatNumber, formatDateTime, formatTime12h, formatDelta, calculateCacheRate } from './utils/formatters.js';
 
 interface AppProps {
@@ -46,6 +48,7 @@ interface AppProps {
   testing: TestingData;
   deployments: DeploymentsData;
   infra: InfraData;
+  logging: LoggingData;
 }
 
 function Header({ data }: { data: DashboardData }): React.ReactElement {
@@ -229,7 +232,7 @@ function MetricsSummary({ data }: { data: DashboardData }): React.ReactElement {
   );
 }
 
-export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra }: AppProps): React.ReactElement {
+export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging }: AppProps): React.ReactElement {
   return (
     <Box flexDirection="column" padding={0}>
       {/* Header */}
@@ -297,7 +300,14 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       {/* Infrastructure */}
       {infra.hasData && (
         <Box marginTop={1}>
-          <InfraSection data={infra} />
+          <InfraSection data={infra} deployments={deployments} />
+        </Box>
+      )}
+
+      {/* Logging */}
+      {logging.hasData && (
+        <Box marginTop={1}>
+          <LoggingSection data={logging} />
         </Box>
       )}
 

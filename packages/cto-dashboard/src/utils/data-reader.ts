@@ -9,6 +9,7 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import Database from 'better-sqlite3';
+import { z } from 'zod';
 
 // ============================================================================
 // Configuration
@@ -258,18 +259,26 @@ export interface DashboardData {
 // Internal interfaces
 // ============================================================================
 
-interface CredentialsFile {
-  claudeAiOauth?: {
-    accessToken?: string;
-    expiresAt?: number;
-  };
-}
+// G003: Zod schemas for external input validation
+const CredentialsFileSchema = z.object({
+  claudeAiOauth: z.object({
+    accessToken: z.string().optional(),
+    expiresAt: z.number().optional(),
+  }).optional(),
+}).passthrough();
 
-interface UsageApiResponse {
-  five_hour?: { utilization: number; resets_at: string } | null;
-  seven_day?: { utilization: number; resets_at: string } | null;
-  extra_usage?: { is_enabled: boolean } | null;
-}
+type CredentialsFile = z.infer<typeof CredentialsFileSchema>;
+
+const UsageBucketSchema = z.object({
+  utilization: z.number(),
+  resets_at: z.string(),
+}).nullable().optional();
+
+const UsageApiResponseSchema = z.object({
+  five_hour: UsageBucketSchema,
+  seven_day: UsageBucketSchema,
+  extra_usage: z.object({ is_enabled: z.boolean() }).nullable().optional(),
+}).passthrough();
 
 interface SessionEntry {
   timestamp?: string;
@@ -301,58 +310,80 @@ interface CompletedCountRow {
   count: number;
 }
 
-interface AgentHistoryEntry {
-  id: string;
-  type: string;
-  hookType: string;
-  timestamp: string;
-}
+const AgentHistorySchema = z.object({
+  agents: z.array(z.object({
+    id: z.string(),
+    type: z.string(),
+    hookType: z.string(),
+    timestamp: z.string(),
+  }).passthrough()).default([]),
+}).passthrough();
 
-interface AgentHistory {
-  agents: AgentHistoryEntry[];
-}
+const HookHistorySchema = z.object({
+  hookExecutions: z.array(z.object({
+    hookType: z.string(),
+    status: z.enum(['success', 'failure', 'skipped']),
+    timestamp: z.string(),
+    metadata: z.object({ error: z.string().optional() }).passthrough().optional(),
+  }).passthrough()).default([]),
+}).passthrough();
 
-interface HookExecutionEntry {
-  hookType: string;
-  status: 'success' | 'failure' | 'skipped';
-  timestamp: string;
-  metadata?: { error?: string };
-}
+const KeyRotationKeyDataSchema = z.object({
+  accessToken: z.string().optional(),
+  subscriptionType: z.string(),
+  last_usage: z.object({
+    five_hour: z.number(),
+    seven_day: z.number(),
+  }).nullable(),
+  status: z.enum(['active', 'exhausted', 'invalid', 'expired']),
+}).passthrough();
 
-interface HookHistory {
-  hookExecutions: HookExecutionEntry[];
-}
+const KeyRotationStateSchema = z.object({
+  version: z.number(),
+  active_key_id: z.string().nullable(),
+  keys: z.record(z.string(), KeyRotationKeyDataSchema),
+  rotation_log: z.array(z.object({
+    timestamp: z.number(),
+    event: z.string(),
+  })),
+});
 
-interface KeyRotationState {
-  version: number;
-  active_key_id: string | null;
-  keys: Record<string, {
-    accessToken?: string;
-    subscriptionType: string;
-    last_usage: {
-      five_hour: number;
-      seven_day: number;
-    } | null;
-    status: 'active' | 'exhausted' | 'invalid' | 'expired';
-  }>;
-  rotation_log: {
-    timestamp: number;
-    event: string;
-  }[];
-}
+type KeyRotationState = z.infer<typeof KeyRotationStateSchema>;
 
-interface AutomationConfigFile {
-  version: number;
-  defaults?: Partial<AutomationCooldowns>;
-  effective?: Partial<AutomationCooldowns>;
-  adjustment?: {
-    factor?: number;
-    target_pct?: number;
-    projected_at_reset?: number;
-    constraining_metric?: '5h' | '7d';
-    last_updated?: string;
-  };
-}
+const AutomationCooldownsPartialSchema = z.object({
+  hourly_tasks: z.number().optional(),
+  triage_check: z.number().optional(),
+  antipattern_hunter: z.number().optional(),
+  schema_mapper: z.number().optional(),
+  lint_checker: z.number().optional(),
+  todo_maintenance: z.number().optional(),
+  task_runner: z.number().optional(),
+  triage_per_item: z.number().optional(),
+  preview_promotion: z.number().optional(),
+  staging_promotion: z.number().optional(),
+  staging_health_monitor: z.number().optional(),
+  production_health_monitor: z.number().optional(),
+  standalone_antipattern_hunter: z.number().optional(),
+  standalone_compliance_checker: z.number().optional(),
+  user_feedback: z.number().optional(),
+  pre_commit_review: z.number().optional(),
+  test_failure_reporter: z.number().optional(),
+  compliance_checker_file: z.number().optional(),
+  compliance_checker_spec: z.number().optional(),
+}).passthrough();
+
+const AutomationConfigFileSchema = z.object({
+  version: z.number(),
+  defaults: AutomationCooldownsPartialSchema.optional(),
+  effective: AutomationCooldownsPartialSchema.optional(),
+  adjustment: z.object({
+    factor: z.number().optional(),
+    target_pct: z.number().optional(),
+    projected_at_reset: z.number().optional(),
+    constraining_metric: z.enum(['5h', '7d']).optional(),
+    last_updated: z.string().optional(),
+  }).passthrough().optional(),
+}).passthrough();
 
 // ============================================================================
 // Key ID Generation (matches api-key-watcher.js:89-98)
@@ -411,7 +442,7 @@ function getCredentialToken(): string | null {
       const raw = execFileSync('security', [
         'find-generic-password', '-s', 'Claude Code-credentials', '-a', username, '-w',
       ], { encoding: 'utf8', timeout: 3000 }).trim();
-      const creds = JSON.parse(raw) as CredentialsFile;
+      const creds = CredentialsFileSchema.parse(JSON.parse(raw));
       const token = extractTokenFromCreds(creds);
       if (token) return token;
     } catch {
@@ -425,7 +456,7 @@ function getCredentialToken(): string | null {
     const configCredsPath = path.join(configDir, '.credentials.json');
     try {
       if (fs.existsSync(configCredsPath)) {
-        const creds = JSON.parse(fs.readFileSync(configCredsPath, 'utf8')) as CredentialsFile;
+        const creds = CredentialsFileSchema.parse(JSON.parse(fs.readFileSync(configCredsPath, 'utf8')));
         const token = extractTokenFromCreds(creds);
         if (token) return token;
       }
@@ -437,7 +468,7 @@ function getCredentialToken(): string | null {
   // Source 4: Standard credentials file (~/.claude/.credentials.json)
   try {
     if (fs.existsSync(CREDENTIALS_PATH)) {
-      const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8')) as CredentialsFile;
+      const creds = CredentialsFileSchema.parse(JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8')));
       const token = extractTokenFromCreds(creds);
       if (token) return token;
     }
@@ -460,7 +491,7 @@ function getAccessToken(): string | null {
   // Source 5: Key rotation state (project-level, active keys only)
   if (fs.existsSync(KEY_ROTATION_STATE_PATH)) {
     try {
-      const state = JSON.parse(fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8')) as KeyRotationState;
+      const state = KeyRotationStateSchema.parse(JSON.parse(fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8')));
       if (state?.version === 1 && state.keys) {
         const activeKeyData = state.active_key_id ? state.keys[state.active_key_id] : undefined;
         if (activeKeyData?.accessToken && activeKeyData.status === 'active') {
@@ -503,7 +534,7 @@ async function fetchQuotaForToken(accessToken: string): Promise<QuotaStatus> {
       return { ...EMPTY_QUOTA, error: `API error: ${response.status}` };
     }
 
-    const data = await response.json() as UsageApiResponse;
+    const data = UsageApiResponseSchema.parse(await response.json());
 
     return {
       five_hour: parseBucket(data.five_hour),
@@ -549,7 +580,7 @@ function collectAllKeys(): { keys: CollectedKey[]; rotationState: KeyRotationSta
   if (fs.existsSync(KEY_ROTATION_STATE_PATH)) {
     try {
       const content = fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8');
-      const state = JSON.parse(content) as KeyRotationState;
+      const state = KeyRotationStateSchema.parse(JSON.parse(content));
       if (state?.version === 1 && typeof state.keys === 'object') {
         rotationState = state;
         for (const [keyId, keyData] of Object.entries(state.keys)) {
@@ -735,7 +766,7 @@ export function getAutonomousModeStatus(): AutonomousModeStatus {
   let enabled = false;
 
   if (fs.existsSync(AUTONOMOUS_CONFIG_PATH)) {
-    const config = JSON.parse(fs.readFileSync(AUTONOMOUS_CONFIG_PATH, 'utf8')) as { enabled?: boolean };
+    const config = z.object({ enabled: z.boolean().optional() }).parse(JSON.parse(fs.readFileSync(AUTONOMOUS_CONFIG_PATH, 'utf8')));
     enabled = config.enabled === true;
   }
 
@@ -743,7 +774,7 @@ export function getAutonomousModeStatus(): AutonomousModeStatus {
   let seconds_until_next: number | null = null;
 
   if (enabled && fs.existsSync(AUTOMATION_STATE_PATH)) {
-    const state = JSON.parse(fs.readFileSync(AUTOMATION_STATE_PATH, 'utf8')) as { lastRun?: number };
+    const state = z.object({ lastRun: z.number().optional() }).parse(JSON.parse(fs.readFileSync(AUTOMATION_STATE_PATH, 'utf8')));
     const lastRun = state.lastRun || 0;
     const now = Date.now();
     const cooldownMs = COOLDOWN_MINUTES * 60 * 1000;
@@ -1034,13 +1065,13 @@ export function getAgentActivity(): AgentActivity {
   if (!fs.existsSync(AGENT_TRACKER_PATH)) return result;
 
   const content = fs.readFileSync(AGENT_TRACKER_PATH, 'utf8');
-  const history = JSON.parse(content) as AgentHistory;
+  const history = AgentHistorySchema.parse(JSON.parse(content));
 
   const now = Date.now();
   const cutoff24h = now - 24 * 60 * 60 * 1000;
   const cutoff7d = now - 7 * 24 * 60 * 60 * 1000;
 
-  for (const agent of history.agents || []) {
+  for (const agent of history.agents) {
     const agentTime = new Date(agent.timestamp).getTime();
 
     if (agentTime >= cutoff7d) {
@@ -1071,14 +1102,14 @@ export function getHookExecutions(): HookExecutions {
   if (!fs.existsSync(AGENT_TRACKER_PATH)) return result;
 
   const content = fs.readFileSync(AGENT_TRACKER_PATH, 'utf8');
-  const history = JSON.parse(content) as HookHistory;
+  const history = HookHistorySchema.parse(JSON.parse(content));
 
   const now = Date.now();
   const cutoff24h = now - 24 * 60 * 60 * 1000;
   let successCount = 0;
   let skippedCount = 0;
 
-  for (const exec of history.hookExecutions || []) {
+  for (const exec of history.hookExecutions) {
     const execTime = new Date(exec.timestamp).getTime();
     if (execTime < cutoff24h) continue;
 
@@ -1122,7 +1153,7 @@ export function getKeyRotationMetrics(hours: number): KeyRotationMetrics | null 
   if (!fs.existsSync(KEY_ROTATION_STATE_PATH)) return null;
 
   const content = fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8');
-  const state = JSON.parse(content) as KeyRotationState;
+  const state = KeyRotationStateSchema.parse(JSON.parse(content));
 
   if (!state || state.version !== 1 || typeof state.keys !== 'object') {
     process.stderr.write(`[data-reader] Invalid key rotation state format at ${KEY_ROTATION_STATE_PATH}\n`);
@@ -1218,7 +1249,7 @@ export function getUsageProjection(): UsageProjection {
   if (!fs.existsSync(AUTOMATION_CONFIG_PATH)) return result;
 
   const content = fs.readFileSync(AUTOMATION_CONFIG_PATH, 'utf8');
-  const config = JSON.parse(content) as AutomationConfigFile;
+  const config = AutomationConfigFileSchema.parse(JSON.parse(content));
 
   if (!config || config.version !== 1) {
     process.stderr.write(`[data-reader] Invalid automation config format at ${AUTOMATION_CONFIG_PATH}\n`);
@@ -1250,13 +1281,15 @@ export function getUsageProjection(): UsageProjection {
 // Automations Info
 // ============================================================================
 
-interface AutomationState {
-  lastRun?: number;
-  lastClaudeMdRefactor?: number;
-  lastTriageCheck?: number;
-  lastTaskRunnerCheck?: number;
-  lastLintCheck?: number;
-}
+const AutomationStateSchema = z.object({
+  lastRun: z.number().optional(),
+  lastClaudeMdRefactor: z.number().optional(),
+  lastTriageCheck: z.number().optional(),
+  lastTaskRunnerCheck: z.number().optional(),
+  lastLintCheck: z.number().optional(),
+}).passthrough();
+
+type AutomationState = z.infer<typeof AutomationStateSchema>;
 
 // Automation definitions with their state keys and defaults
 const AUTOMATION_DEFINITIONS: Array<{
@@ -1342,7 +1375,7 @@ export function getAutomations(): AutomationInfo[] {
   // Read automation state
   let state: AutomationState = {};
   if (fs.existsSync(AUTOMATION_STATE_PATH)) {
-    state = JSON.parse(fs.readFileSync(AUTOMATION_STATE_PATH, 'utf8')) as AutomationState;
+    state = AutomationStateSchema.parse(JSON.parse(fs.readFileSync(AUTOMATION_STATE_PATH, 'utf8')));
   }
 
   return AUTOMATION_DEFINITIONS.map(def => {

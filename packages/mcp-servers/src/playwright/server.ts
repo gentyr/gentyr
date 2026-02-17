@@ -88,6 +88,7 @@ const PERSONA_MAP: Record<string, string> = {
   'manual': 'Manual QA Scaffolds',
   'extension': 'End Customer (Extension)',
   'extension-manual': 'Extension Manual QA',
+  'demo': 'Unified Demo (Dashboard + Extension)',
 };
 
 // ============================================================================
@@ -336,6 +337,7 @@ function getCoverageStatus(): GetCoverageStatusResult {
     'manual': 'e2e/manual',
     'extension': 'e2e/extension',
     'extension-manual': 'e2e/extension/manual',
+    'demo': 'e2e/demo',
   };
 
   for (const [project, testDir] of Object.entries(activeDirs)) {
@@ -461,8 +463,8 @@ const tools: AnyToolHandler[] = [
     description:
       'Launch Playwright in interactive UI mode for manual testing and demos. ' +
       'Opens a browser with the Playwright test runner UI. ' +
-      'Use project "manual" for demos (page.pause() for human interaction), ' +
-      '"extension-manual" for extension demos, ' +
+      'Use project "demo" for full product demos (dashboard + extension in one session), ' +
+      '"manual" for vendor dashboard demos, "extension-manual" for extension demos, ' +
       'or a vendor role project to test as a specific persona.',
     schema: LaunchUiModeArgsSchema,
     handler: launchUiMode,

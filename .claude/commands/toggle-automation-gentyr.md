@@ -1,6 +1,9 @@
+<!-- HOOK:GENTYR:toggle-automation -->
 # /toggle-automation-gentyr - Toggle GENTYR Automation
 
 Toggles the GENTYR automation service between active and paused states. The persistent service (launchd/systemd) keeps running but does nothing when paused.
+
+The prefetch hook has pre-gathered the current automation state and injected it as a `[PREFETCH:toggle-automation]` systemMessage above. Use that data for Step 1 instead of calling the MCP tool. If the prefetch data is missing, fall back to the MCP call.
 
 ## What This Controls
 

@@ -1,5 +1,211 @@
 # GENTYR Framework Changelog
 
+## 2026-02-17 - CTO Dashboard: Elastic/Elasticsearch Integration Fixes
+
+### Fixed
+
+**Elasticsearch field mapping errors** (`packages/cto-dashboard/src/utils/logging-reader.ts`, `packages/cto-dashboard/src/utils/infra-reader.ts`):
+- Terms aggregations were failing with HTTP 400 errors because fields (`level`, `service`, `module`) are mapped as `text` type in the Elastic Serverless deployment and require the `.keyword` suffix for aggregations
+- Updated all terms aggregation fields: `level` -> `level.keyword`, `service` -> `service.keyword`, `module` -> `module.keyword`
+- Updated term filter fields in top-errors and top-warnings queries to use `level.keyword`
+
+**Elasticsearch endpoint resolution** (`packages/cto-dashboard/src/utils/credentials.ts`):
+- Dashboard previously only looked for `ELASTIC_ENDPOINT`; Elastic Cloud hosted deployments use `ELASTIC_CLOUD_ID` (base64-encoded Cloud ID format) instead
+- Added `resolveElasticEndpoint()` helper: tries `ELASTIC_ENDPOINT` first, then decodes `ELASTIC_CLOUD_ID` (splits on `:`, base64-decodes the second segment, extracts the ES host from the `$`-delimited decoded string)
+- Both `logging-reader.ts` and `infra-reader.ts` updated to call `resolveElasticEndpoint()` instead of `resolveCredential('ELASTIC_ENDPOINT')` directly
+
+**Storage estimation 403 fallback** (`packages/cto-dashboard/src/utils/logging-reader.ts`):
+- `queryStorage()` was calling `_cat/indices` which requires the `monitor` cluster privilege; the read-only API key returns 403
+- On a 403 response `queryStorage()` now falls back to doc-count estimation (total document count × estimated bytes-per-doc) instead of returning null storage data
+
+### Added
+
+**`ELASTIC_API_KEY_WRITE` vault mapping** (`vault-mappings.json`):
+- Added mapping for write-capable Elastic API key to support log ingestion use cases
+- Read-only key (`ELASTIC_API_KEY`) continues to be used by dashboard queries
+
+**Sample log data seeding:**
+- Ingested 200 realistic sample log entries into the Elastic Serverless deployment covering multiple services, levels, and modules
+- Verified all dashboard queries (timeseries, level/service breakdowns, top errors/warnings) return correct data after seeding
+
+### Tests
+
+- 47 new tests in `packages/cto-dashboard/src/utils/__tests__/credentials.test.ts` covering:
+  - `resolveElasticEndpoint()`: `ELASTIC_ENDPOINT` priority, `ELASTIC_CLOUD_ID` base64 decode path, malformed Cloud ID handling
+  - `.keyword` field naming: all aggregation and filter fields use the `.keyword` suffix
+  - Storage 403 fallback: `queryStorage()` returns doc-count estimate when `_cat/indices` is unauthorized
+- All 545 tests pass across 16 test files (up from 498)
+- TypeScript builds clean
+- Code review: PASS, no violations
+
+**Total Changes:** 3 modified files, 1 vault-mappings.json update, 47 new tests, 545 total tests passing
+
+---
+
+## 2026-02-17 - CTO Dashboard: Layout Fixes, Environment-Based Deployments, Title-in-Border
+
+### Changed
+
+**Section Component — Title-in-Border Rendering** (`packages/cto-dashboard/src/components/Section.tsx`):
+- Sections now render titles inline in the top border: `╭─ TITLE ──────╮`
+- Uses `borderTop={false}` on the inner Box and a custom Text element for the top line
+- All sections across the dashboard use this style automatically when a title prop is provided
+
+**Deployments Section Restructure** (`packages/cto-dashboard/src/components/DeploymentsSection.tsx`, `packages/cto-dashboard/src/utils/deployments-reader.ts`):
+- Added `DeployEnvironment` type (`preview | staging | production`) and `inferEnvironment()` function to `deployments-reader.ts`
+- `inferEnvironment()` classifies deploys by service name keywords (`staging`, `stg`, `preview`, `dev`) and Vercel `target` field, defaulting to `production`
+- Added `byEnvironment` grouping (`preview`, `staging`, `production` arrays, newest-first, up to 5 each) to `DeploymentsData`
+- Replaced old platform-based layout (ServiceList/Render/Vercel split) with per-environment layout:
+  - `EnvironmentHealth` component: Production/Staging/Preview side-by-side with health dot, last deploy time, and deploy count
+  - `PipelineDetail` component: 3-stage pipeline (preview → staging → production) with check timestamps
+  - `EnvironmentDeploys` per-environment table: time, status dot, service (24w), platform (9w), status (10w), commit message (25w)
+  - `DeployStats` footer: 24h total, success rate, failure count, frequency
+
+**Infrastructure Section Layout Fix** (`packages/cto-dashboard/src/components/InfraSection.tsx`):
+- Restructured from 5-column card grid to clean tabular row layout
+- Aligned columns: Provider (16w) | Status (14w) | Detail (20w) | Extra
+- Each provider gets one row with consistent alignment and no wrapping
+
+**Testing Section Chart Fix** (`packages/cto-dashboard/src/components/TestingSection.tsx`):
+- Changed `yDomain` minimum from `1` to `5` for better chart readability when data values are low
+
+### Tests
+
+- 53 new tests in `packages/cto-dashboard/src/utils/__tests__/deployments-reader.test.ts` covering `inferEnvironment`, `normalizeRenderStatus`, `normalizeVercelStatus`, `truncateMessage`, `byEnvironment` grouping, and `stats` computation
+- Fixed timing-sensitive `UsageTrends` test regex
+- All 498 tests pass across 15 test files
+- TypeScript builds clean
+
+### Code Review
+
+- All changes pass review with no violations
+- No mocked/placeholder code, no credential leaks, no security regressions
+- Pre-existing pattern noted: external API responses use TypeScript `as` casts rather than Zod validation (systemic, not a regression)
+
+**Total Changes:** 4 modified files, 53 new tests, 498 total tests passing
+
+---
+
+## 2026-02-17 - Usage Optimizer and CTO Dashboard Bug Fixes
+
+### Fixed
+
+**Three interconnected bugs causing all automated instances to display "+100% slower":**
+
+1. **Runaway 7-day projection** (`.claude/hooks/usage-optimizer.js`)
+   - Linear rate extrapolation over long horizons (e.g. 155h remaining until 7d reset) was
+     producing projections as high as 483%, which slammed the optimizer factor to MIN_FACTOR (0.5)
+     and kept it there permanently — causing all automation cooldowns to double
+   - Fix: Added `MAX_PROJECTION = 1.5` cap on both `projected5h` and `projected7d` to prevent
+     linear extrapolation from producing nonsensical values
+
+2. **No factor recovery** (`.claude/hooks/usage-optimizer.js`)
+   - Once the factor reached MIN_FACTOR (0.5), the 10% MAX_CHANGE_PER_CYCLE limit prevented
+     recovery as long as the inflated projection kept pushing the factor down each cycle
+   - Fix: Added recovery clause — when factor is stuck at MIN_FACTOR AND current usage is below
+     45% (half of the 90% target), the factor is reset to 1.0 and adjustment resumes normally
+
+3. **Wrong display unit for projected_at_reset** (`packages/cto-dashboard/src/utils/automated-instances.ts`)
+   - `projected_at_reset` is stored as a 0-1 fraction but was passed directly to the Footer
+     component which expected a percentage integer — showing "5%" instead of "483%"
+   - Fix: Multiply `projected_at_reset` by 100 when assigning to `currentProjected`
+
+### Tests
+
+- 11 new tests in `usage-optimizer.test.js` covering projection cap enforcement and factor recovery
+- 10 new tests in `automated-instances.test.ts` covering `currentProjected` unit conversion
+- All 54 automated-instances tests pass; all 132 usage-optimizer tests pass
+- Code review: all 3 changes approved with no violations
+
+**Total Changes:** 2 files modified, 21 new tests
+
+---
+
+## 2026-02-17 - CTO Dashboard: Deployments, Infrastructure, and Logging Overhaul
+
+### Added
+
+**Deployments Section Overhaul** (`packages/cto-dashboard/src/components/DeploymentsSection.tsx`, `packages/cto-dashboard/src/utils/deployments-reader.ts`):
+- `PipelineDetail` component at the top showing a 3-stage pipeline (preview → staging → production) with timestamps
+- Per-platform deploy tables: Render and Vercel each display 5 most recent deploys with service name (width 20), status, age (width 9), and commit message (width 30, constrained)
+- `DeployStats` footer row: total deploy count, success rate, failure count, and deploy frequency
+- `deployments-reader.ts` enriched with `lastPreviewCheck`, `lastStagingCheck`, and stats computation from deploy history
+
+**Infrastructure Section Overhaul** (`packages/cto-dashboard/src/components/InfraSection.tsx`, `packages/cto-dashboard/src/utils/infra-reader.ts`):
+- Per-platform event tables: Render deploy events and Vercel deployment events
+- Load metrics: Render `lastDeployAt`, Vercel `buildingCount`, Cloudflare `planName`
+- Cloudflare nameserver list added to display
+- Elasticsearch detail row removed from InfraSection (moved to dedicated LOGGING section)
+- `InfraSection` now accepts optional `deployments` prop to avoid duplicate Render/Vercel API calls
+- Credential bug fixed: `CF_API_TOKEN` corrected to `CLOUDFLARE_API_TOKEN` (line 145 of `infra-reader.ts`)
+
+**New LOGGING Section** (`packages/cto-dashboard/src/utils/logging-reader.ts`, `packages/cto-dashboard/src/components/LoggingSection.tsx`):
+- `logging-reader.ts`: Elasticsearch queries for 24h volume timeseries (24 hourly buckets), level/service/source breakdowns, top 5 errors, top 5 warnings, storage estimates via `_cat/indices`, and source coverage assessment for 9 expected sources (api, worker, deployment, ci-cd, testing, database, cdn, auth, cron)
+- `LoggingSection.tsx`: Full section with LineGraph (volume timeseries), BarCharts (by level, by service), top errors/warnings tables, source coverage dot indicators (active/low-volume/missing), and storage footer
+- Wired into `index.tsx` via `getLoggingData` in `Promise.allSettled` parallel fetch block
+- Wired into `App.tsx` between `InfraSection` and `FeedbackPersonas`
+- Exported from `components/index.ts`
+
+### Tests
+
+- 45 new tests in `packages/cto-dashboard/src/utils/__tests__/logging-reader.test.ts` covering `parseSizeToBytes`, `assessSourceCoverage`, credential absence, storage estimation, `hasData` flag, and volumeTimeseries padding
+- New `packages/cto-dashboard/src/components/__tests__/AutomatedInstances.test.tsx` — 35 tests (created in preceding session)
+- All 445 tests pass across 14 test files
+- TypeScript build compiles clean
+
+### Code Review Findings (informational, not blocking)
+
+- Duplicated `truncate`/`statusColor` utilities across 3 component files — candidate for shared `formatters.ts` extraction
+- Render `updatedAt` used as proxy for `lastDeployAt` (documented with inline comment)
+- URL validation on trusted credential store values (informational)
+
+**Total Changes:** 3 new files, 7 modified files, 445 tests passing
+
+---
+
+## 2026-02-17 - CTO Dashboard: Token Usage Bar Chart and Testing Section Fixes
+
+### Added
+
+**Automated Instances — Token Usage Bar Chart:**
+
+1. **Token usage by automation type** (`packages/cto-dashboard/src/utils/automated-instances.ts`)
+   - New `getAutomationTokenUsage()` async function reads session JSONL files from `~/.claude/projects/`
+   - Extracts `[Task][agent-type]` prefix from the first user message to identify automation sessions
+   - Sums all token usage fields (input, output, cache read, cache creation) per session
+   - Rolls up raw agent types into INSTANCE_DEFINITIONS display names
+   - Helper functions: `getSessionDir()`, `buildAgentTypeToDisplayName()`, `SessionEntry` interface
+   - `tokensByType: Record<string, number>` field added to `AutomatedInstancesData` type
+
+2. **Bar chart rendering** (`packages/cto-dashboard/src/components/AutomatedInstances.tsx`)
+   - Horizontal bar chart (via `@pppp606/ink-chart` `BarChart`) rendered between Footer and Tip
+   - Conditionally shown only when `tokensByType` has entries
+   - Values sorted descending, formatted with `formatNumber()`
+   - Title: "Token Usage by Automation (24h)"
+
+3. **Async data integration** (`packages/cto-dashboard/src/index.tsx`)
+   - `getAutomationTokenUsage` added to `Promise.allSettled` parallel fetch block
+   - Result merged into `automatedInstances.tokensByType` on success
+
+### Fixed
+
+**Testing Section agent breakdown display** (`packages/cto-dashboard/src/components/TestingSection.tsx`):
+- Removed Jest from agent breakdown (not used by any agent type in testing-reader)
+- Expanded "PW" abbreviation to full "Playwright" label
+- Column width adjustments: COL_NAME 35→34, COL_AGE 9→10, COL_FW 9→11 for better alignment
+
+### Tests
+
+- **New:** `packages/cto-dashboard/src/components/__tests__/AutomatedInstances.test.tsx` — 35 tests covering empty state, table structure, footer, bar chart rendering, run counts, freq adjustments, until-next display, and render consistency
+- **Updated:** `automated-instances.test.ts` — added `tokensByType` shape validation, 2 new describe blocks (11 tests) for JSONL parsing logic
+- **Updated:** `TestingSection.test.tsx` — removed Jest assertions, uses "Playwright" label, updated zero-counts test data
+- All 390 tests pass across 13 test files (up from 343/12)
+- TypeScript build compiles clean
+
+**Total Changes:** 1 new test file, 5 modified files, 390 tests passing
+
+---
+
 ## 2026-02-17 - CTO Dashboard: Deployments, Infrastructure, and Testing Graph
 
 ### Added

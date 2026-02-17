@@ -44,8 +44,86 @@ function getSessionDir(): string {
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * Discover the current session ID by finding the most recently modified
- * .jsonl file in the session directory.
+ * Try to discover the current session ID via lsof.
+ * Checks which .jsonl file the Claude parent process has open,
+ * which avoids picking up automation/task sessions that may have
+ * a more recent mtime.
+ */
+function discoverSessionIdViaLsof(sessionDir: string, claudePid: number): string | null {
+  try {
+    const output = execSync(
+      `lsof -p ${claudePid} 2>/dev/null`,
+      { encoding: 'utf8', timeout: 5000 }
+    );
+
+    for (const line of output.split('\n')) {
+      if (!line.includes('.jsonl')) continue;
+      const match = line.match(
+        /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl/
+      );
+      if (match && match[1]) {
+        // Verify the file is actually in our session directory
+        const candidate = path.join(sessionDir, `${match[1]}.jsonl`);
+        if (fs.existsSync(candidate)) {
+          return match[1];
+        }
+      }
+    }
+  } catch {
+    // lsof unavailable or failed — fall through
+  }
+  return null;
+}
+
+/**
+ * Content-aware session discovery.
+ * Reads the tail of each .jsonl file and looks for "session_restart" —
+ * by the time this MCP tool executes, Claude has already written the
+ * tool_use block to the calling session's transcript.
+ * Among matches, picks the most recently modified (handles old sessions
+ * that may also contain a past restart call).
+ */
+function discoverSessionIdViaContent(sessionDir: string): string | null {
+  const TAIL_BYTES = 8192;
+  const candidates: { id: string; mtime: number }[] = [];
+
+  const fileNames = fs.readdirSync(sessionDir)
+    .filter(f => f.endsWith('.jsonl'));
+
+  for (const f of fileNames) {
+    const id = f.replace('.jsonl', '');
+    if (!UUID_REGEX.test(id)) continue;
+
+    const filePath = path.join(sessionDir, f);
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.size === 0) continue;
+
+      const fd = fs.openSync(filePath, 'r');
+      const readSize = Math.min(TAIL_BYTES, stat.size);
+      const buffer = Buffer.alloc(readSize);
+      fs.readSync(fd, buffer, 0, readSize, Math.max(0, stat.size - readSize));
+      fs.closeSync(fd);
+
+      if (buffer.toString('utf8').includes('session_restart')) {
+        candidates.push({ id, mtime: stat.mtimeMs });
+      }
+    } catch {
+      // Skip unreadable files
+    }
+  }
+
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) => b.mtime - a.mtime);
+  return candidates[0].id;
+}
+
+/**
+ * Discover the current session ID.
+ * 1. lsof: find the .jsonl file Claude has open (most reliable).
+ * 2. Content: find the file whose tail contains "session_restart" (avoids automation confusion).
+ * 3. mtime: most recently modified .jsonl file (last resort).
  */
 function discoverSessionId(): string {
   const sessionDir = getSessionDir();
@@ -54,6 +132,20 @@ function discoverSessionId(): string {
     throw new Error(`Session directory not found: ${sessionDir}`);
   }
 
+  // Tier 1: find which session file Claude actually has open
+  const claudePid = process.ppid;
+  const lsofResult = discoverSessionIdViaLsof(sessionDir, claudePid);
+  if (lsofResult) {
+    return lsofResult;
+  }
+
+  // Tier 2: content-aware — find the session with session_restart in its tail
+  const contentResult = discoverSessionIdViaContent(sessionDir);
+  if (contentResult) {
+    return contentResult;
+  }
+
+  // Tier 3: most recently modified .jsonl file
   const files = fs.readdirSync(sessionDir)
     .filter(f => f.endsWith('.jsonl'))
     .map(f => {

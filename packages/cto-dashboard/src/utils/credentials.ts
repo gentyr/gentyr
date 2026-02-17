@@ -87,6 +87,32 @@ export function resolveCredential(key: string): string | null {
 }
 
 /**
+ * Resolve the Elasticsearch endpoint URL.
+ *
+ * Tries ELASTIC_ENDPOINT first (direct URL for Serverless projects),
+ * then falls back to decoding ELASTIC_CLOUD_ID (hosted Cloud deployments).
+ */
+export function resolveElasticEndpoint(): string | null {
+  const endpoint = resolveCredential('ELASTIC_ENDPOINT');
+  if (endpoint) return endpoint;
+
+  const cloudId = resolveCredential('ELASTIC_CLOUD_ID');
+  if (!cloudId) return null;
+
+  const parts = cloudId.split(':');
+  if (parts.length < 2) return null;
+
+  try {
+    const decoded = Buffer.from(parts[1], 'base64').toString('utf8');
+    const [esHost] = decoded.split('$');
+    if (!esHost) return null;
+    return `https://${esHost}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch with an abort-controller timeout. Shared across data readers.
  */
 export async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 10000): Promise<Response> {

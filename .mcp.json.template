@@ -172,8 +172,7 @@
       "command": "node",
       "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/feedback-reporter/server.js"],
       "env": {
-        "CLAUDE_PROJECT_DIR": ".",
-        "AGENT_REPORTS_DB_PATH": "${CLAUDE_PROJECT_DIR}/.claude/agent-reports.db"
+        "CLAUDE_PROJECT_DIR": "."
       }
     },
     "playwright": {

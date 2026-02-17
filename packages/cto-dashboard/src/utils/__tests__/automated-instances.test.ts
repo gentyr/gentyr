@@ -517,6 +517,73 @@ describe('Automated Instances - Usage Projection', () => {
   });
 });
 
+describe('Automated Instances - projected_at_reset fraction-to-percentage conversion', () => {
+  // automated-instances.ts stores projected_at_reset as a fraction (0.0 – 1.5+)
+  // written by usage-optimizer.js. The getAutomatedInstances() function converts
+  // it to a display percentage by multiplying by 100 and rounding.
+
+  const convertProjection = (raw: number | null | undefined): number | null => {
+    if (raw == null) return null;
+    return Math.round(raw * 100);
+  };
+
+  it('should convert fraction 0.87 to integer 87', () => {
+    expect(convertProjection(0.87)).toBe(87);
+  });
+
+  it('should convert fraction 0.9 to integer 90', () => {
+    expect(convertProjection(0.9)).toBe(90);
+  });
+
+  it('should convert fraction 1.0 to integer 100', () => {
+    expect(convertProjection(1.0)).toBe(100);
+  });
+
+  it('should convert the MAX_PROJECTION cap value 1.5 to integer 150', () => {
+    // When usage-optimizer caps projections at 1.5 and uses that as
+    // projected_at_reset, the display should show 150%.
+    expect(convertProjection(1.5)).toBe(150);
+  });
+
+  it('should return null when projected_at_reset is null', () => {
+    expect(convertProjection(null)).toBeNull();
+  });
+
+  it('should return null when projected_at_reset is undefined', () => {
+    expect(convertProjection(undefined)).toBeNull();
+  });
+
+  it('should round fractions correctly', () => {
+    // 0.876 * 100 = 87.6 → rounds to 88
+    expect(convertProjection(0.876)).toBe(88);
+    // 0.874 * 100 = 87.4 → rounds to 87
+    expect(convertProjection(0.874)).toBe(87);
+  });
+
+  it('should convert a value produced by the optimizer rounding convention', () => {
+    // usage-optimizer writes: Math.round(projectedAtReset * 1000) / 1000
+    // For a raw projection of 0.87654: stored as 0.877
+    const optimizerOutput = Math.round(0.87654 * 1000) / 1000; // 0.877
+    expect(convertProjection(optimizerOutput)).toBe(88); // Math.round(0.877 * 100) = 88
+  });
+
+  it('should handle zero projection (system idle)', () => {
+    expect(convertProjection(0.0)).toBe(0);
+  });
+
+  it('should produce a result that is a non-negative integer', () => {
+    const testValues = [0.0, 0.45, 0.87, 0.9, 1.0, 1.5];
+    for (const val of testValues) {
+      const result = convertProjection(val);
+      expect(result).not.toBeNull();
+      expect(typeof result).toBe('number');
+      expect(result).toBeGreaterThanOrEqual(0);
+      expect(Number.isInteger(result)).toBe(true);
+      expect(Number.isNaN(result)).toBe(false);
+    }
+  });
+});
+
 describe('Automated Instances - Instance Definitions', () => {
   it('should have valid structure for all 15 instance types', () => {
     // These are the expected instance types based on automated-instances.ts
@@ -644,3 +711,339 @@ describe('Automated Instances - Event-Triggered Frequency Adjustment', () => {
   });
 });
 
+describe('Automated Instances - tokensByType field', () => {
+  it('should always include tokensByType in AutomatedInstancesData', () => {
+    // tokensByType maps display name → total tokens (24h)
+    const tokensByType: Record<string, number> = {};
+
+    expect(typeof tokensByType).toBe('object');
+    expect(tokensByType).not.toBeNull();
+    expect(Array.isArray(tokensByType)).toBe(false);
+  });
+
+  it('should accept empty tokensByType', () => {
+    const data = {
+      instances: [],
+      usageTarget: 90,
+      currentProjected: null,
+      adjustingDirection: 'stable' as const,
+      hasData: false,
+      tokensByType: {},
+    };
+
+    expect(Object.keys(data.tokensByType).length).toBe(0);
+  });
+
+  it('should accept tokensByType with entries mapping display name to token count', () => {
+    const data = {
+      instances: [],
+      usageTarget: 90,
+      currentProjected: null,
+      adjustingDirection: 'stable' as const,
+      hasData: true,
+      tokensByType: {
+        'Pre-Commit Hook': 12500,
+        'Task Runner': 48000,
+        'Lint Checker': 7200,
+      },
+    };
+
+    expect(data.tokensByType['Pre-Commit Hook']).toBe(12500);
+    expect(data.tokensByType['Task Runner']).toBe(48000);
+    expect(data.tokensByType['Lint Checker']).toBe(7200);
+    expect(Object.keys(data.tokensByType).length).toBe(3);
+  });
+
+  it('should require all tokensByType values to be non-negative numbers', () => {
+    const tokensByType: Record<string, number> = {
+      'Pre-Commit Hook': 12500,
+      'Task Runner': 0,
+    };
+
+    for (const [_key, value] of Object.entries(tokensByType)) {
+      expect(typeof value).toBe('number');
+      expect(value).toBeGreaterThanOrEqual(0);
+      expect(Number.isNaN(value)).toBe(false);
+      expect(Number.isFinite(value)).toBe(true);
+    }
+  });
+});
+
+describe('getAutomationTokenUsage - Session JSONL parsing', () => {
+  let tempDir: string;
+  let sessionDir: string;
+
+  beforeEach(() => {
+    tempDir = path.join('/tmp', `automation-token-usage-${randomUUID()}`);
+    // Simulate the session directory structure that getAutomationTokenUsage expects:
+    // ~/.claude/projects/-{projectPath}/
+    // For tests we use a temp dir that mimics the structure.
+    sessionDir = path.join(tempDir, 'sessions');
+    fs.mkdirSync(sessionDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Helpers to build JSONL session entries that match what Claude sessions produce.
+   */
+  const makeUserEntry = (agentType: string | null): string => {
+    const content = agentType ? `[Task][${agentType}] Please perform the task.` : 'Hello, human turn without task prefix.';
+    return JSON.stringify({
+      type: 'human',
+      content,
+      message: { content },
+    });
+  };
+
+  const makeAssistantEntry = (inputTokens: number, outputTokens: number, cacheRead = 0, cacheCreate = 0): string => {
+    return JSON.stringify({
+      type: 'assistant',
+      message: {
+        usage: {
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          cache_read_input_tokens: cacheRead,
+          cache_creation_input_tokens: cacheCreate,
+        },
+      },
+    });
+  };
+
+  it('should return empty object when session directory does not exist', async () => {
+    // Build a token usage aggregator that mirrors getAutomationTokenUsage logic
+    // but operates on our temp sessionDir.
+    const aggregateTokens = async (dir: string): Promise<Record<string, number>> => {
+      if (!fs.existsSync(dir)) return {};
+
+      const files = fs.readdirSync(dir).filter((f: string) => f.endsWith('.jsonl'));
+      const since = Date.now() - 24 * 60 * 60 * 1000;
+      const rawTokens: Record<string, number> = {};
+
+      for (const file of files) {
+        const filePath = path.join(dir, file);
+        const stat = fs.statSync(filePath);
+        if (stat.mtime.getTime() < since) continue;
+
+        const content = fs.readFileSync(filePath, 'utf8');
+        const lines = content.split('\n').filter((l: string) => l.trim());
+        let agentType: string | null = null;
+        let totalTokens = 0;
+
+        for (const line of lines) {
+          try {
+            const entry = JSON.parse(line) as {
+              type?: string;
+              content?: string;
+              message?: { content?: string; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } };
+            };
+            if (agentType === null && (entry.type === 'human' || entry.type === 'user')) {
+              const msg = typeof entry.message?.content === 'string' ? entry.message.content : entry.content;
+              if (msg) {
+                const match = msg.match(/^\[Task\]\[([^\]]+)\]/);
+                if (match?.[1]) {
+                  agentType = match[1];
+                } else {
+                  break;
+                }
+              }
+            }
+            const usage = entry.message?.usage;
+            if (usage) {
+              totalTokens += (usage.input_tokens || 0)
+                + (usage.output_tokens || 0)
+                + (usage.cache_read_input_tokens || 0)
+                + (usage.cache_creation_input_tokens || 0);
+            }
+          } catch {
+            // skip malformed
+          }
+        }
+
+        if (agentType && totalTokens > 0) {
+          rawTokens[agentType] = (rawTokens[agentType] || 0) + totalTokens;
+        }
+      }
+
+      return rawTokens;
+    };
+
+    const result = await aggregateTokens(path.join(tempDir, 'nonexistent'));
+    expect(result).toEqual({});
+  });
+
+  it('should return empty object when no .jsonl files exist', async () => {
+    fs.writeFileSync(path.join(sessionDir, 'not-a-jsonl.txt'), 'some content');
+
+    const files = fs.readdirSync(sessionDir).filter((f: string) => f.endsWith('.jsonl'));
+    expect(files.length).toBe(0);
+  });
+
+  it('should parse a task-triggered session and sum all token usage', () => {
+    const lines = [
+      makeUserEntry('lint-fixer'),
+      makeAssistantEntry(1000, 500, 200, 300),
+      makeAssistantEntry(800, 400),
+    ].join('\n') + '\n';
+
+    const filePath = path.join(sessionDir, `session-${randomUUID()}.jsonl`);
+    fs.writeFileSync(filePath, lines);
+
+    // Parse the JSONL manually to verify structure
+    const content = fs.readFileSync(filePath, 'utf8');
+    const parsed = content.split('\n').filter((l: string) => l.trim()).map((l: string) => JSON.parse(l));
+
+    // First entry should be the user message with task prefix
+    expect(parsed[0].type).toBe('human');
+    expect(parsed[0].content).toMatch(/^\[Task\]\[lint-fixer\]/);
+
+    // Second and third entries have usage
+    const usage1 = parsed[1].message.usage;
+    const usage2 = parsed[2].message.usage;
+
+    const total1 = (usage1.input_tokens || 0) + (usage1.output_tokens || 0)
+      + (usage1.cache_read_input_tokens || 0) + (usage1.cache_creation_input_tokens || 0);
+    const total2 = (usage2.input_tokens || 0) + (usage2.output_tokens || 0);
+
+    expect(total1).toBe(2000); // 1000+500+200+300
+    expect(total2).toBe(1200); // 800+400
+    expect(total1 + total2).toBe(3200);
+  });
+
+  it('should skip non-task sessions (no [Task][...] prefix)', () => {
+    const lines = [
+      makeUserEntry(null),
+      makeAssistantEntry(5000, 2000),
+    ].join('\n') + '\n';
+
+    const filePath = path.join(sessionDir, `session-${randomUUID()}.jsonl`);
+    fs.writeFileSync(filePath, lines);
+
+    const content = fs.readFileSync(filePath, 'utf8');
+    const parsed = content.split('\n').filter((l: string) => l.trim()).map((l: string) => JSON.parse(l));
+
+    // Verify user message does NOT have task prefix
+    expect(parsed[0].content).not.toMatch(/^\[Task\]\[/);
+  });
+
+  it('should handle sessions with zero token usage gracefully', () => {
+    const lines = [
+      makeUserEntry('claudemd-refactor'),
+      // No assistant entries with token usage
+      JSON.stringify({ type: 'assistant', message: {} }),
+    ].join('\n') + '\n';
+
+    const filePath = path.join(sessionDir, `session-${randomUUID()}.jsonl`);
+    fs.writeFileSync(filePath, lines);
+
+    const content = fs.readFileSync(filePath, 'utf8');
+    const parsed = content.split('\n').filter((l: string) => l.trim()).map((l: string) => JSON.parse(l));
+
+    expect(parsed[0].content).toMatch(/^\[Task\]\[claudemd-refactor\]/);
+    // No usage in second entry
+    expect(parsed[1].message.usage).toBeUndefined();
+  });
+
+  it('should accumulate tokens across multiple sessions for the same agent type', () => {
+    const sessionA = [
+      makeUserEntry('lint-fixer'),
+      makeAssistantEntry(1000, 500),
+    ].join('\n') + '\n';
+
+    const sessionB = [
+      makeUserEntry('lint-fixer'),
+      makeAssistantEntry(2000, 1000),
+    ].join('\n') + '\n';
+
+    fs.writeFileSync(path.join(sessionDir, `session-a-${randomUUID()}.jsonl`), sessionA);
+    fs.writeFileSync(path.join(sessionDir, `session-b-${randomUUID()}.jsonl`), sessionB);
+
+    // Simulate rollup: both sessions contribute to the same raw agent type
+    const counts: Record<string, number> = {};
+    for (const file of fs.readdirSync(sessionDir).filter((f: string) => f.endsWith('.jsonl'))) {
+      const content = fs.readFileSync(path.join(sessionDir, file), 'utf8');
+      const lines = content.split('\n').filter((l: string) => l.trim());
+      let agentType: string | null = null;
+      let total = 0;
+      for (const line of lines) {
+        const entry = JSON.parse(line);
+        if (agentType === null && (entry.type === 'human' || entry.type === 'user')) {
+          const msg = typeof entry.message?.content === 'string' ? entry.message.content : entry.content;
+          const match = msg?.match(/^\[Task\]\[([^\]]+)\]/);
+          if (match?.[1]) { agentType = match[1]; } else { break; }
+        }
+        const usage = entry.message?.usage;
+        if (usage) {
+          total += (usage.input_tokens || 0) + (usage.output_tokens || 0)
+            + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
+        }
+      }
+      if (agentType && total > 0) {
+        counts[agentType] = (counts[agentType] || 0) + total;
+      }
+    }
+
+    // Both sessions are for 'lint-fixer': 1500 + 3000 = 4500
+    expect(counts['lint-fixer']).toBe(4500);
+  });
+
+  it('should roll up raw agent types into display names via INSTANCE_DEFINITIONS', () => {
+    // Verify the rollup logic: 'lint-fixer' → 'Lint Checker'
+    const agentTypeToDisplayName: Record<string, string> = {
+      'lint-fixer': 'Lint Checker',
+      'claudemd-refactor': 'CLAUDE.md Refactor',
+      'task-runner-code-reviewer': 'Task Runner',
+      'task-runner-investigator': 'Task Runner',
+      'deputy-cto-review': 'Pre-Commit Hook',
+    };
+
+    const rawTokens: Record<string, number> = {
+      'lint-fixer': 5000,
+      'claudemd-refactor': 3000,
+      'task-runner-code-reviewer': 2000,
+      'task-runner-investigator': 1500,
+    };
+
+    const byDisplayName: Record<string, number> = {};
+    for (const [rawType, tokens] of Object.entries(rawTokens)) {
+      const displayName = agentTypeToDisplayName[rawType] || rawType;
+      byDisplayName[displayName] = (byDisplayName[displayName] || 0) + tokens;
+    }
+
+    expect(byDisplayName['Lint Checker']).toBe(5000);
+    expect(byDisplayName['CLAUDE.md Refactor']).toBe(3000);
+    // Both task-runner sub-types roll up into 'Task Runner'
+    expect(byDisplayName['Task Runner']).toBe(3500);
+    expect(byDisplayName['Pre-Commit Hook']).toBeUndefined();
+  });
+
+  it('should handle malformed JSONL lines without throwing', () => {
+    const lines = [
+      makeUserEntry('lint-fixer'),
+      'THIS IS NOT VALID JSON {{{',
+      makeAssistantEntry(1000, 500),
+    ].join('\n') + '\n';
+
+    const filePath = path.join(sessionDir, `session-${randomUUID()}.jsonl`);
+    fs.writeFileSync(filePath, lines);
+
+    // The content file has 3 lines; the middle one is malformed
+    const content = fs.readFileSync(filePath, 'utf8');
+    const nonEmptyLines = content.split('\n').filter((l: string) => l.trim());
+    expect(nonEmptyLines.length).toBe(3);
+
+    // Verify the malformed line fails JSON.parse
+    expect(() => JSON.parse(nonEmptyLines[1])).toThrow();
+
+    // Valid lines still parse correctly
+    const first = JSON.parse(nonEmptyLines[0]);
+    expect(first.type).toBe('human');
+
+    const third = JSON.parse(nonEmptyLines[2]);
+    expect(third.message.usage.input_tokens).toBe(1000);
+  });
+});

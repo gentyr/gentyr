@@ -3,16 +3,19 @@
  *
  * Shows health summary for 5 providers: Render, Vercel, Supabase, Elastic, Cloudflare.
  * Each provider shows a 1-2 line summary with status dots.
+ * Per-platform event tables shown below the provider grid.
  */
 
 import React from 'react';
 import { Box, Text } from 'ink';
 import { Section } from './Section.js';
-import { formatNumber } from '../utils/formatters.js';
+import { formatNumber, formatTimeAgo } from '../utils/formatters.js';
 import type { InfraData } from '../utils/infra-reader.js';
+import type { DeploymentsData, DeploymentEntry } from '../utils/deployments-reader.js';
 
 export interface InfraSectionProps {
   data: InfraData;
+  deployments?: DeploymentsData;
 }
 
 function providerColor(available: boolean, hasIssues: boolean): string {
@@ -21,11 +24,30 @@ function providerColor(available: boolean, hasIssues: boolean): string {
   return 'green';
 }
 
-function StatusDot({ color }: { color: string }): React.ReactElement {
-  return <Text color={color}>{'\u25CF'}</Text>;
+function truncate(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str;
+  return str.slice(0, maxLen - 1) + '\u2026';
 }
 
-export function InfraSection({ data }: InfraSectionProps): React.ReactElement | null {
+function statusColor(status: string): string {
+  if (status === 'live' || status === 'ready' || status === 'active') return 'green';
+  if (status === 'building') return 'yellow';
+  if (status === 'failed' || status === 'error') return 'red';
+  return 'white';
+}
+
+function EventRow({ deploy }: { deploy: DeploymentEntry }): React.ReactElement {
+  const timeStr = formatTimeAgo(deploy.deployedAt).replace(' ago', '');
+  return (
+    <Box flexDirection="row">
+      <Box width={8}><Text color="gray">{timeStr}</Text></Box>
+      <Box width={24}><Text color="white">{truncate(deploy.service, 23)}</Text></Box>
+      <Text color={statusColor(deploy.status)}>{deploy.status}</Text>
+    </Box>
+  );
+}
+
+export function InfraSection({ data, deployments }: InfraSectionProps): React.ReactElement | null {
   if (!data.hasData) return null;
 
   const renderColor = providerColor(data.render.available, data.render.suspendedCount > 0);
@@ -37,112 +59,142 @@ export function InfraSection({ data }: InfraSectionProps): React.ReactElement | 
     data.cloudflare.status !== 'active' && data.cloudflare.available,
   );
 
+  const renderDeploys = deployments?.render.recentDeploys.slice(0, 3) || [];
+  const vercelDeploys = deployments?.vercel.recentDeploys.slice(0, 3) || [];
+
   return (
     <Section title="INFRASTRUCTURE" borderColor="magenta" width="100%">
       <Box flexDirection="column">
-        {/* Provider summary row */}
-        <Box flexDirection="row" gap={2}>
-          {/* Render */}
-          <Box flexDirection="column" width={18}>
-            <Text color="white" bold>Render</Text>
+        {/* Provider summary — single-line per provider for clean alignment */}
+        <Box flexDirection="row">
+          <Box width={16}>
+            <Text color="white" bold>Provider</Text>
+          </Box>
+          <Box width={14}>
+            <Text color="white" bold>Status</Text>
+          </Box>
+          <Box width={20}>
+            <Text color="white" bold>Detail</Text>
+          </Box>
+          <Text color="white" bold>Extra</Text>
+        </Box>
+
+        {/* Render */}
+        <Box flexDirection="row">
+          <Box width={16}><Text color="white">Render</Text></Box>
+          <Box width={14}>
             {data.render.available ? (
-              <>
-                <Box>
-                  <StatusDot color={renderColor} />
-                  <Text color="white"> {data.render.serviceCount} service{data.render.serviceCount !== 1 ? 's' : ''}</Text>
-                </Box>
-                <Text color={data.render.suspendedCount > 0 ? 'yellow' : 'gray'}>
-                  {data.render.suspendedCount} suspended
-                </Text>
-              </>
+              <Text color={renderColor}>{'\u25CF'} {data.render.serviceCount} svc</Text>
             ) : (
-              <Text color="gray">unavailable</Text>
+              <Text color="gray">{'\u25CB'} unavailable</Text>
             )}
           </Box>
+          <Box width={20}>
+            {data.render.available && (
+              <Text color={data.render.suspendedCount > 0 ? 'yellow' : 'gray'}>
+                {data.render.suspendedCount} suspended
+              </Text>
+            )}
+          </Box>
+          {data.render.available && data.render.lastDeployAt && (
+            <Text color="gray">deploy {formatTimeAgo(data.render.lastDeployAt)}</Text>
+          )}
+        </Box>
 
-          {/* Vercel */}
-          <Box flexDirection="column" width={18}>
-            <Text color="white" bold>Vercel</Text>
+        {/* Vercel */}
+        <Box flexDirection="row">
+          <Box width={16}><Text color="white">Vercel</Text></Box>
+          <Box width={14}>
             {data.vercel.available ? (
-              <>
-                <Box>
-                  <StatusDot color={vercelColor} />
-                  <Text color="white"> {data.vercel.projectCount} project{data.vercel.projectCount !== 1 ? 's' : ''}</Text>
-                </Box>
-                <Text color={data.vercel.errorDeploys > 0 ? 'red' : 'gray'}>
-                  {data.vercel.errorDeploys} error{data.vercel.errorDeploys !== 1 ? 's' : ''} (24h)
-                </Text>
-              </>
+              <Text color={vercelColor}>{'\u25CF'} {data.vercel.projectCount} proj</Text>
             ) : (
-              <Text color="gray">unavailable</Text>
+              <Text color="gray">{'\u25CB'} unavailable</Text>
             )}
           </Box>
+          <Box width={20}>
+            {data.vercel.available && (
+              <Text color={data.vercel.errorDeploys > 0 ? 'red' : 'gray'}>
+                {data.vercel.errorDeploys} err (24h)
+              </Text>
+            )}
+          </Box>
+          {data.vercel.available && data.vercel.buildingCount > 0 && (
+            <Text color="yellow">{data.vercel.buildingCount} building</Text>
+          )}
+        </Box>
 
-          {/* Supabase */}
-          <Box flexDirection="column" width={18}>
-            <Text color="white" bold>Supabase</Text>
+        {/* Supabase */}
+        <Box flexDirection="row">
+          <Box width={16}><Text color="white">Supabase</Text></Box>
+          <Box width={14}>
             {data.supabase.available ? (
-              <Box>
-                <StatusDot color={supabaseColor} />
-                <Text color={data.supabase.healthy ? 'green' : 'red'}>
-                  {' '}{data.supabase.healthy ? 'healthy' : 'unhealthy'}
-                </Text>
-              </Box>
+              <Text color={supabaseColor}>{'\u25CF'} {data.supabase.healthy ? 'healthy' : 'unhealthy'}</Text>
             ) : (
-              <Text color="gray">unavailable</Text>
-            )}
-          </Box>
-
-          {/* Elastic */}
-          <Box flexDirection="column" width={14}>
-            <Text color="white" bold>Elastic</Text>
-            {data.elastic.available ? (
-              <>
-                <Box>
-                  <StatusDot color={elasticColor} />
-                  <Text color="white"> active</Text>
-                </Box>
-                <Text color={data.elastic.errorCount1h > 0 ? 'red' : 'gray'}>
-                  {data.elastic.errorCount1h} err/1h
-                </Text>
-              </>
-            ) : (
-              <Text color="gray">unavailable</Text>
-            )}
-          </Box>
-
-          {/* Cloudflare */}
-          <Box flexDirection="column" width={14}>
-            <Text color="white" bold>Cloudflare</Text>
-            {data.cloudflare.available ? (
-              <Box>
-                <StatusDot color={cloudflareColor} />
-                <Text color={cloudflareColor}> {data.cloudflare.status}</Text>
-              </Box>
-            ) : (
-              <Text color="gray">unavailable</Text>
+              <Text color="gray">{'\u25CB'} unavailable</Text>
             )}
           </Box>
         </Box>
 
-        {/* Elastic detail row */}
-        {data.elastic.available && (
+        {/* Elastic */}
+        <Box flexDirection="row">
+          <Box width={16}><Text color="white">Elastic</Text></Box>
+          <Box width={14}>
+            {data.elastic.available ? (
+              <Text color={elasticColor}>{'\u25CF'} active</Text>
+            ) : (
+              <Text color="gray">{'\u25CB'} unavailable</Text>
+            )}
+          </Box>
+          <Box width={20}>
+            {data.elastic.available && (
+              <Text color="white">{formatNumber(data.elastic.totalLogs1h)} logs/1h</Text>
+            )}
+          </Box>
+          {data.elastic.available && (
+            <Text color={data.elastic.errorCount1h > 0 ? 'red' : 'gray'}>
+              {data.elastic.errorCount1h} err  {data.elastic.warnCount1h} warn
+            </Text>
+          )}
+        </Box>
+
+        {/* Cloudflare */}
+        <Box flexDirection="row">
+          <Box width={16}><Text color="white">Cloudflare</Text></Box>
+          <Box width={14}>
+            {data.cloudflare.available ? (
+              <Text color={cloudflareColor}>{'\u25CF'} {data.cloudflare.status}</Text>
+            ) : (
+              <Text color="gray">{'\u25CB'} unavailable</Text>
+            )}
+          </Box>
+          <Box width={20}>
+            {data.cloudflare.available && data.cloudflare.planName && (
+              <Text color="gray">{data.cloudflare.planName}</Text>
+            )}
+          </Box>
+          {data.cloudflare.available && data.cloudflare.nameServers.length > 0 && (
+            <Text color="gray">NS: {data.cloudflare.nameServers.length}</Text>
+          )}
+        </Box>
+
+        {/* Per-platform event tables */}
+        {(renderDeploys.length > 0 || vercelDeploys.length > 0) && (
           <Box flexDirection="column" marginTop={1}>
-            <Text color="cyan" bold>Elastic Logs (1h)</Text>
-            <Box flexDirection="row">
-              <Text color="gray"> {'\u251C\u2500'} Total: </Text>
-              <Text color="white">{formatNumber(data.elastic.totalLogs1h)}</Text>
-              <Text color="gray">    Errors: </Text>
-              <Text color={data.elastic.errorCount1h > 0 ? 'red' : 'green'}>{data.elastic.errorCount1h}</Text>
-              <Text color="gray">    Warnings: </Text>
-              <Text color={data.elastic.warnCount1h > 0 ? 'yellow' : 'green'}>{data.elastic.warnCount1h}</Text>
-            </Box>
-            {data.elastic.topServices.length > 0 && (
-              <Box>
-                <Text color="gray"> {'\u2514\u2500'} Top: </Text>
-                <Text color="white">
-                  {data.elastic.topServices.map(s => `${s.name} (${formatNumber(s.count)})`).join('  ')}
-                </Text>
+            {renderDeploys.length > 0 && (
+              <Box flexDirection="column">
+                <Text color="cyan" bold>Render Events</Text>
+                {renderDeploys.map((d, i) => (
+                  <EventRow key={`re-${i}`} deploy={d} />
+                ))}
+              </Box>
+            )}
+
+            {vercelDeploys.length > 0 && (
+              <Box flexDirection="column" marginTop={renderDeploys.length > 0 ? 1 : 0}>
+                <Text color="cyan" bold>Vercel Events</Text>
+                {vercelDeploys.map((d, i) => (
+                  <EventRow key={`ve-${i}`} deploy={d} />
+                ))}
               </Box>
             )}
           </Box>

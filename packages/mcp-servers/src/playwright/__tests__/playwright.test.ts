@@ -53,6 +53,9 @@ describe('Playwright MCP Server - Zod Schemas', () => {
         'vendor-dev',
         'vendor-viewer',
         'manual',
+        'extension',
+        'extension-manual',
+        'demo',
         'cross-persona',
         'auth-flows',
       ];
@@ -60,6 +63,39 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       for (const project of validProjects) {
         const result = LaunchUiModeArgsSchema.safeParse({ project });
         expect(result.success).toBe(true);
+      }
+    });
+
+    it('should accept demo project (unified dashboard + extension)', () => {
+      const result = LaunchUiModeArgsSchema.safeParse({
+        project: 'demo',
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.project).toBe('demo');
+      }
+    });
+
+    it('should accept extension project', () => {
+      const result = LaunchUiModeArgsSchema.safeParse({
+        project: 'extension',
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.project).toBe('extension');
+      }
+    });
+
+    it('should accept extension-manual project', () => {
+      const result = LaunchUiModeArgsSchema.safeParse({
+        project: 'extension-manual',
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.project).toBe('extension-manual');
       }
     });
 
@@ -438,6 +474,9 @@ Done.
   describe('countTestFiles (simulated with temp files)', () => {
     let tempDir: string;
 
+    // This simulation mirrors the real countTestFiles in server.ts exactly.
+    // Both .spec.ts (automated) and .manual.ts (manual scaffolds) are counted.
+    // The extension project filter excludes files under a manual/ subdirectory.
     function countTestFiles(dir: string, projectFilter?: string): number {
       if (!fs.existsSync(dir)) return 0;
 
@@ -445,7 +484,12 @@ Done.
         const files = fs.readdirSync(dir, { recursive: true }) as string[];
         return files.filter(f => {
           const filename = String(f);
-          if (!filename.endsWith('.spec.ts')) return false;
+          const isSpec = filename.endsWith('.spec.ts');
+          const isManual = filename.endsWith('.manual.ts');
+          if (!isSpec && !isManual) return false;
+
+          // Exclude manual/ subdirectory for the extension project (counted separately as extension-manual)
+          if (projectFilter === 'extension' && filename.includes('manual/')) return false;
 
           // For role-specific projects, filter by matching spec file
           if (projectFilter === 'vendor-admin') return filename.includes('admin');
@@ -482,7 +526,7 @@ Done.
       expect(count).toBe(3);
     });
 
-    it('should ignore non-.spec.ts files', () => {
+    it('should ignore non-.spec.ts and non-.manual.ts files', () => {
       fs.writeFileSync(path.join(tempDir, 'test1.spec.ts'), '');
       fs.writeFileSync(path.join(tempDir, 'test2.test.ts'), '');
       fs.writeFileSync(path.join(tempDir, 'helper.ts'), '');
@@ -491,6 +535,47 @@ Done.
       const count = countTestFiles(tempDir);
 
       expect(count).toBe(1); // Only test1.spec.ts
+    });
+
+    it('should count .manual.ts files (demo and extension-manual scaffolds)', () => {
+      fs.writeFileSync(path.join(tempDir, 'vendor-dashboard.manual.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'vendor-billing.manual.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'ext-popup-auth.manual.ts'), '');
+
+      const count = countTestFiles(tempDir);
+
+      expect(count).toBe(3);
+    });
+
+    it('should count both .spec.ts and .manual.ts files together', () => {
+      fs.writeFileSync(path.join(tempDir, 'auth.spec.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'vendor-dashboard.manual.ts'), '');
+
+      const count = countTestFiles(tempDir);
+
+      expect(count).toBe(2);
+    });
+
+    it('should exclude manual/ subdirectory files for extension project filter', () => {
+      const manualSubdir = path.join(tempDir, 'manual');
+      fs.mkdirSync(manualSubdir, { recursive: true });
+
+      fs.writeFileSync(path.join(tempDir, 'popup-auth.spec.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'platform-detection.spec.ts'), '');
+      fs.writeFileSync(path.join(manualSubdir, 'ext-popup.manual.ts'), ''); // should be excluded
+
+      const count = countTestFiles(tempDir, 'extension');
+
+      expect(count).toBe(2); // Only the .spec.ts files, manual/ excluded
+    });
+
+    it('should include all files for extension project when no manual/ subdirectory', () => {
+      fs.writeFileSync(path.join(tempDir, 'popup-auth.spec.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'platform-detection.spec.ts'), '');
+
+      const count = countTestFiles(tempDir, 'extension');
+
+      expect(count).toBe(2);
     });
 
     it('should count files in nested directories', () => {
@@ -589,6 +674,15 @@ describe('Playwright MCP Server - Constants', () => {
 
     it('should define manual project', () => {
       expect(PLAYWRIGHT_PROJECTS.MANUAL).toBe('manual');
+    });
+
+    it('should define extension projects', () => {
+      expect(PLAYWRIGHT_PROJECTS.EXTENSION).toBe('extension');
+      expect(PLAYWRIGHT_PROJECTS.EXTENSION_MANUAL).toBe('extension-manual');
+    });
+
+    it('should define demo project (unified dashboard + extension)', () => {
+      expect(PLAYWRIGHT_PROJECTS.DEMO).toBe('demo');
     });
 
     it('should define infrastructure projects', () => {

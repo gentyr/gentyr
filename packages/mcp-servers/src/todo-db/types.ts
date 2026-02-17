@@ -8,7 +8,7 @@ import { VALID_SECTIONS, TASK_STATUS, type ValidSection, type TaskStatus } from 
 // Re-export for convenience
 export { VALID_SECTIONS, TASK_STATUS };
 export type { ValidSection, TaskStatus };
-export { SECTION_CREATOR_RESTRICTIONS, FORCED_FOLLOWUP_SECTIONS } from '../shared/constants.js';
+export { SECTION_CREATOR_RESTRICTIONS, FORCED_FOLLOWUP_CREATORS } from '../shared/constants.js';
 
 // ============================================================================
 // Zod Schemas (G003 Compliance)
@@ -36,9 +36,9 @@ export const CreateTaskArgsSchema = z.object({
   title: z.string().describe('Task title (required)'),
   description: z.string().optional().describe('Detailed description'),
   assigned_by: z.string().optional().describe('Your agent name (required for restricted sections like DEPUTY-CTO)'),
-  followup_enabled: z.boolean().optional().describe('Enable follow-up task on completion (forced true for DEPUTY-CTO)'),
+  followup_enabled: z.boolean().optional().describe('Enable follow-up task on completion (forced true when assigned_by is deputy-cto)'),
   followup_section: z.enum(VALID_SECTIONS).optional().describe('Section for follow-up task (defaults to same section)'),
-  followup_prompt: z.string().optional().describe('Custom follow-up prompt. For DEPUTY-CTO tasks, leave empty — auto-generated.'),
+  followup_prompt: z.string().optional().describe('Custom follow-up prompt. For deputy-cto tasks, leave empty — auto-generated.'),
 });
 
 export const StartTaskArgsSchema = z.object({

@@ -161,7 +161,7 @@ export function TestingSection({ data }: TestingSectionProps): React.ReactElemen
               data={[{ values: data.testActivityTimeseries, color: 'cyan' }]}
               height={5}
               width={72}
-              yDomain={[0, Math.max(...data.testActivityTimeseries, 1)]}
+              yDomain={[0, Math.max(...data.testActivityTimeseries, 5)]}
               showYAxis
             />
           </Box>

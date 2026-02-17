@@ -400,6 +400,10 @@ function listAgents(args: ListSpawnedAgentsArgs): ListSpawnedAgentsResult {
         (a.prompt.length > MAX_PROMPT_PREVIEW_LENGTH ? '...' : '')
       : '[no prompt stored]',
     hasSession: Boolean(findSessionFile(a)),
+    pid: a.pid,
+    status: a.status,
+    reapedAt: a.reapedAt,
+    reapReason: a.reapReason,
   }));
 
   return {
@@ -492,6 +496,8 @@ function getAgentStats(): AgentStats {
     last7Days: 0,
     oldestSpawn: null,
     newestSpawn: null,
+    byStatus: {},
+    totalReaped: 0,
   };
 
   const now = Date.now();
@@ -503,6 +509,14 @@ function getAgentStats(): AgentStats {
 
     // Count by hook type
     stats.byHookType[agent.hookType] = (stats.byHookType[agent.hookType] || 0) + 1;
+
+    // Count by status (running/completed/reaped)
+    if (agent.status) {
+      stats.byStatus[agent.status] = (stats.byStatus[agent.status] || 0) + 1;
+      if (agent.status === 'reaped') {
+        stats.totalReaped++;
+      }
+    }
 
     // Time-based stats
     const spawnTime = new Date(agent.timestamp).getTime();

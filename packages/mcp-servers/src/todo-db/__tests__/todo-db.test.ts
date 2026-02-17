@@ -13,7 +13,7 @@ import { randomUUID } from 'crypto';
 
 import { createTestDb, createTempDir } from '../../__testUtils__/index.js';
 import { TODO_DB_SCHEMA } from '../../__testUtils__/schemas.js';
-import { SECTION_CREATOR_RESTRICTIONS, FORCED_FOLLOWUP_SECTIONS } from '../../shared/constants.js';
+import { SECTION_CREATOR_RESTRICTIONS, FORCED_FOLLOWUP_CREATORS } from '../../shared/constants.js';
 
 // Database row types for type safety
 interface TaskRow {
@@ -158,12 +158,11 @@ ${originalTask}`;
     let followup_prompt = args.followup_prompt ?? null;
     let warning: string | undefined;
 
-    if ((FORCED_FOLLOWUP_SECTIONS as readonly string[]).includes(args.section)) {
+    if (args.assigned_by && (FORCED_FOLLOWUP_CREATORS as readonly string[]).includes(args.assigned_by)) {
       if (args.followup_enabled === false) {
-        warning = `Follow-up hooks cannot be disabled for ${args.section} section. Enabled automatically.`;
+        warning = `Follow-up hooks cannot be disabled for tasks created by ${args.assigned_by}. Enabled automatically.`;
       }
       followup_enabled = true;
-      followup_section = followup_section ?? args.section;
 
       if (!followup_prompt) {
         followup_prompt = buildDefaultFollowupPrompt(args.title, args.description ?? null);
@@ -1112,7 +1111,7 @@ ${originalTask}`;
       }
     });
 
-    it('should warn but still enable follow-up when followup_enabled: false for DEPUTY-CTO', () => {
+    it('should warn but still enable follow-up when followup_enabled: false for deputy-cto creator', () => {
       const result = createTask({
         section: 'DEPUTY-CTO',
         title: 'Forced followup',
@@ -1124,6 +1123,7 @@ ${originalTask}`;
       if (!('error' in result)) {
         expect(result.followup_enabled).toBe(1);
         expect(result.warning).toContain('cannot be disabled');
+        expect(result.warning).toContain('deputy-cto');
       }
     });
 
@@ -1240,6 +1240,37 @@ ${originalTask}`;
       }
     });
 
+    it('should force follow-up when deputy-cto creates task in non-DEPUTY-CTO section', () => {
+      const result = createTask({
+        section: 'INVESTIGATOR & PLANNER',
+        title: 'Investigate auth issue',
+        assigned_by: 'deputy-cto',
+      });
+
+      expect('error' in result).toBe(false);
+      if (!('error' in result)) {
+        expect(result.section).toBe('INVESTIGATOR & PLANNER');
+        expect(result.followup_enabled).toBe(1);
+        expect(result.followup_prompt).toContain('[Follow-up Verification]');
+        expect(result.followup_prompt).toContain('Investigate auth issue');
+      }
+    });
+
+    it('should NOT force follow-up when human creates task in DEPUTY-CTO section', () => {
+      const result = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'Manual CTO task',
+        assigned_by: 'human',
+      });
+
+      expect('error' in result).toBe(false);
+      if (!('error' in result)) {
+        expect(result.section).toBe('DEPUTY-CTO');
+        expect(result.followup_enabled).toBe(0);
+        expect(result.warning).toBeUndefined();
+      }
+    });
+
     it('should still work for non-restricted sections without assigned_by', () => {
       const result = createTask({
         section: 'TEST-WRITER',
@@ -1268,6 +1299,72 @@ ${originalTask}`;
         if (!('error' in result)) {
           const followup = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.followup_task_id!) as TaskRow;
           expect(followup.assigned_by).toBe('system-followup');
+        }
+      }
+    });
+
+    it('should NOT force follow-up when cto creates task in DEPUTY-CTO section', () => {
+      // cto is allowed to create DEPUTY-CTO tasks (SECTION_CREATOR_RESTRICTIONS) but
+      // is NOT in FORCED_FOLLOWUP_CREATORS — only deputy-cto triggers forced follow-up
+      const result = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'CTO manual task',
+        assigned_by: 'cto',
+      });
+
+      expect('error' in result).toBe(false);
+      if (!('error' in result)) {
+        expect(result.followup_enabled).toBe(0);
+        expect(result.warning).toBeUndefined();
+      }
+    });
+
+    it('should respect custom followup_section when completing a deputy-cto-created task', () => {
+      const task = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'Cross-section followup task',
+        assigned_by: 'deputy-cto',
+        followup_section: 'TEST-WRITER',
+      });
+
+      expect('error' in task).toBe(false);
+      if (!('error' in task)) {
+        const result = completeTask(task.id) as CompleteOrError;
+
+        expect('error' in result).toBe(false);
+        if (!('error' in result)) {
+          expect(result.followup_task_id).toBeDefined();
+          const followup = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.followup_task_id!) as TaskRow;
+          // Follow-up must land in the explicitly requested section, not the original task's section
+          expect(followup.section).toBe('TEST-WRITER');
+        }
+      }
+    });
+
+    it('should create follow-up task when non-deputy-cto creator opts in with followup_enabled: true', () => {
+      // The forced-follow-up path is triggered by creator identity, but any creator can
+      // opt in voluntarily; the completion hook fires based solely on followup_enabled
+      const task = createTask({
+        section: 'TEST-WRITER',
+        title: 'Opted-in followup task',
+        assigned_by: 'code-reviewer',
+        followup_enabled: true,
+      });
+
+      expect('error' in task).toBe(false);
+      if (!('error' in task)) {
+        expect(task.followup_enabled).toBe(1);
+        expect(task.warning).toBeUndefined();
+
+        const result = completeTask(task.id) as CompleteOrError;
+
+        expect('error' in result).toBe(false);
+        if (!('error' in result)) {
+          expect(result.followup_task_id).toBeDefined();
+          const followup = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.followup_task_id!) as TaskRow;
+          expect(followup.title).toContain('[Follow-up]');
+          expect(followup.status).toBe('pending');
+          expect(followup.followup_enabled).toBe(0);
         }
       }
     });

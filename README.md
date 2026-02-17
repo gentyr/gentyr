@@ -6,7 +6,7 @@ A modular automation framework for Claude Code that provides MCP servers, specia
 
 - **25 MCP Servers**: 9 core (task tracking, specs, reviews, reporting) + 10 infrastructure (Render, Vercel, GitHub, Supabase, Cloudflare, Resend, Elasticsearch, 1Password, Codecov, secret-sync) + 5 AI user feedback (persona management, GUI testing, programmatic testing, reporting bridge, feedback exploration) + 1 browser automation (chrome-bridge)
 - **9 Framework Agents**: Code reviewer, test writer, investigator, deputy-CTO, feedback-agent, etc. (projects can add their own)
-- **8 Slash Commands**: `/configure-personas`, `/cto-report`, `/deputy-cto`, `/overdrive-gentyr`, `/push-migrations`, `/push-secrets`, `/setup-gentyr`, `/toggle-automation-gentyr`
+- **9 Slash Commands**: `/configure-personas`, `/cto-report`, `/deputy-cto`, `/overdrive-gentyr`, `/push-migrations`, `/push-secrets`, `/setup-gentyr`, `/spawn-tasks`, `/toggle-automation-gentyr`
 - **VS Code Companion Extension**: Real-time dashboard with quota usage, deputy CTO status, task tracking, and metrics display (always-visible status bar + webview panel)
 - **AI User Feedback System**: Automated user persona testing triggered by staging changes with configurable personas, features, and test scenarios
 - **13 Automation Hooks**: Pre-commit review, antipattern detection, multi-layer credential detection, CTO notification, secret leak detection, protected actions, AI user feedback pipeline
@@ -166,14 +166,16 @@ mcp__agent-reports__report_to_deputy_cto({
 
 ### CTO Commands
 
+- **`/spawn-tasks`** — Force-spawn all pending TODO tasks immediately, bypassing the hourly automation's age filter (1h minimum), batch limit (3 per cycle), cooldowns, and CTO activity gate. Groups sections into "Implementation agents" (CODE-REVIEWER, TEST-WRITER, INVESTIGATOR & PLANNER) and "Management agents" (PROJECT-MANAGER, DEPUTY-CTO). Concurrency guard (default 10) and agent tracker registration are preserved. Outputs a results summary of spawned, skipped, and errored tasks.
 - **`/cto-report`** — Full metrics dashboard with sections for:
   - Quota & capacity (aggregate across all API keys)
   - System status (Deputy CTO mode, protection status, commit blocks)
   - Deputy CTO triage pipeline (untriaged reports, escalated items, pending questions, 24h summary)
-  - Testing health (failing suites with fix attempts, agent breakdown by framework, resolved suites, unique failures, 42-bucket 4h-resolution activity graph, optional Codecov)
-  - Deployments (Render services + Vercel projects side-by-side, combined recent deploy timeline, pipeline promotion state)
-  - Infrastructure health (5-provider status: Render, Vercel, Supabase, Elasticsearch, Cloudflare — each independently degradable)
-  - Automated instances (active agent sessions with spawn reasons and durations)
+  - Testing health (failing suites with fix attempts, agent breakdown by framework — Vitest/Playwright/Writer, resolved suites, unique failures, 42-bucket 4h-resolution activity graph, optional Codecov)
+  - Deployments (per-environment health overview for Production/Staging/Preview with health status and last deploy info; pipeline promotion state; per-environment deploy tables with time, service, platform, status, and commit message; DeployStats footer with 24h deploy count, success rate, failure count, and frequency)
+  - Infrastructure health (5-provider status: Render, Vercel, Supabase, Elasticsearch, Cloudflare — each independently degradable; per-platform event tables, Cloudflare nameservers, load metrics)
+  - Logging (Elasticsearch log volume timeseries graph, level/service bar charts, top errors/warnings tables, source coverage assessment, storage estimates)
+  - Automated instances (all automation types with 24h run counts, time-until-next, frequency adjustments, and token usage bar chart by type)
   - Timeline (chronological view of sessions, hooks, reports, questions, tasks)
   - Metrics summary (tokens, sessions, agents, tasks, hooks, triage, CTO queue)
 - **`/deputy-cto`** — Review and answer pending CTO decisions (batch review mode with up to 4 items at once), triage agent reports with recommendations, manage autonomous mode
@@ -448,7 +450,7 @@ mcp__specs-browser__createSpec({
 │   │   ├── project-manager.md
 │   │   ├── repo-hygiene-expert.md
 │   │   └── test-writer.md
-│   ├── commands/               # 8 slash commands (.md)
+│   ├── commands/               # 9 slash commands (.md)
 │   │   ├── configure-personas.md
 │   │   ├── cto-report.md
 │   │   ├── deputy-cto.md
@@ -456,6 +458,7 @@ mcp__specs-browser__createSpec({
 │   │   ├── push-migrations.md
 │   │   ├── push-secrets.md
 │   │   ├── setup-gentyr.md
+│   │   ├── spawn-tasks.md
 │   │   └── toggle-automation-gentyr.md
 │   ├── hooks/                  # 13 hooks + 6 utility modules (.js)
 │   │   ├── pre-commit-review.js
@@ -500,8 +503,8 @@ mcp__specs-browser__createSpec({
 │   │   └── tsconfig.json
 │   ├── cto-dashboard/          # Ink-based CLI dashboard (invoked by /cto-report)
 │   │   ├── src/
-│   │   │   ├── components/     # DeploymentsSection, InfraSection, TestingSection, etc.
-│   │   │   ├── utils/          # credentials.ts, deployments-reader.ts, infra-reader.ts, etc.
+│   │   │   ├── components/     # DeploymentsSection, InfraSection, LoggingSection, TestingSection, etc.
+│   │   │   ├── utils/          # credentials.ts, deployments-reader.ts, infra-reader.ts, logging-reader.ts, etc.
 │   │   │   └── App.tsx
 │   │   ├── package.json
 │   │   └── tsconfig.json
@@ -538,6 +541,7 @@ mcp__specs-browser__createSpec({
 │   ├── mcp-launcher.js         # Runtime credential resolver (1Password → env vars)
 │   ├── feedback-launcher.js    # Feedback agent session spawner
 │   ├── feedback-orchestrator.js # Feedback pipeline: change detection → persona selection → spawning
+│   ├── force-spawn-tasks.js    # Force-spawn pending tasks on demand (called by /spawn-tasks)
 │   ├── hooks/                  # Staged hooks (deployed to .claude/hooks/ during install)
 │   │   └── credential-health-check.js
 │   └── setup-automation-service.sh  # 10-min timer service
@@ -861,6 +865,7 @@ sudo scripts/setup.sh --path /path/to/project --protect-only
 
 ## Version History
 
+- **2.6.0**: On-Demand Task Spawning. Added `/spawn-tasks` slash command and `scripts/force-spawn-tasks.js` to force-spawn all pending TODO tasks immediately, bypassing hourly automation's age filter, batch limit, cooldowns, and CTO activity gate. Groups selections as "Implementation agents" or "Management agents" to fit AskUserQuestion's option limit. Outputs JSON results (spawned/skipped/errors). Added `spawn-tasks` sentinel and `handleSpawnTasks()` to `slash-command-prefetch.js` for prefetch DB queries and running agent count.
 - **2.5.0**: Centralized Config & Overdrive System. Unified all automation cooldowns under shared `config-reader.js` module with centralized `.claude/state/automation-config.json`. Event-triggered cooldowns (test failure reporters, pre-commit review, compliance checker) now use dynamic config. Added `/overdrive-gentyr` slash command for 1-hour aggressive automation mode with concurrency boost (5→8 agents) and usage optimizer pause. Overdrive auto-reverts on expiry with factor bounds validation.
 - **2.4.0**: Multi-Layer Credential Detection. 4-layer system (launchd WatchPaths, 10-min timer, SessionStart, throttled PreToolUse) for instant account switch detection. Shared key-sync module reads env var + macOS Keychain + credentials file. User-level rotation state registry at ~/.claude/api-key-rotation.json. OAuth token refresh, subscription/tier tracking, rotation logging.
 - **2.3.0**: Chrome Extension Bridge. Added chrome-bridge MCP server that proxies 18 tools from Claude for Chrome extension via Unix domain socket. Supports multi-browser instances, tab routing, connection resilience, and binary framing protocol. No credentials required (local socket communication).
