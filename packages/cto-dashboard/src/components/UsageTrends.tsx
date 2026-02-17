@@ -1,20 +1,19 @@
 /**
  * Usage Trends Component
  *
- * Displays historical line graphs for 5-hour and 7-day usage.
+ * Displays historical line graphs for 5-hour and 7-day usage,
+ * plus a combined trajectory forecast graph showing history + projections.
  * Uses @pppp606/ink-chart LineGraph for high-resolution rendering.
- * Only shows actual historical data (no projections on graph).
  */
 
 import React from 'react';
 import { Box, Text } from 'ink';
 import { LineGraph } from '@pppp606/ink-chart';
 import { Section } from './Section.js';
-import type { UsageSnapshot } from '../utils/trajectory.js';
+import type { TrajectoryResult } from '../utils/trajectory.js';
 
 export interface UsageTrendsProps {
-  snapshots: UsageSnapshot[];
-  hasData: boolean;
+  trajectory: TrajectoryResult;
 }
 
 /**
@@ -35,7 +34,65 @@ function formatTimeAgo(date: Date): string {
   return `${Math.floor(diffHours / 24)}d ago`;
 }
 
-export function UsageTrends({ snapshots, hasData }: UsageTrendsProps): React.ReactElement | null {
+/**
+ * Format duration until a future time as "Xh Ym" style string.
+ */
+function formatTimeUntil(resetTime: Date | null): string {
+  if (!resetTime) return 'N/A';
+
+  const now = Date.now();
+  const diffMs = resetTime.getTime() - now;
+
+  if (diffMs <= 0) return 'now';
+
+  const diffMins = Math.floor(diffMs / (60 * 1000));
+  const diffHours = Math.floor(diffMs / (60 * 60 * 1000));
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffMins < 60) {
+    return `${diffMins}m`;
+  }
+  if (diffHours < 24) {
+    const mins = diffMins % 60;
+    return mins > 0 ? `${diffHours}h ${mins}m` : `${diffHours}h`;
+  }
+  const hours = diffHours % 24;
+  return hours > 0 ? `${diffDays}d ${hours}h` : `${diffDays}d`;
+}
+
+/**
+ * Generate projection points by linearly extrapolating from lastValue.
+ * Points are evenly spaced between now and resetTime.
+ * Each point is clamped to [0, 100].
+ * Returns empty array if trendPerHour is null or resetTime is in the past.
+ */
+function generateProjectionPoints(
+  lastValue: number,
+  trendPerHour: number | null,
+  resetTime: Date | null,
+  pointCount: number,
+): number[] {
+  if (trendPerHour === null || !resetTime) return [];
+
+  const now = Date.now();
+  const msUntilReset = resetTime.getTime() - now;
+  if (msUntilReset <= 0) return [];
+
+  const hoursUntilReset = msUntilReset / (1000 * 60 * 60);
+  const points: number[] = [];
+
+  for (let i = 1; i <= pointCount; i++) {
+    const hoursAhead = (i / pointCount) * hoursUntilReset;
+    const projected = lastValue + trendPerHour * hoursAhead;
+    points.push(Math.max(0, Math.min(100, projected)));
+  }
+
+  return points;
+}
+
+export function UsageTrends({ trajectory }: UsageTrendsProps): React.ReactElement | null {
+  const { snapshots, hasData } = trajectory;
+
   if (!hasData || snapshots.length === 0) {
     return null;
   }
@@ -54,6 +111,44 @@ export function UsageTrends({ snapshots, hasData }: UsageTrendsProps): React.Rea
   const max5h = Math.max(...fiveHourData);
   const min7d = Math.min(...sevenDayData);
   const max7d = Math.max(...sevenDayData);
+
+  // Build trajectory forecast data
+  // Use earliest reset time across both windows for the projection horizon
+  const resetTimes = [trajectory.fiveHourResetTime, trajectory.sevenDayResetTime].filter(
+    (t): t is Date => t !== null && t.getTime() > Date.now(),
+  );
+  const earliestReset = resetTimes.length > 0
+    ? new Date(Math.min(...resetTimes.map(t => t.getTime())))
+    : null;
+
+  const projectionPointCount = snapshots.length;
+  const projection5h = generateProjectionPoints(
+    current5h,
+    trajectory.fiveHourTrendPerHour,
+    earliestReset,
+    projectionPointCount,
+  );
+  const sevenDayTrendPerHour = trajectory.sevenDayTrendPerDay !== null
+    ? trajectory.sevenDayTrendPerDay / 24
+    : null;
+  const projection7d = generateProjectionPoints(
+    current7d,
+    sevenDayTrendPerHour,
+    earliestReset,
+    projectionPointCount,
+  );
+
+  const hasForecast = projection5h.length > 0 || projection7d.length > 0;
+
+  // Build combined series: history + projection as continuous lines
+  const combined5h = [...fiveHourData, ...projection5h];
+  const combined7d = [...sevenDayData, ...projection7d];
+  const totalPoints = combined5h.length;
+  const targetLine = Array(totalPoints).fill(90);
+
+  // X-axis labels: [timeAgo, "now", "reset: Xh"]
+  const resetLabel = earliestReset ? `reset: ${formatTimeUntil(earliestReset)}` : 'reset: N/A';
+  const forecastXLabels = [formatTimeAgo(firstTime), 'now', resetLabel];
 
   return (
     <Section title="USAGE TRENDS" borderColor="blue" width="100%">
@@ -121,6 +216,37 @@ export function UsageTrends({ snapshots, hasData }: UsageTrendsProps): React.Rea
             </Box>
           </Box>
         </Box>
+
+        {/* Trajectory Forecast Chart */}
+        {hasForecast && (
+          <Box flexDirection="column">
+            <Box>
+              <Text color="yellow" bold>Trajectory Forecast</Text>
+              <Text color="gray"> (history → projection)</Text>
+            </Box>
+
+            <LineGraph
+              data={[
+                { values: combined5h, color: 'cyan' },
+                { values: combined7d, color: 'magenta' },
+                { values: targetLine, color: 'gray' },
+              ]}
+              height={7}
+              width={72}
+              yDomain={[0, 100]}
+              showYAxis
+              yLabels={[0, 25, 50, 75, 100]}
+              xLabels={forecastXLabels}
+            />
+
+            <Box gap={2}>
+              <Text color="cyan">━ 5h</Text>
+              <Text color="magenta">━ 7d</Text>
+              <Text color="gray">━ 90% target</Text>
+              <Text color="gray">  │  left: history  │  right: projected</Text>
+            </Box>
+          </Box>
+        )}
       </Box>
     </Section>
   );

@@ -171,8 +171,8 @@ function calculateAggregate(raw: RawSnapshot): AggregateResult | null {
   for (const k of entries) {
     sum5h += k['5h'] ?? 0;
     sum7d += k['7d'] ?? 0;
-    if (k['5h_reset']) reset5h = k['5h_reset'];
-    if (k['7d_reset']) reset7d = k['7d_reset'];
+    if (k['5h_reset'] && (!reset5h || k['5h_reset'] < reset5h)) reset5h = k['5h_reset'];
+    if (k['7d_reset'] && (!reset7d || k['7d_reset'] < reset7d)) reset7d = k['7d_reset'];
   }
 
   // Snapshot values are 0-1 fractions; convert to 0-100 percentages for display
