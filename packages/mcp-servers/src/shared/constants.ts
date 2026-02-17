@@ -18,9 +18,23 @@ export const VALID_SECTIONS = [
   'INVESTIGATOR & PLANNER',
   'CODE-REVIEWER',
   'PROJECT-MANAGER',
+  'DEPUTY-CTO',
 ] as const;
 
 export type ValidSection = (typeof VALID_SECTIONS)[number];
+
+/**
+ * Soft access control: sections that restrict which agents can create tasks.
+ * Agents self-report identity via assigned_by. Not in list = no restriction.
+ */
+export const SECTION_CREATOR_RESTRICTIONS: Partial<Record<ValidSection, readonly string[]>> = {
+  'DEPUTY-CTO': ['deputy-cto', 'cto', 'human'],
+} as const;
+
+/**
+ * Sections where follow-up hooks are mandatory and cannot be disabled.
+ */
+export const FORCED_FOLLOWUP_SECTIONS: readonly ValidSection[] = ['DEPUTY-CTO'] as const;
 
 // ============================================================================
 // Task Status

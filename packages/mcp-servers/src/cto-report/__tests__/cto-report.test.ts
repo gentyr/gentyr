@@ -75,7 +75,7 @@ describe('CTO Report Server', () => {
         created_timestamp INTEGER NOT NULL,
         completed_timestamp INTEGER,
         CONSTRAINT valid_status CHECK (status IN ('pending', 'in_progress', 'completed')),
-        CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER'))
+        CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO'))
       );
       CREATE INDEX idx_tasks_completed_timestamp ON tasks(completed_timestamp);
     `);

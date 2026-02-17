@@ -8,6 +8,7 @@ import { VALID_SECTIONS, TASK_STATUS, type ValidSection, type TaskStatus } from 
 // Re-export for convenience
 export { VALID_SECTIONS, TASK_STATUS };
 export type { ValidSection, TaskStatus };
+export { SECTION_CREATOR_RESTRICTIONS, FORCED_FOLLOWUP_SECTIONS } from '../shared/constants.js';
 
 // ============================================================================
 // Zod Schemas (G003 Compliance)
@@ -34,7 +35,10 @@ export const CreateTaskArgsSchema = z.object({
   section: z.enum(VALID_SECTIONS).describe('Section to create task in'),
   title: z.string().describe('Task title (required)'),
   description: z.string().optional().describe('Detailed description'),
-  assigned_by: z.string().optional().describe('Agent name assigning this task (for cross-agent assignments)'),
+  assigned_by: z.string().optional().describe('Your agent name (required for restricted sections like DEPUTY-CTO)'),
+  followup_enabled: z.boolean().optional().describe('Enable follow-up task on completion (forced true for DEPUTY-CTO)'),
+  followup_section: z.enum(VALID_SECTIONS).optional().describe('Section for follow-up task (defaults to same section)'),
+  followup_prompt: z.string().optional().describe('Custom follow-up prompt. For DEPUTY-CTO tasks, leave empty — auto-generated.'),
 });
 
 export const StartTaskArgsSchema = z.object({
@@ -102,6 +106,9 @@ export interface TaskRecord {
   metadata: string | null;
   created_timestamp: number;
   completed_timestamp: number | null;
+  followup_enabled: number;        // 0 or 1 (SQLite boolean)
+  followup_section: string | null;
+  followup_prompt: string | null;
 }
 
 export interface TaskResponse {
@@ -114,6 +121,7 @@ export interface TaskResponse {
   started_at: string | null;
   completed_at: string | null;
   assigned_by: string | null;
+  followup_enabled: boolean;
 }
 
 export interface ListTasksResult {
@@ -121,7 +129,9 @@ export interface ListTasksResult {
   total: number;
 }
 
-export interface CreateTaskResult extends TaskResponse {}
+export interface CreateTaskResult extends TaskResponse {
+  warning?: string;
+}
 
 export interface StartTaskResult {
   id: string;
@@ -133,6 +143,7 @@ export interface CompleteTaskResult {
   id: string;
   status: 'completed';
   completed_at: string;
+  followup_task_id?: string;
 }
 
 export interface DeleteTaskResult {

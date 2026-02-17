@@ -51,6 +51,7 @@ const SECTION_AGENT_MAP = {
   'INVESTIGATOR & PLANNER': { agent: 'investigator', agentType: AGENT_TYPES.TASK_RUNNER_INVESTIGATOR },
   'TEST-WRITER': { agent: 'test-writer', agentType: AGENT_TYPES.TASK_RUNNER_TEST_WRITER },
   'PROJECT-MANAGER': { agent: 'project-manager', agentType: AGENT_TYPES.TASK_RUNNER_PROJECT_MANAGER },
+  'DEPUTY-CTO': { agent: 'deputy-cto', agentType: AGENT_TYPES.TASK_RUNNER_DEPUTY_CTO },
 };
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 
@@ -61,8 +62,9 @@ const MAX_TASKS_PER_CYCLE = 3;
 // ---------------------------------------------------------------------------
 // CREDENTIAL CACHE: Lazily resolve 1Password credentials on first agent spawn.
 // Credentials exist only in this process's memory and are passed to child
-// processes via environment variables. mcp-launcher.js skips `op read` when
-// the credential is already in process.env (line 71).
+// processes via environment variables. MCP servers (started by Claude CLI
+// from .mcp.json env blocks) skip `op read` when the credential is already
+// in process.env.
 //
 // Lazy resolution means credentials are NOT resolved on cycles where all
 // tasks hit cooldowns and no agents are spawned (~90% of cycles). This
@@ -584,55 +586,6 @@ After processing all reports, output a summary:
 }
 
 /**
- * Run a child script and wait for completion
- */
-function runScript(scriptPath, description) {
-  return new Promise((resolve, reject) => {
-    log(`Starting: ${description}`);
-
-    const child = spawn('node', [scriptPath], {
-      cwd: PROJECT_DIR,
-      stdio: 'pipe',
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-      },
-    });
-
-    let output = '';
-
-    child.stdout.on('data', (data) => {
-      output += data.toString();
-    });
-
-    child.stderr.on('data', (data) => {
-      output += data.toString();
-    });
-
-    child.on('close', (code) => {
-      if (code === 0) {
-        log(`Completed: ${description}`);
-        resolve({ code, output });
-      } else {
-        log(`Failed: ${description} (exit code ${code})`);
-        resolve({ code, output });
-      }
-    });
-
-    child.on('error', (err) => {
-      log(`Error: ${description} - ${err.message}`);
-      reject(err);
-    });
-
-    // 35 minute timeout per script
-    setTimeout(() => {
-      child.kill();
-      reject(new Error(`${description} timed out after 35 minutes`));
-    }, 35 * 60 * 1000);
-  });
-}
-
-/**
  * Spawn Claude for CLAUDE.md refactoring
  */
 function spawnClaudeMdRefactor() {
@@ -930,6 +883,81 @@ function resetTaskToPending(taskId) {
 }
 
 /**
+ * Build the prompt for a deputy-cto task orchestrator agent
+ */
+function buildDeputyCtoTaskPrompt(task) {
+  return `[Task][task-runner-deputy-cto] You are the Deputy-CTO processing a high-level task assignment.
+
+## Task Details
+
+- **Task ID**: ${task.id}
+- **Section**: ${task.section}
+- **Title**: ${task.title}
+${task.description ? `- **Description**: ${task.description}` : ''}
+
+## Your Mission
+
+You are an ORCHESTRATOR. You do NOT implement tasks yourself — you evaluate, decompose, and delegate.
+
+## Process (FOLLOW THIS ORDER)
+
+### Step 1: Evaluate Alignment
+Before doing anything, evaluate whether this task aligns with:
+- The project's specs (read specs/global/ and specs/local/ as needed)
+- Existing plans (check plans/ directory)
+- CTO directives (check mcp__deputy-cto__list_questions for relevant decisions)
+
+If the task does NOT align with specs, plans, or CTO requests:
+- Report the misalignment via mcp__agent-reports__report_to_deputy_cto
+- Mark this task complete WITHOUT creating sub-tasks
+- Explain in the completion why you declined
+
+### Step 2: Spawn Investigator FIRST
+Always start by spawning an investigator to analyze the task scope:
+\`\`\`
+mcp__deputy-cto__spawn_implementation_task({
+  prompt: "You are the INVESTIGATOR. Analyze the following task and create a detailed implementation plan with specific sub-tasks:\\n\\nTask: ${task.title}\\n${task.description || ''}\\n\\nInvestigate the codebase, read relevant specs, and create TODO items in the appropriate sections via mcp__todo-db__create_task for each sub-task you identify.",
+  description: "Investigate: ${task.title}"
+})
+\`\`\`
+
+### Step 3: Create Implementation Sub-Tasks
+Based on your own analysis (don't wait for the investigator — it runs async), create concrete sub-tasks:
+
+For non-urgent work (picked up by hourly automation):
+\`\`\`
+mcp__todo-db__create_task({
+  section: "INVESTIGATOR & PLANNER",  // or CODE-REVIEWER, TEST-WRITER, PROJECT-MANAGER
+  title: "Specific actionable task title",
+  description: "Detailed context and acceptance criteria",
+  assigned_by: "deputy-cto"
+})
+\`\`\`
+
+Section mapping:
+- Research, analysis, planning → INVESTIGATOR & PLANNER
+- Code implementation + commit → CODE-REVIEWER
+- Test creation/updates → TEST-WRITER
+- Documentation, cleanup → PROJECT-MANAGER
+
+### Step 4: Mark Complete
+After all sub-tasks are created:
+\`\`\`
+mcp__todo-db__complete_task({ id: "${task.id}" })
+\`\`\`
+This will automatically create a follow-up verification task.
+
+## Constraints
+
+- Do NOT write code yourself (you have no Edit/Write/Bash tools)
+- Create 3-8 specific sub-tasks per high-level task
+- Each sub-task must be self-contained with enough context to execute independently
+- Only delegate tasks that align with project specs and plans
+- Report blockers via mcp__agent-reports__report_to_deputy_cto
+- If the task needs CTO input, create a question via mcp__deputy-cto__add_question`;
+}
+
+/**
  * Build the prompt for a task runner agent
  */
 function buildTaskRunnerPrompt(task, agentName) {
@@ -975,7 +1003,9 @@ function spawnTaskAgent(task) {
   const mapping = SECTION_AGENT_MAP[task.section];
   if (!mapping) return false;
 
-  const prompt = buildTaskRunnerPrompt(task, mapping.agent);
+  const prompt = mapping.agent === 'deputy-cto'
+    ? buildDeputyCtoTaskPrompt(task)
+    : buildTaskRunnerPrompt(task, mapping.agent);
 
   const agentId = registerSpawn({
     type: mapping.agentType,
