@@ -84,21 +84,21 @@ process_profile() {
     fi
 
     # Check if extension is installed in this profile
+    # Pass file path and extension ID via sys.argv to avoid shell injection
     local ext_installed
-    ext_installed=$(python3 -c "
+    ext_installed=$(python3 - "$prefs_file" "$EXTENSION_ID" <<'PYEOF'
 import json, sys
 try:
-    with open('$prefs_file', 'r') as f:
+    prefs_file, ext_id = sys.argv[1], sys.argv[2]
+    with open(prefs_file, 'r') as f:
         prefs = json.load(f)
     settings = prefs.get('extensions', {}).get('settings', {})
-    if '$EXTENSION_ID' in settings:
-        print('yes')
-    else:
-        print('no')
+    print('yes' if ext_id in settings else 'no')
 except Exception as e:
     print('error:' + str(e), file=sys.stderr)
     print('no')
-" 2>/dev/null)
+PYEOF
+    )
 
     if [ "$ext_installed" != "yes" ]; then
         return
@@ -108,12 +108,13 @@ except Exception as e:
 
     # Check current permission state
     local perm_state
-    perm_state=$(python3 -c "
+    perm_state=$(python3 - "$prefs_file" "$EXTENSION_ID" <<'PYEOF'
 import json, sys
 try:
-    with open('$prefs_file', 'r') as f:
+    prefs_file, ext_id = sys.argv[1], sys.argv[2]
+    with open(prefs_file, 'r') as f:
         prefs = json.load(f)
-    ext = prefs.get('extensions', {}).get('settings', {}).get('$EXTENSION_ID', {})
+    ext = prefs.get('extensions', {}).get('settings', {}).get(ext_id, {})
     withholding = ext.get('withholding_permissions', False)
     granted = ext.get('granted_permissions', {}).get('explicit_host', [])
     active = ext.get('active_permissions', {}).get('explicit_host', [])
@@ -132,7 +133,8 @@ try:
 except Exception as e:
     print('error:' + str(e), file=sys.stderr)
     print('error')
-" 2>/dev/null)
+PYEOF
+    )
 
     if [ "$perm_state" = "granted" ]; then
         echo -e "  ${GREEN}$profile_name: Host permissions already granted${NC}"
@@ -149,13 +151,14 @@ except Exception as e:
 
     # Modify permissions
     local modify_result
-    modify_result=$(python3 -c "
+    modify_result=$(python3 - "$prefs_file" "$EXTENSION_ID" <<'PYEOF'
 import json, sys
 try:
-    with open('$prefs_file', 'r') as f:
+    prefs_file, ext_id = sys.argv[1], sys.argv[2]
+    with open(prefs_file, 'r') as f:
         prefs = json.load(f)
 
-    ext = prefs.setdefault('extensions', {}).setdefault('settings', {}).get('$EXTENSION_ID')
+    ext = prefs.setdefault('extensions', {}).setdefault('settings', {}).get(ext_id)
     if ext is None:
         print('not_found')
         sys.exit(0)
@@ -175,21 +178,22 @@ try:
     protection = prefs.get('protection', {})
     macs = protection.get('macs', {})
     ext_settings_macs = macs.get('extensions', {}).get('settings', {})
-    if '$EXTENSION_ID' in ext_settings_macs:
-        del ext_settings_macs['$EXTENSION_ID']
+    if ext_id in ext_settings_macs:
+        del ext_settings_macs[ext_id]
 
     # Delete super_mac to force full recalculation
     if 'super_mac' in protection:
         del protection['super_mac']
 
-    with open('$prefs_file', 'w') as f:
+    with open(prefs_file, 'w') as f:
         json.dump(prefs, f, separators=(',', ':'))
 
     print('ok')
 except Exception as e:
     print('error:' + str(e), file=sys.stderr)
     print('error')
-" 2>/dev/null)
+PYEOF
+    )
 
     if [ "$modify_result" = "ok" ]; then
         PROFILES_MODIFIED=$((PROFILES_MODIFIED + 1))

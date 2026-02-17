@@ -165,8 +165,9 @@ function preResolveCredentials() {
           resolvedCredentials[key] = value;
           resolved++;
         }
-      } catch {
+      } catch (err) {
         failed++;
+        log(`Credential cache: failed to resolve ${key} from ${ref}: ${err.message || err}`);
       }
     } else {
       // Direct value (non-secret like URL, zone ID)
@@ -1724,10 +1725,25 @@ async function main() {
   // Credentials are resolved lazily on first agent spawn via ensureCredentials().
   // This avoids unnecessary `op` CLI calls on cycles where all tasks hit cooldowns.
 
+  // Check for overdrive concurrency override
+  let effectiveMaxConcurrent = MAX_CONCURRENT_AGENTS;
+  try {
+    const autoConfigPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
+    if (fs.existsSync(autoConfigPath)) {
+      const autoConfig = JSON.parse(fs.readFileSync(autoConfigPath, 'utf8'));
+      if (autoConfig.overdrive?.active && new Date() < new Date(autoConfig.overdrive.expires_at)) {
+        effectiveMaxConcurrent = autoConfig.overdrive.max_concurrent_override || MAX_CONCURRENT_AGENTS;
+        log(`Overdrive active: concurrency limit raised to ${effectiveMaxConcurrent}`);
+      }
+    }
+  } catch {
+    // Fail safe - use default
+  }
+
   // Concurrency guard: skip cycle if too many agents are already running
   const runningAgents = countRunningAgents();
-  if (runningAgents >= MAX_CONCURRENT_AGENTS) {
-    log(`Concurrency limit reached (${runningAgents}/${MAX_CONCURRENT_AGENTS} agents running). Skipping this cycle.`);
+  if (runningAgents >= effectiveMaxConcurrent) {
+    log(`Concurrency limit reached (${runningAgents}/${effectiveMaxConcurrent} agents running). Skipping this cycle.`);
     registerHookExecution({
       hookType: HOOK_TYPES.HOURLY_AUTOMATION,
       status: 'skipped',
@@ -1736,7 +1752,7 @@ async function main() {
     });
     process.exit(0);
   }
-  log(`Running agents: ${runningAgents}/${MAX_CONCURRENT_AGENTS}`);
+  log(`Running agents: ${runningAgents}/${effectiveMaxConcurrent}`);
 
   const state = getState();
   const now = Date.now();

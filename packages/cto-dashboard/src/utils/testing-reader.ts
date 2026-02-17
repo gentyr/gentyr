@@ -270,7 +270,8 @@ export function getTestingData(): TestingData {
  * OP_SERVICE_ACCOUNT_TOKEN is not inherited. Load it from .mcp.json (source of truth).
  */
 function loadOpTokenFromMcpJson(): void {
-  if (process.env['OP_SERVICE_ACCOUNT_TOKEN']) return;
+  // Always read .mcp.json (source of truth, updated by reinstall.sh) — the env
+  // may have a stale token from a previous session that predates a token rotation.
   const mcpPath = path.join(PROJECT_DIR, '.mcp.json');
   try {
     const config = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
@@ -281,7 +282,7 @@ function loadOpTokenFromMcpJson(): void {
       }
     }
   } catch {
-    // .mcp.json not readable — op read will rely on desktop session or fail gracefully
+    // .mcp.json not readable — op read will rely on env token or desktop session
   }
 }
 
