@@ -404,7 +404,7 @@ function getAggregateQuota() {
     const accountMap = new Map();
 
     for (const keyData of Object.values(state.keys)) {
-      if (keyData.status === 'active' && keyData.last_usage) {
+      if ((keyData.status === 'active' || keyData.status === 'exhausted') && keyData.last_usage) {
         const dedupeKey = keyData.account_uuid || `fp:${keyData.last_usage.seven_day}:${keyData.last_usage.seven_day_sonnet}`;
         if (!accountMap.has(dedupeKey)) {
           accountMap.set(dedupeKey, {

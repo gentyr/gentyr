@@ -249,7 +249,7 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       {/* Usage Trends - line graphs (only if data available) */}
       {trajectory.hasData && (
         <Box marginTop={1}>
-          <UsageTrends snapshots={trajectory.snapshots} hasData={trajectory.hasData} />
+          <UsageTrends trajectory={trajectory} />
         </Box>
       )}
 
