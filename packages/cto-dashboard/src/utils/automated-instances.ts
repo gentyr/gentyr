@@ -7,6 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import type { AutomationCooldowns } from './data-reader.js';
 
 const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
@@ -34,6 +35,7 @@ export interface AutomatedInstancesData {
   currentProjected: number | null;       // Current projected % at reset
   adjustingDirection: 'up' | 'down' | 'stable';  // Which way intervals are adjusting
   hasData: boolean;
+  tokensByType: Record<string, number>;  // display name → total tokens (24h, for bar chart)
 }
 
 interface AgentHistoryEntry {
@@ -317,6 +319,7 @@ export function getAutomatedInstances(): AutomatedInstancesData {
     currentProjected: config.adjustment?.projected_at_reset ?? null,
     adjustingDirection,
     hasData: instances.length > 0,
+    tokensByType: {},
   };
 }
 
@@ -468,4 +471,133 @@ function formatDuration(seconds: number): string {
     return `${minutes}m`;
   }
   return `${seconds}s`;
+}
+
+// ============================================================================
+// Token Usage by Automation Type
+// ============================================================================
+
+interface SessionEntry {
+  type?: string;
+  message?: {
+    content?: string;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+  };
+  content?: string;
+}
+
+function getSessionDir(): string {
+  const projectPath = PROJECT_DIR.replace(/[^a-zA-Z0-9]/g, '-').replace(/^-/, '');
+  return path.join(os.homedir(), '.claude', 'projects', `-${projectPath}`);
+}
+
+/**
+ * Build a reverse lookup from raw agent type → display name using INSTANCE_DEFINITIONS.
+ */
+function buildAgentTypeToDisplayName(): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const def of INSTANCE_DEFINITIONS) {
+    for (const agentType of def.agentTypes) {
+      map.set(agentType, def.type);
+    }
+  }
+  return map;
+}
+
+/**
+ * Get token usage aggregated by automation display name (24h).
+ * Reads session JSONL files, extracts [Task][agent-type] prefixes from the
+ * first user message, sums all message.usage tokens per session, then
+ * rolls up into INSTANCE_DEFINITIONS display names.
+ */
+export async function getAutomationTokenUsage(): Promise<Record<string, number>> {
+  const sessionDir = getSessionDir();
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+
+  if (!fs.existsSync(sessionDir)) {
+    return {};
+  }
+
+  const agentTypeMap = buildAgentTypeToDisplayName();
+  const rawTokens: Record<string, number> = {};
+
+  let files: string[];
+  try {
+    files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
+  } catch {
+    return {};
+  }
+
+  for (const file of files) {
+    const filePath = path.join(sessionDir, file);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      continue;
+    }
+    if (stat.mtime.getTime() < since) continue;
+
+    let content: string;
+    try {
+      content = fs.readFileSync(filePath, 'utf8');
+    } catch {
+      continue;
+    }
+    const lines = content.split('\n').filter(l => l.trim());
+
+    let agentType: string | null = null;
+    let totalTokens = 0;
+
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as SessionEntry;
+
+        // Extract agent type from first user message
+        if (agentType === null && (entry.type === 'human' || entry.type === 'user')) {
+          const msg = typeof entry.message?.content === 'string'
+            ? entry.message.content
+            : entry.content;
+          if (msg) {
+            const match = msg.match(/^\[Task\]\[([^\]]+)\]/);
+            if (match?.[1]) {
+              agentType = match[1];
+            } else {
+              // Not a task-triggered session — skip entirely
+              break;
+            }
+          }
+        }
+
+        // Sum token usage
+        const usage = entry.message?.usage;
+        if (usage) {
+          totalTokens += (usage.input_tokens || 0)
+            + (usage.output_tokens || 0)
+            + (usage.cache_read_input_tokens || 0)
+            + (usage.cache_creation_input_tokens || 0);
+        }
+      } catch {
+        // Skip malformed lines
+      }
+    }
+
+    if (agentType && totalTokens > 0) {
+      rawTokens[agentType] = (rawTokens[agentType] || 0) + totalTokens;
+    }
+  }
+
+  // Roll up raw agent types into display names
+  const byDisplayName: Record<string, number> = {};
+  for (const [rawType, tokens] of Object.entries(rawTokens)) {
+    const displayName = agentTypeMap.get(rawType) || rawType;
+    byDisplayName[displayName] = (byDisplayName[displayName] || 0) + tokens;
+  }
+
+  return byDisplayName;
 }

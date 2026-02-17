@@ -12,8 +12,10 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
+import { BarChart } from '@pppp606/ink-chart';
 import { Section } from './Section.js';
 import type { AutomatedInstancesData, AutomatedInstance } from '../utils/automated-instances.js';
+import { formatNumber } from '../utils/formatters.js';
 
 export interface AutomatedInstancesProps {
   data: AutomatedInstancesData;
@@ -180,6 +182,23 @@ export function AutomatedInstances({ data }: AutomatedInstancesProps): React.Rea
           currentProjected={data.currentProjected}
           adjustingDirection={data.adjustingDirection}
         />
+
+        {/* Token usage bar chart */}
+        {Object.keys(data.tokensByType).length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color="cyan" bold>Token Usage by Automation (24h)</Text>
+            <BarChart
+              data={Object.entries(data.tokensByType)
+                .map(([label, value]) => ({ label, value }))}
+              sort="desc"
+              showValue="right"
+              format={(v: number) => formatNumber(v)}
+              width={76}
+              color="cyan"
+              barChar="▆"
+            />
+          </Box>
+        )}
 
         {/* Hint */}
         <Box marginTop={1}>

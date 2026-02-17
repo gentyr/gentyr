@@ -85,3 +85,16 @@ export function resolveCredential(key: string): string | null {
   // Direct value (e.g., zone IDs, non-secret config)
   return ref;
 }
+
+/**
+ * Fetch with an abort-controller timeout. Shared across data readers.
+ */
+export async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 10000): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}

@@ -147,8 +147,11 @@ The `/cto-report` command launches an Ink-based (React for CLIs) dashboard that 
 
 - **Rounded corner containers** using Ink's `borderStyle: 'round'`
 - **Color-coded quota bars** (green/yellow/red based on usage)
-- **Usage trend sparklines** showing 5h and 7d history
+- **Usage trend line graphs** showing 5h and 7d history with trajectory forecast overlay
 - **Usage trajectory projections** with linear regression
+- **Testing health section** with 42-bucket activity graph (4h resolution), Codecov sparkline, agent framework breakdown
+- **Deployments section** showing Render services and Vercel projects side-by-side with combined deploy timeline and pipeline state
+- **Infrastructure health section** with 5-provider status dots (Render, Vercel, Supabase, Elasticsearch, Cloudflare)
 - **Automated instances table** with run counts and frequency adjustments
 - **Chronological timeline** of all system activity
 - **Metrics summary grid** with nested boxes
@@ -274,6 +277,39 @@ The `/cto-report` command launches an Ink-based (React for CLIs) dashboard that 
   - Reset In - Time remaining until quota reset
   - Trend - Rate of change (% per hour for 5h, % per day for 7d)
 - **Note**: This text-based projection section complements the visual Trajectory Forecast chart in Usage Trends
+
+#### Testing Health
+- **Purpose**: Monitor test suite health, agent coverage, and activity trends
+- **Shows**:
+  - Failing suites with fix attempt counts and resolution status
+  - Agent breakdown by test framework (jest, vitest, playwright)
+  - **42-bucket activity graph** (4h resolution, ~7-day window) rendered as LineGraph — replaces old 7-day sparkline
+  - Codecov coverage sparkline (when credentials available)
+  - Unique failure count and resolved suites in last 24h
+- **Data Source**: `testing-reader.ts` — aggregates test failure events from agent-tracker database and Codecov API
+
+#### Deployments
+- **Purpose**: Live deployment status for Render and Vercel platforms
+- **Shows**:
+  - Render services list (name, status, type, suspension state)
+  - Vercel projects list (name, framework)
+  - Combined recent deploy timeline (newest first, up to 8 entries from both platforms)
+  - Pipeline promotion state (last preview/staging check and last promotion timestamp)
+- **Data Source**: `deployments-reader.ts` — parallel Render and Vercel API calls, all via `Promise.allSettled` with 10s timeouts
+- **Graceful Degradation**: Section hidden when neither `RENDER_API_KEY` nor `VERCEL_TOKEN` available
+
+#### Infrastructure Health
+- **Purpose**: At-a-glance operational status across 5 infrastructure providers
+- **Providers**: Render, Vercel, Supabase, Elasticsearch, Cloudflare — each independently degradable
+- **Shows**:
+  - Per-provider status dot (green = healthy, red = unavailable)
+  - Render: service count and suspended count
+  - Vercel: project count and error deploy count (24h)
+  - Supabase: API reachability health check
+  - Elasticsearch: 1h log totals, error and warn counts, top services by volume
+  - Cloudflare: zone status and nameservers
+- **Data Source**: `infra-reader.ts` — 5 concurrent provider queries, independent failure isolation
+- **Graceful Degradation**: Section hidden when no providers return data
 
 #### Automated Instances
 - **Purpose**: Monitor all automated Claude triggers with frequency adjustment visibility

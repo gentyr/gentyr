@@ -664,6 +664,43 @@ describe('Testing Reader', () => {
       expect(result.dailyTestActivity.length).toBe(7);
       expect(result.dailyTestActivity.every(d => d === 0)).toBe(true);
     });
+
+    it('should produce testActivityTimeseries with 42 four-hour buckets', () => {
+      const now = Date.now();
+      const history = {
+        agents: [
+          {
+            type: 'test-failure-jest',
+            timestamp: new Date(now - 1 * 60 * 60 * 1000).toISOString(),
+            metadata: { suiteNames: ['test1.ts'] }
+          },
+          {
+            type: 'test-failure-vitest',
+            timestamp: new Date(now - 5 * 60 * 60 * 1000).toISOString(),
+            metadata: { suiteNames: ['test2.ts'] }
+          }
+        ]
+      };
+      fs.writeFileSync(agentTrackerPath, JSON.stringify(history));
+
+      const result = getTestingData();
+
+      expect(result.testActivityTimeseries.length).toBe(42);
+      expect(Array.isArray(result.testActivityTimeseries)).toBe(true);
+      result.testActivityTimeseries.forEach(v => {
+        expect(typeof v).toBe('number');
+        expect(Number.isNaN(v)).toBe(false);
+        expect(v).toBeGreaterThanOrEqual(0);
+      });
+      // The most recent bucket (index 41) should have the 1-hour-ago event
+      expect(result.testActivityTimeseries[41]).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should return empty testActivityTimeseries when no agent tracker exists', () => {
+      const result = getTestingData();
+
+      expect(result.testActivityTimeseries).toEqual([]);
+    });
   });
 
   describe('Workspace Test States', () => {

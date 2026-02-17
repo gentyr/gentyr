@@ -7,7 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { resolveCredential } from './credentials.js';
+import { resolveCredential, fetchWithTimeout } from './credentials.js';
 
 const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'hourly-automation-state.json');
@@ -47,16 +47,6 @@ export interface DeploymentsData {
 // ============================================================================
 // Helpers
 // ============================================================================
-
-async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 10000): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
 
 function normalizeRenderStatus(status: string): string {
   // Render deploy statuses: live, build_in_progress, update_in_progress, deactivated, canceled, build_failed, update_failed
