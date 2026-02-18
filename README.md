@@ -60,365 +60,401 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
 
 ## CTO Dashboard
 
-<img src="docs/assets/claude-logo.svg" width="39" height="39" align="left">
-
-&nbsp; **Claude Code** v2.1.34<br>
-&nbsp; Opus 4.6 · Claude Max<br>
-&nbsp; `~/git/my-project`
-
-<br clear="left">
-
+<!-- CTO_DASHBOARD_START -->
 ```
+▗ ▗   ▖ ▖  Claude Code v2.1.34
+           Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/git/my-project
+  ⎿  SessionStart says: Accounts: 2 tracked | Active: a0823518... (40% max usage)
 
-  ⎿  UserPromptSubmit says: Quota: 5-hour ██░░░░░░ 27% (resets 2h) | 7-day ███████░ 91% (resets 5d)
-     Usage (30d): 2344.4M tokens | 311 task / 262 user sessions | TODOs: 361 queued, 1 active | Deputy: ON (ready)
-     Pending: 6 CTO decision(s)                                                                                                                                                                                                                      
-                                                                                                                                                                                                                                                     
-⏺ Let me run the CTO dashboard for you.                                                                                                                                                                             08:18 PM  claude-opus-4-6        
-                                                                                                                                                                                                                                                     
-⏺ Bash(PROJECT_ROOT=$(d=$(pwd); while [ "$d" != "/" ] && [ ! -f "$d/.claude/commands/cto-report.md" ]; do d=$(dirname "$d"); done; echo "$d") && GENTYR_PATH=$(dirname $(dirname $(dirname $(readlink -f                                             
-      "$PROJECT_ROOT/.claude/commands/cto-report.md" 2>/dev/null || echo "$PROJECT_ROOT")))) && CLAUDE_PROJECT_DIR="$PROJECT_ROOT" node "$GENTYR_PATH/packages/cto-dashboard/dist/index.js")                                                         
-  ⎿  ╭──────────────────────────────────────────────────────────────────────────────╮                                                                                                                                                                
-     │ GENTYR CTO DASHBOARD                                        Period: Last 24h │                                                                                                                                                                
-     │ Generated: 2026-02-17 20:18                                                  │                                                                                                                                                                
+❯ /cto-report
+  ⎿  UserPromptSubmit says: Quota (2 accounts): 5h ██████░░░░░░░░░░ 35% | 7d ██████████████░░ 88%
+     Accounts: dev@acme.io (33% 5h) | ops@acme.io (2% 5h)
+     Usage (30d): 2371.0M tokens | 318 task / 279 user sessions | TODOs: 278 queued, 2 active | Deputy: ON (ready)
+     Pending: 5 CTO decision(s)
+
+⏺ Bash(node packages/cto-dashboard/dist/index.js)
+  ⎿  ╭──────────────────────────────────────────────────────────────────────────────╮
+     │ GENTYR CTO DASHBOARD                                        Period: Last 24h │
+     │ Generated: 2026-02-17 23:20                                                  │
      ╰──────────────────────────────────────────────────────────────────────────────╯
-                                                                                                                                                                                                                                                     
-     ╭─ QUOTA & CAPACITY (1 key) ──────────── ╭─ SYSTEM STATUS ───────────────────────                                                                                                                                                             
-     ───────────────────────────────────────╮ ───────────────────────────────────────╮                                                                                                                                                               
-                                                                                                                                                                                                                                                     
-     │ 5-hour   ████░░░░░░░░░░░░  28%       │ │ Deputy CTO: ENABLED                 │                                                                                                                                                                
-     │ 7-day    ███████████████░  91%       │ │   Runs every 55m | Next:7:54PM (0s) │                                                                                                                                                                
-     │ Rotations (24h): 3                   │ │                                     │                                                                                                                                                                
-     ╰──────────────────────────────────────╯ │ Protection: PROTECTED               │                                                                                                                                                                
-                                              │ Commits:    BLOCKED                 │                                                                                                                                                                
-                                              ╰─────────────────────────────────────╯                                                                                                                                                                
-                                                                                                                                                                                                                                                   
+     
+     ╭─ QUOTA & CAPACITY (1 key) ──────────╮ ╭─ SYSTEM STATUS ──────────────────────╮
+     │ 5-hour   ██████░░░░░░░░░░  35%      │ │ Deputy CTO: ENABLED                  │
+     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m |    11:24P (3m30s) │
+     │ Rotations (24h): 2                  │ │   Next:                              │
+     │                                     │ │ Protection: PROTECTED                │
+     │                                     │ │ Commits:    BLOCKED                  │
+     ╰─────────────────────────────────────╯ ╰──────────────────────────────────────╯
+     
      ╭─ DEPUTY CTO ─────────────────────────────────────────────────────────────────╮
      │ ╭────────────╮ ╭────────────╮ ╭────────────╮ ╭─────────────╮                 │
      │ │ Untriaged  │ │ Escalated  │ │ Pending Q  │ │ 24h Handled │                 │
-     │ │ 0          │ │ 5          │ │ 6          │ │ 5           │                 │
+     │ │ 2          │ │ 4          │ │ 5          │ │ 3           │                 │
      │ ╰────────────╯ ╰────────────╯ ╰────────────╯ ╰─────────────╯                 │
      │                                                                              │
      │ ╭───────────────╮ ╭───────────────╮                                          │
      │ │ 24h Escalated │ │ 24h Dismissed │                                          │
-     │ │ 17            │ │ 29            │                                          │
+     │ │ 4             │ │ 2             │                                          │
      │ ╰───────────────╯ ╰───────────────╯                                          │
+     │                                                                              │
+     │ ◆ UNTRIAGED (2)                                                              │
+     │    Title                              Priority  Time                         │
+     │ ────────────────────────────────────────────────────────────                 │
+     │ ◆  Hardcoded JWT secret detected in…  critical  18m ago                      │
+     │ ◆  Missing RLS policy on user_sessi…  high      47m ago                      │
      │                                                                              │
      │ ▲ ESCALATED                                                                  │
      │    Title                              Priority  Time                         │
      │ ────────────────────────────────────────────────────────────                 │
-     │ ◆  Security Review: Email service D…  normal    1h ago                       │
-     │ ◆  G009 RLS Compliance: Team member…  normal    1h ago                       │
-     │ ◆  Staging Health Issue: Render bac…  high      1h ago                       │
-     │ ◆  PAGE-OBSERVER/BROWSER-PROXY secu…  normal    5h ago                       │
-     │ ◆  Periodic Antipattern Scan: 4 iss…  normal    8h ago                       │
+     │ ◆  API rate-limiting bypass via hea…  critical  2h ago                       │
+     │ ◆  CORS wildcard allowed on product…  high      4h ago                       │
+     │ ◆  Service account has write access…  high      6h ago                       │
+     │ ◆  PII logged in request bodies und…  high      8h ago                       │
      │                                                                              │
-     │ ? PENDING QUESTIONS (6)                                                      │
+     │ ? PENDING QUESTIONS (5)                                                      │
      │    Title                              Type      Time                         │
      │ ────────────────────────────────────────────────────────────                 │
-     │ ?  Security: Email service DEV_MODE…  escalation1h ago                       │
-     │    └─ Fix both: (1) Redact OTP codes from DEV_…                              │
-     │ ?  G009 Security: RLS policies inco…  escalation1h ago                       │
-     │    └─ Create a single migration (010) that rep…                              │
-     │ ?  Staging Render backend has NEVER…  escalation1h ago                       │
-     │    └─ Investigate the Render staging build log…                              │
-     │ ?  Bypass Request: Fix CI build fai…  bypass-req1h ago                       │
-     │                                       uest                                   │
-     │ ?  Architecture decision: WebSocket…  decision  5h ago                       │
-     │    └─ Option A: Integrate into backend. Plan 0…                              │
-     │ ?  BROWSER-PROXY spec gap: auth tok…  escalation5h ago                       │
-     │    └─ Update the BROWSER-PROXY spec (specs/loc…                              │
+     │ ?  Should the triage pipeline use a…  architectu25m ago                      │
+     │                                       re                                     │
+     │    └─ Stay with SQLite for now — add a migrati…                              │
+     │ ?  Approve relaxing CSP to allow in…  security  52m ago                      │
+     │    └─ Reject — use CSS variables and data attr…                              │
+     │ ?  G009 exemption request: skip pre…  compliance1h ago                       │
+     │    └─ Grant exemption only for files in dist/ …                              │
+     │ ?  Which caching layer for the quot…  architectu2h ago                       │
+     │                                       re                                     │
+     │    └─ Cache at 5-minute TTL in memory — no ext…                              │
+     │ ?  Should oauth tokens be stored in…  security  3h ago                       │
+     │    └─ Use Supabase Vault with envelope encrypt…                              │
      │                                                                              │
      │ ────────────────────────────────────────────────────────────                 │
      │                                                                              │
      │ ○ Recently Triaged                                                           │
      │    Title                              Priority  Outcome     Time             │
      │ ────────────────────────────────────────────────────────────────────────     │
-     │ ◆  Security Review: Email service D…  normal    ↑ Escalated 1h ago           │
-     │ ◆  G009 RLS Compliance: Team member…  normal    ↑ Escalated 1h ago           │
-     │ ◆  Staging Health Issue: Render bac…  high      ↑ Escalated 1h ago           │
-     │ ◆  Antipattern Hunt: Systemic G001 …  normal    ✕ Dismissed 1h ago           │
-     │ ◆  CLAUDE.md refactored: 25,676 → 1…  low       ✕ Dismissed 2h ago           │
-     │ ◆  Lint fix: prefer-destructuring i…  low       ✕ Dismissed 3h ago           │
-     │ ◆  Fixed 2 lint errors in extension…  low       ✕ Dismissed 4h ago           │
-     │ ◆  Gap 6 Operator Panel: Decomposed…  low       ✕ Dismissed 5h ago           │
+     │ ◆  Unused env vars referencing dele…  low       ✕ Dismissed 9h ago           │
+     │ ◆  Dependency audit: lodash 4.17.20…  normal    ✓ Handled   11h ago          │
+     │ ◆  Spec G003 violation: Zod schema …  high      ↑ Escalated 13h ago          │
+     │ ◆  Antipattern detected: silent cat…  critical  ↑ Escalated 15h ago          │
+     │ ◆  TypeScript strict mode disabled …  normal    ✓ Handled   17h ago          │
+     │ ◆  Session token expiry not validat…  high      ↑ Escalated 19h ago          │
+     │ ◆  Missing index on foreign key: ta…  low       ✕ Dismissed 21h ago          │
+     │ ◆  Compliance check: G004 hardcoded…  normal    ✓ Handled   22h ago          │
      ╰──────────────────────────────────────────────────────────────────────────────╯
-
+     
      ╭─ USAGE TRENDS ───────────────────────────────────────────────────────────────╮
      │ 5-Hour Usage (1019 snapshots, 1d ago to now)                                 │
-     │ 100│ ⎽⎼⎼⎼─⎻⎻⎻                                                                │
-     │  75│                     ⎻⎺   ⎼⎼⎼───       ⎼⎼                                │
-     │  50│⎽        ⎻    ─⎻       ⎽─⎻                                               │
-     │  25│          ──⎺⎺     ⎽─           ⎽⎽⎽⎽─⎻⎻   ⎽⎼⎼⎼⎼⎼⎼⎼⎼⎼⎼⎼─⎼⎼⎼⎼⎼⎼⎼⎼⎼⎼⎼⎼─     │
-     │   0│                ──⎻                      ⎺                               │
-     │ Current: 28%  Min: 0%  Max: 100%                                             │
+     │ 100│    ⎽─⎻─⎽                                                                │
+     │  75│  ⎽⎻     ⎺⎻⎽                ⎽⎼⎼⎼⎽     ⎽⎼⎼                                │
+     │  50│─⎻          ⎺⎼⎽          ⎼─⎻     ⎺⎻──⎻   ⎺⎻⎽                             │
+     │  25│               ⎻⎼⎽     ⎼⎺                   ─⎼──⎼⎼⎼─⎼⎼⎼───⎼─⎼─⎼⎼⎼───     │
+     │   0│                  ─⎼⎽⎼⎻                                                  │
+     │ Current: 29%  Min: 0%  Max: 100%                                             │
      │                                                                              │
      │ 7-Day Usage                                                                  │
-     │ 100│                                           ⎽⎽⎽⎽⎽⎽⎽⎽⎽⎽⎽⎽─────────────     │
-     │  75│                       ⎽⎼⎼⎼⎼⎼⎼⎼⎼────⎻⎻⎻⎺⎺⎺⎺                              │
-     │  50│─⎻⎺⎺⎺⎺⎺⎺⎺            ⎼⎼                                                  │
-     │  25│         ⎻⎻⎻⎻⎻⎻⎺⎺⎺───                                                    │
+     │ 100│                                           ⎽⎽⎽⎽⎼⎼⎼⎼⎼⎼───────────────     │
+     │  75│                                ⎽⎽⎽⎼⎼──⎻⎻⎻⎺                              │
+     │  50│──⎼⎼⎽ ⎽                 ⎽⎽⎼⎼──⎻⎻                                         │
+     │  25│     ⎺ ⎺⎻⎻──⎼───⎼───⎻⎻⎺⎺                                                 │
      │   0│                                                                         │
-     │ Current: 91%  Min: 28%  Max: 91%                                             │
+     │ Current: 92%  Min: 26%  Max: 93%                                             │
      │                                                                              │
      │ 5-Hour Forecast (history → projection)                                       │
-     │ 100│─⎼⎼⎻⎻───────────────────────────────────────────────────────────────     │
-     │  75│           ⎺ ⎼⎼─    ⎼                                                    │
-     │  50│⎽      ─    ─                                                            │
-     │  25│     ─⎺   ⎻     ⎽⎽─⎻ ⎽⎼⎼⎼⎼⎼─⎼⎼⎼⎼⎼⎼─────────────────────────────⎻⎻⎻⎻⎻     │
-     │   0│        ─⎻                                                               │
+     │ 100│──⎽⎻⎽───────────────────────────────────────────────────────────────     │
+     │  75│ ⎽   ⎻        ⎽⎼⎽  ⎽⎼                                                    │
+     │  50│─     ⎺⎽    ⎽─   ⎻─  ⎻                                                   │
+     │  25│        ⎼             ──⎼─⎼⎼⎼⎼⎼⎼⎼─────────────────────────⎻⎻⎻⎻⎻⎻⎻⎻⎻⎻     │
+     │   0│         ─⎽⎻                                                             │
      │    └────────────────────────────────────────────────────────────────────     │
-     │     1d ago                           now                   reset: 1h 41m     │
+     │     1d ago                           now                   reset: 1h 40m     │
      │ ━ 5h usage  ━ 90% target    │  left: history  │  right: projected            │
      │                                                                              │
      │ 7-Day Forecast (history → projection)                                        │
-     │ 100│──────────────────────⎽⎽⎽⎽⎽⎽────────────────────────────────────────     │
-     │  75│            ⎼⎼⎼⎼──⎻⎻⎺⎺                                                   │
-     │  50│─⎺⎺⎺⎺      ⎼                                                             │
-     │  25│     ⎻⎻⎻⎺──                                                              │
+     │ 100│──────────────────────⎽⎽⎼⎼⎼─────────────────────────────────────────     │
+     │  75│                 ⎽⎼⎻⎻⎺                                                   │
+     │  50│─⎼⎽⎽        ⎽⎼─⎻⎺                                                        │
+     │  25│    ⎻─⎼─⎼─⎻⎺                                                             │
      │   0│                                                                         │
      │    └────────────────────────────────────────────────────────────────────     │
-     │     1d ago                           now                   reset: 1h 41m     │
+     │     1d ago                           now                   reset: 1h 40m     │
      │ ━ 7d usage  ━ 90% target    │  left: history  │  right: projected            │
      ╰──────────────────────────────────────────────────────────────────────────────╯
-
+     
      ╭─ USAGE TRAJECTORY ───────────────────────────────────────────────────────────╮
      │ 5-Hour Window                       7-Day Window                             │
-     │  ├─ Current:     28%                 ├─ Current:     91%                     │
+     │  ├─ Current:     29%                 ├─ Current:     92%                     │
      │  ├─ At Reset:    31% ↑               ├─ At Reset:    91%                     │
-     │  ├─ Reset In:    1h 41m              ├─ Reset In:    4d 15h                  │
+     │  ├─ Reset In:    1h 40m              ├─ Reset In:    4d 14h                  │
      │  └─ Trend:       +2.2%/hr ↑          └─ Trend:       +0.0%/day →             │
      │                                                                              │
      │ Projection Method: Linear regression on last 30 snapshots                    │
      ╰──────────────────────────────────────────────────────────────────────────────╯
-
+     
      ╭─ AUTOMATED INSTANCES ────────────────────────────────────────────────────────╮
      │ Type                  Runs (24h)  Until Next    Freq Adj                     │
      │ ───────────────────────────────────────────────────────────────────          │
-     │ Triage Check          0           9m            +100% slower                 │
-     │ Lint Checker          2           39m           +100% slower                 │
-     │ CLAUDE.md Refactor    1           now           +100% slower                 │
-     │ Task Runner           12          28m           +100% slower                 │
-     │ Production Health     4           28m           +100% slower                 │
-     │ Compliance (Sched.)   4           28m           +100% slower                 │
-     │ User Feedback         0           pending       +100% slower                 │
-     │ Antipattern Hunter    2           4h28m         +100% slower                 │
-     │ Staging Health        2           4h28m         +100% slower                 │
-     │ Preview Promotion     0           11h6m         +100% slower                 │
-     │ Staging Promotion     0           19h48m        +100% slower                 │
+     │ Triage Check          0           5m            +80% slower                  │
+     │ Lint Checker          9           16m           +80% slower                  │
+     │ CLAUDE.md Refactor    3           38m           +80% slower                  │
+     │ Task Runner           8           36m           +80% slower                  │
+     │ Production Health     14          52m           +80% slower                  │
+     │ Compliance (Sched.)   4           1h12m         +80% slower                  │
+     │ User Feedback         2           1h48m         +80% slower                  │
+     │ Antipattern Hunter    3           3h24m         +80% slower                  │
+     │ Staging Health        7           2h9m          +80% slower                  │
+     │ Preview Promotion     1           5h18m         +80% slower                  │
+     │ Staging Promotion     0           18h42m        +80% slower                  │
      │ ───────────────────────────────────────────────────────────────────          │
-     │ Pre-Commit Hook       11          on commit     +100% slower                 │
-     │ Test Suite            0           on failure    +100% slower                 │
-     │ Compliance (Hook)     0           on change     +100% slower                 │
-     │ Todo Maintenance      0           on change     +100% slower                 │
+     │ Pre-Commit Hook       18          on commit     +80% slower                  │
+     │ Test Suite            5           on failure    +80% slower                  │
+     │ Compliance (Hook)     11          on change     baseline                     │
+     │ Todo Maintenance      7           on change     +80% slower                  │
      │                                                                              │
-     │ Usage Target: 90%  |  Current Projected: 150%  |  Adjusting: ↑ intervals     │
+     │ Usage Target: 90%  |  Current Projected: 2%  |  Adjusting: → stable          │
      │                                                                              │
      │ Token Usage by Automation (24h)                                              │
-     │ Task Runner            ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆ 90.4M │
-     │ Compliance (Sched.)    ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆                       48.7M │
-     │ Antipattern Hunter     ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆                               33.8M │
-     │ report-triage          ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆                                 29.0M │
-     │ task-runner-deputy-cto ▆▆▆▆▆▆▆▆▆▆▆▆                                    23.5M │
-     │ Test Suite             ▆▆▆▆▆▆▆▆▆                                       17.9M │
-     │ Pre-Commit Hook        ▆▆▆▆▆▆▆▆                                        16.8M │
-     │ Production Health      ▆▆▆▆▆                                           11.4M │
-     │ Lint Checker           ▆▆▆▆                                             8.3M │
-     │ Staging Health         ▆▆                                               5.0M │
-     │ CLAUDE.md Refactor     ▆                                                2.3M │
+     │ Task Runner         ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆ 85.4M │
+     │ Pre-Commit Hook     ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆               61.9M │
+     │ Antipattern Hunter  ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆                       48.4M │
+     │ Lint Checker        ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆                             37.7M │
+     │ Compliance (Hook)   ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆                                  29.1M │
+     │ Compliance (Sched.) ▆▆▆▆▆▆▆▆▆▆▆▆▆                                      22.7M │
+     │ Production Health   ▆▆▆▆▆▆▆▆▆▆                                         18.5M │
+     │ CLAUDE.md Refactor  ▆▆▆▆▆▆▆▆                                           14.3M │
+     │ User Feedback       ▆▆▆▆▆▆                                             11.8M │
+     │ Staging Health      ▆▆▆▆                                                8.5M │
+     │ Test Suite          ▆▆▆                                                 5.9M │
      │                                                                              │
      │ Tip: Ask Claude Code to adjust frequency or switch modes (load balanced /    │
      │ static).                                                                     │
      ╰──────────────────────────────────────────────────────────────────────────────╯
-
+     
      ╭─ TESTING ────────────────────────────────────────────────────────────────────╮
-     │ Failing Suites (6)                                                           │
-     │   ✗ client.idempotency.test.ts        1d ago    -          ○○○○○ 0           │
-     │   ✗ client.test.ts                    21h ago   -          ○○○○○ 0           │
-     │   ✗ route.test.ts                     18h ago   -          ○○○○○ 0           │
-     │   ✗ notification-center.test.tsx      18h ago   -          ○○○○○ 0           │
-     │   ✗ backend-client.test.ts            18h ago   -          ○○○○○ 0           │
-     │   ✗ auth.setup.ts                     17h ago   -          ○○○○○ 0           │
+     │ Failing Suites (5)                                                           │
+     │   ✗ packages/api/src/__tests__/webho… 14h ago   vitest     ●●●●● 5           │
+     │   ✗ packages/frontend/src/__tests__/… 9h ago    vitest     ●●●○○ 3           │
+     │   ✗ e2e/tests/checkout-flow.spec.ts   6h ago    playwright ●●○○○ 2           │
+     │   ✗ packages/worker/src/__tests__/qu… 4h ago    jest       ●○○○○ 1           │
+     │   ✗ packages/shared/src/__tests__/va… 2h ago    vitest     ○○○○○ 0           │
      │                                                                              │
-     │ Agents (24h):   0                                                            │
-     │ Unique failures: 6                                                           │
+     │ Agents (24h):   14    Vitest:   7    Playwright:   3    Writer:   2          │
+     │ Resolved: 3 suites   Unique failures: 8                                      │
+     │                                                                              │
+     │ Test Agent Activity (7d)                                                     │
+     │ 5│                                               ⎻              ──           │
+     │  │                                 ⎽─           ⎻ ⎼     ⎽⎻─    ─  ⎺   ⎼⎺     │
+     │  │             ⎽⎼           ─⎺    ⎽  ─  ⎽⎺⎼    ─       ─   ⎼  ⎼    ⎻⎼⎻       │
+     │  │      ⎽⎺⎼      ⎼  ─⎻⎽   ⎼⎺  ⎻       ⎻⎽   ⎼  ⎼    ⎺⎼⎼⎺     ─⎽               │
+     │ 0│⎽⎽⎼⎺⎻⎽   ⎻⎽⎽─   ─⎼   ⎻⎽⎻     ⎺⎼⎺          ⎽⎻                               │
+     │                                                                              │
+     │ Coverage: 73%   7d trend: ███████                                            │
      ╰──────────────────────────────────────────────────────────────────────────────╯
-
+     
      ╭─ DEPLOYMENTS ────────────────────────────────────────────────────────────────╮
      │ Production                Staging                    Preview                 │
      │ ● healthy                 ● failing                  ● no data               │
-     │ 6h ago via vercel         9d ago via render          0 deploys               │
+     │ 22m ago via render        1h ago via render          0 deploys               │
      │ 5 deploys                 3 deploys                                          │
      │                                                                              │
-     │ Pipeline: preview – → staging – → production (24h gate)                      │
+     │ Pipeline: preview ✓ → staging ✓ → production (24h gate)  Last: 5h ago        │
      │                                                                              │
      │ Production Deploys                                                           │
-     │ 6h      ●  xy                     vercel   ready    feat: Elastic log        │
-     │                                                     pipel…                   │
-     │ 16h     ●  xy                     vercel   ready    fix: add force-dynamic   │
+     │ 22m     ●  gentyr-api             render   live     fix: resolve N+1 query   │
      │                                                     …                        │
-     │ 16h     ●  xy                     vercel   ready    fix: use lazy backend    │
-     │                                                     U…                       │
-     │ 16h     ●  xy                     vercel   ready    fix: cast invoicesData   │
-     │                                                     …                        │
-     │ 16h     ●  xy                     vercel   failed   fix: cast                │
-     │                                                     subscriptionD…           │
+     │ 3h      ●  gentyr-api             render   live     feat: add webhook        │
+     │                                                     signa…                   │
+     │ 5h      ●  gentyr-web             vercel   ready    feat: CTO dashboard      │
+     │                                                     tra…                     │
+     │ 8h      ●  gentyr-web             vercel   ready    chore: bump lodash to    │
+     │                                                     4…                       │
+     │ 11h     ●  gentyr-worker          render   live     fix: queue processor     │
+     │                                                     cr…                      │
      │                                                                              │
      │ Staging Deploys                                                              │
-     │ 9d      ●  projecty-api-staging   render   failed   Fix web app test         │
-     │                                                     failur…                  │
-     │ 9d      ●  projecty-api-staging   render   failed   Fix web app test         │
-     │                                                     failur…                  │
-     │ 9d      ●  projecty-api-staging   render   failed   Fix web app test         │
-     │                                                     failur…                  │
+     │ 1h      ●  gentyr-api-staging     render   failed   wip: experimental        │
+     │                                                     rate-…                   │
+     │ 2h      ●  gentyr-web-staging     vercel   ready    feat: inline styles      │
+     │                                                     rep…                     │
+     │ 7h      ●  gentyr-api-staging     render   live     fix: RLS policy added    │
+     │                                                     t…                       │
      │                                                                              │
-     │ Deploys (24h): 10   Success: 40%   Failed: 6   Freq: 0.4/hr                  │
+     │ Deploys (24h): 8   Success: 50%   Failed: 1   Freq: 0.3/hr                   │
      ╰──────────────────────────────────────────────────────────────────────────────╯
-
+     
      ╭─ INFRASTRUCTURE ─────────────────────────────────────────────────────────────╮
      │ Provider        Status        Detail              Extra                      │
-     │ Render          ● 2 svc       0 suspended         deploy 1d ago              │
-     │ Vercel          ● 1 proj      5 err (24h)                                    │
+     │ Render          ● 2 svc       0 suspended         deploy 22m ago             │
+     │ Vercel          ● 1 proj      2 err (24h)                                    │
      │ Supabase        ● healthy                                                    │
      │ Elastic         ○ unavailable                                                │
      │ Cloudflare      ● active      Free Website        NS: 2                      │
      │                                                                              │
      │ Render Events                                                                │
-     │ 9d      projecty-api-staging    failed                                       │
-     │ 9d      projecty-api-staging    failed                                       │
-     │ 9d      projecty-api-staging    failed                                       │
+     │ 22m     gentyr-api              live                                         │
+     │ 3h      gentyr-api              live                                         │
+     │ 11h     gentyr-worker           live                                         │
      │                                                                              │
      │ Vercel Events                                                                │
-     │ 6h      xy                      ready                                        │
-     │ 16h     xy                      ready                                        │
-     │ 16h     xy                      ready                                        │
+     │ 5h      gentyr-web              ready                                        │
+     │ 8h      gentyr-web              ready                                        │
+     │ 2h      gentyr-web-staging      ready                                        │
      ╰──────────────────────────────────────────────────────────────────────────────╯
-
+     
+     ╭─ LOGGING ────────────────────────────────────────────────────────────────────╮
+     │ Log Volume (24h)                                 Total: 44.6K                │
+     │                     ⎼─⎻⎻⎺⎺⎺⎻⎻⎻──⎼⎼⎽              1h: 2.5K                    │
+     │                                                  Errors: 1.8K                │
+     │                  ⎽─⎺               ⎺⎻─⎼⎽         Warnings: 5.5K              │
+     │                                                                              │
+     │                 ─                       ⎻─⎼                                  │
+     │                                                                              │
+     │ ⎽             ─⎺                                                             │
+     │ ⎺⎻─⎼⎼⎽                                                                       │
+     │  ⎺⎻──⎼⎼⎽⎽⎽⎽⎼─⎺                                                               │
+     │  ⎺                                                                           │
+     │                                                                              │
+     │ By Level                               By Service                            │
+     │ info  ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆ 36.8K    api        ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆ 18.3K   │
+     │ warn  ▆▆▆                      5.5K    worker     ▆▆▆▆▆▆▆▆▆▆▆        11.3K   │
+     │ error ▆                        1.8K    auth       ▆▆▆▆▆▆▆             7.2K   │
+     │ debug ▆                         490    deployment ▆▆▆▆                4.8K   │
+     │                                        cron       ▆▆                  3.0K   │
+     │                                                                              │
+     │ Top Errors (24h)                                                             │
+     │  ✗ ZodError: Required field "schema_versi… api             412               │
+     │  ✗ ETIMEDOUT: Connection timed out reachi… worker          287               │
+     │  ✗ UnhandledPromiseRejection: Token verif… auth            194               │
+     │  ✗ RenderBuildError: Exit code 1 in packa… deployment      88                │
+     │  ✗ CronJobError: Payment reconciliation j… cron            43                │
+     │                                                                              │
+     │ Top Warnings (24h)                                                           │
+     │  ⚠ Slow query detected: reports.find() to… api             831               │
+     │  ⚠ Rate limit approaching: 92% of Anthrop… worker          614               │
+     │  ⚠ Deprecated field "userId" still in use… api             488               │
+     │  ⚠ Session token within 5 minutes of expi… auth            327               │
+     │  ⚠ Cache miss rate elevated: 68% on repor… worker          219               │
+     │                                                                              │
+     │ Source Coverage                                                              │
+     │ ● api ● worker ● deployment ○ ci-cd ● testing ○ database ○ cdn ● auth ● cron │
+     │                                                                              │
+     │ Storage: ~0.0 GB/day   Est. Monthly: ~$0.16   Indices: 7                     │
+     ╰──────────────────────────────────────────────────────────────────────────────╯
+     
+     ╭─ FEEDBACK PERSONAS (4) ──────────────────────────────────────────────────────╮
+     │ Name                Mode  Status    Sessions  Satisfaction      Findings     │
+     │ GUI Developer       gui   active    28        satisfied         14           │
+     │ CLI Power User      cli   active    19        very satisfied    8            │
+     │ API Integrator      api   active    22        neutral           11           │
+     │ SDK Automation      sdk   active    15        satisfied         6            │
+     │                                                                              │
+     │ Total: 84 sessions, 39 findings                                              │
+     ╰──────────────────────────────────────────────────────────────────────────────╯
+     
      ╭─ TIMELINE (24h) ─────────────────────────────────────────────────────────────╮
-     │ 20:17  o  SESSION   3448fd3c...                                              │
-     │                     └─ User session (manual)                                 │
+     │ 23:17  o  SESSION   User session started — CTO dashboard review              │
+     │                     └─ task-triggered via autonomous mode                    │
      │                                                                              │
-     │ 19:04  o  SESSION   7b68562c...                                              │
-     │                     └─ User session (manual)                                 │
+     │ 23:13  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
+     │                     └─ No violations detected by deputy-cto-review agent     │
      │                                                                              │
-     │ 19:01  ?  QUESTION  Security: Email service DEV_MODE logs OTP codes to cons… │
-     │                     └─ Type: escalation | Status: pending                    │
+     │ 23:06  !  REPORT    Hardcoded JWT secret detected in auth middlewa[CRITICAL] │
      │                                                                              │
-     │ 19:01  ?  QUESTION  G009 Security: RLS policies inconsistent — migrations 0… │
-     │                     └─ Type: escalation | Status: pending                    │
+     │                     └─Spec G004 violation — credential must be in env or     │
+     │                       Vault                                                  │
      │                                                                              │
-     │ 19:00  ?  QUESTION  Staging Render backend has NEVER successfully deployed … │
-     │                     └─ Type: escalation | Status: pending                    │
+     │ 22:59  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
+     │                     └─ task-runner-code-reviewer — 8 files changed           │
      │                                                                              │
-     │ 19:00  o  SESSION   33716641...                                              │
-     │                     └─ Task: report-triage                                   │
+     │ 22:52  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or[HIGH] │
      │                                                                              │
-     │ 18:59  *  HOOK      hourly-automation                                        │
-     │                     └─ deputy-cto-review: "Triaging pending CTO reports"     │
+     │                     └─ Awaiting CTO decision                                 │
      │                                                                              │
-     │ 18:55  ?  QUESTION  Bypass Request: Fix CI build failure: createLogger stri… │
-     │                     └─ Type: bypass-request | Status: pending                │
+     │ 22:44  *  HOOK      PostToolUse: Write blocked — attempt to modify [CRITICAL │
+     │                                                                    ]         │
+     │                     └─ Protected path enforcement triggered                  │
      │                                                                              │
-     │ 18:49  o  SESSION   bf7f74e5...                                              │
-     │                     └─ User session (manual)                                 │
+     │ 22:36  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
+     │                     └─Supabase row-level security gap — G003 compliance risk │
      │                                                                              │
-     │ 18:49  !  REPORT    Security Review: Email service DEV_MODE logs OTP codes … │
-     │                     └─From: standalone-antipattern-hunter | Status:          │
-     │                       escalated                                              │
      │                                                                              │
-     │ 18:49  !  REPORT    Antipattern Hunt: Systemic G001 || [] violations across… │
-     │                     └─From: standalone-antipattern-hunter | Status:          │
-     │                       dismissed                                              │
+     │ 22:28  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
+     │                     └─ 12 ESLint errors resolved across 5 files              │
      │                                                                              │
-     │ 18:48  !  REPORT    G009 RLS Compliance: Team member access inconsistency a… │
-     │                     └─From: standalone-compliance-checker | Status:          │
-     │                       escalated                                              │
+     │ 22:19  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
+     │                     └─ claudemd-refactor agent                               │
      │                                                                              │
-     │ 18:48  +  TASK      G002/G017: TODO in execute.ts - Decryption not implemen… │
-     │                     └─ Assignee: CODE-REVIEWER                               │
+     │ 22:09  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
+     │                     └─ Commit blocked — lint-fixer spawned automatically     │
      │                                                                              │
-     │ 18:47  +  TASK      G010: Logs API route has NO auth validation - /api/logs… │
-     │                     └─ Assignee: CODE-REVIEWER                               │
+     │ 21:58  !  REPORT    Antipattern scan: silent catch in payment proce[CRITICAL │
+     │                                                                    ]         │
+     │                     └─ G001 violation — silent failure must be converted to  │
+     │                        loud failure                                          │
      │                                                                              │
-     │ 18:47  !  REPORT    Staging Health Issue: Render backend has never suc[HIGH] │
+     │ 21:47  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
+     │                     └─Architecture question — deputy CTO recommends          │
+     │                       rejection                                              │
      │                                                                              │
-     │                     └─ From: staging-health-monitor | Status: escalated      │
+     │ 21:35  o  SESSION   Staging health monitor — all checks passed               │
+     │                     └─ staging-health-monitor agent — 6 services healthy     │
      │                                                                              │
-     │ 18:47  +  TASK      Fix G001 violation: dashboard/page.tsx partially fixed … │
-     │                     └─ Assignee: INVESTIGATOR & PLANNER                      │
+     │ 21:22  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
+     │                     └─ task-runner-code-reviewer — 14 type errors fixed      │
      │                                                                              │
-     │ 18:46  o  SESSION   88bc9be3...                                              │
-     │                     └─ Task: staging-health-monitor                          │
+     │ 21:08  !  REPORT    CORS wildcard on production endpoints — policy vio[HIGH] │
      │                                                                              │
-     │ 18:46  o  SESSION   82b48d7d...                                              │
-     │                     └─ Task: task-runner-investigator                        │
+     │                     └─Escalated to CTO for explicit origin allowlist         │
+     │                       decision                                               │
      │                                                                              │
-     │ 18:46  o  SESSION   b579aec1...                                              │
-     │                     └─ Task: standalone-antipattern-hunter                   │
+     │ 20:52  *  HOOK      Compliance check triggered — 3 files changed in package… │
+     │                     └─ compliance-global agent: all G001–G011 specs verified │
      │                                                                              │
-     │ 18:46  o  SESSION   0eac06de...                                              │
-     │                     └─ Task: task-runner-code-reviewer                       │
+     │ 20:37  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
+     │                     └─Scale threshold discussion — recommendation: stay      │
+     │                       SQLite until 5k/day                                    │
+     │                                                                              │
+     │ 20:21  o  SESSION   Investigator session — tracing API latency spike in pro… │
+     │                     └─ task-runner-investigator — root cause: N+1 query in   │
+     │                        reports endpoint                                      │
+     │                                                                              │
+     │ 20:03  +  TASK      Completed: Rotate leaked service account credential      │
+     │                     └─security task — Supabase service role key revoked and  │
+     │                       replaced                                               │
+     │                                                                              │
+     │ 19:46  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
+     │                     └─ Self-handled by deputy CTO — bumped to 4.17.21        │
      │                                                                              │
      ╰──────────────────────────────────────────────────────────────────────────────╯
-
+     
      ╭─ METRICS SUMMARY ────────────────────────────────────────────────────────────╮
-     │ ╭─ Tokens                                                                    │
-     │ ─────────────────────────────────────────────────────────────────────╮       │
-     │ │ In: 129.0K                                                         │       │
-     │ │ Out: 137.1K                                                        │       │
-     │ │ Cache: 100%                                                        │       │
-     │ ╰────────────────────────────────────────────────────────────────────╯       │
+     │ ╭─ Tokens ────────╮ ╭─ Sessions ─────╮ ╭─ Agents ───────╮ ╭─ Tasks ────────╮ │
+     │ │ In: 148.3K      │ │ Task: 148      │ │ Spawns: 41     │ │ Pending: 278   │ │
+     │ │ Out: 118.0K     │ │ User: 34       │ │ Types: 8       │ │ Active: 2      │ │
+     │ │ Cache: 49%      │ │ Total: 182     │ │                │ │ Done: 21       │ │
+     │ ╰─────────────────╯ ╰────────────────╯ ╰────────────────╯ ╰────────────────╯ │
      │                                                                              │
-     │ ╭─ Sessions                                                                  │
-     │ ───────────────────────────────────────────────────────────────────╮         │
-     │ │ Task: 183                                                        │         │
-     │ │ User: 46                                                         │         │
-     │ │ Total: 229                                                       │         │
-     │ ╰──────────────────────────────────────────────────────────────────╯         │
-     │                                                                              │
-     │ ╭─ Agents                                                                    │
-     │ ─────────────────────────────────────────────────────────────────────╮       │
-     │ │ Spawns: 48                                                         │       │
-     │ │ Types: 10                                                          │       │
-     │ ╰────────────────────────────────────────────────────────────────────╯       │
-     │                                                                              │
-     │ ╭─ Tasks                                                                     │
-     │ ──────────────────────────────────────────────────────────────────────╮      │
-     │ │ Pending: 361                                                        │      │
-     │ │ Active: 1                                                           │      │
-     │ │ Done: 25                                                            │      │
-     │ ╰─────────────────────────────────────────────────────────────────────╯      │
-     │                                                                              │
-     │ ╭─ Hooks (24h)                                                               │
-     │ ────────────────────────────────────────────────────────────────╮            │
-     │ │ Total: 518                                                    │            │
-     │ │ Success: 100%                                                 │            │
-     │ │ Skipped: 59                                                   │            │
-     │ │ Failures: 0                                                   │            │
-     │ ╰───────────────────────────────────────────────────────────────╯            │
-     │                                                                              │
-     │ ╭─ Triage                                                                    │
-     │ ─────────────────────────────────────────────────────────────────────╮       │
-     │ │ Pending: 0                                                         │       │
-     │ │ Handled: 5                                                         │       │
-     │ │ Escalated: 17                                                      │       │
-     │ ╰────────────────────────────────────────────────────────────────────╯       │
-     │                                                                              │
-     │ ╭─ CTO Queue                                                                 │
-     │ ──────────────────────────────────────────────────────────────────╮          │
-     │ │ Questions: 6                                                    │          │
-     │ │ Rejections: 0                                                   │          │
-     │ │ Triage: 0                                                       │          │
-     │ ╰─────────────────────────────────────────────────────────────────╯          │
-     │                                                                              │
-     │ ╭─ Cooldowns                                                                 │
-     │ ──────────────────────────────────────────────────────────────────╮          │
-     │ │ Factor: 0.5x                                                    │          │
-     │ │ Target: 90%                                                     │          │
-     │ │ Proj: 1.5%                                                      │          │
-     │ ╰─────────────────────────────────────────────────────────────────╯          │
+     │ ╭─ Hooks (24h) ───╮ ╭─ Triage ───────╮ ╭─ CTO Queue ────╮ ╭─ Cooldowns ────╮ │
+     │ │ Total: 447      │ │ Pending: 0     │ │ Questions: 5   │ │ Factor: 0.6x   │ │
+     │ │ Success: 99%    │ │ Handled: 4     │ │ Rejections: 1  │ │ Target: 90%    │ │
+     │ │ Skipped: 44     │ │ Escalated: 14  │ │ Triage: 0      │ │ Proj: 1.8%     │ │
+     │ │ Failures: 3     │ │                │ │                │ │                │ │
+     │ ╰─────────────────╯ ╰────────────────╯ ╰────────────────╯ ╰────────────────╯ │
      ╰──────────────────────────────────────────────────────────────────────────────╯
+──────────────────────────────────────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · PR #9 · ctrl+t to hide tasks
 ```
+<!-- CTO_DASHBOARD_END -->
+
+The dashboard section above is auto-generated. To refresh it:
+
+```bash
+npm run generate:readme
+```
+
+This runs the dashboard with `--mock` data at `COLUMNS=80` and rewrites the content between the HTML comment markers.
 
 ## Components
 

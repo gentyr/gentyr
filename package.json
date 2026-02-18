@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Hook dependencies for GENTYR",
   "scripts": {
-    "test:e2e": "vitest run --config tests/e2e/vitest.config.ts"
+    "test:e2e": "vitest run --config tests/e2e/vitest.config.ts",
+    "generate:readme": "node scripts/generate-readme.js"
   },
   "dependencies": {
     "ajv": "^8.12.0",

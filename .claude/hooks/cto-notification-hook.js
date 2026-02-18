@@ -503,6 +503,17 @@ async function main() {
     return;
   }
 
+  // Skip for slash commands (contain GENTYR sentinel markers)
+  try {
+    const stdin = fs.readFileSync('/dev/stdin', 'utf-8');
+    if (stdin.includes('<!-- HOOK:GENTYR:')) {
+      console.log(JSON.stringify({ continue: true, suppressOutput: true }));
+      return;
+    }
+  } catch {
+    // No stdin available — continue normally
+  }
+
   // Gather all metrics (quota is async, session metrics use incremental cache)
   const sessionMetricsCached = getSessionMetricsCached();
   const aggregateQuota = getAggregateQuota();

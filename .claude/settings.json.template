@@ -89,6 +89,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/gentyr-splash.js",
+            "timeout": 3
+          },
+          {
+            "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-health-check.js",
             "timeout": 5
           },

@@ -1,0 +1,17 @@
+▗ ▗   ▖ ▖  Claude Code v2.1.34
+           Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/git/my-project
+  ⎿  SessionStart says: Accounts: 2 tracked | Active: a0823518... (40% max usage)
+
+❯ /cto-report
+  ⎿  UserPromptSubmit says: Quota (2 accounts): 5h ██████░░░░░░░░░░ 35% | 7d ██████████████░░ 88%
+     Accounts: dev@acme.io (33% 5h) | ops@acme.io (2% 5h)
+     Usage (30d): 2371.0M tokens | 318 task / 279 user sessions | TODOs: 278 queued, 2 active | Deputy: ON (ready)
+     Pending: 5 CTO decision(s)
+
+⏺ Bash(node packages/cto-dashboard/dist/index.js)
+{{DASHBOARD_OUTPUT}}
+──────────────────────────────────────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · PR #9 · ctrl+t to hide tasks

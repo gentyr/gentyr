@@ -67,7 +67,7 @@ function Header({ data }: { data: DashboardData }): React.ReactElement {
   );
 }
 
-function QuotaSection({ data }: { data: DashboardData }): React.ReactElement {
+function QuotaSection({ data, width }: { data: DashboardData; width?: number | string }): React.ReactElement {
   const { verified_quota } = data;
   const { aggregate } = verified_quota;
 
@@ -77,7 +77,7 @@ function QuotaSection({ data }: { data: DashboardData }): React.ReactElement {
   const title = `QUOTA & CAPACITY (${activeKeys} key${activeKeys !== 1 ? 's' : ''})`;
 
   return (
-    <Section title={title} width="100%">
+    <Section title={title} width={width ?? "100%"}>
       {aggregate.error ? (
         <Text color="red">Error: {aggregate.error}</Text>
       ) : (
@@ -93,7 +93,7 @@ function QuotaSection({ data }: { data: DashboardData }): React.ReactElement {
   );
 }
 
-function SystemStatusSection({ data }: { data: DashboardData }): React.ReactElement {
+function SystemStatusSection({ data, width }: { data: DashboardData; width?: number | string }): React.ReactElement {
   const { autonomous_mode, system_health, pending_items } = data;
 
   const deputyStatus = autonomous_mode.enabled ? 'ENABLED' : 'DISABLED';
@@ -117,7 +117,7 @@ function SystemStatusSection({ data }: { data: DashboardData }): React.ReactElem
   const commitColor = pending_items.commits_blocked ? 'red' : 'green';
 
   return (
-    <Section title="SYSTEM STATUS" width="100%">
+    <Section title="SYSTEM STATUS" width={width ?? "100%"}>
       <Box flexDirection="column">
         <Box>
           <Text color="gray">Deputy CTO: </Text>
@@ -233,6 +233,11 @@ function MetricsSummary({ data }: { data: DashboardData }): React.ReactElement {
 }
 
 export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging }: AppProps): React.ReactElement {
+  // Compute explicit widths for side-by-side sections
+  const termCols = process.stdout.columns || 80;
+  const leftWidth = Math.floor((termCols - 1) / 2);  // -1 for gap
+  const rightWidth = termCols - leftWidth - 1;
+
   return (
     <Box flexDirection="column" padding={0}>
       {/* Header */}
@@ -240,12 +245,8 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
 
       {/* Quota & System Status - side by side */}
       <Box marginTop={1} flexDirection="row" gap={1}>
-        <Box flexGrow={1} flexBasis={0}>
-          <QuotaSection data={data} />
-        </Box>
-        <Box flexGrow={1} flexBasis={0}>
-          <SystemStatusSection data={data} />
-        </Box>
+        <QuotaSection data={data} width={leftWidth} />
+        <SystemStatusSection data={data} width={rightWidth} />
       </Box>
 
       {/* Deputy CTO triage pipeline */}

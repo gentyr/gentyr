@@ -52,6 +52,7 @@ export function Section({
           borderTop={false}
           borderColor={borderColor}
           width="100%"
+          flexGrow={1}
           paddingX={paddingX}
           paddingY={paddingY}
         >

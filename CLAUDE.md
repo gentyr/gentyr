@@ -118,3 +118,21 @@ The chrome-bridge MCP server provides access to Claude for Chrome extension capa
 - Workflows: `shortcuts_list`, `shortcuts_execute`, `update_plan`
 
 No credentials required - communicates via local Unix domain socket with length-prefixed JSON framing protocol.
+
+## CTO Dashboard Development
+
+The CTO dashboard (`packages/cto-dashboard/`) supports a `--mock` flag for development and README generation. The `packages/cto-dashboard/src/mock-data.ts` module provides deterministic fixture data (waypoint-interpolated usage curves, realistic triage reports, deployment history) that renders without requiring live MCP connections.
+
+### Regenerate README Dashboard Section
+
+```bash
+node scripts/generate-readme.js
+```
+
+Or via npm:
+
+```bash
+npm run generate:readme
+```
+
+Runs the dashboard with `--mock` and `COLUMNS=80`, then replaces the content between `<!-- CTO_DASHBOARD_START -->` and `<!-- CTO_DASHBOARD_END -->` markers in `README.md`. The script uses `execFileSync` (not `execSync`) to prevent shell injection. Tests live at `scripts/__tests__/generate-readme.test.js`.
