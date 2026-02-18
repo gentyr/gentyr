@@ -121,14 +121,13 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
 ⏺ Bash(node packages/cto-dashboard/dist/index.js)
      ╭──────────────────────────────────────────────────────────────────────────────╮
      │ GENTYR CTO DASHBOARD                                        Period: Last 24h │
-     │ Generated: 2026-02-18 16:01                                                  │
+     │ Generated: 2026-02-18 16:03                                                  │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ QUOTA & CAPACITY (1 key) ──────────╮ ╭─ SYSTEM STATUS ──────────────────────╮
      │ 5-hour   ██████░░░░░░░░░░  35%      │ │ Deputy CTO: ENABLED                  │
-     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next4:04P (3m30s) │
-     │ Rotations (24h): 2                  │ │                                      │
-     │                                     │ │ Protection: PROTECTED                │
+     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 4:07PM (3m… │
+     │ Rotations (24h): 2                  │ │ Protection: PROTECTED                │
      │                                     │ │ Commits:    BLOCKED                  │
      ╰─────────────────────────────────────╯ ╰──────────────────────────────────────╯
      
@@ -144,14 +143,14 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
      │                                                                              │
      │                                                                              │
      │   EVENT HISTORY (last 24h)                                                   │
-     │   3:23PM  Switched to a3f8d21c... (quota_monitor_95pct)                      │
-     │   2:49PM  Account b7c4e92f... exhausted                                      │
-     │   1:31PM  Token refreshed for a3f8d21c...                                    │
-     │  11:55AM  Switched to b7c4e92f... (switched_from_c9d5f13a)                   │
-     │  10:13AM  New account added: c9d5f13a...                                     │
-     │   7:43AM  Token expired for d2e6a47b...                                      │
-     │   4:19AM  Switched to a3f8d21c... (scheduled_rotation)                       │
-     │   1:49AM  Token refreshed for b7c4e92f...                                    │
+     │   3:25PM  Switched to a3f8d21c... (quota_monitor_95pct)                      │
+     │   2:51PM  Account b7c4e92f... exhausted                                      │
+     │   1:33PM  Token refreshed for a3f8d21c...                                    │
+     │  11:57AM  Switched to b7c4e92f... (switched_from_c9d5f13a)                   │
+     │  10:15AM  New account added: c9d5f13a...                                     │
+     │   7:45AM  Token expired for d2e6a47b...                                      │
+     │   4:21AM  Switched to a3f8d21c... (scheduled_rotation)                       │
+     │   1:51AM  Token refreshed for b7c4e92f...                                    │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ DEPUTY CTO ─────────────────────────────────────────────────────────────────╮
@@ -419,72 +418,72 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ TIMELINE (24h) ─────────────────────────────────────────────────────────────╮
-     │ 15:58  o  SESSION   User session started — CTO dashboard review              │
+     │ 16:00  o  SESSION   User session started — CTO dashboard review              │
      │                     └─ task-triggered via autonomous mode                    │
      │                                                                              │
-     │ 15:54  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
+     │ 15:56  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
      │                     └─ No violations detected by deputy-cto-review agent     │
      │                                                                              │
-     │ 15:47  !  REPORT    Hardcoded JWT secret detected in auth middleware [CRITI… │
+     │ 15:49  !  REPORT    Hardcoded JWT secret detected in auth middleware [CRITI… │
      │                     └─Spec G004 violation — credential must be in env or     │
      │                       Vault                                                  │
      │                                                                              │
-     │ 15:40  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
+     │ 15:42  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
      │                     └─ task-runner-code-reviewer — 8 files changed           │
      │                                                                              │
-     │ 15:33  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or OS k… │
+     │ 15:35  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or OS k… │
      │                     └─ Awaiting CTO decision                                 │
      │                                                                              │
-     │ 15:25  *  HOOK      PostToolUse: Write blocked — attempt to modify .claude/… │
+     │ 15:27  *  HOOK      PostToolUse: Write blocked — attempt to modify .claude/… │
      │                     └─ Protected path enforcement triggered                  │
      │                                                                              │
-     │ 15:17  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
+     │ 15:19  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
      │                     └─Supabase row-level security gap — G003 compliance risk │
      │                                                                              │
      │                                                                              │
-     │ 15:09  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
+     │ 15:11  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
      │                     └─ 12 ESLint errors resolved across 5 files              │
      │                                                                              │
-     │ 15:00  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
+     │ 15:02  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
      │                     └─ claudemd-refactor agent                               │
      │                                                                              │
-     │ 14:50  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
+     │ 14:52  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
      │                     └─ Commit blocked — lint-fixer spawned automatically     │
      │                                                                              │
-     │ 14:39  !  REPORT    Antipattern scan: silent catch in payment processing fl… │
+     │ 14:41  !  REPORT    Antipattern scan: silent catch in payment processing fl… │
      │                     └─ G001 violation — silent failure must be converted to  │
      │                        loud failure                                          │
      │                                                                              │
-     │ 14:28  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
+     │ 14:30  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
      │                     └─Architecture question — deputy CTO recommends          │
      │                       rejection                                              │
      │                                                                              │
-     │ 14:16  o  SESSION   Staging health monitor — all checks passed               │
+     │ 14:18  o  SESSION   Staging health monitor — all checks passed               │
      │                     └─ staging-health-monitor agent — 6 services healthy     │
      │                                                                              │
-     │ 14:03  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
+     │ 14:05  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
      │                     └─ task-runner-code-reviewer — 14 type errors fixed      │
      │                                                                              │
-     │ 13:49  !  REPORT    CORS wildcard on production endpoints — policy violatio… │
+     │ 13:51  !  REPORT    CORS wildcard on production endpoints — policy violatio… │
      │                     └─Escalated to CTO for explicit origin allowlist         │
      │                       decision                                               │
      │                                                                              │
-     │ 13:33  *  HOOK      Compliance check triggered — 3 files changed in package… │
+     │ 13:35  *  HOOK      Compliance check triggered — 3 files changed in package… │
      │                     └─ compliance-global agent: all G001–G011 specs verified │
      │                                                                              │
-     │ 13:18  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
+     │ 13:20  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
      │                     └─Scale threshold discussion — recommendation: stay      │
      │                       SQLite until 5k/day                                    │
      │                                                                              │
-     │ 13:02  o  SESSION   Investigator session — tracing API latency spike in pro… │
+     │ 13:04  o  SESSION   Investigator session — tracing API latency spike in pro… │
      │                     └─ task-runner-investigator — root cause: N+1 query in   │
      │                        reports endpoint                                      │
      │                                                                              │
-     │ 12:44  +  TASK      Completed: Rotate leaked service account credential      │
+     │ 12:46  +  TASK      Completed: Rotate leaked service account credential      │
      │                     └─security task — Supabase service role key revoked and  │
      │                       replaced                                               │
      │                                                                              │
-     │ 12:27  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
+     │ 12:29  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
      │                     └─ Self-handled by deputy CTO — bumped to 4.17.21        │
      │                                                                              │
      ╰──────────────────────────────────────────────────────────────────────────────╯
