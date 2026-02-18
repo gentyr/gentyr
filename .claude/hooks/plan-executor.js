@@ -108,7 +108,16 @@ function getPlanFiles() {
 function buildPrompt(planFiles) {
   const fileList = planFiles.map(f => `- ${f.path}`).join('\n');
 
-  return `[Task][plan-executor] You are the deputy-cto performing HOURLY PLAN EXECUTION.
+  return `[Task][plan-executor] You are an orchestrator performing HOURLY PLAN EXECUTION.
+
+## IMMEDIATE ACTION
+
+Your first action MUST be to spawn the deputy-cto sub-agent:
+\`\`\`
+Task(subagent_type='deputy-cto', prompt='Perform hourly plan execution. Study the project plans and execute any that are ready for implementation. Plan files: ${fileList.replace(/\n/g, ', ')}')
+\`\`\`
+
+The deputy-cto sub-agent has specialized instructions loaded from .claude/agents/deputy-cto.md.
 
 ## Your Mission
 
