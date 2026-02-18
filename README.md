@@ -9,7 +9,8 @@ AI agents hallucinate, cut corners, and make autonomous decisions that undermine
 ## Quick Start
 
 ```bash
-sudo scripts/reinstall.sh --path /path/to/project
+git clone git@github.com:gentyr/gentyr.git
+sudo gentyr/scripts/reinstall.sh --path /path/to/project
 ```
 
 Start Claude Code in your project, run `/setup-gentyr` to configure credentials, then restart. See [docs/SETUP-GUIDE.md](docs/SETUP-GUIDE.md) for details.
