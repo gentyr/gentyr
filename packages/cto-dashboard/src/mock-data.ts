@@ -34,6 +34,7 @@ import type { TestingData } from './utils/testing-reader.js';
 import type { DeploymentsData } from './utils/deployments-reader.js';
 import type { InfraData } from './utils/infra-reader.js';
 import type { LoggingData } from './utils/logging-reader.js';
+import type { AccountOverviewData } from './utils/account-overview-reader.js';
 
 // ============================================================================
 // Deterministic PRNG (LCG — no Math.random())
@@ -1375,6 +1376,128 @@ export function getMockLogging(): LoggingData {
       { source: 'cdn',        status: 'missing',    description: 'Cloudflare access/WAF logs' },
       { source: 'auth',       status: 'active',     description: 'Authentication event logs' },
       { source: 'cron',       status: 'active',     description: 'Scheduled job execution logs' },
+    ],
+  };
+}
+
+// ============================================================================
+// Account Overview data
+// ============================================================================
+
+export function getMockAccountOverview(): AccountOverviewData {
+  const now = Date.now();
+  const DAY = 24 * 60 * 60 * 1000;
+  const HOUR = 60 * 60 * 1000;
+  const MIN = 60 * 1000;
+
+  return {
+    hasData: true,
+    activeKeyId: 'a3f8d21c...',
+    totalRotations24h: 2,
+    accounts: [
+      {
+        keyId: 'a3f8d21c...',
+        status: 'active',
+        isCurrent: true,
+        subscriptionType: 'claude_max',
+        email: 'dev@gentyr.io',
+        expiresAt: new Date(now + 1 * DAY),
+        addedAt: new Date(now - 5 * DAY),
+        lastUsedAt: new Date(now - 12 * MIN),
+        fiveHourPct: 35,
+        sevenDayPct: 88,
+        sevenDaySonnetPct: 17,
+        fiveHourResetsAt: null,
+        sevenDayResetsAt: null,
+      },
+      {
+        keyId: 'b7c4e92f...',
+        status: 'exhausted',
+        isCurrent: false,
+        subscriptionType: 'claude_max',
+        email: 'ops@gentyr.io',
+        expiresAt: new Date(now + 3 * DAY),
+        addedAt: new Date(now - 3 * DAY),
+        lastUsedAt: new Date(now - 4 * HOUR),
+        fiveHourPct: 100,
+        sevenDayPct: 100,
+        sevenDaySonnetPct: 22,
+        fiveHourResetsAt: null,
+        sevenDayResetsAt: null,
+      },
+      {
+        keyId: 'c9d5f13a...',
+        status: 'active',
+        isCurrent: false,
+        subscriptionType: 'claude_max',
+        email: 'backup@gentyr.io',
+        expiresAt: new Date(now + 5 * DAY),
+        addedAt: new Date(now - 1 * DAY),
+        lastUsedAt: new Date(now - 2 * HOUR),
+        fiveHourPct: 12,
+        sevenDayPct: 45,
+        sevenDaySonnetPct: 8,
+        fiveHourResetsAt: null,
+        sevenDayResetsAt: null,
+      },
+    ],
+    events: [
+      {
+        timestamp: new Date(now - 38 * MIN),
+        event: 'key_switched',
+        keyId: 'a3f8d21c...',
+        description: 'Switched to a3f8d21c... (quota_monitor_95pct)',
+        usageSnapshot: { fiveHour: 35, sevenDay: 88 },
+      },
+      {
+        timestamp: new Date(now - 1.2 * HOUR),
+        event: 'key_exhausted',
+        keyId: 'b7c4e92f...',
+        description: 'Account b7c4e92f... exhausted',
+        usageSnapshot: { fiveHour: 100, sevenDay: 100 },
+      },
+      {
+        timestamp: new Date(now - 2.5 * HOUR),
+        event: 'key_added',
+        keyId: 'a3f8d21c...',
+        description: 'Token refreshed for a3f8d21c...',
+        usageSnapshot: null,
+      },
+      {
+        timestamp: new Date(now - 4.1 * HOUR),
+        event: 'key_switched',
+        keyId: 'b7c4e92f...',
+        description: 'Switched to b7c4e92f... (switched_from_c9d5f13a)',
+        usageSnapshot: { fiveHour: 62, sevenDay: 91 },
+      },
+      {
+        timestamp: new Date(now - 5.8 * HOUR),
+        event: 'key_added',
+        keyId: 'c9d5f13a...',
+        description: 'New account added: c9d5f13a...',
+        usageSnapshot: null,
+      },
+      {
+        timestamp: new Date(now - 8.3 * HOUR),
+        event: 'key_removed',
+        keyId: 'd2e6a47b...',
+        description: 'Token expired for d2e6a47b...',
+        usageSnapshot: null,
+      },
+      {
+        timestamp: new Date(now - 11.7 * HOUR),
+        event: 'key_switched',
+        keyId: 'a3f8d21c...',
+        description: 'Switched to a3f8d21c... (scheduled_rotation)',
+        usageSnapshot: { fiveHour: 8, sevenDay: 72 },
+      },
+      {
+        timestamp: new Date(now - 14.2 * HOUR),
+        event: 'key_added',
+        keyId: 'b7c4e92f...',
+        description: 'Token refreshed for b7c4e92f...',
+        usageSnapshot: null,
+      },
     ],
   };
 }

@@ -72,6 +72,41 @@ scripts/setup-automation-service.sh setup --path /project --op-token TOKEN  # In
 
 By default, the automation service runs without 1Password credentials in background mode to avoid macOS permission prompts. Provide `--op-token` with a 1Password service account token to enable headless credential resolution for infrastructure MCP servers.
 
+### On-Demand Task Spawning
+
+```bash
+# In a Claude Code session after GENTYR is installed:
+/spawn-tasks
+```
+
+Bypasses the hourly automation's age filter, batch limit, cooldowns, and CTO activity gate to force-spawn pending TODO tasks immediately. The command prefetches current agent counts and concurrency limits, asks which sections to spawn and what concurrency cap to use, then calls `force_spawn_tasks` on the agent-tracker MCP server. Preserves the concurrency guard and task status tracking.
+
+## Automatic Session Recovery
+
+GENTYR automatically detects and recovers sessions interrupted by API quota limits.
+
+**Quota Monitor Hook** (`.claude/hooks/quota-monitor.js`):
+- Runs after every tool call (throttled to 5-minute intervals)
+- Checks active key usage and triggers rotation at 95% utilization
+- Interactive sessions: spawns auto-restart script with new credentials
+- Automated sessions: writes state for session-reviver pickup
+- All-accounts-exhausted: writes paused-sessions.json and waits for recovery
+
+**Session Reviver Hook** (`.claude/hooks/session-reviver.js`):
+- Called every hourly automation cycle with 10-minute cooldown
+- Mode 1: Quota-interrupted pickup (reads quota-interrupted-sessions.json, re-spawns with --resume)
+- Mode 2: Historical dead session recovery (scans agent-tracker-history.json, finds unexpectedly dead agents)
+- Mode 3: Paused session resume (checks for account recovery when all were exhausted)
+- Max 3 revivals per cycle, 7-day historical window
+
+**Manual Recovery** (`scripts/recover-interrupted-sessions.js`):
+```bash
+# One-time recovery for interrupted sessions
+node scripts/recover-interrupted-sessions.js --path /project [--dry-run] [--max-concurrent 3]
+```
+
+Cross-references agent-tracker-history with TODO database to find in_progress tasks with no corresponding live process. Re-spawns sessions with original task context.
+
 ## VS Code Companion Extension
 
 The GENTYR VS Code extension provides a real-time dashboard for developers who use VS Code as their primary editor. It displays the same metrics as the CLI dashboard but in a persistent, always-visible format.

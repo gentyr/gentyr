@@ -49,15 +49,40 @@ mcp__session-events__session_events_search({ query: "authorization header" })
 mcp__session-events__session_events_timeline({ sessionId: "sess-abc123" })
 ```
 
+## Claude Session History (MANDATORY)
+
+**ALWAYS search prior Claude Code session history early in your investigation.** Previous sessions may have already investigated the same area, attempted fixes, or documented context that saves you from duplicating work or missing known pitfalls.
+
+| Tool | Description |
+|------|-------------|
+| `mcp__claude-sessions__search_sessions` | Search across all session transcripts for a keyword (e.g., error message, file name, feature name) |
+| `mcp__claude-sessions__list_sessions` | List all sessions for the current project directory |
+| `mcp__claude-sessions__read_session` | Read the full conversation from a specific session (supports pagination) |
+
+**Workflow**:
+1. Identify 2-3 keywords related to the issue (file names, error messages, component names, function names)
+2. Run `mcp__claude-sessions__search_sessions({ query: "keyword" })` for each
+3. If matches are found, read the relevant sessions with `mcp__claude-sessions__read_session({ session_id: "..." })`
+4. Incorporate any prior findings, failed approaches, or decisions into your investigation
+
+```javascript
+// Example: investigating a broken todo-db schema
+mcp__claude-sessions__search_sessions({ query: "todo-db schema" })
+mcp__claude-sessions__search_sessions({ query: "todo.db migration" })
+```
+
+**Why this matters**: AI agents frequently re-investigate the same problems across sessions. Session history prevents circular work and surfaces decisions that aren't captured in code or docs.
+
 ## Investigation Workflow
 
-1. **Understand the Problem**: Read error messages, logs, and user reports
-2. **Review Specifications**: Use specs-browser to understand architectural constraints
-3. **Analyze Session Data**: Use session-events to review recorded behavior
-4. **Examine Code**: Read relevant source files to understand current implementation
-5. **Run Tests**: Execute existing tests to validate current behavior
-6. **Document Findings**: Create clear, specific plans for fixes
-7. **Create TODO Items**: Assign tasks to appropriate agents
+1. **Search Session History**: Use claude-sessions MCP to find prior work on this topic (MANDATORY — do this FIRST)
+2. **Understand the Problem**: Read error messages, logs, and user reports
+3. **Review Specifications**: Use specs-browser to understand architectural constraints
+4. **Analyze Session Data**: Use session-events to review recorded behavior
+5. **Examine Code**: Read relevant source files to understand current implementation
+6. **Run Tests**: Execute existing tests to validate current behavior
+7. **Document Findings**: Create clear, specific plans for fixes
+8. **Create TODO Items**: Assign tasks to appropriate agents
 
 ## Task Management (MCP Database)
 

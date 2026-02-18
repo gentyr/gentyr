@@ -12,12 +12,20 @@
  *   - Never kills processes it can't match to a known session file
  *   - Processes that are already dead are simply marked completed
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+
+// Lazy-loaded SQLite for TODO reconciliation
+let Database = null;
+try {
+  Database = (await import('better-sqlite3')).default;
+} catch {
+  // Non-fatal: TODO reconciliation will be skipped
+}
 
 // ============================================================================
 // Configuration
@@ -185,13 +193,85 @@ function isAutomatedSession(sessionFile) {
 }
 
 /**
+ * Check if a session JSONL contains evidence of a complete_task MCP tool call.
+ * Searches the last 16KB for the tool name pattern.
+ *
+ * @param {string} sessionFile - Path to the JSONL session file
+ * @returns {boolean}
+ */
+function sessionContainsCompleteTask(sessionFile) {
+  const tail = readTail(sessionFile, 16384);
+  return tail.includes('"mcp__todo-db__complete_task"') ||
+         tail.includes('"name":"complete_task"');
+}
+
+/**
+ * Reconcile a TODO item after an agent is reaped.
+ * - If session completed normally but forgot to mark TODO: mark it completed
+ * - If session died unexpectedly: reset TODO to pending for re-spawn
+ *
+ * @param {object} agent - Agent record from tracker history
+ * @param {string} projectDir - Project directory
+ * @param {string} reapReason - Why the agent was reaped
+ * @returns {{ action: string, taskId: string } | null}
+ */
+function reconcileTodo(agent, projectDir, reapReason) {
+  if (!Database) return null;
+
+  // Only reconcile agents that have a linked task ID
+  const taskId = agent.metadata?.taskId;
+  if (!taskId) return null;
+
+  const todoDbPath = path.join(projectDir, '.claude', 'todo.db');
+  if (!fs.existsSync(todoDbPath)) return null;
+
+  let db;
+  try {
+    db = new Database(todoDbPath);
+
+    // Check current task status
+    const task = db.prepare('SELECT id, status FROM tasks WHERE id = ?').get(taskId);
+    if (!task) return null;
+
+    // Only act on in_progress tasks (already completed = no action needed)
+    if (task.status !== 'in_progress') return null;
+
+    if (reapReason === 'session_complete') {
+      // Agent completed normally - check if it called complete_task
+      const sessionFile = agent.sessionFile;
+      if (sessionFile && fs.existsSync(sessionFile) && sessionContainsCompleteTask(sessionFile)) {
+        // complete_task was called, TODO should already be marked - no action needed
+        return null;
+      }
+      // Agent finished but didn't mark TODO as complete
+      db.prepare("UPDATE tasks SET status = 'completed' WHERE id = ?").run(taskId);
+      return { action: 'completed', taskId };
+    }
+
+    if (reapReason === 'process_already_dead') {
+      // Session died unexpectedly - reset TODO so automation can re-spawn
+      db.prepare("UPDATE tasks SET status = 'pending', started_at = NULL WHERE id = ?").run(taskId);
+      return { action: 'reset_to_pending', taskId };
+    }
+
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (db) {
+      try { db.close(); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
  * Reap completed automated agents.
  *
  * @param {string} projectDir - The project directory
- * @returns {{ reaped: Array<{agentId: string, pid: number, reason: string}>, skipped: Array<{agentId: string, reason: string}>, errors: Array<{agentId: string, error: string}> }}
+ * @returns {{ reaped: Array<{agentId: string, pid: number, reason: string}>, skipped: Array<{agentId: string, reason: string}>, errors: Array<{agentId: string, error: string}>, todoReconciled: Array<{agentId: string, taskId: string, action: string}> }}
  */
 export function reapCompletedAgents(projectDir) {
-  const result = { reaped: [], skipped: [], errors: [] };
+  const result = { reaped: [], skipped: [], errors: [], todoReconciled: [] };
 
   // Load agent tracker
   const historyPath = path.join(projectDir, '.claude', 'state', 'agent-tracker-history.json');
@@ -221,11 +301,25 @@ export function reapCompletedAgents(projectDir) {
 
     // Step 1: Check if process is still alive
     if (!isProcessAlive(pid)) {
+      // Try to discover session file before marking dead (needed for TODO reconciliation)
+      if (!agent.sessionFile) {
+        const discovered = findSessionFileByAgentId(sessionDir, agentId);
+        if (discovered) {
+          agent.sessionFile = discovered;
+        }
+      }
+
       agent.status = 'completed';
       agent.reapReason = 'process_already_dead';
       agent.reapedAt = new Date().toISOString();
       dirty = true;
       result.reaped.push({ agentId, pid, reason: 'process_already_dead' });
+
+      // Reconcile linked TODO item
+      const todoResult = reconcileTodo(agent, projectDir, 'process_already_dead');
+      if (todoResult) {
+        result.todoReconciled.push({ agentId, ...todoResult });
+      }
       continue;
     }
 
@@ -262,6 +356,12 @@ export function reapCompletedAgents(projectDir) {
       agent.reapReason = 'session_complete';
       dirty = true;
       result.reaped.push({ agentId, pid, reason: 'session_complete' });
+
+      // Reconcile linked TODO item
+      const todoResult = reconcileTodo(agent, projectDir, 'session_complete');
+      if (todoResult) {
+        result.todoReconciled.push({ agentId, ...todoResult });
+      }
     } catch (err) {
       if (err.code === 'ESRCH') {
         // Already dead between our check and kill
@@ -270,6 +370,12 @@ export function reapCompletedAgents(projectDir) {
         agent.reapReason = 'process_already_dead';
         dirty = true;
         result.reaped.push({ agentId, pid, reason: 'process_already_dead' });
+
+        // Reconcile linked TODO item
+        const todoResult = reconcileTodo(agent, projectDir, 'process_already_dead');
+        if (todoResult) {
+          result.todoReconciled.push({ agentId, ...todoResult });
+        }
       } else {
         result.errors.push({ agentId, error: `kill failed: ${err.message}` });
       }
@@ -317,6 +423,13 @@ if (process.argv[1] && (
     console.error(`Errors: ${result.errors.length}`);
     for (const e of result.errors) {
       console.error(`  ${e.agentId}: ${e.error}`);
+    }
+  }
+
+  if (result.todoReconciled.length > 0) {
+    console.log(`TODO reconciled for ${result.todoReconciled.length} agent(s):`);
+    for (const t of result.todoReconciled) {
+      console.log(`  ${t.agentId}: TODO ${t.taskId} → ${t.action}`);
     }
   }
 

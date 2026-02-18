@@ -2,9 +2,50 @@
 
 **G**odlike **E**ntity, **N**ot **T**echnically **Y**our **R**eplacement
 
-A governance framework for Claude Code.
+An opinionated AI engineering team for solo CTOs.
 
-AI agents hallucinate, cut corners, and make autonomous decisions that undermine code quality. Without governance, you have an unsupervised intern with root access. GENTYR adds specialized agents, approval gates, and continuous automation to Claude Code. Problems get caught and handled without you thinking about them.
+GENTYR turns Claude Code into a full engineering team that builds new SaaS products from scratch on a fixed TypeScript stack. You make the product decisions. Claude Code writes the code, tests it, reviews it, and ships it — governed by automation so the AI stays on rails and you stay in control.
+
+## Who This Is For
+
+- Solo founder or CTO building a new SaaS product
+- Going from zero to production without hiring an engineering team
+- Willing to adopt an opinionated, non-negotiable stack (see below)
+- Want Claude Code as an engineering team, not just autocomplete
+- **Not** for adopting into existing codebases — GENTYR builds new projects from the ground up
+
+## The Stack
+
+### Application
+
+| Technology | Role |
+|---|---|
+| TypeScript (strict, ESM) | Language |
+| Next.js on Vercel | Frontend |
+| Hono on Render | Backend API |
+| Supabase | PostgreSQL + Auth + Storage + RLS |
+| Zod | Runtime validation |
+
+### Infrastructure
+
+| Technology | Role |
+|---|---|
+| pnpm monorepo | Package management |
+| GitHub + Actions | Source control + CI/CD |
+| 1Password | Secrets (`op://` references, zero on disk) |
+| Cloudflare | DNS |
+| Elastic Cloud | Centralized logging |
+| Resend | Transactional email |
+| Codecov | Coverage reporting |
+
+### Testing
+
+| Technology | Role |
+|---|---|
+| Vitest | Unit + integration tests |
+| Playwright | E2E + browser tests |
+
+This stack is not configurable. GENTYR's 30 MCP servers, 9 agents, and 32 hooks are built specifically for these tools. If you want a different database or hosting provider, this is not for you.
 
 ## Quick Start
 
@@ -17,12 +58,15 @@ Start Claude Code in your project, run `/setup-gentyr` to configure credentials,
 
 ## What You Get
 
+GENTYR replaces an engineering team with specialized AI agents — investigators, code writers, test writers, reviewers, and a deputy CTO — all governed by automation so you only step in for the decisions that matter.
+
 - **Commit approval gate** -- every commit reviewed by deputy-CTO agent before it lands
 - **Specialized agents** -- 9 agents in a fixed workflow: investigate, write, test, review, ship
 - **Zero secrets on disk** -- credentials resolve from 1Password at runtime; only `op://` references stored
 - **Background task runner** -- spawns agents for pending TODOs on a timer; you set direction, agents execute
 - **AI user feedback** -- persona-based testing (GUI/CLI/API/SDK) triggered by staging changes
 - **Usage optimizer** -- dynamically adjusts spawn rates to target 90% API quota utilization
+- **Automatic session recovery** -- quota-interrupted sessions auto-resume after credential rotation; no lost work
 - **Real-time dashboard** -- CLI status bar and VS Code extension with quota, agents, and infrastructure health
 - **Protection model** -- critical files root-owned; agents cannot modify the rules they operate under
 
@@ -77,16 +121,38 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
 ⏺ Bash(node packages/cto-dashboard/dist/index.js)
      ╭──────────────────────────────────────────────────────────────────────────────╮
      │ GENTYR CTO DASHBOARD                                        Period: Last 24h │
-     │ Generated: 2026-02-17 23:40                                                  │
+     │ Generated: 2026-02-18 16:01                                                  │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ QUOTA & CAPACITY (1 key) ──────────╮ ╭─ SYSTEM STATUS ──────────────────────╮
      │ 5-hour   ██████░░░░░░░░░░  35%      │ │ Deputy CTO: ENABLED                  │
-     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m |    11:43P (3m30s) │
-     │ Rotations (24h): 2                  │ │   Next:                              │
+     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next4:04P (3m30s) │
+     │ Rotations (24h): 2                  │ │                                      │
      │                                     │ │ Protection: PROTECTED                │
      │                                     │ │ Commits:    BLOCKED                  │
      ╰─────────────────────────────────────╯ ╰──────────────────────────────────────╯
+     
+     ╭─ ACCOUNT OVERVIEW (3 accounts | 2 rotations 24h) ────────────────────────────╮
+     │ * a3f8d21c...  active     claude_max   dev@gentyr.io  Exp: 2026-02-19        │
+     │   5h     ████░░░░░░░  35    7d     ██████████░  88   7d-son ██░░░░░░░░░  17% │
+     │                                                                              │
+     │   b7c4e92f...  exhausted  claude_max   ops@gentyr.io  Exp: 2026-02-21        │
+     │   5h     ███████████ 100    7d     ███████████ 100   7d-son ███░░░░░░░░  22% │
+     │                                                                              │
+     │   c9d5f13a...  active     claude_max   backup@gentyr.io  Exp: 2026-02-23     │
+     │   5h     █░░░░░░░░░░  12    7d     █████░░░░░░  45   7d-son █░░░░░░░░░░   8% │
+     │                                                                              │
+     │                                                                              │
+     │   EVENT HISTORY (last 24h)                                                   │
+     │   3:23PM  Switched to a3f8d21c... (quota_monitor_95pct)                      │
+     │   2:49PM  Account b7c4e92f... exhausted                                      │
+     │   1:31PM  Token refreshed for a3f8d21c...                                    │
+     │  11:55AM  Switched to b7c4e92f... (switched_from_c9d5f13a)                   │
+     │  10:13AM  New account added: c9d5f13a...                                     │
+     │   7:43AM  Token expired for d2e6a47b...                                      │
+     │   4:19AM  Switched to a3f8d21c... (scheduled_rotation)                       │
+     │   1:49AM  Token refreshed for b7c4e92f...                                    │
+     ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ DEPUTY CTO ─────────────────────────────────────────────────────────────────╮
      │ ╭────────────╮ ╭────────────╮ ╭────────────╮ ╭─────────────╮                 │
@@ -353,72 +419,72 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ TIMELINE (24h) ─────────────────────────────────────────────────────────────╮
-     │ 23:37  o  SESSION   User session started — CTO dashboard review              │
+     │ 15:58  o  SESSION   User session started — CTO dashboard review              │
      │                     └─ task-triggered via autonomous mode                    │
      │                                                                              │
-     │ 23:33  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
+     │ 15:54  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
      │                     └─ No violations detected by deputy-cto-review agent     │
      │                                                                              │
-     │ 23:26  !  REPORT    Hardcoded JWT secret detected in auth middleware [CRITI… │
+     │ 15:47  !  REPORT    Hardcoded JWT secret detected in auth middleware [CRITI… │
      │                     └─Spec G004 violation — credential must be in env or     │
      │                       Vault                                                  │
      │                                                                              │
-     │ 23:19  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
+     │ 15:40  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
      │                     └─ task-runner-code-reviewer — 8 files changed           │
      │                                                                              │
-     │ 23:12  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or OS k… │
+     │ 15:33  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or OS k… │
      │                     └─ Awaiting CTO decision                                 │
      │                                                                              │
-     │ 23:04  *  HOOK      PostToolUse: Write blocked — attempt to modify .claude/… │
+     │ 15:25  *  HOOK      PostToolUse: Write blocked — attempt to modify .claude/… │
      │                     └─ Protected path enforcement triggered                  │
      │                                                                              │
-     │ 22:56  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
+     │ 15:17  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
      │                     └─Supabase row-level security gap — G003 compliance risk │
      │                                                                              │
      │                                                                              │
-     │ 22:48  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
+     │ 15:09  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
      │                     └─ 12 ESLint errors resolved across 5 files              │
      │                                                                              │
-     │ 22:39  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
+     │ 15:00  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
      │                     └─ claudemd-refactor agent                               │
      │                                                                              │
-     │ 22:29  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
+     │ 14:50  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
      │                     └─ Commit blocked — lint-fixer spawned automatically     │
      │                                                                              │
-     │ 22:18  !  REPORT    Antipattern scan: silent catch in payment processing fl… │
+     │ 14:39  !  REPORT    Antipattern scan: silent catch in payment processing fl… │
      │                     └─ G001 violation — silent failure must be converted to  │
      │                        loud failure                                          │
      │                                                                              │
-     │ 22:07  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
+     │ 14:28  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
      │                     └─Architecture question — deputy CTO recommends          │
      │                       rejection                                              │
      │                                                                              │
-     │ 21:55  o  SESSION   Staging health monitor — all checks passed               │
+     │ 14:16  o  SESSION   Staging health monitor — all checks passed               │
      │                     └─ staging-health-monitor agent — 6 services healthy     │
      │                                                                              │
-     │ 21:42  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
+     │ 14:03  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
      │                     └─ task-runner-code-reviewer — 14 type errors fixed      │
      │                                                                              │
-     │ 21:28  !  REPORT    CORS wildcard on production endpoints — policy violatio… │
+     │ 13:49  !  REPORT    CORS wildcard on production endpoints — policy violatio… │
      │                     └─Escalated to CTO for explicit origin allowlist         │
      │                       decision                                               │
      │                                                                              │
-     │ 21:12  *  HOOK      Compliance check triggered — 3 files changed in package… │
+     │ 13:33  *  HOOK      Compliance check triggered — 3 files changed in package… │
      │                     └─ compliance-global agent: all G001–G011 specs verified │
      │                                                                              │
-     │ 20:57  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
+     │ 13:18  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
      │                     └─Scale threshold discussion — recommendation: stay      │
      │                       SQLite until 5k/day                                    │
      │                                                                              │
-     │ 20:41  o  SESSION   Investigator session — tracing API latency spike in pro… │
+     │ 13:02  o  SESSION   Investigator session — tracing API latency spike in pro… │
      │                     └─ task-runner-investigator — root cause: N+1 query in   │
      │                        reports endpoint                                      │
      │                                                                              │
-     │ 20:23  +  TASK      Completed: Rotate leaked service account credential      │
+     │ 12:44  +  TASK      Completed: Rotate leaked service account credential      │
      │                     └─security task — Supabase service role key revoked and  │
      │                       replaced                                               │
      │                                                                              │
-     │ 20:06  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
+     │ 12:27  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
      │                     └─ Self-handled by deputy CTO — bumped to 4.17.21        │
      │                                                                              │
      ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -454,10 +520,10 @@ This runs the dashboard with `--mock` data at `COLUMNS=80` and rewrites the cont
 
 ## Components
 
-- 25 MCP servers (9 core + 10 infrastructure + 5 feedback + 1 browser)
+- 30 MCP servers
 - 9 specialized agents
-- 13 automation hooks
-- 9 slash commands
+- 32 automation hooks
+- 10 slash commands
 - VS Code extension + CLI dashboard
 
 ## Documentation
@@ -473,8 +539,10 @@ This runs the dashboard with `--mock` data at `COLUMNS=80` and rewrites the cont
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 20+
+- pnpm 8+
 - Claude Code CLI
+- Claude Max subscription (Opus 4.6)
 - 1Password CLI (optional, for infrastructure credentials)
 
 ## License
