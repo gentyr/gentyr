@@ -258,13 +258,20 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     }
   }
 
-  // Follow-up enforcement for forced sections
+  // Follow-up enforcement for forced creators
   let followup_enabled = args.followup_enabled ?? false;
   let followup_section = args.followup_section ?? args.section;
   let followup_prompt = args.followup_prompt ?? null;
   let warning: string | undefined;
 
   if (args.assigned_by && (FORCED_FOLLOWUP_CREATORS as readonly string[]).includes(args.assigned_by)) {
+    // Reject tasks without a description — forced-followup creators must provide context
+    if (!args.description?.trim()) {
+      return {
+        error: `Tasks created by ${args.assigned_by} require a description. The description is used to generate a follow-up verification prompt.`,
+      };
+    }
+
     if (args.followup_enabled === false) {
       warning = `Follow-up hooks cannot be disabled for tasks created by ${args.assigned_by}. Enabled automatically.`;
     }
@@ -272,7 +279,7 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
 
     // Auto-generate verification prompt if not provided
     if (!followup_prompt) {
-      followup_prompt = buildDefaultFollowupPrompt(args.title, args.description ?? null);
+      followup_prompt = buildDefaultFollowupPrompt(args.title, args.description);
     }
   }
 

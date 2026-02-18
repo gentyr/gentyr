@@ -140,7 +140,8 @@ function checkApprovalToken(diffHash) {
     const now = Date.now();
 
     // Check expiry
-    if (now > token.expiresAt) {
+    const expiresAt = new Date(token.expiresAt).getTime();
+    if (isNaN(expiresAt) || now > expiresAt) {
       fs.unlinkSync(APPROVAL_TOKEN_FILE); // Clean up expired token
       return { valid: false, reason: 'expired' };
     }
@@ -426,8 +427,10 @@ function verifyLintConfigIntegrity() {
  * SECURITY: Uses project-local eslint from node_modules to prevent PATH manipulation.
  */
 function runStrictLint(stagedFiles) {
-  // Filter to only TypeScript files
-  const tsFiles = stagedFiles.filter(f => f.endsWith('.ts') || f.endsWith('.tsx'));
+  // Filter to only TypeScript files that exist on disk (exclude deleted files)
+  const tsFiles = stagedFiles.filter(f =>
+    (f.endsWith('.ts') || f.endsWith('.tsx')) && fs.existsSync(path.join(PROJECT_DIR, f))
+  );
 
   if (tsFiles.length === 0) {
     return { success: true, skipped: true };
@@ -577,24 +580,47 @@ async function main() {
     process.exit(0);
   }
 
-  // Check for pending CTO items (G020: any pending item blocks commits)
+  // G020: Branch-aware commit blocking
   const ctoItemsCheck = hasPendingCtoItems();
   if (ctoItemsCheck.hasItems) {
-    console.error('');
-    console.error('══════════════════════════════════════════════════════════════');
-    console.error('  COMMIT BLOCKED: Pending CTO item(s) require attention');
-    console.error('');
-    if (ctoItemsCheck.questionCount > 0) {
-      console.error(`  • ${ctoItemsCheck.questionCount} CTO question(s) pending`);
+    const currentBranch = getBranchInfo();
+
+    if (currentBranch === 'main' || currentBranch === 'unknown') {
+      // MAIN/UNKNOWN: Hard block (G001 fail-closed treats unknown as main)
+      console.error('');
+      console.error('══════════════════════════════════════════════════════════════');
+      console.error('  COMMIT BLOCKED: Pending CTO item(s) require attention');
+      console.error('');
+      if (ctoItemsCheck.questionCount > 0) {
+        console.error(`  • ${ctoItemsCheck.questionCount} CTO question(s) pending`);
+      }
+      if (ctoItemsCheck.triageCount > 0) {
+        console.error(`  • ${ctoItemsCheck.triageCount} untriaged report(s) pending`);
+      }
+      console.error('');
+      console.error('  Run /deputy-cto to address blocking items');
+      console.error('══════════════════════════════════════════════════════════════');
+      console.error('');
+      process.exit(1);
+    } else if (currentBranch === 'develop' || currentBranch === 'staging') {
+      // STAGING/DEVELOP: Warn but allow commit
+      console.warn('');
+      console.warn('══════════════════════════════════════════════════════════════');
+      console.warn(`  WARNING: Pending CTO items exist (committing to ${currentBranch})`);
+      console.warn('');
+      if (ctoItemsCheck.questionCount > 0) {
+        console.warn(`  • ${ctoItemsCheck.questionCount} CTO question(s) pending`);
+      }
+      if (ctoItemsCheck.triageCount > 0) {
+        console.warn(`  • ${ctoItemsCheck.triageCount} untriaged report(s) pending`);
+      }
+      console.warn('');
+      console.warn('  These must be resolved before merging to main.');
+      console.warn('══════════════════════════════════════════════════════════════');
+      console.warn('');
+      // Allow commit to proceed (do NOT exit)
     }
-    if (ctoItemsCheck.triageCount > 0) {
-      console.error(`  • ${ctoItemsCheck.triageCount} untriaged report(s) pending`);
-    }
-    console.error('');
-    console.error('  Run /deputy-cto to address blocking items');
-    console.error('══════════════════════════════════════════════════════════════');
-    console.error('');
-    process.exit(1);
+    // Feature branches: no blocking, no warning -- items checked on merge
   }
 
   // Check for valid approval token

@@ -65,6 +65,15 @@ export const GetAgentSessionArgsSchema = z.object({
 
 export const GetAgentStatsArgsSchema = z.object({});
 
+export const GetConcurrencyStatusArgsSchema = z.object({});
+
+export const ForceSpawnTasksArgsSchema = z.object({
+  sections: z.array(z.string()).min(1)
+    .describe('Sections to spawn tasks from (e.g., ["CODE-REVIEWER", "TEST-WRITER"])'),
+  maxConcurrent: z.coerce.number().optional().default(10)
+    .describe('Maximum concurrent agents allowed (default: 10)'),
+});
+
 // ============================================================================
 // Session Browser Schemas (Unified Session Browser)
 // ============================================================================
@@ -144,6 +153,8 @@ export type ListSpawnedAgentsArgs = z.infer<typeof ListSpawnedAgentsArgsSchema>;
 export type GetAgentPromptArgs = z.infer<typeof GetAgentPromptArgsSchema>;
 export type GetAgentSessionArgs = z.infer<typeof GetAgentSessionArgsSchema>;
 export type GetAgentStatsArgs = z.infer<typeof GetAgentStatsArgsSchema>;
+export type GetConcurrencyStatusArgs = z.infer<typeof GetConcurrencyStatusArgsSchema>;
+export type ForceSpawnTasksArgs = z.infer<typeof ForceSpawnTasksArgsSchema>;
 
 // Session Browser Types
 export type ListSessionsArgs = z.infer<typeof ListSessionsArgsSchema>;
@@ -250,6 +261,37 @@ export interface AgentStats {
 
 export interface ErrorResult {
   error: string;
+}
+
+export interface ConcurrencyStatusResult {
+  running: number;
+  maxConcurrent: number;
+  available: number;
+  trackedRunning: {
+    byType: Record<string, number>;
+  };
+}
+
+export interface ForceSpawnTasksResult {
+  spawned: Array<{
+    taskId: string;
+    title: string;
+    section: string;
+    agent: string;
+    agentId: string;
+    pid: number;
+  }>;
+  skipped: Array<{
+    taskId?: string;
+    title?: string;
+    section?: string;
+    reason: string;
+  }>;
+  errors: Array<{
+    taskId?: string;
+    title?: string;
+    message: string;
+  }>;
 }
 
 // ============================================================================

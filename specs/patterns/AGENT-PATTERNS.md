@@ -125,6 +125,62 @@ mcp__agent-reports__report_to_deputy_cto({
 })
 ```
 
+## Deputy-CTO Follow-Up Verification System
+
+Tasks created by the deputy-cto have **forced follow-up verification** to ensure work is actually completed, not just dispatched. This is enforced at the MCP level in the `todo-db` server — it cannot be bypassed by agents.
+
+### How It Works
+
+1. **Task creation** — When `deputy-cto` calls `create_task`, the todo-db server:
+   - **Rejects** the task if no `description` is provided (hard requirement)
+   - Forces `followup_enabled = 1` regardless of what the caller passes
+   - Auto-generates a verification prompt from the task's title and description
+   - Warns (but does not block) if `followup_enabled: false` was explicitly passed
+
+2. **Task execution** — Any agent picks up and works the task normally
+
+3. **Task completion** — When any agent calls `complete_task`, the todo-db server:
+   - Creates a new `[Follow-up]` task automatically
+   - Sets `assigned_by: 'system-followup'` on the follow-up
+   - Sets `followup_enabled: 0` on the follow-up (prevents infinite chaining)
+   - Places it in `followup_section` (defaults to the original task's section, overridable at creation)
+
+4. **Follow-up verification** — The follow-up task contains a verification prompt:
+   - Asks the deputy-cto to verify the original task was actually completed
+   - If not worked on, the deputy-cto stops (re-spawned later)
+   - If partially done, the deputy-cto creates new tasks for remaining work
+   - If fully done, the deputy-cto marks the follow-up as complete (no further chaining)
+
+### Enforcement Details
+
+- **Forced creators**: Defined in `FORCED_FOLLOWUP_CREATORS` constant (currently: `['deputy-cto']`)
+- **Description required**: Tasks without descriptions are rejected at the MCP level
+- **No opt-out**: Passing `followup_enabled: false` is overridden with a warning
+- **No chaining**: Follow-up tasks have `followup_enabled: 0` — completing them does not create another follow-up
+- **Cross-section**: Use `followup_section` to route the follow-up to a different section than the original task
+
+### Example
+
+```javascript
+// Deputy-CTO creates a task
+mcp__todo-db__create_task({
+  section: "CODE-REVIEWER",
+  title: "Fix SSRF in webhook validation",
+  description: "webhook.ts allows arbitrary URLs. Add allowlist validation.",
+  assigned_by: "deputy-cto"
+})
+// → followup_enabled forced to 1, prompt auto-generated
+
+// Agent completes the task
+mcp__todo-db__complete_task({ id: "task-uuid" })
+// → [Follow-up] Fix SSRF in webhook validation created in CODE-REVIEWER
+// → assigned_by: 'system-followup', followup_enabled: 0
+
+// Deputy-CTO verifies the follow-up
+// → If done: marks follow-up complete (no further follow-up created)
+// → If not done: creates new tasks for remaining work
+```
+
 ## Core Beliefs Examples
 
 ### Good Core Beliefs

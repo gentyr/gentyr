@@ -702,6 +702,12 @@ function handleSpawnTasks() {
   }
   output.gathered.runningAgents = runningAgents;
 
+  // Read max concurrent from automation-config.json
+  const automationConfig = readJson(AUTOMATION_CONFIG_PATH);
+  const maxConcurrent = automationConfig?.effective?.MAX_CONCURRENT_AGENTS ?? 10;
+  output.gathered.maxConcurrent = maxConcurrent;
+  output.gathered.availableSlots = Math.max(0, maxConcurrent - runningAgents);
+
   console.log(JSON.stringify({
     continue: true,
     systemMessage: `[PREFETCH:spawn-tasks] ${JSON.stringify(output)}`,

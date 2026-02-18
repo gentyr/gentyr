@@ -3,7 +3,7 @@
 
 On-demand command to **force-spawn all pending tasks immediately**, bypassing the hourly automation's age filter, batch limit, cooldowns, and CTO activity gate.
 
-The prefetch hook has pre-gathered pending task counts and running agent info and injected them as a `[PREFETCH:spawn-tasks]` systemMessage above. Use that data for Step 1.
+The prefetch hook has pre-gathered pending task counts, running agent info, and concurrency limits, injected as a `[PREFETCH:spawn-tasks]` systemMessage above. Use that data for Step 1.
 
 ## Step 1: Display Current State
 
@@ -18,49 +18,48 @@ From the prefetch data, display a summary table:
 | DEPUTY-CTO | N |
 | **Total** | **N** |
 
-Also show: **Running agents**: N
+Also show: **Running agents**: N / M (N running, M max concurrent, K available slots)
 
 If there are **0 pending tasks**, inform the user and stop — nothing to spawn.
 
-## Step 2: Ask Which Sections to Spawn
+## Step 2: Ask User
 
-Use AskUserQuestion with multiSelect: true and these options:
+Use AskUserQuestion with **two questions**:
 
-- **"Implementation agents"** — Spawns CODE-REVIEWER, TEST-WRITER, and INVESTIGATOR & PLANNER tasks
-- **"Management agents"** — Spawns PROJECT-MANAGER and DEPUTY-CTO tasks
-- **"All sections"** — Spawns tasks from all 5 sections
+**Question 1** — Which sections to spawn (multiSelect: true):
+- **"Implementation agents"** — CODE-REVIEWER, INVESTIGATOR & PLANNER, TEST-WRITER
+- **"Management agents"** — PROJECT-MANAGER, DEPUTY-CTO
+- **"All sections"** — All 5 sections
 - **"Cancel"** — Do nothing
 
-The user can also type a custom selection via "Other" (e.g., specific section names).
+**Question 2** — Concurrency limit (multiSelect: false):
+- **"Current default (N)"** — Use the maxConcurrent value from prefetch (Recommended)
+- **"5"** — Conservative limit
+- **"15"** — Higher limit
+- **"20"** — Maximum limit
 
-## Step 3: Map Selection and Run
+## Step 3: Spawn via MCP Tool
 
-Map the user's selection to section names:
-
-- "Implementation agents" → `CODE-REVIEWER,INVESTIGATOR & PLANNER,TEST-WRITER`
-- "Management agents" → `PROJECT-MANAGER,DEPUTY-CTO`
-- "All sections" → `CODE-REVIEWER,INVESTIGATOR & PLANNER,TEST-WRITER,PROJECT-MANAGER,DEPUTY-CTO`
+Map the user's section selection:
+- "Implementation agents" → `["CODE-REVIEWER", "INVESTIGATOR & PLANNER", "TEST-WRITER"]`
+- "Management agents" → `["PROJECT-MANAGER", "DEPUTY-CTO"]`
+- "All sections" → `["CODE-REVIEWER", "INVESTIGATOR & PLANNER", "TEST-WRITER", "PROJECT-MANAGER", "DEPUTY-CTO"]`
+- If both "Implementation agents" and "Management agents" selected → combine both arrays
 - "Cancel" → stop, do nothing
 
-If the user chose "Other" and typed specific section names, use those directly.
+If the user chose "Other" and typed specific section names, parse those into the array.
 
-Then resolve the GENTYR framework path and run:
+Call a single MCP tool:
 
-```bash
-PROJECT_ROOT=$(d=$(pwd); while [ "$d" != "/" ] && [ ! -f "$d/.claude/commands/spawn-tasks.md" ]; do d=$(dirname "$d"); done; echo "$d")
-GENTYR_PATH=$(dirname $(dirname $(dirname $(readlink -f "$PROJECT_ROOT/.claude/commands/spawn-tasks.md" 2>/dev/null || echo "$PROJECT_ROOT"))))
-CLAUDE_PROJECT_DIR="$PROJECT_ROOT" node "$GENTYR_PATH/scripts/force-spawn-tasks.js" --sections "<SECTIONS>" --project-dir "$PROJECT_ROOT"
 ```
-
-Replace `<SECTIONS>` with the comma-separated section names from the mapping above.
+mcp__agent-tracker__force_spawn_tasks({ sections: [...], maxConcurrent: N })
+```
 
 ## Step 4: Display Results
 
-The script outputs JSON: `{ spawned: [...], skipped: [...], errors: [...] }`
+From the tool response, display:
 
-Display a summary:
-
-- **Spawned** (N): list each task title + agent type
+- **Spawned** (N): list each task title + agent type + PID
 - **Skipped** (N): list each with reason (e.g., "concurrency limit reached")
 - **Errors** (N): list each with error message
 
@@ -74,7 +73,7 @@ Display a summary:
 
 ## What This Preserves
 
-- Concurrency guard (default max 10, configurable via `--max-concurrent`)
+- Concurrency guard (configurable via maxConcurrent parameter)
 - Task status tracking (marks in_progress, resets on failure)
 - Agent tracker registration (spawned agents appear in `/cto-report`)
 - Tasks already in_progress are excluded
