@@ -8,9 +8,28 @@ This project uses the GENTYR automation framework.
 - To install, uninstall, reinstall, protect, unprotect, scaffold, or check status: call the `gentyr_setup` MCP tool (from setup-helper server). It generates the correct command with all flags and paths.
 - To view or change automation frequencies/intervals/schedules: call `list_automation_config` then `set_automation_mode` MCP tools (from deputy-cto server).
 
+### Agent Selection Guide
+
+Choose the correct sub-agent based on what KIND of work needs to be done. Each agent has a specific domain — using the wrong agent produces worse results.
+
+| Agent | `subagent_type` | Use when... | NEVER use for... |
+|-------|-----------------|-------------|------------------|
+| **INVESTIGATOR** | `investigator` | Researching a problem, understanding root cause, planning approach. Read-only — does NOT edit code. | Writing or editing any files |
+| **CODE-WRITER** | `code-writer` | Writing or editing **production source code** (application logic, configs, scripts, types). | Editing test files, reviewing code |
+| **TEST-WRITER** | `test-writer` | Writing, editing, or fixing **test files** (`*.test.ts`, `*.spec.ts`, `__tests__/`). Also updating tests after production code changes. | Writing production code |
+| **CODE-REVIEWER** | `code-reviewer` | Reviewing all changes for quality, spec compliance, security. Commits code. | Writing production code or tests |
+| **PROJECT-MANAGER** | `project-manager` | Syncing documentation (CLAUDE.md, README.md), repo cleanup, file organization. | Writing code or tests |
+
+**Critical**: Match the agent to the FILE TYPE being edited:
+- Editing `src/**/*.ts` (production code) → **code-writer**
+- Editing `__tests__/**/*.test.ts` or `*.spec.ts` (test files) → **test-writer**
+- Editing `*.md`, `README.md`, `CLAUDE.md` (docs) → **project-manager**
+- Need to understand a problem first → **investigator**
+- Reviewing/committing completed work → **code-reviewer**
+
 ### Standard Development Workflow
 
-ALL code changes MUST follow this mandatory sub-agent sequence using the Task tool:
+For **new features or significant changes**, follow this full sequence:
 
 1. **INVESTIGATOR** `Task(subagent_type='investigator')` - Research the task, understand codebase context, plan approach
 2. **CODE-WRITER** `Task(subagent_type='code-writer')` - Implement production code changes
@@ -19,17 +38,24 @@ ALL code changes MUST follow this mandatory sub-agent sequence using the Task to
 5. **PROJECT-MANAGER** `Task(subagent_type='project-manager')` - Sync documentation, repo cleanup (ALWAYS LAST)
 6. **SUMMARY** - Report findings to deputy-cto via `mcp__agent-reports__report_to_deputy_cto`
 
+For **scoped work** (e.g., only tests need fixing, only docs need updating), you may start at the appropriate agent and continue the sequence from there. Examples:
+- Test files broken after a schema change → start at **test-writer**, then code-reviewer, project-manager
+- Only documentation is outdated → start at **project-manager**
+- Bug investigation needed → start at **investigator**, then follow full sequence
+
+If a later agent discovers work that belongs to an earlier agent (e.g., test-writer finds a production bug), stop and spawn the correct agent for that work before continuing.
+
 ### Golden Rules
 
-- **Never skip agents** - Every step is mandatory. Skip only if the step is genuinely not applicable (e.g., no tests needed for a docs-only change).
-- **Always follow order** - INVESTIGATOR before CODE-WRITER before TEST-WRITER before CODE-REVIEWER before PROJECT-MANAGER.
-- **One agent per role** - Do not combine roles. The code-writer does NOT review. The code-reviewer does NOT write production code.
+- **Match agent to work type** - The test-writer writes tests. The code-writer writes production code. Never cross these boundaries.
+- **Follow order for the agents you use** - INVESTIGATOR → CODE-WRITER → TEST-WRITER → CODE-REVIEWER → PROJECT-MANAGER. You can skip earlier agents if their work isn't needed, but never reorder.
+- **One agent per role** - Do not combine roles. The code-writer does NOT review. The code-reviewer does NOT write production code. The code-writer does NOT edit test files.
 - **Use sub-agents via Task tool** - Each `Task(subagent_type='...')` loads the agent's specialized config from `.claude/agents/`. Never skip this by doing the work directly.
 - **Use MCP tools** - Coordinate via `mcp__todo-db__*` for task tracking, `mcp__agent-reports__*` for CTO reporting.
 
 ### CTO Reporting
 
-After completing work, report significant findings to the deputy-cTO:
+After completing work, report significant findings to the deputy-CTO:
 - Use `mcp__agent-reports__report_to_deputy_cto` for issues, discoveries, or status updates
 - Critical/security issues are auto-escalated to CTO
 - The deputy-cto triages reports hourly

@@ -152,20 +152,27 @@ ${originalTask}`;
       }
     }
 
-    // Follow-up enforcement for forced sections
+    // Follow-up enforcement for forced creators
     let followup_enabled = args.followup_enabled ?? false;
     let followup_section = args.followup_section ?? args.section;
     let followup_prompt = args.followup_prompt ?? null;
     let warning: string | undefined;
 
     if (args.assigned_by && (FORCED_FOLLOWUP_CREATORS as readonly string[]).includes(args.assigned_by)) {
+      // Reject tasks without a description
+      if (!args.description?.trim()) {
+        return {
+          error: `Tasks created by ${args.assigned_by} require a description. The description is used to generate a follow-up verification prompt.`,
+        };
+      }
+
       if (args.followup_enabled === false) {
         warning = `Follow-up hooks cannot be disabled for tasks created by ${args.assigned_by}. Enabled automatically.`;
       }
       followup_enabled = true;
 
       if (!followup_prompt) {
-        followup_prompt = buildDefaultFollowupPrompt(args.title, args.description ?? null);
+        followup_prompt = buildDefaultFollowupPrompt(args.title, args.description);
       }
     }
 
@@ -1075,6 +1082,7 @@ ${originalTask}`;
       const result = createTask({
         section: 'DEPUTY-CTO',
         title: 'High-level integration task',
+        description: 'Integrate AWS platform connector with backend routes',
         assigned_by: 'deputy-cto',
       });
 
@@ -1082,6 +1090,34 @@ ${originalTask}`;
       if (!('error' in result)) {
         expect(result.section).toBe('DEPUTY-CTO');
         expect(result.followup_enabled).toBe(1);
+      }
+    });
+
+    it('should reject deputy-cto task without description', () => {
+      const result = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'No description task',
+        assigned_by: 'deputy-cto',
+      });
+
+      expect('error' in result).toBe(true);
+      if ('error' in result) {
+        expect(result.error).toContain('require a description');
+        expect(result.error).toContain('deputy-cto');
+      }
+    });
+
+    it('should reject deputy-cto task with empty description', () => {
+      const result = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'Empty description task',
+        description: '   ',
+        assigned_by: 'deputy-cto',
+      });
+
+      expect('error' in result).toBe(true);
+      if ('error' in result) {
+        expect(result.error).toContain('require a description');
       }
     });
 
@@ -1115,6 +1151,7 @@ ${originalTask}`;
       const result = createTask({
         section: 'DEPUTY-CTO',
         title: 'Forced followup',
+        description: 'Task that tries to disable follow-up',
         assigned_by: 'deputy-cto',
         followup_enabled: false,
       });
@@ -1132,6 +1169,7 @@ ${originalTask}`;
       const result = createTask({
         section: 'DEPUTY-CTO',
         title: 'Custom prompt task',
+        description: 'Task with custom verification prompt',
         assigned_by: 'deputy-cto',
         followup_prompt: customPrompt,
       });
@@ -1162,6 +1200,7 @@ ${originalTask}`;
       const task = createTask({
         section: 'DEPUTY-CTO',
         title: 'Completable task',
+        description: 'Task that should produce a follow-up on completion',
         assigned_by: 'deputy-cto',
       });
 
@@ -1206,6 +1245,7 @@ ${originalTask}`;
       const task = createTask({
         section: 'DEPUTY-CTO',
         title: 'Chain test',
+        description: 'Verify follow-up tasks do not chain infinitely',
         assigned_by: 'deputy-cto',
       });
 
@@ -1225,6 +1265,7 @@ ${originalTask}`;
       const task = createTask({
         section: 'DEPUTY-CTO',
         title: 'Build AWS integration',
+        description: 'Implement AWS IAM backend connector with list-users capability',
         assigned_by: 'deputy-cto',
       });
 
@@ -1244,6 +1285,7 @@ ${originalTask}`;
       const result = createTask({
         section: 'INVESTIGATOR & PLANNER',
         title: 'Investigate auth issue',
+        description: 'Research authentication middleware gaps in vendor routes',
         assigned_by: 'deputy-cto',
       });
 
@@ -1288,6 +1330,7 @@ ${originalTask}`;
       const task = createTask({
         section: 'DEPUTY-CTO',
         title: 'Followup author test',
+        description: 'Verify that follow-up tasks are attributed to system-followup',
         assigned_by: 'deputy-cto',
       });
 
@@ -1323,6 +1366,7 @@ ${originalTask}`;
       const task = createTask({
         section: 'DEPUTY-CTO',
         title: 'Cross-section followup task',
+        description: 'Task whose follow-up should land in TEST-WRITER section',
         assigned_by: 'deputy-cto',
         followup_section: 'TEST-WRITER',
       });

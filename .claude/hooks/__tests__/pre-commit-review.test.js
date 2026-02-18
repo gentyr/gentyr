@@ -445,25 +445,14 @@ describe('G001 Compliance Summary', () => {
     const blockingExits = (hookCode.match(/process\.exit\(1\)/g) || []).length;
 
     // Should have multiple fail-closed exit points:
-    // 1. better-sqlite3 unavailable
-    // 2. pending rejections check error
-    // 3. pending rejections exist
-    // 4. git diff error
-    // 5. no decision timeout
-    // 6. review error catch block
-    // 7. rejection decision
+    // 1. forbidden lint config files
+    // 2. git hooksPath tampered
+    // 3. staged info error
+    // 4. lint failure
+    // 5. main/unknown branch + pending CTO items
+    // 6. no approval token (final reject)
 
     assert.ok(blockingExits >= 6, `Should have at least 6 fail-closed exits, found ${blockingExits}`);
-  });
-
-  it('should validate emergency bypass is documented', () => {
-    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-    // Count emergency bypass messages
-    const bypassMessages = (hookCode.match(/Emergency bypass: SKIP_DEPUTY_CTO_REVIEW=1/g) || []).length;
-
-    // Should appear in multiple error messages
-    assert.ok(bypassMessages >= 4, `Should have at least 4 bypass messages, found ${bypassMessages}`);
   });
 
   it('should validate G001 is explicitly mentioned', () => {
@@ -473,48 +462,485 @@ describe('G001 Compliance Summary', () => {
     assert.match(hookCode, /Fail-closed|fail-closed/, 'Should mention fail-closed principle');
   });
 
-  it('should have exactly one approval exit point (exit 0 with approval)', () => {
-    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-    // Validate approval logic
-    assert.match(hookCode, /if \(decision\.decision === 'approved'\)/, 'Should check for approval');
-    assert.match(hookCode, /APPROVED/, 'Should have approval message');
-  });
-
-  it('should validate timeout constants are reasonable', () => {
-    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-    assert.match(hookCode, /REVIEW_TIMEOUT_MS = 120000/, 'Should have 2 minute timeout');
-    assert.match(hookCode, /POLL_INTERVAL_MS = 1000/, 'Should poll every 1 second');
-  });
-
   it('should validate return structure consistency', () => {
     const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-    // getStagedDiff should return { files, stat, diff, error }
-    assert.match(hookCode, /files:.*stat.*diff.*error/s, 'getStagedDiff should return correct structure');
+    // getStagedInfo should return { files, stat, diff, error }
+    assert.match(hookCode, /files:.*stat.*diff.*error/s, 'getStagedInfo should return correct structure');
 
-    // hasPendingRejections should return { hasRejections, error }
-    assert.match(hookCode, /hasRejections.*error/s, 'hasPendingRejections should return correct structure');
+    // hasPendingCtoItems should return { hasItems, count, error }
+    assert.match(hookCode, /hasItems.*count.*error/s, 'hasPendingCtoItems should return correct structure');
+  });
+});
+
+// =============================================================================
+// G020: Branch-Aware Commit Blocking - Logic Tests
+//
+// These tests mirror the branch-routing logic from main() in isolation so we
+// can verify every branch path without requiring a real git repo, real
+// databases, or a full hook execution.
+// =============================================================================
+
+/**
+ * Mirrors the branch-aware blocking logic from main() in pre-commit-review.js
+ * (lines ~581-622). Returns an object describing what action was taken so
+ * tests can assert on it without touching process.exit or console.
+ *
+ * @param {{ hasItems: boolean, count: number, questionCount: number, triageCount: number }} ctoItemsCheck
+ * @param {string} currentBranch
+ * @returns {{ action: 'block' | 'warn' | 'allow', warnOutput: string | null }}
+ */
+function branchAwareBlockingLogic(ctoItemsCheck, currentBranch) {
+  if (!ctoItemsCheck.hasItems) {
+    return { action: 'allow', warnOutput: null };
+  }
+
+  if (currentBranch === 'main' || currentBranch === 'unknown') {
+    // MAIN/UNKNOWN: Hard block (G001 fail-closed treats unknown as main)
+    return { action: 'block', warnOutput: null };
+  }
+
+  if (currentBranch === 'develop' || currentBranch === 'staging') {
+    // STAGING/DEVELOP: Warn but allow commit
+    const warnLines = [
+      '',
+      '══════════════════════════════════════════════════════════════',
+      `  WARNING: Pending CTO items exist (committing to ${currentBranch})`,
+      '',
+    ];
+    if (ctoItemsCheck.questionCount > 0) {
+      warnLines.push(`  • ${ctoItemsCheck.questionCount} CTO question(s) pending`);
+    }
+    if (ctoItemsCheck.triageCount > 0) {
+      warnLines.push(`  • ${ctoItemsCheck.triageCount} untriaged report(s) pending`);
+    }
+    warnLines.push('');
+    warnLines.push('  These must be resolved before merging to main.');
+    warnLines.push('══════════════════════════════════════════════════════════════');
+    warnLines.push('');
+    return { action: 'warn', warnOutput: warnLines.join('\n') };
+  }
+
+  // Feature branches: no blocking, no warning -- items checked on merge
+  return { action: 'allow', warnOutput: null };
+}
+
+describe('G020: Branch-Aware Commit Blocking - Logic', () => {
+  describe('main branch + pending CTO items', () => {
+    it('should hard-block when on main branch with pending questions', () => {
+      const ctoItemsCheck = {
+        hasItems: true,
+        count: 2,
+        questionCount: 2,
+        triageCount: 0,
+        error: false,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'main');
+
+      assert.strictEqual(result.action, 'block', 'Should block commit on main');
+      assert.strictEqual(result.warnOutput, null, 'Should not emit a warning (hard block)');
+    });
+
+    it('should hard-block when on main branch with pending triage reports', () => {
+      const ctoItemsCheck = {
+        hasItems: true,
+        count: 1,
+        questionCount: 0,
+        triageCount: 1,
+        error: false,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'main');
+
+      assert.strictEqual(result.action, 'block');
+    });
+
+    it('should hard-block when on main branch with both questions and reports', () => {
+      const ctoItemsCheck = {
+        hasItems: true,
+        count: 3,
+        questionCount: 2,
+        triageCount: 1,
+        error: false,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'main');
+
+      assert.strictEqual(result.action, 'block');
+    });
   });
 
-  it('should validate all blocking errors provide emergency bypass', () => {
+  describe('main branch + no pending CTO items', () => {
+    it('should allow commit on main when no pending CTO items exist', () => {
+      const ctoItemsCheck = {
+        hasItems: false,
+        count: 0,
+        questionCount: 0,
+        triageCount: 0,
+        error: false,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'main');
+
+      assert.strictEqual(result.action, 'allow', 'Should allow commit with no pending items');
+      assert.strictEqual(result.warnOutput, null);
+    });
+  });
+
+  describe('unknown branch + pending CTO items (G001 fail-closed)', () => {
+    it('should hard-block on unknown branch with pending items (fail-closed)', () => {
+      const ctoItemsCheck = {
+        hasItems: true,
+        count: 1,
+        questionCount: 1,
+        triageCount: 0,
+        error: false,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'unknown');
+
+      assert.strictEqual(result.action, 'block', 'G001: unknown branch treated as main');
+      assert.strictEqual(result.warnOutput, null);
+    });
+
+    it('should hard-block on unknown branch with error state (G001 fail-closed)', () => {
+      // When getBranchInfo() throws, it returns 'unknown'.
+      // When hasPendingCtoItems() DB errors, it returns hasItems: true.
+      // Combined, both error states must produce a hard block.
+      const ctoItemsCheck = {
+        hasItems: true,
+        count: 1,
+        error: true,
+        questionCount: 0,
+        triageCount: 0,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'unknown');
+
+      assert.strictEqual(result.action, 'block', 'G001: error state on unknown branch must block');
+    });
+  });
+
+  describe('staging branch + pending CTO items', () => {
+    it('should warn but not block when on staging branch', () => {
+      const ctoItemsCheck = {
+        hasItems: true,
+        count: 1,
+        questionCount: 1,
+        triageCount: 0,
+        error: false,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'staging');
+
+      assert.strictEqual(result.action, 'warn', 'Should warn on staging');
+      assert.ok(result.warnOutput !== null, 'Should produce warning output');
+      assert.ok(result.warnOutput.includes('WARNING: Pending CTO items exist'), 'Should include warning text');
+      assert.ok(result.warnOutput.includes('staging'), 'Should name the branch in warning');
+      assert.ok(result.warnOutput.includes('These must be resolved before merging to main'), 'Should give merge guidance');
+    });
+
+    it('should include question count in warning when questions pending on staging', () => {
+      const ctoItemsCheck = {
+        hasItems: true,
+        count: 3,
+        questionCount: 3,
+        triageCount: 0,
+        error: false,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'staging');
+
+      assert.strictEqual(result.action, 'warn');
+      assert.ok(result.warnOutput.includes('3 CTO question(s) pending'), 'Should include question count');
+    });
+
+    it('should include triage count in warning when triage reports pending on staging', () => {
+      const ctoItemsCheck = {
+        hasItems: true,
+        count: 2,
+        questionCount: 0,
+        triageCount: 2,
+        error: false,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'staging');
+
+      assert.strictEqual(result.action, 'warn');
+      assert.ok(result.warnOutput.includes('2 untriaged report(s) pending'), 'Should include triage count');
+    });
+
+    it('should include both counts when both types of pending items exist on staging', () => {
+      const ctoItemsCheck = {
+        hasItems: true,
+        count: 3,
+        questionCount: 1,
+        triageCount: 2,
+        error: false,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'staging');
+
+      assert.strictEqual(result.action, 'warn');
+      assert.ok(result.warnOutput.includes('1 CTO question(s) pending'), 'Should include question count');
+      assert.ok(result.warnOutput.includes('2 untriaged report(s) pending'), 'Should include triage count');
+    });
+  });
+
+  describe('develop branch + pending CTO items', () => {
+    it('should warn but not block when on develop branch', () => {
+      const ctoItemsCheck = {
+        hasItems: true,
+        count: 1,
+        questionCount: 0,
+        triageCount: 1,
+        error: false,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'develop');
+
+      assert.strictEqual(result.action, 'warn', 'Should warn on develop');
+      assert.ok(result.warnOutput.includes('develop'), 'Should name the branch in warning');
+      assert.ok(result.warnOutput.includes('These must be resolved before merging to main'), 'Should give merge guidance');
+    });
+
+    it('should not block on develop (only warn) even with many pending items', () => {
+      const ctoItemsCheck = {
+        hasItems: true,
+        count: 10,
+        questionCount: 5,
+        triageCount: 5,
+        error: false,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'develop');
+
+      assert.strictEqual(result.action, 'warn', 'High count of pending items still only warns on develop');
+      assert.notStrictEqual(result.action, 'block');
+    });
+  });
+
+  describe('feature branch + pending CTO items', () => {
+    it('should allow commit on a feature branch with pending items (no block, no warn)', () => {
+      const ctoItemsCheck = {
+        hasItems: true,
+        count: 5,
+        questionCount: 3,
+        triageCount: 2,
+        error: false,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'feature/my-new-feature');
+
+      assert.strictEqual(result.action, 'allow', 'Feature branches are not blocked');
+      assert.strictEqual(result.warnOutput, null, 'Feature branches emit no warning');
+    });
+
+    it('should allow commit on branch named with slash prefix (feature/)', () => {
+      const ctoItemsCheck = { hasItems: true, count: 1, questionCount: 1, triageCount: 0, error: false };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'feature/JIRA-123-fix-auth');
+
+      assert.strictEqual(result.action, 'allow');
+      assert.strictEqual(result.warnOutput, null);
+    });
+
+    it('should allow commit on branch named with fix/ prefix', () => {
+      const ctoItemsCheck = { hasItems: true, count: 1, questionCount: 1, triageCount: 0, error: false };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'fix/urgent-hotfix');
+
+      assert.strictEqual(result.action, 'allow');
+      assert.strictEqual(result.warnOutput, null);
+    });
+
+    it('should allow commit on branch with arbitrary name that is not main/unknown/develop/staging', () => {
+      const ctoItemsCheck = { hasItems: true, count: 1, questionCount: 1, triageCount: 0, error: false };
+
+      for (const branch of ['gentyr-framework-overhaul', 'chore/update-deps', 'release/v2.0.0', 'hotfix/critical']) {
+        const result = branchAwareBlockingLogic(ctoItemsCheck, branch);
+        assert.strictEqual(result.action, 'allow', `Branch "${branch}" should be allowed`);
+        assert.strictEqual(result.warnOutput, null, `Branch "${branch}" should emit no warning`);
+      }
+    });
+  });
+
+  describe('feature branch + no pending CTO items', () => {
+    it('should allow commit on feature branch with no pending items', () => {
+      const ctoItemsCheck = {
+        hasItems: false,
+        count: 0,
+        questionCount: 0,
+        triageCount: 0,
+        error: false,
+      };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'feature/clean-branch');
+
+      assert.strictEqual(result.action, 'allow');
+      assert.strictEqual(result.warnOutput, null);
+    });
+  });
+
+  describe('branch name exact-match boundary conditions', () => {
+    it('should not block "mainstream" (only exact "main" is blocked)', () => {
+      // Regression guard: substring matches must not trigger blocking
+      const ctoItemsCheck = { hasItems: true, count: 1, questionCount: 1, triageCount: 0, error: false };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'mainstream');
+
+      assert.strictEqual(result.action, 'allow', '"mainstream" should not be treated as "main"');
+    });
+
+    it('should not warn on "pre-staging" (only exact "staging" warns)', () => {
+      const ctoItemsCheck = { hasItems: true, count: 1, questionCount: 1, triageCount: 0, error: false };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'pre-staging');
+
+      assert.strictEqual(result.action, 'allow', '"pre-staging" should not be treated as "staging"');
+    });
+
+    it('should not warn on "development" (only exact "develop" warns)', () => {
+      const ctoItemsCheck = { hasItems: true, count: 1, questionCount: 1, triageCount: 0, error: false };
+
+      const result = branchAwareBlockingLogic(ctoItemsCheck, 'development');
+
+      assert.strictEqual(result.action, 'allow', '"development" should not be treated as "develop"');
+    });
+  });
+});
+
+// =============================================================================
+// G020: Branch-Aware Commit Blocking - Code Structure Tests
+//
+// These tests verify the production code in pre-commit-review.js contains
+// the correct branching logic and G020 compliance markers.
+// =============================================================================
+
+describe('G020: Branch-Aware Commit Blocking - Code Structure', () => {
+  const HOOK_PATH = path.join(process.cwd(), '.claude/hooks/pre-commit-review.js');
+
+  it('should define getBranchInfo() function that falls back to "unknown"', () => {
     const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-    // Each COMMIT BLOCKED message should be part of an error output with emergency bypass
-    // Check that emergency bypass appears multiple times throughout error messages
-    const commitBlockedCount = (hookCode.match(/COMMIT BLOCKED/g) || []).length;
-    const emergencyBypassCount = (hookCode.match(/Emergency bypass|SKIP_DEPUTY_CTO_REVIEW=1/g) || []).length;
+    assert.match(hookCode, /function getBranchInfo\(\)/, 'Must define getBranchInfo()');
+    assert.match(hookCode, /git branch --show-current/, 'Must call git branch --show-current');
+    assert.match(hookCode, /return 'unknown'/, 'Must return "unknown" on error (G001 fail-closed)');
+  });
 
-    // We should have roughly as many bypass messages as blocked messages
-    // (some may share the same block, but all error paths should have it)
-    assert.ok(
-      emergencyBypassCount >= 4,
-      `Should have at least 4 emergency bypass references, found ${emergencyBypassCount}`
+  it('should define hasPendingCtoItems() function', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    assert.match(hookCode, /function hasPendingCtoItems\(\)/, 'Must define hasPendingCtoItems()');
+  });
+
+  it('should check both deputy-cto.db (questions) and cto-reports.db (triage) for pending items', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    assert.match(hookCode, /status = 'pending'/, 'Must query pending questions');
+    assert.match(hookCode, /triage_status = 'pending'|triaged_at IS NULL/, 'Must query pending triage items');
+    assert.match(hookCode, /cto-reports\.db/, 'Must check cto-reports.db for triage items');
+  });
+
+  it('should fail-closed when hasPendingCtoItems() throws (G001)', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    // The catch block must return hasItems: true (blocking)
+    assert.match(
+      hookCode,
+      /return \{ hasItems: true, count: 1, error: true \}/,
+      'Must return hasItems: true on DB error (G001 fail-closed)'
     );
+  });
+
+  it('should implement G020 branch-aware routing: main/unknown blocks', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    assert.match(
+      hookCode,
+      /currentBranch === 'main' \|\| currentBranch === 'unknown'/,
+      'Must check for main and unknown together (G001 treats unknown as main)'
+    );
+    assert.match(hookCode, /COMMIT BLOCKED: Pending CTO item/, 'Must emit block message for main/unknown');
+    assert.match(hookCode, /process\.exit\(1\)/, 'Must call process.exit(1) to block');
+  });
+
+  it('should implement G020 branch-aware routing: develop/staging warns only', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    assert.match(
+      hookCode,
+      /currentBranch === 'develop' \|\| currentBranch === 'staging'/,
+      'Must check for develop and staging together'
+    );
+    assert.match(
+      hookCode,
+      /WARNING: Pending CTO items exist/,
+      'Must emit warning for develop/staging'
+    );
+    assert.match(
+      hookCode,
+      /These must be resolved before merging to main/,
+      'Must give guidance about merging to main'
+    );
+    // Must NOT call process.exit after warning (allow commit to continue)
+    // Verified by checking the comment that follows
+    assert.match(
+      hookCode,
+      /Allow commit to proceed \(do NOT exit\)/,
+      'Must document that commit proceeds after warning'
+    );
+  });
+
+  it('should implement G020 branch-aware routing: feature branches skip entirely', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    assert.match(
+      hookCode,
+      /Feature branches: no blocking, no warning/,
+      'Must document feature branch behavior'
+    );
+  });
+
+  it('should reference G020 spec in the branch-aware blocking section', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    assert.match(hookCode, /G020/, 'Must reference G020 spec');
+    assert.match(hookCode, /[Bb]ranch-aware/, 'Must describe the behavior as branch-aware');
+  });
+
+  it('should call getBranchInfo() only after confirming pending items exist', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    // The pattern: hasPendingCtoItems() is called, then if hasItems, getBranchInfo() is called
+    const pendingCheckIndex = hookCode.indexOf('hasPendingCtoItems()');
+    const branchInfoCallIndex = hookCode.indexOf('getBranchInfo()', pendingCheckIndex);
+
+    assert.ok(pendingCheckIndex !== -1, 'hasPendingCtoItems() must be called');
+    assert.ok(branchInfoCallIndex !== -1, 'getBranchInfo() must be called after hasPendingCtoItems()');
     assert.ok(
-      commitBlockedCount >= 4,
-      `Should have at least 4 COMMIT BLOCKED messages, found ${commitBlockedCount}`
+      branchInfoCallIndex > pendingCheckIndex,
+      'getBranchInfo() must be called AFTER hasPendingCtoItems() in main() flow'
+    );
+  });
+
+  it('should display pending question count and triage count in block/warn messages', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    assert.match(hookCode, /questionCount > 0/, 'Must conditionally show question count');
+    assert.match(hookCode, /triageCount > 0/, 'Must conditionally show triage count');
+    assert.match(hookCode, /CTO question\(s\) pending/, 'Must use consistent question label');
+    assert.match(hookCode, /untriaged report\(s\) pending/, 'Must use consistent triage label');
+  });
+
+  it('should show /deputy-cto guidance in the block message', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    assert.match(
+      hookCode,
+      /Run \/deputy-cto to address blocking items/,
+      'Must tell developer how to unblock'
     );
   });
 });

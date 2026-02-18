@@ -6,18 +6,22 @@
  * Provides tools to list agents, view prompts, and access session transcripts.
  * Extended with unified session browser for ALL Claude Code sessions.
  *
- * @version 3.0.0
+ * @version 4.0.0
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execSync, execFileSync } from 'child_process';
+import { fileURLToPath } from 'url';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   ListSpawnedAgentsArgsSchema,
   GetAgentPromptArgsSchema,
   GetAgentSessionArgsSchema,
   GetAgentStatsArgsSchema,
+  GetConcurrencyStatusArgsSchema,
+  ForceSpawnTasksArgsSchema,
   ListSessionsArgsSchema,
   SearchSessionsArgsSchema,
   GetSessionSummaryArgsSchema,
@@ -28,12 +32,16 @@ import {
   type ListSessionsArgs,
   type SearchSessionsArgs,
   type GetSessionSummaryArgs,
+  type GetConcurrencyStatusArgs,
+  type ForceSpawnTasksArgs,
   type ListSpawnedAgentsResult,
   type GetAgentPromptResult,
   type GetAgentSessionResult,
   type ListSessionsResult,
   type SearchSessionsResult,
   type SessionSummaryResult,
+  type ConcurrencyStatusResult,
+  type ForceSpawnTasksResult,
   type AgentStats,
   type AgentHistory,
   type AgentRecord,
@@ -846,6 +854,97 @@ function getSessionSummary(args: GetSessionSummaryArgs): SessionSummaryResult | 
 }
 
 // ============================================================================
+// Concurrency & Force-Spawn Tool Implementations
+// ============================================================================
+
+/**
+ * Get real-time concurrency status: running agents, max allowed, available slots
+ */
+function getConcurrencyStatus(_args: GetConcurrencyStatusArgs): ConcurrencyStatusResult {
+  // Count running agents via pgrep (same pattern as force-spawn-tasks.js)
+  let running = 0;
+  try {
+    const result = execSync(
+      "pgrep -cf 'claude.*--dangerously-skip-permissions'",
+      { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
+    ).trim();
+    running = parseInt(result, 10) || 0;
+  } catch {
+    // pgrep returns exit code 1 when no processes match
+  }
+
+  // Read max concurrent from automation-config.json
+  let maxConcurrent = 10;
+  const automationConfigPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
+  try {
+    const config = JSON.parse(fs.readFileSync(automationConfigPath, 'utf8'));
+    if (config?.effective?.MAX_CONCURRENT_AGENTS) {
+      maxConcurrent = config.effective.MAX_CONCURRENT_AGENTS;
+    }
+  } catch {
+    // Fall back to default
+  }
+
+  // Read agent-tracker-history.json, count agents with status === 'running' by type
+  const history = readHistory();
+  const trackedByType: Record<string, number> = {};
+  for (const agent of history.agents ?? []) {
+    if (agent.status === 'running') {
+      trackedByType[agent.type] = (trackedByType[agent.type] || 0) + 1;
+    }
+  }
+
+  return {
+    running,
+    maxConcurrent,
+    available: Math.max(0, maxConcurrent - running),
+    trackedRunning: { byType: trackedByType },
+  };
+}
+
+/**
+ * Force-spawn pending tasks by wrapping the existing force-spawn-tasks.js script
+ */
+function forceSpawnTasks(args: ForceSpawnTasksArgs): ForceSpawnTasksResult | ErrorResult {
+  // Derive framework path from import.meta.url
+  // Compiled path: <framework>/packages/mcp-servers/dist/agent-tracker/server.js
+  // Navigate up 4 levels to reach framework root
+  const thisFile = fileURLToPath(import.meta.url);
+  const frameworkRoot = path.resolve(path.dirname(thisFile), '..', '..', '..', '..');
+  const scriptPath = path.join(frameworkRoot, 'scripts', 'force-spawn-tasks.js');
+
+  if (!fs.existsSync(scriptPath)) {
+    return { error: `force-spawn-tasks.js not found at ${scriptPath}. Framework root resolved to: ${frameworkRoot}` };
+  }
+
+  try {
+    const output = execFileSync('node', [
+      scriptPath,
+      '--sections', args.sections.join(','),
+      '--project-dir', PROJECT_DIR,
+      '--max-concurrent', String(args.maxConcurrent),
+    ], {
+      encoding: 'utf8',
+      timeout: 120000,
+      env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR },
+    });
+
+    return JSON.parse(output.trim()) as ForceSpawnTasksResult;
+  } catch (err: unknown) {
+    // Attempt to parse stdout from the error (script may have written partial results)
+    const execErr = err as { stdout?: string; message?: string };
+    if (execErr.stdout) {
+      try {
+        return JSON.parse(execErr.stdout.trim()) as ForceSpawnTasksResult;
+      } catch {
+        // Fall through to error return
+      }
+    }
+    return { error: `force-spawn-tasks.js failed: ${execErr.message ?? String(err)}` };
+  }
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -874,6 +973,19 @@ const tools: AnyToolHandler[] = [
     schema: GetAgentStatsArgsSchema,
     handler: getAgentStats,
   },
+  // Concurrency & Force-Spawn Tools
+  {
+    name: 'get_concurrency_status',
+    description: 'Get real-time concurrency status: running agent count, max allowed, available slots, and tracked running agents by type.',
+    schema: GetConcurrencyStatusArgsSchema,
+    handler: getConcurrencyStatus,
+  },
+  {
+    name: 'force_spawn_tasks',
+    description: 'Force-spawn all pending TODO tasks for the specified sections immediately, bypassing age filters, batch limits, cooldowns, and CTO activity gate. Preserves concurrency guard and task tracking.',
+    schema: ForceSpawnTasksArgsSchema,
+    handler: forceSpawnTasks,
+  },
   // Session Browser Tools
   {
     name: 'list_sessions',
@@ -897,7 +1009,7 @@ const tools: AnyToolHandler[] = [
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '3.0.0',  // Added session browser tools
+  version: '4.0.0',  // Added concurrency status + force-spawn tools
   tools,
 });
 
