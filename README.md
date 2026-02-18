@@ -77,12 +77,12 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
 ⏺ Bash(node packages/cto-dashboard/dist/index.js)
      ╭──────────────────────────────────────────────────────────────────────────────╮
      │ GENTYR CTO DASHBOARD                                        Period: Last 24h │
-     │ Generated: 2026-02-17 23:38                                                  │
+     │ Generated: 2026-02-17 23:40                                                  │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ QUOTA & CAPACITY (1 key) ──────────╮ ╭─ SYSTEM STATUS ──────────────────────╮
      │ 5-hour   ██████░░░░░░░░░░  35%      │ │ Deputy CTO: ENABLED                  │
-     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m |    11:41P (3m30s) │
+     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m |    11:43P (3m30s) │
      │ Rotations (24h): 2                  │ │   Next:                              │
      │                                     │ │ Protection: PROTECTED                │
      │                                     │ │ Commits:    BLOCKED                  │
@@ -353,77 +353,72 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ TIMELINE (24h) ─────────────────────────────────────────────────────────────╮
-     │ 23:35  o  SESSION   User session started — CTO dashboard review              │
+     │ 23:37  o  SESSION   User session started — CTO dashboard review              │
      │                     └─ task-triggered via autonomous mode                    │
      │                                                                              │
-     │ 23:31  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
+     │ 23:33  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
      │                     └─ No violations detected by deputy-cto-review agent     │
      │                                                                              │
-     │ 23:24  !  REPORT    Hardcoded JWT secret detected in auth middlewa[CRITICAL] │
-     │                                                                              │
+     │ 23:26  !  REPORT    Hardcoded JWT secret detected in auth middleware [CRITI… │
      │                     └─Spec G004 violation — credential must be in env or     │
      │                       Vault                                                  │
      │                                                                              │
-     │ 23:17  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
+     │ 23:19  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
      │                     └─ task-runner-code-reviewer — 8 files changed           │
      │                                                                              │
-     │ 23:10  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or[HIGH] │
-     │                                                                              │
+     │ 23:12  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or OS k… │
      │                     └─ Awaiting CTO decision                                 │
      │                                                                              │
-     │ 23:02  *  HOOK      PostToolUse: Write blocked — attempt to modify [CRITICAL │
-     │                                                                    ]         │
+     │ 23:04  *  HOOK      PostToolUse: Write blocked — attempt to modify .claude/… │
      │                     └─ Protected path enforcement triggered                  │
      │                                                                              │
-     │ 22:54  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
+     │ 22:56  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
      │                     └─Supabase row-level security gap — G003 compliance risk │
      │                                                                              │
      │                                                                              │
-     │ 22:46  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
+     │ 22:48  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
      │                     └─ 12 ESLint errors resolved across 5 files              │
      │                                                                              │
-     │ 22:37  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
+     │ 22:39  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
      │                     └─ claudemd-refactor agent                               │
      │                                                                              │
-     │ 22:27  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
+     │ 22:29  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
      │                     └─ Commit blocked — lint-fixer spawned automatically     │
      │                                                                              │
-     │ 22:16  !  REPORT    Antipattern scan: silent catch in payment proce[CRITICAL │
-     │                                                                    ]         │
+     │ 22:18  !  REPORT    Antipattern scan: silent catch in payment processing fl… │
      │                     └─ G001 violation — silent failure must be converted to  │
      │                        loud failure                                          │
      │                                                                              │
-     │ 22:05  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
+     │ 22:07  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
      │                     └─Architecture question — deputy CTO recommends          │
      │                       rejection                                              │
      │                                                                              │
-     │ 21:53  o  SESSION   Staging health monitor — all checks passed               │
+     │ 21:55  o  SESSION   Staging health monitor — all checks passed               │
      │                     └─ staging-health-monitor agent — 6 services healthy     │
      │                                                                              │
-     │ 21:40  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
+     │ 21:42  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
      │                     └─ task-runner-code-reviewer — 14 type errors fixed      │
      │                                                                              │
-     │ 21:26  !  REPORT    CORS wildcard on production endpoints — policy vio[HIGH] │
-     │                                                                              │
+     │ 21:28  !  REPORT    CORS wildcard on production endpoints — policy violatio… │
      │                     └─Escalated to CTO for explicit origin allowlist         │
      │                       decision                                               │
      │                                                                              │
-     │ 21:10  *  HOOK      Compliance check triggered — 3 files changed in package… │
+     │ 21:12  *  HOOK      Compliance check triggered — 3 files changed in package… │
      │                     └─ compliance-global agent: all G001–G011 specs verified │
      │                                                                              │
-     │ 20:55  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
+     │ 20:57  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
      │                     └─Scale threshold discussion — recommendation: stay      │
      │                       SQLite until 5k/day                                    │
      │                                                                              │
-     │ 20:39  o  SESSION   Investigator session — tracing API latency spike in pro… │
+     │ 20:41  o  SESSION   Investigator session — tracing API latency spike in pro… │
      │                     └─ task-runner-investigator — root cause: N+1 query in   │
      │                        reports endpoint                                      │
      │                                                                              │
-     │ 20:21  +  TASK      Completed: Rotate leaked service account credential      │
+     │ 20:23  +  TASK      Completed: Rotate leaked service account credential      │
      │                     └─security task — Supabase service role key revoked and  │
      │                       replaced                                               │
      │                                                                              │
-     │ 20:04  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
+     │ 20:06  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
      │                     └─ Self-handled by deputy CTO — bumped to 4.17.21        │
      │                                                                              │
      ╰──────────────────────────────────────────────────────────────────────────────╯
