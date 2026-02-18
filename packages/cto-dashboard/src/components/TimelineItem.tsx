@@ -50,12 +50,6 @@ const COL_TIME = 7;    // "HH:MM" + padding
 const COL_ICON = 3;    // 1-char ASCII icon + padding
 const COL_LABEL = 10;  // longest label "QUESTION" = 8 chars + padding
 
-const PRIORITY_COLORS: Record<string, string> = {
-  critical: 'red',
-  high: 'yellow',
-  normal: 'white',
-  low: 'gray',
-};
 
 function formatTime(date: Date): string {
   return date.toLocaleTimeString('en-US', {
@@ -72,7 +66,7 @@ export function TimelineItem({ event }: { event: TimelineEvent }): React.ReactEl
   const priorityTag = event.priority && event.priority !== 'normal'
     ? ` [${event.priority.toUpperCase()}]`
     : '';
-  const priorityColor = event.priority ? PRIORITY_COLORS[event.priority] : 'white';
+
 
   const indentWidth = COL_TIME + COL_ICON + COL_LABEL;
 
@@ -90,8 +84,7 @@ export function TimelineItem({ event }: { event: TimelineEvent }): React.ReactEl
           <Text color={color} bold>{label}</Text>
         </Box>
         <Box flexShrink={1}>
-          <Text color="white" wrap="truncate-end">{event.title}{priorityTag ? ' ' : ''}</Text>
-          {priorityTag && <Text color={priorityColor}>{priorityTag.trim()}</Text>}
+          <Text color="white" wrap="truncate-end">{event.title}{priorityTag}</Text>
         </Box>
       </Box>
 
