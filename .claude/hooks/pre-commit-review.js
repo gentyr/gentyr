@@ -187,7 +187,16 @@ function getBranchInfo() {
 function spawnDeputyCtoReview(stagedInfo) {
   const branch = getBranchInfo();
 
-  const prompt = `[Task][deputy-cto-review] You are the deputy-cto agent. Review this pending commit and decide whether to approve it.
+  const prompt = `[Task][deputy-cto-review] You are an orchestrator. Review this pending commit and decide whether to approve it.
+
+## IMMEDIATE ACTION
+
+Your first action MUST be to spawn the deputy-cto sub-agent:
+\`\`\`
+Task(subagent_type='deputy-cto', prompt='Review this pending commit on branch ${branch} (${stagedInfo.files.length} files changed) and decide whether to approve or reject it. Use mcp__deputy-cto__approve_commit or mcp__deputy-cto__reject_commit.')
+\`\`\`
+
+The deputy-cto sub-agent has specialized instructions loaded from .claude/agents/deputy-cto.md.
 
 ## Context
 - Branch: ${branch}

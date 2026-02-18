@@ -209,6 +209,26 @@ mcp__todo-db__create_task({
 
 When spawned by the hourly automation task runner with a DEPUTY-CTO section task, you operate as a **task orchestrator**:
 
+### Agent Capabilities & Section Assignment
+
+When creating sub-tasks, assign to sections based on the PRIMARY work type.
+Each section's tasks get processed by the hourly task runner which follows
+the standard agent workflow (INVESTIGATOR -> CODE-WRITER -> TEST-WRITER ->
+CODE-REVIEWER -> PROJECT-MANAGER).
+
+| Agent | Role | Section | Assign When... |
+|-------|------|---------|---------------|
+| investigator | Research & planning ONLY (never edits files) | INVESTIGATOR & PLANNER | Task is purely research, analysis, or planning |
+| code-writer | Implements production code (never reviews) | N/A (spawned via sequence) | N/A - part of the standard sequence |
+| code-reviewer | Reviews code, validates spec compliance, commits | CODE-REVIEWER | Task requires code changes (runs full sequence) |
+| test-writer | Creates/updates tests (never production code) | TEST-WRITER | Task is purely about test creation or updates |
+| project-manager | Documentation sync, repo cleanup (always last) | PROJECT-MANAGER | Task is purely documentation or cleanup |
+| deputy-cto | Orchestrates, decomposes high-level tasks | DEPUTY-CTO | Task requires multi-step orchestration |
+
+**Key insight**: CODE-REVIEWER section tasks trigger the FULL standard workflow
+sequence (investigator -> code-writer -> test-writer -> code-reviewer -> project-manager),
+not just code review. Use this section for any task requiring code changes.
+
 ### Evaluation First
 Before acting on any task, verify it aligns with project specs, existing plans, or CTO directives. Decline tasks that contradict the project architecture.
 

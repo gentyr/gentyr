@@ -405,7 +405,16 @@ function spawnReportTriage() {
     metadata: {},
   });
 
-  const prompt = `[Task][report-triage][AGENT:${agentId}] You are the deputy-cto performing REPORT TRIAGE.
+  const prompt = `[Task][report-triage][AGENT:${agentId}] You are an orchestrator performing REPORT TRIAGE.
+
+## IMMEDIATE ACTION
+
+Your first action MUST be to spawn the deputy-cto sub-agent:
+\`\`\`
+Task(subagent_type='deputy-cto', prompt='Triage all pending agent reports. Use mcp__agent-reports__get_reports_for_triage to get reports, then investigate and decide on each.')
+\`\`\`
+
+The deputy-cto sub-agent has specialized instructions loaded from .claude/agents/deputy-cto.md.
 
 ## Mission
 
@@ -601,7 +610,16 @@ function spawnClaudeMdRefactor() {
     metadata: {},
   });
 
-  const prompt = `[Task][claudemd-refactor][AGENT:${agentId}] You are the deputy-cto performing CLAUDE.md REFACTORING.
+  const prompt = `[Task][claudemd-refactor][AGENT:${agentId}] You are an orchestrator performing CLAUDE.md REFACTORING.
+
+## IMMEDIATE ACTION
+
+Your first action MUST be to spawn the project-manager sub-agent:
+\`\`\`
+Task(subagent_type='project-manager', prompt='CLAUDE.md has grown beyond 25,000 characters. Refactor it by moving detailed content to sub-files in docs/ or specs/, replacing moved content with brief summaries and links. Preserve ALL information. NEVER modify anything below the CTO-PROTECTED divider.')
+\`\`\`
+
+The project-manager sub-agent has specialized instructions loaded from .claude/agents/project-manager.md.
 
 ## Mission
 
@@ -752,7 +770,21 @@ function spawnLintFixer(lintOutput) {
     metadata: { errorCount: errorLines.split('\n').length },
   });
 
-  const prompt = `[Task][lint-fixer][AGENT:${agentId}] You are the code-reviewer agent fixing LINT ERRORS.
+  const prompt = `[Task][lint-fixer][AGENT:${agentId}] You are an orchestrator fixing LINT ERRORS.
+
+## IMMEDIATE ACTION
+
+Your first action MUST be to spawn the code-writer sub-agent to fix the lint errors:
+\`\`\`
+Task(subagent_type='code-writer', prompt='Fix the following ESLint lint errors. Read each file, understand the context, fix the error, then verify by re-running the linter.\\n\\nLint Errors:\\n${errorLines.replace(/`/g, '\\`').replace(/\n/g, '\\n')}')
+\`\`\`
+
+Then after code-writer completes, spawn code-reviewer to review and commit the fixes:
+\`\`\`
+Task(subagent_type='code-reviewer', prompt='Review the lint fix changes and commit them if they look correct.')
+\`\`\`
+
+Each sub-agent has specialized instructions loaded from .claude/agents/ configs.
 
 ## Mission
 
@@ -766,11 +798,8 @@ ${errorLines}
 
 ## Process
 
-1. **Read** the file with errors to understand the context
-2. **Analyze** what the ESLint rule is complaining about
-3. **Fix** the error using your judgment on the best approach
-4. **Verify** by re-running the linter: \`npm run lint 2>&1 | head -100\`
-5. **Iterate** until all errors are resolved (warnings are acceptable)
+1. **Spawn code-writer** to fix the lint errors
+2. **Spawn code-reviewer** to review and commit the fixes
 
 ## Constraints
 
@@ -942,10 +971,10 @@ mcp__todo-db__create_task({
 \`\`\`
 
 Section mapping:
-- Research, analysis, planning → INVESTIGATOR & PLANNER
-- Code implementation + commit → CODE-REVIEWER
-- Test creation/updates → TEST-WRITER
-- Documentation, cleanup → PROJECT-MANAGER
+- Code changes (triggers full agent sequence: investigator → code-writer → test-writer → code-reviewer → project-manager) → CODE-REVIEWER
+- Research, analysis, planning only → INVESTIGATOR & PLANNER
+- Test creation/updates only → TEST-WRITER
+- Documentation, cleanup only → PROJECT-MANAGER
 
 ### Step 4: Mark Complete
 After all sub-tasks are created:
@@ -968,27 +997,16 @@ This will automatically create a follow-up verification task.
  * Build the prompt for a task runner agent
  */
 function buildTaskRunnerPrompt(task, agentName, agentId) {
-  return `[Task][task-runner-${agentName}][AGENT:${agentId}] You are the ${agentName} agent processing a TODO task.
+  const taskDetails = `[Task][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing a TODO task.
 
 ## Task Details
 
 - **Task ID**: ${task.id}
 - **Section**: ${task.section}
 - **Title**: ${task.title}
-${task.description ? `- **Description**: ${task.description}` : ''}
+${task.description ? `- **Description**: ${task.description}` : ''}`;
 
-## Your Role
-
-You are the \`${agentName}\` agent. Complete the task described above using your expertise.
-
-## Process
-
-1. **Understand** the task requirements from the title and description
-2. **Investigate** the codebase as needed to understand context
-3. **Execute** the task using appropriate tools
-4. **Complete** the task by calling the MCP tool below
-
-## When Done
+  const completionBlock = `## When Done
 
 You MUST call this MCP tool to mark the task as completed:
 
@@ -1001,6 +1019,96 @@ mcp__todo-db__complete_task({ id: "${task.id}" })
 - Focus only on this specific task
 - Do not create new tasks unless absolutely necessary
 - Report any issues via mcp__agent-reports__report_to_deputy_cto`;
+
+  // Section-specific workflow instructions
+  if (task.section === 'CODE-REVIEWER') {
+    return `${taskDetails}
+
+## MANDATORY SUB-AGENT WORKFLOW
+
+You are an ORCHESTRATOR. Do NOT edit files directly. Follow this sequence using the Task tool:
+
+1. \`Task(subagent_type='investigator')\` - Research the task, understand the codebase
+2. \`Task(subagent_type='code-writer')\` - Implement the changes
+3. \`Task(subagent_type='test-writer')\` - Add/update tests
+4. \`Task(subagent_type='code-reviewer')\` - Review changes, commit
+5. \`Task(subagent_type='project-manager')\` - Sync documentation (ALWAYS LAST)
+
+Pass the full task context to each sub-agent. Each sub-agent has specialized
+instructions loaded from .claude/agents/ configs.
+
+**YOU ARE PROHIBITED FROM:**
+- Directly editing ANY files using Edit, Write, or NotebookEdit tools
+- Making code changes without the code-writer sub-agent
+- Making test changes without the test-writer sub-agent
+- Skipping investigation before implementation
+- Skipping code-reviewer after any code/test changes
+- Skipping project-manager at the end
+
+${completionBlock}`;
+  }
+
+  if (task.section === 'INVESTIGATOR & PLANNER') {
+    return `${taskDetails}
+
+## IMMEDIATE ACTION
+
+Your first action MUST be:
+\`\`\`
+Task(subagent_type='investigator', prompt='${task.title}. ${task.description || ''}')
+\`\`\`
+
+The investigator sub-agent has specialized instructions loaded from .claude/agents/investigator.md.
+Pass the full task context including title and description.
+
+${completionBlock}`;
+  }
+
+  if (task.section === 'TEST-WRITER') {
+    return `${taskDetails}
+
+## IMMEDIATE ACTION
+
+Your first action MUST be:
+\`\`\`
+Task(subagent_type='test-writer', prompt='${task.title}. ${task.description || ''}')
+\`\`\`
+
+Then after test-writer completes:
+\`\`\`
+Task(subagent_type='code-reviewer', prompt='Review the test changes from the previous step')
+\`\`\`
+
+Each sub-agent has specialized instructions loaded from .claude/agents/ configs.
+
+${completionBlock}`;
+  }
+
+  if (task.section === 'PROJECT-MANAGER') {
+    return `${taskDetails}
+
+## IMMEDIATE ACTION
+
+Your first action MUST be:
+\`\`\`
+Task(subagent_type='project-manager', prompt='${task.title}. ${task.description || ''}')
+\`\`\`
+
+The project-manager sub-agent has specialized instructions loaded from .claude/agents/project-manager.md.
+Pass the full task context including title and description.
+
+${completionBlock}`;
+  }
+
+  // Fallback for any other section
+  return `${taskDetails}
+
+## Your Role
+
+You are the \`${agentName}\` agent. Complete the task described above using your expertise.
+Use the Task tool to spawn the appropriate sub-agent: \`Task(subagent_type='${agentName}')\`
+
+${completionBlock}`;
 }
 
 /**

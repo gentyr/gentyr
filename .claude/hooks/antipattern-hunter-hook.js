@@ -144,6 +144,15 @@ mcp__agent-reports__report_to_deputy_cto({
 function spawnRepoWideHunter() {
   const prompt = `[Task][antipattern-hunter-repo] REPO-WIDE ANTIPATTERN HUNT - Scan the entire codebase for spec violations.
 
+## IMMEDIATE ACTION
+
+Your first action MUST be to spawn the antipattern-hunter sub-agent:
+\`\`\`
+Task(subagent_type='antipattern-hunter', prompt='Perform a REPO-WIDE antipattern hunt. Systematically scan the entire codebase for spec violations, focusing on areas with accumulated technical debt. Prioritize G001, G004, G009, G010, G016.')
+\`\`\`
+
+The antipattern-hunter sub-agent has specialized instructions loaded from .claude/agents/antipattern-hunter.md.
+
 You are a REPO-WIDE antipattern hunter. Your job is to systematically scan the ENTIRE codebase
 looking for spec violations, focusing on areas that may have accumulated technical debt.
 
@@ -239,6 +248,15 @@ function spawnCommitFocusedHunter() {
   const fileList = files.join('\n  - ');
 
   const prompt = `[Task][antipattern-hunter-commit] COMMIT-FOCUSED ANTIPATTERN HUNT - Review only the changes in the current commit.
+
+## IMMEDIATE ACTION
+
+Your first action MUST be to spawn the antipattern-hunter sub-agent:
+\`\`\`
+Task(subagent_type='antipattern-hunter', prompt='Perform a COMMIT-FOCUSED antipattern hunt. Review ONLY the files changed in the most recent commit for spec violations. Commit: ${commitMessage.split('\n')[0]}. Changed files: ${fileList}')
+\`\`\`
+
+The antipattern-hunter sub-agent has specialized instructions loaded from .claude/agents/antipattern-hunter.md.
 
 You are a COMMIT-FOCUSED antipattern hunter. Your job is to deeply review ONLY the files
 that were changed in the most recent commit, checking for spec violations introduced or

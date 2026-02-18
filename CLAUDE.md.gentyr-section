@@ -8,4 +8,44 @@ This project uses the GENTYR automation framework.
 - To install, uninstall, reinstall, protect, unprotect, scaffold, or check status: call the `gentyr_setup` MCP tool (from setup-helper server). It generates the correct command with all flags and paths.
 - To view or change automation frequencies/intervals/schedules: call `list_automation_config` then `set_automation_mode` MCP tools (from deputy-cto server).
 
+### Standard Development Workflow
+
+ALL code changes MUST follow this mandatory sub-agent sequence using the Task tool:
+
+1. **INVESTIGATOR** `Task(subagent_type='investigator')` - Research the task, understand codebase context, plan approach
+2. **CODE-WRITER** `Task(subagent_type='code-writer')` - Implement production code changes
+3. **TEST-WRITER** `Task(subagent_type='test-writer')` - Add/update tests for the changes
+4. **CODE-REVIEWER** `Task(subagent_type='code-reviewer')` - Review all changes, validate spec compliance, commit
+5. **PROJECT-MANAGER** `Task(subagent_type='project-manager')` - Sync documentation, repo cleanup (ALWAYS LAST)
+6. **SUMMARY** - Report findings to deputy-cto via `mcp__agent-reports__report_to_deputy_cto`
+
+### Golden Rules
+
+- **Never skip agents** - Every step is mandatory. Skip only if the step is genuinely not applicable (e.g., no tests needed for a docs-only change).
+- **Always follow order** - INVESTIGATOR before CODE-WRITER before TEST-WRITER before CODE-REVIEWER before PROJECT-MANAGER.
+- **One agent per role** - Do not combine roles. The code-writer does NOT review. The code-reviewer does NOT write production code.
+- **Use sub-agents via Task tool** - Each `Task(subagent_type='...')` loads the agent's specialized config from `.claude/agents/`. Never skip this by doing the work directly.
+- **Use MCP tools** - Coordinate via `mcp__todo-db__*` for task tracking, `mcp__agent-reports__*` for CTO reporting.
+
+### CTO Reporting
+
+After completing work, report significant findings to the deputy-cTO:
+- Use `mcp__agent-reports__report_to_deputy_cto` for issues, discoveries, or status updates
+- Critical/security issues are auto-escalated to CTO
+- The deputy-cto triages reports hourly
+
+### CTO-Protected Actions
+
+Some actions require CTO approval via the deputy-cto pipeline:
+- Architectural changes affecting module boundaries
+- Security-sensitive modifications
+- Breaking changes to APIs or contracts
+- Changes below the `<!-- CTO-PROTECTED -->` divider in CLAUDE.md
+
+### Deployment Flow
+
+`feature branch` → `preview` → `staging` → `production`
+
+Each stage has automated validation. Feedback agents test staging changes automatically.
+
 <!-- GENTYR-FRAMEWORK-END -->
