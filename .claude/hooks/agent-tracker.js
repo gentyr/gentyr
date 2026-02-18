@@ -57,6 +57,7 @@ export const AGENT_TYPES = {
   STANDALONE_ANTIPATTERN_HUNTER: 'standalone-antipattern-hunter',
   STANDALONE_COMPLIANCE_CHECKER: 'standalone-compliance-checker',
   FEEDBACK_ORCHESTRATOR: 'feedback-orchestrator',
+  SESSION_REVIVED: 'session-revived',
 };
 
 /**
@@ -74,6 +75,8 @@ export const HOOK_TYPES = {
   HOURLY_AUTOMATION: 'hourly-automation',
   TASK_RUNNER: 'task-runner',
   API_KEY_WATCHER: 'api-key-watcher',
+  QUOTA_MONITOR: 'quota-monitor',
+  SESSION_REVIVER: 'session-reviver',
 };
 
 /**

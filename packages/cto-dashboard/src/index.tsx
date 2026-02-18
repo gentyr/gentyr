@@ -21,10 +21,11 @@ import { getTestingData, getCodecovData } from './utils/testing-reader.js';
 import { getDeploymentsData } from './utils/deployments-reader.js';
 import { getInfraData } from './utils/infra-reader.js';
 import { getLoggingData } from './utils/logging-reader.js';
+import { getAccountOverviewData } from './utils/account-overview-reader.js';
 import {
   getMockDashboardData, getMockTimelineEvents, getMockTrajectory,
   getMockAutomatedInstances, getMockDeputyCto, getMockTesting,
-  getMockDeployments, getMockInfra, getMockLogging,
+  getMockDeployments, getMockInfra, getMockLogging, getMockAccountOverview,
 } from './mock-data.js';
 
 // ============================================================================
@@ -63,7 +64,7 @@ async function main(): Promise<void> {
   const { hours, mock } = parseArgs();
 
   try {
-    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging;
+    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview;
 
     if (mock) {
       // Use hardcoded mock data — no DB, API, or filesystem access
@@ -76,6 +77,7 @@ async function main(): Promise<void> {
       deployments = getMockDeployments();
       infra = getMockInfra();
       logging = getMockLogging();
+      accountOverview = getMockAccountOverview();
     } else {
       // Fetch data from all sources
       data = await getDashboardData(hours);
@@ -113,6 +115,8 @@ async function main(): Promise<void> {
       if (tokenUsageResult.status === 'fulfilled' && tokenUsageResult.value) {
         automatedInstances.tokensByType = tokenUsageResult.value;
       }
+
+      accountOverview = getAccountOverviewData();
     }
 
     // Render dashboard (static mode - prints once and exits)
@@ -127,6 +131,7 @@ async function main(): Promise<void> {
         deployments={deployments}
         infra={infra}
         logging={logging}
+        accountOverview={accountOverview}
       />,
       { exitOnCtrlC: true }
     );

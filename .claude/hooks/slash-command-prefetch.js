@@ -125,7 +125,7 @@ const SERVICES_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'config', 'servic
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-function getSessionDir() {
+export function getSessionDir() {
   const projectPath = PROJECT_DIR.replace(/[^a-zA-Z0-9]/g, '-').replace(/^-/, '');
   return path.join(os.homedir(), '.claude', 'projects', `-${projectPath}`);
 }
@@ -180,7 +180,7 @@ function discoverSessionIdViaContent(sessionDir) {
   return candidates[0].id;
 }
 
-function discoverSessionId() {
+export function discoverSessionId() {
   const sessionDir = getSessionDir();
   if (!fs.existsSync(sessionDir)) {
     throw new Error(`Session directory not found: ${sessionDir}`);
@@ -219,7 +219,7 @@ function discoverSessionId() {
   return sessionId;
 }
 
-function getClaudePid() {
+export function getClaudePid() {
   const pid = process.ppid;
   if (!Number.isInteger(pid) || pid <= 0) {
     throw new Error(`Invalid parent PID: ${pid}`);
@@ -236,7 +236,7 @@ function getClaudePid() {
   return pid;
 }
 
-function detectTerminal() {
+export function detectTerminal() {
   if (process.platform !== 'darwin') return 'unknown';
   const termProgram = process.env.TERM_PROGRAM || '';
   if (termProgram === 'Apple_Terminal') return 'apple_terminal';
@@ -257,12 +257,12 @@ function validateProjectDir(dir) {
   }
 }
 
-function shellEscape(s) {
+export function shellEscape(s) {
   if (/^[a-zA-Z0-9._\-/~]+$/.test(s)) return s;
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-function generateRestartScript(claudePid, sessionId, projectDir, terminal) {
+export function generateRestartScript(claudePid, sessionId, projectDir, terminal) {
   const resumeCommand = `cd ${shellEscape(projectDir)} && claude --resume ${sessionId}`;
 
   const killBlock = `
@@ -415,6 +415,18 @@ function handleCtoReport() {
 
 function handleDeputyCto() {
   const output = { command: 'deputy-cto', gathered: {} };
+
+  // Read deputy-cto agent instructions for identity injection
+  const agentMdPath = path.join(PROJECT_DIR, '.claude', 'agents', 'deputy-cto.md');
+  try {
+    const raw = fs.readFileSync(agentMdPath, 'utf8');
+    // Strip YAML frontmatter (between --- markers)
+    const stripped = raw.replace(/^---[\s\S]*?---\n*/, '');
+    output.gathered.agentInstructions = stripped.trim();
+  } catch {
+    // Agent file not found — non-fatal
+    output.gathered.agentInstructions = null;
+  }
 
   // deputy-cto.db: pending questions
   const deputyDb = openDb(DEPUTY_CTO_DB);

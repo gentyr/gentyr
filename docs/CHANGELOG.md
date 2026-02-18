@@ -1,5 +1,164 @@
 # GENTYR Framework Changelog
 
+## 2026-02-18 - Automatic Account Rotation & Session Recovery
+
+### Added
+
+**Quota Monitor Hook** (`.claude/hooks/quota-monitor.js`, ~230 lines):
+- PostToolUse hook that monitors API quota usage every 5 minutes
+- Triggers credential rotation at 95% utilization threshold
+- Interactive sessions: spawns auto-restart script with new credentials
+- Automated sessions: writes quota-interrupted state for session-reviver pickup
+- All-accounts-exhausted detection: writes paused-sessions.json with pause reason and timestamp
+- Cooldown protection: 10-minute rotation cooldown prevents rotation loops
+
+**Session Reviver Hook** (`.claude/hooks/session-reviver.js`, ~320 lines):
+- Called from hourly-automation.js to recover interrupted automated sessions
+- Mode 1 (Quota-interrupted pickup): Reads quota-interrupted-sessions.json and re-spawns sessions with --resume after credential rotation
+- Mode 2 (Historical dead session recovery): Scans agent-tracker-history.json for unexpectedly dead agents (process_already_dead) within last 7 days and re-spawns pending TODOs
+- Mode 3 (Paused session resume): Reads paused-sessions.json and checks if any account has recovered, then resumes paused sessions
+- Limits: Max 3 revivals per cycle, 7-day historical window
+- TODO reconciliation integration with reap-completed-agents.js
+
+**Recovery CLI Script** (`scripts/recover-interrupted-sessions.js`, ~200 lines):
+- One-time manual recovery tool for interrupted sessions
+- Accepts `--path`, `--dry-run`, `--max-concurrent` flags
+- Cross-references agent-tracker-history with TODO database
+- Identifies in_progress tasks with no corresponding live process
+- Re-spawns sessions with original task context
+
+### Changed
+
+**Key Sync Module** (`.claude/hooks/key-sync.js`):
+- Exported `checkKeyHealth()`, `selectActiveKey()`, `HIGH_USAGE_THRESHOLD` (80%), `EXHAUSTED_THRESHOLD` (95%) for reuse
+- Added 120 lines of public API functions for credential rotation workflows
+
+**API Key Watcher** (`.claude/hooks/api-key-watcher.js`):
+- Refactored to use shared functions from key-sync.js (~100 lines removed, +10 added)
+- Moved `checkKeyHealth`, `selectActiveKey`, threshold constants to imports
+- Added local `ANTHROPIC_BETA_HEADER` constant for `fetchAccountProfile`
+
+**Agent Tracker** (`.claude/hooks/agent-tracker.js`):
+- Added `SESSION_REVIVED` to `AGENT_TYPES`
+- Added `QUOTA_MONITOR` and `SESSION_REVIVER` to `HOOK_TYPES`
+
+**Slash Command Prefetch** (`.claude/hooks/slash-command-prefetch.js`):
+- Made 6 utility functions into named exports: `getSessionDir`, `discoverSessionId`, `getClaudePid`, `detectTerminal`, `shellEscape`, `generateRestartScript`
+- Enables reuse in quota-monitor.js for restart script generation
+
+**Settings Template** (`.claude/settings.json.template`):
+- Added PostToolUse section registering quota-monitor.js
+
+**Stop-Continue Hook** (`.claude/hooks/stop-continue-hook.js`):
+- Added quota death detection: reads session JSONL for rate_limit errors
+- Attempts credential rotation on quota death
+- Writes recovery state to quota-interrupted-sessions.json for session-reviver pickup
+- Fixed full-file read replaced with head-only read (4KB) for performance
+
+**Reap Completed Agents** (`scripts/reap-completed-agents.js`):
+- Added TODO reconciliation: marks completed or resets to pending based on reap reason
+- Added `todoReconciled` field to result object
+
+**Hourly Automation** (`.claude/hooks/hourly-automation.js`):
+- Integrated session-reviver call after key-sync block with 10-minute cooldown
+
+**Config Reader** (`.claude/hooks/config-reader.js`):
+- Added `session_reviver: 10` (minutes) to cooldown defaults
+
+### Fixed
+
+**Code Review Fixes Applied:**
+- CRITICAL: `ANTHROPIC_BETA_HEADER` undefined in api-key-watcher.js (now defined locally)
+- HIGH: Full transcript file read in stop-hook replaced with 4KB head-read for performance
+- MEDIUM: Changed `stdio: 'inherit'` to `'ignore'` in session-reviver.js to prevent stdio pollution
+- MEDIUM: Stored only `resets_at` timestamp from raw API instead of full response object
+- LOW: Default project path uses `process.cwd()` instead of hardcoded path
+- LOW: `isProcessAlive` handles EPERM consistently across platforms
+
+### Known Technical Debt
+
+**Pre-existing Architectural Patterns (not introduced by this change):**
+- Race condition on shared state files (no file locking) - systemic pattern across framework
+- Duplicate utility functions (readHead, readTail, etc.) across multiple modules - consolidation candidate
+- Inconsistent `getSessionDir` implementations across 4 files - should be unified
+
+### Technical Details
+
+**Recovery Workflow:**
+1. Session hits quota limit during execution
+2. Stop-continue-hook detects rate_limit error in JSONL tail
+3. Attempts credential rotation via key-sync
+4. Writes interrupted session state to quota-interrupted-sessions.json
+5. Session-reviver picks up interrupted state during next hourly automation cycle
+6. Re-spawns session with --resume flag and new credentials
+7. Agent continues from interruption point
+
+**Paused Sessions Workflow:**
+1. Quota-monitor detects all accounts exhausted (all keys >= 95%)
+2. Writes paused-sessions.json with pause reason and timestamp
+3. Session-reviver checks paused state every hourly cycle
+4. When any account recovers below 95%, resumes paused sessions
+5. Logs recovery and clears paused state
+
+**Files Created (3 total):**
+- `.claude/hooks/quota-monitor.js` (230 lines)
+- `.claude/hooks/session-reviver.js` (320 lines)
+- `scripts/recover-interrupted-sessions.js` (200 lines)
+
+**Files Modified (9 total):**
+- `.claude/hooks/key-sync.js` (+120 lines)
+- `.claude/hooks/api-key-watcher.js` (-100/+10 lines)
+- `.claude/hooks/agent-tracker.js` (+3 lines)
+- `.claude/hooks/slash-command-prefetch.js` (+6 exports)
+- `.claude/settings.json.template` (+12 lines)
+- `.claude/hooks/stop-continue-hook.js` (+130 lines)
+- `scripts/reap-completed-agents.js` (+60 lines)
+- `.claude/hooks/hourly-automation.js` (+20 lines)
+- `.claude/hooks/config-reader.js` (+1 line)
+
+**Total Changes:** +750 lines added across 12 files
+
+---
+
+## 2026-02-18 - Deputy-CTO Identity Injection and Investigator Session History
+
+### Changed
+
+**`/deputy-cto` command now fully assumes the deputy-CTO identity** by receiving the agent's complete knowledge base at session start, rather than operating as a generic assistant following session flow instructions.
+
+**Prefetch hook — agent instructions injection** (`.claude/hooks/slash-command-prefetch.js`):
+- `handleDeputyCto()` now reads `.claude/agents/deputy-cto.md` at hook invocation time
+- Strips YAML frontmatter (between `---` markers) before injecting content
+- Injects the stripped markdown as `agentInstructions` in the prefetch output under `gathered.agentInstructions`
+- Non-fatal: if the agent file is missing, `agentInstructions` is set to `null` and the hook continues normally
+
+**Deputy-CTO command — "Your Identity" section** (`.claude/commands/deputy-cto.md`):
+- Added a new "Your Identity" section before "Session Behavior"
+- Instructs Claude to locate the `agentInstructions` field injected by the prefetch hook and absorb it as its own identity
+- Clarifies interactive-session differences from autonomous mode (wait for CTO input, present options rather than deciding unilaterally, use `AskUserQuestion` for batch review)
+
+**Investigator agent — mandatory session history search** (`.claude/agents/investigator.md`):
+- Added "Claude Session History (MANDATORY)" section with a table of `mcp__claude-sessions__*` tools (`search_sessions`, `list_sessions`, `read_session`)
+- Session history search is now step 1 in the Investigation Workflow (was previously absent); all subsequent steps shifted from 1-7 to 2-8
+- Prevents circular re-investigation of previously-explored issues and surfaces decisions not captured in code or docs
+
+### Why This Matters
+
+**Deputy-CTO identity**: Previously, `/deputy-cto` sessions ran Claude as a generic assistant following the command's session flow instructions. The deputy-cto agent's commit review criteria, decision framework, powers, and operating modes were only available in autonomous (pre-commit hook) contexts. Now both paths use the same identity and knowledge base, giving interactive CTO briefing sessions the full context they need to accurately represent the agent's standing policies and decision criteria.
+
+**Investigator session history**: AI agents frequently re-investigate the same problems across sessions. The mandatory session history step surfaces prior work, failed approaches, and decisions before the agent spends time rediscovering them.
+
+### Audit
+
+All 10 slash commands were audited. The remaining 8 commands already follow their correct patterns and required no changes.
+
+**Files Modified (3 total):**
+- `.claude/hooks/slash-command-prefetch.js` - ~12 lines added to `handleDeputyCto()`
+- `.claude/commands/deputy-cto.md` - ~8 lines added (new "Your Identity" section)
+- `.claude/agents/investigator.md` - ~25 lines added (mandatory session history section and workflow reorder)
+
+---
+
 ## 2026-02-17 - CTO Dashboard: Elastic/Elasticsearch Integration Fixes
 
 ### Fixed
