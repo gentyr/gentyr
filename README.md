@@ -60,14 +60,13 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
 
 ## CTO Dashboard
 
-<table><tr>
-  <td><img src="docs/assets/claude-logo.svg" width="39" height="39"></td>
-  <td>
-    <strong>Claude Code</strong> v2.1.34<br>
-    Opus 4.6 · Claude Max<br>
-    <code>~/git/my-project</code>
-  </td>
-</tr></table>
+<img src="docs/assets/claude-logo.svg" width="39" height="39" align="left">
+
+&nbsp; **Claude Code** v2.1.34<br>
+&nbsp; Opus 4.6 · Claude Max<br>
+&nbsp; `~/git/my-project`
+
+<br clear="left">
 
 ```
 
