@@ -159,6 +159,12 @@ try {
     process.exit(0);
   }
 
+  // Skip for slash commands (contain GENTYR sentinel markers)
+  if (userMessage.includes('<!-- HOOK:GENTYR:')) {
+    output(null);
+    process.exit(0);
+  }
+
   if (!userMessage || userMessage.length < 10) {
     output(null);
     process.exit(0);

@@ -7,35 +7,21 @@ The prefetch hook has pre-gathered key metrics (pending questions, task counts, 
 
 ## What to Do
 
-The dashboard is installed in the GENTYR repo. Run this command to display it:
+Run the dashboard via the `.claude-framework` symlink (installed by setup):
 
 ```bash
-# Find project root (walk up until we find .claude/commands), then resolve symlink to GENTYR
-PROJECT_ROOT=$(d=$(pwd); while [ "$d" != "/" ] && [ ! -f "$d/.claude/commands/cto-report.md" ]; do d=$(dirname "$d"); done; echo "$d")
-GENTYR_PATH=$(dirname $(dirname $(dirname $(readlink -f "$PROJECT_ROOT/.claude/commands/cto-report.md" 2>/dev/null || echo "$PROJECT_ROOT"))))
-CLAUDE_PROJECT_DIR="$PROJECT_ROOT" node "$GENTYR_PATH/packages/cto-dashboard/dist/index.js"
+node .claude-framework/packages/cto-dashboard/dist/index.js
 ```
 
-This will render a terminal dashboard with:
-- Rounded corner containers
-- Quota bars with color-coded percentages
-- System status (Deputy CTO, Protection, Commits)
-- Deputy CTO triage pipeline (untriaged reports, escalated items, pending questions, 24h summary)
-- Testing health (failing suites with fix attempts, agent breakdown by framework, resolved suites, unique failures, 7-day activity, optional Codecov)
-- Chronological timeline of sessions, hooks, reports, questions, and tasks
-- Metrics summary grid (Tokens, Sessions, Agents, Tasks, Hooks, Triage, CTO Queue, Cooldowns)
+This will render a terminal dashboard with quota bars, system status, deputy CTO triage pipeline, testing health, chronological timeline, and metrics summary.
 
 ## Optional: Custom Time Range
 
-For a different time period (default is 24 hours):
+For a different time period (default is 24 hours, valid range: 1-168):
 
 ```bash
-PROJECT_ROOT=$(d=$(pwd); while [ "$d" != "/" ] && [ ! -f "$d/.claude/commands/cto-report.md" ]; do d=$(dirname "$d"); done; echo "$d")
-GENTYR_PATH=$(dirname $(dirname $(dirname $(readlink -f "$PROJECT_ROOT/.claude/commands/cto-report.md" 2>/dev/null || echo "$PROJECT_ROOT"))))
-CLAUDE_PROJECT_DIR="$PROJECT_ROOT" node "$GENTYR_PATH/packages/cto-dashboard/dist/index.js" --hours 8
+node .claude-framework/packages/cto-dashboard/dist/index.js --hours 8
 ```
-
-Valid range: 1-168 hours.
 
 ## Notes
 

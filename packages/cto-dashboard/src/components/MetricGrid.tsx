@@ -16,9 +16,9 @@ export interface MetricGridProps {
   columns?: number;
 }
 
-function MetricBox({ title, metrics }: MetricBoxData): React.ReactElement {
+function MetricBox({ title, metrics, width }: MetricBoxData & { width?: number }): React.ReactElement {
   return (
-    <Section title={title} minWidth={16} paddingX={1}>
+    <Section title={title} width={width} minWidth={16} paddingX={1}>
       {metrics.map((metric, idx) => (
         <Box key={idx}>
           <Text color="gray">{metric.label}: </Text>
@@ -31,12 +31,22 @@ function MetricBox({ title, metrics }: MetricBoxData): React.ReactElement {
   );
 }
 
-export function MetricGrid({ boxes }: MetricGridProps): React.ReactElement {
+export function MetricGrid({ boxes, columns = 4 }: MetricGridProps): React.ReactElement {
+  // Parent Section has 1-char border + 1-char padding on each side = 4 chars overhead
+  const containerWidth = (process.stdout.columns || 80) - 4;
+  const cols = Math.min(columns, boxes.length);
+  const gaps = cols - 1;
+  const baseWidth = Math.floor((containerWidth - gaps) / cols);
+  const extraChars = (containerWidth - gaps) - baseWidth * cols;
+
   return (
     <Box flexDirection="row" gap={1} flexWrap="wrap">
-      {boxes.map((box, idx) => (
-        <MetricBox key={idx} {...box} />
-      ))}
+      {boxes.map((box, idx) => {
+        // Distribute extra chars across first N boxes in each row
+        const colIdx = idx % cols;
+        const w = colIdx < extraChars ? baseWidth + 1 : baseWidth;
+        return <MetricBox key={idx} {...box} width={w} />;
+      })}
     </Box>
   );
 }

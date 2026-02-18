@@ -21,14 +21,20 @@ import { getTestingData, getCodecovData } from './utils/testing-reader.js';
 import { getDeploymentsData } from './utils/deployments-reader.js';
 import { getInfraData } from './utils/infra-reader.js';
 import { getLoggingData } from './utils/logging-reader.js';
+import {
+  getMockDashboardData, getMockTimelineEvents, getMockTrajectory,
+  getMockAutomatedInstances, getMockDeputyCto, getMockTesting,
+  getMockDeployments, getMockInfra, getMockLogging,
+} from './mock-data.js';
 
 // ============================================================================
 // CLI Argument Parsing
 // ============================================================================
 
-function parseArgs(): { hours: number } {
+function parseArgs(): { hours: number; mock: boolean } {
   const args = process.argv.slice(2);
   let hours = 24;
+  let mock = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -41,9 +47,12 @@ function parseArgs(): { hours: number } {
         }
       }
     }
+    if (arg === '--mock') {
+      mock = true;
+    }
   }
 
-  return { hours };
+  return { hours, mock };
 }
 
 // ============================================================================
@@ -51,44 +60,59 @@ function parseArgs(): { hours: number } {
 // ============================================================================
 
 async function main(): Promise<void> {
-  const { hours } = parseArgs();
+  const { hours, mock } = parseArgs();
 
   try {
-    // Fetch data from all sources
-    const data = await getDashboardData(hours);
-    const timelineEvents = aggregateTimeline({ hours, maxEvents: 20 });
-    const trajectory = getUsageTrajectory();
-    const automatedInstances = getAutomatedInstances();
-    const deputyCto = getDeputyCtoData();
-    const testing = getTestingData();
+    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging;
 
-    // Fetch optional async data in parallel
-    const [codecovResult, deploymentsResult, infraResult, tokenUsageResult, loggingResult] = await Promise.allSettled([
-      getCodecovData(),
-      getDeploymentsData(),
-      getInfraData(),
-      getAutomationTokenUsage(),
-      getLoggingData(),
-    ]);
+    if (mock) {
+      // Use hardcoded mock data — no DB, API, or filesystem access
+      data = getMockDashboardData();
+      timelineEvents = getMockTimelineEvents();
+      trajectory = getMockTrajectory();
+      automatedInstances = getMockAutomatedInstances();
+      deputyCto = getMockDeputyCto();
+      testing = getMockTesting();
+      deployments = getMockDeployments();
+      infra = getMockInfra();
+      logging = getMockLogging();
+    } else {
+      // Fetch data from all sources
+      data = await getDashboardData(hours);
+      timelineEvents = aggregateTimeline({ hours, maxEvents: 20 });
+      trajectory = getUsageTrajectory();
+      automatedInstances = getAutomatedInstances();
+      deputyCto = getDeputyCtoData();
+      testing = getTestingData();
 
-    if (codecovResult.status === 'fulfilled' && codecovResult.value) {
-      testing.codecov = codecovResult.value;
-    }
+      // Fetch optional async data in parallel
+      const [codecovResult, deploymentsResult, infraResult, tokenUsageResult, loggingResult] = await Promise.allSettled([
+        getCodecovData(),
+        getDeploymentsData(),
+        getInfraData(),
+        getAutomationTokenUsage(),
+        getLoggingData(),
+      ]);
 
-    const deployments = deploymentsResult.status === 'fulfilled'
-      ? deploymentsResult.value
-      : { hasData: false, render: { services: [], recentDeploys: [] }, vercel: { projects: [], recentDeploys: [] }, pipeline: { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null }, combined: [], byEnvironment: { preview: [], staging: [], production: [] }, stats: { totalDeploys24h: 0, successCount24h: 0, failedCount24h: 0 } };
+      if (codecovResult.status === 'fulfilled' && codecovResult.value) {
+        testing.codecov = codecovResult.value;
+      }
 
-    const infra = infraResult.status === 'fulfilled'
-      ? infraResult.value
-      : { hasData: false, render: { serviceCount: 0, suspendedCount: 0, available: false, lastDeployAt: null }, vercel: { projectCount: 0, errorDeploys: 0, buildingCount: 0, available: false }, supabase: { healthy: false, available: false }, elastic: { available: false, totalLogs1h: 0, errorCount1h: 0, warnCount1h: 0, topServices: [] }, cloudflare: { status: 'unavailable', nameServers: [], planName: null, available: false } };
+      deployments = deploymentsResult.status === 'fulfilled'
+        ? deploymentsResult.value
+        : { hasData: false, render: { services: [], recentDeploys: [] }, vercel: { projects: [], recentDeploys: [] }, pipeline: { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null }, combined: [], byEnvironment: { preview: [], staging: [], production: [] }, stats: { totalDeploys24h: 0, successCount24h: 0, failedCount24h: 0 } };
 
-    const logging = loggingResult.status === 'fulfilled'
-      ? loggingResult.value
-      : { hasData: false, totalLogs1h: 0, totalLogs24h: 0, volumeTimeseries: [], byLevel: [], byService: [], bySource: [], topErrors: [], topWarnings: [], storage: { estimatedDailyGB: 0, estimatedMonthlyCost: 0, indexCount: 0 }, sourceCoverage: [] };
+      infra = infraResult.status === 'fulfilled'
+        ? infraResult.value
+        : { hasData: false, render: { serviceCount: 0, suspendedCount: 0, available: false, lastDeployAt: null }, vercel: { projectCount: 0, errorDeploys: 0, buildingCount: 0, available: false }, supabase: { healthy: false, available: false }, elastic: { available: false, totalLogs1h: 0, errorCount1h: 0, warnCount1h: 0, topServices: [] }, cloudflare: { status: 'unavailable', nameServers: [], planName: null, available: false } };
 
-    if (tokenUsageResult.status === 'fulfilled' && tokenUsageResult.value) {
-      automatedInstances.tokensByType = tokenUsageResult.value;
+      logging = loggingResult.status === 'fulfilled'
+        ? loggingResult.value
+        : { hasData: false, totalLogs1h: 0, totalLogs24h: 0, volumeTimeseries: [], byLevel: [], byService: [], bySource: [], topErrors: [], topWarnings: [], storage: { estimatedDailyGB: 0, estimatedMonthlyCost: 0, indexCount: 0 }, sourceCoverage: [] };
+
+      if (tokenUsageResult.status === 'fulfilled' && tokenUsageResult.value) {
+        automatedInstances.tokensByType = tokenUsageResult.value;
+      }
     }
 
     // Render dashboard (static mode - prints once and exits)

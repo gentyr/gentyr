@@ -173,6 +173,11 @@ async function main() {
     process.exit(0);
   }
 
+  // Skip for slash commands (contain GENTYR sentinel markers)
+  if (userMessage.includes('<!-- HOOK:GENTYR:')) {
+    process.exit(0);
+  }
+
   // Check if message matches approval pattern
   const match = userMessage.match(APPROVAL_PATTERN);
 
