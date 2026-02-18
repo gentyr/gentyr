@@ -128,11 +128,13 @@ function SystemStatusSection({ data, width }: { data: DashboardData; width?: num
         </Box>
         {autonomous_mode.enabled && (
           <Box marginLeft={2}>
-            <Text color="gray">{intervalText} | Next: </Text>
-            <Text color="cyan">{nextTimeText}</Text>
-            <Text color="gray"> (</Text>
-            <Text color="yellow">{deltaText}</Text>
-            <Text color="gray">)</Text>
+            <Text wrap="truncate-end">
+              <Text color="gray">{intervalText} | Next: </Text>
+              <Text color="cyan">{nextTimeText}</Text>
+              <Text color="gray"> (</Text>
+              <Text color="yellow">{deltaText}</Text>
+              <Text color="gray">)</Text>
+            </Text>
           </Box>
         )}
         <Box>
