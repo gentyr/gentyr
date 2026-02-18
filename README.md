@@ -60,7 +60,7 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
 
 ## CTO Dashboard
 
-<img src="docs/assets/claude-logo.svg" width="28" align="left" style="margin-right: 8px;">
+<img src="docs/assets/claude-logo.svg" width="32" align="left" style="margin-right: 8px;">
 
 &nbsp; **Claude Code** v2.1.34<br>
 &nbsp; Opus 4.6 · Claude Max<br>
