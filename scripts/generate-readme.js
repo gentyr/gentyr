@@ -49,7 +49,11 @@ if (!template.includes(DASHBOARD_PLACEHOLDER)) {
   process.exit(1);
 }
 
-const chrome = template.replace(DASHBOARD_PLACEHOLDER, indentedDashboard).trimEnd();
+// 4. Swap ⎿ (U+23BF) for a space — the character renders at a different
+//    width in many fonts and throws off alignment in the README.
+const chrome = template.replace(DASHBOARD_PLACEHOLDER, indentedDashboard)
+  .replaceAll('\u23BF', ' ')
+  .trimEnd();
 
 // 4. Read README.md
 const readmePath = resolve(ROOT, 'README.md');
