@@ -60,13 +60,14 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
 
 ## CTO Dashboard
 
+<img src="docs/assets/claude-logo.svg" width="69" height="70" align="left">
+
+&nbsp; **Claude Code** v2.1.34<br>
+&nbsp; Opus 4.6 · Claude Max<br>
+&nbsp; `~/git/my-project`
+
 <!-- CTO_DASHBOARD_START -->
 ```
-▗ ▗   ▖ ▖  Claude Code v2.1.34
-           Opus 4.6 · Claude Max
-  ▘▘ ▝▝    ~/git/my-project
-  ⎿  SessionStart says: Accounts: 2 tracked | Active: a0823518... (40% max usage)
-
 ❯ /cto-report
   ⎿  UserPromptSubmit says: Quota (2 accounts): 5h ██████░░░░░░░░░░ 35% | 7d ██████████████░░ 88%
      Accounts: dev@acme.io (33% 5h) | ops@acme.io (2% 5h)
@@ -76,12 +77,12 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
 ⏺ Bash(node packages/cto-dashboard/dist/index.js)
   ⎿  ╭──────────────────────────────────────────────────────────────────────────────╮
      │ GENTYR CTO DASHBOARD                                        Period: Last 24h │
-     │ Generated: 2026-02-17 23:20                                                  │
+     │ Generated: 2026-02-17 23:27                                                  │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ QUOTA & CAPACITY (1 key) ──────────╮ ╭─ SYSTEM STATUS ──────────────────────╮
      │ 5-hour   ██████░░░░░░░░░░  35%      │ │ Deputy CTO: ENABLED                  │
-     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m |    11:24P (3m30s) │
+     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m |    11:31P (3m30s) │
      │ Rotations (24h): 2                  │ │   Next:                              │
      │                                     │ │ Protection: PROTECTED                │
      │                                     │ │ Commits:    BLOCKED                  │
@@ -352,77 +353,77 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ TIMELINE (24h) ─────────────────────────────────────────────────────────────╮
-     │ 23:17  o  SESSION   User session started — CTO dashboard review              │
+     │ 23:24  o  SESSION   User session started — CTO dashboard review              │
      │                     └─ task-triggered via autonomous mode                    │
      │                                                                              │
-     │ 23:13  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
+     │ 23:20  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
      │                     └─ No violations detected by deputy-cto-review agent     │
      │                                                                              │
-     │ 23:06  !  REPORT    Hardcoded JWT secret detected in auth middlewa[CRITICAL] │
+     │ 23:13  !  REPORT    Hardcoded JWT secret detected in auth middlewa[CRITICAL] │
      │                                                                              │
      │                     └─Spec G004 violation — credential must be in env or     │
      │                       Vault                                                  │
      │                                                                              │
-     │ 22:59  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
+     │ 23:06  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
      │                     └─ task-runner-code-reviewer — 8 files changed           │
      │                                                                              │
-     │ 22:52  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or[HIGH] │
+     │ 22:59  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or[HIGH] │
      │                                                                              │
      │                     └─ Awaiting CTO decision                                 │
      │                                                                              │
-     │ 22:44  *  HOOK      PostToolUse: Write blocked — attempt to modify [CRITICAL │
+     │ 22:51  *  HOOK      PostToolUse: Write blocked — attempt to modify [CRITICAL │
      │                                                                    ]         │
      │                     └─ Protected path enforcement triggered                  │
      │                                                                              │
-     │ 22:36  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
+     │ 22:43  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
      │                     └─Supabase row-level security gap — G003 compliance risk │
      │                                                                              │
      │                                                                              │
-     │ 22:28  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
+     │ 22:35  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
      │                     └─ 12 ESLint errors resolved across 5 files              │
      │                                                                              │
-     │ 22:19  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
+     │ 22:26  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
      │                     └─ claudemd-refactor agent                               │
      │                                                                              │
-     │ 22:09  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
+     │ 22:16  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
      │                     └─ Commit blocked — lint-fixer spawned automatically     │
      │                                                                              │
-     │ 21:58  !  REPORT    Antipattern scan: silent catch in payment proce[CRITICAL │
+     │ 22:05  !  REPORT    Antipattern scan: silent catch in payment proce[CRITICAL │
      │                                                                    ]         │
      │                     └─ G001 violation — silent failure must be converted to  │
      │                        loud failure                                          │
      │                                                                              │
-     │ 21:47  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
+     │ 21:54  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
      │                     └─Architecture question — deputy CTO recommends          │
      │                       rejection                                              │
      │                                                                              │
-     │ 21:35  o  SESSION   Staging health monitor — all checks passed               │
+     │ 21:42  o  SESSION   Staging health monitor — all checks passed               │
      │                     └─ staging-health-monitor agent — 6 services healthy     │
      │                                                                              │
-     │ 21:22  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
+     │ 21:29  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
      │                     └─ task-runner-code-reviewer — 14 type errors fixed      │
      │                                                                              │
-     │ 21:08  !  REPORT    CORS wildcard on production endpoints — policy vio[HIGH] │
+     │ 21:15  !  REPORT    CORS wildcard on production endpoints — policy vio[HIGH] │
      │                                                                              │
      │                     └─Escalated to CTO for explicit origin allowlist         │
      │                       decision                                               │
      │                                                                              │
-     │ 20:52  *  HOOK      Compliance check triggered — 3 files changed in package… │
+     │ 20:59  *  HOOK      Compliance check triggered — 3 files changed in package… │
      │                     └─ compliance-global agent: all G001–G011 specs verified │
      │                                                                              │
-     │ 20:37  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
+     │ 20:44  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
      │                     └─Scale threshold discussion — recommendation: stay      │
      │                       SQLite until 5k/day                                    │
      │                                                                              │
-     │ 20:21  o  SESSION   Investigator session — tracing API latency spike in pro… │
+     │ 20:28  o  SESSION   Investigator session — tracing API latency spike in pro… │
      │                     └─ task-runner-investigator — root cause: N+1 query in   │
      │                        reports endpoint                                      │
      │                                                                              │
-     │ 20:03  +  TASK      Completed: Rotate leaked service account credential      │
+     │ 20:10  +  TASK      Completed: Rotate leaked service account credential      │
      │                     └─security task — Supabase service role key revoked and  │
      │                       replaced                                               │
      │                                                                              │
-     │ 19:46  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
+     │ 19:53  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
      │                     └─ Self-handled by deputy CTO — bumped to 4.17.21        │
      │                                                                              │
      ╰──────────────────────────────────────────────────────────────────────────────╯
