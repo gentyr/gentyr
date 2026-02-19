@@ -782,15 +782,22 @@ function getKeyRotationMetrics(hours: number): KeyRotationMetrics | null {
   const now = Date.now();
   const since = now - (hours * 60 * 60 * 1000);
 
-  // Only include active keys
+  // Count keys by status and build active key list
   const keys: TrackedKeyInfo[] = [];
   let fiveHourSum = 0;
   let sevenDaySum = 0;
   let activeKeysWithData = 0;
+  let expiredKeys = 0;
+  let invalidKeys = 0;
+  let exhaustedKeys = 0;
 
   for (const [keyId, keyData] of Object.entries(state.keys)) {
-    // Skip non-active keys
-    if (keyData.status !== 'active') continue;
+    if (keyData.status === 'expired') { expiredKeys++; continue; }
+    if (keyData.status === 'invalid') { invalidKeys++; continue; }
+    if (keyData.status === 'exhausted') { exhaustedKeys++; }
+
+    // Include active and exhausted keys in the list
+    if (keyData.status !== 'active' && keyData.status !== 'exhausted') continue;
 
     const isCurrent = keyId === state.active_key_id;
 
@@ -802,8 +809,8 @@ function getKeyRotationMetrics(hours: number): KeyRotationMetrics | null {
       is_current: isCurrent,
     });
 
-    // Accumulate for aggregate
-    if (keyData.last_usage) {
+    // Accumulate for aggregate (active keys only)
+    if (keyData.status === 'active' && keyData.last_usage) {
       fiveHourSum += keyData.last_usage.five_hour ?? 0;
       sevenDaySum += keyData.last_usage.seven_day ?? 0;
       activeKeysWithData++;
@@ -824,7 +831,10 @@ function getKeyRotationMetrics(hours: number): KeyRotationMetrics | null {
 
   return {
     current_key_id: state.active_key_id ? `${state.active_key_id.slice(0, 8)}...` : null,
-    active_keys: keys.length,
+    active_keys: keys.length - exhaustedKeys,
+    expired_keys: expiredKeys,
+    invalid_keys: invalidKeys,
+    exhausted_keys: exhaustedKeys,
     keys,
     rotation_events_24h: rotationEvents24h,
     aggregate,

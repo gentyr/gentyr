@@ -96,8 +96,8 @@ export function AccountOverviewSection({ data }: AccountOverviewSectionProps): R
   return (
     <Section title={title}>
       <Box flexDirection="column">
-        {data.accounts.map((account) => (
-          <AccountRow key={account.keyId} account={account} />
+        {data.accounts.map((account, idx) => (
+          <AccountRow key={`${account.keyId}-${idx}`} account={account} />
         ))}
 
         {data.events.length > 0 && (

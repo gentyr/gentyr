@@ -147,6 +147,7 @@ The `/cto-report` command launches an Ink-based (React for CLIs) dashboard that 
 
 - **Rounded corner containers** using Ink's `borderStyle: 'round'`
 - **Color-coded quota bars** (green/yellow/red based on usage)
+- **Account overview section** with per-account quota bars (5h, 7d, 7d-sonnet), status indicators, subscription types, and 24h rotation event timeline
 - **Usage trend line graphs** showing 5h and 7d history with trajectory forecast overlay
 - **Usage trajectory projections** with linear regression
 - **Testing health section** with 42-bucket activity graph (4h resolution), Codecov sparkline, agent framework breakdown
@@ -258,6 +259,22 @@ The `/cto-report` command launches an Ink-based (React for CLIs) dashboard that 
 | ○ | SESSION | Claude Code session (JSONL files) |
 
 ### Dashboard Sections Explained
+
+#### Account Overview
+- **Purpose**: Per-account credential health monitoring and rotation event tracking
+- **Shows**:
+  - Per-account table with truncated key IDs, status (active/exhausted/expired/invalid), subscription type, email, and expiry date
+  - Current account marked with `*` prefix and cyan highlighting
+  - Per-key quota bars: 5h, 7d, and conditional 7d-sonnet (only displayed if >10pp difference from 7d aggregate)
+  - Event timeline (last 24h, max 20 events) with color-coded event types: key_switched (cyan), key_exhausted (red), key_added (green), key_removed (yellow)
+  - Rotation count in section title
+- **Data Source**: `~/.claude/api-key-rotation.json` (maintained by key-sync.js)
+- **Key Features**:
+  - Accounts sorted: current first, then by status priority, then by added date (newest first)
+  - Event descriptions auto-generated from rotation log entries (key_added, key_switched, key_exhausted, key_removed, token_refreshed)
+  - Noisy health_check events filtered from timeline
+  - 7d-sonnet quota bar conditional rendering reduces clutter when Sonnet usage closely matches aggregate
+- **Graceful Degradation**: Section hidden when api-key-rotation.json missing or empty
 
 #### Usage Trends
 - **Purpose**: Visualize API quota consumption history using high-resolution line graphs

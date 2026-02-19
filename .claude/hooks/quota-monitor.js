@@ -23,6 +23,7 @@ import {
   updateActiveCredentials,
   checkKeyHealth,
   selectActiveKey,
+  refreshExpiredToken,
   HIGH_USAGE_THRESHOLD,
   EXHAUSTED_THRESHOLD,
 } from './key-sync.js';
@@ -208,6 +209,38 @@ async function main() {
 
   writeRotationState(state);
 
+  // Step 4b: Refresh expired tokens before rotation attempt
+  for (const [keyId, keyData] of Object.entries(state.keys)) {
+    if (keyData.status === 'expired' && keyData.expiresAt && keyData.expiresAt < Date.now()) {
+      try {
+        const refreshed = await refreshExpiredToken(keyData);
+        if (refreshed === 'invalid_grant') {
+          keyData.status = 'invalid';
+          logRotationEvent(state, {
+            timestamp: Date.now(),
+            event: 'key_removed',
+            key_id: keyId,
+            reason: 'refresh_token_invalid_grant',
+          });
+        } else if (refreshed) {
+          keyData.accessToken = refreshed.accessToken;
+          keyData.refreshToken = refreshed.refreshToken;
+          keyData.expiresAt = refreshed.expiresAt;
+          keyData.status = 'active';
+          logRotationEvent(state, {
+            timestamp: Date.now(),
+            event: 'key_added',
+            key_id: keyId,
+            reason: 'token_refreshed_by_quota_monitor',
+          });
+        }
+      } catch {
+        // Non-fatal: key stays expired
+      }
+    }
+  }
+  writeRotationState(state);
+
   // Step 5: Check if rotation is needed
   const maxUsage = Math.max(
     health.usage.five_hour,
@@ -283,10 +316,39 @@ async function main() {
         return;
       }
     } else {
-      // Automated session: credentials already updated, session continues transparently
+      // Automated session: restart with fresh credentials so Claude Code picks up new token
+      try {
+        const sessionId = discoverSessionId();
+        const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+        const spawnArgs = [
+          '--resume', sessionId,
+          '--dangerously-skip-permissions',
+          '--mcp-config', mcpConfig,
+          '--output-format', 'json',
+        ];
+        const child = spawn('claude', spawnArgs, {
+          cwd: PROJECT_DIR,
+          stdio: 'ignore',
+          detached: true,
+          env: (() => { const e = { ...process.env }; delete e.CLAUDE_CODE_OAUTH_TOKEN; return e; })(),
+        });
+        child.unref();
+
+        if (child.pid) {
+          process.stdout.write(JSON.stringify({
+            continue: false,
+            stopReason: `Account rotated (${Math.round(maxUsage)}% usage). Restarting automated session with fresh credentials (PID ${child.pid}).`,
+          }));
+          return;
+        }
+      } catch {
+        // Spawn failed — fall back to continue with rotated creds on disk
+      }
+
+      // Fallback: continue with warning (creds on disk updated but may be cached in memory)
       process.stdout.write(JSON.stringify({
         continue: true,
-        systemMessage: `Account rotated to ${selectedKeyId.slice(0, 8)}... (${Math.round(maxUsage)}% usage on previous). Continue your work with fresh credentials.`,
+        systemMessage: `Account rotated to ${selectedKeyId.slice(0, 8)}... (${Math.round(maxUsage)}% usage on previous). Warning: credentials updated on disk but may be cached in memory.`,
       }));
       return;
     }
