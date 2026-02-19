@@ -19,6 +19,7 @@ Choose the correct sub-agent based on what KIND of work needs to be done. Each a
 | **TEST-WRITER** | `test-writer` | Writing, editing, or fixing **test files** (`*.test.ts`, `*.spec.ts`, `__tests__/`). Also updating tests after production code changes. | Writing production code |
 | **CODE-REVIEWER** | `code-reviewer` | Reviewing all changes for quality, spec compliance, security. Commits code. | Writing production code or tests |
 | **PROJECT-MANAGER** | `project-manager` | Syncing documentation (CLAUDE.md, README.md), repo cleanup, file organization. | Writing code or tests |
+| **SECRET-MANAGER** | `secret-manager` | Managing secrets, API keys, env vars. Adding, rotating, syncing, or debugging credentials via GENTYR's 1Password pipeline. | Writing code, editing files |
 
 **Critical**: Match the agent to the FILE TYPE being edited:
 - Editing `src/**/*.ts` (production code) → **code-writer**
@@ -52,6 +53,26 @@ If a later agent discovers work that belongs to an earlier agent (e.g., test-wri
 - **One agent per role** - Do not combine roles. The code-writer does NOT review. The code-reviewer does NOT write production code. The code-writer does NOT edit test files.
 - **Use sub-agents via Task tool** - Each `Task(subagent_type='...')` loads the agent's specialized config from `.claude/agents/`. Never skip this by doing the work directly.
 - **Use MCP tools** - Coordinate via `mcp__todo-db__*` for task tracking, `mcp__agent-reports__*` for CTO reporting.
+
+### Secrets Management
+
+Secrets flow through GENTYR's 1Password-based pipeline. **Values never pass through agent context.**
+
+| Operation | How |
+|-----------|-----|
+| **List current mappings** | `mcp__secret-sync__secret_list_mappings` |
+| **Sync to services** | `mcp__secret-sync__secret_sync_secrets({ target: "render-production" })` |
+| **Verify secrets exist** | `mcp__secret-sync__secret_verify_secrets({ target: "all" })` |
+| **List 1Password items** | `mcp__onepassword__list_items({ vault: "Production" })` |
+| **Push all secrets** | Use `/push-secrets` slash command |
+
+**Configuration:** `.claude/config/services.json` maps env var names to `op://` references per target (Render Production, Render Staging, Vercel).
+
+**Local dev:** Use `op run --env-file=.env.local.template -- pnpm dev` to inject secrets at runtime without writing to disk.
+
+**Adding new secrets:** Spawn `secret-manager` agent — `Task(subagent_type='secret-manager')`. It guides the full lifecycle: 1Password item creation, services.json mapping, sync, and verification.
+
+**NEVER** create `.env` files with real values, hardcode credentials (G004), or expose secrets in logs/output.
 
 ### CTO Reporting
 

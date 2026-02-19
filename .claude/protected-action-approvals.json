@@ -1,42 +1,80 @@
 {
   "approvals": {
-    "TURRM4": {
+    "29F435": {
       "server": "test-server",
       "tool": "test-tool",
       "args": {
         "arg1": "value1"
       },
       "phrase": "APPROVE TEST",
-      "code": "TURRM4",
+      "code": "29F435",
       "status": "pending",
-      "created_at": "2026-02-17T01:57:05.036Z",
-      "created_timestamp": 1771293425036,
-      "expires_at": "2026-02-17T02:02:05.036Z",
-      "expires_timestamp": 1771293725036
+      "created_at": "2026-02-19T18:50:53.304Z",
+      "created_timestamp": 1771527053304,
+      "expires_at": "2026-02-19T18:55:53.304Z",
+      "expires_timestamp": 1771527353304
     },
-    "2X5PDB": {
+    "2GAZ5W": {
       "server": "test-server",
       "tool": "test-tool",
       "args": {},
       "phrase": "APPROVE TEST",
-      "code": "2X5PDB",
+      "code": "2GAZ5W",
       "status": "pending",
-      "created_at": "2026-02-17T01:57:05.045Z",
-      "created_timestamp": 1771293425045,
-      "expires_at": "2026-02-17T02:02:05.045Z",
-      "expires_timestamp": 1771293725045
+      "created_at": "2026-02-19T18:50:53.314Z",
+      "created_timestamp": 1771527053314,
+      "expires_at": "2026-02-19T18:55:53.314Z",
+      "expires_timestamp": 1771527353314
     },
-    "4X6AP8": {
+    "H8DA4A": {
       "server": "test-server",
       "tool": "test-tool",
       "args": {},
       "phrase": "APPROVE TEST",
-      "code": "4X6AP8",
+      "code": "H8DA4A",
       "status": "pending",
-      "created_at": "2026-02-17T01:57:05.046Z",
-      "created_timestamp": 1771293425046,
-      "expires_at": "2026-02-17T02:02:05.046Z",
-      "expires_timestamp": 1771293725046
+      "created_at": "2026-02-19T18:50:53.316Z",
+      "created_timestamp": 1771527053316,
+      "expires_at": "2026-02-19T18:55:53.316Z",
+      "expires_timestamp": 1771527353316
+    },
+    "AUHJQD": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {
+        "arg1": "value1"
+      },
+      "phrase": "APPROVE TEST",
+      "code": "AUHJQD",
+      "status": "pending",
+      "created_at": "2026-02-19T18:51:03.226Z",
+      "created_timestamp": 1771527063226,
+      "expires_at": "2026-02-19T18:56:03.226Z",
+      "expires_timestamp": 1771527363226
+    },
+    "XWEY2S": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "XWEY2S",
+      "status": "pending",
+      "created_at": "2026-02-19T18:51:03.233Z",
+      "created_timestamp": 1771527063233,
+      "expires_at": "2026-02-19T18:56:03.233Z",
+      "expires_timestamp": 1771527363233
+    },
+    "XM23BV": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "XM23BV",
+      "status": "pending",
+      "created_at": "2026-02-19T18:51:03.234Z",
+      "created_timestamp": 1771527063234,
+      "expires_at": "2026-02-19T18:56:03.234Z",
+      "expires_timestamp": 1771527363234
     }
   }
 }

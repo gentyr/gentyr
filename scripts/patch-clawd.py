@@ -44,9 +44,9 @@ ROW2_EYE = r'" \u25CF "'
 ROW3_BASE = r'" \u2580   \u2580 "'  # base version, may get trailing spaces adjusted
 
 # Color scheme
-ROW1_COLOR = "penguinShimmer"
+ROW1_COLOR = "chromeYellow"
 ROW2_WING_COLOR = "penguinShimmer"
-ROW2_EYE_COLOR = "clawd_body"  # just color, no bg — dark pupil on terminal bg
+ROW2_EYE_COLOR = "chromeYellow"
 ROW3_COLOR = "chromeYellow"
 
 # ---------------------------------------------------------------------------
@@ -136,8 +136,14 @@ def verify_binary_runs(binary_path):
 
 
 def codesign_binary(binary_path):
-    """Re-sign the binary (required on macOS after modification)."""
+    """Re-sign the binary and clear quarantine (required on macOS after modification)."""
     try:
+        # Clear quarantine attributes first (prevents Gatekeeper prompts)
+        subprocess.run(
+            ["xattr", "-cr", binary_path],
+            capture_output=True,
+            timeout=10,
+        )
         result = subprocess.run(
             ["codesign", "--force", "--sign", "-", binary_path],
             capture_output=True,
@@ -156,8 +162,20 @@ def codesign_binary(binary_path):
 # Anchor: flexDirection:"column",alignItems:"center" near clawd_body
 ANCHOR = rb'flexDirection:"column",alignItems:"center"'
 
-# Mascot unicode chars that appear in any version
-MASCOT_CHARS = [rb"\u25CF", rb"\u2580", rb"\u258C", rb"\u2590"]
+# Mascot unicode chars that may appear in any version of the mascot.
+# Includes stock chars, quadrant blocks used in patched versions, and half blocks.
+MASCOT_CHARS = [
+    rb"\u25CF",  # ● black circle (eye)
+    rb"\u2580",  # ▀ upper half block
+    rb"\u258C",  # ▌ left half block
+    rb"\u2590",  # ▐ right half block
+    rb"\u2584",  # ▄ lower half block
+    rb"\u2596",  # ▖ quadrant lower left
+    rb"\u2597",  # ▗ quadrant lower right
+    rb"\u2598",  # ▘ quadrant upper left
+    rb"\u259D",  # ▝ quadrant upper right
+    rb"\u2726",  # ✦ black four pointed star
+]
 
 # Full function pattern: function NAME(){return VAR.createElement(...)}
 # Uses [\w$]+ to match JS identifiers that may contain $ (e.g. $X8, x$)
@@ -210,9 +228,7 @@ def _extract_block(data, start_offset, kind):
         return bytes(chunk[:end]), end
     else:
         # For return blocks: start is at 'return', end at matching close paren
-        # But we also need to track braces inside (for object literals)
         paren_depth = 0
-        brace_depth = 0
         paren_started = False
         for i in range(len(chunk)):
             b = chunk[i]
@@ -224,10 +240,6 @@ def _extract_block(data, start_offset, kind):
                 if paren_started and paren_depth == 0:
                     end = i + 1
                     break
-            elif b == ord("{"):
-                brace_depth += 1
-            elif b == ord("}"):
-                brace_depth -= 1
         if end == 0:
             return None, 0
         return bytes(chunk[:end]), end
@@ -377,14 +389,13 @@ def find_mascot_blocks(data):
 # Replacement builder
 # ---------------------------------------------------------------------------
 
-# Fingerprint: our patched version contains penguinShimmer + \u2726 (sparkle)
-PATCHED_FINGERPRINT = rb'color:"penguinShimmer"'
-PATCHED_SPARKLE = rb"\u2726"
+# Fingerprint: our patched version has chromeYellow Row 1 with the sparkle char
+PATCHED_FINGERPRINT = rb'color:"chromeYellow"},"\u2597\u2598 \u2726 \u259D\u2596"'
 
 
 def is_already_patched(block_bytes):
     """Check if a block already contains our #29 Winged Eye replacement."""
-    return PATCHED_FINGERPRINT in block_bytes and PATCHED_SPARKLE in block_bytes
+    return PATCHED_FINGERPRINT in block_bytes
 
 
 def build_replacement(block_info):
@@ -441,7 +452,7 @@ def build_replacement(block_info):
 
     if remainder == 1:
         # Add 1 extra trailing space to Row 3 string
-        row3_str = '" \\u2580   \\u2580  "'  # +1 space
+        row3_str = r'" \u2580   \u2580  "'  # +1 space
         row3 = f'{react}.createElement({text},{{color:"{ROW3_COLOR}"}},{row3_str})'
         inner = f'{react}.createElement({flex},{{flexDirection:"column",alignItems:"center"}},{row1},{row2},{row3})'
         if kind == "full_function":
@@ -454,7 +465,7 @@ def build_replacement(block_info):
         remainder = delta % 3
     elif remainder == 2:
         # Add 2 extra trailing spaces to Row 3 string
-        row3_str = '" \\u2580   \\u2580   "'  # +2 spaces
+        row3_str = r'" \u2580   \u2580   "'  # +2 spaces
         row3 = f'{react}.createElement({text},{{color:"{ROW3_COLOR}"}},{row3_str})'
         inner = f'{react}.createElement({flex},{{flexDirection:"column",alignItems:"center"}},{row1},{row2},{row3})'
         if kind == "full_function":
@@ -745,19 +756,23 @@ def main():
         info("Aborting — no changes written.")
         return 0
 
-    # Write
+    # Write atomically via temp file + rename (prevents truncation on failure)
+    temp_path = binary + ".tmp"
     try:
-        with open(binary, "wb") as f:
+        with open(temp_path, "wb") as f:
             f.write(modified)
+        # Preserve original file permissions (especially the execute bit)
+        shutil.copymode(binary, temp_path)
+        os.rename(temp_path, binary)
         success("Binary written successfully")
     except OSError as e:
         error(f"Failed to write binary: {e}")
-        info("Attempting to restore from backup...")
-        ok, msg = restore_backup(binary)
-        if ok:
-            success(msg)
-        else:
-            error(msg)
+        # Clean up temp file if it exists
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        info("Original binary is untouched.")
         return 0
 
     # --- Gate 8: Re-sign ---
@@ -768,6 +783,10 @@ def main():
         if ok:
             success(msg)
             codesign_binary(binary)
+            if verify_binary_runs(binary):
+                success("Backup restored and verified")
+            else:
+                error("Backup restoration also failed — manual intervention needed")
         else:
             error(msg)
         return 0

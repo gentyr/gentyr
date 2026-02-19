@@ -88,9 +88,17 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 **Quota Monitor Hook** (`.claude/hooks/quota-monitor.js`):
 - Runs after every tool call (throttled to 5-minute intervals)
 - Checks active key usage and triggers rotation at 95% utilization
+- Before selecting a rotation candidate, attempts `refreshExpiredToken` for all keys with `status === 'expired'` so they can re-enter the pool
 - Interactive sessions: spawns auto-restart script with new credentials
-- Automated sessions: writes state for session-reviver pickup
+- Automated sessions: spawns `claude --resume <sessionId>` directly with stale `CLAUDE_CODE_OAUTH_TOKEN` removed from env
 - All-accounts-exhausted: writes paused-sessions.json and waits for recovery
+
+**Stop-Continue Hook** (`.claude/hooks/stop-continue-hook.js`):
+- Runs on session stop for automated sessions tagged `[Task]`
+- Forces one continuation cycle (auto-continue) for task sessions on first stop
+- Detects quota/rate-limit death via JSONL error inspection; writes recovery state and approves stop immediately rather than wasting the final API call
+- Attempts credential rotation on quota death; pre-pass refreshes all `expired` tokens before health-check so they can re-enter the candidate pool
+- Writes recovered sessions to `quota-interrupted-sessions.json` for session-reviver Mode 1 pickup
 
 **Session Reviver Hook** (`.claude/hooks/session-reviver.js`):
 - Called every hourly automation cycle with 10-minute cooldown

@@ -99,6 +99,9 @@ export interface TrackedKeyInfo {
 export interface KeyRotationMetrics {
   current_key_id: string | null;
   active_keys: number;
+  expired_keys?: number;
+  invalid_keys?: number;
+  exhausted_keys?: number;
   keys: TrackedKeyInfo[];
   rotation_events_24h: number;
   aggregate: AggregateQuota | null;

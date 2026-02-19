@@ -8,7 +8,9 @@ import * as os from 'os';
 import * as path from 'path';
 import { z } from 'zod';
 
-const KEY_ROTATION_STATE_PATH = path.join(os.homedir(), '.claude', 'api-key-rotation.json');
+function getKeyRotationStatePath(): string {
+  return path.join(os.homedir(), '.claude', 'api-key-rotation.json');
+}
 
 // ============================================================================
 // Public interfaces
@@ -26,8 +28,6 @@ export interface AccountKeyDetail {
   fiveHourPct: number | null;
   sevenDayPct: number | null;
   sevenDaySonnetPct: number | null;
-  fiveHourResetsAt: string | null;
-  sevenDayResetsAt: string | null;
 }
 
 export interface AccountEvent {
@@ -118,6 +118,8 @@ function deriveDescription(event: string, reason: string | undefined, keyId: str
       return `Account ${short} exhausted`;
 
     case 'key_removed':
+      if (reason === 'refresh_token_invalid_grant')
+        return `Refresh token revoked for ${short}`;
       if (reason === 'token_expired' || reason === 'token_expired_refresh_failed')
         return `Token expired for ${short}`;
       if (reason && reason.startsWith('health_check_failed'))
@@ -145,11 +147,12 @@ export function getAccountOverviewData(): AccountOverviewData {
     totalRotations24h: 0,
   };
 
-  if (!fs.existsSync(KEY_ROTATION_STATE_PATH)) return empty;
+  const filePath = getKeyRotationStatePath();
+  if (!fs.existsSync(filePath)) return empty;
 
   let state: z.infer<typeof KeyRotationFileSchema>;
   try {
-    const raw = fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8');
+    const raw = fs.readFileSync(filePath, 'utf8');
     state = KeyRotationFileSchema.parse(JSON.parse(raw));
   } catch {
     return empty;
@@ -172,8 +175,6 @@ export function getAccountOverviewData(): AccountOverviewData {
       fiveHourPct: keyData.last_usage?.five_hour ?? null,
       sevenDayPct: keyData.last_usage?.seven_day ?? null,
       sevenDaySonnetPct: keyData.last_usage?.seven_day_sonnet ?? null,
-      fiveHourResetsAt: null,
-      sevenDayResetsAt: null,
     });
   }
 

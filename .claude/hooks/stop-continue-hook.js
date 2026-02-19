@@ -27,6 +27,7 @@ import {
   updateActiveCredentials,
   checkKeyHealth,
   selectActiveKey,
+  refreshExpiredToken,
 } from './key-sync.js';
 
 // Debug logging - writes to file since stdout is used for hook response
@@ -162,8 +163,8 @@ function writeQuotaInterruptedSession(record) {
       data.sessions.push(record);
     }
 
-    // Clean up entries older than 7 days
-    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    // Clean up entries older than 30 minutes (matches session-reviver reader window)
+    const cutoff = Date.now() - 30 * 60 * 1000;
     data.sessions = data.sessions.filter(s => new Date(s.interruptedAt).getTime() > cutoff);
 
     fs.writeFileSync(QUOTA_INTERRUPTED_PATH, JSON.stringify(data, null, 2), 'utf8');
@@ -180,6 +181,40 @@ async function attemptQuotaRotation() {
   try {
     const state = readRotationState();
     if (!state.active_key_id) return false;
+
+    // Refresh expired tokens before health-check so they can be candidates
+    for (const [keyId, keyData] of Object.entries(state.keys)) {
+      if (keyData.status === 'expired' && keyData.expiresAt && keyData.expiresAt < Date.now()) {
+        try {
+          const refreshed = await refreshExpiredToken(keyData);
+          if (refreshed === 'invalid_grant') {
+            keyData.status = 'invalid';
+            logRotationEvent(state, {
+              timestamp: Date.now(),
+              event: 'key_removed',
+              key_id: keyId,
+              reason: 'refresh_token_invalid_grant',
+            });
+            debugLog(`Refresh token revoked for key ${keyId.slice(0, 8)}... — marked invalid`);
+          } else if (refreshed) {
+            keyData.accessToken = refreshed.accessToken;
+            keyData.refreshToken = refreshed.refreshToken;
+            keyData.expiresAt = refreshed.expiresAt;
+            keyData.status = 'active';
+            logRotationEvent(state, {
+              timestamp: Date.now(),
+              event: 'key_added',
+              key_id: keyId,
+              reason: 'token_refreshed_by_stop_hook',
+            });
+            debugLog(`Refreshed expired token for key ${keyId.slice(0, 8)}...`);
+          }
+        } catch {
+          // Non-fatal: key stays expired
+        }
+      }
+    }
+    writeRotationState(state);
 
     // Health-check all keys to get fresh usage data
     const healthPromises = Object.entries(state.keys)

@@ -159,7 +159,16 @@ async function main() {
     if (keyData.expiresAt && keyData.expiresAt < now) {
       if (keyData.status !== 'expired') {
         const refreshed = await refreshExpiredToken(keyData);
-        if (refreshed) {
+        if (refreshed === 'invalid_grant') {
+          keyData.status = 'invalid';
+          logRotationEvent(state, {
+            timestamp: now,
+            event: 'key_removed',
+            key_id: keyId,
+            reason: 'refresh_token_invalid_grant',
+          });
+          return { keyId, result: null };
+        } else if (refreshed) {
           keyData.accessToken = refreshed.accessToken;
           keyData.refreshToken = refreshed.refreshToken;
           keyData.expiresAt = refreshed.expiresAt;

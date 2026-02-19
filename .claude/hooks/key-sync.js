@@ -32,8 +32,9 @@ const OLD_PROJECT_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'api-key-rotati
 
 // Constants
 const MAX_LOG_ENTRIES = 100;
-const OAUTH_TOKEN_ENDPOINT = 'https://console.anthropic.com/v1/oauth/token';
-const OAUTH_CLIENT_ID = 'claude-code';
+const OAUTH_TOKEN_ENDPOINT = 'https://platform.claude.com/v1/oauth/token';
+const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const OAUTH_SCOPES = 'user:profile user:inference user:sessions:claude_code user:mcp_servers';
 
 /**
  * Generate a stable key ID from an access token.
@@ -313,15 +314,24 @@ export async function refreshExpiredToken(keyData) {
   try {
     const response = await fetch(OAUTH_TOKEN_ENDPOINT, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
         grant_type: 'refresh_token',
         refresh_token: keyData.refreshToken,
         client_id: OAUTH_CLIENT_ID,
+        scope: OAUTH_SCOPES,
       }),
     });
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      if (response.status === 400) {
+        try {
+          const errBody = await response.json();
+          if (errBody.error === 'invalid_grant') return 'invalid_grant';
+        } catch { /* treat as transient */ }
+      }
+      return null;
+    }
     const data = await response.json();
 
     if (!data.access_token) return null;
@@ -329,7 +339,7 @@ export async function refreshExpiredToken(keyData) {
     return {
       accessToken: data.access_token,
       refreshToken: data.refresh_token || keyData.refreshToken,
-      expiresAt: data.expires_at || (Date.now() + 3600 * 1000),
+      expiresAt: data.expires_in ? (Date.now() + data.expires_in * 1000) : (Date.now() + 3600 * 1000),
     };
   } catch {
     return null;
@@ -406,9 +416,18 @@ export async function syncKeys(log) {
 
   // Attempt token refresh for expired keys
   for (const [keyId, keyData] of Object.entries(state.keys)) {
-    if (keyData.status !== 'expired' && keyData.expiresAt && keyData.expiresAt < now) {
+    if (keyData.expiresAt && keyData.expiresAt < now && keyData.status !== 'invalid') {
       const refreshed = await refreshExpiredToken(keyData);
-      if (refreshed) {
+      if (refreshed === 'invalid_grant') {
+        keyData.status = 'invalid';
+        logRotationEvent(state, {
+          timestamp: now,
+          event: 'key_removed',
+          key_id: keyId,
+          reason: 'refresh_token_invalid_grant',
+        });
+        logFn(`[key-sync] Refresh token revoked for key ${keyId.slice(0, 8)}... — marked invalid`);
+      } else if (refreshed) {
         keyData.accessToken = refreshed.accessToken;
         keyData.refreshToken = refreshed.refreshToken;
         keyData.expiresAt = refreshed.expiresAt;
@@ -443,8 +462,50 @@ export async function syncKeys(log) {
     }
   }
 
+  // Garbage-collect dead keys
+  pruneDeadKeys(state, logFn);
+
   writeRotationState(state);
   return result;
+}
+
+/**
+ * Garbage-collect dead keys from the rotation state.
+ * Removes keys with status === 'invalid' whose last_health_check (or added_at)
+ * is older than 7 days. Never prunes the active key. Also removes orphaned
+ * rotation_log entries referencing pruned keys.
+ *
+ * @param {{version: 1, active_key_id: string|null, keys: Object, rotation_log: Array}} state
+ * @param {function} [log] - Optional log function
+ */
+export function pruneDeadKeys(state, log) {
+  const logFn = log || (() => {});
+  const PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+  const now = Date.now();
+  const prunedKeyIds = [];
+
+  for (const [keyId, keyData] of Object.entries(state.keys)) {
+    if (keyData.status !== 'invalid') continue;
+    if (keyId === state.active_key_id) continue;
+
+    const lastSeen = keyData.last_health_check || keyData.added_at || 0;
+    if (now - lastSeen > PRUNE_AGE_MS) {
+      prunedKeyIds.push(keyId);
+    }
+  }
+
+  if (prunedKeyIds.length === 0) return;
+
+  for (const keyId of prunedKeyIds) {
+    delete state.keys[keyId];
+    logFn(`[key-sync] Pruned dead key ${keyId.slice(0, 8)}... (invalid > 7 days)`);
+  }
+
+  // Remove orphaned rotation_log entries
+  const prunedSet = new Set(prunedKeyIds);
+  state.rotation_log = state.rotation_log.filter(
+    entry => !entry.key_id || !prunedSet.has(entry.key_id)
+  );
 }
 
 // ============================================================================

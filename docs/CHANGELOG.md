@@ -1,5 +1,139 @@
 # GENTYR Framework Changelog
 
+## 2026-02-18 - Binary Patching: Clawd Mascot Customization
+
+### Added
+
+**Clawd Mascot Patcher** (`scripts/patch-clawd.py`, ~600 lines):
+- Version-agnostic binary patcher for Claude Code CLI mascot customization
+- Replaces stock Clawd with #29 Winged Eye design (sparkle wings, dark pupil, amber bases)
+- Structural pattern detection using regex instead of hardcoded offsets
+- Dynamic variable extraction for React createElement calls
+- Exact-length replacement with empty-string padding
+- 9 validation gates before and after writing
+- Atomic write via temp file + os.rename() to prevent corruption
+- Idempotent operation: detects already-patched binary and skips
+- CLI flags: --dry-run, --restore, --binary, --no-color
+- Automatic codesign and xattr quarantine clearing
+- Colored terminal output with detailed block analysis
+
+**Binary Patching Documentation** (`docs/BINARY-PATCHING.md`):
+- Complete guide to customizing the Clawd mascot in Claude Code binary
+- Architecture explanation: Bun-compiled executable with embedded JS source
+- Mascot function locations and offset discovery methods
+- Theme color system and available color names
+- Byte-count compensation techniques (empty string padding, string adjustment)
+- Current design specification: #29 Winged Eye with unicode char reference
+- Automated patching workflow with safety gates
+- Manual patching fallback instructions
+- Rollback procedures
+- Technical lessons learned from binary patching experiments
+
+### Fixed
+
+**Code Review Fixes Applied:**
+- CRITICAL: Raw string bug in unicode escape sequences (lines 462, 475) - used r-prefix raw strings to preserve literal \u sequences
+- CRITICAL: Non-atomic write pattern - replaced direct file.write() with temp file + os.rename()
+- MEDIUM: Dead code removed - unused brace_depth variable in return block extraction
+- MEDIUM: Regex $ handling - fixed \w+ to [\w$]+ to match JavaScript identifiers with $
+- LOW: Missing verification - added binary execution check after codesign recovery
+- LOW: Incomplete mascot char list - added all quadrant block characters to detection set
+
+### Tests
+
+**Manual Testing:**
+- --dry-run on patched binary: detects 4 blocks, all "already patched"
+- --dry-run on stock binary: detects 4 blocks, builds correct replacements with exact byte match
+- Full patch cycle: detect → backup → patch → codesign → verify
+- Idempotency verified: re-run on patched binary does nothing
+- Visual verification: mascot displays correctly in terminal
+
+### Technical Details
+
+**Design #29 Winged Eye:**
+```
+▗▘ ✦ ▝▖       Row 1: wing tips + sparkle (penguinShimmer)
+▐▌ ● ▐▌       Row 2: wings + dark pupil (penguinShimmer wings, clawd_body eye)
+ ▀   ▀        Row 3: wing bases (chromeYellow)
+```
+
+**Pattern Detection:**
+- Searches for flexDirection:"column",alignItems:"center" + clawd_body + mascot unicode chars
+- Extracts React import variable (e.g., x$, mB) dynamically
+- Extracts Flex and Text component variables dynamically
+- Builds replacement with exact byte count using empty-string padding (,"")
+
+**Safety Mechanisms:**
+- Byte count verification before and after every replacement
+- Binary execution test after patching
+- Automatic backup creation before any write
+- Codesign restoration with verification
+- Idempotent operation prevents double-patching corruption
+
+---
+
+## 2026-02-18 - CTO Dashboard: Account Overview Section
+
+### Added
+
+**Account Overview Section** (`packages/cto-dashboard/`):
+- New `account-overview-reader.ts` data reader module (~226 lines)
+  - Parses `~/.claude/api-key-rotation.json` for per-account details and rotation events
+  - Reads key metadata: status, subscription type, email, expiry, usage quotas
+  - Filters and formats rotation event log (last 24h, max 20 events, excludes noisy health_check events)
+  - Account sorting: current key first, then by status (active → exhausted → expired → invalid), then by added date
+- New `AccountOverviewSection.tsx` component (~115 lines)
+  - Per-account table with truncated key IDs, status indicators, subscription type, email, expiry date
+  - Per-key quota bars: 5h, 7d, and conditional 7d-sonnet (only shown if >10pp difference from 7d)
+  - Event history timeline (last 24h) with color-coded event types and timestamps
+  - Title shows account count and 24h rotation count
+- Mock data integration in `mock-data.ts`
+  - `getMockAccountOverview()` returns 3 mock accounts with realistic quota spreads
+  - 8 mock rotation events covering all event types (key_added, key_switched, key_exhausted, key_removed)
+- Section wired into `App.tsx` between Quota & System Status and Deputy CTO sections
+- Barrel export added to `components/index.ts`
+
+### Fixed
+
+**Code Review Findings (all addressed):**
+- HIGH: React key collision risk — truncated 8-char key IDs used as React keys caused potential collisions
+  - Fixed by adding index suffix: `key={`${account.keyId}-${idx}`}` for AccountRow components
+- MEDIUM: Dead fields removed — `fiveHourResetsAt` and `sevenDayResetsAt` were always null (reset times now stored in rotation state)
+  - Removed from `AccountKeyDetail` interface
+- MEDIUM: Module-level constant prevents testability — `KEY_ROTATION_STATE_PATH` was a module-level constant
+  - Refactored to lazy getter function `getKeyRotationStatePath()` for test isolation
+
+### Tests
+
+- **New test file:** `packages/cto-dashboard/src/components/__tests__/AccountOverviewSection.test.tsx` (30 tests)
+  - Empty state rendering
+  - Account table structure and ordering (current key first, then by status)
+  - Quota bar rendering with conditional 7d-sonnet logic
+  - Event history formatting and color coding
+  - Edge cases: missing emails, no expiry dates, null usage data
+- **Modified:** `mock-data.ts` — added `getMockAccountOverview()` function
+- **Modified:** `account-overview-reader.ts` — fixed React key collision, removed dead fields, refactored path getter
+- All 632 tests passing across 18 test files (up from 602)
+- TypeScript build: clean
+- README generation: clean (Account Overview section renders in mock mode)
+
+### Verification
+
+**Live Mode Testing:**
+- Dashboard renders 12 real accounts from `~/.claude/api-key-rotation.json`
+- Event history shows 8 rotation events from last 24h
+- Quota bars display correct percentages from last_usage snapshots
+- Current key marked with `*` prefix and cyan color
+
+**Mock Mode Testing:**
+- `npm run generate:readme` successfully regenerates README with Account Overview section
+- Mock data shows 3 accounts with varied statuses (active, exhausted) and quota spreads
+- Event timeline demonstrates all event type color coding
+
+**Total Changes:** 2 new files, 4 modified files, 30 new tests, 632 total tests passing
+
+---
+
 ## 2026-02-18 - Automatic Account Rotation & Session Recovery
 
 ### Added

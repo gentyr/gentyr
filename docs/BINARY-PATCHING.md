@@ -95,33 +95,33 @@ Trailing/leading spaces in strings with only `color` (no `backgroundColor`) are 
 ## Current Design: #29 Winged Eye
 
 ```
-▗▘ ✦ ▝▖       Row 1: wing tips + sparkle (clawd_body — bright gold)
-▐▌ ● ▐▌       Row 2: wings flanking pupil (wings: clawd_body, pupil: clawd_body on clawd_body bg)
- ▀   ▀        Row 3: wing bases (chromeYellow — amber gold)
+▗▘ ✦ ▝▖       Row 1: wing tips + sparkle (chromeYellow — bright gold)
+▐▌ ● ▐▌       Row 2: wings flanking pupil (penguinShimmer wings, chromeYellow eye)
+ ▀   ▀        Row 3: wing bases (chromeYellow — bright gold)
 ```
 
 ### x$ Version (454 bytes)
 
 ```javascript
 function $X8(){return x$.createElement(P,{flexDirection:"column",alignItems:"center"},
-  x$.createElement(L,{color:"clawd_body"},"\u2597\u2598 \u2726 \u259D\u2596","","","",""),
+  x$.createElement(L,{color:"chromeYellow"},"\u2597\u2598 \u2726 \u259D\u2596","","","","","","","","",""),
   x$.createElement(L,null,
-    x$.createElement(L,{color:"clawd_body"},"\u2590\u258C"),
-    x$.createElement(L,{color:"clawd_body",backgroundColor:"clawd_body"}," \u25CF "),
-    x$.createElement(L,{color:"clawd_body"},"\u2590\u258C")),
-  x$.createElement(L,{color:"chromeYellow"},"\u2580   \u2580"))}
+    x$.createElement(L,{color:"penguinShimmer"},"\u2590\u258C"),
+    x$.createElement(L,{color:"chromeYellow"}," \u25CF "),
+    x$.createElement(L,{color:"penguinShimmer"},"\u2590\u258C")),
+  x$.createElement(L,{color:"chromeYellow"}," \u2580   \u2580 "))}
 ```
 
 ### mB Version (438 bytes)
 
 ```javascript
 return mB.createElement(P,{flexDirection:"column",alignItems:"center"},
-  mB.createElement(L,{color:"clawd_body"},"\u2597\u2598 \u2726 \u259D\u2596","","","",""),
+  mB.createElement(L,{color:"chromeYellow"},"\u2597\u2598 \u2726 \u259D\u2596","","","","","","","","",""),
   mB.createElement(L,null,
-    mB.createElement(L,{color:"clawd_body"},"\u2590\u258C"),
-    mB.createElement(L,{color:"clawd_body",backgroundColor:"clawd_body"}," \u25CF "),
-    mB.createElement(L,{color:"clawd_body"},"\u2590\u258C")),
-  mB.createElement(L,{color:"chromeYellow"},"\u2580   \u2580"))
+    mB.createElement(L,{color:"penguinShimmer"},"\u2590\u258C"),
+    mB.createElement(L,{color:"chromeYellow"}," \u25CF "),
+    mB.createElement(L,{color:"penguinShimmer"},"\u2590\u258C")),
+  mB.createElement(L,{color:"chromeYellow"}," \u2580   \u2580 "))
 ```
 
 ### Unicode Character Reference
@@ -139,7 +139,37 @@ return mB.createElement(P,{flexDirection:"column",alignItems:"center"},
 | ▀ | \u2580 | Upper half block |
 | ▄ | \u2584 | Lower half block (original eyelid) |
 
-## Patching Workflow
+## Automated Patching — `scripts/patch-clawd.py`
+
+The recommended way to apply and manage the Clawd patch:
+
+```bash
+# Detect blocks and preview what would change
+python3 scripts/patch-clawd.py --dry-run
+
+# Apply the patch (auto-detects binary, backs up, re-signs, verifies)
+python3 scripts/patch-clawd.py
+
+# Restore from backup
+python3 scripts/patch-clawd.py --restore
+
+# Override binary path (e.g. for a specific version)
+python3 scripts/patch-clawd.py --binary /path/to/claude
+```
+
+The script is version-agnostic — it searches for structural patterns (`flexDirection:"column",alignItems:"center"` + `clawd_body` + mascot unicode chars) rather than relying on hardcoded offsets. It extracts variable names (React import, Flex component, Text component) dynamically and builds exact-length replacements using empty-string padding (`,""`).
+
+### Safety
+
+- All replacements are verified to be the exact same byte count before any write
+- Binary is tested with `claude --version` after patching
+- `codesign` and `xattr -cr` are applied automatically
+- If any gate fails, the script exits cleanly without writing
+- Idempotent: re-running on an already-patched binary reports "already patched" and does nothing
+
+### Manual Workflow
+
+If the script doesn't work for your setup:
 
 ```bash
 # 1. Backup (once)
@@ -147,7 +177,7 @@ cp /opt/homebrew/Caskroom/claude-code/2.1.34/claude \
    /opt/homebrew/Caskroom/claude-code/2.1.34/claude.bak
 
 # 2. Apply patches (Python — handles binary safely)
-python3 patch-clawd.py
+python3 scripts/patch-clawd.py
 
 # 3. Re-sign (required on macOS)
 codesign --force --sign - /opt/homebrew/Caskroom/claude-code/2.1.34/claude
@@ -160,6 +190,8 @@ claude             # Visual check
 ### Rollback
 
 ```bash
+python3 scripts/patch-clawd.py --restore
+# or manually:
 cp /opt/homebrew/Caskroom/claude-code/2.1.34/claude.bak \
    /opt/homebrew/Caskroom/claude-code/2.1.34/claude
 ```

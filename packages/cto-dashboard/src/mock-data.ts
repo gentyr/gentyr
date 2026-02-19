@@ -1407,8 +1407,6 @@ export function getMockAccountOverview(): AccountOverviewData {
         fiveHourPct: 35,
         sevenDayPct: 88,
         sevenDaySonnetPct: 17,
-        fiveHourResetsAt: null,
-        sevenDayResetsAt: null,
       },
       {
         keyId: 'b7c4e92f...',
@@ -1422,8 +1420,6 @@ export function getMockAccountOverview(): AccountOverviewData {
         fiveHourPct: 100,
         sevenDayPct: 100,
         sevenDaySonnetPct: 22,
-        fiveHourResetsAt: null,
-        sevenDayResetsAt: null,
       },
       {
         keyId: 'c9d5f13a...',
@@ -1437,8 +1433,6 @@ export function getMockAccountOverview(): AccountOverviewData {
         fiveHourPct: 12,
         sevenDayPct: 45,
         sevenDaySonnetPct: 8,
-        fiveHourResetsAt: null,
-        sevenDayResetsAt: null,
       },
     ],
     events: [

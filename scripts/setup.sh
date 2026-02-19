@@ -117,6 +117,7 @@ FRAMEWORK_AGENTS=(
     "deputy-cto.md"
     "antipattern-hunter.md"
     "repo-hygiene-expert.md"
+    "secret-manager.md"
 )
 
 # =============================================================================
