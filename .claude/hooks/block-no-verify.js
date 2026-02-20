@@ -94,6 +94,7 @@ function computeHmac(key, ...fields) {
 function hasValidBypassToken(projectDir) {
   try {
     const tokenPath = path.join(projectDir, '.claude', 'bypass-approval-token.json');
+    const clearToken = () => { try { fs.writeFileSync(tokenPath, '{}'); } catch { /* ignore */ } };
 
     if (!fs.existsSync(tokenPath)) {
       return false;
@@ -101,21 +102,26 @@ function hasValidBypassToken(projectDir) {
 
     const token = JSON.parse(fs.readFileSync(tokenPath, 'utf-8'));
 
+    // Empty object means token was consumed (overwrite pattern for sticky-bit compat)
+    if (!token.code && !token.request_id && !token.expires_timestamp) {
+      return false;
+    }
+
     // Check expiry
     if (token.expires_timestamp && Date.now() > token.expires_timestamp) {
       // Clean up expired token
-      try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
+      clearToken();
       return false;
     }
     if (token.expires_at && new Date(token.expires_at).getTime() < Date.now()) {
-      try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
+      clearToken();
       return false;
     }
 
     // Verify required fields
     if (!token.code || !token.request_id || !token.expires_timestamp) {
-      console.error('[block-no-verify] FORGERY DETECTED: Token missing required fields. Deleting.');
-      try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
+      console.error('[block-no-verify] FORGERY DETECTED: Token missing required fields. Clearing.');
+      clearToken();
       return false;
     }
 
@@ -123,25 +129,25 @@ function hasValidBypassToken(projectDir) {
     const key = loadProtectionKey(projectDir);
     if (key) {
       if (!token.hmac) {
-        console.error('[block-no-verify] FORGERY DETECTED: Token missing HMAC field. Deleting.');
-        try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
+        console.error('[block-no-verify] FORGERY DETECTED: Token missing HMAC field. Clearing.');
+        clearToken();
         return false;
       }
       const expectedHmac = computeHmac(key, token.code, token.request_id, String(token.expires_timestamp), 'bypass-approved');
       if (token.hmac !== expectedHmac) {
-        console.error('[block-no-verify] FORGERY DETECTED: Invalid HMAC on bypass token. Deleting.');
-        try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
+        console.error('[block-no-verify] FORGERY DETECTED: Invalid HMAC on bypass token. Clearing.');
+        clearToken();
         return false;
       }
     } else {
       // G001 Fail-Closed: No protection key available -- cannot verify token authenticity
       console.error('[block-no-verify] G001 FAIL-CLOSED: Protection key missing, cannot verify bypass token. Rejecting.');
-      try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
+      clearToken();
       return false;
     }
 
     // Token is valid - consume it (one-time use)
-    try { fs.unlinkSync(tokenPath); } catch { /* ignore */ }
+    clearToken();
 
     return true;
   } catch {

@@ -299,7 +299,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       assert.match(
         functionBody,
-        /if \(Object\.keys\(keyData\)\.length === 0\)/,
+        /if \(Object\.keys\(rawKeyData\)\.length === 0\)/,
         'Must check if no usage data collected'
       );
 
@@ -329,11 +329,46 @@ describe('usage-optimizer.js - Structure Validation', () => {
         'Must capture timestamp'
       );
 
-      // Should return snapshot with ts and keys
+      // Should return snapshot with ts and keys (deduplicated keyData)
       assert.match(
         functionBody,
         /return \{[\s\S]*?ts[\s\S]*?keys:[\s\S]*?keyData/s,
         'Must return snapshot with ts and keys'
+      );
+    });
+
+    it('should deduplicate keys by account before building snapshot', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/async function collectSnapshot\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Should build a keyLookup map
+      assert.match(
+        functionBody,
+        /const keyLookup = new Map\(\)/,
+        'Must create keyLookup map for account deduplication'
+      );
+
+      // Should collect raw data first, then deduplicate
+      assert.match(
+        functionBody,
+        /const rawKeyData = \{\}/,
+        'Must collect raw key data before deduplication'
+      );
+
+      // Should create accountMap for deduplication
+      assert.match(
+        functionBody,
+        /const accountMap = new Map\(\)/,
+        'Must create accountMap for per-account deduplication'
+      );
+
+      // Should use accountId with fingerprint fallback
+      assert.match(
+        functionBody,
+        /key\?\.accountId[\s\S]*?\|\|[\s\S]*?`fp:/s,
+        'Must use accountId with fingerprint fallback for dedup key'
       );
     });
 
@@ -343,14 +378,14 @@ describe('usage-optimizer.js - Structure Validation', () => {
       const functionMatch = code.match(/async function collectSnapshot\(log\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
-      // Should divide 5h utilization by 100
+      // Should divide 5h utilization by 100 (now stored in rawKeyData)
       assert.match(
         functionBody,
         /['"]5h['"]\s*:\s*\(usage\.fiveHour\.utilization[\s\S]*?\)\s*\/\s*100/,
         'Must divide 5h utilization by 100 to normalize to 0-1 fraction'
       );
 
-      // Should divide 7d utilization by 100
+      // Should divide 7d utilization by 100 (now stored in rawKeyData)
       assert.match(
         functionBody,
         /['"]7d['"]\s*:\s*\(usage\.sevenDay\.utilization[\s\S]*?\)\s*\/\s*100/,
@@ -460,7 +495,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
       );
     });
 
-    it('should return array of { id, accessToken } objects', () => {
+    it('should return array of { id, accessToken, accountId } objects', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function getApiKeys\(\) \{[\s\S]*?\n\}/);
@@ -478,6 +513,13 @@ describe('usage-optimizer.js - Structure Validation', () => {
         functionBody,
         /return keys/,
         'Must return keys array'
+      );
+
+      // Should include accountId from rotation state
+      assert.match(
+        functionBody,
+        /accountId:\s*data\.account_uuid \|\| null/,
+        'Must include accountId from rotation state account_uuid'
       );
     });
 
@@ -1415,7 +1457,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
   });
 
   describe('Per-Key Warnings and Max-Key Biasing', () => {
-    it('should log warnings when any key exceeds 5h threshold', () => {
+    it('should log warnings when any account exceeds 5h threshold', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
@@ -1423,12 +1465,12 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       assert.match(
         functionBody,
-        /Usage optimizer WARNING: Key .* 5h utilization/,
-        'Must log per-key 5h utilization warnings'
+        /Usage optimizer WARNING: Account .* 5h utilization/,
+        'Must log per-account 5h utilization warnings'
       );
     });
 
-    it('should log warnings when any key exceeds 7d threshold', () => {
+    it('should log warnings when any account exceeds 7d threshold', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
@@ -1436,8 +1478,8 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       assert.match(
         functionBody,
-        /Usage optimizer WARNING: Key .* 7d utilization/,
-        'Must log per-key 7d utilization warnings'
+        /Usage optimizer WARNING: Account .* 7d utilization/,
+        'Must log per-account 7d utilization warnings'
       );
     });
 
@@ -1869,25 +1911,25 @@ describe('usage-optimizer.js - Structure Validation', () => {
       assert.ok(trackingMatch, 'Must track per-key utilization with 5h and 7d values');
     });
 
-    it('should warn when any single key exceeds 80% on 5h window', () => {
+    it('should warn when any single account exceeds 80% on 5h window', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const warningMatch = code.match(/if \(util\[['"]5h['"]\] >= SINGLE_KEY_WARNING_THRESHOLD\)[\s\S]*?Usage optimizer WARNING:[\s\S]*?5h utilization/s);
       assert.ok(warningMatch, 'Must warn for 5h utilization exceeding threshold');
     });
 
-    it('should warn when any single key exceeds 80% on 7d window', () => {
+    it('should warn when any single account exceeds 80% on 7d window', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const warningMatch = code.match(/if \(util\[['"]7d['"]\] >= SINGLE_KEY_WARNING_THRESHOLD\)[\s\S]*?Usage optimizer WARNING:[\s\S]*?7d utilization/s);
       assert.ok(warningMatch, 'Must warn for 7d utilization exceeding threshold');
     });
 
-    it('should include key ID in warning messages', () => {
+    it('should include account ID in warning messages', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const keyIdMatch = code.match(/Usage optimizer WARNING: Key \$\{keyId\}/);
-      assert.ok(keyIdMatch, 'Must include key ID in warning messages');
+      const keyIdMatch = code.match(/Usage optimizer WARNING: Account \$\{keyId\}/);
+      assert.ok(keyIdMatch, 'Must include account ID in warning messages');
     });
   });
 
@@ -2910,6 +2952,155 @@ describe('usage-optimizer.js - Structure Validation', () => {
         recoveryThreshold,
         oldFormula,
         `Recovery threshold (0.15) must differ from old formula (${oldFormula})`
+      );
+    });
+  });
+
+  describe('Behavioral Tests - Per-Account Deduplication', () => {
+    it('should deduplicate keys by accountId in collectSnapshot', () => {
+      // Simulate the dedup logic: 4 keys from Account A, 2 from B, 1 from C
+      const rawKeyData = {
+        'key1aaaa': { '5h': 0.26, '7d': 1.00 },
+        'key2aaaa': { '5h': 0.26, '7d': 1.00 },
+        'key3aaaa': { '5h': 0.26, '7d': 1.00 },
+        'key4aaaa': { '5h': 0.26, '7d': 1.00 },
+        'key5bbbb': { '5h': 0.85, '7d': 0.35 },
+        'key6bbbb': { '5h': 0.85, '7d': 0.35 },
+        'key7cccc': { '5h': 0.00, '7d': 1.00 },
+      };
+
+      const keyLookup = new Map([
+        ['key1aaaa', { accountId: 'acct-A' }],
+        ['key2aaaa', { accountId: 'acct-A' }],
+        ['key3aaaa', { accountId: 'acct-A' }],
+        ['key4aaaa', { accountId: 'acct-A' }],
+        ['key5bbbb', { accountId: 'acct-B' }],
+        ['key6bbbb', { accountId: 'acct-B' }],
+        ['key7cccc', { accountId: 'acct-C' }],
+      ]);
+
+      const accountMap = new Map();
+      for (const [keyId, usage] of Object.entries(rawKeyData)) {
+        const key = keyLookup.get(keyId);
+        const dedupeKey = key?.accountId || `fp:${usage['5h']}:${usage['7d']}`;
+        if (!accountMap.has(dedupeKey)) {
+          accountMap.set(dedupeKey, { id: keyId, usage });
+        }
+      }
+
+      // Should produce exactly 3 entries (one per account)
+      assert.strictEqual(accountMap.size, 3, 'Must deduplicate to 3 accounts from 7 keys');
+
+      // Verify correct 7d average: (100 + 35 + 100) / 3 = 78.3%
+      const entries = Array.from(accountMap.values());
+      const avg7d = entries.reduce((s, e) => s + e.usage['7d'], 0) / entries.length;
+      const avg7dPct = Math.round(avg7d * 1000) / 10;
+      assert.ok(
+        Math.abs(avg7dPct - 78.3) < 0.1,
+        `Per-account 7d average should be ~78.3%, got ${avg7dPct}%`
+      );
+
+      // Buggy per-key average would be: (100*4 + 35*2 + 100*1) / 7 = 81.4%
+      const buggyAvg = (1.00 * 4 + 0.35 * 2 + 1.00 * 1) / 7;
+      const buggyPct = Math.round(buggyAvg * 1000) / 10;
+      assert.ok(
+        Math.abs(buggyPct - 81.4) < 0.1,
+        `Buggy per-key average should be ~81.4%, got ${buggyPct}%`
+      );
+
+      assert.ok(avg7dPct < buggyPct, 'Per-account average must be lower than buggy per-key average');
+    });
+
+    it('should fall back to fingerprint when accountId is null', () => {
+      const rawKeyData = {
+        'key1xxxx': { '5h': 0.50, '7d': 0.60 },
+        'key2xxxx': { '5h': 0.50, '7d': 0.60 }, // Same fingerprint → same account
+        'key3yyyy': { '5h': 0.20, '7d': 0.30 }, // Different fingerprint → different account
+      };
+
+      const keyLookup = new Map([
+        ['key1xxxx', { accountId: null }],
+        ['key2xxxx', { accountId: null }],
+        ['key3yyyy', { accountId: null }],
+      ]);
+
+      const accountMap = new Map();
+      for (const [keyId, usage] of Object.entries(rawKeyData)) {
+        const key = keyLookup.get(keyId);
+        const dedupeKey = key?.accountId || `fp:${usage['5h']}:${usage['7d']}`;
+        if (!accountMap.has(dedupeKey)) {
+          accountMap.set(dedupeKey, { id: keyId, usage });
+        }
+      }
+
+      // key1 and key2 have same fingerprint → deduped to 1 entry
+      // key3 has different fingerprint → separate entry
+      assert.strictEqual(accountMap.size, 2, 'Must deduplicate by fingerprint when accountId is null');
+    });
+
+    it('should prefer accountId over fingerprint when both available', () => {
+      const rawKeyData = {
+        'key1xxxx': { '5h': 0.50, '7d': 0.60 },
+        'key2xxxx': { '5h': 0.50, '7d': 0.60 }, // Same fingerprint but different account
+      };
+
+      const keyLookup = new Map([
+        ['key1xxxx', { accountId: 'acct-A' }],
+        ['key2xxxx', { accountId: 'acct-B' }], // Different account despite same usage values
+      ]);
+
+      const accountMap = new Map();
+      for (const [keyId, usage] of Object.entries(rawKeyData)) {
+        const key = keyLookup.get(keyId);
+        const dedupeKey = key?.accountId || `fp:${usage['5h']}:${usage['7d']}`;
+        if (!accountMap.has(dedupeKey)) {
+          accountMap.set(dedupeKey, { id: keyId, usage });
+        }
+      }
+
+      // Two different accounts, even though usage values are identical
+      assert.strictEqual(accountMap.size, 2, 'Must keep keys from different accounts even if usage matches');
+    });
+
+    it('should include accountId in env token key objects', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function getApiKeys\(\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Env token should have accountId: null
+      assert.match(
+        functionBody,
+        /return \[\{ id: ['"]env['"],\s*accessToken: envToken,\s*accountId: null \}\]/,
+        'Env token must include accountId: null'
+      );
+    });
+
+    it('should include accountId in keychain key objects', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function getApiKeys\(\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Keychain source should include accountId: null
+      assert.match(
+        functionBody,
+        /id: ['"]keychain['"],\s*accessToken:[\s\S]*?accountId: null/s,
+        'Keychain key must include accountId: null'
+      );
+    });
+
+    it('should include accountId in credentials file key objects', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function getApiKeys\(\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Credentials fallback should include accountId: null
+      assert.match(
+        functionBody,
+        /id: ['"]default['"],\s*accessToken:[\s\S]*?accountId: null/s,
+        'Credentials file key must include accountId: null'
       );
     });
   });

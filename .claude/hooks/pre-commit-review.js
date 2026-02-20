@@ -137,12 +137,18 @@ function checkApprovalToken(diffHash) {
 
   try {
     const token = JSON.parse(fs.readFileSync(APPROVAL_TOKEN_FILE, 'utf8'));
+
+    // Empty object means token was consumed (overwrite pattern for sticky-bit compat)
+    if (!token.expiresAt && !token.diffHash) {
+      return { valid: false, reason: 'no-token' };
+    }
+
     const now = Date.now();
 
     // Check expiry
     const expiresAt = new Date(token.expiresAt).getTime();
     if (isNaN(expiresAt) || now > expiresAt) {
-      fs.unlinkSync(APPROVAL_TOKEN_FILE); // Clean up expired token
+      fs.writeFileSync(APPROVAL_TOKEN_FILE, '{}'); // Clean up expired token (overwrite for sticky-bit compat)
       return { valid: false, reason: 'expired' };
     }
 
@@ -164,10 +170,10 @@ function checkApprovalToken(diffHash) {
 function consumeApprovalToken() {
   try {
     if (fs.existsSync(APPROVAL_TOKEN_FILE)) {
-      fs.unlinkSync(APPROVAL_TOKEN_FILE);
+      fs.writeFileSync(APPROVAL_TOKEN_FILE, '{}');
     }
   } catch (err) {
-    console.error(`[pre-commit] Warning: Could not delete token: ${err.message}`);
+    console.error(`[pre-commit] Warning: Could not clear token: ${err.message}`);
   }
 }
 

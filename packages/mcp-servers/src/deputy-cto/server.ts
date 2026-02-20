@@ -1153,6 +1153,13 @@ function executeBypass(args: ExecuteBypassArgs): ExecuteBypassResult | ErrorResu
     return { error: 'Failed to read approval token. Ask the CTO to type the approval again.' };
   }
 
+  // Empty object means token was consumed (overwrite pattern for sticky-bit compat)
+  if (!token.code && !token.request_id && !token.expires_timestamp) {
+    return {
+      error: `No approval token found. The CTO must type "APPROVE BYPASS ${code}" to create an approval token.`,
+    };
+  }
+
   // Verify code matches
   if (token.code !== code) {
     return {
@@ -1162,8 +1169,8 @@ function executeBypass(args: ExecuteBypassArgs): ExecuteBypassResult | ErrorResu
 
   // Verify not expired
   if (Date.now() > token.expires_timestamp) {
-    // Clean up expired token
-    try { fs.unlinkSync(approvalTokenPath); } catch { /* ignore */ }
+    // Clean up expired token (overwrite for sticky-bit compat)
+    try { fs.writeFileSync(approvalTokenPath, '{}'); } catch { /* ignore */ }
     return {
       error: `Approval token has expired. Ask the CTO to type "APPROVE BYPASS ${code}" again.`,
     };
@@ -1184,8 +1191,8 @@ function executeBypass(args: ExecuteBypassArgs): ExecuteBypassResult | ErrorResu
   // Clear the bypass request from the queue
   db.prepare('DELETE FROM questions WHERE id = ?').run(question.id);
 
-  // Delete the approval token (one-time use)
-  try { fs.unlinkSync(approvalTokenPath); } catch { /* ignore */ }
+  // Clear the approval token (one-time use, overwrite for sticky-bit compat)
+  try { fs.writeFileSync(approvalTokenPath, '{}'); } catch { /* ignore */ }
 
   return {
     executed: true,

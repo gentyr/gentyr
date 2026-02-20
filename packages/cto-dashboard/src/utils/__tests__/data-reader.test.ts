@@ -878,3 +878,365 @@ describe('Data Reader - Hook Executions', () => {
     expect(result.success_rate).toBe(100);
   });
 });
+
+describe('Data Reader - Key Rotation Metrics', () => {
+  let tempDir: string;
+  let keyRotationStatePath: string;
+
+  beforeEach(() => {
+    tempDir = path.join('/tmp', `key-rotation-test-${randomUUID()}`);
+    fs.mkdirSync(tempDir, { recursive: true });
+    keyRotationStatePath = path.join(tempDir, 'api-key-rotation.json');
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  interface KeyData {
+    accessToken?: string;
+    subscriptionType: string;
+    last_usage: {
+      five_hour: number;
+      seven_day: number;
+    } | null;
+    status: 'active' | 'exhausted' | 'invalid' | 'expired';
+    account_uuid?: string | null;
+  }
+
+  interface KeyRotationState {
+    version: number;
+    active_key_id: string | null;
+    keys: Record<string, KeyData>;
+    rotation_log: Array<{ timestamp: number; event: string }>;
+  }
+
+  const getKeyRotationMetrics = (hours: number, stateFilePath: string) => {
+    if (!fs.existsSync(stateFilePath)) return null;
+
+    const content = fs.readFileSync(stateFilePath, 'utf8');
+    const state = JSON.parse(content) as KeyRotationState;
+
+    if (!state || state.version !== 1 || typeof state.keys !== 'object') {
+      return null;
+    }
+
+    const now = Date.now();
+    const since = now - (hours * 60 * 60 * 1000);
+
+    const keys = [];
+
+    for (const [keyId, keyData] of Object.entries(state.keys)) {
+      if (keyData.status !== 'active') continue;
+      const isCurrent = keyId === state.active_key_id;
+
+      keys.push({
+        key_id: `${keyId.slice(0, 8)}...`,
+        subscription_type: keyData.subscriptionType || 'unknown',
+        five_hour_pct: keyData.last_usage?.five_hour ?? null,
+        seven_day_pct: keyData.last_usage?.seven_day ?? null,
+        is_current: isCurrent,
+      });
+    }
+
+    // Deduplicate by account_uuid for aggregate calculation
+    const accountMap = new Map<string, { fiveHour: number; sevenDay: number }>();
+    for (const [, keyData] of Object.entries(state.keys)) {
+      if (keyData.status !== 'active') continue;
+      if (!keyData.last_usage) continue;
+      const dedupeKey = keyData.account_uuid || `fp:${keyData.last_usage.seven_day}`;
+      if (!accountMap.has(dedupeKey)) {
+        accountMap.set(dedupeKey, {
+          fiveHour: keyData.last_usage.five_hour ?? 0,
+          sevenDay: keyData.last_usage.seven_day ?? 0,
+        });
+      }
+    }
+    const accounts = Array.from(accountMap.values());
+
+    const rotationEvents24h = state.rotation_log.filter(
+      entry => entry.timestamp >= since && entry.event === 'key_switched'
+    ).length;
+
+    const aggregate = accounts.length > 0 ? {
+      active_keys: accounts.length,
+      five_hour_pct: Math.round(accounts.reduce((s, a) => s + a.fiveHour, 0) / accounts.length),
+      seven_day_pct: Math.round(accounts.reduce((s, a) => s + a.sevenDay, 0) / accounts.length),
+    } : null;
+
+    return {
+      current_key_id: state.active_key_id ? `${state.active_key_id.slice(0, 8)}...` : null,
+      active_keys: keys.length,
+      keys,
+      rotation_events_24h: rotationEvents24h,
+      aggregate,
+    };
+  };
+
+  it('should return null when rotation state file does not exist', () => {
+    const result = getKeyRotationMetrics(24, keyRotationStatePath);
+    expect(result).toBe(null);
+  });
+
+  it('should return null for invalid rotation state version', () => {
+    const state = { version: 2, keys: {} };
+    fs.writeFileSync(keyRotationStatePath, JSON.stringify(state));
+
+    const result = getKeyRotationMetrics(24, keyRotationStatePath);
+    expect(result).toBe(null);
+  });
+
+  it('should list all active keys with their metrics', () => {
+    const state: KeyRotationState = {
+      version: 1,
+      active_key_id: 'key-abc123',
+      keys: {
+        'key-abc123': {
+          subscriptionType: 'pro',
+          last_usage: { five_hour: 45, seven_day: 30 },
+          status: 'active',
+          account_uuid: 'acct-uuid-1',
+        },
+        'key-def456': {
+          subscriptionType: 'team',
+          last_usage: { five_hour: 60, seven_day: 50 },
+          status: 'active',
+          account_uuid: 'acct-uuid-2',
+        },
+        'key-invalid': {
+          subscriptionType: 'pro',
+          last_usage: null,
+          status: 'invalid',
+          account_uuid: 'acct-uuid-3',
+        },
+      },
+      rotation_log: [],
+    };
+    fs.writeFileSync(keyRotationStatePath, JSON.stringify(state));
+
+    const result = getKeyRotationMetrics(24, keyRotationStatePath);
+
+    expect(result).not.toBe(null);
+    expect(result!.active_keys).toBe(2); // Only active keys
+    expect(result!.keys).toHaveLength(2);
+    expect(result!.keys[0].subscription_type).toBe('pro');
+    expect(result!.keys[0].is_current).toBe(true);
+    expect(result!.keys[1].subscription_type).toBe('team');
+    expect(result!.keys[1].is_current).toBe(false);
+  });
+
+  it('should deduplicate keys from same account in aggregate calculation', () => {
+    const state: KeyRotationState = {
+      version: 1,
+      active_key_id: 'key-1',
+      keys: {
+        'key-1': {
+          subscriptionType: 'pro',
+          last_usage: { five_hour: 10, seven_day: 20 },
+          status: 'active',
+          account_uuid: 'acct-uuid-same',
+        },
+        'key-2': {
+          subscriptionType: 'pro',
+          last_usage: { five_hour: 15, seven_day: 25 },
+          status: 'active',
+          account_uuid: 'acct-uuid-same', // Same account
+        },
+      },
+      rotation_log: [],
+    };
+    fs.writeFileSync(keyRotationStatePath, JSON.stringify(state));
+
+    const result = getKeyRotationMetrics(24, keyRotationStatePath);
+
+    expect(result).not.toBe(null);
+    // Both keys listed individually
+    expect(result!.keys).toHaveLength(2);
+    // But aggregate should only count 1 account
+    expect(result!.aggregate).not.toBe(null);
+    expect(result!.aggregate!.active_keys).toBe(1);
+    // Should use the first occurrence (key-1)
+    expect(result!.aggregate!.five_hour_pct).toBe(10);
+    expect(result!.aggregate!.seven_day_pct).toBe(20);
+  });
+
+  it('should count different accounts separately in aggregate', () => {
+    const state: KeyRotationState = {
+      version: 1,
+      active_key_id: 'key-1',
+      keys: {
+        'key-1': {
+          subscriptionType: 'pro',
+          last_usage: { five_hour: 10, seven_day: 20 },
+          status: 'active',
+          account_uuid: 'acct-uuid-1',
+        },
+        'key-2': {
+          subscriptionType: 'team',
+          last_usage: { five_hour: 30, seven_day: 40 },
+          status: 'active',
+          account_uuid: 'acct-uuid-2', // Different account
+        },
+      },
+      rotation_log: [],
+    };
+    fs.writeFileSync(keyRotationStatePath, JSON.stringify(state));
+
+    const result = getKeyRotationMetrics(24, keyRotationStatePath);
+
+    expect(result).not.toBe(null);
+    expect(result!.keys).toHaveLength(2);
+    expect(result!.aggregate).not.toBe(null);
+    expect(result!.aggregate!.active_keys).toBe(2);
+    // Average: (10+30)/2 = 20, (20+40)/2 = 30
+    expect(result!.aggregate!.five_hour_pct).toBe(20);
+    expect(result!.aggregate!.seven_day_pct).toBe(30);
+  });
+
+  it('should fall back to usage fingerprint when account_uuid is missing', () => {
+    const state: KeyRotationState = {
+      version: 1,
+      active_key_id: 'key-1',
+      keys: {
+        'key-1': {
+          subscriptionType: 'pro',
+          last_usage: { five_hour: 10, seven_day: 20 },
+          status: 'active',
+          account_uuid: null,
+        },
+        'key-2': {
+          subscriptionType: 'pro',
+          last_usage: { five_hour: 15, seven_day: 20 }, // Same seven_day fingerprint
+          status: 'active',
+          account_uuid: null,
+        },
+      },
+      rotation_log: [],
+    };
+    fs.writeFileSync(keyRotationStatePath, JSON.stringify(state));
+
+    const result = getKeyRotationMetrics(24, keyRotationStatePath);
+
+    expect(result).not.toBe(null);
+    expect(result!.keys).toHaveLength(2);
+    // Should deduplicate by fingerprint (same seven_day value)
+    expect(result!.aggregate).not.toBe(null);
+    expect(result!.aggregate!.active_keys).toBe(1);
+  });
+
+  it('should count rotation events within time window', () => {
+    const now = Date.now();
+    const state: KeyRotationState = {
+      version: 1,
+      active_key_id: 'key-1',
+      keys: {
+        'key-1': {
+          subscriptionType: 'pro',
+          last_usage: { five_hour: 10, seven_day: 20 },
+          status: 'active',
+          account_uuid: 'acct-uuid-1',
+        },
+      },
+      rotation_log: [
+        { timestamp: now - 1 * 60 * 60 * 1000, event: 'key_switched' }, // 1h ago
+        { timestamp: now - 12 * 60 * 60 * 1000, event: 'key_switched' }, // 12h ago
+        { timestamp: now - 25 * 60 * 60 * 1000, event: 'key_switched' }, // 25h ago (outside 24h window)
+        { timestamp: now - 2 * 60 * 60 * 1000, event: 'key_added' }, // Not a switch event
+      ],
+    };
+    fs.writeFileSync(keyRotationStatePath, JSON.stringify(state));
+
+    const result = getKeyRotationMetrics(24, keyRotationStatePath);
+
+    expect(result).not.toBe(null);
+    expect(result!.rotation_events_24h).toBe(2); // Only key_switched events within 24h
+  });
+
+  it('should handle keys without usage data', () => {
+    const state: KeyRotationState = {
+      version: 1,
+      active_key_id: 'key-1',
+      keys: {
+        'key-1': {
+          subscriptionType: 'pro',
+          last_usage: null, // No usage data yet
+          status: 'active',
+          account_uuid: 'acct-uuid-1',
+        },
+      },
+      rotation_log: [],
+    };
+    fs.writeFileSync(keyRotationStatePath, JSON.stringify(state));
+
+    const result = getKeyRotationMetrics(24, keyRotationStatePath);
+
+    expect(result).not.toBe(null);
+    expect(result!.keys).toHaveLength(1);
+    expect(result!.keys[0].five_hour_pct).toBe(null);
+    expect(result!.keys[0].seven_day_pct).toBe(null);
+    // No accounts with usage data
+    expect(result!.aggregate).toBe(null);
+  });
+
+  it('should validate structure of returned metrics', () => {
+    const state: KeyRotationState = {
+      version: 1,
+      active_key_id: 'key-1',
+      keys: {
+        'key-1': {
+          subscriptionType: 'pro',
+          last_usage: { five_hour: 10, seven_day: 20 },
+          status: 'active',
+          account_uuid: 'acct-uuid-1',
+        },
+      },
+      rotation_log: [],
+    };
+    fs.writeFileSync(keyRotationStatePath, JSON.stringify(state));
+
+    const result = getKeyRotationMetrics(24, keyRotationStatePath);
+
+    expect(result).not.toBe(null);
+    expect(result).toHaveProperty('current_key_id');
+    expect(result).toHaveProperty('active_keys');
+    expect(result).toHaveProperty('keys');
+    expect(result).toHaveProperty('rotation_events_24h');
+    expect(result).toHaveProperty('aggregate');
+
+    expect(typeof result!.current_key_id).toBe('string');
+    expect(typeof result!.active_keys).toBe('number');
+    expect(Array.isArray(result!.keys)).toBe(true);
+    expect(typeof result!.rotation_events_24h).toBe('number');
+
+    if (result!.aggregate) {
+      expect(result!.aggregate).toHaveProperty('active_keys');
+      expect(result!.aggregate).toHaveProperty('five_hour_pct');
+      expect(result!.aggregate).toHaveProperty('seven_day_pct');
+      expect(typeof result!.aggregate.active_keys).toBe('number');
+      expect(typeof result!.aggregate.five_hour_pct).toBe('number');
+      expect(typeof result!.aggregate.seven_day_pct).toBe('number');
+    }
+
+    // Validate key structure
+    for (const key of result!.keys) {
+      expect(key).toHaveProperty('key_id');
+      expect(key).toHaveProperty('subscription_type');
+      expect(key).toHaveProperty('five_hour_pct');
+      expect(key).toHaveProperty('seven_day_pct');
+      expect(key).toHaveProperty('is_current');
+      expect(typeof key.key_id).toBe('string');
+      expect(typeof key.subscription_type).toBe('string');
+      expect(typeof key.is_current).toBe('boolean');
+    }
+  });
+
+  it('should handle malformed rotation state file gracefully', () => {
+    fs.writeFileSync(keyRotationStatePath, 'invalid json');
+
+    expect(() => {
+      getKeyRotationMetrics(24, keyRotationStatePath);
+    }).toThrow();
+  });
+});
