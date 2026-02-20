@@ -54,6 +54,17 @@ If a later agent discovers work that belongs to an earlier agent (e.g., test-wri
 - **Use sub-agents via Task tool** - Each `Task(subagent_type='...')` loads the agent's specialized config from `.claude/agents/`. Never skip this by doing the work directly.
 - **Use MCP tools** - Coordinate via `mcp__todo-db__*` for task tracking, `mcp__agent-reports__*` for CTO reporting.
 
+### File Protection Error Handling
+
+GENTYR protects critical files with root ownership. If ANY operation fails with `Permission denied` or `EACCES` on a GENTYR-managed file (`.claude/`, `.husky/`, `.mcp.json`, `eslint.config.js`, `package.json`):
+
+1. Call `mcp__setup-helper__gentyr_setup({ action: "unprotect" })` to get the exact unprotect command
+2. Present the command to the user (requires `sudo` in their terminal)
+3. Wait for user to run it, then retry the failed operation
+4. After changes are done, remind user to re-protect: `mcp__setup-helper__gentyr_setup({ action: "protect" })`
+
+Do NOT attempt `chmod`/`chown` directly. Always use the `gentyr_setup` MCP tool.
+
 ### Secrets Management
 
 Secrets flow through GENTYR's 1Password-based pipeline. **Values never pass through agent context.**
@@ -88,6 +99,8 @@ Some actions require CTO approval via the deputy-cto pipeline:
 - Security-sensitive modifications
 - Breaking changes to APIs or contracts
 - Changes below the `<!-- CTO-PROTECTED -->` divider in CLAUDE.md
+
+For full details on GENTYR's 7-layer protection architecture (root ownership, MCP gating, bash blocking, commit review, secret isolation, credential guards, agent restrictions), see `.claude/docs/PROTECTION-SYSTEM.md`.
 
 ### Deployment Flow
 

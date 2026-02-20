@@ -29,8 +29,8 @@ const ANTHROPIC_API_URL = 'https://api.anthropic.com/api/oauth/usage';
 const ANTHROPIC_BETA_HEADER = 'oauth-2025-04-20';
 
 const TARGET_UTILIZATION = 0.90;
-const MAX_FACTOR = 2.0;
-const MIN_FACTOR = 0.5;
+const MAX_FACTOR = 20.0;  // up to 20x speedup (MIN_EFFECTIVE_MINUTES is the real ceiling)
+const MIN_FACTOR = 0.05;  // up to 20x slowdown
 const MAX_CHANGE_PER_CYCLE = 0.10; // ±10% per cycle
 const SNAPSHOT_RETENTION_DAYS = 7;
 const MIN_SNAPSHOTS_FOR_TRAJECTORY = 3;
@@ -438,7 +438,8 @@ function calculateAndAdjust(log) {
   // Recovery: if factor is stuck at minimum but current usage is well below
   // target, the projection model was unreliable. Reset factor to baseline so
   // automations aren't permanently throttled.
-  if (currentFactor <= MIN_FACTOR + 0.01 && currentUsage < TARGET_UTILIZATION * 0.5) {
+  // 0.15 threshold = 85%+ slower than default; catches factors that drifted very low
+  if (currentFactor <= 0.15 && currentUsage < TARGET_UTILIZATION * 0.5) {
     applyFactor(config, 1.0, constraining, projectedAtReset, log, hoursUntilReset);
     log(`Usage optimizer: Factor recovery — usage at ${Math.round(currentUsage * 100)}% (well below ${Math.round(TARGET_UTILIZATION * 100)}% target) but factor stuck at minimum. Reset to 1.0.`);
     return true;
@@ -477,7 +478,7 @@ function calculateAndAdjust(log) {
 
   // Edge case: rate is zero or negative (usage flat/decreasing)
   if (currentRate <= 0) {
-    // Conservatively speed up toward 2.0
+    // Conservatively speed up (5% per cycle, capped at MAX_FACTOR)
     const newFactor = Math.min(currentFactor * 1.05, MAX_FACTOR);
     if (Math.abs(newFactor - currentFactor) > 0.001) {
       applyFactor(config, newFactor, constraining, projectedAtReset, log, hoursUntilReset);
