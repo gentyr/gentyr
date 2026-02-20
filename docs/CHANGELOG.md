@@ -1,5 +1,69 @@
 # GENTYR Framework Changelog
 
+## 2026-02-20 - Usage Optimizer: Per-Account Deduplication Fix
+
+### Fixed
+
+**Double-counting bug in usage optimizer and dashboard** (`.claude/hooks/usage-optimizer.js`, `packages/cto-dashboard/src/utils/data-reader.ts`):
+- Root cause: When the same Anthropic account was discovered through multiple sources (environment variable, rotation state, Keychain, credentials file), each discovery was treated as a separate key for quota calculations
+- Result: Usage projections were inflated, causing premature throttling and incorrect dashboard metrics
+- Fix: `getApiKeys()` now includes `accountId` field (from `account_uuid`) in all returned key objects
+- `collectSnapshot()` deduplicates keys by `accountId` before building snapshots, using fingerprint fallback (`fp:${five_hour}:${seven_day}`) when `accountId` is null
+- `getKeyRotationMetrics()` in dashboard reader performs same per-account deduplication for consistent metrics
+- Warning messages changed from "Key" to "Account" to reflect deduplication scope
+
+### Tests
+
+- **Updated 3 existing tests** in `.claude/hooks/__tests__/usage-optimizer.test.js`:
+  - `getApiKeys()` structure test now asserts `accountId` field presence
+  - `collectSnapshot()` tests updated for new `rawKeyData`/`keyLookup`/`accountMap` variables
+  - Warning message assertions changed from "Key" to "Account"
+- **Added 6 new behavioral tests** in "Per-Account Deduplication" describe block:
+  - Deduplication by `accountId` when present
+  - Fingerprint fallback when `accountId` is null
+  - `accountId` preference over fingerprint when both exist
+  - `accountId` field presence in all key source objects (env, rotation state, keychain, credentials)
+- **Updated dashboard tests** in `packages/cto-dashboard/src/utils/__tests__/data-reader.test.ts`:
+  - `getKeyRotationMetrics()` tests updated for account deduplication logic
+- All 173 optimizer tests passing (was 167)
+- All 662 dashboard tests passing
+
+### Impact
+
+This fix ensures accurate quota tracking when using multi-source credential discovery. Projects with the same account configured in both environment variables and rotation state will no longer show inflated usage projections or premature automation throttling.
+
+---
+
+## 2026-02-20 - macOS Compatibility: Setup Script Group Name Fix
+
+### Fixed
+
+**macOS "illegal group name" error in setup scripts** (`scripts/setup-automation-service.sh`, `scripts/protect-framework.sh`, `scripts/setup.sh`):
+- Root cause: macOS does not create a default group matching the username; commands like `chown $SUDO_USER:$SUDO_USER` fail with "illegal group name"
+- Fix: Replaced hardcoded `$SUDO_USER:$SUDO_USER` with `$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo staff)` at 3 call sites (setup-automation-service.sh lines 181, 231; similar patterns in protect-framework.sh and setup.sh)
+- Hardened `get_original_group()` function with explicit empty-check and OS-aware fallback (staff on Darwin, username on Linux)
+- Lines affected: setup-automation-service.sh:181, 231; protect-framework.sh:118-127; setup.sh:170-179
+
+### Added
+
+**File Protection Error Handling documentation** (`.claude/agents/`, `CLAUDE.md.gentyr-section`):
+- Added "Permission Denied on Protected Files" section to 3 agent configs: code-writer.md, code-reviewer.md, project-manager.md
+- Added "File Protection Error Handling" section to CLAUDE.md.gentyr-section (deployed to target projects via setup.sh)
+- Instructs agents to use `mcp__setup-helper__gentyr_setup({ action: "unprotect" })` when encountering Permission denied errors on protected files
+- Prevents agents from attempting `chmod`/`chown` directly; enforces use of MCP tool for safe unprotect/protect workflow
+
+**Protection System Documentation** (`docs/shared/PROTECTION-SYSTEM.md`):
+- Comprehensive guide to GENTYR's 7-layer protection architecture
+- Threat model, trust boundaries, and attack vectors prevented
+- Layer-by-layer breakdown: Root Ownership, Protected Action Gate, MCP Server Allowlist, Credential File Guard, Bash Command Filter, Secret Leak Detector, Deputy-CTO Commit Review
+- Fail-closed design principles and G001 compliance
+
+### Impact
+
+This fix enables GENTYR installation on macOS systems where the primary user does not have a matching group name (the default macOS configuration). Previously, `sudo scripts/setup.sh --protect` would fail with "chown: illegal group name" errors during systemd service setup and file protection operations.
+
+---
+
 ## 2026-02-20 - Usage Optimizer: Remove Factor Caps for Aggressive Throttling
 
 ### Changed
