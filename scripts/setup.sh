@@ -600,6 +600,7 @@ for state_file in \
     "$PROJECT_DIR/.claude/hourly-automation-state.json" \
     "$PROJECT_DIR/.claude/plan-executor-state.json" \
     "$PROJECT_DIR/.claude/bypass-approval-token.json" \
+    "$PROJECT_DIR/.claude/commit-approval-token.json" \
     "$PROJECT_DIR/.claude/protection-state.json" \
     "$PROJECT_DIR/.claude/protected-action-approvals.json"; do
     [ -f "$state_file" ] || echo '{}' > "$state_file"

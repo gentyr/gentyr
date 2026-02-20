@@ -336,6 +336,7 @@ const KeyRotationKeyDataSchema = z.object({
     seven_day: z.number(),
   }).nullable(),
   status: z.enum(['active', 'exhausted', 'invalid', 'expired']),
+  account_uuid: z.string().nullable().optional(),
 }).passthrough();
 
 const KeyRotationStateSchema = z.object({
@@ -1164,10 +1165,8 @@ export function getKeyRotationMetrics(hours: number): KeyRotationMetrics | null 
   const since = now - (hours * 60 * 60 * 1000);
 
   const keys: TrackedKeyInfo[] = [];
-  let fiveHourSum = 0;
-  let sevenDaySum = 0;
-  let activeKeysWithData = 0;
 
+  // Per-key display list (all active keys shown in dashboard key list)
   for (const [keyId, keyData] of Object.entries(state.keys)) {
     if (keyData.status !== 'active') continue;
     const isCurrent = keyId === state.active_key_id;
@@ -1179,22 +1178,33 @@ export function getKeyRotationMetrics(hours: number): KeyRotationMetrics | null 
       seven_day_pct: keyData.last_usage?.seven_day ?? null,
       is_current: isCurrent,
     });
+  }
 
-    if (keyData.last_usage) {
-      fiveHourSum += keyData.last_usage.five_hour ?? 0;
-      sevenDaySum += keyData.last_usage.seven_day ?? 0;
-      activeKeysWithData++;
+  // Group by account for aggregate calculation (dedup same-account tokens).
+  // Matches the pattern in cto-notification-hook.js:getAggregateQuota().
+  const accountMap = new Map<string, { fiveHour: number; sevenDay: number }>();
+  for (const [, keyData] of Object.entries(state.keys)) {
+    if (keyData.status !== 'active') continue;
+    if (!keyData.last_usage) continue;
+    const dedupeKey = keyData.account_uuid
+      || `fp:${keyData.last_usage.five_hour}:${keyData.last_usage.seven_day}`;
+    if (!accountMap.has(dedupeKey)) {
+      accountMap.set(dedupeKey, {
+        fiveHour: keyData.last_usage.five_hour ?? 0,
+        sevenDay: keyData.last_usage.seven_day ?? 0,
+      });
     }
   }
+  const accounts = Array.from(accountMap.values());
 
   const rotationEvents24h = state.rotation_log.filter(
     entry => entry.timestamp >= since && entry.event === 'key_switched'
   ).length;
 
-  const aggregate: AggregateQuota | null = activeKeysWithData > 0 ? {
-    active_keys: activeKeysWithData,
-    five_hour_pct: Math.round(fiveHourSum / activeKeysWithData),
-    seven_day_pct: Math.round(sevenDaySum / activeKeysWithData),
+  const aggregate: AggregateQuota | null = accounts.length > 0 ? {
+    active_keys: accounts.length,
+    five_hour_pct: Math.round(accounts.reduce((s, a) => s + a.fiveHour, 0) / accounts.length),
+    seven_day_pct: Math.round(accounts.reduce((s, a) => s + a.sevenDay, 0) / accounts.length),
   } : null;
 
   return {

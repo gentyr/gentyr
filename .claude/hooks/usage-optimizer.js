@@ -186,13 +186,15 @@ async function collectSnapshot(log) {
   }
 
   const ts = Date.now();
-  const keyData = {};
+  const rawKeyData = {};
+  const keyLookup = new Map();
 
   for (const key of keys) {
+    keyLookup.set(key.id, key);
     try {
       const usage = await fetchUsage(key.accessToken);
       if (usage) {
-        keyData[key.id] = {
+        rawKeyData[key.id] = {
           '5h': (usage.fiveHour.utilization ?? 0) / 100,
           '5h_reset': usage.fiveHour.resetsAt,
           '7d': (usage.sevenDay.utilization ?? 0) / 100,
@@ -204,9 +206,28 @@ async function collectSnapshot(log) {
     }
   }
 
-  if (Object.keys(keyData).length === 0) {
+  if (Object.keys(rawKeyData).length === 0) {
     log('Usage optimizer: No usage data retrieved, skipping snapshot.');
     return null;
+  }
+
+  // Deduplicate: group by account, keep first key per account.
+  // Uses account_uuid as primary dedup key, falls back to a fingerprint
+  // of usage values (same principle as cto-notification-hook.js).
+  const accountMap = new Map();
+  for (const [keyId, usage] of Object.entries(rawKeyData)) {
+    const key = keyLookup.get(keyId);
+    const dedupeKey = key?.accountId
+      || `fp:${usage['5h']}:${usage['7d']}`;
+    if (!accountMap.has(dedupeKey)) {
+      accountMap.set(dedupeKey, { id: keyId, usage });
+    }
+  }
+
+  // Build snapshot from deduplicated accounts
+  const keyData = {};
+  for (const [, entry] of accountMap) {
+    keyData[entry.id] = entry.usage;
   }
 
   return { ts, keys: keyData };
@@ -223,7 +244,7 @@ function getApiKeys() {
   // Source 1: Environment variable override (highest priority)
   const envToken = process.env['CLAUDE_CODE_OAUTH_TOKEN'];
   if (envToken) {
-    return [{ id: 'env', accessToken: envToken }];
+    return [{ id: 'env', accessToken: envToken, accountId: null }];
   }
 
   // Source 2: Rotation state (multiple keys) - check user-level, fallback to project-level
@@ -239,7 +260,7 @@ function getApiKeys() {
           // Skip expired keys
           if (data.status === 'expired') continue;
           if (data.expiresAt && data.expiresAt < now) continue;
-          keys.push({ id: id.substring(0, 8), accessToken: data.accessToken });
+          keys.push({ id: id.substring(0, 8), accessToken: data.accessToken, accountId: data.account_uuid || null });
         }
       }
     } catch (err) {
@@ -258,7 +279,7 @@ function getApiKeys() {
       if (creds?.claudeAiOauth?.accessToken) {
         const expiresAt = creds.claudeAiOauth.expiresAt;
         if (!expiresAt || expiresAt > now) {
-          keys.push({ id: 'keychain', accessToken: creds.claudeAiOauth.accessToken });
+          keys.push({ id: 'keychain', accessToken: creds.claudeAiOauth.accessToken, accountId: null });
         }
       }
     } catch {
@@ -271,7 +292,7 @@ function getApiKeys() {
     try {
       const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
       if (creds?.claudeAiOauth?.accessToken) {
-        keys.push({ id: 'default', accessToken: creds.claudeAiOauth.accessToken });
+        keys.push({ id: 'default', accessToken: creds.claudeAiOauth.accessToken, accountId: null });
       }
     } catch (err) {
       console.error(`[usage-optimizer] Failed to read credentials: ${err.message}`);
@@ -449,10 +470,10 @@ function calculateAndAdjust(log) {
   if (aggregate.perKeyUtilization) {
     for (const [keyId, util] of Object.entries(aggregate.perKeyUtilization)) {
       if (util['5h'] >= SINGLE_KEY_WARNING_THRESHOLD) {
-        log(`Usage optimizer WARNING: Key ${keyId} at ${Math.round(util['5h'] * 100)}% 5h utilization`);
+        log(`Usage optimizer WARNING: Account ${keyId} at ${Math.round(util['5h'] * 100)}% 5h utilization`);
       }
       if (util['7d'] >= SINGLE_KEY_WARNING_THRESHOLD) {
-        log(`Usage optimizer WARNING: Key ${keyId} at ${Math.round(util['7d'] * 100)}% 7d utilization`);
+        log(`Usage optimizer WARNING: Account ${keyId} at ${Math.round(util['7d'] * 100)}% 7d utilization`);
       }
     }
   }
