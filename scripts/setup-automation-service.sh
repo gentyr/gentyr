@@ -178,7 +178,7 @@ setup_linux() {
 
   # Fix ownership if running as root
   if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
-    chown "$SUDO_USER:$SUDO_USER" "$SYSTEMD_USER_DIR"
+    chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo staff)" "$SYSTEMD_USER_DIR"
   fi
 
   # Build optional OP_SERVICE_ACCOUNT_TOKEN env line
@@ -228,7 +228,7 @@ EOF
 
   # Fix ownership of service files if running as root
   if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
-    chown "$SUDO_USER:$SUDO_USER" "$SERVICE_FILE" "$TIMER_FILE"
+    chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo staff)" "$SERVICE_FILE" "$TIMER_FILE"
   fi
 
   # Reload systemd and enable timer

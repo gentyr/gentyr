@@ -117,8 +117,13 @@ get_original_user() {
 
 get_original_group() {
     local user="$(get_original_user)"
-    # Get primary group for the user (returns "staff" on macOS, user's group on Linux)
-    id -gn "$user" 2>/dev/null || echo "staff"
+    local group
+    group="$(id -gn "$user" 2>/dev/null)" || group=""
+    if [ -z "$group" ]; then
+        if [ "$(uname)" = "Darwin" ]; then echo "staff"; else echo "$user"; fi
+    else
+        echo "$group"
+    fi
 }
 
 get_root_group() {

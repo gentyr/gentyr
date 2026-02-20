@@ -16,18 +16,25 @@
  * @version 1.0.0
  */
 
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn, type ChildProcess } from 'child_process';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
+import { createServer } from 'net';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   SyncSecretsArgsSchema,
   ListMappingsArgsSchema,
   VerifySecretsArgsSchema,
+  DevServerStartArgsSchema,
+  DevServerStopArgsSchema,
+  DevServerStatusArgsSchema,
   ServicesConfigSchema,
   type SyncSecretsArgs,
   type ListMappingsArgs,
   type VerifySecretsArgs,
+  type DevServerStartArgs,
+  type DevServerStopArgs,
+  type DevServerStatusArgs,
   type ServicesConfig,
   type SyncResult,
   type MappingResult,
@@ -35,6 +42,12 @@ import {
   type SyncedSecret,
   type SecretMapping,
   type VerifiedSecret,
+  type DevServerStartResult,
+  type DevServerStopResult,
+  type DevServerStatusResult,
+  type DevServerServiceResult,
+  type DevServerStopServiceResult,
+  type DevServerStatusService,
 } from './types.js';
 
 const { RENDER_API_KEY, VERCEL_TOKEN, VERCEL_TEAM_ID, OP_SERVICE_ACCOUNT_TOKEN } = process.env;
@@ -73,6 +86,157 @@ function loadServicesConfig(): ServicesConfig {
     throw new Error(`Failed to load services.json: ${message}`);
   }
 }
+
+// ============================================================================
+// Dev Server Process Management
+// ============================================================================
+
+const MAX_OUTPUT_LINES = 50;
+const SIGTERM_TIMEOUT_MS = 5000;
+
+interface ManagedProcess {
+  name: string;
+  label: string;
+  process: ChildProcess;
+  pid: number;
+  port: number;
+  startedAt: number;
+  outputBuffer: string[];
+}
+
+const managedProcesses = new Map<string, ManagedProcess>();
+
+function appendOutput(proc: ManagedProcess, line: string): void {
+  proc.outputBuffer.push(line);
+  if (proc.outputBuffer.length > MAX_OUTPUT_LINES) {
+    proc.outputBuffer.shift();
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isPortInUse(port: number): Promise<boolean> {
+  if (port === 0) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once('error', () => {
+      resolve(true);
+    });
+    server.once('listening', () => {
+      server.close(() => resolve(false));
+    });
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+function killPort(port: number): Promise<void> {
+  if (port === 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    try {
+      const output = execFileSync('lsof', ['-ti', `:${port}`], {
+        encoding: 'utf-8',
+        timeout: 5000,
+      }).trim();
+      const pids = output.split('\n').filter(Boolean);
+      for (const pidStr of pids) {
+        const pid = parseInt(pidStr, 10);
+        if (!isNaN(pid)) {
+          try {
+            process.kill(pid, 'SIGTERM');
+          } catch (err) {
+            // Process may have already exited — log for observability (G001)
+            const message = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`[secret-sync] killPort: failed to SIGTERM pid ${pid}: ${message}\n`);
+          }
+        }
+      }
+    } catch (err) {
+      // lsof may fail if no process is on port (exit code 1) — expected behavior
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.includes('exit code 1') && !message.includes('status 1')) {
+        process.stderr.write(`[secret-sync] killPort(${port}): lsof failed: ${message}\n`);
+      }
+    }
+    resolve();
+  });
+}
+
+function detectPort(lines: string[]): number | null {
+  // Scan for common port-binding messages
+  const portPatterns = [
+    /listening on.*:(\d+)/i,
+    /started.*on.*:(\d+)/i,
+    /ready on.*:(\d+)/i,
+    /http:\/\/localhost:(\d+)/i,
+    /http:\/\/127\.0\.0\.1:(\d+)/i,
+    /port\s+(\d+)/i,
+  ];
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    for (const pattern of portPatterns) {
+      const match = lines[i].match(pattern);
+      if (match) {
+        const port = parseInt(match[1], 10);
+        if (port > 0 && port < 65536) return port;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve local secrets from 1Password — values stay in MCP server memory.
+ * Returns env vars ready to inject into child process, plus any failed keys.
+ */
+function resolveLocalSecrets(config: ServicesConfig): { resolvedEnv: Record<string, string>; failedKeys: string[] } {
+  const resolvedEnv: Record<string, string> = {};
+  const failedKeys: string[] = [];
+  const localSecrets = config.secrets.local || {};
+
+  for (const [key, ref] of Object.entries(localSecrets)) {
+    try {
+      resolvedEnv[key] = opRead(ref);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[secret-sync] resolveLocalSecrets: failed to resolve ${key}: ${message}\n`);
+      failedKeys.push(key);
+    }
+  }
+
+  return { resolvedEnv, failedKeys };
+}
+
+function cleanupManagedProcesses(): void {
+  for (const [name, managed] of managedProcesses.entries()) {
+    try {
+      if (isProcessAlive(managed.pid)) {
+        managed.process.kill('SIGTERM');
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[secret-sync] cleanup failed for ${name} (pid ${managed.pid}): ${message}\n`);
+    }
+    managedProcesses.delete(name);
+  }
+}
+
+// Register cleanup handlers
+process.on('exit', cleanupManagedProcesses);
+process.on('SIGINT', () => {
+  cleanupManagedProcesses();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  cleanupManagedProcesses();
+  process.exit(0);
+});
 
 // ============================================================================
 // 1Password Operations
@@ -554,6 +718,240 @@ async function verifySecrets(args: VerifySecretsArgs): Promise<VerifyResult> {
 }
 
 // ============================================================================
+// Dev Server Tool Handlers
+// ============================================================================
+
+async function devServerStart(args: DevServerStartArgs): Promise<DevServerStartResult> {
+  const config = loadServicesConfig();
+  const devServices = config.devServices || {};
+  const started: DevServerServiceResult[] = [];
+
+  if (Object.keys(devServices).length === 0) {
+    throw new Error('No devServices configured in services.json');
+  }
+
+  const serviceNames = args.services || Object.keys(devServices);
+
+  // Validate all service names first
+  for (const name of serviceNames) {
+    if (!devServices[name]) {
+      const available = Object.keys(devServices).join(', ');
+      throw new Error(`Unknown service "${name}". Available: ${available}`);
+    }
+  }
+
+  // Resolve secrets — values stay in MCP server memory
+  const { resolvedEnv, failedKeys } = resolveLocalSecrets(config);
+
+  for (const name of serviceNames) {
+    const svc = devServices[name];
+
+    // Check if already running
+    const existing = managedProcesses.get(name);
+    if (existing && isProcessAlive(existing.pid)) {
+      started.push({
+        name,
+        label: svc.label,
+        pid: existing.pid,
+        port: svc.port,
+        status: 'already_running',
+      });
+      continue;
+    }
+
+    // Check port conflict
+    if (svc.port > 0) {
+      const portBusy = await isPortInUse(svc.port);
+      if (portBusy) {
+        if (args.force) {
+          await killPort(svc.port);
+          // Brief wait for port release
+          await new Promise(r => setTimeout(r, 500));
+        } else {
+          started.push({
+            name,
+            label: svc.label,
+            pid: 0,
+            port: svc.port,
+            status: 'error',
+            error: `Port ${svc.port} already in use. Use force: true to kill existing process.`,
+          });
+          continue;
+        }
+      }
+    }
+
+    try {
+      // Infrastructure credentials that must NOT leak to dev server child processes
+      const INFRA_CRED_KEYS = new Set([
+        'OP_SERVICE_ACCOUNT_TOKEN',
+        'RENDER_API_KEY',
+        'VERCEL_TOKEN',
+        'VERCEL_TEAM_ID',
+        'GH_TOKEN',
+        'GITHUB_TOKEN',
+      ]);
+
+      const childEnv: Record<string, string> = {};
+      // Copy parent env vars, excluding infrastructure credentials
+      for (const [k, v] of Object.entries(process.env)) {
+        if (v !== undefined && !INFRA_CRED_KEYS.has(k)) childEnv[k] = v;
+      }
+      // Inject resolved secrets (application-level only, from secrets.local)
+      Object.assign(childEnv, resolvedEnv);
+      // Set port if specified
+      if (svc.port > 0) {
+        childEnv.PORT = String(svc.port);
+      }
+
+      const child = spawn('pnpm', ['--filter', svc.filter, 'run', svc.command], {
+        env: childEnv,
+        cwd: PROJECT_DIR,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: false,
+      });
+
+      const pid = child.pid;
+      if (!pid) {
+        started.push({
+          name,
+          label: svc.label,
+          pid: 0,
+          port: svc.port,
+          status: 'error',
+          error: 'Failed to spawn process (no PID)',
+        });
+        continue;
+      }
+
+      const managed: ManagedProcess = {
+        name,
+        label: svc.label,
+        process: child,
+        pid,
+        port: svc.port,
+        startedAt: Date.now(),
+        outputBuffer: [],
+      };
+
+      // Capture stdout/stderr in ring buffer (never returned to agent)
+      child.stdout?.on('data', (data: Buffer) => {
+        const lines = data.toString().split('\n').filter(Boolean);
+        for (const line of lines) appendOutput(managed, line);
+      });
+      child.stderr?.on('data', (data: Buffer) => {
+        const lines = data.toString().split('\n').filter(Boolean);
+        for (const line of lines) appendOutput(managed, line);
+      });
+
+      // Auto-remove on exit
+      child.on('exit', () => {
+        managedProcesses.delete(name);
+      });
+
+      managedProcesses.set(name, managed);
+
+      started.push({
+        name,
+        label: svc.label,
+        pid,
+        port: svc.port,
+        status: 'started',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      started.push({
+        name,
+        label: svc.label,
+        pid: 0,
+        port: svc.port,
+        status: 'error',
+        error: message,
+      });
+    }
+  }
+
+  return {
+    started,
+    secretsResolved: Object.keys(resolvedEnv).length,
+    secretsFailed: failedKeys,
+  };
+}
+
+async function devServerStop(args: DevServerStopArgs): Promise<DevServerStopResult> {
+  const stopped: DevServerStopServiceResult[] = [];
+  const serviceNames = args.services || [...managedProcesses.keys()];
+
+  for (const name of serviceNames) {
+    const managed = managedProcesses.get(name);
+    if (!managed) {
+      stopped.push({ name, pid: 0, status: 'not_running' });
+      continue;
+    }
+
+    const pid = managed.pid;
+
+    if (!isProcessAlive(pid)) {
+      managedProcesses.delete(name);
+      stopped.push({ name, pid, status: 'not_running' });
+      continue;
+    }
+
+    try {
+      managed.process.kill('SIGTERM');
+
+      // Wait up to SIGTERM_TIMEOUT_MS for graceful exit
+      const exited = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), SIGTERM_TIMEOUT_MS);
+        managed.process.once('exit', () => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+      });
+
+      if (!exited && isProcessAlive(pid)) {
+        managed.process.kill('SIGKILL');
+        managedProcesses.delete(name);
+        stopped.push({ name, pid, status: 'force_killed' });
+      } else {
+        managedProcesses.delete(name);
+        stopped.push({ name, pid, status: 'stopped' });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      managedProcesses.delete(name);
+      stopped.push({ name, pid, status: 'error', error: message });
+    }
+  }
+
+  return { stopped };
+}
+
+async function devServerStatus(_args: DevServerStatusArgs): Promise<DevServerStatusResult> {
+  const services: DevServerStatusService[] = [];
+
+  for (const [name, managed] of managedProcesses.entries()) {
+    const running = isProcessAlive(managed.pid);
+
+    if (!running) {
+      managedProcesses.delete(name);
+    }
+
+    services.push({
+      name,
+      label: managed.label,
+      pid: managed.pid,
+      port: managed.port,
+      running,
+      uptime: running ? Math.floor((Date.now() - managed.startedAt) / 1000) : 0,
+      detectedPort: detectPort(managed.outputBuffer),
+    });
+  }
+
+  return { services };
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -575,6 +973,24 @@ const tools = [
     description: 'Verify that secrets exist on target services or in local conf file (checks existence only, does not return values).',
     schema: VerifySecretsArgsSchema,
     handler: verifySecrets as (args: unknown) => unknown,
+  },
+  {
+    name: 'secret_dev_server_start',
+    description: 'Start dev servers with secrets resolved from 1Password. Secret values stay in MCP server memory and are injected into child process env vars — never returned to agent. Returns PIDs, ports, and status only.',
+    schema: DevServerStartArgsSchema,
+    handler: devServerStart as (args: unknown) => unknown,
+  },
+  {
+    name: 'secret_dev_server_stop',
+    description: 'Stop managed dev servers gracefully (SIGTERM, then SIGKILL after 5s). Returns shutdown status per service.',
+    schema: DevServerStopArgsSchema,
+    handler: devServerStop as (args: unknown) => unknown,
+  },
+  {
+    name: 'secret_dev_server_status',
+    description: 'Check status of managed dev servers. Returns running state, uptime, and detected ports. No secret values exposed.',
+    schema: DevServerStatusArgsSchema,
+    handler: devServerStatus as (args: unknown) => unknown,
   },
 ] satisfies AnyToolHandler[];
 

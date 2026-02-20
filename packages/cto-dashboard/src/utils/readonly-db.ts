@@ -14,7 +14,11 @@ import Database from 'better-sqlite3';
 
 export function openReadonlyDb(dbPath: string): InstanceType<typeof Database> {
   try {
-    return new Database(dbPath, { readonly: true });
+    const db = new Database(dbPath, { readonly: true });
+    // Force WAL shared-memory initialization — SQLite defers -shm/-wal creation
+    // until the first query, so new Database() alone won't surface the error.
+    db.pragma('journal_mode');
+    return db;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     // SQLITE_READONLY_DIRECTORY or generic "attempt to write a readonly database"

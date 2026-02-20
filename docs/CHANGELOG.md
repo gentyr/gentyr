@@ -1,5 +1,42 @@
 # GENTYR Framework Changelog
 
+## 2026-02-20 - Usage Optimizer: Remove Factor Caps for Aggressive Throttling
+
+### Changed
+
+**Usage optimizer factor range expansion** (`.claude/hooks/usage-optimizer.js`):
+- MAX_FACTOR: 2.0 to 20.0 (up to 20x speedup; MIN_EFFECTIVE_MINUTES=5 is the real ceiling)
+- MIN_FACTOR: 0.5 to 0.05 (up to 20x slowdown; sufficient to essentially pause automation)
+- Recovery threshold: `currentFactor <= MIN_FACTOR + 0.01` to `currentFactor <= 0.15` with explanatory comment (threshold now independent of MIN_FACTOR value)
+- MAX_CHANGE_PER_CYCLE: 0.10 unchanged (factor moves at most ±10% per cycle)
+- MIN_EFFECTIVE_MINUTES: 5 unchanged (no cooldown goes below 5 minutes)
+
+**Rationale**: The previous 0.5-2.0 range limited the optimizer to only 2x slowdown/speedup. When aggressive throttling was needed (e.g., approaching quota ceiling), the factor hit the floor and couldn't go lower. The new 0.05-20.0 range provides 20x dynamic range in both directions while preserving safety invariants.
+
+### Tests
+
+- **Updated 6 existing assertions** in `.claude/hooks/__tests__/usage-optimizer.test.js`:
+  - Constant value regexes for MIN_FACTOR (0.05), MAX_FACTOR (20.0)
+  - Recovery threshold detection regex
+  - Behavioral recovery test values
+- **Added 10 new boundary tests**:
+  - 5 extreme factor boundary tests (MIN_EFFECTIVE_MINUTES floor enforcement, extreme slowdown scenarios)
+  - 5 recovery threshold boundary tests (inclusive/exclusive boundary, independence from MIN_FACTOR)
+- All 166 tests passing (was 156 tests)
+
+### Fixed
+
+**Documentation alignment**:
+- Updated `docs/AUTOMATION-SYSTEMS.md` to reflect new 0.05-20.0 range (was 0.5-2.0)
+- Factor effects table now shows full dynamic range examples
+- Recovery threshold documentation updated to reflect 0.15 fixed value
+
+### Impact
+
+The usage optimizer can now throttle automation by up to 20x when approaching quota limits, preventing quota exhaustion in high-utilization scenarios. The 0.15 recovery threshold ensures the optimizer doesn't get trapped at extreme slowdown when usage drops far below target.
+
+---
+
 ## 2026-02-20 - Secret-Sync MCP Server: Security Hardening
 
 ### Fixed

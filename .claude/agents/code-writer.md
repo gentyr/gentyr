@@ -16,6 +16,10 @@ This is a security platform handling sensitive user credentials. You MUST:
 - Implement RLS policies for all Supabase tables
 - Follow the G001-G011 global specifications
 
+## Permission Denied on Protected Files
+
+If you encounter `Permission denied` or `EACCES` on GENTYR-protected files, call `mcp__setup-helper__gentyr_setup({ action: "unprotect" })` and present the returned command to the user. After changes, remind them to re-protect with `mcp__setup-helper__gentyr_setup({ action: "protect" })`.
+
 ## Specs Browser MCP
 
 Use the specs-browser MCP to review project specifications before implementing:

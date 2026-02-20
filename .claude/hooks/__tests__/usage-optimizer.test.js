@@ -69,14 +69,14 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       assert.match(
         code,
-        /const MAX_FACTOR = 2\.0/,
-        'Must define MAX_FACTOR = 2.0'
+        /const MAX_FACTOR = 20\.0/,
+        'Must define MAX_FACTOR = 20.0'
       );
 
       assert.match(
         code,
-        /const MIN_FACTOR = 0\.5/,
-        'Must define MIN_FACTOR = 0.5'
+        /const MIN_FACTOR = 0\.05/,
+        'Must define MIN_FACTOR = 0.05'
       );
 
       assert.match(
@@ -2313,8 +2313,8 @@ describe('usage-optimizer.js - Structure Validation', () => {
       // after being stuck at MIN_FACTOR due to previously uncapped runaway projections.
       assert.match(
         functionBody,
-        /currentFactor <= MIN_FACTOR \+ 0\.01 && currentUsage < TARGET_UTILIZATION \* 0\.5/,
-        'Must check for factor stuck at minimum with usage well below target'
+        /currentFactor <= 0\.15 && currentUsage < TARGET_UTILIZATION \* 0\.5/,
+        'Must check for factor at very low level with usage well below target'
       );
     });
 
@@ -2326,7 +2326,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       // Find the recovery block and verify it calls applyFactor with 1.0
       const recoveryBlock = functionBody.match(
-        /if \(currentFactor <= MIN_FACTOR \+ 0\.01 && currentUsage < TARGET_UTILIZATION \* 0\.5\)[\s\S]*?return true/
+        /if \(currentFactor <= 0\.15 && currentUsage < TARGET_UTILIZATION \* 0\.5\)[\s\S]*?return true/
       );
       assert.ok(recoveryBlock, 'Must have factor recovery block');
 
@@ -2358,7 +2358,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       // After recovery, return true to signal an adjustment was made.
       const recoveryBlock = functionBody.match(
-        /if \(currentFactor <= MIN_FACTOR \+ 0\.01[\s\S]*?return true/
+        /if \(currentFactor <= 0\.15[\s\S]*?return true/
       );
       assert.ok(recoveryBlock, 'Factor recovery block must return true');
     });
@@ -2384,17 +2384,16 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       assert.strictEqual(recoveryThreshold, 0.45, 'Recovery threshold must be 0.45 (half of 0.90 target)');
 
-      // At 44% usage with factor stuck at MIN_FACTOR, recovery fires.
-      const MIN_FACTOR = 0.5;
-      const stuckFactor = MIN_FACTOR;
+      // At 44% usage with factor at very low level, recovery fires.
+      const stuckFactor = 0.10;
       const currentUsage44pct = 0.44;
 
-      const shouldRecover = stuckFactor <= MIN_FACTOR + 0.01 && currentUsage44pct < recoveryThreshold;
-      assert.strictEqual(shouldRecover, true, 'Recovery must fire at 44% usage with factor at minimum');
+      const shouldRecover = stuckFactor <= 0.15 && currentUsage44pct < recoveryThreshold;
+      assert.strictEqual(shouldRecover, true, 'Recovery must fire at 44% usage with factor at very low level');
 
       // At 50% usage (exactly at threshold), recovery must NOT fire.
       const currentUsage50pct = 0.50;
-      const shouldNotRecover = stuckFactor <= MIN_FACTOR + 0.01 && currentUsage50pct < recoveryThreshold;
+      const shouldNotRecover = stuckFactor <= 0.15 && currentUsage50pct < recoveryThreshold;
       assert.strictEqual(shouldNotRecover, false, 'Recovery must not fire at or above 50% usage');
     });
   });
@@ -2772,6 +2771,146 @@ describe('usage-optimizer.js - Structure Validation', () => {
       const oldMinutes = oldValue * 60;
       assert.ok(oldMinutes < 1, 'Old threshold of 0.01h was only 36 seconds');
       assert.ok(minutesEquiv > oldMinutes, 'New threshold must be significantly larger than old');
+    });
+  });
+
+  describe('Behavioral Tests - Extreme Factor Boundaries', () => {
+    it('should enforce MIN_EFFECTIVE_MINUTES floor when factor reaches MAX_FACTOR (20.0)', () => {
+      // At MAX_FACTOR=20.0, even short default cooldowns hit the 5-minute floor
+      const MAX_FACTOR = 20.0;
+      const MIN_EFFECTIVE_MINUTES = 5;
+      const defaultCooldown = 60; // 60 minutes
+
+      // Calculate effective cooldown: max(5, round(60 / 20))
+      const rawEffective = Math.round(defaultCooldown / MAX_FACTOR);
+      const effective = Math.max(MIN_EFFECTIVE_MINUTES, rawEffective);
+
+      // 60 / 20 = 3 minutes → clamped to 5 minutes
+      assert.strictEqual(rawEffective, 3, 'Raw effective should be 3 minutes');
+      assert.strictEqual(effective, 5, 'Must clamp to MIN_EFFECTIVE_MINUTES floor of 5');
+    });
+
+    it('should allow large effective cooldowns when factor at MAX_FACTOR for longer defaults', () => {
+      // At MAX_FACTOR=20.0, longer cooldowns still produce reasonable values
+      const MAX_FACTOR = 20.0;
+      const MIN_EFFECTIVE_MINUTES = 5;
+      const defaultCooldown = 1440; // 24 hours (1440 minutes)
+
+      const effective = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / MAX_FACTOR));
+
+      // 1440 / 20 = 72 minutes (well above the floor)
+      assert.strictEqual(effective, 72, 'Should allow 72-minute effective cooldown');
+    });
+
+    it('should calculate extreme cooldowns when factor at MIN_FACTOR (0.05)', () => {
+      // At MIN_FACTOR=0.05, cooldowns become very long (20x slowdown)
+      const MIN_FACTOR = 0.05;
+      const MIN_EFFECTIVE_MINUTES = 5;
+      const defaultCooldown = 60; // 60 minutes
+
+      const effective = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / MIN_FACTOR));
+
+      // 60 / 0.05 = 1200 minutes (20 hours)
+      assert.strictEqual(effective, 1200, 'Should calculate 1200-minute (20-hour) effective cooldown');
+    });
+
+    it('should handle extreme slowdown for daily cooldowns at MIN_FACTOR', () => {
+      // At MIN_FACTOR=0.05, daily automations become much less frequent
+      const MIN_FACTOR = 0.05;
+      const MIN_EFFECTIVE_MINUTES = 5;
+      const defaultCooldown = 1440; // 24 hours (1440 minutes)
+
+      const effective = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / MIN_FACTOR));
+
+      // 1440 / 0.05 = 28800 minutes (20 days)
+      assert.strictEqual(effective, 28800, 'Should calculate 28800-minute (20-day) effective cooldown');
+    });
+
+    it('should verify MIN_EFFECTIVE_MINUTES prevents factors from creating sub-5-minute cooldowns', () => {
+      // Even at extreme factors, the floor prevents harmful rapid-fire behavior
+      const MIN_EFFECTIVE_MINUTES = 5;
+      const factors = [20.0, 50.0, 100.0]; // Even beyond MAX_FACTOR
+      const defaultCooldown = 10; // Short default
+
+      for (const factor of factors) {
+        const effective = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / factor));
+        assert.ok(
+          effective >= MIN_EFFECTIVE_MINUTES,
+          `Factor ${factor} must respect ${MIN_EFFECTIVE_MINUTES}-minute floor (got ${effective})`
+        );
+      }
+    });
+  });
+
+  describe('Behavioral Tests - Recovery Threshold Boundaries', () => {
+    it('should fire recovery at factor exactly 0.15 with low usage', () => {
+      const TARGET_UTILIZATION = 0.90;
+      const recoveryThreshold = TARGET_UTILIZATION * 0.5; // 0.45
+      const currentFactor = 0.15; // Exactly at boundary
+      const currentUsage = 0.40; // Below threshold
+
+      const shouldRecover = currentFactor <= 0.15 && currentUsage < recoveryThreshold;
+
+      assert.strictEqual(shouldRecover, true, 'Recovery must fire when factor is exactly 0.15 with usage at 40%');
+    });
+
+    it('should NOT fire recovery at factor 0.16 with low usage', () => {
+      const TARGET_UTILIZATION = 0.90;
+      const recoveryThreshold = TARGET_UTILIZATION * 0.5; // 0.45
+      const currentFactor = 0.16; // Just above boundary
+      const currentUsage = 0.40; // Below threshold
+
+      const shouldRecover = currentFactor <= 0.15 && currentUsage < recoveryThreshold;
+
+      assert.strictEqual(shouldRecover, false, 'Recovery must NOT fire when factor is 0.16 (above 0.15 threshold)');
+    });
+
+    it('should fire recovery at factor below 0.15 with usage just below threshold', () => {
+      const TARGET_UTILIZATION = 0.90;
+      const recoveryThreshold = TARGET_UTILIZATION * 0.5; // 0.45
+      const currentFactor = 0.10; // Well below boundary
+      const currentUsage = 0.44; // Just below threshold
+
+      const shouldRecover = currentFactor <= 0.15 && currentUsage < recoveryThreshold;
+
+      assert.strictEqual(shouldRecover, true, 'Recovery must fire when factor is 0.10 and usage is 44%');
+    });
+
+    it('should NOT fire recovery when usage at or above threshold even with low factor', () => {
+      const TARGET_UTILIZATION = 0.90;
+      const recoveryThreshold = TARGET_UTILIZATION * 0.5; // 0.45
+      const currentFactor = 0.10; // Low factor
+      const currentUsage = 0.45; // Exactly at threshold
+
+      const shouldRecover = currentFactor <= 0.15 && currentUsage < recoveryThreshold;
+
+      assert.strictEqual(shouldRecover, false, 'Recovery must NOT fire when usage is at or above 45% threshold');
+    });
+
+    it('should verify recovery threshold independence from MIN_FACTOR', () => {
+      // Recovery threshold is hardcoded at 0.15, not derived from MIN_FACTOR (0.05)
+      const MIN_FACTOR = 0.05;
+      const recoveryThreshold = 0.15;
+
+      assert.notStrictEqual(
+        recoveryThreshold,
+        MIN_FACTOR,
+        'Recovery threshold (0.15) must be independent of MIN_FACTOR (0.05)'
+      );
+
+      assert.notStrictEqual(
+        recoveryThreshold,
+        MIN_FACTOR + 0.01,
+        'Recovery threshold must NOT use old MIN_FACTOR + 0.01 formula'
+      );
+
+      // Old formula would have been: MIN_FACTOR + 0.01 = 0.05 + 0.01 = 0.06
+      const oldFormula = MIN_FACTOR + 0.01;
+      assert.notStrictEqual(
+        recoveryThreshold,
+        oldFormula,
+        `Recovery threshold (0.15) must differ from old formula (${oldFormula})`
+      );
     });
   });
 });

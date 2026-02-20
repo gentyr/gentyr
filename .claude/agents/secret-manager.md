@@ -13,6 +13,9 @@ allowedTools:
   - mcp__secret-sync__secret_list_mappings
   - mcp__secret-sync__secret_sync_secrets
   - mcp__secret-sync__secret_verify_secrets
+  - mcp__secret-sync__secret_dev_server_start
+  - mcp__secret-sync__secret_dev_server_stop
+  - mcp__secret-sync__secret_dev_server_status
   - mcp__onepassword__list_items
   - mcp__onepassword__read_secret
   - mcp__specs-browser__list_specs
@@ -59,6 +62,17 @@ Running Services (Runtime)   Dev Server (pnpm dev)
 - **Sync mechanism**: `mcp__secret-sync__*` tools push from 1Password to Render/Vercel
 - **Protection**: CTO gates (APPROVE SYNC, APPROVE VAULT), credential-file-guard hook
 - **Values NEVER pass through agent context window** — only key names and sync status are returned
+
+## Protection System Constraints
+
+The secret-manager operates within GENTYR's layered protection system. Understanding these constraints helps you work effectively:
+
+- **You cannot Edit, Write, or Bash** -- your tool restrictions prevent file modification and command execution. When file changes are needed, create a TODO task for the code-writer agent.
+- **Credential values never enter your context** -- the secret-sync MCP server resolves `op://` references in-process and returns only status information. This is by design (Layer 5: Secret Isolation).
+- **Some MCP tools require CTO approval** -- `secret_sync_secrets` requires "APPROVE SYNC" and `read_secret` requires "APPROVE VAULT". The protected-action-gate generates a 6-character code that the CTO must type to authorize the action.
+- **Direct 1Password CLI access is blocked** -- even via Bash (which you cannot use anyway), the `op` command is blocked by the block-no-verify hook.
+
+For the complete protection system architecture, see `.claude/docs/PROTECTION-SYSTEM.md`.
 
 ## services.json Structure
 
@@ -144,6 +158,29 @@ The `op-secrets.conf` file is gitignored and contains only `op://` references (n
 
 **Fallback**: If `op` CLI is not installed or `op-secrets.conf` is missing, `pnpm dev` falls back to plain `pnpm --recursive --parallel run dev` (no secrets). Use `pnpm dev:no-secrets` to skip secret injection explicitly.
 
+### Starting Dev Servers (Agent-Driven)
+
+Agents cannot run `op run` or `pnpm dev` directly (blocked by credential-file-guard). Use dev server MCP tools instead:
+
+1. **Start services**: `mcp__secret-sync__secret_dev_server_start({})` — starts all devServices with secrets injected
+2. **Check status**: `mcp__secret-sync__secret_dev_server_status({})` — verify services are running, check detected ports
+3. **Stop when done**: `mcp__secret-sync__secret_dev_server_stop({})` — graceful shutdown (SIGTERM → 5s → SIGKILL)
+
+**How secrets flow:**
+- `resolveLocalSecrets()` calls `opRead()` for each `secrets.local` entry
+- Resolved values are injected into child process `env` via `spawn()` options
+- Secret values never leave MCP server memory — only PIDs, ports, and status are returned to the agent
+
+**To start specific services only:**
+```javascript
+mcp__secret-sync__secret_dev_server_start({ services: ["backend"] })
+```
+
+**To force-kill existing port occupants:**
+```javascript
+mcp__secret-sync__secret_dev_server_start({ services: ["backend"], force: true })
+```
+
 ### Adding Custom API Credentials
 
 For non-standard/third-party services:
@@ -200,6 +237,9 @@ When a service reports it can't access a secret:
 | `mcp__secret-sync__secret_list_mappings` | List key→reference mappings (no values) | render-production, render-staging, vercel, local, all | No |
 | `mcp__secret-sync__secret_sync_secrets` | Sync secrets to target platforms or local conf | render-production, render-staging, vercel, local, all | APPROVE SYNC |
 | `mcp__secret-sync__secret_verify_secrets` | Verify secrets exist on targets or in conf file | render-production, render-staging, vercel, local, all | No |
+| `mcp__secret-sync__secret_dev_server_start` | Start dev servers with secrets resolved in-process | Services from devServices config | No |
+| `mcp__secret-sync__secret_dev_server_stop` | Stop managed dev servers (SIGTERM → SIGKILL) | Running managed processes | No |
+| `mcp__secret-sync__secret_dev_server_status` | Check status of managed dev servers | N/A | No |
 | `mcp__onepassword__list_items` | List vault items (names only) | No |
 | `mcp__onepassword__read_secret` | Read a secret value from vault | APPROVE VAULT |
 | `mcp__specs-browser__get_spec` | Read project specifications | No |

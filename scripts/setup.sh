@@ -169,8 +169,13 @@ get_original_user() {
 
 get_original_group() {
     local user="$(get_original_user)"
-    # Get primary group for the user
-    id -gn "$user" 2>/dev/null || echo "staff"
+    local group
+    group="$(id -gn "$user" 2>/dev/null)" || group=""
+    if [ -z "$group" ]; then
+        if [ "$(uname)" = "Darwin" ]; then echo "staff"; else echo "$user"; fi
+    else
+        echo "$group"
+    fi
 }
 
 do_protect() {
@@ -704,6 +709,17 @@ for item in commands hooks mcp; do
     ln -sf "../$FRAMEWORK_REL/.claude/$item" "$PROJECT_DIR/.claude/$item"
     echo "  Symlink: .claude/$item"
 done
+
+# Symlink docs/shared for agent-accessible documentation
+if [ -L "$PROJECT_DIR/.claude/docs" ]; then
+    rm "$PROJECT_DIR/.claude/docs"
+fi
+if [ -d "$PROJECT_DIR/.claude/docs" ]; then
+    echo -e "${YELLOW}  Moving existing docs/ to docs.backup/${NC}"
+    mv "$PROJECT_DIR/.claude/docs" "$PROJECT_DIR/.claude/docs.backup"
+fi
+ln -sf "../$FRAMEWORK_REL/docs/shared" "$PROJECT_DIR/.claude/docs"
+echo "  Symlink: .claude/docs"
 
 # Individual file symlinks for agents
 echo "  Setting up agents (individual symlinks)..."
@@ -1454,14 +1470,14 @@ echo ""
 # --- Remove .claude/ symlinks ---
 echo -e "${YELLOW}Removing symlinks from .claude/...${NC}"
 
-# Remove directory symlinks for commands, hooks, mcp
-for item in commands hooks mcp; do
+# Remove directory symlinks for commands, hooks, mcp, docs
+for item in commands hooks mcp docs; do
     if [ -L "$PROJECT_DIR/.claude/$item" ]; then
         rm "$PROJECT_DIR/.claude/$item"
         echo "  Removed: .claude/$item"
     fi
 done
-for item in commands hooks mcp; do
+for item in commands hooks mcp docs; do
     if [ -d "$PROJECT_DIR/.claude/${item}.backup" ]; then
         mv "$PROJECT_DIR/.claude/${item}.backup" "$PROJECT_DIR/.claude/$item"
         echo -e "${GREEN}  Restored backup: .claude/$item${NC}"

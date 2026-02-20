@@ -101,7 +101,7 @@ This is safe because refreshing Account B's token does not revoke Account A's in
 
 ### Purpose
 
-Targets 90% token budget utilization by dynamically scaling all 19 automation cooldowns through a single factor (0.5 to 2.0).
+Targets 90% token budget utilization by dynamically scaling all 19 automation cooldowns through a single factor (0.05 to 20.0).
 
 ### Algorithm
 
@@ -109,16 +109,18 @@ Targets 90% token budget utilization by dynamically scaling all 19 automation co
 2. **Detect reset boundary**: If 5h usage drops > 30pp between consecutive snapshots, a quota reset just occurred. Skip adjustment.
 3. **Calculate EMA rate**: Select time-based snapshots from a 2-hour window (minimum 5-min spacing). Apply Exponential Moving Average (alpha=0.3) to consecutive pairs to compute smoothed tokens-per-hour rate.
 4. **Project utilization**: `projected = currentUsage + (rate * hoursUntilReset)`. Compare to 90% target.
-5. **Adjust factor**: Compute desired rate ratio, apply conservative bounds (max +/-10% per cycle), clamp to 0.5-2.0.
+5. **Adjust factor**: Compute desired rate ratio, apply conservative bounds (max +/-10% per cycle), clamp to 0.05-20.0.
 6. **Write effective cooldowns**: `effective[key] = max(5, round(default / factor))`
 
 ### Factor Effects
 
 | Factor | Effect | Example (60-min default) |
 |--------|--------|--------------------------|
-| 2.0 | Double speed (half cooldowns) | 30 min effective |
+| 20.0 | 20x speed (cooldowns divided by 20) | 3 min effective (floor: 5 min) |
+| 2.0 | 2x speed (half cooldowns) | 30 min effective |
 | 1.0 | Normal (no adjustment) | 60 min effective |
 | 0.5 | Half speed (double cooldowns) | 120 min effective |
+| 0.05 | 20x slowdown (cooldowns multiplied by 20) | 1200 min effective |
 
 ### 19 Managed Cooldowns
 
@@ -138,8 +140,8 @@ All read via `getCooldown(key, fallback)` from config-reader.js:
 ### Edge Cases
 
 - **Already at target**: If usage >= 90%, factor clamped to <= 1.0 (never speed up)
-- **Zero rate**: Conservatively ramp toward 2.0 at 5% per cycle
-- **Factor stuck at minimum**: If usage << 50% of target, reset factor to 1.0 (projection model unreliable)
+- **Zero rate**: Conservatively ramp toward MAX_FACTOR at 5% per cycle
+- **Factor stuck at minimum**: If `currentFactor <= 0.15` and usage << 50% of target, reset factor to 1.0 (projection model unreliable)
 - **Single key warning**: If any single key exceeds 80% in either bucket, bias effective usage upward
 - **Overdrive mode**: Skips adjustment; reverts when overdrive expires
 

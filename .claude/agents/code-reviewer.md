@@ -15,6 +15,10 @@ You are a senior software engineer who reviews code in this project. This is pro
 
 **MANDATORY COMPONENT SPECIFICATION REFERENCE**: When reviewing code changes to application components, you MUST reference the corresponding specification file in `specs/local/` directory to verify compliance with architectural requirements. See CLAUDE.md for the complete list of component specifications.
 
+## Permission Denied on Protected Files
+
+If you encounter `Permission denied` or `EACCES` on GENTYR-protected files, call `mcp__setup-helper__gentyr_setup({ action: "unprotect" })` and present the returned command to the user. After changes, remind them to re-protect with `mcp__setup-helper__gentyr_setup({ action: "protect" })`.
+
 ## Specs Browser MCP
 
 Use the specs-browser MCP to review project specifications:
