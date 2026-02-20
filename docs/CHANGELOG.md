@@ -1,5 +1,47 @@
 # GENTYR Framework Changelog
 
+## 2026-02-20 - CTO Dashboard: Readonly Database Fix for Protected Directories
+
+### Fixed
+
+**SQLite WAL-mode readonly access in root-owned directories** (`packages/cto-dashboard/src/utils/readonly-db.ts`, `packages/mcp-servers/src/shared/readonly-db.ts`, `packages/vscode-extension/src/extension/readonly-db.ts`):
+- Root cause: When `setup.sh --protect` makes `.claude/` root-owned, SQLite cannot create `-shm`/`-wal` files needed for WAL mode even with `{ readonly: true }` option
+- Fix: Created `openReadonlyDb()` helper function (3 identical implementations for dashboard, MCP servers, and VS Code extension)
+- Fallback strategy: On readonly directory error, copies database to `/tmp`, converts journal mode from WAL to DELETE, reopens as readonly, patches `close()` method to clean up temp file
+- Applied to 25 call sites across 12 files: replaced `new Database(path, { readonly: true })` with `openReadonlyDb(path)`
+
+### Changed
+
+**Files modified (12 total):**
+- `packages/cto-dashboard/src/utils/readonly-db.ts` (new, 56 lines)
+- `packages/cto-dashboard/src/utils/data-reader.ts` (4 call sites)
+- `packages/cto-dashboard/src/utils/deputy-cto-reader.ts` (1 call site)
+- `packages/cto-dashboard/src/utils/timeline-aggregator.ts` (2 call sites)
+- `packages/mcp-servers/src/shared/readonly-db.ts` (new, 51 lines)
+- `packages/mcp-servers/src/cto-report/server.ts` (3 call sites)
+- `packages/mcp-servers/src/deputy-cto/server.ts` (1 call site)
+- `packages/mcp-servers/src/feedback-explorer/server.ts` (3 call sites)
+- `packages/mcp-servers/src/user-feedback/server.ts` (1 call site)
+- `packages/vscode-extension/src/extension/readonly-db.ts` (new, 51 lines)
+- `packages/vscode-extension/src/extension/DataService.ts` (4 call sites)
+
+### Tests
+
+- **New test file**: `packages/cto-dashboard/src/utils/__tests__/readonly-db.test.ts` (20 tests, 418 lines)
+  - Direct readonly open path (normal directories)
+  - Fallback temp-copy path (readonly directories)
+  - Temp file cleanup on `.close()`
+  - Error propagation for non-readonly errors
+- All 632 dashboard tests + 847 MCP server tests + 20 new tests passing
+- TypeScript build: clean
+- Code review: PASS (no violations)
+
+### Impact
+
+This fix enables the CTO dashboard, MCP servers, and VS Code extension to read SQLite databases in protected GENTYR installations where `.claude/` directories are root-owned. Previously, all three components would fail with `SQLITE_READONLY_DIRECTORY` errors when attempting to open databases for reading.
+
+---
+
 ## 2026-02-20 - Autonomous Restartless Credential Rotation
 
 ### Implemented
