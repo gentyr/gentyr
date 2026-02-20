@@ -70,11 +70,18 @@ describe('key-sync.js - Expired Token Refresh Filter (line ~409)', () => {
       assert.ok(syncMatch, 'syncKeys must exist');
       const syncBody = syncMatch[0];
 
-      // The full condition must be: expiresAt && expiresAt < now && status !== 'invalid'
+      // The isExpired variable captures: expiresAt && expiresAt < now
       assert.match(
         syncBody,
-        /keyData\.expiresAt && keyData\.expiresAt < now && keyData\.status !== ['"]invalid['"]/,
-        'syncKeys refresh loop must trigger for expired keys when status is not "invalid"'
+        /isExpired = keyData\.expiresAt && keyData\.expiresAt < now/,
+        'syncKeys must define isExpired checking expiresAt < now'
+      );
+
+      // The combined condition must still exclude only 'invalid' status
+      assert.match(
+        syncBody,
+        /\(isExpired \|\| isApproachingExpiry\) && keyData\.status !== ['"]invalid['"]/,
+        'syncKeys refresh loop must trigger for expired or approaching-expiry keys when status is not "invalid"'
       );
     });
 

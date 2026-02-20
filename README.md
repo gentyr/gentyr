@@ -520,7 +520,7 @@ This runs the dashboard with `--mock` data at `COLUMNS=80` and rewrites the cont
 ## Components
 
 - 30 MCP servers
-- 9 specialized agents
+- 10 specialized agents
 - 32 automation hooks
 - 10 slash commands
 - VS Code extension + CLI dashboard

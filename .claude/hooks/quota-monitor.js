@@ -241,6 +241,62 @@ async function main() {
   }
   writeRotationState(state);
 
+  // Step 4c: Proactively refresh non-active tokens approaching expiry.
+  // Keeps standby tokens perpetually fresh so SRA()/r6T() always finds a valid replacement.
+  // Safe: refreshing Account B's token does NOT revoke Account A's in-memory token.
+  const EXPIRY_BUFFER_MS = 600_000; // 10 minutes
+  for (const [keyId, keyData] of Object.entries(state.keys)) {
+    if (keyId === state.active_key_id) continue;
+    if (keyData.status === 'invalid') continue;
+    const approaching = keyData.expiresAt && keyData.expiresAt > Date.now() && keyData.expiresAt < Date.now() + EXPIRY_BUFFER_MS;
+    if (approaching) {
+      try {
+        const refreshed = await refreshExpiredToken(keyData);
+        if (refreshed === 'invalid_grant') {
+          keyData.status = 'invalid';
+          logRotationEvent(state, { timestamp: Date.now(), event: 'key_removed', key_id: keyId, reason: 'refresh_token_invalid_grant' });
+        } else if (refreshed) {
+          keyData.accessToken = refreshed.accessToken;
+          keyData.refreshToken = refreshed.refreshToken;
+          keyData.expiresAt = refreshed.expiresAt;
+          keyData.status = 'active';
+          logRotationEvent(state, { timestamp: Date.now(), event: 'key_refreshed', key_id: keyId, reason: 'proactive_standby_refresh' });
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+  }
+  writeRotationState(state);
+
+  // Step 4d: Pre-expiry restartless swap — if the active key is near expiry,
+  // write a valid standby to Keychain so Claude Code's SRA()/r6T() picks it up.
+  // NO restart needed: SRA() fires at jv() (5 min before expiry), clears in-memory cache,
+  // re-reads from Keychain, and adopts the standby token seamlessly.
+  if (activeKeyData.expiresAt && activeKeyData.expiresAt < Date.now() + EXPIRY_BUFFER_MS) {
+    const standby = Object.entries(state.keys).find(([id, k]) =>
+      id !== state.active_key_id &&
+      k.status === 'active' &&
+      k.expiresAt && k.expiresAt > Date.now() + EXPIRY_BUFFER_MS
+    );
+    if (standby) {
+      const [newKeyId, newKeyData] = standby;
+      const previousKeyId = state.active_key_id;
+      state.active_key_id = newKeyId;
+      newKeyData.last_used_at = Date.now();
+      updateActiveCredentials(newKeyData);
+      logRotationEvent(state, {
+        timestamp: Date.now(),
+        event: 'key_switched',
+        key_id: newKeyId,
+        reason: 'pre_expiry_restartless_swap',
+        previous_key: previousKeyId,
+      });
+      writeRotationState(state);
+      // No restart — Claude Code adopts the Keychain token via SRA()/r6T()
+    }
+  }
+
   // Step 5: Check if rotation is needed
   const maxUsage = Math.max(
     health.usage.five_hour,
