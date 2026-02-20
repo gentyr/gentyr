@@ -78,6 +78,7 @@ PROTECTED_FILES=(
     "$PROJECT_DIR/.claude/settings.json"
     "$PROJECT_DIR/.claude/protection-key"
     "$PROJECT_DIR/.mcp.json"
+    "$PROJECT_DIR/.claude/config/services.json"
     "$PROJECT_DIR/eslint.config.js"
     "$PROJECT_DIR/.husky/pre-commit"
     "$PROJECT_DIR/package.json"

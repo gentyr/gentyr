@@ -18,7 +18,7 @@
 
 import { execFileSync } from 'child_process';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   SyncSecretsArgsSchema,
@@ -39,6 +39,16 @@ import {
 
 const { RENDER_API_KEY, VERCEL_TOKEN, VERCEL_TEAM_ID, OP_SERVICE_ACCOUNT_TOKEN } = process.env;
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || '.';
+
+function safeProjectPath(relativePath: string): string {
+  const resolved = resolve(PROJECT_DIR, relativePath);
+  const projectRoot = resolve(PROJECT_DIR);
+  if (!resolved.startsWith(projectRoot + '/') && resolved !== projectRoot) {
+    throw new Error(`Path traversal blocked: ${relativePath} resolves outside project directory`);
+  }
+  return resolved;
+}
+
 const RENDER_BASE_URL = 'https://api.render.com/v1';
 const VERCEL_BASE_URL = 'https://api.vercel.com';
 
@@ -260,7 +270,7 @@ async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
   const manual = config.secrets.manual || [];
 
   const targets = args.target === 'all'
-    ? ['render-production', 'render-staging', 'vercel', 'local'] as const
+    ? ['render-production', 'render-staging', 'vercel'] as const
     : [args.target];
 
   for (const target of targets) {
@@ -329,7 +339,7 @@ async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
 
     if (target === 'local') {
       const secrets = config.secrets.local || {};
-      const confFile = join(PROJECT_DIR, config.local?.confFile || 'op-secrets.conf');
+      const confFile = safeProjectPath(config.local?.confFile || 'op-secrets.conf');
 
       if (Object.keys(secrets).length === 0) {
         errors.push({ key: 'N/A', service: 'local', error: 'No secrets.local mappings configured' });
@@ -371,7 +381,7 @@ async function listMappings(args: ListMappingsArgs): Promise<MappingResult> {
   const mappings: SecretMapping[] = [];
 
   const targets = args.target === 'all' || !args.target
-    ? ['render-production', 'render-staging', 'vercel', 'local'] as const
+    ? ['render-production', 'render-staging', 'vercel'] as const
     : [args.target];
 
   for (const target of targets) {
@@ -412,7 +422,7 @@ async function verifySecrets(args: VerifySecretsArgs): Promise<VerifyResult> {
   const errors: Array<{ service: string; error: string }> = [];
 
   const targets = args.target === 'all'
-    ? ['render-production', 'render-staging', 'vercel', 'local'] as const
+    ? ['render-production', 'render-staging', 'vercel'] as const
     : [args.target];
 
   for (const target of targets) {
@@ -502,7 +512,7 @@ async function verifySecrets(args: VerifySecretsArgs): Promise<VerifyResult> {
 
     if (target === 'local') {
       const secrets = config.secrets.local || {};
-      const confFile = join(PROJECT_DIR, config.local?.confFile || 'op-secrets.conf');
+      const confFile = safeProjectPath(config.local?.confFile || 'op-secrets.conf');
 
       try {
         if (!existsSync(confFile)) {
