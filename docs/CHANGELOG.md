@@ -1,5 +1,88 @@
 # GENTYR Framework Changelog
 
+## 2026-02-20 - Credential Rotation Experiments: Restartless Recovery Path Discovered
+
+### Research Findings
+
+**Token expiry vs revocation behavior** (documented in `docs/sessions/2026-02-20-credential-rotation-experiments.md`):
+- Naturally expired OAuth tokens return HTTP **401** (`authentication_error`) — **recoverable** by Claude Code's built-in `r6T()` retry handler
+- Revoked tokens (via `refresh_token` grant) return HTTP **403** (`permission_error`) — **terminal**, no recovery
+- This means `refreshExpiredToken()` inadvertently causes unrecoverable 403 by revoking the old token, when waiting for natural expiry would yield a recoverable 401
+
+**Claude Code token architecture**:
+- Uses `Authorization: Bearer <oauth-token>` with `anthropic-beta: oauth-2025-04-20` for `/v1/messages` calls
+- `SRA()` proactive refresh fires 5 minutes before `expiresAt`: clears credential cache → re-reads from disk → if new valid token found, adopts it seamlessly
+- `r6T()` fires on HTTP 401: clears cache → re-reads Keychain → retries with new credentials
+- The `org:create_api_key` scope and API key creation endpoint are optional; Bearer auth is the primary path
+
+**Restartless rotation strategy identified**: Write new account's token to Keychain/file without refreshing the old one. When old token expires → `SRA()` or `r6T()` picks up new token from disk → seamless recovery, no restart needed.
+
+### Bugs Found
+
+**Missing process kill in automated rotation** (`.claude/hooks/quota-monitor.js:318-354`):
+- Automated session rotation spawns new `claude --resume` process but never kills the old one
+- Interactive sessions correctly kill via `generateRestartScript()` with `kill -TERM`/`kill -9`
+- Confirmed 33 orphaned processes consuming ~2GB total RAM
+
+**Selective proxy routing in Bun** (informational):
+- `HTTPS_PROXY` routes eval, profile, and mcp_servers calls through proxy
+- `/v1/messages` (main SDK call) bypasses the proxy entirely
+- Proxy-based 401 injection is not viable for triggering credential recovery
+
+## 2026-02-19 - Credential Lifecycle: invalid_grant Sentinel, Dead-Key Pruning, Secret Manager Agent
+
+### Added
+
+**invalid_grant sentinel in `refreshExpiredToken`** (`.claude/hooks/key-sync.js`):
+- `refreshExpiredToken` now returns the string `'invalid_grant'` (not `null`) when the OAuth server responds HTTP 400 + `{ error: 'invalid_grant' }`, distinguishing a permanently revoked refresh token from a transient network failure
+- All 4 callers updated atomically: `syncKeys()`, `api-key-watcher.js`, `quota-monitor.js`, `stop-continue-hook.js`
+- On `invalid_grant`: key status set to `'invalid'`, rotation log records `refresh_token_invalid_grant` reason, key excluded from all future rotation candidates
+
+**`pruneDeadKeys()` garbage collection** (`.claude/hooks/key-sync.js`):
+- New exported function removes keys with `status === 'invalid'` where `last_health_check` (or `added_at`) is older than 7 days
+- Never prunes the currently active key
+- Removes orphaned `rotation_log` entries that reference pruned keys
+- Called automatically at the end of every `syncKeys()` run
+
+**Dashboard event display** (`packages/cto-dashboard/src/utils/account-overview-reader.ts`):
+- Added `refresh_token_invalid_grant` reason mapping to human-readable description "Refresh token revoked for {key}"
+
+**CTO report key status breakdown** (`packages/mcp-servers/src/cto-report/`):
+- `types.ts`: Added optional `expired_keys`, `invalid_keys`, `exhausted_keys` fields to `KeyRotationMetrics` interface
+- `server.ts`: `getKeyRotationMetrics()` counts and returns those three fields
+
+**Secret Manager Agent** (`.claude/agents/secret-manager.md`):
+- New specialized agent for secret lifecycle management via GENTYR's 1Password-based system
+- Operations-only: uses MCP tools (`secret-sync`, `onepassword`, `todo-db`, `agent-reports`) without editing files
+- Handles: adding/rotating secrets, syncing to Render/Vercel, diagnosing missing runtime credentials, setting up local dev secrets
+- Creates TODO tasks for code-writer when `services.json` changes are needed
+- Reports security findings (shadow secrets, plain-type secrets, mismatched vault refs) to deputy-CTO
+
+**`/setup-gentyr` Phase 2: Claude Account Inventory** (`.claude/commands/setup-gentyr.md`, `.claude/hooks/slash-command-prefetch.js`):
+- New `getAccountInventory()` function in `slash-command-prefetch.js` reads rotation state, deduplicates accounts by `account_uuid`, and injects data into prefetch payload
+- Phase 2 added to setup flow: displays current Claude account inventory (email, status, quota), offers guided login loop to add additional accounts for quota rotation
+- Existing phases renumbered 3–8 (was 2–7)
+
+### Tests
+
+- **New test file:** `.claude/hooks/__tests__/invalid-grant-and-prune.test.js` (43 tests)
+  - `refreshExpiredToken` sentinel return value verification across all 4 caller files (static analysis)
+  - `pruneDeadKeys` behavior: prunes keys older than 7 days, never prunes active key, removes orphaned log entries
+  - `syncKeys` marks key `invalid` and logs `refresh_token_invalid_grant` on sentinel
+  - All callers handle sentinel path by marking key `invalid`
+- All 135 hook tests passing (92 existing + 43 new)
+- TypeScript build: clean
+
+### Verification
+
+- Code review: PASS — no violations, no security issues, TypeScript compiles clean
+- Static analysis confirms sentinel string `'invalid_grant'` returned (not `null`) in HTTP 400 + error body path
+- `pruneDeadKeys` never touches active key in all test scenarios
+
+**Total Changes:** 1 new agent, 1 new test file, 7 modified files, 43 new tests, 135 hook tests passing
+
+---
+
 ## 2026-02-18 - Binary Patching: Clawd Mascot Customization
 
 ### Added

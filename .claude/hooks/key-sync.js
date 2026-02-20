@@ -306,7 +306,7 @@ export function updateActiveCredentials(keyData) {
 /**
  * Attempt to refresh an expired OAuth token.
  * @param {object} keyData - Key data with refreshToken
- * @returns {Promise<{accessToken: string, refreshToken: string, expiresAt: number}|null>}
+ * @returns {Promise<{accessToken: string, refreshToken: string, expiresAt: number}|'invalid_grant'|null>}
  */
 export async function refreshExpiredToken(keyData) {
   if (!keyData.refreshToken || keyData.status === 'invalid') return null;
@@ -414,9 +414,14 @@ export async function syncKeys(log) {
     }
   }
 
-  // Attempt token refresh for expired keys
+  // Attempt token refresh for expired keys AND non-active keys approaching expiry.
+  // Proactive refresh keeps standby tokens fresh so SRA()/r6T() always has a valid replacement.
+  // Safe: refreshing one account's token does NOT revoke another account's in-memory token.
+  const EXPIRY_BUFFER_MS = 600_000; // 10 minutes
   for (const [keyId, keyData] of Object.entries(state.keys)) {
-    if (keyData.expiresAt && keyData.expiresAt < now && keyData.status !== 'invalid') {
+    const isExpired = keyData.expiresAt && keyData.expiresAt < now;
+    const isApproachingExpiry = keyData.expiresAt && keyData.expiresAt > now && keyData.expiresAt < now + EXPIRY_BUFFER_MS && keyId !== state.active_key_id;
+    if ((isExpired || isApproachingExpiry) && keyData.status !== 'invalid') {
       const refreshed = await refreshExpiredToken(keyData);
       if (refreshed === 'invalid_grant') {
         keyData.status = 'invalid';
@@ -459,6 +464,34 @@ export async function syncKeys(log) {
     if (firstActive) {
       state.active_key_id = firstActive[0];
       state.keys[firstActive[0]].last_used_at = now;
+    }
+  }
+
+  // Pre-expiry restartless swap: if the active key is near expiry, write a valid standby
+  // to Keychain so Claude Code's SRA()/r6T() picks it up without requiring a restart.
+  // This is critical for idle sessions — hourly-automation calls syncKeys() every 10 min
+  // even when no Claude Code process is making API calls.
+  const activeKey = state.active_key_id && state.keys[state.active_key_id];
+  if (activeKey && activeKey.expiresAt && activeKey.expiresAt < now + EXPIRY_BUFFER_MS) {
+    const standby = Object.entries(state.keys).find(([id, k]) =>
+      id !== state.active_key_id &&
+      k.status === 'active' &&
+      k.expiresAt && k.expiresAt > now + EXPIRY_BUFFER_MS
+    );
+    if (standby) {
+      const [newKeyId, newKeyData] = standby;
+      const previousKeyId = state.active_key_id;
+      state.active_key_id = newKeyId;
+      newKeyData.last_used_at = now;
+      updateActiveCredentials(newKeyData);
+      logRotationEvent(state, {
+        timestamp: now,
+        event: 'key_switched',
+        key_id: newKeyId,
+        reason: 'pre_expiry_restartless_swap',
+        previous_key: previousKeyId,
+      });
+      logFn(`[key-sync] Pre-expiry restartless swap: ${previousKeyId.slice(0, 8)} → ${newKeyId.slice(0, 8)}`);
     }
   }
 
