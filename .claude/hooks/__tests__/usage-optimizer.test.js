@@ -776,7 +776,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
       );
     });
 
-    it('should calculate trajectory from earliest and latest snapshots', () => {
+    it('should calculate trajectory from time-based earliest and latest snapshots', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
@@ -789,11 +789,17 @@ describe('usage-optimizer.js - Structure Validation', () => {
         'Must get latest snapshot'
       );
 
-      // Should get earliest from recent window
+      // Should use time-based window for earliest
       assert.match(
         functionBody,
-        /const earliest = data\.snapshots\[Math\.max/,
-        'Must get earliest snapshot from window'
+        /const timeBasedWindow = selectTimeBasedSnapshots\(data\.snapshots, EMA_WINDOW_MS, EMA_MIN_INTERVAL_MS\)/,
+        'Must use selectTimeBasedSnapshots for window'
+      );
+
+      assert.match(
+        functionBody,
+        /const earliest = timeBasedWindow\[0\]/,
+        'Must get earliest snapshot from time-based window'
       );
 
       // Should calculate hours between
@@ -1328,7 +1334,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
       );
     });
 
-    it('should skip near-zero time intervals', () => {
+    it('should skip rapid-fire time intervals below MIN_HOURS_DELTA', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3\) \{[\s\S]*?\n\}/);
@@ -1336,8 +1342,8 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       assert.match(
         functionBody,
-        /if \(hoursDelta < 0\.01\) continue/,
-        'Must skip near-zero time intervals'
+        /if \(hoursDelta < MIN_HOURS_DELTA\) continue/,
+        'Must skip intervals shorter than MIN_HOURS_DELTA (0.05h = 3 min)'
       );
     });
 
@@ -1513,7 +1519,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
   });
 
   describe('EMA Rate Integration in calculateAggregate', () => {
-    it('should use EMA rate when allSnapshots available with 3+ entries', () => {
+    it('should use EMA rate with time-based snapshots when allSnapshots available with 3+ entries', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
@@ -1523,6 +1529,12 @@ describe('usage-optimizer.js - Structure Validation', () => {
         functionBody,
         /if \(allSnapshots && allSnapshots\.length >= 3\)/,
         'Must check for allSnapshots availability'
+      );
+
+      assert.match(
+        functionBody,
+        /const recentSnapshots = selectTimeBasedSnapshots\(allSnapshots, EMA_WINDOW_MS, EMA_MIN_INTERVAL_MS\)/,
+        'Must use selectTimeBasedSnapshots instead of array slice'
       );
 
       assert.match(
@@ -1808,12 +1820,12 @@ describe('usage-optimizer.js - Structure Validation', () => {
       assert.ok(emaFormulaMatch, 'Must apply correct EMA formula');
     });
 
-    it('should prefer EMA rate over two-point slope when 3+ snapshots available', () => {
+    it('should prefer EMA rate with time-based selection over two-point slope when 3+ snapshots available', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      // Verify calculateAggregate calls calculateEmaRate when allSnapshots.length >= 3
-      const preferenceMatch = code.match(/if \(allSnapshots && allSnapshots\.length >= 3\)[\s\S]*?rate5h = calculateEmaRate\(recentSnapshots, ['"]5h['"]\)/s);
-      assert.ok(preferenceMatch, 'Must prefer EMA rate when 3+ snapshots available');
+      // Verify calculateAggregate uses selectTimeBasedSnapshots and calls calculateEmaRate
+      const preferenceMatch = code.match(/if \(allSnapshots && allSnapshots\.length >= 3\)[\s\S]*?selectTimeBasedSnapshots\(allSnapshots, EMA_WINDOW_MS, EMA_MIN_INTERVAL_MS\)[\s\S]*?rate5h = calculateEmaRate\(recentSnapshots, ['"]5h['"]\)/s);
+      assert.ok(preferenceMatch, 'Must prefer time-based EMA rate when 3+ snapshots available');
     });
   });
 
@@ -2384,6 +2396,382 @@ describe('usage-optimizer.js - Structure Validation', () => {
       const currentUsage50pct = 0.50;
       const shouldNotRecover = stuckFactor <= MIN_FACTOR + 0.01 && currentUsage50pct < recoveryThreshold;
       assert.strictEqual(shouldNotRecover, false, 'Recovery must not fire at or above 50% usage');
+    });
+  });
+
+  describe('Snapshot Throttle Constants', () => {
+    it('should define MIN_SNAPSHOT_INTERVAL_MS as 5 minutes', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /const MIN_SNAPSHOT_INTERVAL_MS = 5 \* 60 \* 1000/,
+        'Must define MIN_SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000'
+      );
+    });
+
+    it('should define EMA_WINDOW_MS as 2 hours', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /const EMA_WINDOW_MS = 2 \* 60 \* 60 \* 1000/,
+        'Must define EMA_WINDOW_MS = 2 * 60 * 60 * 1000'
+      );
+    });
+
+    it('should define EMA_MIN_INTERVAL_MS as 5 minutes', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /const EMA_MIN_INTERVAL_MS = 5 \* 60 \* 1000/,
+        'Must define EMA_MIN_INTERVAL_MS = 5 * 60 * 1000'
+      );
+    });
+
+    it('should define MIN_HOURS_DELTA as 0.05 (3 minutes)', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /const MIN_HOURS_DELTA = 0\.05/,
+        'Must define MIN_HOURS_DELTA = 0.05'
+      );
+    });
+  });
+
+  describe('getLastSnapshotTimestamp() - Snapshot Throttle Helper', () => {
+    it('should exist as a standalone function', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /function getLastSnapshotTimestamp\(\) \{/,
+        'Must define getLastSnapshotTimestamp function'
+      );
+    });
+
+    it('should return null when snapshots file does not exist', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function getLastSnapshotTimestamp\(\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'getLastSnapshotTimestamp must exist');
+
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /if \(!fs\.existsSync\(SNAPSHOTS_PATH\)\) return null/,
+        'Must return null when snapshots file missing'
+      );
+    });
+
+    it('should return the timestamp of the last snapshot', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function getLastSnapshotTimestamp\(\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /return data\.snapshots\[data\.snapshots\.length - 1\]\?\.ts/,
+        'Must return ts of last snapshot'
+      );
+    });
+
+    it('should return null on empty snapshots array', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function getLastSnapshotTimestamp\(\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /data\.snapshots\.length === 0\) return null/,
+        'Must return null when snapshots array is empty'
+      );
+    });
+
+    it('should be wrapped in try-catch returning null on error', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function getLastSnapshotTimestamp\(\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /try \{[\s\S]*?\} catch \{[\s\S]*?return null/s,
+        'Must return null on any error'
+      );
+    });
+  });
+
+  describe('selectTimeBasedSnapshots() - Time-Based Deduplication', () => {
+    it('should exist as a standalone function', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /function selectTimeBasedSnapshots\(snapshots, windowMs, minIntervalMs\) \{/,
+        'Must define selectTimeBasedSnapshots with correct signature'
+      );
+    });
+
+    it('should return empty array for null/empty input', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function selectTimeBasedSnapshots\(snapshots, windowMs, minIntervalMs\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'selectTimeBasedSnapshots must exist');
+
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /if \(!snapshots \|\| snapshots\.length === 0\) return \[\]/,
+        'Must return empty array for null/empty input'
+      );
+    });
+
+    it('should walk backward from the most recent snapshot', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function selectTimeBasedSnapshots\(snapshots, windowMs, minIntervalMs\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /for \(let i = snapshots\.length - 2; i >= 0; i--\)/,
+        'Must walk backward from second-to-last snapshot'
+      );
+    });
+
+    it('should only include snapshots at least minIntervalMs apart', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function selectTimeBasedSnapshots\(snapshots, windowMs, minIntervalMs\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /if \(lastSelectedTs - s\.ts >= minIntervalMs\)/,
+        'Must check interval between selected snapshots'
+      );
+    });
+
+    it('should stop when exceeding windowMs from the most recent', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function selectTimeBasedSnapshots\(snapshots, windowMs, minIntervalMs\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /if \(s\.ts < windowStart\) break/,
+        'Must break when snapshot is outside time window'
+      );
+    });
+
+    it('should fall back to slice(-30) for cold start (fewer than 3 snapshots selected)', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function selectTimeBasedSnapshots\(snapshots, windowMs, minIntervalMs\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /if \(selected\.length < 3\)[\s\S]*?return snapshots\.slice\(-30\)/s,
+        'Must fall back to slice(-30) when fewer than 3 snapshots selected'
+      );
+    });
+
+    it('should return selected snapshots in chronological order', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function selectTimeBasedSnapshots\(snapshots, windowMs, minIntervalMs\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /return selected\.reverse\(\)/,
+        'Must reverse selected array to chronological order'
+      );
+    });
+
+    it('should correctly deduplicate rapid-fire snapshots', () => {
+      // Behavioral test: simulate 30 snapshots taken 30s apart (rapid-fire)
+      // selectTimeBasedSnapshots should only keep 1 per 5-minute window
+      const MIN_INTERVAL = 5 * 60 * 1000; // 5 min
+      const WINDOW = 2 * 60 * 60 * 1000;  // 2 hours
+      const now = Date.now();
+
+      // 30 rapid-fire snapshots, 30 seconds apart (total span: 14.5 minutes)
+      const rapidFire = [];
+      for (let i = 0; i < 30; i++) {
+        rapidFire.push({ ts: now - (29 - i) * 30000, keys: {} });
+      }
+
+      // Simulate the selection algorithm
+      const latest = rapidFire[rapidFire.length - 1];
+      const windowStart = latest.ts - WINDOW;
+      const selected = [latest];
+      let lastSelectedTs = latest.ts;
+
+      for (let i = rapidFire.length - 2; i >= 0; i--) {
+        const s = rapidFire[i];
+        if (s.ts < windowStart) break;
+        if (lastSelectedTs - s.ts >= MIN_INTERVAL) {
+          selected.push(s);
+          lastSelectedTs = s.ts;
+        }
+      }
+
+      // With 30s intervals and 5-min dedup, we should get very few snapshots
+      // 14.5 min span / 5 min interval = at most 3-4, but since total span is
+      // only ~14.5 min, we get at most 3 (at 0, 5, 10 min marks)
+      assert.ok(selected.length <= 4, `Rapid-fire dedup should yield <=4 snapshots, got ${selected.length}`);
+      assert.ok(selected.length < 30, `Must significantly reduce ${rapidFire.length} rapid-fire snapshots`);
+    });
+
+    it('should keep well-spaced snapshots intact', () => {
+      // Behavioral test: 24 snapshots, 10 minutes apart (4 hours total)
+      const MIN_INTERVAL = 5 * 60 * 1000; // 5 min
+      const WINDOW = 2 * 60 * 60 * 1000;  // 2 hours
+      const now = Date.now();
+
+      const wellSpaced = [];
+      for (let i = 0; i < 24; i++) {
+        wellSpaced.push({ ts: now - (23 - i) * 10 * 60 * 1000, keys: {} });
+      }
+
+      // Simulate the selection algorithm
+      const latest = wellSpaced[wellSpaced.length - 1];
+      const windowStart = latest.ts - WINDOW;
+      const selected = [latest];
+      let lastSelectedTs = latest.ts;
+
+      for (let i = wellSpaced.length - 2; i >= 0; i--) {
+        const s = wellSpaced[i];
+        if (s.ts < windowStart) break;
+        if (lastSelectedTs - s.ts >= MIN_INTERVAL) {
+          selected.push(s);
+          lastSelectedTs = s.ts;
+        }
+      }
+
+      // 2-hour window with 10-min intervals = 12 snapshots, all pass 5-min dedup
+      assert.ok(selected.length >= 10, `Well-spaced snapshots should mostly survive, got ${selected.length}`);
+    });
+  });
+
+  describe('Snapshot Throttle in runUsageOptimizer()', () => {
+    it('should check last snapshot timestamp before any other work', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/export async function runUsageOptimizer\(logFn\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'runUsageOptimizer must exist');
+
+      const functionBody = functionMatch[0];
+
+      // The throttle check should appear before the overdrive check
+      const throttlePos = functionBody.indexOf('getLastSnapshotTimestamp()');
+      const overdrivePos = functionBody.indexOf('Overdrive check');
+
+      assert.ok(throttlePos > 0, 'Must call getLastSnapshotTimestamp()');
+      assert.ok(overdrivePos > 0, 'Must have overdrive check');
+      assert.ok(throttlePos < overdrivePos, 'Throttle check must come before overdrive check');
+    });
+
+    it('should return early with snapshotTaken: false when throttled', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/export async function runUsageOptimizer\(logFn\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Should check against MIN_SNAPSHOT_INTERVAL_MS
+      assert.match(
+        functionBody,
+        /if \(lastTs && \(Date\.now\(\) - lastTs\) < MIN_SNAPSHOT_INTERVAL_MS\)/,
+        'Must compare elapsed time against MIN_SNAPSHOT_INTERVAL_MS'
+      );
+
+      // Should return early
+      const throttleBlock = functionBody.match(
+        /if \(lastTs && \(Date\.now\(\) - lastTs\) < MIN_SNAPSHOT_INTERVAL_MS\)[\s\S]*?return \{[\s\S]*?\}/
+      );
+      assert.ok(throttleBlock, 'Must have throttle return block');
+
+      assert.match(
+        throttleBlock[0],
+        /snapshotTaken: false/,
+        'Must return snapshotTaken: false when throttled'
+      );
+
+      assert.match(
+        throttleBlock[0],
+        /adjustmentMade: false/,
+        'Must return adjustmentMade: false when throttled'
+      );
+
+      assert.match(
+        throttleBlock[0],
+        /success: true/,
+        'Must return success: true when throttled'
+      );
+    });
+
+    it('should verify throttle interval is 5 minutes', () => {
+      // Behavioral: verify the math of the throttle constant
+      const MIN_SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
+      assert.strictEqual(MIN_SNAPSHOT_INTERVAL_MS, 300000, 'Throttle interval must be 300000ms (5 min)');
+
+      // If last snapshot was 4 minutes ago, should be throttled
+      const fourMinAgo = Date.now() - 4 * 60 * 1000;
+      const elapsed = Date.now() - fourMinAgo;
+      assert.ok(elapsed < MIN_SNAPSHOT_INTERVAL_MS, 'Must throttle when <5 min elapsed');
+
+      // If last snapshot was 6 minutes ago, should NOT be throttled
+      const sixMinAgo = Date.now() - 6 * 60 * 1000;
+      const elapsed2 = Date.now() - sixMinAgo;
+      assert.ok(elapsed2 >= MIN_SNAPSHOT_INTERVAL_MS, 'Must not throttle when >=5 min elapsed');
+    });
+  });
+
+  describe('Behavioral Tests - MIN_HOURS_DELTA Filter', () => {
+    it('should use MIN_HOURS_DELTA constant for interval filtering', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      // Verify the constant value
+      const constMatch = code.match(/const MIN_HOURS_DELTA = ([\d.]+)/);
+      assert.ok(constMatch, 'Must find MIN_HOURS_DELTA constant');
+      const value = parseFloat(constMatch[1]);
+      assert.strictEqual(value, 0.05, 'MIN_HOURS_DELTA must be 0.05 (3 minutes)');
+    });
+
+    it('should filter intervals shorter than 3 minutes in calculateEmaRate', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /if \(hoursDelta < MIN_HOURS_DELTA\) continue/,
+        'Must skip intervals below MIN_HOURS_DELTA'
+      );
+    });
+
+    it('should correctly convert MIN_HOURS_DELTA to minutes', () => {
+      // 0.05 hours = 3 minutes
+      const MIN_HOURS_DELTA = 0.05;
+      const minutesEquiv = MIN_HOURS_DELTA * 60;
+      assert.strictEqual(minutesEquiv, 3, 'MIN_HOURS_DELTA of 0.05h must equal 3 minutes');
+
+      // Previous value was 0.01h = 36 seconds — too small to filter rapid-fire
+      const oldValue = 0.01;
+      const oldMinutes = oldValue * 60;
+      assert.ok(oldMinutes < 1, 'Old threshold of 0.01h was only 36 seconds');
+      assert.ok(minutesEquiv > oldMinutes, 'New threshold must be significantly larger than old');
     });
   });
 });

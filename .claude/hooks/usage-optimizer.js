@@ -37,6 +37,10 @@ const MIN_SNAPSHOTS_FOR_TRAJECTORY = 3;
 const MIN_EFFECTIVE_MINUTES = 5; // Floor: no cooldown can go below 5 minutes
 const SINGLE_KEY_WARNING_THRESHOLD = 0.80; // Warn when any key exceeds 80%
 const RESET_BOUNDARY_DROP_THRESHOLD = 0.30; // Detect reset when 5h drops >30pp
+const MIN_SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;  // 5 min — throttle between snapshots
+const EMA_WINDOW_MS = 2 * 60 * 60 * 1000;        // 2 hours — time window for EMA
+const EMA_MIN_INTERVAL_MS = 5 * 60 * 1000;        // 5 min — dedup interval for EMA input
+const MIN_HOURS_DELTA = 0.05;                      // 3 min — floor for EMA interval pairs
 
 /**
  * Revert overdrive state, restoring previous effective values and factor.
@@ -61,6 +65,56 @@ function revertOverdrive(config, log) {
 }
 
 /**
+ * Get the timestamp of the most recent snapshot from the snapshots file.
+ * Returns null if no snapshots exist or file is unreadable.
+ */
+function getLastSnapshotTimestamp() {
+  try {
+    if (!fs.existsSync(SNAPSHOTS_PATH)) return null;
+    const data = JSON.parse(fs.readFileSync(SNAPSHOTS_PATH, 'utf8'));
+    if (!data || !Array.isArray(data.snapshots) || data.snapshots.length === 0) return null;
+    return data.snapshots[data.snapshots.length - 1]?.ts || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Select time-based snapshots from an array, deduplicating by minimum interval.
+ * Walks backward from the most recent snapshot, only including entries at least
+ * minIntervalMs apart, stopping when windowMs is exceeded.
+ *
+ * @param {Array} snapshots - All snapshots (must have .ts)
+ * @param {number} windowMs - Maximum time window from most recent snapshot
+ * @param {number} minIntervalMs - Minimum interval between selected snapshots
+ * @returns {Array} Selected snapshots in chronological order
+ */
+function selectTimeBasedSnapshots(snapshots, windowMs, minIntervalMs) {
+  if (!snapshots || snapshots.length === 0) return [];
+
+  const latest = snapshots[snapshots.length - 1];
+  const windowStart = latest.ts - windowMs;
+  const selected = [latest];
+  let lastSelectedTs = latest.ts;
+
+  for (let i = snapshots.length - 2; i >= 0; i--) {
+    const s = snapshots[i];
+    if (s.ts < windowStart) break;
+    if (lastSelectedTs - s.ts >= minIntervalMs) {
+      selected.push(s);
+      lastSelectedTs = s.ts;
+    }
+  }
+
+  // Fall back to array tail if window yields fewer than 3 snapshots (cold start)
+  if (selected.length < 3) {
+    return snapshots.slice(-30);
+  }
+
+  return selected.reverse(); // chronological order
+}
+
+/**
  * Main entry point - run the usage optimizer.
  * Designed to be cheap and fast (one API call + math).
  *
@@ -71,6 +125,12 @@ export async function runUsageOptimizer(logFn) {
   const log = logFn || console.log;
 
   try {
+    // Snapshot throttle: skip collection if last snapshot is less than 5 minutes old
+    const lastTs = getLastSnapshotTimestamp();
+    if (lastTs && (Date.now() - lastTs) < MIN_SNAPSHOT_INTERVAL_MS) {
+      return { success: true, snapshotTaken: false, adjustmentMade: false };
+    }
+
     // Overdrive check: skip adjustment if overdrive is active
     try {
       const configPath = getConfigPath();
@@ -334,7 +394,8 @@ function calculateAndAdjust(log) {
 
   // Get the most relevant metrics (aggregate across keys)
   const latest = data.snapshots[data.snapshots.length - 1];
-  const earliest = data.snapshots[Math.max(0, data.snapshots.length - 30)]; // Use up to last 30 snapshots
+  const timeBasedWindow = selectTimeBasedSnapshots(data.snapshots, EMA_WINDOW_MS, EMA_MIN_INTERVAL_MS);
+  const earliest = timeBasedWindow[0]; // First snapshot in time-based window
 
   const hoursBetween = (latest.ts - earliest.ts) / (1000 * 60 * 60);
   if (hoursBetween < 0.15) { // Less than ~10 minutes of data
@@ -464,7 +525,7 @@ function calculateEmaRate(snapshots, metricKey, alpha = 0.3) {
     const prev = snapshots[i - 1];
     const curr = snapshots[i];
     const hoursDelta = (curr.ts - prev.ts) / (1000 * 60 * 60);
-    if (hoursDelta < 0.01) continue; // Skip near-zero intervals
+    if (hoursDelta < MIN_HOURS_DELTA) continue; // Skip rapid-fire intervals (<3 min)
 
     // Average across common keys for this pair
     const commonKeys = Object.keys(curr.keys).filter(k => k in prev.keys);
@@ -523,7 +584,7 @@ function calculateAggregate(latest, earliest, hoursBetween, allSnapshots) {
   // Calculate rates: use EMA from recent snapshots if available, fall back to two-point slope
   let rate5h = 0, rate7d = 0;
   if (allSnapshots && allSnapshots.length >= 3) {
-    const recentSnapshots = allSnapshots.slice(-30);
+    const recentSnapshots = selectTimeBasedSnapshots(allSnapshots, EMA_WINDOW_MS, EMA_MIN_INTERVAL_MS);
     rate5h = calculateEmaRate(recentSnapshots, '5h');
     rate7d = calculateEmaRate(recentSnapshots, '7d');
   } else {
