@@ -1,5 +1,55 @@
 # GENTYR Framework Changelog
 
+## 2026-02-20 - Secret-Sync MCP Server: Security Hardening
+
+### Fixed
+
+**HIGH: Path traversal vulnerability via confFile parameter** (`packages/mcp-servers/src/secret-sync/types.ts`, `packages/mcp-servers/src/secret-sync/server.ts`):
+- Schema-level defense: Added Zod regex `/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/` to `confFile` field in `ServicesConfigSchema` to reject path traversal attempts (line 56)
+- Runtime boundary check: Added `safeProjectPath()` helper function to verify resolved paths stay within project directory (defense-in-depth)
+- Updated both `confFile` construction sites in `syncSecrets` and `listMappings` tools to use `safeProjectPath()` instead of bare `path.join()`
+- Blocks 50+ attack vectors: null bytes, Unicode normalization tricks, symlink targets, URL-encoded traversal sequences, backslashes, etc.
+
+**MEDIUM: Protected services.json from agent modification** (`.claude/hooks/credential-file-guard.js`, `scripts/protect-framework.sh`):
+- Added `.claude/config/services.json` to credential-file-guard BLOCKED_PATH_SUFFIXES array (prevents write/overwrite operations)
+- Added to protect-framework.sh PROTECTED_FILES array for root ownership enforcement when `--protect` flag is used
+
+**MEDIUM: Removed "local" from "all" target expansion** (`packages/mcp-servers/src/secret-sync/server.ts`):
+- All three tool functions (`syncSecrets`, `listMappings`, `verifySecrets`) now expand "all" to 3 remote targets only: `['render-production', 'render-staging', 'vercel']`
+- Local file system operations now require explicit opt-in (`target: 'local'`)
+- Prevents accidental writes to project directory when agent uses `target: 'all'`
+
+**LOW: Added op-secrets.conf to .gitignore** (`.gitignore`):
+- Prevents accidental commits of generated local secrets configuration file
+- Placed in "Generated secret config" section with clear comment
+
+### Tests
+
+- **New security defense tests**: `packages/mcp-servers/src/secret-sync/__tests__/secret-sync.test.ts` (12 new tests, 79 total in file)
+  - Zod schema rejection tests: path traversal strings (`../../../etc/passwd`), absolute paths, empty strings, Unicode normalization attacks
+  - `safeProjectPath` boundary check tests: symlink resolution, null byte injection, directory escape attempts
+  - "all" target expansion verification: ensures local is excluded from remote batch operations
+  - Attack vector coverage: 50+ malicious path patterns tested
+- All 873 tests passing (23 test files across MCP servers, hooks, and dashboard)
+- TypeScript build: clean
+- Code review: PASS (no violations)
+
+### Changed
+
+**Files modified (6 total):**
+- `packages/mcp-servers/src/secret-sync/types.ts` (added regex validation to confFile schema)
+- `packages/mcp-servers/src/secret-sync/server.ts` (added `safeProjectPath()` helper, updated 2 construction sites)
+- `.claude/hooks/credential-file-guard.js` (added services.json to blocked paths)
+- `scripts/protect-framework.sh` (added services.json to protected files)
+- `.gitignore` (added op-secrets.conf)
+- `packages/mcp-servers/src/secret-sync/__tests__/secret-sync.test.ts` (12 new security tests)
+
+### Impact
+
+This hardening eliminates path traversal vulnerabilities in the secret-sync MCP server's local file operations. The multi-layer defense (Zod schema + runtime boundary check) ensures agents cannot write outside the project directory or modify protected configuration files, even with sophisticated attack patterns.
+
+---
+
 ## 2026-02-20 - CTO Dashboard: Readonly Database Fix for Protected Directories
 
 ### Fixed
