@@ -58,6 +58,7 @@ const BLOCKED_PATH_SUFFIXES = [
   '.claude/credential-provider.json',
   '.claude/protected-action-approvals.json',
   '.claude/vault-mappings.json',
+  '.claude/config/services.json',
   '.mcp.json',
 ];
 // Note: The suffix '.claude/api-key-rotation.json' also blocks the user-level

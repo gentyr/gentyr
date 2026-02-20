@@ -14,6 +14,7 @@
  * - Fail-closed on missing credentials
  */
 
+import { resolve } from 'path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   SyncSecretsArgsSchema,
@@ -769,17 +770,17 @@ describe('Secret Sync MCP Server - Integration Behavior', () => {
     it('should validate target expansion for "all"', () => {
       /**
        * When target is 'all':
-       * - Expands to: ['render-production', 'render-staging', 'vercel', 'local']
-       * - Syncs to all four targets in sequence
+       * - Expands to: ['render-production', 'render-staging', 'vercel']
+       * - Local is excluded from 'all' — must be explicitly requested
        * - Errors in one target do not stop others
        */
       const target = 'all';
-      const expandedTargets = ['render-production', 'render-staging', 'vercel', 'local'] as const;
+      const expandedTargets = ['render-production', 'render-staging', 'vercel'] as const;
 
       expect(target).toBe('all');
-      expect(expandedTargets).toHaveLength(4);
+      expect(expandedTargets).toHaveLength(3);
       expect(expandedTargets).toContain('render-production');
-      expect(expandedTargets).toContain('local');
+      expect(expandedTargets).not.toContain('local');
     });
 
     it('should validate single target processing', () => {
@@ -1002,16 +1003,17 @@ describe('Secret Sync MCP Server - Local Target', () => {
   });
 
   describe('Target "all" Expansion', () => {
-    it('should include local in all target expansion', () => {
+    it('should NOT include local in all target expansion', () => {
       /**
        * When target is 'all':
-       * - Expands to: ['render-production', 'render-staging', 'vercel', 'local']
-       * - All four targets are processed in sequence
+       * - Expands to: ['render-production', 'render-staging', 'vercel']
+       * - Local is excluded — must be explicitly requested
+       * - This prevents unintended filesystem writes when CTO approves "all"
        */
-      const expandedTargets = ['render-production', 'render-staging', 'vercel', 'local'] as const;
+      const expandedTargets = ['render-production', 'render-staging', 'vercel'] as const;
 
-      expect(expandedTargets).toHaveLength(4);
-      expect(expandedTargets).toContain('local');
+      expect(expandedTargets).toHaveLength(3);
+      expect(expandedTargets).not.toContain('local');
       expect(expandedTargets).toContain('render-production');
       expect(expandedTargets).toContain('render-staging');
       expect(expandedTargets).toContain('vercel');
@@ -1061,6 +1063,132 @@ describe('Secret Sync MCP Server - Local Target', () => {
         expect(value).not.toMatch(/^[a-zA-Z0-9+/=]{20,}/); // Not a base64 token
         expect(value).not.toMatch(/^sk_/); // Not an API key
       }
+    });
+  });
+});
+
+describe('Secret Sync MCP Server - Path Traversal Defense', () => {
+  describe('ServicesConfigSchema - confFile validation', () => {
+    it('should reject confFile with path traversal', () => {
+      const result = ServicesConfigSchema.safeParse({
+        local: { confFile: '../../etc/cron.d/evil' },
+        secrets: {},
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject confFile with absolute path', () => {
+      const result = ServicesConfigSchema.safeParse({
+        local: { confFile: '/etc/passwd' },
+        secrets: {},
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject confFile with directory separator', () => {
+      const result = ServicesConfigSchema.safeParse({
+        local: { confFile: 'subdir/secrets.conf' },
+        secrets: {},
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject confFile starting with dot', () => {
+      const result = ServicesConfigSchema.safeParse({
+        local: { confFile: '.hidden-file' },
+        secrets: {},
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept valid confFile filename', () => {
+      const result = ServicesConfigSchema.safeParse({
+        local: { confFile: 'my-secrets.conf' },
+        secrets: {},
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept confFile with dots and dashes', () => {
+      const result = ServicesConfigSchema.safeParse({
+        local: { confFile: 'op-secrets.local.conf' },
+        secrets: {},
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept default confFile value', () => {
+      const result = ServicesConfigSchema.safeParse({
+        local: {},
+        secrets: {},
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.local?.confFile).toBe('op-secrets.conf');
+      }
+    });
+  });
+
+  describe('safeProjectPath - runtime boundary check', () => {
+    /**
+     * Reimplements safeProjectPath logic for direct unit testing
+     * since the function is not exported from server.ts.
+     */
+    function safeProjectPath(projectDir: string, relativePath: string): string {
+      const resolved = resolve(projectDir, relativePath);
+      const projectRoot = resolve(projectDir);
+      if (!resolved.startsWith(projectRoot + '/') && resolved !== projectRoot) {
+        throw new Error(`Path traversal blocked: ${relativePath} resolves outside project directory`);
+      }
+      return resolved;
+    }
+
+    it('should allow simple filename within project', () => {
+      const result = safeProjectPath('/project', 'op-secrets.conf');
+      expect(result).toBe('/project/op-secrets.conf');
+    });
+
+    it('should throw on relative path traversal', () => {
+      expect(() => safeProjectPath('/project', '../../etc/passwd')).toThrow(
+        'Path traversal blocked'
+      );
+    });
+
+    it('should throw on absolute path outside project', () => {
+      expect(() => safeProjectPath('/project', '/etc/passwd')).toThrow(
+        'Path traversal blocked'
+      );
+    });
+
+    it('should throw on dotdot traversal to parent', () => {
+      expect(() => safeProjectPath('/project', '../sibling/file')).toThrow(
+        'Path traversal blocked'
+      );
+    });
+
+    it('should allow path that resolves within project', () => {
+      const result = safeProjectPath('/project', 'subdir/../op-secrets.conf');
+      expect(result).toBe('/project/op-secrets.conf');
+    });
+  });
+});
+
+describe('Secret Sync MCP Server - Target Expansion Security', () => {
+  describe('"all" target must not include local', () => {
+    it('should expand "all" to 3 remote targets only', () => {
+      /**
+       * After security hardening, "all" expands to remote targets only.
+       * Local must be explicitly requested to ensure CTO approval covers
+       * only intended operations.
+       */
+      const expandedTargets = ['render-production', 'render-staging', 'vercel'] as const;
+      expect(expandedTargets).toHaveLength(3);
+      expect(expandedTargets).not.toContain('local');
+    });
+
+    it('should still allow explicit local target', () => {
+      const result = SyncSecretsArgsSchema.safeParse({ target: 'local' });
+      expect(result.success).toBe(true);
     });
   });
 });

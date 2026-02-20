@@ -52,7 +52,9 @@ export const ServicesConfigSchema = z.object({
     projectId: z.string(),
   }).optional(),
   local: z.object({
-    confFile: z.string().default('op-secrets.conf'),
+    confFile: z.string()
+      .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, 'confFile must be a simple filename (no paths)')
+      .default('op-secrets.conf'),
   }).optional(),
   secrets: z.object({
     renderProduction: z.record(z.string(), z.string()).optional(),
