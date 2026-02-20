@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import Database from 'better-sqlite3';
+import { openReadonlyDb } from './readonly-db.js';
 import type { TimelineEvent, TimelineEventType } from '../components/TimelineItem.js';
 
 // ============================================================================
@@ -123,7 +123,7 @@ function getReportEvents(since: number): TimelineEvent[] {
   if (!fs.existsSync(CTO_REPORTS_DB_PATH)) return events;
 
   try {
-    const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
+    const db = openReadonlyDb(CTO_REPORTS_DB_PATH);
     const sinceIso = new Date(since).toISOString();
 
     const rows = db.prepare(`
@@ -161,7 +161,7 @@ function getQuestionEvents(since: number): TimelineEvent[] {
   if (!fs.existsSync(DEPUTY_CTO_DB_PATH)) return events;
 
   try {
-    const db = new Database(DEPUTY_CTO_DB_PATH, { readonly: true });
+    const db = openReadonlyDb(DEPUTY_CTO_DB_PATH);
     const sinceIso = new Date(since).toISOString();
 
     const rows = db.prepare(`
@@ -199,7 +199,7 @@ function getTaskEvents(since: number): TimelineEvent[] {
   if (!fs.existsSync(TODO_DB_PATH)) return events;
 
   try {
-    const db = new Database(TODO_DB_PATH, { readonly: true });
+    const db = openReadonlyDb(TODO_DB_PATH);
     const sinceTimestamp = Math.floor(since / 1000);
 
     const rows = db.prepare(`

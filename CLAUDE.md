@@ -88,10 +88,10 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 **Quota Monitor Hook** (`.claude/hooks/quota-monitor.js`):
 - Runs after every tool call (throttled to 5-minute intervals)
 - Checks active key usage and triggers rotation at 95% utilization
-- Before selecting a rotation candidate, attempts `refreshExpiredToken` for all keys with `status === 'expired'` so they can re-enter the pool
+- **Step 4b unified refresh loop**: Refreshes expired tokens AND proactively refreshes non-active tokens approaching expiry (within 10 min of `EXPIRY_BUFFER_MS`); uses single loop with `isExpired`/`isApproachingExpiry` variables for efficiency
 - `refreshExpiredToken` returns the sentinel string `'invalid_grant'` (not `null`) when the OAuth server responds HTTP 400 + `{ error: 'invalid_grant' }`; callers mark the key `invalid` and skip it permanently
-- **Proactive standby refresh** (Step 4c): refreshes non-active tokens approaching expiry (within 10 min) to keep standby tokens perpetually fresh; safe because refreshing Account B does not revoke Account A's in-memory token
-- **Pre-expiry restartless swap** (Step 4d): when the active key is within 10 min of expiry and a valid standby exists, writes standby to Keychain via `updateActiveCredentials()`; Claude Code's built-in `SRA()` (proactive refresh at 5 min before expiry) or `r6T()` (401 recovery) picks up the new token seamlessly — no restart needed
+- **Step 4c pre-expiry restartless swap**: When the active key is within 10 min of expiry and a valid standby exists, writes standby to Keychain via `updateActiveCredentials()`; Claude Code's built-in `SRA()` (proactive refresh at 5 min before expiry) or `r6T()` (401 recovery) picks up the new token seamlessly — no restart needed
+- Safe: refreshing Account B does not revoke Account A's in-memory token
 - Interactive sessions: spawns auto-restart script with new credentials
 - Automated sessions: spawns `claude --resume <sessionId>` directly with stale `CLAUDE_CODE_OAUTH_TOKEN` removed from env
 - All-accounts-exhausted: writes paused-sessions.json and waits for recovery
@@ -104,9 +104,10 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 - Writes recovered sessions to `quota-interrupted-sessions.json` for session-reviver Mode 1 pickup
 
 **Key Sync Module** (`.claude/hooks/key-sync.js`):
-- Shared library used by api-key-watcher, hourly-automation, and credential-sync-hook
+- Shared library used by api-key-watcher, hourly-automation, credential-sync-hook, and quota-monitor
+- Exports `EXPIRY_BUFFER_MS` (10 min) constant for consistent timing across all rotation logic
 - `refreshExpiredToken` returns `'invalid_grant'` sentinel (distinct from `null`) when OAuth responds 400 + `error: invalid_grant`; all callers mark the key `status: 'invalid'` and log `refresh_token_invalid_grant`
-- `syncKeys()` proactively refreshes non-active tokens approaching expiry (within 10 min) and performs pre-expiry restartless swap to Keychain; covers idle sessions because hourly-automation calls `syncKeys()` every 10 min via launchd even when no Claude Code process is active
+- `syncKeys()` proactively refreshes non-active tokens approaching expiry (within `EXPIRY_BUFFER_MS`) and performs pre-expiry restartless swap to Keychain; covers idle sessions because hourly-automation calls `syncKeys()` every 10 min via launchd even when no Claude Code process is active
 - `pruneDeadKeys` garbage-collects keys with `status: 'invalid'` older than 7 days; never prunes the active key; removes orphaned rotation_log entries; called automatically at the end of every `syncKeys()` run
 
 **Session Reviver Hook** (`.claude/hooks/session-reviver.js`):

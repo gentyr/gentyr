@@ -25,6 +25,7 @@ const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 // Rotation thresholds (API returns utilization as 0-100 percentages)
 export const HIGH_USAGE_THRESHOLD = 90;  // 90%
 export const EXHAUSTED_THRESHOLD = 100;  // 100%
+export const EXPIRY_BUFFER_MS = 600_000; // 10 min — pre-expiry window for proactive refresh and restartless swap
 const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
 const ROTATION_STATE_PATH = path.join(os.homedir(), '.claude', 'api-key-rotation.json');
 const ROTATION_LOG_PATH = path.join(PROJECT_DIR, '.claude', 'api-key-rotation.log');
@@ -417,7 +418,6 @@ export async function syncKeys(log) {
   // Attempt token refresh for expired keys AND non-active keys approaching expiry.
   // Proactive refresh keeps standby tokens fresh so SRA()/r6T() always has a valid replacement.
   // Safe: refreshing one account's token does NOT revoke another account's in-memory token.
-  const EXPIRY_BUFFER_MS = 600_000; // 10 minutes
   for (const [keyId, keyData] of Object.entries(state.keys)) {
     const isExpired = keyData.expiresAt && keyData.expiresAt < now;
     const isApproachingExpiry = keyData.expiresAt && keyData.expiresAt > now && keyData.expiresAt < now + EXPIRY_BUFFER_MS && keyId !== state.active_key_id;

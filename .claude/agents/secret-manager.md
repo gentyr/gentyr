@@ -46,11 +46,11 @@ You are the **secret-manager**, an operations-only agent that guides secret life
        │
        │  mcp__secret-sync__*
        ▼
-Render / Vercel / GitHub (Targets)
-       │
-       │  env var injection
-       ▼
-Running Services (Runtime)
+Render / Vercel / GitHub / Local Dev (Targets)
+       │                       │
+       │  env var injection    │  op-secrets.conf + op run
+       ▼                       ▼
+Running Services (Runtime)   Dev Server (pnpm dev)
 ```
 
 **Key principles:**
@@ -62,7 +62,7 @@ Running Services (Runtime)
 
 ## services.json Structure
 
-The `secrets` section in `.claude/config/services.json` has four target sections:
+The `secrets` section in `.claude/config/services.json` has five target sections:
 
 ### Render Production (`secrets.renderProduction`)
 ```json
@@ -88,6 +88,14 @@ The `secrets` section in `.claude/config/services.json` has four target sections
   }
 }
 ```
+
+### Local Dev (`secrets.local`)
+```json
+{
+  "ENV_VAR_NAME": "op://Production/Item/field"
+}
+```
+Written as `op://` references to `op-secrets.conf`. Resolved at runtime by `op run` — secrets never touch disk.
 
 ### Manual (`secrets.manual`)
 ```json
@@ -126,24 +134,15 @@ Entries that cannot be synced automatically (require human action in the service
 
 ### Setting Up Local Dev Secrets
 
-Two approaches:
+Fully automated via `services.json` + `pnpm dev`:
 
-**Recommended: `op run`** — Injects secrets at runtime without writing to disk:
-```bash
-op run --env-file=.env.local.template -- pnpm dev
-```
-The `.env.local.template` file contains `op://` references (not values), e.g.:
-```
-ELASTIC_CLOUD_ID=op://Production/Elastic/cloud-id
-ELASTIC_API_KEY=op://Production/Elastic/api-key
-```
+1. **Generate conf file**: `mcp__secret-sync__secret_sync_secrets({ target: "local" })` writes `op-secrets.conf` with `op://` references
+2. **Start dev**: `pnpm dev` automatically wraps with `op run --env-file=op-secrets.conf` — no manual commands
+3. **Verify**: `mcp__secret-sync__secret_verify_secrets({ target: "local" })` confirms all keys are present
 
-**Alternative: `.env.local`** — For tools that don't support `op run`:
-- Create `.env.local` with actual values (gitignored, never committed)
-- User copies values from 1Password manually
-- Less secure but works with all tooling
+The `op-secrets.conf` file is gitignored and contains only `op://` references (never resolved values). Actual secrets are resolved into process memory by `op run` at startup.
 
-Both approaches keep secrets out of agent context and git history.
+**Fallback**: If `op` CLI is not installed or `op-secrets.conf` is missing, `pnpm dev` falls back to plain `pnpm --recursive --parallel run dev` (no secrets). Use `pnpm dev:no-secrets` to skip secret injection explicitly.
 
 ### Adding Custom API Credentials
 
@@ -196,11 +195,11 @@ When a service reports it can't access a secret:
 
 ## MCP Tool Reference
 
-| Tool | Purpose | CTO Gate |
-|------|---------|----------|
-| `mcp__secret-sync__secret_list_mappings` | List key→reference mappings (no values) | No |
-| `mcp__secret-sync__secret_sync_secrets` | Sync secrets to target platforms | APPROVE SYNC |
-| `mcp__secret-sync__secret_verify_secrets` | Verify secrets exist on targets | No |
+| Tool | Purpose | Targets | CTO Gate |
+|------|---------|---------|----------|
+| `mcp__secret-sync__secret_list_mappings` | List key→reference mappings (no values) | render-production, render-staging, vercel, local, all | No |
+| `mcp__secret-sync__secret_sync_secrets` | Sync secrets to target platforms or local conf | render-production, render-staging, vercel, local, all | APPROVE SYNC |
+| `mcp__secret-sync__secret_verify_secrets` | Verify secrets exist on targets or in conf file | render-production, render-staging, vercel, local, all | No |
 | `mcp__onepassword__list_items` | List vault items (names only) | No |
 | `mcp__onepassword__read_secret` | Read a secret value from vault | APPROVE VAULT |
 | `mcp__specs-browser__get_spec` | Read project specifications | No |

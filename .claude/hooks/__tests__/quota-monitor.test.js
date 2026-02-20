@@ -83,7 +83,7 @@ describe('quota-monitor.js - Code Structure', () => {
     it('should filter for keys with status "expired" and past expiresAt in the pre-pass', () => {
       const code = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // The pre-pass condition: status === 'expired' && expiresAt && expiresAt < Date.now()
+      // The unified pre-pass uses isExpired = status === 'expired' && expiresAt < now (cached)
       assert.match(
         code,
         /keyData\.status === ['"]expired['"]/,
@@ -92,8 +92,8 @@ describe('quota-monitor.js - Code Structure', () => {
 
       assert.match(
         code,
-        /keyData\.expiresAt && keyData\.expiresAt < Date\.now\(\)/,
-        'Must check expiresAt < Date.now() in the refresh pre-pass'
+        /keyData\.expiresAt && keyData\.expiresAt < now/,
+        'Must check expiresAt < now (cached timestamp) in the refresh pre-pass'
       );
     });
 
@@ -148,11 +148,11 @@ describe('quota-monitor.js - Code Structure', () => {
     it('should log key_added event when a token is successfully refreshed in the pre-pass', () => {
       const code = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // The event for a refreshed token reuse is 'key_added'
+      // The event for a refreshed expired token is 'key_added' (via ternary: isExpired ? 'key_added' : 'key_refreshed')
       assert.match(
         code,
-        /event:\s*['"]key_added['"]/,
-        'Must log key_added event for refreshed tokens in quota-monitor'
+        /['"]key_added['"]/,
+        'Must include key_added event for refreshed tokens in quota-monitor'
       );
     });
 

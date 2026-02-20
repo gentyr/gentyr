@@ -8,7 +8,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
-import Database from 'better-sqlite3';
+import { openReadonlyDb } from './readonly-db.js';
 import { z } from 'zod';
 
 // ============================================================================
@@ -872,7 +872,7 @@ export function getPendingItems(): PendingItems {
   };
 
   if (fs.existsSync(DEPUTY_CTO_DB_PATH)) {
-    const db = new Database(DEPUTY_CTO_DB_PATH, { readonly: true });
+    const db = openReadonlyDb(DEPUTY_CTO_DB_PATH);
     const pending = db.prepare(
       "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
     ).get() as CountResult | undefined;
@@ -886,7 +886,7 @@ export function getPendingItems(): PendingItems {
   }
 
   if (fs.existsSync(CTO_REPORTS_DB_PATH)) {
-    const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
+    const db = openReadonlyDb(CTO_REPORTS_DB_PATH);
     const pending = db.prepare(
       "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'pending'"
     ).get() as CountResult | undefined;
@@ -916,7 +916,7 @@ export function getTriageMetrics(): TriageMetrics {
 
   if (!fs.existsSync(CTO_REPORTS_DB_PATH)) return metrics;
 
-  const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
+  const db = openReadonlyDb(CTO_REPORTS_DB_PATH);
   const now = Date.now();
   const cutoff24h = new Date(now - 24 * 60 * 60 * 1000).toISOString();
   const cutoff7d = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -982,7 +982,7 @@ export function getTaskMetrics(hours: number): TaskMetrics {
 
   if (!fs.existsSync(TODO_DB_PATH)) return metrics;
 
-  const db = new Database(TODO_DB_PATH, { readonly: true });
+  const db = openReadonlyDb(TODO_DB_PATH);
 
   const tasks = db.prepare(`
     SELECT section, status, COUNT(*) as count
@@ -1425,7 +1425,7 @@ export function getFeedbackPersonas(): FeedbackPersonasData {
     return { personas: [], total_sessions: 0, total_findings: 0 };
   }
 
-  const db = new Database(USER_FEEDBACK_DB_PATH, { readonly: true });
+  const db = openReadonlyDb(USER_FEEDBACK_DB_PATH);
 
   // Query personas with aggregated session data
   interface PersonaRow {

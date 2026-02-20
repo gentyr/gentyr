@@ -15,6 +15,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { openReadonlyDb } from '../shared/readonly-db.js';
 import {
   ListFeedbackPersonasArgsSchema,
   GetPersonaDetailsArgsSchema,
@@ -93,7 +94,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
         if (!fs.existsSync(dbPath)) {
           throw new Error(`user-feedback.db not found at ${dbPath}`);
         }
-        _userFeedbackDb = new Database(dbPath, { readonly: true });
+        _userFeedbackDb = openReadonlyDb(dbPath);
       }
     }
     return _userFeedbackDb;
@@ -108,7 +109,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
         if (!fs.existsSync(dbPath)) {
           throw new Error(`cto-reports.db not found at ${dbPath}`);
         }
-        _ctoReportsDb = new Database(dbPath, { readonly: true });
+        _ctoReportsDb = openReadonlyDb(dbPath);
       }
     }
     return _ctoReportsDb;
@@ -123,7 +124,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
         if (!fs.existsSync(dbPath)) {
           throw new Error(`session-events.db not found at ${dbPath}`);
         }
-        _sessionEventsDb = new Database(dbPath, { readonly: true });
+        _sessionEventsDb = openReadonlyDb(dbPath);
       }
     }
     return _sessionEventsDb;
@@ -150,7 +151,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
     if (!fs.existsSync(sessionDbPath)) {
       throw new Error(`Session database not found at ${sessionDbPath}`);
     }
-    return new Database(sessionDbPath, { readonly: true });
+    return openReadonlyDb(sessionDbPath);
   }
 
   // ============================================================================

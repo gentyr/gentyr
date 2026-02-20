@@ -26,6 +26,7 @@ import {
   refreshExpiredToken,
   HIGH_USAGE_THRESHOLD,
   EXHAUSTED_THRESHOLD,
+  EXPIRY_BUFFER_MS,
 } from './key-sync.js';
 import { registerHookExecution, HOOK_TYPES } from './agent-tracker.js';
 import {
@@ -209,15 +210,22 @@ async function main() {
 
   writeRotationState(state);
 
-  // Step 4b: Refresh expired tokens before rotation attempt
+  // Step 4b: Refresh expired tokens AND proactively refresh non-active tokens
+  // approaching expiry. Keeps standby tokens perpetually fresh so SRA()/r6T()
+  // always finds a valid replacement in Keychain.
+  // Safe: refreshing Account B's token does NOT revoke Account A's in-memory token.
+  const now4b = Date.now();
   for (const [keyId, keyData] of Object.entries(state.keys)) {
-    if (keyData.status === 'expired' && keyData.expiresAt && keyData.expiresAt < Date.now()) {
+    if (keyData.status === 'invalid') continue;
+    const isExpired = keyData.status === 'expired' && keyData.expiresAt && keyData.expiresAt < now4b;
+    const isApproachingExpiry = keyId !== state.active_key_id && keyData.expiresAt && keyData.expiresAt > now4b && keyData.expiresAt < now4b + EXPIRY_BUFFER_MS;
+    if (isExpired || isApproachingExpiry) {
       try {
         const refreshed = await refreshExpiredToken(keyData);
         if (refreshed === 'invalid_grant') {
           keyData.status = 'invalid';
           logRotationEvent(state, {
-            timestamp: Date.now(),
+            timestamp: now4b,
             event: 'key_removed',
             key_id: keyId,
             reason: 'refresh_token_invalid_grant',
@@ -228,65 +236,37 @@ async function main() {
           keyData.expiresAt = refreshed.expiresAt;
           keyData.status = 'active';
           logRotationEvent(state, {
-            timestamp: Date.now(),
-            event: 'key_added',
+            timestamp: now4b,
+            event: isExpired ? 'key_added' : 'key_refreshed',
             key_id: keyId,
-            reason: 'token_refreshed_by_quota_monitor',
+            reason: isExpired ? 'token_refreshed_by_quota_monitor' : 'proactive_standby_refresh',
           });
         }
       } catch {
-        // Non-fatal: key stays expired
+        // Non-fatal: key stays in current status
       }
     }
   }
   writeRotationState(state);
 
-  // Step 4c: Proactively refresh non-active tokens approaching expiry.
-  // Keeps standby tokens perpetually fresh so SRA()/r6T() always finds a valid replacement.
-  // Safe: refreshing Account B's token does NOT revoke Account A's in-memory token.
-  const EXPIRY_BUFFER_MS = 600_000; // 10 minutes
-  for (const [keyId, keyData] of Object.entries(state.keys)) {
-    if (keyId === state.active_key_id) continue;
-    if (keyData.status === 'invalid') continue;
-    const approaching = keyData.expiresAt && keyData.expiresAt > Date.now() && keyData.expiresAt < Date.now() + EXPIRY_BUFFER_MS;
-    if (approaching) {
-      try {
-        const refreshed = await refreshExpiredToken(keyData);
-        if (refreshed === 'invalid_grant') {
-          keyData.status = 'invalid';
-          logRotationEvent(state, { timestamp: Date.now(), event: 'key_removed', key_id: keyId, reason: 'refresh_token_invalid_grant' });
-        } else if (refreshed) {
-          keyData.accessToken = refreshed.accessToken;
-          keyData.refreshToken = refreshed.refreshToken;
-          keyData.expiresAt = refreshed.expiresAt;
-          keyData.status = 'active';
-          logRotationEvent(state, { timestamp: Date.now(), event: 'key_refreshed', key_id: keyId, reason: 'proactive_standby_refresh' });
-        }
-      } catch {
-        // Non-fatal
-      }
-    }
-  }
-  writeRotationState(state);
-
-  // Step 4d: Pre-expiry restartless swap — if the active key is near expiry,
+  // Step 4c: Pre-expiry restartless swap — if the active key is near expiry,
   // write a valid standby to Keychain so Claude Code's SRA()/r6T() picks it up.
   // NO restart needed: SRA() fires at jv() (5 min before expiry), clears in-memory cache,
   // re-reads from Keychain, and adopts the standby token seamlessly.
-  if (activeKeyData.expiresAt && activeKeyData.expiresAt < Date.now() + EXPIRY_BUFFER_MS) {
+  if (activeKeyData.expiresAt && activeKeyData.expiresAt < now4b + EXPIRY_BUFFER_MS) {
     const standby = Object.entries(state.keys).find(([id, k]) =>
       id !== state.active_key_id &&
       k.status === 'active' &&
-      k.expiresAt && k.expiresAt > Date.now() + EXPIRY_BUFFER_MS
+      k.expiresAt && k.expiresAt > now4b + EXPIRY_BUFFER_MS
     );
     if (standby) {
       const [newKeyId, newKeyData] = standby;
       const previousKeyId = state.active_key_id;
       state.active_key_id = newKeyId;
-      newKeyData.last_used_at = Date.now();
+      newKeyData.last_used_at = now4b;
       updateActiveCredentials(newKeyData);
       logRotationEvent(state, {
-        timestamp: Date.now(),
+        timestamp: now4b,
         event: 'key_switched',
         key_id: newKeyId,
         reason: 'pre_expiry_restartless_swap',

@@ -7,6 +7,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import Database from 'better-sqlite3';
+import { openReadonlyDb } from './readonly-db.js';
 
 const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
 const CTO_REPORTS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
@@ -87,7 +88,7 @@ export function getDeputyCtoData(): DeputyCtoData {
   if (fs.existsSync(CTO_REPORTS_DB_PATH)) {
     let db: ReturnType<typeof Database> | null = null;
     try {
-      db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
+      db = openReadonlyDb(CTO_REPORTS_DB_PATH);
 
       // Untriaged reports
       const pending = db.prepare(
@@ -144,7 +145,7 @@ export function getDeputyCtoData(): DeputyCtoData {
   if (fs.existsSync(DEPUTY_CTO_DB_PATH)) {
     let db: ReturnType<typeof Database> | null = null;
     try {
-      db = new Database(DEPUTY_CTO_DB_PATH, { readonly: true });
+      db = openReadonlyDb(DEPUTY_CTO_DB_PATH);
 
       // Pending questions
       result.pendingQuestions = db.prepare(`
