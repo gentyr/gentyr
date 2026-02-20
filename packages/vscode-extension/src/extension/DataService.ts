@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import Database from 'better-sqlite3';
+import { openReadonlyDb } from './readonly-db.js';
 
 // ============================================================================
 // Types (shared with webview via postMessage)
@@ -578,7 +578,7 @@ export class DataService implements vscode.Disposable {
 
     if (fs.existsSync(this.deputyCtoDB)) {
       try {
-        const db = new Database(this.deputyCtoDB, { readonly: true });
+        const db = openReadonlyDb(this.deputyCtoDB);
         const pending = db.prepare("SELECT COUNT(*) as count FROM questions WHERE status = 'pending'").get() as CountResult | undefined;
         const rejections = db.prepare("SELECT COUNT(*) as count FROM questions WHERE type = 'rejection' AND status = 'pending'").get() as CountResult | undefined;
         db.close();
@@ -589,7 +589,7 @@ export class DataService implements vscode.Disposable {
 
     if (fs.existsSync(this.ctoReportsDB)) {
       try {
-        const db = new Database(this.ctoReportsDB, { readonly: true });
+        const db = openReadonlyDb(this.ctoReportsDB);
         const pending = db.prepare("SELECT COUNT(*) as count FROM reports WHERE triage_status = 'pending'").get() as CountResult | undefined;
         items.pending_triage = pending?.count || 0;
         db.close();
@@ -610,7 +610,7 @@ export class DataService implements vscode.Disposable {
     if (!fs.existsSync(this.todoDB)) return metrics;
 
     try {
-      const db = new Database(this.todoDB, { readonly: true });
+      const db = openReadonlyDb(this.todoDB);
 
       const tasks = db.prepare('SELECT section, status, COUNT(*) as count FROM tasks GROUP BY section, status').all() as TaskCountRow[];
       for (const row of tasks) {
@@ -650,7 +650,7 @@ export class DataService implements vscode.Disposable {
 
     if (fs.existsSync(this.ctoReportsDB)) {
       try {
-        const db = new Database(this.ctoReportsDB, { readonly: true });
+        const db = openReadonlyDb(this.ctoReportsDB);
 
         result.untriaged = db.prepare(
           "SELECT id, title, priority, triage_status, created_at FROM reports WHERE triage_status = 'pending' ORDER BY created_timestamp DESC LIMIT 10"
@@ -681,7 +681,7 @@ export class DataService implements vscode.Disposable {
 
     if (fs.existsSync(this.deputyCtoDB)) {
       try {
-        const db = new Database(this.deputyCtoDB, { readonly: true });
+        const db = openReadonlyDb(this.deputyCtoDB);
 
         result.pendingQuestions = db.prepare(
           "SELECT id, type, title, description, recommendation, created_at FROM questions WHERE status = 'pending' ORDER BY created_timestamp DESC LIMIT 10"

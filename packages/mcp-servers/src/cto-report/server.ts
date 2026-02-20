@@ -14,8 +14,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { openReadonlyDb } from '../shared/readonly-db.js';
 import {
   GetReportArgsSchema,
   GetSessionMetricsArgsSchema,
@@ -417,7 +417,7 @@ function getPendingItems(): PendingItems {
 
   // Check deputy-cto database
   if (fs.existsSync(DEPUTY_CTO_DB_PATH)) {
-    const db = new Database(DEPUTY_CTO_DB_PATH, { readonly: true });
+    const db = openReadonlyDb(DEPUTY_CTO_DB_PATH);
 
     const pending = db.prepare(
       "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
@@ -435,7 +435,7 @@ function getPendingItems(): PendingItems {
 
   // Check cto-reports database for pending triage (deputy-cto responsibility, not CTO)
   if (fs.existsSync(CTO_REPORTS_DB_PATH)) {
-    const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
+    const db = openReadonlyDb(CTO_REPORTS_DB_PATH);
 
     const pending = db.prepare(
       "SELECT COUNT(*) as count FROM reports WHERE triage_status = 'pending'"
@@ -471,7 +471,7 @@ function getTriageMetrics(): TriageMetrics {
     return metrics;
   }
 
-  const db = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
+  const db = openReadonlyDb(CTO_REPORTS_DB_PATH);
   const now = Date.now();
   const cutoff24h = new Date(now - 24 * 60 * 60 * 1000).toISOString();
   const cutoff7d = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -550,7 +550,7 @@ function getTaskMetricsData(hours: number): TaskMetrics {
     return metrics;
   }
 
-  const db = new Database(TODO_DB_PATH, { readonly: true });
+  const db = openReadonlyDb(TODO_DB_PATH);
 
   // Get current task counts by section and status
   const tasks = db.prepare(`

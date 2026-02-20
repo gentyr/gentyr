@@ -1,6 +1,31 @@
 # GENTYR Framework Changelog
 
-## 2026-02-20 - Credential Rotation Experiments: Restartless Recovery Path Discovered
+## 2026-02-20 - Autonomous Restartless Credential Rotation
+
+### Implemented
+
+**Unified proactive refresh and pre-expiry swap** (`.claude/hooks/quota-monitor.js`, `.claude/hooks/key-sync.js`):
+- **Step 4b unified**: Combined expired-token refresh and approaching-expiry proactive refresh into single loop using `isExpired`/`isApproachingExpiry` variables
+- **Shared expiry constant**: `EXPIRY_BUFFER_MS` (10 min) exported from `key-sync.js`, imported by `quota-monitor.js` for consistent timing
+- **Proactive standby refresh**: Non-active tokens within 10 min of expiry are refreshed automatically to keep standby pool perpetually fresh
+- **Pre-expiry restartless swap**: When active key approaches expiry and valid standby exists, writes standby to Keychain; Claude Code's `SRA()` (5 min buffer) or `r6T()` (401 recovery) picks up new token seamlessly without restart
+- **Idle session coverage**: `key-sync.js` also performs proactive refresh and pre-expiry swap during `syncKeys()` runs (called every 10 min by launchd even when no Claude Code process is active)
+- **Date.now() consistency**: Cached into `now4b` variable to prevent time drift within execution (matches `key-sync.js` pattern)
+
+### Tests
+
+- **New test file**: `.claude/hooks/__tests__/proactive-refresh-and-swap.test.js` (35 tests, 592 lines)
+  - Step 4b: `EXPIRY_BUFFER_MS` import verification, `isApproachingExpiry` variable presence, refresh loop behavior
+  - Step 4c: Pre-expiry restartless swap trigger logic, standby selection, `updateActiveCredentials()` call verification
+  - `key-sync.js`: proactive refresh in `syncKeys()`, pre-expiry swap logic, shared constant export
+  - Coverage: all new autonomous rotation behaviors across both files
+- **Updated existing tests**: `.claude/hooks/__tests__/key-sync-expired-filter.test.js`, `.claude/hooks/__tests__/quota-monitor.test.js` (updated for new source patterns)
+- **Total**: 130 hook tests passing (92 existing + 35 new + 3 updated)
+
+### Documentation
+
+- **Implementation guide**: `docs/sessions/2026-02-20-credential-rotation-experiments.md` updated with detailed coverage matrix, autonomous rotation architecture, and `SRA()`/`r6T()` recovery path analysis
+- **CLAUDE.md**: Updated quota-monitor and key-sync sections with new proactive refresh and pre-expiry swap capabilities
 
 ### Research Findings
 

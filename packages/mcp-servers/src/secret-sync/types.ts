@@ -12,18 +12,18 @@ import { z } from 'zod';
 // ============================================================================
 
 export const SyncSecretsArgsSchema = z.object({
-  target: z.enum(['render-production', 'render-staging', 'vercel', 'all'])
+  target: z.enum(['render-production', 'render-staging', 'vercel', 'local', 'all'])
     .describe('Target platform to sync secrets to'),
 });
 
 export const ListMappingsArgsSchema = z.object({
-  target: z.enum(['render-production', 'render-staging', 'vercel', 'all'])
+  target: z.enum(['render-production', 'render-staging', 'vercel', 'local', 'all'])
     .optional()
     .describe('Target platform to list mappings for (default: all)'),
 });
 
 export const VerifySecretsArgsSchema = z.object({
-  target: z.enum(['render-production', 'render-staging', 'vercel', 'all'])
+  target: z.enum(['render-production', 'render-staging', 'vercel', 'local', 'all'])
     .describe('Target platform to verify secrets on'),
 });
 
@@ -51,6 +51,9 @@ export const ServicesConfigSchema = z.object({
   vercel: z.object({
     projectId: z.string(),
   }).optional(),
+  local: z.object({
+    confFile: z.string().default('op-secrets.conf'),
+  }).optional(),
   secrets: z.object({
     renderProduction: z.record(z.string(), z.string()).optional(),
     renderStaging: z.record(z.string(), z.string()).optional(),
@@ -59,6 +62,7 @@ export const ServicesConfigSchema = z.object({
       target: z.array(z.string()),
       type: z.string(),
     })).optional(),
+    local: z.record(z.string(), z.string().regex(/^op:\/\//, 'Local secrets must be op:// references')).optional(),
     manual: z.array(z.object({
       service: z.string(),
       key: z.string(),

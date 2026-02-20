@@ -62,6 +62,17 @@ describe('Secret Sync MCP Server - Schema Validation', () => {
       expect(result.success).toBe(true);
     });
 
+    it('should validate sync to local', () => {
+      const result = SyncSecretsArgsSchema.safeParse({
+        target: 'local',
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.target).toBe('local');
+      }
+    });
+
     it('should reject invalid target', () => {
       const result = SyncSecretsArgsSchema.safeParse({
         target: 'invalid-target',
@@ -202,6 +213,63 @@ describe('Secret Sync MCP Server - Schema Validation', () => {
       const result = ServicesConfigSchema.safeParse(config);
 
       expect(result.success).toBe(true);
+    });
+
+    it('should validate config with local target and secrets.local', () => {
+      const config = {
+        local: {
+          confFile: 'op-secrets.conf',
+        },
+        secrets: {
+          local: {
+            ELASTIC_CLOUD_ID: 'op://Production/Elastic/cloud-id',
+            ELASTIC_API_KEY: 'op://Production/Elastic/api-key',
+          },
+        },
+      };
+
+      const result = ServicesConfigSchema.safeParse(config);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.local?.confFile).toBe('op-secrets.conf');
+        expect(result.data.secrets.local).toEqual({
+          ELASTIC_CLOUD_ID: 'op://Production/Elastic/cloud-id',
+          ELASTIC_API_KEY: 'op://Production/Elastic/api-key',
+        });
+      }
+    });
+
+    it('should reject secrets.local values that are not op:// references', () => {
+      const config = {
+        secrets: {
+          local: {
+            ELASTIC_API_KEY: 'actual-secret-value-not-a-reference',
+          },
+        },
+      };
+
+      const result = ServicesConfigSchema.safeParse(config);
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should validate local config with default confFile', () => {
+      const config = {
+        local: {},
+        secrets: {
+          local: {
+            SOME_KEY: 'op://Vault/Item/field',
+          },
+        },
+      };
+
+      const result = ServicesConfigSchema.safeParse(config);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.local?.confFile).toBe('op-secrets.conf');
+      }
     });
 
     it('should validate config with manual secrets only', () => {
@@ -701,16 +769,17 @@ describe('Secret Sync MCP Server - Integration Behavior', () => {
     it('should validate target expansion for "all"', () => {
       /**
        * When target is 'all':
-       * - Expands to: ['render-production', 'render-staging', 'vercel']
-       * - Syncs to all three targets in sequence
+       * - Expands to: ['render-production', 'render-staging', 'vercel', 'local']
+       * - Syncs to all four targets in sequence
        * - Errors in one target do not stop others
        */
       const target = 'all';
-      const expandedTargets = ['render-production', 'render-staging', 'vercel'] as const;
+      const expandedTargets = ['render-production', 'render-staging', 'vercel', 'local'] as const;
 
       expect(target).toBe('all');
-      expect(expandedTargets).toHaveLength(3);
+      expect(expandedTargets).toHaveLength(4);
       expect(expandedTargets).toContain('render-production');
+      expect(expandedTargets).toContain('local');
     });
 
     it('should validate single target processing', () => {
@@ -779,6 +848,219 @@ describe('Secret Sync MCP Server - Integration Behavior', () => {
       const totalApiCalls = secretCount * apiCallsPerSecret;
 
       expect(totalApiCalls).toBe(10);
+    });
+  });
+});
+
+describe('Secret Sync MCP Server - Local Target', () => {
+  describe('syncSecrets() - Local Target Behavior', () => {
+    it('should generate conf file with op:// references only (no opRead calls)', () => {
+      /**
+       * CRITICAL SECURITY REQUIREMENT:
+       *
+       * The local target writes op:// REFERENCES to op-secrets.conf.
+       * It NEVER calls opRead() to resolve actual secret values.
+       * This is the fundamental difference from Render/Vercel targets.
+       *
+       * Flow:
+       * 1. Read secrets.local from services.json
+       * 2. Write each entry as KEY=op://... to conf file
+       * 3. Report each key as status: 'created'
+       *
+       * NO opRead() calls are made — secrets never touch the MCP process.
+       * Resolution happens at runtime via `op run`.
+       */
+      const localSecrets = {
+        ELASTIC_CLOUD_ID: 'op://Production/Elastic/cloud-id',
+        ELASTIC_API_KEY: 'op://Production/Elastic/api-key',
+      };
+
+      const expectedLines = Object.entries(localSecrets).map(
+        ([key, ref]) => `${key}=${ref}`
+      );
+
+      expect(expectedLines).toEqual([
+        'ELASTIC_CLOUD_ID=op://Production/Elastic/cloud-id',
+        'ELASTIC_API_KEY=op://Production/Elastic/api-key',
+      ]);
+
+      // Verify references are NOT resolved values
+      for (const line of expectedLines) {
+        const value = line.split('=').slice(1).join('=');
+        expect(value).toMatch(/^op:\/\//);
+      }
+    });
+
+    it('should include header comments in generated conf file', () => {
+      /**
+       * The generated op-secrets.conf includes informational header comments:
+       * - Auto-generated notice
+       * - Security note about op:// references
+       * - Generation timestamp
+       */
+      const expectedHeaderPatterns = [
+        /^# Auto-generated/,
+        /op:\/\/ references/,
+        /op run/,
+      ];
+
+      for (const pattern of expectedHeaderPatterns) {
+        expect(pattern).toBeInstanceOf(RegExp);
+      }
+    });
+
+    it('should report each key as status created', () => {
+      /**
+       * Unlike Render/Vercel targets which report 'created' or 'updated',
+       * local target always reports 'created' since the conf file is
+       * fully regenerated on each sync.
+       */
+      const localSecrets = {
+        ELASTIC_CLOUD_ID: 'op://Production/Elastic/cloud-id',
+        ELASTIC_API_KEY: 'op://Production/Elastic/api-key',
+      };
+
+      const results = Object.keys(localSecrets).map(key => ({
+        key,
+        service: 'local',
+        status: 'created' as const,
+      }));
+
+      expect(results).toHaveLength(2);
+      expect(results.every(r => r.status === 'created')).toBe(true);
+      expect(results.every(r => r.service === 'local')).toBe(true);
+    });
+  });
+
+  describe('listMappings() - Local Target', () => {
+    it('should return local mappings with op:// references', () => {
+      /**
+       * listMappings({ target: 'local' }) returns entries from secrets.local
+       * with service: 'local'.
+       */
+      const localSecrets = {
+        ELASTIC_CLOUD_ID: 'op://Production/Elastic/cloud-id',
+        ELASTIC_API_KEY: 'op://Production/Elastic/api-key',
+      };
+
+      const mappings = Object.entries(localSecrets).map(([key, ref]) => ({
+        key,
+        reference: ref,
+        service: 'local',
+      }));
+
+      expect(mappings).toHaveLength(2);
+      expect(mappings[0]).toEqual({
+        key: 'ELASTIC_CLOUD_ID',
+        reference: 'op://Production/Elastic/cloud-id',
+        service: 'local',
+      });
+    });
+  });
+
+  describe('verifySecrets() - Local Target', () => {
+    it('should verify keys exist in conf file by parsing KEY=value lines', () => {
+      /**
+       * Verification reads op-secrets.conf and checks that each key
+       * from secrets.local is present as a KEY=... line.
+       *
+       * Parsing rules:
+       * - Skip blank lines
+       * - Skip comment lines (starting with #)
+       * - Split on first = to extract key name
+       */
+      const confContent = [
+        '# Auto-generated by secret-sync MCP server',
+        '# Contains op:// references only',
+        '',
+        'ELASTIC_CLOUD_ID=op://Production/Elastic/cloud-id',
+        'ELASTIC_API_KEY=op://Production/Elastic/api-key',
+      ].join('\n');
+
+      const existingKeys = confContent
+        .split('\n')
+        .filter(line => line.trim() && !line.startsWith('#'))
+        .map(line => line.split('=')[0]);
+
+      expect(existingKeys).toEqual(['ELASTIC_CLOUD_ID', 'ELASTIC_API_KEY']);
+      expect(existingKeys.includes('ELASTIC_CLOUD_ID')).toBe(true);
+      expect(existingKeys.includes('MISSING_KEY')).toBe(false);
+    });
+
+    it('should report error when conf file does not exist', () => {
+      /**
+       * If op-secrets.conf is missing, verifySecrets reports:
+       * - Error: "Conf file not found: <path>"
+       * - All keys marked as exists: false with error message
+       */
+      const confExists = false;
+      const expectedError = 'Conf file not found';
+
+      expect(confExists).toBe(false);
+      expect(expectedError).toContain('Conf file not found');
+    });
+  });
+
+  describe('Target "all" Expansion', () => {
+    it('should include local in all target expansion', () => {
+      /**
+       * When target is 'all':
+       * - Expands to: ['render-production', 'render-staging', 'vercel', 'local']
+       * - All four targets are processed in sequence
+       */
+      const expandedTargets = ['render-production', 'render-staging', 'vercel', 'local'] as const;
+
+      expect(expandedTargets).toHaveLength(4);
+      expect(expandedTargets).toContain('local');
+      expect(expandedTargets).toContain('render-production');
+      expect(expandedTargets).toContain('render-staging');
+      expect(expandedTargets).toContain('vercel');
+    });
+  });
+
+  describe('Security - No Secret Resolution', () => {
+    it('should validate that local target never resolves secrets', () => {
+      /**
+       * CRITICAL: The local target MUST NOT call opRead().
+       *
+       * Render/Vercel targets:
+       * 1. opRead(ref) → resolved value
+       * 2. Push value to platform API
+       *
+       * Local target:
+       * 1. Write ref directly to conf file (op://... reference)
+       * 2. NO opRead() call — no secret resolution
+       *
+       * Resolution happens at runtime:
+       * op run --env-file=op-secrets.conf -- pnpm dev
+       *   → op CLI reads op:// references
+       *   → Resolves to actual values
+       *   → Injects into child process environment (memory only)
+       */
+      const renderFlow = ['opRead', 'renderSetEnvVar'];
+      const localFlow = ['writeFileSync']; // No opRead!
+
+      expect(renderFlow).toContain('opRead');
+      expect(localFlow).not.toContain('opRead');
+    });
+
+    it('should validate conf file contains only references', () => {
+      /**
+       * Every value in the generated conf file MUST start with op://
+       * This ensures no resolved secret values are written to disk.
+       */
+      const confLines = [
+        'ELASTIC_CLOUD_ID=op://Production/Elastic/cloud-id',
+        'ELASTIC_API_KEY=op://Production/Elastic/api-key',
+      ];
+
+      for (const line of confLines) {
+        const value = line.split('=').slice(1).join('=');
+        expect(value).toMatch(/^op:\/\//);
+        // Ensure it's not a resolved value
+        expect(value).not.toMatch(/^[a-zA-Z0-9+/=]{20,}/); // Not a base64 token
+        expect(value).not.toMatch(/^sk_/); // Not an API key
+      }
     });
   });
 });

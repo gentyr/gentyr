@@ -22,6 +22,7 @@ import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { openReadonlyDb } from '../shared/readonly-db.js';
 import {
   CreatePersonaArgsSchema,
   UpdatePersonaArgsSchema,
@@ -864,7 +865,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     // Query session events
     let eventsDb: Database.Database | null = null;
     try {
-      eventsDb = new Database(sessionEventsDbPath, { readonly: true });
+      eventsDb = openReadonlyDb(sessionEventsDbPath);
 
       interface EventRow {
         timestamp: string;

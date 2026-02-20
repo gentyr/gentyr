@@ -27,6 +27,7 @@ import { spawn } from 'child_process';
 
 const { randomUUID } = crypto;
 import Database from 'better-sqlite3';
+import { openReadonlyDb } from '../shared/readonly-db.js';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   AddQuestionArgsSchema,
@@ -257,7 +258,7 @@ function getPendingTriageCount(): number {
     return 0;
   }
   try {
-    const reportsDb = new Database(CTO_REPORTS_DB_PATH, { readonly: true });
+    const reportsDb = openReadonlyDb(CTO_REPORTS_DB_PATH);
     // Check if triage_status column exists
     const columns = reportsDb.pragma('table_info(reports)') as { name: string }[];
     const hasTriageStatus = columns.some(c => c.name === 'triage_status');
