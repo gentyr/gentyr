@@ -468,9 +468,49 @@ export function getMockDashboardData(): DashboardData {
           error: null,
         },
       },
+      {
+        key_id: 'b7c4e92f...',
+        subscription_type: 'claude_max',
+        is_current: false,
+        healthy: false,
+        quota: {
+          five_hour: {
+            utilization: 100,
+            resets_at: fiveHourResetAt,
+            resets_in_hours: 1.7,
+          },
+          seven_day: {
+            utilization: 100,
+            resets_at: sevenDayResetAt,
+            resets_in_hours: 111,
+          },
+          extra_usage_enabled: false,
+          error: null,
+        },
+      },
+      {
+        key_id: 'c9d5f13a...',
+        subscription_type: 'claude_max',
+        is_current: false,
+        healthy: true,
+        quota: {
+          five_hour: {
+            utilization: 12,
+            resets_at: fiveHourResetAt,
+            resets_in_hours: 1.7,
+          },
+          seven_day: {
+            utilization: 45,
+            resets_at: sevenDayResetAt,
+            resets_in_hours: 111,
+          },
+          extra_usage_enabled: false,
+          error: null,
+        },
+      },
     ],
-    healthy_count: 1,
-    total_attempted: 1,
+    healthy_count: 2,
+    total_attempted: 3,
     aggregate: quota,
     rotation_events_24h: 2,
   };
@@ -635,7 +675,7 @@ export function getMockDashboardData(): DashboardData {
     usage_projection: usageProjection,
     key_rotation: {
       current_key_id: 'a3f8d21c...',
-      active_keys: 1,
+      active_keys: 3,
       keys: [
         {
           key_id: 'a3f8d21c...',
@@ -644,10 +684,24 @@ export function getMockDashboardData(): DashboardData {
           seven_day_pct: 88,
           is_current: true,
         },
+        {
+          key_id: 'b7c4e92f...',
+          subscription_type: 'claude_max',
+          five_hour_pct: 100,
+          seven_day_pct: 100,
+          is_current: false,
+        },
+        {
+          key_id: 'c9d5f13a...',
+          subscription_type: 'claude_max',
+          five_hour_pct: 12,
+          seven_day_pct: 45,
+          is_current: false,
+        },
       ],
       rotation_events_24h: 2,
       aggregate: {
-        active_keys: 1,
+        active_keys: 3,
         five_hour_pct: 35,
         seven_day_pct: 88,
       },

@@ -26,18 +26,18 @@ import crypto from 'crypto';
 // ============================================================================
 
 const HOME = os.homedir();
-const XY_DIR = path.join(HOME, 'git/target-project');
-const XY_CLAUDE_DIR = path.join(XY_DIR, '.claude');
-const XY_STATE_DIR = path.join(XY_CLAUDE_DIR, 'state');
+const TARGET_DIR = path.join(HOME, 'git/target-project');
+const TARGET_CLAUDE_DIR = path.join(TARGET_DIR, '.claude');
+const TARGET_STATE_DIR = path.join(TARGET_CLAUDE_DIR, 'state');
 
 const ROTATION_STATE_PATH = path.join(HOME, '.claude', 'api-key-rotation.json');
-const ROTATION_LOG_PATH = path.join(XY_CLAUDE_DIR, 'api-key-rotation.log');
-const STOP_HOOK_DEBUG_PATH = path.join(XY_CLAUDE_DIR, 'hooks', 'stop-hook-debug.log');
-const HOURLY_AUTOMATION_LOG_PATH = path.join(XY_CLAUDE_DIR, 'hourly-automation.log');
-const AGENT_TRACKER_PATH = path.join(XY_STATE_DIR, 'agent-tracker-history.json');
-const QUOTA_INTERRUPTED_PATH = path.join(XY_STATE_DIR, 'quota-interrupted-sessions.json');
-const PAUSED_SESSIONS_PATH = path.join(XY_STATE_DIR, 'paused-sessions.json');
-const LOG_FILE = path.join(XY_STATE_DIR, 'rotation-stress-monitor.log');
+const ROTATION_LOG_PATH = path.join(TARGET_CLAUDE_DIR, 'api-key-rotation.log');
+const STOP_HOOK_DEBUG_PATH = path.join(TARGET_CLAUDE_DIR, 'hooks', 'stop-hook-debug.log');
+const HOURLY_AUTOMATION_LOG_PATH = path.join(TARGET_CLAUDE_DIR, 'hourly-automation.log');
+const AGENT_TRACKER_PATH = path.join(TARGET_STATE_DIR, 'agent-tracker-history.json');
+const QUOTA_INTERRUPTED_PATH = path.join(TARGET_STATE_DIR, 'quota-interrupted-sessions.json');
+const PAUSED_SESSIONS_PATH = path.join(TARGET_STATE_DIR, 'paused-sessions.json');
+const LOG_FILE = path.join(TARGET_STATE_DIR, 'rotation-stress-monitor.log');
 const FORENSICS_DIR = path.join(HOME, '.claude', 'state', 'rotation-forensics');
 
 const EXPIRY_BUFFER_MS = 600_000; // 10 min — matches key-sync.js
@@ -212,7 +212,7 @@ function readAgentTracker() {
   return readJsonSafe(AGENT_TRACKER_PATH);
 }
 
-function getXyProcesses() {
+function getTargetProcesses() {
   try {
     const output = execSync(
       "ps aux | grep '[c]laude' | grep 'target-project'",
@@ -480,7 +480,7 @@ function captureForensicSnapshot(failureConditions) {
     } catch { /* ok */ }
 
     // Process snapshot
-    const processes = getXyProcesses();
+    const processes = getTargetProcesses();
 
     // Keychain
     const kc = getKeychainToken();
@@ -620,7 +620,7 @@ function formatSummaryTable(kc, rotState) {
   lines.push(`${C.cyan}╠══════════════════════════════════════════════════════════════╣${C.reset}`);
   trimOldEntries(state.stats.spawned);
   trimOldEntries(state.stats.died);
-  const processes = getXyProcesses();
+  const processes = getTargetProcesses();
   lines.push(`║ Sessions (1h): spawned=${state.stats.spawned.length} completed=? died=${state.stats.died.length} running=${processes.length}/${MAX_CONCURRENT_AGENTS}`);
 
   // Rotation stats
@@ -724,7 +724,7 @@ function pollFast() {
   if (rotState) state.rotation.lastActiveKeyId = rotState.active_key_id;
 
   // 3. Processes
-  const processes = getXyProcesses();
+  const processes = getTargetProcesses();
 
   // Track new PIDs (birth times)
   for (const p of processes) {
@@ -835,7 +835,7 @@ async function main() {
   log(`Fast poll: ${FAST_INTERVAL_MS / 1000}s | Medium: ${MEDIUM_INTERVAL_MS / 1000}s | Summary: ${SUMMARY_INTERVAL_MS / 1000}s`);
   log(`Log: ${LOG_FILE}`);
   log(`Forensics: ${FORENSICS_DIR}`);
-  log(`Target: ${XY_DIR}`);
+  log(`Target: ${TARGET_DIR}`);
   log('');
 
   // Initialize log offsets to current file sizes (don't replay old content)
