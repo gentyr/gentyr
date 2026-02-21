@@ -11,3 +11,4 @@ dist/
 .claude/protected-action-approvals.json
 .claude/protection-state.json
 coverage/
+.claude/worktrees/

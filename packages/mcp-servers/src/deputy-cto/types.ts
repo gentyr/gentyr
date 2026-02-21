@@ -432,3 +432,6 @@ export interface ListPendingActionRequestsResult {
   count: number;
   message: string;
 }
+
+export const GetMergeChainStatusArgsSchema = z.object({});
+export type GetMergeChainStatusArgs = z.infer<typeof GetMergeChainStatusArgsSchema>;

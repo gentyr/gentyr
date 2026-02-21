@@ -486,53 +486,7 @@ describe('UsageTrajectory', () => {
         rotation_events_24h: 2,
       };
 
-      const accountOverview = {
-        hasData: true,
-        activeKeyId: 'a3f8d21c...',
-        totalRotations24h: 2,
-        accounts: [
-          {
-            keyId: 'a3f8d21c...',
-            status: 'active' as const,
-            isCurrent: true,
-            subscriptionType: 'claude_max',
-            email: 'account1@test.com',
-            expiresAt: new Date(),
-            addedAt: new Date(),
-            lastUsedAt: new Date(),
-            fiveHourPct: 35,
-            sevenDayPct: 88,
-            sevenDaySonnetPct: null,
-          },
-          {
-            keyId: 'b7c4e92f...',
-            status: 'active' as const,
-            isCurrent: false,
-            subscriptionType: 'claude_max',
-            email: 'account2@test.com',
-            expiresAt: new Date(),
-            addedAt: new Date(),
-            lastUsedAt: new Date(),
-            fiveHourPct: 98,
-            sevenDayPct: 100,
-            sevenDaySonnetPct: null,
-          },
-          {
-            keyId: 'c9d5f13a...',
-            status: 'active' as const,
-            isCurrent: false,
-            subscriptionType: 'claude_max',
-            email: 'account3@test.com',
-            expiresAt: new Date(),
-            addedAt: new Date(),
-            lastUsedAt: new Date(),
-            fiveHourPct: 12,
-            sevenDayPct: 45,
-            sevenDaySonnetPct: null,
-          },
-        ],
-        events: [],
-      };
+      const accountOverview = makeAccountOverview(verifiedQuota);
 
       const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
       const output = lastFrame();
@@ -594,7 +548,9 @@ describe('UsageTrajectory', () => {
         rotation_events_24h: 1,
       };
 
-      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} />);
+      const accountOverview = makeAccountOverview(verifiedQuota);
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
       const output = lastFrame();
 
       expect(output).toContain('Total');
@@ -655,11 +611,14 @@ describe('UsageTrajectory', () => {
         rotation_events_24h: 1,
       };
 
-      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} />);
+      const accountOverview = makeAccountOverview(verifiedQuota);
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
       const output = lastFrame();
 
-      expect(output).toContain('a3f8d21c...');
-      expect(output).toContain('b7c4e92f...');
+      // Component displays emails when available, not key IDs
+      expect(output).toContain('account1@test.com');
+      expect(output).toContain('account2@test.com');
     });
 
     it('should mark active key with asterisk', () => {
@@ -715,15 +674,18 @@ describe('UsageTrajectory', () => {
         rotation_events_24h: 1,
       };
 
-      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} />);
+      const accountOverview = makeAccountOverview(verifiedQuota);
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
       const output = lastFrame();
 
-      expect(output).toContain('active_key *');
-      expect(output).toContain('inactive_key');
+      // Component displays emails when available
+      expect(output).toContain('account1@test.com *');
+      expect(output).toContain('account2@test.com');
       // Verify inactive key doesn't have asterisk (account for padding)
       const lines = output!.split('\n');
-      const inactiveKeyLine = lines.find(line => line.includes('inactive_key'));
-      expect(inactiveKeyLine).not.toMatch(/inactive_key\s+\*/);
+      const inactiveKeyLine = lines.find(line => line.includes('account2@test.com'));
+      expect(inactiveKeyLine).not.toMatch(/account2@test\.com\s+\*/);
     });
 
     it('should skip unhealthy keys in quota bars', () => {
@@ -786,11 +748,14 @@ describe('UsageTrajectory', () => {
         rotation_events_24h: 1,
       };
 
-      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} />);
+      const accountOverview = makeAccountOverview(verifiedQuota);
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
       const output = lastFrame();
 
-      expect(output).toContain('healthy_key');
-      expect(output).toContain('another_healthy');
+      // Component displays emails when available (only healthy keys with quota are shown)
+      expect(output).toContain('account1@test.com'); // healthy_key
+      expect(output).toContain('account2@test.com'); // another_healthy
       expect(output).not.toContain('unhealthy_key');
     });
 
@@ -854,11 +819,14 @@ describe('UsageTrajectory', () => {
         rotation_events_24h: 1,
       };
 
-      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} />);
+      const accountOverview = makeAccountOverview(verifiedQuota);
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
       const output = lastFrame();
 
-      expect(output).toContain('valid_key');
-      expect(output).toContain('another_valid');
+      // Component displays emails when available (only keys with quota are shown)
+      expect(output).toContain('account1@test.com'); // valid_key
+      expect(output).toContain('account2@test.com'); // another_valid
       expect(output).not.toContain('null_quota_key');
     });
 
@@ -915,7 +883,9 @@ describe('UsageTrajectory', () => {
         rotation_events_24h: 1,
       };
 
-      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} />);
+      const accountOverview = makeAccountOverview(verifiedQuota);
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
       const output = lastFrame();
 
       // Verify both sections exist
@@ -923,9 +893,9 @@ describe('UsageTrajectory', () => {
       expect(output).toContain('5-Hour');
       expect(output).toContain('7-Day');
       expect(output).toContain('Total');
-      // Verify keys are shown
-      expect(output).toContain('key1');
-      expect(output).toContain('key2');
+      // Verify keys are shown (component displays emails when available)
+      expect(output).toContain('account1@test.com');
+      expect(output).toContain('account2@test.com');
     });
   });
 
@@ -1088,6 +1058,420 @@ describe('UsageTrajectory', () => {
 
       // Structure should be identical with fixed timestamps
       expect(render1.lastFrame()).toBe(render2.lastFrame());
+    });
+  });
+
+  describe('Email Deduplication Logic', () => {
+    it('should deduplicate accounts with same email address', () => {
+      const now = new Date();
+      const trajectory: TrajectoryResult = {
+        snapshots: [
+          { timestamp: now, fiveHour: 45, sevenDay: 65 },
+        ],
+        fiveHourProjectedAtReset: null,
+        sevenDayProjectedAtReset: null,
+        fiveHourResetTime: null,
+        sevenDayResetTime: null,
+        fiveHourTrendPerHour: null,
+        sevenDayTrendPerDay: null,
+        hasData: true,
+      };
+
+      const verifiedQuota: VerifiedQuotaResult = {
+        keys: [
+          {
+            key_id: 'key1',
+            subscription_type: 'claude_max',
+            is_current: true,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 35, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 88, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+          {
+            key_id: 'key2',
+            subscription_type: 'claude_max',
+            is_current: false,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 50, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 70, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+        ],
+        healthy_count: 2,
+        total_attempted: 2,
+        aggregate: {
+          five_hour: { utilization: 42, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+          seven_day: { utilization: 79, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+          extra_usage_enabled: false,
+          error: null,
+        },
+        rotation_events_24h: 1,
+      };
+
+      const accountOverview = {
+        hasData: true,
+        activeKeyId: 'key1',
+        totalRotations24h: 1,
+        accounts: [
+          {
+            keyId: 'key1',
+            status: 'active' as const,
+            isCurrent: true,
+            subscriptionType: 'claude_max',
+            email: 'duplicate@test.com',
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 35,
+            sevenDayPct: 88,
+            sevenDaySonnetPct: null,
+          },
+          {
+            keyId: 'key2',
+            status: 'active' as const,
+            isCurrent: false,
+            subscriptionType: 'claude_max',
+            email: 'duplicate@test.com', // Same email
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 50,
+            sevenDayPct: 70,
+            sevenDaySonnetPct: null,
+          },
+        ],
+        events: [],
+      };
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
+      const output = lastFrame();
+
+      // Should only show one account, not both duplicates (after deduplication only 1 unique email remains)
+      expect(output).not.toContain('Per-Account Quota');
+    });
+
+    it('should show quota bars when multiple unique emails exist', () => {
+      const now = new Date();
+      const trajectory: TrajectoryResult = {
+        snapshots: [
+          { timestamp: now, fiveHour: 45, sevenDay: 65 },
+        ],
+        fiveHourProjectedAtReset: null,
+        sevenDayProjectedAtReset: null,
+        fiveHourResetTime: null,
+        sevenDayResetTime: null,
+        fiveHourTrendPerHour: null,
+        sevenDayTrendPerDay: null,
+        hasData: true,
+      };
+
+      const verifiedQuota: VerifiedQuotaResult = {
+        keys: [
+          {
+            key_id: 'key1',
+            subscription_type: 'claude_max',
+            is_current: true,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 35, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 88, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+          {
+            key_id: 'key2',
+            subscription_type: 'claude_max',
+            is_current: false,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 50, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 70, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+        ],
+        healthy_count: 2,
+        total_attempted: 2,
+        aggregate: {
+          five_hour: { utilization: 42, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+          seven_day: { utilization: 79, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+          extra_usage_enabled: false,
+          error: null,
+        },
+        rotation_events_24h: 1,
+      };
+
+      const accountOverview = {
+        hasData: true,
+        activeKeyId: 'key1',
+        totalRotations24h: 1,
+        accounts: [
+          {
+            keyId: 'key1',
+            status: 'active' as const,
+            isCurrent: true,
+            subscriptionType: 'claude_max',
+            email: 'unique1@test.com',
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 35,
+            sevenDayPct: 88,
+            sevenDaySonnetPct: null,
+          },
+          {
+            keyId: 'key2',
+            status: 'active' as const,
+            isCurrent: false,
+            subscriptionType: 'claude_max',
+            email: 'unique2@test.com', // Different email
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 50,
+            sevenDayPct: 70,
+            sevenDaySonnetPct: null,
+          },
+        ],
+        events: [],
+      };
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
+      const output = lastFrame();
+
+      expect(output).toContain('Per-Account Quota'); // Should show quota bars for 2 unique accounts
+    });
+
+    it('should use keyId as fallback when email is null', () => {
+      const now = new Date();
+      const trajectory: TrajectoryResult = {
+        snapshots: [
+          { timestamp: now, fiveHour: 45, sevenDay: 65 },
+        ],
+        fiveHourProjectedAtReset: null,
+        sevenDayProjectedAtReset: null,
+        fiveHourResetTime: null,
+        sevenDayResetTime: null,
+        fiveHourTrendPerHour: null,
+        sevenDayTrendPerDay: null,
+        hasData: true,
+      };
+
+      const verifiedQuota: VerifiedQuotaResult = {
+        keys: [
+          {
+            key_id: 'key1',
+            subscription_type: 'claude_max',
+            is_current: true,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 35, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 88, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+          {
+            key_id: 'key2',
+            subscription_type: 'claude_max',
+            is_current: false,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 50, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 70, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+        ],
+        healthy_count: 2,
+        total_attempted: 2,
+        aggregate: {
+          five_hour: { utilization: 42, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+          seven_day: { utilization: 79, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+          extra_usage_enabled: false,
+          error: null,
+        },
+        rotation_events_24h: 1,
+      };
+
+      const accountOverview = {
+        hasData: true,
+        activeKeyId: 'key1',
+        totalRotations24h: 1,
+        accounts: [
+          {
+            keyId: 'key1',
+            status: 'active' as const,
+            isCurrent: true,
+            subscriptionType: 'claude_max',
+            email: null, // No email - should use keyId
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 35,
+            sevenDayPct: 88,
+            sevenDaySonnetPct: null,
+          },
+          {
+            keyId: 'key2',
+            status: 'active' as const,
+            isCurrent: false,
+            subscriptionType: 'claude_max',
+            email: null, // No email - should use keyId
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 50,
+            sevenDayPct: 70,
+            sevenDaySonnetPct: null,
+          },
+        ],
+        events: [],
+      };
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
+      const output = lastFrame();
+
+      // Should show both accounts since keyIds are unique
+      expect(output).toContain('Per-Account Quota');
+      expect(output).toContain('key1');
+      expect(output).toContain('key2');
+    });
+
+    it('should keep first account when duplicates exist', () => {
+      const now = new Date();
+      const trajectory: TrajectoryResult = {
+        snapshots: [
+          { timestamp: now, fiveHour: 45, sevenDay: 65 },
+        ],
+        fiveHourProjectedAtReset: null,
+        sevenDayProjectedAtReset: null,
+        fiveHourResetTime: null,
+        sevenDayResetTime: null,
+        fiveHourTrendPerHour: null,
+        sevenDayTrendPerDay: null,
+        hasData: true,
+      };
+
+      const verifiedQuota: VerifiedQuotaResult = {
+        keys: [
+          {
+            key_id: 'key1',
+            subscription_type: 'claude_max',
+            is_current: true,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 35, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 88, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+          {
+            key_id: 'key2',
+            subscription_type: 'claude_max',
+            is_current: false,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 70, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 90, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+          {
+            key_id: 'key3',
+            subscription_type: 'claude_max',
+            is_current: false,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 50, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 75, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+        ],
+        healthy_count: 3,
+        total_attempted: 3,
+        aggregate: {
+          five_hour: { utilization: 52, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+          seven_day: { utilization: 84, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+          extra_usage_enabled: false,
+          error: null,
+        },
+        rotation_events_24h: 2,
+      };
+
+      const accountOverview = {
+        hasData: true,
+        activeKeyId: 'key1',
+        totalRotations24h: 2,
+        accounts: [
+          {
+            keyId: 'key1',
+            status: 'active' as const,
+            isCurrent: true,
+            subscriptionType: 'claude_max',
+            email: 'shared@test.com',
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 35,
+            sevenDayPct: 88,
+            sevenDaySonnetPct: null,
+          },
+          {
+            keyId: 'key2',
+            status: 'active' as const,
+            isCurrent: false,
+            subscriptionType: 'claude_max',
+            email: 'unique@test.com',
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 70,
+            sevenDayPct: 90,
+            sevenDaySonnetPct: null,
+          },
+          {
+            keyId: 'key3',
+            status: 'active' as const,
+            isCurrent: false,
+            subscriptionType: 'claude_max',
+            email: 'shared@test.com', // Same as key1
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 50,
+            sevenDayPct: 75,
+            sevenDaySonnetPct: null,
+          },
+        ],
+        events: [],
+      };
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
+      const output = lastFrame();
+
+      // Should show quota bars (2 unique emails)
+      expect(output).toContain('Per-Account Quota');
+      // Should show first occurrence (key1 with 35%)
+      expect(output).toContain('35%');
+      // Should show unique account (key2 with 70%)
+      expect(output).toContain('70%');
+      // Should NOT show duplicate (key3 with 50%) - this validates deduplication
+      expect(output).not.toContain('50%');
     });
   });
 });

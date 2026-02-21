@@ -49,6 +49,7 @@ Present a concise briefing:
 - Whether commits are currently blocked (and why)
 - Triage stats: pending/in-progress/self-handled/escalated (24h)
 - Any critical/high-priority items
+- Merge chain status (call `mcp__deputy-cto__get_merge_chain_status()` for branch positions, active/stale feature branches, uncommitted changes)
 
 ### 2. Batch Queue Review
 
