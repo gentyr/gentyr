@@ -43,3 +43,10 @@ export const FORCED_FOLLOWUP_CREATORS: readonly string[] = ['deputy-cto'] as con
 
 export const TASK_STATUS = ['pending', 'in_progress', 'completed'] as const;
 export type TaskStatus = (typeof TASK_STATUS)[number];
+
+// ============================================================================
+// Task Priority
+// ============================================================================
+
+export const TASK_PRIORITY = ['normal', 'urgent'] as const;
+export type TaskPriority = (typeof TASK_PRIORITY)[number];

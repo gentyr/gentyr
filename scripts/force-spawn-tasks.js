@@ -92,6 +92,7 @@ const SECTION_AGENT_MAP_KEYS = {
   'TEST-WRITER': { agent: 'test-writer', agentTypeKey: 'TASK_RUNNER_TEST_WRITER' },
   'PROJECT-MANAGER': { agent: 'project-manager', agentTypeKey: 'TASK_RUNNER_PROJECT_MANAGER' },
   'DEPUTY-CTO': { agent: 'deputy-cto', agentTypeKey: 'TASK_RUNNER_DEPUTY_CTO' },
+  'PRODUCT-MANAGER': { agent: 'product-manager', agentTypeKey: 'TASK_RUNNER_PRODUCT_MANAGER' },
 };
 
 // Resolved after AGENT_TYPES is loaded
@@ -504,11 +505,13 @@ async function main() {
     const db = new Database(todoDbPath, { readonly: true });
     const placeholders = config.sections.map(() => '?').join(',');
     candidates = db.prepare(`
-      SELECT id, section, title, description
+      SELECT id, section, title, description, priority
       FROM tasks
       WHERE status = 'pending'
         AND section IN (${placeholders})
-      ORDER BY created_timestamp ASC
+      ORDER BY
+        CASE WHEN priority = 'urgent' THEN 0 ELSE 1 END,
+        created_timestamp ASC
     `).all(...config.sections);
     db.close();
   } catch (err) {

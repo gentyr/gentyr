@@ -34,8 +34,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     followup_enabled INTEGER NOT NULL DEFAULT 0,
     followup_section TEXT,
     followup_prompt TEXT,
+    priority TEXT NOT NULL DEFAULT 'normal',
     CONSTRAINT valid_status CHECK (status IN ('pending', 'in_progress', 'completed')),
-    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO'))
+    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER')),
+    CONSTRAINT valid_priority CHECK (priority IN ('normal', 'urgent'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_section ON tasks(section);
@@ -164,6 +166,7 @@ export const VALID_SECTIONS = [
   'CODE-REVIEWER',
   'PROJECT-MANAGER',
   'DEPUTY-CTO',
+  'PRODUCT-MANAGER',
 ] as const;
 
 export type ValidSection = (typeof VALID_SECTIONS)[number];

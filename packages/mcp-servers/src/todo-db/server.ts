@@ -56,6 +56,7 @@ import {
   type SessionMessage,
   type ErrorResult,
   type ValidSection,
+  type TaskPriority,
 } from './types.js';
 
 // ============================================================================
@@ -87,8 +88,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     followup_enabled INTEGER NOT NULL DEFAULT 0,
     followup_section TEXT,
     followup_prompt TEXT,
+    priority TEXT NOT NULL DEFAULT 'normal',
     CONSTRAINT valid_status CHECK (status IN ('pending', 'in_progress', 'completed')),
-    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER'))
+    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER')),
+    CONSTRAINT valid_priority CHECK (priority IN ('normal', 'urgent'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_section ON tasks(section);
@@ -152,6 +155,13 @@ function initializeDatabase(): Database.Database {
     db.exec("DROP TABLE tasks_old");
   }
 
+  // Auto-migration: add priority column if missing (existing databases)
+  try {
+    db.prepare("SELECT priority FROM tasks LIMIT 0").run();
+  } catch {
+    db.exec("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'");
+  }
+
   return db;
 }
 
@@ -185,6 +195,7 @@ function taskToResponse(task: TaskRecord): TaskResponse {
     completed_at: task.completed_at,
     assigned_by: task.assigned_by,
     followup_enabled: task.followup_enabled === 1,
+    priority: (task.priority ?? 'normal') as TaskPriority,
   };
 }
 
@@ -225,6 +236,10 @@ function listTasks(args: ListTasksArgs): ListTasksResult {
   if (args.status) {
     sql += ' AND status = ?';
     params.push(args.status);
+  }
+  if (args.priority) {
+    sql += ' AND priority = ?';
+    params.push(args.priority);
   }
 
   sql += ' ORDER BY created_timestamp DESC';
@@ -300,10 +315,12 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
   const created_at = now.toISOString();
   const created_timestamp = Math.floor(now.getTime() / 1000);
 
+  const priority = args.priority ?? 'normal';
+
   db.prepare(`
-    INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt)
-    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, args.section, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt);
+    INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority)
+    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, args.section, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority);
 
   return {
     id,
@@ -316,6 +333,7 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     completed_at: null,
     assigned_by: args.assigned_by ?? null,
     followup_enabled,
+    priority: priority as TaskPriority,
     warning,
   };
 }
