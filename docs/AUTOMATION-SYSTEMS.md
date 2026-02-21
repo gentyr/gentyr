@@ -1,6 +1,12 @@
-# Automation & Quota Management Systems
+# the automation layer
 
-How GENTYR's automation hooks, credential rotation, usage optimization, and session recovery systems work together.
+Automation is not a feature of GENTYR. It is the point.
+
+Every ten minutes a background timer wakes up. It checks quota across multiple accounts. It refreshes expiring tokens. It revives dead sessions. It spawns agents for pending tasks. It adjusts its own frequency based on how much API budget remains. No human triggers any of this. No human needs to.
+
+The system has one goal: keep agents working at 90% of available capacity, indefinitely, without intervention. When quota runs low, it slows down. When quota resets, it speeds up. When a session dies, it comes back. When all accounts are exhausted, it waits, then resumes.
+
+This document describes how.
 
 ---
 

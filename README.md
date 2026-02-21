@@ -1,53 +1,58 @@
 # GENTYR
 
+GENTYR is not a tool you micromanage. It is a team you direct.
+
+Ten agents work. A deputy CTO triages. You make the decisions that count.
+
 **G**odlike **E**ntity, **N**ot **T**echnically **Y**our **R**eplacement
 
-An opinionated AI engineering team for solo CTOs.
+GENTYR turns Claude Code into an autonomous engineering team. It installs as a framework of agents, hooks, servers, and guards that govern how AI writes, tests, reviews, and ships code. You point it at a new SaaS project. It builds. You steer.
 
-GENTYR turns Claude Code into a full engineering team that builds new SaaS products from scratch on a fixed TypeScript stack. You make the product decisions. Claude Code writes the code, tests it, reviews it, and ships it — governed by automation so the AI stays on rails and you stay in control.
+## who this is for
 
-## Who This Is For
+Solo founders building new SaaS products from scratch. You want a full engineering team without hiring one. You are willing to adopt a locked stack and let the framework make infrastructure decisions for you. This is not for existing codebases. GENTYR builds from the ground up.
 
-- Solo founder or CTO building a new SaaS product
-- Going from zero to production without hiring an engineering team
-- Willing to adopt an opinionated, non-negotiable stack (see below)
-- Want Claude Code as an engineering team, not just autocomplete
-- **Not** for adopting into existing codebases — GENTYR builds new projects from the ground up
+## the stack
 
-## The Stack
+GENTYR chose managed services so every agent, hook, and server is purpose-built for exactly these tools. No abstraction layers. No configuration matrices. No "bring your own database."
 
-### Application
+TypeScript in strict mode is the only language. Next.js deploys to Vercel for the frontend. Hono deploys to Render for the backend API. Supabase provides PostgreSQL, auth, storage, and row-level security through a single API. Zod validates every payload at runtime. The compliance checker enforces this.
 
-| Technology | Role |
-|---|---|
-| TypeScript (strict, ESM) | Language |
-| Next.js on Vercel | Frontend |
-| Hono on Render | Backend API |
-| Supabase | PostgreSQL + Auth + Storage + RLS |
-| Zod | Runtime validation |
+A pnpm monorepo organizes the project. GitHub Actions run CI/CD. 1Password resolves every secret at runtime through `op://` references. Cloudflare manages DNS. Elastic Cloud aggregates logs. Resend handles transactional email. Codecov tracks test coverage. Vitest runs unit tests. Playwright runs end-to-end tests.
 
-### Infrastructure
+This stack is not configurable. Thirty MCP servers are built for these exact tools. If you want a different database or hosting provider, this is not for you.
 
-| Technology | Role |
-|---|---|
-| pnpm monorepo | Package management |
-| GitHub + Actions | Source control + CI/CD |
-| 1Password | Secrets (`op://` references, zero on disk) |
-| Cloudflare | DNS |
-| Elastic Cloud | Centralized logging |
-| Resend | Transactional email |
-| Codecov | Coverage reporting |
+See [docs/STACK.md](docs/STACK.md) for technical details and MCP server mappings.
 
-### Testing
+## core primitives
 
-| Technology | Role |
-|---|---|
-| Vitest | Unit + integration tests |
-| Playwright | E2E + browser tests |
+### agents
 
-This stack is not configurable. GENTYR's 30 MCP servers, 9 agents, and 32 hooks are built specifically for these tools. If you want a different database or hosting provider, this is not for you.
+Ten specialized roles. Fixed sequence: investigate, write, test, review, manage. Each agent has restricted tool access and a single responsibility. The investigator cannot edit files. The code writer cannot deploy. The test writer cannot approve commits. No general-purpose fallback exists.
 
-## Quick Start
+### hooks
+
+Thirty automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Quota rotation, credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection. Hooks govern what agents can and cannot do.
+
+### servers
+
+Thirty protocol servers connecting agents to external systems. Deployment platforms, secret vaults, task databases, log aggregators, feedback pipelines, coverage reporters. Agents never touch raw APIs. Every external interaction goes through a typed MCP server with a schema and a handler.
+
+### the merge chain
+
+Four stages: feature, preview, staging, main. Enforced locally by root-owned hooks that agents cannot modify. Preview requires passing tests. Staging requires deputy-CTO approval. Main requires CTO sign-off. Stale work is detected and reported automatically.
+
+### the deputy
+
+An autonomous Opus agent that reviews every commit, triages reports, spawns urgent tasks, and escalates decisions to you. Runs on a background timer. You interact through one command: `/deputy-cto`.
+
+## how it runs
+
+Tasks enter the database. The task runner assigns agents on a timer. Agents work in isolated git worktrees. Code flows through the merge chain. The deputy reviews every commit. Hooks enforce compliance on every file change. The quota monitor rotates credentials when usage hits 95%. Dead sessions revive automatically. The usage optimizer scales all cooldowns to target 90% API utilization.
+
+You make the decisions that matter. Automation handles everything else.
+
+## quick start
 
 ```bash
 git clone git@github.com:gentyr/gentyr.git
@@ -56,53 +61,9 @@ sudo gentyr/scripts/setup.sh --path /path/to/project --protect
 
 Start Claude Code in your project, run `/setup-gentyr` to configure credentials, then `/restart-session`. See [docs/SETUP-GUIDE.md](docs/SETUP-GUIDE.md) for details.
 
-## What You Get
+## the CTO report
 
-GENTYR replaces an engineering team with specialized AI agents — investigators, code writers, test writers, reviewers, and a deputy CTO — all governed by automation so you only step in for the decisions that matter.
-
-- **Commit approval gate** -- every commit reviewed by deputy-CTO agent before it lands
-- **Specialized agents** -- 9 agents in a fixed workflow: investigate, write, test, review, ship
-- **Zero secrets on disk** -- credentials resolve from 1Password at runtime; only `op://` references stored
-- **Background task runner** -- spawns agents for pending TODOs on a timer; you set direction, agents execute
-- **AI user feedback** -- persona-based testing (GUI/CLI/API/SDK) triggered by staging changes
-- **Usage optimizer** -- dynamically adjusts spawn rates to target 90% API quota utilization
-- **Automatic session recovery** -- quota-interrupted sessions auto-resume after credential rotation; no lost work
-- **Real-time dashboard** -- CLI status bar and VS Code extension with quota, agents, and infrastructure health
-- **Protection model** -- critical files root-owned; agents cannot modify the rules they operate under
-
-## How It Works
-
-```
-┌──────────────────────────────────┐      ┌──────────────────────────────────┐
-│      GENTYR FRAMEWORK            │      │       YOUR PROJECT               │
-│      (central repo)              │      │       (any repo)                 │
-│                                  │      │                                  │
-│  packages/                       │      │  src/                            │
-│   └─ mcp-servers/                │      │  tests/                          │
-│       ├─ todo-db                 │      │  specs/                          │
-│       ├─ deputy-cto              │      │  CLAUDE.md                       │
-│       └─ ...                     │      │                                  │
-│                                  │      │  .claude/                        │
-│  .claude/                        │      │   ├─ agents/ ←──────────────────┼── symlink
-│   ├─ agents/   ──────────────────────────┼──→                              │
-│   ├─ hooks/    ──────────────────────────┼──→ hooks/ ←────────────────────┼── symlink
-│   └─ skills/   ──────────────────────────┼──→ skills/ ←───────────────────┼── symlink
-│                                  │      │   │                              │
-│                                  │      │   └─ LOCAL DATA (not symlinked)  │
-│                                  │      │       ├─ todo.db                 │
-│                                  │      │       ├─ deputy-cto.db           │
-│                                  │      │       └─ reports.db              │
-└──────────────────────────────────┘      └──────────────────────────────────┘
-         SHARED CODE                              PROJECT STATE
-    (update once, all projects                (isolated per project,
-     get changes automatically)                never shared)
-```
-
-GENTYR installs as symlinks into your project's `.claude/` directory. The framework code is shared across projects; runtime state (databases, config) is isolated per project. One installation serves many repositories.
-
-The agent workflow follows a fixed sequence: investigator, code-writer, test-writer, code-reviewer, project-manager. Each agent has domain-specific prompts and restricted tool access. The deputy-CTO agent gates commits and escalates ambiguous decisions to you.
-
-## CTO Dashboard
+This is what the CTO sees.
 
 <img src="docs/assets/claude-logo.svg" width="69" height="70" align="left">
 
@@ -119,35 +80,12 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
      Pending: 5 CTO decision(s)
 
 ⏺ Bash(node packages/cto-dashboard/dist/index.js)
-     ╭──────────────────────────────────────────────────────────────────────────────╮
-     │ GENTYR CTO DASHBOARD                                        Period: Last 24h │
-     │ Generated: 2026-02-21 10:16                                                  │
-     ╰──────────────────────────────────────────────────────────────────────────────╯
-     
      ╭─ QUOTA & CAPACITY (2 keys) ─────────╮ ╭─ SYSTEM STATUS ──────────────────────╮
      │ 5-hour   ██████░░░░░░░░░░  35%      │ │ Deputy CTO: ENABLED                  │
-     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 10:19AM (3… │
+     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 11:02AM (3… │
      │ Rotations (24h): 2                  │ │ Protection: PROTECTED                │
      │                                     │ │ Commits:    BLOCKED                  │
      ╰─────────────────────────────────────╯ ╰──────────────────────────────────────╯
-     
-     ╭─ ACCOUNT OVERVIEW (3 accounts | 2 rotations 24h) ────────────────────────────╮
-     │ * dev@gentyr.io             active    valid    available  5h: 35%  7d: 88%   │
-     │   backup@gentyr.io          active    valid    available  5h: 12%  7d: 45%   │
-     │   ops@gentyr.io             exhausted valid    exhausted  5h:100%  7d:100%   │
-     │                                                                              │
-     │   Per-account quota bars in USAGE TRAJECTORY below.                          │
-     │                                                                              │
-     │   EVENT HISTORY (last 24h)                                                   │
-     │   9:38AM  Switched to a3f8d21c... (quota_monitor_95pct)                      │
-     │   9:04AM  Account b7c4e92f... exhausted                                      │
-     │   7:46AM  Token refreshed for a3f8d21c...                                    │
-     │   6:10AM  Switched to b7c4e92f... (switched_from_c9d5f13a)                   │
-     │   4:28AM  New account added: c9d5f13a...                                     │
-     │   1:58AM  Token expired for d2e6a47b...                                      │
-     │  10:34PM  Switched to a3f8d21c... (scheduled_rotation)                       │
-     │   8:04PM  Token refreshed for b7c4e92f...                                    │
-     ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ DEPUTY CTO ─────────────────────────────────────────────────────────────────╮
      │ ╭────────────╮ ╭────────────╮ ╭────────────╮ ╭─────────────╮                 │
@@ -205,68 +143,6 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
      │ ◆  Compliance check: G004 hardcoded…  normal    ✓ Handled   22h ago          │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
-     ╭─ USAGE TRENDS ───────────────────────────────────────────────────────────────╮
-     │ 5-Hour Usage (1019 snapshots, 1d ago to now)                                 │
-     │ 100│    ⎽─⎻─⎽                                                                │
-     │  75│  ⎽⎻     ⎺⎻⎽                ⎽⎼⎼⎼⎽     ⎽⎼⎼                                │
-     │  50│─⎻          ⎺⎼⎽          ⎼─⎻     ⎺⎻──⎻   ⎺⎻⎽                             │
-     │  25│               ⎻⎼⎽     ⎼⎺                   ─⎼──⎼⎼⎼─⎼⎼⎼───⎼─⎼─⎼⎼⎼───     │
-     │   0│                  ─⎼⎽⎼⎻                                                  │
-     │ Current: 29%  Min: 0%  Max: 100%                                             │
-     │                                                                              │
-     │ 7-Day Usage                                                                  │
-     │ 100│                                           ⎽⎽⎽⎽⎼⎼⎼⎼⎼⎼───────────────     │
-     │  75│                                ⎽⎽⎽⎼⎼──⎻⎻⎻⎺                              │
-     │  50│──⎼⎼⎽ ⎽                 ⎽⎽⎼⎼──⎻⎻                                         │
-     │  25│     ⎺ ⎺⎻⎻──⎼───⎼───⎻⎻⎺⎺                                                 │
-     │   0│                                                                         │
-     │ Current: 92%  Min: 26%  Max: 93%                                             │
-     │                                                                              │
-     │ 5-Hour Forecast (history → projection)                                       │
-     │ 100│──⎽⎻⎽───────────────────────────────────────────────────────────────     │
-     │  75│ ⎽   ⎻        ⎽⎼⎽  ⎽⎼                                                    │
-     │  50│─     ⎺⎽    ⎽─   ⎻─  ⎻                                                   │
-     │  25│        ⎼             ──⎼─⎼⎼⎼⎼⎼⎼⎼─────────────────────────⎻⎻⎻⎻⎻⎻⎻⎻⎻⎻     │
-     │   0│         ─⎽⎻                                                             │
-     │    └────────────────────────────────────────────────────────────────────     │
-     │     1d ago                           now                   reset: 1h 40m     │
-     │ ━ 5h usage  ━ 90% target    │  left: history  │  right: projected            │
-     │                                                                              │
-     │ 7-Day Forecast (history → projection)                                        │
-     │ 100│──────────────────────⎽⎽⎼⎼⎼─────────────────────────────────────────     │
-     │  75│                 ⎽⎼⎻⎻⎺                                                   │
-     │  50│─⎼⎽⎽        ⎽⎼─⎻⎺                                                        │
-     │  25│    ⎻─⎼─⎼─⎻⎺                                                             │
-     │   0│                                                                         │
-     │    └────────────────────────────────────────────────────────────────────     │
-     │     1d ago                           now                   reset: 1h 40m     │
-     │ ━ 7d usage  ━ 90% target    │  left: history  │  right: projected            │
-     ╰──────────────────────────────────────────────────────────────────────────────╯
-     
-     ╭─ USAGE TRAJECTORY ───────────────────────────────────────────────────────────╮
-     │ 5-Hour Window                       7-Day Window                             │
-     │  ├─ Current:     29%                 ├─ Current:     92%                     │
-     │  ├─ At Reset:    31% ↑               ├─ At Reset:    91%                     │
-     │  ├─ Reset In:    1h 40m              ├─ Reset In:    4d 14h                  │
-     │  └─ Trend:       +2.2%/hr ↑          └─ Trend:       +0.0%/day →             │
-     │                                                                              │
-     │ Per-Account Quota  (* = active)                                              │
-     │                                                                              │
-     │ 5-Hour                                                                       │
-     │  Total                  ██████░░░░░░░░░░  35%                                │
-     │  dev@gentyr.io *        ██████░░░░░░░░░░  35%                                │
-     │  ops@gentyr.io          ████████████████ 100%                                │
-     │  backup@gentyr.io       ██░░░░░░░░░░░░░░  12%                                │
-     │                                                                              │
-     │ 7-Day                                                                        │
-     │  Total                  ██████████████░░  88%                                │
-     │  dev@gentyr.io *        ██████████████░░  88%                                │
-     │  ops@gentyr.io          ████████████████ 100%                                │
-     │  backup@gentyr.io       ███████░░░░░░░░░  45%                                │
-     │                                                                              │
-     │ Projection Method: Linear regression on last 30 snapshots                    │
-     ╰──────────────────────────────────────────────────────────────────────────────╯
-     
      ╭─ AUTOMATED INSTANCES ────────────────────────────────────────────────────────╮
      │ Type                  Runs (24h)  Until Next    Freq Adj                     │
      │ ───────────────────────────────────────────────────────────────────          │
@@ -306,198 +182,6 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
      │ static).                                                                     │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
-     ╭─ TESTING ────────────────────────────────────────────────────────────────────╮
-     │ Failing Suites (5)                                                           │
-     │   ✗ packages/api/src/__tests__/webho… 14h ago   vitest     ●●●●● 5           │
-     │   ✗ packages/frontend/src/__tests__/… 9h ago    vitest     ●●●○○ 3           │
-     │   ✗ e2e/tests/checkout-flow.spec.ts   6h ago    playwright ●●○○○ 2           │
-     │   ✗ packages/worker/src/__tests__/qu… 4h ago    jest       ●○○○○ 1           │
-     │   ✗ packages/shared/src/__tests__/va… 2h ago    vitest     ○○○○○ 0           │
-     │                                                                              │
-     │ Agents (24h):   14    Vitest:   7    Playwright:   3    Writer:   2          │
-     │ Resolved: 3 suites   Unique failures: 8                                      │
-     │                                                                              │
-     │ Test Agent Activity (7d)                                                     │
-     │ 5│                                               ⎻              ──           │
-     │  │                                 ⎽─           ⎻ ⎼     ⎽⎻─    ─  ⎺   ⎼⎺     │
-     │  │             ⎽⎼           ─⎺    ⎽  ─  ⎽⎺⎼    ─       ─   ⎼  ⎼    ⎻⎼⎻       │
-     │  │      ⎽⎺⎼      ⎼  ─⎻⎽   ⎼⎺  ⎻       ⎻⎽   ⎼  ⎼    ⎺⎼⎼⎺     ─⎽               │
-     │ 0│⎽⎽⎼⎺⎻⎽   ⎻⎽⎽─   ─⎼   ⎻⎽⎻     ⎺⎼⎺          ⎽⎻                               │
-     │                                                                              │
-     │ Coverage: 73%   7d trend: ███████                                            │
-     ╰──────────────────────────────────────────────────────────────────────────────╯
-     
-     ╭─ DEPLOYMENTS ────────────────────────────────────────────────────────────────╮
-     │ Production                Staging                    Preview                 │
-     │ ● healthy                 ● failing                  ● no data               │
-     │ 22m ago via render        1h ago via render          0 deploys               │
-     │ 5 deploys                 3 deploys                                          │
-     │                                                                              │
-     │ Pipeline: preview ✓ → staging ✓ → production (24h gate)  Last: 5h ago        │
-     │                                                                              │
-     │ Production Deploys                                                           │
-     │ 22m     ●  gentyr-api             render   live     fix: resolve N+1 query   │
-     │                                                     …                        │
-     │ 3h      ●  gentyr-api             render   live     feat: add webhook        │
-     │                                                     signa…                   │
-     │ 5h      ●  gentyr-web             vercel   ready    feat: CTO dashboard      │
-     │                                                     tra…                     │
-     │ 8h      ●  gentyr-web             vercel   ready    chore: bump lodash to    │
-     │                                                     4…                       │
-     │ 11h     ●  gentyr-worker          render   live     fix: queue processor     │
-     │                                                     cr…                      │
-     │                                                                              │
-     │ Staging Deploys                                                              │
-     │ 1h      ●  gentyr-api-staging     render   failed   wip: experimental        │
-     │                                                     rate-…                   │
-     │ 2h      ●  gentyr-web-staging     vercel   ready    feat: inline styles      │
-     │                                                     rep…                     │
-     │ 7h      ●  gentyr-api-staging     render   live     fix: RLS policy added    │
-     │                                                     t…                       │
-     │                                                                              │
-     │ Deploys (24h): 8   Success: 50%   Failed: 1   Freq: 0.3/hr                   │
-     ╰──────────────────────────────────────────────────────────────────────────────╯
-     
-     ╭─ INFRASTRUCTURE ─────────────────────────────────────────────────────────────╮
-     │ Provider        Status        Detail              Extra                      │
-     │ Render          ● 2 svc       0 suspended         deploy 22m ago             │
-     │ Vercel          ● 1 proj      2 err (24h)                                    │
-     │ Supabase        ● healthy                                                    │
-     │ Elastic         ○ unavailable                                                │
-     │ Cloudflare      ● active      Free Website        NS: 2                      │
-     │                                                                              │
-     │ Render Events                                                                │
-     │ 22m     gentyr-api              live                                         │
-     │ 3h      gentyr-api              live                                         │
-     │ 11h     gentyr-worker           live                                         │
-     │                                                                              │
-     │ Vercel Events                                                                │
-     │ 5h      gentyr-web              ready                                        │
-     │ 8h      gentyr-web              ready                                        │
-     │ 2h      gentyr-web-staging      ready                                        │
-     ╰──────────────────────────────────────────────────────────────────────────────╯
-     
-     ╭─ LOGGING ────────────────────────────────────────────────────────────────────╮
-     │ Log Volume (24h)                                 Total: 44.6K                │
-     │                     ⎼─⎻⎻⎺⎺⎺⎻⎻⎻──⎼⎼⎽              1h: 2.5K                    │
-     │                                                  Errors: 1.8K                │
-     │                  ⎽─⎺               ⎺⎻─⎼⎽         Warnings: 5.5K              │
-     │                                                                              │
-     │                 ─                       ⎻─⎼                                  │
-     │                                                                              │
-     │ ⎽             ─⎺                                                             │
-     │ ⎺⎻─⎼⎼⎽                                                                       │
-     │  ⎺⎻──⎼⎼⎽⎽⎽⎽⎼─⎺                                                               │
-     │  ⎺                                                                           │
-     │                                                                              │
-     │ By Level                               By Service                            │
-     │ info  ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆ 36.8K    api        ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆ 18.3K   │
-     │ warn  ▆▆▆                      5.5K    worker     ▆▆▆▆▆▆▆▆▆▆▆        11.3K   │
-     │ error ▆                        1.8K    auth       ▆▆▆▆▆▆▆             7.2K   │
-     │ debug ▆                         490    deployment ▆▆▆▆                4.8K   │
-     │                                        cron       ▆▆                  3.0K   │
-     │                                                                              │
-     │ Top Errors (24h)                                                             │
-     │  ✗ ZodError: Required field "schema_versi… api             412               │
-     │  ✗ ETIMEDOUT: Connection timed out reachi… worker          287               │
-     │  ✗ UnhandledPromiseRejection: Token verif… auth            194               │
-     │  ✗ RenderBuildError: Exit code 1 in packa… deployment      88                │
-     │  ✗ CronJobError: Payment reconciliation j… cron            43                │
-     │                                                                              │
-     │ Top Warnings (24h)                                                           │
-     │  ⚠ Slow query detected: reports.find() to… api             831               │
-     │  ⚠ Rate limit approaching: 92% of Anthrop… worker          614               │
-     │  ⚠ Deprecated field "userId" still in use… api             488               │
-     │  ⚠ Session token within 5 minutes of expi… auth            327               │
-     │  ⚠ Cache miss rate elevated: 68% on repor… worker          219               │
-     │                                                                              │
-     │ Source Coverage                                                              │
-     │ ● api ● worker ● deployment ○ ci-cd ● testing ○ database ○ cdn ● auth ● cron │
-     │                                                                              │
-     │ Storage: ~0.0 GB/day   Est. Monthly: ~$0.16   Indices: 7                     │
-     ╰──────────────────────────────────────────────────────────────────────────────╯
-     
-     ╭─ FEEDBACK PERSONAS (4) ──────────────────────────────────────────────────────╮
-     │ Name                Mode  Status    Sessions  Satisfaction      Findings     │
-     │ GUI Developer       gui   active    28        satisfied         14           │
-     │ CLI Power User      cli   active    19        very satisfied    8            │
-     │ API Integrator      api   active    22        neutral           11           │
-     │ SDK Automation      sdk   active    15        satisfied         6            │
-     │                                                                              │
-     │ Total: 84 sessions, 39 findings                                              │
-     ╰──────────────────────────────────────────────────────────────────────────────╯
-     
-     ╭─ TIMELINE (24h) ─────────────────────────────────────────────────────────────╮
-     │ 10:13  o  SESSION   User session started — CTO dashboard review              │
-     │                     └─ task-triggered via autonomous mode                    │
-     │                                                                              │
-     │ 10:09  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
-     │                     └─ No violations detected by deputy-cto-review agent     │
-     │                                                                              │
-     │ 10:02  !  REPORT    Hardcoded JWT secret detected in auth middleware [CRITI… │
-     │                     └─Spec G004 violation — credential must be in env or     │
-     │                       Vault                                                  │
-     │                                                                              │
-     │ 09:55  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
-     │                     └─ task-runner-code-reviewer — 8 files changed           │
-     │                                                                              │
-     │ 09:48  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or OS k… │
-     │                     └─ Awaiting CTO decision                                 │
-     │                                                                              │
-     │ 09:40  *  HOOK      PostToolUse: Write blocked — attempt to modify .claude/… │
-     │                     └─ Protected path enforcement triggered                  │
-     │                                                                              │
-     │ 09:32  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
-     │                     └─Supabase row-level security gap — G003 compliance risk │
-     │                                                                              │
-     │                                                                              │
-     │ 09:24  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
-     │                     └─ 12 ESLint errors resolved across 5 files              │
-     │                                                                              │
-     │ 09:15  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
-     │                     └─ claudemd-refactor agent                               │
-     │                                                                              │
-     │ 09:05  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
-     │                     └─ Commit blocked — lint-fixer spawned automatically     │
-     │                                                                              │
-     │ 08:54  !  REPORT    Antipattern scan: silent catch in payment processing fl… │
-     │                     └─ G001 violation — silent failure must be converted to  │
-     │                        loud failure                                          │
-     │                                                                              │
-     │ 08:43  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
-     │                     └─Architecture question — deputy CTO recommends          │
-     │                       rejection                                              │
-     │                                                                              │
-     │ 08:31  o  SESSION   Staging health monitor — all checks passed               │
-     │                     └─ staging-health-monitor agent — 6 services healthy     │
-     │                                                                              │
-     │ 08:18  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
-     │                     └─ task-runner-code-reviewer — 14 type errors fixed      │
-     │                                                                              │
-     │ 08:04  !  REPORT    CORS wildcard on production endpoints — policy violatio… │
-     │                     └─Escalated to CTO for explicit origin allowlist         │
-     │                       decision                                               │
-     │                                                                              │
-     │ 07:48  *  HOOK      Compliance check triggered — 3 files changed in package… │
-     │                     └─ compliance-global agent: all G001–G011 specs verified │
-     │                                                                              │
-     │ 07:33  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
-     │                     └─Scale threshold discussion — recommendation: stay      │
-     │                       SQLite until 5k/day                                    │
-     │                                                                              │
-     │ 07:17  o  SESSION   Investigator session — tracing API latency spike in pro… │
-     │                     └─ task-runner-investigator — root cause: N+1 query in   │
-     │                        reports endpoint                                      │
-     │                                                                              │
-     │ 06:59  +  TASK      Completed: Rotate leaked service account credential      │
-     │                     └─security task — Supabase service role key revoked and  │
-     │                       replaced                                               │
-     │                                                                              │
-     │ 06:42  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
-     │                     └─ Self-handled by deputy CTO — bumped to 4.17.21        │
-     │                                                                              │
-     ╰──────────────────────────────────────────────────────────────────────────────╯
-     
      ╭─ METRICS SUMMARY ────────────────────────────────────────────────────────────╮
      │ ╭─ Tokens ────────╮ ╭─ Sessions ─────╮ ╭─ Agents ───────╮ ╭─ Tasks ────────╮ │
      │ │ In: 148.3K      │ │ Task: 148      │ │ Spawns: 41     │ │ Pending: 278   │ │
@@ -519,34 +203,70 @@ The agent workflow follows a fixed sequence: investigator, code-writer, test-wri
 ```
 <!-- CTO_DASHBOARD_END -->
 
-The dashboard section above is auto-generated. To refresh it:
+See [docs/CTO-DASHBOARD.md](docs/CTO-DASHBOARD.md) for the full report.
+
+The dashboard is auto-generated. To refresh:
 
 ```bash
 npm run generate:readme
 ```
 
-This runs the dashboard with `--mock` data at `COLUMNS=80` and rewrites the content between the HTML comment markers.
+## the automation layer
 
-## Components
+Forty hooks and background timers keep the system running without human triggers.
 
-- 30 MCP servers
-- 10 specialized agents
-- 32 automation hooks
-- 10 slash commands
-- VS Code extension + CLI dashboard
+### quota and credentials
 
-## Documentation
+Multi-account rotation with restartless token swap. The quota monitor checks every five minutes. At 95% utilization it rotates to the lowest-usage account. Tokens refresh proactively before expiry. The swap writes to Keychain and Claude Code picks it up without restart. No session interruption. No lost work.
+
+### session recovery
+
+Three modes. Quota-interrupted sessions resume automatically via `--resume`. Dead agents are detected by cross-referencing the tracker database with running processes. Paused sessions wait for account recovery then re-spawn. Maximum three revivals per cycle. Seven-day historical scan window.
+
+### task orchestration
+
+A background timer spawns agents for pending tasks every cycle. Concurrency capped at five simultaneous agents. The usage optimizer targets 90% API quota utilization by scaling all nineteen automation cooldowns through a single factor. When projected usage is low, agents spawn faster. When quota is tight, everything slows down.
+
+### code quality
+
+The compliance checker validates against framework specifications on every file change. The antipattern hunter scans for silent catches, hardcoded secrets, and disabled tests. Test failures auto-spawn the test-writer agent. Lint runs on every cycle. Every commit is reviewed by the deputy CTO before it lands.
+
+### deployment pipeline
+
+The merge chain promotes code through four stages on configurable timers. The stale work detector flags uncommitted changes and unpushed branches. Feedback agents spawn on staging changes to test the product as real users across GUI, CLI, API, and SDK modes.
+
+### protection
+
+Critical files are root-owned. Agents cannot modify the hooks, guards, or specs that govern them. The credential file guard blocks agents from reading `.mcp.json`. Secret leak detection scans every diff. Protected path enforcement triggers on any write attempt to `.claude/hooks/`.
+
+See [docs/AUTOMATION-SYSTEMS.md](docs/AUTOMATION-SYSTEMS.md) for implementation details.
+
+## the feedback loop
+
+AI personas test the product as real users. Four modes: GUI, CLI, API, SDK. No source code access. Personas interact with the running application and report findings. Those findings go to the deputy-CTO triage pipeline. Not testing code. Testing product.
+
+## secret management
+
+Zero secrets on disk. Zero secrets in agent context. 1Password is the single source of truth. Agents request secrets by name. The server resolves `op://` references internally. Output is sanitized to replace accidentally leaked values with `[REDACTED]`. The executable allowlist prevents arbitrary command injection.
+
+## components
+
+30 MCP servers. 10 agents. 30 hooks. 10 commands. VS Code extension. CLI dashboard.
+
+## documentation
 
 - [Setup Guide](docs/SETUP-GUIDE.md) -- installation, credentials, protection, troubleshooting
 - [Executive Overview](docs/Executive.md) -- architecture, capability inventory, dashboard reference
 - [Deployment Flow](docs/DEPLOYMENT-FLOW.md) -- preview, staging, production promotion pipeline
-- [Stack](docs/STACK.md) -- infrastructure providers and service configuration
+- [Stack](docs/STACK.md) -- infrastructure providers, MCP mappings, monorepo structure
+- [Automation Systems](docs/AUTOMATION-SYSTEMS.md) -- quota management, session recovery, usage optimization
+- [CTO Dashboard](docs/CTO-DASHBOARD.md) -- full dashboard output
 - [Credential Detection](docs/CREDENTIAL-DETECTION.md) -- multi-layer API key detection architecture
 - [Secret Paths](docs/SECRET-PATHS.md) -- canonical 1Password `op://` references
 - [Testing](docs/TESTING.md) -- AI user feedback system and end-to-end test plan
 - [Changelog](docs/CHANGELOG.md) -- version history
 
-## Requirements
+## requirements
 
 - Node.js 20+
 - pnpm 8+
@@ -554,6 +274,16 @@ This runs the dashboard with `--mock` data at `COLUMNS=80` and rewrites the cont
 - Claude Max subscription (Opus 4.6)
 - 1Password CLI (optional, for infrastructure credentials)
 
-## License
+---
+
+GENTYR treats development as continuous orchestration rather than episodic prompting.
+
+Agents coordinate. Products ship.
+
+```
+scripts/setup.sh --path /your/project --protect
+```
+
+## license
 
 [MIT](LICENSE)

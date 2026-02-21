@@ -1,14 +1,15 @@
 /**
  * Unit tests for generate-readme.js
  *
- * Tests the script that regenerates the CTO Dashboard section in README.md by:
+ * Tests the script that regenerates the CTO Dashboard section in both
+ * README.md (teaser) and docs/CTO-DASHBOARD.md (full output) by:
  * - Running the dashboard with --mock flag
- * - Replacing content between HTML comment markers
+ * - Replacing content between HTML comment markers in both files
  *
  * Uses Node's built-in test runner (node:test) for standalone script testing.
  * Run with: node --test scripts/__tests__/generate-readme.test.js
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -30,6 +31,8 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 const START_MARKER = '<!-- CTO_DASHBOARD_START -->';
 const END_MARKER = '<!-- CTO_DASHBOARD_END -->';
+const FULL_START_MARKER = '<!-- FULL_CTO_DASHBOARD_START -->';
+const FULL_END_MARKER = '<!-- FULL_CTO_DASHBOARD_END -->';
 
 // ============================================================================
 // Code Structure Tests
@@ -58,6 +61,21 @@ describe('generate-readme.js - Code Structure', () => {
       code,
       /END_MARKER\s*=\s*['"]<!-- CTO_DASHBOARD_END -->['"]/,
       'Must define END_MARKER with correct value'
+    );
+  });
+
+  it('should define full dashboard marker constants', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /FULL_START_MARKER\s*=\s*['"]<!-- FULL_CTO_DASHBOARD_START -->['"]/,
+      'Must define FULL_START_MARKER with correct value'
+    );
+    assert.match(
+      code,
+      /FULL_END_MARKER\s*=\s*['"]<!-- FULL_CTO_DASHBOARD_END -->['"]/,
+      'Must define FULL_END_MARKER with correct value'
     );
   });
 
@@ -110,6 +128,12 @@ describe('generate-readme.js - Code Structure', () => {
     assert.match(code, /README\.md/, 'Must target README.md');
   });
 
+  it('should write to docs/CTO-DASHBOARD.md', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /CTO-DASHBOARD\.md/, 'Must target docs/CTO-DASHBOARD.md');
+  });
+
   it('should resolve paths relative to script directory (not cwd)', () => {
     const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
 
@@ -118,11 +142,12 @@ describe('generate-readme.js - Code Structure', () => {
     assert.match(code, /resolve\(__dirname,\s*['"]\.\.['"]/, 'Must resolve ROOT as parent of __dirname');
   });
 
-  it('should log success message to console on completion', () => {
+  it('should log success message for both files', () => {
     const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
 
     assert.match(code, /console\.log/, 'Must log success message to console');
     assert.match(code, /README\.md updated/, 'Success message must reference README.md being updated');
+    assert.match(code, /CTO-DASHBOARD\.md updated/, 'Success message must reference CTO-DASHBOARD.md being updated');
   });
 
   it('should log helpful error context when markers are missing', () => {
@@ -136,6 +161,13 @@ describe('generate-readme.js - Code Structure', () => {
       /Expected:.*\$\{START_MARKER\}|Expected:.*\$\{END_MARKER\}/,
       'Error message must interpolate START_MARKER or END_MARKER variable'
     );
+  });
+
+  it('should define teaser section extraction logic', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /TEASER_SECTIONS/, 'Must define TEASER_SECTIONS list');
+    assert.match(code, /extractTeaserSections/, 'Must define extractTeaserSections function');
   });
 });
 
@@ -247,6 +279,26 @@ describe('generate-readme.js - Marker Logic', () => {
     assert.ok(codeBlockStart < codeBlockEnd, 'Code block must open before it closes');
     assert.ok(codeBlockEnd < markerEnd, 'Code block must close before END_MARKER');
   });
+
+  it('should work with FULL markers for CTO-DASHBOARD.md', () => {
+    const doc = `# Dashboard\n\n${FULL_START_MARKER}\n\`\`\`\nold\n\`\`\`\n${FULL_END_MARKER}\n\nFooter`;
+    const mockOutput = 'full dashboard output';
+
+    const startIdx = doc.indexOf(FULL_START_MARKER);
+    const endIdx = doc.indexOf(FULL_END_MARKER);
+
+    assert.ok(startIdx !== -1, 'FULL_START_MARKER must be found');
+    assert.ok(endIdx !== -1, 'FULL_END_MARKER must be found');
+
+    const before = doc.slice(0, startIdx + FULL_START_MARKER.length);
+    const after = doc.slice(endIdx);
+    const replacement = `\n\`\`\`\n${mockOutput.trimEnd()}\n\`\`\`\n`;
+    const updated = before + replacement + after;
+
+    assert.ok(updated.includes('full dashboard output'), 'New content must be present');
+    assert.ok(updated.includes('Footer'), 'Content after marker must be preserved');
+    assert.ok(!updated.includes('old'), 'Old content must be removed');
+  });
 });
 
 // ============================================================================
@@ -255,16 +307,20 @@ describe('generate-readme.js - Marker Logic', () => {
 
 describe('generate-readme.js - Behavior', () => {
   let readmeBefore;
+  let ctoDashBefore;
   const readmePath = path.join(REPO_ROOT, 'README.md');
+  const ctoDashPath = path.join(REPO_ROOT, 'docs', 'CTO-DASHBOARD.md');
 
   beforeEach(() => {
-    // Snapshot the README before each test so we can detect changes
+    // Snapshot files before each test so we can detect changes
     readmeBefore = fs.readFileSync(readmePath, 'utf8');
+    ctoDashBefore = fs.readFileSync(ctoDashPath, 'utf8');
   });
 
   afterEach(() => {
-    // Restore original README after each test to keep the run idempotent
+    // Restore originals after each test to keep the run idempotent
     fs.writeFileSync(readmePath, readmeBefore);
+    fs.writeFileSync(ctoDashPath, ctoDashBefore);
   });
 
   it('should exit with code 0 on success', async () => {
@@ -273,8 +329,9 @@ describe('generate-readme.js - Behavior', () => {
       env: { ...process.env, COLUMNS: '80' },
     });
 
-    // stdout should contain success message
-    assert.match(stdout, /README\.md updated/, 'Should print success message');
+    // stdout should contain success messages for both files
+    assert.match(stdout, /README\.md updated/, 'Should print README success message');
+    assert.match(stdout, /CTO-DASHBOARD\.md updated/, 'Should print CTO-DASHBOARD success message');
   });
 
   it('should preserve markers in the updated README', async () => {
@@ -287,6 +344,18 @@ describe('generate-readme.js - Behavior', () => {
 
     assert.ok(readmeAfter.includes(START_MARKER), 'START_MARKER must remain in README after update');
     assert.ok(readmeAfter.includes(END_MARKER), 'END_MARKER must remain in README after update');
+  });
+
+  it('should preserve markers in the updated CTO-DASHBOARD.md', async () => {
+    await execAsync(`node "${SCRIPT_PATH}"`, {
+      cwd: REPO_ROOT,
+      env: { ...process.env, COLUMNS: '80' },
+    });
+
+    const ctoDashAfter = fs.readFileSync(ctoDashPath, 'utf8');
+
+    assert.ok(ctoDashAfter.includes(FULL_START_MARKER), 'FULL_START_MARKER must remain in CTO-DASHBOARD.md');
+    assert.ok(ctoDashAfter.includes(FULL_END_MARKER), 'FULL_END_MARKER must remain in CTO-DASHBOARD.md');
   });
 
   it('should place a markdown code block between the markers', async () => {
@@ -348,12 +417,77 @@ describe('generate-readme.js - Behavior', () => {
     assert.ok(lines.length >= 3, `Dashboard output must be non-trivial; got ${lines.length} non-empty line(s)`);
   });
 
+  it('should include full dashboard in CTO-DASHBOARD.md', async () => {
+    await execAsync(`node "${SCRIPT_PATH}"`, {
+      cwd: REPO_ROOT,
+      env: { ...process.env, COLUMNS: '80' },
+    });
+
+    const ctoDashAfter = fs.readFileSync(ctoDashPath, 'utf8');
+
+    const startIdx = ctoDashAfter.indexOf(FULL_START_MARKER);
+    const endIdx = ctoDashAfter.indexOf(FULL_END_MARKER);
+    const between = ctoDashAfter.slice(startIdx + FULL_START_MARKER.length, endIdx);
+
+    const lines = between.split('\n').filter(l => l.trim().length > 0);
+    assert.ok(lines.length >= 10, `Full dashboard must have substantial content; got ${lines.length} non-empty line(s)`);
+  });
+
+  it('should produce a README teaser shorter than the full dashboard', async () => {
+    await execAsync(`node "${SCRIPT_PATH}"`, {
+      cwd: REPO_ROOT,
+      env: { ...process.env, COLUMNS: '80' },
+    });
+
+    const readmeAfter = fs.readFileSync(readmePath, 'utf8');
+    const ctoDashAfter = fs.readFileSync(ctoDashPath, 'utf8');
+
+    const readmeStart = readmeAfter.indexOf(START_MARKER);
+    const readmeEnd = readmeAfter.indexOf(END_MARKER);
+    const readmeBetween = readmeAfter.slice(readmeStart + START_MARKER.length, readmeEnd);
+
+    const fullStart = ctoDashAfter.indexOf(FULL_START_MARKER);
+    const fullEnd = ctoDashAfter.indexOf(FULL_END_MARKER);
+    const fullBetween = ctoDashAfter.slice(fullStart + FULL_START_MARKER.length, fullEnd);
+
+    assert.ok(
+      readmeBetween.length < fullBetween.length,
+      `README teaser (${readmeBetween.length} chars) must be shorter than full dashboard (${fullBetween.length} chars)`
+    );
+  });
+
   it('should exit with code 1 when README has no markers', async () => {
     // Write a README without markers to the repo root temporarily
     const stripped = readmeBefore
       .replace(START_MARKER, '')
       .replace(END_MARKER, '');
     fs.writeFileSync(readmePath, stripped);
+
+    try {
+      await execAsync(`node "${SCRIPT_PATH}"`, {
+        cwd: REPO_ROOT,
+        env: { ...process.env, COLUMNS: '80' },
+      });
+      assert.fail('Script should have exited with non-zero code');
+    } catch (err) {
+      assert.ok(
+        err.code !== 0,
+        `Expected non-zero exit code, got ${err.code}`
+      );
+      assert.match(
+        err.stderr || '',
+        /ERROR|marker|CTO_DASHBOARD/i,
+        'stderr must describe the missing-marker error'
+      );
+    }
+  });
+
+  it('should exit with code 1 when CTO-DASHBOARD.md has no markers', async () => {
+    // Write a CTO-DASHBOARD.md without markers temporarily
+    const stripped = ctoDashBefore
+      .replace(FULL_START_MARKER, '')
+      .replace(FULL_END_MARKER, '');
+    fs.writeFileSync(ctoDashPath, stripped);
 
     try {
       await execAsync(`node "${SCRIPT_PATH}"`, {
