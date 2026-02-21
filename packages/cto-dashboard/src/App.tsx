@@ -278,7 +278,7 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       {/* Usage Trajectory - projections (only if data available) */}
       {trajectory.hasData && (
         <Box marginTop={1}>
-          <UsageTrajectory trajectory={trajectory} />
+          <UsageTrajectory trajectory={trajectory} verifiedQuota={data.verified_quota} accountOverview={accountOverview} />
         </Box>
       )}
 
