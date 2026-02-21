@@ -48,18 +48,24 @@ function envHealthStatus(deploys: DeploymentEntry[]): { status: string; color: s
 
 // ─── Environment Health Overview ─────────────────────────────────────────
 
-function EnvironmentHealth({ data }: { data: DeploymentsData }): React.ReactElement {
+function EnvironmentHealth({ data, localDevCount }: { data: DeploymentsData; localDevCount: number }): React.ReactElement {
   const envs: DeployEnvironment[] = ['production', 'staging', 'preview'];
 
   return (
     <Box flexDirection="row" gap={3}>
+      <Box key="local-dev" flexDirection="column" width={18}>
+        <Text color="cyan" bold>Local Dev</Text>
+        <Text color={localDevCount > 0 ? 'white' : 'gray'}>
+          {localDevCount} branch{localDevCount !== 1 ? 'es' : ''}
+        </Text>
+      </Box>
       {envs.map(env => {
         const deploys = data.byEnvironment[env];
         const health = envHealthStatus(deploys);
         const latest = deploys.length > 0 ? deploys[0] : null;
 
         return (
-          <Box key={env} flexDirection="column" width={24}>
+          <Box key={env} flexDirection="column" width={18}>
             <Text color={envColor(env)} bold>{envLabel(env)}</Text>
             <Box>
               <Text color={health.color}>{'\u25CF'} {health.status}</Text>
@@ -82,14 +88,18 @@ function EnvironmentHealth({ data }: { data: DeploymentsData }): React.ReactElem
 function PipelineDetail({ pipeline }: { pipeline: DeploymentsData['pipeline'] }): React.ReactElement {
   const previewOk = pipeline.previewStatus === 'checked';
   const stagingOk = pipeline.stagingStatus === 'checked';
+  const { localDevCount, stagingFreezeActive } = pipeline;
 
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box flexDirection="row">
         <Text color="gray">Pipeline: </Text>
+        <Text color={localDevCount > 0 ? 'cyan' : 'gray'} dimColor={localDevCount === 0}>local dev ({localDevCount})</Text>
+        <Text color="gray"> {'\u2192'} </Text>
         <Text color={previewOk ? 'green' : 'gray'}>preview {previewOk ? '\u2713' : '\u2013'}</Text>
         <Text color="gray"> {'\u2192'} </Text>
         <Text color={stagingOk ? 'green' : 'gray'}>staging {stagingOk ? '\u2713' : '\u2013'}</Text>
+        {stagingFreezeActive && <Text color="cyan"> {'\u2744'}</Text>}
         <Text color="gray"> {'\u2192'} </Text>
         <Text color="gray">production (24h gate)</Text>
         {pipeline.lastPromotionAt && (
@@ -176,7 +186,7 @@ export function DeploymentsSection({ data }: DeploymentsSectionProps): React.Rea
     <Section title="DEPLOYMENTS" borderColor="blue" width="100%">
       <Box flexDirection="column">
         {/* Per-environment health overview */}
-        <EnvironmentHealth data={data} />
+        <EnvironmentHealth data={data} localDevCount={data.pipeline.localDevCount} />
 
         {/* Pipeline promotion state */}
         <PipelineDetail pipeline={data.pipeline} />

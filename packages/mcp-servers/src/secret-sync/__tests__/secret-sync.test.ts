@@ -26,6 +26,7 @@ import {
   DevServiceSchema,
   ServicesConfigSchema,
   RunCommandArgsSchema,
+  VercelSecretEntrySchema,
 } from '../types.js';
 
 describe('Secret Sync MCP Server - Schema Validation', () => {
@@ -294,6 +295,79 @@ describe('Secret Sync MCP Server - Schema Validation', () => {
       if (result.success) {
         expect(result.data.secrets.manual).toHaveLength(2);
       }
+    });
+  });
+
+  describe('VercelSecretEntrySchema - Per-Environment Support', () => {
+    it('should validate a single entry object', () => {
+      const result = VercelSecretEntrySchema.safeParse({
+        ref: 'op://Vault/Item/field',
+        target: ['production', 'preview'],
+        type: 'plain',
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject entry missing ref', () => {
+      const result = VercelSecretEntrySchema.safeParse({
+        target: ['production'],
+        type: 'plain',
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should validate ServicesConfig with array-format vercel entries', () => {
+      const config = {
+        vercel: { projectId: 'prj_test' },
+        secrets: {
+          vercel: {
+            NEXT_PUBLIC_SITE_URL: [
+              { ref: 'op://Production/SiteConfig/site-url', target: ['production'], type: 'plain' },
+              { ref: 'op://Staging/SiteConfig/site-url', target: ['preview'], type: 'plain' },
+            ],
+          },
+        },
+      };
+
+      const result = ServicesConfigSchema.safeParse(config);
+      expect(result.success).toBe(true);
+    });
+
+    it('should validate mixed single-object and array entries in same config', () => {
+      const config = {
+        vercel: { projectId: 'prj_test' },
+        secrets: {
+          vercel: {
+            DATABASE_URL: {
+              ref: 'op://Vault/db/url',
+              target: ['production', 'preview'],
+              type: 'encrypted',
+            },
+            NEXT_PUBLIC_SITE_URL: [
+              { ref: 'op://Production/SiteConfig/site-url', target: ['production'], type: 'plain' },
+              { ref: 'op://Staging/SiteConfig/site-url', target: ['preview'], type: 'plain' },
+            ],
+          },
+        },
+      };
+
+      const result = ServicesConfigSchema.safeParse(config);
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject empty array entries', () => {
+      const config = {
+        secrets: {
+          vercel: {
+            EMPTY_KEY: [],
+          },
+        },
+      };
+
+      const result = ServicesConfigSchema.safeParse(config);
+      expect(result.success).toBe(false);
     });
   });
 });

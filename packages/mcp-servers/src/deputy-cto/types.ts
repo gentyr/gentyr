@@ -435,3 +435,20 @@ export interface ListPendingActionRequestsResult {
 
 export const GetMergeChainStatusArgsSchema = z.object({});
 export type GetMergeChainStatusArgs = z.infer<typeof GetMergeChainStatusArgsSchema>;
+
+// Hotfix Promotion
+export const RequestHotfixPromotionArgsSchema = z.object({});
+export type RequestHotfixPromotionArgs = z.infer<typeof RequestHotfixPromotionArgsSchema>;
+export interface RequestHotfixPromotionResult {
+  code: string;
+  commits: string[];
+  expires_at: string;
+  message: string;
+}
+
+export const ExecuteHotfixPromotionArgsSchema = z.object({});
+export type ExecuteHotfixPromotionArgs = z.infer<typeof ExecuteHotfixPromotionArgsSchema>;
+export interface ExecuteHotfixPromotionResult {
+  success: boolean;
+  message: string;
+}

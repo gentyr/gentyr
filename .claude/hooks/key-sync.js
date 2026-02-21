@@ -504,34 +504,29 @@ export async function syncKeys(log) {
 
 /**
  * Garbage-collect dead keys from the rotation state.
- * Removes keys with status === 'invalid' whose last_health_check (or added_at)
- * is older than 7 days. Never prunes the active key. Also removes orphaned
- * rotation_log entries referencing pruned keys.
+ * Removes all keys with status === 'invalid' immediately (invalid keys have
+ * permanently revoked refresh tokens and cannot recover). Never prunes the
+ * active key. Also removes orphaned rotation_log entries referencing pruned keys.
  *
  * @param {{version: 1, active_key_id: string|null, keys: Object, rotation_log: Array}} state
  * @param {function} [log] - Optional log function
  */
 export function pruneDeadKeys(state, log) {
   const logFn = log || (() => {});
-  const PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-  const now = Date.now();
   const prunedKeyIds = [];
 
   for (const [keyId, keyData] of Object.entries(state.keys)) {
     if (keyData.status !== 'invalid') continue;
     if (keyId === state.active_key_id) continue;
 
-    const lastSeen = keyData.last_health_check || keyData.added_at || 0;
-    if (now - lastSeen > PRUNE_AGE_MS) {
-      prunedKeyIds.push(keyId);
-    }
+    prunedKeyIds.push(keyId);
   }
 
   if (prunedKeyIds.length === 0) return;
 
   for (const keyId of prunedKeyIds) {
     delete state.keys[keyId];
-    logFn(`[key-sync] Pruned dead key ${keyId.slice(0, 8)}... (invalid > 7 days)`);
+    logFn(`[key-sync] Pruned dead key ${keyId.slice(0, 8)}... (invalid, gc'd)`);
   }
 
   // Remove orphaned rotation_log entries

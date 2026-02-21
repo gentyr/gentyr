@@ -170,6 +170,9 @@ The chrome-bridge MCP server provides access to Claude for Chrome extension capa
 - Media: `gif_creator`, `upload_image`, `resize_window`
 - Workflows: `shortcuts_list`, `shortcuts_execute`, `update_plan`
 
+**Contextual Tips:**
+The chrome-bridge server injects site-specific browser automation tips into tool responses. Tips are sourced from docs/SETUP-GUIDE.md and cover common UI quirks for GitHub, 1Password, Render, Vercel, Cloudflare, Supabase, Elastic Cloud, Resend, and Codecov. Each tip is shown at most once per session on interactive tools (`navigate`, `computer`, `form_input`, `find`, `read_page`).
+
 No credentials required - communicates via local Unix domain socket with length-prefixed JSON framing protocol.
 
 ## Secret Management

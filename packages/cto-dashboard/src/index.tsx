@@ -22,10 +22,12 @@ import { getDeploymentsData } from './utils/deployments-reader.js';
 import { getInfraData } from './utils/infra-reader.js';
 import { getLoggingData } from './utils/logging-reader.js';
 import { getAccountOverviewData } from './utils/account-overview-reader.js';
+import { getWorktreeData } from './utils/worktree-reader.js';
 import {
   getMockDashboardData, getMockTimelineEvents, getMockTrajectory,
   getMockAutomatedInstances, getMockDeputyCto, getMockTesting,
   getMockDeployments, getMockInfra, getMockLogging, getMockAccountOverview,
+  getMockWorktrees,
 } from './mock-data.js';
 
 // ============================================================================
@@ -64,7 +66,7 @@ async function main(): Promise<void> {
   const { hours, mock } = parseArgs();
 
   try {
-    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview;
+    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees;
 
     if (mock) {
       // Use hardcoded mock data — no DB, API, or filesystem access
@@ -78,6 +80,7 @@ async function main(): Promise<void> {
       infra = getMockInfra();
       logging = getMockLogging();
       accountOverview = getMockAccountOverview();
+      worktrees = getMockWorktrees();
     } else {
       // Fetch data from all sources
       data = await getDashboardData(hours);
@@ -102,7 +105,7 @@ async function main(): Promise<void> {
 
       deployments = deploymentsResult.status === 'fulfilled'
         ? deploymentsResult.value
-        : { hasData: false, render: { services: [], recentDeploys: [] }, vercel: { projects: [], recentDeploys: [] }, pipeline: { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null }, combined: [], byEnvironment: { preview: [], staging: [], production: [] }, stats: { totalDeploys24h: 0, successCount24h: 0, failedCount24h: 0 } };
+        : { hasData: false, render: { services: [], recentDeploys: [] }, vercel: { projects: [], recentDeploys: [] }, pipeline: { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null, localDevCount: 0, stagingFreezeActive: false }, combined: [], byEnvironment: { preview: [], staging: [], production: [] }, stats: { totalDeploys24h: 0, successCount24h: 0, failedCount24h: 0 } };
 
       infra = infraResult.status === 'fulfilled'
         ? infraResult.value
@@ -117,6 +120,7 @@ async function main(): Promise<void> {
       }
 
       accountOverview = getAccountOverviewData();
+      worktrees = getWorktreeData();
     }
 
     // Render dashboard (static mode - prints once and exits)
@@ -132,6 +136,7 @@ async function main(): Promise<void> {
         infra={infra}
         logging={logging}
         accountOverview={accountOverview}
+        worktrees={worktrees}
       />,
       { exitOnCtrlC: true }
     );

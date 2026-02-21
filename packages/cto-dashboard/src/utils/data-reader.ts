@@ -220,6 +220,22 @@ export interface AutomationInfo {
   seconds_until_next: number | null;
 }
 
+export interface PersonaReport {
+  id: string;
+  title: string;
+  priority: string;
+  triage_status: string;
+  created_at: string;
+}
+
+export interface SatisfactionDistribution {
+  very_satisfied: number;
+  satisfied: number;
+  neutral: number;
+  dissatisfied: number;
+  very_dissatisfied: number;
+}
+
 export interface FeedbackPersonaSummary {
   name: string;
   consumption_mode: string;
@@ -227,12 +243,14 @@ export interface FeedbackPersonaSummary {
   session_count: number;
   last_satisfaction: string | null;
   findings_count: number;
+  recent_reports: PersonaReport[];
 }
 
 export interface FeedbackPersonasData {
   personas: FeedbackPersonaSummary[];
   total_sessions: number;
   total_findings: number;
+  satisfaction_distribution: SatisfactionDistribution;
 }
 
 export interface DashboardData {
@@ -1430,9 +1448,17 @@ export function getAutomations(): AutomationInfo[] {
 // Feedback Personas
 // ============================================================================
 
+const EMPTY_SATISFACTION: SatisfactionDistribution = {
+  very_satisfied: 0,
+  satisfied: 0,
+  neutral: 0,
+  dissatisfied: 0,
+  very_dissatisfied: 0,
+};
+
 export function getFeedbackPersonas(): FeedbackPersonasData {
   if (!fs.existsSync(USER_FEEDBACK_DB_PATH)) {
-    return { personas: [], total_sessions: 0, total_findings: 0 };
+    return { personas: [], total_sessions: 0, total_findings: 0, satisfaction_distribution: { ...EMPTY_SATISFACTION } };
   }
 
   const db = openReadonlyDb(USER_FEEDBACK_DB_PATH);
@@ -1473,6 +1499,45 @@ export function getFeedbackPersonas(): FeedbackPersonasData {
     satisfactionMap.set(row.name, row.satisfaction_level);
   }
 
+  // Aggregate satisfaction distribution across all sessions
+  interface SatisfactionCountRow { satisfaction_level: string; count: number }
+  const satDist: SatisfactionDistribution = { ...EMPTY_SATISFACTION };
+  const satDistRows = db.prepare(`
+    SELECT satisfaction_level, COUNT(*) as count
+    FROM feedback_sessions
+    WHERE satisfaction_level IS NOT NULL
+    GROUP BY satisfaction_level
+  `).all() as SatisfactionCountRow[];
+  for (const row of satDistRows) {
+    const key = row.satisfaction_level as keyof SatisfactionDistribution;
+    if (key in satDist) {
+      satDist[key] = row.count;
+    }
+  }
+
+  db.close();
+
+  // Query recent reports per persona from cto-reports.db
+  const reportsMap = new Map<string, PersonaReport[]>();
+  if (fs.existsSync(CTO_REPORTS_DB_PATH)) {
+    const reportsDb = openReadonlyDb(CTO_REPORTS_DB_PATH);
+    interface ReportRow { id: string; title: string; priority: string; triage_status: string; created_at: string }
+    for (const p of personas) {
+      const agentName = `feedback-${p.name}`;
+      const reports = reportsDb.prepare(`
+        SELECT id, title, priority, triage_status, created_at
+        FROM reports
+        WHERE reporting_agent = ?
+        ORDER BY created_timestamp DESC
+        LIMIT 3
+      `).all(agentName) as ReportRow[];
+      if (reports.length > 0) {
+        reportsMap.set(p.name, reports);
+      }
+    }
+    reportsDb.close();
+  }
+
   const result: FeedbackPersonaSummary[] = personas.map((p) => ({
     name: p.name,
     consumption_mode: p.consumption_mode,
@@ -1480,13 +1545,14 @@ export function getFeedbackPersonas(): FeedbackPersonasData {
     session_count: p.session_count,
     last_satisfaction: satisfactionMap.get(p.name) ?? null,
     findings_count: p.findings_count,
+    recent_reports: reportsMap.get(p.name) ?? [],
   }));
 
-  db.close();
   return {
     personas: result,
     total_sessions: result.reduce((s, p) => s + p.session_count, 0),
     total_findings: result.reduce((s, p) => s + p.findings_count, 0),
+    satisfaction_distribution: satDist,
   };
 }
 

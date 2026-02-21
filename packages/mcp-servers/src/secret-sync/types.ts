@@ -95,6 +95,14 @@ export type RunCommandArgs = z.infer<typeof RunCommandArgsSchema>;
 // Services Config Schema
 // ============================================================================
 
+export const VercelSecretEntrySchema = z.object({
+  ref: z.string(),
+  target: z.array(z.string()),
+  type: z.string(),
+});
+
+export type VercelSecretEntry = z.infer<typeof VercelSecretEntrySchema>;
+
 export const ServicesConfigSchema = z.object({
   render: z.object({
     production: z.object({
@@ -120,11 +128,10 @@ export const ServicesConfigSchema = z.object({
   secrets: z.object({
     renderProduction: z.record(z.string(), z.string()).optional(),
     renderStaging: z.record(z.string(), z.string()).optional(),
-    vercel: z.record(z.string(), z.object({
-      ref: z.string(),
-      target: z.array(z.string()),
-      type: z.string(),
-    })).optional(),
+    vercel: z.record(z.string(), z.union([
+      VercelSecretEntrySchema,
+      z.array(VercelSecretEntrySchema).min(1),
+    ])).optional(),
     local: z.record(z.string(), z.string().regex(/^op:\/\//, 'Local secrets must be op:// references')).optional(),
     manual: z.array(z.object({
       service: z.string(),

@@ -27,6 +27,7 @@ import {
   InfraSection,
   LoggingSection,
   AccountOverviewSection,
+  WorktreeSection,
   type MetricBoxData,
 } from './components/index.js';
 import type { DashboardData } from './utils/data-reader.js';
@@ -39,6 +40,7 @@ import type { DeploymentsData } from './utils/deployments-reader.js';
 import type { InfraData } from './utils/infra-reader.js';
 import type { LoggingData } from './utils/logging-reader.js';
 import type { AccountOverviewData } from './utils/account-overview-reader.js';
+import type { WorktreeData } from './utils/worktree-reader.js';
 import { formatNumber, formatDateTime, formatTime12h, formatDelta, calculateCacheRate } from './utils/formatters.js';
 
 interface AppProps {
@@ -52,6 +54,7 @@ interface AppProps {
   infra: InfraData;
   logging: LoggingData;
   accountOverview: AccountOverviewData;
+  worktrees: WorktreeData;
 }
 
 function Header({ data }: { data: DashboardData }): React.ReactElement {
@@ -237,7 +240,7 @@ function MetricsSummary({ data }: { data: DashboardData }): React.ReactElement {
   );
 }
 
-export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview }: AppProps): React.ReactElement {
+export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees }: AppProps): React.ReactElement {
   // Compute explicit widths for side-by-side sections
   const termCols = process.stdout.columns || 80;
   const leftWidth = Math.floor((termCols - 1) / 2);  // -1 for gap
@@ -310,6 +313,13 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
         </Box>
       )}
 
+      {/* Worktrees */}
+      {worktrees.hasData && (
+        <Box marginTop={1}>
+          <WorktreeSection data={worktrees} />
+        </Box>
+      )}
+
       {/* Infrastructure */}
       {infra.hasData && (
         <Box marginTop={1}>
@@ -325,11 +335,9 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       )}
 
       {/* Feedback Personas */}
-      {data.feedback_personas.personas.length > 0 && (
-        <Box marginTop={1}>
-          <FeedbackPersonas data={data.feedback_personas} />
-        </Box>
-      )}
+      <Box marginTop={1}>
+        <FeedbackPersonas data={data.feedback_personas} />
+      </Box>
 
       {/* Timeline */}
       <Box marginTop={1}>

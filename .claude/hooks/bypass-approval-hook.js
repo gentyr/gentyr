@@ -33,6 +33,10 @@ const TOKEN_EXPIRY_MS = 5 * 60 * 1000;
 // Pattern to match: APPROVE BYPASS XXXXXX (6 alphanumeric chars)
 const APPROVAL_PATTERN = /APPROVE\s+BYPASS\s+([A-Z0-9]{6})/i;
 
+// Pattern to match: APPROVE HOTFIX XXXXXX (6 alphanumeric chars)
+const HOTFIX_PATTERN = /APPROVE\s+HOTFIX\s+([A-Z0-9]{6})/i;
+const HOTFIX_APPROVAL_TOKEN_FILE = path.join(PROJECT_DIR, '.claude', 'hotfix-approval-token.json');
+
 /**
  * Read user message from stdin (passed by Claude Code for UserPromptSubmit hooks)
  */
@@ -97,6 +101,79 @@ async function validateBypassCode(code) {
     };
   } catch (err) {
     return { valid: false, reason: `Database error: ${err.message}` };
+  }
+}
+
+/**
+ * Try to import better-sqlite3 and check if hotfix code is valid
+ */
+async function validateHotfixCode(code) {
+  try {
+    const Database = (await import('better-sqlite3')).default;
+
+    if (!fs.existsSync(DEPUTY_CTO_DB)) {
+      return { valid: false, reason: 'Database not found' };
+    }
+
+    const db = new Database(DEPUTY_CTO_DB, { readonly: true });
+
+    const row = db.prepare(`
+      SELECT id, code, commits_json, created_at, expires_at FROM hotfix_requests
+      WHERE code = ? AND status = 'pending' AND expires_at > datetime('now')
+    `).get(code);
+
+    db.close();
+
+    if (!row) {
+      return { valid: false, reason: 'No pending hotfix request with this code' };
+    }
+
+    return {
+      valid: true,
+      request_id: row.id,
+      code: row.code,
+      expires_at: row.expires_at,
+    };
+  } catch (err) {
+    return { valid: false, reason: `Database error: ${err.message}` };
+  }
+}
+
+/**
+ * Write hotfix approval token with HMAC signature.
+ */
+function writeHotfixApprovalToken(code, requestId, expiresAt) {
+  const key = loadProtectionKey();
+  const hmac = key ? computeHmac(key, code, String(requestId), expiresAt, 'hotfix-approved') : undefined;
+
+  const token = {
+    code,
+    request_id: requestId,
+    created_at: new Date().toISOString(),
+    expires_at: expiresAt,
+    ...(hmac && { hmac }),
+  };
+
+  try {
+    fs.writeFileSync(HOTFIX_APPROVAL_TOKEN_FILE, JSON.stringify(token, null, 2));
+    return true;
+  } catch (err) {
+    console.error(`[bypass-approval] Failed to write hotfix token: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Mark the hotfix request as approved in the database.
+ */
+async function markHotfixApproved(requestId) {
+  try {
+    const Database = (await import('better-sqlite3')).default;
+    const db = new Database(DEPUTY_CTO_DB);
+    db.prepare("UPDATE hotfix_requests SET status = 'approved' WHERE id = ?").run(requestId);
+    db.close();
+  } catch (err) {
+    console.error(`[bypass-approval] Failed to mark hotfix approved: ${err.message}`);
   }
 }
 
@@ -178,33 +255,55 @@ async function main() {
     process.exit(0);
   }
 
-  // Check if message matches approval pattern
+  // Check if message matches bypass approval pattern
   const match = userMessage.match(APPROVAL_PATTERN);
 
-  if (!match) {
-    // Not an approval message, pass through silently
+  if (match) {
+    const code = match[1].toUpperCase();
+
+    const validation = await validateBypassCode(code);
+
+    if (!validation.valid) {
+      console.error(`[bypass-approval] Invalid bypass code "${code}": ${validation.reason}`);
+      process.exit(0);
+    }
+
+    const written = writeApprovalToken(code, validation.request_id, userMessage);
+
+    if (written) {
+      console.error(`[bypass-approval] Bypass approved for code ${code}`);
+      console.error(`[bypass-approval] Request: ${validation.title}`);
+      console.error(`[bypass-approval] Token valid for 5 minutes`);
+    }
+
     process.exit(0);
   }
 
-  const code = match[1].toUpperCase();
+  // Check if message matches hotfix approval pattern
+  const hotfixMatch = userMessage.match(HOTFIX_PATTERN);
 
-  // Validate the bypass code
-  const validation = await validateBypassCode(code);
+  if (hotfixMatch) {
+    const code = hotfixMatch[1].toUpperCase();
 
-  if (!validation.valid) {
-    console.error(`[bypass-approval] Invalid bypass code "${code}": ${validation.reason}`);
-    process.exit(0); // Don't block the user's message, just log warning
+    const validation = await validateHotfixCode(code);
+
+    if (!validation.valid) {
+      console.error(`[bypass-approval] Invalid hotfix code "${code}": ${validation.reason}`);
+      process.exit(0);
+    }
+
+    const written = writeHotfixApprovalToken(code, validation.request_id, validation.expires_at);
+
+    if (written) {
+      await markHotfixApproved(validation.request_id);
+      console.error(`[bypass-approval] Hotfix approved for code ${code}`);
+      console.error(`[bypass-approval] Token valid until ${validation.expires_at}`);
+    }
+
+    process.exit(0);
   }
 
-  // Write approval token
-  const written = writeApprovalToken(code, validation.request_id, userMessage);
-
-  if (written) {
-    console.error(`[bypass-approval] Bypass approved for code ${code}`);
-    console.error(`[bypass-approval] Request: ${validation.title}`);
-    console.error(`[bypass-approval] Token valid for 5 minutes`);
-  }
-
+  // Not an approval message, pass through silently
   process.exit(0);
 }
 
