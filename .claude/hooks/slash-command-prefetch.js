@@ -61,6 +61,8 @@ const SENTINELS = {
   'configure-personas': '<!-- HOOK:GENTYR:configure-personas -->',
   'spawn-tasks': '<!-- HOOK:GENTYR:spawn-tasks -->',
   'show': '<!-- HOOK:GENTYR:show -->',
+  'product-manager': '<!-- HOOK:GENTYR:product-manager -->',
+  'toggle-product-manager': '<!-- HOOK:GENTYR:toggle-product-manager -->',
 };
 
 /**
@@ -146,6 +148,7 @@ const AUTONOMOUS_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
 const AUTOMATION_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
 const SERVICES_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+const PRODUCT_MANAGER_DB = path.join(PROJECT_DIR, '.claude', 'product-manager.db');
 
 // ============================================================================
 // Mode 1: restart-session
@@ -784,7 +787,7 @@ function handleSpawnTasks() {
   if (todoDb) {
     try {
       const rows = todoDb.prepare(
-        "SELECT section, COUNT(*) as count FROM tasks WHERE status = 'pending' AND section IN ('CODE-REVIEWER', 'INVESTIGATOR & PLANNER', 'TEST-WRITER', 'PROJECT-MANAGER', 'DEPUTY-CTO') GROUP BY section"
+        "SELECT section, COUNT(*) as count FROM tasks WHERE status = 'pending' AND section IN ('CODE-REVIEWER', 'INVESTIGATOR & PLANNER', 'TEST-WRITER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER') GROUP BY section"
       ).all();
       output.gathered.pendingBySection = rows;
       const total = rows.reduce((sum, r) => sum + r.count, 0);
@@ -830,6 +833,83 @@ function handleSpawnTasks() {
   }));
 }
 
+function handleProductManager() {
+  const output = { command: 'product-manager', gathered: {} };
+
+  // Check feature toggle
+  const autonomousConfig = readJson(AUTONOMOUS_MODE_PATH);
+  output.gathered.productManagerEnabled = autonomousConfig?.productManagerEnabled === true;
+
+  const pmDb = openDb(PRODUCT_MANAGER_DB);
+  if (pmDb) {
+    try {
+      const meta = pmDb.prepare("SELECT status, last_updated_at, initiated_by, approved_by FROM analysis_meta WHERE id = 'default'").get();
+      output.gathered.meta = meta ?? { status: 'not_started' };
+
+      const sections = pmDb.prepare('SELECT section_number, title, content FROM sections ORDER BY section_number').all();
+      const sectionStatus = sections.map(s => {
+        const isListSection = s.section_number === 2 || s.section_number === 6;
+        let populated = false;
+        let entryCount = 0;
+        if (isListSection) {
+          const count = pmDb.prepare('SELECT COUNT(*) as c FROM section_entries WHERE section_number = ?').get(s.section_number);
+          entryCount = count?.c ?? 0;
+          populated = entryCount > 0;
+        } else {
+          populated = !!s.content;
+        }
+        return { number: s.section_number, title: s.title, populated, entryCount: isListSection ? entryCount : undefined };
+      });
+      output.gathered.sections = sectionStatus;
+      output.gathered.populatedCount = sectionStatus.filter(s => s.populated).length;
+
+      // Compliance
+      const totalPainPoints = pmDb.prepare("SELECT COUNT(*) as c FROM section_entries WHERE section_number = 6").get();
+      const mappedCount = pmDb.prepare("SELECT COUNT(DISTINCT pain_point_id) as c FROM pain_point_personas").get();
+      output.gathered.compliance = {
+        totalPainPoints: totalPainPoints?.c ?? 0,
+        mapped: mappedCount?.c ?? 0,
+      };
+    } catch {
+      output.gathered.error = 'query failed';
+    } finally {
+      pmDb.close();
+    }
+  } else {
+    output.gathered.meta = { status: 'not_started' };
+    output.gathered.sections = [];
+    output.gathered.populatedCount = 0;
+    output.gathered.note = 'product-manager.db not found';
+  }
+
+  console.log(JSON.stringify({
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:product-manager] ${JSON.stringify(output)}`,
+    },
+  }));
+}
+
+function handleToggleProductManager() {
+  const content = readJson(AUTONOMOUS_MODE_PATH);
+  const output = {
+    command: 'toggle-product-manager',
+    gathered: {
+      productManagerEnabled: content?.productManagerEnabled === true,
+      autonomousMode: content ?? { error: 'autonomous-mode.json not found' },
+    },
+  };
+
+  console.log(JSON.stringify({
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:toggle-product-manager] ${JSON.stringify(output)}`,
+    },
+  }));
+}
+
 function handleShow() {
   // Lightweight check: confirm dashboard binary exists and list sections
   const frameworkLink = path.join(PROJECT_DIR, '.claude-framework');
@@ -848,7 +928,7 @@ function handleShow() {
   const sections = [
     'quota', 'accounts', 'deputy-cto', 'usage', 'automations',
     'testing', 'deployments', 'worktrees', 'infra', 'logging',
-    'timeline', 'tasks',
+    'timeline', 'tasks', 'product-market-fit',
   ];
 
   const output = {
@@ -882,7 +962,7 @@ async function main() {
     return handleRestartSession();
   }
   // Mode 2 handlers — load Database lazily only when needed
-  const needsDb = ['cto-report', 'deputy-cto', 'configure-personas', 'spawn-tasks'];
+  const needsDb = ['cto-report', 'deputy-cto', 'configure-personas', 'spawn-tasks', 'product-manager'];
   const matchedCommand = Object.keys(SENTINELS).find(key => matchesCommand(prompt, key));
   if (matchedCommand && matchedCommand !== 'restart-session') {
     if (needsDb.includes(matchedCommand)) {
@@ -916,6 +996,12 @@ async function main() {
   }
   if (matchesCommand(prompt, 'spawn-tasks')) {
     return handleSpawnTasks();
+  }
+  if (matchesCommand(prompt, 'product-manager')) {
+    return handleProductManager();
+  }
+  if (matchesCommand(prompt, 'toggle-product-manager')) {
+    return handleToggleProductManager();
   }
   if (matchesCommand(prompt, 'show')) {
     return handleShow();

@@ -202,6 +202,13 @@
       "env": {
         "CLAUDE_PROJECT_DIR": "."
       }
+    },
+    "product-manager": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/product-manager/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
     }
   }
 }

@@ -2,7 +2,7 @@
 
 GENTYR is not a tool you micromanage. It is a team you direct.
 
-Ten agents work. A deputy CTO triages. You make the decisions that count.
+Eleven agents work. A deputy CTO triages. You make the decisions that count.
 
 **G**odlike **E**ntity, **N**ot **T**echnically **Y**our **R**eplacement
 
@@ -28,7 +28,7 @@ See [docs/STACK.md](docs/STACK.md) for technical details and MCP server mappings
 
 ### agents
 
-Ten specialized roles. Fixed sequence: investigate, write, test, review, manage. Each agent has restricted tool access and a single responsibility. The investigator cannot edit files. The code writer cannot deploy. The test writer cannot approve commits. No general-purpose fallback exists.
+Eleven specialized roles. Fixed sequence: investigate, plan, write, test, review, analyze. Each agent has restricted tool access and a single responsibility. The investigator cannot edit files. The code writer cannot deploy. The test writer cannot approve commits. The product manager cannot modify code. No general-purpose fallback exists.
 
 ### hooks
 
@@ -251,7 +251,7 @@ Zero secrets on disk. Zero secrets in agent context. 1Password is the single sou
 
 ## components
 
-30 MCP servers. 10 agents. 30 hooks. 10 commands. VS Code extension. CLI dashboard.
+30 MCP servers. 11 agents. 30 hooks. 11 commands. CLI dashboard.
 
 ## documentation
 

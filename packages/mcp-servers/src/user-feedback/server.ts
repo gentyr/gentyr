@@ -221,6 +221,13 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     db.pragma('foreign_keys = ON');
     db.exec(SCHEMA);
 
+    // Auto-migration: add cto_protected column if missing
+    try {
+      db.prepare("SELECT cto_protected FROM personas LIMIT 0").run();
+    } catch {
+      db.exec("ALTER TABLE personas ADD COLUMN cto_protected INTEGER NOT NULL DEFAULT 0");
+    }
+
     return db;
   }
 
@@ -248,6 +255,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       endpoints: JSON.parse(record.endpoints) as string[],
       credentials_ref: record.credentials_ref,
       enabled: record.enabled === 1,
+      cto_protected: record.cto_protected === 1,
       created_at: record.created_at,
       updated_at: record.updated_at,
     };
@@ -277,8 +285,8 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
 
     try {
       db.prepare(`
-        INSERT INTO personas (id, name, description, consumption_mode, behavior_traits, endpoints, credentials_ref, created_at, created_timestamp, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO personas (id, name, description, consumption_mode, behavior_traits, endpoints, credentials_ref, cto_protected, created_at, created_timestamp, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         args.name,
@@ -287,6 +295,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
         JSON.stringify(args.behavior_traits ?? []),
         JSON.stringify(args.endpoints ?? []),
         args.credentials_ref ?? null,
+        args.cto_protected ? 1 : 0,
         created_at,
         created_timestamp,
         created_at,
@@ -310,6 +319,11 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       return { error: `Persona not found: ${args.id}` };
     }
 
+    // CTO-protected access control
+    if (record.cto_protected === 1 && args.caller === 'product-manager') {
+      return { error: 'This persona is CTO-protected. Request CTO approval via deputy-CTO queue.' };
+    }
+
     const updates: string[] = [];
     const params: unknown[] = [];
 
@@ -320,6 +334,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     if (args.endpoints !== undefined) { updates.push('endpoints = ?'); params.push(JSON.stringify(args.endpoints)); }
     if (args.credentials_ref !== undefined) { updates.push('credentials_ref = ?'); params.push(args.credentials_ref); }
     if (args.enabled !== undefined) { updates.push('enabled = ?'); params.push(args.enabled ? 1 : 0); }
+    if (args.cto_protected !== undefined) { updates.push('cto_protected = ?'); params.push(args.cto_protected ? 1 : 0); }
 
     if (updates.length === 0) {
       return { error: 'No fields to update' };
@@ -348,6 +363,10 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
 
     if (!record) {
       return { error: `Persona not found: ${args.id}` };
+    }
+
+    if (record.cto_protected === 1 && args.caller === 'product-manager') {
+      return { error: 'This persona is CTO-protected. Request CTO approval via deputy-CTO queue.' };
     }
 
     // Cascade deletes persona_features entries via FK constraint
@@ -565,7 +584,8 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
              p.id as p_id, p.name as p_name, p.description as p_description,
              p.consumption_mode as p_mode, p.behavior_traits as p_traits,
              p.endpoints as p_endpoints, p.credentials_ref as p_creds,
-             p.enabled as p_enabled, p.created_at as p_created,
+             p.enabled as p_enabled, p.cto_protected as p_cto_protected,
+             p.created_at as p_created,
              p.updated_at as p_updated, p.created_timestamp as p_ts,
              f.name as f_name
       FROM persona_features pf
@@ -583,7 +603,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     `).all(...featureIdList) as (PersonaFeatureRecord & {
       p_id: string; p_name: string; p_description: string; p_mode: ConsumptionMode;
       p_traits: string; p_endpoints: string; p_creds: string | null;
-      p_enabled: number; p_created: string; p_updated: string; p_ts: number;
+      p_enabled: number; p_cto_protected: number; p_created: string; p_updated: string; p_ts: number;
       f_name: string;
     })[];
 
@@ -602,6 +622,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
             endpoints: JSON.parse(row.p_endpoints) as string[],
             credentials_ref: row.p_creds,
             enabled: row.p_enabled === 1,
+            cto_protected: row.p_cto_protected === 1,
             created_at: row.p_created,
             updated_at: row.p_updated,
           },

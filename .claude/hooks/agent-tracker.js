@@ -59,6 +59,7 @@ export const AGENT_TYPES = {
   FEEDBACK_ORCHESTRATOR: 'feedback-orchestrator',
   SESSION_REVIVED: 'session-revived',
   HOTFIX_PROMOTION: 'hotfix-promotion',
+  TASK_RUNNER_PRODUCT_MANAGER: 'task-runner-product-manager',
 };
 
 /**

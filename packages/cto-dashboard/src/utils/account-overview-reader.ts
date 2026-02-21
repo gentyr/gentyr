@@ -192,12 +192,6 @@ export function getAccountOverviewData(): AccountOverviewData {
   const cutoff24h = now - 24 * 60 * 60 * 1000;
   let rotationCount = 0;
 
-  // Build a set of emails seen across all keys to detect genuinely new accounts
-  const allEmails = new Set<string>();
-  for (const keyData of Object.values(state.keys)) {
-    if (keyData.account_email) allEmails.add(keyData.account_email);
-  }
-
   // Track emails we've already seen a "New account added" event for
   // (scan chronologically to suppress duplicate additions for the same email)
   const seenAddedEmails = new Set<string>();

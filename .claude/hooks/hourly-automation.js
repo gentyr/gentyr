@@ -56,6 +56,7 @@ const SECTION_AGENT_MAP = {
   'TEST-WRITER': { agent: 'test-writer', agentType: AGENT_TYPES.TASK_RUNNER_TEST_WRITER },
   'PROJECT-MANAGER': { agent: 'project-manager', agentType: AGENT_TYPES.TASK_RUNNER_PROJECT_MANAGER },
   'DEPUTY-CTO': { agent: 'deputy-cto', agentType: AGENT_TYPES.TASK_RUNNER_DEPUTY_CTO },
+  'PRODUCT-MANAGER': { agent: 'product-manager', agentType: AGENT_TYPES.TASK_RUNNER_PRODUCT_MANAGER },
 };
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 
@@ -243,6 +244,7 @@ function getConfig() {
     taskRunnerEnabled: true,
     standaloneAntipatternHunterEnabled: true,
     standaloneComplianceCheckerEnabled: true,
+    productManagerEnabled: false,
     lastModified: null,
   };
 
@@ -2268,7 +2270,17 @@ async function main() {
       log('Task runner: better-sqlite3 not available, skipping.');
     } else {
       log('Task runner: checking for pending tasks...');
-      const candidates = getPendingTasksForRunner();
+      let candidates = getPendingTasksForRunner();
+
+      // Gate PRODUCT-MANAGER tasks on feature toggle
+      if (!config.productManagerEnabled) {
+        const before = candidates.length;
+        candidates = candidates.filter(t => t.section !== 'PRODUCT-MANAGER');
+        const filtered = before - candidates.length;
+        if (filtered > 0) {
+          log(`Task runner: filtered ${filtered} PRODUCT-MANAGER task(s) (feature disabled).`);
+        }
+      }
 
       if (candidates.length === 0) {
         log('Task runner: no eligible pending tasks found.');

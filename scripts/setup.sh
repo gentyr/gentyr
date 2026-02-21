@@ -621,7 +621,8 @@ if [ ! -f "$auto_mode_file" ]; then
   "stagingHealthMonitorEnabled": true,
   "productionHealthMonitorEnabled": true,
   "standaloneAntipatternHunterEnabled": true,
-  "standaloneComplianceCheckerEnabled": true
+  "standaloneComplianceCheckerEnabled": true,
+  "productManagerEnabled": false
 }
 AUTOEOF
 fi
@@ -641,7 +642,8 @@ for db_file in \
     "$PROJECT_DIR/.claude/todo.db" \
     "$PROJECT_DIR/.claude/deputy-cto.db" \
     "$PROJECT_DIR/.claude/cto-reports.db" \
-    "$PROJECT_DIR/.claude/session-events.db"; do
+    "$PROJECT_DIR/.claude/session-events.db" \
+    "$PROJECT_DIR/.claude/product-manager.db"; do
     [ -f "$db_file" ] || touch "$db_file"
     [ -f "${db_file}-shm" ] || touch "${db_file}-shm"
     [ -f "${db_file}-wal" ] || touch "${db_file}-wal"
@@ -772,6 +774,26 @@ for agent in "${FRAMEWORK_AGENTS[@]}"; do
     ln -sf "../../$FRAMEWORK_REL/.claude/agents/$agent" "$PROJECT_DIR/.claude/agents/$agent"
 done
 echo "  Symlink: .claude/agents/ (${#FRAMEWORK_AGENTS[@]} framework agents)"
+
+# Conditional agents based on feature flags
+if [ -f "$auto_mode_file" ]; then
+    PM_ENABLED=$(node -e "
+      try { const c = JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));
+        console.log(c.productManagerEnabled === true ? 'yes' : 'no');
+      } catch { console.log('no'); }
+    " "$auto_mode_file" 2>/dev/null || echo "no")
+else
+    PM_ENABLED="no"
+fi
+
+if [ "$PM_ENABLED" = "yes" ]; then
+    ln -sf "../../$FRAMEWORK_REL/.claude/agents/product-manager.md" "$PROJECT_DIR/.claude/agents/product-manager.md"
+    echo "    Symlink: product-manager.md (enabled)"
+else
+    # Remove symlink if it exists but feature is disabled
+    rm -f "$PROJECT_DIR/.claude/agents/product-manager.md"
+    echo "    Skipped: product-manager.md (not enabled)"
+fi
 
 # --- 2. Settings + TESTING.md ---
 echo ""

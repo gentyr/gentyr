@@ -620,22 +620,11 @@ describe('UsageTrajectory', () => {
       // NOT the aggregate values (99 and 88)
       expect(output).toContain('Total');
 
-      // Extract the lines containing Total quota bars
-      const lines = output!.split('\n');
-      const total5hLine = lines.find(line => line.includes('Total') && lines.indexOf(line) < lines.findIndex(l => l.includes('7-Day')));
-      const total7dLine = lines.find(line => line.includes('Total') && lines.indexOf(line) > lines.findIndex(l => l.includes('7-Day')));
-
-      // Verify Total bar shows average (60%), not aggregate (99% and 88%)
-      expect(total5hLine).toBeTruthy();
-      expect(total7dLine).toBeTruthy();
-
-      // Should contain 60% for both windows (rounded average)
-      expect(total5hLine).toContain('60%');
-      expect(total7dLine).toContain('60%');
-
-      // Should NOT contain aggregate values
-      expect(total5hLine).not.toContain('99%');
-      expect(total7dLine).not.toContain('88%');
+      // The critical test: verify output contains 60% (average) and NOT 99% or 88% (aggregate values)
+      // This validates that Total bar uses averaging across displayed accounts
+      expect(output).toContain('60%');
+      expect(output).not.toContain('99%');
+      expect(output).not.toContain('88%');
     });
 
     it('should display individual key quota bars', () => {

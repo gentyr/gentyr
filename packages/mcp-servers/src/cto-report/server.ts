@@ -43,6 +43,8 @@ import {
   type SystemHealth,
   type UsageProjection,
   type AutomationCooldowns,
+  type ProductMarketFitSummary,
+  type ProductMarketFitSection,
 } from './types.js';
 
 // ============================================================================
@@ -919,6 +921,180 @@ function getUsageProjection(): UsageProjection {
 }
 
 // ============================================================================
+// Product-Market-Fit Summary
+// ============================================================================
+
+const PRODUCT_MANAGER_DB_PATH = path.join(PROJECT_DIR, '.claude', 'product-manager.db');
+
+interface AnalysisMeta {
+  status: string;
+  last_updated_at: string | null;
+}
+
+interface SectionRow {
+  section_number: number;
+  title: string;
+  content: string | null;
+}
+
+interface EntryRow {
+  content: string | null;
+}
+
+function getProductMarketFitSummary(): ProductMarketFitSummary | null {
+  // Check feature toggle
+  let pmEnabled = false;
+  if (fs.existsSync(AUTONOMOUS_CONFIG_PATH)) {
+    try {
+      const config = JSON.parse(fs.readFileSync(AUTONOMOUS_CONFIG_PATH, 'utf8')) as { productManagerEnabled?: boolean };
+      pmEnabled = config.productManagerEnabled === true;
+    } catch {
+      // Default to disabled
+    }
+  }
+
+  if (!pmEnabled) {
+    return {
+      enabled: false,
+      status: 'not_started',
+      sections_populated: 0,
+      total_sections: 6,
+      sections: [],
+      compliance: null,
+      last_updated: null,
+      tip: 'Enable product-market-fit analysis with /toggle-product-manager or ask the deputy CTO.',
+    };
+  }
+
+  if (!fs.existsSync(PRODUCT_MANAGER_DB_PATH)) {
+    return {
+      enabled: true,
+      status: 'not_started',
+      sections_populated: 0,
+      total_sections: 6,
+      sections: [],
+      compliance: null,
+      last_updated: null,
+      tip: 'Start product-market-fit analysis with /product-manager.',
+    };
+  }
+
+  const db = openReadonlyDb(PRODUCT_MANAGER_DB_PATH);
+
+  try {
+    const meta = db.prepare("SELECT status, last_updated_at FROM analysis_meta WHERE id = 'default'").get() as AnalysisMeta | undefined;
+
+    if (!meta) {
+      db.close();
+      return {
+        enabled: true,
+        status: 'not_started',
+        sections_populated: 0,
+        total_sections: 6,
+        sections: [],
+        compliance: null,
+        last_updated: null,
+        tip: 'Start product-market-fit analysis with /product-manager.',
+      };
+    }
+
+    const sections = db.prepare('SELECT section_number, title, content FROM sections ORDER BY section_number').all() as SectionRow[];
+    const LIST_SECTIONS = [2, 6];
+    const sectionInfos: ProductMarketFitSection[] = [];
+    let populatedCount = 0;
+
+    for (const sec of sections) {
+      const isList = LIST_SECTIONS.includes(sec.section_number);
+      let populated = false;
+      let contentPreview: string | null = null;
+      let entryCount: number | undefined;
+
+      if (isList) {
+        const count = (db.prepare(
+          'SELECT COUNT(*) as c FROM section_entries WHERE section_number = ?'
+        ).get(sec.section_number) as { c: number }).c;
+        populated = count > 0;
+        entryCount = count;
+
+        if (populated) {
+          const firstEntry = db.prepare(
+            'SELECT content FROM section_entries WHERE section_number = ? ORDER BY id LIMIT 1'
+          ).get(sec.section_number) as EntryRow | undefined;
+          if (firstEntry?.content) {
+            contentPreview = firstEntry.content.length > 200
+              ? firstEntry.content.slice(0, 200) + '...'
+              : firstEntry.content;
+          }
+        }
+      } else {
+        populated = !!sec.content;
+        if (populated && sec.content) {
+          contentPreview = sec.content.length > 200
+            ? sec.content.slice(0, 200) + '...'
+            : sec.content;
+        }
+      }
+
+      if (populated) populatedCount++;
+
+      const info: ProductMarketFitSection = {
+        number: sec.section_number,
+        title: sec.title,
+        populated,
+        content_preview: contentPreview,
+      };
+      if (entryCount !== undefined) {
+        info.entry_count = entryCount;
+      }
+      sectionInfos.push(info);
+    }
+
+    // Compliance stats
+    let compliance: ProductMarketFitSummary['compliance'] = null;
+    const totalPainPoints = (db.prepare(
+      "SELECT COUNT(*) as c FROM section_entries WHERE section_number = 6"
+    ).get() as { c: number }).c;
+
+    if (totalPainPoints > 0) {
+      const mapped = (db.prepare(
+        "SELECT COUNT(DISTINCT pain_point_id) as c FROM pain_point_personas"
+      ).get() as { c: number }).c;
+      compliance = {
+        total_pain_points: totalPainPoints,
+        mapped,
+        unmapped: totalPainPoints - mapped,
+        pct: Math.round((mapped / totalPainPoints) * 100),
+      };
+    }
+
+    db.close();
+
+    return {
+      enabled: true,
+      status: meta.status as ProductMarketFitSummary['status'],
+      sections_populated: populatedCount,
+      total_sections: 6,
+      sections: sectionInfos,
+      compliance,
+      last_updated: meta.last_updated_at,
+      tip: 'Use /show product-market-fit or ask the deputy CTO for the full untruncated analysis.',
+    };
+  } catch {
+    try { db.close(); } catch { /* ignore */ }
+    return {
+      enabled: true,
+      status: 'not_started',
+      sections_populated: 0,
+      total_sections: 6,
+      sections: [],
+      compliance: null,
+      last_updated: null,
+      tip: 'Use /show product-market-fit or ask the deputy CTO for the full untruncated analysis.',
+    };
+  }
+}
+
+// ============================================================================
 // Tool Implementations
 // ============================================================================
 
@@ -951,6 +1127,7 @@ async function getReport(args: GetReportArgs): Promise<CTOReport> {
     pending_items: getPendingItems(),
     triage: getTriageMetrics(),
     tasks: getTaskMetricsData(hours),
+    product_market_fit: getProductMarketFitSummary(),
   };
 
   return report;

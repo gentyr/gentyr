@@ -37,6 +37,9 @@ export const CreatePersonaArgsSchema = z.object({
     .describe('URLs or endpoints this persona accesses'),
   credentials_ref: z.string().max(200).optional()
     .describe('Credential reference (op:// vault reference or key name)'),
+  cto_protected: z.coerce.boolean().optional().default(false)
+    .describe('If true, this persona cannot be modified by non-CTO agents'),
+  caller: z.string().optional().describe('Agent identity for access control'),
 });
 
 export const UpdatePersonaArgsSchema = z.object({
@@ -48,10 +51,13 @@ export const UpdatePersonaArgsSchema = z.object({
   endpoints: z.array(z.string().max(500)).max(20).optional(),
   credentials_ref: z.string().max(200).optional(),
   enabled: z.coerce.boolean().optional(),
+  cto_protected: z.coerce.boolean().optional(),
+  caller: z.string().optional().describe('Agent identity for access control'),
 });
 
 export const DeletePersonaArgsSchema = z.object({
   id: z.string().describe('Persona UUID'),
+  caller: z.string().optional().describe('Agent identity for access control'),
 });
 
 export const GetPersonaArgsSchema = z.object({
@@ -192,6 +198,7 @@ export interface PersonaRecord {
   endpoints: string; // JSON array
   credentials_ref: string | null;
   enabled: number; // SQLite boolean
+  cto_protected: number; // SQLite boolean
   created_at: string;
   created_timestamp: number;
   updated_at: string;
@@ -258,6 +265,7 @@ export interface PersonaResult {
   endpoints: string[];
   credentials_ref: string | null;
   enabled: boolean;
+  cto_protected: boolean;
   created_at: string;
   updated_at: string;
   features?: {
