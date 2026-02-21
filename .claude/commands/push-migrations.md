@@ -3,7 +3,7 @@
 
 Apply pending local migration files to the remote Supabase database. This is the MCP-native equivalent of `supabase link && supabase db push`.
 
-The prefetch hook has pre-gathered local migration files and injected them as a `[PREFETCH:push-migrations]` systemMessage above. Use that data for Step 0/Step 2 instead of reading the filesystem. If the prefetch data is missing, read the files directly.
+The prefetch hook has pre-gathered local migration files and injected them as `[PREFETCH:push-migrations]` context above. Use that data for Step 0/Step 2 instead of reading the filesystem. If the prefetch data is missing, read the files directly.
 
 ## Security Notes
 

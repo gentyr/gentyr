@@ -33,7 +33,7 @@ Only escalated items appear in your queue.
 
 ### 1. Opening Briefing
 
-The prefetch hook has pre-gathered briefing data and injected it as a `[PREFETCH:deputy-cto]` systemMessage above. Use that data directly for the opening briefing instead of making MCP calls.
+The prefetch hook has pre-gathered briefing data and injected it as `[PREFETCH:deputy-cto]` context above. Use that data directly for the opening briefing instead of making MCP calls.
 
 **Still call** `mcp__deputy-cto__record_cto_briefing()` to refresh the 24h automation gate.
 

@@ -172,6 +172,35 @@ The chrome-bridge MCP server provides access to Claude for Chrome extension capa
 
 No credentials required - communicates via local Unix domain socket with length-prefixed JSON framing protocol.
 
+## Secret Management
+
+The secret-sync MCP server orchestrates secrets from 1Password to deployment platforms without exposing values to agent context.
+
+**Security model:**
+- Secret values NEVER pass through agent context window
+- Agent calls tools with target platform names only
+- Server resolves `op://` references internally via 1Password CLI
+- Output is sanitized to redact accidentally leaked values
+
+**6 Available Tools:**
+- `secret_sync_secrets` - Push secrets to Render/Vercel from 1Password
+- `secret_list_mappings` - List configured secret keys and op:// references
+- `secret_verify_secrets` - Check secret existence on platforms (no values)
+- `secret_run_command` - Run commands with secrets injected (Playwright, Prisma, etc.)
+- `secret_dev_server_status` - Check running dev servers with secret injection
+- `secret_dev_server_stop` - Terminate managed dev servers
+
+**Key features:**
+- Executable allowlist for `secret_run_command`: `pnpm`, `npx`, `node`, `tsx`, `playwright`, `prisma`, `drizzle-kit`, `vitest`
+- Inline eval blocked: `-e`, `--eval`, `-c` flags rejected
+- Infrastructure credentials filtered from child processes
+- Output sanitization replaces secret values with `[REDACTED:KEY_NAME]`
+- Background mode for long-running processes
+
+Configuration via `.claude/config/services.json` with `secrets.local` section. Auto-generates `op-secrets.conf` during setup (contains `op://` references only).
+
+See `packages/mcp-servers/src/secret-sync/README.md` for full documentation.
+
 ## CTO Dashboard Development
 
 The CTO dashboard (`packages/cto-dashboard/`) supports a `--mock` flag for development and README generation. The `packages/cto-dashboard/src/mock-data.ts` module provides deterministic fixture data (waypoint-interpolated usage curves, realistic triage reports, deployment history) that renders without requiring live MCP connections.

@@ -436,7 +436,10 @@ function handleCtoReport() {
 
   console.log(JSON.stringify({
     continue: true,
-    systemMessage: `[PREFETCH:cto-report] ${JSON.stringify(output)}`,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:cto-report] ${JSON.stringify(output)}`,
+    },
   }));
 }
 
@@ -503,7 +506,10 @@ function handleDeputyCto() {
 
   console.log(JSON.stringify({
     continue: true,
-    systemMessage: `[PREFETCH:deputy-cto] ${JSON.stringify(output)}`,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:deputy-cto] ${JSON.stringify(output)}`,
+    },
   }));
 }
 
@@ -518,7 +524,10 @@ function handleToggleAutomation() {
 
   console.log(JSON.stringify({
     continue: true,
-    systemMessage: `[PREFETCH:toggle-automation] ${JSON.stringify(output)}`,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:toggle-automation] ${JSON.stringify(output)}`,
+    },
   }));
 }
 
@@ -533,7 +542,10 @@ function handleOverdrive() {
 
   console.log(JSON.stringify({
     continue: true,
-    systemMessage: `[PREFETCH:overdrive] ${JSON.stringify(output)}`,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:overdrive] ${JSON.stringify(output)}`,
+    },
   }));
 }
 
@@ -649,7 +661,10 @@ function handleSetupGentyr() {
 
   console.log(JSON.stringify({
     continue: true,
-    systemMessage: `[PREFETCH:setup-gentyr] ${JSON.stringify(output)}`,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:setup-gentyr] ${JSON.stringify(output)}`,
+    },
   }));
 }
 
@@ -684,7 +699,10 @@ function handlePushMigrations() {
 
   console.log(JSON.stringify({
     continue: true,
-    systemMessage: `[PREFETCH:push-migrations] ${JSON.stringify(output)}`,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:push-migrations] ${JSON.stringify(output)}`,
+    },
   }));
 }
 
@@ -712,7 +730,10 @@ function handlePushSecrets() {
 
   console.log(JSON.stringify({
     continue: true,
-    systemMessage: `[PREFETCH:push-secrets] ${JSON.stringify(output)}`,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:push-secrets] ${JSON.stringify(output)}`,
+    },
   }));
 }
 
@@ -748,7 +769,10 @@ function handleConfigurePersonas() {
 
   console.log(JSON.stringify({
     continue: true,
-    systemMessage: `[PREFETCH:configure-personas] ${JSON.stringify(output)}`,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:configure-personas] ${JSON.stringify(output)}`,
+    },
   }));
 }
 
@@ -798,7 +822,10 @@ function handleSpawnTasks() {
 
   console.log(JSON.stringify({
     continue: true,
-    systemMessage: `[PREFETCH:spawn-tasks] ${JSON.stringify(output)}`,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:spawn-tasks] ${JSON.stringify(output)}`,
+    },
   }));
 }
 

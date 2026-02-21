@@ -3,7 +3,7 @@
 
 Activates overdrive mode for 1 hour, maxing out all automation frequencies for rapid iteration. The usage optimizer is paused during overdrive to prevent it from scaling frequencies back.
 
-The prefetch hook has pre-gathered the current automation config and injected it as a `[PREFETCH:overdrive]` systemMessage above. Use that data for Step 1 instead of reading the file. If the prefetch data is missing, read the file directly.
+The prefetch hook has pre-gathered the current automation config and injected it as `[PREFETCH:overdrive]` context above. Use that data for Step 1 instead of reading the file. If the prefetch data is missing, read the file directly.
 
 ## What This Does
 

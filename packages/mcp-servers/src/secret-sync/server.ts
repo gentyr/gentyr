@@ -739,7 +739,8 @@ const DEFAULT_ALLOWED_EXECUTABLES = new Set([
   'pnpm', 'npx', 'node', 'tsx', 'playwright', 'prisma', 'drizzle-kit', 'vitest',
 ]);
 
-const BLOCKED_ARGS = new Set(['-e', '--eval', '-c', '--print', '-p']);
+/** Blocked arg prefixes — matches both `-e` and `--eval=<code>` forms */
+const BLOCKED_ARG_PREFIXES = ['-e', '--eval', '-c', '--print', '-p'];
 
 /**
  * Validate command against executable allowlist and blocked args.
@@ -757,11 +758,14 @@ function validateCommand(command: string[], allowedExtras: string[] = []): void 
   }
 
   for (const arg of command.slice(1)) {
-    if (BLOCKED_ARGS.has(arg)) {
-      throw new Error(
-        `Argument "${arg}" is blocked for security. ` +
-        `Inline code execution is not allowed.`
-      );
+    for (const blocked of BLOCKED_ARG_PREFIXES) {
+      // Match exact `-e` or prefix `--eval=...`
+      if (arg === blocked || arg.startsWith(blocked + '=')) {
+        throw new Error(
+          `Argument "${arg}" is blocked for security. ` +
+          `Inline code execution is not allowed.`
+        );
+      }
     }
   }
 }
@@ -903,6 +907,7 @@ async function runCommandForeground(
 function runCommandBackground(
   command: string[],
   childEnv: Record<string, string>,
+  sanitize: (text: string) => string,
   cwd: string,
   label: string,
 ): RunCommandBackgroundResult {
@@ -932,11 +937,11 @@ function runCommandBackground(
 
   child.stdout?.on('data', (data: Buffer) => {
     const lines = data.toString().split('\n').filter(Boolean);
-    for (const line of lines) appendOutput(managed, line);
+    for (const line of lines) appendOutput(managed, sanitize(line));
   });
   child.stderr?.on('data', (data: Buffer) => {
     const lines = data.toString().split('\n').filter(Boolean);
-    for (const line of lines) appendOutput(managed, line);
+    for (const line of lines) appendOutput(managed, sanitize(line));
   });
 
   child.on('exit', () => {
@@ -993,17 +998,16 @@ async function runCommand(args: RunCommandArgs): Promise<RunCommandForegroundRes
   Object.assign(childEnv, injectedEnv);
 
   const secretsResolved = Object.keys(injectedEnv).length;
+  const sanitize = createSanitizer(injectedEnv);
 
   if (args.background) {
     const label = args.label || args.command[0];
-    const result = runCommandBackground(args.command, childEnv, cwd, label);
+    const result = runCommandBackground(args.command, childEnv, sanitize, cwd, label);
     result.secretsResolved = secretsResolved;
     result.secretsFailed = failedKeys;
     return result;
   }
 
-  // Foreground mode — create sanitizer from resolved secrets
-  const sanitize = createSanitizer(injectedEnv);
   const result = await runCommandForeground(
     args.command, childEnv, sanitize, cwd, args.timeout, args.outputLines,
   );

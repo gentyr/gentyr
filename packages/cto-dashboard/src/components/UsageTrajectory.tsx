@@ -150,6 +150,8 @@ function deduplicateByEmail(accounts: AccountKeyDetail[]): AccountKeyDetail[] {
   const seen = new Set<string>();
   const result: AccountKeyDetail[] = [];
   for (const acct of accounts) {
+    // Skip invalid accounts with no quota data
+    if (acct.status === 'invalid' && acct.fiveHourPct == null && acct.sevenDayPct == null) continue;
     const key = acct.email ?? acct.keyId;
     if (!seen.has(key)) {
       seen.add(key);

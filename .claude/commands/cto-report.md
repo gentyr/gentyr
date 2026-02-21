@@ -3,7 +3,7 @@
 
 Generate a comprehensive CTO status dashboard using the Ink-based dashboard app.
 
-The prefetch hook has pre-gathered key metrics (pending questions, task counts, triage stats, automation state) and injected them as a `[PREFETCH:cto-report]` systemMessage above. Use that data to supplement the dashboard output. For the full dashboard, always run the command below.
+The prefetch hook has pre-gathered key metrics (pending questions, task counts, triage stats, automation state) and injected them as `[PREFETCH:cto-report]` context above. Use that data to supplement the dashboard output. For the full dashboard, always run the command below.
 
 ## What to Do
 
@@ -29,3 +29,4 @@ node .claude-framework/packages/cto-dashboard/dist/index.js --hours 8
 - For interactive decision-making, use `/deputy-cto` instead
 - Timeline shows the 20 most recent events
 - Quota shows aggregate across all active API keys (if key rotation is enabled)
+- **IMPORTANT**: Do NOT use the Read tool after running the dashboard command. The Bash output contains everything needed. Using Read creates a second collapsed item in the UI that conflicts with ctrl+o expansion of the dashboard output. Write your summary directly from the Bash output and the prefetch data.
