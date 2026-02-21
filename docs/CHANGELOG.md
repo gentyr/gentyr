@@ -1,5 +1,60 @@
 # GENTYR Framework Changelog
 
+## 2026-02-21 - Chrome Bridge: Contextual Browser Automation Tips
+
+### Added
+
+**Contextual browser automation tips** (3 files):
+- `packages/mcp-servers/src/chrome-bridge/browser-tips.ts` - BrowserTip interface, BrowserTipTracker class with session-scoped deduplication
+- 14 contextual tips (5 general + 9 site-specific) sourced from docs/SETUP-GUIDE.md
+- Tips are injected into chrome-bridge tool responses based on hostname and tool usage
+- Each tip shown at most once per Claude Code session (MCP server lifetime)
+- Domain boundary hostname matching (github.com matches *.github.com)
+- Only shown on interactive tools: `navigate`, `computer`, `form_input`, `find`, `read_page`
+- `packages/mcp-servers/src/chrome-bridge/server.ts` - Import BrowserTipTracker, cache URLs on navigate, appendTips method called at both return paths in executeTool
+- `packages/mcp-servers/src/chrome-bridge/index.ts` - Re-export browser-tips module
+
+**Site-specific tips included**:
+- GitHub: Form input preference for special characters in token names
+- 1Password: Field creation workflow (chevron + button + form_input + save verification)
+- Render: One-time API key capture with get_page_text
+- Vercel: One-time token capture, Team ID extraction
+- Cloudflare: Zone ID extraction, multi-step wizard navigation
+- Supabase: Reveal button for service_role key, multi-value extraction
+- Elastic Cloud: Dev Tools Console API key creation (REST command preferred over UI)
+- Resend: One-time API key capture, permission dropdown selection
+- Codecov: GitHub OAuth disruption, manual login fallback, token extraction
+
+### Tests
+
+**New test files** (2 files):
+- `packages/mcp-servers/src/chrome-bridge/__tests__/browser-tips.test.ts` - 38 unit tests for BrowserTipTracker (hostname matching, deduplication, tool filtering)
+- `packages/mcp-servers/src/chrome-bridge/__tests__/appendTips.test.ts` - 24 integration tests for appendTips method (error exclusion, URL caching, anti-spam)
+
+**Test results**:
+- 93 chrome-bridge tests pass (31 existing + 62 new)
+- TypeScript compilation clean (pre-existing deputy-cto unused variable warnings unrelated)
+
+### Fixed
+
+**Browser automation quirks** (2 files):
+- Hostname matching: Changed from `endsWith(h)` to `hostname === h || hostname.endsWith('.' + h)` for proper domain boundary matching (prevents "github.com" from matching "notgithub.com")
+- Tip text: Fixed reference to `zoom` as standalone tool when it's actually a `computer` action
+
+### Design
+
+**Anti-spam measures**:
+- 5 interactive tools gate: Only `navigate`, `computer`, `form_input`, `find`, `read_page` trigger tips
+- Per-tip Set deduplication: Each tip ID tracked, shown once per session
+- Error exclusion: Tips never appended to error responses
+- Session-scoped tracker: Tips reset on MCP server restart (new Claude Code session)
+
+### Why This Feature
+
+**Problem**: Agents using chrome-bridge MCP struggled with site-specific UI quirks. Browser automation tips existed only in docs/SETUP-GUIDE.md and were never shown to agents during actual browser automation.
+
+**Solution**: Tips are now injected into chrome-bridge tool responses based on the site being visited. Agents see relevant guidance at the moment they need it.
+
 ## 2026-02-21 - CTO Dashboard: Per-Account Quota Bars in Usage Trajectory
 
 ### Added

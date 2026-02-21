@@ -38,6 +38,7 @@ import {
   type DevServerStatusArgs,
   type RunCommandArgs,
   type ServicesConfig,
+  type VercelSecretEntry,
   type SyncResult,
   type MappingResult,
   type VerifyResult,
@@ -431,6 +432,21 @@ async function vercelListEnvVars(projectId: string): Promise<string[]> {
 // Tool Handlers
 // ============================================================================
 
+function normalizeVercelEntries(
+  config: VercelSecretEntry | VercelSecretEntry[]
+): VercelSecretEntry[] {
+  return Array.isArray(config) ? config : [config];
+}
+
+async function vercelDeleteAllEnvVarsForKey(projectId: string, key: string): Promise<number> {
+  const envVars = await vercelFetch(`/v9/projects/${projectId}/env`) as { envs: Array<{ id: string; key: string }> };
+  const matching = envVars.envs.filter(e => e.key === key);
+  for (const env of matching) {
+    await vercelFetch(`/v9/projects/${projectId}/env/${env.id}`, { method: 'DELETE' });
+  }
+  return matching.length;
+}
+
 async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
   const config = loadServicesConfig();
   const synced: SyncedSecret[] = [];
@@ -493,14 +509,37 @@ async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
       const projectId = config.vercel.projectId;
       const secrets = config.secrets.vercel || {};
 
-      for (const [key, secretConfig] of Object.entries(secrets)) {
-        try {
-          const value = opRead(secretConfig.ref);
-          const status = await vercelSetEnvVar(projectId, key, value, secretConfig.target, secretConfig.type);
-          synced.push({ key, service: 'vercel', status });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          synced.push({ key, service: 'vercel', status: 'error', error: message });
+      for (const [key, rawConfig] of Object.entries(secrets)) {
+        const entries = normalizeVercelEntries(rawConfig);
+
+        if (entries.length === 1) {
+          // Single entry — use existing vercelSetEnvVar (handles create/update)
+          try {
+            const value = opRead(entries[0].ref);
+            const status = await vercelSetEnvVar(projectId, key, value, entries[0].target, entries[0].type);
+            synced.push({ key, service: 'vercel', status });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            synced.push({ key, service: 'vercel', status: 'error', error: message });
+          }
+        } else {
+          // Multi-entry — delete all existing, then create each
+          try {
+            const deletedCount = await vercelDeleteAllEnvVarsForKey(projectId, key);
+
+            for (const entry of entries) {
+              const value = opRead(entry.ref);
+              await vercelFetch(`/v10/projects/${projectId}/env`, {
+                method: 'POST',
+                body: JSON.stringify({ key, value, target: entry.target, type: entry.type }),
+              });
+            }
+
+            synced.push({ key, service: 'vercel', status: deletedCount > 0 ? 'updated' : 'created' });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            synced.push({ key, service: 'vercel', status: 'error', error: message });
+          }
         }
       }
     }
@@ -566,8 +605,11 @@ async function listMappings(args: ListMappingsArgs): Promise<MappingResult> {
     }
 
     if (target === 'vercel' && config.secrets.vercel) {
-      for (const [key, secretConfig] of Object.entries(config.secrets.vercel)) {
-        mappings.push({ key, reference: secretConfig.ref, service: 'vercel' });
+      for (const [key, rawConfig] of Object.entries(config.secrets.vercel)) {
+        const entries = normalizeVercelEntries(rawConfig);
+        for (const entry of entries) {
+          mappings.push({ key, reference: entry.ref, service: 'vercel' });
+        }
       }
     }
 

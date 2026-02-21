@@ -25,6 +25,8 @@ import type {
   UsageProjection,
   AutomationCooldowns,
   FeedbackPersonasData,
+  PersonaReport,
+  SatisfactionDistribution,
 } from './utils/data-reader.js';
 import type { TimelineEvent } from './components/TimelineItem.js';
 import type { TrajectoryResult, UsageSnapshot } from './utils/trajectory.js';
@@ -35,6 +37,7 @@ import type { DeploymentsData } from './utils/deployments-reader.js';
 import type { InfraData } from './utils/infra-reader.js';
 import type { LoggingData } from './utils/logging-reader.js';
 import type { AccountOverviewData } from './utils/account-overview-reader.js';
+import type { WorktreeData } from './utils/worktree-reader.js';
 
 // ============================================================================
 // Deterministic PRNG (LCG — no Math.random())
@@ -625,6 +628,79 @@ export function getMockDashboardData(): DashboardData {
     },
   };
 
+  const guiReports: PersonaReport[] = [
+    {
+      id: 'fb-rpt-001',
+      title: 'Login button unresponsive on mobile viewport',
+      priority: 'high',
+      triage_status: 'escalated',
+      created_at: new Date(now - 2.1 * 60 * 60 * 1000).toISOString(),
+    },
+    {
+      id: 'fb-rpt-002',
+      title: 'Dashboard chart tooltip clips at edge of screen',
+      priority: 'normal',
+      triage_status: 'self_handled',
+      created_at: new Date(now - 5.4 * 60 * 60 * 1000).toISOString(),
+    },
+    {
+      id: 'fb-rpt-003',
+      title: 'Missing loading spinner on settings page save',
+      priority: 'low',
+      triage_status: 'dismissed',
+      created_at: new Date(now - 9.8 * 60 * 60 * 1000).toISOString(),
+    },
+  ];
+
+  const cliReports: PersonaReport[] = [
+    {
+      id: 'fb-rpt-004',
+      title: 'Exit code 0 returned on validation failure',
+      priority: 'critical',
+      triage_status: 'escalated',
+      created_at: new Date(now - 1.8 * 60 * 60 * 1000).toISOString(),
+    },
+    {
+      id: 'fb-rpt-005',
+      title: 'Help text missing for --format flag',
+      priority: 'low',
+      triage_status: 'pending',
+      created_at: new Date(now - 6.2 * 60 * 60 * 1000).toISOString(),
+    },
+  ];
+
+  const apiReports: PersonaReport[] = [
+    {
+      id: 'fb-rpt-006',
+      title: 'PUT /users returns 500 when email field is null',
+      priority: 'high',
+      triage_status: 'in_progress',
+      created_at: new Date(now - 0.8 * 60 * 60 * 1000).toISOString(),
+    },
+    {
+      id: 'fb-rpt-007',
+      title: 'Rate limit header X-RateLimit-Reset uses wrong timezone',
+      priority: 'normal',
+      triage_status: 'self_handled',
+      created_at: new Date(now - 4.3 * 60 * 60 * 1000).toISOString(),
+    },
+    {
+      id: 'fb-rpt-008',
+      title: 'Pagination cursor breaks on special characters in name',
+      priority: 'high',
+      triage_status: 'pending',
+      created_at: new Date(now - 8.1 * 60 * 60 * 1000).toISOString(),
+    },
+  ];
+
+  const satisfactionDistribution: SatisfactionDistribution = {
+    very_satisfied: 22,
+    satisfied: 31,
+    neutral: 18,
+    dissatisfied: 9,
+    very_dissatisfied: 4,
+  };
+
   const feedbackPersonas: FeedbackPersonasData = {
     personas: [
       {
@@ -634,6 +710,7 @@ export function getMockDashboardData(): DashboardData {
         session_count: 28,
         last_satisfaction: 'satisfied',
         findings_count: 14,
+        recent_reports: guiReports,
       },
       {
         name: 'CLI Power User',
@@ -642,6 +719,7 @@ export function getMockDashboardData(): DashboardData {
         session_count: 19,
         last_satisfaction: 'very_satisfied',
         findings_count: 8,
+        recent_reports: cliReports,
       },
       {
         name: 'API Integrator',
@@ -650,6 +728,7 @@ export function getMockDashboardData(): DashboardData {
         session_count: 22,
         last_satisfaction: 'neutral',
         findings_count: 11,
+        recent_reports: apiReports,
       },
       {
         name: 'SDK Automation',
@@ -658,10 +737,12 @@ export function getMockDashboardData(): DashboardData {
         session_count: 15,
         last_satisfaction: 'satisfied',
         findings_count: 6,
+        recent_reports: [],
       },
     ],
     total_sessions: 84,
     total_findings: 39,
+    satisfaction_distribution: satisfactionDistribution,
   };
 
   return {
@@ -1209,6 +1290,39 @@ export function getMockDeployments(): DeploymentsData {
     },
   ];
 
+  const previewDeploys = [
+    {
+      service: 'gentyr-web-preview',
+      platform: 'vercel' as const,
+      status: 'ready',
+      deployedAt: new Date(now - 4 * 60 * 60 * 1000).toISOString(),
+      commitMessage: 'feat: add OAuth2 flow',
+      commitSha: 'b4e9f12',
+      url: 'https://preview-auth-redesign.gentyr.io',
+      environment: 'preview' as const,
+    },
+    {
+      service: 'gentyr-api-preview',
+      platform: 'render' as const,
+      status: 'building',
+      deployedAt: new Date(now - 1 * 60 * 60 * 1000).toISOString(),
+      commitMessage: 'fix: resolve race condition in worker',
+      commitSha: 'c7d3a45',
+      url: 'https://api-preview-worker-fix.gentyr.io',
+      environment: 'preview' as const,
+    },
+    {
+      service: 'gentyr-web-preview',
+      platform: 'vercel' as const,
+      status: 'ready',
+      deployedAt: new Date(now - 6.3 * 60 * 60 * 1000).toISOString(),
+      commitMessage: 'feat: dashboard settings panel',
+      commitSha: 'e2f8b71',
+      url: 'https://preview-settings.gentyr.io',
+      environment: 'preview' as const,
+    },
+  ];
+
   const stagingDeploys = [
     {
       service: 'gentyr-api-staging',
@@ -1242,7 +1356,7 @@ export function getMockDeployments(): DeploymentsData {
     },
   ];
 
-  const combined = [...productionDeploys, ...stagingDeploys]
+  const combined = [...productionDeploys, ...stagingDeploys, ...previewDeploys]
     .sort((a, b) => new Date(b.deployedAt).getTime() - new Date(a.deployedAt).getTime())
     .slice(0, 8);
 
@@ -1253,13 +1367,13 @@ export function getMockDeployments(): DeploymentsData {
         { name: 'gentyr-api', status: 'active', type: 'web_service', suspended: false, url: 'https://api.gentyr.io' },
         { name: 'gentyr-worker', status: 'active', type: 'background_worker', suspended: false },
       ],
-      recentDeploys: [...productionDeploys.filter(d => d.platform === 'render'), ...stagingDeploys.filter(d => d.platform === 'render')],
+      recentDeploys: [...productionDeploys.filter(d => d.platform === 'render'), ...stagingDeploys.filter(d => d.platform === 'render'), ...previewDeploys.filter(d => d.platform === 'render')],
     },
     vercel: {
       projects: [
         { name: 'gentyr-web', framework: 'nextjs' },
       ],
-      recentDeploys: [...productionDeploys.filter(d => d.platform === 'vercel'), ...stagingDeploys.filter(d => d.platform === 'vercel')],
+      recentDeploys: [...productionDeploys.filter(d => d.platform === 'vercel'), ...stagingDeploys.filter(d => d.platform === 'vercel'), ...previewDeploys.filter(d => d.platform === 'vercel')],
     },
     pipeline: {
       previewStatus: 'checked',
@@ -1267,10 +1381,12 @@ export function getMockDeployments(): DeploymentsData {
       lastPromotionAt: new Date(now - 5.2 * 60 * 60 * 1000).toISOString(),
       lastPreviewCheck: new Date(now - 25 * 60 * 1000).toISOString(),
       lastStagingCheck: new Date(now - 68 * 60 * 1000).toISOString(),
+      localDevCount: 3,
+      stagingFreezeActive: true,
     },
     combined,
     byEnvironment: {
-      preview: [],
+      preview: previewDeploys,
       staging: stagingDeploys,
       production: productionDeploys,
     },
@@ -1547,5 +1663,77 @@ export function getMockAccountOverview(): AccountOverviewData {
         usageSnapshot: null,
       },
     ],
+  };
+}
+
+// ============================================================================
+// Worktree data
+// ============================================================================
+
+export function getMockWorktrees(): WorktreeData {
+  const now = Date.now();
+  const HOUR = 60 * 60 * 1000;
+  const DAY = 24 * HOUR;
+
+  return {
+    hasData: true,
+    worktrees: [
+      {
+        branch: 'feature/auth-redesign',
+        path: '/project/.claude/worktrees/feature-auth-redesign',
+        head: 'a3f8d21',
+        lastCommitAge: new Date(now - 2 * HOUR).toISOString(),
+        lastCommitMessage: 'feat: add OAuth2 PKCE flow with session rotation',
+        agent: { type: 'code-writer', status: 'running' },
+        pipelineStage: 'local',
+        isSystem: false,
+        isMerged: false,
+      },
+      {
+        branch: 'feature/api-refactor',
+        path: '/project/.claude/worktrees/feature-api-refactor',
+        head: 'b7c4e38',
+        lastCommitAge: new Date(now - 5 * HOUR).toISOString(),
+        lastCommitMessage: 'fix: resolve connection pool exhaustion',
+        agent: { type: 'investigator', status: 'running' },
+        pipelineStage: 'preview',
+        isSystem: false,
+        isMerged: true,
+      },
+      {
+        branch: 'feature/dashboard-v2',
+        path: '/project/.claude/worktrees/feature-dashboard-v2',
+        head: 'c9d2f15',
+        lastCommitAge: new Date(now - 1 * DAY).toISOString(),
+        lastCommitMessage: 'feat: CTO dashboard worktree visualization',
+        agent: null,
+        pipelineStage: 'staging',
+        isSystem: false,
+        isMerged: true,
+      },
+      {
+        branch: 'automation/preview-promo',
+        path: '/project/.claude/worktrees/automation-preview-promo',
+        head: 'd1e5a72',
+        lastCommitAge: new Date(now - 3 * HOUR).toISOString(),
+        lastCommitMessage: 'Merge branch feature/auth-redesign into preview',
+        agent: null,
+        pipelineStage: 'preview',
+        isSystem: true,
+        isMerged: false,
+      },
+      {
+        branch: 'automation/staging-promo',
+        path: '/project/.claude/worktrees/automation-staging-promo',
+        head: 'e4f8b93',
+        lastCommitAge: new Date(now - 1 * DAY).toISOString(),
+        lastCommitMessage: 'Merge branch preview into staging',
+        agent: null,
+        pipelineStage: 'staging',
+        isSystem: true,
+        isMerged: false,
+      },
+    ],
+    summary: { total: 5, active: 2, idle: 1, merged: 2, system: 2 },
   };
 }

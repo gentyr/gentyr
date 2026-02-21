@@ -7,6 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { execSync } from 'child_process';
 import { resolveCredential, fetchWithTimeout } from './credentials.js';
 
 const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
@@ -45,6 +46,8 @@ export interface DeploymentsData {
     lastPromotionAt: string | null;
     lastPreviewCheck: string | null;
     lastStagingCheck: string | null;
+    localDevCount: number;
+    stagingFreezeActive: boolean;
   };
   combined: DeploymentEntry[];
   byEnvironment: {
@@ -237,12 +240,45 @@ interface AutomationState {
   lastPreviewPromotionCheck?: string;
   lastStagingPromotionCheck?: string;
   lastPromotionAt?: string;
+  stagingFreezeActive?: boolean;
+}
+
+function countLocalDevWorktrees(): number {
+  try {
+    const output = execSync('git worktree list --porcelain', {
+      encoding: 'utf8',
+      timeout: 5000,
+      cwd: PROJECT_DIR,
+      stdio: 'pipe',
+    });
+    let count = 0;
+    for (const line of output.split('\n')) {
+      if (line.startsWith('worktree ') && line.includes('.claude/worktrees/')) {
+        count++;
+      }
+    }
+    return count;
+  } catch {
+    return 0;
+  }
 }
 
 function readPipelineState(): DeploymentsData['pipeline'] {
+  const fallback: DeploymentsData['pipeline'] = {
+    previewStatus: null,
+    stagingStatus: null,
+    lastPromotionAt: null,
+    lastPreviewCheck: null,
+    lastStagingCheck: null,
+    localDevCount: 0,
+    stagingFreezeActive: false,
+  };
+
+  const localDevCount = countLocalDevWorktrees();
+
   try {
     if (!fs.existsSync(AUTOMATION_STATE_PATH)) {
-      return { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null };
+      return { ...fallback, localDevCount };
     }
     const state = JSON.parse(fs.readFileSync(AUTOMATION_STATE_PATH, 'utf8')) as AutomationState;
     return {
@@ -251,9 +287,11 @@ function readPipelineState(): DeploymentsData['pipeline'] {
       lastPromotionAt: state.lastPromotionAt || null,
       lastPreviewCheck: state.lastPreviewPromotionCheck || null,
       lastStagingCheck: state.lastStagingPromotionCheck || null,
+      localDevCount,
+      stagingFreezeActive: state.stagingFreezeActive === true,
     };
   } catch {
-    return { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null };
+    return { ...fallback, localDevCount };
   }
 }
 

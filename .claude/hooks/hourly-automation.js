@@ -326,6 +326,9 @@ function getState() {
       lastStandaloneAntipatternHunt: 0, lastStandaloneComplianceCheck: 0,
       lastFeedbackCheck: 0, lastFeedbackSha: null,
       lastSessionReviverCheck: 0,
+      lastPreviewToStagingMergeAt: 0,
+      stagingFreezeActive: false,
+      stagingFreezeActivatedAt: 0,
     };
   }
 
@@ -338,6 +341,10 @@ function getState() {
     }
     // Remove legacy triageAttempts if present (now handled by MCP server)
     delete state.triageAttempts;
+    // Migration for staging freeze fields
+    if (state.lastPreviewToStagingMergeAt === undefined) state.lastPreviewToStagingMergeAt = 0;
+    if (state.stagingFreezeActive === undefined) state.stagingFreezeActive = false;
+    if (state.stagingFreezeActivatedAt === undefined) state.stagingFreezeActivatedAt = 0;
     return state;
   } catch (err) {
     log(`FATAL: State file corrupted: ${err.message}`);
@@ -1270,6 +1277,29 @@ function hasBugFixCommits(commits) {
 }
 
 /**
+ * Create or reuse a worktree for promotion agents.
+ * Uses deterministic branch names so worktrees persist across cycles.
+ * Falls back to PROJECT_DIR on failure (matches task runner pattern).
+ */
+function getPromotionWorktree(promotionType) {
+  const branchName = `automation/${promotionType}`;
+  const baseBranch = promotionType === 'preview-promotion' ? 'preview' : 'staging';
+  try {
+    const worktree = createWorktree(branchName, baseBranch);
+    if (!worktree.created) {
+      // Worktree exists, pull latest
+      try {
+        execSync('git pull --ff-only', { cwd: worktree.path, encoding: 'utf8', timeout: 30000, stdio: 'pipe' });
+      } catch { /* non-fatal */ }
+    }
+    return { cwd: worktree.path, mcpConfig: path.join(worktree.path, '.mcp.json') };
+  } catch (err) {
+    log(`Promotion worktree creation failed for ${promotionType}, falling back to PROJECT_DIR: ${err.message}`);
+    return { cwd: PROJECT_DIR, mcpConfig: path.join(PROJECT_DIR, '.mcp.json') };
+  }
+}
+
+/**
  * Spawn Preview -> Staging promotion orchestrator
  */
 function spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix) {
@@ -1352,17 +1382,21 @@ Summarize the promotion decision and actions taken.`;
   updateAgent(agentId, { prompt });
 
   try {
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+    const wt = getPromotionWorktree('preview-promotion');
     const claude = spawn('claude', [
       '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
+      '--mcp-config', wt.mcpConfig,
       '--output-format', 'json',
       '-p',
       prompt,
     ], {
-      cwd: PROJECT_DIR,
+      cwd: wt.cwd,
       stdio: 'inherit',
-      env: buildSpawnEnv(agentId),
+      env: {
+        ...buildSpawnEnv(agentId),
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        GENTYR_PROMOTION_PIPELINE: 'true',
+      },
     });
 
     return new Promise((resolve, reject) => {
@@ -1469,17 +1503,21 @@ Summarize the promotion decision and actions taken.`;
   updateAgent(agentId, { prompt });
 
   try {
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+    const wt = getPromotionWorktree('staging-promotion');
     const claude = spawn('claude', [
       '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
+      '--mcp-config', wt.mcpConfig,
       '--output-format', 'json',
       '-p',
       prompt,
     ], {
-      cwd: PROJECT_DIR,
+      cwd: wt.cwd,
       stdio: 'inherit',
-      env: buildSpawnEnv(agentId),
+      env: {
+        ...buildSpawnEnv(agentId),
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        GENTYR_PROMOTION_PIPELINE: 'true',
+      },
     });
 
     return new Promise((resolve, reject) => {
@@ -2179,68 +2217,9 @@ async function main() {
   }
 
   // =========================================================================
-  // PREVIEW -> STAGING PROMOTION (6h cooldown)
-  // Checks for new commits on preview, spawns review + promotion pipeline
-  // =========================================================================
-  const timeSinceLastPreviewPromotion = now - (state.lastPreviewPromotionCheck || 0);
-  const previewPromotionEnabled = config.previewPromotionEnabled !== false;
-
-  if (timeSinceLastPreviewPromotion >= PREVIEW_PROMOTION_COOLDOWN_MS && previewPromotionEnabled) {
-    log('Preview promotion: checking for promotable commits...');
-
-    try {
-      // Fetch latest remote state
-      execSync('git fetch origin preview staging --quiet 2>/dev/null || true', {
-        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
-      });
-    } catch {
-      log('Preview promotion: git fetch failed, skipping.');
-    }
-
-    if (remoteBranchExists('preview') && remoteBranchExists('staging')) {
-      const newCommits = getNewCommits('preview', 'staging');
-
-      if (newCommits.length === 0) {
-        log('Preview promotion: no new commits on preview.');
-      } else {
-        const lastStagingTimestamp = getLastCommitTimestamp('staging');
-        const hoursSinceLastStagingMerge = lastStagingTimestamp > 0
-          ? Math.floor((Date.now() / 1000 - lastStagingTimestamp) / 3600) : 999;
-        const hasBugFix = hasBugFixCommits(newCommits);
-
-        if (hoursSinceLastStagingMerge >= 24 || hasBugFix) {
-          log(`Preview promotion: ${newCommits.length} commits ready. Staging age: ${hoursSinceLastStagingMerge}h. Bug fix: ${hasBugFix}.`);
-
-          try {
-            const result = await spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix);
-            if (result.code === 0) {
-              log('Preview promotion pipeline completed successfully.');
-            } else {
-              log(`Preview promotion pipeline exited with code ${result.code}`);
-            }
-          } catch (err) {
-            log(`Preview promotion error: ${err.message}`);
-          }
-        } else {
-          log(`Preview promotion: ${newCommits.length} commits pending but staging only ${hoursSinceLastStagingMerge}h old (need 24h or bug fix).`);
-        }
-      }
-    } else {
-      log('Preview promotion: preview or staging branch does not exist on remote.');
-    }
-
-    state.lastPreviewPromotionCheck = now;
-    saveState(state);
-  } else if (!previewPromotionEnabled) {
-    log('Preview Promotion is disabled in config.');
-  } else {
-    const minutesLeft = Math.ceil((PREVIEW_PROMOTION_COOLDOWN_MS - timeSinceLastPreviewPromotion) / 60000);
-    log(`Preview promotion cooldown active. ${minutesLeft} minutes until next check.`);
-  }
-
-  // =========================================================================
   // STAGING -> PRODUCTION PROMOTION (midnight window, 20h cooldown)
   // Checks nightly for stable staging to promote to production
+  // NOTE: Runs BEFORE preview→staging to prevent clock-reset starvation
   // =========================================================================
   const timeSinceLastStagingPromotion = now - (state.lastStagingPromotionCheck || 0);
   const stagingPromotionEnabled = config.stagingPromotionEnabled !== false;
@@ -2299,6 +2278,110 @@ async function main() {
   } else {
     const minutesLeft = Math.ceil((STAGING_PROMOTION_COOLDOWN_MS - timeSinceLastStagingPromotion) / 60000);
     log(`Staging promotion cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
+  // STAGING FREEZE: Pause preview→staging when staging approaches 24h stability
+  // Prevents preview→staging from resetting the staging clock and starving
+  // the staging→main midnight promotion window.
+  // Fetch staging ref so freeze decisions use fresh data even outside midnight.
+  // =========================================================================
+  try {
+    execSync('git fetch origin staging --quiet 2>/dev/null || true', {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+    });
+  } catch { /* non-fatal */ }
+
+  const lastStagingTs = getLastCommitTimestamp('staging');
+  const stagingAgeHours = lastStagingTs > 0 ? (Date.now() / 1000 - lastStagingTs) / 3600 : 0;
+
+  if (stagingAgeHours >= 18 && !state.stagingFreezeActive) {
+    state.stagingFreezeActive = true;
+    state.stagingFreezeActivatedAt = now;
+    saveState(state);
+    log(`Staging freeze ACTIVATED: staging is ${Math.floor(stagingAgeHours)}h old, pausing preview→staging until staging→main resolves.`);
+  }
+
+  // Clear freeze conditions:
+  // 1. Staging age dropped below 18h (staging→main promoted, new merge is fresh)
+  // 2. 48h safety valve (prevents permanent lockout)
+  if (state.stagingFreezeActive) {
+    const freezeAge = (now - state.stagingFreezeActivatedAt) / (1000 * 3600);
+    if (stagingAgeHours < 18) {
+      state.stagingFreezeActive = false;
+      saveState(state);
+      log('Staging freeze CLEARED: staging age dropped below 18h (promotion completed).');
+    } else if (freezeAge >= 48) {
+      state.stagingFreezeActive = false;
+      saveState(state);
+      log('Staging freeze CLEARED: 48h safety valve triggered.');
+    }
+  }
+
+  // =========================================================================
+  // PREVIEW -> STAGING PROMOTION (6h cooldown)
+  // Checks for new commits on preview, spawns review + promotion pipeline
+  // NOTE: Gated by staging freeze to prevent staging→main starvation
+  // =========================================================================
+  const timeSinceLastPreviewPromotion = now - (state.lastPreviewPromotionCheck || 0);
+  const previewPromotionEnabled = config.previewPromotionEnabled !== false;
+
+  if (state.stagingFreezeActive) {
+    log(`Preview promotion: PAUSED by staging freeze (staging ${Math.floor(stagingAgeHours)}h old, waiting for staging→main).`);
+    // Do NOT update lastPreviewPromotionCheck — so it fires immediately when freeze lifts
+  } else if (timeSinceLastPreviewPromotion >= PREVIEW_PROMOTION_COOLDOWN_MS && previewPromotionEnabled) {
+    log('Preview promotion: checking for promotable commits...');
+
+    try {
+      // Fetch latest remote state
+      execSync('git fetch origin preview staging --quiet 2>/dev/null || true', {
+        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+      });
+    } catch {
+      log('Preview promotion: git fetch failed, skipping.');
+    }
+
+    if (remoteBranchExists('preview') && remoteBranchExists('staging')) {
+      const newCommits = getNewCommits('preview', 'staging');
+
+      if (newCommits.length === 0) {
+        log('Preview promotion: no new commits on preview.');
+      } else {
+        const lastStagingTimestamp = getLastCommitTimestamp('staging');
+        const hoursSinceLastStagingMerge = lastStagingTimestamp > 0
+          ? Math.floor((Date.now() / 1000 - lastStagingTimestamp) / 3600) : 999;
+        const hasBugFix = hasBugFixCommits(newCommits);
+
+        if (hoursSinceLastStagingMerge >= 24 || hasBugFix) {
+          log(`Preview promotion: ${newCommits.length} commits ready. Staging age: ${hoursSinceLastStagingMerge}h. Bug fix: ${hasBugFix}.`);
+
+          try {
+            const result = await spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix);
+            if (result.code === 0) {
+              log('Preview promotion pipeline completed successfully.');
+              state.lastPreviewToStagingMergeAt = now;
+              saveState(state);
+            } else {
+              log(`Preview promotion pipeline exited with code ${result.code}`);
+            }
+          } catch (err) {
+            log(`Preview promotion error: ${err.message}`);
+          }
+        } else {
+          log(`Preview promotion: ${newCommits.length} commits pending but staging only ${hoursSinceLastStagingMerge}h old (need 24h or bug fix).`);
+        }
+      }
+    } else {
+      log('Preview promotion: preview or staging branch does not exist on remote.');
+    }
+
+    state.lastPreviewPromotionCheck = now;
+    saveState(state);
+  } else if (!previewPromotionEnabled) {
+    log('Preview Promotion is disabled in config.');
+  } else {
+    const minutesLeft = Math.ceil((PREVIEW_PROMOTION_COOLDOWN_MS - timeSinceLastPreviewPromotion) / 60000);
+    log(`Preview promotion cooldown active. ${minutesLeft} minutes until next check.`);
   }
 
   // =========================================================================

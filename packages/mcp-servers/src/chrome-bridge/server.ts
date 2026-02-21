@@ -28,6 +28,7 @@ import type {
   ChromeToolDefinition,
   McpContent,
 } from './types.js';
+import { BrowserTipTracker } from './browser-tips.js';
 
 // ============================================================================
 // Chrome Bridge Socket Client
@@ -39,6 +40,7 @@ class ChromeBridgeClient {
   private requestQueues = new Map<string, Promise<void>>();
   private tabRoutes = new Map<number, string>(); // tabId -> socketPath
   private tabUrls = new Map<number, string>(); // tabId -> last known URL
+  private tipTracker = new BrowserTipTracker();
   private readonly socketDir: string;
 
   private static readonly CLIENT_ID = 'gentyr';
@@ -321,6 +323,15 @@ class ChromeBridgeClient {
 
     // Route by tabId if available
     const tabId = typeof args.tabId === 'number' ? args.tabId : undefined;
+
+    // Cache URL on navigate for tip hostname matching
+    if (toolName === 'navigate' && tabId !== undefined && typeof args.url === 'string') {
+      const url = args.url;
+      if (url !== 'forward' && url !== 'back') {
+        this.tabUrls.set(tabId, url.match(/^https?:\/\//) ? url : `https://${url}`);
+      }
+    }
+
     let targetSocket: string | undefined;
 
     if (tabId !== undefined) {
@@ -369,13 +380,16 @@ class ChromeBridgeClient {
             await this.executeOnSocketSerialized(targetSocket, 'navigate', { url: cachedUrl, tabId });
             await new Promise((r) => setTimeout(r, 2000));
             const retryResponse = await this.executeOnSocketSerialized(targetSocket, toolName, args);
-            return this.normalizeResponse(retryResponse);
+            const retryResult = this.normalizeResponse(retryResponse);
+            this.appendTips(retryResult, toolName, tabId);
+            return retryResult;
           } catch {
             // Retry failed, fall through to return the original error
           }
         }
       }
 
+      this.appendTips(result, toolName, tabId);
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -497,6 +511,17 @@ class ChromeBridgeClient {
     }
 
     return { content: [{ type: 'text', text: 'Empty response from Chrome extension' }] };
+  }
+
+  private appendTips(
+    result: { content: McpContent[]; isError?: boolean },
+    toolName: string,
+    tabId: number | undefined,
+  ): void {
+    if (result.isError) return;
+    const tabUrl = tabId !== undefined ? this.tabUrls.get(tabId) : undefined;
+    const tipText = this.tipTracker.getRelevantTips(toolName, tabUrl);
+    if (tipText) result.content.push({ type: 'text', text: tipText });
   }
 
   destroy(): void {
