@@ -19,7 +19,6 @@ import assert from 'node:assert';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 

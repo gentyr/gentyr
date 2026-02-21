@@ -339,6 +339,127 @@ describe('cto-notification-hook.js - Bug Fixes', () => {
     });
   });
 
+  describe('Slash Command Suppression - Bug Fix', () => {
+    it('should parse JSON stdin to extract prompt field', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
+
+      // Must read from /dev/stdin
+      assert.match(
+        mainFunction,
+        /fs\.readFileSync\('\/dev\/stdin'/,
+        'Must read stdin to check for slash commands'
+      );
+
+      // Must parse JSON to extract prompt
+      assert.match(
+        mainFunction,
+        /JSON\.parse\(stdin\)/,
+        'Must parse JSON stdin'
+      );
+
+      // Must extract prompt field
+      assert.match(
+        mainFunction,
+        /parsed\.prompt/,
+        'Must extract prompt field from parsed JSON'
+      );
+    });
+
+    it('should suppress output for sentinel markers', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
+
+      // Must check for HOOK:GENTYR: sentinel markers
+      assert.match(
+        mainFunction,
+        /HOOK:GENTYR:/,
+        'Must check for GENTYR sentinel markers'
+      );
+
+      // Must suppress output when sentinel detected
+      assert.match(
+        mainFunction,
+        /suppressOutput: true/,
+        'Must suppress output for slash commands'
+      );
+    });
+
+    it('should suppress output for bare slash commands', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
+
+      // CRITICAL FIX: Must match bare slash commands like "/restart-session"
+      // Pattern: /^\/[\w-]+$/
+      assert.match(
+        mainFunction,
+        /\/\^\\\/\[\\w-\]\+\$\//,
+        'Must match bare slash commands with /^\/[\\w-]+$/ pattern'
+      );
+    });
+
+    it('should test extracted prompt, not raw stdin', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
+
+      // Must assign to prompt variable
+      assert.match(
+        mainFunction,
+        /let prompt = stdin/,
+        'Must assign stdin to prompt variable for testing'
+      );
+
+      // Must test against prompt, not stdin
+      assert.match(
+        mainFunction,
+        /prompt\.includes\(/,
+        'Must test prompt.includes() for sentinels'
+      );
+
+      assert.match(
+        mainFunction,
+        /\.test\(prompt\.trim\(\)\)/,
+        'Must test prompt.trim() for slash command pattern'
+      );
+    });
+
+    it('should handle JSON parse errors gracefully', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
+
+      // Must wrap stdin parsing in try-catch
+      const stdinSection = mainFunction.match(/try \{[\s\S]*?fs\.readFileSync\('\/dev\/stdin'[\s\S]*?\} catch/);
+      assert.ok(stdinSection, 'Must wrap stdin operations in try-catch');
+    });
+
+    it('should continue normally when stdin unavailable', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
+
+      // Catch block should continue to metrics gathering
+      const catchBlock = mainFunction.match(/\} catch \{[\s\S]*?\/\/ No stdin available/);
+      assert.ok(catchBlock, 'Catch block must continue normally when stdin unavailable');
+    });
+
+    it('should check for both sentinel and regex patterns', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
+
+      // Must have both checks in the same condition
+      const slashCommandCheck = mainFunction.match(/if \(prompt\.includes\('<!-- HOOK:GENTYR:'\) \|\| \/\^\\\/\[\\w-\]\+\$\/\.test\(prompt\.trim\(\)\)\)/);
+      assert.ok(slashCommandCheck, 'Must check both sentinel markers AND bare slash commands');
+    });
+
+    it('should fall back to raw stdin if JSON parse fails', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
+
+      // Must set prompt to stdin if parsing fails
+      const stdinSection = mainFunction.match(/try \{[\s\S]*?const parsed = JSON\.parse\(stdin\);[\s\S]*?if \(typeof parsed\.prompt === 'string'\) prompt = parsed\.prompt;[\s\S]*?\} catch/);
+      assert.ok(stdinSection, 'Must fall back to raw stdin if JSON parsing fails');
+    });
+  });
+
   describe('Code Structure - Overall Validation', () => {
     it('should have all required constants defined', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');

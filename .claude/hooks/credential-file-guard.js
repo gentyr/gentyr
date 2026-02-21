@@ -504,9 +504,13 @@ function findFileProtectionBySuffix(suffix, projectDir) {
       return null;
     }
 
-    // Check if suffix matches any file config key
+    // Check if suffix matches any file config key (require path-component boundary)
     for (const [key, fileConfig] of Object.entries(config.files)) {
-      if (suffix.endsWith(key) || key.endsWith(suffix) || suffix === key) {
+      if (suffix === key) {
+        return { key, config: fileConfig };
+      }
+      // Match at path separator boundary: suffix ends with /key or key ends with /suffix
+      if (suffix.endsWith('/' + key) || suffix.endsWith(key)) {
         return { key, config: fileConfig };
       }
     }
@@ -903,7 +907,8 @@ process.stdin.on('end', () => {
             approvedFileKeys.add(protection.key);
           } else {
             allApproved = false;
-            const request = createRequest('__file__', protection.key, {}, protection.config.phrase);
+            const approvalMode = protection.config.protection === 'deputy-cto-approval' ? 'deputy-cto' : 'cto';
+            const request = createRequest('__file__', protection.key, {}, protection.config.phrase, { approvalMode });
             approvalRequests.push({ request, protection, filePath: fp });
           }
         }
@@ -935,7 +940,8 @@ process.stdin.on('end', () => {
               if (approval) {
                 // Approved — fall through to remaining checks
               } else {
-                const request = createRequest('__file__', protection.key, {}, protection.config.phrase);
+                const approvalMode = protection.config.protection === 'deputy-cto-approval' ? 'deputy-cto' : 'cto';
+            const request = createRequest('__file__', protection.key, {}, protection.config.phrase, { approvalMode });
                 blockBashWithApprovalRequest(command, rawScanResult.reason, [{ request, protection, filePath: matchedSuffix }]);
                 return;
               }
@@ -1061,7 +1067,8 @@ process.stdin.on('end', () => {
         }
 
         // No approval — create request and block with instructions
-        const request = createRequest('__file__', protection.key, {}, protection.config.phrase);
+        const approvalMode = protection.config.protection === 'deputy-cto-approval' ? 'deputy-cto' : 'cto';
+            const request = createRequest('__file__', protection.key, {}, protection.config.phrase, { approvalMode });
         blockWithApprovalRequest(filePath, result.reason, request, protection);
         return;
       }

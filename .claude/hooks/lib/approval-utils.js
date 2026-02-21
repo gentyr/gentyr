@@ -257,35 +257,56 @@ export function saveApprovals(approvals) {
 
 /**
  * Create a pending approval request
- * @param {string} server - MCP server name
- * @param {string} tool - Tool name
+ * @param {string} server - MCP server name (or '__file__' for file approvals)
+ * @param {string} tool - Tool name (or file config key for file approvals)
  * @param {object} args - Tool arguments
  * @param {string} phrase - Approval phrase (e.g., "APPROVE PROD")
+ * @param {object} [options] - Additional options
+ * @param {string} [options.approvalMode] - 'cto' (default) or 'deputy-cto'
  * @returns {object} Request details including code
  */
-export function createRequest(server, tool, args, phrase) {
+export function createRequest(server, tool, args, phrase, options = {}) {
   const code = generateCode();
   const now = Date.now();
+  const expiresTimestamp = now + TOKEN_EXPIRY_MS;
+
+  // Hash the args to bind the approval to these specific arguments
+  const argsHash = crypto.createHash('sha256')
+    .update(JSON.stringify(args || {}))
+    .digest('hex');
+
+  // Compute HMAC for pending request (prevents agent forgery)
+  const key = readProtectionKey();
+  const keyBase64 = key ? key.toString('base64') : null;
+  let pendingHmac;
+  if (keyBase64) {
+    pendingHmac = crypto.createHmac('sha256', key)
+      .update([code, server, tool, argsHash, String(expiresTimestamp)].join('|'))
+      .digest('hex');
+  }
 
   const approvals = loadApprovals();
   approvals.approvals[code] = {
     server,
     tool,
     args,
+    argsHash,
     phrase,
     code,
     status: 'pending',
+    approval_mode: options.approvalMode || 'cto',
     created_at: new Date(now).toISOString(),
     created_timestamp: now,
-    expires_at: new Date(now + TOKEN_EXPIRY_MS).toISOString(),
-    expires_timestamp: now + TOKEN_EXPIRY_MS,
+    expires_at: new Date(expiresTimestamp).toISOString(),
+    expires_timestamp: expiresTimestamp,
+    ...(pendingHmac && { pending_hmac: pendingHmac }),
   };
 
   // Clean expired requests
   const validApprovals = {};
-  for (const [key, val] of Object.entries(approvals.approvals)) {
+  for (const [k, val] of Object.entries(approvals.approvals)) {
     if (val.expires_timestamp > now) {
-      validApprovals[key] = val;
+      validApprovals[k] = val;
     }
   }
   approvals.approvals = validApprovals;
