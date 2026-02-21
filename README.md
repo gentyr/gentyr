@@ -213,7 +213,7 @@ npm run generate:readme
 
 ## the automation layer
 
-Forty hooks and background timers keep the system running without human triggers.
+Thirty hooks and background timers keep the system running without human triggers.
 
 ### quota and credentials
 
