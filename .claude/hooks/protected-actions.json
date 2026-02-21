@@ -172,6 +172,33 @@
       ]
     }
   },
+  "files": {
+    ".claude/config/services.json": {
+      "protection": "deputy-cto-approval",
+      "phrase": "APPROVE CONFIG",
+      "description": "Service configuration with MCP server endpoints"
+    },
+    ".mcp.json": {
+      "protection": "approval-only",
+      "phrase": "APPROVE MCP",
+      "description": "MCP server definitions with credential references"
+    },
+    ".claude/api-key-rotation.json": {
+      "protection": "approval-only",
+      "phrase": "APPROVE ROTATION",
+      "description": "API key rotation state"
+    },
+    ".claude/credential-provider.json": {
+      "protection": "approval-only",
+      "phrase": "APPROVE CREDENTIAL",
+      "description": "Credential provider configuration"
+    },
+    ".claude/vault-mappings.json": {
+      "protection": "approval-only",
+      "phrase": "APPROVE VAULT MAP",
+      "description": "1Password vault mappings"
+    }
+  },
   "settings": {
     "codeLength": 6,
     "expiryMinutes": 5,

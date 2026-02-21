@@ -1,5 +1,36 @@
 # GENTYR Framework Changelog
 
+## 2026-02-20 - Protection System: Fix Token File EACCES Errors
+
+### Fixed
+
+**Token file handling under sticky-bit protection** (4 files):
+- Root cause: `commit-approval-token.json` was missing from pre-creation loop in `setup.sh`, and hooks used `fs.unlinkSync()` (delete semantics) to clear tokens, which fails under sticky-bit protection on `.claude/`
+- Changes:
+  1. **`scripts/setup.sh`** - Added `commit-approval-token.json` to pre-creation loop (line 603)
+  2. **`.claude/hooks/pre-commit-review.js`** - Changed 2 `unlinkSync` calls to `writeFileSync(path, '{}')` pattern, added empty-object early-exit check
+  3. **`.claude/hooks/block-no-verify.js`** - Changed 7 `unlinkSync` calls to `clearToken()` helper using overwrite pattern, added empty-object early-exit check
+  4. **`packages/mcp-servers/src/deputy-cto/server.ts`** - Changed 2 `unlinkSync` calls to `writeFileSync(path, '{}')`, added empty-object early-exit check
+- Result: All token files can now be safely written/cleared under sticky-bit protection without EACCES errors
+- Pattern: Pre-create file during setup → overwrite with data to activate → overwrite with `{}` to consume/clear → treat `{}` as "no token"
+
+### Documentation
+
+**Created `docs/shared/EPHEMERAL-STATE-FILES.md`**:
+- Comprehensive guide to the pre-create + overwrite pattern for ephemeral state files
+- Lists all 6 state files using this pattern with their writers/consumers
+- Step-by-step instructions for adding new state files
+- Common mistakes and how to avoid them
+- Critical for maintaining sticky-bit protection compatibility
+
+### Validation
+
+- Code review: CLEAN, no violations
+- Test writer: No test updates needed (existing tests don't test token clearing behavior directly)
+- Pre-existing test failures confirmed (unrelated to changes)
+- TypeScript compiles clean with project tsconfig
+- All JS files pass syntax check
+
 ## 2026-02-20 - Usage Optimizer: Per-Account Deduplication Fix
 
 ### Fixed

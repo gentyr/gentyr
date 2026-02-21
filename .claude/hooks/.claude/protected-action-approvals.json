@@ -1,0 +1,42 @@
+{
+  "approvals": {
+    "5UX57X": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {
+        "arg1": "value1"
+      },
+      "phrase": "APPROVE TEST",
+      "code": "5UX57X",
+      "status": "pending",
+      "created_at": "2026-02-21T00:28:18.404Z",
+      "created_timestamp": 1771633698404,
+      "expires_at": "2026-02-21T00:33:18.404Z",
+      "expires_timestamp": 1771633998404
+    },
+    "VZWEXY": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "VZWEXY",
+      "status": "pending",
+      "created_at": "2026-02-21T00:28:18.406Z",
+      "created_timestamp": 1771633698406,
+      "expires_at": "2026-02-21T00:33:18.406Z",
+      "expires_timestamp": 1771633998406
+    },
+    "86DU5F": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "86DU5F",
+      "status": "pending",
+      "created_at": "2026-02-21T00:28:18.407Z",
+      "created_timestamp": 1771633698407,
+      "expires_at": "2026-02-21T00:33:18.407Z",
+      "expires_timestamp": 1771633998407
+    }
+  }
+}

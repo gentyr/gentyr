@@ -19,6 +19,7 @@ import assert from 'node:assert';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 
@@ -49,13 +50,18 @@ function createTempDir(prefix = 'credential-guard-test') {
  * Execute the hook script by spawning a subprocess and sending JSON on stdin.
  * Returns { exitCode, stdout, stderr }.
  */
-async function runHook(hookInput) {
+async function runHook(hookInput, opts = {}) {
   return new Promise((resolve) => {
     const hookPath = path.join(__dirname, '..', 'credential-file-guard.js');
 
-    const proc = spawn('node', [hookPath], {
+    const spawnOpts = {
       stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    };
+    if (opts.env) {
+      spawnOpts.env = { ...process.env, ...opts.env };
+    }
+
+    const proc = spawn('node', [hookPath], spawnOpts);
 
     let stdout = '';
     let stderr = '';
@@ -1475,6 +1481,351 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
 
       assert.match(result.stderr, /\.\.\./,
         'Long commands should be truncated with ...');
+    });
+  });
+
+  // ==========================================================================
+  // CTO-Approved File Access (Approval Flow)
+  // ==========================================================================
+
+  describe('CTO-approved file access', () => {
+    /**
+     * Helper to set up protected-actions.json with files section and
+     * optionally create an approved entry in protected-action-approvals.json.
+     */
+    function setupApprovalEnv(tmpDir, opts = {}) {
+      // Create protected-actions.json with files section
+      const hooksDir = path.join(tmpDir, '.claude', 'hooks');
+      fs.mkdirSync(hooksDir, { recursive: true });
+
+      const config = {
+        version: '2.0.0',
+        servers: {},
+        files: {
+          '.claude/config/services.json': {
+            protection: 'deputy-cto-approval',
+            phrase: 'APPROVE CONFIG',
+            description: 'Service configuration',
+          },
+          '.mcp.json': {
+            protection: 'approval-only',
+            phrase: 'APPROVE MCP',
+            description: 'MCP server definitions',
+          },
+          '.claude/api-key-rotation.json': {
+            protection: 'approval-only',
+            phrase: 'APPROVE ROTATION',
+            description: 'API key rotation state',
+          },
+        },
+        settings: {
+          codeLength: 6,
+          expiryMinutes: 5,
+        },
+      };
+
+      fs.writeFileSync(path.join(hooksDir, 'protected-actions.json'), JSON.stringify(config, null, 2));
+
+      // Create approvals file with optional pre-approved entry
+      if (opts.approvedFile) {
+        const approvalsDir = path.join(tmpDir, '.claude');
+        fs.mkdirSync(approvalsDir, { recursive: true });
+
+        const code = opts.approvedCode || 'T3ST99';
+        const approvals = {
+          approvals: {
+            [code]: {
+              server: '__file__',
+              tool: opts.approvedFile,
+              args: {},
+              phrase: opts.approvedPhrase || 'APPROVE CONFIG',
+              code,
+              status: 'approved',
+              created_at: new Date().toISOString(),
+              created_timestamp: Date.now(),
+              expires_at: new Date(Date.now() + 300000).toISOString(),
+              expires_timestamp: Date.now() + 300000,
+              approved_at: new Date().toISOString(),
+              approved_timestamp: Date.now(),
+            },
+          },
+        };
+
+        fs.writeFileSync(path.join(approvalsDir, 'protected-action-approvals.json'), JSON.stringify(approvals, null, 2));
+      }
+    }
+
+    it('should hard-block .claude/protection-key with no approval code', async () => {
+      setupApprovalEnv(tempDir.path);
+
+      const result = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: `${tempDir.path}/.claude/protection-key` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      // Should NOT include approval code instructions
+      assert.ok(!output.hookSpecificOutput.permissionDecisionReason.includes('CTO must type'),
+        'protection-key should be hard-blocked with no approval option');
+      assert.ok(!output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        'protection-key should not show Approval Required');
+    });
+
+    it('should hard-block .claude/protected-action-approvals.json with no approval code', async () => {
+      setupApprovalEnv(tempDir.path);
+
+      const result = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: `${tempDir.path}/.claude/protected-action-approvals.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.ok(!output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        'approvals.json should be hard-blocked with no approval option');
+    });
+
+    it('should hard-block .env files with no approval code', async () => {
+      setupApprovalEnv(tempDir.path);
+
+      const result = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: `${tempDir.path}/.env` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.ok(!output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        '.env should be hard-blocked with no approval option');
+    });
+
+    it('should hard-block .env.production with no approval code', async () => {
+      setupApprovalEnv(tempDir.path);
+
+      const result = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: `${tempDir.path}/.env.production` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.ok(!output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        '.env.production should be hard-blocked with no approval option');
+    });
+
+    it('should block approvable file (.mcp.json) with approval code when no approval exists', async () => {
+      setupApprovalEnv(tempDir.path);
+
+      const result = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: `${tempDir.path}/.mcp.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        '.mcp.json should show Approval Required');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('APPROVE MCP'),
+        '.mcp.json should show the APPROVE MCP phrase');
+      // Should contain a 6-char code
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /[A-Z0-9]{6}/,
+        '.mcp.json should contain an approval code');
+    });
+
+    it('should block approvable file (services.json) with deputy-cto-approval instructions', async () => {
+      setupApprovalEnv(tempDir.path);
+
+      const result = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: `${tempDir.path}/.claude/config/services.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('deputy-CTO'),
+        'services.json should mention deputy-CTO approval option');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('APPROVE CONFIG'),
+        'services.json should show the APPROVE CONFIG phrase');
+    });
+
+    it('should allow approvable file (.mcp.json) when valid approval exists', async () => {
+      setupApprovalEnv(tempDir.path, {
+        approvedFile: '.mcp.json',
+        approvedCode: 'X7Y8Z9',
+        approvedPhrase: 'APPROVE MCP',
+      });
+
+      const result = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: `${tempDir.path}/.mcp.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      // Should NOT have a deny decision
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
+          '.mcp.json should be allowed when approval exists');
+      }
+    });
+
+    it('should consume approval (one-time use) — second attempt should be blocked', async () => {
+      setupApprovalEnv(tempDir.path, {
+        approvedFile: '.mcp.json',
+        approvedCode: 'X7Y8Z9',
+        approvedPhrase: 'APPROVE MCP',
+      });
+
+      const envOpts = { env: { CLAUDE_PROJECT_DIR: tempDir.path } };
+
+      // First attempt — should be allowed (consumes the approval)
+      const result1 = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: `${tempDir.path}/.mcp.json` },
+        cwd: tempDir.path,
+      }, envOpts);
+      assert.strictEqual(result1.exitCode, 0);
+
+      // Second attempt — approval consumed, should be blocked with new code
+      const result2 = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: `${tempDir.path}/.mcp.json` },
+        cwd: tempDir.path,
+      }, envOpts);
+      assert.strictEqual(result2.exitCode, 0);
+      const jsonMatch = result2.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Second attempt should be blocked after approval consumed');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        'Second attempt should show Approval Required with new code');
+    });
+
+    it('should hard-block Bash command with mixed always-blocked and approvable files', async () => {
+      setupApprovalEnv(tempDir.path);
+
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: `cat ${tempDir.path}/.env && cat ${tempDir.path}/.mcp.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      // Should be hard-blocked (not approval-required) because .env is always-blocked
+      assert.ok(!output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        'Mixed always-blocked + approvable should be hard-blocked');
+    });
+
+    it('should block Bash with approvable file and show approval code', async () => {
+      setupApprovalEnv(tempDir.path);
+
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: `cat ${tempDir.path}/.mcp.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        'Bash with approvable file should show Approval Required');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('APPROVE MCP'),
+        'Bash with approvable file should show phrase');
+    });
+
+    it('should allow Bash with approvable file when approval exists', async () => {
+      setupApprovalEnv(tempDir.path, {
+        approvedFile: '.mcp.json',
+        approvedCode: 'B4SH01',
+        approvedPhrase: 'APPROVE MCP',
+      });
+
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: `cat ${tempDir.path}/.mcp.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
+          'Bash with approvable file should be allowed when approval exists');
+      }
+    });
+
+    it('should block Write to approvable file with approval code', async () => {
+      setupApprovalEnv(tempDir.path);
+
+      const result = await runHook({
+        tool_name: 'Write',
+        tool_input: { file_path: `${tempDir.path}/.mcp.json`, content: '{}' },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        'Write to approvable file should show Approval Required');
+    });
+
+    it('should block Edit to approvable file with approval code', async () => {
+      setupApprovalEnv(tempDir.path);
+
+      const result = await runHook({
+        tool_name: 'Edit',
+        tool_input: { file_path: `${tempDir.path}/.claude/api-key-rotation.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        'Edit to approvable file should show Approval Required');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('APPROVE ROTATION'),
+        'Edit to api-key-rotation.json should show APPROVE ROTATION phrase');
     });
   });
 

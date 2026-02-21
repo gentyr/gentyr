@@ -1,80 +1,258 @@
 {
   "approvals": {
-    "UQJYM9": {
+    "SS8BC4": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "SS8BC4",
+      "status": "pending",
+      "created_at": "2026-02-21T00:24:07.011Z",
+      "created_timestamp": 1771633447011,
+      "expires_at": "2026-02-21T00:29:07.011Z",
+      "expires_timestamp": 1771633747011
+    },
+    "BNSB3V": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "BNSB3V",
+      "status": "pending",
+      "created_at": "2026-02-21T00:24:08.079Z",
+      "created_timestamp": 1771633448079,
+      "expires_at": "2026-02-21T00:29:08.079Z",
+      "expires_timestamp": 1771633748079
+    },
+    "K32UGE": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "K32UGE",
+      "status": "pending",
+      "created_at": "2026-02-21T00:24:11.333Z",
+      "created_timestamp": 1771633451333,
+      "expires_at": "2026-02-21T00:29:11.333Z",
+      "expires_timestamp": 1771633751333
+    },
+    "G4BPQK": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "G4BPQK",
+      "status": "pending",
+      "created_at": "2026-02-21T00:24:13.109Z",
+      "created_timestamp": 1771633453109,
+      "expires_at": "2026-02-21T00:29:13.109Z",
+      "expires_timestamp": 1771633753109
+    },
+    "HFE48G": {
+      "server": "__file__",
+      "tool": ".claude/config/services.json",
+      "args": {},
+      "phrase": "APPROVE CONFIG",
+      "code": "HFE48G",
+      "status": "pending",
+      "created_at": "2026-02-21T00:24:13.166Z",
+      "created_timestamp": 1771633453166,
+      "expires_at": "2026-02-21T00:29:13.166Z",
+      "expires_timestamp": 1771633753166
+    },
+    "DBVM33": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "DBVM33",
+      "status": "pending",
+      "created_at": "2026-02-21T00:24:13.224Z",
+      "created_timestamp": 1771633453224,
+      "expires_at": "2026-02-21T00:29:13.224Z",
+      "expires_timestamp": 1771633753224
+    },
+    "WSVQYD": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "WSVQYD",
+      "status": "pending",
+      "created_at": "2026-02-21T00:24:13.284Z",
+      "created_timestamp": 1771633453284,
+      "expires_at": "2026-02-21T00:29:13.284Z",
+      "expires_timestamp": 1771633753284
+    },
+    "EPWDQP": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "EPWDQP",
+      "status": "pending",
+      "created_at": "2026-02-21T00:24:13.340Z",
+      "created_timestamp": 1771633453340,
+      "expires_at": "2026-02-21T00:29:13.340Z",
+      "expires_timestamp": 1771633753340
+    },
+    "HJJMF7": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "HJJMF7",
+      "status": "pending",
+      "created_at": "2026-02-21T00:24:13.456Z",
+      "created_timestamp": 1771633453456,
+      "expires_at": "2026-02-21T00:29:13.456Z",
+      "expires_timestamp": 1771633753456
+    },
+    "RSCD3U": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "RSCD3U",
+      "status": "pending",
+      "created_at": "2026-02-21T00:24:13.516Z",
+      "created_timestamp": 1771633453516,
+      "expires_at": "2026-02-21T00:29:13.516Z",
+      "expires_timestamp": 1771633753516
+    },
+    "XDKNYK": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "XDKNYK",
+      "status": "pending",
+      "created_at": "2026-02-21T00:24:13.574Z",
+      "created_timestamp": 1771633453574,
+      "expires_at": "2026-02-21T00:29:13.574Z",
+      "expires_timestamp": 1771633753574
+    },
+    "VDR398": {
+      "server": "__file__",
+      "tool": ".claude/api-key-rotation.json",
+      "args": {},
+      "phrase": "APPROVE ROTATION",
+      "code": "VDR398",
+      "status": "pending",
+      "created_at": "2026-02-21T00:24:13.632Z",
+      "created_timestamp": 1771633453632,
+      "expires_at": "2026-02-21T00:29:13.632Z",
+      "expires_timestamp": 1771633753632
+    },
+    "5CKMFZ": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "5CKMFZ",
+      "status": "pending",
+      "created_at": "2026-02-21T00:25:44.787Z",
+      "created_timestamp": 1771633544787,
+      "expires_at": "2026-02-21T00:30:44.787Z",
+      "expires_timestamp": 1771633844787
+    },
+    "DYEHCC": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "DYEHCC",
+      "status": "pending",
+      "created_at": "2026-02-21T00:25:45.859Z",
+      "created_timestamp": 1771633545859,
+      "expires_at": "2026-02-21T00:30:45.859Z",
+      "expires_timestamp": 1771633845859
+    },
+    "RAHN8P": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "RAHN8P",
+      "status": "pending",
+      "created_at": "2026-02-21T00:25:49.235Z",
+      "created_timestamp": 1771633549235,
+      "expires_at": "2026-02-21T00:30:49.235Z",
+      "expires_timestamp": 1771633849235
+    },
+    "UQEJ78": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "UQEJ78",
+      "status": "pending",
+      "created_at": "2026-02-21T00:26:30.452Z",
+      "created_timestamp": 1771633590452,
+      "expires_at": "2026-02-21T00:31:30.452Z",
+      "expires_timestamp": 1771633890452
+    },
+    "27KVMV": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "27KVMV",
+      "status": "pending",
+      "created_at": "2026-02-21T00:26:31.496Z",
+      "created_timestamp": 1771633591496,
+      "expires_at": "2026-02-21T00:31:31.496Z",
+      "expires_timestamp": 1771633891496
+    },
+    "PZPXRF": {
+      "server": "__file__",
+      "tool": ".mcp.json",
+      "args": {},
+      "phrase": "APPROVE MCP",
+      "code": "PZPXRF",
+      "status": "pending",
+      "created_at": "2026-02-21T00:26:34.738Z",
+      "created_timestamp": 1771633594738,
+      "expires_at": "2026-02-21T00:31:34.738Z",
+      "expires_timestamp": 1771633894738
+    },
+    "MSMKXQ": {
       "server": "test-server",
       "tool": "test-tool",
       "args": {
         "arg1": "value1"
       },
       "phrase": "APPROVE TEST",
-      "code": "UQJYM9",
+      "code": "MSMKXQ",
       "status": "pending",
-      "created_at": "2026-02-20T12:48:40.110Z",
-      "created_timestamp": 1771591720110,
-      "expires_at": "2026-02-20T12:53:40.110Z",
-      "expires_timestamp": 1771592020110
+      "created_at": "2026-02-21T00:26:41.315Z",
+      "created_timestamp": 1771633601315,
+      "expires_at": "2026-02-21T00:31:41.315Z",
+      "expires_timestamp": 1771633901315
     },
-    "VW9GEA": {
+    "W6GDN9": {
       "server": "test-server",
       "tool": "test-tool",
       "args": {},
       "phrase": "APPROVE TEST",
-      "code": "VW9GEA",
+      "code": "W6GDN9",
       "status": "pending",
-      "created_at": "2026-02-20T12:48:40.112Z",
-      "created_timestamp": 1771591720112,
-      "expires_at": "2026-02-20T12:53:40.112Z",
-      "expires_timestamp": 1771592020112
+      "created_at": "2026-02-21T00:26:41.316Z",
+      "created_timestamp": 1771633601316,
+      "expires_at": "2026-02-21T00:31:41.316Z",
+      "expires_timestamp": 1771633901316
     },
-    "V6N3E8": {
+    "EUKKQQ": {
       "server": "test-server",
       "tool": "test-tool",
       "args": {},
       "phrase": "APPROVE TEST",
-      "code": "V6N3E8",
+      "code": "EUKKQQ",
       "status": "pending",
-      "created_at": "2026-02-20T12:48:40.113Z",
-      "created_timestamp": 1771591720113,
-      "expires_at": "2026-02-20T12:53:40.113Z",
-      "expires_timestamp": 1771592020113
-    },
-    "2CKWHB": {
-      "server": "test-server",
-      "tool": "test-tool",
-      "args": {
-        "arg1": "value1"
-      },
-      "phrase": "APPROVE TEST",
-      "code": "2CKWHB",
-      "status": "pending",
-      "created_at": "2026-02-20T12:48:50.375Z",
-      "created_timestamp": 1771591730375,
-      "expires_at": "2026-02-20T12:53:50.375Z",
-      "expires_timestamp": 1771592030375
-    },
-    "8NKSBP": {
-      "server": "test-server",
-      "tool": "test-tool",
-      "args": {},
-      "phrase": "APPROVE TEST",
-      "code": "8NKSBP",
-      "status": "pending",
-      "created_at": "2026-02-20T12:48:50.377Z",
-      "created_timestamp": 1771591730377,
-      "expires_at": "2026-02-20T12:53:50.377Z",
-      "expires_timestamp": 1771592030377
-    },
-    "UF9K3G": {
-      "server": "test-server",
-      "tool": "test-tool",
-      "args": {},
-      "phrase": "APPROVE TEST",
-      "code": "UF9K3G",
-      "status": "pending",
-      "created_at": "2026-02-20T12:48:50.378Z",
-      "created_timestamp": 1771591730378,
-      "expires_at": "2026-02-20T12:53:50.378Z",
-      "expires_timestamp": 1771592030378
+      "created_at": "2026-02-21T00:26:41.317Z",
+      "created_timestamp": 1771633601317,
+      "expires_at": "2026-02-21T00:31:41.317Z",
+      "expires_timestamp": 1771633901317
     }
   }
 }

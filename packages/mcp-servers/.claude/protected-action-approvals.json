@@ -1,0 +1,118 @@
+{
+  "approvals": {
+    "ZAHFM9": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {
+        "arg1": "value1"
+      },
+      "phrase": "APPROVE TEST",
+      "code": "ZAHFM9",
+      "status": "pending",
+      "created_at": "2026-02-21T00:27:10.934Z",
+      "created_timestamp": 1771633630934,
+      "expires_at": "2026-02-21T00:32:10.934Z",
+      "expires_timestamp": 1771633930934
+    },
+    "23H74V": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "23H74V",
+      "status": "pending",
+      "created_at": "2026-02-21T00:27:10.935Z",
+      "created_timestamp": 1771633630935,
+      "expires_at": "2026-02-21T00:32:10.935Z",
+      "expires_timestamp": 1771633930935
+    },
+    "EX7FHF": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "EX7FHF",
+      "status": "pending",
+      "created_at": "2026-02-21T00:27:10.935Z",
+      "created_timestamp": 1771633630935,
+      "expires_at": "2026-02-21T00:32:10.935Z",
+      "expires_timestamp": 1771633930935
+    },
+    "FUQ77S": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {
+        "arg1": "value1"
+      },
+      "phrase": "APPROVE TEST",
+      "code": "FUQ77S",
+      "status": "pending",
+      "created_at": "2026-02-21T00:27:16.458Z",
+      "created_timestamp": 1771633636458,
+      "expires_at": "2026-02-21T00:32:16.458Z",
+      "expires_timestamp": 1771633936458
+    },
+    "WUZGJ5": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "WUZGJ5",
+      "status": "pending",
+      "created_at": "2026-02-21T00:27:16.460Z",
+      "created_timestamp": 1771633636460,
+      "expires_at": "2026-02-21T00:32:16.460Z",
+      "expires_timestamp": 1771633936460
+    },
+    "MZSSTW": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "MZSSTW",
+      "status": "pending",
+      "created_at": "2026-02-21T00:27:16.460Z",
+      "created_timestamp": 1771633636460,
+      "expires_at": "2026-02-21T00:32:16.460Z",
+      "expires_timestamp": 1771633936460
+    },
+    "ZPJNCH": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {
+        "arg1": "value1"
+      },
+      "phrase": "APPROVE TEST",
+      "code": "ZPJNCH",
+      "status": "pending",
+      "created_at": "2026-02-21T00:27:21.069Z",
+      "created_timestamp": 1771633641069,
+      "expires_at": "2026-02-21T00:32:21.069Z",
+      "expires_timestamp": 1771633941069
+    },
+    "7TMG85": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "7TMG85",
+      "status": "pending",
+      "created_at": "2026-02-21T00:27:21.070Z",
+      "created_timestamp": 1771633641070,
+      "expires_at": "2026-02-21T00:32:21.070Z",
+      "expires_timestamp": 1771633941070
+    },
+    "P82CJE": {
+      "server": "test-server",
+      "tool": "test-tool",
+      "args": {},
+      "phrase": "APPROVE TEST",
+      "code": "P82CJE",
+      "status": "pending",
+      "created_at": "2026-02-21T00:27:21.071Z",
+      "created_timestamp": 1771633641071,
+      "expires_at": "2026-02-21T00:32:21.071Z",
+      "expires_timestamp": 1771633941071
+    }
+  }
+}
