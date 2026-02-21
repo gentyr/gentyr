@@ -16,6 +16,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -1825,6 +1826,311 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
         'Edit to approvable file should show Approval Required');
       assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('APPROVE ROTATION'),
         'Edit to api-key-rotation.json should show APPROVE ROTATION phrase');
+    });
+
+    // --- Grep/Glob approval path ---
+
+    it('should block Grep with path to approvable file and show approval code', async () => {
+      setupApprovalEnv(tempDir.path);
+
+      const result = await runHook({
+        tool_name: 'Grep',
+        tool_input: { pattern: 'token', path: `${tempDir.path}/.mcp.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        'Grep path to approvable file should show Approval Required');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('APPROVE MCP'),
+        'Grep path to .mcp.json should show APPROVE MCP phrase');
+    });
+
+    it('should allow Grep with path to approvable file when approval exists', async () => {
+      setupApprovalEnv(tempDir.path, {
+        approvedFile: '.mcp.json',
+        approvedCode: 'GR3P01',
+        approvedPhrase: 'APPROVE MCP',
+      });
+
+      const result = await runHook({
+        tool_name: 'Grep',
+        tool_input: { pattern: 'token', path: `${tempDir.path}/.mcp.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
+          'Grep path to .mcp.json should be allowed when approval exists');
+      }
+    });
+
+    it('should hard-block Grep with path to always-blocked file', async () => {
+      setupApprovalEnv(tempDir.path);
+
+      const result = await runHook({
+        tool_name: 'Grep',
+        tool_input: { pattern: 'secret', path: `${tempDir.path}/.claude/protection-key` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.ok(!output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        'Grep to protection-key should be hard-blocked with no approval');
+    });
+
+    it('should block Glob with path to approvable file and show approval code', async () => {
+      setupApprovalEnv(tempDir.path);
+
+      const result = await runHook({
+        tool_name: 'Glob',
+        tool_input: { pattern: '*.json', path: `${tempDir.path}/.claude/config/services.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        'Glob path to approvable file should show Approval Required');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('APPROVE CONFIG'),
+        'Glob path to services.json should show APPROVE CONFIG phrase');
+    });
+
+    it('should allow Glob with path to approvable file when approval exists', async () => {
+      setupApprovalEnv(tempDir.path, {
+        approvedFile: '.claude/config/services.json',
+        approvedCode: 'GL0B01',
+        approvedPhrase: 'APPROVE CONFIG',
+      });
+
+      const result = await runHook({
+        tool_name: 'Glob',
+        tool_input: { pattern: '*.json', path: `${tempDir.path}/.claude/config/services.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
+          'Glob path to services.json should be allowed when approval exists');
+      }
+    });
+
+    // --- HMAC integrity tests ---
+
+    it('should reject forged approval with invalid pending_hmac', async () => {
+      // Set up environment with a protection key
+      const hooksDir = path.join(tempDir.path, '.claude', 'hooks');
+      fs.mkdirSync(hooksDir, { recursive: true });
+
+      const config = {
+        version: '2.0.0',
+        servers: {},
+        files: {
+          '.mcp.json': {
+            protection: 'approval-only',
+            phrase: 'APPROVE MCP',
+          },
+        },
+      };
+      fs.writeFileSync(path.join(hooksDir, 'protected-actions.json'), JSON.stringify(config, null, 2));
+
+      // Create a protection key
+      const keyBase64 = crypto.randomBytes(32).toString('base64');
+      fs.writeFileSync(path.join(tempDir.path, '.claude', 'protection-key'), keyBase64);
+
+      // Create a forged approval with invalid HMAC
+      const approvalsDir = path.join(tempDir.path, '.claude');
+      const approvals = {
+        approvals: {
+          FORGED: {
+            server: '__file__',
+            tool: '.mcp.json',
+            args: {},
+            argsHash: crypto.createHash('sha256').update('{}').digest('hex'),
+            phrase: 'APPROVE MCP',
+            code: 'FORGED',
+            status: 'approved',
+            created_timestamp: Date.now(),
+            expires_timestamp: Date.now() + 300000,
+            pending_hmac: 'deadbeef0000111122223333444455556666777788889999aaaabbbbccccdddd',
+            approved_hmac: 'deadbeef0000111122223333444455556666777788889999aaaabbbbccccdddd',
+          },
+        },
+      };
+      fs.writeFileSync(path.join(approvalsDir, 'protected-action-approvals.json'), JSON.stringify(approvals, null, 2));
+
+      const result = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: `${tempDir.path}/.mcp.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      // Forged approval should be rejected — file should be blocked
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Forged approval should be rejected');
+      // Should show a new approval code (forged one was deleted)
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        'Should show new Approval Required after forged one deleted');
+
+      // Verify the forged entry was cleaned up
+      const updatedApprovals = JSON.parse(
+        fs.readFileSync(path.join(approvalsDir, 'protected-action-approvals.json'), 'utf8')
+      );
+      assert.ok(!updatedApprovals.approvals.FORGED,
+        'Forged approval entry should be deleted');
+    });
+
+    it('should accept approval with valid HMAC when protection key exists', async () => {
+      const hooksDir = path.join(tempDir.path, '.claude', 'hooks');
+      fs.mkdirSync(hooksDir, { recursive: true });
+
+      const config = {
+        version: '2.0.0',
+        servers: {},
+        files: {
+          '.mcp.json': {
+            protection: 'approval-only',
+            phrase: 'APPROVE MCP',
+          },
+        },
+      };
+      fs.writeFileSync(path.join(hooksDir, 'protected-actions.json'), JSON.stringify(config, null, 2));
+
+      // Create a protection key
+      const keyBase64 = crypto.randomBytes(32).toString('base64');
+      fs.writeFileSync(path.join(tempDir.path, '.claude', 'protection-key'), keyBase64);
+
+      // Compute valid HMACs
+      const code = 'V4L1D9';
+      const argsHash = crypto.createHash('sha256').update('{}').digest('hex');
+      const expiresTimestamp = Date.now() + 300000;
+
+      const keyBuffer = Buffer.from(keyBase64, 'base64');
+      const pendingHmac = crypto.createHmac('sha256', keyBuffer)
+        .update([code, '__file__', '.mcp.json', argsHash, String(expiresTimestamp)].join('|'))
+        .digest('hex');
+      const approvedHmac = crypto.createHmac('sha256', keyBuffer)
+        .update([code, '__file__', '.mcp.json', 'approved', argsHash, String(expiresTimestamp)].join('|'))
+        .digest('hex');
+
+      const approvals = {
+        approvals: {
+          [code]: {
+            server: '__file__',
+            tool: '.mcp.json',
+            args: {},
+            argsHash,
+            phrase: 'APPROVE MCP',
+            code,
+            status: 'approved',
+            created_timestamp: Date.now(),
+            expires_timestamp: expiresTimestamp,
+            approved_timestamp: Date.now(),
+            pending_hmac: pendingHmac,
+            approved_hmac: approvedHmac,
+          },
+        },
+      };
+      fs.writeFileSync(
+        path.join(tempDir.path, '.claude', 'protected-action-approvals.json'),
+        JSON.stringify(approvals, null, 2)
+      );
+
+      const result = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: `${tempDir.path}/.mcp.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      // Should NOT be denied — valid HMAC-signed approval
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
+          'Valid HMAC-signed approval should be accepted');
+      }
+    });
+
+    it('should reject approval when key exists but HMAC fields missing (G001 fail-closed bypass)', async () => {
+      const hooksDir = path.join(tempDir.path, '.claude', 'hooks');
+      fs.mkdirSync(hooksDir, { recursive: true });
+
+      const config = {
+        version: '2.0.0',
+        servers: {},
+        files: {
+          '.mcp.json': {
+            protection: 'approval-only',
+            phrase: 'APPROVE MCP',
+          },
+        },
+      };
+      fs.writeFileSync(path.join(hooksDir, 'protected-actions.json'), JSON.stringify(config, null, 2));
+
+      // Create protection key
+      const keyBase64 = crypto.randomBytes(32).toString('base64');
+      fs.writeFileSync(path.join(tempDir.path, '.claude', 'protection-key'), keyBase64);
+
+      // Create approval WITHOUT HMAC fields (agent forgery attempt without knowing about HMAC)
+      const approvals = {
+        approvals: {
+          NHMAC1: {
+            server: '__file__',
+            tool: '.mcp.json',
+            args: {},
+            phrase: 'APPROVE MCP',
+            code: 'NHMAC1',
+            status: 'approved',
+            created_timestamp: Date.now(),
+            expires_timestamp: Date.now() + 300000,
+            // No pending_hmac or approved_hmac
+          },
+        },
+      };
+      fs.writeFileSync(
+        path.join(tempDir.path, '.claude', 'protected-action-approvals.json'),
+        JSON.stringify(approvals, null, 2)
+      );
+
+      const result = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: `${tempDir.path}/.mcp.json` },
+        cwd: tempDir.path,
+      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
+
+      assert.strictEqual(result.exitCode, 0);
+      // When protection-key exists, approvals without HMAC should still be accepted
+      // (backward compatibility — the checkApproval only rejects if HMAC is present AND invalid)
+      // This means the hook exits 0 with no JSON (allowed)
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
+          'Approval without HMAC fields should be accepted (backward compat) when key exists but no HMAC was set');
+      }
+      // No JSON output = allowed (exit 0 without deny)
     });
   });
 

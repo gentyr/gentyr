@@ -236,11 +236,25 @@ Two complementary hooks that block credential access at different points.
 
 **File**: `.claude/hooks/credential-file-guard.js`
 
-Blocks file access tools (Read, Write, Edit, Bash, Grep, Glob) from touching credential files.
+Blocks file access tools (Read, Write, Edit, Bash, Grep, Glob) from touching credential files. Uses tiered protection with HMAC-signed CTO approval for configuration files.
 
-**Protected basenames**: `.env`, `.env.local`, `.env.production`, `.env.staging`, `.env.development`, `.env.test`, `.credentials.json`
+**Tiered Protection**:
 
-**Protected path suffixes**: `.claude/protection-key`, `.claude/api-key-rotation.json`, `.claude/bypass-approval-token.json`, `.claude/commit-approval-token.json`, `.claude/credential-provider.json`, `.claude/protected-action-approvals.json`, `.claude/vault-mappings.json`, `.claude/config/services.json`, `.mcp.json`
+1. **Always-blocked files** (no escape hatch):
+   - `.env`, `.env.local`, `.env.production`, `.env.staging`, `.env.development`, `.env.test`, `.credentials.json`
+   - `.claude/protection-key`
+   - `.claude/protected-action-approvals.json`
+   - `.claude/bypass-approval-token.json`
+   - `.claude/commit-approval-token.json`
+
+2. **CTO-approvable files** (HMAC-signed approval):
+   - `.claude/config/services.json` (phrase: `APPROVE CONFIG`)
+   - `.mcp.json` (phrase: `APPROVE MCP`)
+   - `.claude/api-key-rotation.json` (phrase: `APPROVE ROTATION`)
+   - `.claude/credential-provider.json` (phrase: `APPROVE CREDENTIAL`)
+   - `.claude/vault-mappings.json` (phrase: `APPROVE VAULT MAP`)
+
+**Approval flow**: When an agent attempts to access a CTO-approvable file, the hook creates an HMAC-signed request via `approval-utils.js`. The deputy-CTO generates a one-time code. The CTO types the phrase + code (e.g., `APPROVE CONFIG A7KX3N`). The hook validates HMAC + expiry and grants one-time access.
 
 **Protected patterns**: `/\.env(\.[a-z]+)?$/i`
 

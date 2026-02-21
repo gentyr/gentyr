@@ -364,6 +364,70 @@ describe('approval-utils.js', () => {
   });
 
   // ==========================================================================
+  // HMAC Computation
+  // ==========================================================================
+
+  describe('computeHmac()', () => {
+    it('should compute HMAC-SHA256 for given fields', () => {
+      const keyBase64 = utils.generateProtectionKey();
+      const hmac = utils.computeHmac(keyBase64, 'field1', 'field2', 'field3');
+
+      assert.strictEqual(typeof hmac, 'string', 'HMAC must be a string');
+      assert.strictEqual(hmac.length, 64, 'HMAC-SHA256 hex output is 64 characters');
+      assert.match(hmac, /^[0-9a-f]{64}$/, 'HMAC must be hex-encoded');
+    });
+
+    it('should produce different HMACs for different field orders', () => {
+      const keyBase64 = utils.generateProtectionKey();
+      const hmac1 = utils.computeHmac(keyBase64, 'a', 'b', 'c');
+      const hmac2 = utils.computeHmac(keyBase64, 'c', 'b', 'a');
+
+      assert.notStrictEqual(hmac1, hmac2,
+        'Field order should affect HMAC output');
+    });
+
+    it('should produce different HMACs for different keys', () => {
+      const key1 = utils.generateProtectionKey();
+      const key2 = utils.generateProtectionKey();
+      const hmac1 = utils.computeHmac(key1, 'field1', 'field2');
+      const hmac2 = utils.computeHmac(key2, 'field1', 'field2');
+
+      assert.notStrictEqual(hmac1, hmac2,
+        'Different keys should produce different HMACs');
+    });
+
+    it('should produce same HMAC for same key and fields', () => {
+      const keyBase64 = utils.generateProtectionKey();
+      const hmac1 = utils.computeHmac(keyBase64, 'field1', 'field2', 'field3');
+      const hmac2 = utils.computeHmac(keyBase64, 'field1', 'field2', 'field3');
+
+      assert.strictEqual(hmac1, hmac2,
+        'Same key and fields should produce identical HMAC');
+    });
+
+    it('should handle empty fields', () => {
+      const keyBase64 = utils.generateProtectionKey();
+      const hmac = utils.computeHmac(keyBase64, '', '', '');
+
+      assert.strictEqual(typeof hmac, 'string');
+      assert.strictEqual(hmac.length, 64);
+    });
+
+    it('should use pipe delimiter for fields', () => {
+      const keyBase64 = utils.generateProtectionKey();
+
+      // computeHmac('a', 'b') results in 'a|b'
+      // computeHmac('ab') results in 'ab' (different from 'a|b')
+      // This demonstrates the pipe delimiter prevents ambiguity
+      const hmac1 = utils.computeHmac(keyBase64, 'a', 'b');
+      const hmac2 = utils.computeHmac(keyBase64, 'ab');
+
+      assert.notStrictEqual(hmac1, hmac2,
+        'Pipe delimiter should prevent field boundary ambiguity');
+    });
+  });
+
+  // ==========================================================================
   // Protected Actions Configuration
   // ==========================================================================
 
@@ -808,6 +872,205 @@ describe('approval-utils.js', () => {
 
       assert.strictEqual(result, null,
         'Should not find expired approval');
+    });
+
+    it('should reject approval when argsHash does not match (bait-and-switch attack)', () => {
+      const approvalsPath = path.join(tempDir.path, 'approvals.json');
+
+      const now = Date.now();
+      const approvedArgs = { arg1: 'value1' };
+      const differentArgs = { arg1: 'different-value' };
+
+      const approvedArgsHash = crypto.createHash('sha256')
+        .update(JSON.stringify(approvedArgs))
+        .digest('hex');
+
+      const approvals = {
+        approvals: {
+          ABC123: {
+            server: 'test-server',
+            tool: 'test-tool',
+            args: approvedArgs,
+            argsHash: approvedArgsHash,
+            status: 'approved',
+            created_timestamp: now,
+            expires_timestamp: now + 5 * 60 * 1000,
+          },
+        },
+      };
+
+      fs.writeFileSync(approvalsPath, JSON.stringify(approvals));
+
+      // Try to use approval with different args
+      const result = utils.checkApproval('test-server', 'test-tool', differentArgs);
+
+      assert.strictEqual(result, null,
+        'Should reject approval when args do not match approved args');
+    });
+
+    it('should accept approval when argsHash matches', () => {
+      const approvalsPath = path.join(tempDir.path, 'approvals.json');
+
+      const now = Date.now();
+      const args = { arg1: 'value1', arg2: 'value2' };
+
+      const argsHash = crypto.createHash('sha256')
+        .update(JSON.stringify(args))
+        .digest('hex');
+
+      const approvals = {
+        approvals: {
+          ABC123: {
+            server: 'test-server',
+            tool: 'test-tool',
+            args: args,
+            argsHash: argsHash,
+            status: 'approved',
+            created_timestamp: now,
+            expires_timestamp: now + 5 * 60 * 1000,
+          },
+        },
+      };
+
+      fs.writeFileSync(approvalsPath, JSON.stringify(approvals));
+
+      // Use approval with matching args
+      const result = utils.checkApproval('test-server', 'test-tool', args);
+
+      assert.ok(result !== null, 'Should accept approval when args match');
+      assert.strictEqual(result.server, 'test-server');
+      assert.strictEqual(result.tool, 'test-tool');
+    });
+
+    it('should delete approval with forged pending_hmac', () => {
+      const approvalsPath = path.join(tempDir.path, 'approvals.json');
+      const keyPath = path.join(tempDir.path, 'protection-key');
+
+      // Create protection key
+      const keyBase64 = utils.generateProtectionKey();
+      fs.writeFileSync(keyPath, keyBase64 + '\n');
+
+      const now = Date.now();
+      const code = 'FORGED';
+      const argsHash = crypto.createHash('sha256').update('{}').digest('hex');
+
+      const approvals = {
+        approvals: {
+          [code]: {
+            server: 'test-server',
+            tool: 'test-tool',
+            args: {},
+            argsHash: argsHash,
+            status: 'approved',
+            created_timestamp: now,
+            expires_timestamp: now + 5 * 60 * 1000,
+            pending_hmac: 'deadbeef00001111222233334444555566667777', // Invalid HMAC
+          },
+        },
+      };
+
+      fs.writeFileSync(approvalsPath, JSON.stringify(approvals));
+
+      // Override PROTECTION_KEY_PATH for this test
+      const originalDir = process.env.CLAUDE_PROJECT_DIR;
+      process.env.CLAUDE_PROJECT_DIR = tempDir.path;
+
+      const result = utils.checkApproval('test-server', 'test-tool', {});
+
+      process.env.CLAUDE_PROJECT_DIR = originalDir;
+
+      assert.strictEqual(result, null,
+        'Should reject approval with invalid pending_hmac');
+
+      // Verify forged entry was deleted
+      const updated = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+      assert.ok(!updated.approvals[code],
+        'Forged approval should be deleted');
+    });
+
+    it('should delete approval with forged approved_hmac', () => {
+      const approvalsPath = path.join(tempDir.path, 'approvals.json');
+      const keyPath = path.join(tempDir.path, 'protection-key');
+
+      // Create protection key
+      const keyBase64 = utils.generateProtectionKey();
+      fs.writeFileSync(keyPath, keyBase64 + '\n');
+
+      const now = Date.now();
+      const code = 'FORGED';
+      const argsHash = crypto.createHash('sha256').update('{}').digest('hex');
+      const expiresTimestamp = now + 5 * 60 * 1000;
+
+      // Compute valid pending_hmac
+      const validPendingHmac = utils.computeHmac(
+        keyBase64,
+        code,
+        'test-server',
+        'test-tool',
+        argsHash,
+        String(expiresTimestamp)
+      );
+
+      const approvals = {
+        approvals: {
+          [code]: {
+            server: 'test-server',
+            tool: 'test-tool',
+            args: {},
+            argsHash: argsHash,
+            status: 'approved',
+            created_timestamp: now,
+            expires_timestamp: expiresTimestamp,
+            pending_hmac: validPendingHmac,
+            approved_hmac: 'deadbeef00001111222233334444555566667777', // Invalid HMAC
+          },
+        },
+      };
+
+      fs.writeFileSync(approvalsPath, JSON.stringify(approvals));
+
+      // Override PROTECTION_KEY_PATH for this test
+      const originalDir = process.env.CLAUDE_PROJECT_DIR;
+      process.env.CLAUDE_PROJECT_DIR = tempDir.path;
+
+      const result = utils.checkApproval('test-server', 'test-tool', {});
+
+      process.env.CLAUDE_PROJECT_DIR = originalDir;
+
+      assert.strictEqual(result, null,
+        'Should reject approval with invalid approved_hmac');
+
+      // Verify forged entry was deleted
+      const updated = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+      assert.ok(!updated.approvals[code],
+        'Forged approval should be deleted');
+    });
+
+    it('should fail-closed when protection key exists but cannot verify HMAC', () => {
+      const approvalsPath = path.join(tempDir.path, 'approvals.json');
+
+      const now = Date.now();
+      const approvals = {
+        approvals: {
+          ABC123: {
+            server: 'test-server',
+            tool: 'test-tool',
+            args: {},
+            status: 'approved',
+            created_timestamp: now,
+            expires_timestamp: now + 5 * 60 * 1000,
+            pending_hmac: 'some-hmac-value', // HMAC field present but key missing
+          },
+        },
+      };
+
+      fs.writeFileSync(approvalsPath, JSON.stringify(approvals));
+
+      // No protection key exists — should fail-closed (G001)
+      const result = utils.checkApproval('test-server', 'test-tool', {});
+
+      assert.strictEqual(result, null,
+        'Should fail-closed when key missing but HMAC field present (G001)');
     });
   });
 

@@ -1229,6 +1229,7 @@ interface ApprovalRequest {
   server: string;
   tool: string;
   args: Record<string, unknown>;
+  argsHash?: string;
   phrase: string;
   code: string;
   status: 'pending' | 'approved';

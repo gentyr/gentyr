@@ -11,6 +11,7 @@ packages/vscode-extension/*.vsix
 # Test outputs
 coverage/
 *.lcov
+TEST_COVERAGE_REPORT.md
 
 # Runtime state files (project-specific)
 .claude/*.db
@@ -33,6 +34,13 @@ coverage/
 .claude/hooks/*-history.json
 .claude/hooks/*.log
 .claude/hooks/test-*
+.claude/hooks/.claude/
+
+# Nested .claude runtime state (subdirectory copies)
+**/.claude/*.db
+**/.claude/*.db-shm
+**/.claude/*.db-wal
+**/.claude/protected-action-approvals.json
 
 # IDE
 .idea/

@@ -1,5 +1,61 @@
 # GENTYR Framework Changelog
 
+## 2026-02-20 - Slash Command Detection Fix
+
+### Fixed
+
+**Slash commands not being recognized by UserPromptSubmit hooks** (2 files):
+- Root cause: Hooks receive JSON stdin like `{"prompt":"/restart-session",...}` but were only checking for HTML sentinel markers that exist in expanded .md content
+- Impact: All 10 GENTYR slash commands were non-functional
+- Fix: Added `extractPrompt()` to parse JSON stdin and extract raw prompt field
+- Fix: Added `matchesCommand()` to check both bare `/command-name` and sentinel markers
+- Files changed:
+  - `.claude/hooks/slash-command-prefetch.js` - Added JSON parsing for command detection (lines 66-90)
+  - `.claude/hooks/cto-notification-hook.js` - Updated slash command suppression logic (lines 507-519)
+
+### Tests
+
+- **slash-command-detection**: 30/30 pass (new test file validates extractPrompt and matchesCommand)
+- **cto-notification-hook**: 26/26 pass (8 new tests for slash command suppression)
+
+## 2026-02-20 - Credential File Guard: Tiered Blocking with CTO Approval
+
+### Added
+
+**CTO-approvable file access for credential-file-guard** (8 files):
+- Split blocked credential files into two protection tiers:
+  1. **Always-blocked** - protection-key, approval tokens, .env files - hard deny with no escape hatch
+  2. **Approvable** - services.json, .mcp.json, api-key-rotation.json, credential-provider.json, vault-mappings.json - deny with CTO approval code
+- Approval flow via approval-utils.js: create HMAC-signed request → deputy-CTO generates one-time code → user types code → hook validates HMAC + expiry
+- Files changed:
+  - `.claude/hooks/credential-file-guard.js` - Core tiered blocking logic with approval flow integration
+  - `.claude/hooks/protected-actions.json` - Added `files` section with 5 approvable file configs
+  - `.claude/hooks/protected-action-approval-hook.js` - Updated `getValidPhrases()` to include file phrases
+  - `.claude/hooks/lib/approval-utils.js` - Updated `createRequest` to add HMAC signature, argsHash, approval_mode
+  - `packages/mcp-servers/src/deputy-cto/server.ts` - Fixed HMAC argsHash bug in `approveProtectedAction`, added `files` field to TypeScript interface
+
+### Fixed
+
+**Deputy-CTO HMAC argsHash bug**:
+- `approveProtectedAction` was missing `argsHash` in HMAC computation (both verify and sign paths)
+- Would cause "FORGERY DETECTED" errors for gate-originated approval requests
+- Fixed by adding `argsHash` to `computeHmac(phrase, action, argsHash)` calls in verify and sign paths
+- Added 7 new test cases in `packages/mcp-servers/src/deputy-cto/__tests__/hmac-argshash.test.ts`
+
+### Tests
+
+- **credential-file-guard**: 117/117 pass (13 new tests for approval flow)
+- **approval-hook**: 18/18 pass (8 new tests in `protected-action-approval-hook-files.test.js`)
+- **MCP servers**: 939/939 pass (7 new HMAC argsHash tests)
+
+### Known Follow-up Items
+
+1. HIGH: `checkApproval()` in approval-utils.js lacks HMAC verification (mitigated by ALWAYS_BLOCKED_SUFFIXES on approval file)
+2. MEDIUM: Runtime files (.claude/hooks/.claude/) committed by prior checkpoint - need git rm --cached and .gitignore update (RESOLVED)
+3. MEDIUM: HMAC key handling inconsistency (raw Buffer vs base64 string) between createRequest and computeHmac
+4. MEDIUM: No HMAC integrity tests for credential-file-guard approval flow
+5. LOW: Grep/Glob tools don't support approval path (intentional hard-block only)
+
 ## 2026-02-20 - Protection System: Fix Token File EACCES Errors
 
 ### Fixed
