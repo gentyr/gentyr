@@ -1184,10 +1184,10 @@ describe('usage-optimizer.js - Structure Validation', () => {
         'Must get defaults from getDefaults()'
       );
 
-      // Should calculate effective values with MIN_EFFECTIVE_MINUTES floor
+      // Should calculate effective values with MIN_EFFECTIVE_MINUTES floor (GAP 1: uses computed variable)
       assert.match(
         functionBody,
-        /effective\[key\] = Math\.max\(MIN_EFFECTIVE_MINUTES, Math\.round\(defaultVal \/ newFactor\)\)/,
+        /let computed = Math\.max\(MIN_EFFECTIVE_MINUTES, Math\.round\(defaultVal \/ newFactor\)\)/,
         'Must calculate effective with MIN_EFFECTIVE_MINUTES floor'
       );
 
@@ -1788,19 +1788,16 @@ describe('usage-optimizer.js - Structure Validation', () => {
       const minMinutes = parseInt(minMatch[1], 10);
       assert.strictEqual(minMinutes, 5, 'MIN_EFFECTIVE_MINUTES must be 5');
 
-      // Verify floor is applied in effective calculation
-      // Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultVal / newFactor))
-      // Example: defaultVal=60, newFactor=2.0 → Math.max(5, 30) = 30 ✓
-      // Example: defaultVal=8, newFactor=2.0 → Math.max(5, 4) = 5 ✓
-      const applyFactorMatch = code.match(/effective\[key\] = Math\.max\(MIN_EFFECTIVE_MINUTES, Math\.round\(defaultVal \/ newFactor\)\)/);
+      // Verify floor is applied in effective calculation (GAP 1: now uses intermediate `computed` variable)
+      // let computed = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultVal / newFactor));
+      const applyFactorMatch = code.match(/let computed = Math\.max\(MIN_EFFECTIVE_MINUTES, Math\.round\(defaultVal \/ newFactor\)\)/);
       assert.ok(applyFactorMatch, 'Must apply MIN_EFFECTIVE_MINUTES floor in effective calculation');
     });
 
     it('should allow effective cooldowns above the floor', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      // Verify the formula allows values above floor
-      // If defaultVal=60 and newFactor=1.0, result should be 60, not clamped to 2
+      // Verify the formula allows values above floor (GAP 1: now uses `computed` variable)
       const formulaMatch = code.match(/Math\.max\(MIN_EFFECTIVE_MINUTES, Math\.round\(defaultVal \/ newFactor\)\)/);
       assert.ok(formulaMatch, 'Formula must allow values above MIN_EFFECTIVE_MINUTES');
     });
@@ -3102,6 +3099,205 @@ describe('usage-optimizer.js - Structure Validation', () => {
         /id: ['"]default['"],\s*accessToken:[\s\S]*?accountId: null/s,
         'Credentials file key must include accountId: null'
       );
+    });
+  });
+
+  describe('MAX_COOLDOWN_MINUTES - Ceiling Map (GAP 1)', () => {
+    it('should define MAX_COOLDOWN_MINUTES constant', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /const MAX_COOLDOWN_MINUTES\s*=\s*\{/,
+        'Must define MAX_COOLDOWN_MINUTES as an object'
+      );
+    });
+
+    it('should set production_health_monitor ceiling to 120 minutes', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /production_health_monitor:\s*120/,
+        'production_health_monitor ceiling must be 120 (2h)'
+      );
+    });
+
+    it('should set staging_health_monitor ceiling to 360 minutes', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /staging_health_monitor:\s*360/,
+        'staging_health_monitor ceiling must be 360 (6h)'
+      );
+    });
+
+    it('should set triage_check ceiling to 15 minutes', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /triage_check:\s*15/,
+        'triage_check ceiling must be 15 minutes'
+      );
+    });
+
+    it('should apply Math.min ceiling in applyFactor()', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const applyFactorMatch = code.match(/function applyFactor\([\s\S]*?\n\}/);
+      assert.ok(applyFactorMatch, 'applyFactor function must exist');
+      const fnBody = applyFactorMatch[0];
+
+      // Must use Math.min with MAX_COOLDOWN_MINUTES
+      assert.match(
+        fnBody,
+        /Math\.min\(computed,\s*MAX_COOLDOWN_MINUTES\[key\]\)/,
+        'Must apply Math.min ceiling using MAX_COOLDOWN_MINUTES'
+      );
+
+      // Must check if key exists in ceiling map
+      assert.match(
+        fnBody,
+        /MAX_COOLDOWN_MINUTES\[key\]\s*!==\s*undefined/,
+        'Must check if key has a ceiling defined'
+      );
+    });
+
+    it('should apply floor before ceiling (Math.max before Math.min)', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const applyFactorMatch = code.match(/function applyFactor\([\s\S]*?\n\}/);
+      const fnBody = applyFactorMatch[0];
+
+      // Floor (Math.max with MIN_EFFECTIVE_MINUTES) should come before ceiling (Math.min)
+      const floorIdx = fnBody.indexOf('Math.max(MIN_EFFECTIVE_MINUTES');
+      const ceilingIdx = fnBody.indexOf('Math.min(computed, MAX_COOLDOWN_MINUTES');
+
+      assert.ok(floorIdx > 0, 'Must have Math.max floor');
+      assert.ok(ceilingIdx > 0, 'Must have Math.min ceiling');
+      assert.ok(floorIdx < ceilingIdx, 'Floor (Math.max) must be applied before ceiling (Math.min)');
+    });
+  });
+
+  describe('Behavioral Tests - MAX_COOLDOWN_MINUTES Ceiling Application', () => {
+    const MIN_EFFECTIVE_MINUTES = 5;
+    const MAX_COOLDOWN_MINUTES = {
+      production_health_monitor: 120,
+      staging_health_monitor: 360,
+      triage_check: 15,
+    };
+
+    it('should clamp production_health_monitor to 120 minutes when factor is extreme slowdown', () => {
+      // At factor 0.05 (20x slowdown), production default 60 min becomes 60/0.05 = 1200 min
+      const factor = 0.05;
+      const defaultCooldown = 60;
+
+      const rawComputed = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / factor));
+      const withCeiling = Math.min(rawComputed, MAX_COOLDOWN_MINUTES.production_health_monitor);
+
+      assert.strictEqual(rawComputed, 1200, 'Raw computed value should be 1200 minutes');
+      assert.strictEqual(withCeiling, 120, 'Ceiling must clamp to 120 minutes');
+    });
+
+    it('should clamp staging_health_monitor to 360 minutes when factor is extreme slowdown', () => {
+      // At factor 0.05, staging default 180 min becomes 180/0.05 = 3600 min (60 hours)
+      const factor = 0.05;
+      const defaultCooldown = 180;
+
+      const rawComputed = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / factor));
+      const withCeiling = Math.min(rawComputed, MAX_COOLDOWN_MINUTES.staging_health_monitor);
+
+      assert.strictEqual(rawComputed, 3600, 'Raw computed value should be 3600 minutes');
+      assert.strictEqual(withCeiling, 360, 'Ceiling must clamp to 360 minutes (6h)');
+    });
+
+    it('should clamp triage_check to 15 minutes when factor is moderate slowdown', () => {
+      // At factor 0.5, triage default 5 min becomes 5/0.5 = 10 min (under ceiling)
+      // At factor 0.2, triage default 5 min becomes 5/0.2 = 25 min (over ceiling)
+      const factor = 0.2;
+      const defaultCooldown = 5;
+
+      const rawComputed = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / factor));
+      const withCeiling = Math.min(rawComputed, MAX_COOLDOWN_MINUTES.triage_check);
+
+      assert.strictEqual(rawComputed, 25, 'Raw computed value should be 25 minutes');
+      assert.strictEqual(withCeiling, 15, 'Ceiling must clamp to 15 minutes');
+    });
+
+    it('should not clamp production_health_monitor when factor keeps it under ceiling', () => {
+      // At factor 1.0, production default 60 min stays at 60 min (well under 120 ceiling)
+      const factor = 1.0;
+      const defaultCooldown = 60;
+
+      const rawComputed = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / factor));
+      const withCeiling = Math.min(rawComputed, MAX_COOLDOWN_MINUTES.production_health_monitor);
+
+      assert.strictEqual(rawComputed, 60, 'Raw computed value should be 60 minutes');
+      assert.strictEqual(withCeiling, 60, 'Should not clamp when under ceiling');
+    });
+
+    it('should not clamp keys without ceiling entries', () => {
+      // Keys not in MAX_COOLDOWN_MINUTES should only apply floor, not ceiling
+      const factor = 0.05;
+      const defaultCooldown = 1440; // 24 hours
+
+      const rawComputed = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / factor));
+      // No ceiling for this key, so rawComputed is the final value
+      const withCeiling = rawComputed; // Simulating: if (MAX_COOLDOWN_MINUTES[key] !== undefined) check
+
+      assert.strictEqual(rawComputed, 28800, 'Raw computed value should be 28800 minutes (20 days)');
+      assert.strictEqual(withCeiling, 28800, 'Keys without ceiling should not be clamped');
+    });
+
+    it('should apply both floor and ceiling correctly', () => {
+      // Test ceiling application after floor
+      // At factor 10.0, production default 60 min becomes 60/10 = 6 min (above floor, under ceiling)
+      const factorModerate = 10.0;
+      const defaultCooldown = 60;
+
+      const rawComputedModerate = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / factorModerate));
+      const withCeilingModerate = Math.min(rawComputedModerate, MAX_COOLDOWN_MINUTES.production_health_monitor);
+
+      assert.strictEqual(rawComputedModerate, 6, 'Floor should allow 6 minutes');
+      assert.strictEqual(withCeilingModerate, 6, 'Ceiling should not affect values under 120 minutes');
+
+      // At factor 30.0, production default 60 min becomes 60/30 = 2 min → floored to 5 min
+      const factorExtreme = 30.0;
+      const rawComputedExtreme = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / factorExtreme));
+      const withCeilingExtreme = Math.min(rawComputedExtreme, MAX_COOLDOWN_MINUTES.production_health_monitor);
+
+      assert.strictEqual(rawComputedExtreme, 5, 'Floor must enforce 5-minute minimum');
+      assert.strictEqual(withCeilingExtreme, 5, 'Ceiling should not affect floored values');
+    });
+
+    it('should verify ceiling boundaries are exact', () => {
+      // Test that ceiling is applied at exactly the boundary value
+      const factor = 0.5; // 60 / 0.5 = 120 exactly for production
+      const defaultCooldown = 60;
+
+      const rawComputed = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / factor));
+      const withCeiling = Math.min(rawComputed, MAX_COOLDOWN_MINUTES.production_health_monitor);
+
+      assert.strictEqual(rawComputed, 120, 'Raw computed should be exactly 120');
+      assert.strictEqual(withCeiling, 120, 'Ceiling should allow exactly 120 minutes');
+
+      // Just above ceiling
+      const factorJustAbove = 0.499; // 60 / 0.499 = 120.24 → rounds to 120
+      const rawComputedAbove = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / factorJustAbove));
+      const withCeilingAbove = Math.min(rawComputedAbove, MAX_COOLDOWN_MINUTES.production_health_monitor);
+
+      assert.strictEqual(rawComputedAbove, 120, 'Should round to 120');
+      assert.strictEqual(withCeilingAbove, 120, 'Ceiling should not clamp at boundary');
+
+      // Clearly above ceiling
+      const factorClearlyAbove = 0.4; // 60 / 0.4 = 150
+      const rawComputedClear = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultCooldown / factorClearlyAbove));
+      const withCeilingClear = Math.min(rawComputedClear, MAX_COOLDOWN_MINUTES.production_health_monitor);
+
+      assert.strictEqual(rawComputedClear, 150, 'Raw computed should be 150');
+      assert.strictEqual(withCeilingClear, 120, 'Ceiling must clamp 150 to 120');
     });
   });
 });

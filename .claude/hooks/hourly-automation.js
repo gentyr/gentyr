@@ -315,6 +315,252 @@ function checkCtoActivityGate(config) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// GAP 2: PERSISTENT ALERTS SYSTEM
+// Tracks recurring issues (production errors, CI failures, merge chain gaps)
+// with automatic re-escalation when issues persist beyond thresholds.
+// ---------------------------------------------------------------------------
+const PERSISTENT_ALERTS_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'persistent_alerts.json');
+const ALERT_RE_ESCALATION_HOURS = { critical: 4, high: 12, medium: 24 };
+const ALERT_RESOLVED_GC_DAYS = 7;
+const MERGE_CHAIN_GAP_THRESHOLD = 50;
+
+/**
+ * Read persistent alerts state file. Returns default structure if missing/corrupt.
+ */
+function readPersistentAlerts() {
+  try {
+    if (fs.existsSync(PERSISTENT_ALERTS_PATH)) {
+      return JSON.parse(fs.readFileSync(PERSISTENT_ALERTS_PATH, 'utf8'));
+    }
+  } catch (err) {
+    log(`Persistent alerts: failed to read state (${err.message}), using defaults.`);
+  }
+  return { version: 1, alerts: {} };
+}
+
+/**
+ * Write persistent alerts state file.
+ */
+function writePersistentAlerts(data) {
+  try {
+    const dir = path.dirname(PERSISTENT_ALERTS_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(PERSISTENT_ALERTS_PATH, JSON.stringify(data, null, 2));
+  } catch (err) {
+    log(`Persistent alerts: failed to write state: ${err.message}`);
+  }
+}
+
+/**
+ * Record or update a persistent alert.
+ * @param {string} key - Alert key (e.g., 'production_error', 'ci_main_failure')
+ * @param {object} opts - { title, severity, source }
+ */
+function recordAlert(key, { title, severity, source }) {
+  const data = readPersistentAlerts();
+  const now = new Date().toISOString();
+
+  if (data.alerts[key] && !data.alerts[key].resolved) {
+    // Update existing unresolved alert
+    data.alerts[key].last_detected_at = now;
+    data.alerts[key].detection_count += 1;
+    data.alerts[key].title = title;
+  } else {
+    // Create new alert (or replace resolved one)
+    data.alerts[key] = {
+      key,
+      title,
+      severity,
+      first_detected_at: now,
+      last_detected_at: now,
+      last_escalated_at: null,
+      detection_count: 1,
+      escalation_count: 0,
+      resolved: false,
+      resolved_at: null,
+      source,
+    };
+  }
+
+  writePersistentAlerts(data);
+  return data.alerts[key];
+}
+
+/**
+ * Resolve a persistent alert if it exists and is unresolved.
+ */
+function resolveAlert(key) {
+  const data = readPersistentAlerts();
+  if (data.alerts[key] && !data.alerts[key].resolved) {
+    data.alerts[key].resolved = true;
+    data.alerts[key].resolved_at = new Date().toISOString();
+    writePersistentAlerts(data);
+    log(`Persistent alerts: resolved '${key}'.`);
+  }
+}
+
+/**
+ * Spawn a minimal re-escalation agent that posts to deputy-CTO.
+ */
+function spawnAlertEscalation(alert) {
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.PRODUCTION_HEALTH_MONITOR,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: `Alert re-escalation: ${alert.key}`,
+    prompt: '',
+    metadata: { alertKey: alert.key, escalationCount: alert.escalation_count },
+  });
+
+  const ageHours = Math.round((Date.now() - new Date(alert.first_detected_at).getTime()) / 3600000);
+
+  const prompt = `[Task][alert-escalation][AGENT:${agentId}] ALERT RE-ESCALATION
+
+A persistent issue has NOT been resolved and requires CTO attention.
+
+**Alert:** ${alert.title}
+**Key:** ${alert.key}
+**Severity:** ${alert.severity}
+**First detected:** ${alert.first_detected_at} (${ageHours}h ago)
+**Detection count:** ${alert.detection_count} times
+**Previous escalations:** ${alert.escalation_count}
+
+Call \`mcp__deputy-cto__add_question\` with:
+- type: "escalation"
+- title: "PERSISTENT: ${alert.title} (${ageHours}h, ${alert.detection_count} detections)"
+- description: "This issue was first detected ${ageHours}h ago and has been detected ${alert.detection_count} times. It has been escalated ${alert.escalation_count} time(s) previously but remains unresolved. Source: ${alert.source}."
+- recommendation: "Investigate and resolve the ${alert.key} issue. Previous escalations were cleared but the underlying problem persists."
+
+Then exit immediately.`;
+
+  try {
+    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+    const claude = spawn('claude', [
+      '--dangerously-skip-permissions',
+      '--mcp-config', mcpConfig,
+      '--output-format', 'json',
+      '-p', prompt,
+    ], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: PROJECT_DIR,
+      env: buildSpawnEnv(agentId),
+    });
+    claude.unref();
+    updateAgent(agentId, { pid: claude.pid, status: 'running', prompt });
+    return true;
+  } catch (err) {
+    log(`Alert escalation spawn error: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * GAP 2: Check persistent alerts for re-escalation needs.
+ * Runs every cycle (gate-exempt). Spawns re-escalation agents for
+ * unresolved alerts past their re-escalation threshold. Garbage-collects
+ * resolved alerts older than 7 days.
+ */
+function checkPersistentAlerts() {
+  const data = readPersistentAlerts();
+  const now = Date.now();
+  let escalated = 0;
+  let gcCount = 0;
+
+  for (const [key, alert] of Object.entries(data.alerts)) {
+    if (!alert.resolved) {
+      // Check re-escalation threshold
+      const thresholdHours = ALERT_RE_ESCALATION_HOURS[alert.severity] || 24;
+      const lastEscalated = alert.last_escalated_at ? new Date(alert.last_escalated_at).getTime() : 0;
+      const hoursSinceEscalation = (now - lastEscalated) / 3600000;
+
+      if (hoursSinceEscalation >= thresholdHours) {
+        log(`Persistent alerts: re-escalating '${key}' (${alert.severity}, ${Math.round(hoursSinceEscalation)}h since last escalation).`);
+        spawnAlertEscalation(alert);
+        alert.last_escalated_at = new Date().toISOString();
+        alert.escalation_count += 1;
+        escalated++;
+      }
+    } else {
+      // Garbage-collect resolved alerts older than 7 days
+      const resolvedAt = alert.resolved_at ? new Date(alert.resolved_at).getTime() : 0;
+      if (resolvedAt > 0 && (now - resolvedAt) > ALERT_RESOLVED_GC_DAYS * 86400000) {
+        delete data.alerts[key];
+        gcCount++;
+      }
+    }
+  }
+
+  if (escalated > 0 || gcCount > 0) {
+    writePersistentAlerts(data);
+  }
+
+  if (escalated > 0) log(`Persistent alerts: ${escalated} alert(s) re-escalated.`);
+  if (gcCount > 0) log(`Persistent alerts: ${gcCount} resolved alert(s) garbage-collected.`);
+  return { escalated, gcCount };
+}
+
+/**
+ * GAP 3: Check CI status for main and staging branches via GitHub Actions API.
+ * Creates/resolves persistent alerts for CI failures.
+ */
+function checkCiStatus() {
+  let owner, repo;
+  try {
+    const remoteUrl = execSync('git remote get-url origin', {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10000, stdio: 'pipe',
+    }).trim();
+    // Parse owner/repo from git URL (handles SSH and HTTPS)
+    const match = remoteUrl.match(/[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/);
+    if (!match) {
+      log('CI monitoring: could not parse owner/repo from remote URL.');
+      return;
+    }
+    [, owner, repo] = match;
+  } catch {
+    log('CI monitoring: failed to get git remote URL.');
+    return;
+  }
+
+  const branches = ['main', 'staging'];
+  for (const branch of branches) {
+    const alertKey = `ci_${branch}_failure`;
+    try {
+      const result = execFileSync('gh', [
+        'api',
+        `repos/${owner}/${repo}/actions/runs?branch=${branch}&per_page=5&status=completed`,
+        '--jq',
+        '.workflow_runs | map({conclusion, name, html_url, created_at})',
+      ], {
+        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 15000, stdio: 'pipe',
+      });
+
+      const runs = JSON.parse(result || '[]');
+      if (runs.length === 0) {
+        log(`CI monitoring (${branch}): no completed runs found.`);
+        continue;
+      }
+
+      const latestRun = runs[0];
+      if (latestRun.conclusion === 'failure') {
+        log(`CI monitoring (${branch}): latest run FAILED — ${latestRun.name}`);
+        recordAlert(alertKey, {
+          title: `CI failure on ${branch}: ${latestRun.name}`,
+          severity: branch === 'main' ? 'critical' : 'high',
+          source: 'ci-monitoring',
+        });
+      } else {
+        if (latestRun.conclusion === 'success') {
+          resolveAlert(alertKey);
+        }
+        log(`CI monitoring (${branch}): latest run ${latestRun.conclusion}.`);
+      }
+    } catch (err) {
+      log(`CI monitoring (${branch}): gh api call failed (${err.message}). Skipping.`);
+    }
+  }
+}
+
 /**
  * Get state
  * G001: Fail-closed if state file is corrupted
@@ -1636,7 +1882,28 @@ Complete within 25 minutes. If blocked, report and exit.`;
 }
 
 /**
+ * GAP 4: Verify a spawned process is still alive after a short delay.
+ * Returns true if the PID responds to signal 0, false otherwise.
+ * Prevents cooldown consumption when spawn() succeeds but the process dies immediately.
+ */
+async function verifySpawnAlive(pid, label) {
+  if (!pid) return false;
+  return new Promise(resolve => {
+    setTimeout(() => {
+      try {
+        process.kill(pid, 0);
+        resolve(true);
+      } catch {
+        log(`${label}: PID ${pid} not alive after 2s. Cooldown NOT consumed.`);
+        resolve(false);
+      }
+    }, 2000);
+  });
+}
+
+/**
  * Spawn Staging Health Monitor (fire-and-forget)
+ * GAP 4: Returns { success, pid } instead of boolean for deferred cooldown stamps.
  */
 function spawnStagingHealthMonitor() {
   const agentId = registerSpawn({
@@ -1694,6 +1961,19 @@ If the file doesn't exist, report this as an issue and exit.
 **If all clear:**
 - Log "Staging environment healthy" and exit
 
+### Step 6: Update Persistent Alerts
+
+Read \`.claude/state/persistent_alerts.json\` (create if missing with \`{"version":1,"alerts":{}}\`).
+
+**If issues found:** Update or create alert with key \`staging_error\`:
+- Set \`last_detected_at\` to current ISO timestamp
+- Increment \`detection_count\`
+- Set \`severity\` to "high"
+- Set \`resolved\` to false, \`source\` to "staging-health-monitor"
+- If new alert, set \`first_detected_at\`, \`escalation_count\`: 0
+
+**If all clear:** If \`staging_error\` alert exists and is unresolved, set \`resolved: true\`, \`resolved_at\` to current ISO timestamp.
+
 ## Timeout
 
 Complete within 10 minutes. This is a read-only monitoring check.`;
@@ -1718,15 +1998,16 @@ Complete within 10 minutes. This is a read-only monitoring check.`;
 
     claude.unref();
     updateAgent(agentId, { pid: claude.pid, status: 'running' });
-    return true;
+    return { success: true, pid: claude.pid };
   } catch (err) {
     log(`Staging health monitor spawn error: ${err.message}`);
-    return false;
+    return { success: false, pid: null };
   }
 }
 
 /**
  * Spawn Production Health Monitor (fire-and-forget)
+ * GAP 4: Returns { success, pid } instead of boolean for deferred cooldown stamps.
  */
 function spawnProductionHealthMonitor() {
   const agentId = registerSpawn({
@@ -1791,6 +2072,19 @@ If the file doesn't exist, report this as an issue and exit.
 **If all clear:**
 - Log "Production environment healthy" and exit
 
+### Step 6: Update Persistent Alerts
+
+Read \`.claude/state/persistent_alerts.json\` (create if missing with \`{"version":1,"alerts":{}}\`).
+
+**If issues found:** Update or create alert with key \`production_error\`:
+- Set \`last_detected_at\` to current ISO timestamp
+- Increment \`detection_count\`
+- Set \`severity\` to "critical"
+- Set \`resolved\` to false, \`source\` to "production-health-monitor"
+- If new alert, set \`first_detected_at\`, \`escalation_count\`: 0
+
+**If all clear:** If \`production_error\` alert exists and is unresolved, set \`resolved: true\`, \`resolved_at\` to current ISO timestamp.
+
 ## Timeout
 
 Complete within 10 minutes. This is a read-only monitoring check.`;
@@ -1812,10 +2106,10 @@ Complete within 10 minutes. This is a read-only monitoring check.`;
 
     claude.unref();
     updateAgent(agentId, { pid: claude.pid, status: 'running', prompt });
-    return true;
+    return { success: true, pid: claude.pid };
   } catch (err) {
     log(`Production health monitor spawn error: ${err.message}`);
-    return false;
+    return { success: false, pid: null };
   }
 }
 
@@ -2062,19 +2356,17 @@ async function main() {
   }
 
   // CTO Activity Gate: require /deputy-cto within last 24h
+  // GAP 5: Gate is now a flag, not an early exit. Monitoring steps (health monitors,
+  // triage, CI checks, persistent alerts) always run. Gate-required steps (lint,
+  // task runner, promotions, etc.) are skipped when gate is closed.
   const ctoGate = checkCtoActivityGate(config);
-  if (!ctoGate.open) {
+  const ctoGateOpen = ctoGate.open;
+  if (!ctoGateOpen) {
     log(`CTO Activity Gate CLOSED: ${ctoGate.reason}`);
-    registerHookExecution({
-      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-      status: 'skipped',
-      durationMs: Date.now() - startTime,
-      metadata: { reason: 'cto_activity_gate_closed', hoursSinceLastBriefing: ctoGate.hoursSinceLastBriefing }
-    });
-    process.exit(0);
+    log('Monitoring-only mode: health monitors, triage, and CI checks will still run.');
+  } else {
+    log(`Autonomous Deputy CTO Mode is ENABLED. ${ctoGate.reason}`);
   }
-
-  log(`Autonomous Deputy CTO Mode is ENABLED. ${ctoGate.reason}`);
 
   // Credentials are resolved lazily on first agent spawn via ensureCredentials().
   // This avoids unnecessary `op` CLI calls on cycles where all tasks hit cooldowns.
@@ -2223,6 +2515,145 @@ async function main() {
   }
 
   // =========================================================================
+  // STAGING HEALTH MONITOR (3h cooldown, fire-and-forget) [GATE-EXEMPT]
+  // Checks staging infrastructure health
+  // =========================================================================
+  const timeSinceLastStagingHealth = now - (state.lastStagingHealthCheck || 0);
+  const stagingHealthEnabled = config.stagingHealthMonitorEnabled !== false;
+
+  if (timeSinceLastStagingHealth >= STAGING_HEALTH_COOLDOWN_MS && stagingHealthEnabled) {
+    try {
+      execSync('git fetch origin staging --quiet 2>/dev/null || true', {
+        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+      });
+    } catch {
+      log('Staging health monitor: git fetch failed.');
+    }
+
+    if (remoteBranchExists('staging')) {
+      log('Staging health monitor: spawning health check...');
+      const result = spawnStagingHealthMonitor();
+      if (result.success) {
+        const alive = await verifySpawnAlive(result.pid, 'Staging health monitor');
+        if (alive) {
+          state.lastStagingHealthCheck = now;
+          saveState(state);
+        }
+        log('Staging health monitor: spawned (fire-and-forget).');
+      } else {
+        log('Staging health monitor: spawn failed.');
+      }
+    } else {
+      log('Staging health monitor: staging branch does not exist, skipping.');
+    }
+  } else if (!stagingHealthEnabled) {
+    log('Staging Health Monitor is disabled in config.');
+  } else {
+    const minutesLeft = Math.ceil((STAGING_HEALTH_COOLDOWN_MS - timeSinceLastStagingHealth) / 60000);
+    log(`Staging health monitor cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
+  // PRODUCTION HEALTH MONITOR (1h cooldown, fire-and-forget) [GATE-EXEMPT]
+  // Checks production infrastructure health, escalates to CTO
+  // =========================================================================
+  const timeSinceLastProdHealth = now - (state.lastProductionHealthCheck || 0);
+  const prodHealthEnabled = config.productionHealthMonitorEnabled !== false;
+
+  if (timeSinceLastProdHealth >= PRODUCTION_HEALTH_COOLDOWN_MS && prodHealthEnabled) {
+    log('Production health monitor: spawning health check...');
+    const result = spawnProductionHealthMonitor();
+    if (result.success) {
+      const alive = await verifySpawnAlive(result.pid, 'Production health monitor');
+      if (alive) {
+        state.lastProductionHealthCheck = now;
+        saveState(state);
+      }
+      log('Production health monitor: spawned (fire-and-forget).');
+    } else {
+      log('Production health monitor: spawn failed.');
+    }
+  } else if (!prodHealthEnabled) {
+    log('Production Health Monitor is disabled in config.');
+  } else {
+    const minutesLeft = Math.ceil((PRODUCTION_HEALTH_COOLDOWN_MS - timeSinceLastProdHealth) / 60000);
+    log(`Production health monitor cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
+  // CI MONITORING (every cycle, gate-exempt)
+  // GAP 3: Check GitHub Actions CI status for main and staging branches
+  // =========================================================================
+  try {
+    checkCiStatus();
+  } catch (err) {
+    log(`CI monitoring error (non-fatal): ${err.message}`);
+  }
+
+  // =========================================================================
+  // MERGE CHAIN GAP CHECK (every cycle, gate-exempt)
+  // GAP 7: Alert when staging is too far ahead of main (>50 commits)
+  // =========================================================================
+  try {
+    // Ensure we have fresh refs (staging health monitor may have fetched staging already)
+    try {
+      execSync('git fetch origin staging main --quiet 2>/dev/null || true', {
+        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+      });
+    } catch {
+      // Non-fatal, may already have fresh refs
+    }
+
+    if (remoteBranchExists('staging') && remoteBranchExists('main')) {
+      const gapCommits = getNewCommits('staging', 'main');
+      if (gapCommits.length >= MERGE_CHAIN_GAP_THRESHOLD) {
+        log(`Merge chain gap: ${gapCommits.length} commits on staging not in main (threshold: ${MERGE_CHAIN_GAP_THRESHOLD}).`);
+        recordAlert('merge_chain_gap', {
+          title: `Merge chain gap: ${gapCommits.length} commits on staging not merged to main`,
+          severity: 'high',
+          source: 'merge-chain-monitor',
+        });
+      } else {
+        resolveAlert('merge_chain_gap');
+        log(`Merge chain gap: ${gapCommits.length} commits (under threshold ${MERGE_CHAIN_GAP_THRESHOLD}).`);
+      }
+    }
+  } catch (err) {
+    log(`Merge chain gap check error (non-fatal): ${err.message}`);
+  }
+
+  // =========================================================================
+  // PERSISTENT ALERT CHECK (every cycle, gate-exempt)
+  // GAP 2: Re-escalate unresolved alerts past their threshold and GC old ones
+  // =========================================================================
+  try {
+    const alertResult = checkPersistentAlerts();
+    if (alertResult.escalated > 0 || alertResult.gcCount > 0) {
+      log(`Persistent alerts: processed (${alertResult.escalated} escalated, ${alertResult.gcCount} gc'd).`);
+    }
+  } catch (err) {
+    log(`Persistent alerts error (non-fatal): ${err.message}`);
+  }
+
+  // =========================================================================
+  // CTO GATE CHECK — exit if gate is closed after all monitoring-only steps
+  // GAP 5: Everything above this point (Usage Optimizer, Key Sync, Session
+  // Reviver, Triage, Health Monitors, CI Monitoring, Persistent Alerts,
+  // Merge Chain Gap) runs regardless of CTO gate status. Everything below
+  // requires the gate to be open.
+  // =========================================================================
+  if (!ctoGateOpen) {
+    log('CTO gate closed — monitoring-only steps complete. Skipping gate-required steps.');
+    registerHookExecution({
+      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+      status: 'partial',
+      durationMs: Date.now() - startTime,
+      metadata: { reason: 'cto_gate_monitoring_only', hoursSinceLastBriefing: ctoGate.hoursSinceLastBriefing }
+    });
+    process.exit(0);
+  }
+
+  // =========================================================================
   // LINT CHECK (own cooldown, default 30 min)
   // =========================================================================
   const timeSinceLastLint = now - (state.lastLintCheck || 0);
@@ -2358,17 +2789,25 @@ async function main() {
           ? Math.floor((Date.now() / 1000 - lastStagingTimestamp) / 3600) : 0;
 
         if (hoursSinceLastStagingCommit >= 24) {
-          log(`Staging promotion: ${newCommits.length} commits ready. Staging stable for ${hoursSinceLastStagingCommit}h.`);
+          // GAP 6: Block promotion if production is in error state
+          const alertData = readPersistentAlerts();
+          const prodAlert = alertData.alerts['production_error'];
+          if (prodAlert && !prodAlert.resolved) {
+            const ageHours = Math.round((Date.now() - new Date(prodAlert.first_detected_at).getTime()) / 3600000);
+            log(`Staging promotion: BLOCKED — production in error state for ${ageHours}h. Fix production before promoting.`);
+          } else {
+            log(`Staging promotion: ${newCommits.length} commits ready. Staging stable for ${hoursSinceLastStagingCommit}h.`);
 
-          try {
-            const result = await spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit);
-            if (result.code === 0) {
-              log('Staging promotion pipeline completed successfully.');
-            } else {
-              log(`Staging promotion pipeline exited with code ${result.code}`);
+            try {
+              const result = await spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit);
+              if (result.code === 0) {
+                log('Staging promotion pipeline completed successfully.');
+              } else {
+                log(`Staging promotion pipeline exited with code ${result.code}`);
+              }
+            } catch (err) {
+              log(`Staging promotion error: ${err.message}`);
             }
-          } catch (err) {
-            log(`Staging promotion error: ${err.message}`);
           }
         } else {
           log(`Staging promotion: staging only ${hoursSinceLastStagingCommit}h old (need 24h stability).`);
@@ -2491,68 +2930,6 @@ async function main() {
   } else {
     const minutesLeft = Math.ceil((PREVIEW_PROMOTION_COOLDOWN_MS - timeSinceLastPreviewPromotion) / 60000);
     log(`Preview promotion cooldown active. ${minutesLeft} minutes until next check.`);
-  }
-
-  // =========================================================================
-  // STAGING HEALTH MONITOR (3h cooldown, fire-and-forget)
-  // Checks staging infrastructure health
-  // =========================================================================
-  const timeSinceLastStagingHealth = now - (state.lastStagingHealthCheck || 0);
-  const stagingHealthEnabled = config.stagingHealthMonitorEnabled !== false;
-
-  if (timeSinceLastStagingHealth >= STAGING_HEALTH_COOLDOWN_MS && stagingHealthEnabled) {
-    try {
-      execSync('git fetch origin staging --quiet 2>/dev/null || true', {
-        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
-      });
-    } catch {
-      log('Staging health monitor: git fetch failed.');
-    }
-
-    if (remoteBranchExists('staging')) {
-      log('Staging health monitor: spawning health check...');
-      const success = spawnStagingHealthMonitor();
-      if (success) {
-        log('Staging health monitor: spawned (fire-and-forget).');
-      } else {
-        log('Staging health monitor: spawn failed.');
-      }
-    } else {
-      log('Staging health monitor: staging branch does not exist, skipping.');
-    }
-
-    state.lastStagingHealthCheck = now;
-    saveState(state);
-  } else if (!stagingHealthEnabled) {
-    log('Staging Health Monitor is disabled in config.');
-  } else {
-    const minutesLeft = Math.ceil((STAGING_HEALTH_COOLDOWN_MS - timeSinceLastStagingHealth) / 60000);
-    log(`Staging health monitor cooldown active. ${minutesLeft} minutes until next check.`);
-  }
-
-  // =========================================================================
-  // PRODUCTION HEALTH MONITOR (1h cooldown, fire-and-forget)
-  // Checks production infrastructure health, escalates to CTO
-  // =========================================================================
-  const timeSinceLastProdHealth = now - (state.lastProductionHealthCheck || 0);
-  const prodHealthEnabled = config.productionHealthMonitorEnabled !== false;
-
-  if (timeSinceLastProdHealth >= PRODUCTION_HEALTH_COOLDOWN_MS && prodHealthEnabled) {
-    log('Production health monitor: spawning health check...');
-    const success = spawnProductionHealthMonitor();
-    if (success) {
-      log('Production health monitor: spawned (fire-and-forget).');
-    } else {
-      log('Production health monitor: spawn failed.');
-    }
-
-    state.lastProductionHealthCheck = now;
-    saveState(state);
-  } else if (!prodHealthEnabled) {
-    log('Production Health Monitor is disabled in config.');
-  } else {
-    const minutesLeft = Math.ceil((PRODUCTION_HEALTH_COOLDOWN_MS - timeSinceLastProdHealth) / 60000);
-    log(`Production health monitor cooldown active. ${minutesLeft} minutes until next check.`);
   }
 
   // =========================================================================

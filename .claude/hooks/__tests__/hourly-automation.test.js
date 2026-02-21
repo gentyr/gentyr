@@ -410,3 +410,487 @@ describe('Overdrive Concurrency Override', () => {
     );
   });
 });
+
+describe('GAP 5: CTO Activity Gate Monitoring Exemption', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should use ctoGateOpen flag instead of process.exit(0) for gate', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Must define ctoGateOpen flag
+    assert.match(
+      code,
+      /const ctoGateOpen = ctoGate\.open/,
+      'Must define ctoGateOpen flag from ctoGate.open'
+    );
+  });
+
+  it('should not call process.exit(0) immediately on gate closed', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // The gate check should NOT have process.exit immediately after checking ctoGate.open
+    // It should set a flag instead. The old pattern was:
+    // if (!ctoGate.open) { ... process.exit(0); }
+    // The new pattern is:
+    // const ctoGateOpen = ctoGate.open; if (!ctoGateOpen) { log... } else { log... }
+    // followed later by: if (!ctoGateOpen) { ... process.exit(0); }
+
+    // Ensure monitoring-only mode message exists
+    assert.match(
+      code,
+      /Monitoring-only mode: health monitors, triage, and CI checks will still run/,
+      'Must log monitoring-only mode message when gate is closed'
+    );
+  });
+
+  it('should register partial status when gate is closed', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /status: ['"]partial['"]/,
+      'Must register partial status for monitoring-only runs'
+    );
+
+    assert.match(
+      code,
+      /reason: ['"]cto_gate_monitoring_only['"]/,
+      'Must include cto_gate_monitoring_only reason in metadata'
+    );
+  });
+
+  it('should place health monitors before the gate exit', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Health monitors should appear BEFORE the gate check exit
+    const stagingHealthIdx = code.indexOf('STAGING HEALTH MONITOR');
+    const prodHealthIdx = code.indexOf('PRODUCTION HEALTH MONITOR');
+    const gateCheckIdx = code.indexOf('CTO GATE CHECK');
+
+    assert.ok(stagingHealthIdx > 0, 'Staging health monitor section must exist');
+    assert.ok(prodHealthIdx > 0, 'Production health monitor section must exist');
+    assert.ok(gateCheckIdx > 0, 'CTO gate check section must exist');
+    assert.ok(stagingHealthIdx < gateCheckIdx, 'Staging health monitor must come before gate check');
+    assert.ok(prodHealthIdx < gateCheckIdx, 'Production health monitor must come before gate check');
+  });
+
+  it('should mark health monitors as GATE-EXEMPT', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /STAGING HEALTH MONITOR.*\[GATE-EXEMPT\]/,
+      'Staging health monitor must be marked GATE-EXEMPT'
+    );
+
+    assert.match(
+      code,
+      /PRODUCTION HEALTH MONITOR.*\[GATE-EXEMPT\]/,
+      'Production health monitor must be marked GATE-EXEMPT'
+    );
+  });
+});
+
+describe('GAP 4: Deferred Cooldown Stamps', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should define verifySpawnAlive function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /async function verifySpawnAlive\(pid, label\)/,
+      'Must define verifySpawnAlive function'
+    );
+  });
+
+  it('should use process.kill(pid, 0) to check if alive', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/async function verifySpawnAlive[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'verifySpawnAlive function must exist');
+
+    assert.match(
+      fnMatch[0],
+      /process\.kill\(pid, 0\)/,
+      'Must use process.kill(pid, 0) to check process liveness'
+    );
+  });
+
+  it('should return { success, pid } from spawnStagingHealthMonitor', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function spawnStagingHealthMonitor\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnStagingHealthMonitor must exist');
+
+    assert.match(
+      fnMatch[0],
+      /return \{ success: true, pid: claude\.pid \}/,
+      'Must return { success: true, pid } on success'
+    );
+
+    assert.match(
+      fnMatch[0],
+      /return \{ success: false, pid: null \}/,
+      'Must return { success: false, pid: null } on failure'
+    );
+  });
+
+  it('should return { success, pid } from spawnProductionHealthMonitor', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function spawnProductionHealthMonitor\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnProductionHealthMonitor must exist');
+
+    assert.match(
+      fnMatch[0],
+      /return \{ success: true, pid: claude\.pid \}/,
+      'Must return { success: true, pid } on success'
+    );
+
+    assert.match(
+      fnMatch[0],
+      /return \{ success: false, pid: null \}/,
+      'Must return { success: false, pid: null } on failure'
+    );
+  });
+
+  it('should call verifySpawnAlive before stamping cooldown', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // The main flow should call verifySpawnAlive for both monitors
+    assert.match(
+      code,
+      /verifySpawnAlive\(result\.pid, ['"]Production health monitor['"]\)/,
+      'Must call verifySpawnAlive for production health monitor'
+    );
+
+    assert.match(
+      code,
+      /verifySpawnAlive\(result\.pid, ['"]Staging health monitor['"]\)/,
+      'Must call verifySpawnAlive for staging health monitor'
+    );
+  });
+});
+
+describe('GAP 2: Persistent Alerts System', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should define PERSISTENT_ALERTS_PATH constant', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /const PERSISTENT_ALERTS_PATH/,
+      'Must define PERSISTENT_ALERTS_PATH'
+    );
+
+    assert.match(
+      code,
+      /persistent_alerts\.json/,
+      'Path must reference persistent_alerts.json'
+    );
+  });
+
+  it('should define ALERT_RE_ESCALATION_HOURS thresholds', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /const ALERT_RE_ESCALATION_HOURS/,
+      'Must define ALERT_RE_ESCALATION_HOURS'
+    );
+
+    assert.match(
+      code,
+      /critical:\s*4/,
+      'Critical re-escalation threshold must be 4 hours'
+    );
+
+    assert.match(
+      code,
+      /high:\s*12/,
+      'High re-escalation threshold must be 12 hours'
+    );
+  });
+
+  it('should define readPersistentAlerts function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /function readPersistentAlerts\(\)/,
+      'Must define readPersistentAlerts function'
+    );
+  });
+
+  it('should define writePersistentAlerts function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /function writePersistentAlerts\(data\)/,
+      'Must define writePersistentAlerts function'
+    );
+  });
+
+  it('should define recordAlert function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /function recordAlert\(key/,
+      'Must define recordAlert function'
+    );
+  });
+
+  it('should define resolveAlert function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /function resolveAlert\(key\)/,
+      'Must define resolveAlert function'
+    );
+  });
+
+  it('should define checkPersistentAlerts function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /function checkPersistentAlerts\(\)/,
+      'Must define checkPersistentAlerts function'
+    );
+  });
+
+  it('should define spawnAlertEscalation function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /function spawnAlertEscalation\(alert\)/,
+      'Must define spawnAlertEscalation function'
+    );
+  });
+
+  it('should garbage-collect resolved alerts older than 7 days', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /const ALERT_RESOLVED_GC_DAYS = 7/,
+      'Must define ALERT_RESOLVED_GC_DAYS = 7'
+    );
+
+    const fnMatch = code.match(/function checkPersistentAlerts\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'checkPersistentAlerts function must exist');
+
+    assert.match(
+      fnMatch[0],
+      /ALERT_RESOLVED_GC_DAYS/,
+      'checkPersistentAlerts must reference ALERT_RESOLVED_GC_DAYS for garbage collection'
+    );
+  });
+
+  it('should include persistent alert update instructions in health monitor prompts', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Production health monitor prompt should reference persistent_alerts.json
+    assert.match(
+      code,
+      /production-health-monitor[\s\S]*?persistent_alerts\.json/,
+      'Production health monitor prompt must reference persistent_alerts.json'
+    );
+
+    // Staging health monitor prompt should reference persistent_alerts.json
+    assert.match(
+      code,
+      /staging-health-monitor[\s\S]*?persistent_alerts\.json/,
+      'Staging health monitor prompt must reference persistent_alerts.json'
+    );
+  });
+
+  it('should run checkPersistentAlerts in the main flow as gate-exempt', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Persistent alert check should appear before the gate check
+    const alertCheckIdx = code.indexOf('PERSISTENT ALERT CHECK');
+    const gateCheckIdx = code.indexOf('CTO GATE CHECK');
+
+    assert.ok(alertCheckIdx > 0, 'Persistent alert check section must exist');
+    assert.ok(gateCheckIdx > 0, 'CTO gate check section must exist');
+    assert.ok(alertCheckIdx < gateCheckIdx, 'Persistent alert check must come before gate check');
+  });
+});
+
+describe('GAP 6: Promotion Pipeline Production Health Pre-Check', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should check for production_error alert before staging promotion', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // The staging promotion section should check persistent alerts
+    assert.match(
+      code,
+      /alertData\.alerts\['production_error'\]/,
+      'Must check production_error alert key before promoting'
+    );
+  });
+
+  it('should block promotion when production is in error state', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /Staging promotion: BLOCKED.*production in error state/,
+      'Must log BLOCKED message when production is in error state'
+    );
+  });
+
+  it('should call readPersistentAlerts before promotion spawn', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // readPersistentAlerts call should appear before spawnStagingPromotion in the promotion section
+    const promotionSection = code.match(/hoursSinceLastStagingCommit >= 24[\s\S]*?spawnStagingPromotion/);
+    assert.ok(promotionSection, 'Promotion section must exist');
+
+    assert.match(
+      promotionSection[0],
+      /readPersistentAlerts\(\)/,
+      'Must call readPersistentAlerts before spawning promotion'
+    );
+  });
+});
+
+describe('GAP 3: CI Monitoring', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should define checkCiStatus function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /function checkCiStatus\(\)/,
+      'Must define checkCiStatus function'
+    );
+  });
+
+  it('should check both main and staging branches', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function checkCiStatus\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'checkCiStatus function must exist');
+
+    assert.match(
+      fnMatch[0],
+      /const branches = \['main', 'staging'\]/,
+      'Must check both main and staging branches'
+    );
+  });
+
+  it('should use gh api for GitHub Actions runs', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function checkCiStatus\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'checkCiStatus function must exist');
+
+    assert.match(
+      fnMatch[0],
+      /execFileSync\(['"]gh['"]/,
+      'Must use gh CLI for API calls'
+    );
+
+    assert.match(
+      fnMatch[0],
+      /actions\/runs/,
+      'Must query actions/runs API endpoint'
+    );
+  });
+
+  it('should create alerts for CI failures using persistent alert system', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function checkCiStatus\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'checkCiStatus function must exist');
+
+    assert.match(
+      fnMatch[0],
+      /recordAlert\(alertKey/,
+      'Must call recordAlert for CI failures'
+    );
+
+    assert.match(
+      fnMatch[0],
+      /resolveAlert\(alertKey\)/,
+      'Must call resolveAlert for CI successes'
+    );
+  });
+
+  it('should run CI monitoring as gate-exempt', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const ciMonitorIdx = code.indexOf('CI MONITORING');
+    const gateCheckIdx = code.indexOf('CTO GATE CHECK');
+
+    assert.ok(ciMonitorIdx > 0, 'CI monitoring section must exist');
+    assert.ok(gateCheckIdx > 0, 'CTO gate check section must exist');
+    assert.ok(ciMonitorIdx < gateCheckIdx, 'CI monitoring must come before gate check');
+  });
+});
+
+describe('GAP 7: Merge Chain Gap Alerting', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should define MERGE_CHAIN_GAP_THRESHOLD constant', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /const MERGE_CHAIN_GAP_THRESHOLD = 50/,
+      'Must define MERGE_CHAIN_GAP_THRESHOLD = 50'
+    );
+  });
+
+  it('should use getNewCommits to check staging vs main gap', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // The merge chain gap section should call getNewCommits
+    assert.match(
+      code,
+      /getNewCommits\(['"]staging['"],\s*['"]main['"]\)/,
+      'Must call getNewCommits("staging", "main") for gap check'
+    );
+  });
+
+  it('should create merge_chain_gap alert when threshold exceeded', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /recordAlert\(['"]merge_chain_gap['"]/,
+      'Must call recordAlert with merge_chain_gap key'
+    );
+  });
+
+  it('should resolve merge_chain_gap alert when under threshold', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /resolveAlert\(['"]merge_chain_gap['"]\)/,
+      'Must call resolveAlert for merge_chain_gap'
+    );
+  });
+
+  it('should run merge chain gap check as gate-exempt', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const mergeChainIdx = code.indexOf('MERGE CHAIN GAP');
+    const gateCheckIdx = code.indexOf('CTO GATE CHECK');
+
+    assert.ok(mergeChainIdx > 0, 'Merge chain gap section must exist');
+    assert.ok(gateCheckIdx > 0, 'CTO gate check section must exist');
+    assert.ok(mergeChainIdx < gateCheckIdx, 'Merge chain gap check must come before gate check');
+  });
+});

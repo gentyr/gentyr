@@ -35,6 +35,11 @@ const MAX_CHANGE_PER_CYCLE = 0.10; // ±10% per cycle
 const SNAPSHOT_RETENTION_DAYS = 7;
 const MIN_SNAPSHOTS_FOR_TRAJECTORY = 3;
 const MIN_EFFECTIVE_MINUTES = 5; // Floor: no cooldown can go below 5 minutes
+const MAX_COOLDOWN_MINUTES = {
+  production_health_monitor: 120,  // 2h max (default 60) — never throttle production health beyond 2h
+  staging_health_monitor: 360,     // 6h max (default 180) — cap staging health throttling
+  triage_check: 15,                // 15min max (default 5) — keep triage responsive
+};
 const SINGLE_KEY_WARNING_THRESHOLD = 0.80; // Warn when any key exceeds 80%
 const RESET_BOUNDARY_DROP_THRESHOLD = 0.30; // Detect reset when 5h drops >30pp
 const MIN_SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;  // 5 min — throttle between snapshots
@@ -673,7 +678,11 @@ function applyFactor(config, newFactor, constraining, projectedAtReset, log, hou
       effective[key] = config.modes[key].static_minutes ?? defaultVal;
       continue;
     }
-    effective[key] = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultVal / newFactor));
+    let computed = Math.max(MIN_EFFECTIVE_MINUTES, Math.round(defaultVal / newFactor));
+    if (MAX_COOLDOWN_MINUTES[key] !== undefined) {
+      computed = Math.min(computed, MAX_COOLDOWN_MINUTES[key]);
+    }
+    effective[key] = computed;
   }
 
   const direction = newFactor > previousFactor + 0.005 ? 'ramping up' : newFactor < previousFactor - 0.005 ? 'ramping down' : 'holding';
