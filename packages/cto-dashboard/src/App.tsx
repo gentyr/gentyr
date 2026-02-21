@@ -28,6 +28,7 @@ import {
   LoggingSection,
   AccountOverviewSection,
   WorktreeSection,
+  ProductManagerSection,
   type MetricBoxData,
 } from './components/index.js';
 import type { DashboardData } from './utils/data-reader.js';
@@ -41,6 +42,7 @@ import type { InfraData } from './utils/infra-reader.js';
 import type { LoggingData } from './utils/logging-reader.js';
 import type { AccountOverviewData } from './utils/account-overview-reader.js';
 import type { WorktreeData } from './utils/worktree-reader.js';
+import type { ProductManagerData } from './utils/product-manager-reader.js';
 import { formatNumber, formatDateTime, formatTime12h, formatDelta, calculateCacheRate } from './utils/formatters.js';
 
 interface AppProps {
@@ -55,6 +57,7 @@ interface AppProps {
   logging: LoggingData;
   accountOverview: AccountOverviewData;
   worktrees: WorktreeData;
+  productManager: ProductManagerData;
 }
 
 function Header({ data }: { data: DashboardData }): React.ReactElement {
@@ -240,7 +243,7 @@ function MetricsSummary({ data }: { data: DashboardData }): React.ReactElement {
   );
 }
 
-export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees }: AppProps): React.ReactElement {
+export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager }: AppProps): React.ReactElement {
   // Compute explicit widths for side-by-side sections
   const termCols = process.stdout.columns || 80;
   const leftWidth = Math.floor((termCols - 1) / 2);  // -1 for gap
@@ -337,6 +340,11 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       {/* Feedback Personas */}
       <Box marginTop={1}>
         <FeedbackPersonas data={data.feedback_personas} />
+      </Box>
+
+      {/* Product-Market Fit */}
+      <Box marginTop={1}>
+        <ProductManagerSection data={productManager} />
       </Box>
 
       {/* Timeline */}

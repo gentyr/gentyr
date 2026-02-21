@@ -19,6 +19,7 @@ export const VALID_SECTIONS = [
   'CODE-REVIEWER',
   'PROJECT-MANAGER',
   'DEPUTY-CTO',
+  'PRODUCT-MANAGER',
 ] as const;
 
 export type ValidSection = (typeof VALID_SECTIONS)[number];

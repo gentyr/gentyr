@@ -38,6 +38,7 @@ import type { InfraData } from './utils/infra-reader.js';
 import type { LoggingData } from './utils/logging-reader.js';
 import type { AccountOverviewData } from './utils/account-overview-reader.js';
 import type { WorktreeData } from './utils/worktree-reader.js';
+import type { ProductManagerData } from './utils/product-manager-reader.js';
 
 // ============================================================================
 // Deterministic PRNG (LCG — no Math.random())
@@ -1735,5 +1736,28 @@ export function getMockWorktrees(): WorktreeData {
       },
     ],
     summary: { total: 5, active: 2, idle: 1, merged: 2, system: 2 },
+  };
+}
+
+// ============================================================================
+// Product Manager data
+// ============================================================================
+
+export function getMockProductManager(): ProductManagerData {
+  return {
+    hasData: true,
+    status: 'in_progress',
+    sections_populated: 4,
+    total_sections: 6,
+    sections: [
+      { number: 1, title: 'Market Space & Players', populated: true },
+      { number: 2, title: 'Buyer Personas', populated: true, entry_count: 4 },
+      { number: 3, title: 'Competitor Differentiation', populated: true },
+      { number: 4, title: 'Pricing Models', populated: true },
+      { number: 5, title: 'Niche Strengths & Weaknesses', populated: false },
+      { number: 6, title: 'User Sentiment', populated: false, entry_count: 0 },
+    ],
+    compliance: null,
+    last_updated: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
   };
 }

@@ -19,6 +19,7 @@ View individual dashboard sections using `mcp__show__*` tools.
 | `mcp__show__show_logging()` | Log volume, error rates, and top error messages from Elasticsearch |
 | `mcp__show__show_timeline()` | Chronological timeline of recent system events |
 | `mcp__show__show_tasks()` | Task metrics (pending, active, completed) and token usage summary |
+| `mcp__show__show_product_market_fit()` | Product-market-fit analysis with full section content and compliance |
 
 ## Usage
 

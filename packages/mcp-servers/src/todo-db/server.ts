@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     followup_section TEXT,
     followup_prompt TEXT,
     CONSTRAINT valid_status CHECK (status IN ('pending', 'in_progress', 'completed')),
-    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO'))
+    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_section ON tasks(section);
@@ -134,6 +134,18 @@ function initializeDatabase(): Database.Database {
     db.prepare("DELETE FROM tasks WHERE id = ?").run(testId);
   } catch {
     // Old CHECK constraint — recreate table preserving data
+    db.exec("ALTER TABLE tasks RENAME TO tasks_old");
+    db.exec(SCHEMA);
+    db.exec(`INSERT INTO tasks (id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt) SELECT id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, COALESCE(followup_enabled, 0), followup_section, followup_prompt FROM tasks_old`);
+    db.exec("DROP TABLE tasks_old");
+  }
+
+  // Auto-migration: ensure PRODUCT-MANAGER is in CHECK constraint
+  try {
+    const testId = 'migration-pm-check-' + Date.now();
+    db.prepare("INSERT INTO tasks (id, section, status, title, created_at, created_timestamp) VALUES (?, 'PRODUCT-MANAGER', 'pending', '_migration_test', ?, ?)").run(testId, new Date().toISOString(), Math.floor(Date.now() / 1000));
+    db.prepare("DELETE FROM tasks WHERE id = ?").run(testId);
+  } catch {
     db.exec("ALTER TABLE tasks RENAME TO tasks_old");
     db.exec(SCHEMA);
     db.exec(`INSERT INTO tasks (id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt) SELECT id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, COALESCE(followup_enabled, 0), followup_section, followup_prompt FROM tasks_old`);

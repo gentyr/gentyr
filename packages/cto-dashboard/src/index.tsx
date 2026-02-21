@@ -26,11 +26,12 @@ import { getInfraData } from './utils/infra-reader.js';
 import { getLoggingData } from './utils/logging-reader.js';
 import { getAccountOverviewData } from './utils/account-overview-reader.js';
 import { getWorktreeData } from './utils/worktree-reader.js';
+import { getProductManagerData } from './utils/product-manager-reader.js';
 import {
   getMockDashboardData, getMockTimelineEvents, getMockTrajectory,
   getMockAutomatedInstances, getMockDeputyCto, getMockTesting,
   getMockDeployments, getMockInfra, getMockLogging, getMockAccountOverview,
-  getMockWorktrees,
+  getMockWorktrees, getMockProductManager,
 } from './mock-data.js';
 import {
   Section,
@@ -47,6 +48,7 @@ import {
   LoggingSection,
   AccountOverviewSection,
   WorktreeSection,
+  ProductManagerSection,
   type MetricBoxData,
 } from './components/index.js';
 import { formatNumber, calculateCacheRate } from './utils/formatters.js';
@@ -59,7 +61,7 @@ import { formatNumber, calculateCacheRate } from './utils/formatters.js';
 const SECTION_IDS = [
   'quota', 'accounts', 'deputy-cto', 'usage', 'automations',
   'testing', 'deployments', 'worktrees', 'infra', 'logging',
-  'timeline', 'tasks',
+  'timeline', 'tasks', 'product-market-fit',
 ] as const;
 
 type SectionId = typeof SECTION_IDS[number];
@@ -267,6 +269,11 @@ async function renderSection(sectionId: SectionId, mock: boolean, hours: number,
       );
     }
 
+    case 'product-market-fit': {
+      const pm = mock ? getMockProductManager() : getProductManagerData();
+      return <ProductManagerSection data={pm} />;
+    }
+
     default: {
       const _exhaustive: never = sectionId;
       throw new Error(`Unhandled section: ${_exhaustive}`);
@@ -296,7 +303,7 @@ async function main(): Promise<void> {
     }
 
     // Full dashboard mode
-    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees;
+    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager;
 
     if (mock) {
       // Use hardcoded mock data — no DB, API, or filesystem access
@@ -311,6 +318,7 @@ async function main(): Promise<void> {
       logging = getMockLogging();
       accountOverview = getMockAccountOverview();
       worktrees = getMockWorktrees();
+      productManager = getMockProductManager();
     } else {
       // Fetch data from all sources
       data = await getDashboardData(hours);
@@ -351,6 +359,7 @@ async function main(): Promise<void> {
 
       accountOverview = getAccountOverviewData();
       worktrees = getWorktreeData();
+      productManager = getProductManagerData();
     }
 
     // Render dashboard (static mode - prints once and exits)
@@ -367,6 +376,7 @@ async function main(): Promise<void> {
         logging={logging}
         accountOverview={accountOverview}
         worktrees={worktrees}
+        productManager={productManager}
       />,
       { exitOnCtrlC: true }
     );

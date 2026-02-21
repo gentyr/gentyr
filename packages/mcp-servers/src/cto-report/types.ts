@@ -194,6 +194,30 @@ export interface TaskMetrics {
   completed_24h_by_section: Record<string, number>;
 }
 
+export interface ProductMarketFitSection {
+  number: number;
+  title: string;
+  populated: boolean;
+  content_preview: string | null;
+  entry_count?: number;
+}
+
+export interface ProductMarketFitSummary {
+  enabled: boolean;
+  status: 'not_started' | 'pending_approval' | 'approved' | 'in_progress' | 'completed';
+  sections_populated: number;
+  total_sections: 6;
+  sections: ProductMarketFitSection[];
+  compliance: {
+    total_pain_points: number;
+    mapped: number;
+    unmapped: number;
+    pct: number;
+  } | null;
+  last_updated: string | null;
+  tip: string;
+}
+
 export interface CTOReport {
   generated_at: string;
   hours: number;
@@ -209,6 +233,7 @@ export interface CTOReport {
   pending_items: PendingItems;
   triage: TriageMetrics;
   tasks: TaskMetrics;
+  product_market_fit: ProductMarketFitSummary | null;
 }
 
 export interface SessionMetricsResult {

@@ -830,6 +830,315 @@ describe('account-overview-reader', () => {
     });
   });
 
+  describe('Event Description with Email', () => {
+    it('should use email in "New account added" description when available', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-with-email': {
+            status: 'active',
+            account_email: 'user@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'key_added',
+            key_id: 'key-with-email',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('New account added: user@example.com');
+    });
+
+    it('should use keyId in "New account added" description when email is null', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-without-email': {
+            status: 'active',
+            account_email: null,
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'key_added',
+            key_id: 'key-without-email',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('New account added: key-with...');
+    });
+
+    it('should use keyId in "New account added" description when email is missing', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-no-email-field': {
+            status: 'active',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'key_added',
+            key_id: 'key-no-email-field',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('New account added: key-no-e...');
+    });
+
+    it('should still use keyId for token_refreshed events regardless of email', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'refresh-key': {
+            status: 'active',
+            account_email: 'refresh@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'key_added',
+            key_id: 'refresh-key',
+            reason: 'token_refreshed_proactive',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('Token refreshed for refresh-...');
+    });
+  });
+
+  describe('Event Deduplication', () => {
+    it('should suppress duplicate "New account added" events for same email', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': {
+            status: 'active',
+            account_email: 'shared@example.com',
+          },
+          'key-2': {
+            status: 'active',
+            account_email: 'shared@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now - 2000,
+            event: 'key_added',
+            key_id: 'key-1',
+          },
+          {
+            timestamp: now - 1000,
+            event: 'key_added',
+            key_id: 'key-2',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      // Should only have 1 event (first occurrence)
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('New account added: shared@example.com');
+      expect(result.events[0].keyId).toBe('key-1');
+    });
+
+    it('should suppress duplicate "New account added" events for same keyId when email is null', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'same-key': {
+            status: 'active',
+            account_email: null,
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now - 3000,
+            event: 'key_added',
+            key_id: 'same-key',
+          },
+          {
+            timestamp: now - 2000,
+            event: 'key_added',
+            key_id: 'same-key',
+          },
+          {
+            timestamp: now - 1000,
+            event: 'key_added',
+            key_id: 'same-key',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      // Should only have 1 event (first occurrence)
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('New account added: same-key');
+    });
+
+    it('should NOT suppress "New account added" events for different emails', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': {
+            status: 'active',
+            account_email: 'user1@example.com',
+          },
+          'key-2': {
+            status: 'active',
+            account_email: 'user2@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now - 2000,
+            event: 'key_added',
+            key_id: 'key-1',
+          },
+          {
+            timestamp: now - 1000,
+            event: 'key_added',
+            key_id: 'key-2',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      // Should have 2 events (different emails)
+      expect(result.events).toHaveLength(2);
+      expect(result.events.map(e => e.description)).toContain('New account added: user1@example.com');
+      expect(result.events.map(e => e.description)).toContain('New account added: user2@example.com');
+    });
+
+    it('should NOT suppress token_refreshed events even for same email', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'refresh-key': {
+            status: 'active',
+            account_email: 'refresh@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now - 3000,
+            event: 'key_added',
+            key_id: 'refresh-key',
+            reason: 'token_refreshed_proactive',
+          },
+          {
+            timestamp: now - 2000,
+            event: 'key_added',
+            key_id: 'refresh-key',
+            reason: 'token_refreshed_on_401',
+          },
+          {
+            timestamp: now - 1000,
+            event: 'key_added',
+            key_id: 'refresh-key',
+            reason: 'token_refreshed_proactive',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      // All 3 token_refreshed events should be present (not deduplicated)
+      expect(result.events).toHaveLength(3);
+      expect(result.events.every(e => e.description.startsWith('Token refreshed'))).toBe(true);
+    });
+
+    it('should NOT suppress other event types (key_switched, key_exhausted, etc.)', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': {
+            status: 'active',
+            account_email: 'user@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now - 4000,
+            event: 'key_switched',
+            key_id: 'key-1',
+          },
+          {
+            timestamp: now - 3000,
+            event: 'key_switched',
+            key_id: 'key-1',
+          },
+          {
+            timestamp: now - 2000,
+            event: 'key_exhausted',
+            key_id: 'key-1',
+          },
+          {
+            timestamp: now - 1000,
+            event: 'key_removed',
+            key_id: 'key-1',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      // All events should be present (deduplication only applies to key_added without token_refreshed)
+      expect(result.events).toHaveLength(4);
+    });
+  });
+
   describe('Edge Cases', () => {
     it('should handle active_key_id as null', () => {
       const testData = {

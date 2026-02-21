@@ -20,6 +20,9 @@ allowedTools:
   - mcp__todo-db__get_task
   - mcp__todo-db__list_tasks
   - mcp__playwright__launch_ui_mode
+  - mcp__product-manager__approve_analysis
+  - mcp__product-manager__get_analysis_status
+  - mcp__product-manager__get_compliance_report
 disallowedTools:
   - Edit
   - Write
@@ -246,6 +249,10 @@ All DEPUTY-CTO tasks have mandatory follow-up hooks. When your task completes, a
 - If fully done, mark the follow-up complete
 
 Sub-tasks are picked up by the hourly automation task runner, which spawns the appropriate agent. This creates a cascade: your high-level task -> N agent tasks -> verified by follow-up.
+
+## Product-Market-Fit Feature Toggle
+
+The product-manager feature is **opt-in** via the `productManagerEnabled` flag in `.claude/autonomous-mode.json`. When a user asks about product-market-fit analysis and it's not enabled, explain that it can be enabled with `/toggle-product-manager`. You can approve analysis via `mcp__product-manager__approve_analysis` regardless of the toggle (the MCP server is always registered), but the product-manager agent and automation tasks only run when the feature is enabled.
 
 ## Status Displays
 

@@ -1,5 +1,154 @@
 # GENTYR Framework Changelog
 
+## 2026-02-21 - Product Manager Agent & PMF Analysis System
+
+### Added
+
+**Product Manager MCP Server** (2 files):
+- `packages/mcp-servers/src/product-manager/server.ts` - 13 MCP tools with SQLite DB, sequential section lock, markdown auto-generation
+- `packages/mcp-servers/src/product-manager/types.ts` - Zod schemas for 6 analysis sections (market_space, buyer_personas, competitor_differentiation, pricing_models, niche_strengths, user_sentiment)
+
+**Agent & Command Integration** (2 files):
+- `.claude/agents/product-manager.md` - Opus model agent with read-only codebase access, WebSearch/WebFetch for research
+- `.claude/commands/product-manager.md` - `/product-manager` slash command with status display and workflow options
+
+**Dashboard Integration** (3 files):
+- `packages/cto-dashboard/src/utils/product-manager-reader.ts` - Data reader for PMF analysis state
+- `packages/cto-dashboard/src/components/ProductManagerSection.tsx` - Ink/React dashboard component
+- Modified: `packages/cto-dashboard/src/App.tsx`, `index.tsx`, `components/index.ts`, `mock-data.ts`
+
+**System Integration** (4 files):
+- `packages/mcp-servers/src/shared/constants.ts` - Added PRODUCT-MANAGER to VALID_SECTIONS
+- `packages/mcp-servers/src/todo-db/server.ts` - CHECK constraint + migration for PRODUCT-MANAGER section
+- `.claude/hooks/agent-tracker.js` - New agent type registration
+- `.claude/hooks/hourly-automation.js` - SECTION_AGENT_MAP entry
+- `.claude/hooks/slash-command-prefetch.js` - Prefetch handler
+
+**User Feedback Access Control** (2 files):
+- `packages/mcp-servers/src/user-feedback/server.ts` - cto_protected migration + CTO-only access control for deletePersona
+- `packages/mcp-servers/src/user-feedback/types.ts` - cto_protected + caller fields added to persona schema
+
+**MCP Tools** (13 tools):
+- `initiate_analysis` - Start PMF analysis (creates pending_approval state)
+- `approve_analysis` - CTO approval to proceed
+- `get_analysis_status` - Check overall progress
+- `read_section` - Read content with prior context cascading
+- `write_section` - Write single-content sections (1, 3, 4, 5)
+- `add_entry` - Add list entries (sections 2, 6)
+- `list_pain_points` - Query user_sentiment entries
+- `map_pain_point_persona` - Link pain points to user-feedback personas
+- `clear_and_respawn` - Wipe and rebuild analysis via task chain
+- `get_compliance_report` - Persona mapping coverage stats
+- `regenerate_md` - Export to `pmf-analysis.md`
+- `delete_analysis` - Reset state
+- `update_analysis_metadata` - Update timestamps and metadata
+
+**Analysis Workflow**:
+1. User/deputy-CTO calls `initiate_analysis` → state: pending_approval
+2. Deputy-CTO approves → state: approved
+3. Hourly automation spawns PRODUCT-MANAGER agent tasks for each section (sequential)
+4. Agent researches via WebSearch/WebFetch, reads codebase, writes sections
+5. After Section 6 completes, persona evaluation task maps pain points to user-feedback personas
+6. `regenerate_md` exports full analysis to markdown
+
+**Sequential Lock**:
+- Each section requires all prior sections to be populated before writing
+- Context cascading: `read_section` returns all previous sections as context
+- Prevents fragmented or out-of-order analysis
+
+### Tests
+
+**New test files** (4 files):
+- `packages/mcp-servers/src/product-manager/__tests__/product-manager.test.ts` - 32 tests covering all 13 MCP tools, state machine, sequential lock, persona mapping
+- `.claude/hooks/__tests__/agent-tracker-product-manager.test.js` - 11 tests for agent type registration
+- `.claude/hooks/__tests__/hourly-automation-product-manager.test.js` - 14 tests for task spawning
+- `.claude/hooks/__tests__/slash-command-prefetch-product-manager.test.js` - 30 tests for command prefetch handler
+
+**Test results**:
+- All 1092 mcp-servers tests pass
+- All 55 hook tests pass
+- Clean TypeScript build for both packages/mcp-servers and packages/cto-dashboard
+- Mock dashboard renders ProductManagerSection correctly
+
+### Fixed
+
+**Critical security/compliance issues** (identified during code review):
+1. `deletePersona` missing CTO-protected access control - FIXED (requires deputy-CTO caller)
+2. PRODUCT-MANAGER missing from spawn-tasks pending query - FIXED (added to slash-command-prefetch.js)
+3. AddEntryArgsSchema.section not constrained to valid values (2, 6) - FIXED (Zod enum)
+4. `clearAndRespawn` opens todo.db without WAL pragma - FIXED (added pragma)
+5. `mapPainPointPersona` silently continues on persona verification failure - FIXED (throws error)
+6. metadata field not validated as JSON - FIXED (Zod z.record)
+
+### Impact
+
+This session delivered the 11th agent (PRODUCT-MANAGER) and a complete PMF analysis system:
+1. **Market research automation**: Agent uses WebSearch/WebFetch for competitive intelligence
+2. **Codebase analysis**: Read-only access to understand product features
+3. **Sequential workflow**: 6 sections populate in order with context cascading
+4. **Persona integration**: Pain points map to user-feedback personas for automated testing
+5. **CTO oversight**: Analysis requires approval before starting
+6. **Dashboard visibility**: CTO sees PMF progress in main dashboard
+
+All changes backward-compatible. New agent joins existing 10-agent ecosystem. Full integration with task runner, deputy-CTO triage, and hourly automation.
+
+## 2026-02-21 - Dashboard Sections as Agent-Facing MCP Tools & Slash Commands
+
+### Added
+
+**Show MCP Server** (3 files):
+- `packages/mcp-servers/src/show/types.ts` - Zod schemas and constants for 12 dashboard sections (`QUOTA`, `ACCOUNTS`, `DEPUTY_CTO`, `USAGE`, `AUTOMATIONS`, `TESTING`, `DEPLOYMENTS`, `WORKTREES`, `INFRA`, `LOGGING`, `TIMELINE`, `TASKS`)
+- `packages/mcp-servers/src/show/server.ts` - 12 MCP tools generated from data-driven loop: `show_quota`, `show_accounts`, `show_deputy_cto`, etc. Each tool spawns the dashboard binary with `--section <name>` and optional `--limit <N>` flags
+- `.mcp.json.template` - Registered `show` MCP server entry
+
+**Slash Command Integration** (2 files):
+- `.claude/commands/show.md` - New `/show` slash command reference page listing all 12 section tools with descriptions and usage examples
+- `.claude/hooks/slash-command-prefetch.js` - Added `show` sentinel and lightweight `handleShow()` handler for instant command reference
+
+**Dashboard CLI Enhancement** (1 file):
+- `packages/cto-dashboard/src/index.tsx` - Added `--section <name>` and `--limit <N>` CLI flags with `renderSection()` function that renders individual dashboard sections. Includes exhaustiveness check, invalid section warning, and support for all 12 sections.
+
+**Agent Guidance** (2 files):
+- `CLAUDE.md.gentyr-section` - Added "Status Displays" section encouraging agents to use `mcp__show__*` tools before token-heavy operations, deployments, test runs, etc. Added `/show` to slash commands list.
+- `.claude/agents/deputy-cto.md` - Added `mcp__show__*` to `allowedTools` and brief "Status Displays" usage guidance
+
+**Use cases**:
+- `mcp__show__show_quota()` before token-heavy operations
+- `mcp__show__show_testing()` before writing or running tests
+- `mcp__show__show_deployments()` before triggering deploys
+- `mcp__show__show_tasks()` before creating tasks
+- `mcp__show__show_worktrees()` before provisioning worktrees
+- `mcp__show__show_automations()` before spawning agents
+
+**Architecture**:
+- Tools use `execFileSync` to spawn the dashboard binary (prevents shell injection)
+- Pass `{ limit: N }` to expand the number of rows shown
+- Renders rich terminal displays (Ink-based React components)
+- Works with both `--mock` (development) and live MCP connections
+
+### Tests
+
+**Test results**:
+- All 760 cto-dashboard tests pass
+- All 1060 mcp-servers tests pass
+- Both packages build cleanly
+- All 12 sections verified working with `--mock` flag
+
+### Documentation
+
+**Updated documentation** (1 file):
+- `CLAUDE.md.gentyr-section` - Added comprehensive "Status Displays" section with usage guidance and tool listings
+
+### Impact
+
+This session delivered agent-facing status displays:
+1. **12 MCP tools**: Agents can now check individual dashboard sections on-demand without viewing the full CTO report
+2. **Contextual usage**: Tools support passing `{ limit: N }` for expanded views
+3. **Slash command**: `/show` provides quick reference for all available section tools
+4. **Integration**: Works with both mock data (development) and live MCP connections (production)
+
+All changes backward-compatible. Full dashboard (`/cto-report`) still available. New tools provide granular, on-demand access to specific metrics.
+
 ## 2026-02-21 - CTO Dashboard: Hotfix Pathway, Deployments Upgrade, Worktree Visualization
 
 ### Added
