@@ -100,14 +100,15 @@ function truncateKeyId(keyId: string): string {
   return keyId.length > 8 ? `${keyId.slice(0, 8)}...` : keyId;
 }
 
-function deriveDescription(event: string, reason: string | undefined, keyId: string): string | null {
+function deriveDescription(event: string, reason: string | undefined, keyId: string, email?: string | null): string | null {
   const short = truncateKeyId(keyId);
+  const displayName = email || short;
 
   switch (event) {
     case 'key_added':
       if (reason && reason.startsWith('token_refreshed'))
         return `Token refreshed for ${short}`;
-      return `New account added: ${short}`;
+      return `New account added: ${displayName}`;
 
     case 'key_switched': {
       const extra = reason ? ` (${reason})` : '';
@@ -191,14 +192,32 @@ export function getAccountOverviewData(): AccountOverviewData {
   const cutoff24h = now - 24 * 60 * 60 * 1000;
   let rotationCount = 0;
 
+  // Build a set of emails seen across all keys to detect genuinely new accounts
+  const allEmails = new Set<string>();
+  for (const keyData of Object.values(state.keys)) {
+    if (keyData.account_email) allEmails.add(keyData.account_email);
+  }
+
+  // Track emails we've already seen a "New account added" event for
+  // (scan chronologically to suppress duplicate additions for the same email)
+  const seenAddedEmails = new Set<string>();
+
   const events: AccountEvent[] = [];
   for (const entry of state.rotation_log) {
     if (entry.timestamp < cutoff24h) continue;
     if (entry.event === 'key_switched') rotationCount++;
 
     const keyId = entry.key_id ?? 'unknown';
-    const desc = deriveDescription(entry.event, entry.reason, keyId);
+    const email = keyId !== 'unknown' ? state.keys[keyId]?.account_email ?? null : null;
+    const desc = deriveDescription(entry.event, entry.reason, keyId, email);
     if (!desc) continue;
+
+    // Suppress duplicate "New account added" events for the same email
+    if (entry.event === 'key_added' && !(entry.reason && entry.reason.startsWith('token_refreshed'))) {
+      const dedupeKey = email ?? keyId;
+      if (seenAddedEmails.has(dedupeKey)) continue;
+      seenAddedEmails.add(dedupeKey);
+    }
 
     events.push({
       timestamp: new Date(entry.timestamp),

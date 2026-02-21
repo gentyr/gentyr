@@ -173,13 +173,17 @@ interface AccountQuotaBarsProps {
   accountOverview: AccountOverviewData;
 }
 
-function AccountQuotaBars({ verifiedQuota, accountOverview }: AccountQuotaBarsProps): React.ReactElement | null {
+function AccountQuotaBars({ verifiedQuota: _verifiedQuota, accountOverview }: AccountQuotaBarsProps): React.ReactElement | null {
   const unique = deduplicateByEmail(accountOverview.accounts);
   if (unique.length <= 1) return null;
 
-  const { aggregate } = verifiedQuota;
-  const total5h = aggregate.five_hour?.utilization ?? 0;
-  const total7d = aggregate.seven_day?.utilization ?? 0;
+  // Average across all displayed accounts (not just healthy ones)
+  const total5h = unique.length > 0
+    ? Math.round(unique.reduce((s, a) => s + (a.fiveHourPct ?? 0), 0) / unique.length)
+    : 0;
+  const total7d = unique.length > 0
+    ? Math.round(unique.reduce((s, a) => s + (a.sevenDayPct ?? 0), 0) / unique.length)
+    : 0;
 
   return (
     <Box flexDirection="column" marginTop={1}>

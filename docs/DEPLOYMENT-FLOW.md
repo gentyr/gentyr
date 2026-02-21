@@ -153,6 +153,40 @@ gh pr merge --merge
 - Incomplete feature
 - Blocked by dependencies
 
+## Emergency Hotfix Pathway
+
+When production is broken and a fix has already landed on staging, the CTO can trigger immediate promotion bypassing time gates.
+
+**Prerequisites:**
+- Fix must be merged to staging
+- CTO authorization required
+
+**Workflow:**
+1. Agent calls `mcp__deputy-cto__request_hotfix_promotion`
+   - Validates staging has unreleased commits
+   - Returns 6-character approval code (expires in 5 minutes)
+2. Agent presents code to CTO: `APPROVE HOTFIX <code>`
+3. CTO types approval in terminal (agents cannot trigger UserPromptSubmit hooks)
+4. Agent calls `mcp__deputy-cto__execute_hotfix_promotion` with code
+   - Validates HMAC-signed token
+   - Spawns staging→main promotion agent immediately
+
+**What Gets Bypassed:**
+- 24-hour stability requirement
+- Midnight deployment window
+
+**What Remains Required:**
+- Code review (via spawned promotion agent)
+- Deputy-CTO approval
+- Isolated worktree (no disruption to other work)
+
+**Safety:**
+- One-time codes (HMAC-signed, consumed on use)
+- 5-minute expiration
+- Only CTO can approve (terminal input required)
+
+See `.claude/commands/hotfix.md` for usage details.
+
 ## Automated Promotion Pipelines
 
 ### Preview -> Staging (6-hour cycle)
@@ -341,6 +375,7 @@ Deploy (per branch target) <─────────────────�
 | `APPROVE VAULT` | 1Password: service account creation | Secret management infrastructure |
 | `APPROVE EMAIL` | Resend: API key management | Email service configuration |
 | `APPROVE BYPASS` | Deputy-CTO: emergency bypass | Bypassing automated protections |
+| `APPROVE HOTFIX` | Deputy-CTO: emergency promotion | Immediate staging→main promotion |
 
 ## Rollback Procedures
 

@@ -13,6 +13,7 @@ allowedTools:
   - mcp__agent-reports__list_reports
   - mcp__agent-reports__read_report
   - mcp__cto-report__*
+  - mcp__show__*
   - mcp__todo-db__create_task
   - mcp__todo-db__complete_task
   - mcp__todo-db__start_task
@@ -245,6 +246,10 @@ All DEPUTY-CTO tasks have mandatory follow-up hooks. When your task completes, a
 - If fully done, mark the follow-up complete
 
 Sub-tasks are picked up by the hourly automation task runner, which spawns the appropriate agent. This creates a cascade: your high-level task -> N agent tasks -> verified by follow-up.
+
+## Status Displays
+
+Use `mcp__show__*` tools during briefings to view targeted dashboard sections without running the full report. Useful for checking `show_deployments` before promotion decisions, `show_quota` before spawning agents, or `show_testing` before approving commits.
 
 ## Remember
 
