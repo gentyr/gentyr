@@ -60,6 +60,7 @@ const SENTINELS = {
   'push-secrets': '<!-- HOOK:GENTYR:push-secrets -->',
   'configure-personas': '<!-- HOOK:GENTYR:configure-personas -->',
   'spawn-tasks': '<!-- HOOK:GENTYR:spawn-tasks -->',
+  'show': '<!-- HOOK:GENTYR:show -->',
 };
 
 /**
@@ -829,6 +830,44 @@ function handleSpawnTasks() {
   }));
 }
 
+function handleShow() {
+  // Lightweight check: confirm dashboard binary exists and list sections
+  const frameworkLink = path.join(PROJECT_DIR, '.claude-framework');
+  let dashboardExists = false;
+  try {
+    if (fs.existsSync(frameworkLink)) {
+      const frameworkDir = fs.realpathSync(frameworkLink);
+      const dashboardPath = path.join(frameworkDir, 'packages', 'cto-dashboard', 'dist', 'index.js');
+      dashboardExists = fs.existsSync(dashboardPath);
+    }
+  } catch {
+    // ignore
+  }
+
+  // Canonical source: packages/mcp-servers/src/show/types.ts SECTION_IDS
+  const sections = [
+    'quota', 'accounts', 'deputy-cto', 'usage', 'automations',
+    'testing', 'deployments', 'worktrees', 'infra', 'logging',
+    'timeline', 'tasks',
+  ];
+
+  const output = {
+    command: 'show',
+    gathered: {
+      dashboardAvailable: dashboardExists,
+      availableSections: sections,
+    },
+  };
+
+  console.log(JSON.stringify({
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:show] ${JSON.stringify(output)}`,
+    },
+  }));
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -877,6 +916,9 @@ async function main() {
   }
   if (matchesCommand(prompt, 'spawn-tasks')) {
     return handleSpawnTasks();
+  }
+  if (matchesCommand(prompt, 'show')) {
+    return handleShow();
   }
 
   process.exit(0);

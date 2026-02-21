@@ -1,3 +1,4 @@
+<!-- HOOK:GENTYR:hotfix -->
 # Emergency Hotfix Promotion
 
 Use this command when production is broken and a fix has already landed on staging.

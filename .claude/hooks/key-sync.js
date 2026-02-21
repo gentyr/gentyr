@@ -467,6 +467,13 @@ export async function syncKeys(log) {
     }
   }
 
+  // Deduplicate keys sharing the same account before swap logic runs.
+  // Must run before pre-expiry swap to prevent swapping to a key that gets merged away.
+  const dedup = deduplicateKeys(state);
+  if (dedup.merged > 0) {
+    logFn(`[key-sync] Deduplicated ${dedup.merged} key(s) by account_uuid`);
+  }
+
   // Pre-expiry restartless swap: if the active key is near expiry, write a valid standby
   // to Keychain so Claude Code's SRA()/r6T() picks it up without requiring a restart.
   // This is critical for idle sessions — hourly-automation calls syncKeys() every 10 min
@@ -586,6 +593,11 @@ export async function checkKeyHealth(accessToken) {
 
 /**
  * Select the best key to use based on current usage levels.
+ * Groups keys by account_uuid first: for each unique account, picks the key
+ * with the freshest token (highest expiresAt). Keys without account_uuid are
+ * treated as unique (each is its own "account"). Then applies existing
+ * threshold logic between account-representative keys.
+ *
  * Returns the key ID of the best key, or null if all keys are exhausted.
  * @param {{version: 1, active_key_id: string|null, keys: Object, rotation_log: Array}} state
  * @returns {string|null}
@@ -597,8 +609,35 @@ export function selectActiveKey(state) {
 
   if (validKeys.length === 0) return null;
 
+  // Group by account_uuid. Keys without account_uuid are each treated as unique.
+  const accountGroups = new Map();
+  for (const entry of validKeys) {
+    const uuid = entry.key.account_uuid;
+    if (!uuid) {
+      // No account_uuid — treat as its own unique group
+      accountGroups.set(`__no_uuid__${entry.id}`, [entry]);
+    } else {
+      if (!accountGroups.has(uuid)) {
+        accountGroups.set(uuid, []);
+      }
+      accountGroups.get(uuid).push(entry);
+    }
+  }
+
+  // For each account group, pick the representative: key with freshest token (highest expiresAt).
+  // If expiresAt is missing/null, treat as 0 (least fresh).
+  const representatives = [];
+  for (const entries of accountGroups.values()) {
+    if (entries.length === 1) {
+      representatives.push(entries[0]);
+    } else {
+      entries.sort((a, b) => (b.key.expiresAt || 0) - (a.key.expiresAt || 0));
+      representatives.push(entries[0]);
+    }
+  }
+
   // Filter out keys at 100% in ANY category (unusable)
-  const usableKeys = validKeys.filter(({ usage }) => {
+  const usableKeys = representatives.filter(({ usage }) => {
     if (!usage) return true; // No data yet, assume usable
     return usage.five_hour < EXHAUSTED_THRESHOLD &&
            usage.seven_day < EXHAUSTED_THRESHOLD &&
@@ -670,6 +709,72 @@ export function selectActiveKey(state) {
 
   // Default: use current key or pick first usable
   return currentKey?.id ?? usableKeys[0]?.id ?? null;
+}
+
+/**
+ * Deduplicate keys sharing the same account_uuid.
+ * For each group of keys with the same account_uuid, keeps the entry with the
+ * freshest token (highest expiresAt). Copies last_usage and last_health_check
+ * from the most recently health-checked entry. Keys without account_uuid are
+ * left untouched. Should only be called after health checks have populated
+ * account_uuid fields.
+ *
+ * If the active_key_id points to a key that gets merged away, updates
+ * active_key_id to the surviving key.
+ *
+ * @param {{version: 1, active_key_id: string|null, keys: Object, rotation_log: Array}} state
+ * @returns {{merged: number}} Number of keys removed by deduplication
+ */
+export function deduplicateKeys(state) {
+  const result = { merged: 0 };
+
+  // Group keys by account_uuid. Skip keys without one.
+  const accountGroups = new Map();
+  for (const [keyId, keyData] of Object.entries(state.keys)) {
+    const uuid = keyData.account_uuid;
+    if (!uuid) continue;
+    if (!accountGroups.has(uuid)) {
+      accountGroups.set(uuid, []);
+    }
+    accountGroups.get(uuid).push({ id: keyId, data: keyData });
+  }
+
+  for (const [, entries] of accountGroups) {
+    if (entries.length <= 1) continue;
+
+    // Pick the entry with the freshest token (highest expiresAt)
+    entries.sort((a, b) => (b.data.expiresAt || 0) - (a.data.expiresAt || 0));
+    const survivor = entries[0];
+
+    // Find the most recently health-checked entry for usage data
+    const mostRecentlyChecked = entries
+      .filter(e => e.data.last_health_check != null)
+      .sort((a, b) => b.data.last_health_check - a.data.last_health_check)[0];
+
+    if (mostRecentlyChecked && mostRecentlyChecked.id !== survivor.id) {
+      if (mostRecentlyChecked.data.last_usage != null) {
+        survivor.data.last_usage = mostRecentlyChecked.data.last_usage;
+      }
+      if (mostRecentlyChecked.data.last_health_check != null) {
+        survivor.data.last_health_check = mostRecentlyChecked.data.last_health_check;
+      }
+    }
+
+    // Remove all non-survivor entries
+    for (let i = 1; i < entries.length; i++) {
+      const removedId = entries[i].id;
+
+      // If active_key_id pointed to a removed key, redirect to survivor
+      if (state.active_key_id === removedId) {
+        state.active_key_id = survivor.id;
+      }
+
+      delete state.keys[removedId];
+      result.merged++;
+    }
+  }
+
+  return result;
 }
 
 // Export paths for consumers

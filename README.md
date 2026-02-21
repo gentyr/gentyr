@@ -82,7 +82,7 @@ This is what the CTO sees.
 ⏺ Bash(node packages/cto-dashboard/dist/index.js)
      ╭─ QUOTA & CAPACITY (2 keys) ─────────╮ ╭─ SYSTEM STATUS ──────────────────────╮
      │ 5-hour   ██████░░░░░░░░░░  35%      │ │ Deputy CTO: ENABLED                  │
-     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 11:02AM (3… │
+     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 1:15PM (3m… │
      │ Rotations (24h): 2                  │ │ Protection: PROTECTED                │
      │                                     │ │ Commits:    BLOCKED                  │
      ╰─────────────────────────────────────╯ ╰──────────────────────────────────────╯

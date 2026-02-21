@@ -558,6 +558,86 @@ describe('UsageTrajectory', () => {
       expect(output).toContain('7-Day');
     });
 
+    it('should calculate Total bar by averaging across all displayed accounts', () => {
+      const now = new Date();
+      const trajectory: TrajectoryResult = {
+        snapshots: [
+          { timestamp: now, fiveHour: 45, sevenDay: 65 },
+        ],
+        fiveHourProjectedAtReset: null,
+        sevenDayProjectedAtReset: null,
+        fiveHourResetTime: null,
+        sevenDayResetTime: null,
+        fiveHourTrendPerHour: null,
+        sevenDayTrendPerDay: null,
+        hasData: true,
+      };
+
+      const verifiedQuota: VerifiedQuotaResult = {
+        keys: [
+          {
+            key_id: 'key1',
+            subscription_type: 'claude_max',
+            is_current: true,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 30, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 50, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+          {
+            key_id: 'key2',
+            subscription_type: 'claude_max',
+            is_current: false,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 90, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 70, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+        ],
+        healthy_count: 2,
+        total_attempted: 2,
+        aggregate: {
+          five_hour: { utilization: 99, resets_at: new Date().toISOString(), resets_in_hours: 2 }, // Intentionally different from average
+          seven_day: { utilization: 88, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+          extra_usage_enabled: false,
+          error: null,
+        },
+        rotation_events_24h: 1,
+      };
+
+      const accountOverview = makeAccountOverview(verifiedQuota);
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
+      const output = lastFrame();
+
+      // Total should be average of displayed accounts: (30 + 90) / 2 = 60 for 5h, (50 + 70) / 2 = 60 for 7d
+      // NOT the aggregate values (99 and 88)
+      expect(output).toContain('Total');
+
+      // Extract the lines containing Total quota bars
+      const lines = output!.split('\n');
+      const total5hLine = lines.find(line => line.includes('Total') && lines.indexOf(line) < lines.findIndex(l => l.includes('7-Day')));
+      const total7dLine = lines.find(line => line.includes('Total') && lines.indexOf(line) > lines.findIndex(l => l.includes('7-Day')));
+
+      // Verify Total bar shows average (60%), not aggregate (99% and 88%)
+      expect(total5hLine).toBeTruthy();
+      expect(total7dLine).toBeTruthy();
+
+      // Should contain 60% for both windows (rounded average)
+      expect(total5hLine).toContain('60%');
+      expect(total7dLine).toContain('60%');
+
+      // Should NOT contain aggregate values
+      expect(total5hLine).not.toContain('99%');
+      expect(total7dLine).not.toContain('88%');
+    });
+
     it('should display individual key quota bars', () => {
       const now = new Date();
       const trajectory: TrajectoryResult = {

@@ -2,15 +2,25 @@
 /**
  * Quota Monitor - PostToolUse hook for mid-session quota detection
  *
- * Runs after every tool call, throttled to once per 5 minutes via state file.
- * Checks usage API for the active key and triggers rotation if usage >= 95%.
+ * Runs after every tool call, throttled via adaptive interval based on usage:
+ *   - Usage < 70%: 5-min interval
+ *   - Usage 70-85%: 2-min interval
+ *   - Usage 85-95%: 1-min interval
+ *   - Usage >= 95%: 30-sec interval
+ *
+ * Tracks usage velocity (rate of change per minute) over a rolling 5-sample
+ * window. Predictive rotation triggers when projected to hit 100% within 1.5x
+ * the current check interval (only when velocity > 0).
+ *
+ * Checks usage API for the active key and triggers rotation if usage >= 95%
+ * or predictive threshold is met.
  *
  * For interactive sessions: triggers auto-restart with new credentials.
  * For automated sessions: writes signal to quota-interrupted-sessions.json
  *   for session-reviver to pick up.
  * When all accounts are exhausted: writes to paused-sessions.json and warns.
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import fs from 'fs';
@@ -43,9 +53,48 @@ const THROTTLE_STATE_PATH = path.join(STATE_DIR, 'quota-monitor-state.json');
 const PAUSED_SESSIONS_PATH = path.join(STATE_DIR, 'paused-sessions.json');
 
 // Thresholds
-const CHECK_INTERVAL_MS = 5 * 60 * 1000;  // 5 minutes
 const ROTATION_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes anti-loop
 const PROACTIVE_THRESHOLD = 95; // Trigger rotation at 95%
+const USAGE_HISTORY_MAX = 5; // Rolling window size for velocity tracking
+
+// Adaptive interval tiers: usage% -> check interval
+const ADAPTIVE_INTERVALS = [
+  { maxUsage: 70,  intervalMs: 5 * 60 * 1000 },   // < 70%: 5 min
+  { maxUsage: 85,  intervalMs: 2 * 60 * 1000 },   // 70-85%: 2 min
+  { maxUsage: 95,  intervalMs: 60 * 1000 },        // 85-95%: 1 min
+  { maxUsage: Infinity, intervalMs: 30 * 1000 },   // >= 95%: 30 sec
+];
+
+/**
+ * Determine the adaptive check interval based on current usage percentage.
+ */
+function getAdaptiveInterval(usagePercent) {
+  for (const tier of ADAPTIVE_INTERVALS) {
+    if (usagePercent < tier.maxUsage) {
+      return tier.intervalMs;
+    }
+  }
+  // Fallback: tightest interval
+  return ADAPTIVE_INTERVALS[ADAPTIVE_INTERVALS.length - 1].intervalMs;
+}
+
+/**
+ * Compute usage velocity (percentage points per minute) from usage history.
+ * Returns 0 if insufficient data points (need at least 2).
+ */
+function computeVelocity(usageHistory) {
+  if (!Array.isArray(usageHistory) || usageHistory.length < 2) {
+    return 0;
+  }
+  const oldest = usageHistory[0];
+  const newest = usageHistory[usageHistory.length - 1];
+  const timeDeltaMs = newest.timestamp - oldest.timestamp;
+  if (timeDeltaMs <= 0) {
+    return 0;
+  }
+  const timeDeltaMin = timeDeltaMs / (60 * 1000);
+  return (newest.usage - oldest.usage) / timeDeltaMin;
+}
 
 /**
  * Read throttle state from disk.
@@ -58,7 +107,7 @@ function readThrottleState() {
   } catch {
     // Ignore
   }
-  return { lastCheck: 0, lastRotation: 0 };
+  return { lastCheck: 0, lastRotation: 0, currentIntervalMs: ADAPTIVE_INTERVALS[0].intervalMs, usageHistory: [] };
 }
 
 /**
@@ -136,9 +185,10 @@ async function main() {
   const startTime = Date.now();
   const isAutomated = process.env.CLAUDE_SPAWNED_SESSION === 'true';
 
-  // Step 1: Check throttle
+  // Step 1: Check throttle (adaptive interval)
   const throttle = readThrottleState();
-  if (startTime - throttle.lastCheck < CHECK_INTERVAL_MS) {
+  const currentIntervalMs = throttle.currentIntervalMs || ADAPTIVE_INTERVALS[0].intervalMs;
+  if (startTime - throttle.lastCheck < currentIntervalMs) {
     process.stdout.write(JSON.stringify({ continue: true, suppressOutput: true }));
     return;
   }
@@ -277,28 +327,77 @@ async function main() {
     }
   }
 
-  // Step 5: Check if rotation is needed
+  // Step 5: Compute maxUsage, update velocity tracking, set adaptive interval
   const maxUsage = Math.max(
     health.usage.five_hour,
     health.usage.seven_day,
     health.usage.seven_day_sonnet
   );
 
-  if (maxUsage < PROACTIVE_THRESHOLD) {
-    // Usage is fine, no action needed
+  // Step 5a: Update usage history (rolling window for velocity tracking)
+  const usageHistory = Array.isArray(throttle.usageHistory) ? [...throttle.usageHistory] : [];
+  usageHistory.push({ usage: maxUsage, timestamp: startTime });
+  while (usageHistory.length > USAGE_HISTORY_MAX) {
+    usageHistory.shift();
+  }
+  throttle.usageHistory = usageHistory;
+
+  // Step 5b: Compute velocity (percentage points per minute)
+  const velocity = computeVelocity(usageHistory);
+
+  // Step 5c: Update adaptive interval based on current usage
+  throttle.currentIntervalMs = getAdaptiveInterval(maxUsage);
+
+  // Step 5d: Predictive rotation — if velocity > 0 and projected to hit 100%
+  // before 1.5x the next check interval, rotate immediately
+  let predictiveRotation = false;
+  if (velocity > 0 && maxUsage < PROACTIVE_THRESHOLD) {
+    const remainingPercent = 100 - maxUsage;
+    const minutesToExhaustion = remainingPercent / velocity;
+    const msToExhaustion = minutesToExhaustion * 60 * 1000;
+    const predictionHorizon = throttle.currentIntervalMs * 1.5;
+    if (msToExhaustion < predictionHorizon) {
+      predictiveRotation = true;
+    }
+  }
+
+  if (maxUsage < PROACTIVE_THRESHOLD && !predictiveRotation) {
+    // Usage is fine and no predictive trigger, no action needed
     writeThrottleState(throttle);
     registerHookExecution({
       hookType: HOOK_TYPES.QUOTA_MONITOR,
       status: 'success',
       durationMs: Date.now() - startTime,
-      metadata: { maxUsage: Math.round(maxUsage), action: 'none' },
+      metadata: { maxUsage: Math.round(maxUsage), action: 'none', velocity: Math.round(velocity * 100) / 100, intervalMs: throttle.currentIntervalMs },
     });
     process.stdout.write(JSON.stringify({ continue: true, suppressOutput: true }));
     return;
   }
 
-  // Usage >= 95%, attempt rotation
-  const selectedKeyId = selectActiveKey(state);
+  // Usage >= threshold or predictive trigger, attempt rotation
+  const rotationReason = predictiveRotation
+    ? `quota_monitor_predictive_${Math.round(maxUsage)}pct_vel${Math.round(velocity * 100) / 100}`
+    : `quota_monitor_${Math.round(maxUsage)}pct`;
+
+  // For predictive rotation, selectActiveKey may refuse to switch (usage < 90%),
+  // so directly find the lowest-usage alternative key as a fallback.
+  let selectedKeyId = selectActiveKey(state);
+  if (predictiveRotation && (!selectedKeyId || selectedKeyId === state.active_key_id)) {
+    // Bypass selectActiveKey: find any active key on a different account with lower usage
+    const currentAccountUuid = state.keys[state.active_key_id]?.account_uuid;
+    const alternatives = Object.entries(state.keys)
+      .filter(([id, k]) => id !== state.active_key_id && k.status === 'active')
+      .filter(([, k]) => !currentAccountUuid || k.account_uuid !== currentAccountUuid)
+      .map(([id, k]) => {
+        const u = k.last_usage;
+        const altMax = u ? Math.max(u.five_hour, u.seven_day, u.seven_day_sonnet) : 0;
+        return { id, maxUsage: altMax };
+      })
+      .sort((a, b) => a.maxUsage - b.maxUsage);
+    if (alternatives.length > 0 && alternatives[0].maxUsage < maxUsage) {
+      selectedKeyId = alternatives[0].id;
+    }
+  }
 
   if (selectedKeyId && selectedKeyId !== state.active_key_id) {
     // Found a better key - rotate
@@ -311,8 +410,10 @@ async function main() {
       timestamp: startTime,
       event: 'key_switched',
       key_id: selectedKeyId,
-      reason: `quota_monitor_${Math.round(maxUsage)}pct`,
+      reason: rotationReason,
       usage_snapshot: health.usage,
+      velocity: Math.round(velocity * 100) / 100,
+      predictive: predictiveRotation,
     });
 
     updateActiveCredentials(selectedKey);
@@ -325,7 +426,7 @@ async function main() {
       hookType: HOOK_TYPES.QUOTA_MONITOR,
       status: 'success',
       durationMs: Date.now() - startTime,
-      metadata: { maxUsage: Math.round(maxUsage), action: 'rotated', from: previousKeyId.slice(0, 8), to: selectedKeyId.slice(0, 8) },
+      metadata: { maxUsage: Math.round(maxUsage), action: predictiveRotation ? 'predictive_rotated' : 'rotated', velocity: Math.round(velocity * 100) / 100, intervalMs: throttle.currentIntervalMs, from: previousKeyId.slice(0, 8), to: selectedKeyId.slice(0, 8) },
     });
 
     if (!isAutomated) {

@@ -17,12 +17,12 @@ Run `/cto-report` in any GENTYR-managed project to see the live version.
 ⏺ Bash(node packages/cto-dashboard/dist/index.js)
      ╭──────────────────────────────────────────────────────────────────────────────╮
      │ GENTYR CTO DASHBOARD                                        Period: Last 24h │
-     │ Generated: 2026-02-21 10:58                                                  │
+     │ Generated: 2026-02-21 13:12                                                  │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ QUOTA & CAPACITY (2 keys) ─────────╮ ╭─ SYSTEM STATUS ──────────────────────╮
      │ 5-hour   ██████░░░░░░░░░░  35%      │ │ Deputy CTO: ENABLED                  │
-     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 11:02AM (3… │
+     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 1:15PM (3m… │
      │ Rotations (24h): 2                  │ │ Protection: PROTECTED                │
      │                                     │ │ Commits:    BLOCKED                  │
      ╰─────────────────────────────────────╯ ╰──────────────────────────────────────╯
@@ -35,14 +35,14 @@ Run `/cto-report` in any GENTYR-managed project to see the live version.
      │   Per-account quota bars in USAGE TRAJECTORY below.                          │
      │                                                                              │
      │   EVENT HISTORY (last 24h)                                                   │
-     │  10:20AM  Switched to a3f8d21c... (quota_monitor_95pct)                      │
-     │   9:46AM  Account b7c4e92f... exhausted                                      │
-     │   8:28AM  Token refreshed for a3f8d21c...                                    │
-     │   6:52AM  Switched to b7c4e92f... (switched_from_c9d5f13a)                   │
-     │   5:10AM  New account added: c9d5f13a...                                     │
-     │   2:40AM  Token expired for d2e6a47b...                                      │
-     │  11:16PM  Switched to a3f8d21c... (scheduled_rotation)                       │
-     │   8:46PM  Token refreshed for b7c4e92f...                                    │
+     │  12:34PM  Switched to a3f8d21c... (quota_monitor_95pct)                      │
+     │  12:00PM  Account b7c4e92f... exhausted                                      │
+     │  10:42AM  Token refreshed for a3f8d21c...                                    │
+     │   9:06AM  Switched to b7c4e92f... (switched_from_c9d5f13a)                   │
+     │   7:24AM  New account added: c9d5f13a...                                     │
+     │   4:54AM  Token expired for d2e6a47b...                                      │
+     │   1:30AM  Switched to a3f8d21c... (scheduled_rotation)                       │
+     │  11:00PM  Token refreshed for b7c4e92f...                                    │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ DEPUTY CTO ─────────────────────────────────────────────────────────────────╮
@@ -224,12 +224,15 @@ Run `/cto-report` in any GENTYR-managed project to see the live version.
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ DEPLOYMENTS ────────────────────────────────────────────────────────────────╮
-     │ Production                Staging                    Preview                 │
-     │ ● healthy                 ● failing                  ● no data               │
-     │ 22m ago via render        1h ago via render          0 deploys               │
-     │ 5 deploys                 3 deploys                                          │
+     │ Local Dev           Production          Staging            Preview           │
+     │ 3 branches          ● healthy           ● failing          ● healthy         │
+     │                     22m ago via render  1h ago via render  4h ago via vercel │
      │                                                                              │
-     │ Pipeline: preview ✓ → staging ✓ → production (24h gate)  Last: 5h ago        │
+     │                     5 deploys           3 deploys          3 deploys         │
+     │                                                                              │
+     │ Pipelinelocal dev (3 →preview  → staging   → production (24h     Last:5h ago │
+     │                                              gate)                           │
+     │                                                                              │
      │                                                                              │
      │ Production Deploys                                                           │
      │ 22m     ●  gentyr-api             render   live     fix: resolve N+1 query   │
@@ -251,7 +254,37 @@ Run `/cto-report` in any GENTYR-managed project to see the live version.
      │ 7h      ●  gentyr-api-staging     render   live     fix: RLS policy added    │
      │                                                     t…                       │
      │                                                                              │
+     │ Preview Deploys                                                              │
+     │ 4h      ●  gentyr-web-preview     vercel   ready    feat: add OAuth2 flow    │
+     │ 1h      ●  gentyr-api-preview     render   building fix: resolve race        │
+     │                                                     condi…                   │
+     │ 6h      ●  gentyr-web-preview     vercel   ready    feat: dashboard          │
+     │                                                     setting…                 │
+     │                                                                              │
      │ Deploys (24h): 8   Success: 50%   Failed: 1   Freq: 0.3/hr                   │
+     ╰──────────────────────────────────────────────────────────────────────────────╯
+     
+     ╭─ WORKTREES ──────────────────────────────────────────────────────────────────╮
+     │ 5 worktrees (2 active, 1 idle, 2 merged, 2 system)                           │
+     │                                                                              │
+     │ Branch                 Agent        Stage      Age  Commit                   │
+     │ feature/auth-redesign  code-writer  Local      2h   feat: add OAuth2 PKCE    │
+     │                                                     f…                       │
+     │ feature/api-refactor   investigator Preview    5h   fix: resolve             │
+     │                                                     connection…              │
+     │ automation/preview-pro (system)     Preview    3h   Merge branch             │
+     │ …                                                   feature/au…              │
+     │ feature/dashboard-v2   —            Staging    1d   feat: CTO dashboard      │
+     │                                                     wor…                     │
+     │ automation/staging-pro (system)     Staging    1d   Merge branch preview     │
+     │ …                                                   in…                      │
+     │                                                                              │
+     │ ● Local        1 branch                                                      │
+     │ ● Preview      2 branches                                                    │
+     │ ● Staging      2 branches                                                    │
+     │ ● Production   0 branches                                                    │
+     │                                                                              │
+     │ 2 merged worktrees ready for removal                                         │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ INFRASTRUCTURE ─────────────────────────────────────────────────────────────╮
@@ -314,82 +347,103 @@ Run `/cto-report` in any GENTYR-managed project to see the live version.
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ FEEDBACK PERSONAS (4) ──────────────────────────────────────────────────────╮
-     │ Name                Mode  Status    Sessions  Satisfaction      Findings     │
-     │ GUI Developer       gui   active    28        satisfied         14           │
-     │ CLI Power User      cli   active    19        very satisfied    8            │
-     │ API Integrator      api   active    22        neutral           11           │
-     │ SDK Automation      sdk   active    15        satisfied         6            │
+     │ ╭──────────────╮ ╭────────────╮ ╭────────────╮ ╭──────────────╮              │
+     │ │ V.Satisfied  │ │ Satisfied  │ │ Neutral    │ │ Dissatisfied │              │
+     │ │ 22           │ │ 31         │ │ 18         │ │ 9            │              │
+     │ ╰──────────────╯ ╰────────────╯ ╰────────────╯ ╰──────────────╯              │
+     │                                                                              │
+     │ ╭────────────────╮                                                           │
+     │ │ V.Dissatisfied │                                                           │
+     │ │ 4              │                                                           │
+     │ ╰────────────────╯                                                           │
+     │                                                                              │
+     │ GUI Developer (gui) active | 28 sessions | satisfied | 14 findings           │
+     │   ◆    Login button unresponsive on mo…  high      escalated   2h ago        │
+     │   ◆    Dashboard chart tooltip clips a…  normal    handled     5h ago        │
+     │   ◆    Missing loading spinner on sett…  low       dismissed   9h ago        │
+     │                                                                              │
+     │ CLI Power User (cli) active | 19 sessions | very satisfied | 8 findings      │
+     │   ◆    Exit code 0 returned on validat…  critical  escalated   1h ago        │
+     │   ◆    Help text missing for --format …  low       pending     6h ago        │
+     │                                                                              │
+     │ API Integrator (api) active | 22 sessions | neutral | 11 findings            │
+     │   ◆    PUT /users returns 500 when ema…  high      in progress 48m ago       │
+     │   ◆    Rate limit header X-RateLimit-R…  normal    handled     4h ago        │
+     │   ◆    Pagination cursor breaks on spe…  high      pending     8h ago        │
+     │                                                                              │
+     │ SDK Automation (sdk) active | 15 sessions | satisfied | 6 findings           │
+     │   No recent reports                                                          │
      │                                                                              │
      │ Total: 84 sessions, 39 findings                                              │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ TIMELINE (24h) ─────────────────────────────────────────────────────────────╮
-     │ 10:55  o  SESSION   User session started — CTO dashboard review              │
+     │ 13:09  o  SESSION   User session started — CTO dashboard review              │
      │                     └─ task-triggered via autonomous mode                    │
      │                                                                              │
-     │ 10:51  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
+     │ 13:05  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
      │                     └─ No violations detected by deputy-cto-review agent     │
      │                                                                              │
-     │ 10:44  !  REPORT    Hardcoded JWT secret detected in auth middleware [CRITI… │
+     │ 12:58  !  REPORT    Hardcoded JWT secret detected in auth middleware [CRITI… │
      │                     └─Spec G004 violation — credential must be in env or     │
      │                       Vault                                                  │
      │                                                                              │
-     │ 10:37  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
+     │ 12:51  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
      │                     └─ task-runner-code-reviewer — 8 files changed           │
      │                                                                              │
-     │ 10:30  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or OS k… │
+     │ 12:44  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or OS k… │
      │                     └─ Awaiting CTO decision                                 │
      │                                                                              │
-     │ 10:22  *  HOOK      PostToolUse: Write blocked — attempt to modify .claude/… │
+     │ 12:36  *  HOOK      PostToolUse: Write blocked — attempt to modify .claude/… │
      │                     └─ Protected path enforcement triggered                  │
      │                                                                              │
-     │ 10:14  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
+     │ 12:28  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
      │                     └─Supabase row-level security gap — G003 compliance risk │
      │                                                                              │
      │                                                                              │
-     │ 10:06  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
+     │ 12:20  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
      │                     └─ 12 ESLint errors resolved across 5 files              │
      │                                                                              │
-     │ 09:57  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
+     │ 12:11  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
      │                     └─ claudemd-refactor agent                               │
      │                                                                              │
-     │ 09:47  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
+     │ 12:01  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
      │                     └─ Commit blocked — lint-fixer spawned automatically     │
      │                                                                              │
-     │ 09:36  !  REPORT    Antipattern scan: silent catch in payment processing fl… │
+     │ 11:50  !  REPORT    Antipattern scan: silent catch in payment processing fl… │
      │                     └─ G001 violation — silent failure must be converted to  │
      │                        loud failure                                          │
      │                                                                              │
-     │ 09:25  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
+     │ 11:39  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
      │                     └─Architecture question — deputy CTO recommends          │
      │                       rejection                                              │
      │                                                                              │
-     │ 09:13  o  SESSION   Staging health monitor — all checks passed               │
+     │ 11:27  o  SESSION   Staging health monitor — all checks passed               │
      │                     └─ staging-health-monitor agent — 6 services healthy     │
      │                                                                              │
-     │ 09:00  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
+     │ 11:14  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
      │                     └─ task-runner-code-reviewer — 14 type errors fixed      │
      │                                                                              │
-     │ 08:46  !  REPORT    CORS wildcard on production endpoints — policy violatio… │
+     │ 11:00  !  REPORT    CORS wildcard on production endpoints — policy violatio… │
      │                     └─Escalated to CTO for explicit origin allowlist         │
      │                       decision                                               │
      │                                                                              │
-     │ 08:30  *  HOOK      Compliance check triggered — 3 files changed in package… │
+     │ 10:44  *  HOOK      Compliance check triggered — 3 files changed in package… │
      │                     └─ compliance-global agent: all G001–G011 specs verified │
      │                                                                              │
-     │ 08:15  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
+     │ 10:29  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
      │                     └─Scale threshold discussion — recommendation: stay      │
      │                       SQLite until 5k/day                                    │
      │                                                                              │
-     │ 07:59  o  SESSION   Investigator session — tracing API latency spike in pro… │
+     │ 10:13  o  SESSION   Investigator session — tracing API latency spike in pro… │
      │                     └─ task-runner-investigator — root cause: N+1 query in   │
      │                        reports endpoint                                      │
      │                                                                              │
-     │ 07:41  +  TASK      Completed: Rotate leaked service account credential      │
+     │ 09:55  +  TASK      Completed: Rotate leaked service account credential      │
      │                     └─security task — Supabase service role key revoked and  │
      │                       replaced                                               │
      │                                                                              │
-     │ 07:24  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
+     │ 09:38  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
      │                     └─ Self-handled by deputy CTO — bumped to 4.17.21        │
      │                                                                              │
      ╰──────────────────────────────────────────────────────────────────────────────╯

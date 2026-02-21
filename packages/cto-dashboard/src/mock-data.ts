@@ -1638,7 +1638,7 @@ export function getMockAccountOverview(): AccountOverviewData {
         timestamp: new Date(now - 5.8 * HOUR),
         event: 'key_added',
         keyId: 'c9d5f13a...',
-        description: 'New account added: c9d5f13a...',
+        description: 'New account added: backup@gentyr.io',
         usageSnapshot: null,
       },
       {

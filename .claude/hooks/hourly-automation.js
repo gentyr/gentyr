@@ -1537,6 +1537,103 @@ Summarize the promotion decision and actions taken.`;
 }
 
 /**
+ * Spawn Emergency Hotfix Promotion (staging -> main, bypasses 24h + midnight)
+ *
+ * Called by the deputy-cto MCP server's execute_hotfix_promotion tool.
+ * Uses the staging-promotion worktree for isolation, sets GENTYR_PROMOTION_PIPELINE=true.
+ *
+ * @param {string[]} commits - Commit oneline summaries being promoted
+ * @returns {Promise<{code: number, output: string}>}
+ */
+export function spawnHotfixPromotion(commits) {
+  const commitList = commits.join('\n');
+
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.HOTFIX_PROMOTION,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: 'Emergency hotfix: staging -> main promotion',
+    prompt: '',
+    metadata: { commitCount: commits.length, isHotfix: true },
+  });
+
+  const prompt = `[Task][hotfix-promotion][AGENT:${agentId}] You are the EMERGENCY HOTFIX Promotion Pipeline.
+
+## Mission
+
+Immediately merge staging into main. This is a CTO-approved emergency hotfix that bypasses:
+- The 24-hour stability requirement
+- The midnight deployment window
+
+Code review and quality checks still apply.
+
+## Commits being promoted
+
+\`\`\`
+${commitList}
+\`\`\`
+
+## Process
+
+### Step 1: Code Review
+
+Spawn a code-reviewer sub-agent (Task tool, subagent_type: code-reviewer) to review the commits:
+- Check for security issues, code quality, spec violations
+- Look for disabled tests, placeholder code, hardcoded credentials
+- Verify no spec violations (G001-G019)
+
+### Step 2: Create and Merge PR
+
+If code review passes:
+1. Run: gh pr create --base main --head staging --title "HOTFIX: Emergency promotion staging -> main" --body "CTO-approved emergency hotfix. Bypasses 24h stability and midnight window."
+2. Wait for CI: gh pr checks <number> --watch
+3. If CI passes: gh pr merge <number> --merge
+4. If CI fails: Report failure via mcp__agent-reports__report_to_deputy_cto
+
+If code review fails:
+- Report findings via mcp__agent-reports__report_to_deputy_cto with priority "critical"
+- Do NOT proceed with merge
+
+## Timeout
+
+Complete within 25 minutes. If blocked, report and exit.`;
+
+  updateAgent(agentId, { prompt });
+
+  try {
+    const wt = getPromotionWorktree('staging-promotion');
+    const claude = spawn('claude', [
+      '--dangerously-skip-permissions',
+      '--mcp-config', wt.mcpConfig,
+      '--output-format', 'json',
+      '-p',
+      prompt,
+    ], {
+      cwd: wt.cwd,
+      stdio: 'inherit',
+      env: {
+        ...buildSpawnEnv(agentId),
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        GENTYR_PROMOTION_PIPELINE: 'true',
+      },
+    });
+
+    return new Promise((resolve, reject) => {
+      claude.on('close', (code) => {
+        resolve({ code, output: '(output sent to inherit stdio)' });
+      });
+      claude.on('error', (err) => reject(err));
+      setTimeout(() => {
+        claude.kill();
+        reject(new Error('Hotfix promotion timed out after 30 minutes'));
+      }, 30 * 60 * 1000);
+    });
+  } catch (err) {
+    log(`Hotfix promotion spawn error: ${err.message}`);
+    return Promise.resolve({ code: 1, output: err.message });
+  }
+}
+
+/**
  * Spawn Staging Health Monitor (fire-and-forget)
  */
 function spawnStagingHealthMonitor() {

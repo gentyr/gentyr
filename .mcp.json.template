@@ -195,6 +195,13 @@
       "env": {
         "CLAUDE_PROJECT_DIR": "."
       }
+    },
+    "show": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/show/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
     }
   }
 }

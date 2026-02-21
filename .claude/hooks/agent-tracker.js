@@ -58,6 +58,7 @@ export const AGENT_TYPES = {
   STANDALONE_COMPLIANCE_CHECKER: 'standalone-compliance-checker',
   FEEDBACK_ORCHESTRATOR: 'feedback-orchestrator',
   SESSION_REVIVED: 'session-revived',
+  HOTFIX_PROMOTION: 'hotfix-promotion',
 };
 
 /**
