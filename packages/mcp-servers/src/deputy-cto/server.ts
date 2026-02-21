@@ -1213,6 +1213,11 @@ interface ProtectedActionsConfig {
     credentialKeys?: string[];
     description?: string;
   }>;
+  files?: Record<string, {
+    protection: string;
+    phrase: string;
+    description?: string;
+  }>;
   settings?: {
     codeLength?: number;
     expiryMinutes?: number;

@@ -503,10 +503,17 @@ async function main() {
     return;
   }
 
-  // Skip for slash commands (contain GENTYR sentinel markers)
+  // Skip for slash commands (contain GENTYR sentinel markers or raw /command-name)
   try {
     const stdin = fs.readFileSync('/dev/stdin', 'utf-8');
-    if (stdin.includes('<!-- HOOK:GENTYR:')) {
+    let prompt = stdin;
+    try {
+      const parsed = JSON.parse(stdin);
+      if (typeof parsed.prompt === 'string') prompt = parsed.prompt;
+    } catch {
+      // Not JSON — use raw stdin
+    }
+    if (prompt.includes('<!-- HOOK:GENTYR:') || /^\/[\w-]+$/.test(prompt.trim())) {
       console.log(JSON.stringify({ continue: true, suppressOutput: true }));
       return;
     }

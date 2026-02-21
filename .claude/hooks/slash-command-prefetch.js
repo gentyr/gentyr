@@ -62,6 +62,33 @@ const SENTINELS = {
   'spawn-tasks': '<!-- HOOK:GENTYR:spawn-tasks -->',
 };
 
+/**
+ * Extract the prompt string from raw stdin.
+ * UserPromptSubmit hooks receive JSON like {"prompt":"/restart-session",...}
+ * but the expanded .md content contains the sentinel comments.
+ * This extracts the raw user input so we can match bare slash commands.
+ */
+function extractPrompt(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.prompt === 'string') return parsed.prompt;
+  } catch {
+    // Not JSON — use raw string as-is
+  }
+  return raw;
+}
+
+/**
+ * Check if text matches a command by either raw slash command name or sentinel.
+ * Handles both the expanded .md content (contains sentinel) and the raw JSON
+ * stdin (contains bare "/command-name").
+ */
+function matchesCommand(text, commandName) {
+  if (text.trim() === `/${commandName}`) return true;
+  if (text.includes(SENTINELS[commandName])) return true;
+  return false;
+}
+
 // ============================================================================
 // DB helpers
 // ============================================================================
@@ -780,46 +807,48 @@ function handleSpawnTasks() {
 // ============================================================================
 
 async function main() {
-  const prompt = await readStdin();
-  if (!prompt) process.exit(0);
+  const raw = await readStdin();
+  if (!raw) process.exit(0);
 
-  if (prompt.includes(SENTINELS['restart-session'])) {
+  const prompt = extractPrompt(raw);
+
+  if (matchesCommand(prompt, 'restart-session')) {
     return handleRestartSession();
   }
   // Mode 2 handlers — load Database lazily only when needed
   const needsDb = ['cto-report', 'deputy-cto', 'configure-personas', 'spawn-tasks'];
-  const matchedCommand = Object.keys(SENTINELS).find(key => prompt.includes(SENTINELS[key]));
+  const matchedCommand = Object.keys(SENTINELS).find(key => matchesCommand(prompt, key));
   if (matchedCommand && matchedCommand !== 'restart-session') {
     if (needsDb.includes(matchedCommand)) {
       await getDatabase();
     }
   }
 
-  if (prompt.includes(SENTINELS['cto-report'])) {
+  if (matchesCommand(prompt, 'cto-report')) {
     return handleCtoReport();
   }
-  if (prompt.includes(SENTINELS['deputy-cto'])) {
+  if (matchesCommand(prompt, 'deputy-cto')) {
     return handleDeputyCto();
   }
-  if (prompt.includes(SENTINELS['toggle-automation'])) {
+  if (matchesCommand(prompt, 'toggle-automation')) {
     return handleToggleAutomation();
   }
-  if (prompt.includes(SENTINELS['overdrive'])) {
+  if (matchesCommand(prompt, 'overdrive')) {
     return handleOverdrive();
   }
-  if (prompt.includes(SENTINELS['setup-gentyr'])) {
+  if (matchesCommand(prompt, 'setup-gentyr')) {
     return handleSetupGentyr();
   }
-  if (prompt.includes(SENTINELS['push-migrations'])) {
+  if (matchesCommand(prompt, 'push-migrations')) {
     return handlePushMigrations();
   }
-  if (prompt.includes(SENTINELS['push-secrets'])) {
+  if (matchesCommand(prompt, 'push-secrets')) {
     return handlePushSecrets();
   }
-  if (prompt.includes(SENTINELS['configure-personas'])) {
+  if (matchesCommand(prompt, 'configure-personas')) {
     return handleConfigurePersonas();
   }
-  if (prompt.includes(SENTINELS['spawn-tasks'])) {
+  if (matchesCommand(prompt, 'spawn-tasks')) {
     return handleSpawnTasks();
   }
 
