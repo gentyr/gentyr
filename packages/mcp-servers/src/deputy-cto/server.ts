@@ -54,6 +54,7 @@ import {
   ApproveProtectedActionArgsSchema,
   DenyProtectedActionArgsSchema,
   ListPendingActionRequestsArgsSchema,
+  GetMergeChainStatusArgsSchema,
   type AddQuestionArgs,
   type ListQuestionsArgs,
   type ReadQuestionArgs,
@@ -70,6 +71,7 @@ import {
   type GetProtectedActionRequestArgs,
   type ApproveProtectedActionArgs,
   type DenyProtectedActionArgs,
+  type GetMergeChainStatusArgs,
   type QuestionRecord,
   type QuestionListItem,
   type ListQuestionsResult,
@@ -1528,6 +1530,100 @@ function listPendingActionRequests(): ListPendingActionRequestsResult {
 }
 
 // ============================================================================
+// Merge Chain Status
+// ============================================================================
+
+async function getMergeChainStatus(_args: GetMergeChainStatusArgs): Promise<string> {
+  const { execSync } = await import('child_process');
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const gitOpts = { cwd: projectDir, encoding: 'utf8' as const, timeout: 15000, stdio: 'pipe' as const };
+
+  const result: Record<string, unknown> = {};
+
+  // Fetch latest
+  try {
+    execSync('git fetch origin --quiet 2>/dev/null || true', gitOpts);
+  } catch { /* non-fatal */ }
+
+  // Preview ahead of staging
+  try {
+    const log = execSync('git log origin/staging..origin/preview --oneline', gitOpts).trim();
+    const commits = log ? log.split('\n') : [];
+    result.previewAheadOfStaging = commits.length;
+  } catch {
+    result.previewAheadOfStaging = 'unknown (branch may not exist)';
+  }
+
+  // Staging ahead of main
+  try {
+    const log = execSync('git log origin/main..origin/staging --oneline', gitOpts).trim();
+    const commits = log ? log.split('\n') : [];
+    result.stagingAheadOfMain = commits.length;
+  } catch {
+    result.stagingAheadOfMain = 'unknown (branch may not exist)';
+  }
+
+  // Active feature branches
+  try {
+    const branches = execSync('git branch -r --list "origin/feature/*"', gitOpts).trim();
+    const branchList = branches ? branches.split('\n').map((b: string) => b.trim().replace('origin/', '')) : [];
+    result.activeFeatureBranches = branchList.length;
+    result.featureBranchNames = branchList;
+  } catch {
+    result.activeFeatureBranches = 0;
+    result.featureBranchNames = [];
+  }
+
+  // Stale branches (>3 days old with no recent commits)
+  try {
+    const branches = (result.featureBranchNames as string[]) || [];
+    const staleBranches: string[] = [];
+    const threeDaysAgo = Math.floor(Date.now() / 1000) - (3 * 86400);
+
+    for (const branch of branches) {
+      try {
+        const timestamp = parseInt(execSync(`git log -1 --format=%ct origin/${branch}`, gitOpts).trim(), 10);
+        if (timestamp < threeDaysAgo) {
+          staleBranches.push(branch);
+        }
+      } catch { /* skip */ }
+    }
+    result.staleBranches = staleBranches.length;
+    result.staleBranchNames = staleBranches;
+  } catch {
+    result.staleBranches = 0;
+    result.staleBranchNames = [];
+  }
+
+  // Uncommitted changes
+  try {
+    const status = execSync('git status --porcelain', gitOpts).trim();
+    result.uncommittedChanges = status ? status.split('\n').length : 0;
+  } catch {
+    result.uncommittedChanges = 'unknown';
+  }
+
+  // Last promotion timestamps
+  try {
+    const previewTs = execSync('git log -1 --format=%ct origin/preview', gitOpts).trim();
+    const hoursSince = Math.floor((Date.now() / 1000 - parseInt(previewTs, 10)) / 3600);
+    result.lastPreviewCommitHoursAgo = hoursSince;
+  } catch {
+    result.lastPreviewCommitHoursAgo = 'unknown';
+  }
+
+  try {
+    const stagingTs = execSync('git log -1 --format=%ct origin/staging', gitOpts).trim();
+    const hoursSince = Math.floor((Date.now() / 1000 - parseInt(stagingTs, 10)) / 3600);
+    result.lastStagingCommitHoursAgo = hoursSince;
+  } catch {
+    result.lastStagingCommitHoursAgo = 'unknown';
+  }
+
+  return JSON.stringify(result, null, 2);
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -1679,6 +1775,12 @@ const tools: AnyToolHandler[] = [
     description: 'List all pending (non-expired) protected action requests. Shows code, server, tool, args, and approval mode for each.',
     schema: ListPendingActionRequestsArgsSchema,
     handler: listPendingActionRequests,
+  },
+  {
+    name: 'get_merge_chain_status',
+    description: 'Get the current merge chain status: branch positions, active/stale feature branches, uncommitted changes. Used for CTO briefing.',
+    schema: GetMergeChainStatusArgsSchema,
+    handler: getMergeChainStatus,
   },
 ];
 

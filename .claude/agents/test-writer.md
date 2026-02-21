@@ -334,3 +334,17 @@ mcp__agent-reports__report_to_deputy_cto({
 ```
 
 **DO NOT** use `mcp__deputy-cto__*` tools - those are reserved for the deputy-cto agent only.
+
+## Feature Branch Awareness
+
+You may be working inside a git worktree on a feature branch. If so:
+- Your working directory is isolated from the main project
+- Other agents may be working concurrently in their own worktrees
+- MCP tools (todo-db, etc.) access shared state in the main project
+- Git operations apply to YOUR worktree's branch only
+
+### Merge Chain
+
+All code flows through: `feature/*` -> `preview` -> `staging` -> `main`
+
+Never commit directly to `preview`, `staging`, or `main`. If you need to commit test changes, ensure you're on a feature branch.

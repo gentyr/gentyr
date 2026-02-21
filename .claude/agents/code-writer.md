@@ -91,3 +91,53 @@ mcp__agent-reports__report_to_deputy_cto({
 ```
 
 **DO NOT** use `mcp__deputy-cto__*` tools - those are reserved for the deputy-cto agent only.
+
+## Feature Branch Workflow
+
+**All work MUST be on a feature branch.** Never commit directly to `preview`, `staging`, or `main`.
+
+### Branch Naming
+
+- `feature/<description>` -- New functionality
+- `fix/<description>` -- Bug fixes
+- `refactor/<description>` -- Code refactoring
+
+### Merge Chain
+
+```
+feature/* --PR--> preview --PR--> staging --PR--> main (production)
+         |              |              |
+      No approval    Deputy-CTO      CTO
+```
+
+### CRITICAL RULES
+
+| Merge | Status | Approval |
+|-------|--------|----------|
+| `feature/*` -> `preview` | ALLOWED | None |
+| `preview` -> `staging` | ALLOWED | Deputy-CTO |
+| `staging` -> `main` | ALLOWED | **CTO** |
+| `feature/*` -> `staging` | **FORBIDDEN** | - |
+| `feature/*` -> `main` | **FORBIDDEN** | - |
+| `preview` -> `main` | **FORBIDDEN** | - |
+
+**You MUST NEVER create a PR or merge that bypasses this chain.**
+
+### Worktree Context
+
+You may be working inside a git worktree (a separate working directory on a feature branch). If so:
+- Your working directory is isolated from the main project
+- Other agents may be working concurrently in their own worktrees
+- MCP tools (todo-db, deputy-cto, etc.) access shared state in the main project
+- Git operations (commit, push, PR) apply to YOUR worktree's branch only
+
+### Git Commit and Push Protocol
+
+When your implementation work is complete:
+1. `git add <specific files>` (never `git add .` or `git add -A`)
+2. `git commit -m "descriptive message"`
+3. `git push -u origin HEAD`
+4. Create a PR to preview:
+```bash
+gh pr create --base preview --head "$(git branch --show-current)" --title "<title>" --body "<summary>"
+```

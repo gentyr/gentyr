@@ -576,6 +576,33 @@ async function main() {
   }
 
   // ============================================================================
+  // PROTECTED BRANCH GUARD (UNBYPASSABLE)
+  // ============================================================================
+  // Prevents direct commits to protected branches.
+  // Merge chain: feature/* -> preview -> staging -> main
+  // Only promotion pipeline agents can operate on protected branches.
+  // ============================================================================
+  const PROTECTED_BRANCHES = ['main', 'preview', 'staging'];
+  const currentBranchForGuard = getBranchInfo();
+
+  if (PROTECTED_BRANCHES.includes(currentBranchForGuard)) {
+    if (process.env.GENTYR_PROMOTION_PIPELINE !== 'true') {
+      console.error('');
+      console.error('══════════════════════════════════════════════════════════════');
+      console.error(`  COMMIT BLOCKED: Direct commits to '${currentBranchForGuard}' are forbidden.`);
+      console.error('');
+      console.error('  Merge chain: feature/* -> preview -> staging -> main');
+      console.error('');
+      console.error('  Create a feature branch:');
+      console.error('    git checkout -b feature/<name> preview');
+      console.error('══════════════════════════════════════════════════════════════');
+      console.error('');
+      process.exit(1);
+    }
+    // Promotion pipeline agents are allowed to operate on protected branches
+  }
+
+  // ============================================================================
   // BYPASSABLE CHECKS (emergency bypass can skip CTO review, but NOT lint)
   // ============================================================================
 

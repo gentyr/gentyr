@@ -24,6 +24,9 @@ import { runUsageOptimizer } from './usage-optimizer.js';
 import { syncKeys } from './key-sync.js';
 import { reviveInterruptedSessions } from './session-reviver.js';
 import { runFeedbackPipeline } from './feedback-orchestrator.js';
+import { createWorktree, cleanupMergedWorktrees } from './lib/worktree-manager.js';
+import { getFeatureBranchName } from './lib/feature-branch-helper.js';
+import { detectStaleWork, formatReport } from './stale-work-detector.js';
 
 // Try to import better-sqlite3 for task runner
 let Database = null;
@@ -998,7 +1001,7 @@ This will automatically create a follow-up verification task.
 /**
  * Build the prompt for a task runner agent
  */
-function buildTaskRunnerPrompt(task, agentName, agentId) {
+function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
   const taskDetails = `[Task][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing a TODO task.
 
 ## Task Details
@@ -1008,6 +1011,25 @@ function buildTaskRunnerPrompt(task, agentName, agentId) {
 - **Title**: ${task.title}
 ${task.description ? `- **Description**: ${task.description}` : ''}`;
 
+  // Git workflow block for worktree-based agents
+  const gitWorkflowBlock = worktreePath ? `
+## Git Workflow
+
+You are working in a git worktree on a feature branch.
+Your working directory: ${worktreePath}
+MCP tools access shared state in the main project directory.
+
+When your work is complete:
+1. \`git add <specific files>\` (never \`git add .\` or \`git add -A\`)
+2. \`git commit -m "descriptive message"\`
+3. \`git push -u origin HEAD\`
+4. Create a PR to preview:
+\`\`\`
+gh pr create --base preview --head "$(git branch --show-current)" --title "${task.title}" --body "Automated: ${task.section} task"
+\`\`\`
+5. After CI passes: \`gh pr merge --merge --delete-branch\`
+` : '';
+
   const completionBlock = `## When Done
 
 You MUST call this MCP tool to mark the task as completed:
@@ -1015,7 +1037,7 @@ You MUST call this MCP tool to mark the task as completed:
 \`\`\`
 mcp__todo-db__complete_task({ id: "${task.id}" })
 \`\`\`
-
+${gitWorkflowBlock}
 ## Constraints
 
 - Focus only on this specific task
@@ -1114,11 +1136,30 @@ ${completionBlock}`;
 }
 
 /**
- * Spawn a fire-and-forget Claude agent for a task
+ * Spawn a fire-and-forget Claude agent for a task.
+ * When worktrees are available (preview branch exists), each agent gets its
+ * own isolated worktree on a feature branch.  Falls back to PROJECT_DIR if
+ * worktree creation fails.
  */
 function spawnTaskAgent(task) {
   const mapping = SECTION_AGENT_MAP[task.section];
   if (!mapping) return false;
+
+  // --- Worktree setup (best-effort) ---
+  let agentCwd = PROJECT_DIR;
+  let agentMcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+  let worktreePath = null;
+
+  try {
+    const branchName = getFeatureBranchName(task.title, task.id);
+    const worktree = createWorktree(branchName);
+    worktreePath = worktree.path;
+    agentCwd = worktree.path;
+    agentMcpConfig = path.join(worktree.path, '.mcp.json');
+    log(`Task runner: worktree ready at ${worktree.path} (branch ${branchName}, created=${worktree.created})`);
+  } catch (err) {
+    log(`Task runner: worktree creation failed, falling back to PROJECT_DIR: ${err.message}`);
+  }
 
   // Register first to get agentId for prompt embedding
   const agentId = registerSpawn({
@@ -1126,29 +1167,31 @@ function spawnTaskAgent(task) {
     hookType: HOOK_TYPES.TASK_RUNNER,
     description: `Task runner: ${mapping.agent} - ${task.title}`,
     prompt: '',
-    metadata: { taskId: task.id, section: task.section },
+    metadata: { taskId: task.id, section: task.section, worktreePath },
   });
 
   const prompt = mapping.agent === 'deputy-cto'
     ? buildDeputyCtoTaskPrompt(task, agentId)
-    : buildTaskRunnerPrompt(task, mapping.agent, agentId);
+    : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath);
 
   // Store prompt now that it's built
   updateAgent(agentId, { prompt });
 
   try {
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
     const claude = spawn('claude', [
       '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
+      '--mcp-config', agentMcpConfig,
       '--output-format', 'json',
       '-p',
       prompt,
     ], {
       detached: true,
       stdio: 'ignore',
-      cwd: PROJECT_DIR,
-      env: buildSpawnEnv(agentId),
+      cwd: agentCwd,
+      env: {
+        ...buildSpawnEnv(agentId),
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,  // State files always in main project
+      },
     });
 
     claude.unref();
@@ -2318,6 +2361,97 @@ async function main() {
   } else {
     const minutesLeft = Math.ceil((PRODUCTION_HEALTH_COOLDOWN_MS - timeSinceLastProdHealth) / 60000);
     log(`Production health monitor cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
+  // WORKTREE CLEANUP (6h cooldown)
+  // Removes worktrees whose feature branches have been merged to preview
+  // =========================================================================
+  const WORKTREE_CLEANUP_COOLDOWN_MS = getCooldown('worktree_cleanup', 360) * 60 * 1000;
+  const timeSinceLastWorktreeCleanup = now - (state.lastWorktreeCleanup || 0);
+  const worktreeCleanupEnabled = config.worktreeCleanupEnabled !== false;
+
+  if (timeSinceLastWorktreeCleanup >= WORKTREE_CLEANUP_COOLDOWN_MS && worktreeCleanupEnabled) {
+    log('Worktree cleanup: checking for merged worktrees...');
+    try {
+      const cleaned = cleanupMergedWorktrees();
+      if (cleaned > 0) {
+        log(`Worktree cleanup: removed ${cleaned} merged worktree(s).`);
+      } else {
+        log('Worktree cleanup: no merged worktrees to remove.');
+      }
+    } catch (err) {
+      log(`Worktree cleanup error (non-fatal): ${err.message}`);
+    }
+    state.lastWorktreeCleanup = now;
+    saveState(state);
+  } else if (!worktreeCleanupEnabled) {
+    log('Worktree Cleanup is disabled in config.');
+  } else {
+    const minutesLeft = Math.ceil((WORKTREE_CLEANUP_COOLDOWN_MS - timeSinceLastWorktreeCleanup) / 60000);
+    log(`Worktree cleanup cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
+  // STALE WORK DETECTOR (24h cooldown)
+  // Reports uncommitted changes, unpushed branches, and stale feature branches
+  // =========================================================================
+  const STALE_WORK_COOLDOWN_MS = getCooldown('stale_work_detector', 1440) * 60 * 1000;
+  const timeSinceLastStaleCheck = now - (state.lastStaleWorkCheck || 0);
+  const staleWorkEnabled = config.staleWorkDetectorEnabled !== false;
+
+  if (timeSinceLastStaleCheck >= STALE_WORK_COOLDOWN_MS && staleWorkEnabled) {
+    log('Stale work detector: scanning for stale work...');
+    try {
+      const report = detectStaleWork();
+      if (report.hasIssues) {
+        const reportText = formatReport(report);
+        log(`Stale work detector: issues found - ${report.uncommittedFiles.length} uncommitted, ${report.unpushedBranches.length} unpushed, ${report.staleBranches.length} stale branches.`);
+
+        // Report to deputy-CTO via agent-reports (if MCP available)
+        try {
+          const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+          if (fs.existsSync(mcpConfig)) {
+            const reportPrompt = `[Task][stale-work-report] Report this stale work finding to the deputy-CTO.
+
+Use mcp__agent-reports__report_to_deputy_cto with:
+- reporting_agent: "stale-work-detector"
+- title: "Stale Work Detected: ${report.uncommittedFiles.length} uncommitted, ${report.unpushedBranches.length} unpushed, ${report.staleBranches.length} stale branches"
+- summary: ${JSON.stringify(reportText).slice(0, 500)}
+- category: "git-hygiene"
+- priority: "${report.staleBranches.length > 0 ? 'medium' : 'low'}"
+
+Then exit.`;
+
+            const reportAgent = spawn('claude', [
+              '--dangerously-skip-permissions',
+              '--mcp-config', mcpConfig,
+              '--output-format', 'json',
+              '-p', reportPrompt,
+            ], {
+              detached: true,
+              stdio: 'ignore',
+              cwd: PROJECT_DIR,
+              env: buildSpawnEnv(`stale-report-${Date.now()}`),
+            });
+            reportAgent.unref();
+          }
+        } catch (reportErr) {
+          log(`Stale work detector: failed to spawn reporter: ${reportErr.message}`);
+        }
+      } else {
+        log('Stale work detector: no issues found.');
+      }
+    } catch (err) {
+      log(`Stale work detector error (non-fatal): ${err.message}`);
+    }
+    state.lastStaleWorkCheck = now;
+    saveState(state);
+  } else if (!staleWorkEnabled) {
+    log('Stale Work Detector is disabled in config.');
+  } else {
+    const minutesLeft = Math.ceil((STALE_WORK_COOLDOWN_MS - timeSinceLastStaleCheck) / 60000);
+    log(`Stale work detector cooldown active. ${minutesLeft} minutes until next check.`);
   }
 
   // =========================================================================
