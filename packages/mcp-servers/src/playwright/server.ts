@@ -156,10 +156,6 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
     };
   }
 
-  // Clean up zombie dev servers from previous runs
-  cleanupDevServerPort();
-  cleanupDevServerPort(3001);
-
   const cmdArgs = ['playwright', 'test', '--project', project, '--ui'];
   const env: Record<string, string> = { ...process.env as Record<string, string> };
 
