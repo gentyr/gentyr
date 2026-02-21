@@ -31,6 +31,9 @@ const DEPUTY_CTO_DB = path.join(PROJECT_DIR, '.claude', 'deputy-cto.db');
 // Token expires after 5 minutes
 const TOKEN_EXPIRY_MS = 5 * 60 * 1000;
 
+// Lock file for TOCTOU-safe approval consumption
+const LOCK_PATH = APPROVALS_PATH + '.lock';
+
 // Encryption constants
 const ALGORITHM = 'aes-256-gcm';
 const KEY_LENGTH = 32; // 256 bits
@@ -55,6 +58,73 @@ export function generateCode() {
     code += chars.charAt(randomBytes[i] % chars.length);
   }
   return code;
+}
+
+// ============================================================================
+// HMAC Signing (shared across hooks)
+// ============================================================================
+
+/**
+ * Compute HMAC-SHA256 over pipe-delimited fields.
+ * Shared function used by createRequest, checkApproval, and external hooks
+ * (protected-action-gate, protected-action-approval-hook, deputy-cto server).
+ *
+ * @param {string} keyBase64 - Base64-encoded protection key
+ * @param {...string} fields - Fields to include in HMAC
+ * @returns {string} Hex-encoded HMAC
+ */
+export function computeHmac(keyBase64, ...fields) {
+  const keyBuffer = Buffer.from(keyBase64, 'base64');
+  return crypto.createHmac('sha256', keyBuffer)
+    .update(fields.join('|'))
+    .digest('hex');
+}
+
+// ============================================================================
+// File Locking (TOCTOU protection for approval consumption)
+// ============================================================================
+
+/**
+ * Acquire an advisory lock on the approvals file.
+ * Uses exclusive file creation (O_CREAT | O_EXCL) as a cross-process mutex.
+ * Retries with backoff for up to 2 seconds.
+ * @returns {boolean} true if lock acquired
+ */
+function acquireLock() {
+  const maxAttempts = 10;
+  const baseDelay = 50; // ms
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const fd = fs.openSync(LOCK_PATH, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      return true;
+    } catch (err) {
+      // Check for stale lock (older than 10 seconds)
+      try {
+        const stat = fs.statSync(LOCK_PATH);
+        if (Date.now() - stat.mtimeMs > 10000) {
+          fs.unlinkSync(LOCK_PATH);
+          continue; // Retry immediately after removing stale lock
+        }
+      } catch { /* lock file gone, retry */ }
+
+      // Exponential backoff
+      const delay = baseDelay * Math.pow(2, i);
+      const start = Date.now();
+      while (Date.now() - start < delay) { /* busy wait */ }
+    }
+  }
+  return false;
+}
+
+/**
+ * Release the advisory lock.
+ */
+function releaseLock() {
+  try {
+    fs.unlinkSync(LOCK_PATH);
+  } catch { /* already released */ }
 }
 
 // ============================================================================
@@ -237,7 +307,11 @@ export function loadApprovals() {
     if (!fs.existsSync(APPROVALS_PATH)) {
       return { approvals: {} };
     }
-    return JSON.parse(fs.readFileSync(APPROVALS_PATH, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(APPROVALS_PATH, 'utf8'));
+    if (!data || typeof data !== 'object' || !data.approvals || typeof data.approvals !== 'object') {
+      return { approvals: {} };
+    }
+    return data;
   } catch (err) {
     return { approvals: {} };
   }
@@ -280,9 +354,7 @@ export function createRequest(server, tool, args, phrase, options = {}) {
   const keyBase64 = key ? key.toString('base64') : null;
   let pendingHmac;
   if (keyBase64) {
-    pendingHmac = crypto.createHmac('sha256', key)
-      .update([code, server, tool, argsHash, String(expiresTimestamp)].join('|'))
-      .digest('hex');
+    pendingHmac = computeHmac(keyBase64, code, server, tool, argsHash, String(expiresTimestamp));
   }
 
   const approvals = loadApprovals();
@@ -372,30 +444,91 @@ export function validateApproval(phrase, code) {
 }
 
 /**
- * Check if there's a valid approval for a server:tool call
- * @param {string} server - MCP server name
- * @param {string} tool - Tool name
- * @param {object} args - Tool arguments (for matching)
+ * Check if there's a valid approval for a server:tool call.
+ * Verifies HMAC signatures to prevent agent forgery.
+ * Uses file locking to prevent TOCTOU race conditions on approval consumption.
+ *
+ * @param {string} server - MCP server name (or '__file__' for file approvals)
+ * @param {string} tool - Tool name (or file config key for file approvals)
+ * @param {object} [args] - Tool arguments (used to verify approval is scoped to these exact args)
  * @returns {object|null} Approval if valid, null otherwise
  */
 export function checkApproval(server, tool, args) {
-  const approvals = loadApprovals();
-  const now = Date.now();
-
-  for (const [code, request] of Object.entries(approvals.approvals)) {
-    if (request.status !== 'approved') continue;
-    if (request.expires_timestamp < now) continue;
-    if (request.server !== server) continue;
-    if (request.tool !== tool) continue;
-
-    // Found a valid approval - consume it (one-time use)
-    delete approvals.approvals[code];
-    saveApprovals(approvals);
-
-    return request;
+  // Acquire lock to prevent TOCTOU race: two concurrent checks consuming same approval
+  if (!acquireLock()) {
+    console.error('[approval-utils] G001 FAIL-CLOSED: Could not acquire approvals lock. Blocking action.');
+    return null;
   }
 
-  return null;
+  try {
+    const approvals = loadApprovals();
+    const now = Date.now();
+    const key = readProtectionKey();
+    const keyBase64 = key ? key.toString('base64') : null;
+    let dirty = false;
+
+    // Hash the current call's arguments to verify they match the approved args
+    const argsHash = crypto.createHash('sha256')
+      .update(JSON.stringify(args || {}))
+      .digest('hex');
+
+    for (const [code, request] of Object.entries(approvals.approvals)) {
+      if (request.status !== 'approved') continue;
+      if (request.expires_timestamp < now) continue;
+      if (request.server !== server) continue;
+      if (request.tool !== tool) continue;
+
+      // Verify args match what was approved (prevents bait-and-switch attack)
+      if (request.argsHash && request.argsHash !== argsHash) {
+        continue; // Args don't match the approved request
+      }
+
+      // HMAC verification: Verify signatures to prevent agent forgery
+      if (keyBase64) {
+        // Verify pending_hmac (was this request created by the hook with these args?)
+        if (request.pending_hmac) {
+          const expectedPendingHmac = computeHmac(keyBase64, code, server, tool, request.argsHash || argsHash, String(request.expires_timestamp));
+          if (request.pending_hmac !== expectedPendingHmac) {
+            console.error(`[approval-utils] FORGERY DETECTED: Invalid pending_hmac for ${code}. Deleting.`);
+            delete approvals.approvals[code];
+            dirty = true;
+            continue;
+          }
+        }
+
+        // Verify approved_hmac (was this approval created by the approval hook?)
+        if (request.approved_hmac) {
+          const expectedApprovedHmac = computeHmac(keyBase64, code, server, tool, 'approved', request.argsHash || argsHash, String(request.expires_timestamp));
+          if (request.approved_hmac !== expectedApprovedHmac) {
+            console.error(`[approval-utils] FORGERY DETECTED: Invalid approved_hmac for ${code}. Deleting.`);
+            delete approvals.approvals[code];
+            dirty = true;
+            continue;
+          }
+        }
+      } else if (request.pending_hmac || request.approved_hmac) {
+        // G001 Fail-Closed: Request has HMAC fields but we can't verify them
+        // (protection key missing/unreadable). Reject rather than skip verification.
+        console.error(`[approval-utils] G001 FAIL-CLOSED: Cannot verify HMAC for ${code} (protection key missing). Skipping.`);
+        continue;
+      }
+
+      // Found a valid, HMAC-verified approval - consume it (one-time use)
+      delete approvals.approvals[code];
+      saveApprovals(approvals);
+
+      return request;
+    }
+
+    // Save if we deleted forged entries
+    if (dirty) {
+      saveApprovals(approvals);
+    }
+
+    return null;
+  } finally {
+    releaseLock();
+  }
 }
 
 /**
@@ -560,6 +693,9 @@ export async function markDbRequestApproved(questionId) {
 export default {
   // Code generation
   generateCode,
+
+  // HMAC
+  computeHmac,
 
   // Encryption
   generateProtectionKey,

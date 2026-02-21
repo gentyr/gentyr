@@ -974,8 +974,30 @@ process.stdin.on('end', () => {
       if (grepPath) {
         const result = checkFilePath(grepPath, projectDir);
         if (result.blocked) {
-          blockRead(grepPath, result.reason);
-          return;
+          const normalizedGrepPath = path.resolve(grepPath);
+
+          // Always-blocked files: hard deny
+          if (isAlwaysBlocked(normalizedGrepPath)) {
+            blockRead(grepPath, result.reason);
+            return;
+          }
+
+          // Check if file is in the approvable tier
+          const protection = findFileProtection(grepPath, projectDir);
+          if (protection) {
+            const approval = checkApproval('__file__', protection.key);
+            if (approval) {
+              // Approved — fall through to remaining checks
+            } else {
+              const approvalMode = protection.config.protection === 'deputy-cto-approval' ? 'deputy-cto' : 'cto';
+              const request = createRequest('__file__', protection.key, {}, protection.config.phrase, { approvalMode });
+              blockWithApprovalRequest(grepPath, result.reason, request, protection);
+              return;
+            }
+          } else {
+            blockRead(grepPath, result.reason);
+            return;
+          }
         }
       }
       // Also check glob parameter for protected file patterns
@@ -1014,8 +1036,30 @@ process.stdin.on('end', () => {
       if (globPath) {
         const result = checkFilePath(globPath, projectDir);
         if (result.blocked) {
-          blockRead(globPath, result.reason);
-          return;
+          const normalizedGlobPath = path.resolve(globPath);
+
+          // Always-blocked files: hard deny
+          if (isAlwaysBlocked(normalizedGlobPath)) {
+            blockRead(globPath, result.reason);
+            return;
+          }
+
+          // Check if file is in the approvable tier
+          const protection = findFileProtection(globPath, projectDir);
+          if (protection) {
+            const approval = checkApproval('__file__', protection.key);
+            if (approval) {
+              // Approved — fall through to remaining checks
+            } else {
+              const approvalMode = protection.config.protection === 'deputy-cto-approval' ? 'deputy-cto' : 'cto';
+              const request = createRequest('__file__', protection.key, {}, protection.config.phrase, { approvalMode });
+              blockWithApprovalRequest(globPath, result.reason, request, protection);
+              return;
+            }
+          } else {
+            blockRead(globPath, result.reason);
+            return;
+          }
         }
       }
       // Check pattern for protected file names
