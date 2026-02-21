@@ -8,7 +8,7 @@
  * - If briefing within 24h: gate open
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -902,13 +902,19 @@ describe('GAP 7: Merge Chain Gap Alerting', () => {
 describe('VIOLATION 1: readPersistentAlerts schema validation', () => {
   const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
 
-  it('should validate top-level structure (typeof check on raw and raw.alerts)', () => {
+  it('should validate top-level structure (typeof check, null check, and Array.isArray)', () => {
     const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
 
     assert.match(
       code,
-      /typeof raw !== 'object' \|\| raw === null \|\| typeof raw\.alerts !== 'object' \|\| raw\.alerts === null/,
-      'Must validate both raw and raw.alerts are non-null objects'
+      /typeof raw !== 'object' \|\| raw === null \|\| Array\.isArray\(raw\)/,
+      'Must validate raw is non-null, non-array object'
+    );
+
+    assert.match(
+      code,
+      /typeof raw\.alerts !== 'object' \|\| raw\.alerts === null \|\| Array\.isArray\(raw\.alerts\)/,
+      'Must validate raw.alerts is non-null, non-array object'
     );
   });
 
@@ -1090,6 +1096,7 @@ describe('VIOLATION 3: spawnAlertEscalation sanitization', () => {
     assert.match(fnMatch[0], /const safeKey = sanitizeAlertField/, 'Must sanitize key');
     assert.match(fnMatch[0], /const safeSeverity = sanitizeAlertField/, 'Must sanitize severity');
     assert.match(fnMatch[0], /const safeSource = sanitizeAlertField/, 'Must sanitize source');
+    assert.match(fnMatch[0], /const safeFirstDetected = sanitizeAlertField/, 'Must sanitize first_detected_at');
 
     // Must coerce numeric fields
     assert.match(fnMatch[0], /Number\(alert\.detection_count\)/, 'Must coerce detection_count via Number()');
@@ -1100,6 +1107,35 @@ describe('VIOLATION 3: spawnAlertEscalation sanitization', () => {
     assert.match(fnMatch[0], /\$\{safeKey\}/, 'Prompt must use safeKey');
     assert.match(fnMatch[0], /\$\{safeSeverity\}/, 'Prompt must use safeSeverity');
     assert.match(fnMatch[0], /\$\{safeSource\}/, 'Prompt must use safeSource');
+    assert.match(fnMatch[0], /\$\{safeFirstDetected\}/, 'Prompt must use safeFirstDetected');
+  });
+
+  it('should sanitize fields BEFORE registerSpawn call', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function spawnAlertEscalation\(alert\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnAlertEscalation must exist');
+    const fnBody = fnMatch[0];
+
+    const sanitizeIdx = fnBody.indexOf('sanitizeAlertField');
+    const registerIdx = fnBody.indexOf('registerSpawn');
+
+    assert.ok(sanitizeIdx > 0, 'Must call sanitizeAlertField');
+    assert.ok(registerIdx > 0, 'Must call registerSpawn');
+    assert.ok(sanitizeIdx < registerIdx, 'Sanitization must come before registerSpawn');
+  });
+
+  it('should use safeKey in registerSpawn description', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function spawnAlertEscalation\(alert\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnAlertEscalation must exist');
+
+    assert.match(
+      fnMatch[0],
+      /description: `Alert re-escalation: \$\{safeKey\}`/,
+      'registerSpawn description must use safeKey, not alert.key'
+    );
   });
 });
 
@@ -1143,5 +1179,403 @@ describe('sanitizeAlertField - Behavioral Tests', () => {
 
   it('should coerce booleans to strings', () => {
     assert.strictEqual(sanitizeAlertField(true), 'true');
+  });
+
+  it('should handle empty string', () => {
+    assert.strictEqual(sanitizeAlertField(''), '');
+  });
+
+  it('should handle objects by converting to string', () => {
+    assert.strictEqual(sanitizeAlertField({}), '[object Object]');
+  });
+
+  it('should handle arrays by converting to string', () => {
+    assert.strictEqual(sanitizeAlertField([1, 2, 3]), '1,2,3');
+  });
+
+  it('should handle mixed injection attempts', () => {
+    const malicious = '`${eval("code")}`\n';
+    const result = sanitizeAlertField(malicious);
+    assert.ok(!result.includes('${'), 'Must not contain ${');
+    assert.ok(!result.includes('`'), 'Must not contain backticks');
+    assert.ok(!result.includes('\n'), 'Must not contain newlines');
+  });
+
+  it('should handle exactly 200 characters without truncation', () => {
+    const exactly200 = 'x'.repeat(200);
+    assert.strictEqual(sanitizeAlertField(exactly200).length, 200);
+    assert.strictEqual(sanitizeAlertField(exactly200), exactly200);
+  });
+
+  it('should truncate 201 characters to 200', () => {
+    const over200 = 'x'.repeat(201);
+    assert.strictEqual(sanitizeAlertField(over200).length, 200);
+    assert.notStrictEqual(sanitizeAlertField(over200), over200);
+  });
+});
+
+describe('readPersistentAlerts - Behavioral Tests', () => {
+  const tmpDir = path.join(process.cwd(), '.claude/test-tmp');
+  const testAlertsPath = path.join(tmpDir, 'test-alerts.json');
+  const PERSISTENT_ALERTS_PATH_BACKUP = process.env.PERSISTENT_ALERTS_PATH;
+
+  // Mock function that mirrors the implementation
+  function readPersistentAlerts() {
+    try {
+      if (fs.existsSync(testAlertsPath)) {
+        const raw = JSON.parse(fs.readFileSync(testAlertsPath, 'utf8'));
+        // Validate structure
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw) ||
+            typeof raw.alerts !== 'object' || raw.alerts === null || Array.isArray(raw.alerts)) {
+          return { version: 1, alerts: {} };
+        }
+        // Validate individual alerts — drop malformed entries
+        for (const [key, alert] of Object.entries(raw.alerts)) {
+          if (typeof alert !== 'object' || alert === null ||
+              typeof alert.severity !== 'string' ||
+              typeof alert.resolved !== 'boolean') {
+            delete raw.alerts[key];
+          }
+        }
+        return raw;
+      }
+    } catch (err) {
+      // Parse errors return defaults
+    }
+    return { version: 1, alerts: {} };
+  }
+
+  beforeEach(() => {
+    // Create temp directory
+    if (!fs.existsSync(tmpDir)) {
+      fs.mkdirSync(tmpDir, { recursive: true });
+    }
+  });
+
+  afterEach(() => {
+    // Clean up temp files
+    if (fs.existsSync(testAlertsPath)) {
+      fs.unlinkSync(testAlertsPath);
+    }
+    if (fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should return defaults when file does not exist', () => {
+    const result = readPersistentAlerts();
+    assert.deepStrictEqual(result, { version: 1, alerts: {} });
+  });
+
+  it('should return defaults when raw is null', () => {
+    fs.writeFileSync(testAlertsPath, 'null');
+    const result = readPersistentAlerts();
+    assert.deepStrictEqual(result, { version: 1, alerts: {} });
+  });
+
+  it('should return defaults when raw is an array', () => {
+    fs.writeFileSync(testAlertsPath, '[]');
+    const result = readPersistentAlerts();
+    assert.deepStrictEqual(result, { version: 1, alerts: {} });
+  });
+
+  it('should return defaults when raw is a primitive', () => {
+    fs.writeFileSync(testAlertsPath, '"string"');
+    const result = readPersistentAlerts();
+    assert.deepStrictEqual(result, { version: 1, alerts: {} });
+  });
+
+  it('should return defaults when raw.alerts is null', () => {
+    fs.writeFileSync(testAlertsPath, JSON.stringify({ version: 1, alerts: null }));
+    const result = readPersistentAlerts();
+    assert.deepStrictEqual(result, { version: 1, alerts: {} });
+  });
+
+  it('should return defaults when raw.alerts is an array', () => {
+    fs.writeFileSync(testAlertsPath, JSON.stringify({ version: 1, alerts: [] }));
+    const result = readPersistentAlerts();
+    assert.deepStrictEqual(result, { version: 1, alerts: {} });
+  });
+
+  it('should return defaults when raw.alerts is missing', () => {
+    fs.writeFileSync(testAlertsPath, JSON.stringify({ version: 1 }));
+    const result = readPersistentAlerts();
+    assert.deepStrictEqual(result, { version: 1, alerts: {} });
+  });
+
+  it('should drop alert when alert is null', () => {
+    const data = {
+      version: 1,
+      alerts: {
+        good_alert: { severity: 'high', resolved: false },
+        bad_alert: null,
+      },
+    };
+    fs.writeFileSync(testAlertsPath, JSON.stringify(data));
+    const result = readPersistentAlerts();
+
+    assert.ok(result.alerts.good_alert, 'Should keep valid alert');
+    assert.ok(!result.alerts.bad_alert, 'Should drop null alert');
+  });
+
+  it('should drop alert when severity is missing', () => {
+    const data = {
+      version: 1,
+      alerts: {
+        good_alert: { severity: 'high', resolved: false },
+        bad_alert: { resolved: false }, // Missing severity
+      },
+    };
+    fs.writeFileSync(testAlertsPath, JSON.stringify(data));
+    const result = readPersistentAlerts();
+
+    assert.ok(result.alerts.good_alert, 'Should keep valid alert');
+    assert.ok(!result.alerts.bad_alert, 'Should drop alert without severity');
+  });
+
+  it('should drop alert when severity is not a string', () => {
+    const data = {
+      version: 1,
+      alerts: {
+        good_alert: { severity: 'high', resolved: false },
+        bad_alert: { severity: 123, resolved: false }, // Number severity
+      },
+    };
+    fs.writeFileSync(testAlertsPath, JSON.stringify(data));
+    const result = readPersistentAlerts();
+
+    assert.ok(result.alerts.good_alert, 'Should keep valid alert');
+    assert.ok(!result.alerts.bad_alert, 'Should drop alert with non-string severity');
+  });
+
+  it('should drop alert when resolved is missing', () => {
+    const data = {
+      version: 1,
+      alerts: {
+        good_alert: { severity: 'high', resolved: false },
+        bad_alert: { severity: 'critical' }, // Missing resolved
+      },
+    };
+    fs.writeFileSync(testAlertsPath, JSON.stringify(data));
+    const result = readPersistentAlerts();
+
+    assert.ok(result.alerts.good_alert, 'Should keep valid alert');
+    assert.ok(!result.alerts.bad_alert, 'Should drop alert without resolved');
+  });
+
+  it('should drop alert when resolved is not a boolean', () => {
+    const data = {
+      version: 1,
+      alerts: {
+        good_alert: { severity: 'high', resolved: false },
+        bad_alert: { severity: 'critical', resolved: 'false' }, // String instead of boolean
+      },
+    };
+    fs.writeFileSync(testAlertsPath, JSON.stringify(data));
+    const result = readPersistentAlerts();
+
+    assert.ok(result.alerts.good_alert, 'Should keep valid alert');
+    assert.ok(!result.alerts.bad_alert, 'Should drop alert with non-boolean resolved');
+  });
+
+  it('should keep valid alerts and drop multiple malformed alerts', () => {
+    const data = {
+      version: 1,
+      alerts: {
+        valid1: { severity: 'high', resolved: false },
+        valid2: { severity: 'critical', resolved: true },
+        invalid_null: null,
+        invalid_no_severity: { resolved: false },
+        invalid_no_resolved: { severity: 'high' },
+        invalid_wrong_types: { severity: 123, resolved: 'true' },
+      },
+    };
+    fs.writeFileSync(testAlertsPath, JSON.stringify(data));
+    const result = readPersistentAlerts();
+
+    assert.strictEqual(Object.keys(result.alerts).length, 2);
+    assert.ok(result.alerts.valid1, 'Should keep valid1');
+    assert.ok(result.alerts.valid2, 'Should keep valid2');
+    assert.ok(!result.alerts.invalid_null, 'Should drop null alert');
+    assert.ok(!result.alerts.invalid_no_severity, 'Should drop alert without severity');
+    assert.ok(!result.alerts.invalid_no_resolved, 'Should drop alert without resolved');
+    assert.ok(!result.alerts.invalid_wrong_types, 'Should drop alert with wrong types');
+  });
+
+  it('should preserve extra fields in valid alerts', () => {
+    const data = {
+      version: 1,
+      alerts: {
+        alert1: {
+          severity: 'high',
+          resolved: false,
+          extra_field: 'preserved',
+          count: 42,
+        },
+      },
+    };
+    fs.writeFileSync(testAlertsPath, JSON.stringify(data));
+    const result = readPersistentAlerts();
+
+    assert.strictEqual(result.alerts.alert1.extra_field, 'preserved');
+    assert.strictEqual(result.alerts.alert1.count, 42);
+  });
+
+  it('should return defaults on JSON parse error', () => {
+    fs.writeFileSync(testAlertsPath, '{invalid json}');
+    const result = readPersistentAlerts();
+    assert.deepStrictEqual(result, { version: 1, alerts: {} });
+  });
+});
+
+// =========================================================================
+// Priority-Based Urgent Task Dispatch
+// =========================================================================
+
+describe('Urgent Task Dispatcher', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should define getUrgentPendingTasks function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /function getUrgentPendingTasks\(\)/,
+      'Must define getUrgentPendingTasks function'
+    );
+  });
+
+  it('should query for priority = urgent tasks', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function getUrgentPendingTasks\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'getUrgentPendingTasks function must exist');
+
+    assert.match(
+      fnMatch[0],
+      /priority = 'urgent'/,
+      'Must filter on priority = urgent'
+    );
+  });
+
+  it('should NOT apply age filter for urgent tasks', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function getUrgentPendingTasks\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'getUrgentPendingTasks function must exist');
+
+    // The function should NOT reference created_timestamp <= ? (age filter)
+    assert.doesNotMatch(
+      fnMatch[0],
+      /created_timestamp <= \?/,
+      'Must NOT apply age filter for urgent tasks'
+    );
+  });
+
+  it('should place urgent dispatcher before CTO gate exit (gate-exempt)', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const urgentIdx = code.indexOf('URGENT TASK DISPATCHER');
+    const gateCheckIdx = code.indexOf('CTO GATE CHECK');
+
+    assert.ok(urgentIdx > 0, 'Urgent task dispatcher section must exist');
+    assert.ok(gateCheckIdx > 0, 'CTO gate check section must exist');
+    assert.ok(urgentIdx < gateCheckIdx, 'Urgent dispatcher must come before gate check');
+  });
+
+  it('should reuse spawnTaskAgent for governed dispatch', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Find the urgent dispatcher section
+    const urgentSection = code.match(/URGENT TASK DISPATCHER[\s\S]*?CTO GATE CHECK/);
+    assert.ok(urgentSection, 'Urgent dispatcher section must exist');
+
+    assert.match(
+      urgentSection[0],
+      /spawnTaskAgent\(task\)/,
+      'Must reuse spawnTaskAgent for governed dispatch'
+    );
+  });
+
+  it('should reset task to pending on spawn failure', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const urgentSection = code.match(/URGENT TASK DISPATCHER[\s\S]*?CTO GATE CHECK/);
+    assert.ok(urgentSection, 'Urgent dispatcher section must exist');
+
+    assert.match(
+      urgentSection[0],
+      /resetTaskToPending\(task\.id\)/,
+      'Must reset task to pending on spawn failure'
+    );
+  });
+
+  it('should mark task in_progress before spawning', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const urgentSection = code.match(/URGENT TASK DISPATCHER[\s\S]*?CTO GATE CHECK/);
+    assert.ok(urgentSection, 'Urgent dispatcher section must exist');
+
+    assert.match(
+      urgentSection[0],
+      /markTaskInProgress\(task\.id\)/,
+      'Must mark task in_progress before spawning'
+    );
+  });
+});
+
+describe('Triage Self-Handle via create_task with priority: urgent', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should use create_task instead of spawn_implementation_task for self-handling', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Find the triage SELF-HANDLING section
+    const selfHandleSection = code.match(/If SELF-HANDLING[\s\S]*?If ESCALATING/);
+    assert.ok(selfHandleSection, 'Self-handling section must exist in triage prompt');
+
+    assert.match(
+      selfHandleSection[0],
+      /mcp__todo-db__create_task/,
+      'Self-handling must use mcp__todo-db__create_task'
+    );
+
+    assert.doesNotMatch(
+      selfHandleSection[0],
+      /spawn_implementation_task/,
+      'Self-handling must NOT use spawn_implementation_task'
+    );
+  });
+
+  it('should include priority: "urgent" in self-handle create_task call', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const selfHandleSection = code.match(/If SELF-HANDLING[\s\S]*?If ESCALATING/);
+    assert.ok(selfHandleSection, 'Self-handling section must exist');
+
+    assert.match(
+      selfHandleSection[0],
+      /priority: "urgent"/,
+      'Self-handle create_task must include priority: "urgent"'
+    );
+  });
+
+  it('should include section mapping guidance in triage prompt', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const selfHandleSection = code.match(/If SELF-HANDLING[\s\S]*?If ESCALATING/);
+    assert.ok(selfHandleSection, 'Self-handling section must exist');
+
+    assert.match(
+      selfHandleSection[0],
+      /Section mapping/,
+      'Must include section mapping guidance'
+    );
+
+    assert.match(
+      selfHandleSection[0],
+      /CODE-REVIEWER/,
+      'Section mapping must mention CODE-REVIEWER'
+    );
   });
 });

@@ -333,7 +333,8 @@ function readPersistentAlerts() {
     if (fs.existsSync(PERSISTENT_ALERTS_PATH)) {
       const raw = JSON.parse(fs.readFileSync(PERSISTENT_ALERTS_PATH, 'utf8'));
       // Validate structure
-      if (typeof raw !== 'object' || raw === null || typeof raw.alerts !== 'object' || raw.alerts === null) {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw) ||
+          typeof raw.alerts !== 'object' || raw.alerts === null || Array.isArray(raw.alerts)) {
         log('Persistent alerts: invalid structure, using defaults.');
         return { version: 1, alerts: {} };
       }
@@ -428,23 +429,25 @@ function sanitizeAlertField(val) {
  * Spawn a minimal re-escalation agent that posts to deputy-CTO.
  */
 function spawnAlertEscalation(alert) {
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.PRODUCTION_HEALTH_MONITOR,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: `Alert re-escalation: ${alert.key}`,
-    prompt: '',
-    metadata: { alertKey: alert.key, escalationCount: alert.escalation_count },
-  });
-
-  const ageHours = Math.round((Date.now() - new Date(alert.first_detected_at).getTime()) / 3600000);
-
-  // Sanitize all alert fields before prompt interpolation to prevent prompt injection
+  // Sanitize all alert fields before any interpolation to prevent prompt injection
   const safeTitle = sanitizeAlertField(alert.title);
   const safeKey = sanitizeAlertField(alert.key);
   const safeSeverity = sanitizeAlertField(alert.severity);
   const safeSource = sanitizeAlertField(alert.source);
+  const safeFirstDetected = sanitizeAlertField(alert.first_detected_at);
   const safeDetectionCount = Number(alert.detection_count) || 0;
   const safeEscalationCount = Number(alert.escalation_count) || 0;
+
+  const agentId = registerSpawn({
+    type: AGENT_TYPES.PRODUCTION_HEALTH_MONITOR,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    description: `Alert re-escalation: ${safeKey}`,
+    prompt: '',
+    metadata: { alertKey: safeKey, escalationCount: safeEscalationCount },
+  });
+
+  const firstDetectedTs = new Date(alert.first_detected_at).getTime();
+  const ageHours = Number.isFinite(firstDetectedTs) ? Math.round((Date.now() - firstDetectedTs) / 3600000) : 0;
 
   const prompt = `[Task][alert-escalation][AGENT:${agentId}] ALERT RE-ESCALATION
 
@@ -453,7 +456,7 @@ A persistent issue has NOT been resolved and requires CTO attention.
 **Alert:** ${safeTitle}
 **Key:** ${safeKey}
 **Severity:** ${safeSeverity}
-**First detected:** ${alert.first_detected_at} (${ageHours}h ago)
+**First detected:** ${safeFirstDetected} (${ageHours}h ago)
 **Detection count:** ${safeDetectionCount} times
 **Previous escalations:** ${safeEscalationCount}
 
@@ -789,19 +792,29 @@ If the report matches ANY auto-escalation rule, skip to "If ESCALATING" - do not
 
 **If SELF-HANDLING:**
 \`\`\`
-// Spawn a task to address the issue
-mcp__deputy-cto__spawn_implementation_task({
-  prompt: "Detailed instructions for what to fix/implement...",
-  description: "Brief description (max 100 chars)"
+// Create an urgent task — dispatched immediately by the urgent dispatcher
+mcp__todo-db__create_task({
+  section: "CODE-REVIEWER",  // Choose based on task type (see section mapping below)
+  title: "Brief actionable title",
+  description: "Full context: what to fix, where, why, and acceptance criteria",
+  assigned_by: "deputy-cto",
+  priority: "urgent"
 })
 
 // Complete the triage
 mcp__agent-reports__complete_triage({
   id: "<report-id>",
   status: "self_handled",
-  outcome: "Spawned task to [brief description of fix]"
+  outcome: "Created urgent task to [brief description of fix]"
 })
 \`\`\`
+
+Section mapping for self-handled tasks:
+- Code changes (full agent sequence) → "CODE-REVIEWER"
+- Research/analysis only → "INVESTIGATOR & PLANNER"
+- Test creation/updates → "TEST-WRITER"
+- Documentation/cleanup → "PROJECT-MANAGER"
+- Orchestration/delegation → "DEPUTY-CTO"
 
 **If ESCALATING:**
 \`\`\`
@@ -1173,6 +1186,31 @@ function getPendingTasksForRunner() {
     return candidates;
   } catch (err) {
     log(`Task runner: DB query error: ${err.message}`);
+    return [];
+  }
+}
+
+/**
+ * Query todo.db for pending tasks with priority = 'urgent'.
+ * No age filter, no batch limit — urgent tasks are dispatched immediately.
+ */
+function getUrgentPendingTasks() {
+  if (!Database || !fs.existsSync(TODO_DB_PATH)) return [];
+
+  try {
+    const db = new Database(TODO_DB_PATH, { readonly: true });
+    const candidates = db.prepare(`
+      SELECT id, section, title, description
+      FROM tasks
+      WHERE status = 'pending'
+        AND priority = 'urgent'
+        AND section IN (${Object.keys(SECTION_AGENT_MAP).map(() => '?').join(',')})
+      ORDER BY created_timestamp ASC
+    `).all(...Object.keys(SECTION_AGENT_MAP));
+    db.close();
+    return candidates;
+  } catch (err) {
+    log(`Urgent dispatcher: DB query error: ${err.message}`);
     return [];
   }
 }
@@ -2672,11 +2710,41 @@ async function main() {
   }
 
   // =========================================================================
+  // URGENT TASK DISPATCHER (no cooldown, gate-exempt)
+  // Dispatches priority='urgent' tasks immediately without age filter.
+  // These are typically created by deputy-cto during triage self-handling.
+  // =========================================================================
+  if (Database) {
+    const urgentTasks = getUrgentPendingTasks();
+    if (urgentTasks.length > 0) {
+      log(`Urgent dispatcher: found ${urgentTasks.length} urgent task(s).`);
+      let dispatched = 0;
+      for (const task of urgentTasks) {
+        const mapping = SECTION_AGENT_MAP[task.section];
+        if (!mapping) continue;
+        if (!markTaskInProgress(task.id)) {
+          log(`Urgent dispatcher: skipping task ${task.id} (failed to mark in_progress).`);
+          continue;
+        }
+        const success = spawnTaskAgent(task);
+        if (success) {
+          log(`Urgent dispatcher: spawned ${mapping.agent} for "${task.title}" (${task.id})`);
+          dispatched++;
+        } else {
+          resetTaskToPending(task.id);
+          log(`Urgent dispatcher: spawn failed for task ${task.id}, reset to pending.`);
+        }
+      }
+      log(`Urgent dispatcher: dispatched ${dispatched} agent(s).`);
+    }
+  }
+
+  // =========================================================================
   // CTO GATE CHECK — exit if gate is closed after all monitoring-only steps
   // GAP 5: Everything above this point (Usage Optimizer, Key Sync, Session
   // Reviver, Triage, Health Monitors, CI Monitoring, Persistent Alerts,
-  // Merge Chain Gap) runs regardless of CTO gate status. Everything below
-  // requires the gate to be open.
+  // Merge Chain Gap, Urgent Dispatcher) runs regardless of CTO gate status.
+  // Everything below requires the gate to be open.
   // =========================================================================
   if (!ctoGateOpen) {
     log('CTO gate closed — monitoring-only steps complete. Skipping gate-required steps.');

@@ -32,6 +32,7 @@ interface TaskRow {
   followup_enabled: number;
   followup_section: string | null;
   followup_prompt: string | null;
+  priority: string;
 }
 
 interface SectionStatusCount {
@@ -93,7 +94,7 @@ describe('TODO Database Server', () => {
   });
 
   // Helper functions that mirror the server implementation
-  const listTasks = (args: { section?: string; status?: string; limit?: number }) => {
+  const listTasks = (args: { section?: string; status?: string; priority?: string; limit?: number }) => {
     let sql = 'SELECT * FROM tasks WHERE 1=1';
     const params: unknown[] = [];
 
@@ -104,6 +105,10 @@ describe('TODO Database Server', () => {
     if (args.status) {
       sql += ' AND status = ?';
       params.push(args.status);
+    }
+    if (args.priority) {
+      sql += ' AND priority = ?';
+      params.push(args.priority);
     }
 
     sql += ' ORDER BY created_timestamp DESC';
@@ -140,6 +145,7 @@ ${originalTask}`;
     followup_enabled?: boolean;
     followup_section?: string;
     followup_prompt?: string;
+    priority?: string;
   }): TaskRow & { warning?: string } | ErrorResult => {
     // Soft access control
     const restrictions = SECTION_CREATOR_RESTRICTIONS[args.section as keyof typeof SECTION_CREATOR_RESTRICTIONS];
@@ -180,10 +186,11 @@ ${originalTask}`;
     const now = new Date();
     const created_at = now.toISOString();
     const created_timestamp = Math.floor(now.getTime() / 1000);
+    const priority = args.priority ?? 'normal';
 
     db.prepare(`
-      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt)
-      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority)
+      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       args.section,
@@ -194,7 +201,8 @@ ${originalTask}`;
       created_timestamp,
       followup_enabled ? 1 : 0,
       followup_section,
-      followup_prompt
+      followup_prompt,
+      priority
     );
 
     return {
@@ -213,6 +221,7 @@ ${originalTask}`;
       followup_enabled: followup_enabled ? 1 : 0,
       followup_section,
       followup_prompt,
+      priority,
       warning,
     };
   };
@@ -1385,6 +1394,29 @@ ${originalTask}`;
       }
     });
 
+    it('should respect custom followup_section for deputy-cto tasks created with priority: urgent', () => {
+      const task = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'Urgent cross-section task',
+        description: 'Urgent task whose follow-up should land in CODE-REVIEWER',
+        assigned_by: 'deputy-cto',
+        followup_section: 'CODE-REVIEWER',
+        priority: 'urgent',
+      });
+
+      expect('error' in task).toBe(false);
+      if (!('error' in task)) {
+        expect(task.priority).toBe('urgent');
+        const result = completeTask(task.id) as CompleteOrError;
+
+        expect('error' in result).toBe(false);
+        if (!('error' in result)) {
+          const followup = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.followup_task_id!) as TaskRow;
+          expect(followup.section).toBe('CODE-REVIEWER');
+        }
+      }
+    });
+
     it('should create follow-up task when non-deputy-cto creator opts in with followup_enabled: true', () => {
       // The forced-follow-up path is triggered by creator identity, but any creator can
       // opt in voluntarily; the completion hook fires based solely on followup_enabled
@@ -1410,6 +1442,100 @@ ${originalTask}`;
           expect(followup.status).toBe('pending');
           expect(followup.followup_enabled).toBe(0);
         }
+      }
+    });
+  });
+
+  describe('Task Priority', () => {
+    it('should default priority to normal when not specified', () => {
+      const result = createTask({
+        section: 'TEST-WRITER',
+        title: 'Normal priority task',
+      });
+
+      expect('error' in result).toBe(false);
+      if (!('error' in result)) {
+        expect(result.priority).toBe('normal');
+
+        const task = db.prepare('SELECT priority FROM tasks WHERE id = ?').get(result.id) as { priority: string };
+        expect(task.priority).toBe('normal');
+      }
+    });
+
+    it('should store priority as urgent when specified', () => {
+      const result = createTask({
+        section: 'CODE-REVIEWER',
+        title: 'Urgent task',
+        priority: 'urgent',
+      });
+
+      expect('error' in result).toBe(false);
+      if (!('error' in result)) {
+        expect(result.priority).toBe('urgent');
+
+        const task = db.prepare('SELECT priority FROM tasks WHERE id = ?').get(result.id) as { priority: string };
+        expect(task.priority).toBe('urgent');
+      }
+    });
+
+    it('should reject invalid priority values via CHECK constraint', () => {
+      expect(() => {
+        db.prepare(`
+          INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, priority)
+          VALUES (?, 'TEST-WRITER', 'pending', 'Bad priority', ?, ?, 'critical')
+        `).run(randomUUID(), new Date().toISOString(), Math.floor(Date.now() / 1000));
+      }).toThrow();
+    });
+
+    it('should filter tasks by priority in listTasks', () => {
+      createTask({ section: 'TEST-WRITER', title: 'Normal 1' });
+      createTask({ section: 'TEST-WRITER', title: 'Normal 2' });
+      createTask({ section: 'TEST-WRITER', title: 'Urgent 1', priority: 'urgent' });
+
+      const normalTasks = listTasks({ priority: 'normal' });
+      expect(normalTasks.total).toBe(2);
+
+      const urgentTasks = listTasks({ priority: 'urgent' });
+      expect(urgentTasks.total).toBe(1);
+      expect((urgentTasks.tasks[0] as TaskRow).title).toBe('Urgent 1');
+    });
+
+    it('should return all tasks when priority filter is not specified', () => {
+      createTask({ section: 'TEST-WRITER', title: 'Normal' });
+      createTask({ section: 'TEST-WRITER', title: 'Urgent', priority: 'urgent' });
+
+      const allTasks = listTasks({});
+      expect(allTasks.total).toBe(2);
+    });
+
+    it('should combine priority filter with section filter', () => {
+      createTask({ section: 'TEST-WRITER', title: 'TW Normal' });
+      createTask({ section: 'TEST-WRITER', title: 'TW Urgent', priority: 'urgent' });
+      createTask({ section: 'CODE-REVIEWER', title: 'CR Urgent', priority: 'urgent' });
+
+      const result = listTasks({ section: 'TEST-WRITER', priority: 'urgent' });
+      expect(result.total).toBe(1);
+      expect((result.tasks[0] as TaskRow).title).toBe('TW Urgent');
+    });
+
+    it('should preserve priority through task lifecycle', () => {
+      const task = createTask({
+        section: 'TEST-WRITER',
+        title: 'Lifecycle test',
+        priority: 'urgent',
+      });
+
+      expect('error' in task).toBe(false);
+      if (!('error' in task)) {
+        // Start task
+        startTask(task.id);
+        const inProgress = db.prepare('SELECT priority FROM tasks WHERE id = ?').get(task.id) as { priority: string };
+        expect(inProgress.priority).toBe('urgent');
+
+        // Complete task
+        completeTask(task.id);
+        const completed = db.prepare('SELECT priority FROM tasks WHERE id = ?').get(task.id) as { priority: string };
+        expect(completed.priority).toBe('urgent');
       }
     });
   });

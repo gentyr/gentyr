@@ -3,11 +3,11 @@
  */
 
 import { z } from 'zod';
-import { VALID_SECTIONS, TASK_STATUS, type ValidSection, type TaskStatus } from '../shared/constants.js';
+import { VALID_SECTIONS, TASK_STATUS, TASK_PRIORITY, type ValidSection, type TaskStatus, type TaskPriority } from '../shared/constants.js';
 
 // Re-export for convenience
-export { VALID_SECTIONS, TASK_STATUS };
-export type { ValidSection, TaskStatus };
+export { VALID_SECTIONS, TASK_STATUS, TASK_PRIORITY };
+export type { ValidSection, TaskStatus, TaskPriority };
 export { SECTION_CREATOR_RESTRICTIONS, FORCED_FOLLOWUP_CREATORS } from '../shared/constants.js';
 
 // ============================================================================
@@ -21,6 +21,9 @@ export const ListTasksArgsSchema = z.object({
   status: z.enum(TASK_STATUS)
     .optional()
     .describe('Filter by status'),
+  priority: z.enum(TASK_PRIORITY)
+    .optional()
+    .describe('Filter by priority'),
   limit: z.coerce.number()
     .optional()
     .default(50)
@@ -39,6 +42,8 @@ export const CreateTaskArgsSchema = z.object({
   followup_enabled: z.boolean().optional().describe('Enable follow-up task on completion (forced true when assigned_by is deputy-cto)'),
   followup_section: z.enum(VALID_SECTIONS).optional().describe('Section for follow-up task (defaults to same section)'),
   followup_prompt: z.string().optional().describe('Custom follow-up prompt. For deputy-cto tasks, leave empty — auto-generated.'),
+  priority: z.enum(TASK_PRIORITY).optional().default('normal')
+    .describe('Task priority. "urgent" tasks bypass the 1-hour age filter and dispatch immediately.'),
 });
 
 export const StartTaskArgsSchema = z.object({
@@ -109,6 +114,7 @@ export interface TaskRecord {
   followup_enabled: number;        // 0 or 1 (SQLite boolean)
   followup_section: string | null;
   followup_prompt: string | null;
+  priority: string;                // 'normal' | 'urgent'
 }
 
 export interface TaskResponse {
@@ -122,6 +128,7 @@ export interface TaskResponse {
   completed_at: string | null;
   assigned_by: string | null;
   followup_enabled: boolean;
+  priority: TaskPriority;
 }
 
 export interface ListTasksResult {
