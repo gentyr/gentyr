@@ -1,5 +1,5 @@
 /**
- * Product Manager reader — reads PMF analysis status from .claude/product-manager.db
+ * Product Manager reader — reads PMF analysis status from .claude/state/product-manager.db
  */
 
 import * as fs from 'fs';
@@ -49,7 +49,7 @@ const EMPTY: ProductManagerData = {
 
 export function getProductManagerData(): ProductManagerData {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const dbPath = path.join(projectDir, '.claude', 'product-manager.db');
+  const dbPath = path.join(projectDir, '.claude', 'state', 'product-manager.db');
 
   if (!fs.existsSync(dbPath)) {
     return EMPTY;

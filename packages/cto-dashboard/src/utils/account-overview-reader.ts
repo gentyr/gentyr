@@ -161,9 +161,10 @@ export function getAccountOverviewData(): AccountOverviewData {
 
   if (state.version !== 1) return empty;
 
-  // Build accounts
+  // Build accounts (skip invalid keys — they've been revoked and are noise)
   const accounts: AccountKeyDetail[] = [];
   for (const [keyId, keyData] of Object.entries(state.keys)) {
+    if (keyData.status === 'invalid') continue;
     accounts.push({
       keyId: truncateKeyId(keyId),
       status: keyData.status,
@@ -202,7 +203,12 @@ export function getAccountOverviewData(): AccountOverviewData {
     if (entry.event === 'key_switched') rotationCount++;
 
     const keyId = entry.key_id ?? 'unknown';
-    const email = keyId !== 'unknown' ? state.keys[keyId]?.account_email ?? null : null;
+    const keyData = keyId !== 'unknown' ? state.keys[keyId] : undefined;
+
+    // Skip events for keys explicitly marked invalid (revoked credentials)
+    if (keyData?.status === 'invalid') continue;
+
+    const email = keyData?.account_email ?? null;
     const desc = deriveDescription(entry.event, entry.reason, keyId, email);
     if (!desc) continue;
 

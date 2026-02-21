@@ -390,12 +390,11 @@ describe('account-overview-reader', () => {
       fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
       const result = getAccountOverviewData();
 
-      expect(result.accounts).toHaveLength(4);
-      // Order: active, exhausted, expired, invalid
+      expect(result.accounts).toHaveLength(3);
+      // Order: active, exhausted, expired (invalid keys are filtered out)
       expect(result.accounts[0].status).toBe('active');
       expect(result.accounts[1].status).toBe('exhausted');
       expect(result.accounts[2].status).toBe('expired');
-      expect(result.accounts[3].status).toBe('invalid');
     });
 
     it('should sort by addedAt desc when status is equal', () => {
@@ -1232,12 +1231,13 @@ describe('account-overview-reader', () => {
       fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
       const result = getAccountOverviewData();
 
-      expect(result.accounts).toHaveLength(4);
+      expect(result.accounts).toHaveLength(3);
       const statuses = result.accounts.map((a) => a.status);
       expect(statuses).toContain('active');
       expect(statuses).toContain('exhausted');
       expect(statuses).toContain('expired');
-      expect(statuses).toContain('invalid');
+      // invalid keys are filtered out of account overview
+      expect(statuses).not.toContain('invalid');
     });
   });
 });

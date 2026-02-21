@@ -80,7 +80,7 @@ describe('Slash Command Prefetch - /product-manager Command', () => {
     });
 
     it('should define PRODUCT_MANAGER_DB constant', () => {
-      assert.match(hookCode, /const PRODUCT_MANAGER_DB = path\.join\(PROJECT_DIR, '\.claude', 'product-manager\.db'\)/);
+      assert.match(hookCode, /const PRODUCT_MANAGER_DB = path\.join\(PROJECT_DIR, '\.claude', 'state', 'product-manager\.db'\)/);
     });
 
     it('should open database using openDb helper', () => {

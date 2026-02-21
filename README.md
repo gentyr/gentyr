@@ -225,7 +225,7 @@ Three modes. Quota-interrupted sessions resume automatically via `--resume`. Dea
 
 ### task orchestration
 
-A background timer spawns agents for pending tasks every cycle. Concurrency capped at five simultaneous agents. The usage optimizer targets 90% API quota utilization by scaling all nineteen automation cooldowns through a single factor. When projected usage is low, agents spawn faster. When quota is tight, everything slows down.
+A background timer spawns agents for pending tasks every cycle. Urgent tasks dispatch immediately. Normal tasks wait one hour. Concurrency capped at five simultaneous agents. The usage optimizer targets 90% API quota utilization by scaling all nineteen automation cooldowns through a single factor. When projected usage is low, agents spawn faster. When quota is tight, everything slows down.
 
 ### code quality
 
