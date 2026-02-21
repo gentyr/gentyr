@@ -1428,7 +1428,7 @@ function approveProtectedAction(args: ApproveProtectedActionArgs): ApproveProtec
   // Verify pending_hmac with protection key
   const key = loadProtectionKey();
   if (key && request.pending_hmac) {
-    const expectedPendingHmac = computeHmac(key, code, request.server, request.tool, String(request.expires_timestamp));
+    const expectedPendingHmac = computeHmac(key, code, request.server, request.tool, request.argsHash || '', String(request.expires_timestamp));
     if (request.pending_hmac !== expectedPendingHmac) {
       // Forged request - delete it
       delete data.approvals[code];
@@ -1447,7 +1447,7 @@ function approveProtectedAction(args: ApproveProtectedActionArgs): ApproveProtec
   request.status = 'approved';
   request.approved_at = new Date().toISOString();
   request.approved_timestamp = Date.now();
-  request.approved_hmac = computeHmac(key, code, request.server, request.tool, 'approved', String(request.expires_timestamp));
+  request.approved_hmac = computeHmac(key, code, request.server, request.tool, 'approved', request.argsHash || '', String(request.expires_timestamp));
 
   saveApprovalsFile(data);
 

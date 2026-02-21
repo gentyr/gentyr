@@ -28,6 +28,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequest, checkApproval, loadProtectedActions } from './lib/approval-utils.js';
 
 // ============================================================================
 // Protected File Patterns
@@ -63,6 +64,32 @@ const BLOCKED_PATH_SUFFIXES = [
 ];
 // Note: The suffix '.claude/api-key-rotation.json' also blocks the user-level
 // path at ~/.claude/api-key-rotation.json since both end with the same suffix.
+
+/**
+ * Path suffixes that are ALWAYS hard-blocked with no approval escape hatch.
+ * These files control the approval system itself — granting access would
+ * compromise the security model.
+ */
+const ALWAYS_BLOCKED_SUFFIXES = new Set([
+  '.claude/protection-key',
+  '.claude/protected-action-approvals.json',
+  '.claude/bypass-approval-token.json',
+  '.claude/commit-approval-token.json',
+]);
+
+/**
+ * Basenames that are always hard-blocked with no approval escape hatch.
+ * Raw secrets files — no legitimate agent access.
+ */
+const ALWAYS_BLOCKED_BASENAMES = new Set([
+  '.env',
+  '.env.local',
+  '.env.production',
+  '.env.staging',
+  '.env.development',
+  '.env.test',
+  '.credentials.json',
+]);
 
 /**
  * Patterns matched against the full path
@@ -352,7 +379,7 @@ function extractFilePathsFromCommand(command) {
  * scripting language interpreters.
  *
  * @param {string} command
- * @returns {{ blocked: boolean, reason: string }}
+ * @returns {{ blocked: boolean, reason: string, matchedSuffix?: string }}
  */
 function scanRawCommandForProtectedPaths(command) {
   // Check for blocked path suffixes as substrings in the command.
@@ -362,6 +389,7 @@ function scanRawCommandForProtectedPaths(command) {
       return {
         blocked: true,
         reason: `Command references protected path "${suffix}"`,
+        matchedSuffix: suffix,
       };
     }
   }
@@ -417,6 +445,239 @@ function checkBashEnvAccess(command, credentialKeys) {
   }
 
   return { blocked: false, reason: '' };
+}
+
+// ============================================================================
+// File Approval Logic
+// ============================================================================
+
+/**
+ * Check if a normalized file path is always-blocked (no approval possible).
+ * @param {string} normalizedPath - Resolved, normalized file path
+ * @returns {boolean}
+ */
+function isAlwaysBlocked(normalizedPath) {
+  const basename = path.basename(normalizedPath);
+  const normalizedForSuffix = normalizedPath.replace(/\\/g, '/');
+
+  // Check always-blocked basenames (.env, .credentials.json, etc.)
+  if (ALWAYS_BLOCKED_BASENAMES.has(basename)) {
+    return true;
+  }
+
+  // Check always-blocked suffixes (protection-key, approval tokens)
+  for (const suffix of ALWAYS_BLOCKED_SUFFIXES) {
+    if (normalizedForSuffix.endsWith(suffix)) {
+      return true;
+    }
+  }
+
+  // Check .env.* pattern (any .env variant is always-blocked)
+  for (const pattern of BLOCKED_PATH_PATTERNS) {
+    if (pattern.test(normalizedPath)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Check if a path suffix is in the always-blocked set.
+ * @param {string} suffix - A BLOCKED_PATH_SUFFIXES entry
+ * @returns {boolean}
+ */
+function isAlwaysBlockedSuffix(suffix) {
+  return ALWAYS_BLOCKED_SUFFIXES.has(suffix);
+}
+
+/**
+ * Find file protection by suffix string (for raw command scan matches).
+ * @param {string} suffix - The matched suffix from BLOCKED_PATH_SUFFIXES
+ * @param {string} projectDir - The project directory
+ * @returns {{ key: string, config: object } | null}
+ */
+function findFileProtectionBySuffix(suffix, projectDir) {
+  try {
+    const config = loadProtectedActions();
+    if (!config || !config.files) {
+      return null;
+    }
+
+    // Check if suffix matches any file config key
+    for (const [key, fileConfig] of Object.entries(config.files)) {
+      if (suffix.endsWith(key) || key.endsWith(suffix) || suffix === key) {
+        return { key, config: fileConfig };
+      }
+    }
+
+    return null;
+  } catch (err) {
+    console.error(`[credential-file-guard] Warning: Could not load file protection config: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Find file protection configuration from protected-actions.json.
+ * Returns the matching file config if the file is in the approvable tier.
+ *
+ * @param {string} filePath - The file path being accessed
+ * @param {string} projectDir - The project directory
+ * @returns {{ key: string, config: object } | null}
+ */
+function findFileProtection(filePath, projectDir) {
+  try {
+    const config = loadProtectedActions();
+    if (!config || !config.files) {
+      return null;
+    }
+
+    const normalizedPath = path.resolve(filePath).replace(/\\/g, '/');
+
+    // Don't allow approval for always-blocked files
+    if (isAlwaysBlocked(normalizedPath)) {
+      return null;
+    }
+
+    for (const [key, fileConfig] of Object.entries(config.files)) {
+      if (normalizedPath.endsWith(key)) {
+        return { key, config: fileConfig };
+      }
+    }
+
+    return null;
+  } catch (err) {
+    console.error(`[credential-file-guard] Warning: Could not load file protection config: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Block a file operation but include the approval code and instructions.
+ * Used for approvable files (not always-blocked).
+ *
+ * @param {string} filePath - The file path
+ * @param {string} reason - Why it's blocked
+ * @param {object} request - The approval request from createRequest()
+ * @param {object} protection - The file protection config
+ */
+function blockWithApprovalRequest(filePath, reason, request, protection) {
+  const lines = [
+    'BLOCKED: Protected File Access (Approval Required)',
+    '',
+    `Why: ${reason}`,
+    '',
+    `Path: ${filePath}`,
+    '',
+  ];
+
+  if (protection.config.protection === 'deputy-cto-approval') {
+    lines.push(
+      `This file requires deputy-CTO approval. Submit a report to deputy-CTO with code: ${request.code}`,
+      `Or CTO can type: ${request.phrase} ${request.code}`,
+    );
+  } else {
+    lines.push(
+      `CTO must type: ${request.phrase} ${request.code}`,
+    );
+  }
+
+  lines.push(
+    '',
+    `This approval expires in ${request.expires_in_minutes} minutes and can only be used once.`,
+  );
+
+  const fullReason = lines.join('\n');
+
+  console.log(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: fullReason,
+    },
+  }));
+
+  console.error('');
+  console.error('══════════════════════════════════════════════════════════════');
+  console.error('  BLOCKED: Protected File (Approval Required)');
+  console.error('══════════════════════════════════════════════════════════════');
+  console.error('');
+  console.error(`  Why: ${reason}`);
+  console.error(`  Path: ${filePath}`);
+  console.error('');
+  if (protection.config.protection === 'deputy-cto-approval') {
+    console.error(`  Submit report to deputy-CTO with code: ${request.code}`);
+    console.error(`  Or CTO type: ${request.phrase} ${request.code}`);
+  } else {
+    console.error(`  CTO type: ${request.phrase} ${request.code}`);
+  }
+  console.error('');
+  console.error('══════════════════════════════════════════════════════════════');
+  console.error('');
+
+  process.exit(0);
+}
+
+/**
+ * Block a Bash command but include the approval code and instructions.
+ * Used for commands that reference approvable files.
+ *
+ * @param {string} command - The bash command
+ * @param {string} reason - Why it's blocked
+ * @param {object[]} approvalRequests - Array of { request, protection, filePath } for each approvable file
+ */
+function blockBashWithApprovalRequest(command, reason, approvalRequests) {
+  const truncatedCmd = command.length > 100 ? command.substring(0, 100) + '...' : command;
+  const lines = [
+    'BLOCKED: Credential Access via Bash (Approval Required)',
+    '',
+    `Why: ${reason}`,
+    '',
+    `Command: ${truncatedCmd}`,
+    '',
+  ];
+
+  for (const { request, protection } of approvalRequests) {
+    if (protection.config.protection === 'deputy-cto-approval') {
+      lines.push(`Submit report to deputy-CTO with code: ${request.code} or CTO type: ${request.phrase} ${request.code}`);
+    } else {
+      lines.push(`CTO must type: ${request.phrase} ${request.code}`);
+    }
+  }
+
+  lines.push('', `Approvals expire in ${approvalRequests[0].request.expires_in_minutes} minutes and can only be used once.`);
+
+  const fullReason = lines.join('\n');
+
+  console.log(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: fullReason,
+    },
+  }));
+
+  console.error('');
+  console.error('══════════════════════════════════════════════════════════════');
+  console.error('  BASH BLOCKED: Protected File (Approval Required)');
+  console.error('══════════════════════════════════════════════════════════════');
+  console.error('');
+  console.error(`  Why: ${reason}`);
+  console.error(`  Command: ${truncatedCmd}`);
+  console.error('');
+  for (const { request, protection } of approvalRequests) {
+    if (protection.config.protection === 'deputy-cto-approval') {
+      console.error(`  Submit to deputy-CTO with code: ${request.code} or CTO type: ${request.phrase} ${request.code}`);
+    } else {
+      console.error(`  CTO type: ${request.phrase} ${request.code}`);
+    }
+  }
+  console.error('');
+  console.error('══════════════════════════════════════════════════════════════');
+  console.error('');
+
+  process.exit(0);
 }
 
 // ============================================================================
@@ -597,10 +858,60 @@ process.stdin.on('end', () => {
 
       // Check 1: File paths extracted from command tokens
       const filePaths = extractFilePathsFromCommand(command);
+      const blockedApprovable = [];
+      let hasAlwaysBlocked = false;
+      let firstBlockReason = '';
+
       for (const fp of filePaths) {
         const result = checkFilePath(fp, projectDir);
         if (result.blocked) {
-          blockBash(command, result.reason);
+          const normalizedPath = path.resolve(fp);
+          if (!firstBlockReason) firstBlockReason = result.reason;
+
+          if (isAlwaysBlocked(normalizedPath)) {
+            hasAlwaysBlocked = true;
+            break; // Any always-blocked file → hard block the whole command
+          }
+
+          const protection = findFileProtection(fp, projectDir);
+          if (protection) {
+            blockedApprovable.push({ filePath: fp, reason: result.reason, protection });
+          } else {
+            // Blocked but not in approvable config → hard block
+            hasAlwaysBlocked = true;
+            break;
+          }
+        }
+      }
+
+      if (hasAlwaysBlocked) {
+        blockBash(command, firstBlockReason);
+        return;
+      }
+
+      // Track which file config keys were approved (to skip raw scan for the same paths)
+      const approvedFileKeys = new Set();
+
+      if (blockedApprovable.length > 0) {
+        // Check if all approvable files have approvals
+        let allApproved = true;
+        const approvalRequests = [];
+
+        for (const { filePath: fp, reason, protection } of blockedApprovable) {
+          const approval = checkApproval('__file__', protection.key);
+          if (approval) {
+            approvedFileKeys.add(protection.key);
+          } else {
+            allApproved = false;
+            const request = createRequest('__file__', protection.key, {}, protection.config.phrase);
+            approvalRequests.push({ request, protection, filePath: fp });
+          }
+        }
+
+        if (allApproved) {
+          // All files approved — fall through to remaining checks
+        } else {
+          blockBashWithApprovalRequest(command, blockedApprovable[0].reason, approvalRequests);
           return;
         }
       }
@@ -609,8 +920,34 @@ process.stdin.on('end', () => {
       // Catches: python3 -c "open('.mcp.json')", node -e "fs.readFileSync('.env')", etc.
       const rawScanResult = scanRawCommandForProtectedPaths(command);
       if (rawScanResult.blocked) {
-        blockBash(command, rawScanResult.reason);
-        return;
+        const matchedSuffix = rawScanResult.matchedSuffix;
+
+        // Skip if this path was already approved in Check 1 (token extraction)
+        const alreadyApproved = matchedSuffix && !isAlwaysBlockedSuffix(matchedSuffix) &&
+          [...approvedFileKeys].some(key => matchedSuffix.endsWith(key) || key.endsWith(matchedSuffix) || matchedSuffix === key);
+
+        if (!alreadyApproved) {
+          // Check if the matched suffix is approvable (not always-blocked)
+          if (matchedSuffix && !isAlwaysBlockedSuffix(matchedSuffix)) {
+            const protection = findFileProtectionBySuffix(matchedSuffix, projectDir);
+            if (protection) {
+              const approval = checkApproval('__file__', protection.key);
+              if (approval) {
+                // Approved — fall through to remaining checks
+              } else {
+                const request = createRequest('__file__', protection.key, {}, protection.config.phrase);
+                blockBashWithApprovalRequest(command, rawScanResult.reason, [{ request, protection, filePath: matchedSuffix }]);
+                return;
+              }
+            } else {
+              blockBash(command, rawScanResult.reason);
+              return;
+            }
+          } else {
+            blockBash(command, rawScanResult.reason);
+            return;
+          }
+        }
       }
 
       // Check 3: Credential env var references
@@ -705,8 +1042,33 @@ process.stdin.on('end', () => {
     const result = checkFilePath(filePath, projectDir);
 
     if (result.blocked) {
+      const normalizedPath = path.resolve(filePath);
+
+      // Always-blocked files: hard deny, no approval possible
+      if (isAlwaysBlocked(normalizedPath)) {
+        blockRead(filePath, result.reason);
+        return;
+      }
+
+      // Check if file is in the approvable tier
+      const protection = findFileProtection(filePath, projectDir);
+      if (protection) {
+        // Check for existing valid approval
+        const approval = checkApproval('__file__', protection.key);
+        if (approval) {
+          // Approved — allow access
+          process.exit(0);
+        }
+
+        // No approval — create request and block with instructions
+        const request = createRequest('__file__', protection.key, {}, protection.config.phrase);
+        blockWithApprovalRequest(filePath, result.reason, request, protection);
+        return;
+      }
+
+      // Not in approvable config — hard block
       blockRead(filePath, result.reason);
-      return; // blockRead calls process.exit, but just in case
+      return;
     }
 
     // File is allowed

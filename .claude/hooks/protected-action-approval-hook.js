@@ -129,13 +129,18 @@ function loadProtectedActions() {
  * @returns {string[]}
  */
 function getValidPhrases(config) {
-  if (!config || !config.servers) {
-    return [];
+  const phrases = [];
+  if (config?.servers) {
+    for (const s of Object.values(config.servers)) {
+      if (s.phrase) phrases.push(s.phrase.toUpperCase());
+    }
   }
-  return Object.values(config.servers)
-    .map(s => s.phrase)
-    .filter(Boolean)
-    .map(p => p.toUpperCase());
+  if (config?.files) {
+    for (const f of Object.values(config.files)) {
+      if (f.phrase) phrases.push(f.phrase.toUpperCase());
+    }
+  }
+  return phrases;
 }
 
 // ============================================================================
