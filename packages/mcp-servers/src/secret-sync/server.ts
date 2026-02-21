@@ -28,6 +28,7 @@ import {
   DevServerStartArgsSchema,
   DevServerStopArgsSchema,
   DevServerStatusArgsSchema,
+  RunCommandArgsSchema,
   ServicesConfigSchema,
   type SyncSecretsArgs,
   type ListMappingsArgs,
@@ -35,6 +36,7 @@ import {
   type DevServerStartArgs,
   type DevServerStopArgs,
   type DevServerStatusArgs,
+  type RunCommandArgs,
   type ServicesConfig,
   type SyncResult,
   type MappingResult,
@@ -48,6 +50,8 @@ import {
   type DevServerServiceResult,
   type DevServerStopServiceResult,
   type DevServerStatusService,
+  type RunCommandForegroundResult,
+  type RunCommandBackgroundResult,
 } from './types.js';
 
 const { RENDER_API_KEY, VERCEL_TOKEN, VERCEL_TEAM_ID, OP_SERVICE_ACCOUNT_TOKEN } = process.env;
@@ -718,6 +722,297 @@ async function verifySecrets(args: VerifySecretsArgs): Promise<VerifyResult> {
 }
 
 // ============================================================================
+// Run Command — Security & Sanitization
+// ============================================================================
+
+/** Infrastructure credentials that must NOT leak to child processes */
+const INFRA_CRED_KEYS = new Set([
+  'OP_SERVICE_ACCOUNT_TOKEN',
+  'RENDER_API_KEY',
+  'VERCEL_TOKEN',
+  'VERCEL_TEAM_ID',
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+]);
+
+const DEFAULT_ALLOWED_EXECUTABLES = new Set([
+  'pnpm', 'npx', 'node', 'tsx', 'playwright', 'prisma', 'drizzle-kit', 'vitest',
+]);
+
+const BLOCKED_ARGS = new Set(['-e', '--eval', '-c', '--print', '-p']);
+
+/**
+ * Validate command against executable allowlist and blocked args.
+ * Throws on violation.
+ */
+function validateCommand(command: string[], allowedExtras: string[] = []): void {
+  const executable = command[0];
+  const allowed = new Set([...DEFAULT_ALLOWED_EXECUTABLES, ...allowedExtras]);
+
+  if (!allowed.has(executable)) {
+    throw new Error(
+      `Executable "${executable}" is not in the allowlist. ` +
+      `Allowed: ${[...allowed].sort().join(', ')}`
+    );
+  }
+
+  for (const arg of command.slice(1)) {
+    if (BLOCKED_ARGS.has(arg)) {
+      throw new Error(
+        `Argument "${arg}" is blocked for security. ` +
+        `Inline code execution is not allowed.`
+      );
+    }
+  }
+}
+
+/**
+ * Build a sanitizer function that replaces secret values in text with [REDACTED:KEY].
+ * Handles base64, URL-encoded, and hex-encoded forms.
+ * Skips values <= 3 chars (too many false positives).
+ */
+function createSanitizer(resolvedEnv: Record<string, string>): (text: string) => string {
+  const replacements: Array<{ pattern: string; replacement: string }> = [];
+
+  for (const [key, value] of Object.entries(resolvedEnv)) {
+    if (value.length <= 3) continue;
+
+    const redacted = `[REDACTED:${key}]`;
+
+    // Plain value
+    replacements.push({ pattern: value, replacement: redacted });
+
+    // Base64-encoded
+    try {
+      const b64 = Buffer.from(value).toString('base64');
+      if (b64 !== value) replacements.push({ pattern: b64, replacement: redacted });
+    } catch { /* ignore encoding errors */ }
+
+    // URL-encoded
+    try {
+      const urlEncoded = encodeURIComponent(value);
+      if (urlEncoded !== value) replacements.push({ pattern: urlEncoded, replacement: redacted });
+    } catch { /* ignore encoding errors */ }
+
+    // Hex-encoded
+    try {
+      const hex = Buffer.from(value).toString('hex');
+      if (hex !== value) replacements.push({ pattern: hex, replacement: redacted });
+    } catch { /* ignore encoding errors */ }
+  }
+
+  // Sort by pattern length descending (longer patterns first to avoid partial matches)
+  replacements.sort((a, b) => b.pattern.length - a.pattern.length);
+
+  return (text: string): string => {
+    let result = text;
+    for (const { pattern, replacement } of replacements) {
+      // Use split/join for literal string replacement (no regex escaping needed)
+      result = result.split(pattern).join(replacement);
+    }
+    return result;
+  };
+}
+
+/**
+ * Run a command in foreground mode: spawn, collect sanitized output, enforce timeout.
+ */
+async function runCommandForeground(
+  command: string[],
+  childEnv: Record<string, string>,
+  sanitize: (text: string) => string,
+  cwd: string,
+  timeout: number,
+  maxLines: number,
+): Promise<RunCommandForegroundResult> {
+  const startTime = Date.now();
+
+  return new Promise((resolvePromise) => {
+    const child = spawn(command[0], command.slice(1), {
+      env: childEnv,
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+    });
+
+    const outputBuffer: string[] = [];
+    let timedOut = false;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      setTimeout(() => {
+        if (isProcessAlive(child.pid!)) child.kill('SIGKILL');
+      }, 5000);
+    }, timeout);
+
+    const collectOutput = (data: Buffer) => {
+      const lines = data.toString().split('\n').filter(Boolean);
+      for (const line of lines) {
+        outputBuffer.push(sanitize(line));
+      }
+    };
+
+    child.stdout?.on('data', collectOutput);
+    child.stderr?.on('data', collectOutput);
+
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      const durationMs = Date.now() - startTime;
+
+      // Take last N lines
+      const truncated = outputBuffer.length > maxLines;
+      const output = truncated
+        ? outputBuffer.slice(-maxLines)
+        : outputBuffer;
+
+      resolvePromise({
+        mode: 'foreground',
+        exitCode: code ?? -1,
+        signal: signal ?? null,
+        timedOut,
+        output,
+        outputTruncated: truncated,
+        secretsResolved: 0, // filled by caller
+        secretsFailed: [],  // filled by caller
+        durationMs,
+      });
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      const durationMs = Date.now() - startTime;
+      resolvePromise({
+        mode: 'foreground',
+        exitCode: -1,
+        signal: null,
+        timedOut: false,
+        output: [sanitize(`Spawn error: ${err.message}`)],
+        outputTruncated: false,
+        secretsResolved: 0,
+        secretsFailed: [],
+        durationMs,
+      });
+    });
+  });
+}
+
+/**
+ * Run a command in background mode: spawn, register in managedProcesses.
+ */
+function runCommandBackground(
+  command: string[],
+  childEnv: Record<string, string>,
+  cwd: string,
+  label: string,
+): RunCommandBackgroundResult {
+  const child = spawn(command[0], command.slice(1), {
+    env: childEnv,
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: false,
+    detached: false,
+  });
+
+  const pid = child.pid;
+  if (!pid) {
+    throw new Error('Failed to spawn process (no PID)');
+  }
+
+  const name = `run:${label}`;
+  const managed: ManagedProcess = {
+    name,
+    label,
+    process: child,
+    pid,
+    port: 0,
+    startedAt: Date.now(),
+    outputBuffer: [],
+  };
+
+  child.stdout?.on('data', (data: Buffer) => {
+    const lines = data.toString().split('\n').filter(Boolean);
+    for (const line of lines) appendOutput(managed, line);
+  });
+  child.stderr?.on('data', (data: Buffer) => {
+    const lines = data.toString().split('\n').filter(Boolean);
+    for (const line of lines) appendOutput(managed, line);
+  });
+
+  child.on('exit', () => {
+    managedProcesses.delete(name);
+  });
+
+  managedProcesses.set(name, managed);
+
+  return {
+    mode: 'background',
+    pid,
+    label,
+    secretsResolved: 0, // filled by caller
+    secretsFailed: [],   // filled by caller
+  };
+}
+
+/**
+ * Main handler for secret_run_command tool.
+ */
+async function runCommand(args: RunCommandArgs): Promise<RunCommandForegroundResult | RunCommandBackgroundResult> {
+  const config = loadServicesConfig();
+
+  // Validate command
+  const allowedExtras = config.runCommandConfig?.allowedExecutables || [];
+  validateCommand(args.command, allowedExtras);
+
+  // Validate cwd is within PROJECT_DIR
+  const cwd = args.cwd ? safeProjectPath(args.cwd) : resolve(PROJECT_DIR);
+
+  // Resolve secrets
+  const { resolvedEnv, failedKeys } = resolveLocalSecrets(config);
+
+  // Filter to requested subset if specified
+  let injectedEnv: Record<string, string>;
+  if (args.secretKeys) {
+    injectedEnv = {};
+    for (const key of args.secretKeys) {
+      if (key in resolvedEnv) {
+        injectedEnv[key] = resolvedEnv[key];
+      } else if (!failedKeys.includes(key)) {
+        failedKeys.push(key);
+      }
+    }
+  } else {
+    injectedEnv = resolvedEnv;
+  }
+
+  // Build child env: parent env minus infra creds, plus resolved secrets
+  const childEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && !INFRA_CRED_KEYS.has(k)) childEnv[k] = v;
+  }
+  Object.assign(childEnv, injectedEnv);
+
+  const secretsResolved = Object.keys(injectedEnv).length;
+
+  if (args.background) {
+    const label = args.label || args.command[0];
+    const result = runCommandBackground(args.command, childEnv, cwd, label);
+    result.secretsResolved = secretsResolved;
+    result.secretsFailed = failedKeys;
+    return result;
+  }
+
+  // Foreground mode — create sanitizer from resolved secrets
+  const sanitize = createSanitizer(injectedEnv);
+  const result = await runCommandForeground(
+    args.command, childEnv, sanitize, cwd, args.timeout, args.outputLines,
+  );
+  result.secretsResolved = secretsResolved;
+  result.secretsFailed = failedKeys;
+  return result;
+}
+
+// ============================================================================
 // Dev Server Tool Handlers
 // ============================================================================
 
@@ -782,16 +1077,6 @@ async function devServerStart(args: DevServerStartArgs): Promise<DevServerStartR
     }
 
     try {
-      // Infrastructure credentials that must NOT leak to dev server child processes
-      const INFRA_CRED_KEYS = new Set([
-        'OP_SERVICE_ACCOUNT_TOKEN',
-        'RENDER_API_KEY',
-        'VERCEL_TOKEN',
-        'VERCEL_TEAM_ID',
-        'GH_TOKEN',
-        'GITHUB_TOKEN',
-      ]);
-
       const childEnv: Record<string, string> = {};
       // Copy parent env vars, excluding infrastructure credentials
       for (const [k, v] of Object.entries(process.env)) {
@@ -991,6 +1276,12 @@ const tools = [
     description: 'Check status of managed dev servers. Returns running state, uptime, and detected ports. No secret values exposed.',
     schema: DevServerStatusArgsSchema,
     handler: devServerStatus as (args: unknown) => unknown,
+  },
+  {
+    name: 'secret_run_command',
+    description: 'Run an arbitrary command with 1Password secrets injected into env vars. Secrets are resolved in MCP server memory and never returned to the agent. Output is sanitized to redact any leaked secret values. Executable must be in the allowlist (pnpm, npx, node, tsx, playwright, prisma, drizzle-kit, vitest). No shell interpretation — command is an argv array.',
+    schema: RunCommandArgsSchema,
+    handler: runCommand as (args: unknown) => unknown,
   },
 ] satisfies AnyToolHandler[];
 

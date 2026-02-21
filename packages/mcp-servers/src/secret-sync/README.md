@@ -177,6 +177,62 @@ Verify that secrets exist on target platform(s) without revealing values.
 
 **Note:** Only checks existence, never returns secret values.
 
+---
+
+### `secret_run_command`
+
+Run an arbitrary command with 1Password secrets injected into environment variables. Secret values are resolved in MCP server memory, injected into the child process, and never returned to the agent. Output is sanitized to redact any accidentally leaked secret values.
+
+**Security model:**
+- Executable must be in allowlist: `pnpm`, `npx`, `node`, `tsx`, `playwright`, `prisma`, `drizzle-kit`, `vitest`
+- No shell interpretation — command is an argv array (`shell: false`)
+- Inline eval args blocked: `-e`, `--eval`, `-c`, `--print`, `-p`
+- Infrastructure credentials (`OP_SERVICE_ACCOUNT_TOKEN`, `RENDER_API_KEY`, etc.) filtered from child env
+- All output sanitized: secret values replaced with `[REDACTED:KEY_NAME]`
+
+**Input:**
+```typescript
+{
+  command: string[],          // argv array, e.g. ["npx", "playwright", "test"]
+  background?: boolean,       // default false — if true, returns PID only
+  cwd?: string,              // working dir (must be within PROJECT_DIR)
+  timeout?: number,          // ms, default 120000, max 600000 (foreground only)
+  secretKeys?: string[],     // subset of secrets.local keys to inject (omit = all)
+  outputLines?: number,      // max output lines, default 100 (foreground only)
+  label?: string,            // label for background process tracking
+}
+```
+
+**Output (foreground):**
+```typescript
+{
+  mode: "foreground",
+  exitCode: 0,
+  signal: null,
+  timedOut: false,
+  output: ["PASS  tests/login.spec.ts", "  2 passed"],
+  outputTruncated: false,
+  secretsResolved: 5,
+  secretsFailed: [],
+  durationMs: 12340
+}
+```
+
+**Output (background):**
+```typescript
+{
+  mode: "background",
+  pid: 12345,
+  label: "playwright",
+  secretsResolved: 5,
+  secretsFailed: []
+}
+```
+
+Background processes are tracked alongside dev servers — use `secret_dev_server_status` to check and `secret_dev_server_stop` to terminate.
+
+**Note:** All output is sanitized. Secret values that appear in stdout/stderr are replaced with `[REDACTED:KEY_NAME]`.
+
 ## Usage Examples
 
 ### Sync all secrets to production
@@ -200,6 +256,23 @@ mcp__secret-sync__secret_verify_secrets({
 ```typescript
 mcp__secret-sync__secret_list_mappings({
   target: "render-staging"
+})
+```
+
+### Run Playwright tests with secrets
+
+```typescript
+mcp__secret-sync__secret_run_command({
+  command: ["npx", "playwright", "test", "--project=demo"]
+})
+```
+
+### Run database seed with secrets
+
+```typescript
+mcp__secret-sync__secret_run_command({
+  command: ["npx", "prisma", "db", "seed"],
+  timeout: 300000
 })
 ```
 
