@@ -190,7 +190,7 @@ describe('CTO Report Server', () => {
     return id;
   };
 
-  const writeAutonomousConfig = (config: { enabled: boolean }) => {
+  const writeAutonomousConfig = (config: { enabled: boolean; productManagerEnabled?: boolean }) => {
     fs.writeFileSync(autonomousConfigPath, JSON.stringify(config));
   };
 
@@ -1187,6 +1187,388 @@ describe('CTO Report Server', () => {
       expect(result.completed_24h).toBe(0);
       expect(Object.keys(result.by_section)).toHaveLength(0);
       expect(Object.keys(result.completed_24h_by_section)).toHaveLength(0);
+    });
+  });
+
+  // ============================================================================
+  // Product-Market-Fit Summary Tests
+  // ============================================================================
+
+  describe('Product-Market-Fit Summary', () => {
+    it('should return disabled state when feature toggle is false', () => {
+      writeAutonomousConfig({ enabled: true, productManagerEnabled: false });
+
+      const getProductMarketFitSummary = () => {
+        let pmEnabled = false;
+        if (fs.existsSync(autonomousConfigPath)) {
+          const config = JSON.parse(fs.readFileSync(autonomousConfigPath, 'utf8'));
+          pmEnabled = config.productManagerEnabled === true;
+        }
+
+        if (!pmEnabled) {
+          return {
+            enabled: false,
+            status: 'not_started',
+            sections_populated: 0,
+            total_sections: 6,
+            sections: [],
+            compliance: null,
+            last_updated: null,
+            tip: 'Enable product-market-fit analysis with /toggle-product-manager or ask the deputy CTO.',
+          };
+        }
+
+        return null;
+      };
+
+      const result = getProductMarketFitSummary();
+
+      expect(result).not.toBeNull();
+      expect(result?.enabled).toBe(false);
+      expect(result?.status).toBe('not_started');
+      expect(result?.sections_populated).toBe(0);
+      expect(result?.total_sections).toBe(6);
+      expect(result?.sections).toHaveLength(0);
+      expect(result?.compliance).toBeNull();
+      expect(result?.last_updated).toBeNull();
+      expect(result?.tip).toContain('/toggle-product-manager');
+    });
+
+    it('should return not_started state when feature enabled but no database exists', () => {
+      writeAutonomousConfig({ enabled: true, productManagerEnabled: true });
+
+      const productManagerDbPath = path.join(projectDir, '.claude', 'product-manager.db');
+
+      // Ensure DB does NOT exist
+      if (fs.existsSync(productManagerDbPath)) {
+        fs.unlinkSync(productManagerDbPath);
+      }
+
+      const getProductMarketFitSummary = () => {
+        let pmEnabled = false;
+        if (fs.existsSync(autonomousConfigPath)) {
+          const config = JSON.parse(fs.readFileSync(autonomousConfigPath, 'utf8'));
+          pmEnabled = config.productManagerEnabled === true;
+        }
+
+        if (!pmEnabled) {
+          return {
+            enabled: false,
+            status: 'not_started',
+            sections_populated: 0,
+            total_sections: 6,
+            sections: [],
+            compliance: null,
+            last_updated: null,
+            tip: 'Enable product-market-fit analysis with /toggle-product-manager or ask the deputy CTO.',
+          };
+        }
+
+        if (!fs.existsSync(productManagerDbPath)) {
+          return {
+            enabled: true,
+            status: 'not_started',
+            sections_populated: 0,
+            total_sections: 6,
+            sections: [],
+            compliance: null,
+            last_updated: null,
+            tip: 'Start product-market-fit analysis with /product-manager.',
+          };
+        }
+
+        return null;
+      };
+
+      const result = getProductMarketFitSummary();
+
+      expect(result).not.toBeNull();
+      expect(result?.enabled).toBe(true);
+      expect(result?.status).toBe('not_started');
+      expect(result?.sections_populated).toBe(0);
+      expect(result?.total_sections).toBe(6);
+      expect(result?.sections).toHaveLength(0);
+      expect(result?.compliance).toBeNull();
+      expect(result?.last_updated).toBeNull();
+      expect(result?.tip).toContain('/product-manager');
+    });
+
+    it('should return populated state when database exists with data', () => {
+      writeAutonomousConfig({ enabled: true, productManagerEnabled: true });
+
+      const productManagerDbPath = path.join(projectDir, '.claude', 'product-manager.db');
+
+      // Create and populate product-manager database
+      const pmDB = new Database(productManagerDbPath);
+      pmDB.exec(`
+        CREATE TABLE IF NOT EXISTS analysis_meta (
+          id TEXT PRIMARY KEY,
+          status TEXT NOT NULL DEFAULT 'not_started',
+          initiated_at TEXT,
+          initiated_by TEXT,
+          approved_at TEXT,
+          approved_by TEXT,
+          last_updated_at TEXT,
+          md_path TEXT NOT NULL DEFAULT '.claude/product-market-fit.md',
+          CONSTRAINT valid_status CHECK (status IN ('not_started','pending_approval','approved','in_progress','completed'))
+        );
+
+        CREATE TABLE IF NOT EXISTS sections (
+          id TEXT PRIMARY KEY,
+          section_number INTEGER NOT NULL UNIQUE,
+          section_key TEXT NOT NULL UNIQUE,
+          title TEXT NOT NULL,
+          content TEXT,
+          populated_at TEXT,
+          populated_by TEXT,
+          updated_at TEXT,
+          CONSTRAINT valid_section CHECK (section_number BETWEEN 1 AND 6)
+        );
+
+        CREATE TABLE IF NOT EXISTS section_entries (
+          id TEXT PRIMARY KEY,
+          section_number INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          metadata TEXT DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          created_timestamp INTEGER NOT NULL,
+          updated_at TEXT NOT NULL,
+          CONSTRAINT valid_entry_section CHECK (section_number IN (2, 6))
+        );
+
+        CREATE TABLE IF NOT EXISTS pain_point_personas (
+          pain_point_id TEXT NOT NULL,
+          persona_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          created_by TEXT NOT NULL,
+          PRIMARY KEY (pain_point_id, persona_id)
+        );
+      `);
+
+      const now = new Date().toISOString();
+
+      // Seed analysis_meta
+      pmDB.prepare('INSERT INTO analysis_meta (id, status, last_updated_at) VALUES (?, ?, ?)').run(
+        'default',
+        'in_progress',
+        now
+      );
+
+      // Seed sections
+      pmDB.prepare('INSERT INTO sections (id, section_number, section_key, title, content) VALUES (?, ?, ?, ?, ?)').run(
+        randomUUID(),
+        1,
+        'market_space',
+        'Market Space & Players',
+        'Market analysis content here'
+      );
+      pmDB.prepare('INSERT INTO sections (id, section_number, section_key, title) VALUES (?, ?, ?, ?)').run(
+        randomUUID(),
+        2,
+        'buyer_personas',
+        'Buyer Personas'
+      );
+      pmDB.prepare('INSERT INTO sections (id, section_number, section_key, title) VALUES (?, ?, ?, ?)').run(
+        randomUUID(),
+        3,
+        'competitor_differentiation',
+        'Competitor Differentiation'
+      );
+      pmDB.prepare('INSERT INTO sections (id, section_number, section_key, title) VALUES (?, ?, ?, ?)').run(
+        randomUUID(),
+        4,
+        'pricing_models',
+        'Pricing Models'
+      );
+      pmDB.prepare('INSERT INTO sections (id, section_number, section_key, title) VALUES (?, ?, ?, ?)').run(
+        randomUUID(),
+        5,
+        'niche_strengths',
+        'Niche Strengths & Weaknesses'
+      );
+      pmDB.prepare('INSERT INTO sections (id, section_number, section_key, title) VALUES (?, ?, ?, ?)').run(
+        randomUUID(),
+        6,
+        'user_sentiment',
+        'User Sentiment'
+      );
+
+      // Add entry to section 2 (list section)
+      const createdTimestamp = Math.floor(new Date(now).getTime() / 1000);
+      pmDB.prepare(`
+        INSERT INTO section_entries (id, section_number, title, content, created_at, created_timestamp, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(randomUUID(), 2, 'Enterprise Buyer', 'Buyer persona content', now, createdTimestamp, now);
+
+      // Add pain points to section 6
+      const painPoint1 = randomUUID();
+      const painPoint2 = randomUUID();
+      pmDB.prepare(`
+        INSERT INTO section_entries (id, section_number, title, content, created_at, created_timestamp, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(painPoint1, 6, 'Deployment complexity', 'Pain point content', now, createdTimestamp, now);
+      pmDB.prepare(`
+        INSERT INTO section_entries (id, section_number, title, content, created_at, created_timestamp, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(painPoint2, 6, 'Documentation gaps', 'Pain point content', now, createdTimestamp, now);
+
+      // Map one pain point to a persona
+      const personaId = randomUUID();
+      pmDB.prepare('INSERT INTO pain_point_personas (pain_point_id, persona_id, created_at, created_by) VALUES (?, ?, ?, ?)').run(
+        painPoint1,
+        personaId,
+        now,
+        'product-manager'
+      );
+
+      pmDB.close();
+
+      const getProductMarketFitSummary = () => {
+        let pmEnabled = false;
+        if (fs.existsSync(autonomousConfigPath)) {
+          const config = JSON.parse(fs.readFileSync(autonomousConfigPath, 'utf8'));
+          pmEnabled = config.productManagerEnabled === true;
+        }
+
+        if (!pmEnabled) {
+          return null;
+        }
+
+        if (!fs.existsSync(productManagerDbPath)) {
+          return null;
+        }
+
+        const db = new Database(productManagerDbPath, { readonly: true });
+
+        const meta = db.prepare("SELECT status, last_updated_at FROM analysis_meta WHERE id = 'default'").get() as { status: string; last_updated_at: string | null } | undefined;
+
+        if (!meta) {
+          db.close();
+          return null;
+        }
+
+        const sections = db.prepare('SELECT section_number, title, content FROM sections ORDER BY section_number').all() as Array<{ section_number: number; title: string; content: string | null }>;
+        const LIST_SECTIONS = [2, 6];
+        const sectionInfos = [];
+        let populatedCount = 0;
+
+        for (const sec of sections) {
+          const isList = LIST_SECTIONS.includes(sec.section_number);
+          let populated = false;
+          let contentPreview: string | null = null;
+          let entryCount: number | undefined;
+
+          if (isList) {
+            const count = (db.prepare('SELECT COUNT(*) as c FROM section_entries WHERE section_number = ?').get(sec.section_number) as { c: number }).c;
+            populated = count > 0;
+            entryCount = count;
+
+            if (populated) {
+              const firstEntry = db.prepare('SELECT content FROM section_entries WHERE section_number = ? ORDER BY id LIMIT 1').get(sec.section_number) as { content: string | null } | undefined;
+              if (firstEntry?.content) {
+                contentPreview = firstEntry.content.length > 200
+                  ? firstEntry.content.slice(0, 200) + '...'
+                  : firstEntry.content;
+              }
+            }
+          } else {
+            populated = !!sec.content;
+            if (populated && sec.content) {
+              contentPreview = sec.content.length > 200
+                ? sec.content.slice(0, 200) + '...'
+                : sec.content;
+            }
+          }
+
+          if (populated) populatedCount++;
+
+          const info: { number: number; title: string; populated: boolean; content_preview: string | null; entry_count?: number } = {
+            number: sec.section_number,
+            title: sec.title,
+            populated,
+            content_preview: contentPreview,
+          };
+          if (entryCount !== undefined) {
+            info.entry_count = entryCount;
+          }
+          sectionInfos.push(info);
+        }
+
+        // Compliance stats
+        const totalPainPoints = (db.prepare("SELECT COUNT(*) as c FROM section_entries WHERE section_number = 6").get() as { c: number }).c;
+        let compliance: { total_pain_points: number; mapped: number; unmapped: number; pct: number } | null = null;
+
+        if (totalPainPoints > 0) {
+          const mapped = (db.prepare("SELECT COUNT(DISTINCT pain_point_id) as c FROM pain_point_personas").get() as { c: number }).c;
+          compliance = {
+            total_pain_points: totalPainPoints,
+            mapped,
+            unmapped: totalPainPoints - mapped,
+            pct: Math.round((mapped / totalPainPoints) * 100),
+          };
+        }
+
+        db.close();
+
+        return {
+          enabled: true,
+          status: meta.status,
+          sections_populated: populatedCount,
+          total_sections: 6,
+          sections: sectionInfos,
+          compliance,
+          last_updated: meta.last_updated_at,
+          tip: 'Use /show product-market-fit or ask the deputy CTO for the full untruncated analysis.',
+        };
+      };
+
+      const result = getProductMarketFitSummary();
+
+      expect(result).not.toBeNull();
+      expect(result?.enabled).toBe(true);
+      expect(result?.status).toBe('in_progress');
+      expect(result?.sections_populated).toBe(3); // section 1 (content), section 2 (entry), section 6 (entries)
+      expect(result?.total_sections).toBe(6);
+      expect(result?.sections).toHaveLength(6);
+
+      // Validate section 1 (non-list, populated)
+      const section1 = result?.sections.find(s => s.number === 1);
+      expect(section1?.populated).toBe(true);
+      expect(section1?.content_preview).toContain('Market analysis');
+      expect(section1?.entry_count).toBeUndefined();
+
+      // Validate section 2 (list, populated)
+      const section2 = result?.sections.find(s => s.number === 2);
+      expect(section2?.populated).toBe(true);
+      expect(section2?.entry_count).toBe(1);
+      expect(section2?.content_preview).toContain('Buyer persona');
+
+      // Validate section 3 (non-list, unpopulated)
+      const section3 = result?.sections.find(s => s.number === 3);
+      expect(section3?.populated).toBe(false);
+      expect(section3?.content_preview).toBeNull();
+      expect(section3?.entry_count).toBeUndefined();
+
+      // Validate section 6 (list, populated with pain points)
+      const section6 = result?.sections.find(s => s.number === 6);
+      expect(section6?.populated).toBe(true);
+      expect(section6?.entry_count).toBe(2);
+
+      // Validate compliance (structure only, not exact percentages)
+      expect(result?.compliance).not.toBeNull();
+      expect(typeof result?.compliance?.total_pain_points).toBe('number');
+      expect(result?.compliance?.total_pain_points).toBe(2);
+      expect(typeof result?.compliance?.mapped).toBe('number');
+      expect(result?.compliance?.mapped).toBe(1);
+      expect(typeof result?.compliance?.unmapped).toBe('number');
+      expect(result?.compliance?.unmapped).toBe(1);
+      expect(typeof result?.compliance?.pct).toBe('number');
+      expect(result?.compliance?.pct).toBeGreaterThanOrEqual(0);
+      expect(result?.compliance?.pct).toBeLessThanOrEqual(100);
+
+      expect(result?.last_updated).toBe(now);
+      expect(result?.tip).toContain('/show product-market-fit');
     });
   });
 

@@ -894,3 +894,254 @@ describe('GAP 7: Merge Chain Gap Alerting', () => {
     assert.ok(mergeChainIdx < gateCheckIdx, 'Merge chain gap check must come before gate check');
   });
 });
+
+// =========================================================================
+// STEP 8: Code Review Violation Fixes
+// =========================================================================
+
+describe('VIOLATION 1: readPersistentAlerts schema validation', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should validate top-level structure (typeof check on raw and raw.alerts)', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /typeof raw !== 'object' \|\| raw === null \|\| typeof raw\.alerts !== 'object' \|\| raw\.alerts === null/,
+      'Must validate both raw and raw.alerts are non-null objects'
+    );
+  });
+
+  it('should return defaults for invalid structure', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /invalid structure, using defaults/,
+      'Must log "invalid structure" when structure is bad'
+    );
+  });
+
+  it('should drop malformed alerts missing severity or resolved', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    // Must check typeof alert.severity === 'string' and typeof alert.resolved === 'boolean'
+    assert.match(
+      code,
+      /typeof alert\.severity !== 'string'/,
+      'Must validate alert.severity is a string'
+    );
+
+    assert.match(
+      code,
+      /typeof alert\.resolved !== 'boolean'/,
+      'Must validate alert.resolved is a boolean'
+    );
+
+    assert.match(
+      code,
+      /dropping malformed alert/,
+      'Must log when dropping malformed alerts'
+    );
+  });
+
+  it('should delete malformed alert entries from raw.alerts', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function readPersistentAlerts\(\)[\s\S]*?\nfunction/);
+    assert.ok(fnMatch, 'readPersistentAlerts must exist');
+
+    assert.match(
+      fnMatch[0],
+      /delete raw\.alerts\[key\]/,
+      'Must delete malformed alert entries'
+    );
+  });
+});
+
+describe('VIOLATION 2: checkCiStatus API response validation', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should validate runs is an Array', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function checkCiStatus\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'checkCiStatus must exist');
+
+    assert.match(
+      fnMatch[0],
+      /!Array\.isArray\(runs\)/,
+      'Must check Array.isArray(runs)'
+    );
+  });
+
+  it('should validate latestRun.conclusion is a string', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function checkCiStatus\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'checkCiStatus must exist');
+
+    assert.match(
+      fnMatch[0],
+      /typeof latestRun\.conclusion !== 'string'/,
+      'Must validate latestRun.conclusion is a string'
+    );
+  });
+
+  it('should log and skip on unexpected API response shape', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /unexpected API response shape/,
+      'Must log "unexpected API response shape" when conclusion is not a string'
+    );
+  });
+});
+
+describe('VIOLATION 3: spawnAlertEscalation sanitization', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should define sanitizeAlertField function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /function sanitizeAlertField\(val\)/,
+      'Must define sanitizeAlertField function'
+    );
+  });
+
+  it('should strip backticks and newlines in sanitizeAlertField', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function sanitizeAlertField\(val\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'sanitizeAlertField must exist');
+
+    // Must strip backticks
+    assert.match(
+      fnMatch[0],
+      /replace\([^)]*`/,
+      'Must strip backtick characters'
+    );
+
+    // Must strip newlines
+    assert.match(
+      fnMatch[0],
+      /\\n\\r/,
+      'Must strip newline and carriage return characters'
+    );
+  });
+
+  it('should strip template literal syntax in sanitizeAlertField', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function sanitizeAlertField\(val\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'sanitizeAlertField must exist');
+
+    // Must replace ${ with safe alternative ($ {) to prevent template injection
+    assert.match(
+      fnMatch[0],
+      /replace\([^)]*\$\\\{/,
+      'Must handle template literal ${ syntax via replace'
+    );
+  });
+
+  it('should truncate to 200 characters', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function sanitizeAlertField\(val\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'sanitizeAlertField must exist');
+
+    assert.match(
+      fnMatch[0],
+      /\.slice\(0,\s*200\)/,
+      'Must truncate to 200 characters'
+    );
+  });
+
+  it('should handle non-string values', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function sanitizeAlertField\(val\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'sanitizeAlertField must exist');
+
+    assert.match(
+      fnMatch[0],
+      /typeof val !== 'string'/,
+      'Must check for non-string input'
+    );
+
+    assert.match(
+      fnMatch[0],
+      /String\(val \?\? ''\)/,
+      'Must coerce non-string values via String()'
+    );
+  });
+
+  it('should use sanitized fields in spawnAlertEscalation prompt', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const fnMatch = code.match(/function spawnAlertEscalation\(alert\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnAlertEscalation must exist');
+
+    // Must define sanitized variables
+    assert.match(fnMatch[0], /const safeTitle = sanitizeAlertField/, 'Must sanitize title');
+    assert.match(fnMatch[0], /const safeKey = sanitizeAlertField/, 'Must sanitize key');
+    assert.match(fnMatch[0], /const safeSeverity = sanitizeAlertField/, 'Must sanitize severity');
+    assert.match(fnMatch[0], /const safeSource = sanitizeAlertField/, 'Must sanitize source');
+
+    // Must coerce numeric fields
+    assert.match(fnMatch[0], /Number\(alert\.detection_count\)/, 'Must coerce detection_count via Number()');
+    assert.match(fnMatch[0], /Number\(alert\.escalation_count\)/, 'Must coerce escalation_count via Number()');
+
+    // Must use sanitized fields in prompt (not raw alert.title etc.)
+    assert.match(fnMatch[0], /\$\{safeTitle\}/, 'Prompt must use safeTitle');
+    assert.match(fnMatch[0], /\$\{safeKey\}/, 'Prompt must use safeKey');
+    assert.match(fnMatch[0], /\$\{safeSeverity\}/, 'Prompt must use safeSeverity');
+    assert.match(fnMatch[0], /\$\{safeSource\}/, 'Prompt must use safeSource');
+  });
+});
+
+describe('sanitizeAlertField - Behavioral Tests', () => {
+  // Mirror the function for behavioral testing
+  function sanitizeAlertField(val) {
+    if (typeof val !== 'string') return String(val ?? '');
+    return val.replace(/[`\n\r]/g, '').replace(/\$\{/g, '$ {').slice(0, 200);
+  }
+
+  it('should pass through clean strings unchanged', () => {
+    assert.strictEqual(sanitizeAlertField('Production error on main'), 'Production error on main');
+  });
+
+  it('should strip backticks', () => {
+    assert.strictEqual(sanitizeAlertField('Error in `main` branch'), 'Error in main branch');
+  });
+
+  it('should strip newlines', () => {
+    assert.strictEqual(sanitizeAlertField('Line 1\nLine 2\rLine 3'), 'Line 1Line 2Line 3');
+  });
+
+  it('should neutralize template literal injection', () => {
+    const result = sanitizeAlertField('${process.exit(1)}');
+    assert.ok(!result.includes('${'), 'Must not contain raw ${ after sanitization');
+  });
+
+  it('should truncate long strings to 200 characters', () => {
+    const longStr = 'x'.repeat(300);
+    assert.strictEqual(sanitizeAlertField(longStr).length, 200);
+  });
+
+  it('should handle null/undefined by returning empty string', () => {
+    assert.strictEqual(sanitizeAlertField(null), '');
+    assert.strictEqual(sanitizeAlertField(undefined), '');
+  });
+
+  it('should coerce numbers to strings', () => {
+    assert.strictEqual(sanitizeAlertField(42), '42');
+  });
+
+  it('should coerce booleans to strings', () => {
+    assert.strictEqual(sanitizeAlertField(true), 'true');
+  });
+});

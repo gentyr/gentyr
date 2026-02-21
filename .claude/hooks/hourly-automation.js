@@ -331,7 +331,22 @@ const MERGE_CHAIN_GAP_THRESHOLD = 50;
 function readPersistentAlerts() {
   try {
     if (fs.existsSync(PERSISTENT_ALERTS_PATH)) {
-      return JSON.parse(fs.readFileSync(PERSISTENT_ALERTS_PATH, 'utf8'));
+      const raw = JSON.parse(fs.readFileSync(PERSISTENT_ALERTS_PATH, 'utf8'));
+      // Validate structure
+      if (typeof raw !== 'object' || raw === null || typeof raw.alerts !== 'object' || raw.alerts === null) {
+        log('Persistent alerts: invalid structure, using defaults.');
+        return { version: 1, alerts: {} };
+      }
+      // Validate individual alerts — drop malformed entries
+      for (const [key, alert] of Object.entries(raw.alerts)) {
+        if (typeof alert !== 'object' || alert === null ||
+            typeof alert.severity !== 'string' ||
+            typeof alert.resolved !== 'boolean') {
+          log(`Persistent alerts: dropping malformed alert '${key}'.`);
+          delete raw.alerts[key];
+        }
+      }
+      return raw;
     }
   } catch (err) {
     log(`Persistent alerts: failed to read state (${err.message}), using defaults.`);
@@ -401,6 +416,15 @@ function resolveAlert(key) {
 }
 
 /**
+ * Sanitize an alert field for safe prompt interpolation.
+ * Strips backticks, newlines, and template-like syntax to prevent prompt injection.
+ */
+function sanitizeAlertField(val) {
+  if (typeof val !== 'string') return String(val ?? '');
+  return val.replace(/[`\n\r]/g, '').replace(/\$\{/g, '$ {').slice(0, 200);
+}
+
+/**
  * Spawn a minimal re-escalation agent that posts to deputy-CTO.
  */
 function spawnAlertEscalation(alert) {
@@ -414,22 +438,30 @@ function spawnAlertEscalation(alert) {
 
   const ageHours = Math.round((Date.now() - new Date(alert.first_detected_at).getTime()) / 3600000);
 
+  // Sanitize all alert fields before prompt interpolation to prevent prompt injection
+  const safeTitle = sanitizeAlertField(alert.title);
+  const safeKey = sanitizeAlertField(alert.key);
+  const safeSeverity = sanitizeAlertField(alert.severity);
+  const safeSource = sanitizeAlertField(alert.source);
+  const safeDetectionCount = Number(alert.detection_count) || 0;
+  const safeEscalationCount = Number(alert.escalation_count) || 0;
+
   const prompt = `[Task][alert-escalation][AGENT:${agentId}] ALERT RE-ESCALATION
 
 A persistent issue has NOT been resolved and requires CTO attention.
 
-**Alert:** ${alert.title}
-**Key:** ${alert.key}
-**Severity:** ${alert.severity}
+**Alert:** ${safeTitle}
+**Key:** ${safeKey}
+**Severity:** ${safeSeverity}
 **First detected:** ${alert.first_detected_at} (${ageHours}h ago)
-**Detection count:** ${alert.detection_count} times
-**Previous escalations:** ${alert.escalation_count}
+**Detection count:** ${safeDetectionCount} times
+**Previous escalations:** ${safeEscalationCount}
 
 Call \`mcp__deputy-cto__add_question\` with:
 - type: "escalation"
-- title: "PERSISTENT: ${alert.title} (${ageHours}h, ${alert.detection_count} detections)"
-- description: "This issue was first detected ${ageHours}h ago and has been detected ${alert.detection_count} times. It has been escalated ${alert.escalation_count} time(s) previously but remains unresolved. Source: ${alert.source}."
-- recommendation: "Investigate and resolve the ${alert.key} issue. Previous escalations were cleared but the underlying problem persists."
+- title: "PERSISTENT: ${safeTitle} (${ageHours}h, ${safeDetectionCount} detections)"
+- description: "This issue was first detected ${ageHours}h ago and has been detected ${safeDetectionCount} times. It has been escalated ${safeEscalationCount} time(s) previously but remains unresolved. Source: ${safeSource}."
+- recommendation: "Investigate and resolve the ${safeKey} issue. Previous escalations were cleared but the underlying problem persists."
 
 Then exit immediately.`;
 
@@ -536,12 +568,16 @@ function checkCiStatus() {
       });
 
       const runs = JSON.parse(result || '[]');
-      if (runs.length === 0) {
+      if (!Array.isArray(runs) || runs.length === 0) {
         log(`CI monitoring (${branch}): no completed runs found.`);
         continue;
       }
 
       const latestRun = runs[0];
+      if (typeof latestRun.conclusion !== 'string') {
+        log(`CI monitoring (${branch}): unexpected API response shape. Skipping.`);
+        continue;
+      }
       if (latestRun.conclusion === 'failure') {
         log(`CI monitoring (${branch}): latest run FAILED — ${latestRun.name}`);
         recordAlert(alertKey, {
