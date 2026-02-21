@@ -1237,7 +1237,9 @@ describe('CTO Report Server', () => {
     it('should return not_started state when feature enabled but no database exists', () => {
       writeAutonomousConfig({ enabled: true, productManagerEnabled: true });
 
-      const productManagerDbPath = path.join(projectDir, '.claude', 'product-manager.db');
+      const stateDir = path.join(projectDir, '.claude', 'state');
+      fs.mkdirSync(stateDir, { recursive: true });
+      const productManagerDbPath = path.join(stateDir, 'product-manager.db');
 
       // Ensure DB does NOT exist
       if (fs.existsSync(productManagerDbPath)) {
@@ -1296,7 +1298,9 @@ describe('CTO Report Server', () => {
     it('should return populated state when database exists with data', () => {
       writeAutonomousConfig({ enabled: true, productManagerEnabled: true });
 
-      const productManagerDbPath = path.join(projectDir, '.claude', 'product-manager.db');
+      const stateDir = path.join(projectDir, '.claude', 'state');
+      fs.mkdirSync(stateDir, { recursive: true });
+      const productManagerDbPath = path.join(stateDir, 'product-manager.db');
 
       // Create and populate product-manager database
       const pmDB = new Database(productManagerDbPath);

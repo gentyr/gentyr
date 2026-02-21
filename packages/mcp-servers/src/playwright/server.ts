@@ -77,6 +77,50 @@ function cleanupDevServerPort(port = 3000): void {
   }
 }
 
+// ============================================================================
+// Pre-flight Validation
+// ============================================================================
+
+interface PreflightResult {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+/**
+ * Validate that required environment variables are set and resolved.
+ * Catches broken 1Password injection (op:// references still present)
+ * and missing Supabase credentials before spawning Playwright.
+ */
+function validatePrerequisites(): PreflightResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  const required = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY'] as const;
+
+  for (const name of required) {
+    const value = process.env[name];
+    if (!value) {
+      errors.push(`${name} is not set`);
+    } else if (value.startsWith('op://')) {
+      errors.push(`${name} contains unresolved 1Password reference (op:// prefix detected)`);
+    }
+  }
+
+  const optional = ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY'] as const;
+
+  for (const name of optional) {
+    const value = process.env[name];
+    if (!value) {
+      warnings.push(`${name} is not set (will be derived from SUPABASE_* if available)`);
+    } else if (value.startsWith('op://')) {
+      errors.push(`${name} contains unresolved 1Password reference (op:// prefix detected)`);
+    }
+  }
+
+  return { ok: errors.length === 0, errors, warnings };
+}
+
 /** Persona descriptions for coverage reporting */
 const PERSONA_MAP: Record<string, string> = {
   'vendor-owner': 'SaaS Vendor (Owner)',
@@ -97,13 +141,24 @@ const PERSONA_MAP: Record<string, string> = {
 
 /**
  * Launch Playwright in interactive UI mode.
- * Spawns a detached process so the MCP server doesn't block.
+ * Validates prerequisites, spawns a detached process, and monitors for early crashes.
  */
-function launchUiMode(args: LaunchUiModeArgs): LaunchUiModeResult {
+async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult> {
   const { project, base_url } = args;
+
+  // Pre-flight validation
+  const preflight = validatePrerequisites();
+  if (!preflight.ok) {
+    return {
+      success: false,
+      project,
+      message: `Environment validation failed:\n${preflight.errors.map(e => `  - ${e}`).join('\n')}`,
+    };
+  }
 
   // Clean up zombie dev servers from previous runs
   cleanupDevServerPort();
+  cleanupDevServerPort(3001);
 
   const cmdArgs = ['playwright', 'test', '--project', project, '--ui'];
   const env: Record<string, string> = { ...process.env as Record<string, string> };
@@ -115,17 +170,61 @@ function launchUiMode(args: LaunchUiModeArgs): LaunchUiModeResult {
   try {
     const child = spawn('npx', cmdArgs, {
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'pipe'],
       cwd: PROJECT_DIR,
       env,
     });
 
+    // Collect stderr for crash diagnostics
+    let stderrChunks: Buffer[] = [];
+    if (child.stderr) {
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrChunks.push(chunk);
+      });
+    }
+
+    // Wait up to 3s for early crash detection
+    const earlyExit = await new Promise<{ code: number | null; signal: string | null } | null>(
+      (resolve) => {
+        const timer = setTimeout(() => resolve(null), 3000);
+
+        child.on('exit', (code, signal) => {
+          clearTimeout(timer);
+          resolve({ code, signal });
+        });
+
+        child.on('error', (err) => {
+          clearTimeout(timer);
+          resolve({ code: 1, signal: err.message });
+        });
+      }
+    );
+
+    if (earlyExit) {
+      // Process died within 3s — report the failure
+      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
+      const snippet = stderr.length > 500 ? stderr.slice(0, 500) + '...' : stderr;
+      return {
+        success: false,
+        project,
+        message: `Playwright process crashed within 3s (exit code: ${earlyExit.code}, signal: ${earlyExit.signal})${snippet ? `\nstderr: ${snippet}` : ''}`,
+      };
+    }
+
+    // Still running after 3s — detach and return success
+    if (child.stderr) {
+      child.stderr.destroy();
+    }
     child.unref();
+
+    const warningText = preflight.warnings.length > 0
+      ? `\nWarnings:\n${preflight.warnings.map(w => `  - ${w}`).join('\n')}`
+      : '';
 
     return {
       success: true,
       project,
-      message: `Playwright UI mode launched for project "${project}". The browser window should open shortly.`,
+      message: `Playwright UI mode launched for project "${project}". The browser window should open shortly.${warningText}`,
       pid: child.pid,
     };
   } catch (err) {
@@ -142,8 +241,24 @@ function launchUiMode(args: LaunchUiModeArgs): LaunchUiModeResult {
  * Run E2E tests headlessly and return results.
  */
 function runTests(args: RunTestsArgs): RunTestsResult {
+  // Pre-flight validation
+  const preflight = validatePrerequisites();
+  if (!preflight.ok) {
+    const projectLabel = args.project || 'default (vendor-owner + cross-persona)';
+    return {
+      success: false,
+      project: projectLabel,
+      passed: 0,
+      failed: 0,
+      skipped: 0,
+      duration: '0s',
+      output: `Environment validation failed:\n${preflight.errors.map(e => `  - ${e}`).join('\n')}`,
+    };
+  }
+
   // Clean up zombie dev servers from previous runs
   cleanupDevServerPort();
+  cleanupDevServerPort(3001);
 
   const cmdArgs = ['playwright', 'test'];
 
@@ -206,8 +321,19 @@ function runTests(args: RunTestsArgs): RunTestsResult {
  * Seed the E2E test database.
  */
 function seedData(): SeedDataResult {
+  // Pre-flight validation
+  const preflight = validatePrerequisites();
+  if (!preflight.ok) {
+    return {
+      success: false,
+      message: `Environment validation failed:\n${preflight.errors.map(e => `  - ${e}`).join('\n')}`,
+      output: '',
+    };
+  }
+
   // Clean up zombie dev servers from previous runs
   cleanupDevServerPort();
+  cleanupDevServerPort(3001);
 
   try {
     const output = execFileSync('npx', ['playwright', 'test', '--project=seed'], {
@@ -238,6 +364,20 @@ function seedData(): SeedDataResult {
  * Clean up E2E test data.
  */
 function cleanupData(): CleanupDataResult {
+  // Pre-flight validation
+  const preflight = validatePrerequisites();
+  if (!preflight.ok) {
+    return {
+      success: false,
+      message: `Environment validation failed:\n${preflight.errors.map(e => `  - ${e}`).join('\n')}`,
+      output: '',
+    };
+  }
+
+  // Clean up zombie dev servers from previous runs
+  cleanupDevServerPort();
+  cleanupDevServerPort(3001);
+
   try {
     const output = execFileSync('npx', ['playwright', 'test', '--project=seed'], {
       cwd: PROJECT_DIR,

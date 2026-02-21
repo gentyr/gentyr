@@ -148,7 +148,7 @@ const AUTONOMOUS_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
 const AUTOMATION_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
 const SERVICES_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
-const PRODUCT_MANAGER_DB = path.join(PROJECT_DIR, '.claude', 'product-manager.db');
+const PRODUCT_MANAGER_DB = path.join(PROJECT_DIR, '.claude', 'state', 'product-manager.db');
 
 // ============================================================================
 // Mode 1: restart-session

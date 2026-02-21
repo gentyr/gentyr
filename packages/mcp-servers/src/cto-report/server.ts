@@ -924,7 +924,7 @@ function getUsageProjection(): UsageProjection {
 // Product-Market-Fit Summary
 // ============================================================================
 
-const PRODUCT_MANAGER_DB_PATH = path.join(PROJECT_DIR, '.claude', 'product-manager.db');
+const PRODUCT_MANAGER_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'product-manager.db');
 
 interface AnalysisMeta {
   status: string;

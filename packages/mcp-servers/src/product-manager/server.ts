@@ -73,7 +73,7 @@ import {
 // ============================================================================
 
 const PROJECT_DIR = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd());
-const DB_PATH = path.join(PROJECT_DIR, '.claude', 'product-manager.db');
+const DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'product-manager.db');
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 const USER_FEEDBACK_DB_PATH = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
 

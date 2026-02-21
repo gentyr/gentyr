@@ -300,8 +300,31 @@ All automation is gated behind a recency check on the deputy-CTO briefing. If th
 1. **Usage Optimizer** - Collect snapshot, adjust factor
 2. **Key Sync** - Discover credentials, refresh tokens, prune dead keys
 3. **Session Reviver** - Check all 3 recovery modes
-4. **Task Runner** - Query todo.db for pending tasks, spawn agents up to concurrency limit
-5. **Feedback Pipeline** - Trigger user persona testing on staging changes
+4. **Urgent Task Dispatcher** - Dispatch urgent priority tasks immediately (bypasses age filter)
+5. **Task Runner** - Query todo.db for pending normal tasks (1-hour age filter), spawn agents up to concurrency limit
+6. **Feedback Pipeline** - Trigger user persona testing on staging changes
+
+### Task Orchestration
+
+**Priority-Based Dispatch** (added 2026-02-21):
+- Tasks in the TODO database have a `priority` field with values `'normal' | 'urgent'`
+- **Urgent tasks** bypass the 1-hour age filter and dispatch immediately in Step 4
+- **Normal tasks** require 1-hour age threshold before dispatch in Step 5
+- Both urgent and normal dispatchers respect global concurrency limits
+- All triage self-handle operations route through `create_task(priority: 'urgent')` for full governance
+
+**Task Lifecycle**:
+1. Created via `mcp__todo-db__create_task` (default `priority: 'normal'`)
+2. If urgent: dispatched immediately by hourly automation Step 4
+3. If normal: waits 1 hour, then dispatched by hourly automation Step 5
+4. Agent spawned with task context, status → `in_progress`
+5. On completion: status → `done`, followup tasks created if configured
+6. Stale tasks (in_progress > 4 hours) escalated to project manager
+
+**Concurrency Cap**:
+- Default: 5 simultaneous task agents
+- Configurable via `DEFAULT_MAX_CONCURRENT` in `agent-tracker.js`
+- Urgent + normal combined count against single global limit
 
 ### Credential Cache
 

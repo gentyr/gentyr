@@ -65,9 +65,16 @@ mcp__todo-db__create_task({
   section: "CODE-REVIEWER",
   title: "Review authentication changes",
   description: "New OAuth flow added in auth.ts - needs security review",
-  assigned_by: "PROJECT-MANAGER"
+  assigned_by: "PROJECT-MANAGER",
+  priority: "normal"  // optional: 'normal' (default) or 'urgent'
 })
 ```
+
+**Priority Levels** (added 2026-02-21):
+- `"normal"` (default): Task waits 1 hour before dispatch by hourly automation
+- `"urgent"`: Task dispatches immediately, bypassing age filter
+- Use `"urgent"` for critical issues requiring immediate attention (security vulnerabilities, production incidents, blocking bugs)
+- Both priority levels respect global concurrency limits
 
 ## Merge Chain Awareness
 

@@ -642,8 +642,7 @@ for db_file in \
     "$PROJECT_DIR/.claude/todo.db" \
     "$PROJECT_DIR/.claude/deputy-cto.db" \
     "$PROJECT_DIR/.claude/cto-reports.db" \
-    "$PROJECT_DIR/.claude/session-events.db" \
-    "$PROJECT_DIR/.claude/product-manager.db"; do
+    "$PROJECT_DIR/.claude/session-events.db"; do
     [ -f "$db_file" ] || touch "$db_file"
     [ -f "${db_file}-shm" ] || touch "${db_file}-shm"
     [ -f "${db_file}-wal" ] || touch "${db_file}-wal"
