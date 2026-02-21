@@ -398,8 +398,8 @@ const AutomationConfigFileSchema = z.object({
   adjustment: z.object({
     factor: z.number().optional(),
     target_pct: z.number().optional(),
-    projected_at_reset: z.number().optional(),
-    constraining_metric: z.enum(['5h', '7d']).optional(),
+    projected_at_reset: z.number().nullable().optional(),
+    constraining_metric: z.enum(['5h', '7d']).nullable().optional(),
     last_updated: z.string().optional(),
   }).passthrough().optional(),
 }).passthrough();

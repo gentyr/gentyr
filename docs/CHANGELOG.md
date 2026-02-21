@@ -1,5 +1,241 @@
 # GENTYR Framework Changelog
 
+## 2026-02-21 - Priority-Based Urgent Task Dispatch
+
+### Added
+
+**Priority field in TODO database** (`packages/mcp-servers/src/todo-db/`):
+- New `priority` field in task schema with values `'normal' | 'urgent'`
+- Exposed in `CreateTaskArgsSchema` with default value `'normal'`
+- Exposed in `ListTasksArgsSchema` as optional filter parameter
+- Auto-migration added: `ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'` runs on server init if column missing
+- Type exports: `TASK_PRIORITY` constant array, `TaskPriority` type from `shared/constants.ts`
+
+**Urgent dispatcher in hourly automation** (`.claude/hooks/hourly-automation.js`):
+- New `tryDispatchUrgentTasks()` step runs before task runner (bypasses 1-hour age filter)
+- Urgent tasks are NOT age-gated — they dispatch immediately when spawned
+- Concurrency limit enforced: urgent dispatcher respects global agent cap
+- Queries for tasks with `status='pending' AND priority='urgent'`
+- Uses same `spawnTaskAgent()` flow as regular task runner
+
+**Governance routing for triage self-handle** (`packages/mcp-servers/src/deputy-cto/server.ts`):
+- Triage self-handle path now routes through `create_task` with `priority: 'urgent'` instead of ungoverned `spawn_implementation_task`
+- Ensures ALL task spawning goes through centralized governance (concurrency limits, tracking, recovery)
+- Urgent priority ensures immediate dispatch without waiting for 1-hour age threshold
+
+### Changed
+
+**Force-spawn script** (`scripts/force-spawn-tasks.js`):
+- Updated to support priority filter in task queries
+- No behavioral changes (force-spawn bypasses priority entirely, spawns all matching tasks)
+
+### Tests
+
+**Test coverage**:
+- 76 vitest tests (MCP servers) + 113 node:test tests (hooks) = 189 total tests
+- All tests passing
+- TypeScript build clean
+- Coverage includes priority field validation, schema migration, urgent dispatcher logic
+
+### Files Modified
+
+**10 files across 3 areas**:
+- MCP server: `shared/constants.ts`, `todo-db/types.ts`, `todo-db/server.ts`, `__testUtils__/schemas.ts`
+- Hooks: `hourly-automation.js`
+- Scripts: `force-spawn-tasks.js`
+- Tests: `todo-db.test.ts`, `hourly-automation.test.js`
+
+---
+
+## 2026-02-21 - Health Data Freshness Gate + Monitor Actuation Mode
+
+### Added
+
+**Health data freshness gate** (`.claude/hooks/key-sync.js`):
+- New `HEALTH_DATA_MAX_AGE_MS` export (15 minutes) - usage data older than this is treated as unknown
+- `selectActiveKey()` now nulls out usage data when `last_health_check` is older than 15 minutes
+- Effect: prevents uninformed key switches when health data is stale
+- Stale keys pass "usable" filter (not proven exhausted) but are excluded from comparison logic
+- System stays put with current key rather than making blind decisions on outdated data
+
+**Monitor actuation mode** (`scripts/monitor-token-swap.mjs`):
+- New `--act` CLI flag enables actuation mode (default remains observation-only)
+- DESYNC auto-fix: after 3 consecutive polls (~90s) with Keychain-vs-active desync, writes active key to Keychain automatically
+- Actuation rotation: when `--act` enabled and active key >=90% usage, rotates to lower-usage alternative on different account with 5-min cooldown
+- Stale-data health refresh (ALWAYS ON): deep checks now write fresh `last_health_check` and `last_usage` back to rotation state for ALL keys
+- Email propagation: usage data propagates to all keys sharing same `account_email`
+- New alert counters: `ACT_ROTATION`, `ACT_DESYNC_FIX`
+
+**Test coverage** (`.claude/hooks/__tests__/health-data-freshness-gate.test.js`):
+- 25 new tests covering `HEALTH_DATA_MAX_AGE_MS` constant and freshness gate behavior
+- Code structure validation (8 tests): export check, value check, comment check, freshness loop placement
+- Behavioral logic (9 tests): staleness detection, null-out logic, filter effects, comparison exclusion
+- Integration scenarios (8 tests): no-switch with stale data, exhausted-current fallback to stale
+
+### Changed
+
+**Global hooks configuration** (`~/.claude/settings.json`):
+- Added PostToolUse hook: `quota-monitor.js` with absolute path, timeout 10s (fires for ALL projects)
+- Added Stop hook: `stop-continue-hook.js` with absolute path, timeout 5s (fires for ALL projects)
+- Ensures quota monitoring works even in projects without their own hooks
+
+### Fixed
+
+**Usage optimizer maxKey computation** (`.claude/hooks/usage-optimizer.js`):
+- Moved `maxKey5h`/`maxKey7d` computation to after exhausted key filtering
+- Prevents exhausted keys from biasing effectiveUsage upward
+
+### Tests
+
+**Test results**:
+- All 25 new freshness gate tests pass
+- All existing key-sync tests pass (deduplication, expired-filter, proactive-refresh)
+- All quota-monitor adaptive tests pass
+- Code review verified all critical logic (freshness gate, actuation rotation, DESYNC fix, email propagation)
+
+### Documentation
+
+**Updated files**:
+- `CLAUDE.md` - Added freshness gate documentation to Key Sync Module section
+- `docs/CHANGELOG.md` - This entry
+
+**Files modified (8 total)**:
+- `.claude/hooks/key-sync.js` - Added `HEALTH_DATA_MAX_AGE_MS` constant + freshness gate in `selectActiveKey()`
+- `scripts/monitor-token-swap.mjs` - Added `--act` actuation mode + DESYNC auto-fix + health refresh
+- `~/.claude/settings.json` - Added global PostToolUse and Stop hooks
+- `.claude/hooks/__tests__/health-data-freshness-gate.test.js` - New test suite (25 tests)
+- `.claude/hooks/usage-optimizer.js` - Fixed maxKey computation timing
+- `.claude/hooks/__tests__/usage-optimizer.test.js` - Updated tests
+- `.claude/hooks/hourly-automation.js` - Updated tests
+- `.claude/hooks/__tests__/hourly-automation.test.js` - Updated tests
+
+---
+
+## 2026-02-21 - Fix GENTYR Monitoring Gaps: Step 8 Violation Fixes
+
+### Fixed
+
+**3 security violations in hourly-automation hook** (`.claude/hooks/hourly-automation.js`):
+
+1. **VIOLATION 1: Missing schema validation in readPersistentAlerts**
+   - Risk: Malformed persistent-alerts.json could cause type confusion or runtime errors
+   - Fix: Added comprehensive validation for top-level structure (`typeof`, null checks, `Array.isArray`)
+   - Fix: Alert entries missing required `severity` (string) or `resolved` (boolean) fields are now dropped
+   - Impact: Prevents injection or corruption attacks via malformed alert files
+
+2. **VIOLATION 2: Missing API response validation in checkCiStatus**
+   - Risk: Unexpected GitHub API responses could cause null pointer exceptions
+   - Fix: Added `Array.isArray(runs)` validation before accessing runs array
+   - Fix: Added `typeof latestRun.conclusion !== 'string'` validation before comparing conclusion
+   - Impact: Graceful degradation when GitHub API returns unexpected data
+
+3. **VIOLATION 3: Prompt injection risk in spawnAlertEscalation**
+   - Risk: Alert fields containing backticks, template literals, or newlines could inject arbitrary commands into agent prompt
+   - Fix: Created `sanitizeAlertField()` function (strips backticks, newlines, `${` syntax, truncates to 200 chars)
+   - Fix: Applied sanitization to ALL alert fields before prompt interpolation: title, key, severity, source, first_detected_at
+   - Fix: Moved sanitization before `registerSpawn` call to protect the description field
+   - Fix: Added `Number.isFinite` safety check on age calculation
+   - Impact: Prevents malicious alert data from executing arbitrary code in agent context
+
+### Added
+
+**Test coverage** (`.claude/hooks/__tests__/hourly-automation.test.js`):
+- 4 structural tests for VIOLATION 1 (schema validation)
+- 3 structural tests for VIOLATION 2 (CI API response validation)
+- 8 structural tests for VIOLATION 3 (sanitization placement)
+- 14 behavioral tests for `sanitizeAlertField` function
+- 15 behavioral tests for `readPersistentAlerts` with file I/O
+- Total: 44 new tests added
+
+### Tests
+
+**Test results**:
+- All 102 hourly-automation tests pass (58 existing + 44 new)
+- All 202 usage-optimizer tests pass
+- Code review: All violations addressed, 2 follow-up fixes applied (sanitize in registerSpawn, safe age calculation)
+
+### Context
+
+This completes Step 8 (final step) of the "Fix GENTYR Monitoring Gaps" plan. GAPs 1-7 were implemented in a prior session. All monitoring gap fixes are now complete.
+
+**Files modified (2 total)**:
+- `.claude/hooks/hourly-automation.js` - 3 violation fixes + 2 follow-up improvements
+- `.claude/hooks/__tests__/hourly-automation.test.js` - 44 new tests
+
+---
+
+## 2026-02-21 - Usage Optimizer: 7 Cascading Bug Fixes + Trajectory Alignment
+
+### Fixed
+
+**7 interconnected bugs causing permanent over-throttling** (factor stuck at 0.099, automation +913% slower):
+
+1. **Bug 1: Reset time selection picks last, not earliest** (`.claude/hooks/usage-optimizer.js`)
+   - When multiple keys have different reset times, the optimizer must use the earliest reset time to be conservative
+   - Previous: Used arbitrary last key's reset time (could be far in future)
+   - Fix: Changed `resetAt5h = k['5h_reset']` to `resetAt5h = k['5h_reset'] < resetAt5h`
+
+2. **Bug 2: Exhausted accounts (7d >= 99.5%) pollute aggregate + EMA rate** (`.claude/hooks/usage-optimizer.js`)
+   - Exhausted keys should be filtered from both aggregate averaging AND trajectory rate calculation
+   - Previous: Filtered from aggregate but still included in EMA rate calculation
+   - Fix: Added `exhaustedKeyIds` Set, filter from both `calculateAggregate()` and `calculateTrajectory()`
+
+3. **Bug 3: No tiered factor recovery from extreme throttling** (`.claude/hooks/usage-optimizer.js`)
+   - When factor hits MIN_FACTOR (0.05), 10% MAX_CHANGE_PER_CYCLE limit prevents recovery
+   - Fix: Two-tier recovery system:
+     - Tier 1 (hard reset): When factor <= 0.15 AND current usage < 63%, reset factor to 1.0 immediately
+     - Tier 2 (gradual boost): When factor < 0.5 AND current usage < target, apply 1.5x boost per cycle
+
+4. **Bug 4: No per-key reset boundary detection** (`.claude/hooks/usage-optimizer.js`)
+   - Reset detection only looked at aggregate utilization drop, missing individual key resets
+   - Fix: Added PER_KEY_RESET_DROP_THRESHOLD (50pp) check — if ANY key's 5h drops >50pp between snapshots, reset factor to 1.0
+
+5. **Bug 5: Key-count discontinuity causes spurious rate spikes** (`.claude/hooks/usage-optimizer.js`)
+   - When number of active keys changes between snapshots, rate calculation becomes invalid
+   - Fix: Added key-count validation — reject snapshot pairs where key counts differ
+
+6. **Bug 6: Trajectory.ts not aligned with optimizer** (`packages/cto-dashboard/src/utils/trajectory.ts`)
+   - Dashboard trajectory calculation didn't filter exhausted accounts (inconsistent with optimizer)
+   - Fix: Added same exhausted account filtering (7d >= 0.995) to `getQuotaTrajectory()`
+
+7. **Bug 7: maxKey computed from all keys including exhausted** (`.claude/hooks/usage-optimizer.js`)
+   - When computing effectiveUsage (max of average vs. maxKey), exhausted keys biased maxKey upward
+   - Fix: Moved maxKey5h/maxKey7d computation to after active key filtering
+
+### Added
+
+**Utility function** (`.claude/hooks/usage-optimizer.js`):
+- `resetOptimizer()` export for manual cleanup after polluted data (clears snapshots, resets factor to 1.0)
+
+**Test coverage** (`.claude/hooks/__tests__/usage-optimizer.test.js`):
+- 13 new tests covering reset time selection, exhausted account filtering, tier-1/tier-2 recovery, per-key reset detection, key-count validation
+- 3 new trajectory tests for exhausted account filtering (`packages/cto-dashboard/src/utils/__tests__/trajectory.test.ts`)
+
+### Tests
+
+**Test results**:
+- All 202 usage-optimizer tests pass (189 existing + 13 new)
+- All 23 trajectory tests pass (20 existing + 3 new)
+- All 25 cto-report tests pass
+- Code review: 1 minor concern addressed (maxKey bug fix added as Bug 7)
+
+### Impact
+
+**Before fixes**: Factor stuck at 0.099 (MIN_FACTOR), all automation throttled to +913% slower (essentially paused)
+
+**After fixes**: Factor can reset to 1.0 on usage drop or key reset, tier-1 recovery provides immediate escape from extreme throttling, tier-2 recovery prevents gradual descent back to MIN_FACTOR
+
+**Post-deploy action required**: Call `resetOptimizer()` on target project to clear polluted usage-snapshots.json and reset factor from 0.099 to 1.0
+
+**Files modified (5 total)**:
+- `.claude/hooks/usage-optimizer.js` - 7 bug fixes + resetOptimizer() export
+- `packages/cto-dashboard/src/utils/trajectory.ts` - Exhausted account filtering alignment
+- `.claude/hooks/__tests__/usage-optimizer.test.js` - 13 new tests
+- `packages/cto-dashboard/src/utils/__tests__/trajectory.test.ts` - 3 new tests
+- `.claude/hooks/hourly-automation.js` - Updated tests (not functionality)
+
+---
+
 ## 2026-02-21 - Product Manager Agent & PMF Analysis System
 
 ### Added

@@ -25,10 +25,14 @@ import os from 'os';
 import { execFileSync } from 'child_process';
 import {
   readRotationState,
+  writeRotationState,
   selectActiveKey,
   generateKeyId,
   checkKeyHealth,
+  logRotationEvent,
+  updateActiveCredentials,
   EXPIRY_BUFFER_MS,
+  HIGH_USAGE_THRESHOLD,
 } from '../.claude/hooks/key-sync.js';
 
 // ============================================================================
@@ -49,6 +53,11 @@ const DEEP_CHECK_INTERVAL_MS = 300_000; // 5 minutes
 const STALE_HEALTH_CHECK_MS = 600_000;  // 10 min - health check data considered stale
 const VELOCITY_WARNING_PCT = 15;        // warn if usage jumped 15%+ in one poll cycle
 
+// Actuation mode (--act flag)
+const ACT_MODE = process.argv.includes('--act');
+const ACTUATION_COOLDOWN_MS = 300_000;       // 5 min between actuation rotations
+const DESYNC_CONSECUTIVE_THRESHOLD = 3;      // 3 polls (90s) before auto-fix
+
 // ============================================================================
 // Monitor State
 // ============================================================================
@@ -66,8 +75,14 @@ const monitorState = {
     ALL_EXHAUSTED: 0,
     TOKEN_EXPIRED: 0,
     NO_REFRESH_TOKEN: 0,
+    ACT_ROTATION: 0,
+    ACT_DESYNC_FIX: 0,
   },
   shutdownRequested: false,
+  // Actuation state
+  lastActuationRotation: 0,           // timestamp of last actuation-triggered rotation
+  consecutiveDesyncCount: 0,          // consecutive polls with KC-vs-ACTIVE desync
+  lastDesyncKeyId: null,              // keychain key ID during last desync (to detect pattern change)
 };
 
 // ============================================================================
@@ -223,6 +238,30 @@ function runDiagnostics(keychainState, fileState, rotationState) {
     // generateKeyId returns 16 chars; rotation state stores 16 chars
     if (kcShort !== activeId) {
       logAlert('DESYNC', `KC=${shortId(kcShort)} != ACTIVE=${shortId(activeId)} -- Keychain out of sync with rotation state`);
+
+      // Track consecutive desyncs for actuation
+      if (monitorState.lastDesyncKeyId === kcShort) {
+        monitorState.consecutiveDesyncCount++;
+      } else {
+        monitorState.consecutiveDesyncCount = 1;
+        monitorState.lastDesyncKeyId = kcShort;
+      }
+
+      // ACT: Auto-fix DESYNC after 3 consecutive polls (~90s)
+      if (ACT_MODE && monitorState.consecutiveDesyncCount >= DESYNC_CONSECUTIVE_THRESHOLD) {
+        const activeKeyData = rotationState.keys[activeId];
+        if (activeKeyData) {
+          log(`ACT [DESYNC_FIX] Writing active key ${shortId(activeId)} to Keychain after ${monitorState.consecutiveDesyncCount} consecutive desyncs`);
+          updateActiveCredentials(activeKeyData);
+          monitorState.consecutiveDesyncCount = 0;
+          monitorState.lastDesyncKeyId = null;
+          monitorState.alertCounts.ACT_DESYNC_FIX++;
+        }
+      }
+    } else {
+      // No desync — reset counter
+      monitorState.consecutiveDesyncCount = 0;
+      monitorState.lastDesyncKeyId = null;
     }
   }
 
@@ -405,8 +444,13 @@ async function deepCheck() {
     return;
   }
 
+  const now = Date.now();
+  let stateModified = false;
+
   // Collect unique accounts (by account_email or key ID) to avoid redundant API calls
+  // Track which account_email maps to which keyIds for usage propagation
   const checked = new Set();
+  const emailToKeyIds = new Map(); // account_email -> [keyId, ...]
   const keyEntries = Object.entries(rotationState.keys);
 
   for (const [keyId, keyData] of keyEntries) {
@@ -419,9 +463,20 @@ async function deepCheck() {
     const dedupeKey = keyData.account_email || keyId;
     if (checked.has(dedupeKey)) {
       log(`  [${shortId(keyId)}] SKIP (duplicate account: ${keyData.account_email || 'unknown'})`);
+      // Track for usage propagation
+      if (keyData.account_email) {
+        if (!emailToKeyIds.has(keyData.account_email)) emailToKeyIds.set(keyData.account_email, []);
+        emailToKeyIds.get(keyData.account_email).push(keyId);
+      }
       continue;
     }
     checked.add(dedupeKey);
+
+    // Track for usage propagation
+    if (keyData.account_email) {
+      if (!emailToKeyIds.has(keyData.account_email)) emailToKeyIds.set(keyData.account_email, []);
+      emailToKeyIds.get(keyData.account_email).push(keyId);
+    }
 
     // Call checkKeyHealth for this key
     const health = await checkKeyHealth(keyData.accessToken);
@@ -450,6 +505,98 @@ async function deepCheck() {
 
     const email = keyData.account_email || 'unknown';
     log(`  [${shortId(keyId)}] ${email} | API: 5h:${(apiUsage.five_hour || 0).toFixed(1)}% 7d:${(apiUsage.seven_day || 0).toFixed(1)}% son:${(apiUsage.seven_day_sonnet || 0).toFixed(1)}% | drift: ${driftStr}`);
+
+    // ALWAYS: Write fresh health data back to rotation state.
+    // This keeps stored data fresh even when hooks aren't running, so hooks in
+    // OTHER projects benefit from up-to-date usage information.
+    keyData.last_usage = apiUsage;
+    keyData.last_health_check = now;
+    stateModified = true;
+
+    // Propagate to all keys sharing the same account_email
+    if (keyData.account_email && emailToKeyIds.has(keyData.account_email)) {
+      for (const siblingId of emailToKeyIds.get(keyData.account_email)) {
+        if (siblingId !== keyId && rotationState.keys[siblingId]) {
+          rotationState.keys[siblingId].last_usage = apiUsage;
+          rotationState.keys[siblingId].last_health_check = now;
+        }
+      }
+    }
+  }
+
+  // ACT: Deep-check-triggered rotation
+  if (ACT_MODE && (now - monitorState.lastActuationRotation) >= ACTUATION_COOLDOWN_MS) {
+    const activeId = rotationState.active_key_id;
+    const activeKeyData = activeId && rotationState.keys[activeId];
+
+    if (activeKeyData?.last_usage) {
+      const maxUsage = Math.max(
+        activeKeyData.last_usage.five_hour || 0,
+        activeKeyData.last_usage.seven_day || 0,
+        activeKeyData.last_usage.seven_day_sonnet || 0
+      );
+
+      if (maxUsage >= HIGH_USAGE_THRESHOLD) {
+        // Try selectActiveKey first
+        let targetId = selectActiveKey(rotationState);
+
+        // If selectActiveKey returns same key (stale data), directly find lowest-usage alt on different account
+        if (targetId === activeId || !targetId) {
+          const activeUuid = activeKeyData.account_uuid;
+          const alternatives = Object.entries(rotationState.keys)
+            .filter(([id, k]) =>
+              id !== activeId &&
+              k.status === 'active' &&
+              k.last_usage &&
+              k.account_uuid !== activeUuid
+            )
+            .sort((a, b) => {
+              const aMax = Math.max(a[1].last_usage.five_hour || 0, a[1].last_usage.seven_day || 0, a[1].last_usage.seven_day_sonnet || 0);
+              const bMax = Math.max(b[1].last_usage.five_hour || 0, b[1].last_usage.seven_day || 0, b[1].last_usage.seven_day_sonnet || 0);
+              return aMax - bMax;
+            });
+
+          if (alternatives.length > 0) {
+            const altMax = Math.max(
+              alternatives[0][1].last_usage.five_hour || 0,
+              alternatives[0][1].last_usage.seven_day || 0,
+              alternatives[0][1].last_usage.seven_day_sonnet || 0
+            );
+            if (altMax < maxUsage) {
+              targetId = alternatives[0][0];
+            }
+          }
+        }
+
+        if (targetId && targetId !== activeId) {
+          const targetKeyData = rotationState.keys[targetId];
+          const prevId = activeId;
+          rotationState.active_key_id = targetId;
+          targetKeyData.last_used_at = now;
+          updateActiveCredentials(targetKeyData);
+
+          logRotationEvent(rotationState, {
+            timestamp: now,
+            event: 'key_switched',
+            key_id: targetId,
+            reason: 'monitor_actuation_high_usage',
+            previous_key: prevId,
+            usage_snapshot: activeKeyData.last_usage,
+          });
+
+          monitorState.lastActuationRotation = now;
+          monitorState.alertCounts.ACT_ROTATION++;
+          stateModified = true;
+          log(`ACT [ROTATION] ${shortId(prevId)} (${maxUsage.toFixed(1)}%) -> ${shortId(targetId)} | reason=high_usage`);
+        }
+      }
+    }
+  }
+
+  // Write updated state if anything changed
+  if (stateModified) {
+    writeRotationState(rotationState);
+    log('  [STATE] Wrote fresh health data to rotation state');
   }
 
   log('--- DEEP CHECK END ---');
@@ -468,6 +615,7 @@ async function main() {
   log(`Log: ${LOG_FILE}`);
   log(`Project: ${PROJECT_DIR}`);
   log(`Expiry buffer: ${EXPIRY_BUFFER_MS / 1000}s`);
+  log(`Actuation mode: ${ACT_MODE ? 'ENABLED (--act)' : 'disabled (observation only)'}`);
   log('');
 
   // Initial poll

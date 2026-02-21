@@ -401,6 +401,7 @@ function completeTask(args: CompleteTaskArgs): CompleteTaskResult | ErrorResult 
     const followup_created_at = now.toISOString();
     const followup_timestamp = Math.floor(now.getTime() / 1000);
 
+    // priority intentionally omitted — follow-ups default to 'normal' regardless of parent's priority
     db.prepare(`
       INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt)
       VALUES (?, ?, 'pending', ?, ?, 'system-followup', ?, ?, 0, NULL, NULL)

@@ -26,6 +26,7 @@ const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 export const HIGH_USAGE_THRESHOLD = 90;  // 90%
 export const EXHAUSTED_THRESHOLD = 100;  // 100%
 export const EXPIRY_BUFFER_MS = 600_000; // 10 min — pre-expiry window for proactive refresh and restartless swap
+export const HEALTH_DATA_MAX_AGE_MS = 15 * 60 * 1000; // 15 min — usage data older than this is treated as unknown
 const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
 const ROTATION_STATE_PATH = path.join(os.homedir(), '.claude', 'api-key-rotation.json');
 const ROTATION_LOG_PATH = path.join(PROJECT_DIR, '.claude', 'api-key-rotation.log');
@@ -603,11 +604,23 @@ export async function checkKeyHealth(accessToken) {
  * @returns {string|null}
  */
 export function selectActiveKey(state) {
+  const now = Date.now();
   const validKeys = Object.entries(state.keys)
     .filter(([_, key]) => key.status === 'active' || key.status === 'exhausted')
     .map(([id, key]) => ({ id, key, usage: key.last_usage }));
 
   if (validKeys.length === 0) return null;
+
+  // Freshness gate: null out usage for keys with stale health data (>15 min old).
+  // Effect: stale keys pass "usable" filter (not proven exhausted), block "allAbove90"
+  // early-return, and are excluded from comparison logic. Net: system stays put with
+  // stale data rather than making uninformed switches.
+  for (const entry of validKeys) {
+    const lastCheck = entry.key.last_health_check;
+    if (lastCheck && (now - lastCheck) > HEALTH_DATA_MAX_AGE_MS) {
+      entry.usage = null;
+    }
+  }
 
   // Group by account_uuid. Keys without account_uuid are each treated as unique.
   const accountGroups = new Map();

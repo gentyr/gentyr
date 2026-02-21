@@ -23,10 +23,14 @@ For a different time period (default is 24 hours, valid range: 1-168):
 node .claude-framework/packages/cto-dashboard/dist/index.js --hours 8
 ```
 
+## Response Format
+
+After running the dashboard command, respond with a **single short sentence** (e.g., "Dashboard rendered above — 66% quota used, 170 pending code-review tasks."). Do NOT write a multi-section summary with headers, bullet lists, or tables — that creates a second collapsible block in the UI and steals ctrl+o focus from the actual dashboard output.
+
 ## Notes
 
 - This is a **read-only report** - it does not modify any state
 - For interactive decision-making, use `/deputy-cto` instead
 - Timeline shows the 20 most recent events
 - Quota shows aggregate across all active API keys (if key rotation is enabled)
-- **IMPORTANT**: Do NOT use the Read tool after running the dashboard command. The Bash output contains everything needed. Using Read creates a second collapsed item in the UI that conflicts with ctrl+o expansion of the dashboard output. Write your summary directly from the Bash output and the prefetch data.
+- **IMPORTANT**: Do NOT use the Read tool after running the dashboard command. The Bash output contains everything needed. Using Read creates a second collapsed item in the UI that conflicts with ctrl+o expansion of the dashboard output.

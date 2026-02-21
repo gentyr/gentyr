@@ -2718,24 +2718,35 @@ async function main() {
     const urgentTasks = getUrgentPendingTasks();
     if (urgentTasks.length > 0) {
       log(`Urgent dispatcher: found ${urgentTasks.length} urgent task(s).`);
-      let dispatched = 0;
-      for (const task of urgentTasks) {
-        const mapping = SECTION_AGENT_MAP[task.section];
-        if (!mapping) continue;
-        if (!markTaskInProgress(task.id)) {
-          log(`Urgent dispatcher: skipping task ${task.id} (failed to mark in_progress).`);
-          continue;
+      const currentRunning = countRunningAgents();
+      const availableSlots = Math.max(0, effectiveMaxConcurrent - currentRunning);
+      if (availableSlots === 0) {
+        log(`Urgent dispatcher: no available slots (${currentRunning}/${effectiveMaxConcurrent}). Deferring urgent tasks.`);
+      } else {
+        log(`Urgent dispatcher: ${availableSlots} slot(s) available (${currentRunning}/${effectiveMaxConcurrent}).`);
+        let dispatched = 0;
+        for (const task of urgentTasks) {
+          if (dispatched >= availableSlots) {
+            log(`Urgent dispatcher: concurrency limit reached, deferring remaining urgent tasks.`);
+            break;
+          }
+          const mapping = SECTION_AGENT_MAP[task.section];
+          if (!mapping) continue;
+          if (!markTaskInProgress(task.id)) {
+            log(`Urgent dispatcher: skipping task ${task.id} (failed to mark in_progress).`);
+            continue;
+          }
+          const success = spawnTaskAgent(task);
+          if (success) {
+            log(`Urgent dispatcher: spawned ${mapping.agent} for "${task.title}" (${task.id})`);
+            dispatched++;
+          } else {
+            resetTaskToPending(task.id);
+            log(`Urgent dispatcher: spawn failed for task ${task.id}, reset to pending.`);
+          }
         }
-        const success = spawnTaskAgent(task);
-        if (success) {
-          log(`Urgent dispatcher: spawned ${mapping.agent} for "${task.title}" (${task.id})`);
-          dispatched++;
-        } else {
-          resetTaskToPending(task.id);
-          log(`Urgent dispatcher: spawn failed for task ${task.id}, reset to pending.`);
-        }
+        log(`Urgent dispatcher: dispatched ${dispatched} agent(s).`);
       }
-      log(`Urgent dispatcher: dispatched ${dispatched} agent(s).`);
     }
   }
 

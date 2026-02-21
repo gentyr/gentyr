@@ -609,15 +609,12 @@ function calculateAggregate(latest, earliest, hoursBetween, allSnapshots) {
   const exhaustedKeyIds = new Set();
   let resetAt5h = null, resetAt7d = null;
   const perKeyUtilization = {};
-  let maxKey5h = 0, maxKey7d = 0;
 
   // First pass: classify keys, collect per-key data and reset times
   for (const [id, k] of latestEntries) {
     const val5h = k['5h'] ?? 0;
     const val7d = k['7d'] ?? 0;
     perKeyUtilization[id] = { '5h': val5h, '7d': val7d };
-    maxKey5h = Math.max(maxKey5h, val5h);
-    maxKey7d = Math.max(maxKey7d, val7d);
     if (k['5h_reset'] && (!resetAt5h || k['5h_reset'] < resetAt5h)) resetAt5h = k['5h_reset'];
     if (k['7d_reset'] && (!resetAt7d || k['7d_reset'] < resetAt7d)) resetAt7d = k['7d_reset'];
     if (val7d >= EXHAUSTED_THRESHOLD) exhaustedKeyIds.add(id);
@@ -626,6 +623,13 @@ function calculateAggregate(latest, earliest, hoursBetween, allSnapshots) {
   // Compute aggregate from active keys only; fall back to all-key average if ALL exhausted
   const activeEntries = latestEntries.filter(([id]) => !exhaustedKeyIds.has(id));
   const entriesToAverage = activeEntries.length > 0 ? activeEntries : latestEntries;
+
+  // Compute maxKey from active keys only so exhausted keys don't bias effectiveUsage
+  let maxKey5h = 0, maxKey7d = 0;
+  for (const [, k] of entriesToAverage) {
+    maxKey5h = Math.max(maxKey5h, k['5h'] ?? 0);
+    maxKey7d = Math.max(maxKey7d, k['7d'] ?? 0);
+  }
 
   let sum5h = 0, sum7d = 0;
   for (const [, k] of entriesToAverage) {
