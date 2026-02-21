@@ -105,8 +105,8 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       assert.match(
         code,
-        /const RESET_BOUNDARY_DROP_THRESHOLD = 0\.30/,
-        'Must define RESET_BOUNDARY_DROP_THRESHOLD = 0.30'
+        /const PER_KEY_RESET_DROP_THRESHOLD = 0\.50/,
+        'Must define PER_KEY_RESET_DROP_THRESHOLD = 0.50'
       );
     });
 
@@ -1043,7 +1043,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
   });
 
   describe('calculateAggregate() - Aggregate Metrics', () => {
-    it('should average utilization across keys', () => {
+    it('should average utilization across active keys', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
@@ -1051,20 +1051,20 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       const functionBody = functionMatch[0];
 
-      // Should sum values across keys (via val5h/val7d intermediaries)
+      // Should sum values across entries to average
       assert.match(
         functionBody,
-        /sum5h \+= val5h/,
+        /sum5h \+=/,
         'Must sum 5h utilization across keys'
       );
 
       assert.match(
         functionBody,
-        /sum7d \+= val7d/,
+        /sum7d \+=/,
         'Must sum 7d utilization across keys'
       );
 
-      // Should divide by numKeys
+      // Should divide by numKeys (count of entries to average)
       assert.match(
         functionBody,
         /current5h = sum5h \/ numKeys/,
@@ -1075,6 +1075,25 @@ describe('usage-optimizer.js - Structure Validation', () => {
         functionBody,
         /current7d = sum7d \/ numKeys/,
         'Must average 7d by dividing by numKeys'
+      );
+
+      // Should filter exhausted accounts (7d >= 0.995)
+      assert.match(
+        functionBody,
+        /EXHAUSTED_THRESHOLD/,
+        'Must define exhausted threshold for filtering'
+      );
+
+      assert.match(
+        functionBody,
+        /exhaustedKeyIds/,
+        'Must track exhausted key IDs'
+      );
+
+      assert.match(
+        functionBody,
+        /activeEntries/,
+        'Must compute active (non-exhausted) entries'
       );
     });
 
@@ -1148,8 +1167,14 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       assert.match(
         functionBody,
-        /maxKey5h, maxKey7d, perKeyUtilization/,
+        /maxKey5h, maxKey7d, perKeyUtilization,/,
         'Must return maxKey5h, maxKey7d, and perKeyUtilization'
+      );
+
+      assert.match(
+        functionBody,
+        /activeKeyCount:[\s\S]*?totalKeyCount:/s,
+        'Must return activeKeyCount and totalKeyCount'
       );
     });
 
@@ -1331,14 +1356,14 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should exist as a standalone function', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3, excludeKeys = null\) \{[\s\S]*?\n\}/);
       assert.ok(functionMatch, 'calculateEmaRate function must exist with correct signature');
     });
 
     it('should return 0 for fewer than 2 snapshots', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3, excludeKeys = null\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       assert.match(
@@ -1351,7 +1376,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should compute EMA from consecutive snapshot pairs', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3, excludeKeys = null\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should iterate with i=1 start
@@ -1379,7 +1404,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should skip rapid-fire time intervals below MIN_HOURS_DELTA', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3, excludeKeys = null\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       assert.match(
@@ -1392,7 +1417,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should find common keys between consecutive snapshots', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3, excludeKeys = null\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       assert.match(
@@ -1403,8 +1428,8 @@ describe('usage-optimizer.js - Structure Validation', () => {
     });
   });
 
-  describe('Reset-Boundary Detection', () => {
-    it('should detect large 5h utilization drops between consecutive snapshots', () => {
+  describe('Reset-Boundary Detection (Per-Key)', () => {
+    it('should detect large 5h utilization drops per-key between consecutive snapshots', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
@@ -1418,12 +1443,12 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       assert.match(
         functionBody,
-        /drop5h >= RESET_BOUNDARY_DROP_THRESHOLD/,
-        'Must compare drop against RESET_BOUNDARY_DROP_THRESHOLD'
+        /keyDrop >= PER_KEY_RESET_DROP_THRESHOLD/,
+        'Must compare per-key drop against PER_KEY_RESET_DROP_THRESHOLD'
       );
     });
 
-    it('should compare the last two snapshots for boundary detection', () => {
+    it('should compare each key individually for boundary detection', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
@@ -1435,24 +1460,23 @@ describe('usage-optimizer.js - Structure Validation', () => {
         'Must access second-to-last snapshot'
       );
 
-      // drop5h is computed by summing across common keys and averaging:
-      // (prevSum5h / commonKeys.length) - (currSum5h / commonKeys.length)
+      // Per-key detection: compute drop for each common key individually
       assert.match(
         functionBody,
-        /const drop5h = \(prevSum5h \/ commonKeys\.length\) - \(currSum5h \/ commonKeys\.length\)/,
-        'Must calculate drop as averaged previous minus averaged current across common keys'
+        /const keyDrop = \(prev\.keys\[k\]\['5h'\] \?\? 0\) - \(curr\.keys\[k\]\['5h'\] \?\? 0\)/,
+        'Must calculate per-key drop for each common key'
       );
     });
 
-    it('should skip adjustment cycle when reset detected', () => {
+    it('should skip adjustment cycle when any key reset detected', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
-      // After detecting reset, should return false
-      const resetBlock = functionBody.match(/drop5h >= RESET_BOUNDARY_DROP_THRESHOLD[\s\S]*?return false/);
-      assert.ok(resetBlock, 'Must return false when reset boundary detected');
+      // After detecting reset on any key, should return false
+      const resetBlock = functionBody.match(/keyDrop >= PER_KEY_RESET_DROP_THRESHOLD[\s\S]*?return false/);
+      assert.ok(resetBlock, 'Must return false when any key reset boundary detected');
     });
   });
 
@@ -1581,14 +1605,14 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       assert.match(
         functionBody,
-        /rate5h = calculateEmaRate\(recentSnapshots, ['"]5h['"]\)/,
-        'Must call calculateEmaRate for 5h rate'
+        /rate5h = calculateEmaRate\(recentSnapshots, ['"]5h['"], 0\.3, excludeKeys\)/,
+        'Must call calculateEmaRate for 5h rate with excludeKeys'
       );
 
       assert.match(
         functionBody,
-        /rate7d = calculateEmaRate\(recentSnapshots, ['"]7d['"]\)/,
-        'Must call calculateEmaRate for 7d rate'
+        /rate7d = calculateEmaRate\(recentSnapshots, ['"]7d['"], 0\.3, excludeKeys\)/,
+        'Must call calculateEmaRate for 7d rate with excludeKeys'
       );
     });
 
@@ -1803,26 +1827,26 @@ describe('usage-optimizer.js - Structure Validation', () => {
     });
   });
 
-  describe('Behavioral Tests - Reset-Boundary Detection', () => {
-    it('should skip adjustment when 5h drops by 30% or more', () => {
+  describe('Behavioral Tests - Reset-Boundary Detection (Per-Key)', () => {
+    it('should skip adjustment when any key 5h drops by 50% or more', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       // Verify threshold value
-      const thresholdMatch = code.match(/const RESET_BOUNDARY_DROP_THRESHOLD = (0\.\d+)/);
-      assert.ok(thresholdMatch, 'Must find RESET_BOUNDARY_DROP_THRESHOLD');
+      const thresholdMatch = code.match(/const PER_KEY_RESET_DROP_THRESHOLD = (0\.\d+)/);
+      assert.ok(thresholdMatch, 'Must find PER_KEY_RESET_DROP_THRESHOLD');
       const threshold = parseFloat(thresholdMatch[1]);
-      assert.strictEqual(threshold, 0.30, 'RESET_BOUNDARY_DROP_THRESHOLD must be 0.30');
+      assert.strictEqual(threshold, 0.50, 'PER_KEY_RESET_DROP_THRESHOLD must be 0.50');
 
-      // Verify detection logic
-      const detectionMatch = code.match(/if \(drop5h >= RESET_BOUNDARY_DROP_THRESHOLD\)[\s\S]*?return false/);
-      assert.ok(detectionMatch, 'Must skip adjustment when drop >= threshold');
+      // Verify detection logic uses per-key drop
+      const detectionMatch = code.match(/if \(keyDrop >= PER_KEY_RESET_DROP_THRESHOLD\)[\s\S]*?return false/);
+      assert.ok(detectionMatch, 'Must skip adjustment when any key drop >= threshold');
     });
 
     it('should only check reset boundary with 2+ snapshots', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       // Verify guard condition
-      const guardMatch = code.match(/if \(data\.snapshots\.length >= 2\)[\s\S]*?drop5h >= RESET_BOUNDARY_DROP_THRESHOLD/s);
+      const guardMatch = code.match(/if \(data\.snapshots\.length >= 2\)[\s\S]*?keyDrop >= PER_KEY_RESET_DROP_THRESHOLD/s);
       assert.ok(guardMatch, 'Must only check reset boundary with 2+ snapshots');
     });
 
@@ -1839,7 +1863,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should use alpha=0.3 as default smoothing factor', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const alphaMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = (0\.\d+)\)/);
+      const alphaMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = (0\.\d+), excludeKeys = null\)/);
       assert.ok(alphaMatch, 'Must find calculateEmaRate function with alpha parameter');
       const alphaDefault = parseFloat(alphaMatch[1]);
       assert.strictEqual(alphaDefault, 0.3, 'Default alpha must be 0.3');
@@ -1863,7 +1887,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       // Verify calculateAggregate uses selectTimeBasedSnapshots and calls calculateEmaRate
-      const preferenceMatch = code.match(/if \(allSnapshots && allSnapshots\.length >= 3\)[\s\S]*?selectTimeBasedSnapshots\(allSnapshots, EMA_WINDOW_MS, EMA_MIN_INTERVAL_MS\)[\s\S]*?rate5h = calculateEmaRate\(recentSnapshots, ['"]5h['"]\)/s);
+      const preferenceMatch = code.match(/if \(allSnapshots && allSnapshots\.length >= 3\)[\s\S]*?selectTimeBasedSnapshots\(allSnapshots, EMA_WINDOW_MS, EMA_MIN_INTERVAL_MS\)[\s\S]*?rate5h = calculateEmaRate\(recentSnapshots, ['"]5h['"], 0\.3, excludeKeys\)/s);
       assert.ok(preferenceMatch, 'Must prefer time-based EMA rate when 3+ snapshots available');
     });
   });
@@ -2338,8 +2362,8 @@ describe('usage-optimizer.js - Structure Validation', () => {
     });
   });
 
-  describe('Behavioral Tests - Factor Recovery Clause', () => {
-    it('should define the factor recovery condition in calculateAndAdjust', () => {
+  describe('Behavioral Tests - Factor Recovery Clause (Tiered)', () => {
+    it('should define the tier-1 factor recovery condition in calculateAndAdjust', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
@@ -2347,36 +2371,61 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       const functionBody = functionMatch[0];
 
-      // Recovery triggers when factor is at or near minimum AND usage is well below target.
-      // This handles the case where the projection cap allows the optimizer to re-evaluate
-      // after being stuck at MIN_FACTOR due to previously uncapped runaway projections.
+      // Tier 1 recovery triggers when factor is at or near minimum AND usage is below 70% of target.
       assert.match(
         functionBody,
-        /currentFactor <= 0\.15 && currentUsage < TARGET_UTILIZATION \* 0\.5/,
-        'Must check for factor at very low level with usage well below target'
+        /currentFactor <= 0\.15 && currentUsage < TARGET_UTILIZATION \* 0\.7/,
+        'Must check for factor at very low level with usage below 70% of target'
       );
     });
 
-    it('should reset factor to 1.0 on recovery', () => {
+    it('should define the tier-2 gradual recovery condition', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
-      // Find the recovery block and verify it calls applyFactor with 1.0
-      const recoveryBlock = functionBody.match(
-        /if \(currentFactor <= 0\.15 && currentUsage < TARGET_UTILIZATION \* 0\.5\)[\s\S]*?return true/
+      // Tier 2: factor in 0.15-0.5 range with usage below 80% of target
+      assert.match(
+        functionBody,
+        /currentFactor < 0\.5 && currentFactor > 0\.15 && currentUsage < TARGET_UTILIZATION \* 0\.8/,
+        'Must have tier-2 recovery for factor in 0.15-0.5 dead zone'
       );
-      assert.ok(recoveryBlock, 'Must have factor recovery block');
+    });
+
+    it('should multiply factor by 1.5 in tier-2 recovery', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /Math\.min\(1\.0, currentFactor \* 1\.5\)/,
+        'Tier-2 must multiply factor by 1.5 capped at 1.0'
+      );
+    });
+
+    it('should reset factor to 1.0 on tier-1 recovery', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // Find the tier-1 recovery block and verify it calls applyFactor with 1.0
+      const recoveryBlock = functionBody.match(
+        /if \(currentFactor <= 0\.15 && currentUsage < TARGET_UTILIZATION \* 0\.7\)[\s\S]*?return true/
+      );
+      assert.ok(recoveryBlock, 'Must have tier-1 factor recovery block');
 
       assert.match(
         recoveryBlock[0],
         /applyFactor\(config, 1\.0,/,
-        'Must reset factor to 1.0 on recovery'
+        'Must reset factor to 1.0 on tier-1 recovery'
       );
     });
 
-    it('should log a factor recovery message', () => {
+    it('should log factor recovery messages for both tiers', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
       const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
@@ -2384,8 +2433,14 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       assert.match(
         functionBody,
-        /Factor recovery/,
-        'Must log factor recovery message'
+        /Factor recovery \(tier 1\)/,
+        'Must log tier-1 factor recovery message'
+      );
+
+      assert.match(
+        functionBody,
+        /Factor recovery \(tier 2\)/,
+        'Must log tier-2 factor recovery message'
       );
     });
 
@@ -2415,25 +2470,48 @@ describe('usage-optimizer.js - Structure Validation', () => {
       );
     });
 
-    it('should verify recovery threshold is at half of TARGET_UTILIZATION', () => {
-      // Recovery only fires when usage is well below target (less than 45% = 90% * 0.5).
-      // This ensures the recovery does not trigger in normal operating ranges.
+    it('should verify tier-1 recovery threshold at 70% of TARGET_UTILIZATION', () => {
+      // Recovery fires when usage is below 63% = 90% * 0.7.
       const TARGET_UTILIZATION = 0.90;
-      const recoveryThreshold = TARGET_UTILIZATION * 0.5;
+      const recoveryThreshold = TARGET_UTILIZATION * 0.7;
 
-      assert.strictEqual(recoveryThreshold, 0.45, 'Recovery threshold must be 0.45 (half of 0.90 target)');
+      assert.ok(Math.abs(recoveryThreshold - 0.63) < 0.001, 'Recovery threshold must be 0.63 (70% of 0.90 target)');
 
-      // At 44% usage with factor at very low level, recovery fires.
+      // At 60% usage with factor at very low level, tier-1 recovery fires.
       const stuckFactor = 0.10;
-      const currentUsage44pct = 0.44;
+      const currentUsage60pct = 0.60;
+      const shouldRecover = stuckFactor <= 0.15 && currentUsage60pct < recoveryThreshold;
+      assert.strictEqual(shouldRecover, true, 'Tier-1 recovery must fire at 60% usage with factor at very low level');
 
-      const shouldRecover = stuckFactor <= 0.15 && currentUsage44pct < recoveryThreshold;
-      assert.strictEqual(shouldRecover, true, 'Recovery must fire at 44% usage with factor at very low level');
+      // At 65% usage (above threshold), tier-1 recovery must NOT fire.
+      const currentUsage65pct = 0.65;
+      const shouldNotRecover = stuckFactor <= 0.15 && currentUsage65pct < recoveryThreshold;
+      assert.strictEqual(shouldNotRecover, false, 'Tier-1 recovery must not fire at 65% usage');
+    });
 
-      // At 50% usage (exactly at threshold), recovery must NOT fire.
-      const currentUsage50pct = 0.50;
-      const shouldNotRecover = stuckFactor <= 0.15 && currentUsage50pct < recoveryThreshold;
-      assert.strictEqual(shouldNotRecover, false, 'Recovery must not fire at or above 50% usage');
+    it('should verify tier-2 recovery covers the 0.15-0.5 dead zone', () => {
+      const TARGET_UTILIZATION = 0.90;
+      const tier2UsageThreshold = TARGET_UTILIZATION * 0.8; // 0.72
+
+      // Factor at 0.3 (in dead zone), usage at 60%
+      const factor = 0.3;
+      const usage = 0.60;
+      const shouldRecover = factor < 0.5 && factor > 0.15 && usage < tier2UsageThreshold;
+      assert.strictEqual(shouldRecover, true, 'Tier-2 must fire at factor 0.3 with 60% usage');
+
+      // Factor at 0.3, usage at 75% (above 72% threshold)
+      const highUsage = 0.75;
+      const shouldNotRecover = factor < 0.5 && factor > 0.15 && highUsage < tier2UsageThreshold;
+      assert.strictEqual(shouldNotRecover, false, 'Tier-2 must not fire when usage exceeds 72%');
+
+      // Verify 1.5x boost
+      const boosted = Math.min(1.0, factor * 1.5);
+      assert.ok(Math.abs(boosted - 0.45) < 0.001, `Factor 0.3 * 1.5 should be ~0.45, got ${boosted}`);
+
+      // High factor gets capped
+      const highFactor = 0.8;
+      const capped = Math.min(1.0, highFactor * 1.5);
+      assert.strictEqual(capped, 1.0, 'Factor 0.8 * 1.5 = 1.2, capped to 1.0');
     });
   });
 
@@ -2789,7 +2867,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
     it('should filter intervals shorter than 3 minutes in calculateEmaRate', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3\) \{[\s\S]*?\n\}/);
+      const functionMatch = code.match(/function calculateEmaRate\(snapshots, metricKey, alpha = 0\.3, excludeKeys = null\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       assert.match(
@@ -2881,49 +2959,53 @@ describe('usage-optimizer.js - Structure Validation', () => {
     });
   });
 
-  describe('Behavioral Tests - Recovery Threshold Boundaries', () => {
-    it('should fire recovery at factor exactly 0.15 with low usage', () => {
+  describe('Behavioral Tests - Recovery Threshold Boundaries (Tiered)', () => {
+    it('should fire tier-1 recovery at factor exactly 0.15 with low usage', () => {
       const TARGET_UTILIZATION = 0.90;
-      const recoveryThreshold = TARGET_UTILIZATION * 0.5; // 0.45
+      const recoveryThreshold = TARGET_UTILIZATION * 0.7; // 0.63
       const currentFactor = 0.15; // Exactly at boundary
       const currentUsage = 0.40; // Below threshold
 
       const shouldRecover = currentFactor <= 0.15 && currentUsage < recoveryThreshold;
 
-      assert.strictEqual(shouldRecover, true, 'Recovery must fire when factor is exactly 0.15 with usage at 40%');
+      assert.strictEqual(shouldRecover, true, 'Tier-1 recovery must fire when factor is exactly 0.15 with usage at 40%');
     });
 
-    it('should NOT fire recovery at factor 0.16 with low usage', () => {
+    it('should NOT fire tier-1 recovery at factor 0.16 with low usage', () => {
       const TARGET_UTILIZATION = 0.90;
-      const recoveryThreshold = TARGET_UTILIZATION * 0.5; // 0.45
-      const currentFactor = 0.16; // Just above boundary
+      const recoveryThreshold = TARGET_UTILIZATION * 0.7; // 0.63
+      const currentFactor = 0.16; // Just above tier-1 boundary
       const currentUsage = 0.40; // Below threshold
 
-      const shouldRecover = currentFactor <= 0.15 && currentUsage < recoveryThreshold;
+      const shouldTier1 = currentFactor <= 0.15 && currentUsage < recoveryThreshold;
+      assert.strictEqual(shouldTier1, false, 'Tier-1 must NOT fire when factor is 0.16');
 
-      assert.strictEqual(shouldRecover, false, 'Recovery must NOT fire when factor is 0.16 (above 0.15 threshold)');
+      // But tier-2 SHOULD fire (factor < 0.5, > 0.15, usage < 0.72)
+      const tier2Threshold = TARGET_UTILIZATION * 0.8; // 0.72
+      const shouldTier2 = currentFactor < 0.5 && currentFactor > 0.15 && currentUsage < tier2Threshold;
+      assert.strictEqual(shouldTier2, true, 'Tier-2 must fire when factor is 0.16 with usage at 40%');
     });
 
-    it('should fire recovery at factor below 0.15 with usage just below threshold', () => {
+    it('should fire tier-1 recovery at factor below 0.15 with usage just below threshold', () => {
       const TARGET_UTILIZATION = 0.90;
-      const recoveryThreshold = TARGET_UTILIZATION * 0.5; // 0.45
+      const recoveryThreshold = TARGET_UTILIZATION * 0.7; // 0.63
       const currentFactor = 0.10; // Well below boundary
-      const currentUsage = 0.44; // Just below threshold
+      const currentUsage = 0.62; // Just below threshold
 
       const shouldRecover = currentFactor <= 0.15 && currentUsage < recoveryThreshold;
 
-      assert.strictEqual(shouldRecover, true, 'Recovery must fire when factor is 0.10 and usage is 44%');
+      assert.strictEqual(shouldRecover, true, 'Tier-1 recovery must fire when factor is 0.10 and usage is 62%');
     });
 
-    it('should NOT fire recovery when usage at or above threshold even with low factor', () => {
+    it('should NOT fire tier-1 recovery when usage at or above threshold even with low factor', () => {
       const TARGET_UTILIZATION = 0.90;
-      const recoveryThreshold = TARGET_UTILIZATION * 0.5; // 0.45
+      const recoveryThreshold = TARGET_UTILIZATION * 0.7; // 0.63
       const currentFactor = 0.10; // Low factor
-      const currentUsage = 0.45; // Exactly at threshold
+      const currentUsage = 0.63; // Exactly at threshold
 
       const shouldRecover = currentFactor <= 0.15 && currentUsage < recoveryThreshold;
 
-      assert.strictEqual(shouldRecover, false, 'Recovery must NOT fire when usage is at or above 45% threshold');
+      assert.strictEqual(shouldRecover, false, 'Tier-1 recovery must NOT fire when usage is at or above 63% threshold');
     });
 
     it('should verify recovery threshold independence from MIN_FACTOR', () => {
@@ -3099,6 +3181,206 @@ describe('usage-optimizer.js - Structure Validation', () => {
         /id: ['"]default['"],\s*accessToken:[\s\S]*?accountId: null/s,
         'Credentials file key must include accountId: null'
       );
+    });
+  });
+
+  describe('Exhausted-Account Filtering in calculateAggregate', () => {
+    it('should classify keys with 7d >= 0.995 as exhausted', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /const EXHAUSTED_THRESHOLD = 0\.995/,
+        'Must define EXHAUSTED_THRESHOLD = 0.995'
+      );
+
+      assert.match(
+        functionBody,
+        /val7d >= EXHAUSTED_THRESHOLD/,
+        'Must check 7d value against EXHAUSTED_THRESHOLD'
+      );
+    });
+
+    it('should fall back to all-key average when ALL keys are exhausted', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /activeEntries\.length > 0 \? activeEntries : latestEntries/,
+        'Must fall back to all entries when no active keys'
+      );
+    });
+
+    it('should pass excludeKeys to calculateEmaRate to exclude exhausted keys from rates', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /const excludeKeys = exhaustedKeyIds\.size > 0 && activeEntries\.length > 0 \? exhaustedKeyIds : null/,
+        'Must set excludeKeys from exhausted IDs when active keys exist'
+      );
+    });
+
+    it('should correctly compute active-only aggregate (behavioral)', () => {
+      // Simulate: 3 accounts, 1 exhausted at 100% 7d
+      const keys = {
+        active1: { '5h': 0.14, '7d': 0.40 },
+        active2: { '5h': 0.20, '7d': 0.30 },
+        exhausted: { '5h': 0.00, '7d': 1.00 },
+      };
+
+      const EXHAUSTED_THRESHOLD = 0.995;
+      const entries = Object.entries(keys);
+      const activeEntries = entries.filter(([, k]) => (k['7d'] ?? 0) < EXHAUSTED_THRESHOLD);
+      const entriesToAverage = activeEntries.length > 0 ? activeEntries : entries;
+
+      let sum7d = 0;
+      for (const [, k] of entriesToAverage) sum7d += k['7d'] ?? 0;
+      const avg7d = sum7d / entriesToAverage.length;
+
+      // Active-only: (0.40 + 0.30) / 2 = 0.35
+      assert.ok(Math.abs(avg7d - 0.35) < 0.001, `Active-only 7d average must be 0.35, got ${avg7d}`);
+
+      // Buggy all-key: (0.40 + 0.30 + 1.00) / 3 = 0.567
+      const buggyAvg = (0.40 + 0.30 + 1.00) / 3;
+      assert.ok(avg7d < buggyAvg, 'Active-only average must be lower than all-key average');
+    });
+  });
+
+  describe('Key-Count Discontinuity Guard', () => {
+    it('should detect key count changes and skip adjustment', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /prevKeyCount !== currKeyCount/,
+        'Must compare previous and current key counts'
+      );
+
+      assert.match(
+        functionBody,
+        /Key count changed/,
+        'Must log when key count changes'
+      );
+    });
+
+    it('should skip one cycle when keys are added or removed', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function calculateAndAdjust\(log\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      const guardBlock = functionBody.match(/prevKeyCount !== currKeyCount[\s\S]*?return false/);
+      assert.ok(guardBlock, 'Must return false when key count changes');
+    });
+  });
+
+  describe('Invalid Key Filtering in getApiKeys', () => {
+    it('should skip keys with status invalid', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/function getApiKeys\(\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /data\.status === ['"]invalid['"]/,
+        'Must check for invalid status'
+      );
+    });
+  });
+
+  describe('resetOptimizer() - Data Reset', () => {
+    it('should be exported as a named function', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /export function resetOptimizer\(/,
+        'Must export resetOptimizer function'
+      );
+    });
+
+    it('should clear snapshots to empty array', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/export function resetOptimizer\([\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'resetOptimizer must exist');
+
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /JSON\.stringify\(\{ snapshots: \[\] \}/,
+        'Must write empty snapshots array'
+      );
+    });
+
+    it('should reset factor to 1.0', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/export function resetOptimizer\([\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /factor: 1\.0/,
+        'Must reset factor to 1.0'
+      );
+    });
+
+    it('should set direction to reset', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/export function resetOptimizer\([\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /direction: ['"]reset['"]/,
+        'Must set direction to reset'
+      );
+    });
+
+    it('should restore default cooldowns', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/export function resetOptimizer\([\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      assert.match(
+        functionBody,
+        /const defaults = getDefaults\(\)/,
+        'Must get defaults from getDefaults()'
+      );
+
+      assert.match(
+        functionBody,
+        /config\.effective = \{ \.\.\.defaults \}/,
+        'Must spread defaults into config.effective'
+      );
+    });
+
+    it('should handle errors gracefully', () => {
+      const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
+
+      const functionMatch = code.match(/export function resetOptimizer\([\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      const catchCount = (functionBody.match(/\} catch/g) || []).length;
+      assert.ok(catchCount >= 2, 'Must have catch blocks for both snapshot and config operations');
     });
   });
 

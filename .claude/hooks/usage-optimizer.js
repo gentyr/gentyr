@@ -41,7 +41,7 @@ const MAX_COOLDOWN_MINUTES = {
   triage_check: 15,                // 15min max (default 5) — keep triage responsive
 };
 const SINGLE_KEY_WARNING_THRESHOLD = 0.80; // Warn when any key exceeds 80%
-const RESET_BOUNDARY_DROP_THRESHOLD = 0.30; // Detect reset when 5h drops >30pp
+const PER_KEY_RESET_DROP_THRESHOLD = 0.50; // Detect reset when ANY key's 5h drops >50pp
 const MIN_SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;  // 5 min — throttle between snapshots
 const EMA_WINDOW_MS = 2 * 60 * 60 * 1000;        // 2 hours — time window for EMA
 const EMA_MIN_INTERVAL_MS = 5 * 60 * 1000;        // 5 min — dedup interval for EMA input
@@ -262,8 +262,8 @@ function getApiKeys() {
       if (state && state.keys && typeof state.keys === 'object') {
         for (const [id, data] of Object.entries(state.keys)) {
           if (!data.accessToken) continue;
-          // Skip expired keys
-          if (data.status === 'expired') continue;
+          // Skip expired or invalid keys
+          if (data.status === 'expired' || data.status === 'invalid') continue;
           if (data.expiresAt && data.expiresAt < now) continue;
           keys.push({ id: id.substring(0, 8), accessToken: data.accessToken, accountId: data.account_uuid || null });
         }
@@ -396,25 +396,33 @@ function calculateAndAdjust(log) {
     return false;
   }
 
-  // Reset-boundary detection: if 5h utilization dropped >30pp between consecutive
-  // recent snapshots, a window reset just happened. Skip this cycle to avoid
-  // the stale rate causing the factor to ramp up blindly.
-  // Compare only COMMON keys to avoid false positives when keys are added/removed.
+  // Reset-boundary detection: if ANY single key's 5h utilization dropped >50pp
+  // between consecutive snapshots, a window reset just happened. Skip this cycle
+  // to avoid the stale rate causing the factor to ramp up blindly.
+  // Per-key detection avoids dilution when some keys are already at 0%.
   if (data.snapshots.length >= 2) {
     const prev = data.snapshots[data.snapshots.length - 2];
     const curr = data.snapshots[data.snapshots.length - 1];
     const commonKeys = Object.keys(curr.keys).filter(k => k in prev.keys);
-    if (commonKeys.length > 0) {
-      let prevSum5h = 0, currSum5h = 0;
-      for (const k of commonKeys) {
-        prevSum5h += prev.keys[k]['5h'] ?? 0;
-        currSum5h += curr.keys[k]['5h'] ?? 0;
-      }
-      const drop5h = (prevSum5h / commonKeys.length) - (currSum5h / commonKeys.length);
-      if (drop5h >= RESET_BOUNDARY_DROP_THRESHOLD) {
-        log(`Usage optimizer: Reset boundary detected (5h dropped ${Math.round(drop5h * 100)}pp). Skipping adjustment cycle.`);
+    for (const k of commonKeys) {
+      const keyDrop = (prev.keys[k]['5h'] ?? 0) - (curr.keys[k]['5h'] ?? 0);
+      if (keyDrop >= PER_KEY_RESET_DROP_THRESHOLD) {
+        log(`Usage optimizer: Reset boundary detected (key ${k} 5h dropped ${Math.round(keyDrop * 100)}pp). Skipping adjustment cycle.`);
         return false;
       }
+    }
+  }
+
+  // Key-count discontinuity guard: when key count changes between consecutive
+  // snapshots (key discovery/removal), skip one cycle to let EMA stabilize.
+  if (data.snapshots.length >= 2) {
+    const prevSnap = data.snapshots[data.snapshots.length - 2];
+    const currSnap = data.snapshots[data.snapshots.length - 1];
+    const prevKeyCount = Object.keys(prevSnap.keys).length;
+    const currKeyCount = Object.keys(currSnap.keys).length;
+    if (prevKeyCount !== currKeyCount) {
+      log(`Usage optimizer: Key count changed (${prevKeyCount} → ${currKeyCount}). Skipping adjustment cycle to stabilize EMA.`);
+      return false;
     }
   }
 
@@ -461,13 +469,22 @@ function calculateAndAdjust(log) {
   const currentRate = constraining === '5h' ? aggregate.rate5h : aggregate.rate7d;
   const hoursUntilReset = constraining === '5h' ? aggregate.hoursUntil5hReset : aggregate.hoursUntil7dReset;
 
-  // Recovery: if factor is stuck at minimum but current usage is well below
+  // Tier 1 recovery: if factor is stuck at minimum but current usage is well below
   // target, the projection model was unreliable. Reset factor to baseline so
   // automations aren't permanently throttled.
   // 0.15 threshold = 85%+ slower than default; catches factors that drifted very low
-  if (currentFactor <= 0.15 && currentUsage < TARGET_UTILIZATION * 0.5) {
+  if (currentFactor <= 0.15 && currentUsage < TARGET_UTILIZATION * 0.7) {
     applyFactor(config, 1.0, constraining, projectedAtReset, log, hoursUntilReset);
-    log(`Usage optimizer: Factor recovery — usage at ${Math.round(currentUsage * 100)}% (well below ${Math.round(TARGET_UTILIZATION * 100)}% target) but factor stuck at minimum. Reset to 1.0.`);
+    log(`Usage optimizer: Factor recovery (tier 1) — usage at ${Math.round(currentUsage * 100)}% (well below ${Math.round(TARGET_UTILIZATION * 100)}% target) but factor stuck at minimum. Reset to 1.0.`);
+    return true;
+  }
+
+  // Tier 2 recovery: gradual recovery for factors in the 0.15-0.5 dead zone.
+  // The 5% per-cycle conservative speedup is too slow to recover from this range.
+  if (currentFactor < 0.5 && currentFactor > 0.15 && currentUsage < TARGET_UTILIZATION * 0.8) {
+    const recoveredFactor = Math.min(1.0, currentFactor * 1.5);
+    applyFactor(config, recoveredFactor, constraining, projectedAtReset, log, hoursUntilReset);
+    log(`Usage optimizer: Factor recovery (tier 2) — usage at ${Math.round(currentUsage * 100)}% with factor at ${currentFactor.toFixed(3)}. Boosted to ${recoveredFactor.toFixed(3)}.`);
     return true;
   }
 
@@ -543,7 +560,7 @@ function calculateAndAdjust(log) {
  * @param {number} [alpha=0.3] - EMA smoothing factor (higher = more weight on recent)
  * @returns {number} Smoothed rate per hour
  */
-function calculateEmaRate(snapshots, metricKey, alpha = 0.3) {
+function calculateEmaRate(snapshots, metricKey, alpha = 0.3, excludeKeys = null) {
   if (snapshots.length < 2) return 0;
 
   let emaRate = null;
@@ -554,8 +571,9 @@ function calculateEmaRate(snapshots, metricKey, alpha = 0.3) {
     const hoursDelta = (curr.ts - prev.ts) / (1000 * 60 * 60);
     if (hoursDelta < MIN_HOURS_DELTA) continue; // Skip rapid-fire intervals (<3 min)
 
-    // Average across common keys for this pair
-    const commonKeys = Object.keys(curr.keys).filter(k => k in prev.keys);
+    // Average across common keys for this pair, excluding exhausted keys
+    let commonKeys = Object.keys(curr.keys).filter(k => k in prev.keys);
+    if (excludeKeys) commonKeys = commonKeys.filter(k => !excludeKeys.has(k));
     if (commonKeys.length === 0) continue;
 
     let sumCurr = 0, sumPrev = 0;
@@ -586,39 +604,53 @@ function calculateAggregate(latest, earliest, hoursBetween, allSnapshots) {
   const latestEntries = Object.entries(latest.keys);
   if (latestEntries.length === 0) return null;
 
-  // Use all latest keys for current state + per-key tracking
-  let sum5h = 0, sum7d = 0;
-  let maxKey5h = 0, maxKey7d = 0;
+  // Classify keys as exhausted (7d >= 0.995) vs active
+  const EXHAUSTED_THRESHOLD = 0.995;
+  const exhaustedKeyIds = new Set();
   let resetAt5h = null, resetAt7d = null;
   const perKeyUtilization = {};
+  let maxKey5h = 0, maxKey7d = 0;
 
+  // First pass: classify keys, collect per-key data and reset times
   for (const [id, k] of latestEntries) {
     const val5h = k['5h'] ?? 0;
     const val7d = k['7d'] ?? 0;
-    sum5h += val5h;
-    sum7d += val7d;
+    perKeyUtilization[id] = { '5h': val5h, '7d': val7d };
     maxKey5h = Math.max(maxKey5h, val5h);
     maxKey7d = Math.max(maxKey7d, val7d);
-    perKeyUtilization[id] = { '5h': val5h, '7d': val7d };
-    if (k['5h_reset']) resetAt5h = k['5h_reset'];
-    if (k['7d_reset']) resetAt7d = k['7d_reset'];
+    if (k['5h_reset'] && (!resetAt5h || k['5h_reset'] < resetAt5h)) resetAt5h = k['5h_reset'];
+    if (k['7d_reset'] && (!resetAt7d || k['7d_reset'] < resetAt7d)) resetAt7d = k['7d_reset'];
+    if (val7d >= EXHAUSTED_THRESHOLD) exhaustedKeyIds.add(id);
   }
 
-  const numKeys = latestEntries.length;
+  // Compute aggregate from active keys only; fall back to all-key average if ALL exhausted
+  const activeEntries = latestEntries.filter(([id]) => !exhaustedKeyIds.has(id));
+  const entriesToAverage = activeEntries.length > 0 ? activeEntries : latestEntries;
+
+  let sum5h = 0, sum7d = 0;
+  for (const [, k] of entriesToAverage) {
+    sum5h += k['5h'] ?? 0;
+    sum7d += k['7d'] ?? 0;
+  }
+
+  const numKeys = entriesToAverage.length;
   const current5h = sum5h / numKeys;
   const current7d = sum7d / numKeys;
 
   // Calculate rates: use EMA from recent snapshots if available, fall back to two-point slope
+  // Exclude exhausted keys from rate calculation so rates reflect only growing accounts
   let rate5h = 0, rate7d = 0;
+  const excludeKeys = exhaustedKeyIds.size > 0 && activeEntries.length > 0 ? exhaustedKeyIds : null;
   if (allSnapshots && allSnapshots.length >= 3) {
     const recentSnapshots = selectTimeBasedSnapshots(allSnapshots, EMA_WINDOW_MS, EMA_MIN_INTERVAL_MS);
-    rate5h = calculateEmaRate(recentSnapshots, '5h');
-    rate7d = calculateEmaRate(recentSnapshots, '7d');
+    rate5h = calculateEmaRate(recentSnapshots, '5h', 0.3, excludeKeys);
+    rate7d = calculateEmaRate(recentSnapshots, '7d', 0.3, excludeKeys);
   } else {
-    // Fallback: two-point slope from common keys
-    const commonKeyIds = latestEntries
+    // Fallback: two-point slope from common keys (excluding exhausted)
+    let commonKeyIds = latestEntries
       .map(([id]) => id)
       .filter(id => id in earliest.keys);
+    if (excludeKeys) commonKeyIds = commonKeyIds.filter(id => !excludeKeys.has(id));
 
     if (commonKeyIds.length > 0 && hoursBetween > 0) {
       let latestCommon5h = 0, latestCommon7d = 0;
@@ -660,6 +692,8 @@ function calculateAggregate(latest, earliest, hoursBetween, allSnapshots) {
     current5h, current7d, rate5h, rate7d,
     hoursUntil5hReset, hoursUntil7dReset,
     maxKey5h, maxKey7d, perKeyUtilization,
+    activeKeyCount: activeEntries.length,
+    totalKeyCount: latestEntries.length,
   };
 }
 
@@ -705,5 +739,49 @@ function applyFactor(config, newFactor, constraining, projectedAtReset, log, hou
         `Constraining: ${constraining}. Projected at reset: ${Math.round(projectedAtReset * 100)}%.${resetStr}`);
   } catch (err) {
     log(`Usage optimizer: Failed to write config: ${err.message}`);
+  }
+}
+
+/**
+ * Reset the optimizer by clearing all snapshots and restoring factor to 1.0.
+ * Used after deploying fixes to flush polluted historical data.
+ *
+ * @param {function} [logFn] - Optional log function (default: console.log)
+ */
+export function resetOptimizer(logFn) {
+  const log = logFn || console.log;
+
+  // Clear snapshots
+  try {
+    if (fs.existsSync(SNAPSHOTS_PATH)) {
+      fs.writeFileSync(SNAPSHOTS_PATH, JSON.stringify({ snapshots: [] }, null, 2));
+      log('Usage optimizer reset: Cleared usage snapshots.');
+    }
+  } catch (err) {
+    log(`Usage optimizer reset: Failed to clear snapshots: ${err.message}`);
+  }
+
+  // Reset factor to 1.0 with default cooldowns
+  try {
+    const configPath = getConfigPath();
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      const defaults = getDefaults();
+
+      config.effective = { ...defaults };
+      config.adjustment = {
+        factor: 1.0,
+        last_updated: new Date().toISOString(),
+        constraining_metric: null,
+        projected_at_reset: null,
+        direction: 'reset',
+        hours_until_reset: null,
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      log('Usage optimizer reset: Factor restored to 1.0 with default cooldowns.');
+    }
+  } catch (err) {
+    log(`Usage optimizer reset: Failed to reset config: ${err.message}`);
   }
 }

@@ -158,26 +158,38 @@ function calculateAggregate(raw: RawSnapshot): AggregateResult | null {
     return null;
   }
 
-  const entries = Object.values(raw.keys);
+  const entries = Object.entries(raw.keys);
   if (entries.length === 0) {
     return null;
   }
 
-  let sum5h = 0;
-  let sum7d = 0;
+  // Classify keys as exhausted (7d >= 0.995) vs active — matches usage-optimizer.js
+  const EXHAUSTED_THRESHOLD = 0.995;
   let reset5h: string | null = null;
   let reset7d: string | null = null;
 
-  for (const k of entries) {
-    sum5h += k['5h'] ?? 0;
-    sum7d += k['7d'] ?? 0;
+  const activeEntries: [string, RawKeyData][] = [];
+  for (const [id, k] of entries) {
     if (k['5h_reset'] && (!reset5h || k['5h_reset'] < reset5h)) reset5h = k['5h_reset'];
     if (k['7d_reset'] && (!reset7d || k['7d_reset'] < reset7d)) reset7d = k['7d_reset'];
+    if ((k['7d'] ?? 0) < EXHAUSTED_THRESHOLD) {
+      activeEntries.push([id, k]);
+    }
+  }
+
+  // Use active keys for aggregate; fall back to all keys if ALL exhausted
+  const entriesToAverage = activeEntries.length > 0 ? activeEntries : entries;
+
+  let sum5h = 0;
+  let sum7d = 0;
+  for (const [, k] of entriesToAverage) {
+    sum5h += k['5h'] ?? 0;
+    sum7d += k['7d'] ?? 0;
   }
 
   // Snapshot values are 0-1 fractions; convert to 0-100 percentages for display
-  const avg5h = sum5h / entries.length;
-  const avg7d = sum7d / entries.length;
+  const avg5h = sum5h / entriesToAverage.length;
+  const avg7d = sum7d / entriesToAverage.length;
 
   return {
     fiveHour: avg5h <= 1 ? avg5h * 100 : avg5h,

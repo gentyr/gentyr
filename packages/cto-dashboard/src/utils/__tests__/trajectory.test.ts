@@ -172,6 +172,97 @@ describe('trajectory utilities', () => {
       expect(result.snapshots[0].sevenDay).toBeCloseTo(70, 1);
     });
 
+    it('should filter exhausted accounts (7d >= 0.995) from aggregate', () => {
+      const now = Date.now();
+      const resetTime5h = new Date(now + 3600000).toISOString();
+      const resetTime7d = new Date(now + 86400000).toISOString();
+
+      const data = {
+        snapshots: [
+          {
+            ts: now,
+            keys: {
+              active1: {
+                '5h': 0.14,
+                '5h_reset': resetTime5h,
+                '7d': 0.40,
+                '7d_reset': resetTime7d,
+              },
+              active2: {
+                '5h': 0.20,
+                '5h_reset': resetTime5h,
+                '7d': 0.30,
+                '7d_reset': resetTime7d,
+              },
+              exhausted: {
+                '5h': 0.00,
+                '5h_reset': resetTime5h,
+                '7d': 1.00, // >= 0.995, should be excluded
+                '7d_reset': resetTime7d,
+              },
+            },
+          },
+        ],
+      };
+
+      const dir = path.dirname(SNAPSHOTS_PATH);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(SNAPSHOTS_PATH, JSON.stringify(data));
+
+      const result = getUsageTrajectory();
+
+      expect(result.hasData).toBe(true);
+      expect(result.snapshots).toHaveLength(1);
+      // Active-only 7d: (0.40 + 0.30) / 2 = 0.35 => 35%
+      // Without filtering: (0.40 + 0.30 + 1.00) / 3 = 0.567 => 56.7%
+      expect(result.snapshots[0].sevenDay).toBeCloseTo(35, 0);
+      // Active-only 5h: (0.14 + 0.20) / 2 = 0.17 => 17%
+      expect(result.snapshots[0].fiveHour).toBeCloseTo(17, 0);
+    });
+
+    it('should fall back to all-key average when ALL keys are exhausted', () => {
+      const now = Date.now();
+      const resetTime5h = new Date(now + 3600000).toISOString();
+      const resetTime7d = new Date(now + 86400000).toISOString();
+
+      const data = {
+        snapshots: [
+          {
+            ts: now,
+            keys: {
+              exhausted1: {
+                '5h': 0.00,
+                '5h_reset': resetTime5h,
+                '7d': 1.00,
+                '7d_reset': resetTime7d,
+              },
+              exhausted2: {
+                '5h': 0.05,
+                '5h_reset': resetTime5h,
+                '7d': 0.999, // >= 0.995
+                '7d_reset': resetTime7d,
+              },
+            },
+          },
+        ],
+      };
+
+      const dir = path.dirname(SNAPSHOTS_PATH);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(SNAPSHOTS_PATH, JSON.stringify(data));
+
+      const result = getUsageTrajectory();
+
+      expect(result.hasData).toBe(true);
+      // All keys exhausted => fall back to all-key average
+      // 7d: (1.00 + 0.999) / 2 = 0.9995 => ~100%
+      expect(result.snapshots[0].sevenDay).toBeCloseTo(99.95, 0);
+    });
+
     it('should select earliest reset time across keys (fix validation)', () => {
       const now = Date.now();
       const resetTime5h_early = new Date(now + 3600000).toISOString(); // 1h from now
