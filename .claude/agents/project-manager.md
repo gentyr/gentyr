@@ -69,6 +69,23 @@ mcp__todo-db__create_task({
 })
 ```
 
+## Merge Chain Awareness
+
+This project enforces a 4-stage merge chain: `feature/* -> preview -> staging -> main`.
+
+**Local enforcement** (unbypassable):
+- Pre-commit hook blocks direct commits to `main`, `preview`, `staging`
+- Pre-push hook blocks direct pushes to protected branches
+- Only `GENTYR_PROMOTION_PIPELINE=true` agents can operate on protected branches
+
+**Worktrees**: Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/`. Each worktree is provisioned with symlinked GENTYR config. Cleanup runs every 6 hours for merged branches.
+
+**Stale work detection**: Runs every 24 hours, reports uncommitted changes, unpushed branches, and stale feature branches (>3 days) to deputy-CTO.
+
+When assessing project state, check:
+- `mcp__deputy-cto__get_merge_chain_status()` for branch positions and stale branches
+- Whether documentation references to the merge chain are accurate
+
 ## CTO Reporting
 
 **IMPORTANT**: Report project-level issues to the CTO using the agent-reports MCP server.

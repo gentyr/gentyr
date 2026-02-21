@@ -3,7 +3,7 @@
 
 Sync secrets from 1Password to Render and Vercel environment variables using the `secret-sync` MCP server. Secret values never pass through the agent's context window.
 
-The prefetch hook has pre-gathered the current secret mappings from services.json and injected them as a `[PREFETCH:push-secrets]` systemMessage above. Use that data for Step 0 instead of calling the MCP tool. If the prefetch data is missing, call `mcp__secret-sync__list_mappings` as usual.
+The prefetch hook has pre-gathered the current secret mappings from services.json and injected them as `[PREFETCH:push-secrets]` context above. Use that data for Step 0 instead of calling the MCP tool. If the prefetch data is missing, call `mcp__secret-sync__list_mappings` as usual.
 
 ## Security Notes
 

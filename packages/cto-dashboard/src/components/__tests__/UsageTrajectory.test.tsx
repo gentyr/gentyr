@@ -1062,6 +1062,291 @@ describe('UsageTrajectory', () => {
   });
 
   describe('Email Deduplication Logic', () => {
+    it('should skip invalid accounts with no quota data during deduplication', () => {
+      const now = new Date();
+      const trajectory: TrajectoryResult = {
+        snapshots: [
+          { timestamp: now, fiveHour: 45, sevenDay: 65 },
+        ],
+        fiveHourProjectedAtReset: null,
+        sevenDayProjectedAtReset: null,
+        fiveHourResetTime: null,
+        sevenDayResetTime: null,
+        fiveHourTrendPerHour: null,
+        sevenDayTrendPerDay: null,
+        hasData: true,
+      };
+
+      const verifiedQuota: VerifiedQuotaResult = {
+        keys: [
+          {
+            key_id: 'valid-key',
+            subscription_type: 'claude_max',
+            is_current: true,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 35, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 88, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+          {
+            key_id: 'invalid-key',
+            subscription_type: 'claude_max',
+            is_current: false,
+            healthy: false,
+            quota: null,
+          },
+        ],
+        healthy_count: 1,
+        total_attempted: 2,
+        aggregate: {
+          five_hour: { utilization: 35, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+          seven_day: { utilization: 88, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+          extra_usage_enabled: false,
+          error: null,
+        },
+        rotation_events_24h: 0,
+      };
+
+      const accountOverview = {
+        hasData: true,
+        activeKeyId: 'valid-key',
+        totalRotations24h: 0,
+        accounts: [
+          {
+            keyId: 'valid-key',
+            status: 'active' as const,
+            isCurrent: true,
+            subscriptionType: 'claude_max',
+            email: 'valid@test.com',
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 35,
+            sevenDayPct: 88,
+            sevenDaySonnetPct: null,
+          },
+          {
+            keyId: 'invalid-key',
+            status: 'invalid' as const,
+            isCurrent: false,
+            subscriptionType: 'claude_max',
+            email: 'invalid@test.com',
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: null, // No quota data
+            sevenDayPct: null, // No quota data
+            sevenDaySonnetPct: null,
+          },
+        ],
+        events: [],
+      };
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
+      const output = lastFrame();
+
+      // Should not show Per-Account Quota section (only 1 valid account after filtering)
+      expect(output).not.toContain('Per-Account Quota');
+      // Should not contain the invalid account's email
+      expect(output).not.toContain('invalid@test.com');
+    });
+
+    it('should keep invalid accounts that have quota data', () => {
+      const now = new Date();
+      const trajectory: TrajectoryResult = {
+        snapshots: [
+          { timestamp: now, fiveHour: 45, sevenDay: 65 },
+        ],
+        fiveHourProjectedAtReset: null,
+        sevenDayProjectedAtReset: null,
+        fiveHourResetTime: null,
+        sevenDayResetTime: null,
+        fiveHourTrendPerHour: null,
+        sevenDayTrendPerDay: null,
+        hasData: true,
+      };
+
+      const verifiedQuota: VerifiedQuotaResult = {
+        keys: [
+          {
+            key_id: 'key1',
+            subscription_type: 'claude_max',
+            is_current: true,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 35, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 88, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+          {
+            key_id: 'key2',
+            subscription_type: 'claude_max',
+            is_current: false,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 50, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 70, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+        ],
+        healthy_count: 2,
+        total_attempted: 2,
+        aggregate: {
+          five_hour: { utilization: 42, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+          seven_day: { utilization: 79, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+          extra_usage_enabled: false,
+          error: null,
+        },
+        rotation_events_24h: 1,
+      };
+
+      const accountOverview = {
+        hasData: true,
+        activeKeyId: 'key1',
+        totalRotations24h: 1,
+        accounts: [
+          {
+            keyId: 'key1',
+            status: 'active' as const,
+            isCurrent: true,
+            subscriptionType: 'claude_max',
+            email: 'active@test.com',
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 35,
+            sevenDayPct: 88,
+            sevenDaySonnetPct: null,
+          },
+          {
+            keyId: 'key2',
+            status: 'invalid' as const,
+            isCurrent: false,
+            subscriptionType: 'claude_max',
+            email: 'invalid-but-has-quota@test.com',
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 50, // Has quota data - should NOT be filtered
+            sevenDayPct: 70,
+            sevenDaySonnetPct: null,
+          },
+        ],
+        events: [],
+      };
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
+      const output = lastFrame();
+
+      // Should show Per-Account Quota section (2 accounts: 1 active, 1 invalid with quota)
+      expect(output).toContain('Per-Account Quota');
+      expect(output).toContain('active@test.com');
+      expect(output).toContain('invalid-but-has-q...'); // Truncated to 22 chars
+    });
+
+    it('should skip invalid accounts with partial quota data (only fiveHourPct)', () => {
+      const now = new Date();
+      const trajectory: TrajectoryResult = {
+        snapshots: [
+          { timestamp: now, fiveHour: 45, sevenDay: 65 },
+        ],
+        fiveHourProjectedAtReset: null,
+        sevenDayProjectedAtReset: null,
+        fiveHourResetTime: null,
+        sevenDayResetTime: null,
+        fiveHourTrendPerHour: null,
+        sevenDayTrendPerDay: null,
+        hasData: true,
+      };
+
+      const verifiedQuota: VerifiedQuotaResult = {
+        keys: [
+          {
+            key_id: 'key1',
+            subscription_type: 'claude_max',
+            is_current: true,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 35, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 88, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+          {
+            key_id: 'key2',
+            subscription_type: 'claude_max',
+            is_current: false,
+            healthy: true,
+            quota: {
+              five_hour: { utilization: 50, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+              seven_day: { utilization: 70, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+              extra_usage_enabled: false,
+              error: null,
+            },
+          },
+        ],
+        healthy_count: 2,
+        total_attempted: 2,
+        aggregate: {
+          five_hour: { utilization: 42, resets_at: new Date().toISOString(), resets_in_hours: 2 },
+          seven_day: { utilization: 79, resets_at: new Date().toISOString(), resets_in_hours: 100 },
+          extra_usage_enabled: false,
+          error: null,
+        },
+        rotation_events_24h: 1,
+      };
+
+      const accountOverview = {
+        hasData: true,
+        activeKeyId: 'key1',
+        totalRotations24h: 1,
+        accounts: [
+          {
+            keyId: 'key1',
+            status: 'active' as const,
+            isCurrent: true,
+            subscriptionType: 'claude_max',
+            email: 'active@test.com',
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 35,
+            sevenDayPct: 88,
+            sevenDaySonnetPct: null,
+          },
+          {
+            keyId: 'key2',
+            status: 'invalid' as const,
+            isCurrent: false,
+            subscriptionType: 'claude_max',
+            email: 'partial-quota@test.com',
+            expiresAt: new Date(),
+            addedAt: new Date(),
+            lastUsedAt: new Date(),
+            fiveHourPct: 50, // Has 5h quota
+            sevenDayPct: null, // No 7d quota
+            sevenDaySonnetPct: null,
+          },
+        ],
+        events: [],
+      };
+
+      const { lastFrame } = render(<UsageTrajectory trajectory={trajectory} verifiedQuota={verifiedQuota} accountOverview={accountOverview} />);
+      const output = lastFrame();
+
+      // Should show Per-Account Quota section (invalid account has partial quota)
+      expect(output).toContain('Per-Account Quota');
+      expect(output).toContain('partial-quota@tes...'); // Truncated to 22 chars
+    });
+
     it('should deduplicate accounts with same email address', () => {
       const now = new Date();
       const trajectory: TrajectoryResult = {

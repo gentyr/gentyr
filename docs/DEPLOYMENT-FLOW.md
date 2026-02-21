@@ -53,6 +53,55 @@ Enforcement: `merge-chain-check.yml` CI workflow (required status check) + agent
 
 **Why CI enforcement?** GitHub has NO native rule on any plan (Teams or Enterprise) to restrict which source branch a PR comes from. The `merge-chain-check.yml` workflow fills this gap.
 
+## Local Branch Protection
+
+### Pre-Commit Guard (Unbypassable)
+
+GENTYR enforces branch protection at the local level via pre-commit and pre-push hooks. Direct commits to protected branches (`main`, `staging`, `preview`) are blocked:
+
+```
+COMMIT BLOCKED: Direct commits to 'main' are forbidden.
+
+Merge chain: feature/* -> preview -> staging -> main
+
+Create a feature branch:
+  git checkout -b feature/<name> preview
+```
+
+The guard is enforced by `.claude/hooks/pre-commit-review.js` and cannot be bypassed with `--no-verify` (blocked by `block-no-verify.js`).
+
+**Exception**: Promotion pipeline agents with `GENTYR_PROMOTION_PIPELINE=true` are allowed to merge PRs to protected branches.
+
+### Pre-Push Guard
+
+The pre-push hook (`templates/config/husky/pre-push.template`) blocks direct pushes to protected branches:
+
+```bash
+PUSH BLOCKED: Direct pushes to 'main' are forbidden.
+
+Merge chain: feature/* -> preview -> staging -> main
+Push to your feature branch instead, then create a PR to preview.
+```
+
+This provides immediate local feedback before any attempt to push to a protected branch.
+
+## Git Worktrees for Concurrent Agents
+
+GENTYR uses git worktrees to enable multiple agents to work concurrently on separate feature branches without checkout conflicts. Each agent gets an isolated working directory.
+
+**Worktree lifecycle:**
+1. Task agent spawns → worktree manager creates `.claude/worktrees/<branch-name>/`
+2. Worktree provisioned with symlinks to `.claude/agents/`, `.claude/hooks/`, `.husky/`
+3. Worktree-specific `.mcp.json` generated with `CLAUDE_PROJECT_DIR` pointing to main project
+4. Agent works in isolation, commits to feature branch
+5. After branch merged to preview → worktree cleanup (6-hour cycle)
+
+**State isolation:** SQLite databases (todo.db, deputy-cto.db, agent-tracker.db) remain in main project directory, shared via `CLAUDE_PROJECT_DIR` environment variable.
+
+**Modules:**
+- `.claude/hooks/lib/worktree-manager.js` - Worktree lifecycle (create, provision, cleanup)
+- `.claude/hooks/lib/feature-branch-helper.js` - Branch naming and protection checks
+
 ## Feature Branch Workflow
 
 ### Creating Feature Branches
@@ -65,6 +114,8 @@ git checkout preview
 git pull origin preview
 git checkout -b feature/add-user-auth
 ```
+
+**Automated creation:** When task agents spawn, the worktree manager automatically creates feature branches from `preview` if they don't exist.
 
 ### Branch Naming
 
@@ -135,6 +186,23 @@ Checked once nightly during the midnight window (00:00-00:30).
 3. Deputy-CTO creates CTO decision task via `add_question`
 4. CTO approves via `/deputy-cto` slash command
 5. Merge executed after CTO approval
+
+## Stale Work Detection
+
+GENTYR automatically detects stale branches and uncommitted work via `.claude/hooks/stale-work-detector.js`.
+
+**Detection categories:**
+1. **Uncommitted changes** - `git status --porcelain` in project directory
+2. **Unpushed commits** - `git log origin/<branch>..HEAD --oneline` for each local branch
+3. **Stale feature branches** - Remote feature branches with no PR activity in 3+ days
+
+**Integration:**
+- Runs every 24 hours via hourly automation
+- Reports via `mcp__agent-reports__report_to_deputy_cto` with category `git-hygiene`
+- Surfaced in `/deputy-cto` briefing under "Merge Chain Status"
+- Deputy-CTO either auto-handles (spawns cleanup task) or escalates to CTO
+
+**Deputy-CTO MCP tool:** `get_merge_chain_status` returns structured merge chain state for briefing.
 
 ## Health Monitoring
 

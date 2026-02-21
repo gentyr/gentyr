@@ -57,6 +57,10 @@ AUTOMATION-AND-ACCOUNT-QUOTA-LOAD-BALANCING-MONITORING.md
 # Generated secret config
 op-secrets.conf
 
+# Project-specific CLAUDE.md sections (for consuming projects, not framework)
+CLAUDE.md.gentyr-section
+CLAUDE.md.makerkit-section
+
 # OS
 .DS_Store
 Thumbs.db

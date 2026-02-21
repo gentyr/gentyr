@@ -55,7 +55,7 @@ const KeyUsageSchema = z.object({
   seven_day: z.number(),
   seven_day_sonnet: z.number().optional(),
   checked_at: z.number().optional(),
-  resets_at: z.string().optional(),
+  resets_at: z.unknown().optional(),
 }).nullable().optional();
 
 const KeyDataSchema = z.object({
@@ -69,8 +69,8 @@ const KeyDataSchema = z.object({
   last_health_check: z.number().nullable().optional(),
   last_usage: KeyUsageSchema,
   status: z.enum(['active', 'exhausted', 'invalid', 'expired']),
-  account_uuid: z.string().optional(),
-  account_email: z.string().optional(),
+  account_uuid: z.string().nullable().optional(),
+  account_email: z.string().nullable().optional(),
 }).passthrough();
 
 const RotationLogEntrySchema = z.object({

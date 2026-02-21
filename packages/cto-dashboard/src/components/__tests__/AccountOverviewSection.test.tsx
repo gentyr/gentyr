@@ -21,7 +21,7 @@ import type { AccountOverviewData, AccountKeyDetail, AccountEvent } from '../../
 
 describe('AccountOverviewSection', () => {
   describe('Title Formatting', () => {
-    it('should display account count excluding invalid accounts', () => {
+    it('should display deduplicated account count', () => {
       const data: AccountOverviewData = {
         hasData: true,
         activeKeyId: null,
@@ -32,7 +32,7 @@ describe('AccountOverviewSection', () => {
             status: 'active',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'user@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
@@ -47,7 +47,7 @@ describe('AccountOverviewSection', () => {
             status: 'invalid',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'user@example.com', // Same email - should deduplicate
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
@@ -79,7 +79,7 @@ describe('AccountOverviewSection', () => {
             status: 'active',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'user1@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
@@ -94,7 +94,7 @@ describe('AccountOverviewSection', () => {
             status: 'active',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'user2@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
@@ -193,8 +193,8 @@ describe('AccountOverviewSection', () => {
             expiresAt: new Date('2026-03-01'),
             addedAt: null,
             lastUsedAt: null,
-            fiveHourPct: null,
-            sevenDayPct: null,
+            fiveHourPct: 25,
+            sevenDayPct: 50,
             sevenDaySonnetPct: null,
             fiveHourResetsAt: null,
             sevenDayResetsAt: null,
@@ -206,11 +206,12 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain('test-key...');
-      expect(output).toContain('active');
-      expect(output).toContain('claude_max');
       expect(output).toContain('test@example.com');
-      expect(output).toMatch(/Exp: 202[6-9]-[0-1][0-9]-[0-3][0-9]/);
+      expect(output).toContain('active');
+      expect(output).toContain('valid');
+      expect(output).toContain('available');
+      expect(output).toContain('5h: 25%');
+      expect(output).toContain('7d: 50%');
     });
 
     it('should display current account marker (*)', () => {
@@ -224,7 +225,7 @@ describe('AccountOverviewSection', () => {
             status: 'active',
             isCurrent: true,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'current@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
@@ -239,7 +240,7 @@ describe('AccountOverviewSection', () => {
             status: 'active',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'other@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
@@ -258,10 +259,10 @@ describe('AccountOverviewSection', () => {
 
       // Current account should have marker
       expect(output).toContain('*');
-      expect(output).toContain('current-key');
+      expect(output).toContain('current@example.com');
     });
 
-    it('should display "no email" when email is null', () => {
+    it('should display keyId when email is null', () => {
       const data: AccountOverviewData = {
         hasData: true,
         activeKeyId: null,
@@ -289,10 +290,10 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain('no email');
+      expect(output).toContain('key-1');
     });
 
-    it('should display "no expiry" when expiresAt is null', () => {
+    it('should display dash for null percentages', () => {
       const data: AccountOverviewData = {
         hasData: true,
         activeKeyId: null,
@@ -303,7 +304,7 @@ describe('AccountOverviewSection', () => {
             status: 'active',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'test@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
@@ -320,7 +321,8 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain('no expiry');
+      expect(output).toContain('5h:   -');
+      expect(output).toContain('7d:   -');
     });
 
     it('should render all status types with correct colors', () => {
@@ -359,8 +361,8 @@ describe('AccountOverviewSection', () => {
     });
   });
 
-  describe('Quota Bars', () => {
-    it('should render 5h quota bar when fiveHourPct is present', () => {
+  describe('Usage Percentages', () => {
+    it('should render 5h percentage when fiveHourPct is present', () => {
       const data: AccountOverviewData = {
         hasData: true,
         activeKeyId: null,
@@ -371,7 +373,7 @@ describe('AccountOverviewSection', () => {
             status: 'active',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'test@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
@@ -388,11 +390,10 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain('5h');
-      expect(output).toContain('35%');
+      expect(output).toContain('5h: 35%');
     });
 
-    it('should render 7d quota bar when sevenDayPct is present', () => {
+    it('should render 7d percentage when sevenDayPct is present', () => {
       const data: AccountOverviewData = {
         hasData: true,
         activeKeyId: null,
@@ -403,7 +404,7 @@ describe('AccountOverviewSection', () => {
             status: 'active',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'test@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
@@ -420,11 +421,10 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain('7d');
-      expect(output).toContain('72%');
+      expect(output).toContain('7d: 72%');
     });
 
-    it('should render 7d-sonnet bar when sevenDaySonnetPct differs by >10 from sevenDayPct', () => {
+    it('should display valid token status for active/exhausted accounts', () => {
       const data: AccountOverviewData = {
         hasData: true,
         activeKeyId: null,
@@ -432,16 +432,16 @@ describe('AccountOverviewSection', () => {
         accounts: [
           {
             keyId: 'key-1',
-            status: 'active',
+            status: 'exhausted',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'test@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
-            fiveHourPct: null,
-            sevenDayPct: 80,
-            sevenDaySonnetPct: 20, // Differs by 60
+            fiveHourPct: 100,
+            sevenDayPct: 100,
+            sevenDaySonnetPct: null,
             fiveHourResetsAt: null,
             sevenDayResetsAt: null,
           },
@@ -452,11 +452,11 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain('7d-son');
-      expect(output).toContain('20%');
+      expect(output).toContain('valid');
+      expect(output).toContain('exhausted');
     });
 
-    it('should not render 7d-sonnet bar when difference is ≤10', () => {
+    it('should display invalid token status for expired/invalid accounts', () => {
       const data: AccountOverviewData = {
         hasData: true,
         activeKeyId: null,
@@ -464,72 +464,10 @@ describe('AccountOverviewSection', () => {
         accounts: [
           {
             keyId: 'key-1',
-            status: 'active',
+            status: 'invalid',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
-            expiresAt: null,
-            addedAt: null,
-            lastUsedAt: null,
-            fiveHourPct: null,
-            sevenDayPct: 75,
-            sevenDaySonnetPct: 72, // Differs by 3
-            fiveHourResetsAt: null,
-            sevenDayResetsAt: null,
-          },
-        ],
-        events: [],
-      };
-
-      const { lastFrame } = render(<AccountOverviewSection data={data} />);
-      const output = lastFrame();
-
-      expect(output).not.toContain('7d-son');
-    });
-
-    it('should not render 7d-sonnet bar when sevenDayPct is null', () => {
-      const data: AccountOverviewData = {
-        hasData: true,
-        activeKeyId: null,
-        totalRotations24h: 0,
-        accounts: [
-          {
-            keyId: 'key-1',
-            status: 'active',
-            isCurrent: false,
-            subscriptionType: 'claude_max',
-            email: null,
-            expiresAt: null,
-            addedAt: null,
-            lastUsedAt: null,
-            fiveHourPct: null,
-            sevenDayPct: null,
-            sevenDaySonnetPct: 20,
-            fiveHourResetsAt: null,
-            sevenDayResetsAt: null,
-          },
-        ],
-        events: [],
-      };
-
-      const { lastFrame } = render(<AccountOverviewSection data={data} />);
-      const output = lastFrame();
-
-      expect(output).not.toContain('7d-son');
-    });
-
-    it('should not render quota bars when both percentages are null', () => {
-      const data: AccountOverviewData = {
-        hasData: true,
-        activeKeyId: null,
-        totalRotations24h: 0,
-        accounts: [
-          {
-            keyId: 'key-1',
-            status: 'active',
-            isCurrent: false,
-            subscriptionType: 'claude_max',
-            email: null,
+            email: 'test@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
@@ -546,17 +484,70 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      // Should not contain percentage symbols from quota bars
-      const lines = output!.split('\n');
-      const keyLine = lines.find((line) => line.includes('key-1'));
-      const nextLineIdx = lines.indexOf(keyLine!);
-      const nextLine = lines[nextLineIdx + 1];
+      expect(output).toContain('invalid');
+    });
 
-      // Next line should not be a quota bar line
-      if (nextLine) {
-        expect(nextLine).not.toContain('5h');
-        expect(nextLine).not.toContain('7d');
-      }
+    it('should display available usage for active non-exhausted accounts', () => {
+      const data: AccountOverviewData = {
+        hasData: true,
+        activeKeyId: null,
+        totalRotations24h: 0,
+        accounts: [
+          {
+            keyId: 'key-1',
+            status: 'active',
+            isCurrent: false,
+            subscriptionType: 'claude_max',
+            email: 'test@example.com',
+            expiresAt: null,
+            addedAt: null,
+            lastUsedAt: null,
+            fiveHourPct: 50,
+            sevenDayPct: 60,
+            sevenDaySonnetPct: null,
+            fiveHourResetsAt: null,
+            sevenDayResetsAt: null,
+          },
+        ],
+        events: [],
+      };
+
+      const { lastFrame } = render(<AccountOverviewSection data={data} />);
+      const output = lastFrame();
+
+      expect(output).toContain('available');
+    });
+
+    it('should display dash for percentages when both are null', () => {
+      const data: AccountOverviewData = {
+        hasData: true,
+        activeKeyId: null,
+        totalRotations24h: 0,
+        accounts: [
+          {
+            keyId: 'key-1',
+            status: 'active',
+            isCurrent: false,
+            subscriptionType: 'claude_max',
+            email: 'test@example.com',
+            expiresAt: null,
+            addedAt: null,
+            lastUsedAt: null,
+            fiveHourPct: null,
+            sevenDayPct: null,
+            sevenDaySonnetPct: null,
+            fiveHourResetsAt: null,
+            sevenDayResetsAt: null,
+          },
+        ],
+        events: [],
+      };
+
+      const { lastFrame } = render(<AccountOverviewSection data={data} />);
+      const output = lastFrame();
+
+      expect(output).toContain('5h:   -');
+      expect(output).toContain('7d:   -');
     });
   });
 
@@ -769,7 +760,7 @@ describe('AccountOverviewSection', () => {
   });
 
   describe('Multiple Accounts', () => {
-    it('should render multiple accounts in order', () => {
+    it('should render multiple accounts with deduplication', () => {
       const data: AccountOverviewData = {
         hasData: true,
         activeKeyId: 'key-2',
@@ -812,15 +803,12 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain('key-1');
-      expect(output).toContain('key-2');
       expect(output).toContain('user1@example.com');
       expect(output).toContain('user2@example.com');
-      expect(output).toContain('claude_max');
-      expect(output).toContain('claude_pro');
+      expect(output).toContain('2 accounts');
     });
 
-    it('should filter invalid accounts from display but not from title count', () => {
+    it('should deduplicate accounts with same email', () => {
       const data: AccountOverviewData = {
         hasData: true,
         activeKeyId: null,
@@ -831,12 +819,12 @@ describe('AccountOverviewSection', () => {
             status: 'active',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'user@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
-            fiveHourPct: null,
-            sevenDayPct: null,
+            fiveHourPct: 25,
+            sevenDayPct: 50,
             sevenDaySonnetPct: null,
             fiveHourResetsAt: null,
             sevenDayResetsAt: null,
@@ -846,7 +834,7 @@ describe('AccountOverviewSection', () => {
             status: 'invalid',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'user@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
@@ -863,12 +851,12 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      // Title should show 1 account (invalid filtered)
+      // Title should show 1 account (deduplicated by email)
       expect(output).toContain('1 account');
 
-      // Both accounts should be in the list though
-      expect(output).toContain('valid-key');
-      expect(output).toContain('invalid-key');
+      // Should show the account with the better status (active)
+      expect(output).toContain('user@example.com');
+      expect(output).toContain('active');
     });
   });
 
@@ -889,7 +877,7 @@ describe('AccountOverviewSection', () => {
       expect(output).toBeTruthy();
     });
 
-    it('should handle very long email addresses', () => {
+    it('should truncate very long email addresses to 26 characters', () => {
       const longEmail = 'very.long.email.address.that.might.wrap@example.com';
       const data: AccountOverviewData = {
         hasData: true,
@@ -918,7 +906,9 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain(longEmail);
+      // Email should be truncated to 23 chars + "..."
+      expect(output).toContain('very.long.email.address...');
+      expect(output).not.toContain(longEmail);
     });
 
     it('should handle 0% quota values', () => {
@@ -1022,10 +1012,7 @@ describe('AccountOverviewSection', () => {
       expect(output).toContain('Event with <>&"\' special chars');
     });
 
-    it('should handle dates at edge of expiry', () => {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-
+    it('should display note about per-account quota bars', () => {
       const data: AccountOverviewData = {
         hasData: true,
         activeKeyId: null,
@@ -1036,8 +1023,8 @@ describe('AccountOverviewSection', () => {
             status: 'active',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
-            expiresAt: tomorrow,
+            email: 'test@example.com',
+            expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
             fiveHourPct: null,
@@ -1053,8 +1040,7 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain('Exp:');
-      expect(output).toBeTruthy();
+      expect(output).toContain('Per-account quota bars in USAGE TRAJECTORY below');
     });
   });
 

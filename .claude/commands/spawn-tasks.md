@@ -3,7 +3,7 @@
 
 On-demand command to **force-spawn all pending tasks immediately**, bypassing the hourly automation's age filter, batch limit, cooldowns, and CTO activity gate.
 
-The prefetch hook has pre-gathered pending task counts, running agent info, and concurrency limits, injected as a `[PREFETCH:spawn-tasks]` systemMessage above. Use that data for Step 1.
+The prefetch hook has pre-gathered pending task counts, running agent info, and concurrency limits, injected as `[PREFETCH:spawn-tasks]` context above. Use that data for Step 1.
 
 ## Step 1: Display Current State
 

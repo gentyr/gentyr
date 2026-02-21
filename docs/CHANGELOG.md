@@ -1,5 +1,110 @@
 # GENTYR Framework Changelog
 
+## 2026-02-21 - CTO Dashboard: Per-Account Quota Bars in Usage Trajectory
+
+### Added
+
+**Per-account quota visualization** (4 files):
+- `packages/cto-dashboard/src/components/UsageTrajectory.tsx` - Added `AccountQuotaBars` component showing per-account quota usage for 5-hour and 7-day windows
+- Email-based deduplication: Multiple keys with the same `account_email` are merged to show one bar per account
+- Invalid account filtering: Accounts with `status: 'invalid'` are excluded from display
+- Truncated email labels: Shows first 20 chars + "..." for long email addresses
+- Active account indicator: "*" suffix marks the currently active account
+- `packages/cto-dashboard/src/App.tsx` - Passes `verifiedQuota` and `accountOverview` props to `UsageTrajectory`
+- `packages/cto-dashboard/src/mock-data.ts` - Updated mock data to 3 distinct accounts for realistic quota bar rendering
+
+### Fixed
+
+**Zod schema bug in account-overview-reader** (1 file):
+- `packages/cto-dashboard/src/utils/account-overview-reader.ts` - Fixed critical schema parsing bug
+- Root cause: Strict Zod schema expected `resets_at` as string, but actual data includes Date objects (from active keys) and ISO strings (from exhausted keys)
+- Schema also expected `account_uuid` and `account_email` as required strings, but some keys have null values
+- Result: Entire parse failed with `hasData: false`, causing quota bars to never render in production
+- Fix: Changed `resets_at` to `z.unknown()`, `account_uuid` and `account_email` to `.nullable().optional()`
+- This was the root cause preventing quota bars from showing in production (entire parse was failing)
+
+### Tests
+
+**New test files** (2 files):
+- `packages/cto-dashboard/src/components/__tests__/UsageTrajectory.test.tsx` - Updated for new props, added 7 new tests for deduplication and filtering (36 tests total, up from 29)
+- `packages/cto-dashboard/src/utils/__tests__/account-overview-reader.test.ts` - New comprehensive test suite with 38 tests covering schema parsing, sorting, events, edge cases (96% statement coverage)
+
+**Test results**:
+- 760 tests pass across 22 test files (up from 719 across 21)
+- Build passes (TypeScript compiles)
+- Mock dashboard renders correctly with 3 accounts
+- Live dashboard renders correctly with 4 real accounts (filtered from 32 keys)
+- `generate-readme.js` successfully regenerates README with quota bars visible
+
+### Documentation
+
+- README.md updated via `generate-readme.js` to show per-account quota bars in USAGE TRAJECTORY section
+- Bars display format: `Total`, then individual accounts with usage percentages and progress bars
+
+## 2026-02-21 - Merge Chain Enforcement: Local Guards, Worktrees, and Stale Work Detection
+
+### Added
+
+**Local branch protection guards** (2 files):
+- Pre-commit guard blocks direct commits to `main`, `staging`, `preview` - enforcement in `.claude/hooks/pre-commit-review.js`
+- Pre-push guard blocks direct pushes to protected branches - enforcement in `templates/config/husky/pre-push.template`
+- Both guards are unbypassable (cannot be disabled with `--no-verify`)
+- Exception: Promotion pipeline agents with `GENTYR_PROMOTION_PIPELINE=true` environment variable
+- Provides immediate local feedback before attempting forbidden operations
+
+**Git worktrees for concurrent agents** (2 files):
+- `.claude/hooks/lib/worktree-manager.js` - Worktree lifecycle management (create, provision, cleanup)
+- `.claude/hooks/lib/feature-branch-helper.js` - Branch naming and protection checks
+- Enables multiple agents to work concurrently on separate feature branches without checkout conflicts
+- Each agent gets isolated working directory at `.claude/worktrees/<branch-name>/`
+- Worktree provisioning: symlinks to `.claude/agents/`, `.claude/hooks/`, `.husky/`, generates worktree-specific `.mcp.json`
+- State isolation: SQLite databases remain in main project, shared via `CLAUDE_PROJECT_DIR`
+- Automatic cleanup after branch merged to preview (6-hour cycle)
+
+**Stale work detection** (1 file):
+- `.claude/hooks/stale-work-detector.js` - Detects uncommitted changes, unpushed commits, and stale feature branches (3+ days)
+- Runs every 24 hours via hourly automation
+- Reports to deputy-CTO with category `git-hygiene`
+- Surfaced in `/deputy-cto` briefing under "Merge Chain Status"
+
+**Deputy-CTO merge chain integration** (2 files):
+- `packages/mcp-servers/src/deputy-cto/server.ts` - Added `get_merge_chain_status` MCP tool
+- `.claude/commands/deputy-cto.md` - Updated briefing to include merge chain status (commits ahead, active branches, stale branches)
+- Provides structured view of feature branches, promotion pipeline status, and stale work
+
+**Template files for setup.sh** (2 files):
+- `CLAUDE.md.gentyr-section` - GENTYR framework instructions template (includes Team Spawning section)
+- `CLAUDE.md.makerkit-section` - Makerkit integration instructions template
+- Used by `scripts/setup.sh` to inject framework and integration docs into project CLAUDE.md files
+
+### Changed
+
+**Agent spawning uses worktrees** (3 files):
+- `.claude/hooks/hourly-automation.js` - Task agent spawning now creates worktrees and uses `cwd: worktreePath`
+- `.claude/agents/code-writer.md` - Added feature branch workflow section (git workflow, PR creation, merge completion)
+- `.claude/agents/test-writer.md` - Added worktree awareness and feature branch context
+
+**Gitignore template** (1 file):
+- `templates/config/gitignore.template` - Added `.claude/worktrees/` to prevent worktree tracking
+
+### Documentation
+
+**DEPLOYMENT-FLOW.md** (1 file):
+- Added "Local Branch Protection" section documenting pre-commit and pre-push guards
+- Added "Git Worktrees for Concurrent Agents" section documenting worktree architecture
+- Added "Stale Work Detection" section documenting detection categories and integration
+- Updated "Feature Branch Workflow" section to mention automated branch creation
+
+**Implementation plan** (1 file):
+- Created `/Users/jonathantodd/.claude/plans/sequential-sprouting-map.md` - Complete 3-phase implementation plan
+  - Phase 1: Local branch guards (pre-commit + pre-push)
+  - Phase 2: Worktrees + feature branch auto-creation
+  - Phase 3: Stale work detection + deputy-CTO integration
+
+### Impact
+
+This implementation makes the merge chain airtight with local enforcement, enables concurrent agent workflows via worktrees, and provides CTO visibility into stale work. All enforcement happens before remote operations, providing immediate feedback and preventing forbidden merges at the earliest possible point.
+
 ## 2026-02-20 - Slash Command Detection Fix
 
 ### Fixed
