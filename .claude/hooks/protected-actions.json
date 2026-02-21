@@ -59,7 +59,8 @@
         "render_update_env_var",
         "render_delete_env_var",
         "render_create_service",
-        "render_resume_service"
+        "render_resume_service",
+        "render_list_env_vars"
       ],
       "credentialKeys": [
         "RENDER_API_KEY"
