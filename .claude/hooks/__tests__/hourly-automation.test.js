@@ -1522,6 +1522,31 @@ describe('Urgent Task Dispatcher', () => {
       'Must mark task in_progress before spawning'
     );
   });
+
+  it('should enforce concurrency limit before dispatching', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+
+    const urgentSection = code.match(/URGENT TASK DISPATCHER[\s\S]*?CTO GATE CHECK/);
+    assert.ok(urgentSection, 'Urgent dispatcher section must exist');
+
+    assert.match(
+      urgentSection[0],
+      /countRunningAgents\(\)/,
+      'Must check running agent count for concurrency limit'
+    );
+
+    assert.match(
+      urgentSection[0],
+      /effectiveMaxConcurrent/,
+      'Must reference effectiveMaxConcurrent for slot calculation'
+    );
+
+    assert.match(
+      urgentSection[0],
+      /dispatched >= availableSlots/,
+      'Must break loop when concurrency limit is reached'
+    );
+  });
 });
 
 describe('Triage Self-Handle via create_task with priority: urgent', () => {

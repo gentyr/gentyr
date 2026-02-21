@@ -192,17 +192,18 @@ describe('key-sync.js - pruneDeadKeys() code structure', () => {
     assert.ok(fnMatch, 'pruneDeadKeys must accept (state, log) parameters');
   });
 
-  it('should use a 7-day prune age threshold', () => {
+  it('should prune invalid keys immediately (no age window)', () => {
     const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
     const fnMatch = code.match(/export function pruneDeadKeys[\s\S]*?\n\}/);
     assert.ok(fnMatch, 'pruneDeadKeys must be defined');
     const fnBody = fnMatch[0];
 
-    assert.match(
+    // Should NOT have a 7-day threshold — invalid keys are pruned immediately
+    assert.doesNotMatch(
       fnBody,
       /7 \* 24 \* 60 \* 60 \* 1000/,
-      'pruneDeadKeys must use a 7-day (7 * 24 * 60 * 60 * 1000 ms) prune age threshold'
+      'pruneDeadKeys must NOT use a 7-day age threshold (invalid keys are pruned immediately)'
     );
   });
 
@@ -234,17 +235,19 @@ describe('key-sync.js - pruneDeadKeys() code structure', () => {
     );
   });
 
-  it('should use last_health_check or added_at as the age reference (with fallback to 0)', () => {
+  it('should not use age-based filtering (prunes all invalid keys regardless of age)', () => {
     const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
     const fnMatch = code.match(/export function pruneDeadKeys[\s\S]*?\n\}/);
     assert.ok(fnMatch, 'pruneDeadKeys must be defined');
     const fnBody = fnMatch[0];
 
-    assert.match(
+    // Should NOT have age-based filtering — invalid keys have permanently revoked
+    // refresh tokens and cannot recover, so they are pruned immediately
+    assert.doesNotMatch(
       fnBody,
       /last_health_check \|\| keyData\.added_at \|\| 0/,
-      'pruneDeadKeys must use last_health_check, fall back to added_at, then 0'
+      'pruneDeadKeys must NOT use age-based filtering (invalid keys are gc\'d immediately)'
     );
   });
 
@@ -310,8 +313,7 @@ describe('key-sync.js - pruneDeadKeys() code structure', () => {
 // ============================================================================
 
 describe('pruneDeadKeys() - behavioral logic', () => {
-  it('should prune an invalid key whose last_health_check is older than 7 days', () => {
-    const PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+  it('should prune any invalid key immediately (no age window)', () => {
     const now = Date.now();
 
     const state = {
@@ -320,8 +322,8 @@ describe('pruneDeadKeys() - behavioral logic', () => {
         'active-key': { status: 'active', last_health_check: now - 1000 },
         'stale-invalid': {
           status: 'invalid',
-          last_health_check: now - PRUNE_AGE_MS - 1000,  // just over 7 days
-          added_at: now - PRUNE_AGE_MS - 2000,
+          last_health_check: now - 1000,  // just 1 second ago — still pruned
+          added_at: now - 2000,
         },
       },
       rotation_log: [
@@ -330,18 +332,15 @@ describe('pruneDeadKeys() - behavioral logic', () => {
       ],
     };
 
-    // Simulate pruneDeadKeys logic
+    // Simulate pruneDeadKeys logic (immediate prune, no age window)
     const prunedKeyIds = [];
     for (const [keyId, keyData] of Object.entries(state.keys)) {
       if (keyData.status !== 'invalid') continue;
       if (keyId === state.active_key_id) continue;
-      const lastSeen = keyData.last_health_check || keyData.added_at || 0;
-      if (now - lastSeen > PRUNE_AGE_MS) {
-        prunedKeyIds.push(keyId);
-      }
+      prunedKeyIds.push(keyId);
     }
 
-    assert.strictEqual(prunedKeyIds.length, 1, 'Must prune exactly one stale invalid key');
+    assert.strictEqual(prunedKeyIds.length, 1, 'Must prune the invalid key immediately');
     assert.strictEqual(prunedKeyIds[0], 'stale-invalid');
 
     for (const keyId of prunedKeyIds) {
@@ -361,31 +360,32 @@ describe('pruneDeadKeys() - behavioral logic', () => {
     assert.strictEqual(state.rotation_log[0].key_id, 'active-key');
   });
 
-  it('should NOT prune an invalid key whose last_health_check is within 7 days', () => {
-    const PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+  it('should prune even a recently-added invalid key (no age-based protection)', () => {
     const now = Date.now();
 
-    const keys = {
-      'recent-invalid': {
-        status: 'invalid',
-        last_health_check: now - 1000,  // just 1 second ago
+    const state = {
+      active_key_id: null,
+      keys: {
+        'recent-invalid': {
+          status: 'invalid',
+          last_health_check: now - 1000,  // just 1 second ago
+        },
       },
+      rotation_log: [],
     };
 
+    // Simulate pruneDeadKeys logic (immediate prune)
     const prunedKeyIds = [];
-    for (const [keyId, keyData] of Object.entries(keys)) {
+    for (const [keyId, keyData] of Object.entries(state.keys)) {
       if (keyData.status !== 'invalid') continue;
-      const lastSeen = keyData.last_health_check || keyData.added_at || 0;
-      if (now - lastSeen > PRUNE_AGE_MS) {
-        prunedKeyIds.push(keyId);
-      }
+      if (keyId === state.active_key_id) continue;
+      prunedKeyIds.push(keyId);
     }
 
-    assert.strictEqual(prunedKeyIds.length, 0, 'Must NOT prune invalid keys within the 7-day window');
+    assert.strictEqual(prunedKeyIds.length, 1, 'Must prune recently-added invalid keys too');
   });
 
   it('should NOT prune the active key even if it has status "invalid"', () => {
-    const PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
     const now = Date.now();
 
     const state = {
@@ -393,108 +393,109 @@ describe('pruneDeadKeys() - behavioral logic', () => {
       keys: {
         'active-key': {
           status: 'invalid',
-          last_health_check: now - PRUNE_AGE_MS - 9999,  // Very old, would normally prune
+          last_health_check: now - 9999,
         },
       },
     };
 
+    // Simulate pruneDeadKeys logic (immediate prune, but skip active)
     const prunedKeyIds = [];
     for (const [keyId, keyData] of Object.entries(state.keys)) {
       if (keyData.status !== 'invalid') continue;
       if (keyId === state.active_key_id) continue;  // Never prune active
-      const lastSeen = keyData.last_health_check || keyData.added_at || 0;
-      if (now - lastSeen > PRUNE_AGE_MS) {
-        prunedKeyIds.push(keyId);
-      }
+      prunedKeyIds.push(keyId);
     }
 
-    assert.strictEqual(prunedKeyIds.length, 0, 'Must never prune the active key, even if invalid and old');
+    assert.strictEqual(prunedKeyIds.length, 0, 'Must never prune the active key, even if invalid');
   });
 
   it('should NOT prune keys with status other than "invalid"', () => {
-    const PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
     const now = Date.now();
 
-    const keys = {
-      'old-active': {
-        status: 'active',
-        last_health_check: now - PRUNE_AGE_MS - 9999,  // Old but not invalid
-      },
-      'old-expired': {
-        status: 'expired',
-        last_health_check: now - PRUNE_AGE_MS - 9999,
-      },
-      'old-exhausted': {
-        status: 'exhausted',
-        last_health_check: now - PRUNE_AGE_MS - 9999,
+    const state = {
+      active_key_id: null,
+      keys: {
+        'old-active': {
+          status: 'active',
+          last_health_check: now - 9999,
+        },
+        'old-expired': {
+          status: 'expired',
+          last_health_check: now - 9999,
+        },
+        'old-exhausted': {
+          status: 'exhausted',
+          last_health_check: now - 9999,
+        },
       },
     };
 
+    // Simulate pruneDeadKeys logic
     const prunedKeyIds = [];
-    for (const [keyId, keyData] of Object.entries(keys)) {
+    for (const [keyId, keyData] of Object.entries(state.keys)) {
       if (keyData.status !== 'invalid') continue;
-      const lastSeen = keyData.last_health_check || keyData.added_at || 0;
-      if (now - lastSeen > PRUNE_AGE_MS) {
-        prunedKeyIds.push(keyId);
-      }
+      if (keyId === state.active_key_id) continue;
+      prunedKeyIds.push(keyId);
     }
 
     assert.strictEqual(prunedKeyIds.length, 0, 'Must only prune keys with status "invalid"');
   });
 
-  it('should fall back to added_at when last_health_check is null', () => {
-    const PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+  it('should prune invalid keys regardless of last_health_check or added_at', () => {
     const now = Date.now();
 
-    const keys = {
-      'no-health-check-old': {
-        status: 'invalid',
-        last_health_check: null,
-        added_at: now - PRUNE_AGE_MS - 1000,  // Old enough via added_at
+    const state = {
+      active_key_id: null,
+      keys: {
+        'no-health-check': {
+          status: 'invalid',
+          last_health_check: null,
+          added_at: now - 1000,  // Just added, but invalid — still pruned
+        },
+        'has-health-check': {
+          status: 'invalid',
+          last_health_check: now - 500,
+          added_at: now - 2000,
+        },
       },
-      'no-health-check-recent': {
-        status: 'invalid',
-        last_health_check: null,
-        added_at: now - 1000,  // Recent via added_at
-      },
+      rotation_log: [],
     };
 
+    // Simulate pruneDeadKeys logic (immediate prune)
     const prunedKeyIds = [];
-    for (const [keyId, keyData] of Object.entries(keys)) {
+    for (const [keyId, keyData] of Object.entries(state.keys)) {
       if (keyData.status !== 'invalid') continue;
-      const lastSeen = keyData.last_health_check || keyData.added_at || 0;
-      if (now - lastSeen > PRUNE_AGE_MS) {
-        prunedKeyIds.push(keyId);
-      }
+      if (keyId === state.active_key_id) continue;
+      prunedKeyIds.push(keyId);
     }
 
-    assert.strictEqual(prunedKeyIds.length, 1, 'Must prune key when added_at is used as fallback and it is old');
-    assert.strictEqual(prunedKeyIds[0], 'no-health-check-old');
+    assert.strictEqual(prunedKeyIds.length, 2, 'Must prune all invalid keys regardless of timestamps');
   });
 
-  it('should use timestamp 0 as last-resort fallback when both last_health_check and added_at are null', () => {
-    const PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+  it('should prune invalid keys even when both last_health_check and added_at are null', () => {
     const now = Date.now();
 
-    const keys = {
-      'no-timestamps': {
-        status: 'invalid',
-        last_health_check: null,
-        added_at: null,
+    const state = {
+      active_key_id: null,
+      keys: {
+        'no-timestamps': {
+          status: 'invalid',
+          last_health_check: null,
+          added_at: null,
+        },
       },
+      rotation_log: [],
     };
 
+    // Simulate pruneDeadKeys logic (immediate prune)
     const prunedKeyIds = [];
-    for (const [keyId, keyData] of Object.entries(keys)) {
+    for (const [keyId, keyData] of Object.entries(state.keys)) {
       if (keyData.status !== 'invalid') continue;
-      const lastSeen = keyData.last_health_check || keyData.added_at || 0;
-      if (now - lastSeen > PRUNE_AGE_MS) {
-        prunedKeyIds.push(keyId);
-      }
+      if (keyId === state.active_key_id) continue;
+      prunedKeyIds.push(keyId);
     }
 
-    // now - 0 is very large (>> 7 days), so this key should be pruned
-    assert.strictEqual(prunedKeyIds.length, 1, 'Keys with no timestamps must be treated as ancient and pruned');
+    assert.strictEqual(prunedKeyIds.length, 1, 'Invalid keys with no timestamps must still be pruned immediately');
   });
 
   it('should only remove rotation_log entries that reference a pruned key', () => {

@@ -105,10 +105,11 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 
 **Key Sync Module** (`.claude/hooks/key-sync.js`):
 - Shared library used by api-key-watcher, hourly-automation, credential-sync-hook, and quota-monitor
-- Exports `EXPIRY_BUFFER_MS` (10 min) constant for consistent timing across all rotation logic
+- Exports `EXPIRY_BUFFER_MS` (10 min) and `HEALTH_DATA_MAX_AGE_MS` (15 min) constants for consistent timing across all rotation logic
 - `refreshExpiredToken` returns `'invalid_grant'` sentinel (distinct from `null`) when OAuth responds 400 + `error: invalid_grant`; all callers mark the key `status: 'invalid'` and log `refresh_token_invalid_grant`
 - `syncKeys()` proactively refreshes non-active tokens approaching expiry (within `EXPIRY_BUFFER_MS`) and performs pre-expiry restartless swap to Keychain; covers idle sessions because hourly-automation calls `syncKeys()` every 10 min via launchd even when no Claude Code process is active
-- `pruneDeadKeys` garbage-collects keys with `status: 'invalid'` older than 7 days; never prunes the active key; removes orphaned rotation_log entries; called automatically at the end of every `syncKeys()` run
+- `selectActiveKey()` freshness gate: nulls out usage data older than 15 minutes to prevent uninformed switches based on stale health checks; stale keys pass "usable" filter but are excluded from comparison logic, causing system to stay put rather than make blind decisions
+- `pruneDeadKeys` immediately garbage-collects keys with `status: 'invalid'`; never prunes the active key; removes orphaned rotation_log entries; called automatically at the end of every `syncKeys()` run
 
 **Session Reviver Hook** (`.claude/hooks/session-reviver.js`):
 - Called every hourly automation cycle with 10-minute cooldown

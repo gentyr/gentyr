@@ -1570,16 +1570,17 @@ describe('usage-optimizer.js - Structure Validation', () => {
       const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
+      // maxKey computed from entriesToAverage (active keys), not first pass
       assert.match(
         functionBody,
-        /maxKey5h = Math\.max\(maxKey5h, val5h\)/,
-        'Must track max 5h value across keys'
+        /for \(const \[, k\] of entriesToAverage\)[\s\S]*?maxKey5h = Math\.max\(maxKey5h, k\['5h'\]/s,
+        'Must compute maxKey5h from active keys (entriesToAverage)'
       );
 
       assert.match(
         functionBody,
-        /maxKey7d = Math\.max\(maxKey7d, val7d\)/,
-        'Must track max 7d value across keys'
+        /maxKey7d = Math\.max\(maxKey7d, k\['7d'\]/,
+        'Must compute maxKey7d from active keys'
       );
     });
   });
@@ -1893,12 +1894,19 @@ describe('usage-optimizer.js - Structure Validation', () => {
   });
 
   describe('Behavioral Tests - Max-Key Awareness', () => {
-    it('should track max utilization across all keys', () => {
+    it('should track max utilization across active keys only', () => {
       const code = fs.readFileSync(OPTIMIZER_PATH, 'utf8');
 
-      // Verify maxKey tracking in calculateAggregate
-      const maxTrackingMatch = code.match(/maxKey5h = Math\.max\(maxKey5h, val5h\)[\s\S]*?maxKey7d = Math\.max\(maxKey7d, val7d\)/s);
-      assert.ok(maxTrackingMatch, 'Must track max values across keys');
+      // Verify maxKey tracking in calculateAggregate from entriesToAverage (active keys only)
+      const functionMatch = code.match(/function calculateAggregate\(latest, earliest, hoursBetween(?:, allSnapshots)?\) \{[\s\S]*?\n\}/);
+      const functionBody = functionMatch[0];
+
+      // maxKey computed from entriesToAverage, not from all latestEntries
+      assert.match(
+        functionBody,
+        /for \(const \[, k\] of entriesToAverage\)[\s\S]*?maxKey5h = Math\.max\(maxKey5h/s,
+        'Must compute maxKey from entriesToAverage (active keys only)'
+      );
     });
 
     it('should bias effectiveUsage upward when max key exceeds 80%', () => {
