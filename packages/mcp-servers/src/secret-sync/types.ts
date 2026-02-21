@@ -58,6 +58,27 @@ export const DevServerStopArgsSchema = z.object({
 export const DevServerStatusArgsSchema = z.object({});
 
 // ============================================================================
+// Run Command Tool Argument Schema
+// ============================================================================
+
+export const RunCommandArgsSchema = z.object({
+  command: z.array(z.string()).min(1)
+    .describe('Command as argv array (no shell). First element = executable, rest = args.'),
+  background: z.boolean().default(false)
+    .describe('If true, track as managed process and return PID. If false, run to completion.'),
+  cwd: z.string().optional()
+    .describe('Working directory (must be within PROJECT_DIR). Defaults to PROJECT_DIR.'),
+  timeout: z.number().int().min(1000).max(600000).default(120000)
+    .describe('Timeout in ms for foreground mode. Default 120s, max 10min.'),
+  secretKeys: z.array(z.string()).optional()
+    .describe('Subset of secrets.local keys to inject. Omit = inject all.'),
+  outputLines: z.number().int().min(0).max(200).default(100)
+    .describe('Max output lines to return (foreground only). Sanitized of secret values.'),
+  label: z.string().optional()
+    .describe('Label for background process tracking. Defaults to command[0].'),
+});
+
+// ============================================================================
 // Type Exports
 // ============================================================================
 
@@ -68,6 +89,7 @@ export type DevService = z.infer<typeof DevServiceSchema>;
 export type DevServerStartArgs = z.infer<typeof DevServerStartArgsSchema>;
 export type DevServerStopArgs = z.infer<typeof DevServerStopArgsSchema>;
 export type DevServerStatusArgs = z.infer<typeof DevServerStatusArgsSchema>;
+export type RunCommandArgs = z.infer<typeof RunCommandArgsSchema>;
 
 // ============================================================================
 // Services Config Schema
@@ -91,6 +113,10 @@ export const ServicesConfigSchema = z.object({
       .default('op-secrets.conf'),
   }).optional(),
   devServices: z.record(z.string(), DevServiceSchema).optional(),
+  runCommandConfig: z.object({
+    allowedExecutables: z.array(z.string()).optional()
+      .describe('Additional executables to allow beyond defaults'),
+  }).optional(),
   secrets: z.object({
     renderProduction: z.record(z.string(), z.string()).optional(),
     renderStaging: z.record(z.string(), z.string()).optional(),
@@ -207,4 +233,28 @@ export interface DevServerStatusService {
 
 export interface DevServerStatusResult {
   services: DevServerStatusService[];
+}
+
+// ============================================================================
+// Run Command Response Types
+// ============================================================================
+
+export interface RunCommandForegroundResult {
+  mode: 'foreground';
+  exitCode: number;
+  signal: string | null;
+  timedOut: boolean;
+  output: string[];
+  outputTruncated: boolean;
+  secretsResolved: number;
+  secretsFailed: string[];
+  durationMs: number;
+}
+
+export interface RunCommandBackgroundResult {
+  mode: 'background';
+  pid: number;
+  label: string;
+  secretsResolved: number;
+  secretsFailed: string[];
 }

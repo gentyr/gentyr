@@ -16,6 +16,7 @@ allowedTools:
   - mcp__secret-sync__secret_dev_server_start
   - mcp__secret-sync__secret_dev_server_stop
   - mcp__secret-sync__secret_dev_server_status
+  - mcp__secret-sync__secret_run_command
   - mcp__onepassword__list_items
   - mcp__onepassword__read_secret
   - mcp__specs-browser__list_specs
@@ -181,6 +182,22 @@ mcp__secret-sync__secret_dev_server_start({ services: ["backend"] })
 mcp__secret-sync__secret_dev_server_start({ services: ["backend"], force: true })
 ```
 
+### Running Commands with Secrets (Agent-Driven)
+
+For arbitrary commands that need secrets (E2E tests, seed scripts, migrations), use `secret_run_command`:
+
+1. **Foreground** (default): `mcp__secret-sync__secret_run_command({ command: ["npx", "playwright", "test"] })` — runs to completion, returns sanitized output
+2. **Background**: `mcp__secret-sync__secret_run_command({ command: ["npx", "playwright", "test", "--ui"], background: true })` — returns PID, managed like dev servers
+3. **Subset secrets**: `mcp__secret-sync__secret_run_command({ command: ["node", "scripts/seed.js"], secretKeys: ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"] })`
+
+**How secrets flow:**
+- `resolveLocalSecrets()` resolves all `secrets.local` entries from 1Password
+- Infrastructure credentials (`OP_SERVICE_ACCOUNT_TOKEN`, etc.) are filtered out
+- Resolved values are injected into child process `env` — never returned to agent
+- All output is sanitized: any leaked secret values are replaced with `[REDACTED:KEY]`
+
+**Allowed executables:** `pnpm`, `npx`, `node`, `tsx`, `playwright`, `prisma`, `drizzle-kit`, `vitest` (configurable via `runCommandConfig.allowedExecutables` in services.json)
+
 ### Adding Custom API Credentials
 
 For non-standard/third-party services:
@@ -240,6 +257,7 @@ When a service reports it can't access a secret:
 | `mcp__secret-sync__secret_dev_server_start` | Start dev servers with secrets resolved in-process | Services from devServices config | No |
 | `mcp__secret-sync__secret_dev_server_stop` | Stop managed dev servers (SIGTERM → SIGKILL) | Running managed processes | No |
 | `mcp__secret-sync__secret_dev_server_status` | Check status of managed dev servers | N/A | No |
+| `mcp__secret-sync__secret_run_command` | Run command with secrets resolved in-process | Foreground or background mode | No |
 | `mcp__onepassword__list_items` | List vault items (names only) | No |
 | `mcp__onepassword__read_secret` | Read a secret value from vault | APPROVE VAULT |
 | `mcp__specs-browser__get_spec` | Read project specifications | No |
