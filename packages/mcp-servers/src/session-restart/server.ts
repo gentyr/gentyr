@@ -23,10 +23,23 @@ import {
 } from './types.js';
 
 // ============================================================================
+// Platform Guard
+// ============================================================================
+
+if (process.platform !== 'darwin') {
+  throw new Error(
+    `session-restart MCP server requires macOS (darwin). ` +
+    `Current platform: ${process.platform}. ` +
+    `Features like osascript, lsof -p, and Terminal/iTerm detection are macOS-only.`
+  );
+}
+
+// ============================================================================
 // Configuration
 // ============================================================================
 
 const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
+const LOCK_DIR = path.join(os.tmpdir(), 'session-restart-locks');
 
 // ============================================================================
 // Session Discovery
@@ -226,31 +239,16 @@ function detectTerminal(): TerminalType {
 // Restart Script Generation
 // ============================================================================
 
-/**
- * Escape a string for embedding inside an AppleScript double-quoted string
- * that is itself inside a bash single-quoted -e argument.
- *
- * Layers: bash -c '...' → osascript -e '...' → AppleScript "..."
- *
- * Since the osascript -e argument uses single quotes in bash, we only need
- * to handle the AppleScript string escaping (backslash and double-quote).
- * The session ID is validated as UUID (safe chars only) and the project dir
- * is validated to contain no single quotes (which would break the bash layer).
- */
-function escapeForAppleScript(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
 
 /**
  * Validate that a project directory path is safe for embedding in shell scripts.
- * Rejects paths with characters that could break multi-layer quoting.
+ * Rejects paths with characters that could break shell quoting.
  */
 function validateProjectDir(dir: string): void {
-  // Single quotes break the osascript -e '...' bash quoting
-  if (dir.includes("'")) {
-    throw new Error(`Project directory path contains single quotes, which are not supported: ${dir}`);
+  if (!path.isAbsolute(dir)) {
+    throw new Error(`Project directory must be an absolute path: ${dir}`);
   }
-  // Newlines/control chars could inject commands
+  // Control characters could inject commands
   if (/[\x00-\x1f\x7f]/.test(dir)) {
     throw new Error('Project directory path contains control characters');
   }
@@ -264,7 +262,12 @@ function generateRestartScript(
 ): string {
   // sessionId is already validated as UUID (hex + hyphens only)
   // projectDir is validated by validateProjectDir() before we get here
+
+  // Write the resume command to a temp script file to avoid multi-layer escaping.
+  // The temp script path contains only safe characters (UUID = hex + hyphens).
+  const tempScriptPath = path.join(os.tmpdir(), `claude-resume-${sessionId}.sh`);
   const resumeCommand = `cd ${shellEscape(projectDir)} && claude --resume ${sessionId}`;
+  fs.writeFileSync(tempScriptPath, `#!/bin/bash\n${resumeCommand}\n`, { mode: 0o700 });
 
   const killBlock = `
 # Wait for MCP response to propagate
@@ -289,16 +292,15 @@ sleep 0.5
   let resumeBlock: string;
 
   if (terminal === 'apple_terminal') {
-    const escapedCommand = escapeForAppleScript(resumeCommand);
+    // Temp script path is safe (tmpdir + UUID only) — no escaping needed inside AppleScript
     resumeBlock = `
 # Resume in the same Terminal.app tab
-osascript -e 'tell application "Terminal" to do script "${escapedCommand}" in selected tab of front window'
+osascript -e 'tell application "Terminal" to do script "bash ${tempScriptPath}" in selected tab of front window'
 `;
   } else if (terminal === 'iterm') {
-    const escapedCommand = escapeForAppleScript(resumeCommand);
     resumeBlock = `
 # Resume in the same iTerm session
-osascript -e 'tell application "iTerm2" to tell current session of current window to write text "${escapedCommand}"'
+osascript -e 'tell application "iTerm2" to tell current session of current window to write text "bash ${tempScriptPath}"'
 `;
   } else {
     // No automated resume for unknown terminals
@@ -306,14 +308,21 @@ osascript -e 'tell application "iTerm2" to tell current session of current windo
 # Unknown terminal — cannot auto-resume
 echo ""
 echo "Claude Code killed. Resume manually with:"
-echo "  ${resumeCommand}"
+echo "  bash ${tempScriptPath}"
 echo ""
 `;
   }
 
+  // Cleanup: remove the temp script after a delay (it may still be needed for a few seconds)
+  const cleanupBlock = `
+# Clean up temp script after 60s
+(sleep 60 && rm -f ${shellEscape(tempScriptPath)}) &
+`;
+
   return `#!/bin/bash
 ${killBlock}
 ${resumeBlock}
+${cleanupBlock}
 `;
 }
 
@@ -326,10 +335,67 @@ function shellEscape(s: string): string {
 }
 
 // ============================================================================
+// Idempotency Lock (G011)
+// ============================================================================
+
+/**
+ * Acquire a file-based lock to prevent concurrent restart attempts.
+ * Uses a lock file at /tmp/session-restart-locks/{sessionId}.lock.
+ * The lock contains the PID and timestamp for diagnostics.
+ * Stale locks (>30s) are automatically cleaned up.
+ */
+function acquireLock(sessionId: string): void {
+  fs.mkdirSync(LOCK_DIR, { recursive: true });
+  const lockPath = path.join(LOCK_DIR, `${sessionId}.lock`);
+
+  if (fs.existsSync(lockPath)) {
+    try {
+      const lockData = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+      const ageMs = Date.now() - (lockData.timestamp || 0);
+      // Stale lock cleanup: 30s is generous given the restart script takes ~12s max
+      if (ageMs < 30_000) {
+        throw new Error(
+          `A restart is already in progress for session ${sessionId} ` +
+          `(locked ${Math.round(ageMs / 1000)}s ago by PID ${lockData.pid}). ` +
+          `Wait for it to complete or remove ${lockPath} manually.`
+        );
+      }
+      // Stale lock — fall through to overwrite
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('already in progress')) {
+        throw err;
+      }
+      // Corrupt lock file — overwrite it
+    }
+  }
+
+  fs.writeFileSync(lockPath, JSON.stringify({
+    pid: process.pid,
+    timestamp: Date.now(),
+    sessionId,
+  }));
+}
+
+/**
+ * Release the lock file for a session.
+ * Exported for use by callers that need manual cleanup (e.g., tests).
+ * In normal operation, the lock auto-expires after 30s since the restart
+ * script kills the process that holds the lock.
+ */
+export function releaseLock(sessionId: string): void {
+  const lockPath = path.join(LOCK_DIR, `${sessionId}.lock`);
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {
+    // Lock file may already be gone — not an error
+  }
+}
+
+// ============================================================================
 // Tool Implementation
 // ============================================================================
 
-// Idempotency guard: prevent concurrent restart attempts
+// In-process idempotency guard (fast path)
 let restartInProgress = false;
 
 async function sessionRestart(args: SessionRestartArgs): Promise<SessionRestartResult> {
@@ -338,9 +404,9 @@ async function sessionRestart(args: SessionRestartArgs): Promise<SessionRestartR
     throw new Error('confirm must be true to proceed with session restart');
   }
 
-  // Idempotency: reject if a restart is already in flight
+  // In-process idempotency: reject if a restart is already in flight
   if (restartInProgress) {
-    throw new Error('A restart is already in progress');
+    throw new Error('A restart is already in progress (in-process lock)');
   }
 
   // 1. Validate provided session_id BEFORE using it
@@ -351,16 +417,19 @@ async function sessionRestart(args: SessionRestartArgs): Promise<SessionRestartR
   // 2. Discover session ID (uses validated arg or auto-discovers)
   const sessionId = args.session_id ?? discoverSessionId();
 
-  // 3. Validate project directory path for shell safety
+  // 3. File-based idempotency guard (G011: cross-process protection)
+  acquireLock(sessionId);
+
+  // 4. Validate project directory path for shell safety
   validateProjectDir(PROJECT_DIR);
 
-  // 4. Find Claude PID
+  // 5. Find Claude PID
   const claudePid = getClaudePid();
 
-  // 5. Detect terminal
+  // 6. Detect terminal
   const terminal = detectTerminal();
 
-  // 6. Determine method
+  // 7. Determine method
   let method: SessionRestartResult['method'];
   if (terminal === 'apple_terminal') {
     method = 'applescript_terminal';
@@ -370,10 +439,10 @@ async function sessionRestart(args: SessionRestartArgs): Promise<SessionRestartR
     method = 'manual';
   }
 
-  // 7. Mark restart in progress (after all validation passes)
+  // 8. Mark restart in progress (after all validation passes)
   restartInProgress = true;
 
-  // 8. Generate and spawn detached restart script
+  // 9. Generate and spawn detached restart script
   const script = generateRestartScript(claudePid, sessionId, PROJECT_DIR, terminal);
 
   const child = spawn('bash', ['-c', script], {
@@ -382,15 +451,21 @@ async function sessionRestart(args: SessionRestartArgs): Promise<SessionRestartR
   });
   child.unref();
 
-  // 9. Build resume command for fallback
-  const resumeCommand = `cd ${shellEscape(PROJECT_DIR)} && claude --resume ${sessionId}`;
+  // Note: lock is intentionally NOT released here — the restart script will
+  // kill this process. The lock auto-expires after 30s (stale lock cleanup).
+
+  // 10. Build resume command for fallback
+  const tempScriptPath = path.join(os.tmpdir(), `claude-resume-${sessionId}.sh`);
+  const resumeCommand = fs.existsSync(tempScriptPath)
+    ? `bash ${tempScriptPath}`
+    : `cd ${shellEscape(PROJECT_DIR)} && claude --resume ${sessionId}`;
 
   const message = method === 'manual'
-    ? `Restart script spawned. Claude (PID ${claudePid}) will be killed in ~1s. Terminal auto-resume not available — run the resume_command manually.`
-    : `Restart script spawned. Claude (PID ${claudePid}) will be killed in ~1s and resumed automatically via ${method}.`;
+    ? `Restart initiated. Claude (PID ${claudePid}) will be killed in ~1s. Terminal auto-resume not available — run the resume_command manually.`
+    : `Restart initiated. Claude (PID ${claudePid}) will be killed in ~1s and resumed automatically via ${method}.`;
 
   return {
-    success: true,
+    initiated: true,
     session_id: sessionId,
     project_dir: PROJECT_DIR,
     claude_pid: claudePid,
@@ -407,7 +482,7 @@ async function sessionRestart(args: SessionRestartArgs): Promise<SessionRestartR
 const tools: AnyToolHandler[] = [
   {
     name: 'session_restart',
-    description: 'Restart Claude Code session. Kills the current Claude process and resumes the session in the same terminal. Use after rebuilding MCP servers or framework code. Requires confirm=true as a safety guard.',
+    description: 'Restart Claude Code session (macOS only). Kills the current Claude process and resumes the session in the same terminal. Use after rebuilding MCP servers or framework code. Requires confirm=true as a safety guard. Non-idempotent: concurrent calls are rejected via lock file. Returns initiated=true (restart happens asynchronously after response).',
     schema: SessionRestartArgsSchema,
     handler: sessionRestart,
   },

@@ -24,7 +24,8 @@ export const SessionRestartArgsSchema = z.object({
 export type SessionRestartArgs = z.infer<typeof SessionRestartArgsSchema>;
 
 export interface SessionRestartResult {
-  success: boolean;
+  /** True when the restart script has been spawned. The restart itself is asynchronous. */
+  initiated: boolean;
   session_id: string;
   project_dir: string;
   claude_pid: number;

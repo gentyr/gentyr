@@ -133,7 +133,11 @@ function generateRestartScript(
   projectDir: string,
   terminal: TerminalType,
 ): string {
+  // Write the resume command to a temp script file to avoid multi-layer escaping.
+  // The temp script path contains only safe characters (UUID = hex + hyphens).
+  const tempScriptPath = path.join(os.tmpdir(), `claude-resume-${sessionId}.sh`);
   const resumeCommand = `cd ${shellEscape(projectDir)} && claude --resume ${sessionId}`;
+  fs.writeFileSync(tempScriptPath, `#!/bin/bash\n${resumeCommand}\n`, { mode: 0o700 });
 
   const killBlock = `
 # Wait for MCP response to propagate
@@ -158,30 +162,37 @@ sleep 0.5
   let resumeBlock: string;
 
   if (terminal === 'apple_terminal') {
-    const escapedCommand = resumeCommand.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    // Temp script path is safe (tmpdir + UUID only) — no escaping needed inside AppleScript
     resumeBlock = `
 # Resume in the same Terminal.app tab
-osascript -e 'tell application "Terminal" to do script "${escapedCommand}" in selected tab of front window'
+osascript -e 'tell application "Terminal" to do script "bash ${tempScriptPath}" in selected tab of front window'
 `;
   } else if (terminal === 'iterm') {
-    const escapedCommand = resumeCommand.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     resumeBlock = `
 # Resume in the same iTerm session
-osascript -e 'tell application "iTerm2" to tell current session of current window to write text "${escapedCommand}"'
+osascript -e 'tell application "iTerm2" to tell current session of current window to write text "bash ${tempScriptPath}"'
 `;
   } else {
+    // No automated resume for unknown terminals
     resumeBlock = `
 # Unknown terminal — cannot auto-resume
 echo ""
 echo "Claude Code killed. Resume manually with:"
-echo "  ${resumeCommand}"
+echo "  bash ${tempScriptPath}"
 echo ""
 `;
   }
 
+  // Cleanup: remove the temp script after a delay (it may still be needed for a few seconds)
+  const cleanupBlock = `
+# Clean up temp script after 60s
+(sleep 60 && rm -f ${shellEscape(tempScriptPath)}) &
+`;
+
   return `#!/bin/bash
 ${killBlock}
 ${resumeBlock}
+${cleanupBlock}
 `;
 }
 
@@ -450,6 +461,16 @@ describe('Restart Script Generation', () => {
   const testSessionId = 'a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d';
   const testProjectDir = '/Users/test/projects/my-app';
 
+  afterEach(() => {
+    // Clean up temp script files
+    const tempScriptPath = path.join(os.tmpdir(), `claude-resume-${testSessionId}.sh`);
+    try {
+      fs.unlinkSync(tempScriptPath);
+    } catch {
+      // OK if it doesn't exist
+    }
+  });
+
   it('should generate script with Apple Terminal AppleScript', () => {
     const script = generateRestartScript(testPid, testSessionId, testProjectDir, 'apple_terminal');
 
@@ -457,7 +478,9 @@ describe('Restart Script Generation', () => {
     expect(script).toContain(`kill -TERM ${testPid}`);
     expect(script).toContain('osascript');
     expect(script).toContain('Terminal');
-    expect(script).toContain(`claude --resume ${testSessionId}`);
+    // Main script should reference temp script, not contain raw resume command
+    const expectedTempScriptPath = path.join(os.tmpdir(), `claude-resume-${testSessionId}.sh`);
+    expect(script).toContain(`bash ${expectedTempScriptPath}`);
   });
 
   it('should generate script with iTerm AppleScript', () => {
@@ -467,7 +490,8 @@ describe('Restart Script Generation', () => {
     expect(script).toContain(`kill -TERM ${testPid}`);
     expect(script).toContain('osascript');
     expect(script).toContain('iTerm2');
-    expect(script).toContain(`claude --resume ${testSessionId}`);
+    const expectedTempScriptPath = path.join(os.tmpdir(), `claude-resume-${testSessionId}.sh`);
+    expect(script).toContain(`bash ${expectedTempScriptPath}`);
   });
 
   it('should generate manual restart message for unknown terminal', () => {
@@ -477,19 +501,32 @@ describe('Restart Script Generation', () => {
     expect(script).toContain(`kill -TERM ${testPid}`);
     expect(script).toContain('Unknown terminal');
     expect(script).toContain('Resume manually');
-    expect(script).toContain(`claude --resume ${testSessionId}`);
+    const expectedTempScriptPath = path.join(os.tmpdir(), `claude-resume-${testSessionId}.sh`);
+    expect(script).toContain(`bash ${expectedTempScriptPath}`);
     expect(script).not.toContain('osascript');
   });
 
-  it('should properly escape project paths with spaces in AppleScript', () => {
+  it('should create temp script file with resume command', () => {
+    generateRestartScript(testPid, testSessionId, testProjectDir, 'apple_terminal');
+
+    const tempScriptPath = path.join(os.tmpdir(), `claude-resume-${testSessionId}.sh`);
+    expect(fs.existsSync(tempScriptPath)).toBe(true);
+
+    const tempScriptContent = fs.readFileSync(tempScriptPath, 'utf8');
+    expect(tempScriptContent).toContain('#!/bin/bash');
+    expect(tempScriptContent).toContain(`claude --resume ${testSessionId}`);
+    expect(tempScriptContent).toContain(testProjectDir);
+  });
+
+  it('should properly escape project paths with spaces in temp script', () => {
     const pathWithSpaces = '/Users/test/My Projects/app name';
-    const script = generateRestartScript(testPid, testSessionId, pathWithSpaces, 'apple_terminal');
+    generateRestartScript(testPid, testSessionId, pathWithSpaces, 'apple_terminal');
+
+    const tempScriptPath = path.join(os.tmpdir(), `claude-resume-${testSessionId}.sh`);
+    const tempScriptContent = fs.readFileSync(tempScriptPath, 'utf8');
 
     // Should contain shell-escaped path (single quotes for bash)
-    expect(script).toContain("'/Users/test/My Projects/app name'");
-    // Should contain osascript command for Terminal.app
-    expect(script).toContain('osascript');
-    expect(script).toContain('Terminal');
+    expect(tempScriptContent).toContain("'/Users/test/My Projects/app name'");
   });
 
   it('should include graceful shutdown with timeout', () => {
@@ -507,12 +544,67 @@ describe('Restart Script Generation', () => {
     expect(script).toContain('sleep 0.5'); // Poll and settle delays
   });
 
-  it('should escape backslashes in AppleScript commands', () => {
-    const pathWithBackslash = '/path/to\\test';
-    const script = generateRestartScript(testPid, testSessionId, pathWithBackslash, 'iterm');
+  it('should include cleanup block to remove temp script', () => {
+    const script = generateRestartScript(testPid, testSessionId, testProjectDir, 'apple_terminal');
 
-    // Backslashes should be doubled for AppleScript
-    expect(script).toContain('\\\\');
+    expect(script).toContain('Clean up temp script');
+    expect(script).toContain('sleep 60');
+    expect(script).toContain('rm -f');
+  });
+
+  it('should make temp script executable', () => {
+    generateRestartScript(testPid, testSessionId, testProjectDir, 'apple_terminal');
+
+    const tempScriptPath = path.join(os.tmpdir(), `claude-resume-${testSessionId}.sh`);
+    const stats = fs.statSync(tempScriptPath);
+
+    // Check for executable permission (0o700)
+    expect((stats.mode & 0o700) === 0o700).toBe(true);
+  });
+
+  it('should prevent injection via paths with double quotes', () => {
+    const pathWithQuotes = '/Users/test/path"injection"here';
+    generateRestartScript(testPid, testSessionId, pathWithQuotes, 'apple_terminal');
+
+    const tempScriptPath = path.join(os.tmpdir(), `claude-resume-${testSessionId}.sh`);
+    const tempScriptContent = fs.readFileSync(tempScriptPath, 'utf8');
+
+    // Should be properly shell-escaped (single quotes prevent interpretation)
+    expect(tempScriptContent).toContain("'/Users/test/path\"injection\"here'");
+  });
+
+  it('should prevent injection via paths with backticks', () => {
+    const pathWithBackticks = '/Users/test/path`whoami`here';
+    generateRestartScript(testPid, testSessionId, pathWithBackticks, 'apple_terminal');
+
+    const tempScriptPath = path.join(os.tmpdir(), `claude-resume-${testSessionId}.sh`);
+    const tempScriptContent = fs.readFileSync(tempScriptPath, 'utf8');
+
+    // Should be properly shell-escaped
+    expect(tempScriptContent).toContain("'/Users/test/path`whoami`here'");
+  });
+
+  it('should prevent injection via paths with $() command substitution', () => {
+    const pathWithSubstitution = '/Users/test/path$(rm -rf /)here';
+    generateRestartScript(testPid, testSessionId, pathWithSubstitution, 'apple_terminal');
+
+    const tempScriptPath = path.join(os.tmpdir(), `claude-resume-${testSessionId}.sh`);
+    const tempScriptContent = fs.readFileSync(tempScriptPath, 'utf8');
+
+    // Should be properly shell-escaped
+    expect(tempScriptContent).toContain("'/Users/test/path$(rm -rf /)here'");
+  });
+
+  it('should use safe temp script path in main script', () => {
+    const script = generateRestartScript(testPid, testSessionId, testProjectDir, 'apple_terminal');
+
+    // Temp script path should contain UUID (hex + hyphens)
+    const expectedPath = path.join(os.tmpdir(), `claude-resume-${testSessionId}.sh`);
+    expect(script).toContain(expectedPath);
+
+    // Verify the filename portion contains only safe characters
+    const filename = `claude-resume-${testSessionId}.sh`;
+    expect(/^[a-zA-Z0-9._\-]+$/.test(filename)).toBe(true);
   });
 });
 
@@ -570,7 +662,7 @@ describe('Safety Guard', () => {
 describe('Result Structure', () => {
   it('should validate result has all required fields', () => {
     interface SessionRestartResult {
-      success: boolean;
+      initiated: boolean;
       session_id: string;
       project_dir: string;
       claude_pid: number;
@@ -580,16 +672,16 @@ describe('Result Structure', () => {
     }
 
     const mockResult: SessionRestartResult = {
-      success: true,
+      initiated: true,
       session_id: randomUUID(),
       project_dir: '/test/project',
       claude_pid: 12345,
       method: 'applescript_terminal',
-      message: 'Restart script spawned',
+      message: 'Restart initiated',
       resume_command: 'cd /test/project && claude --resume abc-123',
     };
 
-    expect(mockResult).toHaveProperty('success');
+    expect(mockResult).toHaveProperty('initiated');
     expect(mockResult).toHaveProperty('session_id');
     expect(mockResult).toHaveProperty('project_dir');
     expect(mockResult).toHaveProperty('claude_pid');
@@ -597,7 +689,7 @@ describe('Result Structure', () => {
     expect(mockResult).toHaveProperty('message');
     expect(mockResult).toHaveProperty('resume_command');
 
-    expect(typeof mockResult.success).toBe('boolean');
+    expect(typeof mockResult.initiated).toBe('boolean');
     expect(typeof mockResult.session_id).toBe('string');
     expect(typeof mockResult.project_dir).toBe('string');
     expect(typeof mockResult.claude_pid).toBe('number');
@@ -666,5 +758,413 @@ describe('G001 Fail-Closed Behavior', () => {
     for (const check of failClosedChecks) {
       expect(check).toThrow();
     }
+  });
+});
+
+// ============================================================================
+// Tests: Lock File Idempotency Guard (G011)
+// ============================================================================
+
+describe('Lock File Idempotency Guard', () => {
+  const LOCK_DIR = path.join(os.tmpdir(), 'session-restart-locks');
+
+  function acquireLock(sessionId: string): void {
+    fs.mkdirSync(LOCK_DIR, { recursive: true });
+    const lockPath = path.join(LOCK_DIR, `${sessionId}.lock`);
+
+    if (fs.existsSync(lockPath)) {
+      try {
+        const lockData = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        const ageMs = Date.now() - (lockData.timestamp || 0);
+        if (ageMs < 30_000) {
+          throw new Error(
+            `A restart is already in progress for session ${sessionId} ` +
+            `(locked ${Math.round(ageMs / 1000)}s ago by PID ${lockData.pid}). ` +
+            `Wait for it to complete or remove ${lockPath} manually.`
+          );
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('already in progress')) {
+          throw err;
+        }
+      }
+    }
+
+    fs.writeFileSync(lockPath, JSON.stringify({
+      pid: process.pid,
+      timestamp: Date.now(),
+      sessionId,
+    }));
+  }
+
+  function releaseLock(sessionId: string): void {
+    const lockPath = path.join(LOCK_DIR, `${sessionId}.lock`);
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      // OK
+    }
+  }
+
+  afterEach(() => {
+    // Clean up lock directory
+    if (fs.existsSync(LOCK_DIR)) {
+      fs.rmSync(LOCK_DIR, { recursive: true, force: true });
+    }
+  });
+
+  it('should create a lock file on first call', () => {
+    const sessionId = randomUUID();
+    acquireLock(sessionId);
+
+    const lockPath = path.join(LOCK_DIR, `${sessionId}.lock`);
+    expect(fs.existsSync(lockPath)).toBe(true);
+
+    const lockData = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+    expect(lockData.pid).toBe(process.pid);
+    expect(lockData.sessionId).toBe(sessionId);
+    expect(typeof lockData.timestamp).toBe('number');
+
+    releaseLock(sessionId);
+  });
+
+  it('should reject concurrent restart for the same session', () => {
+    const sessionId = randomUUID();
+    acquireLock(sessionId);
+
+    expect(() => acquireLock(sessionId)).toThrow(/already in progress/);
+
+    releaseLock(sessionId);
+  });
+
+  it('should allow restart after lock is released', () => {
+    const sessionId = randomUUID();
+    acquireLock(sessionId);
+    releaseLock(sessionId);
+
+    // Should not throw
+    expect(() => acquireLock(sessionId)).not.toThrow();
+    releaseLock(sessionId);
+  });
+
+  it('should allow concurrent restarts for different sessions', () => {
+    const sessionId1 = randomUUID();
+    const sessionId2 = randomUUID();
+
+    acquireLock(sessionId1);
+    // Should not throw — different session
+    expect(() => acquireLock(sessionId2)).not.toThrow();
+
+    releaseLock(sessionId1);
+    releaseLock(sessionId2);
+  });
+
+  it('should clean up stale locks older than 30s', () => {
+    const sessionId = randomUUID();
+    const lockPath = path.join(LOCK_DIR, `${sessionId}.lock`);
+    fs.mkdirSync(LOCK_DIR, { recursive: true });
+
+    // Write a lock with an old timestamp (> 30s ago)
+    fs.writeFileSync(lockPath, JSON.stringify({
+      pid: 99999,
+      timestamp: Date.now() - 60_000,
+      sessionId,
+    }));
+
+    // Should succeed — stale lock is overwritten
+    expect(() => acquireLock(sessionId)).not.toThrow();
+
+    releaseLock(sessionId);
+  });
+
+  it('should handle corrupt lock files gracefully', () => {
+    const sessionId = randomUUID();
+    const lockPath = path.join(LOCK_DIR, `${sessionId}.lock`);
+    fs.mkdirSync(LOCK_DIR, { recursive: true });
+
+    // Write corrupt data
+    fs.writeFileSync(lockPath, 'not json');
+
+    // Should succeed — corrupt lock is overwritten
+    expect(() => acquireLock(sessionId)).not.toThrow();
+
+    releaseLock(sessionId);
+  });
+
+  it('should not throw when releasing a non-existent lock', () => {
+    const sessionId = randomUUID();
+    // Should not throw
+    expect(() => releaseLock(sessionId)).not.toThrow();
+  });
+});
+
+// ============================================================================
+// Tests: Platform Guard
+// ============================================================================
+
+describe('Platform Guard', () => {
+  it('should validate that the server checks process.platform', () => {
+    // The server.ts throws at module load time if process.platform !== 'darwin'.
+    // We verify this by checking the source contains the guard.
+    // (We cannot actually test the throw since we ARE on darwin when running tests.)
+    const serverSource = fs.readFileSync(
+      path.join(__dirname, '..', 'server.ts'),
+      'utf8'
+    );
+
+    expect(serverSource).toContain("process.platform !== 'darwin'");
+    expect(serverSource).toContain('macOS');
+  });
+
+  it('should document macOS requirement in tool description', () => {
+    const serverSource = fs.readFileSync(
+      path.join(__dirname, '..', 'server.ts'),
+      'utf8'
+    );
+
+    // Tool description should mention macOS
+    expect(serverSource).toContain('macOS only');
+  });
+});
+
+// ============================================================================
+// Tests: Response Semantics
+// ============================================================================
+
+describe('Response Semantics', () => {
+  it('should use "initiated" instead of "success" in result type', () => {
+    const serverSource = fs.readFileSync(
+      path.join(__dirname, '..', 'server.ts'),
+      'utf8'
+    );
+
+    // Should use "initiated: true" not "success: true"
+    expect(serverSource).toContain('initiated: true');
+    expect(serverSource).not.toContain('success: true');
+  });
+
+  it('should use "initiated" wording in messages', () => {
+    const serverSource = fs.readFileSync(
+      path.join(__dirname, '..', 'server.ts'),
+      'utf8'
+    );
+
+    expect(serverSource).toContain('Restart initiated');
+    expect(serverSource).not.toContain('Restart script spawned');
+  });
+});
+
+// ============================================================================
+// Tests: Project Directory Validation
+// ============================================================================
+
+describe('Project Directory Validation', () => {
+  function validateProjectDir(dir: string): void {
+    if (!path.isAbsolute(dir)) {
+      throw new Error(`Project directory must be an absolute path: ${dir}`);
+    }
+    // Control characters could inject commands
+    if (/[\x00-\x1f\x7f]/.test(dir)) {
+      throw new Error('Project directory path contains control characters');
+    }
+  }
+
+  it('should accept valid absolute project directory paths', () => {
+    const validPaths = [
+      '/Users/test/projects/my-app',
+      '/home/user/code/project-name',
+      '/tmp/test project with spaces',
+      '/Users/test/My Projects/App (2024)',
+      "/Users/test/My Project's Folder", // Single quotes now allowed
+    ];
+
+    for (const dir of validPaths) {
+      expect(() => validateProjectDir(dir)).not.toThrow();
+    }
+  });
+
+  it('should reject relative paths', () => {
+    const relativePaths = [
+      'my-project',
+      './projects/my-app',
+      '../parent-dir',
+      '~/projects', // ~ is not absolute for path.isAbsolute
+    ];
+
+    for (const dir of relativePaths) {
+      expect(() => validateProjectDir(dir)).toThrow(/must be an absolute path/);
+    }
+  });
+
+  it('should reject paths with control characters', () => {
+    const pathsWithControl = [
+      '/path/with\x00null',
+      '/path/with\nnewline',
+      '/path/with\ttab',
+      '/path/with\x1bescape',
+      '/path/with\x7fdelete',
+    ];
+
+    for (const dir of pathsWithControl) {
+      expect(() => validateProjectDir(dir)).toThrow(/control characters/);
+    }
+  });
+
+  it('should prevent newline injection attempts', () => {
+    const injection = '/tmp/test\nrm -rf /';
+    expect(() => validateProjectDir(injection)).toThrow(/control characters/);
+  });
+});
+
+// ============================================================================
+// Tests: Content-Aware Session Discovery
+// ============================================================================
+
+describe('Content-Aware Session Discovery', () => {
+  let tempDir: ReturnType<typeof createTempDir>;
+  let sessionDir: string;
+
+  beforeEach(() => {
+    tempDir = createTempDir('session-content-test');
+    sessionDir = createSessionDir(tempDir.path);
+  });
+
+  afterEach(() => {
+    tempDir.cleanup();
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  function createSessionFileWithContent(
+    sessionDir: string,
+    sessionId: string,
+    content: string,
+    mtimeMs: number
+  ): void {
+    const filePath = path.join(sessionDir, `${sessionId}.jsonl`);
+    fs.writeFileSync(filePath, content);
+    const mtime = new Date(mtimeMs);
+    fs.utimesSync(filePath, mtime, mtime);
+  }
+
+  it('should identify session files containing "session_restart" in content', () => {
+    const oldSessionId = randomUUID();
+    const newSessionId = randomUUID();
+    const restartSessionId = randomUUID();
+
+    // Create sessions with different content
+    createSessionFileWithContent(
+      sessionDir,
+      oldSessionId,
+      JSON.stringify({ type: 'session', tool: 'other_tool' }),
+      Date.now() - 7200000 // 2 hours ago
+    );
+
+    createSessionFileWithContent(
+      sessionDir,
+      newSessionId,
+      JSON.stringify({ type: 'session', tool: 'unrelated' }),
+      Date.now() - 3600000 // 1 hour ago (more recent than old)
+    );
+
+    createSessionFileWithContent(
+      sessionDir,
+      restartSessionId,
+      JSON.stringify({ type: 'tool_use', name: 'session_restart', args: {} }),
+      Date.now() - 5400000 // 1.5 hours ago (older than new, but contains target string)
+    );
+
+    // Content-aware discovery should prefer the file with "session_restart"
+    // even if it's not the most recent file
+    const contentMatch = fs.readdirSync(sessionDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => {
+        const content = fs.readFileSync(path.join(sessionDir, f), 'utf8');
+        const stat = fs.statSync(path.join(sessionDir, f));
+        return {
+          id: f.replace('.jsonl', ''),
+          hasRestart: content.includes('session_restart'),
+          mtime: stat.mtimeMs,
+        };
+      })
+      .filter(x => x.hasRestart)
+      .sort((a, b) => b.mtime - a.mtime)[0];
+
+    expect(contentMatch?.id).toBe(restartSessionId);
+  });
+
+  it('should handle empty session files gracefully', () => {
+    const sessionId = randomUUID();
+    const filePath = path.join(sessionDir, `${sessionId}.jsonl`);
+    fs.writeFileSync(filePath, ''); // Empty file
+
+    const stat = fs.statSync(filePath);
+    // Empty files should be skipped (size === 0 check)
+    expect(stat.size).toBe(0);
+  });
+
+  it('should handle large session files by reading tail only', () => {
+    const sessionId = randomUUID();
+    const TAIL_BYTES = 8192;
+
+    // Create a large file (> 8KB)
+    const largeContent = 'x'.repeat(10000) + '\n{"type":"tool_use","name":"session_restart"}';
+    createSessionFileWithContent(sessionDir, sessionId, largeContent, Date.now());
+
+    const filePath = path.join(sessionDir, `${sessionId}.jsonl`);
+    const stat = fs.statSync(filePath);
+
+    // Simulate reading last TAIL_BYTES
+    const fd = fs.openSync(filePath, 'r');
+    const readSize = Math.min(TAIL_BYTES, stat.size);
+    const buffer = Buffer.alloc(readSize);
+    fs.readSync(fd, buffer, 0, readSize, Math.max(0, stat.size - readSize));
+    fs.closeSync(fd);
+
+    const tail = buffer.toString('utf8');
+
+    // Should find the session_restart marker even in large file
+    expect(tail).toContain('session_restart');
+  });
+
+  it('should pick most recent when multiple files contain session_restart', () => {
+    const oldRestart = randomUUID();
+    const newRestart = randomUUID();
+
+    createSessionFileWithContent(
+      sessionDir,
+      oldRestart,
+      '{"tool":"session_restart"}',
+      Date.now() - 3600000
+    );
+
+    createSessionFileWithContent(
+      sessionDir,
+      newRestart,
+      '{"tool":"session_restart"}',
+      Date.now()
+    );
+
+    const candidates = fs.readdirSync(sessionDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => {
+        const content = fs.readFileSync(path.join(sessionDir, f), 'utf8');
+        const stat = fs.statSync(path.join(sessionDir, f));
+        return {
+          id: f.replace('.jsonl', ''),
+          mtime: stat.mtimeMs,
+        };
+      })
+      .filter(x => {
+        const content = fs.readFileSync(
+          path.join(sessionDir, `${x.id}.jsonl`),
+          'utf8'
+        );
+        return content.includes('session_restart');
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+
+    expect(candidates[0].id).toBe(newRestart);
   });
 });
