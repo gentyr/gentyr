@@ -286,12 +286,15 @@ If the task does NOT align with specs, plans, or CTO requests:
 - Mark this task complete WITHOUT creating sub-tasks
 - Explain in the completion why you declined
 
-### Step 2: Spawn Investigator FIRST
-Always start by spawning an investigator to analyze the task scope:
+### Step 2: Create Investigator Task FIRST
+Always start by creating an urgent investigator task:
 \`\`\`
-mcp__deputy-cto__spawn_implementation_task({
-  prompt: "You are the INVESTIGATOR. Analyze the following task and create a detailed implementation plan with specific sub-tasks:\\n\\nTask: ${task.title}\\n${task.description || ''}\\n\\nInvestigate the codebase, read relevant specs, and create TODO items in the appropriate sections via mcp__todo-db__create_task for each sub-task you identify.",
-  description: "Investigate: ${task.title}"
+mcp__todo-db__create_task({
+  section: "INVESTIGATOR & PLANNER",
+  title: "Investigate: ${task.title}",
+  description: "You are the INVESTIGATOR. Analyze the following task and create a detailed implementation plan with specific sub-tasks:\\n\\nTask: ${task.title}\\n${task.description || ''}\\n\\nInvestigate the codebase, read relevant specs, and create TODO items in the appropriate sections via mcp__todo-db__create_task for each sub-task you identify.",
+  assigned_by: "deputy-cto",
+  priority: "urgent"
 })
 \`\`\`
 

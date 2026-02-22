@@ -243,7 +243,7 @@ not just code review. Use this section for any task requiring code changes.
 Before acting on any task, verify it aligns with project specs, existing plans, or CTO directives. Decline tasks that contradict the project architecture.
 
 ### Delegation Workflow
-1. **Spawn Investigator first** — always start with investigation via `spawn_implementation_task`
+1. **Create Investigator task first** — always start with investigation via `mcp__todo-db__create_task` with `priority: "urgent"` in section "INVESTIGATOR & PLANNER"
 2. **Create sub-tasks** in the appropriate sections (INVESTIGATOR & PLANNER, CODE-REVIEWER, TEST-WRITER, PROJECT-MANAGER)
 3. **Mark your task complete** — this auto-triggers a follow-up verification task
 

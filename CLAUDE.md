@@ -92,9 +92,12 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 - `refreshExpiredToken` returns the sentinel string `'invalid_grant'` (not `null`) when the OAuth server responds HTTP 400 + `{ error: 'invalid_grant' }`; callers mark the key `invalid` and skip it permanently
 - **Step 4c pre-expiry restartless swap**: When the active key is within 10 min of expiry and a valid standby exists, writes standby to Keychain via `updateActiveCredentials()`; Claude Code's built-in `SRA()` (proactive refresh at 5 min before expiry) or `r6T()` (401 recovery) picks up the new token seamlessly — no restart needed
 - Safe: refreshing Account B does not revoke Account A's in-memory token
-- Interactive sessions: spawns auto-restart script with new credentials
-- Automated sessions: spawns `claude --resume <sessionId>` directly with stale `CLAUDE_CODE_OAUTH_TOKEN` removed from env
+- **Seamless rotation** (quota-based):
+  - Interactive sessions: writes new credentials to Keychain, continues with `continue: true`, credentials adopted at token expiry (SRA) or 401 (r6T)
+  - Automated sessions: writes new credentials to Keychain, stops cleanly with `continue: false`, session-reviver resumes with fresh credentials
+  - No disruptive kill/restart paths; no orphaned processes
 - All-accounts-exhausted: writes paused-sessions.json and waits for recovery
+- Post-rotation health audit: logs rotation verification to `rotation-audit.log`
 
 **Stop-Continue Hook** (`.claude/hooks/stop-continue-hook.js`):
 - Runs on session stop for automated sessions tagged `[Task]`
@@ -125,6 +128,20 @@ node scripts/recover-interrupted-sessions.js --path /project [--dry-run] [--max-
 ```
 
 Cross-references agent-tracker-history with TODO database to find in_progress tasks with no corresponding live process. Re-spawns sessions with original task context.
+
+**Rotation Monitoring** (`scripts/monitor-token-swap.mjs`):
+```bash
+# Real-time rotation state monitoring
+node scripts/monitor-token-swap.mjs --path /project [--interval 30]
+
+# Rotation health audit report
+node scripts/monitor-token-swap.mjs --path /project --audit
+```
+
+Tracks credential rotation state, Keychain sync status, and account health. Audit mode generates rotation health reports showing recent rotations, pending audits, and system alerts.
+
+**Binary Patch Research** (`scripts/patch-credential-cache.py`):
+Research-only tool for investigating Claude Code's credential memoization cache (`iB/oR` pattern). Dry-run mode searches for 9 binary patterns in the Bun SEA executable and proposes TTL-based cache invalidation via setInterval injection. Not production-ready; exists for future reference if immediate credential adoption is needed for quota-based rotation.
 
 ## Chrome Browser Automation
 

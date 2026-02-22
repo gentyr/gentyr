@@ -157,6 +157,100 @@ describe('key-sync.js - Expired Token Refresh Filter (line ~409)', () => {
     });
   });
 
+  describe('Code Structure: readKeychainCredentials() function', () => {
+    it('should be exported from key-sync.js', () => {
+      const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /export function readKeychainCredentials\(/,
+        'readKeychainCredentials must be exported from key-sync.js'
+      );
+    });
+
+    it('should return null on non-macOS platforms', () => {
+      const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+      const fnMatch = code.match(/export function readKeychainCredentials\([\s\S]*?\n\}/);
+      assert.ok(fnMatch, 'readKeychainCredentials must be defined');
+      const fnBody = fnMatch[0];
+
+      assert.match(
+        fnBody,
+        /process\.platform !== ['"]darwin['"]/,
+        'Must check for darwin platform'
+      );
+
+      assert.match(
+        fnBody,
+        /return null/,
+        'Must return null for non-macOS platforms'
+      );
+    });
+
+    it('should use security command to read from Keychain', () => {
+      const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+      const fnMatch = code.match(/export function readKeychainCredentials\([\s\S]*?\n\}/);
+      assert.ok(fnMatch, 'readKeychainCredentials must be defined');
+      const fnBody = fnMatch[0];
+
+      assert.match(
+        fnBody,
+        /execFileSync\(['"]security['"]/,
+        'Must use execFileSync with security command'
+      );
+
+      assert.match(
+        fnBody,
+        /find-generic-password/,
+        'Must use find-generic-password command'
+      );
+    });
+
+    it('should read from Claude Code-credentials service', () => {
+      const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+      const fnMatch = code.match(/export function readKeychainCredentials\([\s\S]*?\n\}/);
+      assert.ok(fnMatch, 'readKeychainCredentials must be defined');
+      const fnBody = fnMatch[0];
+
+      assert.match(
+        fnBody,
+        /Claude Code-credentials/,
+        'Must read from Claude Code-credentials service'
+      );
+    });
+
+    it('should parse JSON and return the credential object', () => {
+      const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+      const fnMatch = code.match(/export function readKeychainCredentials\([\s\S]*?\n\}/);
+      assert.ok(fnMatch, 'readKeychainCredentials must be defined');
+      const fnBody = fnMatch[0];
+
+      assert.match(
+        fnBody,
+        /JSON\.parse/,
+        'Must parse JSON from Keychain output'
+      );
+    });
+
+    it('should return null on errors (try/catch)', () => {
+      const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+      const fnMatch = code.match(/export function readKeychainCredentials\([\s\S]*?\n\}/);
+      assert.ok(fnMatch, 'readKeychainCredentials must be defined');
+      const fnBody = fnMatch[0];
+
+      assert.match(
+        fnBody,
+        /catch[\s\S]*?return null/,
+        'Must return null on errors'
+      );
+    });
+  });
+
   describe('Code Structure: refreshExpiredToken() function', () => {
     it('should be exported from key-sync.js', () => {
       const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');

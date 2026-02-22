@@ -72,11 +72,6 @@ export const RejectCommitArgsSchema = z.object({
 
 export const GetCommitDecisionArgsSchema = z.object({});
 
-export const SpawnImplementationTaskArgsSchema = z.object({
-  prompt: z.string().min(1).describe('Full prompt for the spawned Claude instance'),
-  description: z.string().min(1).max(100).describe('Brief description of what this task does'),
-});
-
 export const GetPendingCountArgsSchema = z.object({});
 
 export const ToggleAutonomousModeArgsSchema = z.object({
@@ -148,7 +143,6 @@ export type ClearQuestionArgs = z.infer<typeof ClearQuestionArgsSchema>;
 export type ApproveCommitArgs = z.infer<typeof ApproveCommitArgsSchema>;
 export type RejectCommitArgs = z.infer<typeof RejectCommitArgsSchema>;
 export type GetCommitDecisionArgs = z.infer<typeof GetCommitDecisionArgsSchema>;
-export type SpawnImplementationTaskArgs = z.infer<typeof SpawnImplementationTaskArgsSchema>;
 export type GetPendingCountArgs = z.infer<typeof GetPendingCountArgsSchema>;
 export type ToggleAutonomousModeArgs = z.infer<typeof ToggleAutonomousModeArgsSchema>;
 export type GetAutonomousModeStatusArgs = z.infer<typeof GetAutonomousModeStatusArgsSchema>;
@@ -256,12 +250,6 @@ export interface GetCommitDecisionResult {
   rationale: string | null;
   pending_rejections: number;
   commits_blocked: boolean;
-  message: string;
-}
-
-export interface SpawnImplementationTaskResult {
-  spawned: boolean;
-  pid: number | null;
   message: string;
 }
 

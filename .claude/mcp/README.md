@@ -63,7 +63,7 @@ Configuration is in `.mcp.json` at the project root:
 | `approve_commit` | Approve pending commit |
 | `reject_commit` | Reject commit (blocks future commits) |
 | `get_commit_decision` | Check commit approval status |
-| `spawn_implementation_task` | Fire-and-forget Claude spawn |
+
 | `get_pending_count` | Quick check for pending items |
 | `toggle_autonomous_mode` | Enable/disable autonomous mode |
 | `get_autonomous_mode_status` | Check autonomous status |
