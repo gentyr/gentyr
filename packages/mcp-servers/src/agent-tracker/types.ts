@@ -74,6 +74,8 @@ export const ForceSpawnTasksArgsSchema = z.object({
     .describe('Maximum concurrent agents allowed (default: 10)'),
 });
 
+export const ForceTriageReportsArgsSchema = z.object({});
+
 // ============================================================================
 // Session Browser Schemas (Unified Session Browser)
 // ============================================================================
@@ -155,6 +157,7 @@ export type GetAgentSessionArgs = z.infer<typeof GetAgentSessionArgsSchema>;
 export type GetAgentStatsArgs = z.infer<typeof GetAgentStatsArgsSchema>;
 export type GetConcurrencyStatusArgs = z.infer<typeof GetConcurrencyStatusArgsSchema>;
 export type ForceSpawnTasksArgs = z.infer<typeof ForceSpawnTasksArgsSchema>;
+export type ForceTriageReportsArgs = z.infer<typeof ForceTriageReportsArgsSchema>;
 
 // Session Browser Types
 export type ListSessionsArgs = z.infer<typeof ListSessionsArgsSchema>;
@@ -292,6 +295,15 @@ export interface ForceSpawnTasksResult {
     title?: string;
     message: string;
   }>;
+}
+
+export interface ForceTriageReportsResult {
+  agentId: string | null;
+  pid: number | null;
+  sessionId: string | null;
+  pendingReports: number;
+  message?: string;
+  error?: string;
 }
 
 // ============================================================================

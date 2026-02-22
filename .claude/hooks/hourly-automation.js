@@ -45,6 +45,10 @@ const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'hourly-automation.log');
 const STATE_FILE = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
 const CTO_REPORTS_DB = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
 
+// Rotation proxy
+const PROXY_PORT = process.env.GENTYR_PROXY_PORT || 18080;
+const PROXY_HEALTH_URL = `http://localhost:${PROXY_PORT}/__health`;
+
 // Thresholds
 const CLAUDE_MD_SIZE_THRESHOLD = 25000; // 25K characters
 // Note: Per-item cooldown (1 hour) is now handled by the agent-reports MCP server
@@ -201,7 +205,35 @@ function buildSpawnEnv(agentId) {
     CLAUDE_PROJECT_DIR: PROJECT_DIR,
     CLAUDE_SPAWNED_SESSION: 'true',
     CLAUDE_AGENT_ID: agentId,
+    HTTPS_PROXY: 'http://localhost:18080',
+    HTTP_PROXY: 'http://localhost:18080',
+    NO_PROXY: 'localhost,127.0.0.1',
   };
+}
+
+/**
+ * Check if the rotation proxy is running and healthy.
+ * Non-blocking, returns status for logging only. Agents still spawn if proxy is down.
+ */
+async function checkProxyHealth() {
+  const http = await import('http');
+  return new Promise((resolve) => {
+    const req = http.request(PROXY_HEALTH_URL, { timeout: 2000 }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const health = JSON.parse(data);
+          resolve({ running: true, ...health });
+        } catch {
+          resolve({ running: true, raw: data });
+        }
+      });
+    });
+    req.on('error', () => resolve({ running: false }));
+    req.on('timeout', () => { req.destroy(); resolve({ running: false }); });
+    req.end();
+  });
 }
 
 /**
@@ -2472,6 +2504,14 @@ async function main() {
   // Credentials are resolved lazily on first agent spawn via ensureCredentials().
   // This avoids unnecessary `op` CLI calls on cycles where all tasks hit cooldowns.
 
+  // Check rotation proxy health (non-blocking, informational only)
+  const proxyHealth = await checkProxyHealth();
+  if (proxyHealth.running) {
+    log(`Rotation proxy: UP (activeKey=${proxyHealth.activeKeyId?.slice(0, 8) || 'unknown'})`);
+  } else {
+    log('Rotation proxy: DOWN — agents will run without proxy-based rotation.');
+  }
+
   // Check for overdrive concurrency override
   let effectiveMaxConcurrent = MAX_CONCURRENT_AGENTS;
   try {
@@ -2544,6 +2584,21 @@ async function main() {
     }
   } catch (err) {
     log(`Key sync error (non-fatal): ${err.message}`);
+  }
+
+  // =========================================================================
+  // BINARY PATCH VERSION WATCH (runs after key sync — detects Claude updates)
+  // =========================================================================
+  try {
+    const { checkAndRepatch } = await import(
+      path.join(PROJECT_DIR, 'scripts', 'watch-claude-version.js')
+    );
+    await checkAndRepatch(log);
+  } catch (err) {
+    // Non-fatal: version watch is optional
+    if (err.code !== 'ERR_MODULE_NOT_FOUND') {
+      log(`Version watch error (non-fatal): ${err.message}`);
+    }
   }
 
   // =========================================================================

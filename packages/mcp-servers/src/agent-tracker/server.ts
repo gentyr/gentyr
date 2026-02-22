@@ -22,6 +22,7 @@ import {
   GetAgentStatsArgsSchema,
   GetConcurrencyStatusArgsSchema,
   ForceSpawnTasksArgsSchema,
+  ForceTriageReportsArgsSchema,
   ListSessionsArgsSchema,
   SearchSessionsArgsSchema,
   GetSessionSummaryArgsSchema,
@@ -34,6 +35,7 @@ import {
   type GetSessionSummaryArgs,
   type GetConcurrencyStatusArgs,
   type ForceSpawnTasksArgs,
+  type ForceTriageReportsResult,
   type ListSpawnedAgentsResult,
   type GetAgentPromptResult,
   type GetAgentSessionResult,
@@ -944,6 +946,39 @@ function forceSpawnTasks(args: ForceSpawnTasksArgs): ForceSpawnTasksResult | Err
   }
 }
 
+function forceTriageReports(): ForceTriageReportsResult | ErrorResult {
+  const thisFile = fileURLToPath(import.meta.url);
+  const frameworkRoot = path.resolve(path.dirname(thisFile), '..', '..', '..', '..');
+  const scriptPath = path.join(frameworkRoot, 'scripts', 'force-triage-reports.js');
+
+  if (!fs.existsSync(scriptPath)) {
+    return { error: `force-triage-reports.js not found at ${scriptPath}. Framework root resolved to: ${frameworkRoot}` };
+  }
+
+  try {
+    const output = execFileSync('node', [
+      scriptPath,
+      '--project-dir', PROJECT_DIR,
+    ], {
+      encoding: 'utf8',
+      timeout: 120000,
+      env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR },
+    });
+
+    return JSON.parse(output.trim()) as ForceTriageReportsResult;
+  } catch (err: unknown) {
+    const execErr = err as { stdout?: string; message?: string };
+    if (execErr.stdout) {
+      try {
+        return JSON.parse(execErr.stdout.trim()) as ForceTriageReportsResult;
+      } catch {
+        // Fall through to error return
+      }
+    }
+    return { error: `force-triage-reports.js failed: ${execErr.message ?? String(err)}` };
+  }
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -985,6 +1020,12 @@ const tools: AnyToolHandler[] = [
     description: 'Force-spawn all pending TODO tasks for the specified sections immediately, bypassing age filters, batch limits, cooldowns, and CTO activity gate. Preserves concurrency guard and task tracking.',
     schema: ForceSpawnTasksArgsSchema,
     handler: forceSpawnTasks,
+  },
+  {
+    name: 'force_triage_reports',
+    description: 'Force-spawn a deputy-CTO triage agent to process all pending reports immediately, bypassing the hourly automation triage interval. Returns the spawned agent ID, PID, and session ID.',
+    schema: ForceTriageReportsArgsSchema,
+    handler: forceTriageReports,
   },
   // Session Browser Tools
   {

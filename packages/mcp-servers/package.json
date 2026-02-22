@@ -33,7 +33,6 @@
     "mcp-makerkit-docs": "./dist/makerkit-docs/server.js",
     "mcp-setup-helper": "./dist/setup-helper/server.js",
     "mcp-chrome-bridge": "./dist/chrome-bridge/server.js",
-    "mcp-session-restart": "./dist/session-restart/server.js",
     "mcp-product-manager": "./dist/product-manager/server.js"
   },
   "scripts": {

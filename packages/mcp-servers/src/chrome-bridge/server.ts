@@ -432,6 +432,7 @@ class ChromeBridgeClient {
 
     const mergedContent: McpContent[] = [];
     this.tabRoutes.clear();
+    this.tabUrls.clear();
 
     for (const result of results) {
       if (result.status === 'fulfilled') {

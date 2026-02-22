@@ -34,6 +34,7 @@ import {
   readKeychainCredentials,
   EXPIRY_BUFFER_MS,
   HIGH_USAGE_THRESHOLD,
+  ROTATION_AUDIT_LOG_PATH,
 } from '../.claude/hooks/key-sync.js';
 
 // ============================================================================
@@ -56,7 +57,6 @@ const VELOCITY_WARNING_PCT = 15;        // warn if usage jumped 15%+ in one poll
 
 // Audit mode (--audit flag)
 const AUDIT_MODE = process.argv.includes('--audit');
-const ROTATION_AUDIT_LOG_PATH = path.join(STATE_DIR, 'rotation-audit.log');
 
 // Actuation mode (--act flag)
 const ACT_MODE = process.argv.includes('--act');
@@ -82,6 +82,9 @@ const monitorState = {
     NO_REFRESH_TOKEN: 0,
     ACT_ROTATION: 0,
     ACT_DESYNC_FIX: 0,
+    ADOPTION_TIMEOUT: 0,
+    PATCH_MISSING: 0,
+    PATCH_BROKEN: 0,
   },
   shutdownRequested: false,
   // Actuation state
@@ -590,6 +593,28 @@ async function deepCheck() {
     }
   }
 
+  // Adoption audit: check if any pending adoption exists
+  const throttle = readThrottleState();
+  if (throttle?.pendingAudit && !throttle.pendingAudit.adopted) {
+    const age = Date.now() - throttle.pendingAudit.rotatedAt;
+    if (age > 90_000) {
+      logAlert('ADOPTION_TIMEOUT', `Pending adoption for key ${shortId(throttle.pendingAudit.toKeyId)} is ${fmtDuration(age)} old`);
+    }
+  }
+
+  // ACT: Recovery for timed-out adoption
+  if (ACT_MODE && throttle?.pendingAudit && !throttle.pendingAudit.adopted) {
+    const age = Date.now() - throttle.pendingAudit.rotatedAt;
+    if (age > 90_000) {
+      const state2 = readRotationState();
+      const targetKey = state2.keys[throttle.pendingAudit.toKeyId];
+      if (targetKey) {
+        updateActiveCredentials(targetKey);
+        log(`ACT [ADOPTION_RECOVERY] Re-wrote key ${shortId(throttle.pendingAudit.toKeyId)} to Keychain`);
+      }
+    }
+  }
+
   // Write updated state if anything changed
   if (stateModified) {
     writeRotationState(rotationState);
@@ -662,7 +687,139 @@ async function runAuditReport() {
     console.log('  (error reading throttle state)');
   }
 
-  // 3. Current rotation state
+  // 3. Binary Patch Status
+  console.log('\n--- Binary Patch ---');
+  try {
+    const verifyResult = execFileSync('node', [
+      path.join(PROJECT_DIR, 'scripts', 'patch-credential-cache.js'), '--verify'
+    ], { encoding: 'utf8', timeout: 10000 });
+    if (verifyResult.includes('PATCHED')) {
+      console.log('  Status: VERIFIED (setInterval nLD injection found)');
+    } else {
+      console.log('  Status: NOT PATCHED');
+    }
+    try {
+      const binaryPath = fs.realpathSync('/opt/homebrew/bin/claude');
+      console.log(`  Binary: ${binaryPath}`);
+    } catch {
+      console.log('  Binary: /opt/homebrew/bin/claude (could not resolve symlink)');
+    }
+    const patchHistoryPath = path.join(PROJECT_DIR, '.claude', 'state', 'patch-history.json');
+    if (fs.existsSync(patchHistoryPath)) {
+      const ph = JSON.parse(fs.readFileSync(patchHistoryPath, 'utf8'));
+      if (ph.patchedAt) console.log(`  Patched at: ${new Date(ph.patchedAt).toISOString()}`);
+      if (ph.version) console.log(`  Version: ${ph.version}`);
+    }
+  } catch {
+    console.log('  Status: UNKNOWN (could not verify)');
+  }
+
+  // 4. Adoption Metrics
+  console.log('\n--- Adoption Metrics ---');
+  try {
+    if (fs.existsSync(ROTATION_AUDIT_LOG_PATH)) {
+      const allLines = fs.readFileSync(ROTATION_AUDIT_LOG_PATH, 'utf8').trim().split('\n');
+
+      // Parse rotation events, adoption confirmations, and adoption timeouts
+      const rotations = [];       // { timestamp, fromKeyId, toKeyId, line }
+      const confirmations = [];   // { timestamp, keyId, latencyMs, line }
+      const timeouts = [];        // { timestamp, keyId, line }
+
+      for (const line of allLines) {
+        const tsMatch = line.match(/^\[([^\]]+)\]/);
+        const ts = tsMatch ? new Date(tsMatch[1]).getTime() : 0;
+
+        if (line.includes('] ROTATION ')) {
+          const toMatch = line.match(/to=([a-f0-9]+)/i);
+          const fromMatch = line.match(/from=([a-f0-9]+)/i);
+          rotations.push({
+            timestamp: ts,
+            fromKeyId: fromMatch ? fromMatch[1] : null,
+            toKeyId: toMatch ? toMatch[1] : null,
+            line,
+          });
+        } else if (line.includes('] ADOPTION_CONFIRMED ') || line.includes('ADOPTION_CONFIRMED')) {
+          const keyMatch = line.match(/key=([a-f0-9]+)/i);
+          const latencyMatch = line.match(/latency=(\d+)/);
+          confirmations.push({
+            timestamp: ts,
+            keyId: keyMatch ? keyMatch[1] : null,
+            latencyMs: latencyMatch ? parseInt(latencyMatch[1], 10) : null,
+            line,
+          });
+        } else if (line.includes('] ADOPTION_TIMEOUT') || line.includes('ADOPTION_TIMEOUT')) {
+          const keyMatch = line.match(/key=([a-f0-9]+)/i);
+          timeouts.push({
+            timestamp: ts,
+            keyId: keyMatch ? keyMatch[1] : null,
+            line,
+          });
+        }
+      }
+
+      console.log(`  Total rotations: ${rotations.length}`);
+      console.log(`  Adoption confirmed: ${confirmations.length}`);
+      console.log(`  Adoption timeouts: ${timeouts.length}`);
+
+      if (rotations.length > 0) {
+        const adoptionRate = confirmations.length / rotations.length * 100;
+        console.log(`  Adoption rate: ${adoptionRate.toFixed(1)}% (${confirmations.length}/${rotations.length})`);
+      }
+
+      // Latency statistics from confirmations
+      const latencies = confirmations
+        .map(c => c.latencyMs)
+        .filter(l => l != null && !isNaN(l));
+
+      if (latencies.length > 0) {
+        latencies.sort((a, b) => a - b);
+        const min = latencies[0];
+        const max = latencies[latencies.length - 1];
+        const median = latencies[Math.floor(latencies.length / 2)];
+        const avg = latencies.reduce((s, v) => s + v, 0) / latencies.length;
+        console.log(`  Latency min/median/avg/max: ${fmtDuration(min)}/${fmtDuration(median)}/${fmtDuration(avg)}/${fmtDuration(max)}`);
+      }
+
+      // Last 10 rotations with adoption outcomes
+      const last10 = rotations.slice(-10);
+      if (last10.length > 0) {
+        console.log(`\n  Last ${last10.length} rotations:`);
+        for (const rot of last10) {
+          const toShort = rot.toKeyId ? shortId(rot.toKeyId) : '?';
+          const fromShort = rot.fromKeyId ? shortId(rot.fromKeyId) : '?';
+          const rotTs = rot.timestamp ? new Date(rot.timestamp).toISOString().replace('T', ' ').slice(0, 19) : '?';
+
+          // Find matching adoption confirmation or timeout
+          const matchedConfirm = confirmations.find(c =>
+            c.keyId && rot.toKeyId && c.keyId.startsWith(rot.toKeyId.slice(0, 8)) &&
+            c.timestamp >= rot.timestamp && c.timestamp <= rot.timestamp + 600_000
+          );
+          const matchedTimeout = timeouts.find(t =>
+            t.keyId && rot.toKeyId && t.keyId.startsWith(rot.toKeyId.slice(0, 8)) &&
+            t.timestamp >= rot.timestamp && t.timestamp <= rot.timestamp + 600_000
+          );
+
+          let outcome;
+          if (matchedConfirm) {
+            const latStr = matchedConfirm.latencyMs != null ? fmtDuration(matchedConfirm.latencyMs) : '?';
+            outcome = `ADOPTED (${latStr})`;
+          } else if (matchedTimeout) {
+            outcome = 'TIMEOUT';
+          } else {
+            outcome = 'PENDING';
+          }
+
+          console.log(`    ${rotTs} ${fromShort} -> ${toShort} : ${outcome}`);
+        }
+      }
+    } else {
+      console.log('  (no rotation-audit.log found)');
+    }
+  } catch {
+    console.log('  (error parsing adoption metrics)');
+  }
+
+  // 5. Current rotation state (renumbered from 3)
   console.log('\n--- Current State ---');
   const rotationState = readRotationState();
   if (rotationState && rotationState.keys) {
@@ -685,7 +842,7 @@ async function runAuditReport() {
     console.log('  (no rotation state)');
   }
 
-  // 4. Keychain state
+  // 6. Keychain state
   console.log('\n--- Keychain ---');
   const keychainCreds = readKeychainCredentials();
   if (keychainCreds?.claudeAiOauth?.accessToken) {
@@ -699,7 +856,7 @@ async function runAuditReport() {
     console.log('  (no Keychain credentials found)');
   }
 
-  // 5. Alerts
+  // 7. Alerts
   console.log('\n--- Alerts ---');
   let alertCount = 0;
 
@@ -757,6 +914,18 @@ async function main() {
   }
 
   ensureDir(STATE_DIR);
+
+  // Startup patch verification
+  try {
+    const result = execFileSync('node', [
+      path.join(PROJECT_DIR, 'scripts', 'patch-credential-cache.js'), '--verify'
+    ], { encoding: 'utf8', timeout: 10000 });
+    if (result.includes('NOT_PATCHED')) {
+      logAlert('PATCH_MISSING', 'Binary patch not detected — adoption will degrade to token-expiry (~4h)');
+    }
+  } catch {
+    logAlert('PATCH_MISSING', 'Could not verify binary patch status');
+  }
 
   log('');
   log('=== Token Swap Monitor ===');

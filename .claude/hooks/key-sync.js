@@ -808,5 +808,35 @@ export function readKeychainCredentials() {
   }
 }
 
+// Rotation audit log — structured event log for post-rotation health verification
+const ROTATION_AUDIT_LOG_PATH = path.join(
+  process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+  '.claude', 'state', 'rotation-audit.log'
+);
+
+/**
+ * Append a structured audit event to the rotation audit log.
+ * Format: [ISO_TIMESTAMP] EVENT key1=val1 key2=val2
+ *
+ * @param {string} event - Event name (e.g. 'rotation_completed', 'adoption_verified')
+ * @param {Object} details - Key-value pairs to include in the log line
+ */
+export function appendRotationAudit(event, details = {}) {
+  const ts = new Date().toISOString();
+  const sanitizedEvent = String(event).replace(/[\r\n]/g, ' ');
+  const parts = [`[${ts}] ${sanitizedEvent}`];
+  for (const [k, v] of Object.entries(details)) {
+    parts.push(`${k}=${String(v).replace(/[\r\n]/g, ' ')}`);
+  }
+  const line = parts.join(' ');
+  try {
+    const dir = path.dirname(ROTATION_AUDIT_LOG_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(ROTATION_AUDIT_LOG_PATH, line + '\n', 'utf8');
+  } catch (err) {
+    console.error(`[key-sync] Failed to write rotation audit log: ${err.message}`);
+  }
+}
+
 // Export paths for consumers
-export { ROTATION_STATE_PATH, ROTATION_LOG_PATH, CREDENTIALS_PATH, OLD_PROJECT_STATE_PATH };
+export { ROTATION_STATE_PATH, ROTATION_LOG_PATH, CREDENTIALS_PATH, OLD_PROJECT_STATE_PATH, ROTATION_AUDIT_LOG_PATH };

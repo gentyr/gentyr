@@ -561,6 +561,11 @@ def main():
         help="Detect and report what would be patched, but don't write",
     )
     parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Check if binary is patched (machine-parseable output: PATCHED or NOT_PATCHED)",
+    )
+    parser.add_argument(
         "--restore",
         action="store_true",
         help="Restore binary from backup",
@@ -600,6 +605,21 @@ def main():
 
     if not os.access(binary, os.R_OK):
         error(f"Binary is not readable: {binary}")
+        return 0
+
+    # --- Handle --verify ---
+    if args.verify:
+        with open(binary, "rb") as f:
+            data = f.read()
+        blocks = find_mascot_blocks(data)
+        if not blocks:
+            print("NOT_PATCHED — no mascot blocks found")
+            return 0
+        patched = sum(1 for b in blocks if is_already_patched(b["block"]))
+        if patched == len(blocks):
+            print(f"PATCHED — all {len(blocks)} mascot blocks contain #29 Winged Eye")
+        else:
+            print(f"NOT_PATCHED — {patched}/{len(blocks)} blocks patched")
         return 0
 
     # --- Handle --restore ---
