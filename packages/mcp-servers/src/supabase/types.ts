@@ -6,9 +6,15 @@
 
 import { z } from 'zod';
 
+const SQL_IDENTIFIER_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+const sqlIdentifier = z.string().regex(
+  SQL_IDENTIFIER_REGEX,
+  'Invalid SQL identifier: must start with letter/underscore, contain only alphanumeric/underscore'
+);
+
 // Tool argument schemas
 export const SelectArgsSchema = z.object({
-  table: z.string(),
+  table: sqlIdentifier,
   select: z.string().optional().default('*'),
   filter: z.string().optional(),
   order: z.string().optional(),
@@ -17,31 +23,31 @@ export const SelectArgsSchema = z.object({
 });
 
 export const InsertArgsSchema = z.object({
-  table: z.string(),
+  table: sqlIdentifier,
   data: z.record(z.unknown()),
   onConflict: z.string().optional(),
 });
 
 export const UpdateArgsSchema = z.object({
-  table: z.string(),
+  table: sqlIdentifier,
   data: z.record(z.unknown()),
   filter: z.string(),
 });
 
 export const DeleteArgsSchema = z.object({
-  table: z.string(),
+  table: sqlIdentifier,
   filter: z.string(),
 });
 
 export const RpcArgsSchema = z.object({
-  function: z.string(),
+  function: sqlIdentifier,
   params: z.record(z.unknown()).optional(),
 });
 
 export const ListTablesArgsSchema = z.object({});
 
 export const DescribeTableArgsSchema = z.object({
-  table: z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, 'Invalid table name: must be a valid SQL identifier'),
+  table: sqlIdentifier,
 });
 
 export const SqlArgsSchema = z.object({
