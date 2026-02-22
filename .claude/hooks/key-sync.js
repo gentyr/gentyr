@@ -790,5 +790,23 @@ export function deduplicateKeys(state) {
   return result;
 }
 
+/**
+ * Read credentials directly from macOS Keychain.
+ * Returns the parsed credential object (with claudeAiOauth field) or null.
+ * @returns {object|null}
+ */
+export function readKeychainCredentials() {
+  if (process.platform !== 'darwin') return null;
+  try {
+    const { username } = os.userInfo();
+    const raw = execFileSync('security', [
+      'find-generic-password', '-s', 'Claude Code-credentials', '-a', username, '-w',
+    ], { encoding: 'utf8', timeout: 3000 }).trim();
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 // Export paths for consumers
 export { ROTATION_STATE_PATH, ROTATION_LOG_PATH, CREDENTIALS_PATH, OLD_PROJECT_STATE_PATH };

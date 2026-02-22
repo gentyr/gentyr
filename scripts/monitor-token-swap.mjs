@@ -31,6 +31,7 @@ import {
   checkKeyHealth,
   logRotationEvent,
   updateActiveCredentials,
+  readKeychainCredentials,
   EXPIRY_BUFFER_MS,
   HIGH_USAGE_THRESHOLD,
 } from '../.claude/hooks/key-sync.js';
@@ -52,6 +53,10 @@ const DEEP_CHECK_INTERVAL_MS = 300_000; // 5 minutes
 // Diagnostic thresholds
 const STALE_HEALTH_CHECK_MS = 600_000;  // 10 min - health check data considered stale
 const VELOCITY_WARNING_PCT = 15;        // warn if usage jumped 15%+ in one poll cycle
+
+// Audit mode (--audit flag)
+const AUDIT_MODE = process.argv.includes('--audit');
+const ROTATION_AUDIT_LOG_PATH = path.join(STATE_DIR, 'rotation-audit.log');
 
 // Actuation mode (--act flag)
 const ACT_MODE = process.argv.includes('--act');
@@ -603,10 +608,162 @@ async function deepCheck() {
 }
 
 // ============================================================================
+// Audit Report (--audit)
+// ============================================================================
+
+async function runAuditReport() {
+  console.log('=== Rotation Health Audit Report ===\n');
+
+  // 1. Rotation audit log (last 20 entries)
+  console.log('--- Recent Rotations ---');
+  try {
+    if (fs.existsSync(ROTATION_AUDIT_LOG_PATH)) {
+      const lines = fs.readFileSync(ROTATION_AUDIT_LOG_PATH, 'utf8').trim().split('\n');
+      const recent = lines.slice(-20);
+      let rotationCount = 0;
+      let auditCount = 0;
+      let passCount = 0;
+      let matchCount = 0;
+      for (const line of recent) {
+        console.log(`  ${line}`);
+        if (line.includes('] ROTATION ')) rotationCount++;
+        if (line.includes('] AUDIT ')) {
+          auditCount++;
+          if (line.includes('health=PASS')) passCount++;
+          if (line.includes('keychain=MATCH')) matchCount++;
+        }
+      }
+      console.log(`\n  Totals (last ${recent.length} entries): ${rotationCount} rotations, ${auditCount} audits`);
+      if (auditCount > 0) {
+        console.log(`  Health pass rate: ${Math.round(passCount / auditCount * 100)}% (${passCount}/${auditCount})`);
+        console.log(`  Keychain match rate: ${Math.round(matchCount / auditCount * 100)}% (${matchCount}/${auditCount})`);
+      }
+    } else {
+      console.log('  (no rotation-audit.log found)');
+    }
+  } catch {
+    console.log('  (error reading rotation-audit.log)');
+  }
+
+  // 2. Pending audit from throttle state
+  console.log('\n--- Pending Audit ---');
+  try {
+    if (fs.existsSync(THROTTLE_STATE_PATH)) {
+      const throttle = JSON.parse(fs.readFileSync(THROTTLE_STATE_PATH, 'utf8'));
+      if (throttle.pendingAudit) {
+        const pa = throttle.pendingAudit;
+        if (pa.verifiedAt) {
+          console.log(`  Last audit verified at: ${new Date(pa.verifiedAt).toISOString()}`);
+          console.log(`  Keychain: ${pa.keychainMatch ? 'MATCH' : 'MISMATCH'} | Health: ${pa.healthCheckPassed ? 'PASS' : 'FAIL'}`);
+        } else {
+          const age = fmtDuration(Date.now() - pa.rotatedAt);
+          console.log(`  UNVERIFIED rotation pending (${age} old)`);
+          console.log(`  From: ${shortId(pa.fromKeyId)} -> To: ${shortId(pa.toKeyId)}`);
+        }
+      } else {
+        console.log('  (no pending audit)');
+      }
+    } else {
+      console.log('  (no quota-monitor-state.json)');
+    }
+  } catch {
+    console.log('  (error reading throttle state)');
+  }
+
+  // 3. Current rotation state
+  console.log('\n--- Current State ---');
+  const rotationState = readRotationState();
+  if (rotationState && rotationState.keys) {
+    const activeId = rotationState.active_key_id;
+    console.log(`  Active key: ${shortId(activeId)}`);
+
+    for (const [keyId, keyData] of Object.entries(rotationState.keys)) {
+      const isActive = keyId === activeId ? ' (ACTIVE)' : '';
+      const status = keyData.status || 'unknown';
+      const expiresIn = keyData.expiresAt ? fmtDuration(keyData.expiresAt - Date.now()) : 'unknown';
+      const lastCheck = keyData.last_health_check ? fmtDuration(Date.now() - keyData.last_health_check) + ' ago' : 'never';
+      let usageStr = 'no data';
+      if (keyData.last_usage) {
+        const u = keyData.last_usage;
+        usageStr = `5h:${(u.five_hour || 0).toFixed(1)}% 7d:${(u.seven_day || 0).toFixed(1)}% son:${(u.seven_day_sonnet || 0).toFixed(1)}%`;
+      }
+      console.log(`  [${shortId(keyId)}]${isActive} status=${status} expires=${expiresIn} checked=${lastCheck} usage=${usageStr}`);
+    }
+  } else {
+    console.log('  (no rotation state)');
+  }
+
+  // 4. Keychain state
+  console.log('\n--- Keychain ---');
+  const keychainCreds = readKeychainCredentials();
+  if (keychainCreds?.claudeAiOauth?.accessToken) {
+    const kcKeyId = generateKeyId(keychainCreds.claudeAiOauth.accessToken);
+    const kcMatch = rotationState?.active_key_id === kcKeyId;
+    const expiresIn = keychainCreds.claudeAiOauth.expiresAt
+      ? fmtDuration(keychainCreds.claudeAiOauth.expiresAt - Date.now())
+      : 'unknown';
+    console.log(`  Key: ${shortId(kcKeyId)} | Active match: ${kcMatch ? 'YES' : 'NO (DESYNC)'} | Expires in: ${expiresIn}`);
+  } else {
+    console.log('  (no Keychain credentials found)');
+  }
+
+  // 5. Alerts
+  console.log('\n--- Alerts ---');
+  let alertCount = 0;
+
+  // Check for unverified audit
+  try {
+    if (fs.existsSync(THROTTLE_STATE_PATH)) {
+      const throttle = JSON.parse(fs.readFileSync(THROTTLE_STATE_PATH, 'utf8'));
+      if (throttle.pendingAudit && !throttle.pendingAudit.verifiedAt) {
+        const age = Date.now() - throttle.pendingAudit.rotatedAt;
+        if (age > 10 * 60 * 1000) {
+          console.log(`  WARN: Unverified rotation is ${fmtDuration(age)} old (expected verification within 10 min)`);
+          alertCount++;
+        }
+      }
+    }
+  } catch { /* ignore */ }
+
+  // Check for stale health data
+  if (rotationState?.active_key_id) {
+    const activeKey = rotationState.keys[rotationState.active_key_id];
+    if (activeKey?.last_health_check) {
+      const age = Date.now() - activeKey.last_health_check;
+      if (age > 15 * 60 * 1000) {
+        console.log(`  WARN: Active key health data is ${fmtDuration(age)} old (stale after 15m)`);
+        alertCount++;
+      }
+    }
+  }
+
+  // Check for Keychain desync
+  if (keychainCreds?.claudeAiOauth?.accessToken && rotationState?.active_key_id) {
+    const kcKeyId = generateKeyId(keychainCreds.claudeAiOauth.accessToken);
+    if (kcKeyId !== rotationState.active_key_id) {
+      console.log(`  CRIT: Keychain key (${shortId(kcKeyId)}) does not match active key (${shortId(rotationState.active_key_id)})`);
+      alertCount++;
+    }
+  }
+
+  if (alertCount === 0) {
+    console.log('  (none)');
+  }
+
+  console.log('');
+}
+
+// ============================================================================
 // Main Loop
 // ============================================================================
 
 async function main() {
+  // Dispatch --audit mode
+  if (AUDIT_MODE) {
+    await runAuditReport();
+    return;
+  }
+
   ensureDir(STATE_DIR);
 
   log('');

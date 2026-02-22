@@ -15,9 +15,10 @@
  * Checks usage API for the active key and triggers rotation if usage >= 95%
  * or predictive threshold is met.
  *
- * For interactive sessions: triggers auto-restart with new credentials.
- * For automated sessions: writes signal to quota-interrupted-sessions.json
- *   for session-reviver to pick up.
+ * For interactive sessions: writes new credentials to Keychain and continues.
+ *   Claude Code's SRA()/r6T() adopts the new token automatically.
+ * For automated sessions: stops cleanly for session-reviver to resume with
+ *   fresh credentials from Keychain.
  * When all accounts are exhausted: writes to paused-sessions.json and warns.
  *
  * @version 2.0.0
@@ -25,7 +26,6 @@
 
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
 import {
   readRotationState,
   writeRotationState,
@@ -34,23 +34,20 @@ import {
   checkKeyHealth,
   selectActiveKey,
   refreshExpiredToken,
+  readKeychainCredentials,
+  generateKeyId,
   HIGH_USAGE_THRESHOLD,
   EXHAUSTED_THRESHOLD,
   EXPIRY_BUFFER_MS,
 } from './key-sync.js';
 import { registerHookExecution, HOOK_TYPES } from './agent-tracker.js';
-import {
-  discoverSessionId,
-  getClaudePid,
-  detectTerminal,
-  generateRestartScript,
-  shellEscape,
-} from './slash-command-prefetch.js';
+import { discoverSessionId } from './slash-command-prefetch.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
 const THROTTLE_STATE_PATH = path.join(STATE_DIR, 'quota-monitor-state.json');
 const PAUSED_SESSIONS_PATH = path.join(STATE_DIR, 'paused-sessions.json');
+const ROTATION_AUDIT_LOG_PATH = path.join(STATE_DIR, 'rotation-audit.log');
 
 // Thresholds
 const ROTATION_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes anti-loop
@@ -181,6 +178,55 @@ function findEarliestReset(state) {
   return earliest;
 }
 
+/**
+ * Append a line to the rotation audit log.
+ */
+function appendAuditLog(line) {
+  try {
+    if (!fs.existsSync(STATE_DIR)) {
+      fs.mkdirSync(STATE_DIR, { recursive: true });
+    }
+    fs.appendFileSync(ROTATION_AUDIT_LOG_PATH, line + '\n', 'utf8');
+  } catch {
+    // Non-fatal
+  }
+}
+
+/**
+ * Verify a pending rotation audit: check Keychain match and key health.
+ * Writes results to throttle state and audit log.
+ */
+async function verifyPendingAudit(throttle) {
+  const audit = throttle.pendingAudit;
+  if (!audit || audit.verifiedAt) return;
+
+  const now = Date.now();
+  const keychainCreds = readKeychainCredentials();
+  let keychainMatch = false;
+  if (keychainCreds?.claudeAiOauth?.accessToken) {
+    const keychainKeyId = generateKeyId(keychainCreds.claudeAiOauth.accessToken);
+    keychainMatch = keychainKeyId === audit.toKeyId;
+  }
+
+  const state = readRotationState();
+  const targetKey = state.keys?.[audit.toKeyId];
+  let healthCheckPassed = false;
+  if (targetKey?.accessToken) {
+    const health = await checkKeyHealth(targetKey.accessToken);
+    healthCheckPassed = health.valid;
+  }
+
+  audit.verifiedAt = now;
+  audit.keychainMatch = keychainMatch;
+  audit.healthCheckPassed = healthCheckPassed;
+
+  const adoptionTimeSec = Math.round((now - audit.rotatedAt) / 1000);
+  const ts = new Date(now).toISOString();
+  appendAuditLog(
+    `[${ts}] AUDIT to=${audit.toKeyId.slice(0, 8)} keychain=${keychainMatch ? 'MATCH' : 'MISMATCH'} health=${healthCheckPassed ? 'PASS' : 'FAIL'} adoption_time=${adoptionTimeSec}s`
+  );
+}
+
 async function main() {
   const startTime = Date.now();
   const isAutomated = process.env.CLAUDE_SPAWNED_SESSION === 'true';
@@ -191,6 +237,12 @@ async function main() {
   if (startTime - throttle.lastCheck < currentIntervalMs) {
     process.stdout.write(JSON.stringify({ continue: true, suppressOutput: true }));
     return;
+  }
+
+  // Step 1b: Verify pending rotation audit from previous cycle
+  if (throttle.pendingAudit && !throttle.pendingAudit.verifiedAt) {
+    await verifyPendingAudit(throttle);
+    writeThrottleState(throttle);
   }
 
   // Step 2: Anti-loop - skip if we rotated very recently
@@ -420,6 +472,21 @@ async function main() {
     writeRotationState(state);
 
     throttle.lastRotation = startTime;
+
+    // Step 6: Schedule post-rotation audit for next invocation
+    throttle.pendingAudit = {
+      rotatedAt: startTime,
+      fromKeyId: previousKeyId,
+      toKeyId: selectedKeyId,
+      verifiedAt: null,
+    };
+
+    // Log rotation event to audit log
+    const rotTs = new Date(startTime).toISOString();
+    appendAuditLog(
+      `[${rotTs}] ROTATION from=${previousKeyId.slice(0, 8)} to=${selectedKeyId.slice(0, 8)} reason=${rotationReason}`
+    );
+
     writeThrottleState(throttle);
 
     registerHookExecution({
@@ -430,62 +497,20 @@ async function main() {
     });
 
     if (!isAutomated) {
-      // Interactive session: auto-restart with new credentials
-      try {
-        const claudePid = getClaudePid();
-        const sessionId = discoverSessionId();
-        const terminal = detectTerminal();
-        const script = generateRestartScript(claudePid, sessionId, PROJECT_DIR, terminal);
-        const child = spawn('bash', ['-c', script], { detached: true, stdio: 'ignore' });
-        child.unref();
-
-        process.stdout.write(JSON.stringify({
-          continue: false,
-          stopReason: `Account rotated (${Math.round(maxUsage)}% usage). Restarting with fresh credentials...`,
-        }));
-        return;
-      } catch {
-        // Restart failed, continue with rotated credentials anyway
-        process.stdout.write(JSON.stringify({
-          continue: true,
-          systemMessage: `Account rotated to ${selectedKeyId.slice(0, 8)}... (${Math.round(maxUsage)}% usage on previous). Credentials updated mid-session.`,
-        }));
-        return;
-      }
-    } else {
-      // Automated session: restart with fresh credentials so Claude Code picks up new token
-      try {
-        const sessionId = discoverSessionId();
-        const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
-        const spawnArgs = [
-          '--resume', sessionId,
-          '--dangerously-skip-permissions',
-          '--mcp-config', mcpConfig,
-          '--output-format', 'json',
-        ];
-        const child = spawn('claude', spawnArgs, {
-          cwd: PROJECT_DIR,
-          stdio: 'ignore',
-          detached: true,
-          env: (() => { const e = { ...process.env }; delete e.CLAUDE_CODE_OAUTH_TOKEN; return e; })(),
-        });
-        child.unref();
-
-        if (child.pid) {
-          process.stdout.write(JSON.stringify({
-            continue: false,
-            stopReason: `Account rotated (${Math.round(maxUsage)}% usage). Restarting automated session with fresh credentials (PID ${child.pid}).`,
-          }));
-          return;
-        }
-      } catch {
-        // Spawn failed — fall back to continue with rotated creds on disk
-      }
-
-      // Fallback: continue with warning (creds on disk updated but may be cached in memory)
+      // Interactive session: seamless rotation.
+      // Credentials already written to Keychain via updateActiveCredentials() above.
+      // Claude Code's SRA() will adopt the new token when the old one approaches expiry.
+      // For quota-based rotation, r6T() fires when old account hits 100% and returns 429→401.
       process.stdout.write(JSON.stringify({
         continue: true,
-        systemMessage: `Account rotated to ${selectedKeyId.slice(0, 8)}... (${Math.round(maxUsage)}% usage on previous). Warning: credentials updated on disk but may be cached in memory.`,
+        systemMessage: `Account rotated to ${selectedKeyId.slice(0, 8)}... (${Math.round(maxUsage)}% usage on previous). Credentials written to Keychain — will be adopted automatically.`,
+      }));
+      return;
+    } else {
+      // Automated session: stop cleanly for session-reviver to resume with fresh Keychain creds.
+      process.stdout.write(JSON.stringify({
+        continue: false,
+        stopReason: `Account rotated (${Math.round(maxUsage)}% usage). Stopping for credential adoption — session will be auto-resumed by session-reviver.`,
       }));
       return;
     }

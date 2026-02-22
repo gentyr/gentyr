@@ -512,13 +512,20 @@ const APPROVAL_TOKEN_PATH = path.join(PROJECT_DIR, '.claude', 'commit-approval-t
 function approveCommit(args: ApproveCommitArgs): ApproveCommitResult {
   const db = getDb();
 
-  // Check for pending CTO questions (any type blocks commits)
-  const pendingCount = getPendingCount();
-  if (pendingCount > 0) {
+  // G020: Block commits when ANY pending items exist (questions OR triage)
+  const pending = getTotalPendingItems();
+  if (pending.total > 0) {
+    const blockReasons: string[] = [];
+    if (pending.questions > 0) {
+      blockReasons.push(`${pending.questions} CTO question(s)`);
+    }
+    if (pending.triage > 0) {
+      blockReasons.push(`${pending.triage} untriaged report(s)`);
+    }
     return {
       approved: false,
       decision_id: '',
-      message: `Cannot approve commit: ${pendingCount} pending CTO question(s) must be addressed first.`,
+      message: `Cannot approve commit: ${blockReasons.join(' and ')} must be addressed first.`,
     };
   }
 
@@ -549,8 +556,20 @@ function approveCommit(args: ApproveCommitArgs): ApproveCommitResult {
   try {
     fs.writeFileSync(APPROVAL_TOKEN_PATH, JSON.stringify(token, null, 2));
   } catch (err) {
-    // Log but don't fail - the database decision is still recorded
-    console.error(`Warning: Could not write approval token: ${err}`);
+    // G001: Fail-closed - if token file write fails, the approval is non-functional
+    // because the pre-commit hook reads the token file, not the database
+    console.error(`[deputy-cto] G001: Approval token write failed: ${err}`);
+    // Roll back the database decision so state is consistent
+    try {
+      db.prepare('DELETE FROM commit_decisions WHERE id = ?').run(id);
+    } catch (rollbackErr) {
+      console.error(`[deputy-cto] G001: Failed to roll back approval decision: ${rollbackErr}`);
+    }
+    return {
+      approved: false,
+      decision_id: '',
+      message: 'Approval token write failed - check file permissions on commit-approval-token.json. The approval has been rolled back.',
+    };
   }
 
   return {

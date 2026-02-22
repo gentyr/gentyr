@@ -12,7 +12,7 @@ Read the current state from `.claude/autonomous-mode.json` field `productManager
    - Call `mcp__session-restart__session_restart({ confirm: true })` to restart with updated agent registration
 
 ## If currently ENABLED:
-1. Ask: "Disable product-market-fit analysis? The agent will be removed but your analysis data in product-manager.db will be preserved."
+1. Ask: "Disable product-market-fit analysis? The agent will be removed but your analysis data in `.claude/state/product-manager.db` will be preserved."
 2. If yes:
    - Read `.claude/autonomous-mode.json`, set `productManagerEnabled: false`, write back
    - Remove `.claude/agents/product-manager.md` symlink
