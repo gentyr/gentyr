@@ -10,6 +10,8 @@ GENTYR turns Claude Code into an autonomous engineering team. It installs as a f
 
 > **macOS only.** The automation services, credential rotation, and persistent proxy use launchd. Linux and Windows are not supported.
 
+> **Not yet published to npm.** Install via local source only: `pnpm link ~/git/gentyr`. npm publish coming soon.
+
 ## who this is for
 
 Solo founders building new SaaS products from scratch. You want a full engineering team without hiring one. You are willing to adopt a locked stack and let the framework make infrastructure decisions for you. This is not for existing codebases. GENTYR builds from the ground up.

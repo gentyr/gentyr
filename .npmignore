@@ -1,0 +1,65 @@
+# Nested node_modules (never needed at runtime — consumers install their own)
+packages/mcp-servers/node_modules/
+packages/cto-dashboard/node_modules/
+
+# Development and local state
+.claude/worktrees/
+.claude/*.db
+.claude/*.db-shm
+.claude/*.db-wal
+.claude/*-state.json
+.claude/*.log
+.claude/api-key-rotation.json
+.claude/commit-approval-token.json
+.claude/autonomous-mode.json
+.claude/vault-mappings.json
+.claude/settings.local.json
+.claude/protected-action-approvals.json
+.claude/state/
+.claude/hooks/*-state.json
+.claude/hooks/*-history.json
+.claude/hooks/*.log
+.claude/hooks/test-*
+.claude/hooks/.claude/
+
+# MCP source (only dist/ is needed at runtime)
+packages/mcp-servers/src/
+packages/mcp-servers/tsconfig.json
+packages/mcp-servers/*.tsbuildinfo
+
+# CTO dashboard source (runtime not needed by consuming projects)
+packages/cto-dashboard/src/
+packages/cto-dashboard/dist/
+packages/cto-dashboard/tsconfig.json
+
+# VSCode extension
+packages/vscode-extension/
+
+# Test files
+tests/
+*.test.js
+*.spec.js
+coverage/
+*.lcov
+TEST_COVERAGE_REPORT.md
+
+# Scripts not needed at runtime
+scripts/setup.sh
+scripts/setup-validate.js
+scripts/monitor-token-swap.mjs
+scripts/patch-credential-cache.js
+scripts/generate-readme.js
+
+# Vendor (cloned repos, not needed by consumers)
+vendor/
+
+# Dev files
+.gitignore
+.claude/worktrees/
+AUTOMATION-AND-ACCOUNT-QUOTA-LOAD-BALANCING-MONITORING.md
+op-secrets.conf
+CLAUDE.md.makerkit-section
+
+# OS
+.DS_Store
+Thumbs.db
