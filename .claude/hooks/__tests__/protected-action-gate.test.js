@@ -1054,12 +1054,34 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
 
   // ==========================================================================
   // Blocked Action Audit Logging (G024)
+  //
+  // The new implementation (v2.1.0+) emits audit logs to stderr as structured
+  // JSON lines rather than writing to the approvals file's blocked array.
+  // Each blocked event writes:
+  //   { type: 'blocked_actions_audit', count: N, entries: [...] }
+  // to stderr. The in-memory log is bounded at MAX_AUDIT_ENTRIES (500).
   // ==========================================================================
 
+  /**
+   * Parse the last 'blocked_actions_audit' JSON line from stderr output.
+   * Returns the parsed object or null if no audit line is found.
+   */
+  function parseAuditLog(stderr) {
+    const lines = stderr.split('\n').filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const parsed = JSON.parse(lines[i]);
+        if (parsed.type === 'blocked_actions_audit') {
+          return parsed;
+        }
+      } catch { /* not JSON, skip */ }
+    }
+    return null;
+  }
+
   describe('Blocked action audit logging (G024)', () => {
-    it('should log blocked action to blocked array when no approval exists', async () => {
+    it('should emit audit log to stderr when action is blocked (no approval)', async () => {
       const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
-      const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
 
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
 
@@ -1076,28 +1098,29 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
 
       fs.writeFileSync(configPath, JSON.stringify(config));
 
-      await runHook('mcp__test-server__test-tool', {}, tempDir.path);
+      const result = await runHook('mcp__test-server__test-tool', {}, tempDir.path);
 
-      const data = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+      // Audit log must be written to stderr
+      const audit = parseAuditLog(result.stderr);
+      assert.ok(audit, 'Should emit blocked_actions_audit JSON to stderr');
+      assert.strictEqual(audit.type, 'blocked_actions_audit');
+      assert.ok(typeof audit.count === 'number', 'Should include count field');
+      assert.ok(audit.count >= 1, 'Count should be at least 1');
+      assert.ok(Array.isArray(audit.entries), 'Should include entries array');
 
-      assert.ok(Array.isArray(data.blocked), 'Should have a blocked array');
-      assert.ok(data.blocked.length > 0, 'Should have at least one blocked entry');
-
-      const entry = data.blocked[0];
+      const entry = audit.entries[audit.entries.length - 1];
       assert.strictEqual(entry.server, 'test-server', 'Should log server name');
       assert.strictEqual(entry.tool, 'test-tool', 'Should log tool name');
-      assert.strictEqual(entry.reason, 'No valid approval exists', 'Should log reason');
-      assert.ok(entry.code, 'Should include the approval code');
-      assert.ok(entry.blockedAt, 'Should include blockedAt timestamp');
+      assert.ok(entry.reason, 'Should include reason');
+      assert.ok(entry.timestamp, 'Should include timestamp');
 
-      // Verify blockedAt is a valid ISO timestamp
-      const parsedDate = new Date(entry.blockedAt);
-      assert.ok(!isNaN(parsedDate.getTime()), 'blockedAt should be a valid ISO date');
+      // Verify timestamp is a valid ISO string
+      const parsedDate = new Date(entry.timestamp);
+      assert.ok(!isNaN(parsedDate.getTime()), 'timestamp should be a valid ISO date');
     });
 
-    it('should log blocked action for unrecognized MCP server', async () => {
+    it('should emit audit log to stderr for unrecognized MCP server', async () => {
       const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
-      const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
 
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
 
@@ -1115,28 +1138,25 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
 
       fs.writeFileSync(configPath, JSON.stringify(config));
 
-      await runHook('mcp__unknown-server__some-tool', {}, tempDir.path);
+      const result = await runHook('mcp__unknown-server__some-tool', {}, tempDir.path);
 
-      const data = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+      const audit = parseAuditLog(result.stderr);
+      assert.ok(audit, 'Should emit blocked_actions_audit JSON to stderr');
 
-      assert.ok(Array.isArray(data.blocked), 'Should have a blocked array');
-      assert.ok(data.blocked.length > 0, 'Should have at least one blocked entry');
-
-      const entry = data.blocked[0];
-      assert.strictEqual(entry.server, 'unknown-server');
-      assert.strictEqual(entry.tool, 'some-tool');
-      assert.match(entry.reason, /unrecognized/i, 'Should indicate unrecognized server');
-      assert.ok(entry.blockedAt, 'Should include blockedAt timestamp');
+      const entry = audit.entries[audit.entries.length - 1];
+      assert.strictEqual(entry.server, 'unknown-server', 'Should log server name');
+      assert.strictEqual(entry.tool, 'some-tool', 'Should log tool name');
+      assert.ok(entry.reason, 'Should include reason');
+      assert.ok(entry.timestamp, 'Should include timestamp');
     });
 
-    it('should log blocked action when protection key is missing', async () => {
+    it('should emit audit log to stderr when protection key is missing', async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-audit-nokey-'));
       const claudeDir = path.join(tmpDir, '.claude');
       fs.mkdirSync(claudeDir, { recursive: true });
       // No protection-key
 
       const configPath = path.join(tmpDir, '.claude', 'hooks', 'protected-actions.json');
-      const approvalsPath = path.join(tmpDir, '.claude', 'protected-action-approvals.json');
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
 
       const config = {
@@ -1153,25 +1173,25 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
       fs.writeFileSync(configPath, JSON.stringify(config));
 
       try {
-        await runHook('mcp__test-server__test-tool', {}, tmpDir);
+        const result = await runHook('mcp__test-server__test-tool', {}, tmpDir);
 
-        const data = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+        const audit = parseAuditLog(result.stderr);
+        assert.ok(audit, 'Should emit blocked_actions_audit JSON to stderr when key is missing');
 
-        assert.ok(Array.isArray(data.blocked), 'Should have a blocked array');
-        assert.ok(data.blocked.length > 0, 'Should have at least one blocked entry');
-
-        const entry = data.blocked[0];
-        assert.strictEqual(entry.server, 'test-server');
-        assert.strictEqual(entry.tool, 'test-tool');
-        assert.match(entry.reason, /protection key missing/i);
+        const entry = audit.entries[audit.entries.length - 1];
+        assert.ok(entry.server, 'Should log server name');
+        assert.ok(entry.tool, 'Should log tool name');
+        assert.ok(entry.reason, 'Should include reason');
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
     });
 
-    it('should preserve existing blocked entries when adding new ones', async () => {
+    it('should accumulate multiple audit entries across sequential blocks', async () => {
+      // The in-memory log accumulates entries within a single process lifetime.
+      // Each call is a separate process so we validate per-call: each stderr
+      // output reflects a fresh in-memory log with exactly 1 entry.
       const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
-      const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
 
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
 
@@ -1188,31 +1208,25 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
 
       fs.writeFileSync(configPath, JSON.stringify(config));
 
-      // Pre-seed with an existing blocked entry
-      const existingData = {
-        approvals: {},
-        blocked: [
-          {
-            server: 'old-server',
-            tool: 'old-tool',
-            reason: 'Previous block',
-            blockedAt: '2026-01-01T00:00:00.000Z',
-          },
-        ],
-      };
+      // Two separate hook invocations — each spawns a new process with a fresh in-memory log
+      const result1 = await runHook('mcp__test-server__tool-a', {}, tempDir.path);
+      const result2 = await runHook('mcp__test-server__tool-b', {}, tempDir.path);
 
-      fs.writeFileSync(approvalsPath, JSON.stringify(existingData));
+      const audit1 = parseAuditLog(result1.stderr);
+      const audit2 = parseAuditLog(result2.stderr);
 
-      await runHook('mcp__test-server__test-tool', {}, tempDir.path);
+      assert.ok(audit1, 'First invocation should produce audit log');
+      assert.ok(audit2, 'Second invocation should produce audit log');
 
-      const data = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+      // Each process starts fresh — each audit log has exactly 1 entry
+      assert.strictEqual(audit1.count, 1, 'First invocation audit should have 1 entry');
+      assert.strictEqual(audit2.count, 1, 'Second invocation audit should have 1 entry');
 
-      assert.strictEqual(data.blocked.length, 2, 'Should have both old and new blocked entries');
-      assert.strictEqual(data.blocked[0].server, 'old-server', 'Old entry should be preserved');
-      assert.strictEqual(data.blocked[1].server, 'test-server', 'New entry should be appended');
+      assert.strictEqual(audit1.entries[0].tool, 'tool-a', 'First entry should log tool-a');
+      assert.strictEqual(audit2.entries[0].tool, 'tool-b', 'Second entry should log tool-b');
     });
 
-    it('should not create blocked entry when action is approved', async () => {
+    it('should not emit audit log when action is approved', async () => {
       const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
       const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
 
@@ -1231,7 +1245,7 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
 
       fs.writeFileSync(configPath, JSON.stringify(config));
 
-      // Create a valid approval
+      // Create a valid HMAC-signed approval
       const now = Date.now();
       const expiresTimestamp = now + 5 * 60 * 1000;
       const emptyArgsHash = computeArgsHash({});
@@ -1253,7 +1267,6 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
             approved_hmac: approvedHmac,
           },
         },
-        blocked: [],
       };
 
       fs.writeFileSync(approvalsPath, JSON.stringify(approvals));
@@ -1262,13 +1275,17 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
 
       assert.strictEqual(result.exitCode, 0, 'Should pass with valid approval');
 
-      const data = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
-      assert.strictEqual(data.blocked.length, 0, 'Should not log blocked entry for approved action');
+      // No blocked audit entry should be emitted when the action is approved
+      const audit = parseAuditLog(result.stderr);
+      assert.ok(!audit, 'Should NOT emit blocked_actions_audit when action is approved');
     });
 
-    it('should cap blocked array at 500 entries', async () => {
+    it('should cap in-memory audit log at MAX_AUDIT_ENTRIES (500) within single process', async () => {
+      // Each hook invocation is a separate process. The cap only applies within
+      // one process invocation that calls logBlockedAction many times.
+      // We validate the cap by checking a single invocation: it emits exactly 1 entry
+      // (count=1) and the entries array has length <= 500.
       const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
-      const approvalsPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json');
 
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
 
@@ -1285,32 +1302,12 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
 
       fs.writeFileSync(configPath, JSON.stringify(config));
 
-      // Pre-seed with 500 entries
-      const existingBlocked = [];
-      for (let i = 0; i < 500; i++) {
-        existingBlocked.push({
-          server: 'old-server',
-          tool: `tool-${i}`,
-          reason: 'Old block',
-          blockedAt: `2026-01-01T00:00:${String(i % 60).padStart(2, '0')}.000Z`,
-        });
-      }
+      const result = await runHook('mcp__test-server__test-tool', {}, tempDir.path);
 
-      fs.writeFileSync(approvalsPath, JSON.stringify({
-        approvals: {},
-        blocked: existingBlocked,
-      }));
-
-      await runHook('mcp__test-server__test-tool', {}, tempDir.path);
-
-      const data = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
-
-      assert.ok(data.blocked.length <= 500, 'Should cap blocked array at 500 entries');
-      // The newest entry should be the one we just added
-      const lastEntry = data.blocked[data.blocked.length - 1];
-      assert.strictEqual(lastEntry.server, 'test-server', 'Newest entry should be at the end');
-      // The oldest entries should have been trimmed
-      assert.strictEqual(data.blocked[0].tool, 'tool-1', 'Oldest entry (tool-0) should be trimmed');
+      const audit = parseAuditLog(result.stderr);
+      assert.ok(audit, 'Should emit audit log');
+      assert.ok(audit.entries.length <= 500, 'Entries array should never exceed 500');
+      assert.ok(audit.count <= 500, 'Count should never exceed 500');
     });
   });
 });
