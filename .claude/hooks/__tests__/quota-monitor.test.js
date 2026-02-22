@@ -238,8 +238,8 @@ describe('quota-monitor.js - Code Structure', () => {
 
       assert.match(
         code,
-        /appendAuditLog/,
-        'Must include appendAuditLog for rotation telemetry'
+        /appendRotationAudit/,
+        'Must import appendRotationAudit from key-sync.js for rotation telemetry'
       );
     });
   });

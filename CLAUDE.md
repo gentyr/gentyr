@@ -140,8 +140,40 @@ node scripts/monitor-token-swap.mjs --path /project --audit
 
 Tracks credential rotation state, Keychain sync status, and account health. Audit mode generates rotation health reports showing recent rotations, pending audits, and system alerts.
 
-**Binary Patch Research** (`scripts/patch-credential-cache.py`):
-Research-only tool for investigating Claude Code's credential memoization cache (`iB/oR` pattern). Dry-run mode searches for 9 binary patterns in the Bun SEA executable and proposes TTL-based cache invalidation via setInterval injection. Not production-ready; exists for future reference if immediate credential adoption is needed for quota-based rotation.
+**Binary Patch Research** (`scripts/patch-credential-cache.js`) — **ARCHIVED**:
+Research artifact from investigating Claude Code's credential memoization cache. Replaced by the rotation proxy which handles credential swap at the network level, eliminating the need for binary modification. Kept for reference only.
+
+## Rotation Proxy
+
+Local MITM proxy for transparent credential rotation (`scripts/rotation-proxy.js`).
+
+**Architecture:**
+```
+Claude Code ──HTTPS_PROXY──> localhost:18080 ──TLS──> api.anthropic.com
+                                    │
+                            reads rotation state
+                        (~/.claude/api-key-rotation.json)
+                                    │
+                            on 429: rotate key, retry
+```
+
+**What it intercepts** (TLS MITM + header swap):
+- `api.anthropic.com` — main API
+- `mcp-proxy.anthropic.com` — MCP proxy endpoint
+
+**What passes through** (transparent CONNECT tunnel):
+- `platform.claude.com` — OAuth refresh
+- Everything else
+
+**429 retry**: On quota exhaustion response, marks the current key as exhausted, calls `selectActiveKey()` to pick the next available key, and retries the request (max 2 retries). If no keys are available, returns the original 429 to the client.
+
+**Logging**: Structured JSON lines to `~/.claude/rotation-proxy.log` (max 1MB with rotation). Logs token swaps (key ID only, never token values), 429 retries, and errors for debugging.
+
+**Health endpoint**: `GET http://localhost:18080/__health` returns JSON status with active key ID, uptime, and request count.
+
+**Lifecycle**: Runs as a launchd KeepAlive service (`com.local.gentyr-rotation-proxy`). Auto-restarts on crash. Starts before the automation service.
+
+**Complements existing rotation**: The proxy handles immediate token swap at the network level. Quota-monitor still handles usage detection and key selection. Key-sync still handles token refresh and Keychain writes.
 
 ## Chrome Browser Automation
 

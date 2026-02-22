@@ -169,6 +169,7 @@ fi
 SYSTEMD_USER_DIR="$REAL_HOME/.config/systemd/user"
 SERVICE_FILE="$SYSTEMD_USER_DIR/${SERVICE_NAME}.service"
 TIMER_FILE="$SYSTEMD_USER_DIR/${SERVICE_NAME}.timer"
+PROXY_SERVICE_FILE="$SYSTEMD_USER_DIR/gentyr-rotation-proxy.service"
 
 setup_linux() {
   log_info "Setting up systemd user service..."
@@ -188,6 +189,42 @@ setup_linux() {
     log_info "Including OP_SERVICE_ACCOUNT_TOKEN in systemd service (API-based credential resolution, no prompts)."
   fi
 
+  # Resolve framework dir for proxy script path
+  FRAMEWORK_DIR=""
+  if [ -L "$PROJECT_DIR/.claude-framework" ]; then
+    FRAMEWORK_DIR="$(readlink -f "$PROJECT_DIR/.claude-framework")"
+  elif [ -d "$SCRIPT_DIR/.." ]; then
+    FRAMEWORK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+  fi
+
+  # --- Rotation Proxy Service (Restart=always, starts before automation) ---
+  if [ -n "$FRAMEWORK_DIR" ] && [ -f "$FRAMEWORK_DIR/scripts/rotation-proxy.js" ]; then
+    cat > "$PROXY_SERVICE_FILE" << EOF
+[Unit]
+Description=GENTYR Rotation Proxy - transparent credential rotation
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$PROJECT_DIR
+ExecStart=/usr/bin/node $FRAMEWORK_DIR/scripts/rotation-proxy.js
+Environment=CLAUDE_PROJECT_DIR=$PROJECT_DIR
+Environment=GENTYR_LAUNCHD_SERVICE=true
+Restart=always
+RestartSec=5
+StandardOutput=append:$PROJECT_DIR/.claude/rotation-proxy-service.log
+StandardError=append:$PROJECT_DIR/.claude/rotation-proxy-service.log
+
+[Install]
+WantedBy=default.target
+EOF
+
+    log_info "Created $PROXY_SERVICE_FILE"
+  else
+    log_warn "Rotation proxy script not found — skipping proxy service."
+  fi
+
+  # --- Automation Service ---
   # Create service file
   cat > "$SERVICE_FILE" << EOF
 [Unit]
@@ -200,6 +237,9 @@ WorkingDirectory=$PROJECT_DIR
 ExecStart=/usr/bin/node $PROJECT_DIR/.claude/hooks/hourly-automation.js
 Environment=CLAUDE_PROJECT_DIR=$PROJECT_DIR
 Environment=GENTYR_LAUNCHD_SERVICE=true
+Environment=HTTPS_PROXY=http://localhost:18080
+Environment=HTTP_PROXY=http://localhost:18080
+Environment=NO_PROXY=localhost,127.0.0.1
 $OP_TOKEN_ENV
 StandardOutput=append:$PROJECT_DIR/.claude/hourly-automation.log
 StandardError=append:$PROJECT_DIR/.claude/hourly-automation.log
@@ -229,18 +269,32 @@ EOF
   # Fix ownership of service files if running as root
   if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
     chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo staff)" "$SERVICE_FILE" "$TIMER_FILE"
+    [ -f "$PROXY_SERVICE_FILE" ] && chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo staff)" "$PROXY_SERVICE_FILE"
   fi
 
-  # Reload systemd and enable timer
-  if run_systemctl_user daemon-reload && \
-     run_systemctl_user enable "${SERVICE_NAME}.timer" && \
-     run_systemctl_user start "${SERVICE_NAME}.timer"; then
+  # Reload systemd and enable services
+  if run_systemctl_user daemon-reload; then
+    # Start proxy first
+    if [ -f "$PROXY_SERVICE_FILE" ]; then
+      run_systemctl_user enable "gentyr-rotation-proxy.service" 2>/dev/null || true
+      run_systemctl_user start "gentyr-rotation-proxy.service" 2>/dev/null || true
+      log_info "Rotation proxy service enabled and started."
+    fi
+    # Then timer
+    run_systemctl_user enable "${SERVICE_NAME}.timer" && \
+    run_systemctl_user start "${SERVICE_NAME}.timer"
     log_info "Timer enabled and started."
   fi
 }
 
 remove_linux() {
-  log_info "Removing systemd user service..."
+  log_info "Removing systemd user services..."
+
+  # Stop and disable rotation proxy
+  run_systemctl_user stop "gentyr-rotation-proxy.service" 2>/dev/null || true
+  run_systemctl_user disable "gentyr-rotation-proxy.service" 2>/dev/null || true
+  rm -f "$PROXY_SERVICE_FILE"
+  log_info "Rotation proxy service removed."
 
   # Stop and disable timer
   run_systemctl_user stop "${SERVICE_NAME}.timer" 2>/dev/null || true
@@ -252,10 +306,27 @@ remove_linux() {
   # Reload systemd
   run_systemctl_user daemon-reload 2>/dev/null || true
 
-  log_info "Service removed."
+  log_info "Services removed."
 }
 
 status_linux() {
+  echo ""
+  echo "=== Rotation Proxy Status (Linux) ==="
+  echo ""
+
+  if [ -f "$PROXY_SERVICE_FILE" ]; then
+    echo "Proxy service: $PROXY_SERVICE_FILE (exists)"
+  else
+    echo "Proxy service: $PROXY_SERVICE_FILE (NOT FOUND)"
+  fi
+
+  echo "Proxy systemd status:"
+  run_systemctl_user status "gentyr-rotation-proxy.service" 2>/dev/null || echo "  Proxy not found or not running"
+
+  echo ""
+  echo "Proxy health:"
+  curl -sf http://localhost:18080/__health 2>/dev/null || echo "  Proxy not responding"
+
   echo ""
   echo "=== Hourly Automation Status (Linux) ==="
   echo ""
@@ -295,6 +366,7 @@ status_linux() {
 
 LAUNCHD_DIR="$HOME/Library/LaunchAgents"
 PLIST_FILE="$LAUNCHD_DIR/com.local.${SERVICE_NAME}.plist"
+PROXY_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-rotation-proxy.plist"
 
 setup_macos() {
   log_info "Setting up launchd agent..."
@@ -318,6 +390,66 @@ setup_macos() {
     log_info "Including OP_SERVICE_ACCOUNT_TOKEN in plist (API-based credential resolution, no prompts)."
   fi
 
+  # Resolve framework dir for proxy script path
+  FRAMEWORK_DIR=""
+  if [ -L "$PROJECT_DIR/.claude-framework" ]; then
+    FRAMEWORK_DIR="$(readlink -f "$PROJECT_DIR/.claude-framework")"
+  elif [ -d "$SCRIPT_DIR/.." ]; then
+    FRAMEWORK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+  fi
+
+  # --- Rotation Proxy Service (KeepAlive, starts before automation) ---
+  if [ -n "$FRAMEWORK_DIR" ] && [ -f "$FRAMEWORK_DIR/scripts/rotation-proxy.js" ]; then
+    cat > "$PROXY_PLIST_FILE" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.gentyr-rotation-proxy</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$NODE_PATH</string>
+        <string>$FRAMEWORK_DIR/scripts/rotation-proxy.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>$PROJECT_DIR</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CLAUDE_PROJECT_DIR</key>
+        <string>$PROJECT_DIR</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>GENTYR_LAUNCHD_SERVICE</key>
+        <string>true</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>$PROJECT_DIR/.claude/rotation-proxy-service.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>$PROJECT_DIR/.claude/rotation-proxy-service.log</string>
+</dict>
+</plist>
+EOF
+
+    launchctl unload "$PROXY_PLIST_FILE" 2>/dev/null || true
+    launchctl load "$PROXY_PLIST_FILE"
+    log_info "Rotation proxy service loaded (KeepAlive, RunAtLoad)."
+  else
+    log_warn "Rotation proxy script not found — skipping proxy service."
+  fi
+
+  # --- Automation Service (10-min interval) ---
   # Create plist file
   cat > "$PLIST_FILE" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -344,6 +476,12 @@ setup_macos() {
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>GENTYR_LAUNCHD_SERVICE</key>
         <string>true</string>
+        <key>HTTPS_PROXY</key>
+        <string>http://localhost:18080</string>
+        <key>HTTP_PROXY</key>
+        <string>http://localhost:18080</string>
+        <key>NO_PROXY</key>
+        <string>localhost,127.0.0.1</string>
 $OP_TOKEN_PLIST
     </dict>
 
@@ -383,18 +521,37 @@ EOF
 }
 
 remove_macos() {
-  log_info "Removing launchd agent..."
+  log_info "Removing launchd agents..."
 
-  # Unload the agent
+  # Unload and remove rotation proxy service
+  launchctl unload "$PROXY_PLIST_FILE" 2>/dev/null || true
+  rm -f "$PROXY_PLIST_FILE"
+  log_info "Rotation proxy service removed."
+
+  # Unload and remove automation agent
   launchctl unload "$PLIST_FILE" 2>/dev/null || true
-
-  # Remove plist file
   rm -f "$PLIST_FILE"
-
-  log_info "Agent removed."
+  log_info "Automation agent removed."
 }
 
 status_macos() {
+  echo ""
+  echo "=== Rotation Proxy Status (macOS) ==="
+  echo ""
+
+  if [ -f "$PROXY_PLIST_FILE" ]; then
+    echo "Proxy plist: $PROXY_PLIST_FILE (exists)"
+  else
+    echo "Proxy plist: $PROXY_PLIST_FILE (NOT FOUND)"
+  fi
+
+  echo "Proxy launchd:"
+  launchctl list | grep "gentyr-rotation-proxy" || echo "  Proxy not loaded"
+
+  echo ""
+  echo "Proxy health:"
+  curl -sf http://localhost:18080/__health 2>/dev/null || echo "  Proxy not responding"
+
   echo ""
   echo "=== Hourly Automation Status (macOS) ==="
   echo ""

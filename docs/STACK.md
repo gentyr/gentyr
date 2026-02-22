@@ -74,7 +74,6 @@ Internal MCP servers (not tied to external providers):
 | `cto-reports`, `cto-report` | Dashboard data aggregation |
 | `review-queue` | Commit review queue |
 | `session-events` | Session lifecycle events |
-| `session-restart` | Session restart coordination |
 | `feedback-reporter`, `feedback-explorer`, `user-feedback` | Feedback pipeline |
 | `playwright-feedback`, `programmatic-feedback` | AI persona testing |
 | `specs-browser` | Specification document access |

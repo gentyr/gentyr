@@ -26,7 +26,15 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 EXTENSION_ID="fcoeoabgfenejglbffodgkkbkcdhcgfn"
-CHROME_DIR="$HOME/Library/Application Support/Google/Chrome"
+
+# Resolve real user's home directory (handles sudo invocation from setup.sh --protect)
+if [ -n "${SUDO_USER:-}" ]; then
+    REAL_HOME="$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+    REAL_HOME="${REAL_HOME:-$HOME}"
+else
+    REAL_HOME="$HOME"
+fi
+CHROME_DIR="$REAL_HOME/Library/Application Support/Google/Chrome"
 CHECK_ONLY=false
 
 # --- Parse arguments ---

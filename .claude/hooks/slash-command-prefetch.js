@@ -3,8 +3,7 @@
  * Slash Command Prefetch Hook
  *
  * Intercepts slash command prompts via UserPromptSubmit and pre-gathers data.
- * Mode 1 (restart-session): Executes directly, returns continue:false
- * Mode 2 (all others): Gathers data, returns as systemMessage for Claude
+ * Gathers data and returns as systemMessage for Claude to use.
  *
  * @version 1.0.0
  */
@@ -63,6 +62,7 @@ const SENTINELS = {
   'show': '<!-- HOOK:GENTYR:show -->',
   'product-manager': '<!-- HOOK:GENTYR:product-manager -->',
   'toggle-product-manager': '<!-- HOOK:GENTYR:toggle-product-manager -->',
+  'triage': '<!-- HOOK:GENTYR:triage -->',
 };
 
 /**
@@ -910,6 +910,41 @@ function handleToggleProductManager() {
   }));
 }
 
+function handleTriage() {
+  const output = { command: 'triage', gathered: {} };
+
+  // cto-reports.db: triage status breakdown
+  const triageStats = getTriageStats(CTO_REPORTS_DB);
+  output.gathered.triageStats = triageStats ?? { error: 'cto-reports database not found' };
+
+  // Count running agents via pgrep
+  let runningAgents = 0;
+  try {
+    const result = execSync(
+      "pgrep -cf 'claude.*--dangerously-skip-permissions'",
+      { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
+    ).trim();
+    runningAgents = parseInt(result, 10) || 0;
+  } catch {
+    // pgrep returns exit code 1 when no processes match
+  }
+  output.gathered.runningAgents = runningAgents;
+
+  // Read max concurrent from automation-config.json
+  const automationConfig = readJson(AUTOMATION_CONFIG_PATH);
+  const maxConcurrent = automationConfig?.effective?.MAX_CONCURRENT_AGENTS ?? 10;
+  output.gathered.maxConcurrent = maxConcurrent;
+  output.gathered.availableSlots = Math.max(0, maxConcurrent - runningAgents);
+
+  console.log(JSON.stringify({
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:triage] ${JSON.stringify(output)}`,
+    },
+  }));
+}
+
 function handleShow() {
   // Lightweight check: confirm dashboard binary exists and list sections
   const frameworkLink = path.join(PROJECT_DIR, '.claude-framework');
@@ -962,7 +997,7 @@ async function main() {
     return handleRestartSession();
   }
   // Mode 2 handlers — load Database lazily only when needed
-  const needsDb = ['cto-report', 'deputy-cto', 'configure-personas', 'spawn-tasks', 'product-manager'];
+  const needsDb = ['cto-report', 'deputy-cto', 'configure-personas', 'spawn-tasks', 'product-manager', 'triage'];
   const matchedCommand = Object.keys(SENTINELS).find(key => matchesCommand(prompt, key));
   if (matchedCommand && matchedCommand !== 'restart-session') {
     if (needsDb.includes(matchedCommand)) {
@@ -1002,6 +1037,9 @@ async function main() {
   }
   if (matchesCommand(prompt, 'toggle-product-manager')) {
     return handleToggleProductManager();
+  }
+  if (matchesCommand(prompt, 'triage')) {
+    return handleTriage();
   }
   if (matchesCommand(prompt, 'show')) {
     return handleShow();

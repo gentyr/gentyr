@@ -16,7 +16,7 @@
  * or predictive threshold is met.
  *
  * For interactive sessions: writes new credentials to Keychain and continues.
- *   Adoption occurs at token expiry (SRA), on 401 (r6T), or via binary patch.
+ *   Adoption occurs via rotation proxy (immediate) or at token expiry (SRA).
  * For automated sessions: stops cleanly for session-reviver to resume with
  *   fresh credentials from Keychain.
  * When all accounts are exhausted: writes to paused-sessions.json and warns.
@@ -39,6 +39,8 @@ import {
   HIGH_USAGE_THRESHOLD,
   EXHAUSTED_THRESHOLD,
   EXPIRY_BUFFER_MS,
+  ROTATION_AUDIT_LOG_PATH,
+  appendRotationAudit,
 } from './key-sync.js';
 import { registerHookExecution, HOOK_TYPES } from './agent-tracker.js';
 import { discoverSessionId } from './slash-command-prefetch.js';
@@ -47,7 +49,6 @@ const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
 const THROTTLE_STATE_PATH = path.join(STATE_DIR, 'quota-monitor-state.json');
 const PAUSED_SESSIONS_PATH = path.join(STATE_DIR, 'paused-sessions.json');
-const ROTATION_AUDIT_LOG_PATH = path.join(STATE_DIR, 'rotation-audit.log');
 
 // Thresholds
 const ROTATION_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes anti-loop
@@ -178,19 +179,6 @@ function findEarliestReset(state) {
   return earliest;
 }
 
-/**
- * Append a line to the rotation audit log.
- */
-function appendAuditLog(line) {
-  try {
-    if (!fs.existsSync(STATE_DIR)) {
-      fs.mkdirSync(STATE_DIR, { recursive: true });
-    }
-    fs.appendFileSync(ROTATION_AUDIT_LOG_PATH, line + '\n', 'utf8');
-  } catch {
-    // Non-fatal
-  }
-}
 
 /**
  * Verify a pending rotation audit: check Keychain match and key health.
@@ -221,10 +209,12 @@ async function verifyPendingAudit(throttle) {
   audit.healthCheckPassed = healthCheckPassed;
 
   const adoptionTimeSec = Math.round((now - audit.rotatedAt) / 1000);
-  const ts = new Date(now).toISOString();
-  appendAuditLog(
-    `[${ts}] AUDIT to=${audit.toKeyId.slice(0, 8)} keychain=${keychainMatch ? 'MATCH' : 'MISMATCH'} health=${healthCheckPassed ? 'PASS' : 'FAIL'} adoption_time=${adoptionTimeSec}s`
-  );
+  appendRotationAudit('AUDIT', {
+    to: audit.toKeyId.slice(0, 8),
+    keychain: keychainMatch ? 'MATCH' : 'MISMATCH',
+    health: healthCheckPassed ? 'PASS' : 'FAIL',
+    adoption_time: adoptionTimeSec + 's',
+  });
 }
 
 async function main() {
@@ -233,6 +223,7 @@ async function main() {
 
   // Step 1: Check throttle (adaptive interval)
   const throttle = readThrottleState();
+
   const currentIntervalMs = throttle.currentIntervalMs || ADAPTIVE_INTERVALS[0].intervalMs;
   if (startTime - throttle.lastCheck < currentIntervalMs) {
     process.stdout.write(JSON.stringify({ continue: true, suppressOutput: true }));
@@ -478,14 +469,20 @@ async function main() {
       rotatedAt: startTime,
       fromKeyId: previousKeyId,
       toKeyId: selectedKeyId,
+      reason: rotationReason,
+      sessionType: isAutomated ? 'automated' : 'interactive',
       verifiedAt: null,
+      keychainMatch: null,
+      healthCheckPassed: null,
     };
 
     // Log rotation event to audit log
-    const rotTs = new Date(startTime).toISOString();
-    appendAuditLog(
-      `[${rotTs}] ROTATION from=${previousKeyId.slice(0, 8)} to=${selectedKeyId.slice(0, 8)} reason=${rotationReason}`
-    );
+    appendRotationAudit('ROTATION', {
+      from: previousKeyId.slice(0, 8),
+      to: selectedKeyId.slice(0, 8),
+      reason: rotationReason,
+      sessionType: isAutomated ? 'automated' : 'interactive',
+    });
 
     writeThrottleState(throttle);
 
@@ -499,14 +496,10 @@ async function main() {
     if (!isAutomated) {
       // Interactive session: seamless rotation.
       // Credentials written to Keychain via updateActiveCredentials() above.
-      // Adoption timing depends on rotation reason:
-      //   - Pre-expiry swap: SRA() fires ~5 min before token expiry, re-reads Keychain.
-      //   - Quota exhaustion (100%): API returns 429→401, r6T() fires and re-reads.
-      //   - Quota rotation (<100%): Neither SRA() nor r6T() fires — old token is still
-      //     valid with hours of life. Adoption waits until token expiry or binary patch.
+      // Rotation proxy adopts immediately; SRA() picks up at token expiry.
       process.stdout.write(JSON.stringify({
         continue: true,
-        systemMessage: `Account rotated to ${selectedKeyId.slice(0, 8)}... (${Math.round(maxUsage)}% usage on previous). Credentials written to Keychain. Adoption occurs at token expiry or next 401.`,
+        systemMessage: `Account rotated to ${selectedKeyId.slice(0, 8)}... (${Math.round(maxUsage)}% usage on previous). Credentials written to Keychain. Rotation proxy will use new key immediately.`,
       }));
       return;
     } else {
