@@ -15,6 +15,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { resolveFrameworkDir } from '../shared/resolve-framework.js';
 import {
   SearchDocsSchema,
   ListDocsSchema,
@@ -52,8 +53,11 @@ function resolveDocsPath(): string | null {
     }
   }
 
-  // Default fallback
-  const defaultPath = path.join(PROJECT_DIR, '.claude-framework', 'vendor', 'makerkit', 'docs-generated');
+  // Default: resolve framework dir (supports npm and legacy models) then vendor path
+  const fwDir = resolveFrameworkDir(PROJECT_DIR);
+  const defaultPath = fwDir
+    ? path.join(fwDir, 'vendor', 'makerkit', 'docs-generated')
+    : path.join(PROJECT_DIR, '.claude-framework', 'vendor', 'makerkit', 'docs-generated');
   if (fs.existsSync(defaultPath)) {
     return defaultPath;
   }

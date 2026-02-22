@@ -13,6 +13,7 @@ import { execFileSync } from 'child_process';
 import { existsSync, readlinkSync } from 'fs';
 import { join, resolve } from 'path';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { resolveFrameworkDir } from '../shared/resolve-framework.js';
 import {
   SECTION_IDS,
   SECTION_DESCRIPTIONS,
@@ -28,20 +29,8 @@ const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || '.';
 // ============================================================================
 
 function resolveDashboardPath(): string {
-  // Try .claude-framework symlink first (standard GENTYR setup)
-  const frameworkLink = join(PROJECT_DIR, '.claude-framework');
-  let frameworkDir: string | null = null;
-
-  try {
-    if (existsSync(frameworkLink)) {
-      frameworkDir = readlinkSync(frameworkLink);
-      if (!frameworkDir.startsWith('/')) {
-        frameworkDir = resolve(PROJECT_DIR, frameworkDir);
-      }
-    }
-  } catch {
-    // Symlink doesn't exist or can't be read
-  }
+  // Try shared resolver first (supports both npm and legacy symlink models)
+  let frameworkDir: string | null = resolveFrameworkDir(PROJECT_DIR);
 
   // Fallback: follow .claude/hooks symlink to find framework
   if (!frameworkDir) {
@@ -57,7 +46,7 @@ function resolveDashboardPath(): string {
   }
 
   if (!frameworkDir) {
-    throw new Error('Cannot find GENTYR framework directory. Ensure .claude-framework symlink exists.');
+    throw new Error('Cannot find GENTYR framework directory. Ensure node_modules/gentyr or .claude-framework exists.');
   }
 
   const dashboardPath = join(frameworkDir, 'packages', 'cto-dashboard', 'dist', 'index.js');

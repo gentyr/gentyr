@@ -4,51 +4,93 @@ A modular automation framework for Claude Code.
 
 ## Usage
 
-All commands run from the framework directory (`/path/to/gentyr`). Use `--path` to specify the target project.
-
-### Install (with protection - recommended)
+### Install via npm link (recommended)
 
 ```bash
-sudo scripts/setup.sh --path /path/to/project --protect
+cd /path/to/project
+pnpm link ~/git/gentyr        # Creates node_modules/gentyr -> ~/git/gentyr
+npx gentyr init --op-token <token>   # First-time setup
+sudo npx gentyr protect        # Enable root-owned file protection
 ```
 
-Installs framework symlinks, configs, husky hooks, builds MCP servers, and makes critical files root-owned to prevent agent bypass.
+Installs framework symlinks (via `node_modules/gentyr`), configs, husky hooks, builds MCP servers, and optionally makes critical files root-owned to prevent agent bypass.
 
-### Install (without protection - development only)
+### Force Sync (after framework updates)
 
 ```bash
-scripts/setup.sh --path /path/to/project
+npx gentyr sync
+```
+
+Rebuilds MCP servers, re-merges settings.json, regenerates .mcp.json, and deploys staged hooks. Also runs automatically on `SessionStart` when framework version or config hash changes.
+
+### Migrate from legacy install
+
+```bash
+cd /path/to/project
+pnpm link ~/git/gentyr          # Creates node_modules/gentyr
+npx gentyr migrate               # Converts .claude-framework -> node_modules/gentyr
+```
+
+### Check Status
+
+```bash
+npx gentyr status
+```
+
+### Protection
+
+```bash
+sudo npx gentyr protect          # Enable root-owned protection
+sudo npx gentyr unprotect        # Disable protection
 ```
 
 ### Uninstall
 
 ```bash
-sudo scripts/setup.sh --path /path/to/project --uninstall
+sudo npx gentyr uninstall
 ```
 
 Removes protection, symlinks, generated configs, husky hooks, and the managed `# BEGIN GENTYR OP` / `# END GENTYR OP` block from shell profiles. Preserves runtime state (`.claude/*.db`).
 
-### Protect Only
+### Legacy Install (deprecated)
 
 ```bash
-sudo scripts/setup.sh --path /path/to/project --protect-only
+scripts/setup.sh --path /path/to/project --protect    # Will be removed in v2.0
 ```
-
-Adds root ownership to critical files without reinstalling.
-
-### Unprotect Only
-
-```bash
-sudo scripts/setup.sh --path /path/to/project --unprotect-only
-```
-
-Removes root ownership from critical files. Use before making manual changes to protected files, then re-protect with `--protect-only`.
 
 ### Verify Installation
 
 ```bash
 cd /path/to/project && claude mcp list
 ```
+
+## Propagation to Linked Projects
+
+When developing GENTYR locally with `pnpm link`, most changes auto-propagate to target projects:
+- **Hooks, commands, agents, docs**: Immediate (directory/file symlinks)
+- **Config templates**: Next Claude Code session (SessionStart re-merges)
+- **CLAUDE.md.gentyr-section**: Next Claude Code session (SessionStart replaces managed section)
+- **Husky hooks**: Next Claude Code session (SessionStart auto-syncs)
+
+### After editing MCP TypeScript source
+
+MCP servers are referenced via `node_modules/gentyr/packages/mcp-servers/dist/`. The built `dist/` files propagate via symlink, but you MUST build after editing source:
+
+```bash
+cd packages/mcp-servers && npm run build
+```
+
+The SessionStart hook also attempts auto-rebuild if `src/` is newer than `dist/`, but always build explicitly after TS changes to ensure correctness.
+
+### After changing launchd plist configuration
+
+If you change automation service intervals, environment variables, or script paths that affect the launchd plists, run sync in each linked target project:
+
+```bash
+cd ~/git/my-project && npx gentyr sync
+```
+
+This regenerates the plists and reloads the launchd services.
 
 ## AI User Feedback System
 
@@ -128,13 +170,31 @@ Tracks credential rotation state, Keychain sync status, and account health. Audi
 **Binary Patch Research** (`scripts/patch-credential-cache.js`) — **ARCHIVED**:
 Research artifact from investigating Claude Code's credential memoization cache. Replaced by the rotation proxy which handles credential swap at the network level, eliminating the need for binary modification. Kept for reference only.
 
+**GENTYR Auto-Sync Hook** (`.claude/hooks/gentyr-sync.js`):
+- Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
+- Fast path: reads `version.json` and `gentyr-state.json`, compares version + config hash — exits in <5ms when nothing has changed
+- When version or config hash mismatch detected: re-merges `settings.json`, regenerates `.mcp.json` (preserving OP token), updates the GENTYR section of `CLAUDE.md`, and symlinks new agent definitions
+- Auto-rebuilds MCP servers when `src/` mtime > `dist/` mtime (30s timeout); logs to stderr on failure (silent to agent)
+- Syncs husky hooks by comparing `husky/` against `.husky/` in the target project; re-copies if content differs
+- Falls back to legacy settings.json hook diff check when no `gentyr-state.json` exists (pre-migration projects)
+- Supports both npm model (`node_modules/gentyr`) and legacy symlink model (`.claude-framework`)
+- Auto-propagates to target projects via `.claude/hooks/` directory symlink; version 3.0
+
 **Credential Health Check Hook** (`.claude/hooks/credential-health-check.js`):
 - Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions
 - Validates vault mappings against required keys in `protected-actions.json`
 - Checks `.mcp.json` env blocks for keys injected directly (e.g. `OP_SERVICE_ACCOUNT_TOKEN`), which count as configured even if absent from vault-mappings
 - **OP token desync detection**: Compares shell `OP_SERVICE_ACCOUNT_TOKEN` against `.mcp.json` value; if they differ, emits a warning and overwrites `process.env` with the `.mcp.json` value (source of truth); `.mcp.json` is always authoritative because it is updated by reinstall
-- Staged at `scripts/hooks/credential-health-check.js`; deployed to `.claude/hooks/` during `setup.sh` install; both copies must stay identical
+- Auto-propagates to target projects via `.claude/hooks/` directory symlink
 - Shell sync validation also available via `scripts/setup-validate.js` `validateShellSync()` function, which checks the `# BEGIN GENTYR OP` / `# END GENTYR OP` block in `~/.zshrc` or `~/.bashrc`
+
+**Playwright CLI Guard Hook** (`.claude/hooks/playwright-cli-guard.js`):
+- Runs at `PreToolUse` for Bash tool calls only; non-blocking (emits `systemMessage` warning, never blocks execution)
+- Detects CLI-based Playwright invocations (`npx playwright test`, `pnpm test:e2e`, `pnpm test:pw`, and equivalents for npm/yarn)
+- Warns agent to use MCP tools instead (`mcp__playwright__run_tests`, `mcp__playwright__launch_ui_mode`, etc.)
+- Rationale: CLI invocations bypass the Playwright MCP server's 1Password credential injection, causing tests to fail or skip silently without proper environment variables
+- Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `PreToolUse > Bash`
+- Tests at `.claude/hooks/__tests__/playwright-cli-guard.test.js` (23 tests, runs via `node --test`)
 
 ## Rotation Proxy
 

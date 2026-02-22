@@ -98,10 +98,15 @@ export function provisionWorktree(worktreePath) {
     );
   }
 
-  // --- .claude-framework symlink ---
-  const frameworkDir = path.join(PROJECT_DIR, '.claude-framework');
-  if (fs.existsSync(frameworkDir)) {
-    safeSymlink(frameworkDir, path.join(worktreePath, '.claude-framework'));
+  // --- framework symlink: check which install model is active and replicate it ---
+  const npmFramework = path.join(PROJECT_DIR, 'node_modules', 'gentyr');
+  const legacyFramework = path.join(PROJECT_DIR, '.claude-framework');
+  if (fs.existsSync(npmFramework)) {
+    const worktreeNmDir = path.join(worktreePath, 'node_modules');
+    fs.mkdirSync(worktreeNmDir, { recursive: true });
+    safeSymlink(fs.realpathSync(npmFramework), path.join(worktreeNmDir, 'gentyr'));
+  } else if (fs.existsSync(legacyFramework)) {
+    safeSymlink(legacyFramework, path.join(worktreePath, '.claude-framework'));
   }
 
   // --- .claude directory and shared sub-resources ---

@@ -72,4 +72,4 @@ The persistent service (launchd) continues running.
 - This only sets `enabled: false` in `.claude/autonomous-mode.json`
 - The service reads this config on every run and skips all work when disabled
 - Individual automations can also be toggled separately in `autonomous-mode.json`
-- To fully remove the service: `.claude-framework/scripts/setup-automation-service.sh remove`
+- To fully remove the service: `node_modules/gentyr/scripts/setup-automation-service.sh remove`

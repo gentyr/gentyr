@@ -56,7 +56,10 @@ You make the decisions that matter. Automation handles everything else.
 
 ```bash
 git clone git@github.com:gentyr/gentyr.git
-sudo gentyr/scripts/setup.sh --path /path/to/project --protect
+cd /path/to/project
+pnpm link ~/git/gentyr        # node_modules/gentyr -> ~/git/gentyr
+npx gentyr init --op-token <token>
+sudo npx gentyr protect
 ```
 
 Start Claude Code in your project and run `/setup-gentyr` to configure credentials. See [docs/SETUP-GUIDE.md](docs/SETUP-GUIDE.md) for details.
@@ -264,6 +267,7 @@ Zero secrets on disk. Zero secrets in agent context. 1Password is the single sou
 - [Credential Detection](docs/CREDENTIAL-DETECTION.md) -- multi-layer API key detection architecture
 - [Secret Paths](docs/SECRET-PATHS.md) -- canonical 1Password `op://` references
 - [Testing](docs/TESTING.md) -- AI user feedback system and end-to-end test plan
+- [Developer Guide](docs/DEVELOPER.md) -- local development from cloned source, propagation model
 - [Changelog](docs/CHANGELOG.md) -- version history
 
 ## requirements
@@ -281,7 +285,7 @@ GENTYR treats development as continuous orchestration rather than episodic promp
 Agents coordinate. Products ship.
 
 ```
-scripts/setup.sh --path /your/project --protect
+pnpm link ~/git/gentyr && npx gentyr init --op-token <token>
 ```
 
 ## license

@@ -49,11 +49,11 @@ These instructions are frequently consumed by AI agents using browser automation
 6. Copy the service account token
 7. The setup command will inject this into your MCP config
 
-**Shell profile sync**: When you run `setup.sh --op-token <TOKEN>`, the installer writes a managed block to `~/.zshrc` (or `~/.bashrc`) so that subprocesses spawned from your shell inherit the token automatically:
+**Shell profile sync**: When you run `npx gentyr init --op-token <TOKEN>`, the installer writes a managed block to `~/.zshrc` (or `~/.bashrc`) so that subprocesses spawned from your shell inherit the token automatically:
 
 ```
 # BEGIN GENTYR OP
-# 1Password Service Account Token (managed by GENTYR setup.sh — do not edit manually)
+# 1Password Service Account Token (managed by GENTYR — do not edit manually)
 export OP_SERVICE_ACCOUNT_TOKEN="<token>"
 # END GENTYR OP
 ```
@@ -326,7 +326,7 @@ GENTYR enforces a strict merge chain: `feature/* -> preview -> staging -> main (
 
 GitHub has no native rule to restrict which source branch a PR comes from. GENTYR includes a `merge-chain-check.yml` CI workflow that enforces this. It must be added as a **required status check** on all protected branches.
 
-The workflow template is at: `.claude-framework/templates/config/merge-chain-check.yml.template`
+The workflow template is at: `node_modules/gentyr/templates/config/merge-chain-check.yml.template`
 
 Copy it to `.github/workflows/merge-chain-check.yml` in your project.
 
@@ -343,7 +343,7 @@ Go to: Repository > Settings > Branches > Add branch protection rule
 **Additional for `staging`:** Require 1 approving review (deputy-CTO)
 **Additional for `main`:** Require 1 approving review (CTO) + Security Scan check
 
-See `.claude-framework/docs/DEPLOYMENT-FLOW.md` for complete branch protection instructions.
+See `node_modules/gentyr/docs/DEPLOYMENT-FLOW.md` for complete branch protection instructions.
 
 ### GitHub Enterprise Cloud
 
@@ -390,7 +390,7 @@ Enable/disable via `.claude/autonomous-mode.json`:
 After completing setup, run permission validation to verify all credentials work and have correct permissions:
 
 ```bash
-node .claude-framework/scripts/setup-validate.js
+node node_modules/gentyr/scripts/setup-validate.js
 ```
 
 This makes **read-only** API calls to each service and reports:

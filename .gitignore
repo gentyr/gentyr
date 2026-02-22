@@ -57,8 +57,7 @@ AUTOMATION-AND-ACCOUNT-QUOTA-LOAD-BALANCING-MONITORING.md
 # Generated secret config
 op-secrets.conf
 
-# Project-specific CLAUDE.md sections (for consuming projects, not framework)
-CLAUDE.md.gentyr-section
+# Project-specific CLAUDE.md sections (makerkit is project-specific, gentyr-section is tracked)
 CLAUDE.md.makerkit-section
 
 # OS

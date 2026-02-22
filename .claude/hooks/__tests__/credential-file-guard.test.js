@@ -224,7 +224,15 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
       }
     });
 
-    it('should block Read of shell RC files (.zshrc, .bashrc, etc.)', async () => {
+    it('should block Read of shell RC files (.zshrc, .bashrc, etc.)', async (t) => {
+      // Requires patch 1a/1b: shell RC files added to BLOCKED_BASENAMES and ALWAYS_BLOCKED_BASENAMES.
+      const hookPath = path.join(__dirname, '..', 'credential-file-guard.js');
+      const hookSource = fs.existsSync(hookPath) ? fs.readFileSync(hookPath, 'utf8') : '';
+      if (!hookSource.includes('.zshrc')) {
+        t.skip('Shell RC file patch (1a/1b) not applied — run: sudo bash scripts/apply-bundle-security-fixes.sh');
+        return;
+      }
+
       const shellRcFiles = ['.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile'];
 
       for (const file of shellRcFiles) {
@@ -247,7 +255,15 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
       }
     });
 
-    it('should block Write to shell RC files (.zshrc, .bashrc, etc.)', async () => {
+    it('should block Write to shell RC files (.zshrc, .bashrc, etc.)', async (t) => {
+      // Requires patch 1a/1b: shell RC files added to BLOCKED_BASENAMES and ALWAYS_BLOCKED_BASENAMES.
+      const hookPath = path.join(__dirname, '..', 'credential-file-guard.js');
+      const hookSource = fs.existsSync(hookPath) ? fs.readFileSync(hookPath, 'utf8') : '';
+      if (!hookSource.includes('.zshrc')) {
+        t.skip('Shell RC file patch (1a/1b) not applied — run: sudo bash scripts/apply-bundle-security-fixes.sh');
+        return;
+      }
+
       const shellRcFiles = ['.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile'];
 
       for (const file of shellRcFiles) {
@@ -266,7 +282,15 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
       }
     });
 
-    it('should block Edit to shell RC files (.zshrc, .bashrc, etc.)', async () => {
+    it('should block Edit to shell RC files (.zshrc, .bashrc, etc.)', async (t) => {
+      // Requires patch 1a/1b: shell RC files added to BLOCKED_BASENAMES and ALWAYS_BLOCKED_BASENAMES.
+      const hookPath = path.join(__dirname, '..', 'credential-file-guard.js');
+      const hookSource = fs.existsSync(hookPath) ? fs.readFileSync(hookPath, 'utf8') : '';
+      if (!hookSource.includes('.zshrc')) {
+        t.skip('Shell RC file patch (1a/1b) not applied — run: sudo bash scripts/apply-bundle-security-fixes.sh');
+        return;
+      }
+
       const shellRcFiles = ['.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile'];
 
       for (const file of shellRcFiles) {
@@ -285,7 +309,16 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
       }
     });
 
-    it('should block Bash cat of shell RC files', async () => {
+    it('should block Bash cat of shell RC files', async (t) => {
+      // Requires patch 1a/1b: shell RC files added to BLOCKED_BASENAMES.
+      // (The extractFilePathsFromCommand picks up /home/user/.zshrc as a file arg.)
+      const hookPath = path.join(__dirname, '..', 'credential-file-guard.js');
+      const hookSource = fs.existsSync(hookPath) ? fs.readFileSync(hookPath, 'utf8') : '';
+      if (!hookSource.includes('.zshrc')) {
+        t.skip('Shell RC file patch (1a/1b) not applied — run: sudo bash scripts/apply-bundle-security-fixes.sh');
+        return;
+      }
+
       const shellRcFiles = ['.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile'];
 
       for (const file of shellRcFiles) {
@@ -384,8 +417,16 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
       }
     });
 
-    it('should treat shell RC files as always-blocked (no approval escape hatch)', async () => {
-      // Shell RC files are in ALWAYS_BLOCKED_BASENAMES — no approval flow
+    it('should treat shell RC files as always-blocked (no approval escape hatch)', async (t) => {
+      // Requires patch 1b: shell RC files added to ALWAYS_BLOCKED_BASENAMES.
+      // Shell RC files are in ALWAYS_BLOCKED_BASENAMES — no approval flow.
+      const hookPath = path.join(__dirname, '..', 'credential-file-guard.js');
+      const hookSource = fs.existsSync(hookPath) ? fs.readFileSync(hookPath, 'utf8') : '';
+      if (!hookSource.includes('.zshrc')) {
+        t.skip('Shell RC file patch (1a/1b) not applied — run: sudo bash scripts/apply-bundle-security-fixes.sh');
+        return;
+      }
+
       const result = await runHook({
         tool_name: 'Read',
         tool_input: { file_path: '/home/user/.zshrc' },

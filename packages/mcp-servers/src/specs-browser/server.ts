@@ -13,6 +13,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { resolveFrameworkDir, resolveFrameworkRelative } from '../shared/resolve-framework.js';
 import {
   ListSpecsArgsSchema,
   GetSpecArgsSchema,
@@ -64,7 +65,11 @@ import {
 
 const PROJECT_DIR = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd());
 const PROJECT_SPECS_DIR = path.join(PROJECT_DIR, 'specs');
-const FRAMEWORK_SPECS_DIR = path.join(PROJECT_DIR, '.claude-framework', 'specs');
+const _fwDir = resolveFrameworkDir(PROJECT_DIR);
+const _fwRel = resolveFrameworkRelative(PROJECT_DIR);
+const FRAMEWORK_SPECS_DIR = _fwDir
+  ? path.join(_fwDir, 'specs')
+  : path.join(PROJECT_DIR, '.claude-framework', 'specs');
 const CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'specs-config.json');
 const SUITES_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'suites-config.json');
 const MAPPING_FILE_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'spec-file-mappings.json');
@@ -289,7 +294,7 @@ function listSpecs(args: ListSpecsArgs): ListSpecsResult {
         const specId = file.replace('.md', '');
         // Use appropriate base path based on source
         const basePath = catInfo.source === 'framework'
-          ? `.claude-framework/specs/${catInfo.path}`
+          ? `${_fwRel}/specs/${catInfo.path}`
           : `specs/${catInfo.path}`;
         categoryResult.specs.push({
           spec_id: specId,
@@ -340,7 +345,7 @@ function getSpec(args: GetSpecArgs): GetSpecResult | GetSpecErrorResult {
 
           // Use appropriate base path based on source
           const basePath = catInfo.source === 'framework'
-            ? `.claude-framework/specs/${catInfo.path}`
+            ? `${_fwRel}/specs/${catInfo.path}`
             : `specs/${catInfo.path}`;
 
           return {
@@ -396,7 +401,7 @@ function createSpec(args: CreateSpecArgs): CreateSpecResult {
     }
     targetDir = getSpecsDir(catInfo);
     basePath = catInfo.source === 'framework'
-      ? `.claude-framework/specs/${catInfo.path}`
+      ? `${_fwRel}/specs/${catInfo.path}`
       : `specs/${catInfo.path}`;
   }
 

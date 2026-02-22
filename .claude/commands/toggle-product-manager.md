@@ -8,7 +8,7 @@ Read the current state from `.claude/autonomous-mode.json` field `productManager
 2. Ask: "Enable product-market-fit analysis?"
 3. If yes:
    - Read `.claude/autonomous-mode.json`, set `productManagerEnabled: true`, write back
-   - Copy the product-manager agent: create symlink at `.claude/agents/product-manager.md` pointing to `../../.claude-framework/.claude/agents/product-manager.md`
+   - Copy the product-manager agent: create symlink at `.claude/agents/product-manager.md` pointing to `../../node_modules/gentyr/.claude/agents/product-manager.md`
    - Inform the user that changes are saved and they should restart Claude Code manually for the agent to take effect
 
 ## If currently ENABLED:

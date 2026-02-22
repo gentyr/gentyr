@@ -384,7 +384,8 @@ describe('Slash Command Prefetch - /show Integration', () => {
       'push-secrets',
       'configure-personas',
       'spawn-tasks',
-      'show'
+      'show',
+      'demo'
     ];
 
     for (const cmd of commands) {
@@ -392,13 +393,13 @@ describe('Slash Command Prefetch - /show Integration', () => {
     }
   });
 
-  it('should have 13 total slash commands (including show)', () => {
+  it('should have 14 total slash commands (including show and demo)', () => {
     const sentinelsMatch = hookCode.match(/const SENTINELS = \{[\s\S]*?\};/);
     const sentinelsObject = sentinelsMatch[0];
 
     // Count command definitions
     const commandCount = (sentinelsObject.match(/'[\w-]+':/g) || []).length;
-    assert.strictEqual(commandCount, 13, 'Should have 13 slash commands total');
+    assert.strictEqual(commandCount, 14, 'Should have 14 slash commands total');
   });
 
   it('should place /show handler in correct position in main()', () => {

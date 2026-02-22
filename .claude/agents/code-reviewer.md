@@ -152,7 +152,7 @@ You do NOT need to manage promotions -- they are automated:
 | `mcp__github__*` | Merges, secrets | `APPROVE GIT` |
 | `mcp__elastic-logs__*` | Log querying | None (read-only) |
 
-See `.claude-framework/docs/DEPLOYMENT-FLOW.md` for the full deployment reference.
+See `node_modules/gentyr/docs/DEPLOYMENT-FLOW.md` for the full deployment reference.
 
 ## Task Management (MCP Database)
 

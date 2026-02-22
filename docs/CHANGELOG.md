@@ -1,5 +1,85 @@
 # GENTYR Framework Changelog
 
+## 2026-02-22 - npm CLI Package Migration
+
+### Added
+
+**`cli/` package — `npx gentyr` CLI** (`cli/index.js`, `cli/commands/*.js`, `cli/lib/*.js`):
+- `gentyr init [--op-token <token>]` — first-time project setup; replaces `setup.sh --path . [--protect]`
+- `gentyr sync` — force rebuild MCP servers, re-merge settings.json, regenerate .mcp.json, deploy staged hooks; also runs automatically on SessionStart when framework version or config hash changes
+- `gentyr status` — print installation state (model, framework path, version, protection status)
+- `gentyr protect` / `gentyr unprotect` — enable/disable root-owned file protection; replaces `setup.sh --protect-only` / `--unprotect-only`
+- `gentyr uninstall` — full teardown; replaces `setup.sh --uninstall`
+- `gentyr migrate` — convert legacy `.claude-framework` symlink installs to `node_modules/gentyr` npm model
+- `gentyr scaffold <name>` — scaffold new project directory
+
+**CLI lib modules** (`cli/lib/`):
+- `resolve-framework.js` — resolves `node_modules/gentyr` (preferred) then `.claude-framework` (fallback)
+- `symlinks.js` — creates directory, agent, and reporter symlinks from framework into target project
+- `config-gen.js` — generates `.mcp.json`, merges `settings.json`, updates `CLAUDE.md`, updates `.gitignore`
+- `state.js` — reads/writes `gentyr-state.json`; tracks installed version, config hash, install model
+- `init.js` — shared init logic used by both `init` and `migrate` commands
+
+**`packages/mcp-servers/src/shared/resolve-framework.ts`**:
+- Shared TypeScript framework path resolver for MCP servers
+- Exports `resolveFrameworkDir()`, `resolveFrameworkRelative()`, `detectInstallModel()`
+- Prefers `node_modules/gentyr`, falls back to `.claude-framework`
+- Used by MCP servers that need to reference the framework directory
+
+**`scripts/hooks/gentyr-sync.js`** (staged hook):
+- SessionStart hook; detects framework version or config template changes and auto-runs `npx gentyr sync`
+- Fast path: under 5ms when nothing changed (compares two small JSON files)
+- Registered in `settings.json.template` under `SessionStart`
+
+**`scripts/hooks/playwright-cli-guard.js`** (staged hook):
+- PreToolUse(Bash) hook; detects CLI-based Playwright invocations and warns agents to use MCP tools instead
+- Non-blocking: emits `systemMessage` warning, never prevents execution
+- Registered in `settings.json.template` under `PreToolUse > Bash`
+- Tests: `.claude/hooks/__tests__/playwright-cli-guard.test.js` (23 tests, `node --test`)
+
+### Changed
+
+**`package.json`**:
+- Removed `"private": true`; package is now publishable
+- Added `"bin": { "gentyr": "./cli/index.js" }` — enables `npx gentyr` and global install
+- Added `"prepare": "npm run build:mcp"` — MCP servers build automatically on `npm install`
+- Added `"build:mcp"` script — `cd packages/mcp-servers && npm install && npm run build`
+- Version bumped to `1.3.0`
+
+**`settings.json.template`**:
+- Added `gentyr-sync.js` to SessionStart hooks
+- Added `playwright-cli-guard.js` to PreToolUse(Bash) hooks
+
+**34+ files updated** to reference `node_modules/gentyr` instead of `.claude-framework`:
+- `CLAUDE.md`, `README.md` — install instructions rewritten for npm-based workflow
+- `docs/AUTOMATION-SYSTEMS.md`, `docs/TESTING.md`, `docs/SETUP-GUIDE.md`, `docs/STACK.md`, `docs/shared/PROTECTION-SYSTEM.md`, `docs/shared/EPHEMERAL-STATE-FILES.md` — references updated
+- Multiple `.claude/agents/`, `.claude/commands/`, `.claude/hooks/` files — path references updated
+- `scripts/*.js`, `scripts/*.sh` — dual-path support (`node_modules/gentyr` + `.claude-framework` fallback)
+
+### Fixed (Security — from code-reviewer)
+
+**Command injection in `cli/commands/protect.js`**:
+- `SUDO_USER` / `USER` environment variables were passed directly to `chown` via shell string interpolation
+- Added `assertSafeName()` validator (`/^[a-z_][a-z0-9_-]{0,31}$/i`); throws on unsafe values
+- Switched from `execSync` to `execFileSync` throughout
+
+**Shell injection in `cli/commands/init.js`**:
+- `--op-token` value was interpolated directly into a shell command
+- Added `isValidOpToken()` validator (`/^[a-zA-Z0-9_-]{10,}$/`); rejects tokens with shell metacharacters
+
+**Dead code removed in `cli/commands/init.js`**:
+- `fs.symlinkSync().catch?.()` was unreachable — `symlinkSync` is synchronous and does not return a promise
+- Removed the `.catch?.()` call
+
+**`execSync` replaced with `execFileSync`** across all CLI command files:
+- Zero remaining `execSync` calls in the CLI package
+
+### Deprecated
+
+`scripts/setup.sh` is now the legacy install path. The `--path` flag, `--protect`, `--unprotect`, `--protect-only`, `--unprotect-only`, and `--uninstall` modes are superseded by the `npx gentyr` CLI. `setup.sh` will be removed in v2.0.
+
+---
+
 ## 2026-02-22 - Security: SQL Injection Fix in Supabase MCP Server
 
 ### Fixed
@@ -25,7 +105,7 @@
 **OP token desync detection in `credential-health-check.js`** (`scripts/hooks/credential-health-check.js`, `.claude/hooks/credential-health-check.js`):
 - At `SessionStart`, the hook now compares the shell `OP_SERVICE_ACCOUNT_TOKEN` environment variable against the value stored in `.mcp.json`
 - If they differ, `opTokenDesync = true` is set; `process.env` is always overwritten with the `.mcp.json` value (source of truth)
-- A `desyncPrefix` warning is prepended to any output message: "GENTYR: OP_SERVICE_ACCOUNT_TOKEN in shell differs from .mcp.json (source of truth). Run `setup.sh --path <project>` to re-sync."
+- A `desyncPrefix` warning is prepended to any output message: "GENTYR: OP_SERVICE_ACCOUNT_TOKEN in shell differs from .mcp.json (source of truth). Run `npx gentyr sync` to re-sync."
 - When all credentials are valid but a desync exists, the warning is emitted as the sole message rather than silent success
 - Template copy (`scripts/hooks/credential-health-check.js`) synced to match the runtime copy; both files are now identical
 
@@ -38,7 +118,7 @@
 - New validator in the `SERVICE_VALIDATORS` registry (key: `shellSync`)
 - Reads `.mcp.json` token as source of truth and compares against the `# BEGIN GENTYR OP` block in `~/.zshrc` / `~/.bashrc`
 - Reports `fail` if: no managed block exists, legacy unmanaged export found, or tokens differ; reports `warn` if `.mcp.json` unreadable or no shell profile found
-- Remediation message: "Run setup.sh to re-sync shell profile with .mcp.json token"
+- Remediation message: "Run `npx gentyr sync` to re-sync shell profile with .mcp.json token"
 
 ### Tests
 

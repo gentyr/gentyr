@@ -871,3 +871,228 @@ describe('G020: Branch-Aware Commit Blocking - Code Structure', () => {
     );
   });
 });
+
+// =============================================================================
+// verifyGitHooksPath() - Worktree Support (Fix for False-Positive Tamper Detection)
+//
+// These tests verify that the fixed verifyGitHooksPath() implementation uses
+// path.resolve() for comparison so that absolute paths produced by git in
+// worktree environments are accepted, not falsely flagged as tampered.
+//
+// Security insight: endsWith('/.husky') would be INSECURE because it would
+// allow paths like /tmp/evil/.husky. The fix uses path.resolve() to compare
+// the configured path against the known PROJECT_DIR/.husky path exactly.
+// =============================================================================
+
+describe('verifyGitHooksPath() - Worktree Support', () => {
+  const HOOK_PATH = path.join(process.cwd(), '.claude/hooks/pre-commit-review.js');
+
+  describe('Code structure: path.resolve() usage', () => {
+    it('should use path.resolve() to compare hooks paths (not string endsWith)', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // The fix MUST use path.resolve() for path comparison inside verifyGitHooksPath
+      assert.match(
+        hookCode,
+        /path\.resolve/,
+        'Must use path.resolve() for path comparison to prevent false positives in worktrees'
+      );
+
+      // SECURITY: Must NOT use endsWith('/.husky') - that would be insecure
+      // because any path ending in /.husky (e.g. /tmp/evil/.husky) would pass
+      assert.doesNotMatch(
+        hookCode,
+        /endsWith\(['"]\/\.husky['"]\)/,
+        'Must NOT use endsWith("/.husky") - insecure substring match that allows path traversal'
+      );
+    });
+
+    it('should use path.isAbsolute() to handle both relative and absolute hooksPath values', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        hookCode,
+        /path\.isAbsolute\(hooksPath\)/,
+        'Must check path.isAbsolute(hooksPath) to handle both relative (.husky) and absolute (/Users/x/repo/.husky) paths'
+      );
+    });
+
+    it('should build resolved path using path.resolve(hooksPath) for absolute paths', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        hookCode,
+        /path\.resolve\(hooksPath\)/,
+        'Must call path.resolve(hooksPath) when the configured path is already absolute'
+      );
+    });
+
+    it('should build resolved path using path.resolve(PROJECT_DIR, hooksPath) for relative paths', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        hookCode,
+        /path\.resolve\(PROJECT_DIR,\s*hooksPath\)/,
+        'Must call path.resolve(PROJECT_DIR, hooksPath) when the configured path is relative'
+      );
+    });
+  });
+
+  describe('Code structure: git rev-parse --git-common-dir for worktree support', () => {
+    it('should call git rev-parse --git-common-dir to find the main repo root in worktrees', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        hookCode,
+        /git rev-parse --git-common-dir/,
+        'Must use git rev-parse --git-common-dir to resolve main repo root when running inside a worktree'
+      );
+    });
+
+    it('should derive mainRepoRoot from the common git dir path', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // The main repo root is the directory containing .git (i.e. dirname of commonDir)
+      assert.match(
+        hookCode,
+        /path\.dirname\(path\.resolve\(commonDir\)\)/,
+        'Must derive mainRepoRoot as path.dirname(path.resolve(commonDir))'
+      );
+    });
+
+    it('should add mainRepoRoot to allowedRoots only when it differs from PROJECT_DIR', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        hookCode,
+        /mainRepoRoot !== PROJECT_DIR/,
+        'Must guard against adding duplicate roots when PROJECT_DIR already equals mainRepoRoot'
+      );
+
+      assert.match(
+        hookCode,
+        /allowedRoots\.push\(mainRepoRoot\)/,
+        'Must push mainRepoRoot into allowedRoots so the main repo .husky path is accepted in worktrees'
+      );
+    });
+
+    it('should gracefully handle git rev-parse --git-common-dir errors (not in a worktree)', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // The inner try/catch around git rev-parse --git-common-dir must not re-throw
+      // When not in a worktree or on git error, PROJECT_DIR alone is sufficient
+      assert.match(
+        hookCode,
+        /Not in a worktree or git error/,
+        'Must document fallback behavior when git rev-parse --git-common-dir fails'
+      );
+    });
+  });
+
+  describe('Code structure: allowedRoots array and final comparison', () => {
+    it('should initialize allowedRoots starting with PROJECT_DIR', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        hookCode,
+        /const allowedRoots = \[PROJECT_DIR\]/,
+        'Must start with [PROJECT_DIR] so non-worktree repos are handled correctly'
+      );
+    });
+
+    it('should use allowedRoots.some() for the final path acceptance check', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        hookCode,
+        /allowedRoots\.some\(/,
+        'Must use Array.some() to check if the resolved hooks path matches any allowed root'
+      );
+    });
+
+    it('should compare resolvedHooksPath against path.resolve(root, ".husky") for each allowed root', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        hookCode,
+        /resolvedHooksPath === path\.resolve\(root,\s*['"]\.husky['"]\)/,
+        'Must use exact equality with path.resolve(root, ".husky") - not substring or endsWith'
+      );
+    });
+
+    it('should return valid: false when resolvedHooksPath does not match any allowed root', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // The isAllowed check and its fail-closed rejection
+      assert.match(
+        hookCode,
+        /if \(!isAllowed\)/,
+        'Must check the isAllowed result and reject if false'
+      );
+    });
+  });
+
+  describe('Code structure: empty string handling (default git hooks)', () => {
+    it('should explicitly handle empty hooksPath before attempting path resolution', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // Empty string means core.hooksPath is set to nothing, which means default .git/hooks
+      assert.match(
+        hookCode,
+        /if \(hooksPath === ''\)/,
+        "Must handle empty hooksPath as a valid case before path resolution (core.hooksPath='') "
+      );
+    });
+
+    it('should return valid: true for empty hooksPath without path resolution', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // Verify that the early return for empty string yields valid: true
+      // We check the structure: the empty-string early return must appear before the resolve logic
+      const emptyCheckIndex = hookCode.indexOf("if (hooksPath === '')");
+      const resolveIndex = hookCode.indexOf('path.isAbsolute(hooksPath)');
+
+      assert.ok(emptyCheckIndex !== -1, "Empty string check must exist in verifyGitHooksPath");
+      assert.ok(resolveIndex !== -1, 'path.isAbsolute(hooksPath) check must exist');
+      assert.ok(
+        emptyCheckIndex < resolveIndex,
+        'Empty string check must come BEFORE path resolution logic (early return)'
+      );
+    });
+  });
+
+  describe('Security: path traversal prevention', () => {
+    it('should verify the fix uses exact path equality, not pattern matching', () => {
+      // This is a meta-test validating the security posture of the fix.
+      // The correct approach: resolve both sides to absolute paths and compare with ===
+      // The insecure approach: use endsWith('/.husky') or includes('.husky')
+      //
+      // With path.resolve(), a path like /tmp/evil/.husky will resolve to
+      // /tmp/evil/.husky, which will NOT equal /Users/x/repo/.husky — blocked correctly.
+      //
+      // With endsWith('/.husky'), /tmp/evil/.husky would pass — security hole.
+
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // The fix must NOT use any of these insecure patterns
+      assert.doesNotMatch(
+        hookCode,
+        /\.endsWith\(['"]\/\.husky['"]\)/,
+        'SECURITY: Must not use .endsWith("/.husky") - allows arbitrary paths ending in /.husky'
+      );
+
+      assert.doesNotMatch(
+        hookCode,
+        /\.includes\(['"]\.husky['"]\)/,
+        'SECURITY: Must not use .includes(".husky") - allows any path containing .husky as substring'
+      );
+
+      // The secure pattern must be present: exact equality after resolve()
+      assert.match(
+        hookCode,
+        /resolvedHooksPath === path\.resolve\(/,
+        'SECURITY: Must use exact equality (===) after path.resolve() for secure path comparison'
+      );
+    });
+  });
+});

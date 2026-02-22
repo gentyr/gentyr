@@ -32,7 +32,7 @@ GENTYR enforces a **fail-closed** security model (invariant G001): when any chec
 
 ## Layer 1: Root Ownership
 
-**File**: `scripts/setup.sh --protect`
+**Command**: `sudo npx gentyr protect`
 
 OS-level access control that prevents agents from modifying critical files, even with shell access.
 
@@ -316,19 +316,19 @@ The approval chain is cryptographically bound: code → HMAC → protection key 
 
 ### Enable Protection
 ```bash
-sudo scripts/setup.sh --path /path/to/project --protect
+sudo npx gentyr protect
 ```
 Sets root ownership and sticky bits on critical files and directories.
 
 ### Disable Protection
 ```bash
-sudo scripts/setup.sh --path /path/to/project --unprotect-only
+sudo npx gentyr unprotect
 ```
 Removes root ownership. Use before making manual changes to protected files.
 
 ### Re-enable After Changes
 ```bash
-sudo scripts/setup.sh --path /path/to/project --protect-only
+sudo npx gentyr protect
 ```
 Re-applies root ownership without reinstalling the framework.
 

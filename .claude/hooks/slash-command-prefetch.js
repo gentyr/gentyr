@@ -62,6 +62,7 @@ const SENTINELS = {
   'product-manager': '<!-- HOOK:GENTYR:product-manager -->',
   'toggle-product-manager': '<!-- HOOK:GENTYR:toggle-product-manager -->',
   'triage': '<!-- HOOK:GENTYR:triage -->',
+  'demo': '<!-- HOOK:GENTYR:demo -->',
 };
 
 /**
@@ -566,9 +567,11 @@ function handleSetupGentyr() {
     // hooks dir is not a symlink or doesn't exist
   }
 
-  // Fallback: look for .claude-framework symlink in project dir
+  // Fallback: look for node_modules/gentyr (npm install model) or .claude-framework (legacy symlink)
   if (!frameworkDir) {
-    const frameworkLink = path.join(PROJECT_DIR, '.claude-framework');
+    const npmPath = path.join(PROJECT_DIR, 'node_modules', 'gentyr');
+    const legacyPath = path.join(PROJECT_DIR, '.claude-framework');
+    const frameworkLink = fs.existsSync(npmPath) ? npmPath : legacyPath;
     if (fs.existsSync(frameworkLink)) {
       try {
         frameworkDir = fs.realpathSync(frameworkLink);
@@ -896,7 +899,9 @@ function handleTriage() {
 
 function handleShow() {
   // Lightweight check: confirm dashboard binary exists and list sections
-  const frameworkLink = path.join(PROJECT_DIR, '.claude-framework');
+  const npmPath = path.join(PROJECT_DIR, 'node_modules', 'gentyr');
+  const legacyPath = path.join(PROJECT_DIR, '.claude-framework');
+  const frameworkLink = fs.existsSync(npmPath) ? npmPath : legacyPath;
   let dashboardExists = false;
   try {
     if (fs.existsSync(frameworkLink)) {
@@ -928,6 +933,97 @@ function handleShow() {
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
       additionalContext: `[PREFETCH:show] ${JSON.stringify(output)}`,
+    },
+  }));
+}
+
+function handleDemo() {
+  const output = { command: 'demo', gathered: {} };
+
+  // Check playwright.config.ts existence
+  const tsConfig = path.join(PROJECT_DIR, 'playwright.config.ts');
+  const jsConfig = path.join(PROJECT_DIR, 'playwright.config.js');
+  output.gathered.configExists = fs.existsSync(tsConfig) || fs.existsSync(jsConfig);
+  output.gathered.configPath = fs.existsSync(tsConfig) ? 'playwright.config.ts' : (fs.existsSync(jsConfig) ? 'playwright.config.js' : null);
+
+  // Check @playwright/test in node_modules
+  const pwTestDir = path.join(PROJECT_DIR, 'node_modules', '@playwright', 'test');
+  output.gathered.depsInstalled = fs.existsSync(pwTestDir);
+
+  // Check Chromium in browser cache directories
+  const cacheLocations = [
+    path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright'),
+    path.join(os.homedir(), '.cache', 'ms-playwright'),
+  ];
+  let browsersFound = false;
+  for (const cacheDir of cacheLocations) {
+    if (!fs.existsSync(cacheDir)) continue;
+    try {
+      const entries = fs.readdirSync(cacheDir);
+      if (entries.some(e => e.startsWith('chromium-'))) {
+        browsersFound = true;
+        break;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  output.gathered.browsersInstalled = browsersFound;
+
+  // Credential env var status
+  const credentialKeys = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY'];
+  const credentials = {};
+  for (const key of credentialKeys) {
+    const value = process.env[key];
+    if (!value) {
+      credentials[key] = 'missing';
+    } else if (value.startsWith('op://')) {
+      credentials[key] = 'unresolved_op_ref';
+    } else {
+      credentials[key] = 'set';
+    }
+  }
+  output.gathered.credentials = credentials;
+
+  // Test file counts per project directory
+  const activeDirs = {
+    'vendor-owner': 'e2e/vendor',
+    'manual': 'e2e/manual',
+    'extension-manual': 'e2e/extension/manual',
+    'demo': 'e2e/demo',
+  };
+  const testCounts = {};
+  for (const [project, testDir] of Object.entries(activeDirs)) {
+    const fullDir = path.join(PROJECT_DIR, testDir);
+    if (!fs.existsSync(fullDir)) {
+      testCounts[project] = 0;
+      continue;
+    }
+    try {
+      const files = fs.readdirSync(fullDir, { recursive: true });
+      testCounts[project] = files.filter(f => {
+        const filename = String(f);
+        return filename.endsWith('.spec.ts') || filename.endsWith('.manual.ts');
+      }).length;
+    } catch {
+      testCounts[project] = 0;
+    }
+  }
+  output.gathered.testCounts = testCounts;
+
+  // Summary: critical issues
+  const criticalIssues = [];
+  if (!output.gathered.configExists) criticalIssues.push('playwright.config.ts not found');
+  if (!output.gathered.depsInstalled) criticalIssues.push('@playwright/test not installed');
+  if (!output.gathered.browsersInstalled) criticalIssues.push('Chromium browser not installed');
+  output.gathered.criticalIssues = criticalIssues;
+  output.gathered.readyForPreflight = criticalIssues.length === 0;
+
+  console.log(JSON.stringify({
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:demo] ${JSON.stringify(output)}`,
     },
   }));
 }
@@ -989,6 +1085,9 @@ async function main() {
   }
   if (matchesCommand(prompt, 'show')) {
     return handleShow();
+  }
+  if (matchesCommand(prompt, 'demo')) {
+    return handleDemo();
   }
 
   process.exit(0);

@@ -123,6 +123,7 @@ describe('Slash Command Detection - Bug Fix Validation', () => {
       assert.match(sentinelsObject, /'push-secrets':/);
       assert.match(sentinelsObject, /'configure-personas':/);
       assert.match(sentinelsObject, /'spawn-tasks':/);
+      assert.match(sentinelsObject, /'demo':/);
 
       // All sentinels should have HOOK:GENTYR: prefix
       assert.match(sentinelsObject, /<!-- HOOK:GENTYR:/g);
@@ -171,7 +172,8 @@ describe('Slash Command Detection - Bug Fix Validation', () => {
         'push-migrations',
         'push-secrets',
         'configure-personas',
-        'spawn-tasks'
+        'spawn-tasks',
+        'demo'
       ];
 
       for (const cmd of commands) {

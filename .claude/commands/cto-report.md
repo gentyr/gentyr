@@ -7,10 +7,10 @@ The prefetch hook has pre-gathered key metrics (pending questions, task counts, 
 
 ## What to Do
 
-Run the dashboard via the `.claude-framework` symlink (installed by setup):
+Run the dashboard via the `node_modules/gentyr` package (installed by npm):
 
 ```bash
-node .claude-framework/packages/cto-dashboard/dist/index.js
+node node_modules/gentyr/packages/cto-dashboard/dist/index.js
 ```
 
 This will render a terminal dashboard with quota bars, system status, deputy CTO triage pipeline, testing health, chronological timeline, and metrics summary.
@@ -20,7 +20,7 @@ This will render a terminal dashboard with quota bars, system status, deputy CTO
 For a different time period (default is 24 hours, valid range: 1-168):
 
 ```bash
-node .claude-framework/packages/cto-dashboard/dist/index.js --hours 8
+node node_modules/gentyr/packages/cto-dashboard/dist/index.js --hours 8
 ```
 
 ## Response Format

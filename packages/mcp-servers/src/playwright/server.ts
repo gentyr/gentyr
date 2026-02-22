@@ -12,6 +12,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+import * as http from 'http';
 import { spawn, execFileSync } from 'child_process';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
@@ -21,9 +23,11 @@ import {
   CleanupDataArgsSchema,
   GetReportArgsSchema,
   GetCoverageStatusArgsSchema,
+  PreflightCheckArgsSchema,
   type LaunchUiModeArgs,
   type RunTestsArgs,
   type GetReportArgs,
+  type PreflightCheckArgs,
   type LaunchUiModeResult,
   type RunTestsResult,
   type SeedDataResult,
@@ -31,6 +35,8 @@ import {
   type GetReportResult,
   type GetCoverageStatusResult,
   type CoverageEntry,
+  type PreflightCheckEntry,
+  type PreflightCheckResult,
 } from './types.js';
 import { parseTestOutput, truncateOutput } from './helpers.js';
 
@@ -576,6 +582,246 @@ function countTestFiles(dir: string, projectFilter?: string): number {
 // parseTestOutput and truncateOutput imported from ./helpers.js
 
 // ============================================================================
+// Preflight Check
+// ============================================================================
+
+/**
+ * Run a single preflight check and return a structured entry.
+ */
+function runCheck(
+  name: string,
+  fn: () => { status: 'pass' | 'fail' | 'warn' | 'skip'; message: string }
+): PreflightCheckEntry {
+  const start = Date.now();
+  try {
+    const result = fn();
+    return { name, ...result, duration_ms: Date.now() - start };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { name, status: 'fail', message: `Unexpected error: ${message}`, duration_ms: Date.now() - start };
+  }
+}
+
+/**
+ * Comprehensive pre-flight validation before launching Playwright.
+ * Checks config, deps, browsers, test files, credentials, compilation, and dev server.
+ */
+async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckResult> {
+  const startTime = Date.now();
+  const checks: PreflightCheckEntry[] = [];
+  const failures: string[] = [];
+  const warnings: string[] = [];
+  const recoverySteps: string[] = [];
+
+  // 1. Config exists
+  checks.push(runCheck('config_exists', () => {
+    const tsConfig = path.join(PROJECT_DIR, 'playwright.config.ts');
+    const jsConfig = path.join(PROJECT_DIR, 'playwright.config.js');
+    if (fs.existsSync(tsConfig)) {
+      return { status: 'pass', message: `Found playwright.config.ts` };
+    }
+    if (fs.existsSync(jsConfig)) {
+      return { status: 'pass', message: `Found playwright.config.js` };
+    }
+    return { status: 'fail', message: 'No playwright.config.ts or playwright.config.js found' };
+  }));
+
+  // 2. Dependencies installed
+  checks.push(runCheck('dependencies_installed', () => {
+    const pwTestDir = path.join(PROJECT_DIR, 'node_modules', '@playwright', 'test');
+    if (fs.existsSync(pwTestDir)) {
+      return { status: 'pass', message: '@playwright/test is installed' };
+    }
+    return { status: 'fail', message: '@playwright/test not found in node_modules' };
+  }));
+
+  // 3. Browsers installed
+  checks.push(runCheck('browsers_installed', () => {
+    const homedir = os.homedir();
+    const cacheLocations = [
+      path.join(homedir, 'Library', 'Caches', 'ms-playwright'),
+      path.join(homedir, '.cache', 'ms-playwright'),
+    ];
+
+    for (const cacheDir of cacheLocations) {
+      if (!fs.existsSync(cacheDir)) continue;
+      try {
+        const entries = fs.readdirSync(cacheDir);
+        const chromium = entries.find(e => e.startsWith('chromium-'));
+        if (chromium) {
+          return { status: 'pass', message: `Chromium found in ${cacheDir}` };
+        }
+      } catch {
+        continue;
+      }
+    }
+    return { status: 'fail', message: 'No Chromium browser found in Playwright cache' };
+  }));
+
+  // 4. Test files exist (when project specified)
+  if (args.project) {
+    checks.push(runCheck('test_files_exist', () => {
+      const activeDirs: Record<string, string> = {
+        'vendor-owner': 'e2e/vendor',
+        'vendor-admin': 'e2e/vendor-roles',
+        'vendor-dev': 'e2e/vendor-roles',
+        'vendor-viewer': 'e2e/vendor-roles',
+        'cross-persona': 'e2e/cross-persona',
+        'auth-flows': 'e2e/auth',
+        'manual': 'e2e/manual',
+        'extension': 'e2e/extension',
+        'extension-manual': 'e2e/extension/manual',
+        'demo': 'e2e/demo',
+      };
+
+      const testDir = activeDirs[args.project!];
+      if (!testDir) {
+        return { status: 'warn', message: `No known test directory for project "${args.project}"` };
+      }
+
+      const fullDir = path.join(PROJECT_DIR, testDir);
+      const count = countTestFiles(fullDir, args.project);
+      if (count > 0) {
+        return { status: 'pass', message: `${count} test file(s) found in ${testDir}` };
+      }
+      return { status: 'fail', message: `No test files found in ${testDir} for project "${args.project}"` };
+    }));
+  } else {
+    checks.push({ name: 'test_files_exist', status: 'skip', message: 'No project specified — skipping test file check', duration_ms: 0 });
+  }
+
+  // 5. Credentials valid
+  checks.push(runCheck('credentials_valid', () => {
+    const preflight = validatePrerequisites();
+    if (preflight.ok) {
+      const warnMsg = preflight.warnings.length > 0
+        ? ` (${preflight.warnings.length} warning(s))`
+        : '';
+      return { status: 'pass', message: `All required credentials are set${warnMsg}` };
+    }
+    return { status: 'fail', message: preflight.errors.join('; ') };
+  }));
+
+  // 6. Compilation succeeds (unless skipped)
+  if (!args.skip_compilation && args.project) {
+    checks.push(runCheck('compilation', () => {
+      try {
+        const listArgs = ['playwright', 'test', '--list', '--project', args.project!];
+        const output = execFileSync('npx', listArgs, {
+          cwd: PROJECT_DIR,
+          timeout: 30_000,
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: process.env as Record<string, string>,
+        });
+
+        // Check if any tests were listed
+        const lines = output.trim().split('\n').filter(l => l.trim().length > 0);
+        if (lines.length === 0) {
+          return { status: 'fail', message: 'Compilation succeeded but no tests were listed' };
+        }
+        return { status: 'pass', message: `${lines.length} test(s) listed successfully` };
+      } catch (err) {
+        const execErr = err as { stderr?: string; message?: string };
+        const stderr = (execErr.stderr || '').trim();
+        const snippet = stderr.length > 300 ? stderr.slice(0, 300) + '...' : stderr;
+        return { status: 'fail', message: `Compilation/list failed: ${snippet || execErr.message || 'unknown error'}` };
+      }
+    }));
+  } else {
+    const reason = args.skip_compilation ? 'skip_compilation=true' : 'no project specified';
+    checks.push({ name: 'compilation', status: 'skip', message: `Skipped (${reason})`, duration_ms: 0 });
+  }
+
+  // 7. Dev server reachable (warning only)
+  const baseUrl = args.base_url || 'http://localhost:3000';
+  const devServerCheck = await new Promise<PreflightCheckEntry>((resolve) => {
+    const start = Date.now();
+    const url = new URL(baseUrl);
+    const req = http.request(
+      {
+        hostname: url.hostname,
+        port: url.port || 80,
+        path: url.pathname,
+        method: 'HEAD',
+        timeout: 5000,
+      },
+      (res) => {
+        resolve({
+          name: 'dev_server',
+          status: 'pass',
+          message: `Dev server at ${baseUrl} responded with ${res.statusCode}`,
+          duration_ms: Date.now() - start,
+        });
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({
+        name: 'dev_server',
+        status: 'warn',
+        message: `Dev server at ${baseUrl} did not respond within 5s (may auto-start via playwright.config.ts webServer)`,
+        duration_ms: Date.now() - start,
+      });
+    });
+    req.on('error', () => {
+      resolve({
+        name: 'dev_server',
+        status: 'warn',
+        message: `Dev server at ${baseUrl} is not reachable (may auto-start via playwright.config.ts webServer)`,
+        duration_ms: Date.now() - start,
+      });
+    });
+    req.end();
+  });
+  checks.push(devServerCheck);
+
+  // Aggregate results
+  for (const check of checks) {
+    if (check.status === 'fail') {
+      failures.push(`${check.name}: ${check.message}`);
+    } else if (check.status === 'warn') {
+      warnings.push(`${check.name}: ${check.message}`);
+    }
+  }
+
+  // Generate recovery steps for failures
+  for (const check of checks) {
+    if (check.status !== 'fail') continue;
+    switch (check.name) {
+      case 'config_exists':
+        recoverySteps.push('Create playwright.config.ts in the project root (see Playwright docs)');
+        break;
+      case 'dependencies_installed':
+        recoverySteps.push('Run: pnpm add -D @playwright/test');
+        break;
+      case 'browsers_installed':
+        recoverySteps.push('Run: npx playwright install chromium');
+        break;
+      case 'test_files_exist':
+        recoverySteps.push(`Create test files in the expected directory for project "${args.project}"`);
+        break;
+      case 'credentials_valid':
+        recoverySteps.push('Check 1Password credential injection — ensure MCP server has SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY');
+        break;
+      case 'compilation':
+        recoverySteps.push('Fix TypeScript compilation errors — run: npx playwright test --list to see details');
+        break;
+    }
+  }
+
+  return {
+    ready: failures.length === 0,
+    project: args.project || null,
+    checks,
+    failures,
+    warnings,
+    recovery_steps: recoverySteps,
+    total_duration_ms: Date.now() - startTime,
+  };
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -634,6 +880,16 @@ const tools: AnyToolHandler[] = [
       'persona labels, and active/deferred status.',
     schema: GetCoverageStatusArgsSchema,
     handler: getCoverageStatus,
+  },
+  {
+    name: 'preflight_check',
+    description:
+      'Run comprehensive pre-flight validation before launching Playwright. ' +
+      'Checks config file, dependencies, browsers, test files, credentials, ' +
+      'compilation, and dev server. ALWAYS run before launch_ui_mode or run_tests. ' +
+      'Returns structured result with pass/fail per check and recovery steps.',
+    schema: PreflightCheckArgsSchema,
+    handler: preflightCheck,
   },
 ];
 
