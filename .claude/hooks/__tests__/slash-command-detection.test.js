@@ -2,7 +2,7 @@
  * Tests for slash command detection in UserPromptSubmit hooks
  *
  * CRITICAL BUG FIX: Slash commands were not being detected because hooks receive
- * JSON stdin like {"prompt":"/restart-session",...} but hooks were only matching
+ * JSON stdin like {"prompt":"/cto-report",...} but hooks were only matching
  * against sentinel markers in expanded .md content.
  *
  * This test validates:
@@ -38,7 +38,7 @@ describe('Slash Command Detection - Bug Fix Validation', () => {
     });
 
     it('should parse JSON stdin and extract prompt field', () => {
-      // CRITICAL: Must handle JSON input like {"prompt":"/restart-session"}
+      // CRITICAL: Must handle JSON input like {"prompt":"/cto-report"}
       assert.match(hookCode, /JSON\.parse\(raw\)/);
       assert.match(hookCode, /parsed\.prompt/);
     });
@@ -83,7 +83,7 @@ describe('Slash Command Detection - Bug Fix Validation', () => {
 
       const functionBody = matchesCommandMatch[0];
 
-      // Must check for bare slash command: "/restart-session"
+      // Must check for bare slash command: "/cto-report"
       assert.match(functionBody, /text\.trim\(\) === `\/\$\{commandName\}`/);
     });
 
@@ -91,7 +91,7 @@ describe('Slash Command Detection - Bug Fix Validation', () => {
       const matchesCommandMatch = hookCode.match(/function matchesCommand\(text, commandName\) \{[\s\S]*?\n\}/);
       const functionBody = matchesCommandMatch[0];
 
-      // Must check for sentinel markers: <!-- HOOK:GENTYR:restart-session -->
+      // Must check for sentinel markers: <!-- HOOK:GENTYR:cto-report -->
       assert.match(functionBody, /text\.includes\(SENTINELS\[commandName\]\)/);
     });
 
@@ -114,7 +114,6 @@ describe('Slash Command Detection - Bug Fix Validation', () => {
       const sentinelsObject = sentinelsMatch[0];
 
       // Validate key commands have sentinels
-      assert.match(sentinelsObject, /'restart-session':/);
       assert.match(sentinelsObject, /'cto-report':/);
       assert.match(sentinelsObject, /'deputy-cto':/);
       assert.match(sentinelsObject, /'toggle-automation':/);
@@ -156,7 +155,6 @@ describe('Slash Command Detection - Bug Fix Validation', () => {
 
       // Must use matchesCommand helper
       assert.match(mainBody, /matchesCommand\(prompt,/);
-      assert.match(mainBody, /matchesCommand\(prompt, 'restart-session'\)/);
     });
 
     it('should handle all defined slash commands', () => {
@@ -165,7 +163,6 @@ describe('Slash Command Detection - Bug Fix Validation', () => {
 
       // All SENTINELS commands should have handlers in main()
       const commands = [
-        'restart-session',
         'cto-report',
         'deputy-cto',
         'toggle-automation',
@@ -225,7 +222,7 @@ describe('Slash Command Detection - Bug Fix Validation', () => {
       const mainMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
       const mainBody = mainMatch[0];
 
-      // CRITICAL FIX: Must match bare slash commands like "/restart-session"
+      // CRITICAL FIX: Must match bare slash commands like "/cto-report"
       // Pattern: /^\/[\w-]+$/
       assert.match(mainBody, /\/\^\\\/\[\\w-\]\+\$\//);
     });

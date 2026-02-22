@@ -32,6 +32,7 @@ import {
   type GetCoverageStatusResult,
   type CoverageEntry,
 } from './types.js';
+import { parseTestOutput, truncateOutput } from './helpers.js';
 
 // ============================================================================
 // Configuration
@@ -285,6 +286,20 @@ function runTests(args: RunTestsArgs): RunTestsResult {
     });
 
     const { passed, failed, skipped, duration } = parseTestOutput(output);
+
+    // Guard: zero tests executed is not a success
+    if (passed === 0 && failed === 0 && skipped === 0) {
+      return {
+        success: false,
+        project: projectLabel,
+        passed: 0,
+        failed: 0,
+        skipped: 0,
+        duration,
+        output: truncateOutput(output),
+        error: 'No tests were executed. Check project filter, test file paths, or Playwright configuration.',
+      };
+    }
 
     return {
       success: failed === 0,
@@ -558,36 +573,7 @@ function countTestFiles(dir: string, projectFilter?: string): number {
   }).length;
 }
 
-/**
- * Parse Playwright test output for pass/fail/skip counts.
- */
-function parseTestOutput(output: string): {
-  passed: number;
-  failed: number;
-  skipped: number;
-  duration: string;
-} {
-  // Playwright outputs lines like: "  10 passed (5.2s)"
-  const passedMatch = output.match(/(\d+)\s+passed/);
-  const failedMatch = output.match(/(\d+)\s+failed/);
-  const skippedMatch = output.match(/(\d+)\s+skipped/);
-  const durationMatch = output.match(/\((\d+\.?\d*s)\)/);
-
-  return {
-    passed: passedMatch ? parseInt(passedMatch[1], 10) : 0,
-    failed: failedMatch ? parseInt(failedMatch[1], 10) : 0,
-    skipped: skippedMatch ? parseInt(skippedMatch[1], 10) : 0,
-    duration: durationMatch ? durationMatch[1] : 'unknown',
-  };
-}
-
-/**
- * Truncate output to prevent huge MCP responses.
- */
-function truncateOutput(output: string, maxLength = 4000): string {
-  if (output.length <= maxLength) return output;
-  return output.slice(0, maxLength) + '\n... (output truncated)';
-}
+// parseTestOutput and truncateOutput imported from ./helpers.js
 
 // ============================================================================
 // Server Setup

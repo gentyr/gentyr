@@ -85,48 +85,39 @@ describe('cto-notification-hook.js - Bug Fixes', () => {
     });
   });
 
-  describe('getSessionMetrics24h() - JSON Parsing', () => {
-    it('should parse JSON with { agents: [...] } structure', () => {
+  describe('getSessionMetricsCached() - Incremental Cache', () => {
+    // getSessionMetrics24h() and getTokenUsage24h() were replaced by
+    // getSessionMetricsCached() + scanSessionFile() which use an incremental
+    // disk cache and a 30-day window instead of a 24-hour window.
+
+    it('should define getSessionMetricsCached() function', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // CRITICAL: Must parse as { agents: [...] } not as array directly
-      // The bug was treating the content as a direct array
       assert.match(
         hookCode,
-        /const data = JSON\.parse\(content\)/,
-        'Must parse JSON into data variable first'
-      );
-
-      assert.match(
-        hookCode,
-        /const history = data\.agents \|\| \[\]/,
-        'Must extract agents array from data.agents with fallback to empty array'
-      );
-
-      // Should NOT parse directly as array
-      assert.doesNotMatch(
-        hookCode,
-        /const history = JSON\.parse\(content\);?\s*(?!\/\/)/,
-        'Must NOT parse JSON directly into history variable without extracting .agents'
+        /function getSessionMetricsCached\(\)/,
+        'Must define getSessionMetricsCached() function'
       );
     });
 
-    it('should convert ISO timestamp strings to milliseconds for comparison', () => {
+    it('should define scanSessionFile() helper', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // CRITICAL: Must convert entry.timestamp (ISO string) to milliseconds
-      // The bug was comparing string directly to milliseconds
+      assert.match(
+        hookCode,
+        /function scanSessionFile\(filePath, since\)/,
+        'Must define scanSessionFile() helper function'
+      );
+    });
+
+    it('should convert ISO timestamp strings to milliseconds in scanSessionFile', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // The timestamp conversion was moved to scanSessionFile()
       assert.match(
         hookCode,
         /new Date\(entry\.timestamp\)\.getTime\(\)/,
         'Must convert entry.timestamp to milliseconds using new Date().getTime()'
-      );
-
-      // Validate it's filtering agent-tracker entries by time
-      assert.match(
-        hookCode,
-        /new Date\(entry\.timestamp\)\.getTime\(\) >= since/,
-        'Must compare converted timestamp against since variable when filtering hook sessions'
       );
 
       // Should NOT compare string timestamp directly
@@ -137,48 +128,36 @@ describe('cto-notification-hook.js - Bug Fixes', () => {
       );
     });
 
-    it('should validate complete function structure', () => {
+    it('should validate getSessionMetricsCached function structure', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // Extract the function
-      const functionMatch = hookCode.match(/function getSessionMetrics24h\(\) \{[\s\S]*?\n\}/);
-      assert.ok(functionMatch, 'getSessionMetrics24h() function must exist');
+      const functionMatch = hookCode.match(/function getSessionMetricsCached\(\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'getSessionMetricsCached() function must exist');
 
       const functionBody = functionMatch[0];
 
-      // Validate the complete flow:
-      // 1. Read agent tracker history to build Set of hook session IDs
-      assert.match(functionBody, /fs\.readFileSync\(AGENT_TRACKER_HISTORY/, 'Must read agent tracker history file');
-      assert.match(functionBody, /const data = JSON\.parse\(content\)/, 'Must parse JSON content');
-      assert.match(functionBody, /const history = data\.agents/, 'Must extract agents array');
-      assert.match(functionBody, /hookSessionIds\.add\(entry\.sessionId\)/, 'Must build Set of hook session IDs');
+      // 1. Must get session directory and establish time window
+      assert.match(functionBody, /getSessionDir\(\)/, 'Must call getSessionDir()');
 
-      // 2. Count actual .jsonl session files
+      // 2. Must read session directory for .jsonl files
       assert.match(functionBody, /readdirSync\(sessionDir\)/, 'Must read session directory');
       assert.match(functionBody, /\.filter\(f => f\.endsWith\('\.jsonl'\)\)/, 'Must filter for .jsonl files');
 
-      // 3. Check file modification time
-      assert.match(functionBody, /stat\.mtime\.getTime\(\)/, 'Must check file modification time');
+      // 3. Must use incremental cache (load and save)
+      assert.match(functionBody, /loadMetricsCache\(\)/, 'Must load metrics cache');
+      assert.match(functionBody, /saveMetricsCache\(cache\)/, 'Must save metrics cache');
 
-      // 4. Categorize sessions as hook or user
-      assert.match(functionBody, /hookSessionIds\.has\(sessionId\)/, 'Must check if session is hook-spawned');
-      assert.match(functionBody, /metrics\.hook\+\+/, 'Must increment hook counter');
-      assert.match(functionBody, /metrics\.user\+\+/, 'Must increment user counter');
+      // 4. Must track task and user sessions
+      assert.match(functionBody, /taskSessions/, 'Must track task session count');
+      assert.match(functionBody, /userSessions/, 'Must track user session count');
     });
 
-    it('should handle missing file gracefully', () => {
+    it('should handle missing session directory gracefully', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // Extract the function
-      const functionMatch = hookCode.match(/function getSessionMetrics24h\(\) \{[\s\S]*?\n\}/);
+      const functionMatch = hookCode.match(/function getSessionMetricsCached\(\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'getSessionMetricsCached() function must exist');
       const functionBody = functionMatch[0];
-
-      // Should check if agent-tracker history file exists before reading
-      assert.match(
-        functionBody,
-        /if \(fs\.existsSync\(AGENT_TRACKER_HISTORY\)\)/,
-        'Must check if history file exists before reading'
-      );
 
       // Should check if session directory exists before reading
       assert.match(
@@ -190,62 +169,44 @@ describe('cto-notification-hook.js - Bug Fixes', () => {
       // Should return default metrics on missing directory
       assert.match(
         functionBody,
-        /return metrics/,
-        'Must return metrics object'
+        /return \{ tokens: 0, taskSessions: 0, userSessions: 0 \}/,
+        'Must return default zero metrics when session directory missing'
       );
     });
 
-    it('should wrap file operations in try-catch', () => {
+    it('should wrap file scanning in try-catch', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // Extract the function
-      const functionMatch = hookCode.match(/function getSessionMetrics24h\(\) \{[\s\S]*?\n\}/);
+      const functionMatch = hookCode.match(/function getSessionMetricsCached\(\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'getSessionMetricsCached() function must exist');
       const functionBody = functionMatch[0];
 
-      // Should have try-catch for file operations
       assert.match(functionBody, /try \{/, 'Must have try block for file operations');
       assert.match(functionBody, /\} catch/, 'Must have catch block for error handling');
-
-      // Catch block should return metrics (fail-open is acceptable here for metrics)
-      const catchMatch = functionBody.match(/\} catch[^{]*\{([^}]+)\}/);
-      assert.ok(catchMatch, 'Must have catch block with body');
     });
   });
 
   describe('Database Path Constants', () => {
-    it('should use correct agent-reports database path', () => {
+    it('should define CTO_REPORTS_DB constant pointing to cto-reports.db', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // CRITICAL: Database was renamed from cto-reports.db to agent-reports.db
+      // The MCP server for agent reports uses cto-reports.db as its backing file.
+      // Both the hook and packages/mcp-servers/src/agent-reports/server.ts use this path.
       assert.match(
         hookCode,
-        /const CTO_REPORTS_DB = path\.join\(PROJECT_DIR,\s*'\.claude',\s*'agent-reports\.db'\)/,
-        'CTO_REPORTS_DB constant must point to agent-reports.db'
-      );
-
-      // Should NOT reference old database name
-      assert.doesNotMatch(
-        hookCode,
-        /'cto-reports\.db'/,
-        'Must NOT reference old cto-reports.db database'
+        /const CTO_REPORTS_DB = path\.join\(PROJECT_DIR,\s*'\.claude',\s*'cto-reports\.db'\)/,
+        'CTO_REPORTS_DB constant must point to cto-reports.db (the agent-reports MCP server backing file)'
       );
     });
 
     it('should document correct database in comments', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // Header comment should reference agent-reports
+      // Comments should reference agent-reports (the MCP server name / logical name)
       assert.match(
         hookCode,
-        /agent-reports database/i,
-        'Comments must reference agent-reports database, not cto-reports'
-      );
-
-      // Should NOT reference old database in comments
-      assert.doesNotMatch(
-        hookCode,
-        /cto-reports database/i,
-        'Must NOT reference old cto-reports database in comments'
+        /agent-reports/i,
+        'Code must reference agent-reports (MCP server name)'
       );
     });
   });
@@ -254,25 +215,23 @@ describe('cto-notification-hook.js - Bug Fixes', () => {
     it('should return default values on errors (metrics are non-critical)', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // getSessionMetrics24h should return default metrics on error
-      const metricsFunction = hookCode.match(/function getSessionMetrics24h\(\) \{[\s\S]*?\n\}/)[0];
+      // getSessionMetricsCached replaces the old getSessionMetrics24h and
+      // getTokenUsage24h. It returns { tokens, taskSessions, userSessions }.
+      const metricsFunction = hookCode.match(/function getSessionMetricsCached\(\) \{[\s\S]*?\n\}/);
+      assert.ok(metricsFunction, 'getSessionMetricsCached() must exist');
+
+      // Must return default zeros when session directory is missing
       assert.match(
-        metricsFunction,
-        /const metrics = \{ hook: 0, user: 0 \}/,
-        'Must initialize metrics with default values'
+        metricsFunction[0],
+        /return \{ tokens: 0, taskSessions: 0, userSessions: 0 \}/,
+        'Must return default zero values when session directory is missing'
       );
 
-      // getTokenUsage24h should return 0 on errors
-      const tokenFunction = hookCode.match(/function getTokenUsage24h\(\) \{[\s\S]*?\n\}/)[0];
+      // Token accumulator must start at 0 in cache totals
       assert.match(
-        tokenFunction,
-        /let total = 0/,
-        'Must initialize token total to 0'
-      );
-      assert.match(
-        tokenFunction,
-        /return total/,
-        'Must return total (defaults to 0 on errors)'
+        hookCode,
+        /tokens: 0/,
+        'Must initialize token totals to 0'
       );
     });
 
@@ -302,39 +261,39 @@ describe('cto-notification-hook.js - Bug Fixes', () => {
   });
 
   describe('Edge Cases - Timestamp Handling', () => {
-    it('should handle various timestamp formats correctly', () => {
+    it('should handle ISO timestamp strings correctly in scanSessionFile', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // getSessionMetrics24h - entry.timestamp is ISO string
-      const metricsFunction = hookCode.match(/function getSessionMetrics24h\(\) \{[\s\S]*?\n\}/)[0];
-      assert.match(
-        metricsFunction,
-        /new Date\(entry\.timestamp\)/,
-        'Must parse entry.timestamp as Date object'
-      );
+      // Timestamp handling was consolidated into scanSessionFile()
+      const scanFn = hookCode.match(/function scanSessionFile\(filePath, since\) \{[\s\S]*?\n\}/);
+      assert.ok(scanFn, 'scanSessionFile() function must exist');
 
-      // getTokenUsage24h - entry.timestamp needs conversion too
-      const tokenFunction = hookCode.match(/function getTokenUsage24h\(\) \{[\s\S]*?\n\}/)[0];
+      // Must check if timestamp exists before converting
       assert.match(
-        tokenFunction,
+        scanFn[0],
         /if \(entry\.timestamp\)/,
         'Must check if timestamp exists'
       );
+
+      // Must convert ISO string to milliseconds (not compare directly)
       assert.match(
-        tokenFunction,
-        /const entryTime = new Date\(entry\.timestamp\)\.getTime\(\)/,
-        'Must convert timestamp to milliseconds in getTokenUsage24h'
+        scanFn[0],
+        /new Date\(entry\.timestamp\)\.getTime\(\)/,
+        'Must convert entry.timestamp to milliseconds using new Date().getTime()'
       );
     });
 
-    it('should calculate time windows correctly', () => {
+    it('should calculate time window correctly in getSessionMetricsCached', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // Both functions should calculate 24 hour window
+      const metricsFunction = hookCode.match(/function getSessionMetricsCached\(\) \{[\s\S]*?\n\}/);
+      assert.ok(metricsFunction, 'getSessionMetricsCached() function must exist');
+
+      // Uses a 30-day window (replaces the old 24-hour window)
       assert.match(
-        hookCode,
-        /const since = Date\.now\(\) - \(24 \* 60 \* 60 \* 1000\)/g,
-        'Must calculate 24-hour window in milliseconds'
+        metricsFunction[0],
+        /Date\.now\(\) - \(30 \* 24 \* 60 \* 60 \* 1000\)/,
+        'Must calculate 30-day window in milliseconds'
       );
     });
   });
@@ -389,7 +348,7 @@ describe('cto-notification-hook.js - Bug Fixes', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
       const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
 
-      // CRITICAL FIX: Must match bare slash commands like "/restart-session"
+      // CRITICAL FIX: Must match bare slash commands like "/cto-report"
       // Pattern: /^\/[\w-]+$/
       assert.match(
         mainFunction,
@@ -489,13 +448,16 @@ describe('cto-notification-hook.js - Bug Fixes', () => {
     it('should have all required functions defined', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
+      // getSessionMetrics24h and getTokenUsage24h were replaced by
+      // getSessionMetricsCached() and scanSessionFile() in the incremental
+      // cache refactor.
       const requiredFunctions = [
         'getSessionDir',
         'getDeputyCtoCounts',
         'getUnreadReportsCount',
         'getAutonomousModeStatus',
-        'getTokenUsage24h',
-        'getSessionMetrics24h',
+        'scanSessionFile',
+        'getSessionMetricsCached',
         'getTodoCounts',
         'formatTokens',
         'formatHours',

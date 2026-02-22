@@ -144,9 +144,7 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
   // ==========================================================================
 
   describe('Launcher Functions', () => {
-    it('should read persona with features from DB', async () => {
-      if (skip) return;
-
+    it.skipIf(skip)('should read persona with features from DB', async () => {
       const personaId = testProject.getPersonaId('api-consumer');
       const persona = await getPersona(personaId, testProject.dir) as {
         name: string;
@@ -163,9 +161,7 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       expect(persona.features[0].test_scenarios).toContain('List tasks');
     });
 
-    it('should generate valid MCP config with correct server paths', async () => {
-      if (skip) return;
-
+    it.skipIf(skip)('should generate valid MCP config with correct server paths', async () => {
       const personaId = testProject.getPersonaId('api-consumer');
       const persona = await getPersona(personaId, testProject.dir);
       const sessionId = randomUUID();
@@ -199,9 +195,7 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       fs.unlinkSync(configPath);
     });
 
-    it('should generate GUI MCP config with playwright-feedback server', async () => {
-      if (skip) return;
-
+    it.skipIf(skip)('should generate GUI MCP config with playwright-feedback server', async () => {
       const personaId = testProject.getPersonaId('gui-tester');
       const persona = await getPersona(personaId, testProject.dir);
       const sessionId = randomUUID();
@@ -226,9 +220,7 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       fs.unlinkSync(configPath);
     });
 
-    it('should generate SDK MCP config with programmatic-feedback in sdk mode', async () => {
-      if (skip) return;
-
+    it.skipIf(skip)('should generate SDK MCP config with programmatic-feedback in sdk mode', async () => {
       const personaId = testProject.getPersonaId('sdk-developer');
       const persona = await getPersona(personaId, testProject.dir);
       const sessionId = randomUUID();
@@ -251,9 +243,7 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       fs.unlinkSync(configPath);
     });
 
-    it('should build persona-specific prompt with traits and scenarios', async () => {
-      if (skip) return;
-
+    it.skipIf(skip)('should build persona-specific prompt with traits and scenarios', async () => {
       const personaId = testProject.getPersonaId('api-consumer');
       const persona = await getPersona(personaId, testProject.dir);
       const sessionId = randomUUID();
@@ -269,9 +259,7 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       expect(prompt).toContain('You are NOT a developer');
     });
 
-    it('should build GUI-specific prompt with navigation guidance', async () => {
-      if (skip) return;
-
+    it.skipIf(skip)('should build GUI-specific prompt with navigation guidance', async () => {
       const personaId = testProject.getPersonaId('gui-tester');
       const persona = await getPersona(personaId, testProject.dir);
       const sessionId = randomUUID();
@@ -286,9 +274,7 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       expect(prompt).toContain('you cannot use CSS selectors');
     });
 
-    it('should build SDK-specific prompt with sandbox isolation guidance', async () => {
-      if (skip) return;
-
+    it.skipIf(skip)('should build SDK-specific prompt with sandbox isolation guidance', async () => {
       const personaId = testProject.getPersonaId('sdk-developer');
       const persona = await getPersona(personaId, testProject.dir);
       const sessionId = randomUUID();
@@ -316,9 +302,7 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
 
     let agentResults: Map<string, AgentResult>;
 
-    it('should spawn all 4 personas in parallel and produce findings', async () => {
-      if (skip) return;
-
+    it.skipIf(skip)('should spawn all 4 personas in parallel and produce findings', async () => {
       const personaNames = ['api-consumer', 'cli-expert', 'gui-tester', 'sdk-developer'];
 
       // Launch all 4 agents in parallel
@@ -362,8 +346,8 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       }
     }, 600000); // 10 min — all run in parallel so wall time is max of 4
 
-    it('should produce API persona findings and reports', () => {
-      if (skip || !agentResults?.has('api-consumer')) return;
+    it.skipIf(skip)('should produce API persona findings and reports', () => {
+      if (!agentResults?.has('api-consumer')) return;
 
       const { sessionId } = agentResults.get('api-consumer')!;
       const results = getSessionResults(testProject.dir, sessionId, 'api-consumer');
@@ -375,8 +359,8 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       expect(results.auditEvents.length).toBeGreaterThan(0);
     });
 
-    it('should produce CLI persona findings and reports', () => {
-      if (skip || !agentResults?.has('cli-expert')) return;
+    it.skipIf(skip)('should produce CLI persona findings and reports', () => {
+      if (!agentResults?.has('cli-expert')) return;
 
       const { sessionId } = agentResults.get('cli-expert')!;
       const results = getSessionResults(testProject.dir, sessionId, 'cli-expert');
@@ -386,8 +370,8 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       expect(results.reports.every(r => r.reporting_agent === 'feedback-cli-expert')).toBe(true);
     });
 
-    it('should produce GUI persona findings and reports', () => {
-      if (skip || !agentResults?.has('gui-tester')) return;
+    it.skipIf(skip)('should produce GUI persona findings and reports', () => {
+      if (!agentResults?.has('gui-tester')) return;
 
       const { sessionId } = agentResults.get('gui-tester')!;
       const results = getSessionResults(testProject.dir, sessionId, 'gui-tester');
@@ -398,8 +382,8 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       expect(results.auditEvents.length).toBeGreaterThan(0);
     });
 
-    it('should produce SDK persona findings and reports', () => {
-      if (skip || !agentResults?.has('sdk-developer')) return;
+    it.skipIf(skip)('should produce SDK persona findings and reports', () => {
+      if (!agentResults?.has('sdk-developer')) return;
 
       const { sessionId } = agentResults.get('sdk-developer')!;
       const results = getSessionResults(testProject.dir, sessionId, 'sdk-developer');
@@ -410,8 +394,8 @@ describe('Feedback System E2E (Real Claude Agents)', () => {
       expect(results.auditEvents.length).toBeGreaterThan(0);
     });
 
-    it('should have cross-persona reports in the shared database', async () => {
-      if (skip || !agentResults || agentResults.size < 2) return;
+    it.skipIf(skip)('should have cross-persona reports in the shared database', async () => {
+      if (!agentResults || agentResults.size < 2) return;
 
       const Database = (await import('better-sqlite3')).default;
       const reportsDb = new Database(testProject.reportsDbPath, { readonly: true });

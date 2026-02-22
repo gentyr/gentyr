@@ -53,6 +53,17 @@ Each integration has three components:
 2. **Backend Connector** (API Integrator) - Official API integration
 3. **Guide** (Credential Setup Flow) - Step-by-step user guide
 
+## E2E Testing
+
+**NEVER run E2E tests via CLI** (`npx playwright test`, `pnpm test:e2e`, etc.).
+Always use MCP tools — the MCP server handles credential injection from 1Password:
+
+- `mcp__playwright__run_tests` — Run Playwright E2E tests
+- `mcp__playwright__seed_data` — Seed test database
+- `mcp__playwright__get_report` — View last test report
+
+Running tests via CLI bypasses credential resolution — tests fail or skip silently.
+
 ## Task Management (MCP Database)
 
 This project uses an SQLite database (`.claude/todo.db`) via MCP tools.

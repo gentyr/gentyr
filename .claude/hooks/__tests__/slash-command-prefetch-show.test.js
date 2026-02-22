@@ -375,7 +375,6 @@ describe('Slash Command Prefetch - /show Integration', () => {
 
     // Should have handlers for all commands including show
     const commands = [
-      'restart-session',
       'cto-report',
       'deputy-cto',
       'toggle-automation',

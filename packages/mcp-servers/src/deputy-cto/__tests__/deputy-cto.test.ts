@@ -2131,28 +2131,45 @@ describe('Deputy-CTO Server', () => {
     });
 
     describe('getPendingCountTool() triage count', () => {
-      // Helper mirroring getPendingCountTool logic
-      const getPendingCountTool = () => {
+      // Helper mirroring getPendingCountTool logic.
+      // Triage count is simulated (production reads from a separate reports DB).
+      const getPendingCountTool = (pendingTriageCount: number = 0) => {
         const pendingCount = (db.prepare(
           "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
         ).get() as { count: number }).count;
         const rejectionCount = (db.prepare(
           "SELECT COUNT(*) as count FROM questions WHERE type = 'rejection' AND status = 'pending'"
         ).get() as { count: number }).count;
-        // In tests, simulate triage count via a parameter since it uses a separate DB
-        return { pending_count: pendingCount, rejection_count: rejectionCount };
+        return {
+          pending_count: pendingCount,
+          rejection_count: rejectionCount,
+          pending_triage_count: pendingTriageCount,
+          commits_blocked: pendingCount > 0 || pendingTriageCount > 0,
+        };
       };
 
       it('should return pending_triage_count in result', () => {
-        // The actual server returns pending_triage_count from the reports DB.
-        // This test verifies the type contract: the field exists in the return shape.
-        const result = getPendingCountTool();
+        const result = getPendingCountTool(3);
 
-        // Verify base fields exist
-        expect(result).toHaveProperty('pending_count');
-        expect(result).toHaveProperty('rejection_count');
-        expect(typeof result.pending_count).toBe('number');
-        expect(typeof result.rejection_count).toBe('number');
+        expect(result).toHaveProperty('pending_triage_count');
+        expect(result.pending_triage_count).toBe(3);
+        expect(result.commits_blocked).toBe(true);
+      });
+
+      it('should not block commits when no pending items exist', () => {
+        const result = getPendingCountTool(0);
+
+        expect(result.pending_count).toBe(0);
+        expect(result.pending_triage_count).toBe(0);
+        expect(result.commits_blocked).toBe(false);
+      });
+
+      it('should block commits when only triage items are pending', () => {
+        const result = getPendingCountTool(1);
+
+        expect(result.pending_count).toBe(0);
+        expect(result.pending_triage_count).toBe(1);
+        expect(result.commits_blocked).toBe(true);
       });
 
       it('should block commits when pending questions exist', () => {
@@ -2165,6 +2182,7 @@ describe('Deputy-CTO Server', () => {
 
         const result = getPendingCountTool();
         expect(result.pending_count).toBe(1);
+        expect(result.commits_blocked).toBe(true);
       });
     });
 

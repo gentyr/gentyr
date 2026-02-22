@@ -293,7 +293,6 @@ describe('Slash Command Prefetch - /product-manager Integration', () => {
 
     // Should have handlers for all commands including product-manager
     const commands = [
-      'restart-session',
       'cto-report',
       'deputy-cto',
       'toggle-automation',

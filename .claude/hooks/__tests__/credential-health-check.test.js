@@ -490,10 +490,10 @@ describe('credential-health-check.js - Unit Tests', () => {
         'Must check if there are missing keys'
       );
 
-      // Should output message with count
+      // Should output message with count (may be prefixed with desyncPrefix)
       assert.match(
         hookCode,
-        /output\(`GENTYR: \$\{missingKeys\.length\}/,
+        /output\(`\$\{desyncPrefix\}GENTYR: \$\{missingKeys\.length\}/,
         'Must include missing key count in message'
       );
 
@@ -567,7 +567,7 @@ describe('credential-health-check.js - Unit Tests', () => {
       // Should output message on failure
       assert.match(
         hookCode,
-        /\} catch \{[\s\S]*?output\(['"].*1Password.*not authenticated/,
+        /\} catch \{[\s\S]*?output\([`'"].*1Password.*not authenticated/,
         'Must output message when 1Password is not authenticated'
       );
 
@@ -586,22 +586,22 @@ describe('credential-health-check.js - Unit Tests', () => {
       );
     });
 
-    it('should output null when 1Password is authenticated', () => {
+    it('should output null (or desync warning) when 1Password is authenticated', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // Should call output(null) when op whoami succeeds
-      const opBlock = hookCode.match(/try \{[\s\S]*?execFileSync\(['"]op['"][\s\S]*?output\(null\)/);
-      assert.ok(opBlock, 'Must call output(null) when 1Password is authenticated');
+      // Should call output(desyncPrefix || null) when op whoami succeeds
+      const opBlock = hookCode.match(/try \{[\s\S]*?execFileSync\(['"]op['"][\s\S]*?output\(desyncPrefix \|\| null\)/);
+      assert.ok(opBlock, 'Must call output(desyncPrefix || null) when 1Password is authenticated');
     });
 
-    it('should output null when no op:// references exist', () => {
+    it('should output null (or desync warning) when no op:// references exist', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
       // Should have else branch for when !hasOpRefs
       assert.match(
         hookCode,
-        /\} else \{[\s\S]*?output\(null\)/,
-        'Must call output(null) when no op:// references exist'
+        /\} else \{[\s\S]*?output\(desyncPrefix \|\| null\)/,
+        'Must call output(desyncPrefix || null) when no op:// references exist'
       );
     });
   });
@@ -681,6 +681,170 @@ describe('credential-health-check.js - Unit Tests', () => {
         hookCode,
         /console\.log\(/,
         'Must output to stdout via console.log'
+      );
+    });
+  });
+
+  describe('OP Token Desync Detection', () => {
+    it('should capture shellOpToken before .mcp.json overwrites process.env', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // shellOpToken must be captured before the .mcp.json block sets process.env
+      const shellCapture = hookCode.indexOf('const shellOpToken = process.env.OP_SERVICE_ACCOUNT_TOKEN');
+      const mcpOverwrite = hookCode.indexOf('process.env.OP_SERVICE_ACCOUNT_TOKEN = server.env.OP_SERVICE_ACCOUNT_TOKEN');
+      assert.ok(shellCapture > -1, 'Must capture shellOpToken');
+      assert.ok(mcpOverwrite > -1, 'Must overwrite process.env from .mcp.json');
+      assert.ok(
+        shellCapture < mcpOverwrite,
+        'shellOpToken must be captured BEFORE .mcp.json overwrites process.env'
+      );
+    });
+
+    it('should compare shellOpToken with mcpOpToken', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // Must compare shell token with server.env token
+      assert.match(
+        hookCode,
+        /shellOpToken && shellOpToken !== server\.env\.OP_SERVICE_ACCOUNT_TOKEN/,
+        'Must only flag desync when both tokens exist and differ'
+      );
+    });
+
+    it('should not expose token values in desync warning', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // The desync warning must never expose full tokens — uses a fixed message without token values
+      assert.match(
+        hookCode,
+        /OP_SERVICE_ACCOUNT_TOKEN in shell differs from \.mcp\.json/,
+        'Desync warning must describe the mismatch without exposing full tokens'
+      );
+    });
+
+    it('should mention op run as affected pattern in desync context', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // The desync warning should mention setup.sh as the fix
+      assert.match(
+        hookCode,
+        /setup\.sh --path/,
+        'Desync warning must mention setup.sh --path as the fix'
+      );
+    });
+
+    it('should only warn when both tokens exist and differ', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // Must check shellOpToken is truthy before comparing
+      assert.match(
+        hookCode,
+        /if \(shellOpToken && shellOpToken !== /,
+        'Must guard with shellOpToken truthiness check (no warn when shell token is empty)'
+      );
+    });
+
+    it('should declare opTokenDesync flag and use it in final output', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // Must declare opTokenDesync
+      assert.match(
+        hookCode,
+        /let opTokenDesync = false/,
+        'Must declare opTokenDesync flag initialized to false'
+      );
+
+      // Must build desyncPrefix from opTokenDesync
+      assert.match(
+        hookCode,
+        /const desyncPrefix = opTokenDesync/,
+        'Must build desyncPrefix from opTokenDesync flag'
+      );
+
+      // desyncPrefix must be used in output calls
+      assert.match(
+        hookCode,
+        /output\(`\$\{desyncPrefix\}/,
+        'Must use desyncPrefix in output messages'
+      );
+
+      assert.match(
+        hookCode,
+        /output\(desyncPrefix \|\| null\)/,
+        'Must use desyncPrefix || null for silent-path outputs'
+      );
+    });
+
+    it('should set opTokenDesync = true before overwriting process.env in the same if block', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // Both assignments must be inside the same if (server.env.OP_SERVICE_ACCOUNT_TOKEN) block.
+      // Verify ordering: opTokenDesync = true must appear before process.env overwrite.
+      const desyncAssign = hookCode.indexOf('opTokenDesync = true');
+      const envOverwrite = hookCode.indexOf('process.env.OP_SERVICE_ACCOUNT_TOKEN = server.env.OP_SERVICE_ACCOUNT_TOKEN');
+
+      assert.ok(desyncAssign > -1, 'Must assign opTokenDesync = true');
+      assert.ok(envOverwrite > -1, 'Must overwrite process.env.OP_SERVICE_ACCOUNT_TOKEN');
+      assert.ok(
+        desyncAssign < envOverwrite,
+        'opTokenDesync = true must be set BEFORE process.env is overwritten so the comparison uses the original shell value'
+      );
+    });
+
+    it('should produce empty string (not null) when opTokenDesync is false so || null fallback works', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // The ternary must yield '' (falsy string) on the false branch so that
+      // output(desyncPrefix || null) correctly passes null through to suppress output.
+      // A null/undefined desyncPrefix would still satisfy || null, but template literal
+      // interpolation would produce "null" or "undefined" in the missing-keys message.
+      //
+      // The ternary spans multiple lines:
+      //   const desyncPrefix = opTokenDesync
+      //     ? '...'
+      //     : '';
+      // We match across lines with a pattern that confirms the false branch is ''.
+      assert.match(
+        hookCode,
+        /const desyncPrefix = opTokenDesync[\s\S]*?:\s*'';/,
+        "desyncPrefix ternary false branch must be an empty string literal ('') not null or undefined"
+      );
+    });
+
+    it('should prepend desyncPrefix in the 1Password-not-authenticated error message', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // When op whoami fails AND opTokenDesync is true, the user must see both
+      // the desync warning and the 1Password error in one message.
+      assert.match(
+        hookCode,
+        /output\(`\$\{desyncPrefix\}GENTYR: 1Password is not authenticated/,
+        'Must prepend desyncPrefix to the 1Password-not-authenticated error message'
+      );
+    });
+
+    it('should guard mcpEnvKeys population against empty-string env values', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // Empty-string env values in .mcp.json must NOT satisfy missing-key resolution.
+      // The guard `if (server.env[k])` (truthy check) prevents blank strings from
+      // being added to mcpEnvKeys and incorrectly masking missing credentials.
+      assert.match(
+        hookCode,
+        /if \(server\.env\[k\]\)\s*mcpEnvKeys\.add\(k\)/,
+        'Must guard mcpEnvKeys.add with a truthy check to exclude empty-string env values'
+      );
+    });
+
+    it('should apply desyncPrefix to missing-credentials message even when keys are absent', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // The missing-keys branch uses template literal with desyncPrefix so the user
+      // sees the desync warning alongside the missing-credentials notice.
+      assert.match(
+        hookCode,
+        /output\(`\$\{desyncPrefix\}GENTYR: \$\{missingKeys\.length\} credential/,
+        'Must include desyncPrefix in the missing-credentials output message'
       );
     });
   });

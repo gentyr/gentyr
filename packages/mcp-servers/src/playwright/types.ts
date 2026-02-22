@@ -172,6 +172,7 @@ export interface RunTestsResult {
   skipped: number;
   duration: string;
   output: string;
+  error?: string;
 }
 
 export interface SeedDataResult {

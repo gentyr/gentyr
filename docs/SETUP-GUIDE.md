@@ -49,6 +49,17 @@ These instructions are frequently consumed by AI agents using browser automation
 6. Copy the service account token
 7. The setup command will inject this into your MCP config
 
+**Shell profile sync**: When you run `setup.sh --op-token <TOKEN>`, the installer writes a managed block to `~/.zshrc` (or `~/.bashrc`) so that subprocesses spawned from your shell inherit the token automatically:
+
+```
+# BEGIN GENTYR OP
+# 1Password Service Account Token (managed by GENTYR setup.sh — do not edit manually)
+export OP_SERVICE_ACCOUNT_TOKEN="<token>"
+# END GENTYR OP
+```
+
+This block is updated on reinstall and removed on uninstall. `.mcp.json` is always the source of truth. If they ever drift, `credential-health-check.js` warns at session start and `setup-validate.js` reports a `shellSync` failure.
+
 ## Phase 2: GitHub Token
 
 1. Go to https://github.com/settings/tokens

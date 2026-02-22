@@ -152,7 +152,7 @@ describe('setup-validate.js - Code Structure', () => {
 
     const expectedServices = [
       'vercel', 'render', 'github', 'cloudflare',
-      'supabase', 'resend', 'elastic', 'codecov', 'onepassword',
+      'supabase', 'resend', 'elastic', 'codecov', 'onepassword', 'shellSync',
     ];
 
     for (const service of expectedServices) {
@@ -353,7 +353,7 @@ describe('JSON Output Schema', { concurrency: true }, () => {
     }
   });
 
-  it('should include all 9 expected services in output', async () => {
+  it('should include all 10 expected services in output', async () => {
     const testProject = createTestProject({
       withVaultMappings: true,
       mappings: {},
@@ -364,14 +364,14 @@ describe('JSON Output Schema', { concurrency: true }, () => {
 
       const expectedServices = [
         'vercel', 'render', 'github', 'cloudflare',
-        'supabase', 'resend', 'elastic', 'codecov', 'onepassword',
+        'supabase', 'resend', 'elastic', 'codecov', 'onepassword', 'shellSync',
       ];
 
       for (const service of expectedServices) {
         assert.ok(result.json.services[service], `${service} must be in output`);
       }
 
-      assert.strictEqual(result.json.summary.totalServices, 9, 'Should have 9 total services');
+      assert.strictEqual(result.json.summary.totalServices, 10, 'Should have 10 total services');
     } finally {
       testProject.cleanup();
     }
@@ -562,7 +562,7 @@ describe('Summary Calculation', { concurrency: true }, () => {
     }
   });
 
-  it('should have totalServices equal to 9', async () => {
+  it('should have totalServices equal to 10', async () => {
     const testProject = createTestProject({
       withVaultMappings: true,
       mappings: {},
@@ -571,7 +571,7 @@ describe('Summary Calculation', { concurrency: true }, () => {
     try {
       const result = await runSetupValidate(testProject.path);
 
-      assert.strictEqual(result.json.summary.totalServices, 9, 'Should validate 9 services');
+      assert.strictEqual(result.json.summary.totalServices, 10, 'Should validate 10 services');
     } finally {
       testProject.cleanup();
     }
@@ -602,6 +602,7 @@ describe('Service Validator Credential Keys', { concurrency: true }, () => {
         elastic: ['ELASTIC_API_KEY'],
         codecov: ['CODECOV_TOKEN'],
         onepassword: [],
+        shellSync: [],
       };
 
       for (const [service, keys] of Object.entries(expectedKeys)) {
@@ -940,5 +941,380 @@ describe('validateResend() implementation', () => {
     // Verify pass status includes domain count
     assert.match(code, /status:\s*'pass'.*full access.*domain/i,
       'validateResend must return pass status with domain count for full access');
+  });
+});
+
+// ============================================================================
+// validateShellSync() Tests
+// ============================================================================
+
+describe('validateShellSync() implementation', () => {
+  const SCRIPT_PATH = path.join(__dirname, '..', 'setup-validate.js');
+
+  it('should define validateShellSync function', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /function validateShellSync\(\)/,
+      'Must define validateShellSync function');
+  });
+
+  it('should use CLAUDE_PROJECT_DIR or cwd to locate .mcp.json', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    // validateShellSync must resolve projectDir the same way as the rest of the script
+    assert.match(code, /process\.env\.CLAUDE_PROJECT_DIR \|\| process\.cwd\(\)/,
+      'validateShellSync must use CLAUDE_PROJECT_DIR with cwd fallback');
+  });
+
+  it('should read .mcp.json to get the source-of-truth token', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /const mcpPath = path\.join\(projectDir,\s*['"]\.mcp\.json['"]\)/,
+      'validateShellSync must construct mcpPath from projectDir');
+
+    assert.match(code, /JSON\.parse\(fs\.readFileSync\(mcpPath/,
+      'validateShellSync must parse .mcp.json');
+  });
+
+  it('should return warn status when .mcp.json cannot be read', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /status:\s*'warn',\s*message:\s*'Could not read \.mcp\.json/,
+      'validateShellSync must return warn when .mcp.json is unreadable');
+  });
+
+  it('should return warn status when no OP_SERVICE_ACCOUNT_TOKEN in .mcp.json', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /status:\s*'warn',\s*message:\s*'No OP_SERVICE_ACCOUNT_TOKEN in \.mcp\.json'/,
+      'validateShellSync must return warn when .mcp.json has no OP token');
+  });
+
+  it('should look for .zshrc before .bashrc', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    // .zshrc check must appear before .bashrc check in the fs.existsSync ternary
+    const zshrcIdx = code.indexOf('.zshrc');
+    const bashrcIdx = code.indexOf('.bashrc');
+    assert.ok(zshrcIdx > -1, 'Must reference .zshrc');
+    assert.ok(bashrcIdx > -1, 'Must reference .bashrc');
+    assert.ok(zshrcIdx < bashrcIdx, 'Must prefer .zshrc over .bashrc (check .zshrc first)');
+  });
+
+  it('should return warn when no .zshrc or .bashrc is found', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /status:\s*'warn',\s*message:\s*'No \.zshrc or \.bashrc found'/,
+      'validateShellSync must return warn when no shell profile exists');
+
+    assert.match(code, /remediation:.*setup\.sh.*shell profile/i,
+      'validateShellSync must provide remediation for missing shell profile');
+  });
+
+  it('should return warn when shell profile cannot be read', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /status:\s*'warn',\s*message:.*Could not read/,
+      'validateShellSync must return warn when shell profile is unreadable');
+  });
+
+  it('should check for BEGIN GENTYR OP and END GENTYR OP markers', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /# BEGIN GENTYR OP/,
+      'validateShellSync must check for BEGIN GENTYR OP marker');
+    assert.match(code, /# END GENTYR OP/,
+      'validateShellSync must check for END GENTYR OP marker');
+  });
+
+  it('should return fail when unmanaged OP export exists outside GENTYR block', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /export OP_SERVICE_ACCOUNT_TOKEN=/,
+      'validateShellSync must detect unmanaged export');
+
+    assert.match(code, /status:\s*'fail',\s*message:\s*'Unmanaged OP_SERVICE_ACCOUNT_TOKEN in shell profile/,
+      'validateShellSync must return fail for unmanaged export');
+
+    assert.match(code, /remediation:.*setup\.sh.*managed block/i,
+      'validateShellSync must provide remediation for unmanaged export');
+  });
+
+  it('should return fail when no GENTYR OP block exists at all', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /status:\s*'fail',\s*message:\s*'No GENTYR OP block in shell profile'/,
+      'validateShellSync must return fail when GENTYR block is absent');
+
+    assert.match(code, /remediation:.*setup\.sh.*managed OP block/i,
+      'validateShellSync must provide remediation for missing block');
+  });
+
+  it('should extract token from managed block via regex', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.ok(code.includes('# BEGIN GENTYR OP') && code.includes('OP_SERVICE_ACCOUNT_TOKEN="?([^"\\s]+)"?'),
+      'validateShellSync must parse token from GENTYR block with a regex capture group that handles optional quotes');
+  });
+
+  it('should return fail when GENTYR block exists but token cannot be parsed', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /status:\s*'fail',\s*message:\s*'GENTYR OP block found but could not parse token'/,
+      'validateShellSync must return fail when block regex does not match');
+
+    assert.match(code, /remediation:.*setup\.sh.*regenerate managed block/i,
+      'validateShellSync must provide remediation for unparseable block');
+  });
+
+  it('should return pass when shell token matches .mcp.json token', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /shellToken === mcpToken/,
+      'validateShellSync must compare extracted shell token with mcp token');
+
+    assert.match(code, /status:\s*'pass',\s*message:.*Shell profile in sync with \.mcp\.json/,
+      'validateShellSync must return pass when tokens match');
+  });
+
+  it('should return fail when shell token differs from .mcp.json token', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /status:\s*'fail',\s*message:\s*'Shell OP token differs from \.mcp\.json/,
+      'validateShellSync must return fail when shell token does not match .mcp.json');
+
+    assert.match(code, /remediation:.*setup\.sh.*re-sync/i,
+      'validateShellSync must provide remediation for token mismatch');
+  });
+
+  it('should be included in SERVICE_VALIDATORS registry', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(code, /name:\s*['"]shellSync['"]/,
+      'shellSync must be registered in SERVICE_VALIDATORS');
+
+    // Verify it uses validateShellSync
+    assert.match(code, /validate:\s*validateShellSync/,
+      'shellSync entry must reference validateShellSync as its validate function');
+  });
+
+  it('should have empty credentialKeys array (no required credentials)', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    // The shellSync entry in SERVICE_VALIDATORS must have credentialKeys: []
+    // so it is never skipped for missing credentials.
+    const shellSyncBlock = code.match(/name:\s*['"]shellSync['"][\s\S]*?credentialKeys:\s*\[\]/);
+    assert.ok(shellSyncBlock, 'shellSync must have credentialKeys: [] to avoid being skipped');
+  });
+});
+
+// ============================================================================
+// shellSync Integration Tests
+// ============================================================================
+
+describe('shellSync output in JSON', { concurrency: true }, () => {
+  it('should include shellSync in services output', async () => {
+    const testProject = createTestProject({
+      withVaultMappings: true,
+      mappings: {},
+    });
+
+    try {
+      const result = await runSetupValidate(testProject.path);
+
+      assert.ok(result.json, 'Must have JSON output');
+      assert.ok(result.json.services.shellSync, 'shellSync must appear in services output');
+    } finally {
+      testProject.cleanup();
+    }
+  });
+
+  it('should have status and message on shellSync result', async () => {
+    const testProject = createTestProject({
+      withVaultMappings: true,
+      mappings: {},
+    });
+
+    try {
+      const result = await runSetupValidate(testProject.path);
+
+      const { shellSync } = result.json.services;
+      assert.ok(
+        ['pass', 'fail', 'warn', 'skip'].includes(shellSync.status),
+        `shellSync.status must be one of: pass, fail, warn, skip (got: ${shellSync.status})`
+      );
+      assert.strictEqual(typeof shellSync.message, 'string', 'shellSync.message must be string');
+    } finally {
+      testProject.cleanup();
+    }
+  });
+
+  it('should return a warn status when HOME has no .zshrc or .bashrc', async () => {
+    const testProject = createTestProject({
+      withVaultMappings: true,
+      mappings: {},
+    });
+
+    // Create a temp HOME with no shell profiles to force the warn path
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-home-'));
+    try {
+      // Create a .mcp.json so validateShellSync gets past the mcp-read stage
+      const mcpContent = {
+        mcpServers: {
+          onepassword: {
+            command: 'node',
+            args: ['op-server.js'],
+            env: { OP_SERVICE_ACCOUNT_TOKEN: 'ops_test_token_abc' },
+          },
+        },
+      };
+      fs.writeFileSync(path.join(testProject.path, '.mcp.json'), JSON.stringify(mcpContent, null, 2));
+
+      const result = await runSetupValidate(testProject.path, { HOME: fakeHome });
+
+      assert.ok(result.json, 'Must have JSON output');
+      const { shellSync } = result.json.services;
+
+      // With no .zshrc or .bashrc in fakeHome, shellSync must warn
+      assert.strictEqual(shellSync.status, 'warn', 'Should warn when HOME has no shell profiles');
+      assert.match(shellSync.message, /No \.zshrc or \.bashrc found/,
+        'Message must indicate no shell profile was found');
+    } finally {
+      testProject.cleanup();
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it('should return fail status when shell profile has unmanaged OP export', async () => {
+    const testProject = createTestProject({
+      withVaultMappings: true,
+      mappings: {},
+    });
+
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-home-'));
+    try {
+      // Create .mcp.json with token
+      const mcpToken = 'ops_mcp_token_xyz';
+      const mcpContent = {
+        mcpServers: {
+          onepassword: {
+            command: 'node',
+            args: ['op-server.js'],
+            env: { OP_SERVICE_ACCOUNT_TOKEN: mcpToken },
+          },
+        },
+      };
+      fs.writeFileSync(path.join(testProject.path, '.mcp.json'), JSON.stringify(mcpContent, null, 2));
+
+      // Create a .zshrc with unmanaged export (no GENTYR block)
+      const zshrc = path.join(fakeHome, '.zshrc');
+      fs.writeFileSync(zshrc, 'export OP_SERVICE_ACCOUNT_TOKEN=some_old_token\n');
+
+      const result = await runSetupValidate(testProject.path, { HOME: fakeHome });
+
+      assert.ok(result.json, 'Must have JSON output');
+      const { shellSync } = result.json.services;
+
+      assert.strictEqual(shellSync.status, 'fail', 'Should fail for unmanaged OP export');
+      assert.match(shellSync.message, /Unmanaged OP_SERVICE_ACCOUNT_TOKEN/,
+        'Message must describe the unmanaged export condition');
+    } finally {
+      testProject.cleanup();
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it('should return fail when GENTYR block token differs from .mcp.json', async () => {
+    const testProject = createTestProject({
+      withVaultMappings: true,
+      mappings: {},
+    });
+
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-home-'));
+    try {
+      const mcpToken = 'ops_mcp_current_token';
+      const staleToken = 'ops_stale_token_from_last_install';
+
+      // .mcp.json uses mcpToken
+      const mcpContent = {
+        mcpServers: {
+          onepassword: {
+            command: 'node',
+            args: ['op-server.js'],
+            env: { OP_SERVICE_ACCOUNT_TOKEN: mcpToken },
+          },
+        },
+      };
+      fs.writeFileSync(path.join(testProject.path, '.mcp.json'), JSON.stringify(mcpContent, null, 2));
+
+      // .zshrc has a GENTYR block with a different (stale) token
+      const zshrc = path.join(fakeHome, '.zshrc');
+      fs.writeFileSync(zshrc, [
+        '# some other config',
+        '',
+        '# BEGIN GENTYR OP',
+        '# 1Password Service Account Token (managed by GENTYR setup.sh — do not edit manually)',
+        `export OP_SERVICE_ACCOUNT_TOKEN=${staleToken}`,
+        '# END GENTYR OP',
+        '',
+      ].join('\n'));
+
+      const result = await runSetupValidate(testProject.path, { HOME: fakeHome });
+
+      assert.ok(result.json, 'Must have JSON output');
+      const { shellSync } = result.json.services;
+
+      assert.strictEqual(shellSync.status, 'fail', 'Should fail when shell token differs from .mcp.json');
+      assert.match(shellSync.message, /Shell OP token differs from \.mcp\.json/,
+        'Message must describe the token mismatch');
+    } finally {
+      testProject.cleanup();
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it('should return pass when GENTYR block token matches .mcp.json', async () => {
+    const testProject = createTestProject({
+      withVaultMappings: true,
+      mappings: {},
+    });
+
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-home-'));
+    try {
+      const syncedToken = 'ops_synced_token_123';
+
+      // .mcp.json and .zshrc both have the same token
+      const mcpContent = {
+        mcpServers: {
+          onepassword: {
+            command: 'node',
+            args: ['op-server.js'],
+            env: { OP_SERVICE_ACCOUNT_TOKEN: syncedToken },
+          },
+        },
+      };
+      fs.writeFileSync(path.join(testProject.path, '.mcp.json'), JSON.stringify(mcpContent, null, 2));
+
+      const zshrc = path.join(fakeHome, '.zshrc');
+      fs.writeFileSync(zshrc, [
+        '# BEGIN GENTYR OP',
+        '# 1Password Service Account Token (managed by GENTYR setup.sh — do not edit manually)',
+        `export OP_SERVICE_ACCOUNT_TOKEN=${syncedToken}`,
+        '# END GENTYR OP',
+        '',
+      ].join('\n'));
+
+      const result = await runSetupValidate(testProject.path, { HOME: fakeHome });
+
+      assert.ok(result.json, 'Must have JSON output');
+      const { shellSync } = result.json.services;
+
+      assert.strictEqual(shellSync.status, 'pass', 'Should pass when shell token matches .mcp.json');
+      assert.match(shellSync.message, /Shell profile in sync with \.mcp\.json/,
+        'Message must confirm sync status');
+    } finally {
+      testProject.cleanup();
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 });

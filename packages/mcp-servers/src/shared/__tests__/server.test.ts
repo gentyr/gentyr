@@ -343,7 +343,7 @@ describe('McpServer', () => {
       expect(response.error.message).toContain('Unknown tool');
     });
 
-    it('should handle tool errors gracefully', async () => {
+    it('should handle tool errors gracefully with isError flag', async () => {
       const tool: ToolHandler = {
         name: 'failing_tool',
         description: 'A tool that fails',
@@ -368,6 +368,7 @@ describe('McpServer', () => {
       const response = getLastResponse();
       const result = JSON.parse(response.result.content[0].text);
       expect(result.error).toBe('Tool execution failed');
+      expect(response.result.isError).toBe(true);
     });
 
     it('should validate tool call params structure (G003)', async () => {
@@ -439,7 +440,7 @@ describe('McpServer', () => {
       expect(response.error.message).toContain('Unknown method');
     });
 
-    it('should handle internal errors', async () => {
+    it('should handle internal errors with isError flag', async () => {
       const tool: ToolHandler = {
         name: 'error_tool',
         description: 'Tool that throws',
@@ -463,6 +464,56 @@ describe('McpServer', () => {
       expect(response.result).toBeDefined();
       const result = JSON.parse(response.result.content[0].text);
       expect(result.error).toBe('Internal error');
+      expect(response.result.isError).toBe(true);
+    });
+
+    it('should set isError when handler returns object with error property', async () => {
+      const tool: ToolHandler = {
+        name: 'error_return_tool',
+        description: 'Tool that returns an error object',
+        schema: z.object({}),
+        handler: async () => ({
+          error: 'Something went wrong',
+          details: 'More info',
+        }),
+      };
+
+      const server = createTestServer([tool]);
+
+      await sendRequest(server, {
+        jsonrpc: '2.0',
+        id: 16,
+        method: 'tools/call',
+        params: { name: 'error_return_tool', arguments: {} },
+      });
+
+      const response = getLastResponse();
+      expect(response.result).toBeDefined();
+      const result = JSON.parse(response.result.content[0].text);
+      expect(result.error).toBe('Something went wrong');
+      expect(response.result.isError).toBe(true);
+    });
+
+    it('should not set isError when handler returns success object', async () => {
+      const tool: ToolHandler = {
+        name: 'success_tool',
+        description: 'Tool that succeeds',
+        schema: z.object({}),
+        handler: async () => ({ success: true, data: 'result' }),
+      };
+
+      const server = createTestServer([tool]);
+
+      await sendRequest(server, {
+        jsonrpc: '2.0',
+        id: 17,
+        method: 'tools/call',
+        params: { name: 'success_tool', arguments: {} },
+      });
+
+      const response = getLastResponse();
+      expect(response.result).toBeDefined();
+      expect(response.result.isError).toBeUndefined();
     });
   });
 
@@ -874,7 +925,7 @@ describe('McpServer', () => {
       expect(result.error).toContain('Invalid arguments');
     });
 
-    it('should handle tool errors gracefully', async () => {
+    it('should handle tool errors gracefully with isError flag', async () => {
       const tool: ToolHandler = {
         name: 'failing_tool',
         description: 'A tool that fails',
@@ -900,6 +951,7 @@ describe('McpServer', () => {
       expect(response!.result).toBeDefined();
       const result = JSON.parse(response!.result.content[0].text);
       expect(result.error).toBe('Tool execution failed');
+      expect(response!.result.isError).toBe(true);
     });
 
     it('should not write to stdout when using processRequest', async () => {

@@ -49,7 +49,6 @@ async function readStdin() {
 // ============================================================================
 
 const SENTINELS = {
-  'restart-session': '<!-- HOOK:GENTYR:restart-session -->',
   'cto-report': '<!-- HOOK:GENTYR:cto-report -->',
   'deputy-cto': '<!-- HOOK:GENTYR:deputy-cto -->',
   'toggle-automation': '<!-- HOOK:GENTYR:toggle-automation -->',
@@ -67,7 +66,7 @@ const SENTINELS = {
 
 /**
  * Extract the prompt string from raw stdin.
- * UserPromptSubmit hooks receive JSON like {"prompt":"/restart-session",...}
+ * UserPromptSubmit hooks receive JSON like {"prompt":"/cto-report",...}
  * but the expanded .md content contains the sentinel comments.
  * This extracts the raw user input so we can match bare slash commands.
  */
@@ -151,7 +150,7 @@ const SERVICES_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'config', 'servic
 const PRODUCT_MANAGER_DB = path.join(PROJECT_DIR, '.claude', 'state', 'product-manager.db');
 
 // ============================================================================
-// Mode 1: restart-session
+// Session utilities
 // ============================================================================
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -275,75 +274,9 @@ export function detectTerminal() {
   return 'unknown';
 }
 
-function escapeForAppleScript(s) {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
-
-function validateProjectDir(dir) {
-  if (dir.includes("'")) {
-    throw new Error(`Project directory path contains single quotes: ${dir}`);
-  }
-  if (/[\x00-\x1f\x7f]/.test(dir)) {
-    throw new Error('Project directory path contains control characters');
-  }
-}
-
 export function shellEscape(s) {
   if (/^[a-zA-Z0-9._\-/~]+$/.test(s)) return s;
   return `'${s.replace(/'/g, "'\\''")}'`;
-}
-
-export function generateRestartScript(claudePid, sessionId, projectDir, terminal) {
-  const resumeCommand = `cd ${shellEscape(projectDir)} && claude --resume ${sessionId}`;
-
-  const killBlock = `
-sleep 1
-kill -TERM ${claudePid} 2>/dev/null
-for i in $(seq 1 20); do
-  kill -0 ${claudePid} 2>/dev/null || break
-  sleep 0.5
-done
-kill -0 ${claudePid} 2>/dev/null && kill -9 ${claudePid} 2>/dev/null
-sleep 0.5
-`;
-
-  let resumeBlock;
-  if (terminal === 'apple_terminal') {
-    const escaped = escapeForAppleScript(resumeCommand);
-    resumeBlock = `osascript -e 'tell application "Terminal" to do script "${escaped}" in selected tab of front window'`;
-  } else if (terminal === 'iterm') {
-    const escaped = escapeForAppleScript(resumeCommand);
-    resumeBlock = `osascript -e 'tell application "iTerm2" to tell current session of current window to write text "${escaped}"'`;
-  } else {
-    resumeBlock = `echo ""\necho "Claude Code killed. Resume manually with:"\necho "  ${resumeCommand}"\necho ""`;
-  }
-
-  return `#!/bin/bash
-${killBlock}
-${resumeBlock}
-`;
-}
-
-async function handleRestartSession() {
-  const claudePid = getClaudePid();
-  const sessionId = discoverSessionId();
-  validateProjectDir(PROJECT_DIR);
-  const terminal = detectTerminal();
-
-  const script = generateRestartScript(claudePid, sessionId, PROJECT_DIR, terminal);
-  const child = spawn('bash', ['-c', script], { detached: true, stdio: 'ignore' });
-  child.unref();
-
-  const resumeCommand = `cd ${shellEscape(PROJECT_DIR)} && claude --resume ${sessionId}`;
-
-  let stopReason;
-  if (terminal === 'unknown') {
-    stopReason = `Restarting session ${sessionId}. Claude will terminate in ~1s. Resume manually with: ${resumeCommand}`;
-  } else {
-    stopReason = `Restarting session ${sessionId}. Claude will terminate in ~1s and resume automatically.`;
-  }
-
-  console.log(JSON.stringify({ continue: false, stopReason }));
 }
 
 // ============================================================================
@@ -1009,13 +942,10 @@ async function main() {
 
   const prompt = extractPrompt(raw);
 
-  if (matchesCommand(prompt, 'restart-session')) {
-    return handleRestartSession();
-  }
   // Mode 2 handlers — load Database lazily only when needed
   const needsDb = ['cto-report', 'deputy-cto', 'configure-personas', 'spawn-tasks', 'product-manager', 'triage'];
   const matchedCommand = Object.keys(SENTINELS).find(key => matchesCommand(prompt, key));
-  if (matchedCommand && matchedCommand !== 'restart-session') {
+  if (matchedCommand) {
     if (needsDb.includes(matchedCommand)) {
       await getDatabase();
     }
@@ -1064,15 +994,7 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((err) => {
-  // For restart-session failures, surface the error to the user
-  const msg = err?.message || String(err);
-  if (msg.includes('Session') || msg.includes('Claude') || msg.includes('PID')) {
-    console.log(JSON.stringify({
-      continue: false,
-      stopReason: `Session restart failed: ${msg}`,
-    }));
-  }
-  // All other errors: silent exit, Claude falls back to MCP tools
+main().catch(() => {
+  // All errors: silent exit, Claude falls back to MCP tools
   process.exit(0);
 });

@@ -203,18 +203,6 @@ This ensures only the CTO (human user) can approve bypasses - agents cannot trig
 
 ---
 
-### Stop Event
-
-#### `stop-continue-hook.js`
-**Purpose**: Force continuation for spawned task sessions
-
-**Behavior**:
-- For spawned sessions starting with `[Task]`:
-  - First stop: Force one continuation cycle
-  - Subsequent stops: Allow normal stop
-
----
-
 ### Schema Mapping (Federation)
 
 #### `schema-mapper-hook.js`
@@ -563,9 +551,6 @@ See `__tests__/README.md` for details.
 ```bash
 # Todo maintenance
 tail -f .claude/hooks/todo-maintenance-debug.log
-
-# Stop/continue hook
-tail -f .claude/hooks/stop-hook-debug.log
 
 # Hourly automation
 tail -f .claude/hourly-automation.log

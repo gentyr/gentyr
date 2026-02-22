@@ -21,7 +21,7 @@ This plan provides a complete inventory of all .claude-framework components and 
 | **session-events** | `.claude/session-events.db` | Session event logging | `session_events_record`, `session_events_search` |
 | **cto-report** | Multiple sources | Metrics generation | `get_report`, `get_session_metrics`, `get_task_metrics` |
 
-### Hooks (11 automation hooks + 5 utility modules)
+### Hooks (10 automation hooks + 5 utility modules)
 
 | Hook | Trigger | Purpose | Cooldown |
 |------|---------|---------|----------|
@@ -30,7 +30,6 @@ This plan provides a complete inventory of all .claude-framework components and 
 | **cto-notification-hook.js** | UserPromptSubmit | Display CTO status at session start | None |
 | **todo-maintenance.js** | UserPromptSubmit | Auto-spawn todo-processing agent | 15 min |
 | **bypass-approval-hook.js** | UserPromptSubmit | Process "APPROVE BYPASS <code>" messages | None |
-| **stop-continue-hook.js** | Stop | Force continuation for [Task] sessions | None |
 | **antipattern-hunter-hook.js** | Post-Commit | Spawn spec violation hunters | 6 hours |
 | **compliance-checker.js** | Post-Commit | Enforce spec compliance | 7 days per file |
 | **schema-mapper-hook.js** | CLI/Programmatic | Generate schema mappings | 24h per schema |
@@ -181,18 +180,7 @@ node .claude/hooks/cto-notification-hook.js
 ```
 **Verify:** Token file created with 5-minute expiry; bypass proceeds
 
-#### Test 2.4: Stop hook auto-continue
-**Natural Action:** [Task] session tries to stop early
-**Steps:**
-```
-1. Create session JSONL with [Task] as first user message
-2. Run stop-continue-hook.js
-3. First stop: should block
-4. Second stop: should allow
-```
-**Verify:** Task sessions get one continuation; manual sessions stop immediately
-
-#### Test 2.5: Post-commit antipattern-hunter
+#### Test 2.4: Post-commit antipattern-hunter
 **Natural Action:** Commit code, hunters spawn
 **Steps:**
 ```
@@ -423,7 +411,7 @@ rm -f .claude/bypass-approval-token.json
 After all tests, verify:
 
 - [ ] All 8 MCP servers respond correctly to tool calls
-- [ ] All 15 hooks execute without crashes
+- [ ] All 14 hooks execute without crashes
 - [ ] Commit blocking works when CTO items pending
 - [ ] Commit approval flow completes (spawn → review → approve → commit)
 - [ ] Emergency bypass system works end-to-end

@@ -34,7 +34,6 @@ const DEFAULTS = {
   standalone_antipattern_hunter: 180,  // 3 hours
   standalone_compliance_checker: 60,   // 1 hour
   user_feedback: 120,                  // 2 hours
-  session_reviver: 10,                  // 10 minutes
   test_failure_reporter: 120,          // 2h per-suite spawn cooldown
   pre_commit_review: 5,                // 5min approval token expiry
   compliance_checker_file: 10080,      // 7 days in minutes (per-file cooldown)
