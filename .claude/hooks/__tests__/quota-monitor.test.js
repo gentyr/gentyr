@@ -180,111 +180,34 @@ describe('quota-monitor.js - Code Structure', () => {
     });
   });
 
-  describe('Automated session restart via spawn', () => {
-    it('should spawn the claude process for automated session restart', () => {
-      const code = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(
-        code,
-        /spawn\(['"]claude['"]/,
-        'Must spawn "claude" process for automated session restart'
-      );
-    });
-
-    it('should pass --resume flag to the spawned claude process', () => {
-      const code = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(
-        code,
-        /['"]--resume['"]/,
-        'Spawned claude process must receive --resume flag'
-      );
-    });
-
-    it('should pass --dangerously-skip-permissions flag to spawned process', () => {
-      const code = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(
-        code,
-        /['"]--dangerously-skip-permissions['"]/,
-        'Spawned claude process must receive --dangerously-skip-permissions flag'
-      );
-    });
-
-    it('should pass --mcp-config flag pointing at project .mcp.json', () => {
-      const code = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(
-        code,
-        /['"]--mcp-config['"]/,
-        'Spawned claude process must receive --mcp-config flag'
-      );
-
-      assert.match(
-        code,
-        /\.mcp\.json/,
-        'mcp-config path must point to the .mcp.json file'
-      );
-    });
-
-    it('should detach the spawned process so it survives the hook exiting', () => {
-      const code = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(
-        code,
-        /detached:\s*true/,
-        'Spawned child process must be detached'
-      );
-    });
-
-    it('should call child.unref() to allow the hook process to exit', () => {
-      const code = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(
-        code,
-        /child\.unref\(\)/,
-        'Must call child.unref() so the hook process can exit independently'
-      );
-    });
-
-    it('should return continue: false with a stopReason when spawn succeeds for automated session', () => {
+  describe('Seamless rotation (no kill/restart)', () => {
+    it('should return continue: false with stopReason for automated sessions after rotation', () => {
       const code = fs.readFileSync(HOOK_PATH, 'utf8');
 
       assert.match(
         code,
         /continue:\s*false[\s\S]*?stopReason:/,
-        'Must return continue: false with stopReason when automated session is restarted'
+        'Must return continue: false with stopReason for automated sessions'
       );
     });
 
-    it('should include the PID of the spawned process in the stopReason message', () => {
+    it('should return continue: true with systemMessage for interactive sessions after rotation', () => {
       const code = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      assert.match(
-        code,
-        /child\.pid/,
-        'Must include spawned PID in the stopReason message'
-      );
-    });
-
-    it('should fall back to continue: true with systemMessage when spawn fails', () => {
-      const code = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      // After the spawn attempt fails, the hook must fall back gracefully
       assert.match(
         code,
         /continue:\s*true[\s\S]*?systemMessage:/,
-        'Must fall back to continue: true with systemMessage when spawn fails for automated session'
+        'Must return continue: true with systemMessage for interactive sessions'
       );
     });
 
-    it('should distinguish between automated and interactive sessions for restart logic', () => {
+    it('should distinguish between automated and interactive sessions', () => {
       const code = fs.readFileSync(HOOK_PATH, 'utf8');
 
       assert.match(
         code,
         /isAutomated/,
-        'Must use an isAutomated flag to differentiate restart strategy'
+        'Must use an isAutomated flag to differentiate session type'
       );
 
       assert.match(
@@ -293,16 +216,48 @@ describe('quota-monitor.js - Code Structure', () => {
         'Must read CLAUDE_SPAWNED_SESSION env var to detect automated sessions'
       );
     });
-  });
 
-  describe('main() structure integrity', () => {
-    it('should still check the 5-minute throttle before doing any work', () => {
+    it('should NOT spawn new processes (seamless rotation only)', () => {
+      const code = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.doesNotMatch(
+        code,
+        /spawn\(['"]claude['"]/,
+        'Must NOT spawn new claude processes - seamless rotation only'
+      );
+    });
+
+    it('should include rotation audit logging', () => {
       const code = fs.readFileSync(HOOK_PATH, 'utf8');
 
       assert.match(
         code,
-        /CHECK_INTERVAL_MS/,
-        'Must still enforce the 5-minute check interval throttle'
+        /verifyPendingAudit/,
+        'Must include verifyPendingAudit function for post-rotation health checks'
+      );
+
+      assert.match(
+        code,
+        /appendAuditLog/,
+        'Must include appendAuditLog for rotation telemetry'
+      );
+    });
+  });
+
+  describe('main() structure integrity', () => {
+    it('should use adaptive interval instead of fixed CHECK_INTERVAL_MS', () => {
+      const code = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /getAdaptiveInterval/,
+        'Must use getAdaptiveInterval for dynamic throttling'
+      );
+
+      assert.match(
+        code,
+        /ADAPTIVE_INTERVALS/,
+        'Must define ADAPTIVE_INTERVALS for usage-based throttling'
       );
     });
 
@@ -427,26 +382,25 @@ describe('quota-monitor.js - Behavioral Logic', () => {
     });
   });
 
-  describe('Automated session restart logic', () => {
-    it('should build spawnArgs with --resume, sessionId, and --output-format json', () => {
-      // Simulate the spawnArgs construction
-      const sessionId = 'test-session-123';
-      const projectDir = '/path/to/project';
+  describe('Seamless rotation logic', () => {
+    it('should write rotated credentials to Keychain via updateActiveCredentials', () => {
+      const code = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      const spawnArgs = [
-        '--resume', sessionId,
-        '--dangerously-skip-permissions',
-        '--mcp-config', path.join(projectDir, '.mcp.json'),
-        '--output-format', 'json',
-      ];
+      assert.match(
+        code,
+        /updateActiveCredentials\(/,
+        'Must call updateActiveCredentials to persist rotated credentials'
+      );
+    });
 
-      assert.strictEqual(spawnArgs[0], '--resume');
-      assert.strictEqual(spawnArgs[1], sessionId);
-      assert.ok(spawnArgs.includes('--dangerously-skip-permissions'));
-      assert.ok(spawnArgs.includes('--mcp-config'));
-      assert.ok(spawnArgs.some(a => a.endsWith('.mcp.json')));
-      assert.ok(spawnArgs.includes('--output-format'));
-      assert.ok(spawnArgs.includes('json'));
+    it('should create audit record in throttle state after rotation', () => {
+      const code = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /pendingAudit/,
+        'Must create pendingAudit in throttle state for verification'
+      );
     });
   });
 });
