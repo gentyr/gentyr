@@ -240,6 +240,7 @@ Environment=GENTYR_LAUNCHD_SERVICE=true
 Environment=HTTPS_PROXY=http://localhost:18080
 Environment=HTTP_PROXY=http://localhost:18080
 Environment=NO_PROXY=localhost,127.0.0.1
+Environment=NODE_EXTRA_CA_CERTS=$REAL_HOME/.claude/proxy-certs/ca.pem
 $OP_TOKEN_ENV
 StandardOutput=append:$PROJECT_DIR/.claude/hourly-automation.log
 StandardError=append:$PROJECT_DIR/.claude/hourly-automation.log
@@ -482,6 +483,8 @@ EOF
         <string>http://localhost:18080</string>
         <key>NO_PROXY</key>
         <string>localhost,127.0.0.1</string>
+        <key>NODE_EXTRA_CA_CERTS</key>
+        <string>$HOME/.claude/proxy-certs/ca.pem</string>
 $OP_TOKEN_PLIST
     </dict>
 

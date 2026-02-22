@@ -12,11 +12,12 @@ This document describes how.
 
 ## Overview
 
-GENTYR manages API quota across multiple Anthropic accounts through coordinated hooks that handle credential rotation, dynamic throughput adjustment, and session recovery. The system operates at three layers:
+GENTYR manages API quota across multiple Anthropic accounts through coordinated hooks that handle credential rotation, dynamic throughput adjustment, and session recovery. The system operates at four layers:
 
-1. **In-session hooks** - Monitor quota and rotate credentials during active Claude Code sessions
-2. **Background automation** - Orchestrates task spawning, key syncing, and session recovery on a timer
-3. **Dynamic optimization** - Adjusts all automation cooldowns based on projected quota utilization
+1. **Rotation proxy** - Transparent network-level credential swap (localhost:18080 MITM on api.anthropic.com)
+2. **In-session hooks** - Monitor quota and rotate credentials during active Claude Code sessions
+3. **Background automation** - Orchestrates task spawning, key syncing, and session recovery on a timer
+4. **Dynamic optimization** - Adjusts all automation cooldowns based on projected quota utilization
 
 ```
 launchd timer (10 min) ──> hourly-automation.js ──> CTO Activity Gate
@@ -235,6 +236,32 @@ User or system stops session
 
 ---
 
+## Rotation Proxy
+
+Local MITM proxy (`scripts/rotation-proxy.js`) that handles immediate credential swap at the network layer.
+
+```
+Claude Code ──HTTPS_PROXY──> localhost:18080 ──TLS──> api.anthropic.com
+                                    |
+                            reads api-key-rotation.json
+                                    |
+                            on 429: rotate key, retry
+```
+
+**Intercepts** (TLS MITM + Authorization header swap):
+- `api.anthropic.com` — main API
+- `mcp-proxy.anthropic.com` — MCP proxy endpoint
+
+**Passes through transparently** (CONNECT tunnel, no MITM):
+- `platform.claude.com` — OAuth refresh
+- Everything else
+
+**Lifecycle**: KeepAlive launchd service (`com.local.gentyr-rotation-proxy`). Provisioned by `setup-automation-service.sh`. Starts before the automation service. Proxy env vars (`HTTPS_PROXY/HTTP_PROXY/NO_PROXY`) injected into all spawned agent environments.
+
+**Relationship to hook-based rotation**: The proxy handles the actual HTTP-level token swap. Quota-monitor still detects usage thresholds and writes new `active_key_id` to rotation state. Key-sync still refreshes OAuth tokens and writes to Keychain. The proxy reads rotation state on every request, so token swap is immediate — no waiting for SRA or r6T.
+
+---
+
 ## Quota Monitor (PostToolUse)
 
 Runs after every tool call, throttled to 5-minute intervals.
@@ -394,8 +421,9 @@ The `effective` object is computed by the usage optimizer as `default * (1 / fac
 
 | File | Scope | Written By | Read By |
 |------|-------|-----------|---------|
-| `~/.claude/api-key-rotation.json` | User | key-sync, quota-monitor, api-key-watcher | All rotation hooks |
+| `~/.claude/api-key-rotation.json` | User | key-sync, quota-monitor, api-key-watcher | All rotation hooks, rotation-proxy |
 | `~/.claude/.credentials.json` | User | Claude Code | key-sync |
+| `~/.claude/rotation-proxy.log` | User | rotation-proxy | monitor-token-swap (--audit) |
 | `.claude/state/automation-config.json` | Project | usage-optimizer | config-reader (all hooks) |
 | `.claude/state/usage-snapshots.json` | Project | usage-optimizer | usage-optimizer, cto-dashboard |
 | `.claude/state/quota-monitor-state.json` | Project | quota-monitor | quota-monitor |

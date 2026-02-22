@@ -136,6 +136,7 @@ function buildSpawnEnv(agentId) {
     HTTPS_PROXY: 'http://localhost:18080',
     HTTP_PROXY: 'http://localhost:18080',
     NO_PROXY: 'localhost,127.0.0.1',
+    NODE_EXTRA_CA_CERTS: path.join(os.homedir(), '.claude', 'proxy-certs', 'ca.pem'),
   };
 }
 

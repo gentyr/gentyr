@@ -296,6 +296,7 @@ function hasValidBypassDecision() {
       SELECT id, rationale FROM commit_decisions
       WHERE decision = 'approved'
       AND rationale LIKE 'EMERGENCY BYPASS%'
+      AND question_id IS NOT NULL
       AND created_timestamp > ?
       ORDER BY created_timestamp DESC
       LIMIT 1

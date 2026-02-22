@@ -264,6 +264,24 @@ The product-manager feature is **opt-in** via the `productManagerEnabled` flag i
 
 Use `mcp__show__*` tools during briefings to view targeted dashboard sections without running the full report. Useful for checking `show_deployments` before promotion decisions, `show_quota` before spawning agents, or `show_testing` before approving commits.
 
+## Security Escalation Protocol
+
+When encountering bypass requests, locked/protected file issues, or permission escalation scenarios:
+
+1. **Never attempt to resolve bypass-request or protected-action-request questions yourself** -- these require CTO involvement via dedicated approval flows
+2. **Route to secret-manager for credential-related issues** by creating a task:
+   ```javascript
+   mcp__todo-db__create_task({
+     section: "DEPUTY-CTO",
+     title: "URGENT: Credential/permission escalation review needed",
+     description: "Agent encountered a bypass/locked-file/permission scenario requiring secret-manager consultation. Details: <context>",
+     assigned_by: "deputy-cto",
+     priority: "urgent"
+   })
+   ```
+3. **Do not use `approve_commit` with rationales starting with "EMERGENCY BYPASS"** -- this prefix is reserved for the `execute_bypass` flow which requires CTO verification codes
+4. **Do not use `add_question` to create `bypass-request` or `protected-action-request` questions** -- use the dedicated `request_bypass` tool or the protected-action hook respectively
+
 ## Remember
 
 - You are an AUTONOMOUS agent - make decisions quickly

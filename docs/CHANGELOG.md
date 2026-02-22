@@ -1,5 +1,56 @@
 # GENTYR Framework Changelog
 
+## 2026-02-21 - Rotation Proxy (replaces binary patching for credential swap)
+
+### Added
+
+**Rotation proxy server** (`scripts/rotation-proxy.js`):
+- Local MITM proxy on localhost:18080 that intercepts api.anthropic.com and mcp-proxy.anthropic.com
+- Swaps Authorization header with active key from rotation state (`~/.claude/api-key-rotation.json`) on each request
+- On 429 response: marks key exhausted, calls `selectActiveKey()`, retries request (max 2 retries)
+- SSE streaming support for long-running API requests
+- Health endpoint at `GET /__health` - returns active key ID, uptime, request count
+- Structured JSON logging to `~/.claude/rotation-proxy.log` (1MB max with rotation)
+- Runs as launchd KeepAlive service (`com.local.gentyr-rotation-proxy`) — auto-restarts on crash
+
+**TLS certificate generation** (`scripts/generate-proxy-certs.sh`):
+- One-time CA + server cert creation for MITM interception
+- Trusts CA in macOS System Keychain automatically
+- Idempotent: skips if certs already exist; `--remove` cleans up
+
+**Proxy integration in launch points**:
+- `scripts/setup-automation-service.sh`: provisions proxy launchd plist before automation plist; adds `HTTPS_PROXY/HTTP_PROXY/NO_PROXY` to automation environment
+- `scripts/setup.sh`: cert generation in step 5c; shell profile integration (step 6d) with `BEGIN/END GENTYR PROXY` markers; cert removal + profile cleanup on uninstall
+- `.claude/hooks/hourly-automation.js`: `checkProxyHealth()` before agent spawning; proxy env vars in `buildSpawnEnv()`
+- `.claude/hooks/session-reviver.js`: proxy env vars in `buildSpawnEnv()`
+
+### Changed
+
+**Adoption tracking removed** (`.claude/hooks/quota-monitor.js`):
+- Removed `pendingAudit.adopted`, `adoptionCheckCount`, `ADOPTION_CONFIRMED/TIMEOUT` logic (now handled at network layer by proxy)
+- Simplified `pendingAudit` creation; rotation audit logging retained
+
+**Binary patching archived** (`scripts/patch-credential-cache.js`, `scripts/watch-claude-version.js`):
+- `patch-credential-cache.js`: deprecation banner added; no code changes; kept for reference
+- `watch-claude-version.js`: all credential patch logic removed; now only handles Clawd mascot patch on binary updates
+
+### Removed
+
+**Adoption tracking tests** (`.claude/hooks/__tests__/quota-monitor-adoption-tracking.test.js`):
+- Deleted: adoption tracking no longer exists in quota-monitor
+
+### Tests
+
+- Updated `quota-monitor-rotation-audit.test.js`: removed adoption tracking assertions
+- All tests passing: quota-monitor (27), rotation-audit (33), adaptive (42) = 102 total
+
+### Documentation
+
+**Updated files**:
+- `CLAUDE.md` - Rotation Proxy section added; Binary Patch Research marked ARCHIVED; quota-monitor adoption tracking notes removed
+
+---
+
 ## 2026-02-21 - Seamless Credential Rotation + Health Auditing
 
 ### Changed

@@ -168,6 +168,14 @@ describe('Deputy-CTO Server', () => {
       return { error: 'Escalations require a recommendation. Provide a concise statement of what you recommend and why.' };
     }
 
+    // Block agents from creating bypass-request or protected-action-request via add_question
+    if (args.type === 'bypass-request') {
+      return { error: 'Cannot create bypass-request questions via add_question. Use request_bypass instead.' };
+    }
+    if (args.type === 'protected-action-request') {
+      return { error: 'Cannot create protected-action-request questions via add_question. These are created by the protected-action hook.' };
+    }
+
     const id = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
@@ -202,6 +210,15 @@ describe('Deputy-CTO Server', () => {
   };
 
   const approveCommit = (rationale: string) => {
+    // Reject rationales starting with "EMERGENCY BYPASS" — only execute_bypass may use this prefix
+    if (/^EMERGENCY\s+BYPASS/i.test(rationale)) {
+      return {
+        approved: false,
+        decision_id: '',
+        message: 'Cannot use "EMERGENCY BYPASS" prefix in approve_commit rationale. Use request_bypass for emergency bypass requests.',
+      };
+    }
+
     const rejectionCount = getPendingRejectionCount();
     if (rejectionCount > 0) {
       return {
@@ -253,6 +270,115 @@ describe('Deputy-CTO Server', () => {
       question_id: questionId,
       message: `Commit rejected. Question created for CTO (ID: ${questionId}). Commits will be blocked until CTO addresses this.`,
     };
+  };
+
+  const answerQuestion = (args: { id: string; answer: string; decided_by?: string }) => {
+    const question = db.prepare('SELECT * FROM questions WHERE id = ?').get(args.id) as QuestionRow | undefined;
+
+    if (!question) {
+      return { error: `Question not found: ${args.id}` };
+    }
+
+    // Block answering bypass-request and protected-action-request questions via this tool
+    if (question.type === 'bypass-request') {
+      return { error: 'Cannot answer bypass-request questions via answer_question. The CTO must type "APPROVE BYPASS <code>" in chat.' };
+    }
+    if (question.type === 'protected-action-request') {
+      return { error: 'Cannot answer protected-action-request questions via answer_question. Use approve_protected_action or deny_protected_action.' };
+    }
+
+    if (question.status === 'answered') {
+      return {
+        id: args.id,
+        answered: true,
+        message: `Question already answered at ${question.answered_at}`,
+      };
+    }
+
+    const now = new Date().toISOString();
+    const decidedBy = args.decided_by ?? 'cto';
+    db.prepare(`
+      UPDATE questions SET status = 'answered', answer = ?, answered_at = ?, decided_by = ?
+      WHERE id = ?
+    `).run(args.answer, now, decidedBy, args.id);
+
+    return {
+      id: args.id,
+      answered: true,
+      message: `Answer recorded by ${decidedBy}. Use clear_question to remove from queue after implementing.`,
+    };
+  };
+
+  const clearQuestion = (args: { id: string }) => {
+    const question = db.prepare('SELECT * FROM questions WHERE id = ?').get(args.id) as QuestionRow | undefined;
+
+    if (!question) {
+      return { error: `Question not found: ${args.id}` };
+    }
+
+    // Block clearing pending bypass-request and protected-action-request questions
+    if (question.type === 'bypass-request' && question.status === 'pending') {
+      return { error: 'Cannot clear a pending bypass-request. The CTO must type "APPROVE BYPASS <code>". Only answered bypass-requests can be cleared.' };
+    }
+    if (question.type === 'protected-action-request' && question.status === 'pending') {
+      return { error: 'Cannot clear a pending protected-action-request. Use approve_protected_action or deny_protected_action.' };
+    }
+
+    const now = new Date();
+    const cleared_at = now.toISOString();
+    const cleared_timestamp = Math.floor(now.getTime() / 1000);
+
+    db.prepare(`
+      INSERT INTO cleared_questions (id, type, title, description, recommendation, answer, answered_at, decided_by, cleared_at, cleared_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      question.id,
+      question.type,
+      question.title,
+      question.description,
+      question.recommendation ?? null,
+      question.answer ?? null,
+      question.answered_at ?? null,
+      null,
+      cleared_at,
+      cleared_timestamp
+    );
+
+    db.prepare('DELETE FROM questions WHERE id = ?').run(args.id);
+
+    return {
+      id: args.id,
+      cleared: true,
+      message: `Question cleared and archived.`,
+    };
+  };
+
+  // Helper to directly insert a question of any type (bypassing addQuestion guards for test setup)
+  const insertQuestionDirectly = (args: {
+    type: string;
+    title: string;
+    description: string;
+    status?: string;
+  }) => {
+    const id = randomUUID();
+    const now = new Date();
+    const created_at = now.toISOString();
+    const created_timestamp = Math.floor(now.getTime() / 1000);
+
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      args.type,
+      args.status ?? 'pending',
+      args.title,
+      args.description,
+      created_at,
+      created_timestamp
+    );
+
+    return id;
   };
 
   describe('G001 Fail-Closed: getAutonomousConfig()', () => {
@@ -1681,6 +1807,164 @@ describe('Deputy-CTO Server', () => {
       expect(status.ctoGateOpen).toBe(true);
       expect(status.hoursSinceLastBriefing).toBe(0);
       expect(status.lastCtoBriefing).toBe(result.timestamp);
+    });
+  });
+
+  // ==========================================================================
+  // Bypass Security Guards
+  // ==========================================================================
+
+  describe('Bypass Security Guards', () => {
+    describe('approveCommit() EMERGENCY BYPASS guard', () => {
+      it('should reject rationale starting with "EMERGENCY BYPASS"', () => {
+        const result = approveCommit('EMERGENCY BYPASS - skipping review');
+
+        expect(result.approved).toBe(false);
+        expect(result.decision_id).toBe('');
+        expect(result.message).toContain('Cannot use "EMERGENCY BYPASS" prefix');
+      });
+
+      it('should reject case-insensitive "emergency bypass" prefix', () => {
+        const result = approveCommit('emergency bypass - agent forced');
+
+        expect(result.approved).toBe(false);
+        expect(result.message).toContain('Cannot use "EMERGENCY BYPASS" prefix');
+      });
+
+      it('should reject with extra whitespace "EMERGENCY  BYPASS"', () => {
+        const result = approveCommit('EMERGENCY  BYPASS - with extra space');
+
+        expect(result.approved).toBe(false);
+        expect(result.message).toContain('Cannot use "EMERGENCY BYPASS" prefix');
+      });
+
+      it('should allow normal rationales containing "bypass" not at start', () => {
+        const result = approveCommit('Clean commit, no need to bypass any review');
+
+        expect(result.approved).toBe(true);
+        expect(result.decision_id).toBeDefined();
+      });
+
+      it('should allow rationale with "EMERGENCY" not followed by "BYPASS"', () => {
+        const result = approveCommit('EMERGENCY fix for production bug');
+
+        expect(result.approved).toBe(true);
+        expect(result.decision_id).toBeDefined();
+      });
+    });
+
+    describe('answerQuestion() type guards', () => {
+      it('should reject answering bypass-request questions', () => {
+        const questionId = insertQuestionDirectly({
+          type: 'bypass-request',
+          title: 'Bypass needed',
+          description: 'Agent wants to bypass review',
+        });
+
+        const result = answerQuestion({ id: questionId, answer: 'Approved by agent' });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('Cannot answer bypass-request questions');
+        expect((result as { error: string }).error).toContain('APPROVE BYPASS');
+      });
+
+      it('should reject answering protected-action-request questions', () => {
+        const questionId = insertQuestionDirectly({
+          type: 'protected-action-request',
+          title: 'Protected action',
+          description: 'Agent wants to run protected action',
+        });
+
+        const result = answerQuestion({ id: questionId, answer: 'Go ahead' });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('Cannot answer protected-action-request questions');
+        expect((result as { error: string }).error).toContain('approve_protected_action');
+      });
+
+      it('should allow answering normal question types', () => {
+        const questionId = insertQuestionDirectly({
+          type: 'decision',
+          title: 'Which approach?',
+          description: 'Option A or B',
+        });
+
+        const result = answerQuestion({ id: questionId, answer: 'Option A' });
+
+        expect(result).toHaveProperty('answered');
+        expect((result as { answered: boolean }).answered).toBe(true);
+      });
+    });
+
+    describe('clearQuestion() type guards', () => {
+      it('should reject clearing pending bypass-request questions', () => {
+        const questionId = insertQuestionDirectly({
+          type: 'bypass-request',
+          title: 'Bypass needed',
+          description: 'Agent wants to bypass review',
+          status: 'pending',
+        });
+
+        const result = clearQuestion({ id: questionId });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('Cannot clear a pending bypass-request');
+        expect((result as { error: string }).error).toContain('APPROVE BYPASS');
+      });
+
+      it('should reject clearing pending protected-action-request questions', () => {
+        const questionId = insertQuestionDirectly({
+          type: 'protected-action-request',
+          title: 'Protected action',
+          description: 'Agent wants to run protected action',
+          status: 'pending',
+        });
+
+        const result = clearQuestion({ id: questionId });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('Cannot clear a pending protected-action-request');
+      });
+
+      it('should allow clearing answered bypass-request questions', () => {
+        const questionId = insertQuestionDirectly({
+          type: 'bypass-request',
+          title: 'Bypass needed',
+          description: 'CTO approved this bypass',
+          status: 'answered',
+        });
+
+        const result = clearQuestion({ id: questionId });
+
+        expect(result).toHaveProperty('cleared');
+        expect((result as { cleared: boolean }).cleared).toBe(true);
+      });
+    });
+
+    describe('addQuestion() type guards', () => {
+      it('should reject creating bypass-request questions', () => {
+        const result = addQuestion({
+          type: 'bypass-request',
+          title: 'Fake bypass request',
+          description: 'Agent trying to forge a bypass-request',
+        });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('Cannot create bypass-request questions via add_question');
+        expect((result as { error: string }).error).toContain('request_bypass');
+      });
+
+      it('should reject creating protected-action-request questions', () => {
+        const result = addQuestion({
+          type: 'protected-action-request',
+          title: 'Fake protected action',
+          description: 'Agent trying to forge a protected-action-request',
+        });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('Cannot create protected-action-request questions via add_question');
+        expect((result as { error: string }).error).toContain('protected-action hook');
+      });
     });
   });
 });
