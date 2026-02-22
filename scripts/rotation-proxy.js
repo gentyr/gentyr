@@ -203,7 +203,8 @@ function rotateOnExhaustion(exhaustedKeyId) {
 // ---------------------------------------------------------------------------
 
 /**
- * Parse raw HTTP request bytes into { method, path, httpVersion, headers, bodyStart }.
+ * Parse raw HTTP request bytes into { method, path, httpVersion, headers, rawHeaders, bodyStart }.
+ * headers: lowercased keys for lookup. rawHeaders: original [name, value] pairs for rebuilding.
  */
 function parseHttpRequest(buffer) {
   const str = buffer.toString('binary');
@@ -214,13 +215,15 @@ function parseHttpRequest(buffer) {
   const lines = headerSection.split('\r\n');
   const [method, reqPath, httpVersion] = lines[0].split(' ');
 
-  const headers = {};
+  const headers = {};      // lowercased for lookup
+  const rawHeaders = [];   // original casing for rebuild
   for (let i = 1; i < lines.length; i++) {
     const colon = lines[i].indexOf(':');
     if (colon === -1) continue;
-    const name = lines[i].slice(0, colon).trim().toLowerCase();
+    const originalName = lines[i].slice(0, colon).trim();
     const value = lines[i].slice(colon + 1).trim();
-    headers[name] = value;
+    headers[originalName.toLowerCase()] = value;
+    rawHeaders.push([originalName, value]);
   }
 
   return {
@@ -228,24 +231,25 @@ function parseHttpRequest(buffer) {
     path: reqPath,
     httpVersion,
     headers,
+    rawHeaders,
     bodyStart: headerEnd + 4,
   };
 }
 
 /**
  * Reassemble a modified HTTP request buffer with swapped Authorization header.
- * Returns a Buffer.
+ * Preserves original header casing. Returns a Buffer.
  */
 function rebuildRequest(parsed, originalBuffer, newToken) {
   const headerLines = [
     `${parsed.method} ${parsed.path} ${parsed.httpVersion}`,
   ];
 
-  for (const [name, value] of Object.entries(parsed.headers)) {
-    if (name === 'authorization') continue; // strip old auth
+  for (const [name, value] of parsed.rawHeaders) {
+    if (name.toLowerCase() === 'authorization') continue; // strip old auth
     headerLines.push(`${name}: ${value}`);
   }
-  headerLines.push(`authorization: Bearer ${newToken}`);
+  headerLines.push(`Authorization: Bearer ${newToken}`);
   headerLines.push(''); // blank line before body
   headerLines.push('');
 
@@ -496,6 +500,12 @@ function createProxyServer(certs) {
     proxyLog('mitm_intercept', { host: hostname, port });
     clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
 
+    // Push any early data (TLS ClientHello sent before 200 response) back
+    // into the socket's readable stream so TLSSocket sees it during handshake
+    if (head && head.length > 0) {
+      clientSocket.unshift(head);
+    }
+
     const tlsServer = new tls.TLSSocket(clientSocket, {
       isServer: true,
       key: certs.key,
@@ -514,7 +524,11 @@ function createProxyServer(certs) {
     let requestDispatched = false;
 
     tlsServer.on('data', (chunk) => {
-      if (requestDispatched) return; // Only handle first request per tunnel
+      // Intentional: one request per CONNECT tunnel. forwardRequest() closes the
+      // client socket on upstream end, forcing the client to open a new tunnel
+      // for the next request. This sacrifices keep-alive reuse but simplifies
+      // the proxy and ensures every request gets a fresh token lookup.
+      if (requestDispatched) return;
 
       requestBuf = Buffer.concat([requestBuf, chunk]);
 

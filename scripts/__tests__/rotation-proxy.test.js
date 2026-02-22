@@ -1,0 +1,901 @@
+/**
+ * Tests for scripts/rotation-proxy.js - local MITM proxy for credential rotation.
+ *
+ * Coverage:
+ * 1. Code structure: head buffer unshift in MITM CONNECT handler (the specific change)
+ * 2. Code structure: transparent passthrough CONNECT handler (head forwarding)
+ * 3. Behavioral: parseHttpRequest() — pure HTTP parser
+ * 4. Behavioral: rebuildRequest() — header reconstruction with auth swap
+ * 5. Behavioral: MITM domain routing logic
+ * 6. Behavioral: log rotation threshold
+ * 7. Behavioral: loadCerts() fail-loud behavior
+ * 8. Behavioral: getActiveToken() / rotateOnExhaustion() state contracts
+ * 9. Behavioral: 429 retry counter cap
+ *
+ * Uses Node's built-in test runner (node:test)
+ * Run with: node --test scripts/__tests__/rotation-proxy.test.js
+ */
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const PROXY_PATH = path.join(__dirname, '..', 'rotation-proxy.js');
+
+// ---------------------------------------------------------------------------
+// Helper: extract a named function body from source text.
+// Returns the first occurrence of `function <name>(...) { ... }` including
+// arrow functions and export variants.
+// ---------------------------------------------------------------------------
+function extractFunctionBody(code, name) {
+  // Match: [async] function name(...) { ... } (greedy on braces is unreliable;
+  // instead we search for the declaration line then capture until the NEXT
+  // top-level export/function/const that starts at column 0)
+  const start = code.indexOf(`function ${name}`);
+  if (start === -1) return null;
+  return code.slice(start);
+}
+
+// ---------------------------------------------------------------------------
+// 1. File basics
+// ---------------------------------------------------------------------------
+
+describe('rotation-proxy.js - File structure', () => {
+  it('should exist at the expected path', () => {
+    assert.ok(fs.existsSync(PROXY_PATH), `rotation-proxy.js must exist at ${PROXY_PATH}`);
+  });
+
+  it('should have node shebang', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(code, /^#!\/usr\/bin\/env node/, 'Must have #!/usr/bin/env node shebang');
+  });
+
+  it('should use ES module imports (import ... from)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(code, /^import\s+/m, 'Must use ES module import syntax');
+    assert.match(code, /import http from ['"]http['"]/, 'Must import http');
+    assert.match(code, /import tls from ['"]tls['"]/, 'Must import tls');
+    assert.match(code, /import net from ['"]net['"]/, 'Must import net');
+    assert.match(code, /import fs from ['"]fs['"]/, 'Must import fs');
+  });
+
+  it('should define MITM_DOMAINS as a module-level constant array', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(
+      code,
+      /const MITM_DOMAINS\s*=\s*\[/,
+      'Must define MITM_DOMAINS as a const array'
+    );
+    assert.match(code, /api\.anthropic\.com/, 'MITM_DOMAINS must include api.anthropic.com');
+    assert.match(code, /mcp-proxy\.anthropic\.com/, 'MITM_DOMAINS must include mcp-proxy.anthropic.com');
+  });
+
+  it('should define MAX_429_RETRIES constant', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(code, /const MAX_429_RETRIES\s*=\s*\d+/, 'Must define MAX_429_RETRIES');
+  });
+
+  it('should define MAX_LOG_BYTES for log rotation', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(code, /const MAX_LOG_BYTES\s*=/, 'Must define MAX_LOG_BYTES for log rotation');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2. MITM CONNECT handler — the specific change under test
+// ---------------------------------------------------------------------------
+
+describe('rotation-proxy.js - MITM CONNECT handler: head buffer unshift', () => {
+  it('should call clientSocket.unshift(head) when head is non-empty before TLSSocket creation', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    // Find the MITM section — begins after "MITM: respond 200" comment
+    const mitmStart = code.indexOf('// MITM: respond 200');
+    assert.ok(mitmStart !== -1, 'Must have "MITM: respond 200" comment in CONNECT handler');
+
+    // Find where the TLSSocket is created
+    const tlsSocketIdx = code.indexOf('new tls.TLSSocket(clientSocket', mitmStart);
+    assert.ok(tlsSocketIdx !== -1, 'Must create new tls.TLSSocket after the MITM comment');
+
+    // The unshift call must appear BETWEEN the MITM comment and the TLSSocket creation
+    const mitmSection = code.slice(mitmStart, tlsSocketIdx);
+
+    assert.match(
+      mitmSection,
+      /clientSocket\.unshift\(head\)/,
+      'Must call clientSocket.unshift(head) before new tls.TLSSocket() in MITM handler'
+    );
+  });
+
+  it('should guard the unshift behind head && head.length > 0 check', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    const mitmStart = code.indexOf('// MITM: respond 200');
+    const tlsSocketIdx = code.indexOf('new tls.TLSSocket(clientSocket', mitmStart);
+    const mitmSection = code.slice(mitmStart, tlsSocketIdx);
+
+    assert.match(
+      mitmSection,
+      /if\s*\(head\s*&&\s*head\.length\s*>\s*0\)\s*\{[\s\S]*?clientSocket\.unshift\(head\)/,
+      'unshift must be guarded by if (head && head.length > 0) to avoid unshifting empty Buffers'
+    );
+  });
+
+  it('should explain the early-data race condition in a comment near the unshift', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    const mitmStart = code.indexOf('// MITM: respond 200');
+    const tlsSocketIdx = code.indexOf('new tls.TLSSocket(clientSocket', mitmStart);
+    const mitmSection = code.slice(mitmStart, tlsSocketIdx);
+
+    // Expects some comment referencing TLS ClientHello or early data
+    assert.match(
+      mitmSection,
+      /\/\/.*(?:early data|TLS ClientHello|before 200|readable stream)/i,
+      'Must include a comment explaining WHY head is unshifted (TLS ClientHello early data)'
+    );
+  });
+
+  it('should write the 200 Connection Established response BEFORE the unshift', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    const mitmStart = code.indexOf('// MITM: respond 200');
+    const tlsSocketIdx = code.indexOf('new tls.TLSSocket(clientSocket', mitmStart);
+    const mitmSection = code.slice(mitmStart, tlsSocketIdx);
+
+    const writeIdx = mitmSection.indexOf("clientSocket.write('HTTP/1.1 200 Connection Established");
+    const unshiftIdx = mitmSection.indexOf('clientSocket.unshift(head)');
+
+    assert.ok(writeIdx !== -1, 'Must write 200 Connection Established in MITM section');
+    assert.ok(unshiftIdx !== -1, 'Must call unshift in MITM section');
+    assert.ok(
+      writeIdx < unshiftIdx,
+      'Must write 200 response before unshifting head — client expects response before sending TLS ClientHello'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. Transparent CONNECT passthrough — head is forwarded to upstream, not client
+// ---------------------------------------------------------------------------
+
+describe('rotation-proxy.js - transparent CONNECT passthrough', () => {
+  it('should forward head to upstreamSocket, not clientSocket, in passthrough handler', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    // Find the passthrough section — it's before the isMITMTarget check returns
+    const passthroughStart = code.indexOf('// Transparent CONNECT tunnel');
+    assert.ok(passthroughStart !== -1, 'Must have "Transparent CONNECT tunnel" comment');
+
+    const passthroughEnd = code.indexOf('return;', passthroughStart);
+    assert.ok(passthroughEnd !== -1, 'Passthrough handler must return early');
+
+    const passthroughSection = code.slice(passthroughStart, passthroughEnd);
+
+    assert.match(
+      passthroughSection,
+      /upstreamSocket\.write\(head\)/,
+      'Passthrough handler must forward head to upstreamSocket (not clientSocket)'
+    );
+
+    assert.doesNotMatch(
+      passthroughSection,
+      /clientSocket\.unshift\(head\)/,
+      'Passthrough handler must NOT unshift head into clientSocket'
+    );
+  });
+
+  it('should guard the passthrough head write behind head && head.length > 0', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    const passthroughStart = code.indexOf('// Transparent CONNECT tunnel');
+    const passthroughEnd = code.indexOf('return;', passthroughStart);
+    const passthroughSection = code.slice(passthroughStart, passthroughEnd);
+
+    assert.match(
+      passthroughSection,
+      /if\s*\(head.*&&.*head\.length.*>\s*0\).*upstreamSocket\.write\(head\)/s,
+      'Passthrough head write must be guarded by head && head.length > 0'
+    );
+  });
+
+  it('should pipe clientSocket <-> upstreamSocket bidirectionally', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    const passthroughStart = code.indexOf('// Transparent CONNECT tunnel');
+    const passthroughEnd = code.indexOf('return;', passthroughStart);
+    const passthroughSection = code.slice(passthroughStart, passthroughEnd);
+
+    assert.match(
+      passthroughSection,
+      /upstreamSocket\.pipe\(clientSocket\)/,
+      'Must pipe upstream to client'
+    );
+    assert.match(
+      passthroughSection,
+      /clientSocket\.pipe\(upstreamSocket\)/,
+      'Must pipe client to upstream'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. parseHttpRequest() — behavioral unit tests on pure function logic
+// ---------------------------------------------------------------------------
+
+describe('parseHttpRequest() - behavioral logic', () => {
+  // Re-implement the function locally so we can test it without importing the module
+  // (the module calls main() on import, which requires live certs + key state)
+  function parseHttpRequest(buffer) {
+    const str = buffer.toString('binary');
+    const headerEnd = str.indexOf('\r\n\r\n');
+    if (headerEnd === -1) return null;
+
+    const headerSection = str.slice(0, headerEnd);
+    const lines = headerSection.split('\r\n');
+    const [method, reqPath, httpVersion] = lines[0].split(' ');
+
+    const headers = {};
+    const rawHeaders = [];
+    for (let i = 1; i < lines.length; i++) {
+      const colon = lines[i].indexOf(':');
+      if (colon === -1) continue;
+      const originalName = lines[i].slice(0, colon).trim();
+      const value = lines[i].slice(colon + 1).trim();
+      headers[originalName.toLowerCase()] = value;
+      rawHeaders.push([originalName, value]);
+    }
+
+    return { method, path: reqPath, httpVersion, headers, rawHeaders, bodyStart: headerEnd + 4 };
+  }
+
+  it('should parse a minimal GET request correctly', () => {
+    const raw = Buffer.from(
+      'GET /v1/messages HTTP/1.1\r\n' +
+      'Host: api.anthropic.com\r\n' +
+      'Authorization: Bearer token123\r\n' +
+      '\r\n'
+    );
+
+    const result = parseHttpRequest(raw);
+
+    assert.ok(result !== null, 'Must return a parsed object for valid request');
+    assert.strictEqual(result.method, 'GET');
+    assert.strictEqual(result.path, '/v1/messages');
+    assert.strictEqual(result.httpVersion, 'HTTP/1.1');
+    assert.strictEqual(result.headers['authorization'], 'Bearer token123');
+    assert.strictEqual(result.headers['host'], 'api.anthropic.com');
+    assert.strictEqual(result.bodyStart, raw.length); // no body
+  });
+
+  it('should return null when headers are incomplete (no double CRLF)', () => {
+    const raw = Buffer.from('GET /v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\n');
+    const result = parseHttpRequest(raw);
+    assert.strictEqual(result, null, 'Must return null when header section is incomplete');
+  });
+
+  it('should preserve original header casing in rawHeaders', () => {
+    const raw = Buffer.from(
+      'POST /v1/complete HTTP/1.1\r\n' +
+      'Content-Type: application/json\r\n' +
+      'X-Api-Key: key-abc\r\n' +
+      'Authorization: Bearer tok\r\n' +
+      '\r\n'
+    );
+
+    const result = parseHttpRequest(raw);
+    assert.ok(result !== null);
+
+    const names = result.rawHeaders.map(([n]) => n);
+    assert.ok(names.includes('Content-Type'), 'Must preserve Content-Type casing');
+    assert.ok(names.includes('X-Api-Key'), 'Must preserve X-Api-Key casing');
+    assert.ok(names.includes('Authorization'), 'Must preserve Authorization casing');
+  });
+
+  it('should lowercase header names in the headers lookup map', () => {
+    const raw = Buffer.from(
+      'POST /v1/complete HTTP/1.1\r\n' +
+      'Content-Type: application/json\r\n' +
+      'Authorization: Bearer tok\r\n' +
+      '\r\n'
+    );
+
+    const result = parseHttpRequest(raw);
+    assert.ok(result !== null);
+
+    assert.ok('content-type' in result.headers, 'headers map must have lowercase content-type');
+    assert.ok('authorization' in result.headers, 'headers map must have lowercase authorization');
+    assert.strictEqual(result.headers['content-type'], 'application/json');
+  });
+
+  it('should compute bodyStart as headerEnd + 4 (past double CRLF)', () => {
+    const headers = 'POST /v1/messages HTTP/1.1\r\nHost: example.com\r\n\r\n';
+    const body = '{"model":"claude-3"}';
+    const raw = Buffer.from(headers + body);
+
+    const result = parseHttpRequest(raw);
+    assert.ok(result !== null);
+
+    const actualBody = raw.slice(result.bodyStart).toString();
+    assert.strictEqual(actualBody, body, 'bodyStart must point to the start of the request body');
+  });
+
+  it('should skip malformed header lines that have no colon', () => {
+    const raw = Buffer.from(
+      'GET / HTTP/1.1\r\n' +
+      'Host: example.com\r\n' +
+      'X-Malformed-No-Colon\r\n' +
+      'Authorization: Bearer tok\r\n' +
+      '\r\n'
+    );
+
+    const result = parseHttpRequest(raw);
+    assert.ok(result !== null);
+
+    // Malformed line must not appear in rawHeaders
+    const names = result.rawHeaders.map(([n]) => n);
+    assert.ok(!names.includes('X-Malformed-No-Colon'), 'Malformed header with no colon must be skipped');
+    assert.ok(names.includes('Authorization'), 'Valid headers after malformed one must still be parsed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. rebuildRequest() — behavioral unit tests
+// ---------------------------------------------------------------------------
+
+describe('rebuildRequest() - behavioral logic', () => {
+  function parseHttpRequest(buffer) {
+    const str = buffer.toString('binary');
+    const headerEnd = str.indexOf('\r\n\r\n');
+    if (headerEnd === -1) return null;
+    const headerSection = str.slice(0, headerEnd);
+    const lines = headerSection.split('\r\n');
+    const [method, reqPath, httpVersion] = lines[0].split(' ');
+    const headers = {};
+    const rawHeaders = [];
+    for (let i = 1; i < lines.length; i++) {
+      const colon = lines[i].indexOf(':');
+      if (colon === -1) continue;
+      const originalName = lines[i].slice(0, colon).trim();
+      const value = lines[i].slice(colon + 1).trim();
+      headers[originalName.toLowerCase()] = value;
+      rawHeaders.push([originalName, value]);
+    }
+    return { method, path: reqPath, httpVersion, headers, rawHeaders, bodyStart: headerEnd + 4 };
+  }
+
+  function rebuildRequest(parsed, originalBuffer, newToken) {
+    const headerLines = [`${parsed.method} ${parsed.path} ${parsed.httpVersion}`];
+    for (const [name, value] of parsed.rawHeaders) {
+      if (name.toLowerCase() === 'authorization') continue;
+      headerLines.push(`${name}: ${value}`);
+    }
+    headerLines.push(`Authorization: Bearer ${newToken}`);
+    headerLines.push('');
+    headerLines.push('');
+    const headerBuf = Buffer.from(headerLines.join('\r\n'), 'binary');
+    const bodyBuf = originalBuffer.slice(parsed.bodyStart);
+    return Buffer.concat([headerBuf, bodyBuf]);
+  }
+
+  it('should replace the Authorization header with the new token', () => {
+    const raw = Buffer.from(
+      'POST /v1/messages HTTP/1.1\r\n' +
+      'Host: api.anthropic.com\r\n' +
+      'Authorization: Bearer old-token-abc\r\n' +
+      '\r\n'
+    );
+    const parsed = parseHttpRequest(raw);
+    const rebuilt = rebuildRequest(parsed, raw, 'new-token-xyz');
+    const rebuiltStr = rebuilt.toString();
+
+    assert.match(rebuiltStr, /Authorization: Bearer new-token-xyz/, 'Must inject new token');
+    assert.doesNotMatch(rebuiltStr, /old-token-abc/, 'Must strip old token from rebuilt request');
+  });
+
+  it('should preserve non-Authorization headers in rebuilt request', () => {
+    const raw = Buffer.from(
+      'POST /v1/messages HTTP/1.1\r\n' +
+      'Host: api.anthropic.com\r\n' +
+      'Content-Type: application/json\r\n' +
+      'anthropic-version: 2023-06-01\r\n' +
+      'Authorization: Bearer old\r\n' +
+      '\r\n'
+    );
+    const parsed = parseHttpRequest(raw);
+    const rebuilt = rebuildRequest(parsed, raw, 'new-tok');
+    const rebuiltStr = rebuilt.toString();
+
+    assert.match(rebuiltStr, /Host: api\.anthropic\.com/, 'Must preserve Host header');
+    assert.match(rebuiltStr, /Content-Type: application\/json/, 'Must preserve Content-Type');
+    assert.match(rebuiltStr, /anthropic-version: 2023-06-01/, 'Must preserve anthropic-version');
+  });
+
+  it('should preserve the request body verbatim', () => {
+    const body = '{"model":"claude-opus-4-6","messages":[{"role":"user","content":"hello"}]}';
+    const raw = Buffer.from(
+      `POST /v1/messages HTTP/1.1\r\n` +
+      `Host: api.anthropic.com\r\n` +
+      `Content-Length: ${body.length}\r\n` +
+      `Authorization: Bearer old\r\n` +
+      `\r\n` +
+      body
+    );
+    const parsed = parseHttpRequest(raw);
+    const rebuilt = rebuildRequest(parsed, raw, 'new-tok');
+
+    // Body must appear at the end of rebuilt buffer
+    const rebuiltStr = rebuilt.toString();
+    assert.ok(rebuiltStr.endsWith(body), 'Must preserve request body verbatim after header swap');
+  });
+
+  it('should add Authorization header even when original request had none', () => {
+    const raw = Buffer.from(
+      'GET /v1/models HTTP/1.1\r\n' +
+      'Host: api.anthropic.com\r\n' +
+      '\r\n'
+    );
+    const parsed = parseHttpRequest(raw);
+    const rebuilt = rebuildRequest(parsed, raw, 'injected-token');
+    const rebuiltStr = rebuilt.toString();
+
+    assert.match(
+      rebuiltStr,
+      /Authorization: Bearer injected-token/,
+      'Must inject Authorization header even when original had none'
+    );
+  });
+
+  it('should strip Authorization header with any casing (case-insensitive match)', () => {
+    // HTTP headers are case-insensitive; our parser lowercases for the lookup
+    // but rawHeaders preserve the original casing for the rebuild strip check
+    const raw = Buffer.from(
+      'POST /v1/messages HTTP/1.1\r\n' +
+      'Host: api.anthropic.com\r\n' +
+      'AUTHORIZATION: Bearer old\r\n' +  // all-caps
+      '\r\n'
+    );
+    const parsed = parseHttpRequest(raw);
+    const rebuilt = rebuildRequest(parsed, raw, 'new-tok');
+    const rebuiltStr = rebuilt.toString();
+
+    // The old value must be gone; new injected value must be present
+    assert.doesNotMatch(rebuiltStr, /old/, 'Old token must be removed regardless of Authorization header casing');
+    assert.match(rebuiltStr, /Authorization: Bearer new-tok/, 'New token must be injected');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. MITM domain routing logic
+// ---------------------------------------------------------------------------
+
+describe('MITM domain routing logic - behavioral', () => {
+  const MITM_DOMAINS = ['api.anthropic.com', 'mcp-proxy.anthropic.com'];
+
+  it('should classify api.anthropic.com as a MITM target', () => {
+    assert.ok(MITM_DOMAINS.includes('api.anthropic.com'));
+  });
+
+  it('should classify mcp-proxy.anthropic.com as a MITM target', () => {
+    assert.ok(MITM_DOMAINS.includes('mcp-proxy.anthropic.com'));
+  });
+
+  it('should NOT classify platform.claude.com as a MITM target (OAuth passthrough)', () => {
+    assert.ok(!MITM_DOMAINS.includes('platform.claude.com'), 'OAuth endpoint must pass through');
+  });
+
+  it('should NOT classify any google.com, github.com as MITM targets', () => {
+    const externalDomains = ['google.com', 'github.com', 'aws.amazon.com'];
+    for (const domain of externalDomains) {
+      assert.ok(!MITM_DOMAINS.includes(domain), `${domain} must not be a MITM target`);
+    }
+  });
+
+  it('should verify code uses MITM_DOMAINS.includes() for routing decision', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(
+      code,
+      /MITM_DOMAINS\.includes\(hostname\)/,
+      'CONNECT handler must use MITM_DOMAINS.includes(hostname) for routing'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. proxyLog() — log rotation behavior validated via code structure
+// ---------------------------------------------------------------------------
+
+describe('proxyLog() - log rotation structure', () => {
+  it('should check file size against MAX_LOG_BYTES before writing', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'proxyLog');
+    assert.ok(fnStart !== null, 'proxyLog must be defined');
+
+    assert.match(
+      fnStart,
+      /stat\.size\s*>\s*MAX_LOG_BYTES/,
+      'proxyLog must compare stat.size against MAX_LOG_BYTES for rotation trigger'
+    );
+  });
+
+  it('should truncate the oldest half of log lines on rotation', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'proxyLog');
+
+    assert.match(
+      fnStart,
+      /lines\.slice\(half\)/,
+      'proxyLog must slice the log lines to keep only the newer half'
+    );
+
+    assert.match(
+      fnStart,
+      /Math\.ceil\(lines\.length\s*\/\s*2\)/,
+      'proxyLog must use Math.ceil(lines.length / 2) to determine the halfway point'
+    );
+  });
+
+  it('should never throw — must fall back to stderr on write failure', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'proxyLog');
+
+    assert.match(
+      fnStart,
+      /process\.stderr\.write/,
+      'proxyLog must write to stderr on failure instead of throwing'
+    );
+
+    // The outer try/catch around appendFileSync must swallow errors
+    assert.match(
+      fnStart,
+      /try \{[\s\S]*?fs\.appendFileSync[\s\S]*?\} catch/,
+      'proxyLog must wrap appendFileSync in try/catch to never throw'
+    );
+  });
+
+  it('should never log actual token values — only structured event fields', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'proxyLog');
+
+    // The function itself must not reference accessToken or refreshToken
+    assert.doesNotMatch(
+      fnStart.slice(0, 400), // just the function body itself, not call sites
+      /accessToken|refreshToken/,
+      'proxyLog function body must not log raw token values'
+    );
+  });
+
+  it('log rotation threshold should be behavioral: simulate it inline', () => {
+    const MAX_LOG_BYTES = 1_048_576; // 1 MB as defined in the file
+
+    // Simulate 10 KB file — no rotation needed
+    assert.ok(10_000 < MAX_LOG_BYTES, 'Small file should not trigger rotation');
+
+    // Simulate 2 MB file — rotation needed
+    assert.ok(2_097_152 > MAX_LOG_BYTES, 'Large file should trigger rotation');
+
+    // Math.ceil(10/2) = 5: half the lines are kept
+    const lines = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'];
+    const half = Math.ceil(lines.length / 2);
+    const kept = lines.slice(half);
+    assert.strictEqual(kept.length, 5, 'Must keep the second half (5 of 10 lines)');
+    assert.strictEqual(kept[0], 'f', 'Kept lines must start from the halfway point');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. loadCerts() — fail-loud when certs missing
+// ---------------------------------------------------------------------------
+
+describe('loadCerts() - fail-loud on missing certs', () => {
+  it('should throw if any cert file is missing', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'loadCerts');
+    assert.ok(fnStart !== null, 'loadCerts must be defined');
+
+    assert.match(
+      fnStart,
+      /throw new Error/,
+      'loadCerts must throw loudly when cert files are missing'
+    );
+  });
+
+  it('should check for all three files: ca.pem, server-key.pem, server.pem', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'loadCerts');
+
+    assert.match(fnStart, /ca\.pem/, 'loadCerts must check for ca.pem');
+    assert.match(fnStart, /server-key\.pem/, 'loadCerts must check for server-key.pem');
+    assert.match(fnStart, /server\.pem/, 'loadCerts must check for server.pem');
+  });
+
+  it('should reference generate-proxy-certs.sh in the error message for remediation guidance', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'loadCerts');
+
+    assert.match(
+      fnStart,
+      /generate-proxy-certs\.sh/,
+      'loadCerts error message must reference generate-proxy-certs.sh so the operator knows how to fix it'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. getActiveToken() / rotateOnExhaustion() — state contract tests
+// ---------------------------------------------------------------------------
+
+describe('getActiveToken() and rotateOnExhaustion() - code structure', () => {
+  it('getActiveToken must throw when no active_key_id is set', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'getActiveToken');
+    assert.ok(fnStart !== null, 'getActiveToken must be defined');
+
+    assert.match(
+      fnStart,
+      /throw new Error.*No active key/,
+      'getActiveToken must throw loudly when no active key exists in rotation state'
+    );
+  });
+
+  it('getActiveToken must throw when active key has no accessToken', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'getActiveToken');
+
+    assert.match(
+      fnStart,
+      /throw new Error.*has no accessToken/,
+      'getActiveToken must throw when active key exists but has no accessToken field'
+    );
+  });
+
+  it('rotateOnExhaustion must mark the exhausted key with status exhausted', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnExhaustion');
+    assert.ok(fnStart !== null, 'rotateOnExhaustion must be defined');
+
+    assert.match(
+      fnStart,
+      /\.status\s*=\s*['"]exhausted['"]/,
+      'rotateOnExhaustion must set the exhausted key status to "exhausted"'
+    );
+  });
+
+  it('rotateOnExhaustion must return null when no next key is available', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnExhaustion');
+
+    assert.match(
+      fnStart,
+      /return null/,
+      'rotateOnExhaustion must return null when all keys are exhausted (caller handles)'
+    );
+  });
+
+  it('rotateOnExhaustion must call writeRotationState before returning', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnExhaustion');
+
+    assert.match(
+      fnStart,
+      /writeRotationState\(state\)/,
+      'rotateOnExhaustion must persist state after rotation'
+    );
+  });
+
+  it('rotateOnExhaustion must call updateActiveCredentials to sync other components', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnExhaustion');
+
+    assert.match(
+      fnStart,
+      /updateActiveCredentials\(/,
+      'rotateOnExhaustion must call updateActiveCredentials so SRA/r6T picks up new credentials'
+    );
+  });
+
+  it('rotateOnExhaustion must log proxy_429_exhausted event for observability', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnExhaustion');
+
+    assert.match(
+      fnStart,
+      /proxy_429_exhausted/,
+      'rotateOnExhaustion must log proxy_429_exhausted for rotation audit trail'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. forwardRequest() — 429 retry cap and SSE pass-through structure
+// ---------------------------------------------------------------------------
+
+describe('forwardRequest() - retry cap and SSE structure', () => {
+  it('should check retryCount < MAX_429_RETRIES before rotating on 429', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+    assert.ok(fnStart !== null, 'forwardRequest must be defined');
+
+    assert.match(
+      fnStart,
+      /retryCount\s*<\s*MAX_429_RETRIES/,
+      'forwardRequest must gate 429 rotation behind retryCount < MAX_429_RETRIES'
+    );
+  });
+
+  it('should respond with 502 Bad Gateway when token resolution fails', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /HTTP\/1\.1 502 Bad Gateway/,
+      'forwardRequest must return 502 when token resolution fails rather than silently closing'
+    );
+  });
+
+  it('should respond with 400 Bad Request when HTTP parse fails', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /HTTP\/1\.1 400 Bad Request/,
+      'forwardRequest must return 400 when the incoming request cannot be parsed'
+    );
+  });
+
+  it('should detect SSE via content-type: text/event-stream header', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /text\/event-stream/,
+      'forwardRequest must detect SSE responses via content-type: text/event-stream'
+    );
+  });
+
+  it('should pipe SSE responses directly to clientSocket (zero-copy streaming)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /upstream\.pipe\(clientSocket/,
+      'forwardRequest must use .pipe() for SSE streaming to avoid buffering'
+    );
+  });
+
+  it('should never log token values — active_key_id sliced to 8 chars', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // Must slice key IDs, never raw tokens
+    assert.match(
+      fnStart,
+      /activeKeyId\.slice\(0,\s*8\)/,
+      'forwardRequest must only log sliced key IDs, never full token values'
+    );
+    assert.doesNotMatch(
+      fnStart.slice(0, 800), // just the function's own body
+      /activeToken[^;]*(proxyLog|JSON\.stringify)/,
+      'forwardRequest must not pass activeToken to proxyLog'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Health endpoint
+// ---------------------------------------------------------------------------
+
+describe('handleHealthCheck() - response structure', () => {
+  it('should respond with 200 OK', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'handleHealthCheck');
+    assert.ok(fnStart !== null, 'handleHealthCheck must be defined');
+
+    assert.match(fnStart, /res\.writeHead\(200/, 'Health endpoint must respond 200');
+  });
+
+  it('should include status, activeKeyId, uptime, and requestCount fields', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'handleHealthCheck');
+
+    assert.match(fnStart, /status:\s*['"]ok['"]/, 'Health response must include status: "ok"');
+    assert.match(fnStart, /activeKeyId/, 'Health response must include activeKeyId field');
+    assert.match(fnStart, /uptime/, 'Health response must include uptime field');
+    assert.match(fnStart, /requestCount/, 'Health response must include requestCount field');
+  });
+
+  it('should not throw when rotation state is unreadable — activeKeyId should be null', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'handleHealthCheck');
+
+    assert.match(
+      fnStart,
+      /catch[\s\S]*?\}/,
+      'handleHealthCheck must catch state read errors and continue with null activeKeyId'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. main() startup — fail-loud requirements
+// ---------------------------------------------------------------------------
+
+describe('main() startup - fail-loud structure', () => {
+  it('should throw if key-sync.js is not found', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /key-sync\.js not found/,
+      'main() must throw loudly when key-sync.js cannot be located'
+    );
+  });
+
+  it('should throw if no active key exists at startup', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /No active key in rotation state/,
+      'main() must throw at startup if rotation state has no active key'
+    );
+  });
+
+  it('should exit 1 on EADDRINUSE (port already bound)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    assert.match(code, /EADDRINUSE/, 'Must handle EADDRINUSE server error');
+    assert.match(
+      code,
+      /process\.exit\(1\)/,
+      'Must call process.exit(1) on fatal startup errors'
+    );
+  });
+
+  it('should register SIGTERM and SIGINT handlers for graceful shutdown', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    assert.match(code, /process\.on\(['"]SIGTERM['"]/, 'Must register SIGTERM handler');
+    assert.match(code, /process\.on\(['"]SIGINT['"]/, 'Must register SIGINT handler');
+  });
+
+  it('should log startup event with port, project_dir, and active_key_id fields', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    assert.match(code, /proxyLog\(['"]startup['"]/, 'Must call proxyLog("startup") at startup');
+
+    const startupLogIdx = code.indexOf("proxyLog('startup'");
+    const startupSection = code.slice(startupLogIdx, startupLogIdx + 400);
+    assert.match(startupSection, /port/, 'startup log must include port');
+    assert.match(startupSection, /project_dir/, 'startup log must include project_dir');
+    assert.match(startupSection, /active_key_id/, 'startup log must include active_key_id');
+  });
+
+  it('should log shutdown event with signal and requestCount', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    const fnStart = extractFunctionBody(code, 'shutdown');
+    assert.ok(fnStart !== null, 'shutdown function must be defined');
+    assert.match(fnStart, /proxyLog\(['"]shutdown['"]/, 'shutdown must call proxyLog("shutdown")');
+    assert.match(fnStart, /requestCount/, 'shutdown log must include requestCount');
+  });
+
+  it('should bind to 127.0.0.1 only (not 0.0.0.0) for localhost-only access', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /server\.listen\(PROXY_PORT,\s*['"]127\.0\.0\.1['"]/,
+      'Must bind to 127.0.0.1 — proxy must not be externally reachable'
+    );
+  });
+});

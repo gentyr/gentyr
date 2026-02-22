@@ -1017,6 +1017,7 @@ if curl -sf http://localhost:18080/__health > /dev/null 2>&1; then
   export HTTPS_PROXY=http://localhost:18080
   export HTTP_PROXY=http://localhost:18080
   export NO_PROXY=localhost,127.0.0.1
+  export NODE_EXTRA_CA_CERTS="$HOME/.claude/proxy-certs/ca.pem"
 fi
 # END GENTYR PROXY
 PROXYEOF

@@ -109,7 +109,6 @@ extendedKeyUsage = serverAuth
 [alt_names]
 DNS.1 = api.anthropic.com
 DNS.2 = mcp-proxy.anthropic.com
-DNS.3 = *.anthropic.com
 EOF
 
 # 6. Sign server certificate with CA (valid 10 years, with SAN)
