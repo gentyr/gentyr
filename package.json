@@ -2,7 +2,25 @@
   "name": "gentyr",
   "version": "1.3.0",
   "type": "module",
-  "description": "GENTYR automation framework for Claude Code",
+  "description": "Autonomous AI engineering team for Claude Code. Agents, hooks, MCP servers, and guards that write, test, review, and ship code.",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "ai-agent",
+    "automation",
+    "mcp",
+    "saas"
+  ],
+  "homepage": "https://github.com/gentyr/gentyr#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gentyr/gentyr.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "gentyr": "./cli/index.js"
   },
