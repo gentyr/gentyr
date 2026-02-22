@@ -223,6 +223,186 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
           `Should block ${file}`);
       }
     });
+
+    it('should block Read of shell RC files (.zshrc, .bashrc, etc.)', async () => {
+      const shellRcFiles = ['.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile'];
+
+      for (const file of shellRcFiles) {
+        const result = await runHook({
+          tool_name: 'Read',
+          tool_input: { file_path: `/home/user/${file}` },
+          cwd: tempDir.path,
+        });
+
+        assert.strictEqual(result.exitCode, 0, `Hook should exit 0 for ${file}`);
+
+        const jsonMatch = result.stdout.match(/\{.*\}/s);
+        assert.ok(jsonMatch, `Should output JSON for ${file}`);
+        const output = JSON.parse(jsonMatch[0]);
+
+        assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+          `Should block ${file} (shell RC file may contain exported secrets)`);
+        assert.match(output.hookSpecificOutput.permissionDecisionReason, new RegExp(file.replace('.', '\\.'), 'i'),
+          `Block reason should mention ${file}`);
+      }
+    });
+
+    it('should block Write to shell RC files (.zshrc, .bashrc, etc.)', async () => {
+      const shellRcFiles = ['.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile'];
+
+      for (const file of shellRcFiles) {
+        const result = await runHook({
+          tool_name: 'Write',
+          tool_input: { file_path: `/home/user/${file}`, content: 'export EVIL=1' },
+          cwd: tempDir.path,
+        });
+
+        const jsonMatch = result.stdout.match(/\{.*\}/s);
+        assert.ok(jsonMatch, `Should output JSON for ${file}`);
+        const output = JSON.parse(jsonMatch[0]);
+
+        assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+          `Should block Write to ${file} (shell RC file injection vector)`);
+      }
+    });
+
+    it('should block Edit to shell RC files (.zshrc, .bashrc, etc.)', async () => {
+      const shellRcFiles = ['.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile'];
+
+      for (const file of shellRcFiles) {
+        const result = await runHook({
+          tool_name: 'Edit',
+          tool_input: { file_path: `/home/user/${file}` },
+          cwd: tempDir.path,
+        });
+
+        const jsonMatch = result.stdout.match(/\{.*\}/s);
+        assert.ok(jsonMatch, `Should output JSON for ${file}`);
+        const output = JSON.parse(jsonMatch[0]);
+
+        assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+          `Should block Edit to ${file} (shell RC file injection vector)`);
+      }
+    });
+
+    it('should block Bash cat of shell RC files', async () => {
+      const shellRcFiles = ['.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile'];
+
+      for (const file of shellRcFiles) {
+        const result = await runHook({
+          tool_name: 'Bash',
+          tool_input: { command: `cat /home/user/${file}` },
+          cwd: tempDir.path,
+        });
+
+        const jsonMatch = result.stdout.match(/\{.*\}/s);
+        assert.ok(jsonMatch, `Should output JSON for cat ${file}`);
+        const output = JSON.parse(jsonMatch[0]);
+
+        assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+          `Should block cat /home/user/${file}`);
+      }
+    });
+
+    it('should block Bash python3 open() of shell RC files (path-context detection)', async (t) => {
+      // Requires patch 1c: scanRawCommandForProtectedPaths extended with basename path-context detection.
+      // The pattern /home/user/.bashrc or ~/.zshrc inside a string argument (e.g. open('/home/user/.bashrc'))
+      // is matched by the new [/~]basename regex in scanRawCommandForProtectedPaths.
+      const hookPath = path.join(__dirname, '..', 'credential-file-guard.js');
+      const hookSource = fs.existsSync(hookPath) ? fs.readFileSync(hookPath, 'utf8') : '';
+      const patch1cApplied = hookSource.includes('matchedBasename');
+
+      if (!patch1cApplied) {
+        t.skip('Patch 1c (scanRawCommandForProtectedPaths basename extension) not applied — run: sudo bash scripts/apply-bundle-security-fixes.sh');
+        return;
+      }
+
+      const shellRcFiles = ['.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile'];
+
+      for (const file of shellRcFiles) {
+        const result = await runHook({
+          tool_name: 'Bash',
+          tool_input: { command: `python3 -c "open('/home/user/${file}').read()"` },
+          cwd: tempDir.path,
+        });
+
+        const jsonMatch = result.stdout.match(/\{.*\}/s);
+        assert.ok(jsonMatch, `Should output JSON for python3 open(${file})`);
+        const output = JSON.parse(jsonMatch[0]);
+
+        assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+          `Should block python3 open('/home/user/${file}') (path-context detection via scanRawCommandForProtectedPaths)`);
+      }
+    });
+
+    it('should NOT block "echo .bashrc" (not a path context — no leading / or ~)', async () => {
+      // The basename path-context detection only triggers when the basename is
+      // preceded by / or ~.  A bare "echo .bashrc" should pass through.
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'echo .bashrc' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
+          '"echo .bashrc" should NOT be blocked — no path context');
+      }
+    });
+
+    it('should block Bash tilde-path access to shell RC files (cat ~/.bashrc)', async (t) => {
+      // This test validates the tilde-path variant (cat ~/.bashrc).
+      // Requires patch 1c for scanRawCommandForProtectedPaths basename path-context.
+      const hookPath = path.join(__dirname, '..', 'credential-file-guard.js');
+      const hookSource = fs.existsSync(hookPath) ? fs.readFileSync(hookPath, 'utf8') : '';
+      const patch1cApplied = hookSource.includes('matchedBasename');
+
+      if (!patch1cApplied) {
+        t.skip('Patch 1c not applied — run: sudo bash scripts/apply-bundle-security-fixes.sh');
+        return;
+      }
+
+      const shellRcFiles = ['.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile'];
+
+      for (const file of shellRcFiles) {
+        const result = await runHook({
+          tool_name: 'Bash',
+          tool_input: { command: `cat ~/.${file.replace(/^\./, '')}` },
+          cwd: tempDir.path,
+        });
+
+        const jsonMatch = result.stdout.match(/\{.*\}/s);
+        assert.ok(jsonMatch, `Should output JSON for cat ~/${file}`);
+        const output = JSON.parse(jsonMatch[0]);
+
+        assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+          `Should block cat ~/${file} (tilde path-context detection)`);
+      }
+    });
+
+    it('should treat shell RC files as always-blocked (no approval escape hatch)', async () => {
+      // Shell RC files are in ALWAYS_BLOCKED_BASENAMES — no approval flow
+      const result = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: '/home/user/.zshrc' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      // Should NOT offer an approval code path
+      assert.ok(
+        !output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
+        '.zshrc should be hard-blocked with no approval option'
+      );
+    });
   });
 
   // ==========================================================================
@@ -2131,6 +2311,226 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
           'Approval without HMAC fields should be accepted (backward compat) when key exists but no HMAC was set');
       }
       // No JSON output = allowed (exit 0 without deny)
+    });
+  });
+
+  // ==========================================================================
+  // Direct API Call Blocking - G027 Vector B2
+  //
+  // These tests verify that curl/wget/httpie calls to GENTYR-protected services
+  // are blocked by the credential-file-guard.js hook.
+  //
+  // GATING: These tests check at runtime whether the B2 fix has been applied
+  // to the hook (by looking for HTTP_CLIENT_COMMANDS in the hook file). If the
+  // fix has NOT been applied, all tests in this suite are skipped with a clear
+  // message. To apply the fix:
+  //
+  //   sudo bash scripts/apply-g027-b2-fix.sh
+  //
+  // ==========================================================================
+
+  describe('Direct API call blocking - G027 vector B2', () => {
+    let b2TempDir;
+
+    // Detect whether the B2 fix has been applied to the hook file.
+    // The fix adds HTTP_CLIENT_COMMANDS to credential-file-guard.js.
+    const hookPath = path.join(__dirname, '..', 'credential-file-guard.js');
+    const hookSource = fs.existsSync(hookPath)
+      ? fs.readFileSync(hookPath, 'utf8')
+      : '';
+    const b2FixApplied = hookSource.includes('HTTP_CLIENT_COMMANDS');
+
+    beforeEach(() => {
+      b2TempDir = createTempDir('g027-b2-test');
+    });
+
+    afterEach(() => {
+      if (b2TempDir) b2TempDir.cleanup();
+    });
+
+    /**
+     * Helper that wraps a single blocked-case assertion.
+     * Skips the test if the B2 fix has not been applied to the hook.
+     */
+    async function assertBlocked(t, command, domainFragment) {
+      if (!b2FixApplied) {
+        t.skip('B2 fix not applied — run: sudo bash scripts/apply-g027-b2-fix.sh');
+        return;
+      }
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command },
+        cwd: b2TempDir.path,
+      });
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, `Expected JSON output from hook for command: ${command}`);
+      const output = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(
+        output.hookSpecificOutput.permissionDecision,
+        'deny',
+        `Expected command to be blocked: ${command}`
+      );
+      assert.match(
+        output.hookSpecificOutput.permissionDecisionReason,
+        /G027 B2|Direct API call to protected service/i,
+        'Block reason should reference G027 B2'
+      );
+      if (domainFragment) {
+        assert.ok(
+          output.hookSpecificOutput.permissionDecisionReason.includes(domainFragment),
+          `Block reason should mention domain fragment: ${domainFragment}`
+        );
+      }
+    }
+
+    /**
+     * Helper that wraps a single allowed-case assertion.
+     * Skips the test if the B2 fix has not been applied to the hook.
+     */
+    async function assertAllowed(t, command) {
+      if (!b2FixApplied) {
+        t.skip('B2 fix not applied — run: sudo bash scripts/apply-g027-b2-fix.sh');
+        return;
+      }
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command },
+        cwd: b2TempDir.path,
+      });
+      assert.strictEqual(result.exitCode, 0, `Hook should exit 0 for: ${command}`);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(
+          output.hookSpecificOutput?.permissionDecision,
+          'deny',
+          `Command should NOT be blocked: ${command}`
+        );
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Blocked cases
+    // -----------------------------------------------------------------------
+
+    it('should block curl to api.vercel.com', async (t) => {
+      await assertBlocked(t, 'curl https://api.vercel.com/v9/projects', 'api.vercel.com');
+    });
+
+    it('should block wget to api.render.com', async (t) => {
+      await assertBlocked(t, 'wget https://api.render.com/v1/services', 'api.render.com');
+    });
+
+    it('should block curl with Bearer auth header to api.github.com', async (t) => {
+      await assertBlocked(
+        t,
+        'curl -H "Authorization: Bearer $TOKEN" https://api.github.com/repos/foo/bar',
+        'api.github.com'
+      );
+    });
+
+    it('should block curl to api.cloudflare.com', async (t) => {
+      await assertBlocked(t, 'curl https://api.cloudflare.com/client/v4/zones', 'api.cloudflare.com');
+    });
+
+    it('should block curl to supabase.co (project subdomain)', async (t) => {
+      await assertBlocked(t, 'curl https://xyz.supabase.co/rest/v1/users', 'supabase.co');
+    });
+
+    it('should block curl to supabase.com (management API)', async (t) => {
+      await assertBlocked(t, 'curl https://api.supabase.com/v1/projects', 'supabase.com');
+    });
+
+    it('should block curl to api.resend.com', async (t) => {
+      await assertBlocked(t, 'curl https://api.resend.com/emails', 'api.resend.com');
+    });
+
+    it('should block curl to my.1password.com', async (t) => {
+      await assertBlocked(t, 'curl https://my.1password.com/api/v1/vaults', '1password.com');
+    });
+
+    it('should block curl to api.1password.com', async (t) => {
+      await assertBlocked(t, 'curl https://api.1password.com/heartbeat', '1password.com');
+    });
+
+    it('should block wget to elastic.co', async (t) => {
+      await assertBlocked(t, 'wget https://my-cluster.elastic.co/api/v1/clusters', 'elastic.co');
+    });
+
+    it('should block curl to codecov.io', async (t) => {
+      await assertBlocked(t, 'curl https://codecov.io/api/v2/repos', 'codecov.io');
+    });
+
+    it('should block curl piped to grep when first segment targets protected domain', async (t) => {
+      await assertBlocked(
+        t,
+        'curl https://api.vercel.com/v9/projects | grep name',
+        'api.vercel.com'
+      );
+    });
+
+    it('should block curl in && chain (ls && curl to render)', async (t) => {
+      await assertBlocked(
+        t,
+        'ls && curl https://api.render.com/v1/services',
+        'api.render.com'
+      );
+    });
+
+    it('should block curl in semicolon-chained command', async (t) => {
+      await assertBlocked(
+        t,
+        'export FOO=bar; curl https://api.github.com/user',
+        'api.github.com'
+      );
+    });
+
+    it('should block httpie (http command) to protected domain', async (t) => {
+      await assertBlocked(t, 'http https://api.vercel.com/v9/projects', 'api.vercel.com');
+    });
+
+    it('should block wget with flags to api.github.com', async (t) => {
+      await assertBlocked(
+        t,
+        'wget -q https://api.github.com/repos/test/test --output-document=-',
+        'api.github.com'
+      );
+    });
+
+    // -----------------------------------------------------------------------
+    // Allowed cases
+    // -----------------------------------------------------------------------
+
+    it('should allow curl to non-protected domain (example.com)', async (t) => {
+      await assertAllowed(t, 'curl https://example.com/data');
+    });
+
+    it('should allow curl to localhost', async (t) => {
+      await assertAllowed(t, 'curl https://localhost:3000/health');
+    });
+
+    it('should allow curl to api.openai.com (not a GENTYR-protected service)', async (t) => {
+      await assertAllowed(t, 'curl https://api.openai.com/v1/models');
+    });
+
+    it('should allow echo mentioning api.vercel.com (not an HTTP client command)', async (t) => {
+      await assertAllowed(t, 'echo "api.vercel.com"');
+    });
+
+    it('should allow grep mentioning api.github.com (not an HTTP client command)', async (t) => {
+      await assertAllowed(t, 'grep "api.github.com" package.json');
+    });
+
+    it('should allow node -e fetch to protected domain (separate vector, not blocked here)', async (t) => {
+      await assertAllowed(t, "node -e \"fetch('https://api.vercel.com/v9/projects')\"");
+    });
+
+    it('should allow git clone from github.com (git is not an HTTP client)', async (t) => {
+      await assertAllowed(t, 'git clone https://github.com/foo/bar');
+    });
+
+    it('should allow npm install (package manager, not an HTTP client)', async (t) => {
+      await assertAllowed(t, 'npm install @package/name');
     });
   });
 
