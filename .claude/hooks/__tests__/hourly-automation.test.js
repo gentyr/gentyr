@@ -1604,3 +1604,24 @@ describe('Triage Self-Handle via create_task with priority: urgent', () => {
     );
   });
 });
+
+describe('spawn_implementation_task fully deprecated', () => {
+  const filesToCheck = [
+    { name: 'hourly-automation.js', path: path.join(process.cwd(), '.claude/hooks/hourly-automation.js') },
+    { name: 'force-spawn-tasks.js', path: path.join(process.cwd(), 'scripts/force-spawn-tasks.js') },
+    { name: 'plan-executor.js', path: path.join(process.cwd(), '.claude/hooks/plan-executor.js') },
+    { name: 'deputy-cto.md (agent)', path: path.join(process.cwd(), '.claude/agents/deputy-cto.md') },
+    { name: 'deputy-cto.md (command)', path: path.join(process.cwd(), '.claude/commands/deputy-cto.md') },
+  ];
+
+  for (const file of filesToCheck) {
+    it(`should have zero references to spawn_implementation_task in ${file.name}`, () => {
+      const code = fs.readFileSync(file.path, 'utf8');
+      assert.doesNotMatch(
+        code,
+        /spawn_implementation_task/,
+        `${file.name} must not reference spawn_implementation_task — use mcp__todo-db__create_task with priority: "urgent" instead`
+      );
+    });
+  }
+});

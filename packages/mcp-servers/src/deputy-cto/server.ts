@@ -38,7 +38,6 @@ import {
   ApproveCommitArgsSchema,
   RejectCommitArgsSchema,
   GetCommitDecisionArgsSchema,
-  SpawnImplementationTaskArgsSchema,
   GetPendingCountArgsSchema,
   ToggleAutonomousModeArgsSchema,
   GetAutonomousModeStatusArgsSchema,
@@ -64,7 +63,6 @@ import {
   type ClearQuestionArgs,
   type ApproveCommitArgs,
   type RejectCommitArgs,
-  type SpawnImplementationTaskArgs,
   type ToggleAutonomousModeArgs,
   type SearchClearedItemsArgs,
   type SetAutomationModeArgs,
@@ -88,7 +86,6 @@ import {
   type ApproveCommitResult,
   type RejectCommitResult,
   type GetCommitDecisionResult,
-  type SpawnImplementationTaskResult,
   type GetPendingCountResult,
   type ToggleAutonomousModeResult,
   type GetAutonomousModeStatusResult,
@@ -657,42 +654,6 @@ function getCommitDecision(): GetCommitDecisionResult {
       ? `Decision: ${decision.decision}, but ${blockMessage} still blocking commits.`
       : `Decision: ${decision.decision}. Commits may proceed.`,
   };
-}
-
-function spawnImplementationTask(args: SpawnImplementationTaskArgs): SpawnImplementationTaskResult {
-  try {
-    const taggedPrompt = `[Task] ${args.prompt}`;
-
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '-p',
-      taggedPrompt,
-    ], {
-      detached: true,
-      stdio: 'ignore',
-      cwd: PROJECT_DIR,
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        CLAUDE_SPAWNED_SESSION: 'true',
-      },
-    });
-
-    claude.unref();
-
-    return {
-      spawned: true,
-      pid: claude.pid ?? null,
-      message: `Task spawned: ${args.description} (PID: ${claude.pid})`,
-    };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      spawned: false,
-      pid: null,
-      message: `Failed to spawn task: ${message}`,
-    };
-  }
 }
 
 function getPendingCountTool(): GetPendingCountResult {
@@ -1899,12 +1860,6 @@ const tools: AnyToolHandler[] = [
     description: 'Get the current commit decision status. Used by pre-commit hook to allow/block commits.',
     schema: GetCommitDecisionArgsSchema,
     handler: getCommitDecision,
-  },
-  {
-    name: 'spawn_implementation_task',
-    description: 'Spawn a background Claude instance to implement CTO feedback. Fire-and-forget.',
-    schema: SpawnImplementationTaskArgsSchema,
-    handler: spawnImplementationTask,
   },
   {
     name: 'get_pending_count',

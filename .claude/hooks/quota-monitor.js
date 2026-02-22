@@ -16,7 +16,7 @@
  * or predictive threshold is met.
  *
  * For interactive sessions: writes new credentials to Keychain and continues.
- *   Claude Code's SRA()/r6T() adopts the new token automatically.
+ *   Adoption occurs at token expiry (SRA), on 401 (r6T), or via binary patch.
  * For automated sessions: stops cleanly for session-reviver to resume with
  *   fresh credentials from Keychain.
  * When all accounts are exhausted: writes to paused-sessions.json and warns.
@@ -498,12 +498,15 @@ async function main() {
 
     if (!isAutomated) {
       // Interactive session: seamless rotation.
-      // Credentials already written to Keychain via updateActiveCredentials() above.
-      // Claude Code's SRA() will adopt the new token when the old one approaches expiry.
-      // For quota-based rotation, r6T() fires when old account hits 100% and returns 429→401.
+      // Credentials written to Keychain via updateActiveCredentials() above.
+      // Adoption timing depends on rotation reason:
+      //   - Pre-expiry swap: SRA() fires ~5 min before token expiry, re-reads Keychain.
+      //   - Quota exhaustion (100%): API returns 429→401, r6T() fires and re-reads.
+      //   - Quota rotation (<100%): Neither SRA() nor r6T() fires — old token is still
+      //     valid with hours of life. Adoption waits until token expiry or binary patch.
       process.stdout.write(JSON.stringify({
         continue: true,
-        systemMessage: `Account rotated to ${selectedKeyId.slice(0, 8)}... (${Math.round(maxUsage)}% usage on previous). Credentials written to Keychain — will be adopted automatically.`,
+        systemMessage: `Account rotated to ${selectedKeyId.slice(0, 8)}... (${Math.round(maxUsage)}% usage on previous). Credentials written to Keychain. Adoption occurs at token expiry or next 401.`,
       }));
       return;
     } else {

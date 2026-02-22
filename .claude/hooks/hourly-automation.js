@@ -1282,12 +1282,15 @@ If the task does NOT align with specs, plans, or CTO requests:
 - Mark this task complete WITHOUT creating sub-tasks
 - Explain in the completion why you declined
 
-### Step 2: Spawn Investigator FIRST
-Always start by spawning an investigator to analyze the task scope:
+### Step 2: Create Investigator Task FIRST
+Always start by creating an urgent investigator task:
 \`\`\`
-mcp__deputy-cto__spawn_implementation_task({
-  prompt: "You are the INVESTIGATOR. Analyze the following task and create a detailed implementation plan with specific sub-tasks:\\n\\nTask: ${task.title}\\n${task.description || ''}\\n\\nInvestigate the codebase, read relevant specs, and create TODO items in the appropriate sections via mcp__todo-db__create_task for each sub-task you identify.",
-  description: "Investigate: ${task.title}"
+mcp__todo-db__create_task({
+  section: "INVESTIGATOR & PLANNER",
+  title: "Investigate: ${task.title}",
+  description: "You are the INVESTIGATOR. Analyze the following task and create a detailed implementation plan with specific sub-tasks:\\n\\nTask: ${task.title}\\n${task.description || ''}\\n\\nInvestigate the codebase, read relevant specs, and create TODO items in the appropriate sections via mcp__todo-db__create_task for each sub-task you identify.",
+  assigned_by: "deputy-cto",
+  priority: "urgent"
 })
 \`\`\`
 
@@ -1682,15 +1685,16 @@ If both agents pass, spawn a deputy-cto sub-agent (Task tool, subagent_type: dep
 - Request: Evaluate stability and decide whether to promote
 
 The deputy-cto should:
-- **If approving**: Call \`mcp__deputy-cto__spawn_implementation_task\` with this prompt:
-  \`\`\`
-  Create a PR from preview to staging and merge it after CI passes:
-  1. Run: gh pr create --base staging --head preview --title "Promote preview to staging" --body "Automated promotion. Commits: ${newCommits.length} new commits. Reviewed by code-reviewer and test-writer agents."
-  2. Wait for CI: gh pr checks <number> --watch
-  3. If CI passes: gh pr merge <number> --merge
-  4. If CI fails: Report failure via mcp__cto-reports__report_to_cto
-  \`\`\`
-- **If rejecting**: Report issues via mcp__cto-reports__report_to_cto, create TODO tasks
+- **If approving**: Report approval via \`mcp__cto-reports__report_to_cto\` with category "decision", summary "Preview promotion approved"
+- **If rejecting**: Report issues via \`mcp__cto-reports__report_to_cto\`, create TODO tasks for fixes
+
+### Step 5: Execute Promotion (after deputy-cto approves)
+
+If the deputy-cto approved, execute the promotion yourself:
+1. Run: \`gh pr create --base staging --head preview --title "Promote preview to staging" --body "Automated promotion. Commits: ${newCommits.length} new commits. Reviewed by code-reviewer and test-writer agents."\`
+2. Wait for CI: \`gh pr checks <number> --watch\`
+3. If CI passes: \`gh pr merge <number> --merge\`
+4. If CI fails: Report failure via \`mcp__cto-reports__report_to_cto\`
 
 ## Timeout
 
@@ -1797,21 +1801,30 @@ If both agents pass, spawn a deputy-cto sub-agent (Task tool, subagent_type: dep
 - Request: Create the production release PR and CTO decision task
 
 The deputy-cto should:
-1. Call \`mcp__deputy-cto__spawn_implementation_task\` to create the PR:
-   \`\`\`
-   gh pr create --base main --head staging --title "Production Release: ${newCommits.length} commits" --body "Automated production promotion. Staging stable for ${hoursSinceLastStagingCommit}h. Reviewed by code-reviewer and test-writer."
-   \`\`\`
-
-2. Call \`mcp__deputy-cto__add_question\` with:
+1. Call \`mcp__deputy-cto__add_question\` with:
    - type: "approval"
    - title: "Production Release: Merge staging -> main (${newCommits.length} commits)"
    - description: Include review results, commit list, stability assessment
    - suggested_options: ["Approve merge to production", "Reject - needs more work"]
 
-3. Report via mcp__cto-reports__report_to_cto
+2. Report via mcp__cto-reports__report_to_cto
 
-**CTO approval**: When CTO approves via /deputy-cto, deputy-cto calls spawn_implementation_task to merge:
-\`gh pr merge <number> --merge\`
+### Step 5: Create Production PR (after deputy-cto approves)
+
+If the deputy-cto approved, create the PR yourself:
+1. Run: \`gh pr create --base main --head staging --title "Production Release: ${newCommits.length} commits" --body "Automated production promotion. Staging stable for ${hoursSinceLastStagingCommit}h. Reviewed by code-reviewer and test-writer."\`
+   Do NOT merge — CTO approval required via /deputy-cto.
+
+**CTO approval**: When CTO approves via /deputy-cto, an urgent merge task is created:
+\`\`\`
+mcp__todo-db__create_task({
+  section: "CODE-REVIEWER",
+  title: "Merge production release PR #<number>",
+  description: "CTO approved. Run: gh pr merge <number> --merge",
+  assigned_by: "deputy-cto",
+  priority: "urgent"
+})
+\`\`\`
 
 ## Timeout
 
@@ -2028,9 +2041,16 @@ If the file doesn't exist, report this as an issue and exit.
    - category: "performance" or "blocker" based on severity
    - priority: "normal" or "high" based on severity
 
-2. For actionable issues, call \`mcp__deputy-cto__spawn_implementation_task\` with:
-   - Detailed prompt describing the issue and how to fix it
-   - Include all relevant context (error messages, service IDs, etc.)
+2. For actionable issues, create an urgent fix task:
+   \`\`\`
+   mcp__todo-db__create_task({
+     section: "CODE-REVIEWER",
+     title: "Fix staging health issue: [summary]",
+     description: "[Detailed description of the issue and how to fix it. Include all relevant context: error messages, service IDs, etc.]",
+     assigned_by: "staging-health-monitor",
+     priority: "urgent"
+   })
+   \`\`\`
 
 **If all clear:**
 - Log "Staging environment healthy" and exit
@@ -2139,9 +2159,16 @@ If the file doesn't exist, report this as an issue and exit.
    - recommendation: Your recommended fix or action based on the health findings
    - This creates a CTO decision task visible in /deputy-cto
 
-3. For actionable issues, call \`mcp__deputy-cto__spawn_implementation_task\` with:
-   - Detailed prompt describing the issue and how to fix it
-   - Include all relevant context (error messages, service IDs, etc.)
+3. For actionable issues, create an urgent fix task:
+   \`\`\`
+   mcp__todo-db__create_task({
+     section: "CODE-REVIEWER",
+     title: "Fix production health issue: [summary]",
+     description: "[Detailed description of the issue and how to fix it. Include all relevant context: error messages, service IDs, etc.]",
+     assigned_by: "production-health-monitor",
+     priority: "urgent"
+   })
+   \`\`\`
 
 **If all clear:**
 - Log "Production environment healthy" and exit

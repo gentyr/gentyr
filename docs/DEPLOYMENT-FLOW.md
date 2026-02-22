@@ -254,7 +254,7 @@ Runs every 3 hours when the `staging` branch exists and has been deployed.
 | Error rate stats | `mcp__elastic-logs__get_log_stats` | Error count grouped by service |
 | Supabase health | Supabase MCP tools | Migration issues, connectivity |
 
-**Reporting:** Issues are reported to deputy-CTO via `mcp__cto-reports__report_to_cto` and fixer agents are spawned via `spawn_implementation_task`.
+**Reporting:** Issues are reported to deputy-CTO via `mcp__cto-reports__report_to_cto` and fixer tasks are created via `create_task` with `priority: 'urgent'`.
 
 ### Production Health Monitor (1-hour cycle)
 
@@ -264,7 +264,7 @@ Same checks as staging (targeting production services), plus:
 |-------------------|----------|---------|
 | CTO escalation | `mcp__deputy-cto__add_question` | Creates CTO decision task |
 | Deputy-CTO report | `mcp__cto-reports__report_to_cto` | Health report for triage |
-| Fixer spawn | `mcp__deputy-cto__spawn_implementation_task` | Agents to address issues |
+| Fixer task | `mcp__todo-db__create_task` (priority: urgent) | Tasks to address issues |
 
 Production issues use `priority: "critical"` for reporting and escalation.
 

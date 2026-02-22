@@ -172,7 +172,7 @@ hourly-automation.js
 Session runs task
   |
   |-- [PostToolUse] quota-monitor checks every 5 min
-  |       |-- usage >= 95%? -> rotate key, restart session
+  |       |-- usage >= 95%? -> rotate key, write to Keychain, stop cleanly (continue: false)
   |       |-- token expiring? -> restartless swap via Keychain
   |
   |-- [Stop triggered]
@@ -189,7 +189,7 @@ Session ends
   |
   v
 session-reviver.js (next automation cycle)
-  |-- Mode 1: picks up quota-interrupted sessions -> claude --resume
+  |-- Mode 1: picks up quota-interrupted sessions -> claude --resume with fresh credentials
   |-- Mode 2: scans agent-tracker for dead sessions -> re-spawns
   |-- Mode 3: checks paused sessions for account recovery
 ```
@@ -203,7 +203,8 @@ User starts claude
 User works
   |-- [PreToolUse:Bash] credential-sync-hook (30-min throttle)
   |-- [PostToolUse] quota-monitor (5-min throttle)
-  |       |-- usage >= 95%? -> rotate + auto-restart with new creds
+  |       |-- usage >= 95%? -> rotate key, write to Keychain, continue (continue: true)
+  |       |       |-- credentials adopted at token expiry (SRA) or 401 (r6T)
   |       |-- token expiring? -> restartless Keychain swap
   |
 User or system stops session
@@ -246,8 +247,11 @@ Runs after every tool call, throttled to 5-minute intervals.
 4. **Step 4b - Proactive refresh**: Refresh expired AND approaching-expiry standby tokens
 5. **Step 4c - Pre-expiry swap**: If active key near expiry, write standby to Keychain (no restart)
 6. **Rotation check**: If max usage >= 95%, select better key and rotate
-7. **Session handling**: Interactive -> auto-restart script; Automated -> `claude --resume`
+7. **Seamless session handling**:
+   - Interactive sessions: write to Keychain, continue with `continue: true`, credentials adopted at SRA/r6T
+   - Automated sessions: write to Keychain, stop cleanly with `continue: false`, session-reviver resumes
 8. **Exhaustion handling**: If no key available, write paused-sessions.json
+9. **Post-rotation audit**: Log rotation event to `rotation-audit.log` for health tracking
 
 ### Key Thresholds
 

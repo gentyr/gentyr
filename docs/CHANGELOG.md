@@ -1,5 +1,58 @@
 # GENTYR Framework Changelog
 
+## 2026-02-21 - Seamless Credential Rotation + Health Auditing
+
+### Changed
+
+**Seamless rotation for quota-based switches** (`.claude/hooks/quota-monitor.js`):
+- Removed disruptive kill/restart paths (old lines 432-491): no more AppleScript terminal injection, no more orphaned process spawning
+- Interactive sessions: now receive `continue: true` with system message explaining adoption timing (credentials written to Keychain, picked up at SRA or r6T, not immediate)
+- Automated sessions: now receive `continue: false` with stopReason (clean stop for session-reviver to resume with fresh credentials from Keychain)
+- Removed unused imports: `spawn`, `getClaudePid`, `detectTerminal`, `generateRestartScript`, `shellEscape`
+- Updated doc comment to reflect seamless rotation behavior (version 2.0.0)
+
+**Post-rotation health audit** (`.claude/hooks/quota-monitor.js`):
+- Added `pendingAudit` field to throttle state
+- Added `verifyPendingAudit()` function to verify rotation success
+- Writes audit results to `rotation-audit.log`
+- Imports `readKeychainCredentials` and `generateKeyId` from key-sync.js
+
+**Shared keychain reader** (`.claude/hooks/key-sync.js`):
+- New export: `readKeychainCredentials()` - reads and parses macOS Keychain credentials directly
+- Used by quota-monitor for post-rotation auditing and by monitor-token-swap for state verification
+
+**Rotation health monitoring** (`scripts/monitor-token-swap.mjs`):
+- Added `--audit` flag: prints rotation health report (recent rotations, pending audits, current state, Keychain status, alerts)
+- Refactored `readKeychainState()` to delegate to shared `readKeychainCredentials()` from key-sync.js
+- Audit mode shows rotation success rate, credential sync status, and system health metrics
+
+### Added
+
+**Binary patch research** (`scripts/patch-credential-cache.py`):
+- Dry-run only research script for Claude Code's `iB()` credential memoization
+- Searches for 9 patterns in Bun SEA binary (all found on v2.1.34)
+- Proposes Approach A: setInterval injection to periodically clear `iB.cache` (60-second TTL)
+- Not production-ready; exists for future reference if immediate adoption needed for quota rotation
+- Test coverage: `scripts/__tests__/patch-credential-cache.test.js` (37 tests)
+
+### Tests
+
+**Test updates**:
+- Updated quota-monitor tests for seamless rotation paths (186 tests total, all passing)
+- Added `readKeychainCredentials()` coverage in key-sync tests
+- Added `--audit` flag tests for monitor-token-swap
+- Created `patch-credential-cache.test.js` with 37 tests for binary patch research script
+- Fixed `readKeychainState` test to match new delegation pattern
+
+### Documentation
+
+**Updated files**:
+- `CLAUDE.md` - Seamless rotation behavior, rotation monitoring tools, binary patch research note
+- `docs/AUTOMATION-SYSTEMS.md` - Updated session flow diagrams and quota-monitor steps
+- `MEMORY.md` - Added seamless rotation pattern note
+
+---
+
 ## 2026-02-21 - Priority-Based Urgent Task Dispatch
 
 ### Added

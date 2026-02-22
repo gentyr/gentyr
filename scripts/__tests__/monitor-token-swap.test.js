@@ -252,7 +252,7 @@ describe('monitor-token-swap.mjs - Code Structure', () => {
       );
     });
 
-    it('readKeychainState should use security command on macOS', () => {
+    it('readKeychainState should delegate to readKeychainCredentials from key-sync', () => {
       const code = fs.readFileSync(MONITOR_SCRIPT_PATH, 'utf8');
 
       const fnMatch = code.match(/function readKeychainState\([\s\S]*?\n\}/);
@@ -261,14 +261,14 @@ describe('monitor-token-swap.mjs - Code Structure', () => {
 
       assert.match(
         fnBody,
-        /execFileSync\(['"]security['"]/,
-        'Must use execFileSync with security command'
+        /readKeychainCredentials\(\)/,
+        'Must delegate to readKeychainCredentials from key-sync.js'
       );
 
       assert.match(
         fnBody,
-        /find-generic-password/,
-        'Must use find-generic-password command'
+        /generateKeyId/,
+        'Must use generateKeyId to compute key ID from access token'
       );
     });
 
@@ -693,6 +693,76 @@ describe('monitor-token-swap.mjs - Code Structure', () => {
     });
   });
 
+  describe('Audit mode (--audit flag)', () => {
+    it('should detect --audit flag in process.argv', () => {
+      const code = fs.readFileSync(MONITOR_SCRIPT_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /AUDIT_MODE\s*=\s*process\.argv\.includes\(['"]--audit['"]\)/,
+        'Must detect --audit flag in process.argv'
+      );
+    });
+
+    it('should define runAuditReport async function', () => {
+      const code = fs.readFileSync(MONITOR_SCRIPT_PATH, 'utf8');
+
+      assert.match(
+        code,
+        /async function runAuditReport\(/,
+        'Must define runAuditReport async function'
+      );
+    });
+
+    it('runAuditReport should read rotation audit log', () => {
+      const code = fs.readFileSync(MONITOR_SCRIPT_PATH, 'utf8');
+
+      const fnMatch = code.match(/async function runAuditReport\([\s\S]*?\n\}/);
+      assert.ok(fnMatch, 'runAuditReport must be defined');
+      const fnBody = fnMatch[0];
+
+      assert.match(
+        fnBody,
+        /ROTATION_AUDIT_LOG_PATH/,
+        'Must read from ROTATION_AUDIT_LOG_PATH'
+      );
+    });
+
+    it('main should dispatch to runAuditReport in AUDIT_MODE', () => {
+      const code = fs.readFileSync(MONITOR_SCRIPT_PATH, 'utf8');
+
+      const fnMatch = code.match(/async function main\([\s\S]*$/);
+      assert.ok(fnMatch, 'main must be defined');
+      const fnBody = fnMatch[0];
+
+      assert.match(
+        fnBody,
+        /if \(AUDIT_MODE\)/,
+        'Must check AUDIT_MODE in main'
+      );
+
+      assert.match(
+        fnBody,
+        /await runAuditReport\(\)/,
+        'Must call runAuditReport when AUDIT_MODE is true'
+      );
+    });
+
+    it('audit report should show recent rotation entries', () => {
+      const code = fs.readFileSync(MONITOR_SCRIPT_PATH, 'utf8');
+
+      const fnMatch = code.match(/async function runAuditReport\([\s\S]*?\n\}/);
+      assert.ok(fnMatch, 'runAuditReport must be defined');
+      const fnBody = fnMatch[0];
+
+      assert.match(
+        fnBody,
+        /Recent Rotations/i,
+        'Must include "Recent Rotations" header'
+      );
+    });
+  });
+
   describe('Main loop structure', () => {
     it('should define main async function', () => {
       const code = fs.readFileSync(MONITOR_SCRIPT_PATH, 'utf8');
@@ -704,7 +774,7 @@ describe('monitor-token-swap.mjs - Code Structure', () => {
       );
     });
 
-    it('main should call initial poll and deepCheck', () => {
+    it('main should call initial poll and deepCheck (when not in audit mode)', () => {
       const code = fs.readFileSync(MONITOR_SCRIPT_PATH, 'utf8');
 
       const fnMatch = code.match(/async function main\([\s\S]*$/);

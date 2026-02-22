@@ -124,25 +124,17 @@ function logAlert(alertType, details) {
  * Returns null if Keychain is unavailable.
  */
 function readKeychainState() {
-  if (process.platform !== 'darwin') return null;
-  try {
-    const { username } = os.userInfo();
-    const raw = execFileSync('security', [
-      'find-generic-password', '-s', 'Claude Code-credentials', '-a', username, '-w',
-    ], { encoding: 'utf8', timeout: 3000 }).trim();
-    const creds = JSON.parse(raw);
-    const oauth = creds.claudeAiOauth;
-    if (oauth && oauth.accessToken) {
-      return {
-        keyId: generateKeyId(oauth.accessToken),
-        expiresAt: oauth.expiresAt || null,
-        subscriptionType: oauth.subscriptionType || null,
-        rateLimitTier: oauth.rateLimitTier || null,
-        hasRefreshToken: !!oauth.refreshToken,
-      };
-    }
-  } catch {
-    // Keychain locked or no entry
+  const creds = readKeychainCredentials();
+  if (!creds) return null;
+  const oauth = creds.claudeAiOauth;
+  if (oauth && oauth.accessToken) {
+    return {
+      keyId: generateKeyId(oauth.accessToken),
+      expiresAt: oauth.expiresAt || null,
+      subscriptionType: oauth.subscriptionType || null,
+      rateLimitTier: oauth.rateLimitTier || null,
+      hasRefreshToken: !!oauth.refreshToken,
+    };
   }
   return null;
 }

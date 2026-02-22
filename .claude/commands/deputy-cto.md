@@ -153,19 +153,22 @@ When the CTO wants something implemented, choose based on urgency:
 
 ### Urgent Tasks (Immediate)
 
-Use `spawn_implementation_task` for time-sensitive work:
+Use `mcp__todo-db__create_task` with `priority: "urgent"` for time-sensitive work:
 - Security fixes
 - Blocking issues preventing commits
 - CTO requests immediate action
 
 ```typescript
-mcp__deputy-cto__spawn_implementation_task({
-  prompt: "Detailed instructions for what to implement...",
-  description: "Brief description for logging"
+mcp__todo-db__create_task({
+  section: "CODE-REVIEWER",  // or INVESTIGATOR & PLANNER, TEST-WRITER, PROJECT-MANAGER
+  title: "Brief description of the task",
+  description: "Detailed instructions for what to implement...",
+  assigned_by: "deputy-cto",
+  priority: "urgent"
 })
 ```
 
-The spawned task runs in the background with full tool access.
+Urgent tasks are dispatched within seconds by the governed automation pipeline with full worktree isolation, agent-tracker, and credential resolution.
 
 ### Non-Urgent Tasks (Queued)
 
