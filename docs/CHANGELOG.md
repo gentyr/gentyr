@@ -1,5 +1,23 @@
 # GENTYR Framework Changelog
 
+## 2026-02-22 - Security: SQL Injection Fix in Supabase MCP Server
+
+### Fixed
+
+**SQL injection vulnerability in Supabase MCP server** (`packages/mcp-servers/src/supabase/types.ts`, `packages/mcp-servers/src/supabase/server.ts`):
+- Added shared `sqlIdentifier` Zod validator (`/^[a-zA-Z_][a-zA-Z0-9_]*$/`) to all 6 schemas that accept table or function names: `SelectArgsSchema`, `InsertArgsSchema`, `UpdateArgsSchema`, `DeleteArgsSchema`, `RpcArgsSchema`, and `DescribeTableArgsSchema`
+- Table/function names were previously interpolated directly into SQL strings with no validation, allowing injection via malicious identifier strings
+- `SqlArgsSchema` intentionally left unrestricted — it accepts raw SQL by design
+- Defense-in-depth: `describeTable()` also adds single-quote escaping as a secondary guard
+
+### Tests
+
+**320 new vitest tests** (`packages/mcp-servers/src/supabase/__tests__/supabase-schemas.test.ts`):
+- Coverage across all 6 affected schemas: valid identifiers, injection payloads (DROP, UNION, comment sequences), regex boundary cases, and edge cases (empty string, leading digits, special characters)
+- Total: 1414 tests passing across 28 test files
+
+---
+
 ## 2026-02-22 - OP_SERVICE_ACCOUNT_TOKEN Sync & Desync Detection
 
 ### Added
