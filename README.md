@@ -8,6 +8,8 @@ Eleven agents work. A deputy CTO triages. You make the decisions that count.
 
 GENTYR turns Claude Code into an autonomous engineering team. It installs as a framework of agents, hooks, servers, and guards that govern how AI writes, tests, reviews, and ships code. You point it at a new SaaS project. It builds. You steer.
 
+> **macOS only.** The automation services, credential rotation, and persistent proxy use launchd. Linux and Windows are not supported.
+
 ## who this is for
 
 Solo founders building new SaaS products from scratch. You want a full engineering team without hiring one. You are willing to adopt a locked stack and let the framework make infrastructure decisions for you. This is not for existing codebases. GENTYR builds from the ground up.
