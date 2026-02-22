@@ -251,11 +251,13 @@ export class McpServer {
 
     try {
       const toolResult = await tool.handler(argsParseResult.data);
+      const hasError = toolResult && typeof toolResult === 'object' && 'error' in toolResult;
       const result: McpToolCallResult = {
         content: [{
           type: 'text',
           text: JSON.stringify(toolResult, null, 2),
         }],
+        ...(hasError ? { isError: true } : {}),
       };
       return this.createSuccessResponse(id, result);
     } catch (err) {
@@ -265,6 +267,7 @@ export class McpServer {
           type: 'text',
           text: JSON.stringify({ error: message }, null, 2),
         }],
+        isError: true,
       };
       return this.createSuccessResponse(id, result);
     }

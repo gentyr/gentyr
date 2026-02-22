@@ -1,5 +1,104 @@
 # GENTYR Framework Changelog
 
+## 2026-02-22 - OP_SERVICE_ACCOUNT_TOKEN Sync & Desync Detection
+
+### Added
+
+**OP token desync detection in `credential-health-check.js`** (`scripts/hooks/credential-health-check.js`, `.claude/hooks/credential-health-check.js`):
+- At `SessionStart`, the hook now compares the shell `OP_SERVICE_ACCOUNT_TOKEN` environment variable against the value stored in `.mcp.json`
+- If they differ, `opTokenDesync = true` is set; `process.env` is always overwritten with the `.mcp.json` value (source of truth)
+- A `desyncPrefix` warning is prepended to any output message: "GENTYR: OP_SERVICE_ACCOUNT_TOKEN in shell differs from .mcp.json (source of truth). Run `setup.sh --path <project>` to re-sync."
+- When all credentials are valid but a desync exists, the warning is emitted as the sole message rather than silent success
+- Template copy (`scripts/hooks/credential-health-check.js`) synced to match the runtime copy; both files are now identical
+
+**`setup.sh` section 3c — OP shell profile sync** (`scripts/setup.sh`):
+- During install with `--op-token`, writes a `# BEGIN GENTYR OP` / `# END GENTYR OP` managed block to `~/.zshrc` (or `~/.bashrc`) containing `export OP_SERVICE_ACCOUNT_TOKEN=<token>`
+- Idempotent: removes any existing managed block and any legacy unmanaged `export OP_SERVICE_ACCOUNT_TOKEN=` lines before writing
+- During uninstall, removes the managed block from all detected shell profiles
+
+**`validateShellSync()` in `setup-validate.js`** (`scripts/setup-validate.js`):
+- New validator in the `SERVICE_VALIDATORS` registry (key: `shellSync`)
+- Reads `.mcp.json` token as source of truth and compares against the `# BEGIN GENTYR OP` block in `~/.zshrc` / `~/.bashrc`
+- Reports `fail` if: no managed block exists, legacy unmanaged export found, or tokens differ; reports `warn` if `.mcp.json` unreadable or no shell profile found
+- Remediation message: "Run setup.sh to re-sync shell profile with .mcp.json token"
+
+### Tests
+
+**11 new tests + 4 fixed assertions** (`.claude/hooks/__tests__/credential-health-check.test.js`):
+- New `OP Token Desync Detection` describe block with 11 tests covering: desync warning when shell token differs from `.mcp.json`, silent success when tokens match, desync warning prepended to missing-credential messages, desync warning prepended to 1Password auth failure messages, `process.env` always overwritten with `.mcp.json` value, no desync when shell token is absent, and no token value exposure in output
+- Fixed 4 existing test assertions that broke after desync changes (pattern updates for `desyncPrefix` and template literal matching)
+- Total: 42 tests passing (was 31 before)
+
+### Documentation
+
+**Updated files**:
+- `docs/AUTOMATION-SYSTEMS.md` — Hook Registration table updated to include `credential-health-check` at `SessionStart`; new "Credential Health Check Hook" section added
+- `CLAUDE.md` — New "Credential Health Check Hook" bullet; uninstall description updated to mention shell profile block removal
+- `docs/SETUP-GUIDE.md` — Phase 1 updated with shell profile sync behavior and managed block format
+- `docs/CHANGELOG.md` — This entry
+
+---
+
+## 2026-02-22 - Bypass Security Hardening (Phase 2) + Fix Unknown Accounts
+
+### Added
+
+**HMAC verification in `executeBypass()`** (`packages/mcp-servers/src/deputy-cto/server.ts`):
+- When the CTO types `APPROVE BYPASS <code>`, the UserPromptSubmit hook now writes an HMAC-SHA256 signature into `bypass-approval-token.json` over `code|request_id|expires_timestamp|bypass-approved`
+- `execute_bypass` verifies this signature using the root-owned protection key before proceeding
+- Forged token files are detected, deleted, and rejected with `FORGERY DETECTED: Invalid bypass approval token signature`
+- Matches the verification pattern already used by `executeHotfixPromotion()`
+
+**`pending_triage_count` in `get_pending_count` result** (`packages/mcp-servers/src/deputy-cto/server.ts`, `types.ts`):
+- `GetPendingCountResult` now includes `pending_triage_count` alongside `pending_count`
+- Lets the CTO see the split between pending questions and pending triage reports when `commits_blocked: true`
+
+**Account profile resolution in `syncKeys()`** (`.claude/hooks/key-sync.js`, `.claude/hooks/api-key-watcher.js`):
+- `fetchAccountProfile(accessToken)` exported from `key-sync.js`; calls `https://api.anthropic.com/api/oauth/profile` to resolve `account_uuid` and `email`
+- `syncKeys()` now calls this for every active/exhausted key with `account_uuid === null` after the token refresh loop
+- Fixes "unknown" accounts in the CTO notification status line caused by keys added by automation or token refresh paths that skipped the interactive SessionStart profile-resolution
+- `api-key-watcher.js` now imports `fetchAccountProfile` from `key-sync.js` instead of maintaining a local copy
+
+**Fingerprint cross-match in quota display hooks** (`.claude/hooks/cto-notification-hook.js`, `.claude/hooks/slash-command-prefetch.js`):
+- Fallback deduplication for null-UUID keys: after building the account map, checks if any fingerprint-based entry (`fp:` prefix) matches a UUID-bearing entry by `seven_day + seven_day_sonnet` values
+- Merges matches to prevent "unknown" appearing in the status line even when the profile API is temporarily unavailable
+
+### Changed
+
+**`requestBypass` rate limit** (`packages/mcp-servers/src/deputy-cto/server.ts`):
+- Maximum 3 pending bypass-request questions allowed at a time
+- `request_bypass` returns an error if the limit is reached, asking the agent to wait
+
+**`reportToCto` rate limit** (`packages/mcp-servers/src/agent-reports/server.ts`):
+- Maximum 5 untriaged reports per reporting agent allowed at a time
+- `report_to_cto` returns an error if the limit is reached
+
+### Removed
+
+**`spawn_implementation_task` tool** (`packages/mcp-servers/src/deputy-cto/server.ts`, `types.ts`):
+- Removed the tool that spawned background Claude instances directly from the deputy-cto server
+- Task spawning is now exclusively managed by the agent-tracker MCP server and hourly automation
+
+### Tests
+
+**15 new vitest tests** (`packages/mcp-servers/src/deputy-cto/__tests__/deputy-cto.test.ts`, `packages/mcp-servers/src/agent-reports/__tests__/agent-reports.test.ts`):
+- HMAC verification: forged token, missing HMAC, missing key, valid HMAC (4 tests)
+- `get_pending_count` triage count (3 tests)
+- `requestBypass` rate limiting (3 tests)
+- `reportToCto` rate limiting (4 tests, in agent-reports test file)
+- Total: 1093 tests passing across 27 test files
+
+### Documentation
+
+**Updated files**:
+- `docs/AUTOMATION-SYSTEMS.md` — Deputy-CTO Security Guards section expanded with Phase 2 details; `syncKeys()` process updated with profile resolution step
+- `docs/CHANGELOG.md` — This entry
+- `CLAUDE.md` — Key Sync Module updated with `fetchAccountProfile` export and `syncKeys()` profile resolution step
+- `plans/fix-unknown-accounts.md` — Removed (plan fully implemented)
+- `plans/TRIAGE-COMMAND.md` — Removed (plan fully implemented in prior session)
+
+---
+
 ## 2026-02-21 - Rotation Proxy E2E Validation + Triage Command
 
 ### Added

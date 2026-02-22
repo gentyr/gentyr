@@ -375,9 +375,11 @@ describe('quota-monitor.js - Rotation Audit System', () => {
     it('should log ROTATION event via appendRotationAudit', () => {
       const code = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      // Find rotation success block
-      const rotationMatch = code.match(/updateActiveCredentials\(selectedKey\);[\s\S]{0,2000}if \(!isAutomated\)/);
-      assert.ok(rotationMatch, 'Must have rotation success block');
+      // Find rotation success block: updateActiveCredentials() is called first,
+      // then appendRotationAudit('ROTATION'...) is called shortly after.
+      // All sessions use the same seamless rotation path.
+      const rotationMatch = code.match(/updateActiveCredentials\(selectedKey\);[\s\S]{0,1000}appendRotationAudit\(['"]ROTATION['"]/);
+      assert.ok(rotationMatch, 'Must have rotation success block with appendRotationAudit ROTATION call after updateActiveCredentials');
 
       assert.match(
         rotationMatch[0],

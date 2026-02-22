@@ -20,6 +20,7 @@ import {
   GetCoverageStatusArgsSchema,
   PLAYWRIGHT_PROJECTS,
 } from '../types.js';
+import { parseTestOutput } from '../helpers.js';
 
 // ============================================================================
 // Zod Schema Validation Tests (G003 Compliance)
@@ -329,27 +330,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
 // ============================================================================
 
 describe('Playwright MCP Server - Helper Functions', () => {
-  describe('parseTestOutput (simulated)', () => {
-    // Since parseTestOutput is not exported, we test the logic inline
-    function parseTestOutput(output: string): {
-      passed: number;
-      failed: number;
-      skipped: number;
-      duration: string;
-    } {
-      const passedMatch = output.match(/(\d+)\s+passed/);
-      const failedMatch = output.match(/(\d+)\s+failed/);
-      const skippedMatch = output.match(/(\d+)\s+skipped/);
-      const durationMatch = output.match(/\((\d+\.?\d*s)\)/);
-
-      return {
-        passed: passedMatch ? parseInt(passedMatch[1], 10) : 0,
-        failed: failedMatch ? parseInt(failedMatch[1], 10) : 0,
-        skipped: skippedMatch ? parseInt(skippedMatch[1], 10) : 0,
-        duration: durationMatch ? durationMatch[1] : 'unknown',
-      };
-    }
-
+  describe('parseTestOutput', () => {
     it('should parse successful test output', () => {
       const output = '  10 passed (5.2s)';
       const result = parseTestOutput(output);
@@ -427,6 +408,32 @@ Done.
         const result = parseTestOutput(output);
         expect(result.duration).toMatch(/^\d+\.?\d*s$/);
       }
+    });
+
+    it('should return zeros on garbage/crash output', () => {
+      const result = parseTestOutput('Error: Cannot find module playwright\n    at Module._resolveFilename');
+
+      expect(result.passed).toBe(0);
+      expect(result.failed).toBe(0);
+      expect(result.skipped).toBe(0);
+      expect(result.duration).toBe('unknown');
+    });
+
+    it('should return zeros on empty output', () => {
+      const result = parseTestOutput('');
+
+      expect(result.passed).toBe(0);
+      expect(result.failed).toBe(0);
+      expect(result.skipped).toBe(0);
+      expect(result.duration).toBe('unknown');
+    });
+
+    it('should return zeros when Playwright finds no matching tests', () => {
+      const result = parseTestOutput('No tests found.\n');
+
+      expect(result.passed).toBe(0);
+      expect(result.failed).toBe(0);
+      expect(result.skipped).toBe(0);
     });
   });
 

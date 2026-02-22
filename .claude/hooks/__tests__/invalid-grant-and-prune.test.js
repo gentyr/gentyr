@@ -7,9 +7,7 @@
  * 2. pruneDeadKeys() garbage-collects keys with status 'invalid' older than 7 days.
  * 3. syncKeys() marks a key as 'invalid' and logs key_removed when refreshed === 'invalid_grant'.
  * 4. quota-monitor.js marks a key as 'invalid' when refreshed === 'invalid_grant' in Step 4b.
- * 5. stop-continue-hook.js marks a key as 'invalid' when refreshed === 'invalid_grant' in
- *    the attemptQuotaRotation() pre-pass.
- * 6. api-key-watcher.js marks a key as 'invalid' when refreshed === 'invalid_grant' in its
+ * 5. api-key-watcher.js marks a key as 'invalid' when refreshed === 'invalid_grant' in its
  *    health-check loop.
  *
  * Uses Node's built-in test runner (node:test)
@@ -27,7 +25,6 @@ const __dirname = path.dirname(__filename);
 
 const KEY_SYNC_PATH = path.join(__dirname, '..', 'key-sync.js');
 const QUOTA_MONITOR_PATH = path.join(__dirname, '..', 'quota-monitor.js');
-const STOP_HOOK_PATH = path.join(__dirname, '..', 'stop-continue-hook.js');
 const API_KEY_WATCHER_PATH = path.join(__dirname, '..', 'api-key-watcher.js');
 
 // ============================================================================
@@ -610,67 +607,6 @@ describe('quota-monitor.js - invalid_grant sentinel handling in Step 4b', () => 
 });
 
 // ============================================================================
-// stop-continue-hook.js — invalid_grant branch in attemptQuotaRotation()
-// ============================================================================
-
-describe('stop-continue-hook.js - invalid_grant sentinel handling in attemptQuotaRotation()', () => {
-  it('should set key status to "invalid" when refreshExpiredToken returns "invalid_grant"', () => {
-    const code = fs.readFileSync(STOP_HOOK_PATH, 'utf8');
-
-    const fnMatch = code.match(/async function attemptQuotaRotation[\s\S]*?\nfunction /);
-    assert.ok(fnMatch, 'attemptQuotaRotation must be defined');
-    const fnBody = fnMatch[0];
-
-    assert.match(
-      fnBody,
-      /refreshed === ['"]invalid_grant['"][\s\S]*?keyData\.status = ['"]invalid['"]/,
-      'attemptQuotaRotation must set key status to "invalid" when sentinel is received'
-    );
-  });
-
-  it('should log a key_removed event with reason refresh_token_invalid_grant in attemptQuotaRotation', () => {
-    const code = fs.readFileSync(STOP_HOOK_PATH, 'utf8');
-
-    const fnMatch = code.match(/async function attemptQuotaRotation[\s\S]*?\nfunction /);
-    assert.ok(fnMatch, 'attemptQuotaRotation must be defined');
-    const fnBody = fnMatch[0];
-
-    assert.match(
-      fnBody,
-      /event:\s*['"]key_removed['"][\s\S]*?reason:\s*['"]refresh_token_invalid_grant['"]/,
-      'attemptQuotaRotation must log key_removed with reason refresh_token_invalid_grant'
-    );
-  });
-
-  it('should use else-if to separate invalid_grant and successful refresh branches', () => {
-    const code = fs.readFileSync(STOP_HOOK_PATH, 'utf8');
-
-    const fnMatch = code.match(/async function attemptQuotaRotation[\s\S]*?\nfunction /);
-    assert.ok(fnMatch, 'attemptQuotaRotation must be defined');
-    const fnBody = fnMatch[0];
-
-    assert.match(
-      fnBody,
-      /=== ['"]invalid_grant['"][\s\S]*?} else if \(refreshed\)/,
-      'attemptQuotaRotation must use else-if to distinguish invalid_grant from successful refresh'
-    );
-  });
-
-  it('should NOT add a key with invalid_grant back as a health-check candidate', () => {
-    // Behavioral: after invalid_grant, status is 'invalid'.
-    // The health-check filter excludes 'invalid' and 'expired' statuses.
-    const keyData = { status: 'invalid', accessToken: 'tok' };
-    const isHealthCheckCandidate = keyData.status !== 'invalid' && keyData.status !== 'expired';
-
-    assert.strictEqual(
-      isHealthCheckCandidate,
-      false,
-      'A key marked invalid by invalid_grant must not be a health-check candidate'
-    );
-  });
-});
-
-// ============================================================================
 // api-key-watcher.js — invalid_grant branch in health-check loop
 // ============================================================================
 
@@ -754,7 +690,6 @@ describe('Cross-file consistency — invalid_grant sentinel contract', () => {
     const files = [
       { name: 'key-sync.js', path: KEY_SYNC_PATH },
       { name: 'quota-monitor.js', path: QUOTA_MONITOR_PATH },
-      { name: 'stop-continue-hook.js', path: STOP_HOOK_PATH },
       { name: 'api-key-watcher.js', path: API_KEY_WATCHER_PATH },
     ];
 
@@ -773,7 +708,6 @@ describe('Cross-file consistency — invalid_grant sentinel contract', () => {
     const files = [
       { name: 'key-sync.js', path: KEY_SYNC_PATH },
       { name: 'quota-monitor.js', path: QUOTA_MONITOR_PATH },
-      { name: 'stop-continue-hook.js', path: STOP_HOOK_PATH },
       { name: 'api-key-watcher.js', path: API_KEY_WATCHER_PATH },
     ];
 
@@ -792,7 +726,6 @@ describe('Cross-file consistency — invalid_grant sentinel contract', () => {
     const files = [
       { name: 'key-sync.js', path: KEY_SYNC_PATH },
       { name: 'quota-monitor.js', path: QUOTA_MONITOR_PATH },
-      { name: 'stop-continue-hook.js', path: STOP_HOOK_PATH },
       { name: 'api-key-watcher.js', path: API_KEY_WATCHER_PATH },
     ];
 

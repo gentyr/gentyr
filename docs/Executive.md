@@ -109,7 +109,7 @@ AI coding agents hallucinate, cut corners, and make autonomous decisions that un
 - **antipattern-hunter** - Spec violation detection
 - **repo-hygiene-expert** - Architecture and dead code analysis
 
-### Automation Hooks (16 Event Handlers)
+### Automation Hooks (15 Event Handlers)
 - **pre-commit-review** - Triggers deputy-cto review before commits
 - **block-no-verify** - Prevents git hook bypass attempts
 - **compliance-checker** - Scans code against spec mappings
@@ -122,7 +122,6 @@ AI coding agents hallucinate, cut corners, and make autonomous decisions that un
 - **plan-executor** - Runs approved implementation plans
 - **todo-maintenance** - Task list cleanup and updates
 - **bypass-approval-hook** - Emergency bypass authorization
-- **stop-continue-hook** - Session interruption handling
 - **mapping-validator** - Spec-to-code mapping verification
 - **schema-mapper-hook** - Automatic spec mapping suggestions
 - **config-reader** - Centralized configuration access

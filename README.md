@@ -59,7 +59,7 @@ git clone git@github.com:gentyr/gentyr.git
 sudo gentyr/scripts/setup.sh --path /path/to/project --protect
 ```
 
-Start Claude Code in your project, run `/setup-gentyr` to configure credentials, then `/restart-session`. See [docs/SETUP-GUIDE.md](docs/SETUP-GUIDE.md) for details.
+Start Claude Code in your project and run `/setup-gentyr` to configure credentials. See [docs/SETUP-GUIDE.md](docs/SETUP-GUIDE.md) for details.
 
 ## the CTO report
 

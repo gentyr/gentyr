@@ -22,7 +22,6 @@ import { registerSpawn, updateAgent, registerHookExecution, AGENT_TYPES, HOOK_TY
 import { getCooldown } from './config-reader.js';
 import { runUsageOptimizer } from './usage-optimizer.js';
 import { syncKeys } from './key-sync.js';
-import { reviveInterruptedSessions } from './session-reviver.js';
 import { runFeedbackPipeline } from './feedback-orchestrator.js';
 import { createWorktree, cleanupMergedWorktrees } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
@@ -645,7 +644,6 @@ function getState() {
       lastStagingHealthCheck: 0, lastProductionHealthCheck: 0,
       lastStandaloneAntipatternHunt: 0, lastStandaloneComplianceCheck: 0,
       lastFeedbackCheck: 0, lastFeedbackSha: null,
-      lastSessionReviverCheck: 0,
       lastPreviewToStagingMergeAt: 0,
       stagingFreezeActive: false,
       stagingFreezeActivatedAt: 0,
@@ -2600,29 +2598,6 @@ async function main() {
     if (err.code !== 'ERR_MODULE_NOT_FOUND') {
       log(`Version watch error (non-fatal): ${err.message}`);
     }
-  }
-
-  // =========================================================================
-  // SESSION REVIVER (runs after key sync — revives quota-interrupted sessions)
-  // =========================================================================
-  const SESSION_REVIVER_COOLDOWN_MS = getCooldown('session_reviver', 10) * 60 * 1000;
-  const timeSinceLastReviver = now - (state.lastSessionReviverCheck || 0);
-
-  if (timeSinceLastReviver >= SESSION_REVIVER_COOLDOWN_MS) {
-    try {
-      const reviverResult = await reviveInterruptedSessions(log, effectiveMaxConcurrent);
-      const totalRevived = reviverResult.revivedQuota + reviverResult.revivedDead + reviverResult.revivedPaused;
-      if (totalRevived > 0) {
-        log(`Session reviver: revived ${totalRevived} session(s) (quota: ${reviverResult.revivedQuota}, dead: ${reviverResult.revivedDead}, paused: ${reviverResult.revivedPaused}).`);
-      }
-    } catch (err) {
-      log(`Session reviver error (non-fatal): ${err.message}`);
-    }
-    state.lastSessionReviverCheck = now;
-    saveState(state);
-  } else {
-    const minutesLeft = Math.ceil((SESSION_REVIVER_COOLDOWN_MS - timeSinceLastReviver) / 60000);
-    log(`Session reviver cooldown active. ${minutesLeft} minutes until next check.`);
   }
 
   // Dynamic cooldowns from config

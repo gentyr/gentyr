@@ -7,9 +7,8 @@
  * captures forensic snapshots, and outputs status lines + summary tables.
  *
  * Data sources:
- *   Keychain, rotation state, rotation log, stop-hook debug log,
- *   hourly automation log, agent tracker, quota-interrupted sessions,
- *   paused sessions
+ *   Keychain, rotation state, rotation log,
+ *   hourly automation log, agent tracker
  *
  * Run:  node scripts/rotation-stress-monitor.mjs
  * Stop: Ctrl+C (prints final summary)
@@ -32,11 +31,8 @@ const TARGET_STATE_DIR = path.join(TARGET_CLAUDE_DIR, 'state');
 
 const ROTATION_STATE_PATH = path.join(HOME, '.claude', 'api-key-rotation.json');
 const ROTATION_LOG_PATH = path.join(TARGET_CLAUDE_DIR, 'api-key-rotation.log');
-const STOP_HOOK_DEBUG_PATH = path.join(TARGET_CLAUDE_DIR, 'hooks', 'stop-hook-debug.log');
 const HOURLY_AUTOMATION_LOG_PATH = path.join(TARGET_CLAUDE_DIR, 'hourly-automation.log');
 const AGENT_TRACKER_PATH = path.join(TARGET_STATE_DIR, 'agent-tracker-history.json');
-const QUOTA_INTERRUPTED_PATH = path.join(TARGET_STATE_DIR, 'quota-interrupted-sessions.json');
-const PAUSED_SESSIONS_PATH = path.join(TARGET_STATE_DIR, 'paused-sessions.json');
 const LOG_FILE = path.join(TARGET_STATE_DIR, 'rotation-stress-monitor.log');
 const FORENSICS_DIR = path.join(HOME, '.claude', 'state', 'rotation-forensics');
 
@@ -82,7 +78,6 @@ const state = {
   rotation: { lastActiveKeyId: null, rotationLogLineCount: 0 },
   // Log tailing by byte offset
   logOffsets: {
-    stopHookDebug: 0,
     hourlyAutomation: 0,
     rotationLog: 0,
   },
@@ -362,10 +357,6 @@ function detectFailureConditions(kc, rotState, processes) {
     }
   }
 
-  // FC2: Reviver gap — dead agent with quota error not in quota-interrupted-sessions
-  // Checked during medium poll when agent deltas are computed
-  // (handled inline in pollMedium)
-
   // FC3: All dead — every key exhausted/invalid with no future reset
   const activeKeys = Object.values(rotState.keys).filter(k => k.status === 'active');
   if (activeKeys.length === 0) {
@@ -486,22 +477,6 @@ function captureForensicSnapshot(failureConditions) {
     const kc = getKeychainToken();
     const kcSnapshot = kc ? { keyId: kc.keyId, expiresAt: kc.expiresAt, tier: kc.tier } : null;
 
-    // Quota-interrupted + paused sessions
-    const quotaInterrupted = readJsonSafe(QUOTA_INTERRUPTED_PATH);
-    const paused = readJsonSafe(PAUSED_SESSIONS_PATH);
-
-    // Stop-hook tail (5KB)
-    let stopHookTail = '';
-    try {
-      const stat = fs.statSync(STOP_HOOK_DEBUG_PATH);
-      const readSize = Math.min(5120, stat.size);
-      const fd = fs.openSync(STOP_HOOK_DEBUG_PATH, 'r');
-      const buf = Buffer.alloc(readSize);
-      fs.readSync(fd, buf, 0, readSize, Math.max(0, stat.size - readSize));
-      fs.closeSync(fd);
-      stopHookTail = buf.toString('utf8');
-    } catch { /* ok */ }
-
     const snapshot = {
       capturedAt: new Date(now).toISOString(),
       failureConditions,
@@ -510,9 +485,6 @@ function captureForensicSnapshot(failureConditions) {
       rotationLogTail: rotLogTail,
       processes,
       keychain: kcSnapshot,
-      quotaInterruptedSessions: quotaInterrupted,
-      pausedSessions: paused,
-      stopHookTail,
       monitorStats: {
         uptime: fmtDuration(now - state.startedAt),
         pollCount: state.pollCount,
@@ -747,18 +719,7 @@ function pollFast() {
   const rotLogNew = tailNewBytes(ROTATION_LOG_PATH, 'rotationLog');
   const eventCount = processRotationLogEvents(rotLogNew);
 
-  // 5. Tail stop-hook debug log (just track, don't print each line)
-  const stopHookNew = tailNewBytes(STOP_HOOK_DEBUG_PATH, 'stopHookDebug');
-  if (stopHookNew) {
-    // Count interesting events
-    const quotaDeathMatches = (stopHookNew.match(/quota.*death|rate_limit/gi) || []).length;
-    if (quotaDeathMatches > 0) {
-      log(`  stop-hook: ${quotaDeathMatches} quota-death events detected`, { color: C.yellow });
-      state.stats.events.push({ type: 'stop_hook_quota_death', timestamp: now });
-    }
-  }
-
-  // 6. Tail hourly automation log
+  // 5. Tail hourly automation log
   const hourlyNew = tailNewBytes(HOURLY_AUTOMATION_LOG_PATH, 'hourlyAutomation');
   if (hourlyNew) {
     const spawnMatches = hourlyNew.match(/Spawning agent/g);
@@ -797,30 +758,11 @@ function pollMedium() {
       }
       for (const a of deltas.died) {
         log(`  AGENT DIED: ${a.id} type=${a.type || '?'}`, { color: C.red });
-
-        // FC2 check: if agent died recently and was a task agent, check if in quota-interrupted
-        const qi = readJsonSafe(QUOTA_INTERRUPTED_PATH);
-        const inQI = qi?.sessions?.some(s => s.agentId === a.id || s.sessionId === a.sessionId);
-        if (!inQI && a.hookType === 'hourly-automation') {
-          logAlert('HIGH', 'FC2', `Agent ${a.id} died but NOT in quota-interrupted-sessions.json`);
-          captureForensicSnapshot([{ name: 'FC2', severity: 'HIGH', details: `Agent ${a.id} died without quota-interrupted entry` }]);
-        }
       }
     }
     state.sessions.lastAgentSnapshot = currentAgents;
   }
 
-  // Quota-interrupted sessions
-  const qi = readJsonSafe(QUOTA_INTERRUPTED_PATH);
-  if (qi?.sessions?.length > 0) {
-    log(`  quota-interrupted: ${qi.sessions.length} session(s) awaiting revival`, { color: C.yellow });
-  }
-
-  // Paused sessions
-  const paused = readJsonSafe(PAUSED_SESSIONS_PATH);
-  if (paused?.sessions?.length > 0) {
-    log(`  paused: ${paused.sessions.length} session(s) waiting for recovery`, { color: C.red });
-  }
 }
 
 // ============================================================================
@@ -841,7 +783,6 @@ async function main() {
   // Initialize log offsets to current file sizes (don't replay old content)
   for (const [key, filePath] of [
     ['rotationLog', ROTATION_LOG_PATH],
-    ['stopHookDebug', STOP_HOOK_DEBUG_PATH],
     ['hourlyAutomation', HOURLY_AUTOMATION_LOG_PATH],
   ]) {
     try {

@@ -252,6 +252,10 @@ When E2E test coverage needs to be verified or tests need to be run, use these M
 
 **Persona projects:** vendor-owner (SaaS Vendor), vendor-admin, vendor-dev, vendor-viewer, cross-persona, auth-flows.
 
+**NEVER run E2E tests via CLI** (`npx playwright test`, `pnpm test:e2e`, etc.).
+Always use MCP tools — the MCP server handles credential injection from 1Password.
+Running tests via CLI bypasses credential resolution — tests fail or skip silently.
+
 ## Code Coverage
 
 ### Checking Coverage

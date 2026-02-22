@@ -884,6 +884,40 @@ else
     fi
 fi
 
+# --- 3c. Manage OP_SERVICE_ACCOUNT_TOKEN in shell profile ---
+if [ -n "$OP_TOKEN" ]; then
+    echo -e "${YELLOW}Syncing OP_SERVICE_ACCOUNT_TOKEN to shell profile...${NC}"
+    SHELL_PROFILE_OP=""
+    if [ -f "$HOME/.zshrc" ]; then
+        SHELL_PROFILE_OP="$HOME/.zshrc"
+    elif [ -f "$HOME/.bashrc" ]; then
+        SHELL_PROFILE_OP="$HOME/.bashrc"
+    fi
+
+    if [ -n "$SHELL_PROFILE_OP" ]; then
+        # Remove any existing managed block (idempotent)
+        if grep -q "# BEGIN GENTYR OP" "$SHELL_PROFILE_OP" 2>/dev/null; then
+            sed -i '' '/# BEGIN GENTYR OP/,/# END GENTYR OP/d' "$SHELL_PROFILE_OP"
+        fi
+
+        # Remove legacy unmanaged export lines
+        sed -i '' '/^export OP_SERVICE_ACCOUNT_TOKEN=/d' "$SHELL_PROFILE_OP"
+        sed -i '' '/^# 1Password Service Account Token/d' "$SHELL_PROFILE_OP"
+
+        # Write managed block
+        cat >> "$SHELL_PROFILE_OP" << OPEOF
+
+# BEGIN GENTYR OP
+# 1Password Service Account Token (managed by GENTYR setup.sh — do not edit manually)
+export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
+# END GENTYR OP
+OPEOF
+        echo "  Synced OP_SERVICE_ACCOUNT_TOKEN to $SHELL_PROFILE_OP"
+    else
+        echo -e "  ${YELLOW}No .zshrc or .bashrc found, skipping OP shell sync${NC}"
+    fi
+fi
+
 # --- 4. Husky hooks ---
 echo ""
 echo -e "${YELLOW}Setting up husky hooks...${NC}"
@@ -1567,6 +1601,16 @@ for profile_file in "$HOME/.zshrc" "$HOME/.bashrc"; do
     if [ -f "$profile_file" ] && grep -q "# BEGIN GENTYR PROXY" "$profile_file" 2>/dev/null; then
         sed -i '' '/# BEGIN GENTYR PROXY/,/# END GENTYR PROXY/d' "$profile_file"
         echo "  Removed proxy env from $profile_file"
+    fi
+done
+echo ""
+
+# --- Remove OP shell integration ---
+echo -e "${YELLOW}Removing OP shell integration...${NC}"
+for profile_file in "$HOME/.zshrc" "$HOME/.bashrc"; do
+    if [ -f "$profile_file" ] && grep -q "# BEGIN GENTYR OP" "$profile_file" 2>/dev/null; then
+        sed -i '' '/# BEGIN GENTYR OP/,/# END GENTYR OP/d' "$profile_file"
+        echo "  Removed OP token from $profile_file"
     fi
 done
 echo ""

@@ -85,6 +85,7 @@ export interface McpToolCallResult {
     type: 'text';
     text: string;
   }>;
+  isError?: boolean;
 }
 
 // ============================================================================

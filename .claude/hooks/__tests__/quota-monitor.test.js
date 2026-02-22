@@ -181,16 +181,6 @@ describe('quota-monitor.js - Code Structure', () => {
   });
 
   describe('Seamless rotation (no kill/restart)', () => {
-    it('should return continue: false with stopReason for automated sessions after rotation', () => {
-      const code = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(
-        code,
-        /continue:\s*false[\s\S]*?stopReason:/,
-        'Must return continue: false with stopReason for automated sessions'
-      );
-    });
-
     it('should return continue: true with systemMessage for interactive sessions after rotation', () => {
       const code = fs.readFileSync(HOOK_PATH, 'utf8');
 
@@ -288,16 +278,6 @@ describe('quota-monitor.js - Code Structure', () => {
         code,
         /selectActiveKey\(state\)/,
         'Must still call selectActiveKey to determine best key after refresh pre-pass'
-      );
-    });
-
-    it('should still write paused session when all keys are exhausted', () => {
-      const code = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(
-        code,
-        /writePausedSession\(/,
-        'Must still write paused session record when all accounts are exhausted'
       );
     });
 

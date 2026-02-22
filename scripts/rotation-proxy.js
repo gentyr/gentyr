@@ -337,9 +337,9 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
   let isSSE = false;
   let headerEndIndex = -1;
 
-  upstream.on('data', (chunk) => {
+  const onData = (chunk) => {
     if (headersParsed) {
-      // Already streaming — pass through
+      // Already streaming — pass through (non-SSE only; SSE uses pipe)
       if (!clientSocket.destroyed) clientSocket.write(chunk);
       return;
     }
@@ -392,16 +392,30 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
       return;
     }
 
-    // Pass response through to client
-    if (!clientSocket.destroyed) {
-      clientSocket.write(responseHeaderBuf);
-    }
-
     if (isSSE) {
-      // SSE: pipe remaining data zero-copy
+      // SSE: remove this data listener BEFORE writing buffered data or
+      // setting up pipe, so incoming chunks are only handled by pipe.
+      upstream.removeListener('data', onData);
+
+      // Write buffered headers + any partial body that arrived with them
+      if (!clientSocket.destroyed) {
+        clientSocket.write(responseHeaderBuf);
+      }
+
+      // Pipe all subsequent upstream data to client zero-copy.
+      // Since we removed the 'data' listener above, only pipe writes to
+      // clientSocket — no double-write.
       upstream.pipe(clientSocket, { end: true });
+    } else {
+      // Non-SSE: write buffered data, subsequent chunks handled by the
+      // headersParsed early-return at the top of this handler.
+      if (!clientSocket.destroyed) {
+        clientSocket.write(responseHeaderBuf);
+      }
     }
-  });
+  };
+
+  upstream.on('data', onData);
 
   upstream.on('end', () => {
     if (!isSSE && !clientSocket.destroyed) {

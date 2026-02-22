@@ -15,11 +15,9 @@
  * Checks usage API for the active key and triggers rotation if usage >= 95%
  * or predictive threshold is met.
  *
- * For interactive sessions: writes new credentials to Keychain and continues.
+ * On rotation: writes new credentials to Keychain and continues for ALL sessions.
  *   Adoption occurs via rotation proxy (immediate) or at token expiry (SRA).
- * For automated sessions: stops cleanly for session-reviver to resume with
- *   fresh credentials from Keychain.
- * When all accounts are exhausted: writes to paused-sessions.json and warns.
+ * When all accounts are exhausted: warns the user.
  *
  * @version 2.0.0
  */
@@ -43,12 +41,10 @@ import {
   appendRotationAudit,
 } from './key-sync.js';
 import { registerHookExecution, HOOK_TYPES } from './agent-tracker.js';
-import { discoverSessionId } from './slash-command-prefetch.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
 const THROTTLE_STATE_PATH = path.join(STATE_DIR, 'quota-monitor-state.json');
-const PAUSED_SESSIONS_PATH = path.join(STATE_DIR, 'paused-sessions.json');
 
 // Thresholds
 const ROTATION_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes anti-loop
@@ -121,64 +117,6 @@ function writeThrottleState(state) {
     // Non-fatal
   }
 }
-
-/**
- * Write a paused-session record for when all accounts are exhausted.
- */
-function writePausedSession(record) {
-  try {
-    if (!fs.existsSync(STATE_DIR)) {
-      fs.mkdirSync(STATE_DIR, { recursive: true });
-    }
-
-    let data = { sessions: [] };
-    if (fs.existsSync(PAUSED_SESSIONS_PATH)) {
-      data = JSON.parse(fs.readFileSync(PAUSED_SESSIONS_PATH, 'utf8'));
-      if (!Array.isArray(data.sessions)) data.sessions = [];
-    }
-
-    // Don't duplicate
-    const existingIdx = data.sessions.findIndex(
-      s => s.sessionId === record.sessionId
-    );
-    if (existingIdx >= 0) {
-      data.sessions[existingIdx] = record;
-    } else {
-      data.sessions.push(record);
-    }
-
-    // Clean up entries older than 24h
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    data.sessions = data.sessions.filter(s => s.pausedAt > cutoff);
-
-    fs.writeFileSync(PAUSED_SESSIONS_PATH, JSON.stringify(data, null, 2), 'utf8');
-  } catch {
-    // Non-fatal
-  }
-}
-
-/**
- * Find the earliest reset time across all keys.
- */
-function findEarliestReset(state) {
-  let earliest = null;
-  for (const [, keyData] of Object.entries(state.keys)) {
-    const resetsAt = keyData.last_usage?.resets_at;
-    if (resetsAt) {
-      for (const bucket of ['five_hour', 'seven_day', 'seven_day_sonnet']) {
-        const resetAt = resetsAt[bucket];
-        if (resetAt) {
-          const resetMs = new Date(resetAt).getTime();
-          if (!earliest || resetMs < earliest) {
-            earliest = resetMs;
-          }
-        }
-      }
-    }
-  }
-  return earliest;
-}
-
 
 /**
  * Verify a pending rotation audit: check Keychain match and key health.
@@ -493,54 +431,23 @@ async function main() {
       metadata: { maxUsage: Math.round(maxUsage), action: predictiveRotation ? 'predictive_rotated' : 'rotated', velocity: Math.round(velocity * 100) / 100, intervalMs: throttle.currentIntervalMs, from: previousKeyId.slice(0, 8), to: selectedKeyId.slice(0, 8) },
     });
 
-    if (!isAutomated) {
-      // Interactive session: seamless rotation.
-      // Credentials written to Keychain via updateActiveCredentials() above.
-      // Rotation proxy adopts immediately; SRA() picks up at token expiry.
-      process.stdout.write(JSON.stringify({
-        continue: true,
-        systemMessage: `Account rotated to ${selectedKeyId.slice(0, 8)}... (${Math.round(maxUsage)}% usage on previous). Credentials written to Keychain. Rotation proxy will use new key immediately.`,
-      }));
-      return;
-    } else {
-      // Automated session: stop cleanly for session-reviver to resume with fresh Keychain creds.
-      process.stdout.write(JSON.stringify({
-        continue: false,
-        stopReason: `Account rotated (${Math.round(maxUsage)}% usage). Stopping for credential adoption — session will be auto-resumed by session-reviver.`,
-      }));
-      return;
-    }
+    // All sessions: seamless rotation via rotation proxy.
+    // Credentials written to Keychain via updateActiveCredentials() above.
+    // Rotation proxy adopts immediately; SRA() picks up at token expiry.
+    process.stdout.write(JSON.stringify({
+      continue: true,
+      systemMessage: `Account rotated to ${selectedKeyId.slice(0, 8)}... (${Math.round(maxUsage)}% usage on previous). Credentials written to Keychain. Rotation proxy will use new key immediately.`,
+    }));
+    return;
   }
 
   // No better key available
   if (!selectedKeyId || selectedKeyId === state.active_key_id) {
     if (isExhausted) {
-      // All keys exhausted
-      const earliestReset = findEarliestReset(state);
-      const resetInfo = earliestReset
-        ? `Earliest reset: ${new Date(earliestReset).toLocaleString()}`
-        : 'Reset times unknown';
-
+      // All keys exhausted — warn the user
       const accountCount = Object.values(state.keys).filter(
         k => k.status === 'active' || k.status === 'exhausted'
       ).length;
-
-      // Write paused session record
-      let sessionId = null;
-      try {
-        sessionId = discoverSessionId();
-      } catch {
-        // Can't discover session ID
-      }
-
-      writePausedSession({
-        sessionId,
-        agentId: process.env.CLAUDE_AGENT_ID || null,
-        projectDir: PROJECT_DIR,
-        pausedAt: startTime,
-        earliestReset: earliestReset || startTime + 5 * 60 * 60 * 1000,
-        type: isAutomated ? 'automated' : 'interactive',
-      });
 
       writeThrottleState(throttle);
 
@@ -553,7 +460,7 @@ async function main() {
 
       process.stdout.write(JSON.stringify({
         continue: true,
-        systemMessage: `All ${accountCount} accounts exhausted. ${resetInfo}. Session will auto-resume when quota resets.`,
+        systemMessage: `All ${accountCount} accounts exhausted. Quota will reset automatically — no action needed.`,
       }));
       return;
     }

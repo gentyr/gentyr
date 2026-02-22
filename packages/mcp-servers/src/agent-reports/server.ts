@@ -195,17 +195,6 @@ function reportToCto(args: ReportToCtoArgs): ReportToCtoResult {
   // Run cleanup first
   runCleanup();
 
-  // Rate limit: max 5 untriaged reports per agent
-  const pendingFromAgent = db.prepare(
-    "SELECT COUNT(*) as count FROM reports WHERE reporting_agent = ? AND triage_status = 'pending'"
-  ).get(args.reporting_agent) as { count: number };
-  if (pendingFromAgent.count >= 5) {
-    return {
-      id: '',
-      message: `Too many untriaged reports from ${args.reporting_agent} (max 5). Wait for existing reports to be triaged.`,
-    };
-  }
-
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();

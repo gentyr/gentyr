@@ -102,7 +102,9 @@ try {
   // is injected into .mcp.json by the installer, not stored in vault-mappings).
   // Always load OP_SERVICE_ACCOUNT_TOKEN from .mcp.json (source of truth) — the env
   // may have a stale token from a previous session that predates a token rotation.
+  let opTokenDesync = false;
   {
+    const shellOpToken = process.env.OP_SERVICE_ACCOUNT_TOKEN;
     const mcpPath = path.join(projectDir, '.mcp.json');
     try {
       const mcpConfig = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
@@ -114,6 +116,9 @@ try {
           }
           // Always prefer .mcp.json token — it's updated by reinstall.sh
           if (server.env.OP_SERVICE_ACCOUNT_TOKEN) {
+            if (shellOpToken && shellOpToken !== server.env.OP_SERVICE_ACCOUNT_TOKEN) {
+              opTokenDesync = true;
+            }
             process.env.OP_SERVICE_ACCOUNT_TOKEN = server.env.OP_SERVICE_ACCOUNT_TOKEN;
           }
         }
@@ -132,8 +137,13 @@ try {
     });
   }
 
+  // Build desync warning prefix if shell token differs from .mcp.json
+  const desyncPrefix = opTokenDesync
+    ? 'GENTYR: OP_SERVICE_ACCOUNT_TOKEN in shell differs from .mcp.json (source of truth). Run `setup.sh --path <project>` to re-sync. '
+    : '';
+
   if (missingKeys.length > 0) {
-    output(`GENTYR: ${missingKeys.length} credential mapping(s) not configured. Run /setup-gentyr to complete setup.`);
+    output(`${desyncPrefix}GENTYR: ${missingKeys.length} credential mapping(s) not configured. Run /setup-gentyr to complete setup.`);
   } else if (hasOpRefs) {
     // Only test 1Password connectivity if there are op:// references to resolve
     try {
@@ -142,14 +152,14 @@ try {
         timeout: 5000,
         env: process.env,
       });
-      // Connected — no message needed
-      output(null);
+      // Connected — emit desync warning if present, otherwise silent
+      output(desyncPrefix || null);
     } catch {
-      output('GENTYR: 1Password is not authenticated. Run `sudo scripts/setup.sh --path <project> --op-token <TOKEN>` to configure. MCP servers will start without credentials.');
+      output(`${desyncPrefix}GENTYR: 1Password is not authenticated. Run \`sudo scripts/setup.sh --path <project> --op-token <TOKEN>\` to configure. MCP servers will start without credentials.`);
     }
   } else {
     // All mappings are direct values — no 1Password needed
-    output(null);
+    output(desyncPrefix || null);
   }
 } catch (err) {
   // Don't block session — but log the error for debugging

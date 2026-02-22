@@ -26,7 +26,7 @@ scripts/setup.sh --path /path/to/project
 sudo scripts/setup.sh --path /path/to/project --uninstall
 ```
 
-Removes protection, symlinks, generated configs, and husky hooks. Preserves runtime state (`.claude/*.db`).
+Removes protection, symlinks, generated configs, husky hooks, and the managed `# BEGIN GENTYR OP` / `# END GENTYR OP` block from shell profiles. Preserves runtime state (`.claude/*.db`).
 
 ### Protect Only
 
@@ -101,42 +101,18 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 - `refreshExpiredToken` returns the sentinel string `'invalid_grant'` (not `null`) when the OAuth server responds HTTP 400 + `{ error: 'invalid_grant' }`; callers mark the key `invalid` and skip it permanently
 - **Step 4c pre-expiry restartless swap**: When the active key is within 10 min of expiry and a valid standby exists, writes standby to Keychain via `updateActiveCredentials()`; Claude Code's built-in `SRA()` (proactive refresh at 5 min before expiry) or `r6T()` (401 recovery) picks up the new token seamlessly — no restart needed
 - Safe: refreshing Account B does not revoke Account A's in-memory token
-- **Seamless rotation** (quota-based):
-  - Interactive sessions: writes new credentials to Keychain, continues with `continue: true`, credentials adopted at token expiry (SRA) or 401 (r6T)
-  - Automated sessions: writes new credentials to Keychain, stops cleanly with `continue: false`, session-reviver resumes with fresh credentials
+- **Seamless rotation** (quota-based): writes new credentials to Keychain, continues with `continue: true` for all sessions, credentials adopted at token expiry (SRA) or 401 (r6T)
   - No disruptive kill/restart paths; no orphaned processes
-- All-accounts-exhausted: writes paused-sessions.json and waits for recovery
 - Post-rotation health audit: logs rotation verification to `rotation-audit.log`
-
-**Stop-Continue Hook** (`.claude/hooks/stop-continue-hook.js`):
-- Runs on session stop for automated sessions tagged `[Task]`
-- Forces one continuation cycle (auto-continue) for task sessions on first stop
-- Detects quota/rate-limit death via JSONL error inspection; writes recovery state and approves stop immediately rather than wasting the final API call
-- Attempts credential rotation on quota death; pre-pass refreshes all `expired` tokens before health-check so they can re-enter the candidate pool; keys returning `invalid_grant` are marked `invalid`
-- Writes recovered sessions to `quota-interrupted-sessions.json` for session-reviver Mode 1 pickup
 
 **Key Sync Module** (`.claude/hooks/key-sync.js`):
 - Shared library used by api-key-watcher, hourly-automation, credential-sync-hook, and quota-monitor
 - Exports `EXPIRY_BUFFER_MS` (10 min) and `HEALTH_DATA_MAX_AGE_MS` (15 min) constants for consistent timing across all rotation logic
 - `refreshExpiredToken` returns `'invalid_grant'` sentinel (distinct from `null`) when OAuth responds 400 + `error: invalid_grant`; all callers mark the key `status: 'invalid'` and log `refresh_token_invalid_grant`
-- `syncKeys()` proactively refreshes non-active tokens approaching expiry (within `EXPIRY_BUFFER_MS`) and performs pre-expiry restartless swap to Keychain; covers idle sessions because hourly-automation calls `syncKeys()` every 10 min via launchd even when no Claude Code process is active
+- `syncKeys()` proactively refreshes non-active tokens approaching expiry (within `EXPIRY_BUFFER_MS`), resolves account profiles for keys missing `account_uuid` via `fetchAccountProfile()`, and performs pre-expiry restartless swap to Keychain; covers idle sessions because hourly-automation calls `syncKeys()` every 10 min via launchd even when no Claude Code process is active
+- `fetchAccountProfile(accessToken)` — exported function that calls `https://api.anthropic.com/api/oauth/profile` to resolve `account_uuid` and `email` for keys added by automation or token refresh that skipped the interactive SessionStart profile-resolution path; non-fatal, retried on next sync
 - `selectActiveKey()` freshness gate: nulls out usage data older than 15 minutes to prevent uninformed switches based on stale health checks; stale keys pass "usable" filter but are excluded from comparison logic, causing system to stay put rather than make blind decisions
 - `pruneDeadKeys` immediately garbage-collects keys with `status: 'invalid'`; never prunes the active key; removes orphaned rotation_log entries; called automatically at the end of every `syncKeys()` run
-
-**Session Reviver Hook** (`.claude/hooks/session-reviver.js`):
-- Called every hourly automation cycle with 10-minute cooldown
-- Mode 1: Quota-interrupted pickup (reads quota-interrupted-sessions.json, re-spawns with --resume)
-- Mode 2: Historical dead session recovery (scans agent-tracker-history.json, finds unexpectedly dead agents)
-- Mode 3: Paused session resume (checks for account recovery when all were exhausted)
-- Max 3 revivals per cycle, 7-day historical window
-
-**Manual Recovery** (`scripts/recover-interrupted-sessions.js`):
-```bash
-# One-time recovery for interrupted sessions
-node scripts/recover-interrupted-sessions.js --path /project [--dry-run] [--max-concurrent 3]
-```
-
-Cross-references agent-tracker-history with TODO database to find in_progress tasks with no corresponding live process. Re-spawns sessions with original task context.
 
 **Rotation Monitoring** (`scripts/monitor-token-swap.mjs`):
 ```bash
@@ -151,6 +127,14 @@ Tracks credential rotation state, Keychain sync status, and account health. Audi
 
 **Binary Patch Research** (`scripts/patch-credential-cache.js`) — **ARCHIVED**:
 Research artifact from investigating Claude Code's credential memoization cache. Replaced by the rotation proxy which handles credential swap at the network level, eliminating the need for binary modification. Kept for reference only.
+
+**Credential Health Check Hook** (`.claude/hooks/credential-health-check.js`):
+- Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions
+- Validates vault mappings against required keys in `protected-actions.json`
+- Checks `.mcp.json` env blocks for keys injected directly (e.g. `OP_SERVICE_ACCOUNT_TOKEN`), which count as configured even if absent from vault-mappings
+- **OP token desync detection**: Compares shell `OP_SERVICE_ACCOUNT_TOKEN` against `.mcp.json` value; if they differ, emits a warning and overwrites `process.env` with the `.mcp.json` value (source of truth); `.mcp.json` is always authoritative because it is updated by reinstall
+- Staged at `scripts/hooks/credential-health-check.js`; deployed to `.claude/hooks/` during `setup.sh` install; both copies must stay identical
+- Shell sync validation also available via `scripts/setup-validate.js` `validateShellSync()` function, which checks the `# BEGIN GENTYR OP` / `# END GENTYR OP` block in `~/.zshrc` or `~/.bashrc`
 
 ## Rotation Proxy
 

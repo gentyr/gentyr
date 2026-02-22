@@ -2,9 +2,9 @@
 
 Automation is not a feature of GENTYR. It is the point.
 
-Every ten minutes a background timer wakes up. It checks quota across multiple accounts. It refreshes expiring tokens. It revives dead sessions. It spawns agents for pending tasks. It adjusts its own frequency based on how much API budget remains. No human triggers any of this. No human needs to.
+Every ten minutes a background timer wakes up. It checks quota across multiple accounts. It refreshes expiring tokens. It spawns agents for pending tasks. It adjusts its own frequency based on how much API budget remains. No human triggers any of this. No human needs to.
 
-The system has one goal: keep agents working at 90% of available capacity, indefinitely, without intervention. When quota runs low, it slows down. When quota resets, it speeds up. When a session dies, it comes back. When all accounts are exhausted, it waits, then resumes.
+The system has one goal: keep agents working at 90% of available capacity, indefinitely, without intervention. When quota runs low, it slows down. When quota resets, it speeds up.
 
 This document describes how.
 
@@ -16,7 +16,7 @@ GENTYR manages API quota across multiple Anthropic accounts through coordinated 
 
 1. **Rotation proxy** - Transparent network-level credential swap (localhost:18080 MITM on api.anthropic.com)
 2. **In-session hooks** - Monitor quota and rotate credentials during active Claude Code sessions
-3. **Background automation** - Orchestrates task spawning, key syncing, and session recovery on a timer
+3. **Background automation** - Orchestrates task spawning and key syncing on a timer
 4. **Dynamic optimization** - Adjusts all automation cooldowns based on projected quota utilization
 
 ```
@@ -24,11 +24,10 @@ launchd timer (10 min) ──> hourly-automation.js ──> CTO Activity Gate
                                   |
                                   |── runUsageOptimizer()   -> adjust cooldown factor
                                   |── syncKeys()            -> refresh tokens, maintain standby pool
-                                  |── reviveInterruptedSessions() -> recover dead sessions
                                   |── task runner           -> spawn pending TODO tasks
                                   |── feedback pipeline     -> user persona testing
                                   v
-                           automation-config.json  (factor scales all 19 cooldowns)
+                           automation-config.json  (factor scales all 18 cooldowns)
                                   |
                                   v
                            config-reader.js  -->  getCooldown(key, fallback)
@@ -44,9 +43,9 @@ launchd timer (10 min) ──> hourly-automation.js ──> CTO Activity Gate
 | Event | Hooks | Purpose |
 |-------|-------|---------|
 | **SessionStart** | api-key-watcher | Discover credentials, health-check, select optimal key |
+| **SessionStart** | credential-health-check | Vault mapping validation, OP token desync detection |
 | **PreToolUse(Bash)** | credential-sync-hook | Periodic credential sync (30-min throttle) |
 | **PostToolUse** | quota-monitor | Mid-session quota check (5-min throttle), rotate at 95% |
-| **Stop** | stop-continue-hook | Auto-continue for [Task] sessions, quota death detection |
 
 ---
 
@@ -82,7 +81,6 @@ Discovered -> Active -> [High Usage 90%+] -> [Exhausted 100%] -> [Token Expires]
 Multiple hooks can refresh tokens independently, all using `refreshExpiredToken()` from key-sync.js:
 
 - **quota-monitor** Step 4b: Proactive refresh of standby tokens approaching expiry
-- **stop-continue-hook**: Pre-pass refresh before health-check on quota death
 - **syncKeys()**: Comprehensive refresh during periodic sync cycle
 
 The refresh function returns three possible outcomes:
@@ -129,7 +127,7 @@ Targets 90% token budget utilization by dynamically scaling all 19 automation co
 | 0.5 | Half speed (double cooldowns) | 120 min effective |
 | 0.05 | 20x slowdown (cooldowns multiplied by 20) | 1200 min effective |
 
-### 19 Managed Cooldowns
+### 18 Managed Cooldowns
 
 All read via `getCooldown(key, fallback)` from config-reader.js:
 
@@ -141,7 +139,6 @@ All read via `getCooldown(key, fallback)` from config-reader.js:
 | Compliance | standalone_compliance_checker, compliance_checker_file, compliance_checker_spec |
 | Deployment | preview_promotion, staging_promotion |
 | Monitoring | staging_health_monitor, production_health_monitor |
-| Recovery | session_reviver |
 | Other | user_feedback, test_failure_reporter, pre_commit_review |
 
 ### Edge Cases
@@ -161,7 +158,7 @@ Snapshots are protected against rapid-fire contamination by three layers:
 
 ---
 
-## Session Lifecycle & Recovery
+## Session Lifecycle
 
 ### Automated Session Flow
 
@@ -173,26 +170,11 @@ hourly-automation.js
 Session runs task
   |
   |-- [PostToolUse] quota-monitor checks every 5 min
-  |       |-- usage >= 95%? -> rotate key, write to Keychain, stop cleanly (continue: false)
+  |       |-- usage >= 95%? -> rotate key, write to Keychain, continue: true
   |       |-- token expiring? -> restartless swap via Keychain
-  |
-  |-- [Stop triggered]
-  |       |-- stop-continue-hook reads transcript
-  |       |-- Is [Task] session + first stop? -> BLOCK (force continue)
-  |       |-- Is quota death? -> record for revival, APPROVE immediately
-  |       |-- Second stop or not [Task]? -> APPROVE
   |
   v
 Session ends
-  |
-  |-- If quota death: written to quota-interrupted-sessions.json
-  |-- If all accounts exhausted: written to paused-sessions.json
-  |
-  v
-session-reviver.js (next automation cycle)
-  |-- Mode 1: picks up quota-interrupted sessions -> claude --resume with fresh credentials
-  |-- Mode 2: scans agent-tracker for dead sessions -> re-spawns
-  |-- Mode 3: checks paused sessions for account recovery
 ```
 
 ### Interactive Session Flow
@@ -211,28 +193,10 @@ User works
 User or system stops session
 ```
 
-### Session Recovery Modes
-
-**Mode 1: Quota-Interrupted Pickup**
-- Source: `quota-interrupted-sessions.json` (written by stop-continue-hook)
-- Action: Spawns `claude --resume <sessionId>`
-- Window: Entries older than 30 minutes are skipped (stale)
-
-**Mode 2: Dead Session Recovery**
-- Source: `agent-tracker-history.json` (agents with `reapReason: 'process_already_dead'`)
-- Action: Cross-references with todo.db for pending tasks, re-spawns with original session
-- Window: 7-day historical scan
-
-**Mode 3: Paused Session Resume**
-- Source: `paused-sessions.json` (written by quota-monitor when all accounts exhausted)
-- Action: Checks each account for recovery (< 90% in all buckets), rotates to recovered account
-- Scope: Only revives automated sessions; logs info for interactive sessions
-
 ### Concurrency Guards
 
 - `MAX_CONCURRENT_AGENTS = 5` - total running agents across all types
 - `MAX_TASKS_PER_CYCLE = 3` - new task spawns per automation cycle
-- `MAX_REVIVALS_PER_CYCLE = 3` - session revivals per cycle
 
 ---
 
@@ -274,11 +238,8 @@ Runs after every tool call, throttled to 5-minute intervals.
 4. **Step 4b - Proactive refresh**: Refresh expired AND approaching-expiry standby tokens
 5. **Step 4c - Pre-expiry swap**: If active key near expiry, write standby to Keychain (no restart)
 6. **Rotation check**: If max usage >= 95%, select better key and rotate
-7. **Seamless session handling**:
-   - Interactive sessions: write to Keychain, continue with `continue: true`, credentials adopted at SRA/r6T
-   - Automated sessions: write to Keychain, stop cleanly with `continue: false`, session-reviver resumes
-8. **Exhaustion handling**: If no key available, write paused-sessions.json
-9. **Post-rotation audit**: Log rotation event to `rotation-audit.log` for health tracking
+7. **Seamless session handling**: write to Keychain, continue with `continue: true` for all sessions, credentials adopted at SRA/r6T
+8. **Post-rotation audit**: Log rotation event to `rotation-audit.log` for health tracking
 
 ### Key Thresholds
 
@@ -293,28 +254,31 @@ ROTATION_COOLDOWN_MS   = 600,000 (10 min - anti-loop after rotation)
 
 ---
 
-## Stop-Continue Hook
+## Credential Health Check Hook (credential-health-check.js)
 
-Runs on every session stop event.
+Runs at `SessionStart` for interactive sessions (skipped for spawned `[Task]` sessions). Validates that all required credential mappings are present and that the `OP_SERVICE_ACCOUNT_TOKEN` in the shell environment is in sync with `.mcp.json`.
 
-### Decision Logic
+### Validation Steps
 
-```
-if [Task] session AND quota death detected:
-    -> Attempt credential rotation
-    -> Write to quota-interrupted-sessions.json for revival
-    -> APPROVE stop (don't waste final API call on retry)
+1. **Load required keys**: Reads `protected-actions.json` to build the set of required credential keys
+2. **Check vault mappings**: Reads `vault-mappings.json`; counts configured keys (both `op://` refs and direct values)
+3. **Check `.mcp.json` env blocks**: Keys injected directly into `.mcp.json` (e.g. `OP_SERVICE_ACCOUNT_TOKEN`) count as configured even if absent from vault-mappings
+4. **OP token desync detection**: Compares the shell `OP_SERVICE_ACCOUNT_TOKEN` environment variable against the value in `.mcp.json`; if they differ, sets `opTokenDesync = true` and always overwrites `process.env` with the `.mcp.json` value (source of truth)
+5. **Alternative key resolution**: Removes keys from the missing list if a known alternative is already configured (e.g. `ELASTIC_CLOUD_ID` / `ELASTIC_ENDPOINT`)
+6. **1Password connectivity**: If any `op://` refs are present, calls `op whoami` to verify the CLI is authenticated
 
-else if [Task] session AND first stop (not already continuing):
-    -> BLOCK stop (force one continuation cycle)
+### Output Behavior
 
-else:
-    -> APPROVE stop
-```
+| Condition | Output |
+|-----------|--------|
+| All configured, no desync | Silent (`suppressOutput: true`) |
+| Token desync only | Warning prefix: "GENTYR: OP_SERVICE_ACCOUNT_TOKEN in shell differs from .mcp.json (source of truth). Run `setup.sh --path <project>` to re-sync." |
+| Missing credentials | Error with count; prepended with desync warning if applicable |
+| 1Password not authenticated | Error prompting to run setup with `--op-token`; prepended with desync warning if applicable |
 
-### Quota Death Detection
+### Deployment
 
-Reads the last 8KB of the session transcript JSONL. Checks the last 5 parseable entries for `error: 'rate_limit'` combined with `isApiErrorMessage: true`. If detected, the session is dying from quota exhaustion and should not waste its final API call on a doomed retry.
+The hook is staged at `scripts/hooks/credential-health-check.js` and deployed to the target project's `.claude/hooks/` during `setup.sh` install (Step 9 - staged hooks deployment). The staged copy and runtime copy must remain identical.
 
 ---
 
@@ -330,10 +294,9 @@ All automation is gated behind a recency check on the deputy-CTO briefing. If th
 
 1. **Usage Optimizer** - Collect snapshot, adjust factor
 2. **Key Sync** - Discover credentials, refresh tokens, prune dead keys
-3. **Session Reviver** - Check all 3 recovery modes
-4. **Urgent Task Dispatcher** - Dispatch urgent priority tasks immediately (bypasses age filter)
-5. **Task Runner** - Query todo.db for pending normal tasks (1-hour age filter), spawn agents up to concurrency limit
-6. **Feedback Pipeline** - Trigger user persona testing on staging changes
+3. **Urgent Task Dispatcher** - Dispatch urgent priority tasks immediately (bypasses age filter)
+4. **Task Runner** - Query todo.db for pending normal tasks (1-hour age filter), spawn agents up to concurrency limit
+5. **Feedback Pipeline** - Trigger user persona testing on staging changes
 
 ### Task Orchestration
 
@@ -372,10 +335,11 @@ Shared library used by api-key-watcher, hourly-automation, credential-sync-hook,
 1. Discover credentials from all sources (env, Keychain, credentials file)
 2. Sync into rotation state (add new, update existing)
 3. Refresh expired tokens AND proactively refresh non-active tokens approaching expiry
-4. Set initial `active_key_id` if not set
-5. Pre-expiry restartless swap if active key near expiry
-6. Prune dead keys (invalid > 7 days, never prunes active key)
-7. Write state and return `{ keysAdded, keysUpdated, tokensRefreshed }`
+4. Resolve account profiles for keys with `account_uuid === null` — calls `fetchAccountProfile()` for each active/exhausted key missing a UUID; non-fatal, retried on next sync
+5. Set initial `active_key_id` if not set
+6. Pre-expiry restartless swap if active key near expiry
+7. Prune dead keys (invalid > 7 days, never prunes active key)
+8. Write state and return `{ keysAdded, keysUpdated, tokensRefreshed }`
 
 ### Credential Sources (priority order)
 
@@ -402,8 +366,8 @@ The `effective` object is computed by the usage optimizer as `default * (1 / fac
 ```json
 {
   "version": 1,
-  "defaults": { "task_runner": 60, "session_reviver": 10, ... },
-  "effective": { "task_runner": 30, "session_reviver": 5, ... },
+  "defaults": { "task_runner": 60, "triage_check": 5, ... },
+  "effective": { "task_runner": 30, "triage_check": 3, ... },
   "adjustment": {
     "factor": 1.5,
     "last_updated": "...",
@@ -475,27 +439,33 @@ If either count > 0, the commit is blocked regardless of token state. This ensur
 
 ## Deputy-CTO Server Security Guards (deputy-cto/server.ts)
 
-Defense-in-depth guards added to four MCP tool handlers to prevent bypass-route exploitation:
+Defense-in-depth guards implemented across the deputy-cto and agent-reports MCP servers to prevent bypass-route exploitation.
 
-### `add_question` Guard
+### Phase 1: Tool Handler Guards
 
-Blocks creation of `bypass-request` or `protected-action-request` question types via `add_question`. These types have dedicated creation paths (`request_bypass` tool, protected-action hook) that enforce the CTO verification code flow. An agent cannot self-create a bypass request and then self-answer it.
+Four `add_question` / `answer_question` / `clear_question` / `approve_commit` guards block agent-accessible loopholes:
 
-### `answer_question` Guard
+**`add_question` Guard** — Blocks creation of `bypass-request` or `protected-action-request` question types via `add_question`. These types have dedicated creation paths (`request_bypass` tool, protected-action hook) that enforce the CTO verification code flow. An agent cannot self-create a bypass request and then self-answer it.
 
-Blocks answering `bypass-request` questions via `answer_question`. The only valid answer path for bypass-requests is the CTO typing `APPROVE BYPASS <code>` in chat, which routes through the `execute_bypass` tool with cryptographic code verification.
+**`answer_question` Guard** — Blocks answering `bypass-request` questions via `answer_question`. The only valid answer path for bypass-requests is the CTO typing `APPROVE BYPASS <code>` in chat, which routes through the `execute_bypass` tool with cryptographic code verification.
 
-### `clear_question` Guard
+**`clear_question` Guard** — Blocks clearing a pending `bypass-request` or `protected-action-request` question via `clear_question`. Pending requests of these types can only be resolved through their designated approval flows. This prevents an agent from clearing a pending bypass-request to make it appear resolved.
 
-Blocks clearing a pending `bypass-request` or `protected-action-request` question via `clear_question`. Pending requests of these types can only be resolved through their designated approval flows. This prevents an agent from clearing a pending bypass-request to make it appear resolved.
+**`approve_commit` Guard** — Blocks any `approve_commit` call with a rationale beginning with `EMERGENCY BYPASS`. This prefix is reserved exclusively for the `execute_bypass` MCP tool, which validates a CTO-provided 6-character code before writing the bypass decision row. Direct use of this prefix via `approve_commit` would create a bypass-looking token without CTO verification.
 
-### `approve_commit` Guard
+The SQL fix in `pre-commit-review.js` (`AND question_id IS NOT NULL`) ensures the hook only honors bypass decisions that were created by `execute_bypass` — which always links `question_id` to the originating bypass-request question — not arbitrary `approve_commit` calls with the "EMERGENCY BYPASS" prefix.
 
-Blocks any `approve_commit` call with a rationale beginning with `EMERGENCY BYPASS`. This prefix is reserved exclusively for the `execute_bypass` MCP tool, which validates a CTO-provided 6-character code before writing the bypass decision row. Direct use of this prefix via `approve_commit` would create a bypass-looking token without CTO verification.
+### Phase 2: HMAC Verification and Rate Limits
 
-### Combined Effect
+**`executeBypass` HMAC verification** — When the CTO types `APPROVE BYPASS <code>`, the UserPromptSubmit hook writes a `bypass-approval-token.json` file containing an HMAC-SHA256 signature over `code|request_id|expires_timestamp|bypass-approved`. The `execute_bypass` tool recomputes the expected HMAC using the protection key (`loadProtectionKey()`) and rejects tokens that fail verification with `FORGERY DETECTED: Invalid bypass approval token signature. Token deleted.` This matches the pattern used by `executeHotfixPromotion()` and prevents an agent from writing a forged approval token file (the key is root-owned and unreadable by agent processes).
 
-These four guards close agent-accessible loopholes in the bypass approval chain. The SQL fix in `pre-commit-review.js` (`AND question_id IS NOT NULL`) ensures the hook only honors bypass decisions that were created by `execute_bypass` — which always links `question_id` to the originating bypass-request question — not arbitrary `approve_commit` calls with the "EMERGENCY BYPASS" prefix.
+**`requestBypass` rate limit** — Maximum 3 pending bypass-request questions at a time. If the limit is reached, `request_bypass` returns an error asking the agent to wait for existing requests to be addressed. Prevents request flooding that could obscure legitimate bypass requests.
+
+**`reportToCto` rate limit (agent-reports server)** — Maximum 5 untriaged reports per reporting agent at a time. If the limit is reached, `report_to_cto` returns an error message. Prevents a single agent from flooding the triage queue and hiding reports from other agents.
+
+**`get_pending_count` exposes `pending_triage_count`** — The `GetPendingCountResult` type now includes `pending_triage_count` alongside `pending_count` and `commits_blocked`. This lets the CTO see the split between pending questions and pending triage reports when understanding why `commits_blocked: true`.
+
+**`spawn_implementation_task` removed** — The `spawn_implementation_task` tool (which spawned background Claude instances directly from the deputy-cto server) was removed. Task spawning is now exclusively managed by the agent-tracker MCP server and hourly automation, which enforce concurrency limits, registration, and tracking.
 
 ---
 
@@ -509,6 +479,4 @@ These four guards close agent-accessible loopholes in the bypass approval chain.
 | `.claude/state/automation-config.json` | Project | usage-optimizer | config-reader (all hooks) |
 | `.claude/state/usage-snapshots.json` | Project | usage-optimizer | usage-optimizer, cto-dashboard |
 | `.claude/state/quota-monitor-state.json` | Project | quota-monitor | quota-monitor |
-| `.claude/state/quota-interrupted-sessions.json` | Project | stop-continue-hook | session-reviver |
-| `.claude/state/paused-sessions.json` | Project | quota-monitor | session-reviver |
 | macOS Keychain `Claude Code-credentials` | System | key-sync, quota-monitor | Claude Code runtime |

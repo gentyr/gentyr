@@ -40,58 +40,80 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should define all required constants', () => {
+      // checkKeyHealth, fetchAccountProfile, selectActiveKey and their constants
+      // (ANTHROPIC_API_URL, HIGH_USAGE_THRESHOLD, EXHAUSTED_THRESHOLD) were
+      // moved to key-sync.js. api-key-watcher.js imports them from there.
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const keySyncCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const requiredConstants = [
+      // api-key-watcher.js must import from key-sync.js
+      assert.match(
+        hookCode,
+        /from ['"]\.\/key-sync\.js['"]/,
+        'Must import from key-sync.js'
+      );
+
+      // Constants are defined in key-sync.js
+      const constantsInKeySync = [
         'ANTHROPIC_API_URL',
-        'ANTHROPIC_BETA_HEADER',
         'HIGH_USAGE_THRESHOLD',
         'EXHAUSTED_THRESHOLD',
       ];
 
-      for (const constant of requiredConstants) {
+      for (const constant of constantsInKeySync) {
         assert.match(
-          hookCode,
+          keySyncCode,
           new RegExp(`const ${constant} =`),
-          `Must define ${constant} constant`
+          `Must define ${constant} constant in key-sync.js`
         );
       }
     });
 
     it('should define all required functions', () => {
+      // checkKeyHealth, fetchAccountProfile, and selectActiveKey were moved to
+      // key-sync.js. Only main() remains defined locally in api-key-watcher.js.
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const keySyncCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const requiredFunctions = [
+      // main() is still local
+      assert.match(
+        hookCode,
+        /async function main\(/,
+        'Must define main function locally'
+      );
+
+      // These functions are in key-sync.js
+      const funcsInKeySync = [
         'checkKeyHealth',
         'fetchAccountProfile',
         'selectActiveKey',
-        'main'
       ];
 
-      for (const func of requiredFunctions) {
+      for (const func of funcsInKeySync) {
         assert.match(
-          hookCode,
+          keySyncCode,
           new RegExp(`function ${func}\\(`),
-          `Must define ${func} function`
+          `Must define ${func} function in key-sync.js`
         );
       }
     });
 
     it('should define correct threshold constants', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      // Threshold constants are now in key-sync.js
+      const keySyncCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       // High usage threshold should be 90 (90%)
       assert.match(
-        hookCode,
+        keySyncCode,
         /const HIGH_USAGE_THRESHOLD = 90/,
-        'HIGH_USAGE_THRESHOLD must be 90'
+        'HIGH_USAGE_THRESHOLD must be 90 in key-sync.js'
       );
 
       // Exhausted threshold should be 100 (100%)
       assert.match(
-        hookCode,
+        keySyncCode,
         /const EXHAUSTED_THRESHOLD = 100/,
-        'EXHAUSTED_THRESHOLD must be 100'
+        'EXHAUSTED_THRESHOLD must be 100 in key-sync.js'
       );
     });
   });
@@ -533,11 +555,12 @@ describe('api-key-watcher.js - Unit Tests', () => {
   });
 
   describe('checkKeyHealth() - API Health Check', () => {
+    // checkKeyHealth was moved from api-key-watcher.js to key-sync.js and exported.
     it('should make GET request to Anthropic Usage API', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const keySyncCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
-      assert.ok(functionMatch, 'checkKeyHealth function must be async');
+      const functionMatch = keySyncCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
+      assert.ok(functionMatch, 'checkKeyHealth function must be async in key-sync.js');
 
       const functionBody = functionMatch[0];
 
@@ -557,9 +580,9 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should set correct headers', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const keySyncCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
+      const functionMatch = keySyncCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should set Authorization header with Bearer token
@@ -592,9 +615,9 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should handle 401 unauthorized response', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const keySyncCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
+      const functionMatch = keySyncCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should check for 401 status
@@ -613,9 +636,9 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should handle non-OK responses', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const keySyncCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
+      const functionMatch = keySyncCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should check if response.ok
@@ -634,9 +657,9 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should parse usage data correctly', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const keySyncCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
+      const functionMatch = keySyncCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should parse JSON response
@@ -676,9 +699,9 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should return valid: true on success', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const keySyncCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
+      const functionMatch = keySyncCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should return valid: true with usage data
@@ -690,9 +713,9 @@ describe('api-key-watcher.js - Unit Tests', () => {
     });
 
     it('should handle fetch errors', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+      const keySyncCode = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
-      const functionMatch = hookCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
+      const functionMatch = keySyncCode.match(/async function checkKeyHealth\(accessToken\) \{[\s\S]*?\n\}/);
       const functionBody = functionMatch[0];
 
       // Should wrap in try-catch

@@ -512,6 +512,74 @@ function validateOnePassword() {
   }
 }
 
+function validateShellSync() {
+  // Find the .mcp.json token (source of truth)
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const mcpPath = path.join(projectDir, '.mcp.json');
+  let mcpToken = null;
+  try {
+    const config = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+    for (const server of Object.values(config.mcpServers || {})) {
+      if (server.env && server.env.OP_SERVICE_ACCOUNT_TOKEN) {
+        mcpToken = server.env.OP_SERVICE_ACCOUNT_TOKEN;
+        break;
+      }
+    }
+  } catch {
+    return { status: 'warn', message: 'Could not read .mcp.json to compare tokens' };
+  }
+
+  if (!mcpToken) {
+    return { status: 'warn', message: 'No OP_SERVICE_ACCOUNT_TOKEN in .mcp.json' };
+  }
+
+  // Find shell profile
+  const profilePath = fs.existsSync(path.join(process.env.HOME, '.zshrc'))
+    ? path.join(process.env.HOME, '.zshrc')
+    : fs.existsSync(path.join(process.env.HOME, '.bashrc'))
+      ? path.join(process.env.HOME, '.bashrc')
+      : null;
+
+  if (!profilePath) {
+    return { status: 'warn', message: 'No .zshrc or .bashrc found',
+      remediation: 'Run setup.sh to create managed OP block in shell profile' };
+  }
+
+  let profileContent;
+  try {
+    profileContent = fs.readFileSync(profilePath, 'utf8');
+  } catch {
+    return { status: 'warn', message: `Could not read ${profilePath}` };
+  }
+
+  // Check for managed block
+  const hasBlock = profileContent.includes('# BEGIN GENTYR OP') && profileContent.includes('# END GENTYR OP');
+  if (!hasBlock) {
+    // Check for legacy unmanaged export
+    if (profileContent.includes('export OP_SERVICE_ACCOUNT_TOKEN=')) {
+      return { status: 'fail', message: 'Unmanaged OP_SERVICE_ACCOUNT_TOKEN in shell profile (not in GENTYR block)',
+        remediation: 'Run setup.sh to replace with managed block' };
+    }
+    return { status: 'fail', message: 'No GENTYR OP block in shell profile',
+      remediation: 'Run setup.sh to add managed OP block' };
+  }
+
+  // Extract token from managed block
+  const blockMatch = profileContent.match(/# BEGIN GENTYR OP\n[\s\S]*?export OP_SERVICE_ACCOUNT_TOKEN="?([^"\s]+)"?\n[\s\S]*?# END GENTYR OP/);
+  if (!blockMatch) {
+    return { status: 'fail', message: 'GENTYR OP block found but could not parse token',
+      remediation: 'Run setup.sh to regenerate managed block' };
+  }
+
+  const shellToken = blockMatch[1];
+  if (shellToken === mcpToken) {
+    return { status: 'pass', message: `Shell profile in sync with .mcp.json (${path.basename(profilePath)})` };
+  }
+
+  return { status: 'fail', message: 'Shell OP token differs from .mcp.json (source of truth)',
+    remediation: 'Run setup.sh to re-sync shell profile with .mcp.json token' };
+}
+
 // ---------------------------------------------------------------------------
 // Service Validator Registry
 // ---------------------------------------------------------------------------
@@ -562,6 +630,11 @@ const SERVICE_VALIDATORS = [
     name: 'onepassword',
     credentialKeys: [],
     validate: validateOnePassword,
+  },
+  {
+    name: 'shellSync',
+    credentialKeys: [],
+    validate: validateShellSync,
   },
 ];
 
