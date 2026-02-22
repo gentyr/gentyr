@@ -18,9 +18,10 @@ import {
   CleanupDataArgsSchema,
   GetReportArgsSchema,
   GetCoverageStatusArgsSchema,
+  PreflightCheckArgsSchema,
   PLAYWRIGHT_PROJECTS,
 } from '../types.js';
-import { parseTestOutput } from '../helpers.js';
+import { parseTestOutput, truncateOutput } from '../helpers.js';
 
 // ============================================================================
 // Zod Schema Validation Tests (G003 Compliance)
@@ -323,6 +324,117 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       expect(result.success).toBe(true);
     });
   });
+
+  describe('PreflightCheckArgsSchema', () => {
+    it('should accept empty object (general readiness check)', () => {
+      const result = PreflightCheckArgsSchema.safeParse({});
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.project).toBeUndefined();
+        expect(result.data.skip_compilation).toBe(false);
+      }
+    });
+
+    it('should accept valid UI mode project', () => {
+      const result = PreflightCheckArgsSchema.safeParse({
+        project: 'demo',
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.project).toBe('demo');
+      }
+    });
+
+    it('should accept all valid UI mode projects', () => {
+      const validProjects = [
+        'vendor-owner', 'vendor-admin', 'vendor-dev', 'vendor-viewer',
+        'manual', 'extension', 'extension-manual', 'demo',
+        'cross-persona', 'auth-flows',
+      ];
+
+      for (const project of validProjects) {
+        const result = PreflightCheckArgsSchema.safeParse({ project });
+        expect(result.success).toBe(true);
+      }
+    });
+
+    it('should reject invalid project name', () => {
+      const result = PreflightCheckArgsSchema.safeParse({
+        project: 'invalid-project',
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject infrastructure projects (seed, auth-setup)', () => {
+      const result = PreflightCheckArgsSchema.safeParse({
+        project: 'seed',
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept optional base_url', () => {
+      const result = PreflightCheckArgsSchema.safeParse({
+        project: 'demo',
+        base_url: 'http://localhost:4000',
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.base_url).toBe('http://localhost:4000');
+      }
+    });
+
+    it('should reject invalid base_url', () => {
+      const result = PreflightCheckArgsSchema.safeParse({
+        project: 'demo',
+        base_url: 'not-a-url',
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept skip_compilation flag', () => {
+      const result = PreflightCheckArgsSchema.safeParse({
+        project: 'demo',
+        skip_compilation: true,
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.skip_compilation).toBe(true);
+      }
+    });
+
+    it('should default skip_compilation to false', () => {
+      const result = PreflightCheckArgsSchema.safeParse({
+        project: 'demo',
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.skip_compilation).toBe(false);
+      }
+    });
+
+    it('should accept all parameters together', () => {
+      const result = PreflightCheckArgsSchema.safeParse({
+        project: 'vendor-owner',
+        base_url: 'http://localhost:3000',
+        skip_compilation: true,
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.project).toBe('vendor-owner');
+        expect(result.data.base_url).toBe('http://localhost:3000');
+        expect(result.data.skip_compilation).toBe(true);
+      }
+    });
+  });
 });
 
 // ============================================================================
@@ -437,12 +549,7 @@ Done.
     });
   });
 
-  describe('truncateOutput (simulated)', () => {
-    function truncateOutput(output: string, maxLength = 4000): string {
-      if (output.length <= maxLength) return output;
-      return output.slice(0, maxLength) + '\n... (output truncated)';
-    }
-
+  describe('truncateOutput', () => {
     it('should not truncate short output', () => {
       const output = 'Short output'.repeat(10);
       const result = truncateOutput(output);

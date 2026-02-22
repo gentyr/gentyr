@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { resolveFrameworkDir } from '../shared/resolve-framework.js';
 import {
   GentyrSetupArgsSchema,
   type Action,
@@ -48,18 +49,14 @@ const PROJECT_DIR = path.resolve(
 // ============================================================================
 
 function detectState(projectPath: string): DetectedState {
-  const frameworkSymlink = path.join(projectPath, '.claude-framework');
   const protectionState = path.join(projectPath, '.claude', 'protection-state.json');
   const mcpJson = path.join(projectPath, '.mcp.json');
 
   let isInstalled = false;
   try {
-    isInstalled = fs.existsSync(frameworkSymlink) && (
-      fs.lstatSync(frameworkSymlink).isSymbolicLink() ||
-      fs.lstatSync(frameworkSymlink).isDirectory()
-    );
+    isInstalled = resolveFrameworkDir(projectPath) !== null;
   } catch (err) {
-    process.stderr.write(`[setup-helper] Failed to check framework symlink: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`[setup-helper] Failed to check framework installation: ${err instanceof Error ? err.message : String(err)}\n`);
   }
 
   let isProtected = false;

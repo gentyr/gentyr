@@ -1,7 +1,9 @@
 #!/bin/bash
 # fix-mcp-launcher-issues.sh
 # Fixes protected-actions.json (root-owned) for MCP launcher credential resolution.
-# Must be run with sudo: sudo bash .claude-framework/scripts/fix-mcp-launcher-issues.sh
+# Must be run with sudo:
+#   sudo bash node_modules/gentyr/scripts/fix-mcp-launcher-issues.sh  (npm install model)
+#   sudo bash .claude-framework/scripts/fix-mcp-launcher-issues.sh    (legacy symlink)
 #
 # Changes:
 # 1. Renames servers.elastic -> servers.elastic-logs (consistency with MCP server name)
@@ -10,7 +12,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
+# Resolve project root: detect whether running from node_modules/gentyr/scripts/ (npm install
+# model) or .claude-framework/scripts/ (legacy symlink model).
+_PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+_GRANDPARENT_DIR="$(dirname "$_PARENT_DIR")"
+if [ "$(basename "$_GRANDPARENT_DIR")" = "node_modules" ]; then
+  # npm install model: node_modules/gentyr/scripts/ -> node_modules/ -> project root
+  PROJECT_ROOT="$(dirname "$_GRANDPARENT_DIR")"
+else
+  # Legacy symlink model: .claude-framework/scripts/ -> .claude-framework/ -> project root
+  PROJECT_ROOT="$_GRANDPARENT_DIR"
+fi
 HOOKS_DIR="$PROJECT_ROOT/.claude/hooks"
 
 if [ "$(id -u)" -ne 0 ]; then

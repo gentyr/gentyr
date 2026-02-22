@@ -18,7 +18,7 @@ All ephemeral state files in `.claude/` follow this lifecycle:
 
 ### 1. Pre-create during setup
 
-`scripts/setup.sh` pre-creates every state file with `{}` before applying sticky-bit protection:
+`npx gentyr init` (via `cli/commands/init.js`) pre-creates every state file with `{}` before applying sticky-bit protection:
 
 ```bash
 for state_file in \
@@ -74,17 +74,17 @@ if (!token.code && !token.request_id) {
 | `commit-approval-token.json` | deputy-cto MCP server | pre-commit-review hook |
 | `bypass-approval-token.json` | bypass-approval hook | block-no-verify hook, deputy-cto server |
 | `protected-action-approvals.json` | protected-action-gate hook | protected-action-gate hook |
-| `protection-state.json` | setup.sh | various hooks |
+| `protection-state.json` | npx gentyr init | various hooks |
 | `hourly-automation-state.json` | hourly automation | hourly automation |
 | `plan-executor-state.json` | plan executor | plan executor |
 
 ## Adding a New State File
 
-1. **Add to `setup.sh` pre-creation loop** (line ~595) so it exists before protection
+1. **Add to `init.js` pre-creation block** (`cli/commands/init.js` `preCreateStateFiles`) so it exists before protection
 2. **Use `writeFileSync` to write** -- never use conditional create (`O_CREAT | O_EXCL`)
 3. **Use `writeFileSync(path, '{}')` to clear** -- never use `unlinkSync`
 4. **Check for empty `{}` in readers** -- treat as "no data"
-5. **Add to `.gitignore`** via setup.sh gitignore generation if not already listed
+5. **Add to `.gitignore`** via config-gen.js gitignore generation if not already listed
 6. **Add to credential-file-guard** if the file contains sensitive data
 
 ## Common Mistakes
@@ -106,9 +106,9 @@ if (Object.keys(token).length === 0) {
 }
 ```
 
-### Forgetting to add to setup.sh
+### Forgetting to add to init.js
 
-If a new state file isn't pre-created, the first write attempt will fail with EACCES. Always add new files to the pre-creation loop in `setup.sh`.
+If a new state file isn't pre-created, the first write attempt will fail with EACCES. Always add new files to `preCreateStateFiles()` in `cli/commands/init.js`.
 
 ### Using `unlinkSync` in error/cleanup paths
 

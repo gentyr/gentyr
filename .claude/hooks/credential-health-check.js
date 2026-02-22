@@ -139,7 +139,7 @@ try {
 
   // Build desync warning prefix if shell token differs from .mcp.json
   const desyncPrefix = opTokenDesync
-    ? 'GENTYR: OP_SERVICE_ACCOUNT_TOKEN in shell differs from .mcp.json (source of truth). Run `setup.sh --path <project>` to re-sync. '
+    ? 'GENTYR: OP_SERVICE_ACCOUNT_TOKEN in shell differs from .mcp.json (source of truth). '
     : '';
 
   if (missingKeys.length > 0) {
@@ -155,7 +155,7 @@ try {
       // Connected — emit desync warning if present, otherwise silent
       output(desyncPrefix || null);
     } catch {
-      output(`${desyncPrefix}GENTYR: 1Password is not authenticated. Run \`sudo scripts/setup.sh --path <project> --op-token <TOKEN>\` to configure. MCP servers will start without credentials.`);
+      output(`${desyncPrefix}GENTYR: 1Password is not authenticated. MCP servers will start without credentials.`);
     }
   } else {
     // All mappings are direct values — no 1Password needed

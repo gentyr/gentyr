@@ -146,6 +146,24 @@ export const GetReportArgsSchema = z.object({
 
 export const GetCoverageStatusArgsSchema = z.object({});
 
+export const PreflightCheckArgsSchema = z.object({
+  project: z.enum(UI_MODE_PROJECTS)
+    .optional()
+    .describe(
+      'Playwright project to validate. If omitted, checks general readiness only ' +
+      '(config, deps, browsers, credentials). If provided, also validates test files ' +
+      'exist and compilation succeeds for that specific project.'
+    ),
+  base_url: z.string()
+    .url()
+    .optional()
+    .describe('Override base URL for dev server check (default: http://localhost:3000)'),
+  skip_compilation: z.boolean()
+    .optional()
+    .default(false)
+    .describe('Skip the compilation check (faster but less thorough)'),
+});
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -156,6 +174,26 @@ export type SeedDataArgs = z.infer<typeof SeedDataArgsSchema>;
 export type CleanupDataArgs = z.infer<typeof CleanupDataArgsSchema>;
 export type GetReportArgs = z.infer<typeof GetReportArgsSchema>;
 export type GetCoverageStatusArgs = z.infer<typeof GetCoverageStatusArgsSchema>;
+export type PreflightCheckArgs = z.infer<typeof PreflightCheckArgsSchema>;
+
+export type PreflightCheckStatus = 'pass' | 'fail' | 'warn' | 'skip';
+
+export interface PreflightCheckEntry {
+  name: string;
+  status: PreflightCheckStatus;
+  message: string;
+  duration_ms: number;
+}
+
+export interface PreflightCheckResult {
+  ready: boolean;
+  project: string | null;
+  checks: PreflightCheckEntry[];
+  failures: string[];
+  warnings: string[];
+  recovery_steps: string[];
+  total_duration_ms: number;
+}
 
 export interface LaunchUiModeResult {
   success: boolean;

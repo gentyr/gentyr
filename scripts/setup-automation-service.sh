@@ -191,7 +191,9 @@ setup_linux() {
 
   # Resolve framework dir for proxy script path
   FRAMEWORK_DIR=""
-  if [ -L "$PROJECT_DIR/.claude-framework" ]; then
+  if [ -d "$PROJECT_DIR/node_modules/gentyr" ] || [ -L "$PROJECT_DIR/node_modules/gentyr" ]; then
+    FRAMEWORK_DIR="$(cd "$PROJECT_DIR/node_modules/gentyr" && pwd -P)"
+  elif [ -L "$PROJECT_DIR/.claude-framework" ]; then
     FRAMEWORK_DIR="$(readlink -f "$PROJECT_DIR/.claude-framework")"
   elif [ -d "$SCRIPT_DIR/.." ]; then
     FRAMEWORK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -393,7 +395,9 @@ setup_macos() {
 
   # Resolve framework dir for proxy script path
   FRAMEWORK_DIR=""
-  if [ -L "$PROJECT_DIR/.claude-framework" ]; then
+  if [ -d "$PROJECT_DIR/node_modules/gentyr" ] || [ -L "$PROJECT_DIR/node_modules/gentyr" ]; then
+    FRAMEWORK_DIR="$(cd "$PROJECT_DIR/node_modules/gentyr" && pwd -P)"
+  elif [ -L "$PROJECT_DIR/.claude-framework" ]; then
     FRAMEWORK_DIR="$(readlink -f "$PROJECT_DIR/.claude-framework")"
   elif [ -d "$SCRIPT_DIR/.." ]; then
     FRAMEWORK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

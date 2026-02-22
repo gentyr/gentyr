@@ -8,7 +8,7 @@
  *
  * Output: Single JSON object on stdout. All diagnostic/error messages go to stderr.
  *
- * Usage: node .claude-framework/scripts/setup-check.js
+ * Usage: node node_modules/gentyr/scripts/setup-check.js
  *
  * @version 1.0.0
  */
@@ -44,7 +44,17 @@ const CREDENTIALS = [
 // ---------------------------------------------------------------------------
 
 function checkGentyrInstalled(projectDir) {
-  const frameworkPath = path.join(projectDir, '.claude-framework');
+  const npmPath = path.join(projectDir, 'node_modules', 'gentyr');
+  const legacyPath = path.join(projectDir, '.claude-framework');
+  const frameworkPath = (() => {
+    try {
+      const stat = fs.lstatSync(npmPath);
+      if (stat.isSymbolicLink() || stat.isDirectory()) return npmPath;
+    } catch {
+      // not found
+    }
+    return legacyPath;
+  })();
   try {
     const stat = fs.lstatSync(frameworkPath);
     return stat.isSymbolicLink() || stat.isDirectory();

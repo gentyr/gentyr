@@ -6,6 +6,10 @@
 # Requires sudo since it handles protection.
 # After reinstall, start a new Claude Code session and run /setup-gentyr
 # to configure credentials interactively.
+#
+# DEPRECATION NOTICE:
+#   This script will be superseded by the `npx gentyr` CLI in a future release.
+#   Prefer: sudo npx gentyr sync --path /path/to/project
 
 set -e
 

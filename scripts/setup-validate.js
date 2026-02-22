@@ -9,7 +9,8 @@
  *
  * Output: Single JSON object on stdout. Diagnostics go to stderr.
  *
- * Usage: node .claude-framework/scripts/setup-validate.js [--repo owner/repo]
+ * Usage: node node_modules/gentyr/scripts/setup-validate.js [--repo owner/repo]
+ *        node .claude-framework/scripts/setup-validate.js [--repo owner/repo]  (legacy)
  *
  * @version 1.0.0
  */

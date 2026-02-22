@@ -42,9 +42,11 @@ launchd timer (10 min) ──> hourly-automation.js ──> CTO Activity Gate
 
 | Event | Hooks | Purpose |
 |-------|-------|---------|
+| **SessionStart** | gentyr-sync | Framework version/config change detection; auto-sync settings.json, .mcp.json, hooks, agents |
 | **SessionStart** | api-key-watcher | Discover credentials, health-check, select optimal key |
 | **SessionStart** | credential-health-check | Vault mapping validation, OP token desync detection |
 | **PreToolUse(Bash)** | credential-sync-hook | Periodic credential sync (30-min throttle) |
+| **PreToolUse(Bash)** | playwright-cli-guard | Warn agents against CLI-based Playwright test invocation (non-blocking) |
 | **PostToolUse** | quota-monitor | Mid-session quota check (5-min throttle), rotate at 95% |
 
 ---
@@ -272,13 +274,13 @@ Runs at `SessionStart` for interactive sessions (skipped for spawned `[Task]` se
 | Condition | Output |
 |-----------|--------|
 | All configured, no desync | Silent (`suppressOutput: true`) |
-| Token desync only | Warning prefix: "GENTYR: OP_SERVICE_ACCOUNT_TOKEN in shell differs from .mcp.json (source of truth). Run `setup.sh --path <project>` to re-sync." |
+| Token desync only | Warning prefix: "GENTYR: OP_SERVICE_ACCOUNT_TOKEN in shell differs from .mcp.json (source of truth). Run `npx gentyr sync` to re-sync." |
 | Missing credentials | Error with count; prepended with desync warning if applicable |
 | 1Password not authenticated | Error prompting to run setup with `--op-token`; prepended with desync warning if applicable |
 
 ### Deployment
 
-The hook is staged at `scripts/hooks/credential-health-check.js` and deployed to the target project's `.claude/hooks/` during `setup.sh` install (Step 9 - staged hooks deployment). The staged copy and runtime copy must remain identical.
+The hook lives at `.claude/hooks/credential-health-check.js` and auto-propagates to target projects via the `.claude/hooks/` directory symlink (npm link model).
 
 ---
 

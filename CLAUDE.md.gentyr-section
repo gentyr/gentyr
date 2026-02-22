@@ -1,0 +1,89 @@
+<!-- GENTYR-FRAMEWORK-START -->
+## GENTYR Framework Agent Workflow
+
+### Golden Rules
+
+1. **NEVER skip agents** - Each agent has a specific role
+2. **ALWAYS follow the order** - Agents build on each other's work
+3. **ONE agent per role** - Don't combine responsibilities
+4. **Use MCP tools** - All agents use specs-browser and todo-db
+5. **Report to CTO** - Use `mcp__cto-reports__report_to_cto` for important items
+
+### Standard Development Workflow
+
+1. **INVESTIGATOR** (first, always) - investigates, creates plan, creates TODOs
+2. **CODE-WRITER** - writes code, follows specs
+3. **TEST-WRITER** (after implementation) - writes tests, achieves coverage
+4. **CODE-REVIEWER** - reviews, commits, may create fix TODOs
+5. **PROJECT-MANAGER** (cleanup, mandatory) - syncs docs, cleans TODOs
+6. **SUMMARY** (always) - provide user with detailed summary
+
+### CTO Reporting
+
+Report to deputy-cto when you encounter:
+- **Architecture decisions** - Major structural changes
+- **Security concerns** - Potential vulnerabilities
+- **Breaking changes** - Changes affecting multiple components
+- **Blockers** - Issues preventing progress
+
+### CTO-Protected Actions
+
+Some MCP actions require CTO approval before execution. When you call a protected action:
+
+1. **Action is blocked** - You'll see a message with a 6-character code
+2. **Stop and wait** - Do NOT retry until CTO approves
+3. **CTO types approval** - e.g., `APPROVE PROD A7X9K2`
+4. **Retry the action** - It will now succeed (one-time use, 5-minute expiry)
+
+**To check protected actions:** Use `mcp__deputy-cto__list_protections()`
+
+**To check pending requests:** Use `mcp__deputy-cto__get_protected_action_request({ code: "XXXXXX" })`
+
+### Deployment Flow
+
+GENTYR enforces a strict merge chain: **feature -> preview -> staging -> production**.
+
+| Merge | Approval | Auto-deploy |
+|---|---|---|
+| `feature/*` -> `preview` | None (agent autonomous) | Vercel preview + CI |
+| `preview` -> `staging` | Deputy-CTO (automated 6h pipeline) | Vercel staging + Render staging |
+| `staging` -> `main` | **CTO** (automated nightly pipeline) | Vercel prod + Render prod |
+
+**Forbidden merges:** Feature branches can NEVER merge directly into `staging` or `main`. Preview can NEVER merge directly into `main`.
+
+**Feature branches:** All work should be organized into descriptive feature branches (e.g., `feature/add-auth`, `fix/login-bug`). Push to the current feature branch, then merge into `preview` when ready.
+
+**Automated promotion:** Preview->staging is checked every 6 hours (requires 24h since last staging merge or bug fix). Staging->main is checked nightly at midnight (requires 24h stability). Both pipelines include code review and test assessment.
+
+**Health monitoring:** Staging is checked every 3 hours, production every 1 hour. Monitors query Render, Vercel, Elasticsearch, and Supabase for issues. Production issues also escalate to CTO.
+
+**Key deployment MCP tools:**
+- `mcp__vercel__*` (frontend) -- Approval: `APPROVE DEPLOY`
+- `mcp__render__*` (backend) -- Approval: `APPROVE INFRA`
+- `mcp__supabase__*` (database on main) -- Approval: `APPROVE DATABASE`
+- `mcp__github__*` (merges, secrets) -- Approval: `APPROVE GIT`
+- `mcp__elastic-logs__*` (log querying) -- No approval needed (read-only)
+
+See `node_modules/gentyr/docs/DEPLOYMENT-FLOW.md` for the full deployment reference.
+
+### Slash Commands
+
+- `/cto-report` - Status dashboard with metrics
+- `/deputy-cto` - Interactive CTO briefing session
+- `/demo` - Launch product demo with preflight validation
+
+### Playwright & Demo Best Practices
+
+**Always run preflight before demos or E2E testing:**
+- Use `mcp__playwright__preflight_check({ project: "demo" })` before any Playwright launch
+- This validates: config, deps, browsers, credentials, test files, compilation, dev server
+- Never skip — Playwright GUI can open but show zero tests (silent failure)
+
+**Never use Playwright CLI directly:**
+- Do NOT run `npx playwright test`, `pnpm test:e2e`, etc. via Bash
+- CLI bypasses 1Password credential injection — tests fail silently
+- Use MCP tools: `preflight_check`, `run_tests`, `launch_ui_mode`
+
+**Use `/demo` for interactive demos** — runs preflight automatically.
+
+<!-- GENTYR-FRAMEWORK-END -->

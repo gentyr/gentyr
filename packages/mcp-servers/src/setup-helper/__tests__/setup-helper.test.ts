@@ -35,16 +35,23 @@ function createTestHandler(frameworkDir: string, projectDir: string) {
   }
 
   function detectState(projectPath: string) {
-    const frameworkSymlink = path.join(projectPath, '.claude-framework');
+    const npmPath = path.join(projectPath, 'node_modules', 'gentyr');
+    const legacyPath = path.join(projectPath, '.claude-framework');
     const protectionState = path.join(projectPath, '.claude', 'protection-state.json');
     const mcpJson = path.join(projectPath, '.mcp.json');
 
     let isInstalled = false;
     try {
-      isInstalled = fs.existsSync(frameworkSymlink) && (
-        fs.lstatSync(frameworkSymlink).isSymbolicLink() ||
-        fs.lstatSync(frameworkSymlink).isDirectory()
-      );
+      // Check npm model first, then legacy
+      for (const candidate of [npmPath, legacyPath]) {
+        if (fs.existsSync(candidate) && (
+          fs.lstatSync(candidate).isSymbolicLink() ||
+          fs.lstatSync(candidate).isDirectory()
+        )) {
+          isInstalled = true;
+          break;
+        }
+      }
     } catch {
       // fail-safe
     }
@@ -359,9 +366,20 @@ describe('Setup Helper Server', () => {
       expect(result.detected_state.is_protected).toBe(false);
     });
 
-    it('should detect installed state via symlink', async () => {
+    it('should detect installed state via legacy symlink', async () => {
       // Create .claude-framework symlink
       fs.symlinkSync(frameworkDir, path.join(projectDir, '.claude-framework'));
+
+      const result = await callTool(server);
+      if (result.status !== 'overview') throw new Error('Expected overview');
+      expect(result.detected_state.is_installed).toBe(true);
+    });
+
+    it('should detect installed state via node_modules/gentyr', async () => {
+      // Create node_modules/gentyr symlink (npm model)
+      const nmDir = path.join(projectDir, 'node_modules');
+      fs.mkdirSync(nmDir, { recursive: true });
+      fs.symlinkSync(frameworkDir, path.join(nmDir, 'gentyr'));
 
       const result = await callTool(server);
       if (result.status !== 'overview') throw new Error('Expected overview');

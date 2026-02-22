@@ -87,7 +87,7 @@ Internal MCP servers (not tied to external providers):
 
 ```
 project-root/
-├── .claude-framework/          # GENTYR (symlinked)
+├── node_modules/gentyr/        # GENTYR (npm package)
 ├── .claude/config/services.json # Project-specific service IDs
 ├── products/
 │   └── {product-name}/

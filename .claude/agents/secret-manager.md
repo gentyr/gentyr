@@ -223,7 +223,7 @@ Pre-built knowledge of required credentials per service:
 | **Render** | `RENDER_API_KEY` | `op://Production/Render/api-key` (infra, GitHub Secrets) |
 | **Vercel** | `VERCEL_TOKEN` | `op://Production/Vercel/token` (infra, GitHub Secrets) |
 | **GitHub** | `GH_TOKEN` | `op://Production/GitHub/token` (infra) |
-| **1Password** | `OP_SERVICE_ACCOUNT_TOKEN` | Injected via setup.sh (not in vault-mappings) |
+| **1Password** | `OP_SERVICE_ACCOUNT_TOKEN` | Injected via `npx gentyr init` (not in vault-mappings) |
 | **Encryption** | `ENCRYPTION_KEY` | `op://{env}/Backend/encryption-key` (manual setup) |
 
 ## Diagnostic Workflow

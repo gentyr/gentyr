@@ -14,9 +14,10 @@
 #   - lint-staged config in package.json (enforced via hash check)
 #
 # Usage:
-#   sudo bash .claude-framework/scripts/protect-framework.sh          # Enable protection
-#   bash .claude-framework/scripts/protect-framework.sh status        # Check status
-#   sudo bash .claude-framework/scripts/protect-framework.sh disable  # Temporarily disable
+#   sudo bash node_modules/gentyr/scripts/protect-framework.sh          # Enable protection (npm install model)
+#   sudo bash .claude-framework/scripts/protect-framework.sh            # Enable protection (legacy symlink)
+#   bash node_modules/gentyr/scripts/protect-framework.sh status        # Check status
+#   sudo bash node_modules/gentyr/scripts/protect-framework.sh disable  # Temporarily disable
 #
 # ==============================================================================
 
@@ -58,6 +59,9 @@ fi
 if [ -L "$PROJECT_DIR/.claude/hooks" ]; then
     HOOKS_DIR="$(readlink -f "$PROJECT_DIR/.claude/hooks")"
     USE_FRAMEWORK=true
+elif [ -d "$PROJECT_DIR/node_modules/gentyr/.claude/hooks" ]; then
+    HOOKS_DIR="$PROJECT_DIR/node_modules/gentyr/.claude/hooks"
+    USE_FRAMEWORK=true
 elif [ -d "$PROJECT_DIR/.claude-framework/.claude/hooks" ]; then
     HOOKS_DIR="$PROJECT_DIR/.claude-framework/.claude/hooks"
     USE_FRAMEWORK=true
@@ -74,6 +78,7 @@ PROTECTED_FILES=(
     "$HOOKS_DIR/protected-action-gate.js"
     "$HOOKS_DIR/protected-action-approval-hook.js"
     "$HOOKS_DIR/credential-file-guard.js"
+    "$HOOKS_DIR/secret-leak-detector.js"
     "$HOOKS_DIR/protected-actions.json"
     "$PROJECT_DIR/.claude/settings.json"
     "$PROJECT_DIR/.claude/protection-key"
@@ -195,11 +200,18 @@ check_file_protection() {
         perms=$(stat -c '%a' "$file")
     fi
 
-    if [ "$owner" = "root" ] && [ "$perms" = "644" ]; then
-        echo -e "  ${GREEN}PROTECTED: $file (owner: root, perms: 644)${NC}"
+    # Determine expected permissions based on file type.
+    # Husky hooks need execute permission to function as git hooks.
+    local expected_perms="644"
+    if [[ "$file" == *".husky/"* ]]; then
+        expected_perms="755"
+    fi
+
+    if [ "$owner" = "root" ] && [ "$perms" = "$expected_perms" ]; then
+        echo -e "  ${GREEN}PROTECTED: $file (owner: root, perms: $expected_perms)${NC}"
         return 0
     else
-        echo -e "  ${RED}UNPROTECTED: $file (owner: $owner, perms: $perms)${NC}"
+        echo -e "  ${RED}UNPROTECTED: $file (owner: $owner, perms: $perms, expected: root/$expected_perms)${NC}"
         return 1
     fi
 }

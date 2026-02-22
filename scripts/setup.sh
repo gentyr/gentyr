@@ -10,6 +10,11 @@
 #   scripts/setup.sh --scaffold --path /path/to/new-project   # Scaffold new project
 #
 # --path is required. Protection requires sudo.
+#
+# DEPRECATION NOTICE:
+#   This script will be superseded by the `npx gentyr` CLI in a future release.
+#   Prefer: npx gentyr init --path /path/to/project
+#   See: https://github.com/gentyr/gentyr#installation
 
 set -eo pipefail
 
@@ -201,6 +206,7 @@ do_protect() {
         "$PROJECT_DIR/.claude/settings.json"
         "$PROJECT_DIR/.claude/protection-key"
         "$PROJECT_DIR/.mcp.json"
+        "$PROJECT_DIR/.claude/config/services.json"
         "$PROJECT_DIR/eslint.config.js"
         "$PROJECT_DIR/.husky/pre-commit"
         "$PROJECT_DIR/package.json"

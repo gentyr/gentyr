@@ -35,7 +35,8 @@ const __dirname = path.dirname(__filename);
 /**
  * Create a temporary project directory for testing
  * @param {Object} options - Configuration options
- * @param {boolean} options.withGentyr - Create .claude-framework symlink
+ * @param {boolean} options.withGentyr - Create framework directory (supports both models)
+ * @param {'npm'|'legacy'} [options.gentyrModel='legacy'] - Which install model to simulate
  * @param {boolean} options.withVaultMappings - Create vault-mappings.json
  * @param {Object} options.mappings - Credential mappings to include
  * @returns {Object} Test directory info
@@ -46,9 +47,16 @@ function createTestProject(options = {}) {
   fs.mkdirSync(claudeDir, { recursive: true });
 
   if (options.withGentyr) {
-    // Create a dummy .claude-framework directory (not a real symlink)
-    const frameworkDir = path.join(tmpDir, '.claude-framework');
-    fs.mkdirSync(frameworkDir, { recursive: true });
+    const model = options.gentyrModel || 'legacy';
+    if (model === 'npm') {
+      // Create node_modules/gentyr directory (npm model)
+      const nmDir = path.join(tmpDir, 'node_modules', 'gentyr');
+      fs.mkdirSync(nmDir, { recursive: true });
+    } else {
+      // Create a dummy .claude-framework directory (legacy model)
+      const frameworkDir = path.join(tmpDir, '.claude-framework');
+      fs.mkdirSync(frameworkDir, { recursive: true });
+    }
   }
 
   if (options.withVaultMappings) {
@@ -214,8 +222,8 @@ describe('setup-check.js - Code Structure', () => {
 // ============================================================================
 
 describe('checkGentyrInstalled()', () => {
-  it('should return true when .claude-framework exists as directory', () => {
-    const testProject = createTestProject({ withGentyr: true });
+  it('should return true when .claude-framework exists as directory (legacy)', () => {
+    const testProject = createTestProject({ withGentyr: true, gentyrModel: 'legacy' });
 
     try {
       const frameworkPath = path.join(testProject.path, '.claude-framework');
@@ -228,14 +236,29 @@ describe('checkGentyrInstalled()', () => {
     }
   });
 
-  it('should return false when .claude-framework does not exist', () => {
+  it('should return true when node_modules/gentyr exists (npm model)', () => {
+    const testProject = createTestProject({ withGentyr: true, gentyrModel: 'npm' });
+
+    try {
+      const npmPath = path.join(testProject.path, 'node_modules', 'gentyr');
+      const exists = fs.existsSync(npmPath);
+      const isDir = exists && fs.statSync(npmPath).isDirectory();
+
+      assert.strictEqual(isDir, true, 'node_modules/gentyr should be a directory');
+    } finally {
+      testProject.cleanup();
+    }
+  });
+
+  it('should return false when neither framework path exists', () => {
     const testProject = createTestProject({ withGentyr: false });
 
     try {
-      const frameworkPath = path.join(testProject.path, '.claude-framework');
-      const exists = fs.existsSync(frameworkPath);
+      const legacyPath = path.join(testProject.path, '.claude-framework');
+      const npmPath = path.join(testProject.path, 'node_modules', 'gentyr');
 
-      assert.strictEqual(exists, false, '.claude-framework should not exist');
+      assert.strictEqual(fs.existsSync(legacyPath), false, '.claude-framework should not exist');
+      assert.strictEqual(fs.existsSync(npmPath), false, 'node_modules/gentyr should not exist');
     } finally {
       testProject.cleanup();
     }

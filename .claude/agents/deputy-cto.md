@@ -19,6 +19,7 @@ allowedTools:
   - mcp__todo-db__start_task
   - mcp__todo-db__get_task
   - mcp__todo-db__list_tasks
+  - mcp__playwright__preflight_check
   - mcp__playwright__launch_ui_mode
   - mcp__product-manager__approve_analysis
   - mcp__product-manager__get_analysis_status
@@ -91,11 +92,25 @@ You do NOT have:
 
 ## Demo Mode
 
-If the user requests to see a demo of the platform, use `mcp__playwright__launch_ui_mode` to launch Playwright in interactive UI mode. Do NOT run `npx playwright` via Bash — always use the MCP tool. Recommended projects:
-- `manual` — Dashboard pages with `page.pause()` for human interaction
-- `extension-manual` — Browser extension scaffolds with `page.pause()` for interactive inspection
-- `vendor-owner`, `vendor-admin`, `vendor-dev`, `vendor-viewer` — Role-specific dashboard demos
-- `extension` — Automated extension E2E tests (headed Chromium with `--load-extension`)
+When the user requests a demo, follow the preflight-gated protocol:
+
+1. **Always run preflight first**: `mcp__playwright__preflight_check({ project: "<project>" })`
+2. **If `ready: false`**: Display all `failures` and `recovery_steps` — do NOT launch
+3. **If `ready: true`**: Launch via `mcp__playwright__launch_ui_mode({ project: "<project>" })`
+
+**Project recommendations:**
+
+| Use Case | Project | Description |
+|----------|---------|-------------|
+| Full product demo | `demo` | Dashboard + extension in single Chromium session |
+| Dashboard demo | `manual` | Dashboard pages with `page.pause()` for inspection |
+| Extension demo | `extension-manual` | Extension scaffolds with `page.pause()` |
+| Role-specific | `vendor-owner`, `vendor-admin`, `vendor-dev`, `vendor-viewer` | Per-persona dashboard |
+
+**Rules:**
+- Never skip `preflight_check` — Playwright GUI can open but show zero tests (silent failure)
+- Never use `npx playwright` via Bash — bypasses 1Password credential injection
+- Never report a successful demo launch without preflight passing first
 
 ## Executive Decisions
 

@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This plan provides a complete inventory of all .claude-framework components and an end-to-end test plan for each. The goal is to test all capabilities naturally without mocking, using realistic workflows that exercise the system as it would run in production.
+This plan provides a complete inventory of all node_modules/gentyr components and an end-to-end test plan for each. The goal is to test all capabilities naturally without mocking, using realistic workflows that exercise the system as it would run in production.
 
 ---
 
@@ -21,11 +21,12 @@ This plan provides a complete inventory of all .claude-framework components and 
 | **session-events** | `.claude/session-events.db` | Session event logging | `session_events_record`, `session_events_search` |
 | **cto-report** | Multiple sources | Metrics generation | `get_report`, `get_session_metrics`, `get_task_metrics` |
 
-### Hooks (10 automation hooks + 5 utility modules)
+### Hooks (11 automation hooks + 5 utility modules)
 
 | Hook | Trigger | Purpose | Cooldown |
 |------|---------|---------|----------|
 | **block-no-verify.js** | PreToolUse | Blocks `--no-verify` and bypass commands | None |
+| **playwright-cli-guard.js** | PreToolUse(Bash) | Warn agents against CLI-based Playwright test invocation; advises MCP tools instead | None |
 | **api-key-watcher.js** | SessionStart | Auto-rotate API keys based on usage | Per-session |
 | **cto-notification-hook.js** | UserPromptSubmit | Display CTO status at session start | None |
 | **todo-maintenance.js** | UserPromptSubmit | Auto-spawn todo-processing agent | 15 min |
@@ -346,16 +347,18 @@ Expected flow:
 ```bash
 mkdir /tmp/test-install && cd /tmp/test-install
 git init
-sudo /path/to/.claude-framework/scripts/setup.sh --path . --protect
+pnpm link ~/git/gentyr
+npx gentyr init
+sudo npx gentyr protect
 ```
 **Verify:** Symlinks created, .mcp.json generated, husky hooks installed, MCP servers built, protection active
 
 #### Test 6.2: Protection Toggle
 **Steps:**
 ```bash
-sudo scripts/setup.sh --path /path/to/project --unprotect-only
+sudo npx gentyr unprotect
 ls -la .claude/hooks/pre-commit-review.js  # Should be user-owned
-sudo scripts/setup.sh --path /path/to/project --protect-only
+sudo npx gentyr protect
 ls -la .claude/hooks/pre-commit-review.js  # Should be root-owned
 ```
 **Verify:** Protection toggles correctly
