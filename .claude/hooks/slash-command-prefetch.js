@@ -573,7 +573,7 @@ function getAccountInventory() {
       else if (k.status === 'expired') expiredKeys++;
       else if (k.status === 'invalid') invalidKeys++;
 
-      const dedupeKey = k.account_uuid || id;
+      const dedupeKey = k.account_uuid || `fp:${id}`;
       if (!accountMap.has(dedupeKey) || k.status === 'active') {
         accountMap.set(dedupeKey, {
           email: k.account_email || null,
@@ -583,9 +583,25 @@ function getAccountInventory() {
           usage: k.last_usage ? {
             five_hour: Math.round(k.last_usage.five_hour ?? 0),
             seven_day: Math.round(k.last_usage.seven_day ?? 0),
+            seven_day_sonnet: Math.round(k.last_usage.seven_day_sonnet ?? 0),
           } : null,
           subscription: k.subscriptionType || 'unknown',
         });
+      }
+    }
+
+    // Cross-match null-UUID keys against UUID-bearing keys with matching usage.
+    // Prevents "unknown" accounts when profile resolution hasn't run yet.
+    const fpKeys = [...accountMap.keys()].filter(k => k.startsWith('fp:'));
+    for (const fpKey of fpKeys) {
+      const fpEntry = accountMap.get(fpKey);
+      if (!fpEntry.usage) continue;
+      for (const [uuidKey, uuidEntry] of accountMap) {
+        if (uuidKey.startsWith('fp:') || !uuidEntry.email || !uuidEntry.usage) continue;
+        if (uuidEntry.usage.seven_day === fpEntry.usage.seven_day && uuidEntry.usage.seven_day_sonnet === fpEntry.usage.seven_day_sonnet) {
+          accountMap.delete(fpKey);
+          break;
+        }
       }
     }
 

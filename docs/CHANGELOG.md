@@ -1,5 +1,49 @@
 # GENTYR Framework Changelog
 
+## 2026-02-21 - Rotation Proxy E2E Validation + Triage Command
+
+### Added
+
+**`/triage` slash command** (`.claude/commands/triage.md`, `scripts/force-triage-reports.js`):
+- On-demand force-spawn of the deputy-CTO triage cycle
+- Bypasses hourly automation's triage check interval, automation-enabled flag, and CTO activity gate
+- Prefetch handler in `slash-command-prefetch.js` injects pending report counts into the command
+- Calls `force_triage_reports` on the agent-tracker MCP server
+- Returns spawned session ID for `claude --resume` workflow
+- Preserves concurrency guard, agent tracker registration, and per-item triage cooldown filtering
+- Mirrors the `/spawn-tasks` pattern
+
+**`force_triage_reports` MCP tool** (`packages/mcp-servers/src/agent-tracker/server.ts`, `types.ts`):
+- New tool in agent-tracker server; calls `scripts/force-triage-reports.js` via execFileSync
+- Returns `{ agentId, pid, sessionId, pendingReports }` result
+
+**Deputy-CTO test coverage** (`packages/mcp-servers/src/deputy-cto/__tests__/deputy-cto.test.ts`):
+- 284 lines of new vitest tests for deputy-cto server
+
+### Fixed
+
+**TLS CONNECT `head` buffer handling** (`scripts/rotation-proxy.js`):
+- Added `clientSocket.unshift(head)` before wrapping CONNECT socket in TLSSocket
+- The `head` parameter contains early client data (TLS ClientHello) sent before the 200 response arrives; dropping it caused intermittent ECONNRESET errors
+- Success rate went from ~20% to 100% in controlled tests
+- This is the textbook fix for Node.js HTTPS MITM proxies
+
+### Tests
+
+**`scripts/__tests__/rotation-proxy.test.js`** (NEW, 60 unit tests):
+- Code structure: `head` buffer unshift in MITM CONNECT handler, transparent passthrough head forwarding
+- Behavioral: `parseHttpRequest()`, `rebuildRequest()`, domain routing, log rotation threshold, `loadCerts()`, `getActiveToken()`, `rotateOnExhaustion()`, 429 retry cap
+- Uses Node's built-in test runner (`node:test`)
+- All 120 tests passing: 60 quota-monitor + 60 rotation-proxy
+
+### Documentation
+
+**Updated files**:
+- `CLAUDE.md` — Added `/triage` command under Automation Service; added CONNECT head buffer handling note to Rotation Proxy section
+- `docs/CHANGELOG.md` — This entry
+
+---
+
 ## 2026-02-21 - Rotation Proxy (replaces binary patching for credential swap)
 
 ### Added

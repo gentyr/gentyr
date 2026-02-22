@@ -459,6 +459,24 @@ export async function syncKeys(log) {
     }
   }
 
+  // Resolve account profiles for keys missing account_uuid.
+  // This ensures keys added by hourly automation, token refresh, or credential sync
+  // get their profile resolved without waiting for an interactive SessionStart.
+  for (const [keyId, keyData] of Object.entries(state.keys)) {
+    if (keyData.account_uuid) continue;
+    if (keyData.status !== 'active' && keyData.status !== 'exhausted') continue;
+    try {
+      const profile = await fetchAccountProfile(keyData.accessToken);
+      if (profile) {
+        keyData.account_uuid = profile.account_uuid;
+        keyData.account_email = profile.email;
+        logFn(`[key-sync] Resolved profile for key ${keyId.slice(0, 8)}...: ${profile.email}`);
+      }
+    } catch {
+      // Non-fatal — profile will be retried on next sync
+    }
+  }
+
   // Set initial active key if none set
   if (!state.active_key_id) {
     const firstActive = Object.entries(state.keys).find(([_, k]) => k.status === 'active');
@@ -803,6 +821,45 @@ export function readKeychainCredentials() {
       'find-generic-password', '-s', 'Claude Code-credentials', '-a', username, '-w',
     ], { encoding: 'utf8', timeout: 3000 }).trim();
     return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================================
+// Account Profile Resolution
+// ============================================================================
+
+const PROFILE_API_URL = 'https://api.anthropic.com/api/oauth/profile';
+
+/**
+ * Fetch account profile to get account UUID and email for deduplication.
+ * Uses the same OAuth Bearer auth as the usage endpoint.
+ * @param {string} accessToken
+ * @returns {Promise<{account_uuid: string, email: string}|null>}
+ */
+export async function fetchAccountProfile(accessToken) {
+  try {
+    const response = await fetch(PROFILE_API_URL, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'claude-code/2.1.14',
+        'anthropic-beta': ANTHROPIC_BETA_HEADER,
+      },
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    if (data.account?.uuid && data.account?.email) {
+      return {
+        account_uuid: data.account.uuid,
+        email: data.account.email,
+      };
+    }
+    return null;
   } catch {
     return null;
   }

@@ -417,6 +417,88 @@ The `effective` object is computed by the usage optimizer as `default * (1 / fac
 
 ---
 
+## Pre-Commit Review Hook (pre-commit-review.js)
+
+Runs as a Husky pre-commit hook on every `git commit` attempt.
+
+### Commit Flow
+
+```
+git commit
+  |
+  v
+pre-commit-review.js
+  |-- Verify git core.hooksPath hasn't been tampered (hook bypass detection)
+  |-- Check for valid emergency bypass token (from execute_bypass flow)
+  |-- Check for pending CTO items (G020 compliance)
+  |       |-- Pending questions in deputy-cto.db?
+  |       |-- Pending triage items in cto-reports.db?
+  |       |-- Either present? -> BLOCK commit
+  |-- Check for valid approval token (from deputy-cto approve_commit)
+  |       |-- Token exists + not expired (5 min) + hash matches staged files?
+  |       |-- Yes -> ALLOW commit
+  |-- Spawn deputy-cto review in background
+  |-- BLOCK commit (await review)
+  |
+  v (after deputy-cto reviews and approves)
+
+git commit (second attempt)
+  |-- Valid approval token found -> ALLOW commit
+```
+
+### Approval Token Lifecycle
+
+1. Deputy-CTO reviews staged diff and calls `approve_commit`
+2. `approve_commit` writes `.claude/commit-approval-token.json` with SHA-256 hash of staged diff + 5-minute expiry
+3. Next commit attempt validates: token unexpired AND `diffHash` matches current staged changes
+4. On match: commit proceeds; token consumed
+
+### Emergency Bypass
+
+A CTO-authorized emergency bypass writes a `commit_decisions` row with `rationale LIKE 'EMERGENCY BYPASS%'` and `question_id IS NOT NULL`. The hook detects this within a 5-minute window and allows the commit without requiring a deputy-CTO review cycle. The `question_id IS NOT NULL` constraint ensures only bypass decisions created via the `execute_bypass` MCP tool (which always links to the originating bypass-request question) are honored — bare `approve_commit` calls with "EMERGENCY BYPASS" prefix are blocked by the server-side guard.
+
+### G020 Compliance Check
+
+Before any approval path, the hook queries:
+- `deputy-cto.db` questions table: `WHERE status = 'pending'`
+- `cto-reports.db` reports table: `WHERE triage_status = 'pending'` (or `triaged_at IS NULL` as fallback)
+
+If either count > 0, the commit is blocked regardless of token state. This ensures no code ships while the CTO has outstanding decisions.
+
+### Fail-Closed Behavior
+
+- `better-sqlite3` unavailable: skip CTO item check (permissive), approval token check still runs
+- DB read error on triage count: assume 1 pending item (blocks commit)
+- Hook path tampered (`core.hooksPath` changed): BLOCK with alert
+
+---
+
+## Deputy-CTO Server Security Guards (deputy-cto/server.ts)
+
+Defense-in-depth guards added to four MCP tool handlers to prevent bypass-route exploitation:
+
+### `add_question` Guard
+
+Blocks creation of `bypass-request` or `protected-action-request` question types via `add_question`. These types have dedicated creation paths (`request_bypass` tool, protected-action hook) that enforce the CTO verification code flow. An agent cannot self-create a bypass request and then self-answer it.
+
+### `answer_question` Guard
+
+Blocks answering `bypass-request` questions via `answer_question`. The only valid answer path for bypass-requests is the CTO typing `APPROVE BYPASS <code>` in chat, which routes through the `execute_bypass` tool with cryptographic code verification.
+
+### `clear_question` Guard
+
+Blocks clearing a pending `bypass-request` or `protected-action-request` question via `clear_question`. Pending requests of these types can only be resolved through their designated approval flows. This prevents an agent from clearing a pending bypass-request to make it appear resolved.
+
+### `approve_commit` Guard
+
+Blocks any `approve_commit` call with a rationale beginning with `EMERGENCY BYPASS`. This prefix is reserved exclusively for the `execute_bypass` MCP tool, which validates a CTO-provided 6-character code before writing the bypass decision row. Direct use of this prefix via `approve_commit` would create a bypass-looking token without CTO verification.
+
+### Combined Effect
+
+These four guards close agent-accessible loopholes in the bypass approval chain. The SQL fix in `pre-commit-review.js` (`AND question_id IS NOT NULL`) ensures the hook only honors bypass decisions that were created by `execute_bypass` — which always links `question_id` to the originating bypass-request question — not arbitrary `approve_commit` calls with the "EMERGENCY BYPASS" prefix.
+
+---
+
 ## State Files
 
 | File | Scope | Written By | Read By |

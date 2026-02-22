@@ -256,6 +256,7 @@ export interface GetCommitDecisionResult {
 export interface GetPendingCountResult {
   pending_count: number;
   rejection_count: number;
+  pending_triage_count: number;
   commits_blocked: boolean;
 }
 

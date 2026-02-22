@@ -1075,4 +1075,127 @@ describe('Agent Reports Server', () => {
     });
   });
 
+  // ============================================================================
+  // Report Rate Limiting
+  // ============================================================================
+
+  describe('reportToCto() rate limiting', () => {
+    // Helper mirroring reportToCto logic with rate limit
+    const reportToCtoWithLimit = (args: {
+      reporting_agent: string;
+      title: string;
+      summary: string;
+      category?: string;
+      priority?: string;
+    }) => {
+      // Rate limit: max 5 untriaged reports per agent
+      const pendingFromAgent = db.prepare(
+        "SELECT COUNT(*) as count FROM reports WHERE reporting_agent = ? AND triage_status = 'pending'"
+      ).get(args.reporting_agent) as { count: number };
+      if (pendingFromAgent.count >= 5) {
+        return {
+          id: '',
+          message: `Too many untriaged reports from ${args.reporting_agent} (max 5). Wait for existing reports to be triaged.`,
+        };
+      }
+
+      return reportToCto(args);
+    };
+
+    it('should reject when agent has 5 untriaged reports', () => {
+      // Submit 5 reports from the same agent
+      for (let i = 0; i < 5; i++) {
+        reportToCto({
+          reporting_agent: 'spammy-agent',
+          title: `Report ${i}`,
+          summary: `Summary ${i}`,
+        });
+      }
+
+      // The 6th should be rejected
+      const result = reportToCtoWithLimit({
+        reporting_agent: 'spammy-agent',
+        title: 'Report 5',
+        summary: 'Summary 5',
+      });
+
+      expect(result.id).toBe('');
+      expect(result.message).toContain('Too many untriaged reports');
+      expect(result.message).toContain('spammy-agent');
+      expect(result.message).toContain('max 5');
+    });
+
+    it('should allow when agent has fewer than 5 untriaged reports', () => {
+      // Submit 4 reports from the same agent
+      for (let i = 0; i < 4; i++) {
+        reportToCto({
+          reporting_agent: 'normal-agent',
+          title: `Report ${i}`,
+          summary: `Summary ${i}`,
+        });
+      }
+
+      // The 5th should succeed
+      const result = reportToCtoWithLimit({
+        reporting_agent: 'normal-agent',
+        title: 'Report 4',
+        summary: 'Summary 4',
+      });
+
+      expect(result.id).not.toBe('');
+      expect(result.message).toContain('Report submitted');
+    });
+
+    it('should not count triaged reports toward limit', () => {
+      // Submit 5 reports and triage them all
+      const reportIds: string[] = [];
+      for (let i = 0; i < 5; i++) {
+        const r = reportToCto({
+          reporting_agent: 'busy-agent',
+          title: `Report ${i}`,
+          summary: `Summary ${i}`,
+        });
+        reportIds.push(r.id);
+      }
+
+      // Triage all reports
+      for (const id of reportIds) {
+        db.prepare(
+          "UPDATE reports SET triage_status = 'self_handled', triage_outcome = 'no_action', triaged_at = ? WHERE id = ?"
+        ).run(new Date().toISOString(), id);
+      }
+
+      // New report should succeed
+      const result = reportToCtoWithLimit({
+        reporting_agent: 'busy-agent',
+        title: 'New Report',
+        summary: 'New summary',
+      });
+
+      expect(result.id).not.toBe('');
+      expect(result.message).toContain('Report submitted');
+    });
+
+    it('should count per agent independently', () => {
+      // Submit 5 reports from agent-a
+      for (let i = 0; i < 5; i++) {
+        reportToCto({
+          reporting_agent: 'agent-a',
+          title: `Report ${i}`,
+          summary: `Summary ${i}`,
+        });
+      }
+
+      // agent-b should still be able to submit
+      const result = reportToCtoWithLimit({
+        reporting_agent: 'agent-b',
+        title: 'Agent B Report',
+        summary: 'Agent B summary',
+      });
+
+      expect(result.id).not.toBe('');
+      expect(result.message).toContain('Report submitted');
+    });
+  });
+
 });
