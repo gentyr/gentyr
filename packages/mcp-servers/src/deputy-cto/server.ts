@@ -697,6 +697,7 @@ function getPendingCountTool(): GetPendingCountResult {
   return {
     pending_count: pendingCount,
     rejection_count: rejectionCount,
+    pending_triage_count: pendingTriage,
     // G020: Block commits when ANY pending items exist (questions OR triage)
     commits_blocked: pendingCount > 0 || pendingTriage > 0,
   };
@@ -1104,6 +1105,19 @@ function generateBypassCode(): string {
 function requestBypass(args: RequestBypassArgs): RequestBypassResult {
   const db = getDb();
 
+  // Rate limit: max 3 pending bypass requests at a time
+  const pendingBypasses = db.prepare(
+    "SELECT COUNT(*) as count FROM questions WHERE type = 'bypass-request' AND status = 'pending'"
+  ).get() as { count: number };
+  if (pendingBypasses.count >= 3) {
+    return {
+      request_id: '',
+      bypass_code: '',
+      message: 'Too many pending bypass requests (max 3). Wait for existing requests to be addressed before submitting more.',
+      instructions: 'Wait for the CTO to address existing bypass requests.',
+    };
+  }
+
   const id = randomUUID();
   const bypassCode = generateBypassCode();
   const now = new Date();
@@ -1178,6 +1192,7 @@ function executeBypass(args: ExecuteBypassArgs): ExecuteBypassResult | ErrorResu
     request_id: string;
     user_message: string;
     expires_timestamp: number;
+    hmac?: string;
   };
 
   try {
@@ -1191,6 +1206,17 @@ function executeBypass(args: ExecuteBypassArgs): ExecuteBypassResult | ErrorResu
     return {
       error: `No approval token found. The CTO must type "APPROVE BYPASS ${code}" to create an approval token.`,
     };
+  }
+
+  // Verify HMAC signature to prevent agent forgery
+  const key = loadProtectionKey();
+  if (!key) {
+    return { error: 'Protection key missing. Cannot verify bypass approval token. Restore .claude/protection-key.' };
+  }
+  const expectedHmac = computeHmac(key, token.code, token.request_id, String(token.expires_timestamp), 'bypass-approved');
+  if (token.hmac !== expectedHmac) {
+    try { fs.writeFileSync(approvalTokenPath, '{}'); } catch { /* ignore */ }
+    return { error: 'FORGERY DETECTED: Invalid bypass approval token signature. Token deleted.' };
   }
 
   // Verify code matches

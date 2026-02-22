@@ -30,86 +30,12 @@ import {
   refreshExpiredToken,
   checkKeyHealth,
   selectActiveKey,
+  fetchAccountProfile,
   HIGH_USAGE_THRESHOLD,
   EXHAUSTED_THRESHOLD,
 } from './key-sync.js';
 
 const __filename = fileURLToPath(import.meta.url);
-
-// Used by fetchAccountProfile (local to this file)
-const ANTHROPIC_BETA_HEADER = 'oauth-2025-04-20';
-
-/**
- * @typedef {Object} UsageData
- * @property {number} five_hour
- * @property {number} seven_day
- * @property {number} seven_day_sonnet
- * @property {number} checked_at
- */
-
-/**
- * @typedef {Object} KeyData
- * @property {string} accessToken
- * @property {string} refreshToken
- * @property {number} expiresAt
- * @property {string} subscriptionType
- * @property {string} rateLimitTier
- * @property {number} added_at
- * @property {number|null} last_used_at
- * @property {number|null} last_health_check
- * @property {UsageData|null} last_usage
- * @property {'active'|'exhausted'|'invalid'|'expired'} status
- */
-
-/**
- * @typedef {Object} RotationLogEntry
- * @property {number} timestamp
- * @property {'key_added'|'key_removed'|'key_switched'|'key_exhausted'|'health_check'} event
- * @property {string} key_id
- * @property {string} [reason]
- * @property {{five_hour: number, seven_day: number, seven_day_sonnet: number}} [usage_snapshot]
- */
-
-/**
- * @typedef {Object} KeyRotationState
- * @property {1} version
- * @property {string|null} active_key_id
- * @property {Record<string, KeyData>} keys
- * @property {RotationLogEntry[]} rotation_log
- */
-
-/**
- * Fetch account profile to get account UUID and email for deduplication.
- * Uses the same OAuth Bearer auth as the usage endpoint.
- * @param {string} accessToken
- * @returns {Promise<{account_uuid: string, email: string}|null>}
- */
-async function fetchAccountProfile(accessToken) {
-  try {
-    const response = await fetch('https://api.anthropic.com/api/oauth/profile', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'claude-code/2.1.14',
-        'anthropic-beta': ANTHROPIC_BETA_HEADER,
-      },
-    });
-
-    if (!response.ok) return null;
-
-    const data = await response.json();
-    if (data.account?.uuid && data.account?.email) {
-      return {
-        account_uuid: data.account.uuid,
-        email: data.account.email,
-      };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Main entry point

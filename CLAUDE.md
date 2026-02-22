@@ -81,6 +81,15 @@ By default, the automation service runs without 1Password credentials in backgro
 
 Bypasses the hourly automation's age filter, batch limit, cooldowns, and CTO activity gate to force-spawn pending TODO tasks immediately. The command prefetches current agent counts and concurrency limits, asks which sections to spawn and what concurrency cap to use, then calls `force_spawn_tasks` on the agent-tracker MCP server. Preserves the concurrency guard and task status tracking.
 
+### On-Demand Triage
+
+```bash
+# In a Claude Code session after GENTYR is installed:
+/triage
+```
+
+Force-spawns the deputy-CTO triage cycle immediately, bypassing the hourly automation's triage check interval, the automation-enabled flag, and the CTO activity gate. The command prefetches pending report counts and running agent info, asks for confirmation, then calls `force_triage_reports` on the agent-tracker MCP server. Returns the spawned session ID so the user can `claude --resume` into the triage session. Preserves the concurrency guard, agent tracker registration, and per-item triage cooldown filtering.
+
 ## Automatic Session Recovery
 
 GENTYR automatically detects and recovers sessions interrupted by API quota limits.
@@ -172,6 +181,8 @@ Claude Code ──HTTPS_PROXY──> localhost:18080 ──TLS──> api.anthro
 **Health endpoint**: `GET http://localhost:18080/__health` returns JSON status with active key ID, uptime, and request count.
 
 **Lifecycle**: Runs as a launchd KeepAlive service (`com.local.gentyr-rotation-proxy`). Auto-restarts on crash. Starts before the automation service.
+
+**CONNECT head buffer handling**: The CONNECT handler's `head` parameter (early client data — typically the TLS ClientHello — sent before the 200 response arrives) is pushed back into the socket's readable stream with `clientSocket.unshift(head)` before wrapping in TLSSocket. Omitting this caused intermittent ECONNRESET errors because the TLS handshake began with incomplete data. This is the textbook fix for Node.js HTTPS MITM proxies.
 
 **Complements existing rotation**: The proxy handles immediate token swap at the network level. Quota-monitor still handles usage detection and key selection. Key-sync still handles token refresh and Keychain writes.
 

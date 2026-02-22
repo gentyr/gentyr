@@ -411,7 +411,25 @@ function getAggregateQuota() {
             email: keyData.account_email || null,
             fiveHour: keyData.last_usage.five_hour || 0,
             sevenDay: keyData.last_usage.seven_day || 0,
+            sevenDaySonnet: keyData.last_usage.seven_day_sonnet || 0,
           });
+        }
+      }
+    }
+
+    // Cross-match fingerprint-based entries (null-UUID keys) against UUID-bearing entries.
+    // If a null-UUID key has the same seven_day + seven_day_sonnet as a UUID-bearing key,
+    // it's the same account — merge it to prevent "unknown" in the display.
+    const fpKeys = [...accountMap.keys()].filter(k => k.startsWith('fp:'));
+    for (const fpKey of fpKeys) {
+      const fpEntry = accountMap.get(fpKey);
+      for (const [uuidKey, uuidEntry] of accountMap) {
+        if (uuidKey.startsWith('fp:') || !uuidEntry.email) continue;
+        if (uuidEntry.sevenDay === fpEntry.sevenDay && uuidEntry.sevenDaySonnet === fpEntry.sevenDaySonnet) {
+          // Same account — take the higher fiveHour value
+          uuidEntry.fiveHour = Math.max(uuidEntry.fiveHour, fpEntry.fiveHour);
+          accountMap.delete(fpKey);
+          break;
         }
       }
     }
