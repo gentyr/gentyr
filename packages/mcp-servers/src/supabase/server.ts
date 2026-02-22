@@ -244,7 +244,7 @@ async function describeTable(args: DescribeTableArgs): Promise<unknown | InfoMes
         column_default,
         character_maximum_length
       FROM information_schema.columns
-      WHERE table_schema = 'public' AND table_name = '${args.table}'
+      WHERE table_schema = 'public' AND table_name = '${args.table.replace(/'/g, "''")}'
       ORDER BY ordinal_position
     `);
   }
