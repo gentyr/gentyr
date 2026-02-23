@@ -148,6 +148,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/slash-command-prefetch.js",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/branch-drift-check.js",
+            "timeout": 5
           }
         ]
       }

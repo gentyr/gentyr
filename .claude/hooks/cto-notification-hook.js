@@ -650,6 +650,10 @@ async function main() {
     continue: true,
     suppressOutput: false,
     systemMessage: message,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: message,
+    },
   }));
 }
 

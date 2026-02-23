@@ -38,6 +38,7 @@ const DEFAULTS = {
   pre_commit_review: 5,                // 5min approval token expiry
   compliance_checker_file: 10080,      // 7 days in minutes (per-file cooldown)
   compliance_checker_spec: 10080,      // 7 days in minutes (per-spec cooldown)
+  branch_drift_check: 30,              // 30 minutes
 };
 
 /**
