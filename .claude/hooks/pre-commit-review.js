@@ -689,6 +689,20 @@ async function main() {
     // Feature branches: no blocking, no warning -- items checked on merge
   }
 
+  // ============================================================================
+  // FEATURE BRANCH FAST PATH
+  // ============================================================================
+  // On feature branches, lint and security checks are sufficient at commit time.
+  // Code review moves to PR time (deputy-CTO reviews the PR, not the commit).
+  // Protected branches still require the full approval token flow.
+  // ============================================================================
+  const FEATURE_FAST_PATH_RE = /^(feature|fix|refactor|docs|chore)\//;
+  if (FEATURE_FAST_PATH_RE.test(currentBranchForGuard)) {
+    console.log('[pre-commit] Feature branch — lint passed, commit approved');
+    console.log('[pre-commit] Code review happens at PR time');
+    process.exit(0);
+  }
+
   // Check for valid approval token
   const tokenCheck = checkApprovalToken(stagedInfo.diffHash);
 

@@ -1386,15 +1386,23 @@ You are working in a git worktree on a feature branch.
 Your working directory: ${worktreePath}
 MCP tools access shared state in the main project directory.
 
+Commits on feature branches are non-blocking (lint + security only, no review gate).
+Code review happens asynchronously at PR time.
+
 When your work is complete:
 1. \`git add <specific files>\` (never \`git add .\` or \`git add -A\`)
 2. \`git commit -m "descriptive message"\`
-3. \`git push -u origin HEAD\`
-4. Create a PR to preview:
+3. Push and create PR:
 \`\`\`
-gh pr create --base preview --head "$(git branch --show-current)" --title "${task.title}" --body "Automated: ${task.section} task"
+git push -u origin HEAD
+gh pr create --base preview --head "$(git branch --show-current)" --title "${task.title}" --body "Automated: ${task.section} task" 2>/dev/null || true
 \`\`\`
-5. After CI passes: \`gh pr merge --merge --delete-branch\`
+4. Request PR review (creates urgent task, triggers immediate deputy-CTO session):
+\`\`\`
+mcp__todo-db__create_task({ section: "DEPUTY-CTO", title: "Review PR: ${task.title}", description: "Review and merge the PR from this feature branch to preview. Run gh pr diff, review for security/architecture/quality, then approve+merge or request changes.", assigned_by: "pr-reviewer", priority: "urgent" })
+\`\`\`
+
+Do NOT self-merge. Deputy-CTO reviews and merges PRs asynchronously.
 ` : '';
 
   const completionBlock = `## When Done
@@ -3115,10 +3123,10 @@ async function main() {
   }
 
   // =========================================================================
-  // WORKTREE CLEANUP (6h cooldown)
+  // WORKTREE CLEANUP (30min cooldown)
   // Removes worktrees whose feature branches have been merged to preview
   // =========================================================================
-  const WORKTREE_CLEANUP_COOLDOWN_MS = getCooldown('worktree_cleanup', 360) * 60 * 1000;
+  const WORKTREE_CLEANUP_COOLDOWN_MS = getCooldown('worktree_cleanup', 30) * 60 * 1000;
   const timeSinceLastWorktreeCleanup = now - (state.lastWorktreeCleanup || 0);
   const worktreeCleanupEnabled = config.worktreeCleanupEnabled !== false;
 

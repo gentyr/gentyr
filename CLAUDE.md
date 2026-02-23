@@ -44,6 +44,20 @@ sudo npx gentyr protect          # Enable root-owned protection
 sudo npx gentyr unprotect        # Disable protection
 ```
 
+**Security model** (as of current implementation):
+
+| Target | Ownership | Permissions | Rationale |
+|--------|-----------|-------------|-----------|
+| Critical hook files (pre-commit-review.js, bypass-approval-hook.js, etc.) | root:wheel | 644 | Prevents agent modification |
+| `.claude/hooks/` directory | user:staff | 755 | Git needs write access for checkout/merge/stash (was root-owned, caused cross-repo side effects) |
+| `.claude/` directory (target projects only) | root:wheel | 1755 | Prevents hooks symlink replacement; excluded in framework repo (MCP servers need runtime file creation) |
+| `.husky/` directory | root:wheel | 1755 | Prevents deletion of the pre-commit entry point |
+
+**Tamper detection** closes the unlink+recreate gap left by not root-owning `.claude/hooks/`:
+- **Commit-time check** (`husky/pre-commit`): Before each commit, verifies 8 critical hook files are still root-owned via `stat`. Blocks commit if any are not owned by root. The pre-commit script itself lives in a root-owned `.husky/` directory, making it trustworthy.
+- **SessionStart check** (`gentyr-sync.js` `tamperCheck()`): At every interactive session start, reads `protection-state.json` and checks `criticalHooks` array ownership via `fs.statSync().uid`. Emits a `systemMessage` warning if tampering is detected.
+- `protection-state.json` records `criticalHooks` as an array so both checks read the same source of truth dynamically.
+
 ### Uninstall
 
 ```bash
@@ -197,6 +211,7 @@ Research artifact from investigating Claude Code's credential memoization cache.
 - Syncs husky hooks by comparing `husky/` against `.husky/` in the target project; re-copies if content differs
 - Falls back to legacy settings.json hook diff check when no `gentyr-state.json` exists (pre-migration projects)
 - Supports both npm model (`node_modules/gentyr`) and legacy symlink model (`.claude-framework`)
+- **`tamperCheck()`**: Runs before sync logic. Reads `protection-state.json`; if `protected: true`, verifies each filename in `criticalHooks` array is still root-owned (`stat.uid === 0`). Emits a `systemMessage` warning if any hook is not root-owned. Resolves the hooks directory via symlink the same way `protect.js` does.
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; version 3.0
 
 **Credential Health Check Hook** (`.claude/hooks/credential-health-check.js`):

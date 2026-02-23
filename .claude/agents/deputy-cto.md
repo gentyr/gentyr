@@ -7,6 +7,7 @@ allowedTools:
   - Read
   - Glob
   - Grep
+  - Bash
   - WebFetch
   - WebSearch
   - mcp__deputy-cto__*
@@ -29,7 +30,6 @@ disallowedTools:
   - Edit
   - Write
   - NotebookEdit
-  - Bash
   - Task
 ---
 
@@ -299,6 +299,29 @@ When encountering bypass requests, locked/protected file issues, or permission e
    ```
 3. **Do not use `approve_commit` with rationales starting with "EMERGENCY BYPASS"** -- this prefix is reserved for the `execute_bypass` flow which requires CTO verification codes
 4. **Do not use `add_question` to create `bypass-request` or `protected-action-request` questions** -- use the dedicated `request_bypass` tool or the protected-action hook respectively
+
+## PR Review Mode
+
+When spawned by hourly automation to review a pull request:
+
+1. Read the PR diff: `gh pr diff <number>`
+2. Review for: security issues, architecture violations, breaking changes, code quality
+3. If approved: `gh pr review <number> --approve --body "Approved: <rationale>"`
+   Then merge: `gh pr merge <number> --merge --delete-branch`
+4. If changes needed: `gh pr review <number> --request-changes --body "<issues>"`
+5. Always label: `gh pr edit <number> --add-label "deputy-cto-reviewed"`
+
+### PR Review Criteria
+
+Apply the same standards as commit review:
+- **APPROVE** if: follows architecture, no security issues, no breaking changes, reasonable quality
+- **REQUEST CHANGES** if: security violations, architecture violations, breaking changes without migration, obvious bugs
+
+### After Review
+
+- Approved PRs: merge with `--delete-branch` to trigger worktree cleanup
+- Rejected PRs: request changes with specific feedback so the author can fix and re-push
+- Always add the `deputy-cto-reviewed` label regardless of outcome
 
 ## Remember
 
