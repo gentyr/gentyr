@@ -1,5 +1,78 @@
 # GENTYR Framework Changelog
 
+## 2026-02-23 - CTO Dashboard 3-Page Split (--page flag)
+
+### Summary
+
+Split the `/cto-report` command from a single Bash call into three sequential pages to avoid Bash tool output truncation on large deployments (e.g., 68 worktrees causing the previous 2-page split to still time out on page 2).
+
+### Changed
+
+**`packages/cto-dashboard/src/App.tsx`**:
+- Added `page?: 1 | 2 | 3` prop to `AppProps` interface
+- Added `showPage1`, `showPage2`, `showPage3` rendering gates — sections only render when the active page (or no page) matches
+- Page 1 (Intelligence): Header, Quota + Status, Accounts, Deputy-CTO, Usage Trends, Usage Trajectory, Automations
+- Page 2 (Operations): Testing, Deployments, Worktrees, Infra, Logging
+- Page 3 (Analytics): Feedback Personas, PM, Worklog, Timeline, Metrics Summary
+- No `--page` argument renders all sections (backwards compatible; used by `generate-readme.js`)
+
+**`packages/cto-dashboard/src/index.tsx`**:
+- `parseArgs()` extended to parse `--page 1|2|3`; emits stderr warning for invalid values
+- Data fetching optimized per page — readers for sections not rendered on the active page are skipped entirely (no unnecessary I/O)
+- `page` value passed through to `<App page={page ?? undefined} />`
+
+**`.claude/commands/cto-report.md`**:
+- Replaced single Bash call with three sequential Bash calls: `--page 1`, `--page 2`, `--page 3`
+- Added Optional Custom Time Range section showing `--hours N` combined with `--page`
+
+**`CLAUDE.md`**:
+- Added `--page` flag documentation to CTO Dashboard Development section
+- Documents page groupings, backwards compatibility, and data fetching optimization
+
+### Added
+
+**`packages/cto-dashboard/src/__tests__/page-flag.test.tsx`**:
+- 30 tests covering App component page prop rendering (sections visible/hidden per page) and `parseArgs` `--page` logic
+- All passing; full suite (815 tests) green
+
+---
+
+## 2026-02-23 - Branch Drift Check: Extracted to UserPromptSubmit Hook
+
+### Summary
+
+Extracted the branch drift warning from `gentyr-sync.js` (SessionStart) into a standalone `branch-drift-check.js` hook running at `UserPromptSubmit`. The new hook uses a 30-minute cooldown and resets when the branch changes, reducing noise from repeated warnings.
+
+### Changed
+
+**`.claude/hooks/branch-drift-check.js`** (new file):
+- Runs at `UserPromptSubmit` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
+- Detects when the main working tree is not on `main` and emits a `systemMessage` warning
+- `getCooldown('branch_drift_check', 30)` cooldown (30 minutes, configurable); resets immediately when the branch changes
+- State file: `.claude/state/branch-drift-state.json` with `{ lastCheck, lastBranch }`
+- Skips worktrees (`.git` file check), detached HEAD, and spawned sessions; warn-only — never auto-restores
+- Registered in `settings.json.template` under `UserPromptSubmit`
+
+**`.claude/hooks/gentyr-sync.js`**:
+- Removed inline `branchDriftCheck()` function and call from session-start sync path
+
+**`.claude/hooks/config-reader.js`**:
+- Added `branch_drift_check: 30` to `DEFAULTS` map (30-minute default cooldown, configurable)
+
+**`.claude/settings.json.template`**:
+- Added `branch-drift-check.js` entry under `UserPromptSubmit` hook array (timeout: 5s)
+
+**`CLAUDE.md`**:
+- Removed `branchDriftCheck()` bullet from `gentyr-sync.js` documentation
+- Added standalone "Branch Drift Check Hook" section referencing `branch-drift-check.js`, `UserPromptSubmit`, cooldown behavior, and test file
+
+### Tests
+
+**`.claude/hooks/__tests__/gentyr-sync-branch-drift.test.js`** (14 tests, runs via `node --test`):
+- Covers skip conditions (worktrees, detached HEAD, spawned sessions), cooldown logic, branch-change reset, and warning emission
+
+---
+
 ## 2026-02-23 - Investigation-Before-Escalation for Deputy-CTO Triage
 
 ### Summary

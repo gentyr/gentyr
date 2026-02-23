@@ -77,6 +77,7 @@ interface ParsedArgs {
   mock: boolean;
   section: SectionId | null;
   limit: number | null;
+  page: 1 | 2 | 3 | null;
 }
 
 function parseArgs(): ParsedArgs {
@@ -85,6 +86,7 @@ function parseArgs(): ParsedArgs {
   let mock = false;
   let section: SectionId | null = null;
   let limit: number | null = null;
+  let page: 1 | 2 | 3 | null = null;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -117,9 +119,18 @@ function parseArgs(): ParsedArgs {
         }
       }
     }
+    if (arg === '--page') {
+      const value = args[i + 1];
+      if (value === '1') page = 1;
+      else if (value === '2') page = 2;
+      else if (value === '3') page = 3;
+      else if (value) {
+        process.stderr.write(`Warning: --page must be 1, 2, or 3, got "${value}"\n`);
+      }
+    }
   }
 
-  return { hours, mock, section, limit };
+  return { hours, mock, section, limit, page };
 }
 
 // ============================================================================
@@ -293,7 +304,7 @@ async function renderSection(sectionId: SectionId, mock: boolean, hours: number,
 // ============================================================================
 
 async function main(): Promise<void> {
-  const { hours, mock, section, limit } = parseArgs();
+  const { hours, mock, section, limit, page } = parseArgs();
 
   try {
     // Single-section mode: render only the requested section
@@ -309,66 +320,88 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Full dashboard mode
+    // Full dashboard mode (optionally page-filtered)
+    const needPage1 = !page || page === 1;
+    const needPage2 = !page || page === 2;
+    const needPage3 = !page || page === 3;
+
     let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager, worklog;
+
+    // Empty defaults for sections not needed on the current page
+    const emptyDeployments = { hasData: false, render: { services: [], recentDeploys: [] }, vercel: { projects: [], recentDeploys: [] }, pipeline: { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null, localDevCount: 0, stagingFreezeActive: false }, combined: [], byEnvironment: { preview: [], staging: [], production: [] }, stats: { totalDeploys24h: 0, successCount24h: 0, failedCount24h: 0 } } as const;
+    const emptyInfra = { hasData: false, render: { serviceCount: 0, suspendedCount: 0, available: false, lastDeployAt: null }, vercel: { projectCount: 0, errorDeploys: 0, buildingCount: 0, available: false }, supabase: { healthy: false, available: false }, elastic: { available: false, totalLogs1h: 0, errorCount1h: 0, warnCount1h: 0, topServices: [] }, cloudflare: { status: 'unavailable' as const, nameServers: [], planName: null, available: false } };
+    const emptyLogging = { hasData: false, totalLogs1h: 0, totalLogs24h: 0, volumeTimeseries: [], byLevel: [], byService: [], bySource: [], topErrors: [], topWarnings: [], storage: { estimatedDailyGB: 0, estimatedMonthlyCost: 0, indexCount: 0 }, sourceCoverage: [] };
 
     if (mock) {
       // Use hardcoded mock data — no DB, API, or filesystem access
       data = getMockDashboardData();
-      timelineEvents = getMockTimelineEvents();
-      trajectory = getMockTrajectory();
-      automatedInstances = getMockAutomatedInstances();
-      deputyCto = getMockDeputyCto();
-      testing = getMockTesting();
-      deployments = getMockDeployments();
-      infra = getMockInfra();
-      logging = getMockLogging();
-      accountOverview = getMockAccountOverview();
-      worktrees = getMockWorktrees();
-      productManager = getMockProductManager();
-      worklog = getMockWorklog();
+      timelineEvents = needPage3 ? getMockTimelineEvents() : [];
+      trajectory = needPage1 ? getMockTrajectory() : { hasData: false } as any;
+      automatedInstances = needPage1 ? getMockAutomatedInstances() : { hasData: false } as any;
+      deputyCto = needPage1 ? getMockDeputyCto() : { hasData: false } as any;
+      testing = needPage2 ? getMockTesting() : { hasData: false } as any;
+      deployments = needPage2 ? getMockDeployments() : emptyDeployments as any;
+      infra = needPage2 ? getMockInfra() : emptyInfra as any;
+      logging = needPage2 ? getMockLogging() : emptyLogging as any;
+      accountOverview = needPage1 ? getMockAccountOverview() : { hasData: false } as any;
+      worktrees = needPage2 ? getMockWorktrees() : { hasData: false } as any;
+      productManager = needPage3 ? getMockProductManager() : { hasData: false } as any;
+      worklog = needPage3 ? getMockWorklog() : { hasData: false } as any;
     } else {
-      // Fetch data from all sources
+      // Always fetch core data (used by Header, Quota, Status, FeedbackPersonas, and MetricsSummary)
       data = await getDashboardData(hours);
-      timelineEvents = aggregateTimeline({ hours, maxEvents: 20 });
-      trajectory = getUsageTrajectory();
-      automatedInstances = getAutomatedInstances();
-      deputyCto = getDeputyCtoData();
-      testing = getTestingData();
 
-      // Fetch optional async data in parallel
-      const [codecovResult, deploymentsResult, infraResult, tokenUsageResult, loggingResult] = await Promise.allSettled([
-        getCodecovData(),
-        getDeploymentsData(),
-        getInfraData(),
-        getAutomationTokenUsage(),
-        getLoggingData(),
-      ]);
+      // Page 1 sync fetches
+      trajectory = needPage1 ? getUsageTrajectory() : { hasData: false } as any;
+      automatedInstances = needPage1 ? getAutomatedInstances() : { hasData: false } as any;
+      deputyCto = needPage1 ? getDeputyCtoData() : { hasData: false } as any;
+      accountOverview = needPage1 ? getAccountOverviewData() : { hasData: false } as any;
 
-      if (codecovResult.status === 'fulfilled' && codecovResult.value) {
-        testing.codecov = codecovResult.value;
+      // Page 2 sync fetches
+      testing = needPage2 ? getTestingData() : { hasData: false } as any;
+      worktrees = needPage2 ? getWorktreeData() : { hasData: false } as any;
+
+      // Page 3 sync fetches
+      timelineEvents = needPage3 ? aggregateTimeline({ hours, maxEvents: 20 }) : [];
+      productManager = needPage3 ? getProductManagerData() : { hasData: false } as any;
+      worklog = needPage3 ? getWorklogData() : { hasData: false } as any;
+
+      // Async fetches — only for sections on the active page
+      const asyncFetches: Promise<any>[] = [];
+      const fetchKeys: string[] = [];
+
+      if (needPage2) {
+        fetchKeys.push('codecov', 'deployments', 'infra', 'logging');
+        asyncFetches.push(getCodecovData(), getDeploymentsData(), getInfraData(), getLoggingData());
+      }
+      if (needPage1) {
+        fetchKeys.push('tokenUsage');
+        asyncFetches.push(getAutomationTokenUsage());
       }
 
-      deployments = deploymentsResult.status === 'fulfilled'
-        ? deploymentsResult.value
-        : { hasData: false, render: { services: [], recentDeploys: [] }, vercel: { projects: [], recentDeploys: [] }, pipeline: { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null, localDevCount: 0, stagingFreezeActive: false }, combined: [], byEnvironment: { preview: [], staging: [], production: [] }, stats: { totalDeploys24h: 0, successCount24h: 0, failedCount24h: 0 } };
+      const results = await Promise.allSettled(asyncFetches);
+      const resultMap: Record<string, PromiseSettledResult<any>> = {};
+      fetchKeys.forEach((key, i) => { resultMap[key] = results[i]; });
 
-      infra = infraResult.status === 'fulfilled'
-        ? infraResult.value
-        : { hasData: false, render: { serviceCount: 0, suspendedCount: 0, available: false, lastDeployAt: null }, vercel: { projectCount: 0, errorDeploys: 0, buildingCount: 0, available: false }, supabase: { healthy: false, available: false }, elastic: { available: false, totalLogs1h: 0, errorCount1h: 0, warnCount1h: 0, topServices: [] }, cloudflare: { status: 'unavailable', nameServers: [], planName: null, available: false } };
-
-      logging = loggingResult.status === 'fulfilled'
-        ? loggingResult.value
-        : { hasData: false, totalLogs1h: 0, totalLogs24h: 0, volumeTimeseries: [], byLevel: [], byService: [], bySource: [], topErrors: [], topWarnings: [], storage: { estimatedDailyGB: 0, estimatedMonthlyCost: 0, indexCount: 0 }, sourceCoverage: [] };
-
-      if (tokenUsageResult.status === 'fulfilled' && tokenUsageResult.value) {
-        automatedInstances.tokensByType = tokenUsageResult.value;
+      if (resultMap.codecov?.status === 'fulfilled' && resultMap.codecov.value) {
+        testing.codecov = resultMap.codecov.value;
       }
 
-      accountOverview = getAccountOverviewData();
-      worktrees = getWorktreeData();
-      productManager = getProductManagerData();
-      worklog = getWorklogData();
+      deployments = resultMap.deployments?.status === 'fulfilled'
+        ? resultMap.deployments.value
+        : emptyDeployments as any;
+
+      infra = resultMap.infra?.status === 'fulfilled'
+        ? resultMap.infra.value
+        : emptyInfra as any;
+
+      logging = resultMap.logging?.status === 'fulfilled'
+        ? resultMap.logging.value
+        : emptyLogging as any;
+
+      if (resultMap.tokenUsage?.status === 'fulfilled' && resultMap.tokenUsage.value) {
+        automatedInstances.tokensByType = resultMap.tokenUsage.value;
+      }
     }
 
     // Render dashboard (static mode - prints once and exits)
@@ -387,6 +420,7 @@ async function main(): Promise<void> {
         worktrees={worktrees}
         productManager={productManager}
         worklog={worklog}
+        page={page ?? undefined}
       />,
       { exitOnCtrlC: true }
     );

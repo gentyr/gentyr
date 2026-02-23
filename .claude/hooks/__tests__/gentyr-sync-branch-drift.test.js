@@ -1,24 +1,24 @@
 /**
- * Unit tests for gentyr-sync.js branchDriftCheck()
+ * Unit tests for branch-drift-check.js (UserPromptSubmit hook)
  *
- * Tests that the SessionStart hook detects when the main working tree
- * is not on 'main' and emits an appropriate warning.
+ * Tests that the hook detects when the main working tree is not on 'main'
+ * and emits an appropriate systemMessage warning to the AI agent.
+ * Also tests cooldown and branch-change state tracking.
  *
  * Uses Node.js built-in test runner (node:test)
  * Run with: node --test .claude/hooks/__tests__/gentyr-sync-branch-drift.test.js
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-const HOOK_PATH = path.resolve(process.cwd(), '.claude/hooks/gentyr-sync.js');
+const HOOK_PATH = path.resolve(process.cwd(), '.claude/hooks/branch-drift-check.js');
 
 /**
  * Run the hook with a given project directory and env vars.
@@ -32,7 +32,6 @@ function runHook(projectDir, extraEnv = {}) {
       env: {
         ...process.env,
         CLAUDE_PROJECT_DIR: projectDir,
-        // Don't inherit the real spawned session flag
         CLAUDE_SPAWNED_SESSION: '',
         ...extraEnv,
       },
@@ -59,8 +58,6 @@ function createGitRepo(dir, branch = 'main') {
   execFileSync('git', ['init', '-b', 'main'], { cwd: dir, stdio: 'pipe' });
   execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: dir, stdio: 'pipe' });
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir, stdio: 'pipe' });
-  // Need at least one commit for branch operations
-  // Include .gitignore so node_modules/.claude don't appear as untracked
   fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n.claude/\n');
   fs.writeFileSync(path.join(dir, 'README.md'), '# test');
   execFileSync('git', ['add', '.'], { cwd: dir, stdio: 'pipe' });
@@ -71,50 +68,15 @@ function createGitRepo(dir, branch = 'main') {
 }
 
 /**
- * Set up minimal framework structure so the hook doesn't exit early
- * at resolveFrameworkDir(). We create a version.json and the .claude dir.
+ * Write a branch-drift-state.json to simulate prior state.
  */
-function setupFrameworkStub(dir) {
-  // The hook needs resolveFrameworkDir to succeed; create node_modules/gentyr
-  // with a version.json as the minimal requirement
-  const gentyrDir = path.join(dir, 'node_modules', 'gentyr');
-  fs.mkdirSync(gentyrDir, { recursive: true });
-  fs.writeFileSync(path.join(gentyrDir, 'version.json'), JSON.stringify({ version: '0.0.0-test' }));
-  // Create .claude dir for gentyr-state.json
-  fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
-  // Create template files so computeConfigHash works
-  const claudeDir = path.join(gentyrDir, '.claude');
-  fs.mkdirSync(claudeDir, { recursive: true });
-  fs.writeFileSync(path.join(claudeDir, 'settings.json.template'), '{}');
-  fs.writeFileSync(path.join(gentyrDir, '.mcp.json.template'), '{}');
-  // Write state that matches so statBasedSync does nothing (fast path)
-  const configHash = computeConfigHashForTest(gentyrDir);
-  fs.writeFileSync(path.join(dir, '.claude', 'gentyr-state.json'), JSON.stringify({
-    version: '0.0.0-test',
-    configHash,
-    claudeMdHash: '',
-    agentList: [],
-    stateFilesVersion: 1,
-    lastSync: new Date().toISOString(),
-  }));
+function writeState(dir, state) {
+  const stateDir = path.join(dir, '.claude', 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'branch-drift-state.json'), JSON.stringify(state, null, 2));
 }
 
-/**
- * Replicate computeConfigHash logic for test setup
- */
-function computeConfigHashForTest(frameworkDir) {
-  const files = [
-    path.join(frameworkDir, '.claude', 'settings.json.template'),
-    path.join(frameworkDir, '.mcp.json.template'),
-  ];
-  const hash = crypto.createHash('sha256');
-  for (const f of files) {
-    try { hash.update(fs.readFileSync(f, 'utf8')); } catch { hash.update(''); }
-  }
-  return hash.digest('hex');
-}
-
-describe('gentyr-sync branchDriftCheck', () => {
+describe('branch-drift-check hook', () => {
   let tmpDir;
 
   beforeEach(() => {
@@ -127,11 +89,9 @@ describe('gentyr-sync branchDriftCheck', () => {
 
   it('should emit no warning when on main', () => {
     createGitRepo(tmpDir, 'main');
-    setupFrameworkStub(tmpDir);
     const { exitCode, parsed } = runHook(tmpDir);
     assert.strictEqual(exitCode, 0);
     assert.strictEqual(parsed.continue, true);
-    // Should be silent (no systemMessage about branch drift)
     if (parsed.systemMessage) {
       assert.ok(
         !parsed.systemMessage.includes('BRANCH DRIFT'),
@@ -142,7 +102,6 @@ describe('gentyr-sync branchDriftCheck', () => {
 
   it('should warn when on a feature branch with no uncommitted changes', () => {
     createGitRepo(tmpDir, 'feature/test-branch');
-    setupFrameworkStub(tmpDir);
     const { exitCode, parsed } = runHook(tmpDir);
     assert.strictEqual(exitCode, 0);
     assert.strictEqual(parsed.continue, true);
@@ -167,8 +126,6 @@ describe('gentyr-sync branchDriftCheck', () => {
 
   it('should warn with stash guidance when on a feature branch with uncommitted changes', () => {
     createGitRepo(tmpDir, 'hotfix/fix-ci');
-    setupFrameworkStub(tmpDir);
-    // Create an uncommitted file
     fs.writeFileSync(path.join(tmpDir, 'dirty.txt'), 'uncommitted change');
     const { exitCode, parsed } = runHook(tmpDir);
     assert.strictEqual(exitCode, 0);
@@ -190,8 +147,6 @@ describe('gentyr-sync branchDriftCheck', () => {
 
   it('should not warn on detached HEAD', () => {
     createGitRepo(tmpDir, 'main');
-    setupFrameworkStub(tmpDir);
-    // Detach HEAD
     const commitHash = execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: tmpDir, encoding: 'utf8', stdio: 'pipe',
     }).trim();
@@ -209,12 +164,10 @@ describe('gentyr-sync branchDriftCheck', () => {
 
   it('should not warn inside a worktree (.git is a file)', () => {
     createGitRepo(tmpDir, 'main');
-    // Create a worktree on a different branch
     const worktreeDir = path.join(tmpDir, 'wt');
     execFileSync('git', ['worktree', 'add', worktreeDir, '-b', 'feature/wt-test'], {
       cwd: tmpDir, stdio: 'pipe',
     });
-    setupFrameworkStub(worktreeDir);
     const { exitCode, parsed } = runHook(worktreeDir);
     assert.strictEqual(exitCode, 0);
     assert.strictEqual(parsed.continue, true);
@@ -228,19 +181,14 @@ describe('gentyr-sync branchDriftCheck', () => {
 
   it('should not warn when CLAUDE_SPAWNED_SESSION=true', () => {
     createGitRepo(tmpDir, 'feature/spawned-test');
-    setupFrameworkStub(tmpDir);
     const { exitCode, parsed } = runHook(tmpDir, { CLAUDE_SPAWNED_SESSION: 'true' });
     assert.strictEqual(exitCode, 0);
     assert.strictEqual(parsed.continue, true);
-    // Spawned sessions exit before branchDriftCheck runs
     assert.strictEqual(parsed.suppressOutput, true, 'spawned sessions should be silent');
   });
 
   it('should not warn when git is not available or repo is corrupted', () => {
-    // No .git at all — not a git repo
     fs.mkdirSync(path.join(tmpDir, '.claude'), { recursive: true });
-    setupFrameworkStub(tmpDir);
-    // Remove the .git directory so it's not a repo
     const gitDir = path.join(tmpDir, '.git');
     if (fs.existsSync(gitDir)) {
       fs.rmSync(gitDir, { recursive: true, force: true });
@@ -257,15 +205,10 @@ describe('gentyr-sync branchDriftCheck', () => {
   });
 
   it('should warn on staging and preview branches (they are not main)', () => {
-    // staging and preview are protected merge-chain branches, not 'main'.
-    // branchDriftCheck currently warns for ANY branch that is not 'main'.
-    // This test pins that behaviour so a future change to special-case these
-    // branches (suppressing the warning) cannot regress silently.
     for (const branch of ['staging', 'preview']) {
       const branchDir = fs.mkdtempSync(path.join(os.tmpdir(), `branch-drift-${branch}-`));
       try {
         createGitRepo(branchDir, branch);
-        setupFrameworkStub(branchDir);
         const { exitCode, parsed } = runHook(branchDir);
         assert.strictEqual(exitCode, 0, `exit code should be 0 on '${branch}'`);
         assert.strictEqual(parsed.continue, true, `continue should be true on '${branch}'`);
@@ -285,10 +228,7 @@ describe('gentyr-sync branchDriftCheck', () => {
   });
 
   it('should include the full context sentence in the warning', () => {
-    // The warning message contains a second sentence explaining *why* branch drift
-    // matters. Pin it so accidental deletion does not go unnoticed.
     createGitRepo(tmpDir, 'feature/context-sentence-test');
-    setupFrameworkStub(tmpDir);
     const { parsed } = runHook(tmpDir);
     assert.ok(parsed.systemMessage, 'should emit a systemMessage');
     assert.ok(
@@ -306,10 +246,7 @@ describe('gentyr-sync branchDriftCheck', () => {
   });
 
   it('should include the full stash round-trip command when there are uncommitted changes', () => {
-    // The dirty-branch recovery instruction is a three-step sequence.
-    // Pin all three steps to prevent partial truncation from silently passing.
     createGitRepo(tmpDir, 'feature/stash-roundtrip-test');
-    setupFrameworkStub(tmpDir);
     fs.writeFileSync(path.join(tmpDir, 'dirty.txt'), 'uncommitted change');
     const { parsed } = runHook(tmpDir);
     assert.ok(parsed.systemMessage, 'should emit a systemMessage');
@@ -328,19 +265,10 @@ describe('gentyr-sync branchDriftCheck', () => {
   });
 
   it('should warn with the clean-branch message when git status fails on a non-main branch', () => {
-    // When 'git status --porcelain' throws, the implementation silently falls
-    // through with hasChanges = false and emits the no-stash variant.
-    // Simulate this by making the project dir a git repo on a non-main branch
-    // but placing a file named 'git' earlier in PATH that exits 1 for 'status'
-    // but behaves normally for 'branch --show-current'.
-    //
-    // Approach: use a wrapper script directory on PATH that intercepts only 'status'.
     const fakeGitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-git-'));
     try {
       createGitRepo(tmpDir, 'feature/git-status-fails');
-      setupFrameworkStub(tmpDir);
 
-      // Wrapper that delegates 'branch' normally but fails on 'status'
       const fakeGit = path.join(fakeGitDir, 'git');
       fs.writeFileSync(fakeGit,
         `#!/bin/sh
@@ -363,7 +291,6 @@ exec /usr/bin/git "$@"
         parsed.systemMessage.includes('BRANCH DRIFT'),
         'should include BRANCH DRIFT label even when git status fails',
       );
-      // With hasChanges = false (status threw), the no-stash message is used
       assert.ok(
         !parsed.systemMessage.includes('git stash &&'),
         'should NOT include the full stash command when git status failed',
@@ -375,5 +302,120 @@ exec /usr/bin/git "$@"
     } finally {
       fs.rmSync(fakeGitDir, { recursive: true, force: true });
     }
+  });
+
+  // --- Cooldown tests ---
+
+  it('should respect cooldown: second run within window is silent', () => {
+    createGitRepo(tmpDir, 'feature/cooldown-test');
+
+    // First run — should warn
+    const first = runHook(tmpDir);
+    assert.strictEqual(first.exitCode, 0);
+    assert.ok(first.parsed.systemMessage, 'first run should emit warning');
+    assert.ok(first.parsed.systemMessage.includes('BRANCH DRIFT'));
+
+    // Second run immediately — should be silent (within 30-min cooldown)
+    const second = runHook(tmpDir);
+    assert.strictEqual(second.exitCode, 0);
+    assert.strictEqual(second.parsed.continue, true);
+    assert.strictEqual(second.parsed.suppressOutput, true, 'second run should be silent due to cooldown');
+  });
+
+  it('should reset cooldown when branch changes', () => {
+    createGitRepo(tmpDir, 'feature/branch-a');
+
+    // First run on branch-a — warns and records state
+    const first = runHook(tmpDir);
+    assert.ok(first.parsed.systemMessage, 'first run should warn');
+    assert.ok(first.parsed.systemMessage.includes("'feature/branch-a'"));
+
+    // Switch to branch-b
+    execFileSync('git', ['checkout', '-b', 'feature/branch-b'], { cwd: tmpDir, stdio: 'pipe' });
+
+    // Second run — should warn again despite being within cooldown window
+    const second = runHook(tmpDir);
+    assert.ok(second.parsed.systemMessage, 'should warn after branch change despite cooldown');
+    assert.ok(second.parsed.systemMessage.includes("'feature/branch-b'"));
+  });
+
+  it('should emit no warning when returning to main (clears state)', () => {
+    createGitRepo(tmpDir, 'feature/drift-then-fix');
+
+    // First run on feature branch — warns
+    const first = runHook(tmpDir);
+    assert.ok(first.parsed.systemMessage);
+    assert.ok(first.parsed.systemMessage.includes('BRANCH DRIFT'));
+
+    // Switch back to main
+    execFileSync('git', ['checkout', 'main'], { cwd: tmpDir, stdio: 'pipe' });
+
+    // Second run on main — no warning
+    const second = runHook(tmpDir);
+    assert.strictEqual(second.exitCode, 0);
+    assert.strictEqual(second.parsed.continue, true);
+    if (second.parsed.systemMessage) {
+      assert.ok(
+        !second.parsed.systemMessage.includes('BRANCH DRIFT'),
+        'should not warn after returning to main',
+      );
+    }
+  });
+
+  // --- hookSpecificOutput tests ---
+
+  it('should include hookSpecificOutput with hookEventName and additionalContext when warning', () => {
+    createGitRepo(tmpDir, 'feature/hook-output-test');
+    const { exitCode, parsed } = runHook(tmpDir);
+    assert.strictEqual(exitCode, 0);
+    assert.ok(parsed.systemMessage, 'should emit a systemMessage');
+    assert.ok(parsed.hookSpecificOutput, 'should include hookSpecificOutput field');
+    assert.strictEqual(
+      parsed.hookSpecificOutput.hookEventName,
+      'UserPromptSubmit',
+      'hookEventName must be UserPromptSubmit',
+    );
+    assert.ok(
+      parsed.hookSpecificOutput.additionalContext,
+      'additionalContext must be present',
+    );
+  });
+
+  it('additionalContext must equal systemMessage when warning is emitted', () => {
+    createGitRepo(tmpDir, 'feature/context-sync-test');
+    const { parsed } = runHook(tmpDir);
+    assert.ok(parsed.systemMessage, 'should emit a systemMessage');
+    assert.ok(parsed.hookSpecificOutput, 'should include hookSpecificOutput');
+    assert.strictEqual(
+      parsed.hookSpecificOutput.additionalContext,
+      parsed.systemMessage,
+      'additionalContext must be identical to systemMessage so the AI model receives the same text as the terminal',
+    );
+  });
+
+  it('additionalContext must contain the full BRANCH DRIFT message text', () => {
+    createGitRepo(tmpDir, 'feature/additional-context-content-test');
+    const { parsed } = runHook(tmpDir);
+    assert.ok(parsed.hookSpecificOutput, 'should include hookSpecificOutput');
+    assert.ok(
+      parsed.hookSpecificOutput.additionalContext.includes('BRANCH DRIFT'),
+      'additionalContext must include BRANCH DRIFT label',
+    );
+    assert.ok(
+      parsed.hookSpecificOutput.additionalContext.includes("'feature/additional-context-content-test'"),
+      'additionalContext must include the branch name',
+    );
+  });
+
+  it('should not include hookSpecificOutput when session is silent (spawned session)', () => {
+    createGitRepo(tmpDir, 'feature/spawned-no-hook-output');
+    const { exitCode, parsed } = runHook(tmpDir, { CLAUDE_SPAWNED_SESSION: 'true' });
+    assert.strictEqual(exitCode, 0);
+    assert.strictEqual(parsed.continue, true);
+    assert.strictEqual(parsed.suppressOutput, true);
+    assert.ok(
+      !parsed.hookSpecificOutput,
+      'spawned sessions must not include hookSpecificOutput',
+    );
   });
 });

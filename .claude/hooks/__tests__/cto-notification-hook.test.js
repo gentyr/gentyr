@@ -571,6 +571,87 @@ describe('Path Sanitization - Security Validation', () => {
   });
 });
 
+describe('hookSpecificOutput - UserPromptSubmit Protocol', () => {
+  const PROJECT_DIR = process.cwd();
+  const HOOK_PATH = path.join(PROJECT_DIR, '.claude/hooks/cto-notification-hook.js');
+
+  it('should emit hookSpecificOutput with hookEventName UserPromptSubmit in the final console.log', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    // The final console.log in main() must include hookSpecificOutput so the
+    // Claude Code runtime injects additionalContext into the model's context window.
+    assert.match(
+      hookCode,
+      /hookSpecificOutput:/,
+      'main() final console.log must include hookSpecificOutput field',
+    );
+
+    assert.match(
+      hookCode,
+      /hookEventName:\s*'UserPromptSubmit'/,
+      "hookEventName must be 'UserPromptSubmit'",
+    );
+  });
+
+  it('should set additionalContext to the same message string as systemMessage', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    // Extract the final console.log block (last JSON.stringify call in main()).
+    // Both systemMessage and additionalContext must reference the same `message` variable
+    // so the AI model context and terminal display stay in sync.
+    const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
+
+    // The final output block must assign additionalContext: message
+    assert.match(
+      mainFunction,
+      /additionalContext:\s*message/,
+      'additionalContext must be set to the same `message` variable as systemMessage',
+    );
+
+    // And systemMessage must also be set to message
+    assert.match(
+      mainFunction,
+      /systemMessage:\s*message/,
+      'systemMessage must be set to the same `message` variable as additionalContext',
+    );
+  });
+
+  it('should include hookSpecificOutput in the same object as systemMessage', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+    const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
+
+    // The final JSON.stringify call must have all four required fields together.
+    // Extract the final console.log block by finding the last console.log.
+    const lastConsoleLog = mainFunction.match(/console\.log\(JSON\.stringify\(\{[\s\S]*?\}\)\);\n\}/);
+    assert.ok(lastConsoleLog, 'main() must have a final console.log(JSON.stringify(...))');
+
+    const block = lastConsoleLog[0];
+    assert.match(block, /continue:\s*true/, 'output must include continue: true');
+    assert.match(block, /suppressOutput:\s*false/, 'output must include suppressOutput: false');
+    assert.match(block, /systemMessage:\s*message/, 'output must include systemMessage: message');
+    assert.match(block, /hookSpecificOutput:/, 'output must include hookSpecificOutput');
+    assert.match(block, /additionalContext:\s*message/, 'output must include additionalContext: message');
+  });
+
+  it('should not include hookSpecificOutput in the spawned-session suppression path', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+    const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
+
+    // The spawned-session early-return path outputs { continue: true, suppressOutput: true }
+    // only — no hookSpecificOutput.  Extract that block.
+    const spawnedBlock = mainFunction.match(
+      /if \(process\.env\.CLAUDE_SPAWNED_SESSION === 'true'\) \{[\s\S]*?\}/,
+    );
+    assert.ok(spawnedBlock, 'Must have spawned session guard');
+
+    assert.doesNotMatch(
+      spawnedBlock[0],
+      /hookSpecificOutput/,
+      'Spawned session path must not include hookSpecificOutput',
+    );
+  });
+});
+
 describe('Integration - Bug Fix Validation', () => {
   it('should document both bug fixes in code or comments', () => {
     const hookCode = fs.readFileSync(path.join(process.cwd(), '.claude/hooks/cto-notification-hook.js'), 'utf8');

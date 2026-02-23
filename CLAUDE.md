@@ -192,6 +192,8 @@ The product-manager MCP server (`packages/mcp-servers/src/product-manager/`) man
 
 **Access via `/product-manager` slash command** (prefetches current status from the database before display).
 
+**Scope**: All 6 sections are external market research. Section content must not reference the local project, compare competitors to the local product, or describe the local product's features, strengths, or positioning. The local codebase is read only to determine what market space to research.
+
 **6 Analysis Sections** (must be populated in strict sequential order):
 
 | # | Key | Title | Write tool |
@@ -304,6 +306,24 @@ Tracks credential rotation state, Keychain sync status, and account health. Audi
 **Binary Patch Research** (`scripts/patch-credential-cache.js`) — **ARCHIVED**:
 Research artifact from investigating Claude Code's credential memoization cache. Replaced by the rotation proxy which handles credential swap at the network level, eliminating the need for binary modification. Kept for reference only.
 
+### Hook Output Format: `systemMessage` vs `additionalContext`
+
+For `UserPromptSubmit` hooks, two output fields serve different purposes:
+- **`systemMessage`**: Shown in the terminal UI only. The AI model does NOT see this — it only receives "Success" for hook status.
+- **`hookSpecificOutput.additionalContext`**: Injected into the AI model's conversation context. This is the ONLY way to pass information from a hook to the model.
+
+Hooks that need the AI to act on their output must include both:
+```json
+{
+  "continue": true,
+  "systemMessage": "human-visible warning",
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "context that reaches the AI model"
+  }
+}
+```
+
 **GENTYR Auto-Sync Hook** (`.claude/hooks/gentyr-sync.js`):
 - Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
 - Fast path: reads `version.json` and `gentyr-state.json`, compares version + config hash — exits in <5ms when nothing has changed
@@ -313,8 +333,16 @@ Research artifact from investigating Claude Code's credential memoization cache.
 - Falls back to legacy settings.json hook diff check when no `gentyr-state.json` exists (pre-migration projects)
 - Supports both npm model (`node_modules/gentyr`) and legacy symlink model (`.claude-framework`)
 - **`tamperCheck()`**: Runs before sync logic. Reads `protection-state.json`; if `protected: true`, verifies each filename in `criticalHooks` array is still root-owned (`stat.uid === 0`). Emits a `systemMessage` warning if any hook is not root-owned. Resolves the hooks directory via symlink the same way `protect.js` does.
-- **`branchDriftCheck()`**: Runs after tamper check, before sync logic. Detects when the main working tree is not on `main` and returns a warning message (does not exit). The warning is prepended to the sync output via `pendingWarningPrefix` so both drift warning and sync run in a single hook invocation. Skips worktrees (`.git` file check), detached HEAD, and spawned sessions. Warn-only — never auto-restores.
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; version 3.0
+
+**Branch Drift Check Hook** (`.claude/hooks/branch-drift-check.js`):
+- Runs at `UserPromptSubmit` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
+- Detects when the main working tree is not on `main` and emits a warning via both `systemMessage` (terminal) and `additionalContext` (AI model context)
+- Uses `getCooldown('branch_drift_check', 30)` (30-minute default, configurable); cooldown resets immediately if the branch changes
+- State file: `.claude/state/branch-drift-state.json` with `{ lastCheck, lastBranch }`
+- Skips worktrees (`.git` file check), detached HEAD, and spawned sessions; warn-only — never auto-restores
+- Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `UserPromptSubmit`
+- Tests at `.claude/hooks/__tests__/gentyr-sync-branch-drift.test.js` (14 tests, runs via `node --test`)
 
 **Credential Health Check Hook** (`.claude/hooks/credential-health-check.js`):
 - Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions
@@ -468,6 +496,14 @@ See `packages/mcp-servers/src/secret-sync/README.md` for full documentation.
 
 The CTO dashboard (`packages/cto-dashboard/`) supports a `--mock` flag for development and README generation. The `packages/cto-dashboard/src/mock-data.ts` module provides deterministic fixture data (waypoint-interpolated usage curves, realistic triage reports, deployment history) that renders without requiring live MCP connections.
 
+**`--page` flag** splits rendering to avoid Bash tool output truncation on large deployments (e.g., 68 worktrees):
+- `--page 1` (Intelligence): Header, Quota + Status, Accounts, Deputy-CTO, Usage Trends, Usage Trajectory, Automations
+- `--page 2` (Operations): Testing, Deployments, Worktrees, Infra, Logging
+- `--page 3` (Analytics): Feedback Personas, PM, Worklog, Timeline, Metrics Summary
+- No `--page` argument renders all sections (backwards compatible; used by `generate-readme.js`)
+
+The `/cto-report` slash command runs all three pages sequentially. Data fetching is optimized per page — sections not rendered on the active page skip their I/O readers in `index.tsx`.
+
 The **ACCOUNT OVERVIEW** section displays a curated EVENT HISTORY (last 24h, capped at 20 entries). Only 6 event types pass the `ALLOWED_EVENTS` whitelist in `account-overview-reader.ts`:
 - `key_added` — new account registered (token-refresh re-additions filtered as noise)
 - `key_switched` — active account changed by rotation logic
@@ -497,7 +533,7 @@ Agents call `mcp__todo-db__summarize_work()` before `mcp__todo-db__complete_task
 
 **CTO Dashboard section**: WORKLOG section shows recent entries (time, section, title, result, duration, tokens) with 30-day metrics block. Standalone view: `/show worklog`.
 
-### Regenerate README Dashboard Section
+### Regenerate README Dashboard Sections
 
 ```bash
 node scripts/generate-readme.js
@@ -509,4 +545,8 @@ Or via npm:
 npm run generate:readme
 ```
 
-Runs the dashboard with `--mock` and `COLUMNS=80`, then replaces the content between `<!-- CTO_DASHBOARD_START -->` and `<!-- CTO_DASHBOARD_END -->` markers in `README.md`. The script uses `execFileSync` (not `execSync`) to prevent shell injection. Tests live at `scripts/__tests__/generate-readme.test.js`.
+Runs the dashboard with `--mock` and `COLUMNS=80`, updates two files:
+- `README.md` — teaser with selected sections (Quota, System Status, Deputy CTO, Automations, Metrics) between `<!-- CTO_DASHBOARD_START -->` / `<!-- CTO_DASHBOARD_END -->` markers
+- `docs/CTO-DASHBOARD.md` — full dashboard output between `<!-- FULL_CTO_DASHBOARD_START -->` / `<!-- FULL_CTO_DASHBOARD_END -->` markers
+
+The script uses `execFileSync` (not `execSync`) to prevent shell injection. Tests live at `scripts/__tests__/generate-readme.test.js`.

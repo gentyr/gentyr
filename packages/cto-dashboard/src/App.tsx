@@ -61,6 +61,7 @@ interface AppProps {
   worktrees: WorktreeData;
   productManager: ProductManagerData;
   worklog: WorklogData;
+  page?: 1 | 2 | 3;
 }
 
 function Header({ data }: { data: DashboardData }): React.ReactElement {
@@ -246,124 +247,146 @@ function MetricsSummary({ data, tip }: { data: DashboardData; tip?: string }): R
   );
 }
 
-export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager, worklog }: AppProps): React.ReactElement {
+export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager, worklog, page }: AppProps): React.ReactElement {
   // Compute explicit widths for side-by-side sections
   const termCols = process.stdout.columns || 80;
   const leftWidth = Math.floor((termCols - 1) / 2);  // -1 for gap
   const rightWidth = termCols - leftWidth - 1;
 
+  const showPage1 = !page || page === 1;
+  const showPage2 = !page || page === 2;
+  const showPage3 = !page || page === 3;
+
   return (
     <Box flexDirection="column" padding={0}>
+      {/* === PAGE 1: Intelligence === */}
+
       {/* Header */}
-      <Header data={data} />
+      {showPage1 && <Header data={data} />}
 
       {/* Quota & System Status - side by side */}
-      <Box marginTop={1} flexDirection="row" gap={1}>
-        <QuotaSection data={data} width={leftWidth} tip="/show quota" />
-        <SystemStatusSection data={data} width={rightWidth} />
-      </Box>
+      {showPage1 && (
+        <Box marginTop={1} flexDirection="row" gap={1}>
+          <QuotaSection data={data} width={leftWidth} tip="/show quota" />
+          <SystemStatusSection data={data} width={rightWidth} />
+        </Box>
+      )}
 
       {/* Account Overview */}
-      {accountOverview.hasData && (
+      {showPage1 && accountOverview.hasData && (
         <Box marginTop={1}>
           <AccountOverviewSection data={accountOverview} tip="/show accounts" />
         </Box>
       )}
 
       {/* Deputy CTO triage pipeline */}
-      {deputyCto.hasData && (
+      {showPage1 && deputyCto.hasData && (
         <Box marginTop={1}>
           <DeputyCtoSection data={deputyCto} tip="/show deputy-cto" />
         </Box>
       )}
 
       {/* Usage Trends - line graphs (only if data available) */}
-      {trajectory.hasData && (
+      {showPage1 && trajectory.hasData && (
         <Box marginTop={1}>
           <UsageTrends trajectory={trajectory} tip="/show usage" />
         </Box>
       )}
 
       {/* Usage Trajectory - projections (only if data available) */}
-      {trajectory.hasData && (
+      {showPage1 && trajectory.hasData && (
         <Box marginTop={1}>
           <UsageTrajectory trajectory={trajectory} verifiedQuota={data.verified_quota} accountOverview={accountOverview} />
         </Box>
       )}
 
       {/* Automated Instances (only if data available) */}
-      {automatedInstances.hasData && (
+      {showPage1 && automatedInstances.hasData && (
         <Box marginTop={1}>
           <AutomatedInstances data={automatedInstances} tip="/show automations" />
         </Box>
       )}
 
       {/* Legacy Automations (fallback if automated instances not available) */}
-      {!automatedInstances.hasData && (
+      {showPage1 && !automatedInstances.hasData && (
         <Box marginTop={1}>
           <Automations automations={data.automations} />
         </Box>
       )}
 
+      {/* === PAGE 2: Operations === */}
+
       {/* Testing health */}
-      {testing.hasData && (
+      {showPage2 && testing.hasData && (
         <Box marginTop={1}>
           <TestingSection data={testing} tip="/show testing" />
         </Box>
       )}
 
       {/* Deployments */}
-      {deployments.hasData && (
+      {showPage2 && deployments.hasData && (
         <Box marginTop={1}>
           <DeploymentsSection data={deployments} tip="/show deployments" />
         </Box>
       )}
 
       {/* Worktrees */}
-      {worktrees.hasData && (
+      {showPage2 && worktrees.hasData && (
         <Box marginTop={1}>
           <WorktreeSection data={worktrees} tip="/show worktrees" />
         </Box>
       )}
 
       {/* Infrastructure */}
-      {infra.hasData && (
+      {showPage2 && infra.hasData && (
         <Box marginTop={1}>
           <InfraSection data={infra} deployments={deployments} tip="/show infra" />
         </Box>
       )}
 
       {/* Logging */}
-      {logging.hasData && (
+      {showPage2 && logging.hasData && (
         <Box marginTop={1}>
           <LoggingSection data={logging} tip="/show logging" />
         </Box>
       )}
 
+      {/* === PAGE 3: Analytics === */}
+
       {/* Feedback Personas */}
-      <Box marginTop={1}>
-        <FeedbackPersonas data={data.feedback_personas} />
-      </Box>
+      {showPage3 && (
+        <Box marginTop={1}>
+          <FeedbackPersonas data={data.feedback_personas} />
+        </Box>
+      )}
 
       {/* Product-Market Fit */}
-      <Box marginTop={1}>
-        <ProductManagerSection data={productManager} tip="/show product-market-fit" />
-      </Box>
+      {showPage3 && (
+        <Box marginTop={1}>
+          <ProductManagerSection data={productManager} tip="/show product-market-fit" />
+        </Box>
+      )}
 
       {/* Worklog */}
-      <Box marginTop={1}>
-        <WorklogSection data={worklog} tip="/show worklog -- standalone view with more entries" />
-      </Box>
+      {showPage3 && (
+        <Box marginTop={1}>
+          <WorklogSection data={worklog} tip="/show worklog -- standalone view with more entries" />
+        </Box>
+      )}
 
       {/* Timeline */}
-      <Box marginTop={1}>
-        <Timeline events={timelineEvents} hours={data.hours} maxEvents={20} tip="/show timeline" />
-      </Box>
+      {showPage3 && (
+        <Box marginTop={1}>
+          <Timeline events={timelineEvents} hours={data.hours} maxEvents={20} tip="/show timeline" />
+        </Box>
+      )}
 
       {/* Metrics Summary */}
-      <Box marginTop={1}>
-        <MetricsSummary data={data} tip="/show tasks" />
-      </Box>
+      {showPage3 && (
+        <Box marginTop={1}>
+          <MetricsSummary data={data} tip="/show tasks" />
+        </Box>
+      )}
     </Box>
   );
 }

@@ -7,20 +7,40 @@ The prefetch hook has pre-gathered key metrics (pending questions, task counts, 
 
 ## What to Do
 
-Resolve the framework path (supports npm link, legacy symlink, and running from within the gentyr repo), then run the dashboard:
+Resolve the framework path (supports npm link, legacy symlink, and running from within the gentyr repo), then run the dashboard in three pages to avoid output truncation. Run these three Bash commands **sequentially**:
+
+**Page 1 — Intelligence** (Header, Quota, Status, Accounts, Deputy-CTO, Usage, Automations):
 
 ```bash
-GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })" && node "$GENTYR_DIR/packages/cto-dashboard/dist/index.js"
+GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })" && node "$GENTYR_DIR/packages/cto-dashboard/dist/index.js" --page 1
 ```
 
-This will render a terminal dashboard with quota bars, system status, deputy CTO triage pipeline, testing health, chronological timeline, and metrics summary.
+**Page 2 — Operations** (Testing, Deployments, Worktrees, Infra, Logging):
+
+```bash
+GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })" && node "$GENTYR_DIR/packages/cto-dashboard/dist/index.js" --page 2
+```
+
+**Page 3 — Analytics** (Feedback, PM, Worklog, Timeline, Metrics Summary):
+
+```bash
+GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })" && node "$GENTYR_DIR/packages/cto-dashboard/dist/index.js" --page 3
+```
 
 ## Optional: Custom Time Range
 
-For a different time period (default is 24 hours, valid range: 1-168):
+For a different time period (default is 24 hours, valid range: 1-168), add `--hours N` to each page command:
 
 ```bash
-GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })" && node "$GENTYR_DIR/packages/cto-dashboard/dist/index.js" --hours 8
+GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })" && node "$GENTYR_DIR/packages/cto-dashboard/dist/index.js" --page 1 --hours 8
+```
+
+```bash
+GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })" && node "$GENTYR_DIR/packages/cto-dashboard/dist/index.js" --page 2 --hours 8
+```
+
+```bash
+GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })" && node "$GENTYR_DIR/packages/cto-dashboard/dist/index.js" --page 3 --hours 8
 ```
 
 ## Response Format
