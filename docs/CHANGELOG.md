@@ -1,5 +1,205 @@
 # GENTYR Framework Changelog
 
+## 2026-02-23 - `/persona-feedback` Slash Command
+
+### Summary
+
+New interactive slash command for browsing persona feedback history and spawning on-demand feedback sessions. Previously, feedback sessions could only be triggered automatically via the hourly automation pipeline on staging changes. This command provides a manual, single-persona path.
+
+### Added
+
+**`.claude/commands/persona-feedback.md`** (new):
+- 5-step interactive flow: overview → persona picker → feedback history → action menu → spawn/view/done
+- Uses prefetch data from the hook for instant display; falls back to MCP tools if prefetch is missing
+- Spawns sessions via `mcp__user-feedback__start_feedback_run` with `trigger_type: "manual"`
+
+**`.claude/hooks/slash-command-prefetch.js`**:
+- New sentinel: `'persona-feedback': '<!-- HOOK:GENTYR:persona-feedback -->'`
+- `'persona-feedback'` added to `needsDb` array for lazy SQLite loading
+- New `handlePersonaFeedback()` handler gathering: enabled personas, recent feedback runs (last 5), per-persona last session date + satisfaction level, total sessions, total findings (via `SUM(findings_count)` from `feedback_sessions`)
+- Dispatch call in `main()` positioned before `/show`
+
+**`CLAUDE.md`**:
+- Added `/persona-feedback` documentation to "AI User Feedback System" section
+
+### Tests
+
+- New `slash-command-prefetch-persona-feedback.test.js` — 39 tests covering sentinels, handler queries (correct column names: `started_at`, `completed_at`, `satisfaction_level`), output structure, error handling, and routing
+- Updated SENTINELS count from 16 → 17 in 4 existing test files
+
+---
+
+## 2026-02-23 - Product Manager Agent: Feature-Complete Persona Evaluation
+
+### Summary
+
+The `product-manager` agent's persona creation capability was skeletal — it created bare personas missing `endpoints`, `behavior_traits`, and proper `consumption_mode` detection, and lacked the tools to register project features or check existing ones. The agent now performs a complete 3-phase post-analysis persona evaluation workflow that produces fully-functional personas ready for the AI User Feedback System.
+
+### Changed
+
+**`.claude/agents/product-manager.md`**:
+- Added `mcp__user-feedback__register_feature` and `mcp__user-feedback__list_features` to `allowedTools` — both were missing, preventing feature registration and existence checks
+- Replaced the skeletal "Persona Evaluation" section (6 simple steps creating bare personas) with an expanded 3-phase workflow:
+  - **Phase 1 — Project Context Gathering**: Reads `package.json` to detect dev server URL and framework; globs for route/feature/component directories (cap 20); excludes `_`-prefixed dirs, `node_modules`, build output
+  - **Phase 2 — Register Features + Create Personas**: Calls `list_features` before registering to avoid duplicates; calls `register_feature` with `file_patterns` and `url_patterns`; creates personas with all required fields: `endpoints` (dev server URL), `behavior_traits` (derived from pain points), `consumption_mode` (`gui` for web apps, `api`/`cli`/`sdk` for other project types)
+  - **Phase 3 — Mapping**: Maps personas to features with `priority` and `test_scenarios`; maps pain points to personas; verifies with compliance report; reports to deputy-CTO
+- Fixed `priority` value documentation: changed incorrect `priority (1-5, where 1 is highest)` to correct enum values `('low', 'normal', 'high', 'critical')` matching the actual Zod schema in `types.ts`
+
+**`CLAUDE.md`**:
+- Updated "AI User Feedback System" section: added paragraph explaining the product-manager agent's automated persona creation path vs. the manual `/configure-personas` interactive path
+- Updated "Product Manager MCP Server" section: added "Post-analysis persona evaluation" subsection documenting the 3-phase workflow with Phase 1/2/3 details
+
+### Tests
+
+All product-manager-specific tests pass. No new test files added (agent definition change — behavior tested via integration).
+
+---
+
+## 2026-02-23 - Rotation Proxy: Fix "OAuth Token Revoked" via Tombstone Pattern
+
+### Summary
+
+Two conflicting bugs in the rotation proxy caused credential failures. Bug A (previously fixed) had the proxy overwriting fresh login tokens with exhausted keys. Bug B (this fix) had the proxy sending pruned dead tokens to the API, triggering "OAuth token revoked" errors. Root cause: `pruneDeadKeys` used `delete state.keys[keyId]`, making pruned tokens indistinguishable from genuinely new tokens — both hit the `!state.keys[incomingKeyId]` passthrough path.
+
+### Changed
+
+**`scripts/rotation-proxy.js`**:
+- `rebuildRequest()`: Conditional auth header injection — only adds `Authorization: Bearer` back if the original request had one (prevents injecting a token into non-auth requests)
+- `forwardRequest()`: Tombstone-aware routing — incoming token checked against rotation state: `tombstone` status triggers active-key swap (not passthrough), absent entry triggers passthrough + async `syncKeys()` (fresh login), any other status uses normal swap path
+- `forwardRequest()`: 401 retry handling — single retry with fresh state read on auth failure (does not call `rotateOnExhaustion`; fires `auth_retry_on_401` log event)
+
+**`.claude/hooks/key-sync.js`**:
+- `pruneDeadKeys()`: Marks invalid keys as `status: 'tombstone'` with `tombstoned_at` timestamp instead of deleting them; 24h TTL cleanup runs on every call
+- `pruneDeadKeys()`: `hasOtherViableKey` filter now also excludes `tombstone` status entries
+- `pruneDeadKeys()`: Orphaned rotation_log entries removed only after tombstone TTL expires (not at tombstone creation)
+- `refreshExpiredToken()`: Skips keys with `status: 'tombstone'` (in addition to `'invalid'`)
+
+**`.claude/hooks/session-reviver.js`**, **`.claude/hooks/api-key-watcher.js`**, **`.claude/hooks/stop-continue-hook.js`**, **`.claude/hooks/quota-monitor.js`**:
+- Added tombstone filter to exclude `status: 'tombstone'` entries before calling `checkKeyHealth()`, preventing calls with `undefined` access tokens
+
+### Added
+
+**`scripts/__tests__/rotation-proxy.test.js`** (new and updated test sections):
+- Section 5: `rebuildRequest` — conditional auth injection (with/without auth header)
+- Section 12: Tombstone-aware routing — tombstone triggers active-key swap, unknown triggers passthrough
+- Sections 16–18: 401 retry behavior, tombstone consumer filters, tombstone TTL cleanup
+
+### Tests
+
+86/86 rotation proxy tests pass. 120/120 key-sync tests pass (52 key-sync + 68 invalid-grant-and-prune).
+
+---
+
+## 2026-02-23 - Protection Model: Fix Git Conflict (Remove .claude/ Root-Ownership)
+
+### Summary
+
+`git stash`, `git checkout`, and `git merge` were failing in protected target projects because `.claude/` was root-owned (1755) and runtime files tracked in git required write access. Removed `.claude/` from the root-owned directories list and replaced directory ownership as the anti-tampering mechanism with symlink target verification.
+
+### Changed
+
+**`cli/commands/protect.js`**:
+- Removed `.claude/` from `dirs` array — git stash/checkout/merge need user-writable `.claude/`
+- Added migration block: if `.claude/` is currently root-owned (legacy install), restores user ownership with `chown` + `chmod 755` during `doProtect()`
+- `getOriginalGroup()` uses `id -gn` for cross-platform group resolution (Linux-safe; macOS falls back to `staff`)
+
+**`cli/lib/config-gen.js`** (`updateGitignore()`):
+- Rewrote from append-only to `BEGIN GENTYR GITIGNORE` / `END GENTYR GITIGNORE` marker block replacement so it is idempotent on every run
+- Legacy `# GENTYR runtime` blocks from older installs are detected and removed with correct conditional logic (non-legacy lines after the block are preserved)
+
+**`cli/commands/sync.js`**:
+- Added step 5a: migration to restore user ownership of `.claude/` if root-owned (runs with sudo)
+- Added step 5b: `updateGitignore()` call to keep `.gitignore` current on every sync
+- Added step 5c: auto-untrack files now covered by the new gitignore patterns (`git rm --cached --quiet`)
+- Group resolved via `id -gn` (cross-platform, not hardcoded `:staff`)
+
+**`husky/pre-commit`**:
+- Added **SECURITY: SYMLINK TARGET VERIFICATION** block after the existing file ownership check
+- Verifies `.claude/hooks` is a symlink resolving to a directory whose grandparent contains `version.json`
+- Regular directory only allowed in the framework repo itself
+- Missing `.claude/hooks` results in a blocked commit
+
+**`.claude/hooks/gentyr-sync.js`** (`tamperCheck()`):
+- Rewrote to run two sequential checks: (1) symlink target verification as check #1; (2) existing file ownership check as check #2
+- Symlink check: resolves `.claude/hooks`, walks two levels up, verifies `version.json` presence
+- Regular directory allowed only when `version.json` exists in `projectDir` (framework repo)
+- Both checks contribute to a combined `warnings` array; a single `systemMessage` is emitted if any fail
+
+**`templates/config/gitignore.template`**:
+- Added missing patterns: `.claude/settings.json`, `.claude/protection-key`, `.claude/protected-action-approvals.json`, `.claude/specs-config.json`, `.claude/playwright-health.json`, `.claude/config/`, `.claude/state/`, `.claude/worktrees/`, `op-secrets.conf`
+- Updated to use `BEGIN`/`END` marker format for idempotent block replacement
+
+**`CLAUDE.md`**:
+- Updated security model table: `.claude/` row changed to `user:staff / 755` with rationale "Git needs write access..."
+- Updated tamper detection description: two-layer model (symlink target verification + file ownership)
+- Updated `tamperCheck()` bullet to describe both check #1 and check #2
+
+**`docs/shared/PROTECTION-SYSTEM.md`**:
+- Updated Layer 1 "What Gets Protected" — `.claude/` removed from root-owned directories; explanatory note updated
+- Rewrote tamper detection section to document both the symlink verification layer and the file ownership layer
+- Updated "Verify Protection" commands: replaced `.claude/` sticky-bit check with commands that verify correct user ownership and symlink target
+
+### Added
+
+**`cli/lib/__tests__/config-gen-gitignore.test.js`** (9 tests):
+- Fresh install (no existing `.gitignore`)
+- Idempotency (running twice produces identical output)
+- Legacy `# GENTYR runtime` block migration
+- Non-legacy content after legacy block is preserved
+- Existing `BEGIN`/`END` block is replaced (not duplicated)
+- All required patterns present after update
+
+**`.claude/hooks/__tests__/husky-pre-commit-structure.test.js`** (8 tests):
+- Symlink verification block structure present in `husky/pre-commit`
+- Missing hooks directory block present
+- Regular directory (framework repo) allowed block present
+- Block ordering: file ownership check before symlink check
+
+### Tests
+
+All 65 new and existing affected tests pass:
+- 18 branch drift tests
+- 30 slash command tests
+- 9 new gitignore tests
+- 8 new husky structure tests
+
+---
+
+## 2026-02-23 - UserPromptSubmit Hooks: Fix additionalContext for AI Model Delivery
+
+### Summary
+
+`branch-drift-check.js` and `cto-notification-hook.js` were emitting warnings visible in the terminal via `systemMessage` but not injecting them into the AI model's context. The AI could not act on branch drift or quota data because `systemMessage` is terminal-only; the model only receives `hookSpecificOutput.additionalContext`. Both hooks now emit both fields with identical content.
+
+### Changed
+
+**`.claude/hooks/branch-drift-check.js`**:
+- Added `hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: message }` to the `warn()` output object
+- Updated JSDoc to document that the hook uses both `systemMessage` and `additionalContext`
+
+**`.claude/hooks/cto-notification-hook.js`**:
+- Added `hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: message }` to the final `console.log` output in `main()`
+- Quota status, pending CTO items, and usage data now reach the AI model context on every prompt
+
+**`CLAUDE.md`**:
+- Added "Hook Output Format" subsection explaining the `systemMessage` vs `additionalContext` distinction with canonical JSON example
+- Updated Branch Drift Check Hook description to note dual-field output
+- Added CTO Notification Hook section (previously undocumented despite being a registered UserPromptSubmit hook)
+- Corrected branch-drift test count: 14 → 18
+
+### Tests
+
+**`.claude/hooks/__tests__/gentyr-sync-branch-drift.test.js`** (4 new tests, 18 total):
+- `should include hookSpecificOutput with hookEventName and additionalContext when warning`
+- `additionalContext must equal systemMessage when warning is emitted`
+- `additionalContext must contain the full BRANCH DRIFT message text`
+- `should not include hookSpecificOutput when session is silent (spawned session)`
+
+**`.claude/hooks/__tests__/cto-notification-hook.test.js`** (4 new tests, 36 total):
+- Parallel assertions for `hookSpecificOutput` presence, `hookEventName`, `additionalContext` content, and absence on suppressed paths
+
+---
+
 ## 2026-02-23 - CTO Dashboard 3-Page Split (--page flag)
 
 ### Summary

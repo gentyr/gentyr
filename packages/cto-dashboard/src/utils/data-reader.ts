@@ -348,13 +348,14 @@ const HookHistorySchema = z.object({
 
 const KeyRotationKeyDataSchema = z.object({
   accessToken: z.string().optional(),
-  subscriptionType: z.string(),
+  subscriptionType: z.string().optional(),
   last_usage: z.object({
     five_hour: z.number(),
     seven_day: z.number(),
-  }).nullable(),
-  status: z.enum(['active', 'exhausted', 'invalid', 'expired']),
+  }).nullable().optional(),
+  status: z.enum(['active', 'exhausted', 'invalid', 'expired', 'tombstone']),
   account_uuid: z.string().nullable().optional(),
+  tombstoned_at: z.number().optional(),
 }).passthrough();
 
 const KeyRotationStateSchema = z.object({

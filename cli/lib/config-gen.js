@@ -212,38 +212,103 @@ export function updateClaudeMd(projectDir, frameworkDir) {
 /**
  * Update .gitignore with GENTYR runtime entries.
  *
+ * Uses BEGIN/END markers so the block is replaced on every run (not append-only).
+ * Also removes legacy `# GENTYR runtime` blocks from older installs.
+ *
  * @param {string} projectDir - Absolute path to the target project
  */
 export function updateGitignore(projectDir) {
   const gitignorePath = path.join(projectDir, '.gitignore');
-  const marker = '# GENTYR runtime';
+  const BEGIN = '# BEGIN GENTYR GITIGNORE';
+  const END = '# END GENTYR GITIGNORE';
+  const LEGACY_MARKER = '# GENTYR runtime';
 
-  const entries = `
-${marker}
-.claude/*.db
-.claude/*.db-shm
-.claude/*.db-wal
-.claude/*-state.json
-.claude/*.log
-.claude/api-key-rotation.json
-.claude/commit-approval-token.json
-.claude/autonomous-mode.json
-.claude/vault-mappings.json
-.claude/credential-provider.json
-.claude/state/
-.claude/settings.local.json
-`;
+  const patterns = [
+    '# Runtime databases and WAL files',
+    '.claude/*.db',
+    '.claude/*.db-shm',
+    '.claude/*.db-wal',
+    '',
+    '# State and config files',
+    '.claude/*-state.json',
+    '.claude/*.log',
+    '.claude/api-key-rotation.json',
+    '.claude/commit-approval-token.json',
+    '.claude/autonomous-mode.json',
+    '.claude/vault-mappings.json',
+    '.claude/credential-provider.json',
+    '.claude/settings.local.json',
+    '.claude/settings.json',
+    '.claude/protection-key',
+    '.claude/protected-action-approvals.json',
+    '.claude/protection-state.json',
+    '.claude/specs-config.json',
+    '.claude/playwright-health.json',
+    '',
+    '# Generated directories',
+    '.claude/config/',
+    '.claude/state/',
+    '.claude/worktrees/',
+    '',
+    '# Generated root-level files',
+    '.mcp.json',
+    'op-secrets.conf',
+  ];
+
+  const block = `${BEGIN}\n${patterns.join('\n')}\n${END}\n`;
 
   let content = '';
   try {
     content = fs.readFileSync(gitignorePath, 'utf8');
   } catch {}
 
-  if (content.includes(marker)) {
-    console.log('  .gitignore already configured');
-    return;
+  // Remove existing BEGIN/END block if present
+  const beginIdx = content.indexOf(BEGIN);
+  const endIdx = content.indexOf(END);
+  if (beginIdx !== -1 && endIdx !== -1) {
+    content = content.substring(0, beginIdx) + content.substring(endIdx + END.length);
+    // Clean up extra newlines left behind
+    content = content.replace(/\n{3,}/g, '\n\n');
+    if (content.endsWith('\n\n')) content = content.slice(0, -1);
   }
 
-  fs.writeFileSync(gitignorePath, content + entries);
-  console.log('  Added runtime exclusions to .gitignore');
+  // Remove legacy `# GENTYR runtime` block (everything from marker to next blank line or EOF)
+  if (content.includes(LEGACY_MARKER)) {
+    const lines = content.split('\n');
+    const out = [];
+    let inLegacy = false;
+    for (const line of lines) {
+      if (line.trim() === LEGACY_MARKER) {
+        inLegacy = true;
+        continue;
+      }
+      if (inLegacy) {
+        // Legacy block ends at a blank line or a line that doesn't start with .claude/ or a known pattern
+        if (line.trim() === '') {
+          inLegacy = false;
+          out.push(line);
+        } else if (!line.startsWith('.claude/') && !line.startsWith('op-secrets') && !line.startsWith('.mcp.json')) {
+          inLegacy = false;
+          out.push(line); // This line is NOT part of the legacy block
+        }
+        continue;
+      }
+      out.push(line);
+    }
+    content = out.join('\n');
+    // Clean up extra newlines
+    content = content.replace(/\n{3,}/g, '\n\n');
+  }
+
+  // Append the new block
+  if (content.length > 0 && !content.endsWith('\n')) {
+    content += '\n';
+  }
+  if (content.length > 0 && !content.endsWith('\n\n')) {
+    content += '\n';
+  }
+  content += block;
+
+  fs.writeFileSync(gitignorePath, content);
+  console.log('  Updated .gitignore with GENTYR patterns');
 }

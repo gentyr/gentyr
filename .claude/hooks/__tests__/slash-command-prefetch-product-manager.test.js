@@ -316,7 +316,7 @@ describe('Slash Command Prefetch - /product-manager Integration', () => {
 
     // Count command definitions
     const commandCount = (sentinelsObject.match(/'[\w-]+':/g) || []).length;
-    assert.strictEqual(commandCount, 16, 'Should have 16 slash commands total');
+    assert.strictEqual(commandCount, 17, 'Should have 17 slash commands total');
   });
 
   it('should place /product-manager handler in correct position in main()', () => {

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { resolveFrameworkDir, resolveFrameworkRelative, detectInstallModel } from '../lib/resolve-framework.js';
-import { generateMcpJson, mergeSettings, updateClaudeMd } from '../lib/config-gen.js';
+import { generateMcpJson, mergeSettings, updateClaudeMd, updateGitignore } from '../lib/config-gen.js';
 import { createDirectorySymlinks, createAgentSymlinks, createReporterSymlinks } from '../lib/symlinks.js';
 import { buildState, writeState, getFrameworkAgents } from '../lib/state.js';
 
@@ -53,6 +53,50 @@ export default async function sync(args) {
   // 5. Sync agent symlinks
   console.log(`\n${YELLOW}Syncing agent symlinks...${NC}`);
   createAgentSymlinks(projectDir, frameworkRel, agents);
+
+  // 5a. Migration: restore user ownership of .claude/ if root-owned
+  const claudeDir = path.join(projectDir, '.claude');
+  try {
+    const stat = fs.statSync(claudeDir);
+    if (stat.uid === 0) {
+      console.log(`\n${YELLOW}Migrating .claude/ directory ownership...${NC}`);
+      const user = process.env.USER || 'unknown';
+      let group;
+      try {
+        group = execFileSync('id', ['-gn', user], { encoding: 'utf8', stdio: 'pipe' }).trim();
+      } catch {
+        group = process.platform === 'darwin' ? 'staff' : user;
+      }
+      try {
+        execFileSync('sudo', ['chown', `${user}:${group}`, claudeDir], { stdio: 'inherit' });
+        execFileSync('sudo', ['chmod', '755', claudeDir], { stdio: 'inherit' });
+        console.log('  Restored user ownership of .claude/ (was root-owned)');
+      } catch {
+        console.log(`  ${YELLOW}Warning: could not restore .claude/ ownership (sudo may be needed)${NC}`);
+      }
+    }
+  } catch {}
+
+  // 5b. Update .gitignore
+  console.log(`\n${YELLOW}Updating .gitignore...${NC}`);
+  updateGitignore(projectDir);
+
+  // 5c. Auto-untrack files that are now gitignored
+  try {
+    const tracked = execFileSync('git', ['ls-files', '--cached', '--ignored', '--exclude-standard', '.claude/'], {
+      cwd: projectDir, encoding: 'utf8', stdio: 'pipe', timeout: 10000,
+    }).trim();
+    if (tracked) {
+      const files = tracked.split('\n').filter(Boolean);
+      console.log(`  Untracking ${files.length} now-gitignored file(s)...`);
+      execFileSync('git', ['rm', '--cached', '--quiet', ...files], {
+        cwd: projectDir, encoding: 'utf8', stdio: 'pipe', timeout: 10000,
+      });
+      console.log(`  Untracked: ${files.join(', ')}`);
+    }
+  } catch {
+    // Non-fatal — may not be a git repo or no tracked files match
+  }
 
   // 6. Sync husky hooks
   console.log(`\n${YELLOW}Syncing husky hooks...${NC}`);

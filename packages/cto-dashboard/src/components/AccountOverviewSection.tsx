@@ -27,6 +27,7 @@ const STATUS_PRIORITY: Record<AccountKeyDetail['status'], number> = {
   exhausted: 1,
   expired: 2,
   invalid: 3,
+  tombstone: 4,
 };
 
 interface DeduplicatedAccount {
@@ -95,6 +96,7 @@ function statusColor(status: AccountKeyDetail['status']): string {
     case 'exhausted': return 'red';
     case 'expired': return 'yellow';
     case 'invalid': return 'gray';
+    case 'tombstone': return 'gray';
   }
 }
 

@@ -29,6 +29,34 @@ echo "Hook integrity verified"
 echo ""
 
 # =============================================================================
+# SECURITY: SYMLINK TARGET VERIFICATION
+# =============================================================================
+# Verifies .claude/hooks points to a GENTYR framework (has version.json).
+# Replaces directory root-ownership as the anti-tampering mechanism for .claude/.
+# =============================================================================
+
+if [ -L ".claude/hooks" ]; then
+  HOOKS_REAL=$(cd ".claude/hooks" 2>/dev/null && pwd -P)
+  FRAMEWORK_ROOT=$(dirname "$(dirname "$HOOKS_REAL")")
+  if [ ! -f "$FRAMEWORK_ROOT/version.json" ]; then
+    echo "COMMIT BLOCKED: .claude/hooks does not point to a GENTYR framework"
+    exit 1
+  fi
+  echo "Symlink target verified"
+elif [ -d ".claude/hooks" ]; then
+  # Regular directory is only valid in the framework repo itself
+  if [ ! -f "version.json" ]; then
+    echo "COMMIT BLOCKED: .claude/hooks is a regular directory (expected symlink)"
+    exit 1
+  fi
+  echo "Framework repo hooks verified"
+else
+  echo "COMMIT BLOCKED: .claude/hooks does not exist"
+  exit 1
+fi
+echo ""
+
+# =============================================================================
 # LINT STAGED FILES
 # =============================================================================
 

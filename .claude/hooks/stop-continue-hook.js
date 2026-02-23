@@ -218,7 +218,7 @@ async function attemptQuotaRotation() {
 
     // Health-check all keys to get fresh usage data
     const healthPromises = Object.entries(state.keys)
-      .filter(([_, k]) => k.status !== 'invalid' && k.status !== 'expired')
+      .filter(([_, k]) => k.status !== 'invalid' && k.status !== 'expired' && k.status !== 'tombstone')
       .map(async ([keyId, keyData]) => {
         const result = await checkKeyHealth(keyData.accessToken);
         if (result.valid && result.usage) {

@@ -5,10 +5,36 @@ dist/
 .env.*.local
 *.log
 .DS_Store
-.claude/todo.db*
-.claude/config/
+coverage/
+
+# BEGIN GENTYR GITIGNORE
+# Runtime databases and WAL files
+.claude/*.db
+.claude/*.db-shm
+.claude/*.db-wal
+
+# State and config files
+.claude/*-state.json
+.claude/*.log
+.claude/api-key-rotation.json
+.claude/commit-approval-token.json
+.claude/autonomous-mode.json
+.claude/vault-mappings.json
+.claude/credential-provider.json
+.claude/settings.local.json
+.claude/settings.json
 .claude/protection-key
 .claude/protected-action-approvals.json
 .claude/protection-state.json
-coverage/
+.claude/specs-config.json
+.claude/playwright-health.json
+
+# Generated directories
+.claude/config/
+.claude/state/
 .claude/worktrees/
+
+# Generated root-level files
+.mcp.json
+op-secrets.conf
+# END GENTYR GITIGNORE

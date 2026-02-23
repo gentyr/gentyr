@@ -49,13 +49,14 @@ npx gentyr unprotect        # Disable protection
 | Target | Ownership | Permissions | Rationale |
 |--------|-----------|-------------|-----------|
 | Critical hook files (pre-commit-review.js, bypass-approval-hook.js, etc.) | root:wheel | 644 | Prevents agent modification |
-| `.claude/hooks/` directory | user:staff | 755 | Git needs write access for checkout/merge/stash (was root-owned, caused cross-repo side effects) |
-| `.claude/` directory (target projects only) | root:wheel | 1755 | Prevents hooks symlink replacement; excluded in framework repo (MCP servers need runtime file creation) |
+| `.claude/hooks/` directory | user:staff | 755 | Git needs write access for checkout/merge/stash |
+| `.claude/` directory | user:staff | 755 | Git needs write access for stash/checkout/merge; symlink target verification replaces directory ownership |
 | `.husky/` directory | root:wheel | 1755 | Prevents deletion of the pre-commit entry point |
 
-**Tamper detection** closes the unlink+recreate gap left by not root-owning `.claude/hooks/`:
-- **Commit-time check** (`husky/pre-commit`): Before each commit, verifies 8 critical hook files are still root-owned via `stat`. Blocks commit if any are not owned by root. The pre-commit script itself lives in a root-owned `.husky/` directory, making it trustworthy.
-- **SessionStart check** (`gentyr-sync.js` `tamperCheck()`): At every interactive session start, reads `protection-state.json` and checks `criticalHooks` array ownership via `fs.statSync().uid`. Emits a `systemMessage` warning if tampering is detected.
+**Tamper detection** uses two layers — symlink target verification and file ownership checks:
+- **Symlink target verification** (`husky/pre-commit` + `gentyr-sync.js`): Verifies `.claude/hooks` symlink resolves to a directory whose grandparent contains `version.json` (GENTYR framework marker). Regular directories are only allowed in the framework repo itself. Replaces `.claude/` directory root-ownership as the anti-tampering mechanism.
+- **Commit-time check** (`husky/pre-commit`): Before each commit, verifies symlink target + 8 critical hook files are still root-owned via `stat`. Blocks commit if any check fails. The pre-commit script itself lives in a root-owned `.husky/` directory, making it trustworthy.
+- **SessionStart check** (`gentyr-sync.js` `tamperCheck()`): At every interactive session start, verifies symlink target + reads `protection-state.json` and checks `criticalHooks` array ownership via `fs.statSync().uid`. Emits a `systemMessage` warning if tampering is detected.
 - `protection-state.json` records `criticalHooks` as an array so both checks read the same source of truth dynamically.
 
 ### Uninstall
@@ -186,6 +187,16 @@ Configure user personas to automatically test your app when staging changes are 
 
 Creates personas (GUI/CLI/API/SDK modes), registers features with file patterns, and maps personas to features. Feedback agents spawn on staging changes and report findings to deputy-CTO triage pipeline.
 
+To browse a persona's feedback history or spawn a one-shot feedback session on demand:
+
+```bash
+/persona-feedback
+```
+
+Shows an overview of all personas and recent feedback runs, lets you pick a persona, view its satisfaction trend and CTO reports, drill into past session details, or spawn a live feedback session (fire-and-forget).
+
+The `product-manager` agent also creates fully-functional personas automatically as a post-analysis step. After Section 6 is completed, the agent receives a persona evaluation task where it first asks the user to choose between **Fill gaps only** (idempotent — backfill missing data without replacing existing) or **Full rebuild** (create everything fresh). It then reads `package.json` to detect the dev server URL and framework, scans for route/feature directories, registers them as features, creates or backfills personas with all required fields (`endpoints`, `behavior_traits`, `consumption_mode`), maps personas to features, maps pain points to personas, and reports compliance to the deputy-CTO. This is the primary automated path; `/configure-personas` is the interactive manual path for user-driven setup.
+
 ## Product Manager MCP Server
 
 The product-manager MCP server (`packages/mcp-servers/src/product-manager/`) manages a 6-section product-market-fit (PMF) analysis pipeline. State is persisted in `.claude/state/product-manager.db`.
@@ -230,6 +241,12 @@ Sections 2 and 6 are **list sections**: they use `add_entry` instead of `write_s
 **Persona compliance**: After Section 6 is populated, pain points can be mapped to personas via `map_pain_point_persona`. Persona IDs are validated against `user-feedback.db` (read-only). `get_compliance_report` shows mapping coverage percentage.
 
 **Markdown output**: Every write operation regenerates `.claude/product-market-fit.md` with all section content.
+
+**Post-analysis persona evaluation** (product-manager agent, 3-phase):
+- **Mode selection**: Agent uses `AskUserQuestion` to ask whether to run **Fill gaps only** (idempotent — skips existing data) or **Full rebuild** (creates everything from scratch). `AskUserQuestion` is included in the agent's `allowedTools` for this purpose.
+- **Phase 1 — Project Context Gathering**: Reads `package.json` to detect dev server URL and framework; globs for route/feature/component directories (cap 20); excludes `_`-prefixed dirs, `node_modules`, build output
+- **Phase 2 — Register Features + Create Personas**: Calls `mcp__user-feedback__list_features()` to skip already-registered features (applies in both modes); in Fill gaps only mode, also calls `mcp__user-feedback__list_personas()` and `mcp__user-feedback__update_persona` to backfill existing personas where `endpoints` or `behavior_traits` is empty (never overwrites populated fields; skips `cto_protected: true` personas entirely); skips creating a new persona if an existing one covers the same archetype; calls `mcp__user-feedback__register_feature` for new dirs with `file_patterns` and `url_patterns`; creates personas via `mcp__user-feedback__create_persona` with all required fields: `endpoints` (dev server URL), `behavior_traits` (derived from pain points), `consumption_mode` (`gui` for web apps, `api`/`cli`/`sdk` for other types)
+- **Phase 3 — Mapping**: Checks existing feature mappings via `mcp__user-feedback__get_persona` before adding — skips persona-feature pairs that already exist (idempotent); maps pain points to personas via `map_pain_point_persona` (`unmapped_only: true` filter ensures idempotency); verifies with `get_compliance_report`; reports results to deputy-CTO with new vs existing counts for features, personas, and mappings
 
 ## Automation Service
 
@@ -290,7 +307,8 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 - `syncKeys()` proactively refreshes non-active tokens approaching expiry (within `EXPIRY_BUFFER_MS`), resolves account profiles for keys missing `account_uuid` via `fetchAccountProfile()`, and performs pre-expiry restartless swap to Keychain; covers idle sessions because hourly-automation calls `syncKeys()` every 10 min via launchd even when no Claude Code process is active
 - `fetchAccountProfile(accessToken)` — exported function that calls `https://api.anthropic.com/api/oauth/profile` to resolve `account_uuid` and `email` for keys added by automation or token refresh that skipped the interactive SessionStart profile-resolution path; non-fatal, retried on next sync
 - `selectActiveKey()` freshness gate: nulls out usage data older than 15 minutes to prevent uninformed switches based on stale health checks; stale keys pass "usable" filter but are excluded from comparison logic, causing system to stay put rather than make blind decisions
-- `pruneDeadKeys` immediately garbage-collects keys with `status: 'invalid'`; fires an `account_auth_failed` rotation log event only when an account loses its last viable key; email resolution order: key-level `account_email` → sibling key with same `account_uuid` → rotation_log history for same `key_id`; fires `account_auth_failed` only once per account (checks remaining non-pruned keys with same email to avoid duplicates); preserved in rotation_log even after the key entry is deleted; never prunes the active key; removes orphaned rotation_log entries for other event types; called automatically at the end of every `syncKeys()` run
+- `pruneDeadKeys` converts keys with `status: 'invalid'` to `status: 'tombstone'` (with `tombstoned_at` timestamp and 24h TTL) rather than deleting them; tombstoned keys are distinguishable from genuinely unknown tokens so the rotation proxy can swap rather than passthrough; fires `account_auth_failed` rotation log event only when an account loses its last viable key; email resolution order: key-level `account_email` → sibling key with same `account_uuid` → rotation_log history for same `key_id`; fires `account_auth_failed` only once per account (checks remaining non-pruned keys with same email to avoid duplicates); tombstoned entries removed from rotation_log only after their 24h TTL expires; `hasOtherViableKey` filter excludes `tombstone` status; never prunes the active key; called automatically at the end of every `syncKeys()` run
+- `refreshExpiredToken` skips keys with `status: 'tombstone'` (in addition to `'invalid'`)
 
 **Rotation Monitoring** (`scripts/monitor-token-swap.mjs`):
 ```bash
@@ -332,8 +350,18 @@ Hooks that need the AI to act on their output must include both:
 - Syncs husky hooks by comparing `husky/` against `.husky/` in the target project; re-copies if content differs
 - Falls back to legacy settings.json hook diff check when no `gentyr-state.json` exists (pre-migration projects)
 - Supports both npm model (`node_modules/gentyr`) and legacy symlink model (`.claude-framework`)
-- **`tamperCheck()`**: Runs before sync logic. Reads `protection-state.json`; if `protected: true`, verifies each filename in `criticalHooks` array is still root-owned (`stat.uid === 0`). Emits a `systemMessage` warning if any hook is not root-owned. Resolves the hooks directory via symlink the same way `protect.js` does.
+- **`tamperCheck()`**: Runs before sync logic. Two checks: (1) symlink target verification — confirms `.claude/hooks` is a symlink resolving to a directory whose grandparent contains `version.json`; regular directories only allowed in the framework repo itself; (2) file ownership check — reads `protection-state.json`, if `protected: true` verifies each filename in `criticalHooks` array is still root-owned (`stat.uid === 0`). Emits a `systemMessage` warning listing all failed checks if any are detected.
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; version 3.0
+
+**CTO Notification Hook** (`.claude/hooks/cto-notification-hook.js`):
+- Runs at `UserPromptSubmit` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`) and slash commands (sentinel markers or `/command-name` pattern)
+- Checks deputy-cto database (pending decisions, rejections), agent-reports database (unread reports), todo.db (queued/active task counts), and autonomous mode status
+- Reads aggregate quota from `~/.claude/api-key-rotation.json`; deduplicates same-account keys by `account_uuid`; falls back to fingerprint cross-match for null-UUID keys
+- Displays a multi-line status block each prompt (quota bar, 30-day token usage, session counts, TODO counts, pending CTO items)
+- Critical mode: when `rejections > 0`, collapses to a compact one-liner with `COMMITS BLOCKED` prefix
+- Uses an incremental session-file cache (`~/.claude/cto-metrics-cache-*.json`) with a 3-second time budget to compute token usage without blocking
+- Output uses both `systemMessage` (terminal display) and `hookSpecificOutput.additionalContext` (AI model context) so the AI can act on quota/deadline data
+- Tests at `.claude/hooks/__tests__/cto-notification-hook.test.js` (36 tests, runs via `node --test`)
 
 **Branch Drift Check Hook** (`.claude/hooks/branch-drift-check.js`):
 - Runs at `UserPromptSubmit` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
@@ -342,7 +370,7 @@ Hooks that need the AI to act on their output must include both:
 - State file: `.claude/state/branch-drift-state.json` with `{ lastCheck, lastBranch }`
 - Skips worktrees (`.git` file check), detached HEAD, and spawned sessions; warn-only — never auto-restores
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `UserPromptSubmit`
-- Tests at `.claude/hooks/__tests__/gentyr-sync-branch-drift.test.js` (14 tests, runs via `node --test`)
+- Tests at `.claude/hooks/__tests__/gentyr-sync-branch-drift.test.js` (18 tests, runs via `node --test`)
 
 **Credential Health Check Hook** (`.claude/hooks/credential-health-check.js`):
 - Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions
@@ -431,13 +459,24 @@ Claude Code ──HTTPS_PROXY──> localhost:18080 ──TLS──> api.anthro
 
 **429 retry**: On quota exhaustion response, marks the current key as exhausted, calls `selectActiveKey()` to pick the next available key, and retries the request (max 2 retries). If no keys are available, returns the original 429 to the client.
 
-**Logging**: Structured JSON lines to `~/.claude/rotation-proxy.log` (max 1MB with rotation). Logs token swaps (key ID only, never token values), 429 retries, and errors for debugging.
+**401 retry**: On auth failure response (not a quota issue), retries once with a fresh state read — allows picking up a key that was rotated between the proxy's token resolution and the upstream response. Does not call `rotateOnExhaustion`; fires `auth_retry_on_401` log event.
+
+**Tombstone-aware routing** (`forwardRequest`): When the incoming request carries a token known to rotation state, the proxy inspects its entry:
+- `status: 'tombstone'` — pruned dead token; swap with the active key and forward (prevents "OAuth token revoked" errors from stale sessions sending tombstoned credentials)
+- No entry at all — genuinely unknown token (fresh login not yet registered); pass through unchanged and trigger async `syncKeys()` to register it (preserves fresh login flow)
+- Any other status — normal swap path (inject active key's token)
+
+**Conditional auth header injection** (`rebuildRequest`): Authorization header is only added back to the rebuilt request if the original request had one. Requests without auth headers (e.g., health checks, OAuth flows that pass through to a MITM host) are forwarded without injecting a token.
+
+**Logging**: Structured JSON lines to `~/.claude/rotation-proxy.log` (max 1MB with rotation). Logs token swaps (key ID only, never token values), 429 retries, 401 retries, tombstone swaps, unknown-token passthroughs, and errors for debugging.
 
 **Health endpoint**: `GET http://localhost:18080/__health` returns JSON status with active key ID, uptime, and request count.
 
 **Lifecycle**: Runs as a launchd KeepAlive service (`com.local.gentyr-rotation-proxy`). Auto-restarts on crash. Starts before the automation service.
 
 **CONNECT head buffer handling**: The CONNECT handler's `head` parameter (early client data — typically the TLS ClientHello — sent before the 200 response arrives) is pushed back into the socket's readable stream with `clientSocket.unshift(head)` before wrapping in TLSSocket. Omitting this caused intermittent ECONNRESET errors because the TLS handshake began with incomplete data. This is the textbook fix for Node.js HTTPS MITM proxies.
+
+**Tombstone consumer filters**: Consumer hooks that iterate rotation state keys (`session-reviver.js`, `api-key-watcher.js`, `stop-continue-hook.js`, `quota-monitor.js`) filter out tombstoned entries before passing key data to `checkKeyHealth()`, preventing calls with `undefined` access tokens.
 
 **Complements existing rotation**: The proxy handles immediate token swap at the network level. Quota-monitor still handles usage detection and key selection. Key-sync still handles token refresh and Keychain writes.
 

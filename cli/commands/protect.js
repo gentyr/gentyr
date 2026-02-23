@@ -100,12 +100,11 @@ function doProtect(projectDir) {
   // file operations (checkout, merge, stash). Individual critical files inside are still
   // root-owned. The unlink+recreate gap is closed by the husky tamper check + SessionStart check.
   //
-  // .claude/ is protected in target projects (prevents hooks symlink replacement).
-  // Framework repo excluded — MCP servers need to create runtime files (databases, state, etc.)
-  const isFrameworkRepo = fs.existsSync(path.join(projectDir, 'version.json'));
+  // .claude/ directory is NOT root-owned — git stash/checkout/merge need to create/unlink
+  // files inside it. Symlink target verification (pre-commit + SessionStart) replaces
+  // directory ownership as the anti-tampering mechanism for .claude/hooks.
   const dirs = [
     path.join(projectDir, '.husky'),
-    ...(!isFrameworkRepo ? [path.join(projectDir, '.claude')] : []),
   ];
 
   // Write state BEFORE protecting directories (user needs write access to .claude/)
@@ -135,6 +134,20 @@ function doProtect(projectDir) {
       console.log(`  Protected dir: ${dir}`);
     }
   }
+
+  // Migration: if .claude/ is currently root-owned, restore user ownership.
+  // This undoes the old protection model that broke git stash/checkout/merge.
+  const claudeDir = path.join(projectDir, '.claude');
+  try {
+    const stat = fs.statSync(claudeDir);
+    if (stat.uid === 0) {
+      const originalUser = getOriginalUser();
+      const originalGroup = getOriginalGroup();
+      sudoExec('chown', [`${originalUser}:${originalGroup}`, claudeDir]);
+      sudoExec('chmod', ['755', claudeDir]);
+      console.log(`  Migrated .claude/ to user ownership (was root-owned)`);
+    }
+  } catch {}
 
   for (const file of files) {
     if (fs.existsSync(file)) {
@@ -182,10 +195,8 @@ function doUnprotect(projectDir) {
     path.join(projectDir, 'package.json'),
   ];
 
-  const isFrameworkRepo = fs.existsSync(path.join(projectDir, 'version.json'));
   const dirs = [
     path.join(projectDir, '.husky'),
-    ...(!isFrameworkRepo ? [path.join(projectDir, '.claude')] : []),
   ];
 
   const ownership = `${originalUser}:${originalGroup}`;

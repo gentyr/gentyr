@@ -167,6 +167,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "mcp__todo-db__create_task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/urgent-task-spawner.js",
+            "timeout": 15
+          }
+        ]
       }
     ]
   }

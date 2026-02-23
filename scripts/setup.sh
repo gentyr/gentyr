@@ -566,6 +566,16 @@ fi
 
 if [ "$MODE" = "install" ]; then
 
+# Auto-unprotect if currently protected (re-protects at end)
+WAS_PROTECTED=false
+if is_protected; then
+    WAS_PROTECTED=true
+    require_root "--path $PROJECT_DIR (project is protected, sudo required)"
+    echo -e "${YELLOW}Auto-unprotecting for install...${NC}"
+    do_unprotect
+    echo ""
+fi
+
 # Check if --protect was requested, require sudo upfront
 if [ "$PROTECT" = true ]; then
     require_root "--protect"
@@ -1560,8 +1570,8 @@ if [ "$PROTECT_MCP" = true ]; then
     fi
 fi
 
-# --- 11. Protection (if requested) ---
-if [ "$PROTECT" = true ]; then
+# --- 11. Protection (if requested, or auto-re-protect if was protected) ---
+if [ "$PROTECT" = true ] || [ "$WAS_PROTECTED" = true ]; then
     echo ""
     do_protect
 fi

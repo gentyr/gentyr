@@ -77,7 +77,7 @@ async function main() {
   // Step 3: Run health checks on all tracked keys (with token refresh for expired)
   const healthCheckPromises = Object.entries(state.keys).map(async ([keyId, keyData]) => {
     // Skip invalid keys
-    if (keyData.status === 'invalid') {
+    if (keyData.status === 'invalid' || keyData.status === 'tombstone') {
       return { keyId, result: null };
     }
 

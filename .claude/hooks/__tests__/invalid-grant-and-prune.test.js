@@ -248,21 +248,50 @@ describe('key-sync.js - pruneDeadKeys() code structure', () => {
     );
   });
 
-  it('should delete pruned keys from state.keys', () => {
+  it('should tombstone invalid keys (status: "tombstone") rather than immediately deleting them', () => {
     const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
     const fnMatch = code.match(/export function pruneDeadKeys[\s\S]*?\n\}/);
     assert.ok(fnMatch, 'pruneDeadKeys must be defined');
     const fnBody = fnMatch[0];
 
+    // Invalid keys are transitioned to tombstone status, not deleted outright.
+    // This preserves the key entry for 24h so duplicate prune events are not re-fired.
     assert.match(
       fnBody,
-      /delete state\.keys\[keyId\]/,
-      'pruneDeadKeys must delete pruned key entries from state.keys'
+      /status:\s*['"]tombstone['"]/,
+      'pruneDeadKeys must write status: "tombstone" for invalid keys'
+    );
+
+    assert.match(
+      fnBody,
+      /tombstoned_at:/,
+      'pruneDeadKeys must record tombstoned_at timestamp for TTL-based cleanup'
     );
   });
 
-  it('should remove rotation_log entries referencing pruned keys', () => {
+  it('should delete expired tombstones (24h TTL) from state.keys', () => {
+    const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+    const fnMatch = code.match(/export function pruneDeadKeys[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'pruneDeadKeys must be defined');
+    const fnBody = fnMatch[0];
+
+    // Only tombstones that have aged past 24h are actually deleted from state.keys.
+    assert.match(
+      fnBody,
+      /TOMBSTONE_TTL_MS\s*=\s*24 \* 60 \* 60 \* 1000/,
+      'pruneDeadKeys must define a 24h tombstone TTL constant'
+    );
+
+    assert.match(
+      fnBody,
+      /delete state\.keys\[keyId\]/,
+      'pruneDeadKeys must delete expired tombstones from state.keys'
+    );
+  });
+
+  it('should remove rotation_log entries only for actually-deleted (expired) tombstones, not fresh tombstones', () => {
     const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
     const fnMatch = code.match(/export function pruneDeadKeys[\s\S]*?\n\}/);
@@ -272,7 +301,14 @@ describe('key-sync.js - pruneDeadKeys() code structure', () => {
     assert.match(
       fnBody,
       /state\.rotation_log = state\.rotation_log\.filter\(/,
-      'pruneDeadKeys must filter out orphaned rotation_log entries for pruned keys'
+      'pruneDeadKeys must filter rotation_log for expired tombstones'
+    );
+
+    // The filter must scope to deletedSet (expired tombstones), not prunedSet (freshly tombstoned)
+    assert.match(
+      fnBody,
+      /deletedSet/,
+      'pruneDeadKeys must scope rotation_log cleanup to deleted tombstones (deletedSet), not freshly tombstoned keys'
     );
   });
 
@@ -290,7 +326,7 @@ describe('key-sync.js - pruneDeadKeys() code structure', () => {
     );
   });
 
-  it('should log each pruned key using the optional log function', () => {
+  it('should log each tombstoned key using the optional log function', () => {
     const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
     const fnMatch = code.match(/export function pruneDeadKeys[\s\S]*?\n\}/);
@@ -299,8 +335,24 @@ describe('key-sync.js - pruneDeadKeys() code structure', () => {
 
     assert.match(
       fnBody,
-      /logFn\(`\[key-sync\] Pruned dead key/,
-      'pruneDeadKeys must log each pruned key via the logFn parameter'
+      /logFn\(`\[key-sync\] Tombstoned dead key/,
+      'pruneDeadKeys must log each tombstoned key via the logFn parameter'
+    );
+  });
+
+  it('should exclude tombstone-status keys from hasOtherViableKey check', () => {
+    const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+    const fnMatch = code.match(/export function pruneDeadKeys[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'pruneDeadKeys must be defined');
+    const fnBody = fnMatch[0];
+
+    // hasOtherViableKey must exclude tombstone keys — they can no longer authenticate.
+    // This prevents a freshly-tombstoned key (from a previous cycle) from masking auth failure.
+    assert.match(
+      fnBody,
+      /otherData\.status === ['"]tombstone['"]/,
+      'hasOtherViableKey check must exclude keys with status "tombstone"'
     );
   });
 });
@@ -521,18 +573,201 @@ describe('pruneDeadKeys() - behavioral logic', () => {
       rotation_log: [],
     };
 
-    // Simulate pruneDeadKeys on empty state
+    // Simulate pruneDeadKeys candidate collection on empty state
     const prunedKeyIds = [];
     for (const [keyId, keyData] of Object.entries(state.keys)) {
       if (keyData.status !== 'invalid') continue;
       if (keyId === state.active_key_id) continue;
-      const lastSeen = keyData.last_health_check || keyData.added_at || 0;
-      if (Date.now() - lastSeen > 7 * 24 * 60 * 60 * 1000) {
-        prunedKeyIds.push(keyId);
-      }
+      prunedKeyIds.push(keyId);
     }
 
     assert.strictEqual(prunedKeyIds.length, 0, 'pruneDeadKeys must handle empty state.keys without error');
+  });
+});
+
+// ============================================================================
+// pruneDeadKeys() — tombstone marking and TTL cleanup (new behavior)
+// ============================================================================
+
+describe('pruneDeadKeys() - tombstone behavior', () => {
+  it('should convert invalid keys to tombstone status instead of deleting them immediately', () => {
+    // Invalid keys become tombstones so the rotation_log entries can still refer to them
+    // for 24h. Direct deletion would orphan those log entries prematurely.
+    const now = Date.now();
+    const state = {
+      active_key_id: 'active-key',
+      keys: {
+        'active-key': { status: 'active', account_email: 'a@example.com' },
+        'invalid-key': {
+          status: 'invalid',
+          account_email: 'b@example.com',
+          account_uuid: null,
+        },
+      },
+      rotation_log: [
+        { key_id: 'invalid-key', event: 'key_removed', reason: 'refresh_token_invalid_grant' },
+      ],
+    };
+
+    // Simulate tombstone conversion (production logic)
+    const prunedKeyIds = [];
+    for (const [keyId, keyData] of Object.entries(state.keys)) {
+      if (keyData.status !== 'invalid') continue;
+      if (keyId === state.active_key_id) continue;
+      prunedKeyIds.push(keyId);
+    }
+
+    for (const keyId of prunedKeyIds) {
+      state.keys[keyId] = {
+        status: 'tombstone',
+        tombstoned_at: now,
+        account_email: state.keys[keyId]?.account_email || null,
+      };
+    }
+
+    // Key must still exist in state, but as a tombstone
+    assert.ok(state.keys['invalid-key'], 'Tombstoned key must still exist in state.keys');
+    assert.strictEqual(state.keys['invalid-key'].status, 'tombstone', 'Key status must be "tombstone"');
+    assert.strictEqual(state.keys['invalid-key'].tombstoned_at, now, 'tombstoned_at must be set');
+    assert.strictEqual(state.keys['invalid-key'].account_email, 'b@example.com', 'account_email must be preserved');
+
+    // Rotation log entries are NOT cleaned up yet (only cleaned after TTL expires)
+    assert.strictEqual(state.rotation_log.length, 1, 'rotation_log entries must not be removed for fresh tombstones');
+  });
+
+  it('should clean up expired tombstones (older than 24h) by deleting them from state.keys', () => {
+    const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    const state = {
+      active_key_id: 'active-key',
+      keys: {
+        'active-key': { status: 'active' },
+        'fresh-tombstone': {
+          status: 'tombstone',
+          tombstoned_at: now - 1000,  // only 1s ago — keep it
+        },
+        'stale-tombstone': {
+          status: 'tombstone',
+          tombstoned_at: now - TOMBSTONE_TTL_MS - 1000,  // >24h ago — delete it
+        },
+      },
+      rotation_log: [
+        { key_id: 'fresh-tombstone', event: 'account_auth_failed' },
+        { key_id: 'stale-tombstone', event: 'account_auth_failed' },
+        { key_id: 'stale-tombstone', event: 'key_removed' },
+        { key_id: 'active-key', event: 'key_added' },
+      ],
+    };
+
+    // Simulate TTL cleanup
+    const expiredTombstones = [];
+    for (const [keyId, keyData] of Object.entries(state.keys)) {
+      if (keyData.status === 'tombstone' &&
+          keyData.tombstoned_at && now - keyData.tombstoned_at > TOMBSTONE_TTL_MS) {
+        expiredTombstones.push(keyId);
+      }
+    }
+    for (const keyId of expiredTombstones) {
+      delete state.keys[keyId];
+    }
+
+    // Filter log for deleted tombstones (non-account_auth_failed entries)
+    const deletedSet = new Set(expiredTombstones);
+    if (deletedSet.size > 0) {
+      state.rotation_log = state.rotation_log.filter(
+        entry => !entry.key_id || !deletedSet.has(entry.key_id) || entry.event === 'account_auth_failed'
+      );
+    }
+
+    // Only the stale tombstone is deleted
+    assert.ok(!state.keys['stale-tombstone'], 'Stale tombstone (>24h) must be deleted');
+    assert.ok(state.keys['fresh-tombstone'], 'Fresh tombstone (<24h) must be kept');
+    assert.ok(state.keys['active-key'], 'Active key must be unaffected');
+
+    // account_auth_failed for stale tombstone is preserved; key_removed is removed
+    const logKeyIds = state.rotation_log.map(e => `${e.key_id}:${e.event}`);
+    assert.ok(logKeyIds.includes('fresh-tombstone:account_auth_failed'), 'Fresh tombstone log entry must be kept');
+    assert.ok(logKeyIds.includes('stale-tombstone:account_auth_failed'), 'account_auth_failed for stale tombstone must be preserved');
+    assert.ok(!logKeyIds.includes('stale-tombstone:key_removed'), 'key_removed for stale tombstone must be removed');
+    assert.ok(logKeyIds.includes('active-key:key_added'), 'Active key log entry must be kept');
+  });
+
+  it('should NOT clean up tombstones that are exactly at the 24h boundary (TTL is strictly >24h)', () => {
+    const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    // At exactly 24h the check is `> TOMBSTONE_TTL_MS`, so exactly 24h should NOT be cleaned up
+    const state = {
+      active_key_id: null,
+      keys: {
+        'at-boundary': {
+          status: 'tombstone',
+          tombstoned_at: now - TOMBSTONE_TTL_MS,  // exactly at boundary
+        },
+      },
+      rotation_log: [],
+    };
+
+    const expiredTombstones = [];
+    for (const [keyId, keyData] of Object.entries(state.keys)) {
+      if (keyData.status === 'tombstone' &&
+          keyData.tombstoned_at && now - keyData.tombstoned_at > TOMBSTONE_TTL_MS) {
+        expiredTombstones.push(keyId);
+      }
+    }
+
+    // Exactly at the boundary is NOT expired (strictly greater than)
+    assert.strictEqual(expiredTombstones.length, 0, 'Tombstones at exactly 24h must not yet be cleaned up (strictly >)');
+  });
+
+  it('should NOT prune tombstone-status keys as invalid (tombstones bypass the invalid check)', () => {
+    // Tombstone keys have status 'tombstone', not 'invalid', so they are skipped
+    // by the initial invalid-key selection loop.
+    const state = {
+      active_key_id: null,
+      keys: {
+        'tombstone-key': {
+          status: 'tombstone',
+          tombstoned_at: Date.now() - 1000,
+        },
+      },
+      rotation_log: [],
+    };
+
+    const prunedKeyIds = [];
+    for (const [keyId, keyData] of Object.entries(state.keys)) {
+      if (keyData.status !== 'invalid') continue;
+      if (keyId === state.active_key_id) continue;
+      prunedKeyIds.push(keyId);
+    }
+
+    assert.strictEqual(prunedKeyIds.length, 0, 'Tombstone-status keys must not be selected as invalid-prune candidates');
+  });
+
+  it('should exclude tombstone-status keys from hasOtherViableKey (tombstones cannot authenticate)', () => {
+    // A tombstone key cannot be used for authentication. If it were counted as viable,
+    // account_auth_failed would be incorrectly suppressed.
+    const email = 'user@example.com';
+    const prunedSet = new Set(['invalid-key']);
+
+    const keys = {
+      'invalid-key': { status: 'invalid', account_email: email },
+      'tombstone-sibling': { status: 'tombstone', account_email: email },
+    };
+
+    const hasOtherViableKey = Object.entries(keys).some(([otherId, otherData]) => {
+      if (otherId === 'invalid-key' || prunedSet.has(otherId)) return false;
+      if (otherData.status === 'invalid' || otherData.status === 'expired' || otherData.status === 'tombstone') return false;
+      if (!email) return false;
+      return otherData.account_email === email;
+    });
+
+    assert.strictEqual(
+      hasOtherViableKey,
+      false,
+      'A tombstone-status key must NOT count as a viable sibling — it cannot authenticate'
+    );
   });
 });
 
@@ -892,7 +1127,7 @@ describe('pruneDeadKeys() - email resolution from sibling keys and rotation_log'
       // Gap G: only emit if this account has no other viable key
       const hasOtherViableKey = Object.entries(state.keys).some(([otherId, otherData]) => {
         if (otherId === keyId || prunedSet.has(otherId)) return false;
-        if (otherData.status === 'invalid' || otherData.status === 'expired') return false;
+        if (otherData.status === 'invalid' || otherData.status === 'expired' || otherData.status === 'tombstone') return false;
         if (!email) return false;
         return otherData.account_email === email;
       });

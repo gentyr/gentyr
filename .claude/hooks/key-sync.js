@@ -311,7 +311,7 @@ export function updateActiveCredentials(keyData) {
  * @returns {Promise<{accessToken: string, refreshToken: string, expiresAt: number}|'invalid_grant'|null>}
  */
 export async function refreshExpiredToken(keyData) {
-  if (!keyData.refreshToken || keyData.status === 'invalid') return null;
+  if (!keyData.refreshToken || keyData.status === 'invalid' || keyData.status === 'tombstone') return null;
 
   try {
     const response = await fetch(OAUTH_TOKEN_ENDPOINT, {
@@ -585,7 +585,7 @@ export function pruneDeadKeys(state, log) {
     // Check if any other non-pruned key belongs to the same account
     const hasOtherViableKey = Object.entries(state.keys).some(([otherId, otherData]) => {
       if (otherId === keyId || prunedSet.has(otherId)) return false;
-      if (otherData.status === 'invalid' || otherData.status === 'expired') return false;
+      if (otherData.status === 'invalid' || otherData.status === 'expired' || otherData.status === 'tombstone') return false;
       if (!email) return false; // Can't match by email if this key has none
       return otherData.account_email === email;
     });
@@ -604,14 +604,36 @@ export function pruneDeadKeys(state, log) {
   }
 
   for (const keyId of prunedKeyIds) {
-    delete state.keys[keyId];
-    logFn(`[key-sync] Pruned dead key ${keyId.slice(0, 8)}... (invalid, gc'd)`);
+    state.keys[keyId] = {
+      status: 'tombstone',
+      tombstoned_at: Date.now(),
+      account_email: state.keys[keyId]?.account_email || null,
+    };
+    logFn(`[key-sync] Tombstoned dead key ${keyId.slice(0, 8)}... (invalid → tombstone)`);
   }
 
-  // Remove orphaned rotation_log entries (preserve account_auth_failed events)
-  state.rotation_log = state.rotation_log.filter(
-    entry => !entry.key_id || !prunedSet.has(entry.key_id) || entry.event === 'account_auth_failed'
-  );
+  // Clean up old tombstones (24h TTL)
+  const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
+  const expiredTombstones = [];
+  for (const [keyId, keyData] of Object.entries(state.keys)) {
+    if (keyData.status === 'tombstone' &&
+        keyData.tombstoned_at && Date.now() - keyData.tombstoned_at > TOMBSTONE_TTL_MS) {
+      expiredTombstones.push(keyId);
+    }
+  }
+  for (const keyId of expiredTombstones) {
+    delete state.keys[keyId];
+    logFn(`[key-sync] Cleaned up expired tombstone ${keyId.slice(0, 8)}...`);
+  }
+
+  // Remove orphaned rotation_log entries only for actually-deleted tombstones
+  // (freshly tombstoned keys still exist in state, so keep their log entries)
+  const deletedSet = new Set(expiredTombstones);
+  if (deletedSet.size > 0) {
+    state.rotation_log = state.rotation_log.filter(
+      entry => !entry.key_id || !deletedSet.has(entry.key_id) || entry.event === 'account_auth_failed'
+    );
+  }
 }
 
 // ============================================================================

@@ -72,7 +72,7 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
       const sentinelsMatch = hookCode.match(/const SENTINELS = \{[\s\S]*?\};/);
       assert.ok(sentinelsMatch, 'SENTINELS constant must exist');
       const commandCount = (sentinelsMatch[0].match(/'[\w-]+':/g) || []).length;
-      assert.strictEqual(commandCount, 16, 'Should have 16 slash commands total');
+      assert.strictEqual(commandCount, 17, 'Should have 17 slash commands total');
     });
   });
 

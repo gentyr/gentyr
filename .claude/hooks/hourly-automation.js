@@ -308,7 +308,7 @@ function checkCtoActivityGate(config) {
   if (!lastCtoBriefing) {
     return {
       open: false,
-      reason: 'No CTO briefing recorded. Run /deputy-cto to activate automation.',
+      reason: 'No CTO briefing recorded. Start a Claude Code session or run /deputy-cto to activate.',
       hoursSinceLastBriefing: null,
     };
   }
@@ -318,7 +318,7 @@ function checkCtoActivityGate(config) {
     if (isNaN(briefingTime)) {
       return {
         open: false,
-        reason: 'CTO briefing timestamp is invalid. Run /deputy-cto to reset.',
+        reason: 'CTO briefing timestamp is invalid. Start a Claude Code session or run /deputy-cto to reset.',
         hoursSinceLastBriefing: null,
       };
     }
@@ -327,7 +327,7 @@ function checkCtoActivityGate(config) {
     if (hoursSince >= 24) {
       return {
         open: false,
-        reason: `CTO briefing was ${Math.floor(hoursSince)}h ago (>24h). Run /deputy-cto to reactivate.`,
+        reason: `CTO briefing was ${Math.floor(hoursSince)}h ago (>24h). Start a Claude Code session or run /deputy-cto to reactivate.`,
         hoursSinceLastBriefing: Math.floor(hoursSince),
       };
     }
