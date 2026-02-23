@@ -78,6 +78,7 @@ const RotationLogEntrySchema = z.object({
   event: z.string(),
   key_id: z.string().optional(),
   reason: z.string().optional(),
+  account_email: z.string().nullable().optional(),
   usage_snapshot: z.object({
     five_hour: z.number(),
     seven_day: z.number(),
@@ -96,42 +97,67 @@ const KeyRotationFileSchema = z.object({
 // Helpers
 // ============================================================================
 
+// Only these 6 event types are shown in the EVENT HISTORY section.
+// Everything else is filtered (still logged for debugging).
+const ALLOWED_EVENTS = new Set([
+  'key_added',
+  'account_auth_failed',
+  'account_nearly_depleted',
+  'key_exhausted',
+  'key_switched',
+  'account_quota_refreshed',
+]);
+
 function truncateKeyId(keyId: string): string {
   return keyId.length > 8 ? `${keyId.slice(0, 8)}...` : keyId;
 }
 
-function deriveDescription(event: string, reason: string | undefined, keyId: string, email?: string | null): string | null {
-  const short = truncateKeyId(keyId);
-  const displayName = email || short;
+/**
+ * Resolve email for an event: entry-level account_email → key-level account_email → truncated key ID.
+ */
+function resolveEmail(
+  entryEmail: string | null | undefined,
+  keyData: { account_email?: string | null } | undefined,
+  keyId: string,
+): string {
+  return entryEmail || keyData?.account_email || truncateKeyId(keyId);
+}
+
+function deriveDescription(
+  event: string,
+  reason: string | undefined,
+  keyId: string,
+  entryEmail: string | null | undefined,
+  keyData?: { account_email?: string | null },
+): string | null {
+  if (!ALLOWED_EVENTS.has(event)) return null;
+
+  const displayName = resolveEmail(entryEmail, keyData, keyId);
 
   switch (event) {
     case 'key_added':
+      // Filter out token refresh events — they are noise
       if (reason && reason.startsWith('token_refreshed'))
-        return `Token refreshed for ${short}`;
+        return null;
       return `New account added: ${displayName}`;
 
-    case 'key_switched': {
-      const extra = reason ? ` (${reason})` : '';
-      return `Switched to ${short}${extra}`;
-    }
+    case 'account_auth_failed':
+      return `Account can no longer auth: ${displayName}`;
+
+    case 'account_nearly_depleted':
+      return `Account nearly depleted: ${displayName}`;
 
     case 'key_exhausted':
-      return `Account ${short} exhausted`;
+      return `Account fully depleted: ${displayName}`;
 
-    case 'key_removed':
-      if (reason === 'refresh_token_invalid_grant')
-        return `Refresh token revoked for ${short}`;
-      if (reason === 'token_expired' || reason === 'token_expired_refresh_failed')
-        return `Token expired for ${short}`;
-      if (reason && reason.startsWith('health_check_failed'))
-        return `Health check failed for ${short}`;
-      return `Key removed: ${short}`;
+    case 'key_switched':
+      return `Account selected: ${displayName}`;
 
-    case 'health_check':
-      return null; // too noisy
+    case 'account_quota_refreshed':
+      return `Account quota refreshed: ${displayName}`;
 
     default:
-      return `${event}: ${short}`;
+      return null;
   }
 }
 
@@ -208,13 +234,15 @@ export function getAccountOverviewData(): AccountOverviewData {
     // Skip events for keys explicitly marked invalid (revoked credentials)
     if (keyData?.status === 'invalid') continue;
 
-    const email = keyData?.account_email ?? null;
-    const desc = deriveDescription(entry.event, entry.reason, keyId, email);
+    // Access entry-level account_email (may be set by hooks that embed it)
+    const entryEmail = (entry as Record<string, unknown>).account_email as string | null | undefined;
+    const desc = deriveDescription(entry.event, entry.reason, keyId, entryEmail, keyData);
     if (!desc) continue;
 
     // Suppress duplicate "New account added" events for the same email
     if (entry.event === 'key_added' && !(entry.reason && entry.reason.startsWith('token_refreshed'))) {
-      const dedupeKey = email ?? keyId;
+      const resolvedEmail = entryEmail || (keyData?.account_email ?? null);
+      const dedupeKey = resolvedEmail ?? keyId;
       if (seenAddedEmails.has(dedupeKey)) continue;
       seenAddedEmails.add(dedupeKey);
     }

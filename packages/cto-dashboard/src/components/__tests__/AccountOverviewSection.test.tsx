@@ -262,7 +262,7 @@ describe('AccountOverviewSection', () => {
       expect(output).toContain('current@example.com');
     });
 
-    it('should display keyId when email is null', () => {
+    it('should exclude accounts without email from deduplicated view', () => {
       const data: AccountOverviewData = {
         hasData: true,
         activeKeyId: null,
@@ -290,7 +290,8 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain('key-1');
+      // Accounts without email are excluded from the deduplicated account list
+      expect(output).toContain('0 accounts');
     });
 
     it('should display dash for null percentages', () => {
@@ -339,7 +340,7 @@ describe('AccountOverviewSection', () => {
               status,
               isCurrent: false,
               subscriptionType: 'claude_max',
-              email: null,
+              email: `${status}@example.com`,
               expiresAt: null,
               addedAt: null,
               lastUsedAt: null,
@@ -664,11 +665,12 @@ describe('AccountOverviewSection', () => {
 
     it('should render all event types with appropriate colors', () => {
       const events: Array<{ event: string; desc: string }> = [
-        { event: 'key_switched', desc: 'Switched' },
-        { event: 'key_exhausted', desc: 'Exhausted' },
-        { event: 'key_added', desc: 'Added' },
-        { event: 'key_removed', desc: 'Removed' },
-        { event: 'unknown_event', desc: 'Unknown' },
+        { event: 'key_switched', desc: 'Account selected: user@test.io' },
+        { event: 'key_exhausted', desc: 'Account fully depleted: user@test.io' },
+        { event: 'key_added', desc: 'New account added: user@test.io' },
+        { event: 'account_nearly_depleted', desc: 'Account nearly depleted: user@test.io' },
+        { event: 'account_quota_refreshed', desc: 'Account quota refreshed: user@test.io' },
+        { event: 'account_auth_failed', desc: 'Account can no longer auth: user@test.io' },
       ];
 
       events.forEach(({ event, desc }) => {
@@ -922,7 +924,7 @@ describe('AccountOverviewSection', () => {
             status: 'active',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'zero@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
@@ -953,7 +955,7 @@ describe('AccountOverviewSection', () => {
             status: 'exhausted',
             isCurrent: false,
             subscriptionType: 'claude_max',
-            email: null,
+            email: 'maxed@example.com',
             expiresAt: null,
             addedAt: null,
             lastUsedAt: null,
