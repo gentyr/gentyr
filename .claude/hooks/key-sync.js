@@ -550,15 +550,29 @@ export function pruneDeadKeys(state, log) {
 
   if (prunedKeyIds.length === 0) return;
 
+  // Log account_auth_failed for accounts losing their last viable key
+  for (const keyId of prunedKeyIds) {
+    const keyData = state.keys[keyId];
+    const email = keyData?.account_email || null;
+    logRotationEvent(state, {
+      timestamp: Date.now(),
+      event: 'account_auth_failed',
+      key_id: keyId,
+      reason: 'last_key_invalid_pruned',
+      account_email: email,
+    });
+    logFn(`[key-sync] Account auth failed for ${email || keyId.slice(0, 8) + '...'} (invalid key pruned)`);
+  }
+
   for (const keyId of prunedKeyIds) {
     delete state.keys[keyId];
     logFn(`[key-sync] Pruned dead key ${keyId.slice(0, 8)}... (invalid, gc'd)`);
   }
 
-  // Remove orphaned rotation_log entries
+  // Remove orphaned rotation_log entries (preserve account_auth_failed events)
   const prunedSet = new Set(prunedKeyIds);
   state.rotation_log = state.rotation_log.filter(
-    entry => !entry.key_id || !prunedSet.has(entry.key_id)
+    entry => !entry.key_id || !prunedSet.has(entry.key_id) || entry.event === 'account_auth_failed'
   );
 }
 

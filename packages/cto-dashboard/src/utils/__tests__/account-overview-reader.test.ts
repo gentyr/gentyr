@@ -454,7 +454,7 @@ describe('account-overview-reader', () => {
       expect(result.events[0].keyId).toBe('recent-k...');
     });
 
-    it('should filter health_check events (too noisy)', () => {
+    it('should filter non-whitelisted events (health_check, key_removed, key_refreshed)', () => {
       const now = Date.now();
       const testData = {
         version: 1,
@@ -468,9 +468,21 @@ describe('account-overview-reader', () => {
             reason: 'periodic',
           },
           {
-            timestamp: now,
-            event: 'key_switched',
+            timestamp: now - 1000,
+            event: 'key_removed',
             key_id: 'key-2',
+            reason: 'token_expired',
+          },
+          {
+            timestamp: now - 2000,
+            event: 'key_refreshed',
+            key_id: 'key-3',
+            reason: 'proactive_standby_refresh',
+          },
+          {
+            timestamp: now - 3000,
+            event: 'key_switched',
+            key_id: 'key-4',
             reason: 'test',
           },
         ],
@@ -479,9 +491,72 @@ describe('account-overview-reader', () => {
       fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
       const result = getAccountOverviewData();
 
-      // health_check events should be filtered
+      // Only key_switched should pass the whitelist
       expect(result.events).toHaveLength(1);
       expect(result.events[0].event).toBe('key_switched');
+    });
+
+    it('should filter key_added events with token_refreshed reason', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': { status: 'active', account_email: 'user@example.com' },
+        },
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'key_added',
+            key_id: 'key-1',
+            reason: 'token_refreshed_proactive',
+          },
+          {
+            timestamp: now - 1000,
+            event: 'key_added',
+            key_id: 'key-1',
+            reason: 'new_key_from_keychain_claude_max',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      // Only the non-token_refreshed key_added event should show
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('New account added: user@example.com');
+    });
+
+    it('should allow all 6 whitelisted event types', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': { status: 'active', account_email: 'user@example.com' },
+        },
+        rotation_log: [
+          { timestamp: now, event: 'key_added', key_id: 'key-1' },
+          { timestamp: now - 1000, event: 'account_auth_failed', key_id: 'key-1', account_email: 'user@example.com' },
+          { timestamp: now - 2000, event: 'account_nearly_depleted', key_id: 'key-1', account_email: 'user@example.com' },
+          { timestamp: now - 3000, event: 'key_exhausted', key_id: 'key-1' },
+          { timestamp: now - 4000, event: 'key_switched', key_id: 'key-1' },
+          { timestamp: now - 5000, event: 'account_quota_refreshed', key_id: 'key-1', account_email: 'user@example.com' },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      expect(result.events).toHaveLength(6);
+      const eventTypes = result.events.map(e => e.event);
+      expect(eventTypes).toContain('key_added');
+      expect(eventTypes).toContain('account_auth_failed');
+      expect(eventTypes).toContain('account_nearly_depleted');
+      expect(eventTypes).toContain('key_exhausted');
+      expect(eventTypes).toContain('key_switched');
+      expect(eventTypes).toContain('account_quota_refreshed');
     });
 
     it('should cap events at 20', () => {
@@ -910,7 +985,7 @@ describe('account-overview-reader', () => {
       expect(result.events[0].description).toBe('New account added: key-no-e...');
     });
 
-    it('should still use keyId for token_refreshed events regardless of email', () => {
+    it('should filter token_refreshed key_added events from display', () => {
       const now = Date.now();
       const testData = {
         version: 1,
@@ -934,8 +1009,8 @@ describe('account-overview-reader', () => {
       fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
       const result = getAccountOverviewData();
 
-      expect(result.events).toHaveLength(1);
-      expect(result.events[0].description).toBe('Token refreshed for refresh-...');
+      // token_refreshed events are now filtered from display
+      expect(result.events).toHaveLength(0);
     });
   });
 
@@ -1054,7 +1129,7 @@ describe('account-overview-reader', () => {
       expect(result.events.map(e => e.description)).toContain('New account added: user2@example.com');
     });
 
-    it('should NOT suppress token_refreshed events even for same email', () => {
+    it('should filter all token_refreshed key_added events from display', () => {
       const now = Date.now();
       const testData = {
         version: 1,
@@ -1090,12 +1165,11 @@ describe('account-overview-reader', () => {
       fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
       const result = getAccountOverviewData();
 
-      // All 3 token_refreshed events should be present (not deduplicated)
-      expect(result.events).toHaveLength(3);
-      expect(result.events.every(e => e.description.startsWith('Token refreshed'))).toBe(true);
+      // All token_refreshed events are now filtered from display
+      expect(result.events).toHaveLength(0);
     });
 
-    it('should NOT suppress other event types (key_switched, key_exhausted, etc.)', () => {
+    it('should NOT suppress whitelisted event types (key_switched, key_exhausted, etc.)', () => {
       const now = Date.now();
       const testData = {
         version: 1,
@@ -1124,7 +1198,66 @@ describe('account-overview-reader', () => {
           },
           {
             timestamp: now - 1000,
-            event: 'key_removed',
+            event: 'account_quota_refreshed',
+            key_id: 'key-1',
+            account_email: 'user@example.com',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      // All whitelisted events should be present (deduplication only applies to key_added)
+      expect(result.events).toHaveLength(4);
+    });
+  });
+
+  describe('New Event Type Descriptions', () => {
+    it('should use email from entry-level account_email for new event types', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': {
+            status: 'active',
+            account_email: 'key-level@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'account_nearly_depleted',
+            key_id: 'key-1',
+            account_email: 'entry-level@example.com',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      expect(result.events).toHaveLength(1);
+      // Entry-level email takes precedence over key-level
+      expect(result.events[0].description).toBe('Account nearly depleted: entry-level@example.com');
+    });
+
+    it('should fall back to key-level email when entry-level email is missing', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': {
+            status: 'active',
+            account_email: 'key-level@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'account_quota_refreshed',
             key_id: 'key-1',
           },
         ],
@@ -1133,8 +1266,111 @@ describe('account-overview-reader', () => {
       fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
       const result = getAccountOverviewData();
 
-      // All events should be present (deduplication only applies to key_added without token_refreshed)
-      expect(result.events).toHaveLength(4);
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('Account quota refreshed: key-level@example.com');
+    });
+
+    it('should describe account_auth_failed with email', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {},
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'account_auth_failed',
+            key_id: 'key-1',
+            account_email: 'dead@example.com',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('Account can no longer auth: dead@example.com');
+    });
+
+    it('should describe key_exhausted with email', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': {
+            status: 'exhausted',
+            account_email: 'depleted@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'key_exhausted',
+            key_id: 'key-1',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('Account fully depleted: depleted@example.com');
+    });
+
+    it('should describe key_switched with email', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': {
+            status: 'active',
+            account_email: 'selected@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'key_switched',
+            key_id: 'key-1',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('Account selected: selected@example.com');
+    });
+
+    it('should fall back to truncated key ID when no email available', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-no-email-123': {
+            status: 'active',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'key_switched',
+            key_id: 'key-no-email-123',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('Account selected: key-no-e...');
     });
   });
 

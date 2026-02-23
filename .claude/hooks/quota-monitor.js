@@ -237,6 +237,13 @@ async function main() {
     });
   } else if (!isExhausted && activeKeyData.status === 'exhausted') {
     activeKeyData.status = 'active';
+    logRotationEvent(state, {
+      timestamp: startTime,
+      event: 'account_quota_refreshed',
+      key_id: state.active_key_id,
+      reason: 'usage_dropped_below_100',
+      account_email: activeKeyData.account_email || null,
+    });
   }
 
   writeRotationState(state);
@@ -314,6 +321,27 @@ async function main() {
     health.usage.seven_day,
     health.usage.seven_day_sonnet
   );
+
+  // Step 5a0: Fire account_nearly_depleted event when approaching threshold
+  // Uses 5-hour cooldown per key to avoid re-firing every check cycle
+  if (maxUsage >= PROACTIVE_THRESHOLD && !isExhausted) {
+    const nearlyDepletedKeys = throttle.nearlyDepletedKeys || {};
+    const keyLastFired = nearlyDepletedKeys[state.active_key_id] || 0;
+    const NEARLY_DEPLETED_COOLDOWN_MS = 5 * 60 * 60 * 1000; // 5 hours
+    if (startTime - keyLastFired >= NEARLY_DEPLETED_COOLDOWN_MS) {
+      logRotationEvent(state, {
+        timestamp: startTime,
+        event: 'account_nearly_depleted',
+        key_id: state.active_key_id,
+        reason: `usage_at_${Math.round(maxUsage)}pct`,
+        usage_snapshot: health.usage,
+        account_email: activeKeyData.account_email || null,
+      });
+      writeRotationState(state);
+      nearlyDepletedKeys[state.active_key_id] = startTime;
+      throttle.nearlyDepletedKeys = nearlyDepletedKeys;
+    }
+  }
 
   // Step 5a: Update usage history (rolling window for velocity tracking)
   const usageHistory = Array.isArray(throttle.usageHistory) ? [...throttle.usageHistory] : [];

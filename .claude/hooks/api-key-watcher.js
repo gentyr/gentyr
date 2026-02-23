@@ -174,6 +174,13 @@ async function main() {
         });
       } else if (!isExhausted && keyData.status === 'exhausted') {
         keyData.status = 'active';
+        logRotationEvent(state, {
+          timestamp: now,
+          event: 'account_quota_refreshed',
+          key_id: keyId,
+          reason: 'usage_dropped_below_100',
+          account_email: keyData.account_email || null,
+        });
       }
 
       logRotationEvent(state, {
@@ -244,9 +251,11 @@ async function main() {
 
     if (usage) {
       const maxUsage = Math.max(usage.five_hour, usage.seven_day, usage.seven_day_sonnet);
-      message = `Accounts: ${accountCount} tracked | Active: ${state.active_key_id.slice(0, 8)}... (${Math.round(maxUsage)}% max usage)`;
+      const activeLabel = activeKey.account_email || `${state.active_key_id.slice(0, 8)}...`;
+      message = `Accounts: ${accountCount} tracked | Active: ${activeLabel} (${Math.round(maxUsage)}% max usage)`;
     } else {
-      message = `Accounts: ${accountCount} tracked | Active: ${state.active_key_id.slice(0, 8)}...`;
+      const activeLabel2 = state.keys[state.active_key_id]?.account_email || `${state.active_key_id.slice(0, 8)}...`;
+      message = `Accounts: ${accountCount} tracked | Active: ${activeLabel2}`;
     }
   }
 

@@ -2,7 +2,7 @@
  * Account Overview section — deduplicated per-account status and event history.
  *
  * Groups keys by email and shows one row per account with:
- * - email (or keyId fallback)
+ * - email (keys without an email are skipped)
  * - token validity
  * - usage availability
  * - current 5h/7d percentages
@@ -43,7 +43,8 @@ function deduplicateAccounts(accounts: AccountKeyDetail[]): DeduplicatedAccount[
   const map = new Map<string, { keys: AccountKeyDetail[]; isCurrent: boolean }>();
 
   for (const acct of accounts) {
-    const key = acct.email ?? acct.keyId;
+    if (!acct.email) continue; // Skip keys without an email (orphaned/duplicate entries)
+    const key = acct.email;
     const existing = map.get(key);
     if (existing) {
       existing.keys.push(acct);
@@ -101,7 +102,9 @@ function eventColor(event: string): string {
     case 'key_switched': return 'cyan';
     case 'key_exhausted': return 'red';
     case 'key_added': return 'green';
-    case 'key_removed': return 'yellow';
+    case 'account_nearly_depleted': return 'yellow';
+    case 'account_quota_refreshed': return 'green';
+    case 'account_auth_failed': return 'red';
     default: return 'gray';
   }
 }
