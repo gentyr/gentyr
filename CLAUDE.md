@@ -109,7 +109,7 @@ When processing a `pr-reviewer`-assigned task, the deputy-CTO has `Bash` access 
 - `gh pr merge <number> --merge --delete-branch` — merge and trigger worktree cleanup
 - `gh pr edit <number> --add-label "deputy-cto-reviewed"` — always applied
 
-**`pr-reviewer` is an approved `assigned_by` value** for the `DEPUTY-CTO` section in `SECTION_CREATOR_RESTRICTIONS` (defined in `packages/mcp-servers/src/shared/constants.ts`).
+**`pr-reviewer` and `system-followup` are approved `assigned_by` values** for the `DEPUTY-CTO` section in `SECTION_CREATOR_RESTRICTIONS` (defined in `packages/mcp-servers/src/shared/constants.ts`). `system-followup` is used by investigation follow-up tasks that call back into the deputy-cto triage pipeline after investigation completes.
 
 ### Worktrees
 
@@ -258,6 +258,12 @@ Bypasses the hourly automation's age filter, batch limit, cooldowns, and CTO act
 
 Force-spawns the deputy-CTO triage cycle immediately, bypassing the hourly automation's triage check interval, the automation-enabled flag, and the CTO activity gate. The command prefetches pending report counts and running agent info, asks for confirmation, then calls `force_triage_reports` on the agent-tracker MCP server. Returns the spawned session ID so the user can `claude --resume` into the triage session. Preserves the concurrency guard, agent tracker registration, and per-item triage cooldown filtering.
 
+**Investigation-before-escalation**: When the deputy-CTO decides to escalate a report to the CTO queue, it first spawns an `INVESTIGATOR & PLANNER` task and links it to the escalation via `investigation_task_id`. A `[Investigation Follow-up]` task (assigned `system-followup`) is auto-created when the investigation completes. The follow-up picks up the escalation and either resolves it (calling `mcp__deputy-cto__resolve_question`) if the issue was already fixed, or enriches it with findings (calling `mcp__deputy-cto__update_question`) before the CTO reviews it. This reduces noise in the CTO queue by filtering out self-resolving issues.
+
+**Investigation tools on the deputy-cto MCP server:**
+- `update_question` — Appends timestamped investigation findings to a pending escalation's context field (append-only, 10KB cap). Blocked on `bypass-request` and `protected-action-request` types.
+- `resolve_question` — Resolves and archives a pending escalation atomically (answer + archive to `cleared_questions` + delete from active queue). Valid resolution types: `fixed`, `not_reproducible`, `duplicate`, `workaround_applied`, `no_longer_relevant`. CTO never sees resolved escalations, but they remain in `cleared_questions` for audit and deduplication.
+
 ## Automatic Session Recovery
 
 GENTYR automatically detects and recovers sessions interrupted by API quota limits.
@@ -282,7 +288,7 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 - `syncKeys()` proactively refreshes non-active tokens approaching expiry (within `EXPIRY_BUFFER_MS`), resolves account profiles for keys missing `account_uuid` via `fetchAccountProfile()`, and performs pre-expiry restartless swap to Keychain; covers idle sessions because hourly-automation calls `syncKeys()` every 10 min via launchd even when no Claude Code process is active
 - `fetchAccountProfile(accessToken)` — exported function that calls `https://api.anthropic.com/api/oauth/profile` to resolve `account_uuid` and `email` for keys added by automation or token refresh that skipped the interactive SessionStart profile-resolution path; non-fatal, retried on next sync
 - `selectActiveKey()` freshness gate: nulls out usage data older than 15 minutes to prevent uninformed switches based on stale health checks; stale keys pass "usable" filter but are excluded from comparison logic, causing system to stay put rather than make blind decisions
-- `pruneDeadKeys` immediately garbage-collects keys with `status: 'invalid'`; fires an `account_auth_failed` rotation log event for each pruned key (preserved in rotation_log even after the key entry is deleted); never prunes the active key; removes orphaned rotation_log entries for other event types; called automatically at the end of every `syncKeys()` run
+- `pruneDeadKeys` immediately garbage-collects keys with `status: 'invalid'`; fires an `account_auth_failed` rotation log event only when an account loses its last viable key; email resolution order: key-level `account_email` → sibling key with same `account_uuid` → rotation_log history for same `key_id`; fires `account_auth_failed` only once per account (checks remaining non-pruned keys with same email to avoid duplicates); preserved in rotation_log even after the key entry is deleted; never prunes the active key; removes orphaned rotation_log entries for other event types; called automatically at the end of every `syncKeys()` run
 
 **Rotation Monitoring** (`scripts/monitor-token-swap.mjs`):
 ```bash
@@ -307,6 +313,7 @@ Research artifact from investigating Claude Code's credential memoization cache.
 - Falls back to legacy settings.json hook diff check when no `gentyr-state.json` exists (pre-migration projects)
 - Supports both npm model (`node_modules/gentyr`) and legacy symlink model (`.claude-framework`)
 - **`tamperCheck()`**: Runs before sync logic. Reads `protection-state.json`; if `protected: true`, verifies each filename in `criticalHooks` array is still root-owned (`stat.uid === 0`). Emits a `systemMessage` warning if any hook is not root-owned. Resolves the hooks directory via symlink the same way `protect.js` does.
+- **`branchDriftCheck()`**: Runs after tamper check, before sync logic. Detects when the main working tree is not on `main` and returns a warning message (does not exit). The warning is prepended to the sync output via `pendingWarningPrefix` so both drift warning and sync run in a single hook invocation. Skips worktrees (`.git` file check), detached HEAD, and spawned sessions. Warn-only — never auto-restores.
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; version 3.0
 
 **Credential Health Check Hook** (`.claude/hooks/credential-health-check.js`):
@@ -469,7 +476,7 @@ The **ACCOUNT OVERVIEW** section displays a curated EVENT HISTORY (last 24h, cap
 - `account_quota_refreshed` — previously exhausted account dropped below 100% (fired by quota-monitor and api-key-watcher)
 - `account_auth_failed` — account lost its last key to invalid_grant pruning (fired by pruneDeadKeys in key-sync)
 
-Event descriptions resolve account identity via entry-level `account_email` → key-level `account_email` → truncated key ID fallback. Events are colored in the dashboard: `key_switched`/`account_quota_refreshed` cyan/green, `key_exhausted`/`account_auth_failed` red, `account_nearly_depleted` yellow.
+Event descriptions resolve account identity via entry-level `account_email` → key-level `account_email` → rotation_log history lookup (email captured in earlier events for the same key_id) → truncated key ID fallback. Consecutive identical events (same type + description) are deduplicated after sorting so a burst of duplicate `account_auth_failed` entries collapses to one. Events are colored in the dashboard: `key_switched`/`account_quota_refreshed` cyan/green, `key_exhausted`/`account_auth_failed` red, `account_nearly_depleted` yellow.
 
 ### WORKLOG System
 

@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS questions (
     created_timestamp INTEGER NOT NULL,
     answered_at TEXT,
     decided_by TEXT,
+    investigation_task_id TEXT,
     CONSTRAINT valid_type CHECK (type IN ('decision', 'approval', 'rejection', 'question', 'escalation', 'bypass-request', 'protected-action-request')),
     CONSTRAINT valid_status CHECK (status IN ('pending', 'answered')),
     CONSTRAINT valid_decided_by CHECK (decided_by IS NULL OR decided_by IN ('cto', 'deputy-cto'))

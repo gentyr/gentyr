@@ -1,5 +1,104 @@
 # GENTYR Framework Changelog
 
+## 2026-02-23 - Investigation-Before-Escalation for Deputy-CTO Triage
+
+### Summary
+
+Added an investigation-before-escalation flow to the deputy-CTO triage pipeline. When a report is escalated to the CTO queue, an `INVESTIGATOR & PLANNER` task is spawned first. An auto-created `[Investigation Follow-up]` task resolves the escalation if the issue self-healed, or enriches it with findings before the CTO sees it. Two new MCP tools implement this on the server.
+
+### Added
+
+**`packages/mcp-servers/src/deputy-cto/server.ts`**:
+- `update_question` tool — Appends timestamped investigation findings to a pending escalation's context field. Append-only with timestamped separators; 10KB context cap enforced. Blocked on `bypass-request` and `protected-action-request` types and non-pending status.
+- `resolve_question` tool — Resolves a pending escalation atomically in a single transaction: marks answered, archives to `cleared_questions`, and removes from the active queue. CTO never sees it. Valid resolution types: `fixed`, `not_reproducible`, `duplicate`, `workaround_applied`, `no_longer_relevant`.
+
+**`packages/mcp-servers/src/deputy-cto/types.ts`**:
+- Added `UpdateQuestionArgsSchema` (id + append_context) and `ResolveQuestionArgsSchema` (id + resolution + resolution_detail).
+- Added `RESOLUTION_TYPES` constant and `ResolutionType` type.
+- Added `UpdateQuestionResult` and `ResolveQuestionResult` interfaces.
+- Added `investigation_task_id: string | null` to `QuestionRecord`, `ReadQuestionResult`, and `AddQuestionArgsSchema`.
+
+**`packages/mcp-servers/src/deputy-cto/server.ts`** (schema + migration):
+- Added `investigation_task_id TEXT` column to the production `SCHEMA` constant.
+- Added `ALTER TABLE` migration for `investigation_task_id` to maintain backward compatibility with existing databases.
+- Updated `addQuestion()` INSERT and `readQuestion()` SELECT to handle `investigation_task_id`.
+
+**`packages/mcp-servers/src/shared/constants.ts`**:
+- Added `'system-followup'` to the `DEPUTY-CTO` `SECTION_CREATOR_RESTRICTIONS` array, allowing investigation follow-up tasks to create tasks in the DEPUTY-CTO section.
+
+**`scripts/force-triage-reports.js`**:
+- Replaced the plain "If ESCALATING" section with the full investigation-before-escalation flow: create investigation task (Step 1), create escalation with `investigation_task_id` link (Step 2), complete triage (Step 3). Includes deduplication check guidance for pre-existing investigations.
+
+**`.claude/agents/deputy-cto.md`**:
+- Added "Investigation Follow-up Handling" section with step-by-step instructions for processing `[Follow-up]` and `[Investigation Follow-up]` tasks.
+- Added "Available Investigation Tools" subsection documenting `update_question` and `resolve_question`.
+
+### Tests
+
+**`packages/mcp-servers/src/deputy-cto/__tests__/deputy-cto.test.ts`**:
+- Added 16 new test cases across 3 describe blocks:
+  - `update_question`: 7 tests (happy path, accumulation, size limit, wrong status, bypass-request guard, PAR guard, not found)
+  - `resolve_question`: 7 tests (happy path with archive, pending count decrease, already-answered guard, bypass-request guard, PAR guard, not found, atomicity)
+  - `add_question with investigation_task_id`: 2 tests (stored when provided, null when omitted)
+- All 117 tests pass (110 pre-existing + 7 new test suites).
+
+**`packages/mcp-servers/src/__testUtils__/schemas.ts`**:
+- Added `investigation_task_id TEXT` column to `DEPUTY_CTO_SCHEMA` to keep the test utility schema in sync with production.
+
+---
+
+## 2026-02-23 - Worklog Metric Formula Fixes + resolveAgentTaskId Bug Fix
+
+### Summary
+
+Fixed three incorrect metric formulas in the WORKLOG system (both the CTO dashboard reader and the `get_worklog` MCP tool) and a bug in `resolveAgentTaskId` that caused worklog entries to be attributed to the wrong task.
+
+### Changed
+
+**`packages/cto-dashboard/src/utils/worklog-reader.ts`** and **`packages/mcp-servers/src/todo-db/server.ts`** (mirrored fixes):
+- **Cache hit rate**: Changed denominator from `sum_cache_read / sum_input` to `sum_cache_read / (sum_input + sum_cache_read)`. The previous formula produced values in the millions of percent when cache reads were large.
+- **Success rate denominator**: Changed from `completedCount` (completed todo tasks) to `metricRow.total_entries` (total worklog entries). Success rate now measures "% of worklog entries reporting success" rather than penalizing tasks that didn't log at all.
+- **Coverage pct cap**: Added `Math.min(100, ...)` to prevent the coverage percentage from exceeding 100% when multiple worklog entries exist for a single task.
+
+**`packages/mcp-servers/src/todo-db/server.ts`** (`resolveAgentTaskId`):
+- Removed broken `Object.values()` loop that returned the `taskId` from the first entry in *any* agent's history, ignoring `CLAUDE_AGENT_ID`. Now uses only the direct key lookup (`history[agentId]`) so task attribution is always scoped to the calling agent.
+
+**`packages/cto-dashboard/src/App.tsx`**:
+- Removed `worklog.hasData &&` guard from the WorklogSection render block. The component now renders unconditionally (matching the ProductManagerSection pattern), relying on WorklogSection's own empty-state message when no data is available.
+
+---
+
+## 2026-02-23 - Account Overview EVENT HISTORY: Email Resolution + Consecutive Deduplication
+
+### Summary
+
+Fixed two issues in the CTO dashboard's ACCOUNT OVERVIEW EVENT HISTORY: truncated key IDs appeared instead of email addresses for pruned keys, and a burst of identical `account_auth_failed` entries could flood the event list.
+
+### Changed
+
+**`packages/cto-dashboard/src/utils/account-overview-reader.ts`**:
+- Added `emailByKeyId` map built from rotation_log entries before the event loop. Provides an additional email resolution fallback for events whose key has already been pruned from `state.keys`.
+- Extended `resolveEmail()` and `deriveDescription()` to accept and use the `emailByKeyId` map as a third fallback step (entry-level → key-level → rotation_log history → truncated key ID).
+- Added consecutive event deduplication pass after `events.sort()`: collapses adjacent entries with matching `event` + `description` into one, preventing a burst of identical `account_auth_failed` entries from consuming the 20-slot cap.
+
+**`.claude/hooks/key-sync.js`** (`pruneDeadKeys`):
+- Changed `account_auth_failed` firing logic from "one per pruned key" to "once per account losing its last viable key" — prevents duplicate events when an account has multiple invalid keys pruned in the same run.
+- Added email resolution cascade before firing the event: key-level `account_email` → sibling key with same `account_uuid` → rotation_log history lookup for same `key_id`.
+- Added `hasOtherViableKey` guard: if the account still has non-pruned keys sharing the same email, the `account_auth_failed` event is suppressed.
+
+**`packages/cto-dashboard/src/utils/__tests__/account-overview-reader.test.ts`**:
+- Updated 1 existing test expectation to account for consecutive deduplication changing event counts.
+- Added 5 new tests: 3 for consecutive deduplication behavior, 2 for rotation_log email resolution fallback.
+
+**`.claude/hooks/__tests__/invalid-grant-and-prune.test.js`**:
+- Added 18 new behavioral tests covering email resolution from sibling keys, rotation_log lookup, `emittedAccounts` deduplication guard, and `hasOtherViableKey` suppression.
+
+### Live Data Cleanup
+- Cleaned up `~/.claude/api-key-rotation.json`: 100 → 27 rotation_log entries (73 duplicates removed).
+- Removed stale invalid key entry `bcd174c9...`.
+
+---
+
 ## 2026-02-23 - Product Manager PMF Pipeline Bug Fixes
 
 ### Summary

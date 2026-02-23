@@ -375,23 +375,46 @@ Section mapping for self-handled tasks:
 - Orchestration/delegation → "DEPUTY-CTO"
 
 **If ESCALATING:**
+
+Before escalating, check for duplicate investigations:
 \`\`\`
-// Add to CTO queue with context
+// Check for existing investigations on the same issue
+mcp__todo-db__list_tasks({ section: "INVESTIGATOR & PLANNER", status: "pending" })
+// If a similar investigation task already exists, skip Step 1 and link to the existing task ID instead
+\`\`\`
+
+Then follow the investigation-before-escalation flow:
+\`\`\`
+// Step 1: Create investigation task (returns task_id)
+const investigationTask = mcp__todo-db__create_task({
+  section: "INVESTIGATOR & PLANNER",
+  title: "Investigate: <brief issue description>",
+  description: "Context from triage: <what was found, where, reproduction steps>\n\nAcceptance criteria:\n- Determine root cause\n- Verify if issue is still active\n- Document findings",
+  assigned_by: "deputy-cto",
+  priority: "urgent",
+  followup_section: "DEPUTY-CTO",
+  followup_prompt: "[Investigation Follow-up]\nEscalation ID: <question_id from Step 2>\n\nInstructions:\n1. Read the escalation via mcp__deputy-cto__read_question(id)\n   - If not found or already answered, mark this follow-up complete (CTO already handled it)\n2. Check current state of the issue\n3. If resolved: call mcp__deputy-cto__resolve_question({ id, resolution: 'fixed', resolution_detail: '<evidence>' })\n4. If not resolved but has findings: call mcp__deputy-cto__update_question({ id, append_context: '<findings>' })\n5. Mark this follow-up task complete"
+})
+
+// Step 2: Create escalation with investigation link
 mcp__deputy-cto__add_question({
   type: "escalation",  // or "decision" if CTO needs to choose
   title: "Brief title of the issue",
   description: "Context from investigation + why CTO input needed",
   suggested_options: ["Option A", "Option B"],  // if applicable
-  recommendation: "Your recommended course of action and why"  // REQUIRED for escalations
+  recommendation: "Your recommended course of action and why",  // REQUIRED for escalations
+  investigation_task_id: investigationTask.task_id  // Links escalation to investigation
 })
 
-// Complete the triage
+// Step 3: Complete the triage
 mcp__agent-reports__complete_triage({
   id: "<report-id>",
   status: "escalated",
-  outcome: "Escalated: [reason CTO input is needed]"
+  outcome: "Escalated with investigation task: [brief description]"
 })
 \`\`\`
+
+IMPORTANT: Update the followup_prompt's "Escalation ID" placeholder with the actual question ID returned from Step 2's add_question call.
 
 **If DISMISSING:**
 \`\`\`

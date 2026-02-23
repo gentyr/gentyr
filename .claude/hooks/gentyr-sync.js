@@ -23,16 +23,26 @@ import { execFileSync } from 'node:child_process';
 // Output helpers
 // ============================================================================
 
+// Accumulated warning prefix (set by branchDriftCheck, prepended by warn)
+let pendingWarningPrefix = '';
+
 function silent() {
+  if (pendingWarningPrefix) {
+    // Emit the accumulated warning even on the "no sync needed" path
+    warn(pendingWarningPrefix);
+  }
   console.log(JSON.stringify({ continue: true, suppressOutput: true }));
   process.exit(0);
 }
 
 function warn(message) {
+  const fullMessage = pendingWarningPrefix && !message.startsWith(pendingWarningPrefix)
+    ? `${pendingWarningPrefix} | ${message}`
+    : message;
   console.log(JSON.stringify({
     continue: true,
     suppressOutput: false,
-    systemMessage: message,
+    systemMessage: fullMessage,
   }));
   process.exit(0);
 }
@@ -442,18 +452,79 @@ function tamperCheck() {
   }
 }
 
+// ============================================================================
+// Branch drift check (warns when main working tree is not on 'main')
+// ============================================================================
+
+/**
+ * Returns a branch drift warning message, or null if no drift detected.
+ * Does NOT call warn()/process.exit — the caller is responsible for
+ * including the message in the final hook output so sync still runs.
+ */
+function branchDriftCheck() {
+  const gitDir = path.join(projectDir, '.git');
+
+  // Skip if .git is a file (we're inside a worktree, not the main checkout)
+  try {
+    if (fs.statSync(gitDir).isFile()) return null;
+  } catch { return null; }
+
+  // Get current branch
+  let currentBranch;
+  try {
+    currentBranch = execFileSync('git', ['branch', '--show-current'], {
+      cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    }).trim();
+  } catch { return null; }
+
+  if (!currentBranch) return null; // Detached HEAD — don't warn
+  if (currentBranch === 'main') return null; // On main — all good
+
+  // Check for uncommitted changes (influences the warning message)
+  let hasChanges = false;
+  try {
+    const status = execFileSync('git', ['status', '--porcelain'], {
+      cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    }).trim();
+    hasChanges = status.length > 0;
+  } catch {}
+
+  // Build warning message
+  const parts = [
+    `BRANCH DRIFT: Main working tree is on '${currentBranch}' instead of 'main'.`,
+    'This may cause incorrect preflight checks, stale worktree bases, and promotion failures.',
+  ];
+
+  if (hasChanges) {
+    parts.push('Uncommitted changes detected. To restore: git stash && git checkout main && git stash pop (if changes belong on main) or create a worktree for in-progress work.');
+  } else {
+    parts.push('No uncommitted changes. To restore: git checkout main');
+  }
+
+  return parts.join(' ');
+}
+
 try {
   const frameworkDir = resolveFrameworkDir(projectDir);
   if (!frameworkDir) silent();
 
-  // Check for hook tampering before sync
+  // Check for hook tampering before sync (may exit via warn())
   tamperCheck();
 
-  // Try state-based sync first; fall back to legacy check
+  // Check for branch drift (returns message or null; does NOT exit).
+  // Sets pendingWarningPrefix so warn()/silent() include it in output.
+  const driftWarning = branchDriftCheck();
+  if (driftWarning) {
+    pendingWarningPrefix = driftWarning;
+  }
+
+  // Try state-based sync first; fall back to legacy check.
+  // If sync is needed, warn() will prepend the drift warning automatically.
   if (!statBasedSync(frameworkDir)) {
     legacySettingsCheck(frameworkDir);
   }
 
+  // No sync was needed. silent() emits drift warning if present.
   silent();
 } catch (err) {
   // Never block the session

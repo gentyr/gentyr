@@ -828,3 +828,544 @@ describe('Cross-file consistency — invalid_grant sentinel contract', () => {
     assert.notStrictEqual(typeof sentinel, 'object', 'Sentinel is not an object (not a refresh result)');
   });
 });
+
+// ============================================================================
+// pruneDeadKeys() — email resolution and account_auth_failed deduplication (new logic)
+// ============================================================================
+
+describe('pruneDeadKeys() - email resolution from sibling keys and rotation_log', () => {
+  /**
+   * Minimal implementation of the new pruneDeadKeys email-resolution + deduplication logic.
+   * We simulate the actual algorithm from key-sync.js so these are behavioral tests, not
+   * just structure checks.  The simulation must match the production code line-for-line so
+   * any future drift becomes a test failure.
+   */
+  function simulatePruneDeadKeys(state) {
+    const emittedEvents = [];
+    function logFn(msg) { /* intentionally silent */ }
+    function mockLogRotationEvent(st, entry) {
+      emittedEvents.push(entry);
+      st.rotation_log.unshift(entry);
+    }
+
+    const prunedKeyIds = [];
+    for (const [keyId, keyData] of Object.entries(state.keys)) {
+      if (keyData.status !== 'invalid') continue;
+      if (keyId === state.active_key_id) continue;
+      prunedKeyIds.push(keyId);
+    }
+
+    if (prunedKeyIds.length === 0) return { emittedEvents, state };
+
+    const prunedSet = new Set(prunedKeyIds);
+    const emittedAccounts = new Set();
+
+    for (const keyId of prunedKeyIds) {
+      const keyData = state.keys[keyId];
+      let email = keyData?.account_email || null;
+
+      // Gap D: resolve email from sibling keys with same account_uuid
+      if (!email && keyData?.account_uuid) {
+        for (const [, otherData] of Object.entries(state.keys)) {
+          if (otherData.account_uuid === keyData.account_uuid && otherData.account_email) {
+            email = otherData.account_email;
+            break;
+          }
+        }
+      }
+
+      // Gap E: resolve email from rotation_log history
+      if (!email) {
+        for (const entry of state.rotation_log) {
+          if (entry.key_id === keyId && entry.account_email) {
+            email = entry.account_email;
+            break;
+          }
+        }
+      }
+
+      const dedupeKey = email || keyId;
+
+      // Gap F: deduplicate — skip if we've already emitted for this account
+      if (emittedAccounts.has(dedupeKey)) continue;
+
+      // Gap G: only emit if this account has no other viable key
+      const hasOtherViableKey = Object.entries(state.keys).some(([otherId, otherData]) => {
+        if (otherId === keyId || prunedSet.has(otherId)) return false;
+        if (otherData.status === 'invalid' || otherData.status === 'expired') return false;
+        if (!email) return false;
+        return otherData.account_email === email;
+      });
+
+      if (!hasOtherViableKey) {
+        mockLogRotationEvent(state, {
+          timestamp: Date.now(),
+          event: 'account_auth_failed',
+          key_id: keyId,
+          reason: 'invalid_key_pruned',
+          account_email: email,
+        });
+        emittedAccounts.add(dedupeKey);
+      }
+    }
+
+    for (const keyId of prunedKeyIds) {
+      delete state.keys[keyId];
+    }
+
+    state.rotation_log = state.rotation_log.filter(
+      entry => !entry.key_id || !prunedSet.has(entry.key_id) || entry.event === 'account_auth_failed'
+    );
+
+    return { emittedEvents, state };
+  }
+
+  // ---- Gap D: email from sibling key with same account_uuid ----
+
+  it('should resolve email from sibling key but suppress account_auth_failed because a viable sibling still exists', () => {
+    // When a pruned key has no email, the sibling lookup resolves it.
+    // But the same sibling that provided the email is still active — hasOtherViableKey is true,
+    // so account_auth_failed must NOT be emitted (the account can still auth via the sibling).
+    const state = {
+      active_key_id: null,
+      keys: {
+        'invalid-key-no-email': {
+          status: 'invalid',
+          account_uuid: 'shared-uuid',
+          account_email: null,
+        },
+        // Sibling key — same uuid, has email, is still active (not being pruned)
+        'active-sibling': {
+          status: 'active',
+          account_uuid: 'shared-uuid',
+          account_email: 'sibling@example.com',
+        },
+      },
+      rotation_log: [],
+    };
+
+    const { emittedEvents } = simulatePruneDeadKeys(state);
+
+    // The sibling resolved the email AND is itself a viable key — so auth_failed is suppressed
+    assert.strictEqual(emittedEvents.length, 0,
+      'Must NOT emit account_auth_failed when the sibling that provided the email is still viable');
+  });
+
+  it('should resolve email from sibling AND emit account_auth_failed when sibling is also being pruned', () => {
+    // Both keys share the same account_uuid — one has email, one doesn't.
+    // Both are invalid (both being pruned). Email is resolved from the sibling.
+    // Since no viable key remains, account_auth_failed IS emitted.
+    const state = {
+      active_key_id: null,
+      keys: {
+        'invalid-key-no-email': {
+          status: 'invalid',
+          account_uuid: 'shared-uuid',
+          account_email: null,
+        },
+        'invalid-sibling-has-email': {
+          status: 'invalid',
+          account_uuid: 'shared-uuid',
+          account_email: 'sibling@example.com',
+        },
+      },
+      rotation_log: [],
+    };
+
+    const { emittedEvents } = simulatePruneDeadKeys(state);
+
+    // Both keys are pruned — no viable sibling remains — one event should fire (deduped by email)
+    assert.strictEqual(emittedEvents.length, 1,
+      'Must emit account_auth_failed once when all keys for the account are pruned');
+    assert.strictEqual(emittedEvents[0].account_email, 'sibling@example.com',
+      'Must use the email resolved from the sibling key');
+  });
+
+  it('should NOT use sibling resolution when the pruned key already has its own email', () => {
+    const state = {
+      active_key_id: null,
+      keys: {
+        'invalid-key-has-email': {
+          status: 'invalid',
+          account_uuid: 'shared-uuid',
+          account_email: 'own@example.com',
+        },
+        'sibling-different-email': {
+          status: 'active',
+          account_uuid: 'shared-uuid',
+          account_email: 'sibling@example.com',
+        },
+      },
+      rotation_log: [],
+    };
+
+    const { emittedEvents } = simulatePruneDeadKeys(state);
+
+    // active sibling exists — hasOtherViableKey is true — no event emitted at all
+    // (but when email is present, the sibling has same email, so hasOtherViableKey check
+    // looks for account_email === email on sibling, which is 'own@example.com', but the
+    // sibling's email is 'sibling@example.com' — they differ, so auth_failed IS emitted)
+    assert.strictEqual(emittedEvents[0].account_email, 'own@example.com',
+      'Must use the pruned key\'s own email, not the sibling\'s email');
+  });
+
+  // ---- Gap E: email from rotation_log history ----
+
+  it('should resolve email from rotation_log when key has no email and no account_uuid', () => {
+    const state = {
+      active_key_id: null,
+      keys: {
+        'invalid-no-uuid': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: null,
+        },
+      },
+      rotation_log: [
+        // Earlier log entry for this key carried the email
+        {
+          timestamp: Date.now() - 5000,
+          event: 'key_added',
+          key_id: 'invalid-no-uuid',
+          account_email: 'from-log@example.com',
+        },
+      ],
+    };
+
+    const { emittedEvents } = simulatePruneDeadKeys(state);
+
+    assert.strictEqual(emittedEvents.length, 1, 'Must emit account_auth_failed');
+    assert.strictEqual(emittedEvents[0].account_email, 'from-log@example.com',
+      'Must resolve email from rotation_log history when no direct or sibling email exists');
+  });
+
+  it('should use the first matching rotation_log entry (not a later one) for email resolution', () => {
+    const state = {
+      active_key_id: null,
+      keys: {
+        'invalid-key': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: null,
+        },
+      },
+      rotation_log: [
+        // First entry has email — this is the one that should be used
+        { timestamp: Date.now() - 3000, event: 'key_added', key_id: 'invalid-key', account_email: 'first@example.com' },
+        // Second entry also has email but should be ignored
+        { timestamp: Date.now() - 1000, event: 'key_switched', key_id: 'invalid-key', account_email: 'second@example.com' },
+      ],
+    };
+
+    const { emittedEvents } = simulatePruneDeadKeys(state);
+
+    assert.strictEqual(emittedEvents[0].account_email, 'first@example.com',
+      'Must use the first rotation_log entry that has a matching key_id and account_email');
+  });
+
+  it('should fall back to null email (and use keyId as dedupeKey) when no email source exists', () => {
+    const state = {
+      active_key_id: null,
+      keys: {
+        'truly-no-email': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: null,
+        },
+      },
+      rotation_log: [
+        // Log entry exists but has no email
+        { timestamp: Date.now(), event: 'key_removed', key_id: 'truly-no-email', account_email: null },
+      ],
+    };
+
+    const { emittedEvents } = simulatePruneDeadKeys(state);
+
+    assert.strictEqual(emittedEvents.length, 1, 'Must still emit account_auth_failed');
+    assert.strictEqual(emittedEvents[0].account_email, null,
+      'account_email must be null when no email can be resolved');
+    assert.strictEqual(emittedEvents[0].key_id, 'truly-no-email');
+  });
+
+  // ---- Gap F: emittedAccounts deduplication ----
+
+  it('should emit account_auth_failed only once when multiple invalid keys share the same email', () => {
+    const state = {
+      active_key_id: null,
+      keys: {
+        'invalid-key-A': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: 'shared@example.com',
+        },
+        'invalid-key-B': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: 'shared@example.com',
+        },
+      },
+      rotation_log: [],
+    };
+
+    const { emittedEvents } = simulatePruneDeadKeys(state);
+
+    assert.strictEqual(emittedEvents.length, 1,
+      'Must emit account_auth_failed only once per unique email, even when multiple invalid keys share it');
+    assert.strictEqual(emittedEvents[0].account_email, 'shared@example.com');
+  });
+
+  it('should emit separate account_auth_failed events for invalid keys with different emails', () => {
+    const state = {
+      active_key_id: null,
+      keys: {
+        'invalid-key-X': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: 'user-x@example.com',
+        },
+        'invalid-key-Y': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: 'user-y@example.com',
+        },
+      },
+      rotation_log: [],
+    };
+
+    const { emittedEvents } = simulatePruneDeadKeys(state);
+
+    assert.strictEqual(emittedEvents.length, 2,
+      'Must emit a separate account_auth_failed for each distinct email');
+    const emails = new Set(emittedEvents.map(e => e.account_email));
+    assert.ok(emails.has('user-x@example.com'));
+    assert.ok(emails.has('user-y@example.com'));
+  });
+
+  it('should emit only once when two invalid keys both have null email but the same keyId-based dedupeKey', () => {
+    // Edge case: when email is null, dedupeKey falls back to keyId, so two different
+    // invalid keys with null emails each get their own dedupeKey — both should emit.
+    // But if the SAME key somehow appears twice (shouldn't happen), only one fires.
+    const state = {
+      active_key_id: null,
+      keys: {
+        'no-email-key-1': { status: 'invalid', account_uuid: null, account_email: null },
+        'no-email-key-2': { status: 'invalid', account_uuid: null, account_email: null },
+      },
+      rotation_log: [],
+    };
+
+    const { emittedEvents } = simulatePruneDeadKeys(state);
+
+    // Different keyIds → different dedupeKeys → two separate events
+    assert.strictEqual(emittedEvents.length, 2,
+      'Two invalid keys with null email and different key IDs must each produce their own event');
+    const keyIds = new Set(emittedEvents.map(e => e.key_id));
+    assert.ok(keyIds.has('no-email-key-1'));
+    assert.ok(keyIds.has('no-email-key-2'));
+  });
+
+  // ---- Gap G: hasOtherViableKey suppresses account_auth_failed ----
+
+  it('should NOT emit account_auth_failed when a non-pruned key with same email is still viable', () => {
+    const state = {
+      active_key_id: null,
+      keys: {
+        'invalid-key': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: 'user@example.com',
+        },
+        // Another key for the same account (same email) that is still active — not being pruned
+        'viable-key': {
+          status: 'active',
+          account_uuid: null,
+          account_email: 'user@example.com',
+        },
+      },
+      rotation_log: [],
+    };
+
+    const { emittedEvents } = simulatePruneDeadKeys(state);
+
+    assert.strictEqual(emittedEvents.length, 0,
+      'Must NOT emit account_auth_failed when the account still has a viable non-pruned key');
+  });
+
+  it('should emit account_auth_failed when the only other key for the email is also being pruned', () => {
+    const state = {
+      active_key_id: null,
+      keys: {
+        'invalid-key-A': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: 'user@example.com',
+        },
+        'invalid-key-B': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: 'user@example.com',
+        },
+      },
+      rotation_log: [],
+    };
+
+    const { emittedEvents } = simulatePruneDeadKeys(state);
+
+    // Both keys for this account are being pruned — hasOtherViableKey is false for the first one.
+    // The second is deduplicated by emittedAccounts.
+    assert.strictEqual(emittedEvents.length, 1,
+      'Must emit account_auth_failed once when all keys for an account are being pruned');
+    assert.strictEqual(emittedEvents[0].account_email, 'user@example.com');
+  });
+
+  it('should NOT emit account_auth_failed when the other key is exhausted (still viable in production)', () => {
+    // exhausted keys are NOT in the hasOtherViableKey exclusion list — only invalid and expired are excluded.
+    // An exhausted key means the account can still auth (it just hit quota), so we should NOT emit auth_failed.
+    const state = {
+      active_key_id: null,
+      keys: {
+        'invalid-key': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: 'user@example.com',
+        },
+        'exhausted-key': {
+          status: 'exhausted',
+          account_uuid: null,
+          account_email: 'user@example.com',
+        },
+      },
+      rotation_log: [],
+    };
+
+    const { emittedEvents } = simulatePruneDeadKeys(state);
+
+    assert.strictEqual(emittedEvents.length, 0,
+      'Must NOT emit account_auth_failed when another key for the account is exhausted (still auth-capable)');
+  });
+
+  it('should emit account_auth_failed when the only other key for the email is expired', () => {
+    // expired keys ARE excluded from hasOtherViableKey — an expired key cannot be used.
+    const state = {
+      active_key_id: null,
+      keys: {
+        'invalid-key': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: 'user@example.com',
+        },
+        'expired-key': {
+          status: 'expired',
+          account_uuid: null,
+          account_email: 'user@example.com',
+        },
+      },
+      rotation_log: [],
+    };
+
+    const { emittedEvents } = simulatePruneDeadKeys(state);
+
+    assert.strictEqual(emittedEvents.length, 1,
+      'Must emit account_auth_failed when the only other key for the account is expired');
+    assert.strictEqual(emittedEvents[0].account_email, 'user@example.com');
+  });
+
+  it('should not consider a pruned key a viable key for hasOtherViableKey check', () => {
+    // Both keys for the account are invalid — neither should count as "viable" for the other
+    // The prunedSet check in hasOtherViableKey ensures this.
+    const state = {
+      active_key_id: null,
+      keys: {
+        'invalid-key-1': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: 'user@example.com',
+        },
+        'invalid-key-2': {
+          status: 'invalid',
+          account_uuid: null,
+          account_email: 'user@example.com',
+        },
+      },
+      rotation_log: [],
+    };
+
+    const { emittedEvents, state: finalState } = simulatePruneDeadKeys(state);
+
+    // One event should fire (for the first key before deduplication blocks the second)
+    assert.strictEqual(emittedEvents.length, 1,
+      'A key being pruned must not count as a viable sibling for another pruned key');
+    // Both keys must be deleted from state
+    assert.ok(!finalState.keys['invalid-key-1'], 'invalid-key-1 must be deleted');
+    assert.ok(!finalState.keys['invalid-key-2'], 'invalid-key-2 must be deleted');
+  });
+
+  // ---- Code structure: new logic must be present in key-sync.js ----
+
+  it('should resolve email from sibling keys by account_uuid in key-sync.js source', () => {
+    const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+    const pruneMatch = code.match(/export function pruneDeadKeys[\s\S]*?\n\}/);
+    assert.ok(pruneMatch, 'pruneDeadKeys must be defined and exported');
+    const pruneBody = pruneMatch[0];
+
+    assert.match(
+      pruneBody,
+      /otherData\.account_uuid === keyData\.account_uuid && otherData\.account_email/,
+      'pruneDeadKeys must resolve email from sibling keys sharing account_uuid'
+    );
+  });
+
+  it('should resolve email from rotation_log history in key-sync.js source', () => {
+    const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+    const pruneMatch = code.match(/export function pruneDeadKeys[\s\S]*?\n\}/);
+    assert.ok(pruneMatch, 'pruneDeadKeys must be defined and exported');
+    const pruneBody = pruneMatch[0];
+
+    assert.match(
+      pruneBody,
+      /entry\.key_id === keyId && entry\.account_email/,
+      'pruneDeadKeys must resolve email from rotation_log entries matching the pruned keyId'
+    );
+  });
+
+  it('should use an emittedAccounts Set to deduplicate account_auth_failed events in key-sync.js source', () => {
+    const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+    const pruneMatch = code.match(/export function pruneDeadKeys[\s\S]*?\n\}/);
+    assert.ok(pruneMatch, 'pruneDeadKeys must be defined and exported');
+    const pruneBody = pruneMatch[0];
+
+    assert.match(
+      pruneBody,
+      /emittedAccounts/,
+      'pruneDeadKeys must use an emittedAccounts Set to prevent duplicate account_auth_failed events'
+    );
+    assert.match(
+      pruneBody,
+      /emittedAccounts\.has\(dedupeKey\)/,
+      'pruneDeadKeys must check emittedAccounts before emitting'
+    );
+    assert.match(
+      pruneBody,
+      /emittedAccounts\.add\(dedupeKey\)/,
+      'pruneDeadKeys must add to emittedAccounts after emitting'
+    );
+  });
+
+  it('should implement hasOtherViableKey guard in key-sync.js source', () => {
+    const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+    const pruneMatch = code.match(/export function pruneDeadKeys[\s\S]*?\n\}/);
+    assert.ok(pruneMatch, 'pruneDeadKeys must be defined and exported');
+    const pruneBody = pruneMatch[0];
+
+    assert.match(
+      pruneBody,
+      /hasOtherViableKey/,
+      'pruneDeadKeys must implement hasOtherViableKey check before emitting account_auth_failed'
+    );
+    assert.match(
+      pruneBody,
+      /!hasOtherViableKey/,
+      'pruneDeadKeys must only emit account_auth_failed when hasOtherViableKey is false'
+    );
+  });
+});

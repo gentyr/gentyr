@@ -37,6 +37,7 @@ export const AddQuestionArgsSchema = z.object({
   context: z.string().max(2000).optional().describe('Additional context (file paths, commit info, etc.) - max 2000 chars'),
   suggested_options: z.array(z.string().max(200)).max(10).optional().describe('Suggested options for CTO to choose from (max 10 options, 200 chars each)'),
   recommendation: z.string().min(1).max(500).optional().describe('Agent recommendation for the CTO (required for escalations). Concise statement of what the agent recommends and why.'),
+  investigation_task_id: z.string().optional().describe('Task ID of the investigation task spawned alongside this escalation'),
 });
 
 export const ListQuestionsArgsSchema = z.object({
@@ -85,6 +86,23 @@ export const RecordCtoBriefingArgsSchema = z.object({});
 export const SearchClearedItemsArgsSchema = z.object({
   query: z.string().min(1).max(200).describe('Substring to search for in cleared question titles/descriptions'),
   limit: z.coerce.number().optional().default(10).describe('Maximum results to return'),
+});
+
+export const UpdateQuestionArgsSchema = z.object({
+  id: z.string().describe('Question UUID'),
+  append_context: z.string().min(1).max(2000).describe('Investigation findings to append'),
+});
+
+export const RESOLUTION_TYPES = [
+  'fixed', 'not_reproducible', 'duplicate', 'workaround_applied', 'no_longer_relevant'
+] as const;
+
+export type ResolutionType = typeof RESOLUTION_TYPES[number];
+
+export const ResolveQuestionArgsSchema = z.object({
+  id: z.string().describe('Question UUID'),
+  resolution: z.enum(RESOLUTION_TYPES).describe('Resolution type'),
+  resolution_detail: z.string().min(1).max(2000).describe('Evidence of resolution'),
 });
 
 export const CleanupOldRecordsArgsSchema = z.object({});
@@ -148,6 +166,8 @@ export type ToggleAutonomousModeArgs = z.infer<typeof ToggleAutonomousModeArgsSc
 export type GetAutonomousModeStatusArgs = z.infer<typeof GetAutonomousModeStatusArgsSchema>;
 export type RecordCtoBriefingArgs = z.infer<typeof RecordCtoBriefingArgsSchema>;
 export type SearchClearedItemsArgs = z.infer<typeof SearchClearedItemsArgsSchema>;
+export type UpdateQuestionArgs = z.infer<typeof UpdateQuestionArgsSchema>;
+export type ResolveQuestionArgs = z.infer<typeof ResolveQuestionArgsSchema>;
 export type CleanupOldRecordsArgs = z.infer<typeof CleanupOldRecordsArgsSchema>;
 export type SetAutomationModeArgs = z.infer<typeof SetAutomationModeArgsSchema>;
 export type ListAutomationConfigArgs = z.infer<typeof ListAutomationConfigArgsSchema>;
@@ -173,6 +193,7 @@ export interface QuestionRecord {
   created_timestamp: number;
   answered_at: string | null;
   decided_by: DecisionMaker | null;
+  investigation_task_id: string | null;
 }
 
 export interface QuestionListItem {
@@ -209,6 +230,7 @@ export interface ReadQuestionResult {
   answer: string | null;
   created_at: string;
   answered_at: string | null;
+  investigation_task_id: string | null;
 }
 
 export interface AnswerQuestionResult {
@@ -307,6 +329,20 @@ export interface ClearedQuestionItem {
 export interface SearchClearedItemsResult {
   items: ClearedQuestionItem[];
   count: number;
+  message: string;
+}
+
+export interface UpdateQuestionResult {
+  id: string;
+  updated: boolean;
+  message: string;
+}
+
+export interface ResolveQuestionResult {
+  id: string;
+  resolved: boolean;
+  resolution: string;
+  remaining_pending_count: number;
   message: string;
 }
 

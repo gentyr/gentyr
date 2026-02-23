@@ -43,6 +43,8 @@ import {
   GetAutonomousModeStatusArgsSchema,
   RecordCtoBriefingArgsSchema,
   SearchClearedItemsArgsSchema,
+  UpdateQuestionArgsSchema,
+  ResolveQuestionArgsSchema,
   CleanupOldRecordsArgsSchema,
   SetAutomationModeArgsSchema,
   ListAutomationConfigArgsSchema,
@@ -65,6 +67,8 @@ import {
   type RejectCommitArgs,
   type ToggleAutonomousModeArgs,
   type SearchClearedItemsArgs,
+  type UpdateQuestionArgs,
+  type ResolveQuestionArgs,
   type SetAutomationModeArgs,
   type RequestBypassArgs,
   type ExecuteBypassArgs,
@@ -91,6 +95,8 @@ import {
   type GetAutonomousModeStatusResult,
   type RecordCtoBriefingResult,
   type SearchClearedItemsResult,
+  type UpdateQuestionResult,
+  type ResolveQuestionResult,
   type CleanupOldRecordsResult,
   type SetAutomationModeResult,
   type AutomationConfigItem,
@@ -144,6 +150,7 @@ CREATE TABLE IF NOT EXISTS questions (
     created_timestamp INTEGER NOT NULL,
     answered_at TEXT,
     decided_by TEXT,
+    investigation_task_id TEXT,
     CONSTRAINT valid_type CHECK (type IN ('decision', 'approval', 'rejection', 'question', 'escalation', 'bypass-request', 'protected-action-request')),
     CONSTRAINT valid_status CHECK (status IN ('pending', 'answered')),
     CONSTRAINT valid_decided_by CHECK (decided_by IS NULL OR decided_by IN ('cto', 'deputy-cto'))
@@ -213,6 +220,9 @@ function initializeDatabase(): Database.Database {
   }
   if (!questionsColumns.some(c => c.name === 'recommendation')) {
     db.exec('ALTER TABLE questions ADD COLUMN recommendation TEXT');
+  }
+  if (!questionsColumns.some(c => c.name === 'investigation_task_id')) {
+    db.exec('ALTER TABLE questions ADD COLUMN investigation_task_id TEXT');
   }
   const clearedColumns = db.pragma('table_info(cleared_questions)') as { name: string }[];
   if (!clearedColumns.some(c => c.name === 'decided_by')) {
@@ -348,8 +358,8 @@ function addQuestion(args: AddQuestionArgs): AddQuestionResult | ErrorResult {
   const created_timestamp = Math.floor(now.getTime() / 1000);
 
   db.prepare(`
-    INSERT INTO questions (id, type, status, title, description, context, suggested_options, recommendation, created_at, created_timestamp)
-    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO questions (id, type, status, title, description, context, suggested_options, recommendation, investigation_task_id, created_at, created_timestamp)
+    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     args.type,
@@ -358,6 +368,7 @@ function addQuestion(args: AddQuestionArgs): AddQuestionResult | ErrorResult {
     args.context ?? null,
     args.suggested_options ? JSON.stringify(args.suggested_options) : null,
     args.recommendation ?? null,
+    args.investigation_task_id ?? null,
     created_at,
     created_timestamp
   );
@@ -426,6 +437,7 @@ function readQuestion(args: ReadQuestionArgs): ReadQuestionResult | ErrorResult 
     answer: question.answer,
     created_at: question.created_at,
     answered_at: question.answered_at,
+    investigation_task_id: question.investigation_task_id ?? null,
   };
 }
 
@@ -889,6 +901,109 @@ function searchClearedItems(args: SearchClearedItemsArgs): SearchClearedItemsRes
     message: items.length === 0
       ? `No cleared items found matching "${args.query}".`
       : `Found ${items.length} cleared item(s) matching "${args.query}".`,
+  };
+}
+
+// ============================================================================
+// Investigation Tools
+// ============================================================================
+
+const MAX_CONTEXT_SIZE = 10 * 1024; // 10KB cap
+
+function updateQuestion(args: UpdateQuestionArgs): UpdateQuestionResult | ErrorResult {
+  const db = getDb();
+  const question = db.prepare('SELECT * FROM questions WHERE id = ?').get(args.id) as QuestionRecord | undefined;
+
+  if (!question) {
+    return { error: `Question not found: ${args.id}` };
+  }
+
+  if (question.status !== 'pending') {
+    return { error: `Cannot update question ${args.id}: status is '${question.status}', expected 'pending'.` };
+  }
+
+  // Block updating bypass-request and protected-action-request types
+  if (question.type === 'bypass-request' || question.type === 'protected-action-request') {
+    return { error: `Cannot update ${question.type} questions via update_question.` };
+  }
+
+  const separator = `\n\n--- Investigation Update (${new Date().toISOString()}) ---\n`;
+  const existingContext = question.context ?? '';
+  const newContext = existingContext + separator + args.append_context;
+
+  if (newContext.length > MAX_CONTEXT_SIZE) {
+    return { error: `Context would exceed 10KB limit (current: ${existingContext.length} bytes, appending: ${args.append_context.length + separator.length} bytes).` };
+  }
+
+  db.prepare('UPDATE questions SET context = ? WHERE id = ?').run(newContext, args.id);
+
+  return {
+    id: args.id,
+    updated: true,
+    message: `Investigation findings appended to question ${args.id}. Context is now ${newContext.length} bytes.`,
+  };
+}
+
+function resolveQuestion(args: ResolveQuestionArgs): ResolveQuestionResult | ErrorResult {
+  const db = getDb();
+  const question = db.prepare('SELECT * FROM questions WHERE id = ?').get(args.id) as QuestionRecord | undefined;
+
+  if (!question) {
+    return { error: `Question not found: ${args.id}` };
+  }
+
+  if (question.status === 'answered') {
+    return { error: `Question ${args.id} is already answered. Cannot resolve an already-answered question.` };
+  }
+
+  // Block resolving bypass-request and protected-action-request types
+  if (question.type === 'bypass-request' || question.type === 'protected-action-request') {
+    return { error: `Cannot resolve ${question.type} questions via resolve_question.` };
+  }
+
+  const now = new Date();
+  const answered_at = now.toISOString();
+  const cleared_timestamp = Math.floor(now.getTime() / 1000);
+  const answer = `[Resolved by investigation: ${args.resolution}]\n${args.resolution_detail}`;
+
+  // Single transaction: answer, archive, delete
+  const txn = db.transaction(() => {
+    // Mark as answered
+    db.prepare(`
+      UPDATE questions SET status = 'answered', answer = ?, answered_at = ?, decided_by = 'deputy-cto'
+      WHERE id = ?
+    `).run(answer, answered_at, args.id);
+
+    // Archive to cleared_questions
+    db.prepare(`
+      INSERT INTO cleared_questions (id, type, title, description, recommendation, answer, answered_at, decided_by, cleared_at, cleared_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'deputy-cto', ?, ?)
+    `).run(
+      question.id,
+      question.type,
+      question.title,
+      question.description,
+      question.recommendation,
+      answer,
+      answered_at,
+      answered_at,
+      cleared_timestamp
+    );
+
+    // Remove from active questions
+    db.prepare('DELETE FROM questions WHERE id = ?').run(args.id);
+  });
+
+  txn();
+
+  const remainingCount = getPendingCount();
+
+  return {
+    id: args.id,
+    resolved: true,
+    resolution: args.resolution,
+    remaining_pending_count: remainingCount,
+    message: `Question ${args.id} resolved as '${args.resolution}' by investigation. ${remainingCount} pending question(s) remaining.`,
   };
 }
 
@@ -1981,6 +2096,18 @@ const tools: AnyToolHandler[] = [
     description: 'Search previously cleared CTO questions by substring. Use to check if a CTO-PENDING note in a plan has been addressed.',
     schema: SearchClearedItemsArgsSchema,
     handler: searchClearedItems,
+  },
+  {
+    name: 'update_question',
+    description: 'Append investigation findings to a pending question\'s context field. Append-only with timestamped separators. 10KB context cap. Only works on pending questions (not bypass-request or protected-action-request).',
+    schema: UpdateQuestionArgsSchema,
+    handler: updateQuestion,
+  },
+  {
+    name: 'resolve_question',
+    description: 'Resolve a pending escalation based on investigation findings. Answers, archives to cleared_questions, and removes from active queue in a single transaction. CTO never sees it. Only works on pending questions (not bypass-request or protected-action-request).',
+    schema: ResolveQuestionArgsSchema,
+    handler: resolveQuestion,
   },
   {
     name: 'cleanup_old_records',

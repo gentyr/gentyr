@@ -33,6 +33,54 @@ const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '.
 const PROTECTED_ACTIONS_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'protected-actions.json');
 const APPROVALS_PATH = path.join(PROJECT_DIR, '.claude', 'protected-action-approvals.json');
 const PROTECTION_KEY_PATH = path.join(PROJECT_DIR, '.claude', 'protection-key');
+const LOCK_PATH = APPROVALS_PATH + '.lock';
+
+// ============================================================================
+// File Locking (TOCTOU protection for approval consumption)
+// ============================================================================
+
+/**
+ * Acquire an advisory lock on the approvals file.
+ * Uses exclusive file creation (O_CREAT | O_EXCL) as a cross-process mutex.
+ * Retries with backoff for up to 2 seconds.
+ * @returns {boolean} true if lock acquired
+ */
+function acquireLock() {
+  const maxAttempts = 10;
+  const baseDelay = 50; // ms
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const fd = fs.openSync(LOCK_PATH, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      return true;
+    } catch (err) {
+      // Check for stale lock (older than 10 seconds)
+      try {
+        const stat = fs.statSync(LOCK_PATH);
+        if (Date.now() - stat.mtimeMs > 10000) {
+          fs.unlinkSync(LOCK_PATH);
+          continue; // Retry immediately after removing stale lock
+        }
+      } catch { /* lock file gone, retry */ }
+
+      // Exponential backoff
+      const delay = baseDelay * Math.pow(2, i);
+      const start = Date.now();
+      while (Date.now() - start < delay) { /* busy wait */ }
+    }
+  }
+  return false;
+}
+
+/**
+ * Release the advisory lock.
+ */
+function releaseLock() {
+  try {
+    fs.unlinkSync(LOCK_PATH);
+  } catch { /* already released */ }
+}
 
 // ============================================================================
 // HMAC Signing (Fix 2: Anti-Forgery)
@@ -181,70 +229,80 @@ function saveApprovals(approvals) {
  * @returns {object} Validation result
  */
 function validateAndApprove(phrase, code) {
-  const approvals = loadApprovals();
-  const normalizedCode = code.toUpperCase();
-  const request = approvals.approvals[normalizedCode];
-
-  if (!request) {
-    return { valid: false, reason: 'No pending request with this code' };
+  // Acquire lock to prevent TOCTOU race: concurrent approval + consumption of same request
+  if (!acquireLock()) {
+    console.error('[protected-action-approval] G001 FAIL-CLOSED: Could not acquire approvals lock.');
+    return { valid: false, reason: 'Could not acquire file lock' };
   }
 
-  if (request.status === 'approved') {
-    return { valid: false, reason: 'This code has already been used' };
-  }
+  try {
+    const approvals = loadApprovals();
+    const normalizedCode = code.toUpperCase();
+    const request = approvals.approvals[normalizedCode];
 
-  if (Date.now() > request.expires_timestamp) {
-    // Clean up expired request
-    delete approvals.approvals[normalizedCode];
-    saveApprovals(approvals);
-    return { valid: false, reason: 'Approval code has expired' };
-  }
+    if (!request) {
+      return { valid: false, reason: 'No pending request with this code' };
+    }
 
-  // HMAC verification (Fix 2): Verify the pending request was created by the gate hook
-  const key = loadProtectionKey();
-  if (key && request.pending_hmac) {
-    const expectedPendingHmac = computeHmac(key, normalizedCode, request.server, request.tool, request.argsHash || '', String(request.expires_timestamp));
-    if (request.pending_hmac !== expectedPendingHmac) {
-      // Forged pending request — delete and reject
-      console.error(`[protected-action-approval] FORGERY DETECTED: Invalid pending_hmac for ${normalizedCode}. Deleting.`);
+    if (request.status === 'approved') {
+      return { valid: false, reason: 'This code has already been used' };
+    }
+
+    if (Date.now() > request.expires_timestamp) {
+      // Clean up expired request
       delete approvals.approvals[normalizedCode];
       saveApprovals(approvals);
-      return { valid: false, reason: 'FORGERY: Invalid request signature' };
+      return { valid: false, reason: 'Approval code has expired' };
     }
-  } else if (!key && request.pending_hmac) {
-    // G001 Fail-Closed: Request has HMAC but we can't verify (key missing)
-    console.error(`[protected-action-approval] G001 FAIL-CLOSED: Cannot verify HMAC for ${normalizedCode} (protection key missing).`);
-    return { valid: false, reason: 'Cannot verify request signature (protection key missing)' };
-  }
 
-  // Extract the expected phrase from the stored full phrase (e.g., "APPROVE PROD" -> "PROD")
-  const storedPhrase = request.phrase.toUpperCase();
-  const expectedPhrase = storedPhrase.replace(/^APPROVE\s+/i, '');
-  const providedPhrase = phrase.toUpperCase();
+    // HMAC verification (Fix 2): Verify the pending request was created by the gate hook
+    const key = loadProtectionKey();
+    if (key && request.pending_hmac) {
+      const expectedPendingHmac = computeHmac(key, normalizedCode, request.server, request.tool, request.argsHash || '', String(request.expires_timestamp));
+      if (request.pending_hmac !== expectedPendingHmac) {
+        // Forged pending request — delete and reject
+        console.error(`[protected-action-approval] FORGERY DETECTED: Invalid pending_hmac for ${normalizedCode}. Deleting.`);
+        delete approvals.approvals[normalizedCode];
+        saveApprovals(approvals);
+        return { valid: false, reason: 'FORGERY: Invalid request signature' };
+      }
+    } else if (!key && request.pending_hmac) {
+      // G001 Fail-Closed: Request has HMAC but we can't verify (key missing)
+      console.error(`[protected-action-approval] G001 FAIL-CLOSED: Cannot verify HMAC for ${normalizedCode} (protection key missing).`);
+      return { valid: false, reason: 'Cannot verify request signature (protection key missing)' };
+    }
 
-  // Check if the provided phrase matches the expected phrase
-  if (providedPhrase !== expectedPhrase && providedPhrase !== storedPhrase) {
+    // Extract the expected phrase from the stored full phrase (e.g., "APPROVE PROD" -> "PROD")
+    const storedPhrase = request.phrase.toUpperCase();
+    const expectedPhrase = storedPhrase.replace(/^APPROVE\s+/i, '');
+    const providedPhrase = phrase.toUpperCase();
+
+    // Check if the provided phrase matches the expected phrase
+    if (providedPhrase !== expectedPhrase && providedPhrase !== storedPhrase) {
+      return {
+        valid: false,
+        reason: `Wrong approval phrase. Expected: APPROVE ${expectedPhrase}`
+      };
+    }
+
+    // Mark as approved with HMAC signature (Fix 2)
+    request.status = 'approved';
+    request.approved_at = new Date().toISOString();
+    request.approved_timestamp = Date.now();
+    if (key) {
+      request.approved_hmac = computeHmac(key, normalizedCode, request.server, request.tool, 'approved', request.argsHash || '', String(request.expires_timestamp));
+    }
+    saveApprovals(approvals);
+
     return {
-      valid: false,
-      reason: `Wrong approval phrase. Expected: APPROVE ${expectedPhrase}`
+      valid: true,
+      server: request.server,
+      tool: request.tool,
+      code: normalizedCode,
     };
+  } finally {
+    releaseLock();
   }
-
-  // Mark as approved with HMAC signature (Fix 2)
-  request.status = 'approved';
-  request.approved_at = new Date().toISOString();
-  request.approved_timestamp = Date.now();
-  if (key) {
-    request.approved_hmac = computeHmac(key, normalizedCode, request.server, request.tool, 'approved', request.argsHash || '', String(request.expires_timestamp));
-  }
-  saveApprovals(approvals);
-
-  return {
-    valid: true,
-    server: request.server,
-    tool: request.tool,
-    code: normalizedCode,
-  };
 }
 
 // ============================================================================
