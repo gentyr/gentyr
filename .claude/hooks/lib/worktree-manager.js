@@ -156,9 +156,18 @@ export function provisionWorktree(worktreePath) {
   // --- framework symlink: resolve real path (resilient to node_modules pruning) ---
   const frameworkDir = resolveFrameworkDir(PROJECT_DIR);
   if (frameworkDir) {
+    // Always create node_modules/gentyr symlink for consistent resolution
     const worktreeNmDir = path.join(worktreePath, 'node_modules');
     fs.mkdirSync(worktreeNmDir, { recursive: true });
     safeSymlink(frameworkDir, path.join(worktreeNmDir, 'gentyr'));
+
+    // Also create .claude-framework for legacy model compatibility
+    const legacyPath = path.join(PROJECT_DIR, '.claude-framework');
+    try {
+      if (fs.lstatSync(legacyPath).isSymbolicLink() || fs.statSync(legacyPath).isDirectory()) {
+        safeSymlink(frameworkDir, path.join(worktreePath, '.claude-framework'));
+      }
+    } catch {}
   }
 
   // --- .claude directory and shared sub-resources ---

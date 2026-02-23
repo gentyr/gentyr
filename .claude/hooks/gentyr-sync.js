@@ -70,6 +70,20 @@ function resolveFrameworkDir(dir) {
     }
   } catch {}
 
+  // 3. Follow .claude/hooks symlink (resilient to node_modules pruning)
+  const hooksPath = path.join(dir, '.claude', 'hooks');
+  try {
+    const stat = fs.lstatSync(hooksPath);
+    if (stat.isSymbolicLink()) {
+      const realHooks = fs.realpathSync(hooksPath);
+      // hooks dir is at <framework>/.claude/hooks
+      const candidate = path.resolve(realHooks, '..', '..');
+      if (fs.existsSync(path.join(candidate, 'version.json'))) {
+        return candidate;
+      }
+    }
+  } catch {}
+
   return null;
 }
 

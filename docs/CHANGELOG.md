@@ -1,5 +1,19 @@
 # GENTYR Framework Changelog
 
+## 2026-02-22 - pnpm Pruning Resilience
+
+### Fixed
+
+**Framework path resolution resilient to `pnpm install` pruning** (`cli/lib/resolve-framework.js`, `packages/mcp-servers/src/shared/resolve-framework.ts`, `.claude/hooks/gentyr-sync.js`, `.claude/hooks/lib/worktree-manager.js`):
+- Root cause: `resolveFrameworkRelative()` returned literal token strings (`'node_modules/gentyr'`) instead of resolving through symlinks to the real filesystem path; `pnpm install` pruned the unlisted `gentyr` package, breaking all symlinks and configs
+- Added path 3 to `resolveFrameworkDir()`: follows `.claude/hooks` symlink back to the framework root as a last-resort fallback; allows hooks, agents, and MCP servers to locate the framework even when `node_modules/gentyr` has been pruned
+- `resolveFrameworkRelative()` now calls `resolveFrameworkDir()` + `path.relative()` instead of returning literal tokens
+- `cli/commands/migrate.js`: replaced hardcoded `'node_modules/gentyr'` with `path.relative(projectDir, frameworkDir)`
+- `cli/commands/sync.js`: added directory symlink + reporter symlink self-healing step (imports `createDirectorySymlinks` and `createReporterSymlinks`) so `npx gentyr sync` repairs broken symlinks without a full reinstall
+- `worktree-manager.js`: added local `resolveFrameworkDir()` helper; resolved relative `.mcp.json` args to absolute paths for worktree context; preserved legacy `.claude-framework` support alongside npm model
+
+---
+
 ## 2026-02-22 - npm CLI Package Migration
 
 ### Added
@@ -14,7 +28,7 @@
 - `gentyr scaffold <name>` — scaffold new project directory
 
 **CLI lib modules** (`cli/lib/`):
-- `resolve-framework.js` — resolves `node_modules/gentyr` (preferred) then `.claude-framework` (fallback)
+- `resolve-framework.js` — resolves `node_modules/gentyr` (preferred), `.claude-framework` (legacy fallback), `.claude/hooks` symlink traversal (resilient to pnpm pruning)
 - `symlinks.js` — creates directory, agent, and reporter symlinks from framework into target project
 - `config-gen.js` — generates `.mcp.json`, merges `settings.json`, updates `CLAUDE.md`, updates `.gitignore`
 - `state.js` — reads/writes `gentyr-state.json`; tracks installed version, config hash, install model
@@ -23,7 +37,7 @@
 **`packages/mcp-servers/src/shared/resolve-framework.ts`**:
 - Shared TypeScript framework path resolver for MCP servers
 - Exports `resolveFrameworkDir()`, `resolveFrameworkRelative()`, `detectInstallModel()`
-- Prefers `node_modules/gentyr`, falls back to `.claude-framework`
+- Resolves via three paths: `node_modules/gentyr` (npm model), `.claude-framework` (legacy), `.claude/hooks` symlink traversal (resilient to pnpm pruning)
 - Used by MCP servers that need to reference the framework directory
 
 **`scripts/hooks/gentyr-sync.js`** (staged hook):
