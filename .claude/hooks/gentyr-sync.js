@@ -398,9 +398,56 @@ function legacySettingsCheck(frameworkDir) {
 // Main
 // ============================================================================
 
+// ============================================================================
+// Protection tamper check (runs when protection-state.json says protected: true)
+// ============================================================================
+
+function tamperCheck() {
+  const statePath = path.join(projectDir, '.claude', 'protection-state.json');
+  let state;
+  try {
+    state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  } catch {
+    return; // No state file — skip check
+  }
+
+  if (!state.protected || !Array.isArray(state.criticalHooks)) return;
+
+  // Resolve hooks directory (follows symlinks, same as protect.js getHooksDir)
+  let hooksDir = path.join(projectDir, '.claude', 'hooks');
+  try {
+    if (fs.lstatSync(hooksDir).isSymbolicLink()) {
+      hooksDir = fs.realpathSync(hooksDir);
+    }
+  } catch {}
+
+  const tampered = [];
+  for (const hook of state.criticalHooks) {
+    const filePath = path.join(hooksDir, hook);
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.uid !== 0) {
+        tampered.push(hook);
+      }
+    } catch {
+      // File missing — not necessarily tampering (could be removed legitimately)
+    }
+  }
+
+  if (tampered.length > 0) {
+    warn(
+      `SECURITY WARNING: ${tampered.length} critical hook(s) are not root-owned: ${tampered.join(', ')}. ` +
+      'Possible tampering detected. Run "sudo npx gentyr protect" to restore protection.'
+    );
+  }
+}
+
 try {
   const frameworkDir = resolveFrameworkDir(projectDir);
   if (!frameworkDir) silent();
+
+  // Check for hook tampering before sync
+  tamperCheck();
 
   // Try state-based sync first; fall back to legacy check
   if (!statBasedSync(frameworkDir)) {

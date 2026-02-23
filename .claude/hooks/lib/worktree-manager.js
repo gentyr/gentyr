@@ -75,7 +75,6 @@ function safeSymlink(target, linkPath) {
  * @returns {string|null}
  */
 function resolveFrameworkDir(dir) {
-  // 1. node_modules/gentyr (npm model)
   const npmPath = path.join(dir, 'node_modules', 'gentyr');
   try {
     const stat = fs.lstatSync(npmPath);
@@ -84,7 +83,6 @@ function resolveFrameworkDir(dir) {
     }
   } catch {}
 
-  // 2. .claude-framework (legacy model)
   const legacyPath = path.join(dir, '.claude-framework');
   try {
     const stat = fs.lstatSync(legacyPath);
@@ -93,7 +91,6 @@ function resolveFrameworkDir(dir) {
     }
   } catch {}
 
-  // 3. Follow .claude/hooks symlink
   const hooksPath = path.join(dir, '.claude', 'hooks');
   try {
     const stat = fs.lstatSync(hooksPath);
@@ -123,7 +120,7 @@ function resolveFrameworkDir(dir) {
  * @param {string} worktreePath - Absolute path to the worktree directory
  */
 export function provisionWorktree(worktreePath) {
-  // --- .mcp.json: rewrite relative paths to absolute for worktree context ---
+  // --- .mcp.json: rewrite CLAUDE_PROJECT_DIR env values to absolute path ---
   const mainMcpPath = path.join(PROJECT_DIR, '.mcp.json');
   if (fs.existsSync(mainMcpPath)) {
     const mcpConfig = JSON.parse(fs.readFileSync(mainMcpPath, 'utf8'));
@@ -156,7 +153,6 @@ export function provisionWorktree(worktreePath) {
   // --- framework symlink: resolve real path (resilient to node_modules pruning) ---
   const frameworkDir = resolveFrameworkDir(PROJECT_DIR);
   if (frameworkDir) {
-    // Always create node_modules/gentyr symlink for consistent resolution
     const worktreeNmDir = path.join(worktreePath, 'node_modules');
     fs.mkdirSync(worktreeNmDir, { recursive: true });
     safeSymlink(frameworkDir, path.join(worktreeNmDir, 'gentyr'));

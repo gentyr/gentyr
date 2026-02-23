@@ -96,10 +96,17 @@ function doProtect(projectDir) {
     path.join(projectDir, 'package.json'),
   ];
 
+  // Protect directories that should block agent file creation/deletion.
+  // .claude/hooks/ is NOT protected as a directory — git needs write access for atomic
+  // file operations (checkout, merge, stash). Individual critical files inside are still
+  // root-owned. The unlink+recreate gap is closed by the husky tamper check + SessionStart check.
+  //
+  // .claude/ is protected in target projects (prevents hooks symlink replacement).
+  // Framework repo excluded — MCP servers need to create runtime files (databases, state, etc.)
+  const isFrameworkRepo = fs.existsSync(path.join(projectDir, 'version.json'));
   const dirs = [
     path.join(projectDir, '.husky'),
-    path.join(projectDir, '.claude'),
-    hooksDir,
+    ...(!isFrameworkRepo ? [path.join(projectDir, '.claude')] : []),
   ];
 
   for (const dir of dirs) {
@@ -122,12 +129,23 @@ function doProtect(projectDir) {
     }
   }
 
-  // Write state
+  // Write state (includes criticalHooks list so SessionStart tamper check reads dynamically)
+  const criticalHooks = [
+    'pre-commit-review.js',
+    'bypass-approval-hook.js',
+    'block-no-verify.js',
+    'protected-action-gate.js',
+    'protected-action-approval-hook.js',
+    'credential-file-guard.js',
+    'secret-leak-detector.js',
+    'protected-actions.json',
+  ];
   const stateFile = path.join(projectDir, '.claude', 'protection-state.json');
   fs.writeFileSync(stateFile, JSON.stringify({
     protected: true,
     timestamp: new Date().toISOString(),
     modified_by: getOriginalUser(),
+    criticalHooks,
   }, null, 2) + '\n');
   execFileSync('chmod', ['644', stateFile], { stdio: 'pipe' });
 
@@ -171,10 +189,10 @@ function doUnprotect(projectDir) {
     path.join(projectDir, 'package.json'),
   ];
 
+  const isFrameworkRepo = fs.existsSync(path.join(projectDir, 'version.json'));
   const dirs = [
     path.join(projectDir, '.husky'),
-    path.join(projectDir, '.claude'),
-    hooksDir,
+    ...(!isFrameworkRepo ? [path.join(projectDir, '.claude')] : []),
   ];
 
   const ownership = `${originalUser}:${originalGroup}`;
@@ -200,6 +218,7 @@ function doUnprotect(projectDir) {
     [path.join(projectDir, '.husky'), 1],
     [path.join(projectDir, '.claude'), 1],
     [path.join(projectDir, '.claude', 'state'), 1],
+    [hooksDir, 2],  // covers lib/, __tests__/
   ];
   for (const [dir, depth] of fixDirs) {
     if (fs.existsSync(dir)) {
