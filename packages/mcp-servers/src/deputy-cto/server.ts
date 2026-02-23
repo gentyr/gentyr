@@ -127,6 +127,7 @@ const AUTOMATION_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'autom
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
 const PROTECTED_ACTIONS_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'protected-actions.json');
 const PROTECTED_APPROVALS_PATH = path.join(PROJECT_DIR, '.claude', 'protected-action-approvals.json');
+const APPROVALS_LOCK_PATH = PROTECTED_APPROVALS_PATH + '.lock';
 const PROTECTION_KEY_PATH = path.join(PROJECT_DIR, '.claude', 'protection-key');
 const HOTFIX_APPROVAL_TOKEN_PATH = path.join(PROJECT_DIR, '.claude', 'hotfix-approval-token.json');
 const COOLDOWN_MINUTES = 55;
@@ -1604,7 +1605,45 @@ function saveApprovalsFile(data: ApprovalsFile): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(PROTECTED_APPROVALS_PATH, JSON.stringify(data, null, 2));
+  const tmpPath = PROTECTED_APPROVALS_PATH + '.tmp.' + process.pid;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
+    fs.renameSync(tmpPath, PROTECTED_APPROVALS_PATH);
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    throw err;
+  }
+}
+
+function acquireApprovalsLock(): boolean {
+  const maxAttempts = 10;
+  const baseDelay = 50;
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const fd = fs.openSync(APPROVALS_LOCK_PATH, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      return true;
+    } catch {
+      try {
+        const stat = fs.statSync(APPROVALS_LOCK_PATH);
+        if (Date.now() - stat.mtimeMs > 10000) {
+          fs.unlinkSync(APPROVALS_LOCK_PATH);
+          continue;
+        }
+      } catch { /* lock file gone, retry */ }
+      const delay = baseDelay * Math.pow(2, i);
+      const start = Date.now();
+      while (Date.now() - start < delay) { /* busy wait */ }
+    }
+  }
+  return false;
+}
+
+function releaseApprovalsLock(): void {
+  try {
+    fs.unlinkSync(APPROVALS_LOCK_PATH);
+  } catch { /* already released */ }
 }
 
 /**
@@ -1613,63 +1652,72 @@ function saveApprovalsFile(data: ApprovalsFile): void {
  */
 function approveProtectedAction(args: ApproveProtectedActionArgs): ApproveProtectedActionResult | ErrorResult {
   const code = args.code.toUpperCase();
-  const data = loadApprovalsFile();
-  const request = data.approvals[code];
 
-  if (!request) {
-    return { error: `No pending request found with code: ${code}` };
+  if (!acquireApprovalsLock()) {
+    return { error: 'Could not acquire approvals file lock. Try again.' };
   }
 
-  if (request.status === 'approved') {
-    return { error: `Request ${code} has already been approved.` };
-  }
+  try {
+    const data = loadApprovalsFile();
+    const request = data.approvals[code];
 
-  if (Date.now() > request.expires_timestamp) {
-    delete data.approvals[code];
-    saveApprovalsFile(data);
-    return { error: `Request ${code} has expired.` };
-  }
+    if (!request) {
+      return { error: `No pending request found with code: ${code}` };
+    }
 
-  // Only deputy-cto-approval mode requests can be approved by deputy-cto
-  if (request.approval_mode !== 'deputy-cto') {
-    return {
-      error: `Request ${code} requires CTO approval (mode: ${request.approval_mode || 'cto'}). Deputy-CTO cannot approve this action. Escalate to CTO queue.`,
-    };
-  }
+    if (request.status === 'approved') {
+      return { error: `Request ${code} has already been approved.` };
+    }
 
-  // Verify pending_hmac with protection key
-  const key = loadProtectionKey();
-  if (key && request.pending_hmac) {
-    const expectedPendingHmac = computeHmac(key, code, request.server, request.tool, request.argsHash || '', String(request.expires_timestamp));
-    if (request.pending_hmac !== expectedPendingHmac) {
-      // Forged request - delete it
+    if (Date.now() > request.expires_timestamp) {
       delete data.approvals[code];
       saveApprovalsFile(data);
-      return { error: `FORGERY DETECTED: Invalid pending signature for ${code}. Request deleted.` };
+      return { error: `Request ${code} has expired.` };
     }
-  } else if (!key && request.pending_hmac) {
-    // G001 Fail-Closed: Request has HMAC but we can't verify (key missing)
-    return { error: `Cannot verify request signature for ${code} (protection key missing). Restore .claude/protection-key.` };
-  } else if (!key) {
-    // G001 Fail-Closed: No protection key at all — cannot sign approvals
-    return { error: `Protection key missing. Cannot create HMAC-signed approval. Restore .claude/protection-key.` };
+
+    // Only deputy-cto-approval mode requests can be approved by deputy-cto
+    if (request.approval_mode !== 'deputy-cto') {
+      return {
+        error: `Request ${code} requires CTO approval (mode: ${request.approval_mode || 'cto'}). Deputy-CTO cannot approve this action. Escalate to CTO queue.`,
+      };
+    }
+
+    // Verify pending_hmac with protection key
+    const key = loadProtectionKey();
+    if (key && request.pending_hmac) {
+      const expectedPendingHmac = computeHmac(key, code, request.server, request.tool, request.argsHash || '', String(request.expires_timestamp));
+      if (request.pending_hmac !== expectedPendingHmac) {
+        // Forged request - delete it
+        delete data.approvals[code];
+        saveApprovalsFile(data);
+        return { error: `FORGERY DETECTED: Invalid pending signature for ${code}. Request deleted.` };
+      }
+    } else if (!key && request.pending_hmac) {
+      // G001 Fail-Closed: Request has HMAC but we can't verify (key missing)
+      return { error: `Cannot verify request signature for ${code} (protection key missing). Restore .claude/protection-key.` };
+    } else if (!key) {
+      // G001 Fail-Closed: No protection key at all — cannot sign approvals
+      return { error: `Protection key missing. Cannot create HMAC-signed approval. Restore .claude/protection-key.` };
+    }
+
+    // Compute approved_hmac (same algorithm as approval hook)
+    request.status = 'approved';
+    request.approved_at = new Date().toISOString();
+    request.approved_timestamp = Date.now();
+    request.approved_hmac = computeHmac(key, code, request.server, request.tool, 'approved', request.argsHash || '', String(request.expires_timestamp));
+
+    saveApprovalsFile(data);
+
+    return {
+      approved: true,
+      code,
+      server: request.server,
+      tool: request.tool,
+      message: `Approved: ${request.server}.${request.tool} (code: ${code}). Agent can now retry the action.`,
+    };
+  } finally {
+    releaseApprovalsLock();
   }
-
-  // Compute approved_hmac (same algorithm as approval hook)
-  request.status = 'approved';
-  request.approved_at = new Date().toISOString();
-  request.approved_timestamp = Date.now();
-  request.approved_hmac = computeHmac(key, code, request.server, request.tool, 'approved', request.argsHash || '', String(request.expires_timestamp));
-
-  saveApprovalsFile(data);
-
-  return {
-    approved: true,
-    code,
-    server: request.server,
-    tool: request.tool,
-    message: `Approved: ${request.server}.${request.tool} (code: ${code}). Agent can now retry the action.`,
-  };
 }
 
 /**
@@ -1678,25 +1726,34 @@ function approveProtectedAction(args: ApproveProtectedActionArgs): ApproveProtec
  */
 function denyProtectedAction(args: DenyProtectedActionArgs): DenyProtectedActionResult | ErrorResult {
   const code = args.code.toUpperCase();
-  const data = loadApprovalsFile();
-  const request = data.approvals[code];
 
-  if (!request) {
-    return { error: `No pending request found with code: ${code}` };
+  if (!acquireApprovalsLock()) {
+    return { error: 'Could not acquire approvals file lock. Try again.' };
   }
 
-  // Remove the request
-  const server = request.server;
-  const tool = request.tool;
-  delete data.approvals[code];
-  saveApprovalsFile(data);
+  try {
+    const data = loadApprovalsFile();
+    const request = data.approvals[code];
 
-  return {
-    denied: true,
-    code,
-    reason: args.reason,
-    message: `Denied: ${server}.${tool} (code: ${code}). Reason: ${args.reason}`,
-  };
+    if (!request) {
+      return { error: `No pending request found with code: ${code}` };
+    }
+
+    // Remove the request
+    const server = request.server;
+    const tool = request.tool;
+    delete data.approvals[code];
+    saveApprovalsFile(data);
+
+    return {
+      denied: true,
+      code,
+      reason: args.reason,
+      message: `Denied: ${server}.${tool} (code: ${code}). Reason: ${args.reason}`,
+    };
+  } finally {
+    releaseApprovalsLock();
+  }
 }
 
 /**

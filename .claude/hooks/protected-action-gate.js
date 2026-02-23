@@ -224,7 +224,14 @@ function saveApprovals(approvals) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(APPROVALS_PATH, JSON.stringify(approvals, null, 2));
+  const tmpPath = APPROVALS_PATH + '.tmp.' + process.pid;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(approvals, null, 2));
+    fs.renameSync(tmpPath, APPROVALS_PATH);
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    throw err;
+  }
 }
 
 /**
