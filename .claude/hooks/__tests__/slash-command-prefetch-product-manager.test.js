@@ -18,8 +18,7 @@ import assert from 'node:assert';
 import fs from 'fs';
 import path from 'path';
 
-const PROJECT_DIR = process.cwd();
-const SLASH_COMMAND_PREFETCH_HOOK = path.join(PROJECT_DIR, '.claude/hooks/slash-command-prefetch.js');
+const SLASH_COMMAND_PREFETCH_HOOK = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'slash-command-prefetch.js');
 
 describe('Slash Command Prefetch - /product-manager Command', () => {
   let hookCode;
@@ -311,13 +310,13 @@ describe('Slash Command Prefetch - /product-manager Integration', () => {
     }
   });
 
-  it('should have 13 total slash commands (including product-manager and toggle-product-manager)', () => {
+  it('should have 16 total slash commands (including demo-interactive and demo-auto)', () => {
     const sentinelsMatch = hookCode.match(/const SENTINELS = \{[\s\S]*?\};/);
     const sentinelsObject = sentinelsMatch[0];
 
     // Count command definitions
     const commandCount = (sentinelsObject.match(/'[\w-]+':/g) || []).length;
-    assert.strictEqual(commandCount, 13, 'Should have 13 slash commands total');
+    assert.strictEqual(commandCount, 16, 'Should have 16 slash commands total');
   });
 
   it('should place /product-manager handler in correct position in main()', () => {

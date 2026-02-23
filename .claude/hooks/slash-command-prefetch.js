@@ -63,6 +63,8 @@ const SENTINELS = {
   'toggle-product-manager': '<!-- HOOK:GENTYR:toggle-product-manager -->',
   'triage': '<!-- HOOK:GENTYR:triage -->',
   'demo': '<!-- HOOK:GENTYR:demo -->',
+  'demo-interactive': '<!-- HOOK:GENTYR:demo -->',
+  'demo-auto': '<!-- HOOK:GENTYR:demo -->',
 };
 
 /**
@@ -693,6 +695,99 @@ function handlePushSecrets() {
   }));
 }
 
+function detectProjectFeatures() {
+  const EXCLUDE = new Set(['node_modules', '.git', '.next', '.nuxt', '.svelte-kit', 'dist', 'build', 'coverage', '.cache', '.turbo', '__pycache__']);
+  const MAX_FEATURES = 20;
+  const features = [];
+
+  function safeReaddir(dirPath) {
+    try {
+      return fs.readdirSync(dirPath, { withFileTypes: true })
+        .filter(d => d.isDirectory() && !d.name.startsWith('_') && !d.name.startsWith('.') && !EXCLUDE.has(d.name));
+    } catch {
+      return [];
+    }
+  }
+
+  // Route directories (Next.js app/, SvelteKit routes/, pages/)
+  const routeDirs = [
+    { base: 'app', source: 'route' },
+    { base: path.join('src', 'app'), source: 'route' },
+    { base: 'routes', source: 'route' },
+    { base: path.join('src', 'routes'), source: 'route' },
+    { base: 'pages', source: 'route' },
+    { base: path.join('src', 'pages'), source: 'route' },
+  ];
+
+  for (const { base, source } of routeDirs) {
+    const fullBase = path.join(PROJECT_DIR, base);
+    if (!fs.existsSync(fullBase)) continue;
+    const subdirs = safeReaddir(fullBase);
+    for (const d of subdirs) {
+      if (features.length >= MAX_FEATURES) break;
+      const relativePath = path.join(base, d.name);
+      features.push({
+        name: d.name,
+        suggested_file_patterns: [`${relativePath}/**`],
+        suggested_url_patterns: [`/${d.name}`, `/${d.name}/*`],
+        category: 'route',
+        source: `${source} directory: ${base}/`,
+      });
+    }
+    if (features.length >= MAX_FEATURES) break;
+    break; // Only use the first matching route directory
+  }
+
+  // Feature/module directories
+  const featureDirs = [
+    { base: path.join('src', 'features'), source: 'feature' },
+    { base: path.join('src', 'modules'), source: 'module' },
+    { base: 'lib', source: 'lib' },
+  ];
+
+  for (const { base, source } of featureDirs) {
+    const fullBase = path.join(PROJECT_DIR, base);
+    if (!fs.existsSync(fullBase)) continue;
+    const subdirs = safeReaddir(fullBase);
+    for (const d of subdirs) {
+      if (features.length >= MAX_FEATURES) break;
+      // Skip if already detected as a route
+      if (features.some(f => f.name === d.name)) continue;
+      const relativePath = path.join(base, d.name);
+      features.push({
+        name: d.name,
+        suggested_file_patterns: [`${relativePath}/**`],
+        suggested_url_patterns: [],
+        category: source,
+        source: `${source} directory: ${base}/`,
+      });
+    }
+  }
+
+  // Component directories (top-level subdirs of src/components)
+  if (features.length < MAX_FEATURES) {
+    const compBase = path.join('src', 'components');
+    const fullCompBase = path.join(PROJECT_DIR, compBase);
+    if (fs.existsSync(fullCompBase)) {
+      const subdirs = safeReaddir(fullCompBase);
+      for (const d of subdirs) {
+        if (features.length >= MAX_FEATURES) break;
+        if (features.some(f => f.name === d.name)) continue;
+        const relativePath = path.join(compBase, d.name);
+        features.push({
+          name: `components/${d.name}`,
+          suggested_file_patterns: [`${relativePath}/**`],
+          suggested_url_patterns: [],
+          category: 'component',
+          source: `component directory: ${compBase}/`,
+        });
+      }
+    }
+  }
+
+  return features;
+}
+
 function handleConfigurePersonas() {
   const output = { command: 'configure-personas', gathered: {} };
 
@@ -722,6 +817,9 @@ function handleConfigurePersonas() {
     output.gathered.mappings = [];
     output.gathered.note = 'user-feedback.db not found (no personas configured yet)';
   }
+
+  // Auto-detected features (directory structure scan)
+  output.gathered.detectedFeatures = detectProjectFeatures();
 
   console.log(JSON.stringify({
     continue: true,
@@ -1133,6 +1231,12 @@ async function main() {
     return handleShow();
   }
   if (matchesCommand(prompt, 'demo')) {
+    return handleDemo();
+  }
+  if (matchesCommand(prompt, 'demo-interactive')) {
+    return handleDemo();
+  }
+  if (matchesCommand(prompt, 'demo-auto')) {
     return handleDemo();
   }
 
