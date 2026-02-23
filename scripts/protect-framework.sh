@@ -90,11 +90,23 @@ PROTECTED_FILES=(
 )
 
 # Directories to protect (prevents deletion of protected files inside)
+# .claude/hooks/ is NOT protected as a directory — git needs write access for atomic
+# file operations (checkout, merge, stash). Individual critical files inside are still
+# root-owned. The unlink+recreate gap is closed by the husky tamper check + SessionStart check.
+#
+# .claude/ is protected in target projects (prevents hooks symlink replacement).
+# Framework repo excluded — MCP servers need to create runtime files.
+IS_FRAMEWORK_REPO=false
+if [ -f "$PROJECT_DIR/version.json" ]; then
+    IS_FRAMEWORK_REPO=true
+fi
+
 PROTECTED_DIRS=(
     "$PROJECT_DIR/.husky"
-    "$PROJECT_DIR/.claude"
-    "$HOOKS_DIR"
 )
+if [ "$IS_FRAMEWORK_REPO" = false ]; then
+    PROTECTED_DIRS+=("$PROJECT_DIR/.claude")
+fi
 
 # State file for tracking protection
 STATE_FILE="$PROJECT_DIR/.claude/protection-state.json"
@@ -293,6 +305,16 @@ write_state() {
   "protected": $protected,
   "timestamp": "$timestamp",
   "modified_by": "$user",
+  "criticalHooks": [
+    "pre-commit-review.js",
+    "bypass-approval-hook.js",
+    "block-no-verify.js",
+    "protected-action-gate.js",
+    "protected-action-approval-hook.js",
+    "credential-file-guard.js",
+    "secret-leak-detector.js",
+    "protected-actions.json"
+  ],
   "files": [
     "$HOOKS_DIR/pre-commit-review.js",
     "$HOOKS_DIR/bypass-approval-hook.js",

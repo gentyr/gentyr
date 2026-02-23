@@ -38,7 +38,6 @@ export function resolveFrameworkDir(projectDir: string): string | null {
     const stat = fs.lstatSync(hooksPath);
     if (stat.isSymbolicLink()) {
       const realHooks = fs.realpathSync(hooksPath);
-      // hooks dir is at <framework>/.claude/hooks
       const candidate = path.resolve(realHooks, '..', '..');
       if (fs.existsSync(path.join(candidate, 'version.json'))) {
         return candidate;

@@ -21,7 +21,7 @@ Installs framework symlinks (via `node_modules/gentyr`), configs, husky hooks, b
 npx gentyr sync
 ```
 
-Rebuilds MCP servers, re-merges settings.json, regenerates .mcp.json, self-heals directory and reporter symlinks, and deploys staged hooks. Also runs automatically on `SessionStart` when framework version or config hash changes.
+Rebuilds MCP servers, re-merges settings.json, regenerates .mcp.json, and deploys staged hooks. Also runs automatically on `SessionStart` when framework version or config hash changes.
 
 ### Migrate from legacy install
 
@@ -196,7 +196,7 @@ Research artifact from investigating Claude Code's credential memoization cache.
 - Auto-rebuilds MCP servers when `src/` mtime > `dist/` mtime (30s timeout); logs to stderr on failure (silent to agent)
 - Syncs husky hooks by comparing `husky/` against `.husky/` in the target project; re-copies if content differs
 - Falls back to legacy settings.json hook diff check when no `gentyr-state.json` exists (pre-migration projects)
-- Resolves the framework directory via three paths: (1) `node_modules/gentyr` (npm model), (2) `.claude-framework` (legacy symlink model), (3) `.claude/hooks` symlink traversal — resilient to `pnpm install` pruning `node_modules/gentyr` when it is not listed in `package.json`
+- Supports both npm model (`node_modules/gentyr`) and legacy symlink model (`.claude-framework`)
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; version 3.0
 
 **Credential Health Check Hook** (`.claude/hooks/credential-health-check.js`):

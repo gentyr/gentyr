@@ -3,6 +3,32 @@ echo "Running pre-commit checks..."
 echo ""
 
 # =============================================================================
+# SECURITY: HOOK INTEGRITY CHECK
+# =============================================================================
+# Verifies critical hooks are still root-owned. Catches unlink+recreate attacks.
+# This check is trustworthy: .husky/pre-commit is root-owned in a root-owned dir.
+# =============================================================================
+
+TAMPER=0
+for f in pre-commit-review.js bypass-approval-hook.js block-no-verify.js \
+         protected-action-gate.js protected-action-approval-hook.js \
+         credential-file-guard.js secret-leak-detector.js protected-actions.json; do
+  if [ -f ".claude/hooks/$f" ]; then
+    uid=$(stat -f '%u' ".claude/hooks/$f" 2>/dev/null || stat -c '%u' ".claude/hooks/$f" 2>/dev/null)
+    if [ "$uid" != "0" ]; then
+      echo "SECURITY: .claude/hooks/$f not root-owned (uid=$uid)"
+      TAMPER=1
+    fi
+  fi
+done
+if [ "$TAMPER" = "1" ]; then
+  echo "COMMIT BLOCKED: Hook tampering detected. Run 'sudo npx gentyr protect'"
+  exit 1
+fi
+echo "Hook integrity verified"
+echo ""
+
+# =============================================================================
 # LINT STAGED FILES
 # =============================================================================
 
