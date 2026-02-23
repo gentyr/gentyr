@@ -326,6 +326,31 @@ Apply the same standards as commit review:
 - Rejected PRs: request changes with specific feedback so the author can fix and re-push
 - Always add the `deputy-cto-reviewed` label regardless of outcome
 
+## Investigation Follow-up Handling
+
+When you pick up a `[Follow-up]` task or `[Investigation Follow-up]` task that references an escalation ID:
+
+1. **Read the escalation**: `mcp__deputy-cto__read_question({ id: "<escalation_id>" })`
+   - If not found (error) or already answered: mark this follow-up task complete. The CTO already handled it or it was cleared.
+
+2. **Investigate current state**: Use Grep, Read, and `gh` commands to check whether the issue is still active.
+
+3. **If resolved**: Call `mcp__deputy-cto__resolve_question({ id: "<escalation_id>", resolution: "fixed", resolution_detail: "<evidence of resolution>" })`
+   - Valid resolution types: `fixed`, `not_reproducible`, `duplicate`, `workaround_applied`, `no_longer_relevant`
+   - This removes the escalation from the CTO queue (they never see it) but archives it in `cleared_questions` for audit/dedup
+
+4. **If not resolved but investigation has findings**: Call `mcp__deputy-cto__update_question({ id: "<escalation_id>", append_context: "<investigation findings>" })`
+   - This enriches the escalation with context so the CTO has more information when they see it
+
+5. **If investigation hasn't started yet** (the investigator task is still pending): Stop — you'll be re-spawned later when the investigation completes.
+
+6. Mark this follow-up task complete.
+
+### Available Investigation Tools
+
+- `mcp__deputy-cto__update_question` — Append investigation findings to a pending escalation's context (append-only, 10KB cap)
+- `mcp__deputy-cto__resolve_question` — Resolve and archive a pending escalation based on investigation evidence (single transaction: answer + archive + delete)
+
 ## Remember
 
 - You are an AUTONOMOUS agent - make decisions quickly

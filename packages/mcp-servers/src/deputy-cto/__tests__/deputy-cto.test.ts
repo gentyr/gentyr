@@ -162,6 +162,7 @@ describe('Deputy-CTO Server', () => {
     context?: string;
     suggested_options?: string[];
     recommendation?: string;
+    investigation_task_id?: string;
   }) => {
     // Require recommendation for escalations (mirrors server validation)
     if (args.type === 'escalation' && !args.recommendation) {
@@ -182,8 +183,8 @@ describe('Deputy-CTO Server', () => {
     const created_timestamp = Math.floor(now.getTime() / 1000);
 
     db.prepare(`
-      INSERT INTO questions (id, type, status, title, description, context, suggested_options, recommendation, created_at, created_timestamp)
-      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO questions (id, type, status, title, description, context, suggested_options, recommendation, investigation_task_id, created_at, created_timestamp)
+      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       args.type,
@@ -192,6 +193,7 @@ describe('Deputy-CTO Server', () => {
       args.context ?? null,
       args.suggested_options ? JSON.stringify(args.suggested_options) : null,
       args.recommendation ?? null,
+      args.investigation_task_id ?? null,
       created_at,
       created_timestamp
     );
@@ -2479,6 +2481,418 @@ describe('Deputy-CTO Server', () => {
 
         expect(result.request_id).not.toBe('');
         expect(result.message).toContain('Bypass request submitted');
+      });
+    });
+  });
+
+  // ==========================================================================
+  // Investigation Tools
+  // ==========================================================================
+
+  describe('Investigation Tools', () => {
+    const MAX_CONTEXT_SIZE = 10 * 1024;
+
+    const updateQuestion = (args: { id: string; append_context: string }) => {
+      const question = db.prepare('SELECT * FROM questions WHERE id = ?').get(args.id) as QuestionRow | undefined;
+
+      if (!question) {
+        return { error: `Question not found: ${args.id}` };
+      }
+
+      if (question.status !== 'pending') {
+        return { error: `Cannot update question ${args.id}: status is '${question.status}', expected 'pending'.` };
+      }
+
+      if (question.type === 'bypass-request' || question.type === 'protected-action-request') {
+        return { error: `Cannot update ${question.type} questions via update_question.` };
+      }
+
+      const separator = `\n\n--- Investigation Update (${new Date().toISOString()}) ---\n`;
+      const existingContext = question.context ?? '';
+      const newContext = existingContext + separator + args.append_context;
+
+      if (newContext.length > MAX_CONTEXT_SIZE) {
+        return { error: `Context would exceed 10KB limit (current: ${existingContext.length} bytes, appending: ${args.append_context.length + separator.length} bytes).` };
+      }
+
+      db.prepare('UPDATE questions SET context = ? WHERE id = ?').run(newContext, args.id);
+
+      return {
+        id: args.id,
+        updated: true,
+        message: `Investigation findings appended to question ${args.id}. Context is now ${newContext.length} bytes.`,
+      };
+    };
+
+    const resolveQuestion = (args: { id: string; resolution: string; resolution_detail: string }) => {
+      const question = db.prepare('SELECT * FROM questions WHERE id = ?').get(args.id) as QuestionRow | undefined;
+
+      if (!question) {
+        return { error: `Question not found: ${args.id}` };
+      }
+
+      if (question.status === 'answered') {
+        return { error: `Question ${args.id} is already answered. Cannot resolve an already-answered question.` };
+      }
+
+      if (question.type === 'bypass-request' || question.type === 'protected-action-request') {
+        return { error: `Cannot resolve ${question.type} questions via resolve_question.` };
+      }
+
+      const now = new Date();
+      const answered_at = now.toISOString();
+      const cleared_timestamp = Math.floor(now.getTime() / 1000);
+      const answer = `[Resolved by investigation: ${args.resolution}]\n${args.resolution_detail}`;
+
+      const txn = db.transaction(() => {
+        db.prepare(`
+          UPDATE questions SET status = 'answered', answer = ?, answered_at = ?, decided_by = 'deputy-cto'
+          WHERE id = ?
+        `).run(answer, answered_at, args.id);
+
+        db.prepare(`
+          INSERT INTO cleared_questions (id, type, title, description, recommendation, answer, answered_at, decided_by, cleared_at, cleared_timestamp)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'deputy-cto', ?, ?)
+        `).run(
+          question.id,
+          question.type,
+          question.title,
+          question.description,
+          (question as QuestionRow & { recommendation?: string }).recommendation ?? null,
+          answer,
+          answered_at,
+          answered_at,
+          cleared_timestamp
+        );
+
+        db.prepare('DELETE FROM questions WHERE id = ?').run(args.id);
+      });
+
+      txn();
+
+      const remaining = db.prepare(
+        "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
+      ).get() as { count: number };
+
+      return {
+        id: args.id,
+        resolved: true,
+        resolution: args.resolution,
+        remaining_pending_count: remaining.count,
+        message: `Question ${args.id} resolved as '${args.resolution}' by investigation. ${remaining.count} pending question(s) remaining.`,
+      };
+    };
+
+    describe('update_question', () => {
+      it('should append context with timestamp separator', () => {
+        const q = addQuestion({
+          type: 'escalation',
+          title: 'CI failure',
+          description: 'CI has been failing for 3 days',
+          context: 'Initial context from triage',
+          recommendation: 'Investigate root cause',
+        });
+
+        const result = updateQuestion({
+          id: q.id,
+          append_context: 'Found: flaky test in auth module',
+        });
+
+        expect(result).not.toHaveProperty('error');
+        expect((result as { updated: boolean }).updated).toBe(true);
+
+        const updated = db.prepare('SELECT context FROM questions WHERE id = ?').get(q.id) as { context: string };
+        expect(updated.context).toContain('Initial context from triage');
+        expect(updated.context).toContain('--- Investigation Update (');
+        expect(updated.context).toContain('Found: flaky test in auth module');
+      });
+
+      it('should accumulate multiple updates', () => {
+        const q = addQuestion({
+          type: 'escalation',
+          title: 'Performance issue',
+          description: 'Slow API responses',
+          recommendation: 'Profile the endpoints',
+        });
+
+        updateQuestion({ id: q.id, append_context: 'Update 1: profiled /api/users - 2s avg' });
+        updateQuestion({ id: q.id, append_context: 'Update 2: found N+1 query in user loader' });
+        const result = updateQuestion({ id: q.id, append_context: 'Update 3: fix applied, testing' });
+
+        expect(result).not.toHaveProperty('error');
+
+        const updated = db.prepare('SELECT context FROM questions WHERE id = ?').get(q.id) as { context: string };
+        expect(updated.context).toContain('Update 1:');
+        expect(updated.context).toContain('Update 2:');
+        expect(updated.context).toContain('Update 3:');
+
+        // Should have 3 separator lines
+        const separatorCount = (updated.context.match(/--- Investigation Update/g) || []).length;
+        expect(separatorCount).toBe(3);
+      });
+
+      it('should reject when context would exceed 10KB', () => {
+        const q = addQuestion({
+          type: 'escalation',
+          title: 'Large context test',
+          description: 'Testing size limit',
+          context: 'x'.repeat(9000), // Already close to limit
+          recommendation: 'Test recommendation',
+        });
+
+        const result = updateQuestion({
+          id: q.id,
+          append_context: 'y'.repeat(2000), // This would push over 10KB
+        });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('10KB limit');
+      });
+
+      it('should reject when question is not pending', () => {
+        const q = addQuestion({
+          type: 'decision',
+          title: 'Test',
+          description: 'Test desc',
+        });
+
+        // Answer the question
+        answerQuestion({ id: q.id, answer: 'Done' });
+
+        const result = updateQuestion({
+          id: q.id,
+          append_context: 'Late findings',
+        });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain("status is 'answered'");
+      });
+
+      it('should reject bypass-request type', () => {
+        const id = insertQuestionDirectly({
+          type: 'bypass-request',
+          title: 'Bypass test',
+          description: 'Testing',
+        });
+
+        const result = updateQuestion({
+          id,
+          append_context: 'Trying to update bypass',
+        });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('bypass-request');
+      });
+
+      it('should reject protected-action-request type', () => {
+        const id = insertQuestionDirectly({
+          type: 'protected-action-request',
+          title: 'PAR test',
+          description: 'Testing',
+        });
+
+        const result = updateQuestion({
+          id,
+          append_context: 'Trying to update PAR',
+        });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('protected-action-request');
+      });
+
+      it('should return error for non-existent question', () => {
+        const result = updateQuestion({
+          id: 'non-existent-uuid',
+          append_context: 'Does not matter',
+        });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('Question not found');
+      });
+    });
+
+    describe('resolve_question', () => {
+      it('should resolve and archive a pending escalation', () => {
+        const q = addQuestion({
+          type: 'escalation',
+          title: 'CI failure',
+          description: 'CI failing for 3 days',
+          recommendation: 'Investigate',
+        });
+
+        const result = resolveQuestion({
+          id: q.id,
+          resolution: 'fixed',
+          resolution_detail: 'Flaky test removed in commit abc123',
+        });
+
+        expect(result).not.toHaveProperty('error');
+        expect((result as { resolved: boolean }).resolved).toBe(true);
+        expect((result as { resolution: string }).resolution).toBe('fixed');
+
+        // Should be removed from active questions
+        const active = db.prepare('SELECT * FROM questions WHERE id = ?').get(q.id);
+        expect(active).toBeUndefined();
+
+        // Should be archived in cleared_questions
+        const cleared = db.prepare('SELECT * FROM cleared_questions WHERE id = ?').get(q.id) as {
+          answer: string;
+          decided_by: string;
+        };
+        expect(cleared).toBeDefined();
+        expect(cleared.answer).toContain('[Resolved by investigation: fixed]');
+        expect(cleared.answer).toContain('Flaky test removed in commit abc123');
+        expect(cleared.decided_by).toBe('deputy-cto');
+      });
+
+      it('should decrease pending count after resolution', () => {
+        const q1 = addQuestion({
+          type: 'escalation',
+          title: 'Issue 1',
+          description: 'Desc 1',
+          recommendation: 'Rec 1',
+        });
+        addQuestion({
+          type: 'decision',
+          title: 'Issue 2',
+          description: 'Desc 2',
+        });
+
+        const before = db.prepare(
+          "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
+        ).get() as { count: number };
+        expect(before.count).toBe(2);
+
+        const result = resolveQuestion({
+          id: q1.id,
+          resolution: 'not_reproducible',
+          resolution_detail: 'Could not reproduce after investigation',
+        });
+
+        expect((result as { remaining_pending_count: number }).remaining_pending_count).toBe(1);
+      });
+
+      it('should reject already-answered questions', () => {
+        const q = addQuestion({
+          type: 'decision',
+          title: 'Already answered',
+          description: 'This will be answered',
+        });
+
+        answerQuestion({ id: q.id, answer: 'CTO answered this' });
+
+        const result = resolveQuestion({
+          id: q.id,
+          resolution: 'fixed',
+          resolution_detail: 'Trying to resolve',
+        });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('already answered');
+      });
+
+      it('should reject bypass-request type', () => {
+        const id = insertQuestionDirectly({
+          type: 'bypass-request',
+          title: 'Bypass test',
+          description: 'Testing',
+        });
+
+        const result = resolveQuestion({
+          id,
+          resolution: 'fixed',
+          resolution_detail: 'Trying to resolve bypass',
+        });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('bypass-request');
+      });
+
+      it('should reject protected-action-request type', () => {
+        const id = insertQuestionDirectly({
+          type: 'protected-action-request',
+          title: 'PAR test',
+          description: 'Testing',
+        });
+
+        const result = resolveQuestion({
+          id,
+          resolution: 'fixed',
+          resolution_detail: 'Trying to resolve PAR',
+        });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('protected-action-request');
+      });
+
+      it('should return error for non-existent question', () => {
+        const result = resolveQuestion({
+          id: 'non-existent-uuid',
+          resolution: 'fixed',
+          resolution_detail: 'Does not matter',
+        });
+
+        expect(result).toHaveProperty('error');
+        expect((result as { error: string }).error).toContain('Question not found');
+      });
+
+      it('should maintain transaction atomicity (all-or-nothing)', () => {
+        const q = addQuestion({
+          type: 'escalation',
+          title: 'Atomicity test',
+          description: 'Testing transaction',
+          recommendation: 'Test',
+        });
+
+        // Resolve it
+        resolveQuestion({
+          id: q.id,
+          resolution: 'duplicate',
+          resolution_detail: 'Duplicate of earlier issue',
+        });
+
+        // Verify all three operations happened:
+        // 1. No active question
+        const active = db.prepare('SELECT * FROM questions WHERE id = ?').get(q.id);
+        expect(active).toBeUndefined();
+
+        // 2. Cleared question exists
+        const cleared = db.prepare('SELECT * FROM cleared_questions WHERE id = ?').get(q.id) as {
+          id: string;
+          decided_by: string;
+        } | undefined;
+        expect(cleared).toBeDefined();
+        expect(cleared!.decided_by).toBe('deputy-cto');
+      });
+    });
+
+    describe('add_question with investigation_task_id', () => {
+      it('should store investigation_task_id when provided', () => {
+        const q = addQuestion({
+          type: 'escalation',
+          title: 'Linked escalation',
+          description: 'Has an investigation task',
+          recommendation: 'Investigate first',
+          investigation_task_id: 'task-uuid-123',
+        });
+
+        const question = db.prepare('SELECT investigation_task_id FROM questions WHERE id = ?').get(q.id) as {
+          investigation_task_id: string | null;
+        };
+        expect(question.investigation_task_id).toBe('task-uuid-123');
+      });
+
+      it('should default investigation_task_id to null when omitted', () => {
+        const q = addQuestion({
+          type: 'decision',
+          title: 'No investigation',
+          description: 'Standard question without investigation',
+        });
+
+        const question = db.prepare('SELECT investigation_task_id FROM questions WHERE id = ?').get(q.id) as {
+          investigation_task_id: string | null;
+        };
+        expect(question.investigation_task_id).toBeNull();
       });
     });
   });

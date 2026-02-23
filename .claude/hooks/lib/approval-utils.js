@@ -17,12 +17,18 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
-const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+// Must match PROJECT_DIR resolution in protected-action-gate.js and
+// protected-action-approval-hook.js to ensure consistent lock file paths.
+const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..', '..');
 const PROTECTION_KEY_PATH = path.join(PROJECT_DIR, '.claude', 'protection-key');
 const PROTECTED_ACTIONS_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'protected-actions.json');
 const APPROVALS_PATH = path.join(PROJECT_DIR, '.claude', 'protected-action-approvals.json');
@@ -90,7 +96,7 @@ export function computeHmac(keyBase64, ...fields) {
  * Retries with backoff for up to 2 seconds.
  * @returns {boolean} true if lock acquired
  */
-function acquireLock() {
+export function acquireLock() {
   const maxAttempts = 10;
   const baseDelay = 50; // ms
   for (let i = 0; i < maxAttempts; i++) {
@@ -121,7 +127,7 @@ function acquireLock() {
 /**
  * Release the advisory lock.
  */
-function releaseLock() {
+export function releaseLock() {
   try {
     fs.unlinkSync(LOCK_PATH);
   } catch { /* already released */ }
@@ -357,33 +363,42 @@ export function createRequest(server, tool, args, phrase, options = {}) {
     pendingHmac = computeHmac(keyBase64, code, server, tool, argsHash, String(expiresTimestamp));
   }
 
-  const approvals = loadApprovals();
-  approvals.approvals[code] = {
-    server,
-    tool,
-    args,
-    argsHash,
-    phrase,
-    code,
-    status: 'pending',
-    approval_mode: options.approvalMode || 'cto',
-    created_at: new Date(now).toISOString(),
-    created_timestamp: now,
-    expires_at: new Date(expiresTimestamp).toISOString(),
-    expires_timestamp: expiresTimestamp,
-    ...(pendingHmac && { pending_hmac: pendingHmac }),
-  };
-
-  // Clean expired requests
-  const validApprovals = {};
-  for (const [k, val] of Object.entries(approvals.approvals)) {
-    if (val.expires_timestamp > now) {
-      validApprovals[k] = val;
-    }
+  // Acquire lock for atomic read-modify-write
+  if (!acquireLock()) {
+    console.error('[approval-utils] Warning: Could not acquire lock for createRequest. Proceeding without lock.');
   }
-  approvals.approvals = validApprovals;
 
-  saveApprovals(approvals);
+  try {
+    const approvals = loadApprovals();
+    approvals.approvals[code] = {
+      server,
+      tool,
+      args,
+      argsHash,
+      phrase,
+      code,
+      status: 'pending',
+      approval_mode: options.approvalMode || 'cto',
+      created_at: new Date(now).toISOString(),
+      created_timestamp: now,
+      expires_at: new Date(expiresTimestamp).toISOString(),
+      expires_timestamp: expiresTimestamp,
+      ...(pendingHmac && { pending_hmac: pendingHmac }),
+    };
+
+    // Clean expired requests
+    const validApprovals = {};
+    for (const [k, val] of Object.entries(approvals.approvals)) {
+      if (val.expires_timestamp > now) {
+        validApprovals[k] = val;
+      }
+    }
+    approvals.approvals = validApprovals;
+
+    saveApprovals(approvals);
+  } finally {
+    releaseLock();
+  }
 
   return {
     code,
@@ -402,45 +417,55 @@ export function createRequest(server, tool, args, phrase, options = {}) {
  * @returns {object} Validation result
  */
 export function validateApproval(phrase, code) {
-  const approvals = loadApprovals();
-  const request = approvals.approvals[code.toUpperCase()];
-
-  if (!request) {
-    return { valid: false, reason: 'No pending request with this code' };
+  // Acquire lock to prevent TOCTOU race: concurrent validation + consumption of same request
+  if (!acquireLock()) {
+    console.error('[approval-utils] G001 FAIL-CLOSED: Could not acquire approvals lock for validateApproval.');
+    return { valid: false, reason: 'Could not acquire file lock' };
   }
 
-  if (request.status === 'approved') {
-    return { valid: false, reason: 'This code has already been used' };
-  }
+  try {
+    const approvals = loadApprovals();
+    const request = approvals.approvals[code.toUpperCase()];
 
-  if (Date.now() > request.expires_timestamp) {
-    // Clean up expired request
-    delete approvals.approvals[code.toUpperCase()];
+    if (!request) {
+      return { valid: false, reason: 'No pending request with this code' };
+    }
+
+    if (request.status === 'approved') {
+      return { valid: false, reason: 'This code has already been used' };
+    }
+
+    if (Date.now() > request.expires_timestamp) {
+      // Clean up expired request
+      delete approvals.approvals[code.toUpperCase()];
+      saveApprovals(approvals);
+      return { valid: false, reason: 'Approval code has expired' };
+    }
+
+    // Verify phrase matches (case-insensitive)
+    if (request.phrase.toUpperCase() !== phrase.toUpperCase()) {
+      return {
+        valid: false,
+        reason: `Wrong approval phrase. Expected: ${request.phrase}`
+      };
+    }
+
+    // Mark as approved
+    request.status = 'approved';
+    request.approved_at = new Date().toISOString();
+    request.approved_timestamp = Date.now();
     saveApprovals(approvals);
-    return { valid: false, reason: 'Approval code has expired' };
-  }
 
-  // Verify phrase matches (case-insensitive)
-  if (request.phrase.toUpperCase() !== phrase.toUpperCase()) {
     return {
-      valid: false,
-      reason: `Wrong approval phrase. Expected: ${request.phrase}`
+      valid: true,
+      server: request.server,
+      tool: request.tool,
+      args: request.args,
+      request,
     };
+  } finally {
+    releaseLock();
   }
-
-  // Mark as approved
-  request.status = 'approved';
-  request.approved_at = new Date().toISOString();
-  request.approved_timestamp = Date.now();
-  saveApprovals(approvals);
-
-  return {
-    valid: true,
-    server: request.server,
-    tool: request.tool,
-    args: request.args,
-    request,
-  };
 }
 
 /**
@@ -722,6 +747,10 @@ export default {
   createDbRequest,
   validateDbApproval,
   markDbRequestApproved,
+
+  // File locking
+  acquireLock,
+  releaseLock,
 
   // Constants
   PROTECTION_KEY_PATH,

@@ -763,17 +763,17 @@ Steps:
         },
         {
           title: '[PMF] Populate Section 3: Competitor Differentiation',
-          description: `Section 3 (Competitor Differentiation) is ready. Analyze competitors and write a comprehensive comparison.
+          description: `Section 3 (Competitor Differentiation) is ready. For the leading products identified in Section 1, analyze how they differentiate against EACH OTHER. Compare features, positioning, target segments, and go-to-market strategies. Do NOT compare any competitor to the local project.
 
 Steps:
 1. Call mcp__product-manager__read_section({section: 3}) to see context from Sections 1-2
-2. Research competitors via WebSearch
+2. Research competitor differentiation via WebSearch
 3. Call mcp__product-manager__write_section({section: 3, content: "..."}) with your analysis
 4. Mark this task complete`,
         },
         {
           title: '[PMF] Populate Section 4: Pricing Models',
-          description: `Section 4 (Pricing Models) is ready. Research and document competitor pricing and recommend positioning.
+          description: `Section 4 (Pricing Models) is ready. For the competitors in Section 1, research and compare their pricing tiers, freemium strategies, enterprise pricing, and pricing model structure. This is a pure comparison of competitor pricing — do NOT recommend positioning for the local product.
 
 Steps:
 1. Call mcp__product-manager__read_section({section: 4}) to see context from Sections 1-3
@@ -783,22 +783,22 @@ Steps:
         },
         {
           title: '[PMF] Populate Section 5: Niche Strengths & Weaknesses',
-          description: `Section 5 (Niche Strengths & Weaknesses) is ready. Assess the product's unique advantages and disadvantages.
+          description: `Section 5 (Niche Strengths & Weaknesses) is ready. For each top competitor from Section 1, identify the niche domains where that competitor has strengths and weaknesses. This is purely about the competitors themselves — do NOT analyze the local product's strengths or weaknesses.
 
 Steps:
 1. Call mcp__product-manager__read_section({section: 5}) to see context from Sections 1-4
-2. Analyze strengths and weaknesses from codebase and prior sections
-3. Call mcp__product-manager__write_section({section: 5, content: "..."}) with your assessment
+2. Research each competitor's niche strengths and weaknesses via WebSearch
+3. Call mcp__product-manager__write_section({section: 5, content: "..."}) with your analysis
 4. Mark this task complete`,
         },
         {
           title: '[PMF] Populate Section 6: User Sentiment',
-          description: `Section 6 (User Sentiment) is ready. Document user pain points and frustrations. Add at least ${MIN_LIST_ENTRIES} entries. After populating, finalize the analysis.
+          description: `Section 6 (User Sentiment) is ready. Add at least ${MIN_LIST_ENTRIES} entries. Cover: what users complain about for each major product, what they like most, and the biggest overall pain points that no product handles well. Source from review sites, forums, social media, and analyst reports. Do NOT reference the local project. After populating, finalize the analysis.
 
 Steps:
 1. Call mcp__product-manager__read_section({section: 6}) to see context from Sections 1-5
-2. For each pain point, call mcp__product-manager__add_entry({section: 6, title: "...", content: "..."})
-3. Add at least ${MIN_LIST_ENTRIES} pain point entries
+2. For each pain point/sentiment, call mcp__product-manager__add_entry({section: 6, title: "...", content: "..."})
+3. Add at least ${MIN_LIST_ENTRIES} entries
 4. Call mcp__product-manager__complete_analysis({completed_by: "product-manager"}) to finalize
 5. Mark this task complete`,
         },
