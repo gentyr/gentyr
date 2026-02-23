@@ -4,6 +4,7 @@
  * Resolves the framework directory from a target project, supporting:
  *   1. node_modules/gentyr (npm link model - preferred)
  *   2. .claude-framework (legacy symlink model - fallback)
+ *   3. .claude/hooks symlink (resilient to node_modules pruning)
  */
 
 import * as fs from 'fs';
@@ -28,6 +29,20 @@ export function resolveFrameworkDir(projectDir: string): string | null {
     const stat = fs.lstatSync(legacyPath);
     if (stat.isSymbolicLink() || stat.isDirectory()) {
       return fs.realpathSync(legacyPath);
+    }
+  } catch {}
+
+  // 3. Follow .claude/hooks symlink (resilient to node_modules pruning)
+  const hooksPath = path.join(projectDir, '.claude', 'hooks');
+  try {
+    const stat = fs.lstatSync(hooksPath);
+    if (stat.isSymbolicLink()) {
+      const realHooks = fs.realpathSync(hooksPath);
+      // hooks dir is at <framework>/.claude/hooks
+      const candidate = path.resolve(realHooks, '..', '..');
+      if (fs.existsSync(path.join(candidate, 'version.json'))) {
+        return candidate;
+      }
     }
   } catch {}
 
