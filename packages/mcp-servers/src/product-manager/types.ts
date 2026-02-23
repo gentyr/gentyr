@@ -106,6 +106,10 @@ export const ClearAndRespawnArgsSchema = z.object({
   initiated_by: z.string().optional().default('product-manager').describe('Agent identity'),
 });
 
+export const CompleteAnalysisArgsSchema = z.object({
+  completed_by: z.string().optional().default('product-manager'),
+});
+
 export const RegenerateMdArgsSchema = z.object({});
 
 // ============================================================================
@@ -124,6 +128,7 @@ export type ListPainPointsArgs = z.infer<typeof ListPainPointsArgsSchema>;
 export type MapPainPointPersonaArgs = z.infer<typeof MapPainPointPersonaArgsSchema>;
 export type GetComplianceReportArgs = z.infer<typeof GetComplianceReportArgsSchema>;
 export type ClearAndRespawnArgs = z.infer<typeof ClearAndRespawnArgsSchema>;
+export type CompleteAnalysisArgs = z.infer<typeof CompleteAnalysisArgsSchema>;
 export type RegenerateMdArgs = z.infer<typeof RegenerateMdArgsSchema>;
 
 // ============================================================================
@@ -193,6 +198,7 @@ export interface AnalysisStatusResult {
     title: string;
     populated: boolean;
     entry_count?: number;
+    min_entries_required?: number;
   }>;
   compliance: {
     total_pain_points: number;
@@ -288,8 +294,15 @@ export interface ComplianceReportResult {
 
 export interface ClearAndRespawnResult {
   cleared: true;
-  task_id: string;
+  task_ids: string[];
   message: string;
+}
+
+export interface CompleteAnalysisResult {
+  status: 'completed';
+  completed_at: string;
+  completed_by: string | null;
+  compliance: { total_pain_points: number; mapped: number; unmapped: number; pct: number } | null;
 }
 
 export interface RegenerateMdResult {

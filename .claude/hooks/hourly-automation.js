@@ -1357,7 +1357,7 @@ This will automatically create a follow-up verification task.
 
 ## Constraints
 
-- Do NOT write code yourself (you have no Edit/Write/Bash tools)
+- Do NOT write code yourself (you have no Edit/Write tools)
 - Create 3-8 specific sub-tasks per high-level task
 - Each sub-task must be self-contained with enough context to execute independently
 - Only delegate tasks that align with project specs and plans

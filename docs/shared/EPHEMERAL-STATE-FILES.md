@@ -10,7 +10,7 @@ GENTYR protects `.claude/` with a sticky bit to prevent agents from creating or 
 - **Deleting files (`unlinkSync`) fails** with EACCES
 - **Overwriting existing files (`writeFileSync`) works** because it modifies content, not directory entries
 
-Hooks and MCP servers that use create/delete semantics for ephemeral tokens (approval tokens, bypass tokens) will crash under protection.
+Hooks and MCP servers that use create/delete semantics for ephemeral tokens (bypass tokens, protected-action approvals) will crash under protection.
 
 ## The Pattern: Pre-Create + Overwrite
 
@@ -23,7 +23,6 @@ All ephemeral state files in `.claude/` follow this lifecycle:
 ```bash
 for state_file in \
     "$PROJECT_DIR/.claude/bypass-approval-token.json" \
-    "$PROJECT_DIR/.claude/commit-approval-token.json" \
     "$PROJECT_DIR/.claude/protection-state.json" \
     "$PROJECT_DIR/.claude/protected-action-approvals.json"; do
     [ -f "$state_file" ] || echo '{}' > "$state_file"
@@ -71,7 +70,6 @@ if (!token.code && !token.request_id) {
 
 | File | Written By | Consumed By |
 |------|-----------|-------------|
-| `commit-approval-token.json` | deputy-cto MCP server | pre-commit-review hook |
 | `bypass-approval-token.json` | bypass-approval hook | block-no-verify hook, deputy-cto server |
 | `protected-action-approvals.json` | protected-action-gate hook | protected-action-gate hook |
 | `protection-state.json` | npx gentyr init | various hooks |

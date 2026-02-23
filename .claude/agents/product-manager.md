@@ -54,8 +54,9 @@ Populate the 6 sections of the product-market-fit analysis in strict sequential 
 4. Read codebase files with `Read`, `Glob`, `Grep` to understand the product
 5. Write/add content using the appropriate tool:
    - Single-content sections (1, 3, 4, 5): `mcp__product-manager__write_section`
-   - List sections (2, 6): `mcp__product-manager__add_entry` (one call per entry)
-6. Call `mcp__todo-db__complete_task` when done
+   - List sections (2, 6): `mcp__product-manager__add_entry` (one call per entry, minimum 3 entries required)
+6. After completing Section 6, call `mcp__product-manager__complete_analysis({completed_by: "product-manager"})` to finalize the analysis
+7. Call `mcp__todo-db__complete_task` when done
 
 ### Context Cascading
 
@@ -93,5 +94,6 @@ After all sections are populated, you may receive a persona evaluation task:
 - You have **read-only** codebase access (no Edit/Write/Bash)
 - All content modifications go through MCP tools
 - Follow the sequential lock: you cannot write Section N until Sections 1..N-1 are populated
+- List sections (2, 6) require at least 3 entries to be considered populated
 - Do not modify CTO-protected personas
 - Keep each section focused and data-driven

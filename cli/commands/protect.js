@@ -17,6 +17,11 @@ function assertSafeName(name, label) {
   }
 }
 
+/** Run a command via sudo (prompts user for password if needed). */
+function sudoExec(cmd, args, opts = {}) {
+  execFileSync('sudo', [cmd, ...args], { stdio: 'inherit', ...opts });
+}
+
 const RED = '\x1b[0;31m';
 const GREEN = '\x1b[0;32m';
 const YELLOW = '\x1b[1;33m';
@@ -38,11 +43,11 @@ function getHooksDir(projectDir) {
 }
 
 /**
- * Get the original (non-root) user when running under sudo.
+ * Get the current user.
  * @returns {string}
  */
 function getOriginalUser() {
-  const user = process.env.SUDO_USER || process.env.USER || 'unknown';
+  const user = process.env.USER || 'unknown';
   assertSafeName(user, 'username');
   return user;
 }
@@ -67,16 +72,10 @@ function getOriginalGroup() {
  * @param {string} projectDir
  */
 function doProtect(projectDir) {
-  if (process.getuid() !== 0) {
-    console.error(`${RED}Error: protection requires sudo${NC}`);
-    console.error(`Usage: sudo npx gentyr protect`);
-    process.exit(1);
-  }
-
   const hooksDir = getHooksDir(projectDir);
   const rootGroup = process.platform === 'darwin' ? 'wheel' : 'root';
 
-  console.log(`${YELLOW}Enabling protection...${NC}`);
+  console.log(`${YELLOW}Enabling protection (sudo will prompt for password)...${NC}`);
 
   const files = [
     path.join(hooksDir, 'pre-commit-review.js'),
@@ -109,27 +108,7 @@ function doProtect(projectDir) {
     ...(!isFrameworkRepo ? [path.join(projectDir, '.claude')] : []),
   ];
 
-  for (const dir of dirs) {
-    if (fs.existsSync(dir)) {
-      execFileSync('chown', [`root:${rootGroup}`, dir], { stdio: 'pipe' });
-      execFileSync('chmod', ['1755', dir], { stdio: 'pipe' });
-      console.log(`  Protected dir: ${dir}`);
-    }
-  }
-
-  for (const file of files) {
-    if (fs.existsSync(file)) {
-      execFileSync('chown', [`root:${rootGroup}`, file], { stdio: 'pipe' });
-      if (file.includes('.husky/')) {
-        execFileSync('chmod', ['755', file], { stdio: 'pipe' });
-      } else {
-        execFileSync('chmod', ['644', file], { stdio: 'pipe' });
-      }
-      console.log(`  Protected: ${file}`);
-    }
-  }
-
-  // Write state (includes criticalHooks list so SessionStart tamper check reads dynamically)
+  // Write state BEFORE protecting directories (user needs write access to .claude/)
   const criticalHooks = [
     'pre-commit-review.js',
     'bypass-approval-hook.js',
@@ -147,7 +126,27 @@ function doProtect(projectDir) {
     modified_by: getOriginalUser(),
     criticalHooks,
   }, null, 2) + '\n');
-  execFileSync('chmod', ['644', stateFile], { stdio: 'pipe' });
+  sudoExec('chmod', ['644', stateFile]);
+
+  for (const dir of dirs) {
+    if (fs.existsSync(dir)) {
+      sudoExec('chown', [`root:${rootGroup}`, dir]);
+      sudoExec('chmod', ['1755', dir]);
+      console.log(`  Protected dir: ${dir}`);
+    }
+  }
+
+  for (const file of files) {
+    if (fs.existsSync(file)) {
+      sudoExec('chown', [`root:${rootGroup}`, file]);
+      if (file.includes('.husky/')) {
+        sudoExec('chmod', ['755', file]);
+      } else {
+        sudoExec('chmod', ['644', file]);
+      }
+      console.log(`  Protected: ${file}`);
+    }
+  }
 
   console.log(`${GREEN}Protection enabled. Agents cannot modify critical files.${NC}`);
 }
@@ -157,17 +156,11 @@ function doProtect(projectDir) {
  * @param {string} projectDir
  */
 function doUnprotect(projectDir) {
-  if (process.getuid() !== 0) {
-    console.error(`${RED}Error: unprotection requires sudo${NC}`);
-    console.error(`Usage: sudo npx gentyr unprotect`);
-    process.exit(1);
-  }
-
   const hooksDir = getHooksDir(projectDir);
   const originalUser = getOriginalUser();
   const originalGroup = getOriginalGroup();
 
-  console.log(`${YELLOW}Disabling protection...${NC}`);
+  console.log(`${YELLOW}Disabling protection (sudo will prompt for password)...${NC}`);
 
   const files = [
     path.join(hooksDir, 'pre-commit-review.js'),
@@ -199,16 +192,16 @@ function doUnprotect(projectDir) {
 
   for (const file of files) {
     if (fs.existsSync(file)) {
-      execFileSync('chown', [ownership, file], { stdio: 'pipe' });
-      execFileSync('chmod', ['644', file], { stdio: 'pipe' });
+      sudoExec('chown', [ownership, file]);
+      sudoExec('chmod', ['644', file]);
       console.log(`  Unprotected: ${file}`);
     }
   }
 
   for (const dir of dirs) {
     if (fs.existsSync(dir)) {
-      execFileSync('chown', [ownership, dir], { stdio: 'pipe' });
-      execFileSync('chmod', ['755', dir], { stdio: 'pipe' });
+      sudoExec('chown', [ownership, dir]);
+      sudoExec('chmod', ['755', dir]);
       console.log(`  Unprotected dir: ${dir}`);
     }
   }
@@ -223,7 +216,7 @@ function doUnprotect(projectDir) {
   for (const [dir, depth] of fixDirs) {
     if (fs.existsSync(dir)) {
       try {
-        execFileSync('find', [dir, '-maxdepth', String(depth), '-type', 'f', '-user', 'root', '-exec', 'chown', ownership, '{}', ';'], { stdio: 'pipe' });
+        sudoExec('find', [dir, '-maxdepth', String(depth), '-type', 'f', '-user', 'root', '-exec', 'chown', ownership, '{}', ';']);
       } catch {}
     }
   }
@@ -231,20 +224,20 @@ function doUnprotect(projectDir) {
   // Fix agents directory
   const agentsDir = path.join(projectDir, '.claude', 'agents');
   if (fs.existsSync(agentsDir)) {
-    execFileSync('chown', [ownership, agentsDir], { stdio: 'pipe' });
-    execFileSync('chmod', ['755', agentsDir], { stdio: 'pipe' });
+    sudoExec('chown', [ownership, agentsDir]);
+    sudoExec('chmod', ['755', agentsDir]);
     try {
-      execFileSync('find', [agentsDir, '-maxdepth', '1', '-user', 'root', '-exec', 'chown', '-h', ownership, '{}', ';'], { stdio: 'pipe' });
+      sudoExec('find', [agentsDir, '-maxdepth', '1', '-user', 'root', '-exec', 'chown', '-h', ownership, '{}', ';']);
     } catch {}
   }
 
   // Fix reporters directory
   const reportersDir = path.join(projectDir, '.claude', 'reporters');
   if (fs.existsSync(reportersDir)) {
-    execFileSync('chown', [ownership, reportersDir], { stdio: 'pipe' });
-    execFileSync('chmod', ['755', reportersDir], { stdio: 'pipe' });
+    sudoExec('chown', [ownership, reportersDir]);
+    sudoExec('chmod', ['755', reportersDir]);
     try {
-      execFileSync('find', [reportersDir, '-maxdepth', '1', '-user', 'root', '-exec', 'chown', '-h', ownership, '{}', ';'], { stdio: 'pipe' });
+      sudoExec('find', [reportersDir, '-maxdepth', '1', '-user', 'root', '-exec', 'chown', '-h', ownership, '{}', ';']);
     } catch {}
   }
 
@@ -254,13 +247,13 @@ function doUnprotect(projectDir) {
     for (const subdir of ['packages/mcp-servers/dist', 'packages/mcp-servers/node_modules', 'node_modules']) {
       const dir = path.join(frameworkDir, subdir);
       if (fs.existsSync(dir)) {
-        execFileSync('chown', ['-R', ownership, dir], { stdio: 'pipe' });
+        sudoExec('chown', ['-R', ownership, dir]);
         console.log(`  Unprotected dir: ${dir}`);
       }
     }
   }
 
-  // Write state
+  // Write state (directories are now user-owned so we can write directly)
   fs.writeFileSync(path.join(projectDir, '.claude', 'protection-state.json'), JSON.stringify({
     protected: false,
     timestamp: new Date().toISOString(),

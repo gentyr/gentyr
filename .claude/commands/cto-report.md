@@ -7,10 +7,10 @@ The prefetch hook has pre-gathered key metrics (pending questions, task counts, 
 
 ## What to Do
 
-Run the dashboard via the `node_modules/gentyr` package (installed by npm):
+Resolve the framework path (supports npm link, legacy symlink, and running from within the gentyr repo), then run the dashboard:
 
 ```bash
-node node_modules/gentyr/packages/cto-dashboard/dist/index.js
+GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })" && node "$GENTYR_DIR/packages/cto-dashboard/dist/index.js"
 ```
 
 This will render a terminal dashboard with quota bars, system status, deputy CTO triage pipeline, testing health, chronological timeline, and metrics summary.
@@ -20,7 +20,7 @@ This will render a terminal dashboard with quota bars, system status, deputy CTO
 For a different time period (default is 24 hours, valid range: 1-168):
 
 ```bash
-node node_modules/gentyr/packages/cto-dashboard/dist/index.js --hours 8
+GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })" && node "$GENTYR_DIR/packages/cto-dashboard/dist/index.js" --hours 8
 ```
 
 ## Response Format

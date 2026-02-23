@@ -24,6 +24,9 @@ import {
   type PainPointPersonaRecord,
 } from '../types.js';
 
+/** Must match server.ts MIN_LIST_ENTRIES */
+const MIN_LIST_ENTRIES = 3;
+
 // ============================================================================
 // Schema Definition
 // ============================================================================
@@ -97,6 +100,32 @@ const SECTION_SEEDS: Array<{ number: number; key: SectionKey; title: string }> =
 // Helper Functions (mirror server implementation)
 // ============================================================================
 
+function isListSection(sectionNumber: number): boolean {
+  return (LIST_SECTIONS as readonly number[]).includes(sectionNumber);
+}
+
+function isSectionPopulated(db: Database.Database, sectionNumber: number): boolean {
+  if (isListSection(sectionNumber)) {
+    const count = (db.prepare(
+      'SELECT COUNT(*) as c FROM section_entries WHERE section_number = ?'
+    ).get(sectionNumber) as { c: number }).c;
+    return count >= MIN_LIST_ENTRIES;
+  }
+  const sec = db.prepare(
+    'SELECT content FROM sections WHERE section_number = ?'
+  ).get(sectionNumber) as { content: string | null } | undefined;
+  return !!sec?.content;
+}
+
+function assertPreviousSectionsPopulated(db: Database.Database, targetNumber: number): string | null {
+  for (let n = 1; n < targetNumber; n++) {
+    if (!isSectionPopulated(db, n)) {
+      return `Section ${n} must be populated first`;
+    }
+  }
+  return null;
+}
+
 function seedDatabase(db: Database.Database): void {
   // Seed sections
   const insertSection = db.prepare(
@@ -126,7 +155,7 @@ function getAnalysisStatus(db: Database.Database) {
       const count = (db.prepare('SELECT COUNT(*) as c FROM section_entries WHERE section_number = ?')
         .get(s.section_number) as { c: number }).c;
       entryCount = count;
-      populated = count > 0;
+      populated = count >= MIN_LIST_ENTRIES;
     } else {
       populated = s.content !== null && s.content.trim().length > 0;
     }
@@ -203,6 +232,12 @@ function writeSection(db: Database.Database, sectionNumber: number, content: str
     return { error: `Section ${sectionNumber} not found` };
   }
 
+  // Sequential lock
+  const lockError = assertPreviousSectionsPopulated(db, sectionNumber);
+  if (lockError) {
+    return { error: lockError };
+  }
+
   const now = new Date().toISOString();
   db.prepare('UPDATE sections SET content = ?, populated_at = ?, populated_by = ?, updated_at = ? WHERE section_number = ?')
     .run(content, now, populatedBy ?? null, now, sectionNumber);
@@ -260,6 +295,84 @@ function addEntry(db: Database.Database, args: {
     title: args.title,
     created_at: createdAt,
   };
+}
+
+function getPopulatedCount(db: Database.Database): number {
+  let count = 0;
+  for (let n = 1; n <= 6; n++) {
+    if (isSectionPopulated(db, n)) count++;
+  }
+  return count;
+}
+
+function getComplianceStats(db: Database.Database) {
+  const total = (db.prepare(
+    "SELECT COUNT(*) as c FROM section_entries WHERE section_number = 6"
+  ).get() as { c: number }).c;
+  if (total === 0) return null;
+  const mapped = (db.prepare(
+    "SELECT COUNT(DISTINCT pain_point_id) as c FROM pain_point_personas"
+  ).get() as { c: number }).c;
+  return {
+    total_pain_points: total,
+    mapped,
+    unmapped: total - mapped,
+    pct: Math.round((mapped / total) * 100),
+  };
+}
+
+function completeAnalysis(db: Database.Database, completedBy = 'product-manager') {
+  const meta = db.prepare("SELECT status FROM analysis_meta WHERE id = 'default'").get() as { status: string };
+
+  if (meta.status !== 'in_progress') {
+    return { error: `Cannot complete: current status is '${meta.status}', expected 'in_progress'` };
+  }
+
+  const unpopulated: string[] = [];
+  for (let n = 1; n <= 6; n++) {
+    if (!isSectionPopulated(db, n)) {
+      const seed = SECTION_SEEDS[n - 1];
+      if (isListSection(n)) {
+        const count = (db.prepare(
+          'SELECT COUNT(*) as c FROM section_entries WHERE section_number = ?'
+        ).get(n) as { c: number }).c;
+        unpopulated.push(`Section ${n} (${seed.title}): ${count}/${MIN_LIST_ENTRIES} entries`);
+      } else {
+        unpopulated.push(`Section ${n} (${seed.title}): no content`);
+      }
+    }
+  }
+
+  if (unpopulated.length > 0) {
+    return { error: `Cannot complete: ${unpopulated.length} section(s) not sufficiently populated:\n- ${unpopulated.join('\n- ')}` };
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(
+    "UPDATE analysis_meta SET status = 'completed', last_updated_at = ? WHERE id = 'default'"
+  ).run(now);
+
+  return {
+    status: 'completed' as const,
+    completed_at: now,
+    completed_by: completedBy,
+    compliance: getComplianceStats(db),
+  };
+}
+
+function clearAndRespawn(db: Database.Database) {
+  // Clear all section content
+  db.prepare('UPDATE sections SET content = NULL, populated_at = NULL, populated_by = NULL, updated_at = NULL').run();
+  db.prepare('DELETE FROM section_entries').run();
+  db.prepare('DELETE FROM pain_point_personas').run();
+
+  // Update meta
+  const now = new Date().toISOString();
+  db.prepare(
+    "UPDATE analysis_meta SET status = 'in_progress', last_updated_at = ? WHERE id = 'default'"
+  ).run(now);
+
+  return { cleared: true };
 }
 
 // ============================================================================
@@ -504,7 +617,9 @@ describe('Product Manager MCP Server', () => {
       approveAnalysis(db, 'deputy-cto');
 
       writeSection(db, 1, 'Content 1', 'product-manager');
-      addEntry(db, { section: 2, title: 'Entry 1', content: 'Content' });
+      addEntry(db, { section: 2, title: 'Entry 1', content: 'Content 1' });
+      addEntry(db, { section: 2, title: 'Entry 2', content: 'Content 2' });
+      addEntry(db, { section: 2, title: 'Entry 3', content: 'Content 3' });
       writeSection(db, 3, 'Content 3', 'product-manager');
 
       const status = getAnalysisStatus(db);
@@ -522,10 +637,10 @@ describe('Product Manager MCP Server', () => {
       const section2 = status.sections.find(s => s.number === 2);
 
       expect(section2?.entry_count).toBe(2);
-      expect(section2?.populated).toBe(true);
+      expect(section2?.populated).toBe(false);
     });
 
-    it('should mark list section populated when entries exist', () => {
+    it('should NOT mark list section populated with fewer than MIN_LIST_ENTRIES', () => {
       initiateAnalysis(db, 'product-manager');
       approveAnalysis(db, 'deputy-cto');
 
@@ -534,7 +649,23 @@ describe('Product Manager MCP Server', () => {
       const status = getAnalysisStatus(db);
       const section6 = status.sections.find(s => s.number === 6);
 
+      expect(section6?.populated).toBe(false);
+      expect(section6?.entry_count).toBe(1);
+    });
+
+    it('should mark list section populated when entries reach MIN_LIST_ENTRIES', () => {
+      initiateAnalysis(db, 'product-manager');
+      approveAnalysis(db, 'deputy-cto');
+
+      addEntry(db, { section: 6, title: 'Pain Point 1', content: 'Content 1' });
+      addEntry(db, { section: 6, title: 'Pain Point 2', content: 'Content 2' });
+      addEntry(db, { section: 6, title: 'Pain Point 3', content: 'Content 3' });
+
+      const status = getAnalysisStatus(db);
+      const section6 = status.sections.find(s => s.number === 6);
+
       expect(section6?.populated).toBe(true);
+      expect(section6?.entry_count).toBe(3);
     });
 
     it('should mark non-list section populated when content exists', () => {
@@ -682,6 +813,246 @@ describe('Product Manager MCP Server', () => {
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `).run(randomUUID(), 1, 'Invalid', 'Content', createdAt, createdTimestamp, createdAt);
       }).toThrow();
+    });
+  });
+
+  // ============================================================================
+  // Sequential Lock with Threshold Tests
+  // ============================================================================
+
+  describe('Sequential Lock with Entry Threshold', () => {
+    it('should block Section 3 when Section 2 has fewer than MIN_LIST_ENTRIES', () => {
+      initiateAnalysis(db, 'product-manager');
+      approveAnalysis(db, 'deputy-cto');
+
+      writeSection(db, 1, 'Market content', 'product-manager');
+      // Only 1 entry in Section 2 — not populated
+      addEntry(db, { section: 2, title: 'Persona 1', content: 'Content' });
+
+      const result = writeSection(db, 3, 'Competitor content', 'product-manager');
+
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('Section 2 must be populated first');
+      }
+    });
+
+    it('should allow Section 3 when Section 2 has MIN_LIST_ENTRIES', () => {
+      initiateAnalysis(db, 'product-manager');
+      approveAnalysis(db, 'deputy-cto');
+
+      writeSection(db, 1, 'Market content', 'product-manager');
+      addEntry(db, { section: 2, title: 'Persona 1', content: 'Content 1' });
+      addEntry(db, { section: 2, title: 'Persona 2', content: 'Content 2' });
+      addEntry(db, { section: 2, title: 'Persona 3', content: 'Content 3' });
+
+      const result = writeSection(db, 3, 'Competitor content', 'product-manager');
+
+      expect(isErrorResult(result)).toBe(false);
+      expect(result.section_number).toBe(3);
+    });
+  });
+
+  // ============================================================================
+  // Complete Analysis Tests
+  // ============================================================================
+
+  describe('Complete Analysis', () => {
+    function populateAllSections(testDb: Database.Database) {
+      writeSection(testDb, 1, 'Market content', 'product-manager');
+      addEntry(testDb, { section: 2, title: 'Persona 1', content: 'C1' });
+      addEntry(testDb, { section: 2, title: 'Persona 2', content: 'C2' });
+      addEntry(testDb, { section: 2, title: 'Persona 3', content: 'C3' });
+      writeSection(testDb, 3, 'Competitor content', 'product-manager');
+      writeSection(testDb, 4, 'Pricing content', 'product-manager');
+      writeSection(testDb, 5, 'Niche content', 'product-manager');
+      addEntry(testDb, { section: 6, title: 'Pain 1', content: 'C1' });
+      addEntry(testDb, { section: 6, title: 'Pain 2', content: 'C2' });
+      addEntry(testDb, { section: 6, title: 'Pain 3', content: 'C3' });
+    }
+
+    it('should complete when all sections sufficiently populated', () => {
+      initiateAnalysis(db, 'product-manager');
+      approveAnalysis(db, 'deputy-cto');
+      populateAllSections(db);
+
+      const result = completeAnalysis(db);
+
+      expect(isErrorResult(result)).toBe(false);
+      expect(result.status).toBe('completed');
+      expect(result.completed_at).toBeDefined();
+      expect(result.completed_by).toBe('product-manager');
+
+      const statusAfter = getAnalysisStatus(db);
+      expect(statusAfter.status).toBe('completed');
+    });
+
+    it('should fail when status is not in_progress', () => {
+      // Status is not_started
+      const result = completeAnalysis(db);
+
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('Cannot complete');
+        expect(result.error).toContain('not_started');
+        expect(result.error).toContain('expected \'in_progress\'');
+      }
+    });
+
+    it('should fail when status is approved (not yet in_progress)', () => {
+      initiateAnalysis(db, 'product-manager');
+      approveAnalysis(db, 'deputy-cto');
+
+      const result = completeAnalysis(db);
+
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('Cannot complete');
+        expect(result.error).toContain('approved');
+      }
+    });
+
+    it('should fail when list section has too few entries', () => {
+      initiateAnalysis(db, 'product-manager');
+      approveAnalysis(db, 'deputy-cto');
+
+      writeSection(db, 1, 'Market content', 'product-manager');
+      // Only 1 entry in Section 2
+      addEntry(db, { section: 2, title: 'Persona 1', content: 'Content' });
+      // Force status to in_progress
+      db.prepare("UPDATE analysis_meta SET status = 'in_progress' WHERE id = 'default'").run();
+
+      const result = completeAnalysis(db);
+
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('not sufficiently populated');
+        expect(result.error).toContain('Section 2 (Buyer Personas): 1/3 entries');
+      }
+    });
+
+    it('should fail when non-list section has no content', () => {
+      initiateAnalysis(db, 'product-manager');
+      approveAnalysis(db, 'deputy-cto');
+
+      writeSection(db, 1, 'Market content', 'product-manager');
+      // Skip Section 2-5, force status
+      db.prepare("UPDATE analysis_meta SET status = 'in_progress' WHERE id = 'default'").run();
+
+      const result = completeAnalysis(db);
+
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('Section 2 (Buyer Personas)');
+        expect(result.error).toContain('Section 3 (Competitor Differentiation): no content');
+      }
+    });
+
+    it('should list all unpopulated sections in error', () => {
+      initiateAnalysis(db, 'product-manager');
+      approveAnalysis(db, 'deputy-cto');
+      // Force status to in_progress without populating anything
+      db.prepare("UPDATE analysis_meta SET status = 'in_progress' WHERE id = 'default'").run();
+
+      const result = completeAnalysis(db);
+
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('6 section(s) not sufficiently populated');
+      }
+    });
+
+    it('should include compliance stats on successful completion', () => {
+      initiateAnalysis(db, 'product-manager');
+      approveAnalysis(db, 'deputy-cto');
+      populateAllSections(db);
+
+      const result = completeAnalysis(db);
+
+      expect(isErrorResult(result)).toBe(false);
+      expect(result.compliance).not.toBeNull();
+      expect(result.compliance?.total_pain_points).toBe(3);
+      expect(result.compliance?.mapped).toBe(0);
+      expect(result.compliance?.unmapped).toBe(3);
+    });
+  });
+
+  // ============================================================================
+  // Clear and Respawn Tests
+  // ============================================================================
+
+  describe('Clear and Respawn', () => {
+    it('should clear all section data', () => {
+      initiateAnalysis(db, 'product-manager');
+      approveAnalysis(db, 'deputy-cto');
+      writeSection(db, 1, 'Market content', 'product-manager');
+      addEntry(db, { section: 2, title: 'Persona 1', content: 'C1' });
+
+      clearAndRespawn(db);
+
+      // Sections should be empty
+      const sections = db.prepare('SELECT content FROM sections WHERE content IS NOT NULL').all();
+      expect(sections).toHaveLength(0);
+
+      // Entries should be deleted
+      const entries = db.prepare('SELECT COUNT(*) as c FROM section_entries').get() as { c: number };
+      expect(entries.c).toBe(0);
+    });
+
+    it('should clear pain_point_personas mappings', () => {
+      const now = new Date().toISOString();
+      db.prepare('INSERT INTO pain_point_personas (pain_point_id, persona_id, created_at, created_by) VALUES (?, ?, ?, ?)')
+        .run(randomUUID(), randomUUID(), now, 'test');
+
+      clearAndRespawn(db);
+
+      const mappings = db.prepare('SELECT COUNT(*) as c FROM pain_point_personas').get() as { c: number };
+      expect(mappings.c).toBe(0);
+    });
+
+    it('should set status to in_progress', () => {
+      clearAndRespawn(db);
+
+      const meta = db.prepare("SELECT status FROM analysis_meta WHERE id = 'default'").get() as { status: string };
+      expect(meta.status).toBe('in_progress');
+    });
+
+    it('should return cleared: true', () => {
+      const result = clearAndRespawn(db);
+      expect(result.cleared).toBe(true);
+    });
+  });
+
+  // ============================================================================
+  // Auto-completion Regression Test
+  // ============================================================================
+
+  describe('Auto-completion Regression', () => {
+    it('should NOT auto-complete when all sections are populated', () => {
+      initiateAnalysis(db, 'product-manager');
+      approveAnalysis(db, 'deputy-cto');
+
+      // Populate all 6 sections
+      writeSection(db, 1, 'Market content', 'product-manager');
+      addEntry(db, { section: 2, title: 'Persona 1', content: 'C1' });
+      addEntry(db, { section: 2, title: 'Persona 2', content: 'C2' });
+      addEntry(db, { section: 2, title: 'Persona 3', content: 'C3' });
+      writeSection(db, 3, 'Competitor content', 'product-manager');
+      writeSection(db, 4, 'Pricing content', 'product-manager');
+      writeSection(db, 5, 'Niche content', 'product-manager');
+      addEntry(db, { section: 6, title: 'Pain 1', content: 'C1' });
+      addEntry(db, { section: 6, title: 'Pain 2', content: 'C2' });
+      addEntry(db, { section: 6, title: 'Pain 3', content: 'C3' });
+
+      // Status should remain in_progress — NOT auto-completed
+      const status = getAnalysisStatus(db);
+      expect(status.status).toBe('in_progress');
+      expect(status.sections_populated).toBe(6);
+
+      // Only completeAnalysis should transition to completed
+      const result = completeAnalysis(db);
+      expect(isErrorResult(result)).toBe(false);
+      expect(result.status).toBe('completed');
     });
   });
 

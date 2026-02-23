@@ -1169,7 +1169,7 @@ describe('account-overview-reader', () => {
       expect(result.events).toHaveLength(0);
     });
 
-    it('should NOT suppress whitelisted event types (key_switched, key_exhausted, etc.)', () => {
+    it('should collapse consecutive identical events but keep different event types', () => {
       const now = Date.now();
       const testData = {
         version: 1,
@@ -1208,8 +1208,11 @@ describe('account-overview-reader', () => {
       fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
       const result = getAccountOverviewData();
 
-      // All whitelisted events should be present (deduplication only applies to key_added)
-      expect(result.events).toHaveLength(4);
+      // Two consecutive key_switched with same description are collapsed to one
+      expect(result.events).toHaveLength(3);
+      expect(result.events[0].event).toBe('account_quota_refreshed');
+      expect(result.events[1].event).toBe('key_exhausted');
+      expect(result.events[2].event).toBe('key_switched');
     });
   });
 
@@ -1371,6 +1374,140 @@ describe('account-overview-reader', () => {
 
       expect(result.events).toHaveLength(1);
       expect(result.events[0].description).toBe('Account selected: key-no-e...');
+    });
+  });
+
+  describe('Consecutive Event Deduplication', () => {
+    it('should collapse many consecutive account_auth_failed events into one', () => {
+      const now = Date.now();
+      const rotation_log = [];
+      // Simulate the bug: many account_auth_failed events for same key with null email
+      for (let i = 0; i < 20; i++) {
+        rotation_log.push({
+          timestamp: now - i * 10000,
+          event: 'account_auth_failed',
+          key_id: 'dead-key-abcdef12',
+          reason: 'invalid_key_pruned',
+          account_email: null,
+        });
+      }
+
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {},
+        rotation_log,
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      // All 20 identical events should collapse to just 1
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].event).toBe('account_auth_failed');
+    });
+
+    it('should not collapse non-consecutive identical events', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': { status: 'active', account_email: 'a@example.com' },
+          'key-2': { status: 'active', account_email: 'b@example.com' },
+        },
+        rotation_log: [
+          { timestamp: now - 4000, event: 'key_switched', key_id: 'key-1' },
+          { timestamp: now - 3000, event: 'key_exhausted', key_id: 'key-2' },
+          { timestamp: now - 2000, event: 'key_switched', key_id: 'key-1' },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      // Non-consecutive identical events should NOT be collapsed
+      expect(result.events).toHaveLength(3);
+    });
+
+    it('should not collapse events with different descriptions (different keys)', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': { status: 'active', account_email: 'a@example.com' },
+          'key-2': { status: 'active', account_email: 'b@example.com' },
+        },
+        rotation_log: [
+          { timestamp: now - 2000, event: 'key_switched', key_id: 'key-1' },
+          { timestamp: now - 1000, event: 'key_switched', key_id: 'key-2' },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      // Same event type but different descriptions (different emails) — keep both
+      expect(result.events).toHaveLength(2);
+    });
+  });
+
+  describe('Email Resolution from Rotation Log History', () => {
+    it('should resolve email from rotation_log when key is deleted', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {},  // Key has been pruned/deleted
+        rotation_log: [
+          {
+            timestamp: now - 2000,
+            event: 'key_added',
+            key_id: 'deleted-key-1234',
+            account_email: 'recovered@example.com',
+          },
+          {
+            timestamp: now - 1000,
+            event: 'account_auth_failed',
+            key_id: 'deleted-key-1234',
+            reason: 'invalid_key_pruned',
+            account_email: null,  // This event has no email
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      // The account_auth_failed event should resolve email from the key_added entry in the log
+      const authFailedEvent = result.events.find(e => e.event === 'account_auth_failed');
+      expect(authFailedEvent).toBeDefined();
+      expect(authFailedEvent!.description).toBe('Account can no longer auth: recovered@example.com');
+    });
+
+    it('should fall back to truncated key ID when no email anywhere', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {},  // Key has been pruned
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'account_auth_failed',
+            key_id: 'no-email-key-1234',
+            reason: 'invalid_key_pruned',
+            account_email: null,
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('Account can no longer auth: no-email...');
     });
   });
 

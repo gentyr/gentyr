@@ -22,7 +22,7 @@ for f in pre-commit-review.js bypass-approval-hook.js block-no-verify.js \
   fi
 done
 if [ "$TAMPER" = "1" ]; then
-  echo "COMMIT BLOCKED: Hook tampering detected. Run 'sudo npx gentyr protect'"
+  echo "COMMIT BLOCKED: Hook tampering detected. Run 'npx gentyr protect'"
   exit 1
 fi
 echo "Hook integrity verified"

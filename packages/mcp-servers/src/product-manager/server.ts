@@ -33,6 +33,7 @@ import {
   MapPainPointPersonaArgsSchema,
   GetComplianceReportArgsSchema,
   ClearAndRespawnArgsSchema,
+  CompleteAnalysisArgsSchema,
   RegenerateMdArgsSchema,
   type GetAnalysisStatusArgs,
   type InitiateAnalysisArgs,
@@ -46,6 +47,7 @@ import {
   type MapPainPointPersonaArgs,
   type GetComplianceReportArgs,
   type ClearAndRespawnArgs,
+  type CompleteAnalysisArgs,
   type RegenerateMdArgs,
   type AnalysisMetaRecord,
   type SectionRecord,
@@ -64,6 +66,7 @@ import {
   type MapPainPointResult,
   type ComplianceReportResult,
   type ClearAndRespawnResult,
+  type CompleteAnalysisResult,
   type RegenerateMdResult,
   type SectionKey,
 } from './types.js';
@@ -146,6 +149,9 @@ const SECTION_SEEDS: Array<{ number: number; key: SectionKey; title: string }> =
   { number: 6, key: 'user_sentiment', title: 'User Sentiment' },
 ];
 
+/** Minimum entries required for a list section to be considered populated */
+const MIN_LIST_ENTRIES = 3;
+
 // ============================================================================
 // Database Management
 // ============================================================================
@@ -212,7 +218,7 @@ function isSectionPopulated(db: Database.Database, sectionNumber: number): boole
     const count = (db.prepare(
       'SELECT COUNT(*) as c FROM section_entries WHERE section_number = ?'
     ).get(sectionNumber) as { c: number }).c;
-    return count > 0;
+    return count >= MIN_LIST_ENTRIES;
   }
   const sec = db.prepare(
     'SELECT content FROM sections WHERE section_number = ?'
@@ -335,6 +341,7 @@ function getAnalysisStatus(_args: GetAnalysisStatusArgs): AnalysisStatusResult |
       result.entry_count = (db.prepare(
         'SELECT COUNT(*) as c FROM section_entries WHERE section_number = ?'
       ).get(s.section_number) as { c: number }).c;
+      result.min_entries_required = MIN_LIST_ENTRIES;
     }
     return result;
   });
@@ -470,11 +477,6 @@ function writeSection(args: WriteSectionArgs): WriteSectionResult | ErrorResult 
     updateLastUpdated(db);
   }
 
-  // Check if all sections populated -> mark completed
-  if (getPopulatedCount(db) === 6) {
-    db.prepare("UPDATE analysis_meta SET status = 'completed', last_updated_at = ? WHERE id = 'default'").run(now);
-  }
-
   regenerateMarkdown(db);
 
   const sec = db.prepare('SELECT title FROM sections WHERE section_number = ?').get(sectionNumber) as { title: string };
@@ -519,11 +521,6 @@ function addEntry(args: AddEntryArgs): AddEntryResult | ErrorResult {
     db.prepare("UPDATE analysis_meta SET status = 'in_progress', last_updated_at = ? WHERE id = 'default'").run(created_at);
   } else {
     updateLastUpdated(db);
-  }
-
-  // Check completion
-  if (getPopulatedCount(db) === 6) {
-    db.prepare("UPDATE analysis_meta SET status = 'completed', last_updated_at = ? WHERE id = 'default'").run(created_at);
   }
 
   regenerateMarkdown(db);
@@ -734,61 +731,144 @@ function clearAndRespawn(args: ClearAndRespawnArgs): ClearAndRespawnResult | Err
 
   regenerateMarkdown(db);
 
-  // Create first task in PRODUCT-MANAGER section via todo.db
-  let taskId = 'no-todo-db';
+  // Create all 6 tasks upfront in PRODUCT-MANAGER section via todo.db
+  // Sequential lock (assertPreviousSectionsPopulated) prevents out-of-order execution
+  const taskIds: string[] = [];
   if (fs.existsSync(TODO_DB_PATH)) {
     try {
       const todoDb = new Database(TODO_DB_PATH);
       todoDb.pragma('journal_mode = WAL');
-      taskId = randomUUID();
       const created_timestamp = Math.floor(Date.now() / 1000);
 
-      const followupPrompt = `Section 1 (Market Space & Players) has been assigned to you. Research and populate it using web search and codebase analysis.
+      const taskDescriptions = [
+        {
+          title: '[PMF] Populate Section 1: Market Space & Players',
+          description: `Section 1 (Market Space & Players) has been assigned to you. Research and populate it using web search and codebase analysis.
 
 Steps:
 1. Call mcp__product-manager__read_section({section: 1}) to see the current state
 2. Research the market space via WebSearch
 3. Call mcp__product-manager__write_section({section: 1, content: "..."}) with your findings
-4. Mark this task complete
-
-After completion, the follow-up chain will create Section 2's task.`;
-
-      const section2Prompt = `Section 2 (Buyer Personas) is ready. Populate it using add_entry for each buyer persona.
+4. Mark this task complete`,
+        },
+        {
+          title: '[PMF] Populate Section 2: Buyer Personas',
+          description: `Section 2 (Buyer Personas) is ready. Populate it using add_entry for each buyer persona. Add at least ${MIN_LIST_ENTRIES} entries.
 
 Steps:
 1. Call mcp__product-manager__read_section({section: 2}) to see context from Section 1
 2. For each buyer persona, call mcp__product-manager__add_entry({section: 2, title: "...", content: "..."})
-3. Mark this task complete
+3. Add at least ${MIN_LIST_ENTRIES} persona entries
+4. Mark this task complete`,
+        },
+        {
+          title: '[PMF] Populate Section 3: Competitor Differentiation',
+          description: `Section 3 (Competitor Differentiation) is ready. Analyze competitors and write a comprehensive comparison.
 
-After completion, the follow-up chain will create Section 3's task.`;
+Steps:
+1. Call mcp__product-manager__read_section({section: 3}) to see context from Sections 1-2
+2. Research competitors via WebSearch
+3. Call mcp__product-manager__write_section({section: 3, content: "..."}) with your analysis
+4. Mark this task complete`,
+        },
+        {
+          title: '[PMF] Populate Section 4: Pricing Models',
+          description: `Section 4 (Pricing Models) is ready. Research and document competitor pricing and recommend positioning.
 
-      // Create Section 1 task with follow-up chain
-      // Section 1 -> follow-up creates Section 2 -> ... -> Section 6 -> persona eval
-      // We only create Section 1 now; the rest chain via followup_prompt
-      todoDb.prepare(`
-        INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt)
-        VALUES (?, 'PRODUCT-MANAGER', 'pending', ?, ?, ?, ?, ?, 1, 'PRODUCT-MANAGER', ?)
-      `).run(
-        taskId,
-        '[PMF] Populate Section 1: Market Space & Players',
-        followupPrompt,
-        args.initiated_by,
-        now,
-        created_timestamp,
-        section2Prompt
-      );
+Steps:
+1. Call mcp__product-manager__read_section({section: 4}) to see context from Sections 1-3
+2. Research competitor pricing via WebSearch
+3. Call mcp__product-manager__write_section({section: 4, content: "..."}) with your findings
+4. Mark this task complete`,
+        },
+        {
+          title: '[PMF] Populate Section 5: Niche Strengths & Weaknesses',
+          description: `Section 5 (Niche Strengths & Weaknesses) is ready. Assess the product's unique advantages and disadvantages.
+
+Steps:
+1. Call mcp__product-manager__read_section({section: 5}) to see context from Sections 1-4
+2. Analyze strengths and weaknesses from codebase and prior sections
+3. Call mcp__product-manager__write_section({section: 5, content: "..."}) with your assessment
+4. Mark this task complete`,
+        },
+        {
+          title: '[PMF] Populate Section 6: User Sentiment',
+          description: `Section 6 (User Sentiment) is ready. Document user pain points and frustrations. Add at least ${MIN_LIST_ENTRIES} entries. After populating, finalize the analysis.
+
+Steps:
+1. Call mcp__product-manager__read_section({section: 6}) to see context from Sections 1-5
+2. For each pain point, call mcp__product-manager__add_entry({section: 6, title: "...", content: "..."})
+3. Add at least ${MIN_LIST_ENTRIES} pain point entries
+4. Call mcp__product-manager__complete_analysis({completed_by: "product-manager"}) to finalize
+5. Mark this task complete`,
+        },
+      ];
+
+      const insertStmt = todoDb.prepare(`
+        INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled)
+        VALUES (?, 'PRODUCT-MANAGER', 'pending', ?, ?, ?, ?, ?, 0)
+      `);
+
+      for (const task of taskDescriptions) {
+        const taskId = randomUUID();
+        insertStmt.run(taskId, task.title, task.description, args.initiated_by, now, created_timestamp);
+        taskIds.push(taskId);
+      }
 
       todoDb.close();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[product-manager] Warning: Could not create todo task: ${message}\n`);
+      process.stderr.write(`[product-manager] Warning: Could not create todo tasks: ${message}\n`);
     }
   }
 
   return {
     cleared: true,
-    task_id: taskId,
-    message: 'All section data cleared. Section 1 task created in PRODUCT-MANAGER queue.',
+    task_ids: taskIds.length > 0 ? taskIds : ['no-todo-db'],
+    message: `All section data cleared. ${taskIds.length} tasks created in PRODUCT-MANAGER queue.`,
+  };
+}
+
+function completeAnalysis(args: CompleteAnalysisArgs): CompleteAnalysisResult | ErrorResult {
+  const db = getDb();
+  const meta = db.prepare("SELECT status FROM analysis_meta WHERE id = 'default'").get() as { status: string };
+
+  if (meta.status !== 'in_progress') {
+    return { error: `Cannot complete: current status is '${meta.status}', expected 'in_progress'` };
+  }
+
+  // Verify all 6 sections are sufficiently populated
+  const unpopulated: string[] = [];
+  for (let n = 1; n <= 6; n++) {
+    if (!isSectionPopulated(db, n)) {
+      const seed = SECTION_SEEDS[n - 1];
+      if (isListSection(n)) {
+        const count = (db.prepare(
+          'SELECT COUNT(*) as c FROM section_entries WHERE section_number = ?'
+        ).get(n) as { c: number }).c;
+        unpopulated.push(`Section ${n} (${seed.title}): ${count}/${MIN_LIST_ENTRIES} entries`);
+      } else {
+        unpopulated.push(`Section ${n} (${seed.title}): no content`);
+      }
+    }
+  }
+
+  if (unpopulated.length > 0) {
+    return { error: `Cannot complete: ${unpopulated.length} section(s) not sufficiently populated:\n- ${unpopulated.join('\n- ')}` };
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(
+    "UPDATE analysis_meta SET status = 'completed', last_updated_at = ? WHERE id = 'default'"
+  ).run(now);
+
+  regenerateMarkdown(db);
+
+  return {
+    status: 'completed',
+    completed_at: now,
+    completed_by: args.completed_by,
+    compliance: getComplianceStats(db),
   };
 }
 
@@ -875,9 +955,15 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'clear_and_respawn',
-    description: 'Clear all section data and create a follow-up task chain for sequential population of all 6 sections.',
+    description: 'Clear all section data and create 6 tasks (one per section) for sequential population.',
     schema: ClearAndRespawnArgsSchema,
     handler: clearAndRespawn,
+  },
+  {
+    name: 'complete_analysis',
+    description: 'Mark PMF analysis as completed. Validates all sections populated with minimum entry thresholds.',
+    schema: CompleteAnalysisArgsSchema,
+    handler: completeAnalysis,
   },
   {
     name: 'regenerate_md',

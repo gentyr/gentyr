@@ -23,8 +23,9 @@ Option: **Approve now** (if CTO is running this command) - Call `mcp__product-ma
 ### If status is `approved` or `in_progress`:
 Present these options:
 1. **View section** - Ask which section (1-6), then call `mcp__product-manager__read_section({section: N})`
-2. **Run full pipeline** - Call `mcp__product-manager__clear_and_respawn({initiated_by: "human"})` to wipe and rebuild all sections sequentially via task chain
+2. **Run full pipeline** - Call `mcp__product-manager__clear_and_respawn({initiated_by: "human"})` to wipe and create tasks for all 6 sections
 3. **Regenerate markdown** - Call `mcp__product-manager__regenerate_md()`
+4. **Finalize analysis** (only when all 6 sections are populated) - Call `mcp__product-manager__complete_analysis({completed_by: "human"})` to validate and mark analysis as completed
 
 ### If status is `completed`:
 Present all options above plus:

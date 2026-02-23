@@ -10,7 +10,7 @@ A modular automation framework for Claude Code.
 cd /path/to/project
 pnpm link ~/git/gentyr        # Creates node_modules/gentyr -> ~/git/gentyr
 npx gentyr init --op-token <token>   # First-time setup
-sudo npx gentyr protect        # Enable root-owned file protection
+npx gentyr protect        # Enable root-owned file protection
 ```
 
 Installs framework symlinks (via `node_modules/gentyr`), configs, husky hooks, builds MCP servers, and optionally makes critical files root-owned to prevent agent bypass.
@@ -40,8 +40,8 @@ npx gentyr status
 ### Protection
 
 ```bash
-sudo npx gentyr protect          # Enable root-owned protection
-sudo npx gentyr unprotect        # Disable protection
+npx gentyr protect          # Enable root-owned protection
+npx gentyr unprotect        # Disable protection
 ```
 
 **Security model** (as of current implementation):
@@ -61,7 +61,7 @@ sudo npx gentyr unprotect        # Disable protection
 ### Uninstall
 
 ```bash
-sudo npx gentyr uninstall
+npx gentyr uninstall
 ```
 
 Removes protection, symlinks, generated configs, husky hooks, and the managed `# BEGIN GENTYR OP` / `# END GENTYR OP` block from shell profiles. Preserves runtime state (`.claude/*.db`).
@@ -77,6 +77,43 @@ scripts/setup.sh --path /path/to/project --protect    # Will be removed in v2.0
 ```bash
 cd /path/to/project && claude mcp list
 ```
+
+## Merge Chain and Agent Git Workflow
+
+GENTYR enforces a 4-stage merge chain: `feature/* -> preview -> staging -> main`. Direct commits to `main`, `staging`, and `preview` are blocked at the local level via pre-commit and pre-push hooks. Only promotion pipeline agents (`GENTYR_PROMOTION_PIPELINE=true`) may operate on protected branches.
+
+### Feature Branch Commit Flow (Low-Friction)
+
+Agents work on feature branches (`feature/*`, `fix/*`, `refactor/*`, `docs/*`, `chore/*`). At commit time, only lint and security checks run — no deputy-CTO review gate. This keeps commit latency low.
+
+After committing, the agent:
+1. Pushes the branch: `git push -u origin <branch>`
+2. Creates a PR to `preview`: `gh pr create --base preview --head <branch> --title "..."`
+3. Creates an urgent DEPUTY-CTO task for immediate PR review:
+   ```javascript
+   mcp__todo-db__create_task({
+     section: "DEPUTY-CTO",
+     title: "Review PR: <feature-title>",
+     description: "Review and merge the PR...",
+     assigned_by: "pr-reviewer",
+     priority: "urgent"
+   })
+   ```
+
+### Deputy-CTO PR Review Mode
+
+When processing a `pr-reviewer`-assigned task, the deputy-CTO has `Bash` access to `gh` commands:
+- `gh pr diff <number>` — review changes
+- `gh pr review <number> --approve --body "..."` — approve
+- `gh pr review <number> --request-changes --body "..."` — reject with feedback
+- `gh pr merge <number> --merge --delete-branch` — merge and trigger worktree cleanup
+- `gh pr edit <number> --add-label "deputy-cto-reviewed"` — always applied
+
+**`pr-reviewer` is an approved `assigned_by` value** for the `DEPUTY-CTO` section in `SECTION_CREATOR_RESTRICTIONS` (defined in `packages/mcp-servers/src/shared/constants.ts`).
+
+### Worktrees
+
+Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/`. Each worktree is provisioned with symlinked GENTYR config (hooks, agents, commands) and a worktree-specific `.mcp.json` with absolute `CLAUDE_PROJECT_DIR` paths. Worktrees for merged branches are cleaned up every **30 minutes** by the hourly automation (`getCooldown('worktree_cleanup', 30)`).
 
 ## Propagation to Linked Projects
 
@@ -95,6 +132,21 @@ cd packages/mcp-servers && npm run build
 ```
 
 The SessionStart hook also attempts auto-rebuild if `src/` is newer than `dist/`, but always build explicitly after TS changes to ensure correctness.
+
+### Slash Command Path Resolution
+
+Slash commands in `.claude/commands/` must not hardcode `node_modules/gentyr` because they run in three different install contexts:
+- **npm link** (standard): `node_modules/gentyr -> ~/git/gentyr`
+- **Legacy symlink**: `.claude-framework -> ~/git/gentyr`
+- **Gentyr repo itself**: `.` (working directly in the framework)
+
+All slash commands resolve the framework directory with this pattern before running any `node` commands or `Read` tool paths:
+
+```bash
+GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })"
+```
+
+This is documented within each command's `## Framework Path Resolution` section and enforced by the test suite at `.claude/hooks/__tests__/slash-command-markdown-gentyr-dir.test.js`.
 
 ### After changing launchd plist configuration
 
@@ -133,6 +185,49 @@ Configure user personas to automatically test your app when staging changes are 
 ```
 
 Creates personas (GUI/CLI/API/SDK modes), registers features with file patterns, and maps personas to features. Feedback agents spawn on staging changes and report findings to deputy-CTO triage pipeline.
+
+## Product Manager MCP Server
+
+The product-manager MCP server (`packages/mcp-servers/src/product-manager/`) manages a 6-section product-market-fit (PMF) analysis pipeline. State is persisted in `.claude/state/product-manager.db`.
+
+**Access via `/product-manager` slash command** (prefetches current status from the database before display).
+
+**6 Analysis Sections** (must be populated in strict sequential order):
+
+| # | Key | Title | Write tool |
+|---|-----|-------|------------|
+| 1 | `market_space` | Market Space & Players | `write_section` |
+| 2 | `buyer_personas` | Buyer Personas | `add_entry` (list, min 3) |
+| 3 | `competitor_differentiation` | Competitor Differentiation | `write_section` |
+| 4 | `pricing_models` | Pricing Models | `write_section` |
+| 5 | `niche_strengths` | Niche Strengths & Weaknesses | `write_section` |
+| 6 | `user_sentiment` | User Sentiment | `add_entry` (list, min 3) |
+
+Sections 2 and 6 are **list sections**: they use `add_entry` instead of `write_section` and require at least **3 entries** (`MIN_LIST_ENTRIES = 3`) to be considered populated. `get_analysis_status` returns `entry_count` and `min_entries_required` for list sections.
+
+**Analysis lifecycle**: `not_started` → `pending_approval` (initiate) → `approved` (deputy-CTO gate) → `in_progress` (first write) → `completed` (explicit `complete_analysis` call)
+
+**14 Available Tools:**
+- `get_analysis_status` — Current status, per-section progress, compliance stats
+- `initiate_analysis` — Move to `pending_approval`; agent should then report to deputy-CTO
+- `approve_analysis` — Called by deputy-CTO; moves to `approved`
+- `read_section` — Returns target section plus all prior sections as context cascade
+- `write_section` — Write content to sections 1, 3, 4, or 5 (enforces sequential lock)
+- `add_entry` — Add an entry to sections 2 or 6 (enforces sequential lock)
+- `update_entry` — Update an existing list entry by UUID
+- `delete_entry` — Delete a list entry; also removes pain-point-persona mappings
+- `list_pain_points` — List Section 6 entries with persona mappings; `unmapped_only` filter
+- `map_pain_point_persona` — Map a Section 6 pain point to a persona from `user-feedback.db`
+- `get_compliance_report` — Per-pain-point mapping status and compliance percentage
+- `clear_and_respawn` — Wipe all section data and create all 6 `PRODUCT-MANAGER` todo tasks upfront with `followup_enabled: 0`; returns `task_ids: string[]`
+- `complete_analysis` — Quality gate: validates all 6 sections meet population thresholds before marking `completed`; returns detailed error listing unpopulated sections with entry counts
+- `regenerate_md` — Force-regenerate `.claude/product-market-fit.md` from database state
+
+**Sequential lock**: `assertPreviousSectionsPopulated()` blocks any write to section N until sections 1..N-1 are populated. `clear_and_respawn` creates all 6 tasks upfront (not sequentially via followup chain) because the sequential lock already prevents out-of-order execution.
+
+**Persona compliance**: After Section 6 is populated, pain points can be mapped to personas via `map_pain_point_persona`. Persona IDs are validated against `user-feedback.db` (read-only). `get_compliance_report` shows mapping coverage percentage.
+
+**Markdown output**: Every write operation regenerates `.claude/product-market-fit.md` with all section content.
 
 ## Automation Service
 

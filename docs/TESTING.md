@@ -35,7 +35,7 @@ This plan provides a complete inventory of all node_modules/gentyr components an
 | **compliance-checker.js** | Post-Commit | Enforce spec compliance | 7 days per file |
 | **schema-mapper-hook.js** | CLI/Programmatic | Generate schema mappings | 24h per schema |
 | **hourly-automation.js** | Hourly service | Triage, plan execution, refactoring | 55 min |
-| **pre-commit-review.js** | Git pre-commit | Deputy-CTO review + lint | Per commit |
+| **pre-commit-review.js** | Git pre-commit | Lint + security gates; PR-based deputy-CTO review (v4.0) | Per commit |
 | **agent-tracker.js** | Support module | Shared spawn tracking | N/A |
 | **config-reader.js** | Support module | Shared cooldown configuration | N/A |
 | **mapping-validator.js** | Support module | Validate spec-file-mappings.json | N/A |
@@ -196,37 +196,40 @@ node .claude/hooks/cto-notification-hook.js
 
 ### Phase 3: Git Workflow Tests (Sequential)
 
-#### Test 3.1: Full Commit Approval Flow
-**Natural Action:** Make a code change and commit it
+#### Test 3.1: Feature Branch Commit Flow (v4.0 Universal Fast Path)
+**Natural Action:** Make a code change and commit it on a feature branch
 **Steps:**
 ```
-1. Edit a TypeScript file
-2. git add <file>
-3. git commit -m "Add feature" (spawns deputy-cto review)
-4. Wait for deputy-cto to call approve_commit()
-5. git commit -m "Add feature" (second attempt succeeds)
-6. Verify post-commit hooks run (antipattern-hunter, compliance-checker)
+1. git checkout -b feature/add-something
+2. Edit a TypeScript file
+3. git add <file>
+4. git commit -m "Add feature" (lint + security checks only; no deputy-CTO spawn)
+5. git push -u origin feature/add-something
+6. gh pr create --base preview --title "Add something"
+7. Create urgent DEPUTY-CTO task with assigned_by: "pr-reviewer"
+8. Verify post-commit hooks run (antipattern-hunter, compliance-checker)
 ```
-**Verify:** Commit succeeds after approval; approval token created and consumed
+**Verify:** Commit succeeds immediately after lint/security pass; deputy-CTO review happens via PR task
 
-#### Test 3.2: Commit Rejection Flow
-**Natural Action:** Try to commit code with security issue
+#### Test 3.2: PR Review Flow
+**Natural Action:** Deputy-CTO reviews and merges a feature PR
 **Steps:**
 ```
-1. Stage file with hardcoded API key
-2. git commit -m "test" (deputy-cto rejects)
-3. Verify commits blocked (rejection question exists)
-4. Run /deputy-cto to address rejection
-5. Fix code, commit succeeds
+1. Ensure a feature branch PR exists targeting preview
+2. Deputy-CTO spawns (via urgent DEPUTY-CTO task)
+3. gh pr diff <number> -- reviews changes
+4. gh pr review <number> --approve --body "LGTM"
+5. gh pr merge <number> --merge --delete-branch
+6. gh pr edit <number> --add-label "deputy-cto-reviewed"
 ```
-**Verify:** Rejection blocks all commits until addressed
+**Verify:** PR merged to preview; branch and worktree cleaned up within 30 minutes
 
 #### Test 3.3: Lint Enforcement (Unbypassable)
 **Natural Action:** Try to commit with lint errors
 **Steps:**
 ```
 1. Stage TypeScript file with lint errors
-2. Attempt commit (even with valid approval token)
+2. Attempt commit
 ```
 **Expected:** Commit blocked by ESLint - cannot be bypassed
 
@@ -349,16 +352,16 @@ mkdir /tmp/test-install && cd /tmp/test-install
 git init
 pnpm link ~/git/gentyr
 npx gentyr init
-sudo npx gentyr protect
+npx gentyr protect
 ```
 **Verify:** Symlinks created, .mcp.json generated, husky hooks installed, MCP servers built, protection active
 
 #### Test 6.2: Protection Toggle
 **Steps:**
 ```bash
-sudo npx gentyr unprotect
+npx gentyr unprotect
 ls -la .claude/hooks/pre-commit-review.js  # Should be user-owned
-sudo npx gentyr protect
+npx gentyr protect
 ls -la .claude/hooks/pre-commit-review.js  # Should be root-owned
 ```
 **Verify:** Protection toggles correctly
@@ -384,7 +387,7 @@ ls -la .claude/hooks/pre-commit-review.js  # Should be root-owned
 | todo-maintenance | 15 minutes | Edit `lastSpawn` in `todo-maintenance-state.json` |
 | schema-mapper | 24h/schema | Edit `cooldowns` in `schema-mapper-state.json` |
 | hourly-automation | 55 minutes | Edit `lastRun` in `hourly-automation-state.json` |
-| approval tokens | 5 minutes | Edit `expiresAt` in token files |
+| bypass-approval-token | 5 minutes | Edit `expiresAt` in `.claude/bypass-approval-token.json` |
 
 ---
 
@@ -403,7 +406,6 @@ rm -f .claude/hooks/todo-maintenance-state.json
 rm -f .claude/hooks/schema-mapper-state.json
 rm -f .claude/hourly-automation-state.json
 rm -f .claude/autonomous-mode.json
-rm -f .claude/commit-approval-token.json
 rm -f .claude/bypass-approval-token.json
 ```
 

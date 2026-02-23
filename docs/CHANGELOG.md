@@ -1,5 +1,128 @@
 # GENTYR Framework Changelog
 
+## 2026-02-23 - Product Manager PMF Pipeline Bug Fixes
+
+### Summary
+
+Fixed three bugs in the product-manager PMF pipeline that caused incomplete task chains, premature population detection, and auto-completion without a quality gate.
+
+### Changed
+
+**`packages/mcp-servers/src/product-manager/server.ts`**:
+- **Bug 1 fix — broken task chain**: Rewrote `clearAndRespawn` to create all 6 `PRODUCT-MANAGER` tasks upfront with `followup_enabled: 0`. Previously only a Section 1 task was created with `followup_enabled: 1`, but `complete_task` creates follow-ups with `followup_enabled: 0`, causing the chain to die after Section 2. The sequential lock (`assertPreviousSectionsPopulated`) already prevents out-of-order execution, so all 6 tasks can safely exist in the queue simultaneously.
+- **Bug 2 fix — premature populated detection**: Added `MIN_LIST_ENTRIES = 3` constant. Changed `isSectionPopulated()` threshold for list sections from `count > 0` to `count >= MIN_LIST_ENTRIES`. Sections 2 and 6 now require at least 3 entries to be considered populated.
+- **Bug 3 fix — auto-completion without quality gate**: Removed `getPopulatedCount() === 6` auto-completion blocks from both `writeSection()` and `addEntry()`. Added explicit `completeAnalysis()` function that validates all 6 sections meet population thresholds before marking status as `completed`. Returns detailed error messages listing unpopulated sections with entry counts.
+- `get_analysis_status` now returns `entry_count` and `min_entries_required` fields for list sections.
+
+**`packages/mcp-servers/src/product-manager/types.ts`**:
+- Added `CompleteAnalysisArgsSchema` and `CompleteAnalysisResult` types.
+- Changed `ClearAndRespawnResult.task_id: string` to `task_ids: string[]` to reflect that all 6 task IDs are now returned.
+- Added `min_entries_required?: number` to `AnalysisStatusResult` section shape.
+
+**`packages/mcp-servers/src/product-manager/__tests__/product-manager.test.ts`**:
+- Test suite expanded from 34 to 47 tests covering the new `complete_analysis` tool, `MIN_LIST_ENTRIES` threshold enforcement, and upfront task creation behavior.
+
+**`.claude/agents/product-manager.md`**:
+- Updated workflow to document the `complete_analysis` call after Section 6 is populated.
+- Added note that list sections require a minimum of 3 entries.
+
+**`.claude/commands/product-manager.md`**:
+- Added "Finalize analysis" option to the `approved`/`in_progress` status branch (calls `complete_analysis`).
+
+**`.claude/hooks/slash-command-prefetch.js`**:
+- Updated `handleProductManager()` prefetch logic to mirror the `MIN_LIST_ENTRIES = 3` threshold (was using `count > 0`).
+
+---
+
+## 2026-02-23 - Pre-Commit Hook v4.0 and Internal Sudo for protect/unprotect
+
+### Summary
+
+Completed the PR-based review migration by removing the last vestiges of the commit-time deputy-CTO spawn and approval token system from `pre-commit-review.js`. All commits now use a universal fast path (lint + security only). Separately, `protect` and `unprotect` CLI commands now prompt for sudo internally via `sudoExec()`, so users no longer need to prefix the commands with `sudo`.
+
+### Changed
+
+**`.claude/hooks/pre-commit-review.js`** — v4.0 universal fast path:
+- Removed all deputy-CTO spawn logic (`spawnDeputyCtoReview`, `checkApprovalToken`, `consumeApprovalToken`)
+- Removed `APPROVAL_TOKEN_FILE`, `TOKEN_EXPIRY_MS` constants
+- Removed unused imports: `spawn`, `registerSpawn`, `AGENT_TYPES`, `HOOK_TYPES`, `getCooldown`
+- All branches now exit after lint/security checks — no deputy-CTO review spawned at commit time
+- Updated header comment to v4.0 (PR-Based Review)
+- Re-added `getBranchInfo()` that was accidentally deleted during refactor
+
+**`cli/commands/protect.js`** — Internal sudo:
+- Added `sudoExec(cmd, args)` helper using `execFileSync('sudo', ...)` with `stdio: 'inherit'` (required for password prompting)
+- Removed root UID checks from `doProtect()` and `doUnprotect()` — no longer required to run as root
+- Replaced all direct `execFileSync('chown')` / `execFileSync('chmod')` / `execFileSync('find')` calls with `sudoExec()`
+- Reordered `doProtect()` to write `protection-state.json` BEFORE protecting directories (user needs write access first)
+- Simplified `getOriginalUser()` to read `process.env.USER` directly (SUDO_USER indirection no longer needed)
+
+**`cli/commands/uninstall.js`** — No root check:
+- Removed root UID check for protected projects; `uninstall` now delegates to `protect(['--mode', 'unprotect'])` which handles sudo internally
+
+**`cli/index.js`** — Help text:
+- Updated `protect` / `unprotect` help text to "(prompts for sudo internally)" — no longer shows `sudo` prefix
+
+**Documentation** — `sudo` prefix removed from all CLI references:
+- `CLAUDE.md`, `README.md`, `husky/pre-commit`, `gentyr-sync.js`, `docs/TESTING.md`, `docs/DEVELOPER.md`, `docs/shared/PROTECTION-SYSTEM.md`, `scripts/reinstall.sh`
+
+**`.claude/hooks/__tests__/pre-commit-review.test.js`** — Test suite updated:
+- Removed tests for deleted functions (approval tokens, deputy-CTO spawn, getCooldown)
+- Added "Universal Fast Path" test block covering the new v4.0 behavior
+- Fixed G001 compliance exit count
+- All 65 tests pass
+
+### Security Impact
+
+No regression. Commit-time security gates are identical:
+1. Lint config integrity check (forbidden files block commit)
+2. Git `core.hooksPath` tamper check (blocks if redirected)
+3. Strict ESLint (`--max-warnings 0`) on staged `.ts`/`.tsx` files
+4. Protected branch guard (blocks direct commits to `main`, `staging`, `preview`)
+5. G020 pending CTO items check (blocks commits to `main` with pending questions or triage items)
+
+Deputy-CTO code review (security, architecture, breaking changes) runs at PR time before any branch can merge to `preview`.
+
+---
+
+## 2026-02-23 - Lower-Friction Agent Git Workflow
+
+### Summary
+
+Removed the blocking deputy-CTO commit-time review gate from feature branches. Code review now happens at PR time instead of commit time, dramatically reducing friction for agent workflows while preserving security via lint/security gates at commit time and full deputy-CTO review at PR time.
+
+### Changed
+
+**`.claude/hooks/pre-commit-review.js`** — Feature branch fast path:
+- Added `FEATURE_FAST_PATH_RE = /^(feature|fix|refactor|docs|chore)\//` branch pattern check
+- Feature branch commits exit after lint and unbypassable security checks (no deputy-CTO review spawned)
+- Protected branches (`main`, `staging`, `preview`) still require the full approval token flow
+
+**`.claude/agents/deputy-cto.md`** — PR Review Mode:
+- Added `## PR Review Mode` section describing PR review workflow via `gh` commands
+- Deputy-CTO has `Bash` access (already in `allowedTools`) for `gh pr diff`, `gh pr review`, `gh pr merge`, `gh pr edit`
+- Approved+merged PRs use `--delete-branch` to trigger worktree cleanup
+
+**`packages/mcp-servers/src/shared/constants.ts`** — `pr-reviewer` assigner:
+- Added `'pr-reviewer'` to `SECTION_CREATOR_RESTRICTIONS['DEPUTY-CTO']` allowlist
+- Enables task-spawning code (e.g., code-reviewer agents creating PR review tasks) to use `assigned_by: "pr-reviewer"` without triggering section restriction errors
+
+**`.claude/hooks/hourly-automation.js`** — Worktree cleanup interval:
+- Worktree cleanup cooldown reduced from 6 hours to **30 minutes** (`getCooldown('worktree_cleanup', 30)`)
+- Merged worktrees are cleaned up much faster after a PR is merged with `--delete-branch`
+
+### Security Impact
+
+No regression. Feature branch commits still run:
+1. Lint config integrity check (forbidden files block commit)
+2. Git `core.hooksPath` tamper check (blocks if redirected)
+3. Strict ESLint (`--max-warnings 0`) on staged `.ts`/`.tsx` files
+4. Protected branch guard (blocks direct commits to `main`, `staging`, `preview`)
+
+Full deputy-CTO review (security, architecture, breaking changes) runs at PR time before the branch can merge to `preview`.
+
+---
+
 ## 2026-02-23 - Protection Security Model: Fix Cross-Repo Side Effect
 
 ### Problem

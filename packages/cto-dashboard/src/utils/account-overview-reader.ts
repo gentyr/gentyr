@@ -113,14 +113,16 @@ function truncateKeyId(keyId: string): string {
 }
 
 /**
- * Resolve email for an event: entry-level account_email → key-level account_email → truncated key ID.
+ * Resolve email for an event: entry-level account_email → key-level account_email
+ * → rotation_log history lookup → truncated key ID.
  */
 function resolveEmail(
   entryEmail: string | null | undefined,
   keyData: { account_email?: string | null } | undefined,
   keyId: string,
+  emailByKeyId?: Map<string, string>,
 ): string {
-  return entryEmail || keyData?.account_email || truncateKeyId(keyId);
+  return entryEmail || keyData?.account_email || emailByKeyId?.get(keyId) || truncateKeyId(keyId);
 }
 
 function deriveDescription(
@@ -129,10 +131,11 @@ function deriveDescription(
   keyId: string,
   entryEmail: string | null | undefined,
   keyData?: { account_email?: string | null },
+  emailByKeyId?: Map<string, string>,
 ): string | null {
   if (!ALLOWED_EVENTS.has(event)) return null;
 
-  const displayName = resolveEmail(entryEmail, keyData, keyId);
+  const displayName = resolveEmail(entryEmail, keyData, keyId, emailByKeyId);
 
   switch (event) {
     case 'key_added':
@@ -219,6 +222,14 @@ export function getAccountOverviewData(): AccountOverviewData {
   const cutoff24h = now - 24 * 60 * 60 * 1000;
   let rotationCount = 0;
 
+  // Build email lookup from rotation_log entries (some events capture email even if key is deleted)
+  const emailByKeyId = new Map<string, string>();
+  for (const entry of state.rotation_log) {
+    if (entry.account_email && entry.key_id) {
+      emailByKeyId.set(entry.key_id, entry.account_email);
+    }
+  }
+
   // Track emails we've already seen a "New account added" event for
   // (scan chronologically to suppress duplicate additions for the same email)
   const seenAddedEmails = new Set<string>();
@@ -235,7 +246,7 @@ export function getAccountOverviewData(): AccountOverviewData {
     if (keyData?.status === 'invalid') continue;
 
     const entryEmail = entry.account_email;
-    const desc = deriveDescription(entry.event, entry.reason, keyId, entryEmail, keyData);
+    const desc = deriveDescription(entry.event, entry.reason, keyId, entryEmail, keyData, emailByKeyId);
     if (!desc) continue;
 
     // Suppress duplicate "New account added" events for the same email
@@ -257,9 +268,18 @@ export function getAccountOverviewData(): AccountOverviewData {
     });
   }
 
-  // Sort newest first, cap at 20
+  // Sort newest first
   events.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-  const cappedEvents = events.slice(0, 20);
+
+  // Deduplicate consecutive identical events (same type + description)
+  const deduped: AccountEvent[] = [];
+  for (const ev of events) {
+    const prev = deduped[deduped.length - 1];
+    if (prev && prev.event === ev.event && prev.description === ev.description) continue;
+    deduped.push(ev);
+  }
+
+  const cappedEvents = deduped.slice(0, 20);
 
   const activeKeyId = state.active_key_id ? truncateKeyId(state.active_key_id) : null;
 

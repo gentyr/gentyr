@@ -404,39 +404,42 @@ The `effective` object is computed by the usage optimizer as `default * (1 / fac
 
 ## Pre-Commit Review Hook (pre-commit-review.js)
 
-Runs as a Husky pre-commit hook on every `git commit` attempt.
+Runs as a Husky pre-commit hook on every `git commit` attempt. As of **v4.0 (PR-Based Review)**, all commits use a universal fast path — lint and security checks only. Full deputy-CTO code review happens at PR time, not commit time.
 
-### Commit Flow
+### Commit Flow (v4.0)
 
 ```
 git commit
   |
   v
 pre-commit-review.js
-  |-- Verify git core.hooksPath hasn't been tampered (hook bypass detection)
-  |-- Check for valid emergency bypass token (from execute_bypass flow)
-  |-- Check for pending CTO items (G020 compliance)
+  |-- [1] Lint config integrity check (block forbidden override files)
+  |-- [2] Git core.hooksPath tamper check (BLOCK if redirected)
+  |-- [3] Strict ESLint --max-warnings 0 on staged .ts/.tsx files
+  |-- [4] Protected branch guard
+  |       |-- Is branch main / staging / preview?
+  |       |-- GENTYR_PROMOTION_PIPELINE=true? -> allow
+  |       |-- Otherwise -> BLOCK
+  |-- [5] G020 pending CTO items check (main branch only: BLOCK; staging: warn)
   |       |-- Pending questions in deputy-cto.db?
   |       |-- Pending triage items in cto-reports.db?
-  |       |-- Either present? -> BLOCK commit
-  |-- Check for valid approval token (from deputy-cto approve_commit)
-  |       |-- Token exists + not expired (5 min) + hash matches staged files?
-  |       |-- Yes -> ALLOW commit
-  |-- Spawn deputy-cto review in background
-  |-- BLOCK commit (await review)
+  |-- All checks pass -> commit allowed
   |
-  v (after deputy-cto reviews and approves)
+  v (post-commit, for feature branches)
 
-git commit (second attempt)
-  |-- Valid approval token found -> ALLOW commit
+Agent pushes branch and creates PR to preview
+  |-- gh pr create --base preview ...
+  |-- mcp__todo-db__create_task({ section: "DEPUTY-CTO", assigned_by: "pr-reviewer", priority: "urgent" })
+  |-- Deputy-CTO reviews PR diff via gh pr diff, then approves+merges or requests changes
 ```
 
-### Approval Token Lifecycle
+### PR-Based Review Flow
 
-1. Deputy-CTO reviews staged diff and calls `approve_commit`
-2. `approve_commit` writes `.claude/commit-approval-token.json` with SHA-256 hash of staged diff + 5-minute expiry
-3. Next commit attempt validates: token unexpired AND `diffHash` matches current staged changes
-4. On match: commit proceeds; token consumed
+After committing and pushing a feature branch, the agent:
+1. Creates a PR to `preview`: `gh pr create --base preview --head <branch>`
+2. Creates an urgent DEPUTY-CTO task with `assigned_by: "pr-reviewer"` to trigger immediate review
+3. The deputy-CTO reviews via `gh pr diff`, decides to approve+merge or request changes
+4. Merged branches trigger worktree cleanup (30-minute cycle)
 
 ### Emergency Bypass
 
@@ -444,16 +447,16 @@ A CTO-authorized emergency bypass writes a `commit_decisions` row with `rational
 
 ### G020 Compliance Check
 
-Before any approval path, the hook queries:
+The hook queries:
 - `deputy-cto.db` questions table: `WHERE status = 'pending'`
 - `cto-reports.db` reports table: `WHERE triage_status = 'pending'` (or `triaged_at IS NULL` as fallback)
 
-If either count > 0, the commit is blocked regardless of token state. This ensures no code ships while the CTO has outstanding decisions.
+Branch behavior: `main` → hard block (exit 1); `staging` → warn only; feature branches → no check (fast path exits immediately after lint).
 
 ### Fail-Closed Behavior
 
-- `better-sqlite3` unavailable: skip CTO item check (permissive), approval token check still runs
-- DB read error on triage count: assume 1 pending item (blocks commit)
+- `better-sqlite3` unavailable: skip CTO item check (permissive)
+- DB read error on triage count: assume 1 pending item (blocks commit on main)
 - Hook path tampered (`core.hooksPath` changed): BLOCK with alert
 
 ---

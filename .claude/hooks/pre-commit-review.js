@@ -1,34 +1,29 @@
 #!/usr/bin/env node
 /**
- * Pre-Commit Review Hook (v3.0 - Approval Token)
+ * Pre-Commit Review Hook (v4.0 - PR-Based Review)
  *
  * Flow:
- * 1. First commit attempt → Rejected, spawns deputy-cto review in background
- * 2. Deputy-CTO reviews and approves → Writes approval token
- * 3. Second commit attempt → Token valid? Allow. Otherwise reject.
+ * 1. Run lint config integrity check
+ * 2. Run ESLint with --max-warnings 0
+ * 3. Check protection / tamper integrity
+ * 4. Enforce protected branch guard
+ * 5. Check pending CTO items (warn on staging, block on main)
+ * 6. If all pass → commit approved. Code review happens at PR time.
  *
- * Token expires after 5 minutes and is tied to the staged files hash.
- *
- * @version 3.0.0
+ * @version 4.0.0
  */
 
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { spawn, execSync } from 'child_process';
+import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { registerSpawn, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
-import { getCooldown } from './config-reader.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const DEPUTY_CTO_DB = path.join(PROJECT_DIR, '.claude', 'deputy-cto.db');
-const APPROVAL_TOKEN_FILE = path.join(PROJECT_DIR, '.claude', 'commit-approval-token.json');
-
-// Token expires after configured minutes (default 5)
-const TOKEN_EXPIRY_MS = getCooldown('pre_commit_review', 5) * 60 * 1000;
 
 // Try to import better-sqlite3
 let Database = null;
@@ -132,56 +127,6 @@ function hasPendingCtoItems() {
 }
 
 /**
- * Check if a valid approval token exists for the current staged changes
- */
-function checkApprovalToken(diffHash) {
-  if (!fs.existsSync(APPROVAL_TOKEN_FILE)) {
-    return { valid: false, reason: 'no-token' };
-  }
-
-  try {
-    const token = JSON.parse(fs.readFileSync(APPROVAL_TOKEN_FILE, 'utf8'));
-
-    // Empty object means token was consumed (overwrite pattern for sticky-bit compat)
-    if (!token.expiresAt && !token.diffHash) {
-      return { valid: false, reason: 'no-token' };
-    }
-
-    const now = Date.now();
-
-    // Check expiry
-    const expiresAt = new Date(token.expiresAt).getTime();
-    if (isNaN(expiresAt) || now > expiresAt) {
-      fs.writeFileSync(APPROVAL_TOKEN_FILE, '{}'); // Clean up expired token (overwrite for sticky-bit compat)
-      return { valid: false, reason: 'expired' };
-    }
-
-    // Check diff hash matches
-    if (token.diffHash !== diffHash) {
-      return { valid: false, reason: 'diff-changed' };
-    }
-
-    return { valid: true, token };
-  } catch (err) {
-    console.error(`[pre-commit] Error reading token: ${err.message}`);
-    return { valid: false, reason: 'read-error' };
-  }
-}
-
-/**
- * Consume (delete) the approval token after successful use
- */
-function consumeApprovalToken() {
-  try {
-    if (fs.existsSync(APPROVAL_TOKEN_FILE)) {
-      fs.writeFileSync(APPROVAL_TOKEN_FILE, '{}');
-    }
-  } catch (err) {
-    console.error(`[pre-commit] Warning: Could not clear token: ${err.message}`);
-  }
-}
-
-/**
  * Get branch info
  */
 function getBranchInfo() {
@@ -190,96 +135,6 @@ function getBranchInfo() {
   } catch {
     return 'unknown';
   }
-}
-
-/**
- * Spawn deputy-cto to review and potentially approve the commit
- */
-function spawnDeputyCtoReview(stagedInfo) {
-  const branch = getBranchInfo();
-
-  const prompt = `[Task][deputy-cto-review] You are an orchestrator. Review this pending commit and decide whether to approve it.
-
-## IMMEDIATE ACTION
-
-Your first action MUST be to spawn the deputy-cto sub-agent:
-\`\`\`
-Task(subagent_type='deputy-cto', prompt='Review this pending commit on branch ${branch} (${stagedInfo.files.length} files changed) and decide whether to approve or reject it. Use mcp__deputy-cto__approve_commit or mcp__deputy-cto__reject_commit.')
-\`\`\`
-
-The deputy-cto sub-agent has specialized instructions loaded from .claude/agents/deputy-cto.md.
-
-## Context
-- Branch: ${branch}
-- Files changed: ${stagedInfo.files.length}
-- Diff hash: ${stagedInfo.diffHash}
-
-## Staged Files
-${stagedInfo.files.join('\n')}
-
-## Diff Statistics
-${stagedInfo.stat}
-
-## Full Diff
-\`\`\`diff
-${stagedInfo.diff}
-\`\`\`
-
-## Your Task
-
-1. Review the changes for:
-   - Security issues (hardcoded credentials, exposed secrets) - CRITICAL
-   - Architectural violations (cross-product boundary violations) - CRITICAL
-   - Breaking changes without documentation - IMPORTANT
-   - Code quality issues - NOTE for later
-
-2. Make a decision:
-   - If APPROVED: Call mcp__deputy-cto__approve_commit({ rationale: "..." })
-     This writes an approval token so the developer can commit.
-   - If REJECTED: Call mcp__deputy-cto__reject_commit({ title: "...", description: "..." })
-     This blocks commits until addressed via /deputy-cto.
-
-3. For non-critical observations, use mcp__deputy-cto__add_question() to note items for CTO review.
-
-IMPORTANT: You MUST call either approve_commit or reject_commit. The developer is waiting to commit.`;
-
-  // Register spawn
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.DEPUTY_CTO_REVIEW,
-    hookType: HOOK_TYPES.PRE_COMMIT_REVIEW,
-    description: `Review: ${stagedInfo.files.length} files on ${branch}`,
-    prompt: prompt,
-    metadata: {
-      fileCount: stagedInfo.files.length,
-      files: stagedInfo.files.slice(0, 10),
-      branch,
-      diffHash: stagedInfo.diffHash,
-    },
-  });
-
-  const mcpConfigPath = path.join(PROJECT_DIR, '.mcp.json');
-
-  // Spawn as detached background process
-  const claude = spawn('claude', [
-    '--dangerously-skip-permissions',
-    '--mcp-config', mcpConfigPath,
-    '-p', prompt,
-  ], {
-    cwd: PROJECT_DIR,
-    detached: true,
-    stdio: 'ignore',
-    env: {
-      ...process.env,
-      CLAUDE_PROJECT_DIR: PROJECT_DIR,
-      CLAUDE_SPAWNED_SESSION: 'true',
-      CLAUDE_AGENT_ID: agentId,
-      DEPUTY_CTO_DIFF_HASH: stagedInfo.diffHash, // Pass hash for token creation
-    },
-  });
-
-  claude.unref();
-
-  return { agentId, pid: claude.pid };
 }
 
 /**
@@ -690,54 +545,14 @@ async function main() {
   }
 
   // ============================================================================
-  // FEATURE BRANCH FAST PATH
+  // COMMIT APPROVED — lint and security checks passed
   // ============================================================================
-  // On feature branches, lint and security checks are sufficient at commit time.
-  // Code review moves to PR time (deputy-CTO reviews the PR, not the commit).
-  // Protected branches still require the full approval token flow.
+  // Code review happens at PR time, not commit time.
+  // The approval token system has been removed in favor of PR-based review.
   // ============================================================================
-  const FEATURE_FAST_PATH_RE = /^(feature|fix|refactor|docs|chore)\//;
-  if (FEATURE_FAST_PATH_RE.test(currentBranchForGuard)) {
-    console.log('[pre-commit] Feature branch — lint passed, commit approved');
-    console.log('[pre-commit] Code review happens at PR time');
-    process.exit(0);
-  }
-
-  // Check for valid approval token
-  const tokenCheck = checkApprovalToken(stagedInfo.diffHash);
-
-  if (tokenCheck.valid) {
-    // Token is valid - allow the commit
-    console.log('[deputy-cto] ✓ Lint passed (--max-warnings 0)');
-    console.log('[deputy-cto] ✓ Approval token valid - commit approved');
-    console.log(`[deputy-cto] Approved by: ${tokenCheck.token.approvedBy || 'deputy-cto'}`);
-    consumeApprovalToken(); // One-time use
-    process.exit(0);
-  }
-
-  // No valid token - spawn review and reject this attempt
-  console.log('');
-  console.log('══════════════════════════════════════════════════════════════');
-  console.log('  COMMIT PENDING: Deputy-CTO review required');
-  console.log('══════════════════════════════════════════════════════════════');
-  console.log('');
-  console.log(`  Files: ${stagedInfo.files.length} staged`);
-  console.log(`  Hash:  ${stagedInfo.diffHash}`);
-  console.log('');
-
-  // Spawn the review
-  const { agentId, pid } = spawnDeputyCtoReview(stagedInfo);
-
-  console.log(`  Review spawned (agent: ${agentId})`);
-  console.log('');
-  console.log('  → Wait for approval, then retry your commit');
-  console.log(`  → Token expires in ${Math.round(TOKEN_EXPIRY_MS / 60000)} minutes after approval`);
-  console.log('');
-  console.log('══════════════════════════════════════════════════════════════');
-  console.log('');
-
-  // Reject this commit attempt
-  process.exit(1);
+  console.log('[pre-commit] Lint and security checks passed — commit approved');
+  console.log('[pre-commit] Code review happens at PR time');
+  process.exit(0);
 }
 
 main();

@@ -93,8 +93,9 @@ GENTYR uses git worktrees to enable multiple agents to work concurrently on sepa
 1. Task agent spawns → worktree manager creates `.claude/worktrees/<branch-name>/`
 2. Worktree provisioned with symlinks to `.claude/agents/`, `.claude/hooks/`, `.husky/`
 3. Worktree-specific `.mcp.json` generated with `CLAUDE_PROJECT_DIR` pointing to main project
-4. Agent works in isolation, commits to feature branch
-5. After branch merged to preview → worktree cleanup (6-hour cycle)
+4. Agent works in isolation, commits to feature branch (lint + security only — no deputy-CTO review gate at commit time)
+5. Agent pushes branch, creates PR to `preview`, and creates an urgent DEPUTY-CTO task for PR review
+6. After branch merged to preview → worktree cleanup (30-minute cycle)
 
 **State isolation:** SQLite databases (todo.db, deputy-cto.db, agent-tracker.db) remain in main project directory, shared via `CLAUDE_PROJECT_DIR` environment variable.
 
@@ -126,7 +127,7 @@ git checkout -b feature/add-user-auth
 
 ### Merging to Preview
 
-When the feature is complete and CI passes:
+When the feature is complete, the agent pushes the branch, creates a PR, and requests deputy-CTO review:
 
 ```bash
 # Push feature branch
@@ -134,16 +135,27 @@ git push -u origin feature/add-user-auth
 
 # Create PR to preview
 gh pr create --base preview --title "Add user authentication" --body "..."
-
-# Merge after CI passes (no approval needed)
-gh pr merge --merge
 ```
+
+After creating the PR, the agent creates an urgent DEPUTY-CTO task to trigger immediate review:
+
+```javascript
+mcp__todo-db__create_task({
+  section: "DEPUTY-CTO",
+  title: "Review PR: <feature-title>",
+  description: "Review and merge the PR from feature branch to preview. Run gh pr diff, review for security/architecture/quality, then approve+merge or request changes.",
+  assigned_by: "pr-reviewer",
+  priority: "urgent"
+})
+```
+
+The deputy-CTO agent uses `gh pr diff`, `gh pr review --approve` or `gh pr review --request-changes`, and `gh pr merge --merge --delete-branch` (which also triggers worktree cleanup). The `deputy-cto-reviewed` label is always applied.
 
 ### When to Merge
 
 - CI passes (lint, type check, unit tests, build)
-- Code review complete
-- No blocking issues
+- Deputy-CTO code review approved (at PR time, not commit time)
+- No blocking security or architecture issues
 - Feature is functionally complete
 
 ### When NOT to Merge
