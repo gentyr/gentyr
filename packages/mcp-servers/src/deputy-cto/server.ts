@@ -1664,14 +1664,58 @@ function releaseApprovalsLock(): void {
 }
 
 /**
+ * Acquire an advisory lock on the approvals file.
+ * Uses exclusive file creation (O_CREAT | O_EXCL) as a cross-process mutex.
+ * Same pattern as protected-action-gate.js to prevent TOCTOU race conditions.
+ * @returns true if lock acquired, false otherwise
+ */
+function acquireApprovalsLock(): boolean {
+  const maxAttempts = 10;
+  const baseDelay = 50; // ms
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const fd = fs.openSync(APPROVALS_LOCK_PATH, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      return true;
+    } catch {
+      // Check for stale lock (older than 10 seconds)
+      try {
+        const stat = fs.statSync(APPROVALS_LOCK_PATH);
+        if (Date.now() - stat.mtimeMs > 10000) {
+          fs.unlinkSync(APPROVALS_LOCK_PATH);
+          continue; // Retry immediately after removing stale lock
+        }
+      } catch { /* lock file gone, retry */ }
+
+      // Exponential backoff
+      const delay = baseDelay * Math.pow(2, i);
+      const start = Date.now();
+      while (Date.now() - start < delay) { /* busy wait */ }
+    }
+  }
+  return false;
+}
+
+/**
+ * Release the advisory lock on the approvals file.
+ */
+function releaseApprovalsLock(): void {
+  try {
+    fs.unlinkSync(APPROVALS_LOCK_PATH);
+  } catch { /* already released */ }
+}
+
+/**
  * Approve a protected action request (deputy-cto only).
  * Computes HMAC-signed approval that the gate hook will verify.
  */
 function approveProtectedAction(args: ApproveProtectedActionArgs): ApproveProtectedActionResult | ErrorResult {
   const code = args.code.toUpperCase();
 
+  // Acquire lock to prevent TOCTOU race on read-modify-write cycle
   if (!acquireApprovalsLock()) {
-    return { error: 'Could not acquire approvals file lock. Try again.' };
+    return { error: `G001 FAIL-CLOSED: Could not acquire approvals lock for ${code}. Retry shortly.` };
   }
 
   try {
@@ -1747,8 +1791,9 @@ function approveProtectedAction(args: ApproveProtectedActionArgs): ApproveProtec
 function denyProtectedAction(args: DenyProtectedActionArgs): DenyProtectedActionResult | ErrorResult {
   const code = args.code.toUpperCase();
 
+  // Acquire lock to prevent TOCTOU race on read-modify-write cycle
   if (!acquireApprovalsLock()) {
-    return { error: 'Could not acquire approvals file lock. Try again.' };
+    return { error: `G001 FAIL-CLOSED: Could not acquire approvals lock for ${code}. Retry shortly.` };
   }
 
   try {
