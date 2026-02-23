@@ -21,12 +21,17 @@
  * @version 1.0.0
  */
 
+import { existsSync, readFileSync } from 'fs';
+
 /**
  * @typedef {Object} CredentialProvider
  * @property {string} name - Human-readable provider name
  * @property {() => Promise<boolean>} isAvailable - Check if provider can be used
  * @property {(key: string, vaultRef: string) => Promise<string>} resolve - Resolve a credential value
  */
+
+/** Only allow alphanumeric and hyphens in provider names to prevent path traversal. */
+const PROVIDER_NAME_RE = /^[a-z0-9-]+$/;
 
 /**
  * Load a credential provider by name.
@@ -38,9 +43,18 @@
  * @throws {Error} If provider not found or invalid
  */
 export async function loadProvider(providerName, projectDir) {
+  if (typeof providerName !== 'string' || !PROVIDER_NAME_RE.test(providerName)) {
+    throw new Error(
+      `Invalid provider name "${providerName}". ` +
+      `Must be lowercase alphanumeric with hyphens only (e.g., 'onepassword', 'manual').`
+    );
+  }
+  if (typeof projectDir !== 'string' || projectDir.length === 0) {
+    throw new Error('projectDir must be a non-empty string.');
+  }
+
   // 1. Check project-local providers first
   const localPath = `${projectDir}/.claude/credential-providers/${providerName}.js`;
-  const { existsSync } = await import('fs');
 
   if (existsSync(localPath)) {
     const provider = await import(localPath);
@@ -89,7 +103,10 @@ function validateProvider(provider, name, filepath) {
  * @returns {object|null} Config object or null if not configured
  */
 export async function loadProviderConfig(projectDir) {
-  const { existsSync, readFileSync } = await import('fs');
+  if (typeof projectDir !== 'string' || projectDir.length === 0) {
+    throw new Error('projectDir must be a non-empty string.');
+  }
+
   const configPath = `${projectDir}/.claude/credential-provider.json`;
 
   if (!existsSync(configPath)) {
