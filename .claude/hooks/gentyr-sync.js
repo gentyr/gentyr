@@ -170,7 +170,12 @@ function statBasedSync(frameworkDir) {
     const settingsPath = path.join(projectDir, '.claude', 'settings.json');
     const templatePath = path.join(frameworkDir, '.claude', 'settings.json.template');
     try {
-      fs.accessSync(settingsPath, fs.constants.W_OK);
+      const fileExists = fs.existsSync(settingsPath);
+      if (fileExists) {
+        fs.accessSync(settingsPath, fs.constants.W_OK);
+      } else {
+        fs.accessSync(path.dirname(settingsPath), fs.constants.W_OK);
+      }
       execFileSync('node', [mergeScript, 'install', settingsPath, templatePath], {
         stdio: 'pipe', timeout: 10000,
       });
