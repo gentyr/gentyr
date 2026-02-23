@@ -26,6 +26,7 @@ import tls from 'tls';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -33,6 +34,7 @@ import os from 'os';
 
 const PROXY_PORT = parseInt(process.env.GENTYR_PROXY_PORT || '18080', 10);
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CERT_DIR = path.join(os.homedir(), '.claude', 'proxy-certs');
 const PROXY_LOG_PATH = path.join(os.homedir(), '.claude', 'rotation-proxy.log');
 const MAX_LOG_BYTES = 1_048_576; // 1 MB
@@ -57,6 +59,8 @@ let selectActiveKey;
 let updateActiveCredentials;
 let logRotationEvent;
 let appendRotationAudit;
+let generateKeyId;
+let syncKeys;
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -149,9 +153,18 @@ function getActiveToken() {
 function rotateOnExhaustion(exhaustedKeyId) {
   const state = readRotationState();
 
-  // Mark exhausted
+  // Mark exhausted with authoritative usage data.
+  // A 429 from the API is definitive proof of exhaustion — stamp fresh usage
+  // so selectActiveKey's freshness gate doesn't null it out and re-select it.
   if (state.keys[exhaustedKeyId]) {
     state.keys[exhaustedKeyId].status = 'exhausted';
+    state.keys[exhaustedKeyId].last_usage = {
+      five_hour: 100,
+      seven_day: 100,
+      seven_day_sonnet: 100,
+      checked_at: Date.now(),
+    };
+    state.keys[exhaustedKeyId].last_health_check = Date.now();
     logRotationEvent(state, {
       timestamp: Date.now(),
       event: 'key_removed',
@@ -160,9 +173,9 @@ function rotateOnExhaustion(exhaustedKeyId) {
     });
   }
 
-  // Select next
+  // Select next — reject self-rotation (same key we just marked exhausted)
   const nextKeyId = selectActiveKey(state);
-  if (!nextKeyId || !state.keys[nextKeyId]) {
+  if (!nextKeyId || !state.keys[nextKeyId] || nextKeyId === exhaustedKeyId) {
     writeRotationState(state);
     return null;
   }
@@ -284,7 +297,7 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
     return;
   }
 
-  // Parse and rebuild with swapped token
+  // Parse the incoming request
   const parsed = parseHttpRequest(rawRequest);
   if (!parsed) {
     proxyLog('parse_error', { host });
@@ -293,9 +306,39 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
     return;
   }
 
+  // Check if the incoming token is unknown to rotation state.
+  // If so, pass it through unmodified — the user likely just logged in with
+  // a fresh account that hasn't been registered yet.
+  const existingAuth = parsed.headers['authorization'];
+  let usePassthrough = false;
+  let incomingKeyId = null;
+
+  if (retryCount === 0 && existingAuth) {
+    const bearerMatch = existingAuth.match(/^Bearer\s+(.+)$/i);
+    if (bearerMatch && generateKeyId) {
+      incomingKeyId = generateKeyId(bearerMatch[1]);
+      const state = readRotationState();
+      if (!state.keys[incomingKeyId]) {
+        // Unknown token — pass through and trigger async sync to register it
+        usePassthrough = true;
+        proxyLog('unknown_token_passthrough', {
+          host,
+          method: parsed.method,
+          path: parsed.path.slice(0, 100),
+          incoming_key_id: incomingKeyId.slice(0, 8),
+          active_key_id: activeKeyId.slice(0, 8),
+        });
+        if (syncKeys) {
+          syncKeys().catch(err => {
+            proxyLog('async_sync_failed', { error: err.message });
+          });
+        }
+      }
+    }
+  }
+
   // Log the swap (key IDs only, never tokens)
-  if (retryCount === 0) {
-    const existingAuth = parsed.headers['authorization'];
+  if (retryCount === 0 && !usePassthrough) {
     const hadAuth = Boolean(existingAuth);
     proxyLog('request_intercepted', {
       host,
@@ -304,7 +347,7 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
       had_auth: hadAuth,
       active_key_id: activeKeyId.slice(0, 8),
     });
-  } else {
+  } else if (retryCount > 0) {
     proxyLog('retry_attempt', {
       host,
       method: parsed.method,
@@ -315,7 +358,10 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
     });
   }
 
-  const modifiedRequest = rebuildRequest(parsed, rawRequest, activeToken);
+  // If the incoming token is unknown, forward the original request as-is
+  const modifiedRequest = usePassthrough
+    ? rawRequest
+    : rebuildRequest(parsed, rawRequest, activeToken);
 
   // Connect to upstream
   const upstream = tls.connect({ host, port: 443, servername: host }, () => {
@@ -363,8 +409,8 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
 
     headersParsed = true;
 
-    if (responseStatusCode === 429 && retryCount < MAX_429_RETRIES) {
-      // Rotate key and retry
+    if (responseStatusCode === 429 && retryCount < MAX_429_RETRIES && !usePassthrough) {
+      // Rotate key and retry (skip for passthrough — proxy didn't inject that token)
       upstream.destroy();
       proxyLog('rotating_on_429', {
         host,
@@ -573,12 +619,15 @@ function createProxyServer(certs) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  // Load key-sync module
-  const keySyncPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'key-sync.js');
+  // Load key-sync module — resolve relative to this script (gentyr repo) first,
+  // then fall back to CLAUDE_PROJECT_DIR for backwards compatibility
+  const scriptRelativePath = path.join(SCRIPT_DIR, '..', '.claude', 'hooks', 'key-sync.js');
+  const projectDirPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'key-sync.js');
+  const keySyncPath = fs.existsSync(scriptRelativePath) ? scriptRelativePath : projectDirPath;
   if (!fs.existsSync(keySyncPath)) {
     throw new Error(
-      `key-sync.js not found at ${keySyncPath}. ` +
-      'Set CLAUDE_PROJECT_DIR to your GENTYR project directory.'
+      `key-sync.js not found at ${scriptRelativePath} or ${projectDirPath}. ` +
+      'Ensure the proxy is run from the GENTYR repo or set CLAUDE_PROJECT_DIR.'
     );
   }
 
@@ -589,6 +638,8 @@ async function main() {
   updateActiveCredentials = keySync.updateActiveCredentials;
   logRotationEvent = keySync.logRotationEvent;
   appendRotationAudit = keySync.appendRotationAudit;
+  generateKeyId = keySync.generateKeyId;
+  syncKeys = keySync.syncKeys;
 
   // Load TLS certs
   const certs = loadCerts();

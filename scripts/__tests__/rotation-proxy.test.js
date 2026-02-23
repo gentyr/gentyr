@@ -826,7 +826,263 @@ describe('handleHealthCheck() - response structure', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 12. main() startup — fail-loud requirements
+// 12. Token passthrough for unknown keys (Bug Fix #1)
+// ---------------------------------------------------------------------------
+
+describe('forwardRequest() - unknown token passthrough', () => {
+  it('should detect when incoming token is not in rotation state via generateKeyId', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+    assert.ok(fnStart !== null, 'forwardRequest must be defined');
+
+    // Must import generateKeyId from key-sync
+    assert.match(
+      code,
+      /generateKeyId/,
+      'Must import generateKeyId from key-sync for unknown token detection'
+    );
+
+    // Must call generateKeyId on incoming Bearer token
+    assert.match(
+      fnStart,
+      /generateKeyId\(/,
+      'forwardRequest must call generateKeyId to identify incoming token'
+    );
+  });
+
+  it('should check incoming key ID against rotation state keys', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /!state\.keys\[incomingKeyId\]/,
+      'Must check if incomingKeyId exists in rotation state keys'
+    );
+  });
+
+  it('should set usePassthrough flag when incoming token is unknown', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /usePassthrough\s*=\s*true/,
+      'Must set usePassthrough flag when token is unknown'
+    );
+  });
+
+  it('should log unknown_token_passthrough event with key IDs', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /proxyLog\(['"]unknown_token_passthrough['"]/,
+      'Must log unknown_token_passthrough event for observability'
+    );
+
+    const passthroughLogIdx = fnStart.indexOf('unknown_token_passthrough');
+    const passthroughSection = fnStart.slice(passthroughLogIdx, passthroughLogIdx + 400);
+    assert.match(
+      passthroughSection,
+      /incoming_key_id/,
+      'unknown_token_passthrough log must include incoming_key_id'
+    );
+    assert.match(
+      passthroughSection,
+      /active_key_id/,
+      'unknown_token_passthrough log must include active_key_id for comparison'
+    );
+  });
+
+  it('should trigger async syncKeys() when unknown token detected', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // Must call syncKeys asynchronously to register the new account
+    assert.match(
+      fnStart,
+      /syncKeys\(\).*catch/s,
+      'Must call syncKeys() asynchronously when unknown token is detected'
+    );
+  });
+
+  it('should forward original request unchanged when usePassthrough is true', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // Must use ternary to choose between passthrough and modified request
+    assert.match(
+      fnStart,
+      /usePassthrough\s*\?\s*rawRequest\s*:\s*rebuildRequest/,
+      'Must forward rawRequest unchanged when usePassthrough is true'
+    );
+  });
+
+  it('should only trigger passthrough on first attempt (retryCount === 0)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // The passthrough check must be gated by retryCount === 0
+    const passthroughCheckIdx = fnStart.indexOf('!state.keys[incomingKeyId]');
+    const passthroughSection = fnStart.slice(Math.max(0, passthroughCheckIdx - 300), passthroughCheckIdx + 100);
+
+    assert.match(
+      passthroughSection,
+      /retryCount\s*===\s*0/,
+      'Passthrough check must only run on initial request (retryCount === 0), not retries'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Authoritative 429 exhaustion data (Bug Fix #2)
+// ---------------------------------------------------------------------------
+
+describe('rotateOnExhaustion() - authoritative usage data stamping', () => {
+  it('should stamp last_usage with 100% values when marking key exhausted', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnExhaustion');
+    assert.ok(fnStart !== null, 'rotateOnExhaustion must be defined');
+
+    // Find the exhaustion marking section
+    const exhaustedIdx = fnStart.indexOf("status = 'exhausted'");
+    assert.ok(exhaustedIdx !== -1, 'Must set status to exhausted');
+
+    const exhaustionSection = fnStart.slice(exhaustedIdx, exhaustedIdx + 500);
+
+    // Must stamp all three usage buckets with 100%
+    assert.match(
+      exhaustionSection,
+      /last_usage[\s\S]*?five_hour:\s*100/,
+      'Must stamp five_hour usage at 100% when key exhausted by 429'
+    );
+    assert.match(
+      exhaustionSection,
+      /last_usage[\s\S]*?seven_day:\s*100/,
+      'Must stamp seven_day usage at 100% when key exhausted by 429'
+    );
+    assert.match(
+      exhaustionSection,
+      /last_usage[\s\S]*?seven_day_sonnet:\s*100/,
+      'Must stamp seven_day_sonnet usage at 100% when key exhausted by 429'
+    );
+  });
+
+  it('should stamp last_usage.checked_at with Date.now() for authoritative freshness', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnExhaustion');
+
+    const exhaustedIdx = fnStart.indexOf("status = 'exhausted'");
+    const exhaustionSection = fnStart.slice(exhaustedIdx, exhaustedIdx + 500);
+
+    assert.match(
+      exhaustionSection,
+      /checked_at:\s*Date\.now\(\)/,
+      'Must stamp checked_at with Date.now() so freshness gate does not null out this data'
+    );
+  });
+
+  it('should stamp last_health_check with Date.now() to prevent freshness gate nulling', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnExhaustion');
+
+    const exhaustedIdx = fnStart.indexOf("status = 'exhausted'");
+    const exhaustionSection = fnStart.slice(exhaustedIdx, exhaustedIdx + 500);
+
+    assert.match(
+      exhaustionSection,
+      /last_health_check\s*=\s*Date\.now\(\)/,
+      'Must stamp last_health_check with Date.now() to keep data fresh'
+    );
+  });
+
+  it('must stamp usage data BEFORE calling selectActiveKey to prevent re-selection', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnExhaustion');
+
+    // Use `.last_usage =` and `selectActiveKey(` to match actual code, not comments
+    const usageStampIdx = fnStart.indexOf('.last_usage =');
+    const selectIdx = fnStart.indexOf('selectActiveKey(');
+
+    assert.ok(usageStampIdx !== -1, 'Must stamp last_usage');
+    assert.ok(selectIdx !== -1, 'Must call selectActiveKey');
+    assert.ok(
+      usageStampIdx < selectIdx,
+      'Must stamp last_usage BEFORE calling selectActiveKey so freshness gate does not re-select exhausted key'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 14. Self-rotation guard (Bug Fix #3)
+// ---------------------------------------------------------------------------
+
+describe('rotateOnExhaustion() - self-rotation prevention', () => {
+  it('should check nextKeyId === exhaustedKeyId to prevent self-rotation', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnExhaustion');
+    assert.ok(fnStart !== null, 'rotateOnExhaustion must be defined');
+
+    assert.match(
+      fnStart,
+      /nextKeyId\s*===\s*exhaustedKeyId/,
+      'Must check if nextKeyId equals exhaustedKeyId to prevent rotating to the same key'
+    );
+  });
+
+  it('should return null when nextKeyId equals exhaustedKeyId (self-rotation detected)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnExhaustion');
+
+    // Find the self-rotation check
+    const selfRotationIdx = fnStart.indexOf('nextKeyId === exhaustedKeyId');
+    assert.ok(selfRotationIdx !== -1, 'Must have self-rotation check');
+
+    const selfRotationSection = fnStart.slice(selfRotationIdx, selfRotationIdx + 200);
+
+    // Must return null in this branch
+    assert.match(
+      selfRotationSection,
+      /return null/,
+      'Must return null when self-rotation is detected (same key selected again)'
+    );
+  });
+
+  it('should guard alongside !nextKeyId and !state.keys[nextKeyId] checks', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnExhaustion');
+
+    // The guard must be part of the same conditional that checks for missing keys
+    const guardIdx = fnStart.indexOf('nextKeyId === exhaustedKeyId');
+    const guardLine = fnStart.slice(Math.max(0, guardIdx - 100), guardIdx + 100);
+
+    assert.match(
+      guardLine,
+      /!nextKeyId\s*\|\|\s*!state\.keys\[nextKeyId\]\s*\|\|\s*nextKeyId\s*===\s*exhaustedKeyId/,
+      'Self-rotation guard must be combined with nextKeyId existence checks in same conditional'
+    );
+  });
+
+  it('should write rotation state before returning null on self-rotation', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnExhaustion');
+
+    const guardIdx = fnStart.indexOf('nextKeyId === exhaustedKeyId');
+    const returnNullIdx = fnStart.indexOf('return null', guardIdx);
+    const guardSection = fnStart.slice(guardIdx, returnNullIdx);
+
+    assert.match(
+      guardSection,
+      /writeRotationState\(state\)/,
+      'Must persist state (exhausted key marked) before returning null on self-rotation'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 15. main() startup — fail-loud requirements
 // ---------------------------------------------------------------------------
 
 describe('main() startup - fail-loud structure', () => {
