@@ -10,7 +10,7 @@ GENTYR turns Claude Code into an autonomous engineering team. It installs as a f
 
 > **macOS only.** The automation services, credential rotation, and persistent proxy use launchd. Linux and Windows are not supported.
 
-> **Not yet published to npm.** Install via local source only: `pnpm link ~/git/gentyr`. npm publish coming soon.
+> **Install:** `pnpm add gentyr` (npm) or `pnpm link ~/git/gentyr` (local dev)
 
 ## who this is for
 
