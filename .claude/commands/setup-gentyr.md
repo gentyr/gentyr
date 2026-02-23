@@ -5,6 +5,16 @@ One command for full GENTYR project setup. Runs a programmatic check script, dis
 
 The prefetch hook has pre-run `setup-check.js` and injected its JSON output as `[PREFETCH:setup-gentyr]` context above. Use that data for Phase 1 instead of running the script. If the prefetch data is missing, run the script directly.
 
+## Framework Path Resolution
+
+Before running any commands, resolve the GENTYR framework directory (supports npm link, legacy symlink, and running from within the gentyr repo):
+
+```bash
+GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })" && echo "$GENTYR_DIR"
+```
+
+Use this `$GENTYR_DIR` value for all subsequent `node` commands and `Read` tool paths in this flow.
+
 ## Security Architecture
 
 - **No credentials on disk.** Vault mappings (`.claude/vault-mappings.json`) contain only `op://` references and non-secret identifiers, not actual secret values.
@@ -46,7 +56,7 @@ The `setup-check.js` script is the authoritative source for credential classific
 Run the programmatic setup-check script to get complete project state in one call:
 
 ```bash
-node node_modules/gentyr/scripts/setup-check.js 2>/dev/null
+node "$GENTYR_DIR/scripts/setup-check.js" 2>/dev/null
 ```
 
 Parse the JSON output. This single call determines everything — do NOT run individual `op` commands to check credentials. The script checks:
@@ -60,7 +70,7 @@ Parse the JSON output. This single call determines everything — do NOT run ind
 
 1. If `gentyrInstalled === false`:
    - Inform the user: "GENTYR is not installed."
-   - Provide: `sudo node_modules/gentyr/scripts/reinstall.sh --path $(pwd) --op-token <token>`
+   - Provide: `sudo "$GENTYR_DIR/scripts/reinstall.sh" --path $(pwd) --op-token <token>`
    - Stop and wait for user to complete this step and restart their Claude Code session.
 
 2. If `opCliAvailable === false`:
@@ -157,7 +167,7 @@ For each credential in the JSON output where `type === "secret"` AND (`existsInO
 
 1. **Group by `setupGuidePhase`** — deduplicate so you show each guide section only once. For example, GITHUB_TOKEN and GITHUB_PAT share `"Phase 2: GitHub Token"`, so show that section once.
 
-2. **Read** `node_modules/gentyr/docs/SETUP-GUIDE.md`.
+2. **Read** `$GENTYR_DIR/docs/SETUP-GUIDE.md`.
 
 3. For each unique `setupGuidePhase` value (e.g., `"Phase 5: Cloudflare API Token"`):
    a. Find the section matching the heading `## {setupGuidePhase}` in SETUP-GUIDE.md.
@@ -169,7 +179,7 @@ For each credential in the JSON output where `type === "secret"` AND (`existsInO
 
 5. **Re-run the setup-check script** to verify the item was created:
    ```bash
-   node node_modules/gentyr/scripts/setup-check.js 2>/dev/null
+   node "$GENTYR_DIR/scripts/setup-check.js" 2>/dev/null
    ```
    Check the updated `existsInOp` value. If still `false`, inform the user and offer to skip.
 
@@ -181,7 +191,7 @@ For each credential in the JSON output where `type === "secret"` AND (`existsInO
 
 For each credential in the JSON output where `type === "identifier"` AND `mappedInVault === false`:
 
-1. **Read** `node_modules/gentyr/docs/SETUP-GUIDE.md`.
+1. **Read** `$GENTYR_DIR/docs/SETUP-GUIDE.md`.
 
 2. Find the `setupGuidePhase` section and locate the **"Non-secret (share in chat during /setup-gentyr):"** subsection within it.
 
@@ -271,12 +281,12 @@ This phase is **mandatory** — always run both scripts, never ask the user if t
 
 1. **Re-run setup-check** to confirm final credential state:
    ```bash
-   node node_modules/gentyr/scripts/setup-check.js 2>/dev/null
+   node "$GENTYR_DIR/scripts/setup-check.js" 2>/dev/null
    ```
 
 2. **Run permission validation** (always — do NOT offer this as optional):
    ```bash
-   node node_modules/gentyr/scripts/setup-validate.js 2>/dev/null
+   node "$GENTYR_DIR/scripts/setup-validate.js" 2>/dev/null
    ```
 
 3. **Display combined results** using this exact format (dynamically populated from the two JSON outputs):
@@ -306,7 +316,7 @@ This phase is **mandatory** — always run both scripts, never ask the user if t
    Use ✓ for pass/configured, ✗ for fail/missing, ⚠ for warn, ○ for skip. Populate dynamically from JSON — every credential and every service must appear.
 
 4. **For any missing credentials** (`existsInOp === false` OR `mappedInVault === false`):
-   - Read `node_modules/gentyr/docs/SETUP-GUIDE.md`
+   - Read `$GENTYR_DIR/docs/SETUP-GUIDE.md`
    - Find the section matching the credential's `setupGuidePhase` heading (e.g., `## Phase 6: Supabase Credentials`)
    - **Output the entire section verbatim** — from the `## Phase N` heading through to the next `## Phase` heading (or end of file). Do NOT paraphrase, summarize, or reformat.
    - List which credential keys from the JSON output this section covers
@@ -315,7 +325,7 @@ This phase is **mandatory** — always run both scripts, never ask the user if t
 
 5. **For any failed validations** (status: `fail`):
    - Output the `remediation` text from the validation JSON
-   - Also read and output the relevant `node_modules/gentyr/docs/SETUP-GUIDE.md` section for context
+   - Also read and output the relevant `$GENTYR_DIR/docs/SETUP-GUIDE.md` section for context
    - Wait for user to fix, then re-run `setup-validate.js`
 
 6. **Warnings** (status: `warn`) are informational, not blocking. Display the `remediation` text but proceed.
@@ -339,7 +349,7 @@ git rev-parse --verify origin/staging 2>/dev/null || (git branch staging && git 
 
 2. **Install merge-chain-check workflow**:
    - Check if `.github/workflows/merge-chain-check.yml` exists
-   - If missing, copy from GENTYR template: `${FRAMEWORK_PATH}/templates/config/merge-chain-check.yml.template`
+   - If missing, copy from GENTYR template: `$GENTYR_DIR/templates/config/merge-chain-check.yml.template`
    - This workflow enforces the merge chain: `feature/* -> preview -> staging -> main`
 
 3. **Verify `gh` CLI**:
@@ -352,7 +362,7 @@ gh auth status
    - Use `AskUserQuestion` to ask: "Which GitHub plan are you on?"
      - Option 1: "Teams" -- Show Teams-compatible branch protection instructions
      - Option 2: "Enterprise Cloud" -- Show Enterprise instructions with additional features
-   - Display the branch protection instructions from `node_modules/gentyr/docs/DEPLOYMENT-FLOW.md` (Branch Protection Setup section)
+   - Display the branch protection instructions from `$GENTYR_DIR/docs/DEPLOYMENT-FLOW.md` (Branch Protection Setup section)
    - Use `AskUserQuestion`: "Have you configured branch protection rules for preview, staging, and main?"
      - Option 1: "Yes, all configured"
      - Option 2: "I'll do it later"

@@ -14,7 +14,7 @@ Local development from the cloned gentyr source repository.
 cd ~/git/my-project                    # your target project
 pnpm link ~/git/gentyr                 # creates node_modules/gentyr -> ~/git/gentyr
 npx gentyr init --op-token TOKEN       # first-time setup (configs, symlinks, services)
-sudo npx gentyr protect                # optional: enable root-owned file protection
+npx gentyr protect                # optional: enable root-owned file protection
 ```
 
 `pnpm link` creates a symlink from `node_modules/gentyr` to your local gentyr working tree. All framework changes propagate automatically through this symlink.
@@ -91,8 +91,8 @@ Rebuilds MCP servers, re-merges settings.json, regenerates .mcp.json, syncs husk
 Root-owned file protection prevents agent self-modification of critical framework files:
 
 ```bash
-sudo npx gentyr protect                # enable protection
-sudo npx gentyr unprotect              # disable (required before editing protected files)
+npx gentyr protect                # enable protection
+npx gentyr unprotect              # disable (required before editing protected files)
 ```
 
 When protection is active, `.claude/hooks/` is root-owned. You must unprotect before creating new files there.

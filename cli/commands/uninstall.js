@@ -33,12 +33,7 @@ export default async function uninstall() {
   try {
     const ps = JSON.parse(fs.readFileSync(protectionFile, 'utf8'));
     if (ps.protected) {
-      if (process.getuid() !== 0) {
-        console.error(`${RED}Error: project is protected. Run with sudo:${NC}`);
-        console.error('  sudo npx gentyr uninstall');
-        process.exit(1);
-      }
-      // Run unprotect via our protect command
+      // Run unprotect via our protect command (prompts for sudo internally)
       const { default: protect } = await import('./protect.js');
       await protect(['--mode', 'unprotect']);
       console.log('');

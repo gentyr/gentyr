@@ -112,6 +112,8 @@ mcp__agent-reports__report_to_deputy_cto({
 - `feature/<description>` -- New functionality
 - `fix/<description>` -- Bug fixes
 - `refactor/<description>` -- Code refactoring
+- `docs/<description>` -- Documentation changes
+- `chore/<description>` -- Maintenance tasks
 
 ### Merge Chain
 

@@ -48,11 +48,11 @@ Four stages: feature, preview, staging, main. Enforced locally by root-owned hoo
 
 ### the deputy
 
-An autonomous Opus agent that reviews every commit, triages reports, spawns urgent tasks, and escalates decisions to you. Runs on a background timer. You interact through one command: `/deputy-cto`.
+An autonomous Opus agent that reviews every PR before it merges, triages reports, spawns urgent tasks, and escalates decisions to you. Runs on a background timer. You interact through one command: `/deputy-cto`.
 
 ## how it runs
 
-Tasks enter the database. The task runner assigns agents on a timer. Agents work in isolated git worktrees. Code flows through the merge chain. The deputy reviews every commit. Hooks enforce compliance on every file change. The quota monitor rotates credentials when usage hits 95%. Dead sessions revive automatically. The usage optimizer scales all cooldowns to target 90% API utilization.
+Tasks enter the database. The task runner assigns agents on a timer. Agents work in isolated git worktrees. Code flows through the merge chain. The deputy reviews every PR before it merges. Hooks enforce compliance on every file change. The quota monitor rotates credentials when usage hits 95%. Dead sessions revive automatically. The usage optimizer scales all cooldowns to target 90% API utilization.
 
 You make the decisions that matter. Automation handles everything else.
 
@@ -63,7 +63,7 @@ git clone git@github.com:gentyr/gentyr.git
 cd /path/to/project
 pnpm link ~/git/gentyr        # node_modules/gentyr -> ~/git/gentyr
 npx gentyr init --op-token <token>
-sudo npx gentyr protect
+npx gentyr protect
 ```
 
 Start Claude Code in your project and run `/setup-gentyr` to configure credentials. See [docs/SETUP-GUIDE.md](docs/SETUP-GUIDE.md) for details.
@@ -236,7 +236,7 @@ A background timer spawns agents for pending tasks every cycle. Urgent tasks dis
 
 ### code quality
 
-The compliance checker validates against framework specifications on every file change. The antipattern hunter scans for silent catches, hardcoded secrets, and disabled tests. Test failures auto-spawn the test-writer agent. Lint runs on every cycle. Every commit is reviewed by the deputy CTO before it lands.
+The compliance checker validates against framework specifications on every file change. The antipattern hunter scans for silent catches, hardcoded secrets, and disabled tests. Test failures auto-spawn the test-writer agent. Lint runs on every cycle. Every PR is reviewed by the deputy CTO before it merges. Feature branch commits pass through lint and security gates only, keeping commit latency low.
 
 ### deployment pipeline
 

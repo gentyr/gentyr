@@ -555,7 +555,28 @@ export function pruneDeadKeys(state, log) {
   const emittedAccounts = new Set();
   for (const keyId of prunedKeyIds) {
     const keyData = state.keys[keyId];
-    const email = keyData?.account_email || null;
+    let email = keyData?.account_email || null;
+
+    // If no email, try resolving from sibling keys with same account_uuid
+    if (!email && keyData?.account_uuid) {
+      for (const [, otherData] of Object.entries(state.keys)) {
+        if (otherData.account_uuid === keyData.account_uuid && otherData.account_email) {
+          email = otherData.account_email;
+          break;
+        }
+      }
+    }
+
+    // If still no email, try resolving from rotation_log history
+    if (!email) {
+      for (const entry of state.rotation_log) {
+        if (entry.key_id === keyId && entry.account_email) {
+          email = entry.account_email;
+          break;
+        }
+      }
+    }
+
     const dedupeKey = email || keyId;
 
     // Skip if we've already emitted for this account

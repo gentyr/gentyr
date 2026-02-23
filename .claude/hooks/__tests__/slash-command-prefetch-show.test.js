@@ -393,13 +393,13 @@ describe('Slash Command Prefetch - /show Integration', () => {
     }
   });
 
-  it('should have 14 total slash commands (including show and demo)', () => {
+  it('should have 16 total slash commands (including show, demo, demo-interactive, demo-auto)', () => {
     const sentinelsMatch = hookCode.match(/const SENTINELS = \{[\s\S]*?\};/);
     const sentinelsObject = sentinelsMatch[0];
 
-    // Count command definitions
+    // Count command definitions — update this number when new commands are added
     const commandCount = (sentinelsObject.match(/'[\w-]+':/g) || []).length;
-    assert.strictEqual(commandCount, 14, 'Should have 14 slash commands total');
+    assert.strictEqual(commandCount, 16, 'Should have 16 slash commands total');
   });
 
   it('should place /show handler in correct position in main()', () => {

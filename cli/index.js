@@ -6,8 +6,8 @@
  *   npx gentyr init [--op-token <token>]     # First-time project setup
  *   npx gentyr sync                          # Force sync (rebuild MCP servers + re-merge configs)
  *   npx gentyr status                        # Show installation state
- *   npx gentyr protect                       # Enable root-owned protection (requires sudo)
- *   npx gentyr unprotect                     # Disable protection (requires sudo)
+ *   npx gentyr protect                       # Enable root-owned protection (prompts for sudo internally)
+ *   npx gentyr unprotect                     # Disable protection (prompts for sudo internally)
  *   npx gentyr uninstall                     # Remove GENTYR from project
  *   npx gentyr migrate                       # Convert from .claude-framework to npm
  *   npx gentyr scaffold <name>               # Scaffold new project
@@ -45,8 +45,8 @@ Commands:
   init [--op-token <token>]   First-time project setup
   sync                        Force sync (rebuild MCP servers + re-merge configs)
   status                      Show installation state
-  protect                     Enable root-owned protection (requires sudo)
-  unprotect                   Disable protection (requires sudo)
+  protect                     Enable root-owned protection (prompts for sudo internally)
+  unprotect                   Disable protection (prompts for sudo internally)
   uninstall                   Remove GENTYR from project
   migrate                     Convert from .claude-framework to npm model
   scaffold <name>             Scaffold new project

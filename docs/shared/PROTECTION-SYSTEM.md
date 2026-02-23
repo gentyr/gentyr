@@ -32,7 +32,7 @@ GENTYR enforces a **fail-closed** security model (invariant G001): when any chec
 
 ## Layer 1: Root Ownership
 
-**Command**: `sudo npx gentyr protect`
+**Command**: `npx gentyr protect`
 
 OS-level access control that prevents agents from modifying critical files, even with shell access.
 
@@ -62,7 +62,7 @@ Because `.claude/hooks/` is not root-owned as a directory, an agent could theore
 **SessionStart check** (`gentyr-sync.js` `tamperCheck()`):
 - Runs at every interactive session start, before sync logic
 - Reads `.claude/protection-state.json`; if `protected: true`, iterates the `criticalHooks` array and calls `fs.statSync().uid` on each resolved hook path
-- Emits a `systemMessage` warning if any hook is not root-owned, prompting the user to re-run `sudo npx gentyr protect`
+- Emits a `systemMessage` warning if any hook is not root-owned, prompting the user to re-run `npx gentyr protect`
 
 ### Attack Vectors Prevented
 
@@ -175,30 +175,31 @@ For legitimate emergencies:
 
 ## Layer 4: Deputy-CTO Commit Review
 
-**File**: `.claude/hooks/pre-commit-review.js`
+**File**: `.claude/hooks/pre-commit-review.js` (v4.0 — PR-Based Review)
 
-Mandatory code review by the deputy-cto agent before any commit reaches the repository.
+Lint and security gate at commit time. Full code review by the deputy-CTO agent at PR time.
 
-### APPROVE / REJECT Flow
+### Universal Fast Path (v4.0)
 
-**First commit attempt**:
-1. Hook computes `diffHash` = SHA256 of `git diff --cached` (first 16 chars)
-2. Checks for a valid approval token matching this `diffHash`
-3. No token found → spawns deputy-cto agent with the full diff for review
-4. Exits with code 1 (commit blocked)
+All commits — feature branches and promotion pipeline alike — pass through after lint and security checks only. No deputy-CTO review is spawned at commit time. This eliminates commit-time latency while preserving full review coverage at the PR gate.
 
-**Deputy-CTO review**:
-- `mcp__deputy-cto__approve_commit({ rationale })` → writes approval token
-- `mcp__deputy-cto__reject_commit({ title, description })` → creates blocking question in deputy-cto.db
+**Commit-time checks** (unbypassable for all branches):
+1. Lint config integrity — blocks forbidden override files
+2. Git `core.hooksPath` tamper check — blocks if redirected
+3. Strict ESLint (`--max-warnings 0`) on staged `.ts`/`.tsx` files
+4. Protected branch guard — blocks direct commits to `main`, `staging`, `preview` unless `GENTYR_PROMOTION_PIPELINE=true`
+5. Pending CTO items check — blocks commits to `main` if questions or triage items are pending (G020)
 
-**Second commit attempt**:
-1. Reads approval token, verifies `diffHash` matches current staged changes
-2. Verifies token not expired (5-minute window)
-3. Consumes token (deletes file), exits with code 0 (commit allowed)
+**Post-commit flow** (feature branches):
+1. Agent pushes and creates a PR to `preview`
+2. Agent creates an urgent DEPUTY-CTO task: `assigned_by: "pr-reviewer"`
+3. Deputy-CTO reviews the PR diff via `gh pr diff`, then approves+merges or requests changes
 
-### Diff-Hash-Bound Tokens
-
-Approval tokens in `.claude/commit-approval-token.json` are bound to the exact diff hash. If the staged changes are modified between approval and commit, the hash won't match and the commit is blocked. This prevents an agent from getting approval for a safe diff, then staging additional changes before committing.
+**Deputy-CTO PR Review** (`Bash` access enabled for `gh` commands):
+- `gh pr diff <number>` — review changes
+- `gh pr review <number> --approve` or `--request-changes` — decision
+- `gh pr merge <number> --merge --delete-branch` — merge and trigger worktree cleanup
+- `gh pr edit <number> --add-label "deputy-cto-reviewed"` — always applied
 
 ### Pending Questions Block Commits
 
@@ -209,7 +210,7 @@ Approval tokens in `.claude/commit-approval-token.json` are bound to the exact d
 Branch behavior:
 - `main` or unknown → **hard block** (exit 1)
 - `staging` or `develop` → warn only
-- Feature branches → no check
+- Feature branches (`feature/*`, `fix/*`, etc.) → no check; exits immediately after lint (fast path)
 
 **G001**: If the database read fails, the hook assumes pending items exist and blocks the commit.
 
@@ -329,13 +330,15 @@ The combination means agent restrictions are **defense-in-depth**: the agent def
 
 All five layers must be defeated to extract a secret value. Compromising any single layer is insufficient.
 
-### Example 2: Agent Attempts to Self-Approve a Commit
+### Example 2: Agent Attempts to Bypass Commit Review
 
-1. **Layer 4** (Commit Review): Agent commits code; pre-commit hook requires deputy-cto approval
-2. **Layer 2** (Protected Action Gate): Agent tries to call `mcp__deputy-cto__approve_commit` directly -- this is a protected action requiring CTO approval code
-3. **Layer 2** (HMAC Verification): Agent tries to write a fake approval token to `.claude/commit-approval-token.json` -- the token requires a valid HMAC that only the protected-action-gate can produce
-4. **Layer 6** (Credential File Guard): Agent tries to read `.claude/protection-key` to compute the HMAC -- the credential file guard blocks access
-5. **Layer 1** (Root Ownership): Agent tries to modify the credential file guard to remove the block -- the hook file is root-owned
+The commit-time approval token system for commits has been removed in v4.0 (PR-Based Review). Code review now happens at PR time via the deputy-CTO agent. The relevant attack surface is now bypassing the PR-level gate:
+
+1. **Layer 4** (Commit Review): Agent commits code; pre-commit hook runs lint + security checks. No deputy-CTO spawn at commit time.
+2. **Layer 2** (Protected Action Gate): Agent tries to call `mcp__deputy-cto__approve_commit` directly to forge a PR approval — this is a protected action requiring CTO approval code
+3. **Layer 2** (HMAC Verification): Agent tries to write a fake protected-action approval — the token requires a valid HMAC that only the protected-action-gate can produce
+4. **Layer 6** (Credential File Guard): Agent tries to read `.claude/protection-key` to compute the HMAC — the credential file guard blocks access
+5. **Layer 1** (Root Ownership): Agent tries to modify the credential file guard to remove the block — the hook file is root-owned
 
 The approval chain is cryptographically bound: code → HMAC → protection key → root ownership. Breaking any link blocks the attack.
 
@@ -343,19 +346,19 @@ The approval chain is cryptographically bound: code → HMAC → protection key 
 
 ### Enable Protection
 ```bash
-sudo npx gentyr protect
+npx gentyr protect
 ```
 Sets root ownership and sticky bits on critical files and directories.
 
 ### Disable Protection
 ```bash
-sudo npx gentyr unprotect
+npx gentyr unprotect
 ```
 Removes root ownership. Use before making manual changes to protected files.
 
 ### Re-enable After Changes
 ```bash
-sudo npx gentyr protect
+npx gentyr protect
 ```
 Re-applies root ownership without reinstalling the framework.
 

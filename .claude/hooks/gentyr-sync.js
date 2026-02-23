@@ -437,7 +437,7 @@ function tamperCheck() {
   if (tampered.length > 0) {
     warn(
       `SECURITY WARNING: ${tampered.length} critical hook(s) are not root-owned: ${tampered.join(', ')}. ` +
-      'Possible tampering detected. Run "sudo npx gentyr protect" to restore protection.'
+      'Possible tampering detected. Run "npx gentyr protect" to restore protection.'
     );
   }
 }

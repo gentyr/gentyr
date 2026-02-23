@@ -904,7 +904,7 @@ function handleProductManager() {
         if (isListSection) {
           const count = pmDb.prepare('SELECT COUNT(*) as c FROM section_entries WHERE section_number = ?').get(s.section_number);
           entryCount = count?.c ?? 0;
-          populated = entryCount > 0;
+          populated = entryCount >= 3;
         } else {
           populated = !!s.content;
         }

@@ -81,7 +81,7 @@ describe('pre-commit-review.js - G001 Fail-Closed Behavior', () => {
 
       // Verify bypass check exists in main flow
       const bypassCheckIndex = hookCode.indexOf('if (hasValidBypassDecision())');
-      const ctoItemsCheckIndex = hookCode.indexOf('const ctoItemsCheck = hasPendingCtoItems()');
+      const ctoItemsCheckIndex = hookCode.indexOf('hasPendingCtoItems()');
 
       assert.ok(bypassCheckIndex !== -1, 'hasValidBypassDecision() must be called in main');
       assert.ok(ctoItemsCheckIndex !== -1, 'hasPendingCtoItems() must be called in main');
@@ -151,42 +151,22 @@ describe('pre-commit-review.js - G001 Fail-Closed Behavior', () => {
     });
   });
 
-  describe('Normal Operation Flow', () => {
-    it('should have code structure for spawning deputy-cto review', () => {
-      // Verify the code structure for normal operation (can't easily test live due to protected files)
+  describe('Universal Fast Path (v4.0 - PR-Based Review)', () => {
+    it('should approve all commits after lint and security checks pass', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      assert.match(hookCode, /function spawnDeputyCtoReview/, 'Should define spawn function');
-      assert.match(hookCode, /COMMIT PENDING: Deputy-CTO review required/, 'Should have pending message');
-      assert.match(hookCode, /spawn\('claude'/, 'Should spawn claude process');
-      assert.match(hookCode, /registerSpawn/, 'Should register agent spawn');
-      assert.match(hookCode, /Review spawned/, 'Should log spawn confirmation');
-    });
-  });
-
-  describe('Approval Token Handling', () => {
-    it('should have checkApprovalToken function with expiry and hash validation', () => {
-      // Verify the approval token logic exists
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(hookCode, /function checkApprovalToken/, 'Should define checkApprovalToken function');
-      assert.match(hookCode, /expiresAt/, 'Should check token expiry');
-      assert.match(hookCode, /diffHash/, 'Should check diff hash matches');
-      assert.match(hookCode, /return \{ valid: false, reason:/, 'Should return validation result');
+      assert.match(hookCode, /Lint and security checks passed/, 'Should log approval message');
+      assert.match(hookCode, /Code review happens at PR time/, 'Should indicate PR-based review');
     });
 
-    it('should have consumeApprovalToken function that clears token', () => {
+    it('should not contain approval token or deputy-cto spawn logic', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
-      assert.match(hookCode, /function consumeApprovalToken/, 'Should define consumeApprovalToken function');
-      assert.match(hookCode, /writeFileSync.*\{\}/, 'Should write empty object to clear token');
-    });
-
-    it('should show COMMIT PENDING message when no valid token exists', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(hookCode, /COMMIT PENDING: Deputy-CTO review required/, 'Should show commit pending message');
-      assert.match(hookCode, /process\.exit\(1\)/, 'Should reject commit when no valid token');
+      assert.doesNotMatch(hookCode, /function checkApprovalToken/, 'Should not have checkApprovalToken');
+      assert.doesNotMatch(hookCode, /function consumeApprovalToken/, 'Should not have consumeApprovalToken');
+      assert.doesNotMatch(hookCode, /function spawnDeputyCtoReview/, 'Should not have spawnDeputyCtoReview');
+      assert.doesNotMatch(hookCode, /COMMIT PENDING/, 'Should not have COMMIT PENDING message');
+      assert.doesNotMatch(hookCode, /APPROVAL_TOKEN_FILE/, 'Should not reference approval token file');
     });
   });
 
@@ -201,55 +181,6 @@ describe('pre-commit-review.js - G001 Fail-Closed Behavior', () => {
     });
   });
 
-  describe('Dynamic Cooldown Configuration', () => {
-    it('should import getCooldown from config-reader', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(
-        hookCode,
-        /import \{[\s\S]*?getCooldown[\s\S]*?\} from ['"]\.\/config-reader\.js['"]/,
-        'Must import getCooldown from config-reader.js'
-      );
-    });
-
-    it('should use getCooldown for TOKEN_EXPIRY_MS with default of 5 minutes', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(
-        hookCode,
-        /const TOKEN_EXPIRY_MS = getCooldown\(['"]pre_commit_review['"], 5\) \* 60 \* 1000/,
-        'Must use getCooldown for TOKEN_EXPIRY_MS with 5 minute default'
-      );
-    });
-
-    it('should allow usage optimizer to dynamically adjust token expiry', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      // Verify TOKEN_EXPIRY_MS is calculated from getCooldown (not a hardcoded constant)
-      assert.match(
-        hookCode,
-        /TOKEN_EXPIRY_MS = getCooldown/,
-        'TOKEN_EXPIRY_MS must be dynamically calculated'
-      );
-
-      // Verify it's not a const literal like "const TOKEN_EXPIRY_MS = 300000"
-      assert.doesNotMatch(
-        hookCode,
-        /const TOKEN_EXPIRY_MS = \d+/,
-        'TOKEN_EXPIRY_MS must not be a hardcoded number'
-      );
-    });
-
-    it('should convert cooldown from minutes to milliseconds', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(
-        hookCode,
-        /getCooldown\(['"]pre_commit_review['"], 5\) \* 60 \* 1000/,
-        'Must convert minutes to milliseconds (* 60 * 1000)'
-      );
-    });
-  });
 
   describe('Database Module Unavailable - G001 Fail-Closed', () => {
     it('should have graceful handling when better-sqlite3 is missing', () => {
@@ -326,40 +257,6 @@ describe('Helper Functions - Code Structure Tests', () => {
     });
   });
 
-  describe('checkApprovalToken()', () => {
-    it('should validate token expiry and diff hash', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(hookCode, /function checkApprovalToken\(diffHash\)/, 'Should accept diffHash parameter');
-      assert.match(hookCode, /APPROVAL_TOKEN_FILE/, 'Should check token file');
-      assert.match(hookCode, /expiresAt/, 'Should validate expiry time');
-      assert.match(hookCode, /token\.diffHash !== diffHash/, 'Should validate diff hash matches');
-      assert.match(hookCode, /return \{ valid: false/, 'Should return validation result');
-    });
-
-    it('should handle missing or invalid token file gracefully', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(hookCode, /if \(!fs\.existsSync\(APPROVAL_TOKEN_FILE\)\)/, 'Should check if token file exists');
-      assert.match(hookCode, /return \{ valid: false, reason: 'no-token' \}/, 'Should return no-token reason');
-    });
-  });
-
-  describe('consumeApprovalToken()', () => {
-    it('should clear token after successful use', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(hookCode, /function consumeApprovalToken\(\)/, 'Should define function');
-      assert.match(hookCode, /writeFileSync.*\{\}/, 'Should write empty object to consume token');
-    });
-
-    it('should handle token file errors gracefully', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(hookCode, /catch \(err\)/, 'Should catch errors');
-      assert.match(hookCode, /Warning: Could not clear token/, 'Should log warning on error');
-    });
-  });
 });
 
 describe('G001 Compliance Summary', () => {
@@ -377,9 +274,8 @@ describe('G001 Compliance Summary', () => {
     // 3. staged info error
     // 4. lint failure
     // 5. main/unknown branch + pending CTO items
-    // 6. no approval token (final reject)
 
-    assert.ok(blockingExits >= 6, `Should have at least 6 fail-closed exits, found ${blockingExits}`);
+    assert.ok(blockingExits >= 5, `Should have at least 5 fail-closed exits, found ${blockingExits}`);
   });
 
   it('should validate G001 is explicitly mentioned', () => {

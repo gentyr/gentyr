@@ -46,6 +46,8 @@ mcp__specs-browser__get_spec({ spec_id: "G004" })       // No hardcoded credenti
 - `feature/<description>` -- New functionality
 - `fix/<description>` -- Bug fixes
 - `refactor/<description>` -- Code refactoring
+- `docs/<description>` -- Documentation changes
+- `chore/<description>` -- Maintenance tasks
 
 ### Creating a Feature Branch
 
@@ -106,7 +108,7 @@ mcp__todo-db__create_task({
    Code review happens asynchronously at PR time via deputy-CTO.
    Do NOT self-merge your PR -- deputy-CTO handles review and merge.
 
-3. **If push fails (tests fail)**: Do NOT attempt to fix the failures yourself. Simply inform the user:
+4. **If push fails (tests fail)**: Do NOT attempt to fix the failures yourself. Simply inform the user:
    - "Push failed due to test failures in the pre-push hook."
    - "Claude agents have been automatically spawned in the background to fix the failing tests."
    - "The test-failure-reporter will handle resolution - no action needed from this session."

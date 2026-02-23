@@ -9,7 +9,7 @@
 #
 # DEPRECATION NOTICE:
 #   This script will be superseded by the `npx gentyr` CLI in a future release.
-#   Prefer: sudo npx gentyr sync --path /path/to/project
+#   Prefer: npx gentyr sync --path /path/to/project
 
 set -e
 
