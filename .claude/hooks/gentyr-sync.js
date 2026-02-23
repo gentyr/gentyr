@@ -74,11 +74,11 @@ function resolveFrameworkDir(dir) {
 }
 
 function resolveFrameworkRel(dir) {
-  const npmPath = path.join(dir, 'node_modules', 'gentyr');
-  try {
-    const stat = fs.lstatSync(npmPath);
-    if (stat.isSymbolicLink() || stat.isDirectory()) return 'node_modules/gentyr';
-  } catch {}
+  const resolved = resolveFrameworkDir(dir);
+  if (resolved) {
+    const rel = path.relative(dir, resolved);
+    return rel || '.';
+  }
   return '.claude-framework';
 }
 
@@ -299,7 +299,19 @@ function statBasedSync(frameworkDir) {
       })(),
       stateFilesVersion: state.stateFilesVersion || 1,
       lastSync: new Date().toISOString(),
-      installModel: frameworkRel === 'node_modules/gentyr' ? 'npm' : 'legacy',
+      installModel: (() => {
+        try {
+          const npmPath = path.join(projectDir, 'node_modules', 'gentyr');
+          const stat = fs.lstatSync(npmPath);
+          if (stat.isSymbolicLink() || stat.isDirectory()) return 'npm';
+        } catch {}
+        try {
+          const legacyPath = path.join(projectDir, '.claude-framework');
+          const stat = fs.lstatSync(legacyPath);
+          if (stat.isSymbolicLink() || stat.isDirectory()) return 'legacy';
+        } catch {}
+        return 'npm';
+      })(),
     };
     fs.writeFileSync(statePath, JSON.stringify(newState, null, 2) + '\n');
   } catch {}

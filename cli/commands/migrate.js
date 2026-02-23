@@ -46,7 +46,7 @@ export default async function migrate() {
   }
 
   const frameworkDir = fs.realpathSync(npmPath);
-  const frameworkRel = 'node_modules/gentyr';
+  const frameworkRel = path.relative(projectDir, frameworkDir);
   const agents = getFrameworkAgents(frameworkDir);
 
   console.log(`${GREEN}Migrating from .claude-framework to node_modules/gentyr...${NC}`);
