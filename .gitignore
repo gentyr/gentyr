@@ -25,6 +25,8 @@ TEST_COVERAGE_REPORT.md
 .claude/settings.local.json
 .claude/protected-action-approvals.json
 .claude/state/
+.claude/worktrees/
+.claude/playwright-health.json
 
 # MCP configuration (user-specific, use template)
 .mcp.json
@@ -59,6 +61,9 @@ op-secrets.conf
 
 # Project-specific CLAUDE.md sections (makerkit is project-specific, gentyr-section is tracked)
 CLAUDE.md.makerkit-section
+
+# Local plugins (gitignored — project-specific integrations, never published)
+plugins/
 
 # OS
 .DS_Store

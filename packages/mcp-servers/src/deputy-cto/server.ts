@@ -225,7 +225,7 @@ function initializeDatabase(): Database.Database {
   // Run cleanup on startup to prevent unbounded database growth
   // This is safe to call on every startup (idempotent)
   const cleanup = cleanupOldRecordsInternal(db);
-  if (cleanup.commit_decisions_deleted > 0 || cleanup.cleared_questions_deleted > 0) {
+  if (cleanup.commit_decisions_deleted > 0 || cleanup.cleared_questions_deleted > 0 || cleanup.bypass_requests_expired > 0) {
     console.error(`[deputy-cto] Startup cleanup: ${cleanup.message}`);
   }
 
@@ -262,6 +262,8 @@ function getPendingRejectionCount(): number {
 
 function getPendingCount(): number {
   const db = getDb();
+  // Expire stale bypass requests before counting to prevent dead agents from blocking commits
+  expireStaleBypassRequests(db);
   const result = db.prepare(
     "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
   ).get() as CountResult;
@@ -528,6 +530,23 @@ function clearQuestion(args: ClearQuestionArgs): ClearQuestionResult | ErrorResu
 
 // Token expires after 5 minutes
 const TOKEN_EXPIRY_MS = 5 * 60 * 1000;
+
+// Bypass requests expire after 1 hour (stale requests from dead agents)
+const BYPASS_REQUEST_TTL_S = 3600;
+
+/**
+ * Expire stale bypass-request questions that have been pending beyond the TTL.
+ * These are requests from agents that have since terminated without cleanup.
+ */
+function expireStaleBypassRequests(db: Database.Database): number {
+  const cutoff = Math.floor(Date.now() / 1000) - BYPASS_REQUEST_TTL_S;
+  const result = db.prepare(`
+    DELETE FROM questions
+    WHERE type = 'bypass-request' AND status = 'pending'
+    AND created_timestamp < ?
+  `).run(cutoff);
+  return result.changes;
+}
 const APPROVAL_TOKEN_PATH = path.join(PROJECT_DIR, '.claude', 'commit-approval-token.json');
 
 function approveCommit(args: ApproveCommitArgs): ApproveCommitResult {
@@ -887,6 +906,9 @@ function searchClearedItems(args: SearchClearedItemsArgs): SearchClearedItemsRes
  * - Keep at least 500 most recent cleared questions (even if < 30 days old)
  */
 function cleanupOldRecordsInternal(db: Database.Database): CleanupOldRecordsResult {
+  // Expire stale bypass-request questions (dead agent cleanup)
+  const bypassExpired = expireStaleBypassRequests(db);
+
   // Clean commit_decisions: keep only last 100
   const commitDecisionsResult = db.prepare(`
     DELETE FROM commit_decisions WHERE id NOT IN (
@@ -906,18 +928,23 @@ function cleanupOldRecordsInternal(db: Database.Database): CleanupOldRecordsResu
 
   const commitDeleted = commitDecisionsResult.changes;
   const clearedDeleted = clearedQuestionsResult.changes;
-  const totalDeleted = commitDeleted + clearedDeleted;
+  const totalDeleted = commitDeleted + clearedDeleted + bypassExpired;
 
   let message: string;
   if (totalDeleted === 0) {
     message = 'No old records found to clean up. Database is within retention limits.';
   } else {
-    message = `Cleaned up ${totalDeleted} old record(s): ${commitDeleted} commit decision(s), ${clearedDeleted} cleared question(s).`;
+    const parts: string[] = [];
+    if (commitDeleted > 0) parts.push(`${commitDeleted} commit decision(s)`);
+    if (clearedDeleted > 0) parts.push(`${clearedDeleted} cleared question(s)`);
+    if (bypassExpired > 0) parts.push(`${bypassExpired} stale bypass request(s)`);
+    message = `Cleaned up ${totalDeleted} old record(s): ${parts.join(', ')}.`;
   }
 
   return {
     commit_decisions_deleted: commitDeleted,
     cleared_questions_deleted: clearedDeleted,
+    bypass_requests_expired: bypassExpired,
     message,
   };
 }
@@ -1105,6 +1132,9 @@ function generateBypassCode(): string {
 function requestBypass(args: RequestBypassArgs): RequestBypassResult {
   const db = getDb();
 
+  // Self-clean stale bypass requests before rate-limit check
+  expireStaleBypassRequests(db);
+
   // Rate limit: max 3 pending bypass requests at a time
   const pendingBypasses = db.prepare(
     "SELECT COUNT(*) as count FROM questions WHERE type = 'bypass-request' AND status = 'pending'"
@@ -1133,9 +1163,11 @@ ${args.blocked_by ? `**Blocked by:** ${args.blocked_by}` : ''}
 ---
 
 **CTO Action Required:**
-To approve this bypass, type exactly: **APPROVE BYPASS ${bypassCode}**
+To approve: **APPROVE BYPASS ${bypassCode}**
+To deny: **DENY BYPASS ${bypassCode}**
 
-This will create an approval token that allows the agent to execute the bypass.`;
+Approving creates an approval token that allows the agent to execute the bypass.
+Denying removes the request from the queue.`;
 
   // Store bypass code in context field for validation
   db.prepare(`

@@ -16,6 +16,7 @@ import type { DeploymentsData, DeploymentEntry } from '../utils/deployments-read
 export interface InfraSectionProps {
   data: InfraData;
   deployments?: DeploymentsData;
+  tip?: string;
 }
 
 function providerColor(available: boolean, hasIssues: boolean): string {
@@ -47,7 +48,7 @@ function EventRow({ deploy }: { deploy: DeploymentEntry }): React.ReactElement {
   );
 }
 
-export function InfraSection({ data, deployments }: InfraSectionProps): React.ReactElement | null {
+export function InfraSection({ data, deployments, tip }: InfraSectionProps): React.ReactElement | null {
   if (!data.hasData) return null;
 
   const renderColor = providerColor(data.render.available, data.render.suspendedCount > 0);
@@ -63,7 +64,7 @@ export function InfraSection({ data, deployments }: InfraSectionProps): React.Re
   const vercelDeploys = deployments?.vercel.recentDeploys.slice(0, 3) || [];
 
   return (
-    <Section title="INFRASTRUCTURE" borderColor="magenta" width="100%">
+    <Section title="INFRASTRUCTURE" borderColor="magenta" width="100%" tip={tip}>
       <Box flexDirection="column">
         {/* Provider summary — single-line per provider for clean alignment */}
         <Box flexDirection="row">

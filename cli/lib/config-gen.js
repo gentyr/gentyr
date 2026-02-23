@@ -66,6 +66,41 @@ export function generateMcpJson(projectDir, frameworkDir, frameworkRel, opts = {
     return;
   }
 
+  // When generating for the gentyr repo itself, add plugin-manager + installed plugins
+  const isGentyrRepo = path.resolve(projectDir) === path.resolve(frameworkDir);
+  if (isGentyrRepo) {
+    try {
+      const mcpConfig = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+      mcpConfig.mcpServers = mcpConfig.mcpServers || {};
+
+      mcpConfig.mcpServers['plugin-manager'] = {
+        command: 'node',
+        args: [`${frameworkDir}/packages/mcp-servers/dist/plugin-manager/server.js`],
+        env: { GENTYR_DIR: frameworkDir },
+      };
+
+      // Discover installed plugins by checking for dist/server.js
+      const pluginsDir = path.join(frameworkDir, 'plugins');
+      if (fs.existsSync(pluginsDir)) {
+        for (const pluginName of fs.readdirSync(pluginsDir)) {
+          const serverPath = path.join(pluginsDir, pluginName, 'dist', 'server.js');
+          if (fs.existsSync(serverPath)) {
+            mcpConfig.mcpServers[`plugin-${pluginName}`] = {
+              command: 'node',
+              args: [serverPath],
+              env: { GENTYR_DIR: frameworkDir },
+            };
+          }
+        }
+      }
+
+      fs.writeFileSync(outputPath, JSON.stringify(mcpConfig, null, 2) + '\n');
+      console.log('  Added plugin-manager and discovered plugins to .mcp.json');
+    } catch (err) {
+      console.log(`  Warning: could not add plugin-manager to .mcp.json: ${err.message}`);
+    }
+  }
+
   // Inject OP token
   const token = opts.opToken || existingOpToken;
   if (token) {

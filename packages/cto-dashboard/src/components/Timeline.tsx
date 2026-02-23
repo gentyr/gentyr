@@ -12,6 +12,7 @@ export interface TimelineProps {
   maxEvents?: number;
   title?: string;
   hours?: number;
+  tip?: string;
 }
 
 export function Timeline({
@@ -19,6 +20,7 @@ export function Timeline({
   maxEvents = 20,
   title,
   hours = 24,
+  tip,
 }: TimelineProps): React.ReactElement {
   // Sort by timestamp descending (most recent first)
   const sortedEvents = [...events]
@@ -28,7 +30,7 @@ export function Timeline({
   const displayTitle = title || `TIMELINE (${hours}h)`;
 
   return (
-    <Section title={displayTitle} borderColor="blue">
+    <Section title={displayTitle} borderColor="blue" tip={tip}>
       {sortedEvents.length === 0 ? (
         <Text color="gray">No events in the last {hours} hours</Text>
       ) : (

@@ -359,23 +359,25 @@ describe('Deputy-CTO Server', () => {
     title: string;
     description: string;
     status?: string;
+    context?: string;
+    created_timestamp?: number;
   }) => {
     const id = randomUUID();
-    const now = new Date();
-    const created_at = now.toISOString();
-    const created_timestamp = Math.floor(now.getTime() / 1000);
+    const ts = args.created_timestamp ?? Math.floor(Date.now() / 1000);
+    const created_at = new Date(ts * 1000).toISOString();
 
     db.prepare(`
-      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO questions (id, type, status, title, description, context, created_at, created_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       args.type,
       args.status ?? 'pending',
       args.title,
       args.description,
+      args.context ?? null,
       created_at,
-      created_timestamp
+      ts
     );
 
     return id;
@@ -2183,6 +2185,201 @@ describe('Deputy-CTO Server', () => {
         const result = getPendingCountTool();
         expect(result.pending_count).toBe(1);
         expect(result.commits_blocked).toBe(true);
+      });
+    });
+
+    describe('Bypass Request TTL', () => {
+      // TTL constant matching server.ts BYPASS_REQUEST_TTL_S
+      const BYPASS_REQUEST_TTL_S = 3600;
+
+      // Helper mirroring expireStaleBypassRequests logic
+      const expireStaleBypassRequests = (): number => {
+        const cutoff = Math.floor(Date.now() / 1000) - BYPASS_REQUEST_TTL_S;
+        const result = db.prepare(`
+          DELETE FROM questions
+          WHERE type = 'bypass-request' AND status = 'pending'
+          AND created_timestamp < ?
+        `).run(cutoff);
+        return result.changes;
+      };
+
+      // Helper mirroring cleanupOldRecords + bypass expiry
+      const cleanupOldRecords = () => {
+        const bypassExpired = expireStaleBypassRequests();
+
+        const commitDecisionsResult = db.prepare(`
+          DELETE FROM commit_decisions WHERE id NOT IN (
+            SELECT id FROM commit_decisions ORDER BY created_timestamp DESC LIMIT 100
+          )
+        `).run();
+
+        const thirtyDaysAgo = Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60);
+        const clearedQuestionsResult = db.prepare(`
+          DELETE FROM cleared_questions
+          WHERE cleared_timestamp < ?
+          AND id NOT IN (
+            SELECT id FROM cleared_questions ORDER BY cleared_timestamp DESC LIMIT 500
+          )
+        `).run(thirtyDaysAgo);
+
+        return {
+          commit_decisions_deleted: commitDecisionsResult.changes,
+          cleared_questions_deleted: clearedQuestionsResult.changes,
+          bypass_requests_expired: bypassExpired,
+          message: '',
+        };
+      };
+
+      // Helper mirroring getPendingCount with bypass expiry
+      const getPendingCount = (): number => {
+        expireStaleBypassRequests();
+        const result = db.prepare(
+          "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
+        ).get() as { count: number };
+        return result.count;
+      };
+
+      it('should expire stale bypass-requests during cleanup', () => {
+        const twoHoursAgo = Math.floor(Date.now() / 1000) - 7200;
+
+        insertQuestionDirectly({
+          type: 'bypass-request',
+          title: 'Stale bypass',
+          description: 'From dead agent',
+          status: 'pending',
+          created_timestamp: twoHoursAgo,
+        });
+
+        const result = cleanupOldRecords();
+
+        expect(result.bypass_requests_expired).toBe(1);
+
+        // Verify the row was deleted
+        const count = db.prepare(
+          "SELECT COUNT(*) as count FROM questions WHERE type = 'bypass-request'"
+        ).get() as { count: number };
+        expect(count.count).toBe(0);
+      });
+
+      it('should preserve recent bypass-requests during cleanup', () => {
+        const thirtyMinAgo = Math.floor(Date.now() / 1000) - 1800;
+
+        insertQuestionDirectly({
+          type: 'bypass-request',
+          title: 'Recent bypass',
+          description: 'Still active agent',
+          status: 'pending',
+          created_timestamp: thirtyMinAgo,
+        });
+
+        const result = cleanupOldRecords();
+
+        expect(result.bypass_requests_expired).toBe(0);
+
+        // Verify the row still exists
+        const count = db.prepare(
+          "SELECT COUNT(*) as count FROM questions WHERE type = 'bypass-request'"
+        ).get() as { count: number };
+        expect(count.count).toBe(1);
+      });
+
+      it('should self-clean stale requests before rate-limit in requestBypass', () => {
+        const twoHoursAgo = Math.floor(Date.now() / 1000) - 7200;
+
+        // Insert 3 stale bypass requests (would hit rate limit)
+        for (let i = 0; i < 3; i++) {
+          insertQuestionDirectly({
+            type: 'bypass-request',
+            title: `Stale bypass ${i}`,
+            description: `From dead agent ${i}`,
+            status: 'pending',
+            created_timestamp: twoHoursAgo,
+          });
+        }
+
+        // Verify they exist before cleanup
+        const beforeCount = db.prepare(
+          "SELECT COUNT(*) as count FROM questions WHERE type = 'bypass-request' AND status = 'pending'"
+        ).get() as { count: number };
+        expect(beforeCount.count).toBe(3);
+
+        // Expire them (simulating what requestBypass does before rate-limit check)
+        expireStaleBypassRequests();
+
+        // Verify they're gone
+        const afterCount = db.prepare(
+          "SELECT COUNT(*) as count FROM questions WHERE type = 'bypass-request' AND status = 'pending'"
+        ).get() as { count: number };
+        expect(afterCount.count).toBe(0);
+      });
+
+      it('should exclude expired bypass-requests from getPendingCount', () => {
+        const twoHoursAgo = Math.floor(Date.now() / 1000) - 7200;
+
+        // Insert one expired bypass-request
+        insertQuestionDirectly({
+          type: 'bypass-request',
+          title: 'Expired bypass',
+          description: 'From dead agent',
+          status: 'pending',
+          created_timestamp: twoHoursAgo,
+        });
+
+        // Insert one fresh decision question
+        insertQuestionDirectly({
+          type: 'decision',
+          title: 'Fresh question',
+          description: 'Still relevant',
+          status: 'pending',
+        });
+
+        const count = getPendingCount();
+
+        // Should only count the fresh decision, not the expired bypass-request
+        expect(count).toBe(1);
+      });
+
+      it('should not expire answered bypass-requests', () => {
+        const twoHoursAgo = Math.floor(Date.now() / 1000) - 7200;
+
+        insertQuestionDirectly({
+          type: 'bypass-request',
+          title: 'Old but answered bypass',
+          description: 'CTO handled this',
+          status: 'answered',
+          created_timestamp: twoHoursAgo,
+        });
+
+        const expired = expireStaleBypassRequests();
+
+        expect(expired).toBe(0);
+
+        // Verify it still exists
+        const count = db.prepare(
+          "SELECT COUNT(*) as count FROM questions WHERE type = 'bypass-request'"
+        ).get() as { count: number };
+        expect(count.count).toBe(1);
+      });
+
+      it('should not expire non-bypass-request questions', () => {
+        const twoHoursAgo = Math.floor(Date.now() / 1000) - 7200;
+
+        insertQuestionDirectly({
+          type: 'decision',
+          title: 'Old decision',
+          description: 'Still waiting for CTO',
+          status: 'pending',
+          created_timestamp: twoHoursAgo,
+        });
+
+        const expired = expireStaleBypassRequests();
+
+        expect(expired).toBe(0);
+
+        const count = db.prepare(
+          "SELECT COUNT(*) as count FROM questions WHERE type = 'decision'"
+        ).get() as { count: number };
+        expect(count.count).toBe(1);
       });
     });
 

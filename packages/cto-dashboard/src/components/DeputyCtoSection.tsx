@@ -17,6 +17,7 @@ import type { DeputyCtoData, TriagedReport, PendingQuestion, AnsweredQuestion } 
 
 export interface DeputyCtoSectionProps {
   data: DeputyCtoData;
+  tip?: string;
 }
 
 function truncate(str: string, maxLen: number): string {
@@ -256,7 +257,7 @@ function Divider(): React.ReactElement {
 // Main Component
 // ────────────────────────────────────────────────────────────────
 
-export function DeputyCtoSection({ data }: DeputyCtoSectionProps): React.ReactElement | null {
+export function DeputyCtoSection({ data, tip }: DeputyCtoSectionProps): React.ReactElement | null {
   if (!data.hasData) return null;
 
   const hasUntriaged = data.untriaged.length > 0;
@@ -268,7 +269,7 @@ export function DeputyCtoSection({ data }: DeputyCtoSectionProps): React.ReactEl
   const hasHistory = hasRecentlyTriaged || hasAnsweredQuestions;
 
   return (
-    <Section title="DEPUTY CTO" borderColor="yellow">
+    <Section title="DEPUTY CTO" borderColor="yellow" tip={tip}>
       <Box flexDirection="column">
         {/* Summary metric boxes */}
         <SummaryMetrics data={data} />

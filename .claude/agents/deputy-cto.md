@@ -21,6 +21,7 @@ allowedTools:
   - mcp__todo-db__list_tasks
   - mcp__playwright__preflight_check
   - mcp__playwright__launch_ui_mode
+  - mcp__playwright__run_auth_setup
   - mcp__product-manager__approve_analysis
   - mcp__product-manager__get_analysis_status
   - mcp__product-manager__get_compliance_report
@@ -111,6 +112,8 @@ When the user requests a demo, follow the preflight-gated protocol:
 - Never skip `preflight_check` — Playwright GUI can open but show zero tests (silent failure)
 - Never use `npx playwright` via Bash — bypasses 1Password credential injection
 - Never report a successful demo launch without preflight passing first
+
+**Playwright Auth Repair Tasks**: When assigned an urgent "Repair Playwright environment" task with an `auth_state` failure, call `mcp__playwright__run_auth_setup()` directly. Verify `success: true` and `auth_files_refreshed` contains all 4 persona files. If it fails, create an urgent `INVESTIGATOR & PLANNER` task with the full error output to diagnose why auth-setup is failing.
 
 ## Executive Decisions
 

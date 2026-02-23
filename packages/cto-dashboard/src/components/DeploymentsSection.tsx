@@ -13,6 +13,7 @@ import type { DeploymentsData, DeploymentEntry, DeployEnvironment } from '../uti
 
 export interface DeploymentsSectionProps {
   data: DeploymentsData;
+  tip?: string;
 }
 
 function statusColor(status: string): string {
@@ -179,11 +180,11 @@ function DeployStats({ stats }: { stats: DeploymentsData['stats'] }): React.Reac
 
 // ─── Main Section ────────────────────────────────────────────────────────
 
-export function DeploymentsSection({ data }: DeploymentsSectionProps): React.ReactElement | null {
+export function DeploymentsSection({ data, tip }: DeploymentsSectionProps): React.ReactElement | null {
   if (!data.hasData) return null;
 
   return (
-    <Section title="DEPLOYMENTS" borderColor="blue" width="100%">
+    <Section title="DEPLOYMENTS" borderColor="blue" width="100%" tip={tip}>
       <Box flexDirection="column">
         {/* Per-environment health overview */}
         <EnvironmentHealth data={data} localDevCount={data.pipeline.localDevCount} />

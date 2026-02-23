@@ -14,6 +14,7 @@ import type { ProductManagerData } from '../utils/product-manager-reader.js';
 
 export interface ProductManagerSectionProps {
   data: ProductManagerData;
+  tip?: string;
 }
 
 function statusColor(status: string): string {
@@ -48,18 +49,18 @@ function ComplianceBar({ pct, mapped, total }: { pct: number; mapped: number; to
   );
 }
 
-export function ProductManagerSection({ data }: ProductManagerSectionProps): React.ReactElement {
+export function ProductManagerSection({ data, tip }: ProductManagerSectionProps): React.ReactElement {
   // Not started state
   if (!data.hasData || data.status === 'not_started') {
     return (
-      <Section title="PRODUCT-MARKET FIT" borderColor="magenta">
+      <Section title="PRODUCT-MARKET FIT" borderColor="magenta" tip={tip}>
         <Text color="gray">No PMF analysis initiated. Use /product-manager to start.</Text>
       </Section>
     );
   }
 
   return (
-    <Section title={`PRODUCT-MARKET FIT (${data.sections_populated}/${data.total_sections})`} borderColor="magenta">
+    <Section title={`PRODUCT-MARKET FIT (${data.sections_populated}/${data.total_sections})`} borderColor="magenta" tip={tip}>
       <Box flexDirection="column">
         {/* Status row */}
         <Box>

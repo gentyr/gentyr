@@ -345,7 +345,7 @@ describe('pruneDeadKeys() - behavioral logic', () => {
     }
     const prunedSet = new Set(prunedKeyIds);
     state.rotation_log = state.rotation_log.filter(
-      entry => !entry.key_id || !prunedSet.has(entry.key_id)
+      entry => !entry.key_id || !prunedSet.has(entry.key_id) || entry.event === 'account_auth_failed'
     );
 
     assert.ok(!state.keys['stale-invalid'], 'Pruned key must be removed from state.keys');
@@ -506,7 +506,7 @@ describe('pruneDeadKeys() - behavioral logic', () => {
     ];
 
     const filtered = rotation_log.filter(
-      entry => !entry.key_id || !prunedSet.has(entry.key_id)
+      entry => !entry.key_id || !prunedSet.has(entry.key_id) || entry.event === 'account_auth_failed'
     );
 
     assert.strictEqual(filtered.length, 2, 'Must only remove log entries for pruned keys');
@@ -533,6 +533,83 @@ describe('pruneDeadKeys() - behavioral logic', () => {
     }
 
     assert.strictEqual(prunedKeyIds.length, 0, 'pruneDeadKeys must handle empty state.keys without error');
+  });
+});
+
+// ============================================================================
+// pruneDeadKeys() — account_auth_failed event emission & preservation
+// ============================================================================
+
+describe('pruneDeadKeys() - account_auth_failed event emission', () => {
+  it('should emit account_auth_failed via logRotationEvent before deleting invalid keys', () => {
+    const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+    const pruneMatch = code.match(/function pruneDeadKeys[\s\S]*?\n\}/);
+    assert.ok(pruneMatch, 'pruneDeadKeys function must be defined');
+    const pruneBody = pruneMatch[0];
+
+    // account_auth_failed must appear BEFORE the delete loop
+    const authFailedIdx = pruneBody.indexOf("'account_auth_failed'");
+    const deleteIdx = pruneBody.indexOf('delete state.keys[keyId]');
+    assert.ok(authFailedIdx > -1, 'pruneDeadKeys must emit account_auth_failed event');
+    assert.ok(deleteIdx > -1, 'pruneDeadKeys must delete pruned keys');
+    assert.ok(
+      authFailedIdx < deleteIdx,
+      'account_auth_failed must be emitted BEFORE keys are deleted from state.keys'
+    );
+  });
+
+  it('should include account_email in the account_auth_failed event', () => {
+    const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+    const pruneMatch = code.match(/function pruneDeadKeys[\s\S]*?\n\}/);
+    assert.ok(pruneMatch, 'pruneDeadKeys function must be defined');
+    const pruneBody = pruneMatch[0];
+
+    assert.match(
+      pruneBody,
+      /event:\s*['"]account_auth_failed['"][\s\S]*?account_email/,
+      'account_auth_failed event must include account_email field'
+    );
+  });
+
+  it('should preserve account_auth_failed entries in the rotation_log filter', () => {
+    const prunedSet = new Set(['pruned-key-1']);
+
+    const rotation_log = [
+      { key_id: 'pruned-key-1', event: 'key_removed' },
+      { key_id: 'pruned-key-1', event: 'account_auth_failed' },
+      { key_id: 'keeper-key', event: 'key_switched' },
+      { key_id: null, event: 'system_event' },
+    ];
+
+    const filtered = rotation_log.filter(
+      entry => !entry.key_id || !prunedSet.has(entry.key_id) || entry.event === 'account_auth_failed'
+    );
+
+    assert.strictEqual(filtered.length, 3, 'Must preserve account_auth_failed for pruned keys');
+    assert.ok(
+      filtered.some(e => e.key_id === 'pruned-key-1' && e.event === 'account_auth_failed'),
+      'account_auth_failed entry for pruned key must be retained'
+    );
+    assert.ok(
+      !filtered.some(e => e.key_id === 'pruned-key-1' && e.event === 'key_removed'),
+      'key_removed entry for pruned key must still be removed'
+    );
+  });
+
+  it('should use logRotationEvent to emit account_auth_failed (not manual push)', () => {
+    const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+    const pruneMatch = code.match(/function pruneDeadKeys[\s\S]*?\n\}/);
+    assert.ok(pruneMatch, 'pruneDeadKeys function must be defined');
+    const pruneBody = pruneMatch[0];
+
+    assert.match(
+      pruneBody,
+      /logRotationEvent\(state,\s*\{[\s\S]*?event:\s*['"]account_auth_failed['"]/,
+      'pruneDeadKeys must use logRotationEvent() to emit account_auth_failed'
+    );
   });
 });
 

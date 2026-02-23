@@ -1011,6 +1011,52 @@ function handleDemo() {
   }
   output.gathered.testCounts = testCounts;
 
+  // Fast path: read cached health signal from SessionStart hook
+  const healthFile = path.join(PROJECT_DIR, '.claude', 'playwright-health.json');
+  let authCheckedFromCache = false;
+  if (fs.existsSync(healthFile)) {
+    try {
+      const cached = JSON.parse(fs.readFileSync(healthFile, 'utf-8'));
+      const cacheAge = Date.now() - new Date(cached.checkedAt).getTime();
+      if (cacheAge < 3_600_000) { // 1 hour
+        output.gathered.authState = cached.authState;
+        output.gathered.extensionBuilt = cached.extensionBuilt;
+        authCheckedFromCache = true;
+      }
+    } catch { /* ignore — fall through to manual checks */ }
+  }
+
+  // Auth state freshness (manual check if cache miss)
+  if (!authCheckedFromCache) {
+    const authDir = path.join(PROJECT_DIR, '.auth');
+    const primaryAuth = path.join(authDir, 'vendor-owner.json');
+    let authState = { exists: false, ageHours: null, cookiesExpired: false, isStale: true };
+
+    if (fs.existsSync(primaryAuth)) {
+      try {
+        const stat = fs.statSync(primaryAuth);
+        const ageMs = Date.now() - stat.mtimeMs;
+        const ageHours = ageMs / (1000 * 60 * 60);
+
+        let cookiesExpired = false;
+        try {
+          const state = JSON.parse(fs.readFileSync(primaryAuth, 'utf-8'));
+          const now = Date.now() / 1000;
+          const cookies = state.cookies || [];
+          cookiesExpired = cookies.some(c => c.expires && c.expires > 0 && c.expires < now);
+        } catch { /* ignore */ }
+
+        authState = {
+          exists: true,
+          ageHours: Math.round(ageHours * 10) / 10,
+          cookiesExpired,
+          isStale: cookiesExpired || ageHours > 24,
+        };
+      } catch { /* ignore */ }
+    }
+    output.gathered.authState = authState;
+  }
+
   // Summary: critical issues
   const criticalIssues = [];
   if (!output.gathered.configExists) criticalIssues.push('playwright.config.ts not found');

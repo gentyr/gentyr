@@ -18,6 +18,7 @@ import type { TestingData, FailingSuite } from '../utils/testing-reader.js';
 
 export interface TestingSectionProps {
   data: TestingData;
+  tip?: string;
 }
 
 // Sparkline block characters (8 levels)
@@ -93,7 +94,7 @@ function FailingSuiteRow({ suite }: { suite: FailingSuite }): React.ReactElement
   );
 }
 
-export function TestingSection({ data }: TestingSectionProps): React.ReactElement | null {
+export function TestingSection({ data, tip }: TestingSectionProps): React.ReactElement | null {
   if (!data.hasData) return null;
 
   const hasFailingSuites = data.failingSuites.length > 0;
@@ -104,7 +105,7 @@ export function TestingSection({ data }: TestingSectionProps): React.ReactElemen
   const hasSummaryMetrics = hasAgentActivity || data.suitesFixedRecently > 0 || data.uniqueFailureSignatures24h > 0;
 
   return (
-    <Section title="TESTING" borderColor="red" width="100%">
+    <Section title="TESTING" borderColor="red" width="100%" tip={tip}>
       <Box flexDirection="column">
         {/* Failing suites */}
         {hasFailingSuites && (

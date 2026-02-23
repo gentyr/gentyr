@@ -402,17 +402,23 @@ function getAggregateQuota() {
 
     // Group by account_uuid to deduplicate same-account tokens
     const accountMap = new Map();
+    const activeKey = state.active_key_id ? state.keys[state.active_key_id] : null;
+    const activeAccountUuid = activeKey?.account_uuid || null;
 
-    for (const keyData of Object.values(state.keys)) {
+    for (const [keyId, keyData] of Object.entries(state.keys)) {
       if ((keyData.status === 'active' || keyData.status === 'exhausted') && keyData.last_usage) {
         const dedupeKey = keyData.account_uuid || `fp:${keyData.last_usage.seven_day}:${keyData.last_usage.seven_day_sonnet}`;
+        const isActiveKey = keyId === state.active_key_id;
         if (!accountMap.has(dedupeKey)) {
           accountMap.set(dedupeKey, {
             email: keyData.account_email || null,
             fiveHour: keyData.last_usage.five_hour || 0,
             sevenDay: keyData.last_usage.seven_day || 0,
             sevenDaySonnet: keyData.last_usage.seven_day_sonnet || 0,
+            isActive: isActiveKey || (activeAccountUuid && keyData.account_uuid === activeAccountUuid),
           });
+        } else if (isActiveKey) {
+          accountMap.get(dedupeKey).isActive = true;
         }
       }
     }
@@ -426,8 +432,9 @@ function getAggregateQuota() {
       for (const [uuidKey, uuidEntry] of accountMap) {
         if (uuidKey.startsWith('fp:') || !uuidEntry.email) continue;
         if (uuidEntry.sevenDay === fpEntry.sevenDay && uuidEntry.sevenDaySonnet === fpEntry.sevenDaySonnet) {
-          // Same account — take the higher fiveHour value
+          // Same account — take the higher fiveHour value and transfer isActive
           uuidEntry.fiveHour = Math.max(uuidEntry.fiveHour, fpEntry.fiveHour);
+          if (fpEntry.isActive) uuidEntry.isActive = true;
           accountMap.delete(fpKey);
           break;
         }
@@ -606,7 +613,8 @@ async function main() {
       if (aggregateQuota.accounts) {
         const accountParts = aggregateQuota.accounts.map(a => {
           const label = a.email || 'unknown';
-          return `${label} (${Math.round(a.fiveHour)}% 5h)`;
+          const display = a.isActive ? `[${label}]` : label;
+          return `${display} (${Math.round(a.fiveHour)}% 5h)`;
         });
         lines.push(`Accounts: ${accountParts.join(' | ')}`);
       }

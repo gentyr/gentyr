@@ -14,6 +14,7 @@ import type { TrajectoryResult } from '../utils/trajectory.js';
 
 export interface UsageTrendsProps {
   trajectory: TrajectoryResult;
+  tip?: string;
 }
 
 /**
@@ -90,7 +91,7 @@ function generateProjectionPoints(
   return points;
 }
 
-export function UsageTrends({ trajectory }: UsageTrendsProps): React.ReactElement | null {
+export function UsageTrends({ trajectory, tip }: UsageTrendsProps): React.ReactElement | null {
   const { snapshots, hasData } = trajectory;
 
   if (!hasData || snapshots.length === 0) {
@@ -152,7 +153,7 @@ export function UsageTrends({ trajectory }: UsageTrendsProps): React.ReactElemen
   const forecastXLabels = [formatTimeAgo(firstTime), 'now', resetLabel];
 
   return (
-    <Section title="USAGE TRENDS" borderColor="blue" width="100%">
+    <Section title="USAGE TRENDS" borderColor="blue" width="100%" tip={tip}>
       <Box flexDirection="column" gap={1}>
         {/* 5-Hour Usage Chart */}
         <Box flexDirection="column">
