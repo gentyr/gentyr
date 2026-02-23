@@ -29,7 +29,7 @@ export type ValidSection = (typeof VALID_SECTIONS)[number];
  * Agents self-report identity via assigned_by. Not in list = no restriction.
  */
 export const SECTION_CREATOR_RESTRICTIONS: Partial<Record<ValidSection, readonly string[]>> = {
-  'DEPUTY-CTO': ['deputy-cto', 'cto', 'human', 'demo'],
+  'DEPUTY-CTO': ['deputy-cto', 'cto', 'human', 'demo', 'pr-reviewer'],
 } as const;
 
 /**

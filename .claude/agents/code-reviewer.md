@@ -84,20 +84,27 @@ Once you've finished all the current code review you need to do:
 
    **E2E verification (optional):** Before committing UI changes, consider running `mcp__playwright__run_tests` to verify E2E tests still pass.
 
-2. **Push (if >24 hours since last push)**: After committing, check if it's been more than 24 hours since the last push to remote:
+2. **Push**: After committing, push immediately and create a PR:
 ```bash
-# Push to the CURRENT branch (feature branch), never directly to main/staging/preview
-CURRENT_BRANCH=$(git branch --show-current)
-LAST_PUSH_TIME=$(git log "origin/${CURRENT_BRANCH}..HEAD" --format=%ct 2>/dev/null | tail -1)
-if [ -n "$LAST_PUSH_TIME" ]; then
-  NOW=$(date +%s)
-  HOURS_SINCE=$(( ($NOW - $LAST_PUSH_TIME) / 3600 ))
-  if [ $HOURS_SINCE -ge 24 ]; then
-    echo "Pushing (oldest unpushed commit is ${HOURS_SINCE} hours old)..."
-    git push -u origin HEAD
-  fi
-fi
+git push -u origin HEAD
+gh pr create --base preview --head "$(git branch --show-current)" \
+  --title "Code review checkpoint" --body "Automated code-reviewer checkpoint" 2>/dev/null || true
 ```
+
+3. **Request PR review**: Create an urgent DEPUTY-CTO task to trigger immediate review:
+```javascript
+mcp__todo-db__create_task({
+  section: "DEPUTY-CTO",
+  title: "Review PR: Code review checkpoint",
+  description: "Review and merge PR from <branch> to preview. Run gh pr diff <number>, review for security/architecture/quality, then approve+merge or request changes.",
+  assigned_by: "pr-reviewer",
+  priority: "urgent"
+})
+```
+
+   Note: Commits on feature branches pass through immediately (lint + security only).
+   Code review happens asynchronously at PR time via deputy-CTO.
+   Do NOT self-merge your PR -- deputy-CTO handles review and merge.
 
 3. **If push fails (tests fail)**: Do NOT attempt to fix the failures yourself. Simply inform the user:
    - "Push failed due to test failures in the pre-push hook."

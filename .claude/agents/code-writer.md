@@ -147,8 +147,23 @@ You may be working inside a git worktree (a separate working directory on a feat
 When your implementation work is complete:
 1. `git add <specific files>` (never `git add .` or `git add -A`)
 2. `git commit -m "descriptive message"`
-3. `git push -u origin HEAD`
-4. Create a PR to preview:
+3. Push and create PR:
 ```bash
-gh pr create --base preview --head "$(git branch --show-current)" --title "<title>" --body "<summary>"
+git push -u origin HEAD
+gh pr create --base preview --head "$(git branch --show-current)" \
+  --title "<title>" --body "<summary>" 2>/dev/null || true
 ```
+4. Request PR review via urgent DEPUTY-CTO task:
+```javascript
+mcp__todo-db__create_task({
+  section: "DEPUTY-CTO",
+  title: "Review PR: <title>",
+  description: "Review and merge PR #<number> from <branch> to preview. Run gh pr diff <number>, review for security/architecture/quality, then approve+merge or request changes.",
+  assigned_by: "pr-reviewer",
+  priority: "urgent"
+})
+```
+
+Note: Commits on feature branches pass through immediately (lint + security only).
+Code review happens asynchronously at PR time via deputy-CTO.
+Do NOT self-merge your PR -- deputy-CTO handles review and merge.

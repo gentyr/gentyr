@@ -40,15 +40,29 @@ OS-level access control that prevents agents from modifying critical files, even
 
 **Directories** (root-owned, sticky bit `1755`):
 - `.husky/` -- git hook infrastructure
-- `.claude/` -- framework configuration root
-- Resolved hooks directory (symlink target)
+- `.claude/` -- framework configuration root (target projects only; excluded in the framework repo itself because MCP servers need to create runtime files such as databases and state files)
 
-The **sticky bit** (`chmod 1755`) prevents non-root users from deleting files within these directories, even if they have write permission on the parent.
+Note: `.claude/hooks/` is intentionally **not** root-owned as a directory. Git requires write access to this path for atomic file operations (checkout, merge, stash). Root-owning it caused cross-repo side effects when `getHooksDir()` resolved the symlink back to the framework repo. The unlink+recreate gap this leaves is closed by the tamper detection described below.
 
 **Files** (root-owned, `644`):
 - Hook scripts: `pre-commit-review.js`, `bypass-approval-hook.js`, `block-no-verify.js`, `protected-action-gate.js`, `protected-action-approval-hook.js`, `credential-file-guard.js`, `secret-leak-detector.js`
 - Configuration: `protected-actions.json`, `.claude/settings.json`, `.claude/protection-key`, `.mcp.json`, `eslint.config.js`, `package.json`
 - Git hooks: `.husky/pre-commit` (`755`, executable)
+
+### Tamper Detection
+
+Because `.claude/hooks/` is not root-owned as a directory, an agent could theoretically unlink and recreate a critical hook file to replace it. Two complementary checks close this gap:
+
+**Commit-time check** (`husky/pre-commit`):
+- Runs before lint-staged and deputy-CTO review on every commit
+- Uses `stat` to verify that 8 critical hook files inside `.claude/hooks/` are still root-owned (uid 0)
+- Blocks the commit with an actionable error message if any are not
+- Trustworthy because `husky/pre-commit` itself lives in the root-owned `.husky/` directory
+
+**SessionStart check** (`gentyr-sync.js` `tamperCheck()`):
+- Runs at every interactive session start, before sync logic
+- Reads `.claude/protection-state.json`; if `protected: true`, iterates the `criticalHooks` array and calls `fs.statSync().uid` on each resolved hook path
+- Emits a `systemMessage` warning if any hook is not root-owned, prompting the user to re-run `sudo npx gentyr protect`
 
 ### Attack Vectors Prevented
 
@@ -56,6 +70,7 @@ The **sticky bit** (`chmod 1755`) prevents non-root users from deleting files wi
 - Agent cannot modify `.mcp.json` to add unvetted MCP servers
 - Agent cannot weaken ESLint config or package.json scripts
 - Agent cannot tamper with the HMAC protection key used for approval verification
+- Agent cannot replace `.claude/` with a directory containing a different hooks symlink (target projects)
 
 ### Protection State
 
@@ -64,9 +79,21 @@ Written to `.claude/protection-state.json`:
 {
   "protected": true,
   "timestamp": "2026-02-20T12:00:00-08:00",
-  "modified_by": "original_user"
+  "modified_by": "original_user",
+  "criticalHooks": [
+    "pre-commit-review.js",
+    "bypass-approval-hook.js",
+    "block-no-verify.js",
+    "protected-action-gate.js",
+    "protected-action-approval-hook.js",
+    "credential-file-guard.js",
+    "secret-leak-detector.js",
+    "protected-actions.json"
+  ]
 }
 ```
+
+The `criticalHooks` array is the single source of truth read by both the commit-time tamper check and the SessionStart tamper check.
 
 ## Layer 2: Protected Action Gate
 

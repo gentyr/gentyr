@@ -1,5 +1,45 @@
 # GENTYR Framework Changelog
 
+## 2026-02-23 - Protection Security Model: Fix Cross-Repo Side Effect
+
+### Problem
+
+`getHooksDir()` in `protect.js` follows the `.claude/hooks` symlink back to the gentyr repo's real directory. Running `sudo npx gentyr protect` in a target project was root-owning the gentyr repo's `.claude/hooks/` directory — a cross-repo side effect that blocked all git operations (checkout, merge, stash, pull) in the gentyr repo itself.
+
+### Changed
+
+**`cli/commands/protect.js`** — Security model update:
+- Removed `hooksDir` (resolved `.claude/hooks/` target) from the protected directories list; git requires write access here
+- Added conditional `.claude/` protection for target projects only (excluded when `version.json` exists, i.e. the framework repo itself)
+- Added `criticalHooks` array to `protection-state.json` (single source of truth for tamper checks)
+- Added `hooksDir` to the bulk-fix `find` sweep in `doUnprotect()` so existing root-owned hook files are cleaned up on unprotect
+
+**`husky/pre-commit`** — Tamper detection at commit time:
+- Added hook integrity check section before lint-staged
+- Verifies 8 critical hook files in `.claude/hooks/` are still root-owned via `stat`
+- Blocks commit with `COMMIT BLOCKED: Hook tampering detected` if any file is not owned by root (uid 0)
+- Trustworthy because `husky/pre-commit` itself lives in the root-owned `.husky/` directory
+
+**`.claude/hooks/gentyr-sync.js`** — Tamper detection at SessionStart:
+- Added `tamperCheck()` function that runs before sync logic
+- Reads `protection-state.json`; if `protected: true`, checks `criticalHooks` array via `fs.statSync().uid`
+- Emits a `systemMessage` warning if any hook is not root-owned
+
+**`scripts/protect-framework.sh`** — Mirrored protect.js changes:
+- Added `IS_FRAMEWORK_REPO` check (skips `.claude/` directory protection in framework repo)
+- Added `criticalHooks` array to `write_state()` output
+
+### Security Model Summary
+
+| Target | Ownership | Rationale |
+|--------|-----------|-----------|
+| `.claude/hooks/` directory | user:staff 755 | Git compatibility; individual files still root-owned |
+| `.claude/` directory | root:wheel 1755 | Target projects only; prevents hooks symlink swap |
+| Critical hook files | root:wheel 644 | Unchanged |
+| Unlink+recreate gap | Closed by tamper checks | Commit-time + SessionStart checks |
+
+---
+
 ## 2026-02-22 - npm CLI Package Migration
 
 ### Added
