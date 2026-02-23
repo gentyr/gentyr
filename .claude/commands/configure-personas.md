@@ -53,7 +53,7 @@ Start by explaining what this system does:
 
 Read `package.json` (and any other relevant config like `README.md`, framework config files) in the target project to understand:
 - What framework is used (Next.js, SvelteKit, Express, etc.)
-- Whether the project is a web app, CLI tool, API backend, or a combination
+- Whether the project is a web app, CLI tool, API backend, SDK/library, or a combination
 - What the dev server URL likely is
 - The project name and a one-line description
 
@@ -77,6 +77,7 @@ Based on your project analysis, offer appropriate preset personas using `AskUser
 - **Web apps**: Offer "New User", "Power User", "API Consumer"
 - **CLI tools**: Offer "CLI Beginner", "CI/CD Scripter"
 - **API backends**: Offer "API Consumer", "Load Tester"
+- **SDK/libraries** (has `main`/`exports` in package.json, no web UI or CLI): Offer "SDK Consumer"
 - **Full-stack** (web + API): Offer "New User", "Power User", "API Consumer"
 - Always include a "Custom persona" option
 
@@ -90,6 +91,7 @@ Based on your project analysis, offer appropriate preset personas using `AskUser
 | CLI Beginner | cli-beginner | cli | A developer using the CLI for the first time by following the README | follows README, tries basic commands first, confused by abbreviations |
 | CI/CD Scripter | cicd-scripter | cli | An automation engineer integrating the CLI into CI/CD pipelines | pipes output, uses --json flags, expects exit codes, tests with large inputs |
 | Load Tester | load-tester | api | A QA engineer validating API performance under concurrent load | sends rapid requests, tests rate limits, checks response times, tests concurrent access |
+| SDK Consumer | sdk-consumer | sdk | A developer using the library programmatically in their own codebase | reads docs and type signatures, tests edge cases in function arguments, checks return types, tries invalid inputs, tests error throwing, evaluates composability |
 
 ### Step 4: Create Selected Personas
 

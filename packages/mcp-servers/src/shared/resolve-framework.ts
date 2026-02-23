@@ -38,11 +38,11 @@ export function resolveFrameworkDir(projectDir: string): string | null {
  * Get the relative path token for templates.
  */
 export function resolveFrameworkRelative(projectDir: string): string {
-  const npmPath = path.join(projectDir, 'node_modules', 'gentyr');
-  try {
-    const stat = fs.lstatSync(npmPath);
-    if (stat.isSymbolicLink() || stat.isDirectory()) return 'node_modules/gentyr';
-  } catch {}
+  const resolved = resolveFrameworkDir(projectDir);
+  if (resolved) {
+    const rel = path.relative(projectDir, resolved);
+    return rel || '.';
+  }
   return '.claude-framework';
 }
 

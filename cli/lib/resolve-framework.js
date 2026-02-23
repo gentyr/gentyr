@@ -63,14 +63,11 @@ export function resolveFrameworkDir(projectDir) {
  * @returns {string} Relative framework path for template substitution
  */
 export function resolveFrameworkRelative(projectDir) {
-  const npmPath = path.join(projectDir, 'node_modules', 'gentyr');
-  try {
-    const stat = fs.lstatSync(npmPath);
-    if (stat.isSymbolicLink() || stat.isDirectory()) {
-      return 'node_modules/gentyr';
-    }
-  } catch {}
-
+  const resolved = resolveFrameworkDir(projectDir);
+  if (resolved) {
+    const rel = path.relative(projectDir, resolved);
+    return rel || '.';
+  }
   return '.claude-framework';
 }
 

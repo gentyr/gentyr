@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { resolveFrameworkDir, resolveFrameworkRelative, detectInstallModel } from '../lib/resolve-framework.js';
 import { generateMcpJson, mergeSettings, updateClaudeMd } from '../lib/config-gen.js';
-import { createAgentSymlinks } from '../lib/symlinks.js';
+import { createDirectorySymlinks, createAgentSymlinks, createReporterSymlinks } from '../lib/symlinks.js';
 import { buildState, writeState, getFrameworkAgents } from '../lib/state.js';
 
 const RED = '\x1b[0;31m';
@@ -45,11 +45,16 @@ export default async function sync(args) {
   console.log(`\n${YELLOW}Updating CLAUDE.md...${NC}`);
   updateClaudeMd(projectDir, frameworkDir);
 
-  // 4. Sync agent symlinks
+  // 4. Repair directory symlinks
+  console.log(`\n${YELLOW}Repairing directory symlinks...${NC}`);
+  createDirectorySymlinks(projectDir, frameworkRel);
+  createReporterSymlinks(projectDir, frameworkRel);
+
+  // 5. Sync agent symlinks
   console.log(`\n${YELLOW}Syncing agent symlinks...${NC}`);
   createAgentSymlinks(projectDir, frameworkRel, agents);
 
-  // 5. Sync husky hooks
+  // 6. Sync husky hooks
   console.log(`\n${YELLOW}Syncing husky hooks...${NC}`);
   const huskyDir = path.join(frameworkDir, 'husky');
   const projectHuskyDir = path.join(projectDir, '.husky');
@@ -67,7 +72,7 @@ export default async function sync(args) {
     }
   }
 
-  // 6. Rebuild MCP servers
+  // 7. Rebuild MCP servers
   console.log(`\n${YELLOW}Rebuilding MCP servers...${NC}`);
   const mcpDir = path.join(frameworkDir, 'packages', 'mcp-servers');
   try {
@@ -79,7 +84,7 @@ export default async function sync(args) {
     console.log(`  ${YELLOW}Warning: MCP server build failed: ${err.message}${NC}`);
   }
 
-  // 7. Regenerate launchd plists (macOS only)
+  // 8. Regenerate launchd plists (macOS only)
   if (process.platform === 'darwin') {
     const script = path.join(frameworkDir, 'scripts', 'setup-automation-service.sh');
     if (fs.existsSync(script)) {
@@ -92,7 +97,7 @@ export default async function sync(args) {
     }
   }
 
-  // 8. Write state
+  // 9. Write state
   const state = buildState(frameworkDir, model);
   writeState(projectDir, state);
 
