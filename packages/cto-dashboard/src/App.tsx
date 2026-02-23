@@ -351,11 +351,9 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       </Box>
 
       {/* Worklog */}
-      {worklog.hasData && (
-        <Box marginTop={1}>
-          <WorklogSection data={worklog} tip="/show worklog -- standalone view with more entries" />
-        </Box>
-      )}
+      <Box marginTop={1}>
+        <WorklogSection data={worklog} tip="/show worklog -- standalone view with more entries" />
+      </Box>
 
       {/* Timeline */}
       <Box marginTop={1}>

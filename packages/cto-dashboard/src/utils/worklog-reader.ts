@@ -137,19 +137,18 @@ export function getWorklogData(limit = 10): WorklogData {
     }
 
     const cacheHitPct = metricRow.sum_input && metricRow.sum_cache_read
-      ? Math.round((metricRow.sum_cache_read / metricRow.sum_input) * 1000) / 10
+      ? Math.round((metricRow.sum_cache_read / (metricRow.sum_input + metricRow.sum_cache_read)) * 1000) / 10
       : null;
 
-    // Success rate: successful worklog entries / total completed tasks
-    // Tasks without a worklog entry are assumed to have failed
-    const successRatePct = completedCount > 0
-      ? Math.round(((metricRow.successful_entries ?? 0) / completedCount) * 1000) / 10
+    // Success rate: successful worklog entries / total worklog entries
+    const successRatePct = metricRow.total_entries > 0
+      ? Math.round(((metricRow.successful_entries ?? 0) / metricRow.total_entries) * 1000) / 10
       : null;
 
     const metrics: WorklogMetricsData = {
       coverage_entries: metricRow.total_entries,
       coverage_completed_tasks: completedCount,
-      coverage_pct: completedCount > 0 ? Math.round((metricRow.total_entries / completedCount) * 1000) / 10 : 0,
+      coverage_pct: completedCount > 0 ? Math.min(100, Math.round((metricRow.total_entries / completedCount) * 1000) / 10) : 0,
       success_rate_pct: successRatePct,
       avg_time_to_start_ms: metricRow.avg_assign_to_start ? Math.round(metricRow.avg_assign_to_start) : null,
       avg_time_to_complete_from_start_ms: metricRow.avg_start_to_complete ? Math.round(metricRow.avg_start_to_complete) : null,
