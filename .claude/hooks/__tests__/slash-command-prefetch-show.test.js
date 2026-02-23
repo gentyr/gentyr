@@ -399,7 +399,7 @@ describe('Slash Command Prefetch - /show Integration', () => {
 
     // Count command definitions — update this number when new commands are added
     const commandCount = (sentinelsObject.match(/'[\w-]+':/g) || []).length;
-    assert.strictEqual(commandCount, 16, 'Should have 16 slash commands total');
+    assert.strictEqual(commandCount, 17, 'Should have 17 slash commands total');
   });
 
   it('should place /show handler in correct position in main()', () => {

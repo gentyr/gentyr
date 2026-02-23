@@ -20,6 +20,9 @@ const __dirname = path.dirname(__filename);
 /**
  * checkCtoActivityGate implementation (mirrored from hourly-automation.js)
  * G001: Fail-closed - if lastCtoBriefing is missing or older than 24h, automation is gated.
+ *
+ * NOTE: Message strings updated to reflect "Start a Claude Code session or run /deputy-cto"
+ * (gentyr-sync.js now resets the gate on every interactive session start).
  */
 function checkCtoActivityGate(config) {
   try {
@@ -28,7 +31,7 @@ function checkCtoActivityGate(config) {
     if (!lastCtoBriefing) {
       return {
         open: false,
-        reason: 'No CTO briefing recorded. Run /deputy-cto to activate automation.',
+        reason: 'No CTO briefing recorded. Start a Claude Code session or run /deputy-cto to activate.',
         hoursSinceLastBriefing: null,
       };
     }
@@ -37,7 +40,7 @@ function checkCtoActivityGate(config) {
     if (isNaN(briefingTime)) {
       return {
         open: false,
-        reason: 'CTO briefing timestamp is invalid. Run /deputy-cto to reset.',
+        reason: 'CTO briefing timestamp is invalid. Start a Claude Code session or run /deputy-cto to reset.',
         hoursSinceLastBriefing: null,
       };
     }
@@ -46,7 +49,7 @@ function checkCtoActivityGate(config) {
     if (hoursSince >= 24) {
       return {
         open: false,
-        reason: `CTO briefing was ${Math.floor(hoursSince)}h ago (>24h). Run /deputy-cto to reactivate.`,
+        reason: `CTO briefing was ${Math.floor(hoursSince)}h ago (>24h). Start a Claude Code session or run /deputy-cto to reactivate.`,
         hoursSinceLastBriefing: Math.floor(hoursSince),
       };
     }
@@ -76,7 +79,7 @@ describe('CTO Activity Gate (hourly-automation.js)', () => {
       assert.strictEqual(gate.open, false);
       assert.strictEqual(gate.hoursSinceLastBriefing, null);
       assert.ok(gate.reason.includes('No CTO briefing recorded'));
-      assert.ok(gate.reason.includes('Run /deputy-cto to activate'));
+      assert.ok(gate.reason.includes('/deputy-cto to activate'));
     });
 
     it('should fail-closed when lastCtoBriefing is undefined (G001)', () => {
@@ -107,7 +110,7 @@ describe('CTO Activity Gate (hourly-automation.js)', () => {
       assert.strictEqual(gate.open, false);
       assert.strictEqual(gate.hoursSinceLastBriefing, null);
       assert.ok(gate.reason.includes('CTO briefing timestamp is invalid'));
-      assert.ok(gate.reason.includes('Run /deputy-cto to reset'));
+      assert.ok(gate.reason.includes('/deputy-cto to reset'));
     });
 
     it('should fail-closed when lastCtoBriefing is malformed JSON date (G001)', () => {
@@ -160,7 +163,7 @@ describe('CTO Activity Gate (hourly-automation.js)', () => {
       assert.strictEqual(gate.hoursSinceLastBriefing, 24);
       assert.ok(gate.reason.includes('CTO briefing was 24h ago'));
       assert.ok(gate.reason.includes('>24h'));
-      assert.ok(gate.reason.includes('Run /deputy-cto to reactivate'));
+      assert.ok(gate.reason.includes('/deputy-cto to reactivate'));
     });
 
     it('should fail-closed when briefing is old (>24h)', () => {
@@ -175,7 +178,7 @@ describe('CTO Activity Gate (hourly-automation.js)', () => {
       assert.strictEqual(gate.hoursSinceLastBriefing, 48);
       assert.ok(gate.reason.includes('CTO briefing was 48h ago'));
       assert.ok(gate.reason.includes('>24h'));
-      assert.ok(gate.reason.includes('Run /deputy-cto to reactivate'));
+      assert.ok(gate.reason.includes('/deputy-cto to reactivate'));
     });
 
     it('should open gate when briefing is just under 24h (23.9h)', () => {

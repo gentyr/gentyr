@@ -40,9 +40,8 @@ OS-level access control that prevents agents from modifying critical files, even
 
 **Directories** (root-owned, sticky bit `1755`):
 - `.husky/` -- git hook infrastructure
-- `.claude/` -- framework configuration root (target projects only; excluded in the framework repo itself because MCP servers need to create runtime files such as databases and state files)
 
-Note: `.claude/hooks/` is intentionally **not** root-owned as a directory. Git requires write access to this path for atomic file operations (checkout, merge, stash). Root-owning it caused cross-repo side effects when `getHooksDir()` resolved the symlink back to the framework repo. The unlink+recreate gap this leaves is closed by the tamper detection described below.
+Note: `.claude/` and `.claude/hooks/` are intentionally **not** root-owned as directories. Git requires write access to these paths for atomic file operations (`git stash`, `git checkout`, `git merge`). Root-owning `.claude/` blocked runtime file creation (databases, state files) and broke tracked git operations. Symlink target verification (described below) replaces directory ownership as the anti-tampering mechanism.
 
 **Files** (root-owned, `644`):
 - Hook scripts: `pre-commit-review.js`, `bypass-approval-hook.js`, `block-no-verify.js`, `protected-action-gate.js`, `protected-action-approval-hook.js`, `credential-file-guard.js`, `secret-leak-detector.js`
@@ -51,26 +50,29 @@ Note: `.claude/hooks/` is intentionally **not** root-owned as a directory. Git r
 
 ### Tamper Detection
 
-Because `.claude/hooks/` is not root-owned as a directory, an agent could theoretically unlink and recreate a critical hook file to replace it. Two complementary checks close this gap:
+Because neither `.claude/` nor `.claude/hooks/` is root-owned as a directory, an agent could theoretically unlink and recreate files, or replace the hooks symlink. Two complementary layers close this gap:
 
-**Commit-time check** (`husky/pre-commit`):
-- Runs before lint-staged and deputy-CTO review on every commit
-- Uses `stat` to verify that 8 critical hook files inside `.claude/hooks/` are still root-owned (uid 0)
-- Blocks the commit with an actionable error message if any are not
-- Trustworthy because `husky/pre-commit` itself lives in the root-owned `.husky/` directory
+**Symlink target verification** (`husky/pre-commit` + `gentyr-sync.js`):
+- Verifies that `.claude/hooks` is a symlink whose resolved grandparent directory contains `version.json` (the GENTYR framework marker)
+- A regular directory is only allowed in the framework repo itself (where `version.json` is in the working directory)
+- If `.claude/hooks` is missing entirely, the commit is blocked
+- This check runs before the file ownership check and is the primary anti-tampering mechanism for `.claude/`
 
-**SessionStart check** (`gentyr-sync.js` `tamperCheck()`):
-- Runs at every interactive session start, before sync logic
-- Reads `.claude/protection-state.json`; if `protected: true`, iterates the `criticalHooks` array and calls `fs.statSync().uid` on each resolved hook path
-- Emits a `systemMessage` warning if any hook is not root-owned, prompting the user to re-run `npx gentyr protect`
+**File ownership check** (`husky/pre-commit` + `gentyr-sync.js`):
+- Uses `stat` to verify 8 critical hook files inside `.claude/hooks/` are still root-owned (uid 0)
+- Blocks the commit if any are not root-owned
+- `gentyr-sync.js` `tamperCheck()` runs the same checks at every interactive session start and emits a `systemMessage` warning
+- `protection-state.json` records `criticalHooks` as an array so both checks read the same source of truth
+
+**Trustworthiness**: The `husky/pre-commit` script performing these checks lives in the root-owned `.husky/` directory, making it tamper-resistant.
 
 ### Attack Vectors Prevented
 
-- Agent cannot `rm` or `Edit` hook files to disable safety checks
-- Agent cannot modify `.mcp.json` to add unvetted MCP servers
-- Agent cannot weaken ESLint config or package.json scripts
-- Agent cannot tamper with the HMAC protection key used for approval verification
-- Agent cannot replace `.claude/` with a directory containing a different hooks symlink (target projects)
+- Agent cannot `rm` or `Edit` hook files to disable safety checks (root-owned)
+- Agent cannot replace `.claude/hooks` symlink with a pointer to a different directory (symlink target verification)
+- Agent cannot modify `.mcp.json` to add unvetted MCP servers (root-owned)
+- Agent cannot weaken ESLint config or package.json scripts (root-owned)
+- Agent cannot tamper with the HMAC protection key used for approval verification (root-owned)
 
 ### Protection State
 
@@ -364,8 +366,19 @@ Re-applies root ownership without reinstalling the framework.
 
 ### Verify Protection
 ```bash
+# Critical hook files should be root-owned
 ls -la /path/to/project/.claude/hooks/protected-action-gate.js
 # Should show root:wheel ownership
-stat -f '%p' /path/to/project/.claude/
+
+# .husky/ directory should be root-owned with sticky bit
+stat -f '%p' /path/to/project/.husky/
 # Should show 41755 (sticky bit set)
+
+# .claude/ directory should be user-owned (git needs write access)
+stat -f '%Su' /path/to/project/.claude/
+# Should show your username, NOT root
+
+# .claude/hooks should be a symlink to a GENTYR framework directory
+readlink /path/to/project/.claude/hooks
+# Should resolve to a path containing version.json at grandparent level
 ```

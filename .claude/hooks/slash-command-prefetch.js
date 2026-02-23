@@ -65,6 +65,7 @@ const SENTINELS = {
   'demo': '<!-- HOOK:GENTYR:demo -->',
   'demo-interactive': '<!-- HOOK:GENTYR:demo -->',
   'demo-auto': '<!-- HOOK:GENTYR:demo -->',
+  'persona-feedback': '<!-- HOOK:GENTYR:persona-feedback -->',
 };
 
 /**
@@ -1035,6 +1036,84 @@ function handleShow() {
   }));
 }
 
+function handlePersonaFeedback() {
+  const output = { command: 'persona-feedback', gathered: {} };
+
+  const feedbackDb = openDb(USER_FEEDBACK_DB);
+  if (feedbackDb) {
+    try {
+      // All enabled personas with basic info
+      const personas = feedbackDb.prepare(
+        "SELECT id, name, consumption_mode, enabled FROM personas ORDER BY name"
+      ).all();
+      output.gathered.personas = personas;
+      output.gathered.enabledCount = personas.filter(p => p.enabled).length;
+
+      // Recent feedback runs (last 5)
+      try {
+        const runs = feedbackDb.prepare(
+          "SELECT id, trigger_type, status, started_at FROM feedback_runs ORDER BY started_at DESC LIMIT 5"
+        ).all();
+        output.gathered.recentRuns = runs;
+      } catch {
+        output.gathered.recentRuns = [];
+      }
+
+      // Per-persona last session date and satisfaction (lightweight)
+      try {
+        const perPersona = feedbackDb.prepare(`
+          SELECT
+            p.id,
+            p.name,
+            (SELECT MAX(s.completed_at) FROM feedback_sessions s WHERE s.persona_id = p.id) as last_session_date,
+            (SELECT s.satisfaction_level FROM feedback_sessions s WHERE s.persona_id = p.id ORDER BY s.completed_at DESC LIMIT 1) as last_satisfaction
+          FROM personas p
+          WHERE p.enabled = 1
+          ORDER BY p.name
+        `).all();
+        output.gathered.perPersonaStats = perPersona;
+      } catch {
+        output.gathered.perPersonaStats = [];
+      }
+
+      // Overview stats
+      try {
+        const totalSessions = feedbackDb.prepare("SELECT COUNT(*) as count FROM feedback_sessions").get();
+        output.gathered.totalSessions = totalSessions?.count ?? 0;
+      } catch {
+        output.gathered.totalSessions = 0;
+      }
+
+      try {
+        const totalFindings = feedbackDb.prepare("SELECT COALESCE(SUM(findings_count), 0) as count FROM feedback_sessions").get();
+        output.gathered.totalFindings = totalFindings?.count ?? 0;
+      } catch {
+        output.gathered.totalFindings = 0;
+      }
+    } catch {
+      output.gathered.error = 'query failed';
+    } finally {
+      feedbackDb.close();
+    }
+  } else {
+    output.gathered.personas = [];
+    output.gathered.enabledCount = 0;
+    output.gathered.recentRuns = [];
+    output.gathered.perPersonaStats = [];
+    output.gathered.totalSessions = 0;
+    output.gathered.totalFindings = 0;
+    output.gathered.note = 'user-feedback.db not found (no personas configured yet)';
+  }
+
+  console.log(JSON.stringify({
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `[PREFETCH:persona-feedback] ${JSON.stringify(output)}`,
+    },
+  }));
+}
+
 function handleDemo() {
   const output = { command: 'demo', gathered: {} };
 
@@ -1183,7 +1262,7 @@ async function main() {
   const prompt = extractPrompt(raw);
 
   // Mode 2 handlers — load Database lazily only when needed
-  const needsDb = ['cto-report', 'deputy-cto', 'configure-personas', 'spawn-tasks', 'product-manager', 'triage'];
+  const needsDb = ['cto-report', 'deputy-cto', 'configure-personas', 'spawn-tasks', 'product-manager', 'triage', 'persona-feedback'];
   const matchedCommand = Object.keys(SENTINELS).find(key => matchesCommand(prompt, key));
   if (matchedCommand) {
     if (needsDb.includes(matchedCommand)) {
@@ -1226,6 +1305,9 @@ async function main() {
   }
   if (matchesCommand(prompt, 'triage')) {
     return handleTriage();
+  }
+  if (matchesCommand(prompt, 'persona-feedback')) {
+    return handlePersonaFeedback();
   }
   if (matchesCommand(prompt, 'show')) {
     return handleShow();

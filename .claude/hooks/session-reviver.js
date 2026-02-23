@@ -368,7 +368,7 @@ async function resumePausedSessions(log, maxRevivals) {
   let hasRecoveredKey = false;
 
   for (const [keyId, keyData] of Object.entries(state.keys)) {
-    if (keyData.status === 'invalid' || keyData.status === 'expired') continue;
+    if (keyData.status === 'invalid' || keyData.status === 'expired' || keyData.status === 'tombstone') continue;
 
     const health = await checkKeyHealth(keyData.accessToken);
     if (health.valid && health.usage) {

@@ -403,40 +403,72 @@ function legacySettingsCheck(frameworkDir) {
 // ============================================================================
 
 function tamperCheck() {
+  const warnings = [];
+
+  // Check 1: Symlink target verification
+  // Verifies .claude/hooks points to a real GENTYR framework directory.
+  const hooksPath = path.join(projectDir, '.claude', 'hooks');
+  try {
+    const lstat = fs.lstatSync(hooksPath);
+    if (lstat.isSymbolicLink()) {
+      const realHooksDir = fs.realpathSync(hooksPath);
+      const candidate = path.resolve(realHooksDir, '..', '..');
+      if (!fs.existsSync(path.join(candidate, 'version.json'))) {
+        warnings.push('.claude/hooks symlink does not point to a GENTYR framework');
+      }
+    } else if (lstat.isDirectory()) {
+      // Regular directory is only valid in the framework repo itself
+      if (!fs.existsSync(path.join(projectDir, 'version.json'))) {
+        warnings.push('.claude/hooks is a regular directory (expected symlink to framework)');
+      }
+    }
+  } catch {
+    // hooks path doesn't exist — will be caught by other checks
+  }
+
+  // Check 2: Critical hook file ownership (existing check)
   const statePath = path.join(projectDir, '.claude', 'protection-state.json');
   let state;
   try {
     state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
   } catch {
-    return; // No state file — skip check
+    // No state file — skip ownership check but still emit symlink warnings
+    if (warnings.length > 0) {
+      warn(`SECURITY WARNING: ${warnings.join('; ')}. Run "npx gentyr protect" to restore protection.`);
+    }
+    return;
   }
 
-  if (!state.protected || !Array.isArray(state.criticalHooks)) return;
-
-  // Resolve hooks directory (follows symlinks, same as protect.js getHooksDir)
-  let hooksDir = path.join(projectDir, '.claude', 'hooks');
-  try {
-    if (fs.lstatSync(hooksDir).isSymbolicLink()) {
-      hooksDir = fs.realpathSync(hooksDir);
-    }
-  } catch {}
-
-  const tampered = [];
-  for (const hook of state.criticalHooks) {
-    const filePath = path.join(hooksDir, hook);
+  if (state.protected && Array.isArray(state.criticalHooks)) {
+    // Resolve hooks directory (follows symlinks, same as protect.js getHooksDir)
+    let hooksDir = hooksPath;
     try {
-      const stat = fs.statSync(filePath);
-      if (stat.uid !== 0) {
-        tampered.push(hook);
+      if (fs.lstatSync(hooksDir).isSymbolicLink()) {
+        hooksDir = fs.realpathSync(hooksDir);
       }
-    } catch {
-      // File missing — not necessarily tampering (could be removed legitimately)
+    } catch {}
+
+    const tampered = [];
+    for (const hook of state.criticalHooks) {
+      const filePath = path.join(hooksDir, hook);
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.uid !== 0) {
+          tampered.push(hook);
+        }
+      } catch {
+        // File missing — not necessarily tampering (could be removed legitimately)
+      }
+    }
+
+    if (tampered.length > 0) {
+      warnings.push(`${tampered.length} critical hook(s) not root-owned: ${tampered.join(', ')}`);
     }
   }
 
-  if (tampered.length > 0) {
+  if (warnings.length > 0) {
     warn(
-      `SECURITY WARNING: ${tampered.length} critical hook(s) are not root-owned: ${tampered.join(', ')}. ` +
+      `SECURITY WARNING: ${warnings.join('; ')}. ` +
       'Possible tampering detected. Run "npx gentyr protect" to restore protection.'
     );
   }
@@ -452,6 +484,21 @@ try {
   // Try state-based sync first; fall back to legacy check.
   if (!statBasedSync(frameworkDir)) {
     legacySettingsCheck(frameworkDir);
+  }
+
+  // Reset CTO Activity Gate on interactive session start
+  // This ensures automation stays active whenever the CTO is using Claude Code
+  try {
+    const autoConfigPath = path.join(projectDir, '.claude', 'autonomous-mode.json');
+    if (fs.existsSync(autoConfigPath)) {
+      const config = JSON.parse(fs.readFileSync(autoConfigPath, 'utf8'));
+      config.lastCtoBriefing = new Date().toISOString();
+      config.lastModified = new Date().toISOString();
+      config.modifiedBy = 'session-start';
+      fs.writeFileSync(autoConfigPath, JSON.stringify(config, null, 2));
+    }
+  } catch {
+    // Non-fatal — don't block session start
   }
 
   // No sync was needed.

@@ -371,11 +371,17 @@ describe('rebuildRequest() - behavioral logic', () => {
 
   function rebuildRequest(parsed, originalBuffer, newToken) {
     const headerLines = [`${parsed.method} ${parsed.path} ${parsed.httpVersion}`];
+    let hadAuth = false;
     for (const [name, value] of parsed.rawHeaders) {
-      if (name.toLowerCase() === 'authorization') continue;
+      if (name.toLowerCase() === 'authorization') {
+        hadAuth = true;
+        continue;
+      }
       headerLines.push(`${name}: ${value}`);
     }
-    headerLines.push(`Authorization: Bearer ${newToken}`);
+    if (hadAuth) {
+      headerLines.push(`Authorization: Bearer ${newToken}`);
+    }
     headerLines.push('');
     headerLines.push('');
     const headerBuf = Buffer.from(headerLines.join('\r\n'), 'binary');
@@ -434,7 +440,7 @@ describe('rebuildRequest() - behavioral logic', () => {
     assert.ok(rebuiltStr.endsWith(body), 'Must preserve request body verbatim after header swap');
   });
 
-  it('should add Authorization header even when original request had none', () => {
+  it('should NOT add Authorization header when original request had none', () => {
     const raw = Buffer.from(
       'GET /v1/models HTTP/1.1\r\n' +
       'Host: api.anthropic.com\r\n' +
@@ -444,10 +450,10 @@ describe('rebuildRequest() - behavioral logic', () => {
     const rebuilt = rebuildRequest(parsed, raw, 'injected-token');
     const rebuiltStr = rebuilt.toString();
 
-    assert.match(
+    assert.doesNotMatch(
       rebuiltStr,
-      /Authorization: Bearer injected-token/,
-      'Must inject Authorization header even when original had none'
+      /Authorization/,
+      'Must NOT inject Authorization header when original had none (conditional auth injection)'
     );
   });
 
@@ -850,14 +856,29 @@ describe('forwardRequest() - unknown token passthrough', () => {
     );
   });
 
-  it('should check incoming key ID against rotation state keys', () => {
+  it('should check incoming key ID against rotation state keys (tombstone-aware)', () => {
     const code = fs.readFileSync(PROXY_PATH, 'utf8');
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
+    // Must read keyEntry from state.keys first
     assert.match(
       fnStart,
-      /!state\.keys\[incomingKeyId\]/,
-      'Must check if incomingKeyId exists in rotation state keys'
+      /state\.keys\[incomingKeyId\]/,
+      'Must look up incomingKeyId in rotation state keys'
+    );
+
+    // Must check for tombstone status
+    assert.match(
+      fnStart,
+      /keyEntry\.status\s*===\s*['"]tombstone['"]/,
+      'Must check if keyEntry has tombstone status'
+    );
+
+    // Must check for genuinely unknown (no entry at all)
+    assert.match(
+      fnStart,
+      /!keyEntry/,
+      'Must check if keyEntry does not exist (genuinely unknown token)'
     );
   });
 
@@ -925,8 +946,8 @@ describe('forwardRequest() - unknown token passthrough', () => {
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
     // The passthrough check must be gated by retryCount === 0
-    const passthroughCheckIdx = fnStart.indexOf('!state.keys[incomingKeyId]');
-    const passthroughSection = fnStart.slice(Math.max(0, passthroughCheckIdx - 300), passthroughCheckIdx + 100);
+    const passthroughCheckIdx = fnStart.indexOf('!keyEntry');
+    const passthroughSection = fnStart.slice(Math.max(0, passthroughCheckIdx - 800), passthroughCheckIdx + 100);
 
     assert.match(
       passthroughSection,
@@ -1152,6 +1173,196 @@ describe('main() startup - fail-loud structure', () => {
       code,
       /server\.listen\(PROXY_PORT,\s*['"]127\.0\.0\.1['"]/,
       'Must bind to 127.0.0.1 — proxy must not be externally reachable'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 16. Tombstone token swap (Bug Fix - Bug B)
+// ---------------------------------------------------------------------------
+
+describe('forwardRequest() - tombstone token handling', () => {
+  it('should log tombstone_token_swap when incoming token is tombstoned', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+    assert.ok(fnStart !== null, 'forwardRequest must be defined');
+
+    assert.match(
+      fnStart,
+      /proxyLog\(['"]tombstone_token_swap['"]/,
+      'Must log tombstone_token_swap event when tombstoned token is detected'
+    );
+  });
+
+  it('should NOT set usePassthrough for tombstoned tokens (swap with active key instead)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // Find the tombstone check section
+    const tombstoneIdx = fnStart.indexOf('tombstone_token_swap');
+    assert.ok(tombstoneIdx !== -1, 'Must have tombstone_token_swap log event');
+
+    // Between tombstone check and the log, usePassthrough must NOT be set to true
+    const tombstoneSection = fnStart.slice(
+      fnStart.indexOf("keyEntry.status === 'tombstone'"),
+      tombstoneIdx + 200
+    );
+
+    assert.doesNotMatch(
+      tombstoneSection,
+      /usePassthrough\s*=\s*true/,
+      'Must NOT set usePassthrough for tombstoned tokens — they must be swapped with active key'
+    );
+  });
+
+  it('should check tombstone BEFORE unknown token (order matters)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    const tombstoneIdx = fnStart.indexOf("keyEntry.status === 'tombstone'");
+    const unknownIdx = fnStart.indexOf('!keyEntry');
+
+    assert.ok(tombstoneIdx !== -1, 'Must check for tombstone status');
+    assert.ok(unknownIdx !== -1, 'Must check for unknown token');
+    assert.ok(
+      tombstoneIdx < unknownIdx,
+      'Must check tombstone BEFORE unknown token to distinguish pruned dead tokens from fresh logins'
+    );
+  });
+
+  it('should include incoming_key_id and active_key_id in tombstone_token_swap log', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    const tombstoneLogIdx = fnStart.indexOf('tombstone_token_swap');
+    const tombstoneSection = fnStart.slice(tombstoneLogIdx, tombstoneLogIdx + 400);
+
+    assert.match(
+      tombstoneSection,
+      /incoming_key_id/,
+      'tombstone_token_swap log must include incoming_key_id'
+    );
+    assert.match(
+      tombstoneSection,
+      /active_key_id/,
+      'tombstone_token_swap log must include active_key_id'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 17. rebuildRequest() - conditional auth injection
+// ---------------------------------------------------------------------------
+
+describe('rebuildRequest() - conditional auth injection', () => {
+  it('should only add Authorization header when original request had one', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rebuildRequest');
+    assert.ok(fnStart !== null, 'rebuildRequest must be defined');
+
+    // Must track whether original had auth
+    assert.match(
+      fnStart,
+      /hadAuth/,
+      'rebuildRequest must track whether the original request had an Authorization header'
+    );
+
+    // Must conditionally add auth
+    assert.match(
+      fnStart,
+      /if\s*\(hadAuth\)/,
+      'rebuildRequest must conditionally add Authorization based on original presence'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 18. 401 retry handling
+// ---------------------------------------------------------------------------
+
+describe('forwardRequest() - 401 retry handling', () => {
+  it('should detect 401 status and retry once', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+    assert.ok(fnStart !== null, 'forwardRequest must be defined');
+
+    assert.match(
+      fnStart,
+      /responseStatusCode\s*===\s*401/,
+      'Must detect 401 response status code'
+    );
+  });
+
+  it('should log auth_retry_on_401 event', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /proxyLog\(['"]auth_retry_on_401['"]/,
+      'Must log auth_retry_on_401 event for observability'
+    );
+  });
+
+  it('should only retry 401 on first attempt (retryCount === 0)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // Find the 401 check — it must include retryCount === 0
+    const authRetryIdx = fnStart.indexOf('auth_retry_on_401');
+    const authRetrySection = fnStart.slice(Math.max(0, authRetryIdx - 300), authRetryIdx);
+
+    assert.match(
+      authRetrySection,
+      /retryCount\s*===\s*0/,
+      '401 retry must only happen on first attempt (retryCount === 0)'
+    );
+  });
+
+  it('should NOT retry 401 for passthrough requests', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // Find the 401 check — it must include !usePassthrough
+    const authRetryIdx = fnStart.indexOf('auth_retry_on_401');
+    const authRetrySection = fnStart.slice(Math.max(0, authRetryIdx - 300), authRetryIdx);
+
+    assert.match(
+      authRetrySection,
+      /!usePassthrough/,
+      '401 retry must be skipped for passthrough requests (proxy did not inject the token)'
+    );
+  });
+
+  it('should NOT call rotateOnExhaustion on 401 (auth error, not quota)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // Find the 401 section — between 401 check and the next status code check
+    const auth401Idx = fnStart.indexOf('auth_retry_on_401');
+    const auth401Section = fnStart.slice(auth401Idx, auth401Idx + 500);
+
+    assert.doesNotMatch(
+      auth401Section,
+      /rotateOnExhaustion/,
+      '401 handling must NOT call rotateOnExhaustion — 401 is auth, not quota'
+    );
+  });
+
+  it('should destroy upstream before retrying 401', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // Find the 401 section
+    const auth401Idx = fnStart.indexOf('responseStatusCode === 401');
+    assert.ok(auth401Idx !== -1, 'Must have 401 check');
+
+    const auth401Section = fnStart.slice(auth401Idx, auth401Idx + 500);
+
+    assert.match(
+      auth401Section,
+      /upstream\.destroy\(\)/,
+      'Must destroy upstream connection before retrying on 401'
     );
   });
 });

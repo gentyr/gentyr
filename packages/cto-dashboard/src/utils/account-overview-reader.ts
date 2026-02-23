@@ -18,7 +18,7 @@ function getKeyRotationStatePath(): string {
 
 export interface AccountKeyDetail {
   keyId: string;
-  status: 'active' | 'exhausted' | 'invalid' | 'expired';
+  status: 'active' | 'exhausted' | 'invalid' | 'expired' | 'tombstone';
   isCurrent: boolean;
   subscriptionType: string;
   email: string | null;
@@ -68,7 +68,7 @@ const KeyDataSchema = z.object({
   last_used_at: z.number().nullable().optional(),
   last_health_check: z.number().nullable().optional(),
   last_usage: KeyUsageSchema,
-  status: z.enum(['active', 'exhausted', 'invalid', 'expired']),
+  status: z.enum(['active', 'exhausted', 'invalid', 'expired', 'tombstone']),
   account_uuid: z.string().nullable().optional(),
   account_email: z.string().nullable().optional(),
 }).passthrough();
@@ -212,7 +212,7 @@ export function getAccountOverviewData(): AccountOverviewData {
   // Sort: current first, then active, then by addedAt desc
   accounts.sort((a, b) => {
     if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
-    const statusOrder = { active: 0, exhausted: 1, expired: 2, invalid: 3 };
+    const statusOrder: Record<string, number> = { active: 0, exhausted: 1, expired: 2, invalid: 3, tombstone: 4 };
     if (a.status !== b.status) return statusOrder[a.status] - statusOrder[b.status];
     return (b.addedAt?.getTime() ?? 0) - (a.addedAt?.getTime() ?? 0);
   });

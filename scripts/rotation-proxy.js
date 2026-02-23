@@ -258,11 +258,17 @@ function rebuildRequest(parsed, originalBuffer, newToken) {
     `${parsed.method} ${parsed.path} ${parsed.httpVersion}`,
   ];
 
+  let hadAuth = false;
   for (const [name, value] of parsed.rawHeaders) {
-    if (name.toLowerCase() === 'authorization') continue; // strip old auth
+    if (name.toLowerCase() === 'authorization') {
+      hadAuth = true;
+      continue; // strip old auth
+    }
     headerLines.push(`${name}: ${value}`);
   }
-  headerLines.push(`Authorization: Bearer ${newToken}`);
+  if (hadAuth) {
+    headerLines.push(`Authorization: Bearer ${newToken}`);
+  }
   headerLines.push(''); // blank line before body
   headerLines.push('');
 
@@ -318,8 +324,20 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
     if (bearerMatch && generateKeyId) {
       incomingKeyId = generateKeyId(bearerMatch[1]);
       const state = readRotationState();
-      if (!state.keys[incomingKeyId]) {
-        // Unknown token — pass through and trigger async sync to register it
+      const keyEntry = state.keys[incomingKeyId];
+
+      if (keyEntry && keyEntry.status === 'tombstone') {
+        // Pruned dead token — swap with active key (prevents Bug B)
+        proxyLog('tombstone_token_swap', {
+          host,
+          method: parsed.method,
+          path: parsed.path.slice(0, 100),
+          incoming_key_id: incomingKeyId.slice(0, 8),
+          active_key_id: activeKeyId.slice(0, 8),
+        });
+        // usePassthrough stays false — request gets active key's token
+      } else if (!keyEntry) {
+        // Unknown token — likely fresh login, pass through unchanged (Bug A fix)
         usePassthrough = true;
         proxyLog('unknown_token_passthrough', {
           host,
@@ -334,6 +352,7 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
           });
         }
       }
+      // If keyEntry exists with other status (active, exhausted, etc.) — normal swap path
     }
   }
 
@@ -431,6 +450,23 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
       }
 
       // Retry with new key
+      forwardRequest(host, rawRequest, clientSocket, {
+        retryCount: retryCount + 1,
+        fromKeyId: activeKeyId,
+      });
+      return;
+    }
+
+    // 401: retry once with fresh state read (auth error, not quota — don't call rotateOnExhaustion)
+    if (responseStatusCode === 401 && retryCount === 0 && !usePassthrough) {
+      upstream.destroy();
+      proxyLog('auth_retry_on_401', {
+        host,
+        method: parsed.method,
+        path: parsed.path.slice(0, 100),
+        active_key_id: activeKeyId.slice(0, 8),
+        retry: retryCount,
+      });
       forwardRequest(host, rawRequest, clientSocket, {
         retryCount: retryCount + 1,
         fromKeyId: activeKeyId,
