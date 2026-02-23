@@ -164,6 +164,34 @@ export const PreflightCheckArgsSchema = z.object({
     .describe('Skip the compilation check (faster but less thorough)'),
 });
 
+export const ListExtensionTabsArgsSchema = z.object({
+  port: z.coerce.number()
+    .int()
+    .min(1024)
+    .max(65535)
+    .optional()
+    .default(9222)
+    .describe('CDP remote debugging port (default: 9222)'),
+});
+
+export const ScreenshotExtensionTabArgsSchema = z.object({
+  url_pattern: z.string()
+    .max(500)
+    .optional()
+    .describe('Substring to match against tab URL (e.g. "popup.html", "dashboard"). Screenshots the first matching tab, or the first tab if no match.'),
+  tab_id: z.string()
+    .max(200)
+    .optional()
+    .describe('Specific CDP tab ID (from list_extension_tabs). Takes precedence over url_pattern.'),
+  port: z.coerce.number()
+    .int()
+    .min(1024)
+    .max(65535)
+    .optional()
+    .default(9222)
+    .describe('CDP remote debugging port (default: 9222)'),
+});
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -193,6 +221,24 @@ export interface PreflightCheckResult {
   warnings: string[];
   recovery_steps: string[];
   total_duration_ms: number;
+}
+
+export const RunAuthSetupArgsSchema = z.object({
+  seed_only: z.boolean()
+    .optional()
+    .default(false)
+    .describe('Run only the seed project (skip auth-setup). Useful when just refreshing test data.'),
+});
+
+export type RunAuthSetupArgs = z.infer<typeof RunAuthSetupArgsSchema>;
+
+export interface RunAuthSetupResult {
+  success: boolean;
+  phases: { name: 'seed' | 'auth-setup'; success: boolean; message: string; duration_ms: number }[];
+  auth_files_refreshed: string[];
+  total_duration_ms: number;
+  error?: string;
+  output_summary: string;
 }
 
 export interface LaunchUiModeResult {
@@ -250,4 +296,27 @@ export interface GetCoverageStatusResult {
 
 export interface ErrorResult {
   error: string;
+}
+
+export type ListExtensionTabsArgs = z.infer<typeof ListExtensionTabsArgsSchema>;
+export type ScreenshotExtensionTabArgs = z.infer<typeof ScreenshotExtensionTabArgsSchema>;
+
+export interface ExtensionTab {
+  id: string;
+  title: string;
+  url: string;
+  type: string;
+}
+
+export interface ListExtensionTabsResult {
+  success: boolean;
+  tabs: ExtensionTab[];
+  message: string;
+}
+
+export interface ScreenshotExtensionTabResult {
+  success: boolean;
+  tab?: ExtensionTab;
+  message: string;
+  image?: string;  // base64 PNG
 }

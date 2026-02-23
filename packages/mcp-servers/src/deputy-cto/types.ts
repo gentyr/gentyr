@@ -313,6 +313,7 @@ export interface SearchClearedItemsResult {
 export interface CleanupOldRecordsResult {
   commit_decisions_deleted: number;
   cleared_questions_deleted: number;
+  bypass_requests_expired: number;
   message: string;
 }
 

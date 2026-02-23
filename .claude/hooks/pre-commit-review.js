@@ -81,9 +81,13 @@ function hasPendingCtoItems() {
     const db = new Database(DEPUTY_CTO_DB, { readonly: true });
 
     // Check ALL pending questions (any type, not just rejections)
+    // Filter out expired bypass-requests (sync with BYPASS_REQUEST_TTL_S = 3600 in deputy-cto server.ts)
+    const bypassCutoff = Math.floor(Date.now() / 1000) - 3600;
     const questionsResult = db.prepare(
-      "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
-    ).get();
+      `SELECT COUNT(*) as count FROM questions
+       WHERE status = 'pending'
+       AND NOT (type = 'bypass-request' AND created_timestamp < ?)`
+    ).get(bypassCutoff);
     const questionCount = questionsResult?.count || 0;
 
     db.close();
@@ -321,9 +325,37 @@ function hasValidBypassDecision() {
 function verifyGitHooksPath() {
   try {
     const hooksPath = execSync('git config --get core.hooksPath', { encoding: 'utf8' }).trim();
-    // Allow .husky (standard) or empty (default .git/hooks)
-    const allowedPaths = ['.husky', ''];
-    if (!allowedPaths.includes(hooksPath)) {
+
+    // Empty string means core.hooksPath is set to nothing, which means default .git/hooks
+    if (hooksPath === '') {
+      return { valid: true, path: hooksPath };
+    }
+
+    // Resolve the configured path to an absolute path
+    const resolvedHooksPath = path.isAbsolute(hooksPath)
+      ? path.resolve(hooksPath)
+      : path.resolve(PROJECT_DIR, hooksPath);
+
+    // Build list of allowed roots: current PROJECT_DIR + main repo root (for worktrees)
+    const allowedRoots = [PROJECT_DIR];
+
+    // In a worktree, PROJECT_DIR is the worktree root, but .husky may be in the main repo
+    try {
+      const commonDir = execSync('git rev-parse --git-common-dir', { encoding: 'utf8' }).trim();
+      const mainRepoRoot = path.dirname(path.resolve(commonDir));
+      if (mainRepoRoot !== PROJECT_DIR) {
+        allowedRoots.push(mainRepoRoot);
+      }
+    } catch {
+      // Not in a worktree or git error -- PROJECT_DIR alone is sufficient
+    }
+
+    // Check if resolvedHooksPath matches any allowed root's .husky
+    const isAllowed = allowedRoots.some(
+      (root) => resolvedHooksPath === path.resolve(root, '.husky')
+    );
+
+    if (!isAllowed) {
       return { valid: false, path: hooksPath };
     }
     return { valid: true, path: hooksPath };

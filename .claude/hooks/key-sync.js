@@ -550,18 +550,36 @@ export function pruneDeadKeys(state, log) {
 
   if (prunedKeyIds.length === 0) return;
 
-  // Log account_auth_failed for accounts losing their last viable key
+  // Log account_auth_failed only for accounts losing their LAST viable key
+  const prunedSet = new Set(prunedKeyIds);
+  const emittedAccounts = new Set();
   for (const keyId of prunedKeyIds) {
     const keyData = state.keys[keyId];
     const email = keyData?.account_email || null;
-    logRotationEvent(state, {
-      timestamp: Date.now(),
-      event: 'account_auth_failed',
-      key_id: keyId,
-      reason: 'last_key_invalid_pruned',
-      account_email: email,
+    const dedupeKey = email || keyId;
+
+    // Skip if we've already emitted for this account
+    if (emittedAccounts.has(dedupeKey)) continue;
+
+    // Check if any other non-pruned key belongs to the same account
+    const hasOtherViableKey = Object.entries(state.keys).some(([otherId, otherData]) => {
+      if (otherId === keyId || prunedSet.has(otherId)) return false;
+      if (otherData.status === 'invalid' || otherData.status === 'expired') return false;
+      if (!email) return false; // Can't match by email if this key has none
+      return otherData.account_email === email;
     });
-    logFn(`[key-sync] Account auth failed for ${email || keyId.slice(0, 8) + '...'} (invalid key pruned)`);
+
+    if (!hasOtherViableKey) {
+      logRotationEvent(state, {
+        timestamp: Date.now(),
+        event: 'account_auth_failed',
+        key_id: keyId,
+        reason: 'invalid_key_pruned',
+        account_email: email,
+      });
+      logFn(`[key-sync] Account auth failed for ${email || keyId.slice(0, 8) + '...'} (invalid key pruned)`);
+      emittedAccounts.add(dedupeKey);
+    }
   }
 
   for (const keyId of prunedKeyIds) {
@@ -570,7 +588,6 @@ export function pruneDeadKeys(state, log) {
   }
 
   // Remove orphaned rotation_log entries (preserve account_auth_failed events)
-  const prunedSet = new Set(prunedKeyIds);
   state.rotation_log = state.rotation_log.filter(
     entry => !entry.key_id || !prunedSet.has(entry.key_id) || entry.event === 'account_auth_failed'
   );

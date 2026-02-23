@@ -1344,8 +1344,12 @@ Section mapping:
 - Test creation/updates only → TEST-WRITER
 - Documentation, cleanup only → PROJECT-MANAGER
 
-### Step 4: Mark Complete
+### Step 4: Summarize and Complete
 After all sub-tasks are created:
+\`\`\`
+mcp__todo-db__summarize_work({ summary: "<what you triaged, how many sub-tasks created, key decisions>", success: true/false })
+\`\`\`
+Then:
 \`\`\`
 mcp__todo-db__complete_task({ id: "${task.id}" })
 \`\`\`
@@ -1395,8 +1399,13 @@ gh pr create --base preview --head "$(git branch --show-current)" --title "${tas
 
   const completionBlock = `## When Done
 
-You MUST call this MCP tool to mark the task as completed:
+### Step 1: Summarize Your Work (MANDATORY)
+\`\`\`
+mcp__todo-db__summarize_work({ summary: "<concise description of what you did and the outcome>", success: true/false })
+\`\`\`
+task_id is auto-resolved from your CLAUDE_AGENT_ID — do not pass it manually.
 
+### Step 2: Mark Task Complete
 \`\`\`
 mcp__todo-db__complete_task({ id: "${task.id}" })
 \`\`\`

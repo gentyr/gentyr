@@ -14,6 +14,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as http from 'http';
+import * as net from 'net';
+import * as crypto from 'crypto';
 import { spawn, execFileSync } from 'child_process';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
@@ -24,6 +26,8 @@ import {
   GetReportArgsSchema,
   GetCoverageStatusArgsSchema,
   PreflightCheckArgsSchema,
+  ListExtensionTabsArgsSchema,
+  ScreenshotExtensionTabArgsSchema,
   type LaunchUiModeArgs,
   type RunTestsArgs,
   type GetReportArgs,
@@ -37,6 +41,14 @@ import {
   type CoverageEntry,
   type PreflightCheckEntry,
   type PreflightCheckResult,
+  type ListExtensionTabsArgs,
+  type ScreenshotExtensionTabArgs,
+  type ListExtensionTabsResult,
+  type ScreenshotExtensionTabResult,
+  type ExtensionTab,
+  RunAuthSetupArgsSchema,
+  type RunAuthSetupArgs,
+  type RunAuthSetupResult,
 } from './types.js';
 import { parseTestOutput, truncateOutput } from './helpers.js';
 
@@ -776,6 +788,45 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   });
   checks.push(devServerCheck);
 
+  // 8. Auth state freshness (only when a project is specified)
+  if (args.project) {
+    checks.push(runCheck('auth_state', () => {
+      const authDir = path.join(PROJECT_DIR, '.auth');
+      const primaryFile = path.join(authDir, 'vendor-owner.json');
+
+      if (!fs.existsSync(primaryFile)) {
+        return { status: 'fail', message: '.auth/vendor-owner.json missing — run mcp__playwright__run_auth_setup to generate it' };
+      }
+
+      const stat = fs.statSync(primaryFile);
+      const ageMs = Date.now() - stat.mtimeMs;
+      const ageHours = ageMs / (1000 * 60 * 60);
+
+      // Check cookie expiry from inside the JSON
+      try {
+        const state = JSON.parse(fs.readFileSync(primaryFile, 'utf-8'));
+        const cookies: Array<{ expires?: number }> = state.cookies || [];
+        const now = Date.now() / 1000;
+        const expired = cookies.filter(c => c.expires && c.expires > 0 && c.expires < now);
+        if (expired.length > 0) {
+          return { status: 'fail', message: `Auth cookies are expired (${expired.length} expired) — run mcp__playwright__run_auth_setup` };
+        }
+      } catch {
+        return { status: 'warn', message: `Could not parse .auth/vendor-owner.json (${ageHours.toFixed(1)}h old)` };
+      }
+
+      if (ageHours > 24) {
+        return { status: 'fail', message: `.auth files are ${ageHours.toFixed(1)}h old — run mcp__playwright__run_auth_setup` };
+      }
+      if (ageHours > 4) {
+        return { status: 'warn', message: `.auth files are ${ageHours.toFixed(1)}h old — may expire soon` };
+      }
+      return { status: 'pass', message: `.auth files are ${ageHours.toFixed(1)}h old — fresh` };
+    }));
+  } else {
+    checks.push({ name: 'auth_state', status: 'skip', message: 'No project specified — skipping auth state check', duration_ms: 0 });
+  }
+
   // Aggregate results
   for (const check of checks) {
     if (check.status === 'fail') {
@@ -807,6 +858,9 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
       case 'compilation':
         recoverySteps.push('Fix TypeScript compilation errors — run: npx playwright test --list to see details');
         break;
+      case 'auth_state':
+        recoverySteps.push('Run: mcp__playwright__run_auth_setup() to refresh auth cookies');
+        break;
     }
   }
 
@@ -818,6 +872,394 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
     warnings,
     recovery_steps: recoverySteps,
     total_duration_ms: Date.now() - startTime,
+  };
+}
+
+// ============================================================================
+// Auth Setup
+// ============================================================================
+
+/**
+ * Refresh Playwright auth state by running seed + auth-setup projects.
+ * Seeds test data first, then runs the auth-setup project to generate .auth/*.json files.
+ */
+async function runAuthSetup(args: RunAuthSetupArgs): Promise<RunAuthSetupResult> {
+  const startTime = Date.now();
+  const prereq = validatePrerequisites();
+  if (!prereq.ok) {
+    return {
+      success: false,
+      phases: [],
+      auth_files_refreshed: [],
+      total_duration_ms: 0,
+      error: `Credential check failed: ${prereq.errors.join('; ')}`,
+      output_summary: '',
+    };
+  }
+
+  const phases: RunAuthSetupResult['phases'] = [];
+
+  // Phase 1: Seed
+  const seedStart = Date.now();
+  try {
+    execFileSync('npx', ['playwright', 'test', '--project=seed'], {
+      cwd: PROJECT_DIR,
+      timeout: 60_000,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: process.env as Record<string, string>,
+    });
+    phases.push({ name: 'seed', success: true, message: 'Seed completed', duration_ms: Date.now() - seedStart });
+  } catch (err) {
+    const execErr = err as { stderr?: string; message?: string };
+    const msg = (execErr.stderr || execErr.message || 'unknown').slice(0, 300);
+    phases.push({ name: 'seed', success: false, message: `Seed failed: ${msg}`, duration_ms: Date.now() - seedStart });
+    return {
+      success: false,
+      phases,
+      auth_files_refreshed: [],
+      total_duration_ms: Date.now() - startTime,
+      error: 'Seed phase failed — auth-setup aborted',
+      output_summary: msg.slice(0, 500),
+    };
+  }
+
+  if (args.seed_only) {
+    return {
+      success: true,
+      phases,
+      auth_files_refreshed: [],
+      total_duration_ms: Date.now() - startTime,
+      output_summary: 'Seed only',
+    };
+  }
+
+  // Phase 2: Auth setup
+  const authStart = Date.now();
+  try {
+    const output = execFileSync('npx', ['playwright', 'test', '--project=auth-setup'], {
+      cwd: PROJECT_DIR,
+      timeout: 240_000, // 4 min: web server startup + 4 persona sign-ins
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: process.env as Record<string, string>,
+    });
+    phases.push({ name: 'auth-setup', success: true, message: 'Auth setup completed', duration_ms: Date.now() - authStart });
+
+    const authDir = path.join(PROJECT_DIR, '.auth');
+    const expected = ['vendor-owner.json', 'vendor-admin.json', 'vendor-dev.json', 'vendor-viewer.json'];
+    const refreshed = expected.filter(f => fs.existsSync(path.join(authDir, f)));
+
+    return {
+      success: true,
+      phases,
+      auth_files_refreshed: refreshed,
+      total_duration_ms: Date.now() - startTime,
+      output_summary: truncateOutput(output, 1000),
+    };
+  } catch (err) {
+    const execErr = err as { stderr?: string; stdout?: string; message?: string };
+    const msg = ((execErr.stderr || '') + (execErr.stdout || '') || execErr.message || 'unknown').slice(0, 500);
+    phases.push({ name: 'auth-setup', success: false, message: `Auth setup failed: ${msg.slice(0, 300)}`, duration_ms: Date.now() - authStart });
+    return {
+      success: false,
+      phases,
+      auth_files_refreshed: [],
+      total_duration_ms: Date.now() - startTime,
+      error: 'Auth setup phase failed',
+      output_summary: msg,
+    };
+  }
+}
+
+/**
+ * List all open tabs in the CDP-connected extension test browser.
+ * Requires --remote-debugging-port to be exposed in the fixture.
+ */
+async function listExtensionTabs(args: ListExtensionTabsArgs): Promise<ListExtensionTabsResult> {
+  const { port } = args;
+
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        hostname: 'localhost',
+        port,
+        path: '/json',
+        method: 'GET',
+        timeout: 5000,
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+        res.on('end', () => {
+          try {
+            const raw = JSON.parse(data) as Array<{
+              id: string;
+              title: string;
+              url: string;
+              type: string;
+            }>;
+            const tabs: ExtensionTab[] = raw
+              .filter(t => t.type === 'page' || t.type === 'background_page' || t.url.startsWith('chrome-extension://'))
+              .map(t => ({ id: t.id, title: t.title, url: t.url, type: t.type }));
+            resolve({
+              success: true,
+              tabs,
+              message: `Found ${tabs.length} tab(s) in extension browser (port ${port})`,
+            });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            resolve({ success: false, tabs: [], message: `Failed to parse CDP response: ${msg}` });
+          }
+        });
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({
+        success: false,
+        tabs: [],
+        message: `CDP endpoint at port ${port} did not respond within 5s. Is the extension browser running with --remote-debugging-port=${port}?`,
+      });
+    });
+    req.on('error', () => {
+      resolve({
+        success: false,
+        tabs: [],
+        message: `Cannot connect to CDP endpoint at port ${port}. Launch extension tests first (mcp__playwright__launch_ui_mode with project "demo" or "extension-manual").`,
+      });
+    });
+    req.end();
+  });
+}
+
+/**
+ * Take a screenshot of a specific tab in the CDP-connected extension test browser.
+ * Returns a base64 PNG image for inline rendering in Claude Code.
+ */
+async function screenshotExtensionTab(args: ScreenshotExtensionTabArgs): Promise<ScreenshotExtensionTabResult> {
+  const { port, url_pattern, tab_id } = args;
+
+  // Step 1: List tabs
+  const listResult = await listExtensionTabs({ port });
+  if (!listResult.success || listResult.tabs.length === 0) {
+    return {
+      success: false,
+      message: listResult.success
+        ? `No tabs found in extension browser at port ${port}`
+        : listResult.message,
+    };
+  }
+
+  // Step 2: Find the target tab
+  let targetTab: ExtensionTab | undefined;
+
+  if (tab_id) {
+    targetTab = listResult.tabs.find(t => t.id === tab_id);
+    if (!targetTab) {
+      return {
+        success: false,
+        message: `Tab with id "${tab_id}" not found. Available tabs: ${listResult.tabs.map(t => t.id).join(', ')}`,
+      };
+    }
+  } else if (url_pattern) {
+    targetTab = listResult.tabs.find(t => t.url.includes(url_pattern));
+    if (!targetTab) {
+      // Fall back to first tab
+      targetTab = listResult.tabs[0];
+    }
+  } else {
+    targetTab = listResult.tabs[0];
+  }
+
+  if (!targetTab) {
+    return { success: false, message: 'No tab selected' };
+  }
+
+  const selectedTab = targetTab;
+
+  // Step 3: Activate the tab via CDP HTTP endpoint
+  await new Promise<void>((resolve) => {
+    const req = http.request(
+      { hostname: 'localhost', port, path: `/json/activate/${selectedTab.id}`, method: 'GET', timeout: 3000 },
+      () => resolve()
+    );
+    req.on('error', () => resolve());
+    req.on('timeout', () => { req.destroy(); resolve(); });
+    req.end();
+  });
+
+  // Step 4: Get WebSocket debugger URL for this tab
+  const wsDebuggerUrl = await new Promise<string | null>((resolve) => {
+    const req = http.request(
+      { hostname: 'localhost', port, path: `/json`, method: 'GET', timeout: 5000 },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+        res.on('end', () => {
+          try {
+            const tabs = JSON.parse(data) as Array<{ id: string; webSocketDebuggerUrl?: string }>;
+            const tab = tabs.find(t => t.id === selectedTab.id);
+            resolve(tab?.webSocketDebuggerUrl ?? null);
+          } catch {
+            resolve(null);
+          }
+        });
+      }
+    );
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+
+  if (!wsDebuggerUrl) {
+    return {
+      success: false,
+      tab: selectedTab,
+      message: `Failed to get WebSocket debugger URL for tab "${selectedTab.title}" (${selectedTab.url})`,
+    };
+  }
+
+  // Step 5: Connect via raw WebSocket and capture screenshot via CDP Page.captureScreenshot
+  const base64png = await new Promise<string | null>((resolve) => {
+    const url = new URL(wsDebuggerUrl);
+    const wsPort = parseInt(url.port || String(port));
+
+    const key = crypto.randomBytes(16).toString('base64');
+    const socket = net.createConnection({ host: url.hostname, port: wsPort }, () => {
+      const handshake = [
+        `GET ${url.pathname} HTTP/1.1`,
+        `Host: ${url.host}`,
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        `Sec-WebSocket-Key: ${key}`,
+        'Sec-WebSocket-Version: 13',
+        '',
+        '',
+      ].join('\r\n');
+      socket.write(handshake);
+    });
+
+    let upgraded = false;
+    let buffer = Buffer.alloc(0);
+
+    socket.setTimeout(10000);
+    socket.on('timeout', () => { socket.destroy(); resolve(null); });
+    socket.on('error', () => resolve(null));
+
+    socket.on('data', (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
+
+      if (!upgraded) {
+        const headerEnd = buffer.indexOf('\r\n\r\n');
+        if (headerEnd === -1) return;
+        upgraded = true;
+        buffer = buffer.slice(headerEnd + 4);
+
+        // Send Page.captureScreenshot
+        const msg = JSON.stringify({ id: 1, method: 'Page.captureScreenshot', params: { format: 'png' } });
+        const msgBytes = Buffer.from(msg, 'utf8');
+        const mask = crypto.randomBytes(4);
+
+        // Build WebSocket frame: FIN=1, opcode=1 (text), MASK=1, payload length
+        let headerBuf: Buffer;
+        if (msgBytes.length < 126) {
+          headerBuf = Buffer.alloc(6); // 2 bytes header + 4 bytes mask
+          headerBuf[0] = 0x81;
+          headerBuf[1] = 0x80 | msgBytes.length;
+          mask.copy(headerBuf, 2);
+        } else if (msgBytes.length < 65536) {
+          headerBuf = Buffer.alloc(8); // 2 + 2 extended len + 4 mask
+          headerBuf[0] = 0x81;
+          headerBuf[1] = 0x80 | 126;
+          headerBuf.writeUInt16BE(msgBytes.length, 2);
+          mask.copy(headerBuf, 4);
+        } else {
+          headerBuf = Buffer.alloc(14); // 2 + 8 extended len + 4 mask
+          headerBuf[0] = 0x81;
+          headerBuf[1] = 0x80 | 127;
+          headerBuf.writeBigUInt64BE(BigInt(msgBytes.length), 2);
+          mask.copy(headerBuf, 10);
+        }
+
+        const maskedPayload = Buffer.alloc(msgBytes.length);
+        for (let i = 0; i < msgBytes.length; i++) {
+          maskedPayload[i] = msgBytes[i] ^ mask[i % 4];
+        }
+
+        socket.write(Buffer.concat([headerBuf, maskedPayload]));
+        return;
+      }
+
+      // Parse incoming WebSocket frame(s) — may arrive in chunks
+      while (buffer.length >= 2) {
+        const opcode = buffer[0] & 0x0f;
+
+        if (opcode === 0x08) {
+          // Connection close
+          socket.destroy();
+          resolve(null);
+          return;
+        }
+
+        const isMasked = (buffer[1] & 0x80) !== 0;
+        const payloadLenByte = buffer[1] & 0x7f;
+        let headerLen = 2 + (isMasked ? 4 : 0);
+        let actualLen = payloadLenByte;
+
+        if (payloadLenByte === 126) {
+          if (buffer.length < 4) return; // wait for more data
+          actualLen = buffer.readUInt16BE(2);
+          headerLen = 4 + (isMasked ? 4 : 0);
+        } else if (payloadLenByte === 127) {
+          if (buffer.length < 10) return; // wait for more data
+          actualLen = Number(buffer.readBigUInt64BE(2));
+          headerLen = 10 + (isMasked ? 4 : 0);
+        }
+
+        if (buffer.length < headerLen + actualLen) return; // wait for complete frame
+
+        let payload = buffer.slice(headerLen, headerLen + actualLen);
+
+        if (isMasked) {
+          const maskOffset = headerLen - 4;
+          const frameMask = buffer.slice(maskOffset, maskOffset + 4);
+          const unmasked = Buffer.alloc(payload.length);
+          for (let i = 0; i < payload.length; i++) {
+            unmasked[i] = payload[i] ^ frameMask[i % 4];
+          }
+          payload = unmasked;
+        }
+
+        buffer = buffer.slice(headerLen + actualLen);
+
+        try {
+          const msgParsed = JSON.parse(payload.toString('utf8')) as { result?: { data?: string } };
+          if (msgParsed.result?.data) {
+            socket.destroy();
+            resolve(msgParsed.result.data);
+            return;
+          }
+        } catch {
+          // Not valid JSON or not our message — continue reading
+        }
+      }
+    });
+  });
+
+  if (!base64png) {
+    return {
+      success: false,
+      tab: selectedTab,
+      message: `Failed to capture screenshot of tab "${selectedTab.title}" (${selectedTab.url})`,
+    };
+  }
+
+  return {
+    success: true,
+    tab: selectedTab,
+    image: base64png,
+    message: `Screenshot captured for tab "${selectedTab.title}" (${selectedTab.url})`,
   };
 }
 
@@ -886,10 +1328,40 @@ const tools: AnyToolHandler[] = [
     description:
       'Run comprehensive pre-flight validation before launching Playwright. ' +
       'Checks config file, dependencies, browsers, test files, credentials, ' +
-      'compilation, and dev server. ALWAYS run before launch_ui_mode or run_tests. ' +
+      'compilation, dev server, and auth state freshness. ALWAYS run before launch_ui_mode or run_tests. ' +
       'Returns structured result with pass/fail per check and recovery steps.',
     schema: PreflightCheckArgsSchema,
     handler: preflightCheck,
+  },
+  {
+    name: 'run_auth_setup',
+    description:
+      'Refresh Playwright auth state by running seed + auth-setup projects. ' +
+      'Run when .auth/*.json files are missing, expired, or stale (>4h old). ' +
+      'Automatically starts the dev server via playwright.config.ts webServer config. ' +
+      'Takes 2–4 minutes. Required before demo tests can authenticate.',
+    schema: RunAuthSetupArgsSchema,
+    handler: runAuthSetup,
+  },
+  {
+    name: 'list_extension_tabs',
+    description:
+      'List all open tabs in the CDP-connected extension test browser. ' +
+      'Requires the extension test browser to be running with --remote-debugging-port=9222. ' +
+      'Launch it first with launch_ui_mode({ project: "demo" }) and click a test. ' +
+      'Returns tab IDs, titles, and URLs — use with screenshot_extension_tab.',
+    schema: ListExtensionTabsArgsSchema,
+    handler: listExtensionTabs,
+  },
+  {
+    name: 'screenshot_extension_tab',
+    description:
+      'Take a screenshot of a specific tab in the extension test browser via CDP. ' +
+      'Returns a base64 PNG image that renders inline in Claude Code. ' +
+      'Use url_pattern to match by URL substring (e.g. "popup.html", "dashboard"). ' +
+      'Requires the extension test browser to be running (see launch_ui_mode with project "demo").',
+    schema: ScreenshotExtensionTabArgsSchema,
+    handler: screenshotExtensionTab,
   },
 ];
 

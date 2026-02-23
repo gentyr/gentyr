@@ -29,6 +29,7 @@ import {
   AccountOverviewSection,
   WorktreeSection,
   ProductManagerSection,
+  WorklogSection,
   type MetricBoxData,
 } from './components/index.js';
 import type { DashboardData } from './utils/data-reader.js';
@@ -43,6 +44,7 @@ import type { LoggingData } from './utils/logging-reader.js';
 import type { AccountOverviewData } from './utils/account-overview-reader.js';
 import type { WorktreeData } from './utils/worktree-reader.js';
 import type { ProductManagerData } from './utils/product-manager-reader.js';
+import type { WorklogData } from './utils/worklog-reader.js';
 import { formatNumber, formatDateTime, formatTime12h, formatDelta, calculateCacheRate } from './utils/formatters.js';
 
 interface AppProps {
@@ -58,6 +60,7 @@ interface AppProps {
   accountOverview: AccountOverviewData;
   worktrees: WorktreeData;
   productManager: ProductManagerData;
+  worklog: WorklogData;
 }
 
 function Header({ data }: { data: DashboardData }): React.ReactElement {
@@ -76,7 +79,7 @@ function Header({ data }: { data: DashboardData }): React.ReactElement {
   );
 }
 
-function QuotaSection({ data, width }: { data: DashboardData; width?: number | string }): React.ReactElement {
+function QuotaSection({ data, width, tip }: { data: DashboardData; width?: number | string; tip?: string }): React.ReactElement {
   const { verified_quota } = data;
   const { aggregate } = verified_quota;
 
@@ -86,7 +89,7 @@ function QuotaSection({ data, width }: { data: DashboardData; width?: number | s
   const title = `QUOTA & CAPACITY (${activeKeys} key${activeKeys !== 1 ? 's' : ''})`;
 
   return (
-    <Section title={title} width={width ?? "100%"}>
+    <Section title={title} width={width ?? "100%"} tip={tip}>
       {aggregate.error ? (
         <Text color="red">Error: {aggregate.error}</Text>
       ) : (
@@ -156,7 +159,7 @@ function SystemStatusSection({ data, width }: { data: DashboardData; width?: num
   );
 }
 
-function MetricsSummary({ data }: { data: DashboardData }): React.ReactElement {
+function MetricsSummary({ data, tip }: { data: DashboardData; tip?: string }): React.ReactElement {
   const { token_usage, sessions, agents, tasks, hooks, triage, pending_items, usage_projection } = data;
 
   const cacheRate = calculateCacheRate(token_usage.cache_read, token_usage.input);
@@ -237,13 +240,13 @@ function MetricsSummary({ data }: { data: DashboardData }): React.ReactElement {
   ];
 
   return (
-    <Section title="METRICS SUMMARY" borderColor="green">
+    <Section title="METRICS SUMMARY" borderColor="green" tip={tip}>
       <MetricGrid boxes={boxes} />
     </Section>
   );
 }
 
-export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager }: AppProps): React.ReactElement {
+export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager, worklog }: AppProps): React.ReactElement {
   // Compute explicit widths for side-by-side sections
   const termCols = process.stdout.columns || 80;
   const leftWidth = Math.floor((termCols - 1) / 2);  // -1 for gap
@@ -256,28 +259,28 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
 
       {/* Quota & System Status - side by side */}
       <Box marginTop={1} flexDirection="row" gap={1}>
-        <QuotaSection data={data} width={leftWidth} />
+        <QuotaSection data={data} width={leftWidth} tip="/show quota" />
         <SystemStatusSection data={data} width={rightWidth} />
       </Box>
 
       {/* Account Overview */}
       {accountOverview.hasData && (
         <Box marginTop={1}>
-          <AccountOverviewSection data={accountOverview} />
+          <AccountOverviewSection data={accountOverview} tip="/show accounts" />
         </Box>
       )}
 
       {/* Deputy CTO triage pipeline */}
       {deputyCto.hasData && (
         <Box marginTop={1}>
-          <DeputyCtoSection data={deputyCto} />
+          <DeputyCtoSection data={deputyCto} tip="/show deputy-cto" />
         </Box>
       )}
 
       {/* Usage Trends - line graphs (only if data available) */}
       {trajectory.hasData && (
         <Box marginTop={1}>
-          <UsageTrends trajectory={trajectory} />
+          <UsageTrends trajectory={trajectory} tip="/show usage" />
         </Box>
       )}
 
@@ -291,7 +294,7 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       {/* Automated Instances (only if data available) */}
       {automatedInstances.hasData && (
         <Box marginTop={1}>
-          <AutomatedInstances data={automatedInstances} />
+          <AutomatedInstances data={automatedInstances} tip="/show automations" />
         </Box>
       )}
 
@@ -305,35 +308,35 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       {/* Testing health */}
       {testing.hasData && (
         <Box marginTop={1}>
-          <TestingSection data={testing} />
+          <TestingSection data={testing} tip="/show testing" />
         </Box>
       )}
 
       {/* Deployments */}
       {deployments.hasData && (
         <Box marginTop={1}>
-          <DeploymentsSection data={deployments} />
+          <DeploymentsSection data={deployments} tip="/show deployments" />
         </Box>
       )}
 
       {/* Worktrees */}
       {worktrees.hasData && (
         <Box marginTop={1}>
-          <WorktreeSection data={worktrees} />
+          <WorktreeSection data={worktrees} tip="/show worktrees" />
         </Box>
       )}
 
       {/* Infrastructure */}
       {infra.hasData && (
         <Box marginTop={1}>
-          <InfraSection data={infra} deployments={deployments} />
+          <InfraSection data={infra} deployments={deployments} tip="/show infra" />
         </Box>
       )}
 
       {/* Logging */}
       {logging.hasData && (
         <Box marginTop={1}>
-          <LoggingSection data={logging} />
+          <LoggingSection data={logging} tip="/show logging" />
         </Box>
       )}
 
@@ -344,17 +347,24 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
 
       {/* Product-Market Fit */}
       <Box marginTop={1}>
-        <ProductManagerSection data={productManager} />
+        <ProductManagerSection data={productManager} tip="/show product-market-fit" />
       </Box>
+
+      {/* Worklog */}
+      {worklog.hasData && (
+        <Box marginTop={1}>
+          <WorklogSection data={worklog} tip="/show worklog -- standalone view with more entries" />
+        </Box>
+      )}
 
       {/* Timeline */}
       <Box marginTop={1}>
-        <Timeline events={timelineEvents} hours={data.hours} maxEvents={20} />
+        <Timeline events={timelineEvents} hours={data.hours} maxEvents={20} tip="/show timeline" />
       </Box>
 
       {/* Metrics Summary */}
       <Box marginTop={1}>
-        <MetricsSummary data={data} />
+        <MetricsSummary data={data} tip="/show tasks" />
       </Box>
     </Box>
   );

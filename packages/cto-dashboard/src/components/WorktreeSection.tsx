@@ -13,6 +13,7 @@ import type { WorktreeData, WorktreeEntry, PipelineStage } from '../utils/worktr
 
 export interface WorktreeSectionProps {
   data: WorktreeData;
+  tip?: string;
 }
 
 // ============================================================================
@@ -139,11 +140,11 @@ function CleanupHint({ count }: { count: number }): React.ReactElement {
 
 // ─── Main Section ───────────────────────────────────────────────────────
 
-export function WorktreeSection({ data }: WorktreeSectionProps): React.ReactElement | null {
+export function WorktreeSection({ data, tip }: WorktreeSectionProps): React.ReactElement | null {
   if (!data.hasData || data.worktrees.length === 0) return null;
 
   return (
-    <Section title="WORKTREES" borderColor="magenta">
+    <Section title="WORKTREES" borderColor="magenta" tip={tip}>
       <Box flexDirection="column" gap={1}>
         <WorktreeSummary summary={data.summary} />
         <WorktreeTable worktrees={data.worktrees} />

@@ -1,24 +1,19 @@
 <!-- HOOK:GENTYR:demo -->
 
-# /demo - Launch Product Demo with Preflight Validation
+# /demo - Launch Product Demo
 
-Launch Playwright in interactive UI mode with comprehensive pre-flight checks to prevent silent failures (empty GUI with zero tests).
+Detects environment deficiencies and escalates ALL failures as urgent deputy-CTO tasks.
+No failure is unrecoverable — agents can repair everything.
 
 ## Instructions
 
-Follow these steps exactly:
-
 ### Step 1: Display Readiness Summary
 
-Show the prefetch data summary to the user. Highlight any critical issues immediately.
+Show all prefetch data. Highlight any `criticalIssues` and auth staleness prominently. If `authState.isStale` is true, show a prominent warning that auth will need repair.
 
-### Step 2: Gate on Critical Failures
+### Step 2: Ask User for Demo Project
 
-If the prefetch data shows missing config, missing dependencies, or missing browsers, display the specific failures with recovery steps and **STOP** — do not proceed to project selection.
-
-### Step 3: Ask User for Demo Project
-
-Use `AskUserQuestion` to ask which demo to run:
+Use `AskUserQuestion`:
 
 | Option | Project | Description |
 |--------|---------|-------------|
@@ -27,53 +22,68 @@ Use `AskUserQuestion` to ask which demo to run:
 | Extension only | `extension-manual` | Browser extension scaffolds with `page.pause()` |
 | Vendor Owner walkthrough | `vendor-owner` | Full dashboard access as Owner persona |
 
-### Step 4: Run Full Preflight
+### Step 3: Run Preflight
 
-Call `mcp__playwright__preflight_check` with the selected project:
+Call `mcp__playwright__preflight_check({ project: "<selected>" })`.
 
+This runs all checks including auth_state freshness.
+
+### Step 4: Escalate ALL Failures as a Single Urgent Deputy-CTO Task
+
+If `ready: false` (any failures at all):
+
+1. Build a description covering every failed check. For each entry in `failures[]`, append specific repair instructions using this mapping:
+
+| Failed check | Repair instruction for deputy-CTO |
+|---|---|
+| `config_exists` | Create `playwright.config.ts` in project root. Investigate existing test structure. Assign to CODE-REVIEWER section with urgent priority. |
+| `dependencies_installed` | Run `pnpm add -D @playwright/test` via Bash. Verify `node_modules/@playwright/test` exists afterward. |
+| `browsers_installed` | Run `npx playwright install chromium` via Bash. Verify Chromium appears in `~/Library/Caches/ms-playwright/`. |
+| `test_files_exist` | Create test files for project `<project>`. Check `e2e/<dir>` structure. Assign to TEST-WRITER section with urgent priority. |
+| `credentials_valid` | Check 1Password vault mappings for SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY. Assign to INVESTIGATOR & PLANNER with urgent priority if not resolvable directly. |
+| `compilation` | Fix TypeScript errors. Run `npx playwright test --list --project=<project>` for details. Assign to CODE-REVIEWER section with urgent priority. |
+| `auth_state` | Call `mcp__playwright__run_auth_setup()`. Verify `success: true` and all 4 `.auth/*.json` files refreshed. If fails, assign to INVESTIGATOR & PLANNER section with urgent priority. |
+
+2. Call `mcp__todo-db__create_task` with:
+   - `section`: `"DEPUTY-CTO"`
+   - `priority`: `"urgent"`
+   - `assigned_by`: `"demo"`
+   - `title`: `"Repair Playwright environment — <N> preflight check(s) failed for project <project>"`
+   - `description`: Full description covering all failures and per-check repair instructions (see template below)
+
+Description template:
 ```
-mcp__playwright__preflight_check({ project: "<selected>" })
+Preflight failed for project '<project>'.
+
+Failed checks:
+- <check_name>: <message>
+(one line per failure)
+
+Repair instructions:
+<per-check instructions from table above, only for failed checks>
+
+After all repairs, verify: mcp__playwright__preflight_check({ project: '<project>' }) returns ready: true.
+Assign sub-tasks with priority: urgent as needed. Do NOT defer.
 ```
 
-This runs the comprehensive check including compilation validation (which prefetch skipped).
+3. Show the user a clear summary:
+   > "Found N issue(s): [list of failures]. Created urgent repair task #`<id>` for the deputy-CTO. A repair session will be dispatched within the next automation cycle (~10 min). Re-run `/demo` once repairs complete."
 
-### Step 5: Gate on Preflight Result
+4. **STOP** — do not launch.
 
-If the preflight result shows `ready: false`:
-- Display all failures from the `failures` array
-- Display all `recovery_steps`
-- **STOP** — do not launch
+### Step 5: Launch
 
-### Step 6: Launch
+If preflight passes (`ready: true`), call `mcp__playwright__launch_ui_mode({ project: "<selected>" })`.
 
-Call `mcp__playwright__launch_ui_mode` with the selected project:
+### Step 6: Report
 
-```
-mcp__playwright__launch_ui_mode({ project: "<selected>" })
-```
+Show project, PID, and tips:
+- Tests appear in the left sidebar — click to run
+- Filter bar searches test names
 
-### Step 7: Report Result
+## Rules
 
-Show the user:
-- Which project was launched
-- The PID of the Playwright process
-- Tip: Tests appear in the left sidebar — click to run individual tests
-- Tip: Use the filter bar to search for specific test names
-
-## Recovery Guide
-
-| Failure | Fix |
-|---------|-----|
-| Config missing | Create `playwright.config.ts` — see project E2E spec |
-| Dependencies missing | `pnpm add -D @playwright/test` |
-| Browsers missing | `npx playwright install chromium` |
-| Test files missing | Create test files in the project's test directory |
-| Credentials invalid | Check 1Password injection — MCP server needs `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` |
-| Compilation failed | Fix TypeScript errors — run `npx playwright test --list` for details |
-| Dev server unreachable | Start dev server (`pnpm dev`) or ensure `playwright.config.ts` has a `webServer` section |
-
-## Important
-
+- **Every failure goes to the deputy-CTO** — no failure is unrecoverable by an agent
 - **Never skip preflight** — Playwright GUI can open but display zero tests (silent failure)
-- **Never use CLI** — `npx playwright test` bypasses 1Password credential injection
-- **Always use MCP tools** — `preflight_check`, `launch_ui_mode`, `run_tests`
+- **Never use CLI** — `npx playwright test` bypasses credential injection
+- **Never launch when preflight fails** — always escalate first

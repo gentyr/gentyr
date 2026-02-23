@@ -21,3 +21,4 @@ export { LoggingSection, type LoggingSectionProps } from './LoggingSection.js';
 export { AccountOverviewSection, type AccountOverviewSectionProps } from './AccountOverviewSection.js';
 export { WorktreeSection, type WorktreeSectionProps } from './WorktreeSection.js';
 export { ProductManagerSection, type ProductManagerSectionProps } from './ProductManagerSection.js';
+export { WorklogSection, type WorklogSectionProps } from './WorklogSection.js';

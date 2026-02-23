@@ -19,6 +19,7 @@ import {
   GetReportArgsSchema,
   GetCoverageStatusArgsSchema,
   PreflightCheckArgsSchema,
+  RunAuthSetupArgsSchema,
   PLAYWRIGHT_PROJECTS,
 } from '../types.js';
 import { parseTestOutput, truncateOutput } from '../helpers.js';
@@ -433,6 +434,42 @@ describe('Playwright MCP Server - Zod Schemas', () => {
         expect(result.data.base_url).toBe('http://localhost:3000');
         expect(result.data.skip_compilation).toBe(true);
       }
+    });
+  });
+
+  describe('RunAuthSetupArgsSchema', () => {
+    it('should accept empty object', () => {
+      const result = RunAuthSetupArgsSchema.safeParse({});
+      expect(result.success).toBe(true);
+    });
+
+    it('should default seed_only to false', () => {
+      const result = RunAuthSetupArgsSchema.safeParse({});
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.seed_only).toBe(false);
+      }
+    });
+
+    it('should accept seed_only: true', () => {
+      const result = RunAuthSetupArgsSchema.safeParse({ seed_only: true });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.seed_only).toBe(true);
+      }
+    });
+
+    it('should accept seed_only: false', () => {
+      const result = RunAuthSetupArgsSchema.safeParse({ seed_only: false });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.seed_only).toBe(false);
+      }
+    });
+
+    it('should reject non-boolean seed_only', () => {
+      const result = RunAuthSetupArgsSchema.safeParse({ seed_only: 'yes' });
+      expect(result.success).toBe(false);
     });
   });
 });

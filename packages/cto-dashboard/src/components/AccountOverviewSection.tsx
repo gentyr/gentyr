@@ -18,6 +18,7 @@ import type { AccountOverviewData, AccountKeyDetail, AccountEvent } from '../uti
 
 export interface AccountOverviewSectionProps {
   data: AccountOverviewData;
+  tip?: string;
 }
 
 // Status priority: lower = better (used to pick best key per account)
@@ -149,12 +150,12 @@ function EventRow({ evt }: { evt: AccountEvent }): React.ReactElement {
   );
 }
 
-export function AccountOverviewSection({ data }: AccountOverviewSectionProps): React.ReactElement {
+export function AccountOverviewSection({ data, tip }: AccountOverviewSectionProps): React.ReactElement {
   const deduplicated = deduplicateAccounts(data.accounts);
   const title = `ACCOUNT OVERVIEW (${deduplicated.length} account${deduplicated.length !== 1 ? 's' : ''} | ${data.totalRotations24h} rotation${data.totalRotations24h !== 1 ? 's' : ''} 24h)`;
 
   return (
-    <Section title={title}>
+    <Section title={title} tip={tip}>
       <Box flexDirection="column">
         {deduplicated.map((account, idx) => (
           <AccountRow key={`${account.email}-${idx}`} account={account} />

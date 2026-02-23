@@ -19,6 +19,7 @@ export interface SectionProps {
   paddingY?: number;
   borderColor?: string;
   titleColor?: string;
+  tip?: string;
 }
 
 export function Section({
@@ -31,6 +32,7 @@ export function Section({
   paddingY = 0,
   borderColor = 'gray',
   titleColor = 'cyan',
+  tip,
 }: SectionProps): React.ReactElement {
   if (title) {
     // Compute fill width for the top border line
@@ -57,6 +59,11 @@ export function Section({
           paddingY={paddingY}
         >
           {children}
+          {tip && (
+            <Box paddingX={1}>
+              <Text color="gray" dimColor>Tip: {tip}</Text>
+            </Box>
+          )}
         </Box>
       </Box>
     );
@@ -74,6 +81,11 @@ export function Section({
       paddingY={paddingY}
     >
       {children}
+      {tip && (
+        <Box paddingX={1}>
+          <Text color="gray" dimColor>Tip: {tip}</Text>
+        </Box>
+      )}
     </Box>
   );
 }

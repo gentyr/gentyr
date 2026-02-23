@@ -27,11 +27,12 @@ import { getLoggingData } from './utils/logging-reader.js';
 import { getAccountOverviewData } from './utils/account-overview-reader.js';
 import { getWorktreeData } from './utils/worktree-reader.js';
 import { getProductManagerData } from './utils/product-manager-reader.js';
+import { getWorklogData } from './utils/worklog-reader.js';
 import {
   getMockDashboardData, getMockTimelineEvents, getMockTrajectory,
   getMockAutomatedInstances, getMockDeputyCto, getMockTesting,
   getMockDeployments, getMockInfra, getMockLogging, getMockAccountOverview,
-  getMockWorktrees, getMockProductManager,
+  getMockWorktrees, getMockProductManager, getMockWorklog,
 } from './mock-data.js';
 import {
   Section,
@@ -49,6 +50,7 @@ import {
   AccountOverviewSection,
   WorktreeSection,
   ProductManagerSection,
+  WorklogSection,
   type MetricBoxData,
 } from './components/index.js';
 import { formatNumber, calculateCacheRate } from './utils/formatters.js';
@@ -61,7 +63,7 @@ import { formatNumber, calculateCacheRate } from './utils/formatters.js';
 const SECTION_IDS = [
   'quota', 'accounts', 'deputy-cto', 'usage', 'automations',
   'testing', 'deployments', 'worktrees', 'infra', 'logging',
-  'timeline', 'tasks', 'product-market-fit',
+  'timeline', 'tasks', 'product-market-fit', 'worklog',
 ] as const;
 
 type SectionId = typeof SECTION_IDS[number];
@@ -274,6 +276,11 @@ async function renderSection(sectionId: SectionId, mock: boolean, hours: number,
       return <ProductManagerSection data={pm} />;
     }
 
+    case 'worklog': {
+      const worklog = mock ? getMockWorklog() : getWorklogData(limit ?? 20);
+      return <WorklogSection data={worklog} />;
+    }
+
     default: {
       const _exhaustive: never = sectionId;
       throw new Error(`Unhandled section: ${_exhaustive}`);
@@ -296,14 +303,14 @@ async function main(): Promise<void> {
         <Box flexDirection="column">{element}</Box>,
         { exitOnCtrlC: true }
       );
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 500));
       unmount();
       await waitUntilExit();
       return;
     }
 
     // Full dashboard mode
-    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager;
+    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager, worklog;
 
     if (mock) {
       // Use hardcoded mock data — no DB, API, or filesystem access
@@ -319,6 +326,7 @@ async function main(): Promise<void> {
       accountOverview = getMockAccountOverview();
       worktrees = getMockWorktrees();
       productManager = getMockProductManager();
+      worklog = getMockWorklog();
     } else {
       // Fetch data from all sources
       data = await getDashboardData(hours);
@@ -360,6 +368,7 @@ async function main(): Promise<void> {
       accountOverview = getAccountOverviewData();
       worktrees = getWorktreeData();
       productManager = getProductManagerData();
+      worklog = getWorklogData();
     }
 
     // Render dashboard (static mode - prints once and exits)
@@ -377,12 +386,13 @@ async function main(): Promise<void> {
         accountOverview={accountOverview}
         worktrees={worktrees}
         productManager={productManager}
+        worklog={worklog}
       />,
       { exitOnCtrlC: true }
     );
 
     // Wait a tick for render to complete, then exit
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, 500));
     unmount();
     await waitUntilExit();
 

@@ -89,7 +89,7 @@ This is what the CTO sees.
 ⏺ Bash(node packages/cto-dashboard/dist/index.js)
      ╭─ QUOTA & CAPACITY (2 keys) ─────────╮ ╭─ SYSTEM STATUS ──────────────────────╮
      │ 5-hour   ██████░░░░░░░░░░  35%      │ │ Deputy CTO: ENABLED                  │
-     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 1:15PM (3m… │
+     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 9:19PM (3m… │
      │ Rotations (24h): 2                  │ │ Protection: PROTECTED                │
      │                                     │ │ Commits:    BLOCKED                  │
      ╰─────────────────────────────────────╯ ╰──────────────────────────────────────╯
@@ -256,9 +256,15 @@ AI personas test the product as real users. Four modes: GUI, CLI, API, SDK. No s
 
 Zero secrets on disk. Zero secrets in agent context. 1Password is the single source of truth. Agents request secrets by name. The server resolves `op://` references internally. Output is sanitized to replace accidentally leaked values with `[REDACTED]`. The executable allowlist prevents arbitrary command injection.
 
+## local plugins
+
+GENTYR supports local-only extensions via a gitignored `plugins/` directory. Each plugin is a self-contained Node package with a `config.json` (managed via MCP tools) and an optional MCP server that auto-registers in `.mcp.json` when working in the gentyr repo. The plugin-manager MCP server (`list_plugins`, `get_plugin_config`, `set_plugin_config`, `add_plugin_mapping`, `remove_plugin_mapping`) is the entry point for managing plugin configuration.
+
+The Notion plugin (`plugins/notion/`) syncs GENTYR's AI user feedback data — personas and review sessions — to Notion databases via a 60-second launchd daemon.
+
 ## components
 
-30 MCP servers. 11 agents. 30 hooks. 11 commands. CLI dashboard.
+30 MCP servers. 11 agents. 30 hooks. 11 commands. CLI dashboard. Plugin system with extensible local MCP servers.
 
 ## documentation
 

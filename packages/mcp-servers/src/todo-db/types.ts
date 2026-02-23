@@ -82,6 +82,24 @@ export const GetCompletedSinceArgsSchema = z.object({
     .describe('Hours to look back (1-168, default 24)'),
 });
 
+export const SummarizeWorkArgsSchema = z.object({
+  task_id: z.string().optional()
+    .describe('Task UUID. Auto-resolved from CLAUDE_AGENT_ID env -> agent-tracker when omitted.'),
+  summary: z.string().describe('Summary of what was accomplished'),
+  success: z.boolean().describe('Whether the task was completed successfully'),
+});
+
+export const GetWorklogArgsSchema = z.object({
+  hours: z.coerce.number().min(1).max(720).optional().default(24)
+    .describe('Hours to look back (1-720, default 24)'),
+  section: z.enum(VALID_SECTIONS).optional()
+    .describe('Filter by section'),
+  limit: z.coerce.number().min(1).max(100).optional().default(20)
+    .describe('Maximum entries to return (1-100, default 20)'),
+  include_metrics: z.boolean().optional().default(true)
+    .describe('Include 30-day rolling metrics'),
+});
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -97,6 +115,8 @@ export type CleanupArgs = z.infer<typeof CleanupArgsSchema>;
 export type GetSessionsForTaskArgs = z.infer<typeof GetSessionsForTaskArgsSchema>;
 export type BrowseSessionArgs = z.infer<typeof BrowseSessionArgsSchema>;
 export type GetCompletedSinceArgs = z.infer<typeof GetCompletedSinceArgsSchema>;
+export type SummarizeWorkArgs = z.infer<typeof SummarizeWorkArgsSchema>;
+export type GetWorklogArgs = z.infer<typeof GetWorklogArgsSchema>;
 
 export interface TaskRecord {
   id: string;
@@ -220,4 +240,56 @@ export interface GetCompletedSinceResult {
   since: string;
   total: number;
   by_section: CompletedSinceCount[];
+}
+
+export interface WorklogEntry {
+  id: string;
+  task_id: string;
+  session_id: string | null;
+  agent_id: string | null;
+  section: string;
+  title: string;
+  assigned_by: string | null;
+  summary: string;
+  success: boolean;
+  timestamp_assigned: string | null;
+  timestamp_started: string | null;
+  timestamp_completed: string;
+  duration_assign_to_start_ms: number | null;
+  duration_start_to_complete_ms: number | null;
+  duration_assign_to_complete_ms: number | null;
+  tokens_input: number | null;
+  tokens_output: number | null;
+  tokens_cache_read: number | null;
+  tokens_cache_creation: number | null;
+  tokens_total: number | null;
+  created_at: string;
+}
+
+export interface WorklogMetrics {
+  coverage_entries: number;
+  coverage_completed_tasks: number;
+  coverage_pct: number;
+  success_rate_pct: number | null;
+  avg_time_to_start_ms: number | null;
+  avg_time_to_complete_from_start_ms: number | null;
+  avg_time_to_complete_from_assign_ms: number | null;
+  avg_tokens_per_task: number | null;
+  cache_hit_pct: number | null;
+}
+
+export interface SummarizeWorkResult {
+  id: string;
+  task_id: string;
+  section: string;
+  title: string;
+  success: boolean;
+  tokens_total: number | null;
+  duration_assign_to_complete_ms: number | null;
+}
+
+export interface GetWorklogResult {
+  entries: WorklogEntry[];
+  metrics: WorklogMetrics | null;
+  total: number;
 }

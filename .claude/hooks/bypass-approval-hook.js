@@ -33,6 +33,12 @@ const TOKEN_EXPIRY_MS = 5 * 60 * 1000;
 // Pattern to match: APPROVE BYPASS XXXXXX (6 alphanumeric chars)
 const APPROVAL_PATTERN = /APPROVE\s+BYPASS\s+([A-Z0-9]{6})/i;
 
+// Pattern to match: DENY BYPASS XXXXXX (6 alphanumeric chars)
+const DENY_PATTERN = /DENY\s+BYPASS\s+([A-Z0-9]{6})/i;
+
+// Pattern to match: CLEAR ALL BYPASS
+const CLEAR_ALL_BYPASS_PATTERN = /CLEAR\s+ALL\s+BYPASS/i;
+
 // Pattern to match: APPROVE HOTFIX XXXXXX (6 alphanumeric chars)
 const HOTFIX_PATTERN = /APPROVE\s+HOTFIX\s+([A-Z0-9]{6})/i;
 const HOTFIX_APPROVAL_TOKEN_FILE = path.join(PROJECT_DIR, '.claude', 'hotfix-approval-token.json');
@@ -136,6 +142,68 @@ async function validateHotfixCode(code) {
     };
   } catch (err) {
     return { valid: false, reason: `Database error: ${err.message}` };
+  }
+}
+
+/**
+ * Deny a single pending bypass-request by its code.
+ * Opens the database read-write to DELETE the matching row.
+ */
+async function denyBypassRequest(code) {
+  try {
+    const Database = (await import('better-sqlite3')).default;
+
+    if (!fs.existsSync(DEPUTY_CTO_DB)) {
+      return { denied: false, reason: 'Database not found' };
+    }
+
+    const db = new Database(DEPUTY_CTO_DB);
+
+    const question = db.prepare(`
+      SELECT id, title FROM questions
+      WHERE type = 'bypass-request'
+      AND status = 'pending'
+      AND context = ?
+    `).get(code);
+
+    if (!question) {
+      db.close();
+      return { denied: false, reason: 'No pending bypass request with this code' };
+    }
+
+    db.prepare('DELETE FROM questions WHERE id = ?').run(question.id);
+    db.close();
+
+    return { denied: true, title: question.title, reason: 'Denied by CTO' };
+  } catch (err) {
+    return { denied: false, reason: `Database error: ${err.message}` };
+  }
+}
+
+/**
+ * Clear ALL pending bypass-request questions.
+ * Opens the database read-write to DELETE all matching rows.
+ */
+async function clearAllBypassRequests() {
+  try {
+    const Database = (await import('better-sqlite3')).default;
+
+    if (!fs.existsSync(DEPUTY_CTO_DB)) {
+      return { cleared: false, count: 0, reason: 'Database not found' };
+    }
+
+    const db = new Database(DEPUTY_CTO_DB);
+
+    const result = db.prepare(`
+      DELETE FROM questions
+      WHERE type = 'bypass-request' AND status = 'pending'
+    `).run();
+
+    db.close();
+
+    return { cleared: true, count: result.changes };
+  } catch (err) {
+    return { cleared: false, count: 0, reason: `Database error: ${err.message}` };
   }
 }
 
@@ -274,6 +342,41 @@ async function main() {
       console.error(`[bypass-approval] Bypass approved for code ${code}`);
       console.error(`[bypass-approval] Request: ${validation.title}`);
       console.error(`[bypass-approval] Token valid for 5 minutes`);
+    }
+
+    process.exit(0);
+  }
+
+  // Check if message matches CLEAR ALL BYPASS pattern (before DENY to avoid substring collisions)
+  const clearAllMatch = userMessage.match(CLEAR_ALL_BYPASS_PATTERN);
+
+  if (clearAllMatch) {
+    const result = await clearAllBypassRequests();
+
+    if (!result.cleared) {
+      console.error(`[bypass-approval] CLEAR ALL BYPASS failed: ${result.reason}`);
+    } else if (result.count === 0) {
+      console.error(`[bypass-approval] No pending bypass requests to clear`);
+    } else {
+      console.error(`[bypass-approval] Cleared ${result.count} pending bypass request(s)`);
+    }
+
+    process.exit(0);
+  }
+
+  // Check if message matches DENY BYPASS pattern
+  const denyMatch = userMessage.match(DENY_PATTERN);
+
+  if (denyMatch) {
+    const code = denyMatch[1].toUpperCase();
+
+    const result = await denyBypassRequest(code);
+
+    if (!result.denied) {
+      console.error(`[bypass-approval] DENY BYPASS "${code}" failed: ${result.reason}`);
+    } else {
+      console.error(`[bypass-approval] Bypass DENIED for code ${code}`);
+      console.error(`[bypass-approval] Request: ${result.title}`);
     }
 
     process.exit(0);

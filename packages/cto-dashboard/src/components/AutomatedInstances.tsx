@@ -19,6 +19,7 @@ import { formatNumber } from '../utils/formatters.js';
 
 export interface AutomatedInstancesProps {
   data: AutomatedInstancesData;
+  tip?: string;
 }
 
 // Column widths for alignment
@@ -143,7 +144,7 @@ function Footer({ usageTarget, currentProjected, adjustingDirection }: FooterPro
   );
 }
 
-export function AutomatedInstances({ data }: AutomatedInstancesProps): React.ReactElement | null {
+export function AutomatedInstances({ data, tip }: AutomatedInstancesProps): React.ReactElement | null {
   if (!data.hasData || data.instances.length === 0) {
     return null;
   }
@@ -153,7 +154,7 @@ export function AutomatedInstances({ data }: AutomatedInstancesProps): React.Rea
   const eventTriggered = data.instances.filter(i => i.trigger !== 'scheduled');
 
   return (
-    <Section title="AUTOMATED INSTANCES" borderColor="magenta" width="100%">
+    <Section title="AUTOMATED INSTANCES" borderColor="magenta" width="100%" tip={tip}>
       <Box flexDirection="column">
         {/* Header */}
         <HeaderRow />

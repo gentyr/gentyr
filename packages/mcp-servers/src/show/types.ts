@@ -10,7 +10,7 @@ import { z } from 'zod';
 export const SECTION_IDS = [
   'quota', 'accounts', 'deputy-cto', 'usage', 'automations',
   'testing', 'deployments', 'worktrees', 'infra', 'logging',
-  'timeline', 'tasks', 'product-market-fit',
+  'timeline', 'tasks', 'product-market-fit', 'worklog',
 ] as const;
 
 export type SectionId = typeof SECTION_IDS[number];
@@ -36,4 +36,5 @@ export const SECTION_DESCRIPTIONS: Record<SectionId, string> = {
   timeline: 'Show chronological timeline of recent system events',
   tasks: 'Show task metrics (pending, active, completed) and token usage summary',
   'product-market-fit': 'Show product-market-fit analysis with full section content and persona compliance',
+  worklog: 'Show agent worklog entries with durations, tokens, and 30-day rolling metrics',
 };

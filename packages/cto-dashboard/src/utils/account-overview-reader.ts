@@ -234,8 +234,7 @@ export function getAccountOverviewData(): AccountOverviewData {
     // Skip events for keys explicitly marked invalid (revoked credentials)
     if (keyData?.status === 'invalid') continue;
 
-    // Access entry-level account_email (may be set by hooks that embed it)
-    const entryEmail = (entry as Record<string, unknown>).account_email as string | null | undefined;
+    const entryEmail = entry.account_email;
     const desc = deriveDescription(entry.event, entry.reason, keyId, entryEmail, keyData);
     if (!desc) continue;
 

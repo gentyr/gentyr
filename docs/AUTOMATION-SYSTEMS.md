@@ -66,7 +66,9 @@ Discovered -> Active -> [High Usage 90%+] -> [Exhausted 100%] -> [Token Expires]
                                                                 /            \
                                                          Success          invalid_grant
                                                             |                  |
-                                                         Active            Invalid -> [7d] -> Pruned
+                                                         Active            Invalid -> [immediate] -> Pruned
+                                                                                           |
+                                                                               account_auth_failed event logged
 ```
 
 ### Key Selection Algorithm (`selectActiveKey`)
@@ -237,11 +239,13 @@ Runs after every tool call, throttled to 5-minute intervals.
 1. **Throttle check**: Skip if last check < 5 min ago
 2. **Anti-loop check**: Skip if rotated < 10 min ago
 3. **Health check**: Query Anthropic usage API for active key
-4. **Step 4b - Proactive refresh**: Refresh expired AND approaching-expiry standby tokens
-5. **Step 4c - Pre-expiry swap**: If active key near expiry, write standby to Keychain (no restart)
-6. **Rotation check**: If max usage >= 95%, select better key and rotate
-7. **Seamless session handling**: write to Keychain, continue with `continue: true` for all sessions, credentials adopted at SRA/r6T
-8. **Post-rotation audit**: Log rotation event to `rotation-audit.log` for health tracking
+4. **Step 4a0 - Nearly depleted event**: If max usage >= 95% and not yet exhausted, fires `account_nearly_depleted` rotation log event (5-hour per-key cooldown prevents re-firing on every check cycle)
+5. **Step 4b - Proactive refresh**: Refresh expired AND approaching-expiry standby tokens
+6. **Step 4c - Pre-expiry swap**: If active key near expiry, write standby to Keychain (no restart)
+7. **Rotation check**: If max usage >= 95%, select better key and rotate
+8. **Seamless session handling**: write to Keychain, continue with `continue: true` for all sessions, credentials adopted at SRA/r6T
+9. **Post-rotation audit**: Log rotation event to `rotation-audit.log` for health tracking
+10. **Quota refresh detection**: If previously exhausted key's usage drops below 100%, marks status `active` and fires `account_quota_refreshed` event (also checked in `api-key-watcher.js` at SessionStart)
 
 ### Key Thresholds
 
@@ -340,7 +344,7 @@ Shared library used by api-key-watcher, hourly-automation, credential-sync-hook,
 4. Resolve account profiles for keys with `account_uuid === null` — calls `fetchAccountProfile()` for each active/exhausted key missing a UUID; non-fatal, retried on next sync
 5. Set initial `active_key_id` if not set
 6. Pre-expiry restartless swap if active key near expiry
-7. Prune dead keys (invalid > 7 days, never prunes active key)
+7. Prune dead keys (`status: 'invalid'`, immediately — no age threshold); fires `account_auth_failed` rotation log event for each pruned key before removal; event is preserved in rotation_log even after the key entry is deleted; never prunes the active key
 8. Write state and return `{ keysAdded, keysUpdated, tokensRefreshed }`
 
 ### Credential Sources (priority order)
@@ -350,6 +354,21 @@ Shared library used by api-key-watcher, hourly-automation, credential-sync-hook,
 3. `~/.claude/.credentials.json` file
 
 All sources are read (not short-circuited) and merged into rotation state.
+
+### Rotation Log Event Types
+
+All events are appended to `rotation_log` in `~/.claude/api-key-rotation.json`. The CTO dashboard's ACCOUNT OVERVIEW section shows a curated subset (last 24h, max 20 entries, newest first) filtered by the `ALLOWED_EVENTS` whitelist in `account-overview-reader.ts`:
+
+| Event | Source | Color | Meaning |
+|-------|--------|-------|---------|
+| `key_added` | api-key-watcher, syncKeys | green | New account registered (token-refresh re-additions filtered) |
+| `key_switched` | quota-monitor, api-key-watcher | cyan | Active account changed by rotation |
+| `key_exhausted` | api-key-watcher | red | Account reached 100% in any quota bucket |
+| `account_nearly_depleted` | quota-monitor | yellow | Active account hit 95%; 5-hour per-key cooldown |
+| `account_quota_refreshed` | quota-monitor, api-key-watcher | green | Previously exhausted account dropped below 100% |
+| `account_auth_failed` | pruneDeadKeys (key-sync) | red | Account lost last key to invalid_grant; event preserved after key deletion |
+
+Other event types (`token_refreshed`, `health_check`, etc.) are logged for debugging but filtered from the dashboard display.
 
 ---
 

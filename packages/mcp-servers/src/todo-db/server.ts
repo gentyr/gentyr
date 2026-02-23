@@ -28,6 +28,8 @@ import {
   GetSessionsForTaskArgsSchema,
   BrowseSessionArgsSchema,
   GetCompletedSinceArgsSchema,
+  SummarizeWorkArgsSchema,
+  GetWorklogArgsSchema,
   VALID_SECTIONS,
   SECTION_CREATOR_RESTRICTIONS,
   FORCED_FOLLOWUP_CREATORS,
@@ -40,6 +42,8 @@ import {
   type GetSessionsForTaskArgs,
   type BrowseSessionArgs,
   type GetCompletedSinceArgs,
+  type SummarizeWorkArgs,
+  type GetWorklogArgs,
   type ListTasksResult,
   type TaskResponse,
   type TaskRecord,
@@ -57,6 +61,10 @@ import {
   type ErrorResult,
   type ValidSection,
   type TaskPriority,
+  type WorklogEntry,
+  type WorklogMetrics,
+  type SummarizeWorkResult,
+  type GetWorklogResult,
 } from './types.js';
 
 // ============================================================================
@@ -65,6 +73,7 @@ import {
 
 const PROJECT_DIR = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd());
 const DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
+const WORKLOG_DB_PATH = path.join(PROJECT_DIR, '.claude', 'worklog.db');
 const SESSION_WINDOW_MINUTES = 5;
 
 // ============================================================================
@@ -103,6 +112,34 @@ CREATE TABLE IF NOT EXISTS maintenance_state (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+`;
+
+const WORKLOG_SCHEMA = `
+CREATE TABLE IF NOT EXISTS worklog_entries (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    session_id TEXT,
+    agent_id TEXT,
+    section TEXT NOT NULL,
+    title TEXT NOT NULL,
+    assigned_by TEXT,
+    summary TEXT NOT NULL,
+    success INTEGER NOT NULL DEFAULT 1,
+    timestamp_assigned TEXT,
+    timestamp_started TEXT,
+    timestamp_completed TEXT NOT NULL,
+    duration_assign_to_start_ms INTEGER,
+    duration_start_to_complete_ms INTEGER,
+    duration_assign_to_complete_ms INTEGER,
+    tokens_input INTEGER,
+    tokens_output INTEGER,
+    tokens_cache_read INTEGER,
+    tokens_cache_creation INTEGER,
+    tokens_total INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_worklog_task_id ON worklog_entries(task_id);
+CREATE INDEX IF NOT EXISTS idx_worklog_created_at ON worklog_entries(created_at);
 `;
 
 // ============================================================================
@@ -179,6 +216,34 @@ function closeDb(): void {
   }
 }
 
+let _worklogDb: Database.Database | null = null;
+
+function initializeWorklogDatabase(): Database.Database {
+  const dbDir = path.dirname(WORKLOG_DB_PATH);
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
+
+  const db = new Database(WORKLOG_DB_PATH);
+  db.pragma('journal_mode = WAL');
+  db.exec(WORKLOG_SCHEMA);
+  return db;
+}
+
+function getWorklogDb(): Database.Database {
+  if (!_worklogDb) {
+    _worklogDb = initializeWorklogDatabase();
+  }
+  return _worklogDb;
+}
+
+function closeWorklogDb(): void {
+  if (_worklogDb) {
+    _worklogDb.close();
+    _worklogDb = null;
+  }
+}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -218,6 +283,70 @@ If fully completed, mark this follow-up task as complete.
 
 [Original Task]:
 ${originalTask}`;
+}
+
+// ============================================================================
+// Worklog Helpers
+// ============================================================================
+
+function extractTokensFromSession(sessionFile: string): { input: number; output: number; cache_read: number; cache_creation: number; total: number } | null {
+  try {
+    if (!fs.existsSync(sessionFile)) return null;
+    const content = fs.readFileSync(sessionFile, 'utf8');
+    const lines = content.trim().split('\n');
+
+    let input = 0;
+    let output = 0;
+    let cache_read = 0;
+    let cache_creation = 0;
+
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        const usage = entry?.message?.usage;
+        if (usage) {
+          input += usage.input_tokens || 0;
+          output += usage.output_tokens || 0;
+          cache_read += usage.cache_read_input_tokens || 0;
+          cache_creation += usage.cache_creation_input_tokens || 0;
+        }
+      } catch {
+        // Skip unparseable lines
+      }
+    }
+
+    const total = input + output;
+    if (total === 0) return null;
+    return { input, output, cache_read, cache_creation, total };
+  } catch {
+    return null;
+  }
+}
+
+function resolveAgentTaskId(): string | null {
+  const agentId = process.env.CLAUDE_AGENT_ID;
+  if (!agentId) return null;
+
+  try {
+    const historyPath = path.join(PROJECT_DIR, '.claude', 'agent-tracker-history.json');
+    if (!fs.existsSync(historyPath)) return null;
+    const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+
+    // Search through agents for matching agentId
+    for (const entry of Object.values(history) as Array<{ metadata?: { taskId?: string } }>) {
+      if (entry?.metadata?.taskId) {
+        return entry.metadata.taskId;
+      }
+    }
+
+    // Also try by agent ID key
+    const record = history[agentId];
+    if (record?.metadata?.taskId) return record.metadata.taskId;
+
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 // ============================================================================
@@ -709,6 +838,237 @@ function getCompletedSince(args: GetCompletedSinceArgs): GetCompletedSinceResult
   };
 }
 
+function summarizeWork(args: SummarizeWorkArgs): SummarizeWorkResult | ErrorResult {
+  // Resolve task_id
+  let taskId = args.task_id;
+  if (!taskId) {
+    taskId = resolveAgentTaskId() ?? undefined;
+    if (!taskId) {
+      return { error: 'Could not resolve task_id. Provide it explicitly or ensure CLAUDE_AGENT_ID is set with agent-tracker metadata.' };
+    }
+  }
+
+  const db = getDb();
+  const worklogDb = getWorklogDb();
+
+  // Look up task from todo.db
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as TaskRecord | undefined;
+
+  const section = task?.section ?? 'UNKNOWN';
+  const title = task?.title ?? 'Unknown task';
+  const assigned_by = task?.assigned_by ?? null;
+  const timestamp_assigned = task?.created_at ?? null;
+  const timestamp_started = task?.started_at ?? null;
+  const timestamp_completed = task?.completed_at ?? new Date().toISOString();
+
+  // Compute durations
+  let duration_assign_to_start_ms: number | null = null;
+  let duration_start_to_complete_ms: number | null = null;
+  let duration_assign_to_complete_ms: number | null = null;
+
+  if (timestamp_assigned && timestamp_started) {
+    duration_assign_to_start_ms = new Date(timestamp_started).getTime() - new Date(timestamp_assigned).getTime();
+  }
+  if (timestamp_started && timestamp_completed) {
+    duration_start_to_complete_ms = new Date(timestamp_completed).getTime() - new Date(timestamp_started).getTime();
+  }
+  if (timestamp_assigned && timestamp_completed) {
+    duration_assign_to_complete_ms = new Date(timestamp_completed).getTime() - new Date(timestamp_assigned).getTime();
+  }
+
+  // Attempt token extraction
+  let tokens: { input: number; output: number; cache_read: number; cache_creation: number; total: number } | null = null;
+
+  // Try to find session file via agent-tracker
+  const agentId = process.env.CLAUDE_AGENT_ID;
+  if (agentId) {
+    try {
+      const historyPath = path.join(PROJECT_DIR, '.claude', 'agent-tracker-history.json');
+      if (fs.existsSync(historyPath)) {
+        const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+        const record = history[agentId];
+        if (record?.sessionFile && fs.existsSync(record.sessionFile)) {
+          tokens = extractTokensFromSession(record.sessionFile);
+        }
+      }
+    } catch {
+      // Non-fatal: tokens will be null
+    }
+  }
+
+  // If no tokens from agent-tracker, try finding session by timestamp proximity
+  if (!tokens && timestamp_completed) {
+    try {
+      const projectPath = PROJECT_DIR.replace(/[^a-zA-Z0-9]/g, '-');
+      const sessionDir = path.join(os.homedir(), '.claude', 'projects', projectPath);
+      if (fs.existsSync(sessionDir)) {
+        const completionTime = new Date(timestamp_completed).getTime();
+        const files = fs.readdirSync(sessionDir)
+          .filter(f => f.endsWith('.jsonl'))
+          .map(f => {
+            const stat = fs.statSync(path.join(sessionDir, f));
+            return { file: f, mtime: stat.mtime.getTime(), diff: Math.abs(stat.mtime.getTime() - completionTime) };
+          })
+          .filter(f => f.diff <= 5 * 60 * 1000)
+          .sort((a, b) => a.diff - b.diff);
+
+        if (files.length > 0) {
+          tokens = extractTokensFromSession(path.join(sessionDir, files[0].file));
+        }
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  const session_id = process.env.CLAUDE_SESSION_ID ?? null;
+
+  const id = randomUUID();
+  const now = new Date().toISOString();
+
+  worklogDb.prepare(`
+    INSERT INTO worklog_entries (
+      id, task_id, session_id, agent_id, section, title, assigned_by,
+      summary, success, timestamp_assigned, timestamp_started, timestamp_completed,
+      duration_assign_to_start_ms, duration_start_to_complete_ms, duration_assign_to_complete_ms,
+      tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_total,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, taskId, session_id, agentId ?? null, section, title, assigned_by,
+    args.summary, args.success ? 1 : 0, timestamp_assigned, timestamp_started, timestamp_completed,
+    duration_assign_to_start_ms, duration_start_to_complete_ms, duration_assign_to_complete_ms,
+    tokens?.input ?? null, tokens?.output ?? null, tokens?.cache_read ?? null, tokens?.cache_creation ?? null, tokens?.total ?? null,
+    now
+  );
+
+  return {
+    id,
+    task_id: taskId,
+    section,
+    title,
+    success: args.success,
+    tokens_total: tokens?.total ?? null,
+    duration_assign_to_complete_ms,
+  };
+}
+
+function getWorklog(args: GetWorklogArgs): GetWorklogResult {
+  const worklogDb = getWorklogDb();
+  const hours = args.hours ?? 24;
+  const limit = args.limit ?? 20;
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+
+  let sql = 'SELECT * FROM worklog_entries WHERE created_at >= ?';
+  const params: unknown[] = [since];
+
+  if (args.section) {
+    sql += ' AND section = ?';
+    params.push(args.section);
+  }
+
+  sql += ' ORDER BY created_at DESC LIMIT ?';
+  params.push(limit);
+
+  interface WorklogRow {
+    id: string;
+    task_id: string;
+    session_id: string | null;
+    agent_id: string | null;
+    section: string;
+    title: string;
+    assigned_by: string | null;
+    summary: string;
+    success: number;
+    timestamp_assigned: string | null;
+    timestamp_started: string | null;
+    timestamp_completed: string;
+    duration_assign_to_start_ms: number | null;
+    duration_start_to_complete_ms: number | null;
+    duration_assign_to_complete_ms: number | null;
+    tokens_input: number | null;
+    tokens_output: number | null;
+    tokens_cache_read: number | null;
+    tokens_cache_creation: number | null;
+    tokens_total: number | null;
+    created_at: string;
+  }
+
+  const rows = worklogDb.prepare(sql).all(...params) as WorklogRow[];
+
+  const entries: WorklogEntry[] = rows.map(row => ({
+    ...row,
+    success: row.success === 1,
+  }));
+
+  let metrics: WorklogMetrics | null = null;
+
+  if (args.include_metrics !== false) {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    interface MetricRow {
+      total_entries: number;
+      successful_entries: number;
+      avg_assign_to_start: number | null;
+      avg_start_to_complete: number | null;
+      avg_assign_to_complete: number | null;
+      avg_tokens: number | null;
+      sum_cache_read: number | null;
+      sum_input: number | null;
+    }
+
+    const metricRow = worklogDb.prepare(`
+      SELECT
+        COUNT(*) as total_entries,
+        SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successful_entries,
+        AVG(duration_assign_to_start_ms) as avg_assign_to_start,
+        AVG(duration_start_to_complete_ms) as avg_start_to_complete,
+        AVG(duration_assign_to_complete_ms) as avg_assign_to_complete,
+        AVG(tokens_total) as avg_tokens,
+        SUM(tokens_cache_read) as sum_cache_read,
+        SUM(tokens_input) as sum_input
+      FROM worklog_entries
+      WHERE created_at >= ?
+    `).get(thirtyDaysAgo) as MetricRow;
+
+    // Count completed tasks from todo.db for coverage
+    const db = getDb();
+    const thirtyDaysAgoTimestamp = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
+    interface CountResult { count: number }
+    const completedCount = (db.prepare(
+      "SELECT COUNT(*) as count FROM tasks WHERE status = 'completed' AND completed_timestamp >= ?"
+    ).get(thirtyDaysAgoTimestamp) as CountResult).count;
+
+    const cacheHitPct = metricRow.sum_input && metricRow.sum_cache_read
+      ? Math.round((metricRow.sum_cache_read / metricRow.sum_input) * 1000) / 10
+      : null;
+
+    // Success rate: successful worklog entries / total completed tasks
+    // Tasks without a worklog entry are assumed to have failed
+    const successRatePct = completedCount > 0
+      ? Math.round(((metricRow.successful_entries ?? 0) / completedCount) * 1000) / 10
+      : null;
+
+    metrics = {
+      coverage_entries: metricRow.total_entries,
+      coverage_completed_tasks: completedCount,
+      coverage_pct: completedCount > 0 ? Math.round((metricRow.total_entries / completedCount) * 1000) / 10 : 0,
+      success_rate_pct: successRatePct,
+      avg_time_to_start_ms: metricRow.avg_assign_to_start ? Math.round(metricRow.avg_assign_to_start) : null,
+      avg_time_to_complete_from_start_ms: metricRow.avg_start_to_complete ? Math.round(metricRow.avg_start_to_complete) : null,
+      avg_time_to_complete_from_assign_ms: metricRow.avg_assign_to_complete ? Math.round(metricRow.avg_assign_to_complete) : null,
+      avg_tokens_per_task: metricRow.avg_tokens ? Math.round(metricRow.avg_tokens) : null,
+      cache_hit_pct: cacheHitPct,
+    };
+  }
+
+  return {
+    entries,
+    metrics,
+    total: entries.length,
+  };
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -780,6 +1140,18 @@ const tools: AnyToolHandler[] = [
     schema: GetCompletedSinceArgsSchema,
     handler: getCompletedSince,
   },
+  {
+    name: 'summarize_work',
+    description: 'Record a worklog entry for a completed task. Call this BEFORE complete_task to capture task metrics. Auto-resolves task_id from CLAUDE_AGENT_ID env when omitted.',
+    schema: SummarizeWorkArgsSchema,
+    handler: summarizeWork,
+  },
+  {
+    name: 'get_worklog',
+    description: 'Get recent worklog entries with optional 30-day rolling metrics (coverage, avg duration, avg tokens, cache hit rate).',
+    schema: GetWorklogArgsSchema,
+    handler: getWorklog,
+  },
 ];
 
 const server = new McpServer({
@@ -790,11 +1162,13 @@ const server = new McpServer({
 
 // Handle cleanup on exit
 process.on('SIGINT', () => {
+  closeWorklogDb();
   closeDb();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
+  closeWorklogDb();
   closeDb();
   process.exit(0);
 });

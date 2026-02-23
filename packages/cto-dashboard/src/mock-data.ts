@@ -39,6 +39,7 @@ import type { LoggingData } from './utils/logging-reader.js';
 import type { AccountOverviewData } from './utils/account-overview-reader.js';
 import type { WorktreeData } from './utils/worktree-reader.js';
 import type { ProductManagerData } from './utils/product-manager-reader.js';
+import type { WorklogData } from './utils/worklog-reader.js';
 
 // ============================================================================
 // Deterministic PRNG (LCG — no Math.random())
@@ -1759,5 +1760,130 @@ export function getMockProductManager(): ProductManagerData {
     ],
     compliance: null,
     last_updated: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+  };
+}
+
+// ============================================================================
+// Worklog data
+// ============================================================================
+
+export function getMockWorklog(): WorklogData {
+  const now = Date.now();
+  const HOUR = 60 * 60 * 1000;
+  const MIN = 60 * 1000;
+
+  return {
+    hasData: true,
+    entries: [
+      {
+        id: 'wl-001',
+        task_id: 't-001',
+        section: 'CODE-REVIEWER',
+        title: 'Fix auth token refresh',
+        summary: 'Fixed race condition in OAuth2 token refresh. Added mutex lock.',
+        success: true,
+        timestamp_completed: new Date(now - 2 * HOUR).toISOString(),
+        duration_assign_to_start_ms: 72 * MIN,
+        duration_start_to_complete_ms: 12 * MIN + 34000,
+        duration_assign_to_complete_ms: 84 * MIN + 34000,
+        tokens_total: 1_234_567,
+        created_at: new Date(now - 2 * HOUR).toISOString(),
+      },
+      {
+        id: 'wl-002',
+        task_id: 't-002',
+        section: 'TEST-WRITER',
+        title: 'Add login test coverage',
+        summary: 'Added 12 integration tests for login flow including OAuth and MFA.',
+        success: true,
+        timestamp_completed: new Date(now - 3.5 * HOUR).toISOString(),
+        duration_assign_to_start_ms: 45 * MIN,
+        duration_start_to_complete_ms: 8 * MIN + 12000,
+        duration_assign_to_complete_ms: 53 * MIN + 12000,
+        tokens_total: 890_123,
+        created_at: new Date(now - 3.5 * HOUR).toISOString(),
+      },
+      {
+        id: 'wl-003',
+        task_id: 't-003',
+        section: 'INVESTIGATOR & PLANNER',
+        title: 'Trace N+1 query in reports',
+        summary: 'Identified N+1 in reports endpoint. Proposed eager loading fix.',
+        success: true,
+        timestamp_completed: new Date(now - 5 * HOUR).toISOString(),
+        duration_assign_to_start_ms: 90 * MIN,
+        duration_start_to_complete_ms: 6 * MIN + 45000,
+        duration_assign_to_complete_ms: 96 * MIN + 45000,
+        tokens_total: 654_321,
+        created_at: new Date(now - 5 * HOUR).toISOString(),
+      },
+      {
+        id: 'wl-004',
+        task_id: 't-004',
+        section: 'CODE-REVIEWER',
+        title: 'Enable strict TypeScript',
+        summary: 'Failed: 14 type errors in packages/api. Need follow-up task.',
+        success: false,
+        timestamp_completed: new Date(now - 7 * HOUR).toISOString(),
+        duration_assign_to_start_ms: 62 * MIN,
+        duration_start_to_complete_ms: 18 * MIN + 45000,
+        duration_assign_to_complete_ms: 80 * MIN + 45000,
+        tokens_total: 2_145_678,
+        created_at: new Date(now - 7 * HOUR).toISOString(),
+      },
+      {
+        id: 'wl-005',
+        task_id: 't-005',
+        section: 'PROJECT-MANAGER',
+        title: 'Update API docs',
+        summary: 'Synced OpenAPI spec with current endpoints. Added webhook docs.',
+        success: true,
+        timestamp_completed: new Date(now - 9 * HOUR).toISOString(),
+        duration_assign_to_start_ms: 38 * MIN,
+        duration_start_to_complete_ms: 4 * MIN + 22000,
+        duration_assign_to_complete_ms: 42 * MIN + 22000,
+        tokens_total: 456_789,
+        created_at: new Date(now - 9 * HOUR).toISOString(),
+      },
+      {
+        id: 'wl-006',
+        task_id: 't-006',
+        section: 'DEPUTY-CTO',
+        title: 'Triage security report',
+        summary: 'Triaged CORS wildcard report. Created sub-task for origin allowlist.',
+        success: true,
+        timestamp_completed: new Date(now - 11 * HOUR).toISOString(),
+        duration_assign_to_start_ms: 15 * MIN,
+        duration_start_to_complete_ms: 9 * MIN + 18000,
+        duration_assign_to_complete_ms: 24 * MIN + 18000,
+        tokens_total: 987_654,
+        created_at: new Date(now - 11 * HOUR).toISOString(),
+      },
+      {
+        id: 'wl-007',
+        task_id: 't-007',
+        section: 'TEST-WRITER',
+        title: 'Fix webhook test flake',
+        summary: 'Stabilized webhook.test.ts timing issues with fake timers.',
+        success: true,
+        timestamp_completed: new Date(now - 14 * HOUR).toISOString(),
+        duration_assign_to_start_ms: 55 * MIN,
+        duration_start_to_complete_ms: 11 * MIN + 5000,
+        duration_assign_to_complete_ms: 66 * MIN + 5000,
+        tokens_total: 1_567_890,
+        created_at: new Date(now - 14 * HOUR).toISOString(),
+      },
+    ],
+    metrics: {
+      coverage_entries: 42,
+      coverage_completed_tasks: 58,
+      coverage_pct: 72.4,
+      success_rate_pct: 62.1,
+      avg_time_to_start_ms: 72 * 60 * 1000,
+      avg_time_to_complete_from_start_ms: 15 * 60 * 1000,
+      avg_time_to_complete_from_assign_ms: 87 * 60 * 1000,
+      avg_tokens_per_task: 1_400_000,
+      cache_hit_pct: 34.2,
+    },
   };
 }

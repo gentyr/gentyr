@@ -22,7 +22,7 @@
     "node": ">=20"
   },
   "bin": {
-    "gentyr": "./cli/index.js"
+    "gentyr": "cli/index.js"
   },
   "scripts": {
     "build:mcp": "cd packages/mcp-servers && npm install --no-fund --no-audit && npm run build",

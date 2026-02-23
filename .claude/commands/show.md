@@ -20,6 +20,7 @@ View individual dashboard sections using `mcp__show__*` tools.
 | `mcp__show__show_timeline()` | Chronological timeline of recent system events |
 | `mcp__show__show_tasks()` | Task metrics (pending, active, completed) and token usage summary |
 | `mcp__show__show_product_market_fit()` | Product-market-fit analysis with full section content and compliance |
+| `mcp__show__show_worklog()` | Agent worklog entries with durations, tokens, and 30-day metrics |
 
 ## Usage
 

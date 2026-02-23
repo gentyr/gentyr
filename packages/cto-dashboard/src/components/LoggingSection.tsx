@@ -14,6 +14,7 @@ import type { LoggingData } from '../utils/logging-reader.js';
 
 export interface LoggingSectionProps {
   data: LoggingData;
+  tip?: string;
 }
 
 function truncate(str: string, maxLen: number): string {
@@ -40,14 +41,14 @@ function coverageDot(status: 'active' | 'missing' | 'low-volume'): string {
   return '\u25CF'; // filled circle
 }
 
-export function LoggingSection({ data }: LoggingSectionProps): React.ReactElement | null {
+export function LoggingSection({ data, tip }: LoggingSectionProps): React.ReactElement | null {
   if (!data.hasData) return null;
 
   const errorCount = data.byLevel.find(l => l.level === 'error')?.count || 0;
   const warnCount = data.byLevel.find(l => l.level === 'warn' || l.level === 'warning')?.count || 0;
 
   return (
-    <Section title="LOGGING" borderColor="cyan" width="100%">
+    <Section title="LOGGING" borderColor="cyan" width="100%" tip={tip}>
       <Box flexDirection="column">
         {/* Volume line graph + summary stats */}
         <Box flexDirection="row" gap={2}>
