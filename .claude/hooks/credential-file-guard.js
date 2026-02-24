@@ -23,7 +23,7 @@
  *
  * SECURITY: This file should be root-owned via protect-framework.sh
  *
- * @version 3.0.0
+ * @version 3.2.0
  */
 
 import fs from 'node:fs';
@@ -45,6 +45,11 @@ const BLOCKED_BASENAMES = new Set([
   '.env.development',
   '.env.test',
   '.credentials.json',
+  '.zshrc',
+  '.bashrc',
+  '.bash_profile',
+  '.profile',
+  '.zprofile',
 ]);
 
 /**
@@ -59,7 +64,10 @@ const BLOCKED_PATH_SUFFIXES = [
   '.claude/credential-provider.json',
   '.claude/protected-action-approvals.json',
   '.claude/vault-mappings.json',
-  '.claude/config/services.json',
+  // NOTE: .claude/config/services.json is intentionally NOT listed here.
+  // It contains service IDs (not secrets) and agents need read access to it
+  // for health monitoring. It remains protected against writes via
+  // protected-actions.json (requires deputy-CTO approval to modify).
   '.mcp.json',
 ];
 // Note: The suffix '.claude/api-key-rotation.json' also blocks the user-level
@@ -89,6 +97,11 @@ const ALWAYS_BLOCKED_BASENAMES = new Set([
   '.env.development',
   '.env.test',
   '.credentials.json',
+  '.zshrc',
+  '.bashrc',
+  '.bash_profile',
+  '.profile',
+  '.zprofile',
 ]);
 
 /**
@@ -334,9 +347,10 @@ function extractFilePathsFromCommand(command) {
         if (token.startsWith('-') && !token.startsWith('./') && !token.startsWith('../')) {
           continue;
         }
-        // Skip redirection operators (targets handled below)
-        if (token === '>' || token === '>>' || token === '<' || token === '2>' || token === '2>>') {
-          i++; // skip the target
+        // Skip redirection operators (targets caught by redirection scan below)
+        // Includes fd-prefixed variants: 1> (stdout), 2> (stderr), 0< (stdin)
+        if (token === '>' || token === '>>' || token === '<' || token === '2>' || token === '2>>' || token === '1>' || token === '1>>' || token === '0<') {
+          i++; // skip target here to avoid adding as regular arg
           continue;
         }
         // Skip variable references (checked separately)
@@ -350,14 +364,20 @@ function extractFilePathsFromCommand(command) {
       }
     }
 
-    // Check ALL output and input redirection targets regardless of command (M1 fix).
-    // This catches: echo '{}' > .claude/bypass-approval-token.json
-    // and: grep secret < .env
-    const redirectMatches = trimmed.matchAll(/(?:^|[^<>])(>>?|2>>?|<)\s*(\S+)/g);
-    for (const match of redirectMatches) {
-      const target = match[2];
-      if (target && !target.startsWith('$') && !target.startsWith('&')) {
-        paths.push(target);
+    // Check ALL redirection targets regardless of command type (M1 fix).
+    // Uses tokenized output (quotes already stripped) instead of regex on raw string.
+    // This prevents bypass via quoted targets: echo hello > ".env"
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      // Includes fd-prefixed variants: 1> (stdout), 2> (stderr), 0< (stdin)
+      if (token === '>' || token === '>>' || token === '<' || token === '2>' || token === '2>>' || token === '1>' || token === '1>>' || token === '0<') {
+        if (i + 1 < tokens.length) {
+          const target = tokens[i + 1];
+          if (target && !target.startsWith('$') && !target.startsWith('&')) {
+            paths.push(target);
+          }
+        }
+        i++;
       }
     }
   }
@@ -379,7 +399,7 @@ function extractFilePathsFromCommand(command) {
  * scripting language interpreters.
  *
  * @param {string} command
- * @returns {{ blocked: boolean, reason: string, matchedSuffix?: string }}
+ * @returns {{ blocked: boolean, reason: string, matchedSuffix?: string, matchedBasename?: string }}
  */
 function scanRawCommandForProtectedPaths(command) {
   // Check for blocked path suffixes as substrings in the command.
@@ -390,6 +410,21 @@ function scanRawCommandForProtectedPaths(command) {
         blocked: true,
         reason: `Command references protected path "${suffix}"`,
         matchedSuffix: suffix,
+      };
+    }
+  }
+
+  // Check for blocked basenames preceded by / or ~ (path context detection).
+  // Only triggers when basename appears in a file-path context to avoid
+  // false positives like "echo .bashrc" (no path separator).
+  for (const basename of BLOCKED_BASENAMES) {
+    // Match /basename or ~basename (path boundary + basename)
+    const pattern = new RegExp('[/~]' + escapeRegExp(basename) + '(?:[^a-zA-Z0-9_.]|$)');
+    if (pattern.test(command)) {
+      return {
+        blocked: true,
+        reason: `Command references protected file "${basename}" in path context`,
+        matchedBasename: basename,
       };
     }
   }
