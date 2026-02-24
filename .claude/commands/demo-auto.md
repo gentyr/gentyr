@@ -14,17 +14,16 @@ No failure is unrecoverable — agents can repair everything.
 
 Show all prefetch data. Highlight any `criticalIssues` and auth staleness prominently. If `authState.isStale` is true, show a prominent warning that auth will need repair.
 
-### Step 2: Ask User for Demo Project
+### Step 2: Discover and Select Demo Project
 
-Use `AskUserQuestion`:
+1. Read the project's `playwright.config.ts` (or `playwright.config.js`) using the Read tool
+2. Identify available Playwright projects from the `projects` array in the config
+3. Exclude infrastructure projects (`setup`, `seed`, `auth-setup`, `cleanup`) and manual projects (`manual`, `*-manual`) — manual projects use `page.pause()` which halts execution and is incompatible with auto-play
+4. If prefetch data includes `discoveredProjects`, use that instead of re-reading the config
+5. If only one eligible project remains, use it directly
+6. If multiple eligible projects exist, present them via `AskUserQuestion` with a brief description of each (derived from the config context)
 
-| Option | Project | Description |
-|--------|---------|-------------|
-| Full product demo (Recommended) | `demo` | Dashboard + extension in single Chromium session |
-| Vendor Owner walkthrough | `vendor-owner` | Full dashboard access as Owner persona |
-| Extension only | `extension` | Browser extension E2E tests |
-
-Note: `manual` and `extension-manual` are not available in auto-play mode because they use `page.pause()` which halts execution. Use `/demo-interactive` for those projects.
+Note: Use `/demo-interactive` for manual projects that use `page.pause()`.
 
 ### Step 3: Run Preflight
 
@@ -51,7 +50,7 @@ If `ready: false` (any failures at all):
 2. Call `mcp__todo-db__create_task` with:
    - `section`: `"DEPUTY-CTO"`
    - `priority`: `"urgent"`
-   - `assigned_by`: `"demo-auto"`
+   - `assigned_by`: `"demo"`
    - `title`: `"Repair Playwright environment — <N> preflight check(s) failed for project <project>"`
    - `description`: Full description covering all failures and per-check repair instructions
 

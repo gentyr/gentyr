@@ -661,6 +661,59 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
         'Should show G001 fail-closed message');
     });
 
+    it('should block and fail-closed when acquireLock() fails in createRequest() (G001)', async () => {
+      // Setup: write a valid config with a protected server so the hook reaches createRequest()
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '2.0.0',
+        servers: {
+          'deputy-cto': {
+            protection: 'approval-only',
+            phrase: 'APPROVE BYPASS',
+            tools: ['execute_bypass'],
+          },
+        },
+        allowedUnprotectedServers: [],
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      // Pre-create the lock file so acquireLock() always finds it held.
+      // We must keep its mtime fresh (< 10s old) so the stale-lock eviction
+      // path never removes it during the 10 retry attempts.
+      const lockPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json.lock');
+      fs.writeFileSync(lockPath, 'held-by-test');
+
+      // Touch the lock file every 50ms to prevent it from going stale
+      const touchInterval = setInterval(() => {
+        try {
+          const now = new Date();
+          fs.utimesSync(lockPath, now, now);
+        } catch { /* lock may have been removed after hook exits */ }
+      }, 50);
+
+      let result;
+      try {
+        // Run the hook with a tool that is protected and would reach createRequest()
+        result = await runHook('mcp__deputy-cto__execute_bypass', {}, tempDir.path);
+      } finally {
+        clearInterval(touchInterval);
+        // Clean up lock file so subsequent tests are not affected
+        try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+      }
+
+      // G001: createRequest() returns null when lock cannot be acquired.
+      // main() must then fail-closed: exit code 1 and emit the FAIL-CLOSED message.
+      assert.strictEqual(result.exitCode, 1,
+        'Should block (exit 1) when acquireLock() fails in createRequest() (G001 fail-closed)');
+      assert.match(result.stderr, /FAIL-CLOSED/,
+        'Should emit FAIL-CLOSED message when createRequest() cannot acquire lock');
+      assert.match(result.stderr, /[Cc]ould not create approval request|failed to create approval/,
+        'Should indicate that the approval request could not be created');
+    });
+
     it('should handle malformed tool input gracefully', async () => {
       const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -1308,6 +1361,198 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
       assert.ok(audit, 'Should emit audit log');
       assert.ok(audit.entries.length <= 500, 'Entries array should never exceed 500');
       assert.ok(audit.count <= 500, 'Count should never exceed 500');
+    });
+
+    it('should emit audit log to stderr when config file is missing (config not found path)', async () => {
+      // Trigger the G001 FAIL-CLOSED config-not-found block path.
+      // The beforeEach tempDir has no protected-actions.json, so calling any MCP
+      // tool hits the notConfigured branch which calls logBlockedAction + emitAuditLog.
+      const result = await runHook('mcp__some-server__some-tool', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 1, 'Should block when config is missing');
+
+      const audit = parseAuditLog(result.stderr);
+      assert.ok(audit, 'Should emit blocked_actions_audit JSON to stderr for config-not-found path');
+      assert.strictEqual(audit.type, 'blocked_actions_audit');
+      assert.ok(audit.count >= 1, 'Count should be at least 1');
+      assert.ok(Array.isArray(audit.entries), 'Should include entries array');
+
+      const entry = audit.entries[audit.entries.length - 1];
+      assert.strictEqual(entry.server, 'some-server', 'Should log the server name');
+      assert.strictEqual(entry.tool, 'some-tool', 'Should log the tool name');
+      assert.ok(entry.reason, 'Should include a reason');
+      assert.match(entry.reason, /config not found/i, 'Reason should mention config not found');
+      assert.ok(entry.timestamp, 'Should include a timestamp');
+
+      const parsedDate = new Date(entry.timestamp);
+      assert.ok(!isNaN(parsedDate.getTime()), 'timestamp should be a valid ISO date');
+    });
+
+    it('should emit audit log to stderr when config is corrupted (config error path)', async () => {
+      // Trigger the G001 FAIL-CLOSED config-error block path by writing invalid JSON.
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      // Write deliberately invalid JSON to trigger the config.error branch
+      fs.writeFileSync(configPath, '{ invalid json }');
+
+      const result = await runHook('mcp__some-server__some-tool', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 1, 'Should block when config is corrupted');
+
+      const audit = parseAuditLog(result.stderr);
+      assert.ok(audit, 'Should emit blocked_actions_audit JSON to stderr for config-error path');
+      assert.strictEqual(audit.type, 'blocked_actions_audit');
+      assert.ok(audit.count >= 1, 'Count should be at least 1');
+      assert.ok(Array.isArray(audit.entries), 'Should include entries array');
+
+      const entry = audit.entries[audit.entries.length - 1];
+      assert.strictEqual(entry.server, 'some-server', 'Should log the server name');
+      assert.strictEqual(entry.tool, 'some-tool', 'Should log the tool name');
+      assert.ok(entry.reason, 'Should include a reason');
+      assert.match(entry.reason, /config corrupted/i, 'Reason should mention config corrupted');
+      assert.ok(entry.timestamp, 'Should include a timestamp');
+
+      const parsedDate = new Date(entry.timestamp);
+      assert.ok(!isNaN(parsedDate.getTime()), 'timestamp should be a valid ISO date');
+    });
+  });
+
+  // ==========================================================================
+  // parseMcpToolName regex - double underscore defense
+  //
+  // Validates that the updated regex rejects tool names containing double
+  // underscores (the MCP namespace delimiter), leading/trailing underscores,
+  // and double hyphens, while continuing to accept valid names.
+  // ==========================================================================
+
+  describe('parseMcpToolName regex - double underscore defense', () => {
+    it('should reject tool names with double underscores (extra segment attack)', async () => {
+      // mcp__supabase__executeSql__extra uses __ inside the tool part,
+      // which is the MCP namespace delimiter. The regex must not parse this.
+      const result = await runHook('mcp__supabase__executeSql__extra', {}, tempDir.path);
+
+      // The hook will not parse the tool name as a valid MCP call.
+      // Without a valid parse, the hook treats the name as a non-MCP tool
+      // and passes through (exit 0), but critically it must NOT be dispatched
+      // as if it were mcp__supabase__executeSql. We verify the hook did not
+      // route it as a protected supabase tool by checking that it exited 0
+      // (treated as non-MCP, not as a mcp__supabase call that bypassed the gate).
+      // If it had been parsed as mcp__supabase__executeSql, it would hit the
+      // protected-actions config for supabase and exit 1.
+      // The key invariant: it must NOT be parsed and dispatched as a known
+      // protected server tool, so exit 0 (non-MCP pass-through) is correct
+      // and safe — the tool simply does not exist.
+      assert.strictEqual(result.exitCode, 0,
+        'Malformed tool with double underscore should not be parsed as valid MCP tool');
+    });
+
+    it('should reject tool names with leading underscore', async () => {
+      // mcp__supabase___leading has ___ between server and tool (leading _ on tool).
+      // The regex requires the tool segment start with [a-zA-Z0-9], so this is rejected.
+      const result = await runHook('mcp__supabase___leading', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 0,
+        'Tool name with leading underscore should not be parsed as valid MCP tool');
+    });
+
+    it('should reject tool names with trailing underscore', async () => {
+      // Tool segment ends with _ which violates the regex pattern
+      // requiring each separator group to have alphanumeric chars on both sides.
+      const result = await runHook('mcp__supabase__trailing_', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 0,
+        'Tool name with trailing underscore should not be parsed as valid MCP tool');
+    });
+
+    it('should reject tool names with double hyphens', async () => {
+      // Double hyphens (--) inside the tool segment are not valid separators.
+      const result = await runHook('mcp__supabase__foo--bar', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 0,
+        'Tool name with double hyphens should not be parsed as valid MCP tool');
+    });
+
+    it('should accept valid tool names with single underscores', async () => {
+      // mcp__supabase__list_tasks is the canonical valid form with underscore separator.
+      // With no config present, it should block as an unrecognized MCP server
+      // (not pass through as non-MCP), confirming the name was successfully parsed.
+      const result = await runHook('mcp__supabase__list_tasks', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 1,
+        'Valid MCP tool with single underscore should be parsed and blocked (no config present)');
+      assert.match(result.stderr, /config not found/i,
+        'Should be blocked due to missing config, confirming it was parsed as MCP tool');
+    });
+
+    it('should accept valid tool names with single hyphens', async () => {
+      // mcp__deputy-cto__approve_commit has a hyphenated server name and
+      // an underscored tool name — both are valid formats.
+      const result = await runHook('mcp__deputy-cto__approve_commit', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 1,
+        'Valid MCP tool with hyphenated server and underscored tool should be parsed and blocked');
+      assert.match(result.stderr, /config not found/i,
+        'Should be blocked due to missing config, confirming it was parsed as MCP tool');
+    });
+
+    it('security: malformed tool name on known server does not bypass gate (fail-closed)', async () => {
+      // Defense-in-depth test: even if an adversary crafts a name like
+      // mcp__supabase__executeSql__extra hoping the gate routes it as
+      // mcp__supabase__executeSql, the regex must reject the full name so it
+      // is never dispatched as a known protected tool.
+      //
+      // Set up a config that protects supabase with wildcard tools, then call
+      // the malformed name. The hook should NOT allow it through as an approved
+      // supabase action — it must either be blocked (exit 1) or be treated as
+      // an unrecognized non-MCP tool. Either outcome is safe; the critical
+      // invariant is that it does NOT return exit 0 while being routed as
+      // mcp__supabase__executeSql (which would mean the gate was bypassed).
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '2.0.0',
+        servers: {
+          supabase: {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE DATABASE',
+            tools: '*',
+          },
+        },
+        allowedUnprotectedServers: [],
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      const result = await runHook('mcp__supabase__executeSql__extra', {}, tempDir.path);
+
+      // The malformed name cannot be parsed as mcp__supabase__executeSql.
+      // Because it fails the regex, the hook treats it as a non-MCP tool
+      // (exits 0) — it is never routed to the supabase protection check.
+      // This is safe: the tool call itself is invalid and will fail at execution.
+      // Critically, the exit code must NOT be 0 via a path that approved a
+      // protected supabase action. We verify this by checking that when the
+      // gate exits 0, the stderr does NOT contain the supabase approval message.
+      assert.ok(
+        result.exitCode === 0 || result.exitCode === 1,
+        'Hook must exit 0 (non-MCP pass-through) or 1 (blocked), never silently approve'
+      );
+
+      if (result.exitCode === 0) {
+        // Exited as non-MCP pass-through: confirm it was NOT routed as supabase
+        assert.ok(
+          !result.stderr.includes('Approval verified'),
+          'A malformed tool name must never be approved as a protected supabase action'
+        );
+        assert.ok(
+          !result.stderr.includes('APPROVE DATABASE'),
+          'A malformed tool name must not trigger the supabase approval flow'
+        );
+      } else {
+        // Exited as blocked: also acceptable (fail-closed is always safe)
+        assert.ok(result.exitCode === 1, 'If blocked, exit code must be 1');
+      }
     });
   });
 });

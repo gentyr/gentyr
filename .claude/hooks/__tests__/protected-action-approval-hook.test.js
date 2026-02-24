@@ -20,6 +20,7 @@ import assert from 'node:assert';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
@@ -685,6 +686,190 @@ describe('protected-action-approval-hook.js (UserPromptSubmit Hook)', () => {
       } catch (err) {
         assert.fail(`Hook should exit 0 on empty stdin, got exit code ${err.code}: ${err.stderr}`);
       }
+    });
+  });
+
+  // ==========================================================================
+  // HMAC verification (G001 fail-closed)
+  // ==========================================================================
+
+  describe('HMAC verification (G001 fail-closed)', () => {
+    // Shared helpers -----------------------------------------------------------
+
+    /**
+     * Write the protection key into the temp project's .claude/protection-key file.
+     * Returns the raw base64 key string so tests can compute expected HMACs.
+     */
+    function writeProtectionKey(projectPath) {
+      const keyBytes = crypto.randomBytes(32);
+      const keyBase64 = keyBytes.toString('base64');
+      const keyDir = path.join(projectPath, '.claude');
+      fs.mkdirSync(keyDir, { recursive: true });
+      fs.writeFileSync(path.join(keyDir, 'protection-key'), keyBase64);
+      return keyBase64;
+    }
+
+    /**
+     * Compute the HMAC that the gate hook would have written into pending_hmac.
+     * Must match exactly: computeHmac(key, code, server, tool, argsHash||'', String(expires_timestamp))
+     */
+    function computeExpectedPendingHmac(keyBase64, code, server, tool, argsHash, expiresTimestamp) {
+      const keyBuffer = Buffer.from(keyBase64, 'base64');
+      return crypto
+        .createHmac('sha256', keyBuffer)
+        .update([code, server, tool, argsHash || '', String(expiresTimestamp)].join('|'))
+        .digest('hex');
+    }
+
+    /**
+     * Write the standard protected-actions config into the temp project dir.
+     */
+    function writeConfig(projectPath, phrase = 'APPROVE TEST') {
+      const configPath = path.join(projectPath, '.claude', 'hooks', 'protected-actions.json');
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({
+        version: '1.0.0',
+        servers: {
+          'test-server': {
+            protection: 'credential-isolated',
+            phrase,
+            tools: '*',
+          },
+        },
+      }));
+    }
+
+    /**
+     * Write an approvals file containing a single pending entry.
+     */
+    function writePendingApproval(projectPath, overrides = {}) {
+      const approvalsPath = path.join(projectPath, '.claude', 'protected-action-approvals.json');
+      const now = Date.now();
+      const entry = {
+        server: 'test-server',
+        tool: 'test-tool',
+        phrase: 'APPROVE TEST',
+        code: 'HMAC01',
+        status: 'pending',
+        created_timestamp: now,
+        expires_timestamp: now + 5 * 60 * 1000,
+        ...overrides,
+      };
+      fs.writeFileSync(approvalsPath, JSON.stringify({
+        approvals: { [entry.code]: entry },
+      }));
+      return entry;
+    }
+
+    // -------------------------------------------------------------------------
+
+    it('should approve a request that carries a valid pending_hmac (positive control)', async () => {
+      writeConfig(tempDir.path);
+      const keyBase64 = writeProtectionKey(tempDir.path);
+
+      const now = Date.now();
+      const expiresTimestamp = now + 5 * 60 * 1000;
+      const code = 'HMAC01';
+      const server = 'test-server';
+      const tool = 'test-tool';
+      const argsHash = '';
+
+      const validHmac = computeExpectedPendingHmac(keyBase64, code, server, tool, argsHash, expiresTimestamp);
+
+      writePendingApproval(tempDir.path, {
+        code,
+        server,
+        tool,
+        expires_timestamp: expiresTimestamp,
+        pending_hmac: validHmac,
+      });
+
+      const result = await runHook('APPROVE TEST HMAC01', tempDir.path);
+
+      assert.strictEqual(result.exitCode, 0,
+        'Hook should exit 0 on valid HMAC approval');
+      assert.match(result.stderr, /PROTECTED ACTION APPROVED/,
+        'Valid pending_hmac should result in an approved action');
+    });
+
+    it('should reject a request that carries a forged/invalid pending_hmac', async () => {
+      writeConfig(tempDir.path);
+      writeProtectionKey(tempDir.path);
+
+      const now = Date.now();
+      const expiresTimestamp = now + 5 * 60 * 1000;
+
+      // Deliberately wrong HMAC — all zeros is never the real value
+      writePendingApproval(tempDir.path, {
+        code: 'HMAC01',
+        expires_timestamp: expiresTimestamp,
+        pending_hmac: 'a'.repeat(64), // 256-bit hex string of 'a's — not a real HMAC
+      });
+
+      const result = await runHook('APPROVE TEST HMAC01', tempDir.path);
+
+      assert.strictEqual(result.exitCode, 0,
+        'Hook should still exit 0 (log warning, do not block the user)');
+      assert.match(result.stderr, /FORGERY/i,
+        'Forged HMAC should trigger FORGERY log message');
+      assert.ok(!result.stderr.includes('PROTECTED ACTION APPROVED'),
+        'Forged request must NOT be approved');
+    });
+
+    it('should reject a request that is missing pending_hmac when a protection key exists (THE MAIN VULNERABILITY)', async () => {
+      // This is the exact attack vector that was fixed: an agent could forge a
+      // pending approval entry in the JSON file without a valid HMAC.  If the
+      // hook only verified the HMAC when the field was *present*, a request
+      // lacking pending_hmac would silently slip through.
+      //
+      // G001 Fail-Closed: the field being undefined must fail the comparison.
+      writeConfig(tempDir.path);
+      writeProtectionKey(tempDir.path); // key IS present
+
+      const now = Date.now();
+      const expiresTimestamp = now + 5 * 60 * 1000;
+
+      // Write a pending entry with NO pending_hmac field at all
+      writePendingApproval(tempDir.path, {
+        code: 'HMAC01',
+        expires_timestamp: expiresTimestamp,
+        // pending_hmac intentionally omitted
+      });
+
+      const result = await runHook('APPROVE TEST HMAC01', tempDir.path);
+
+      assert.strictEqual(result.exitCode, 0,
+        'Hook should still exit 0 (log warning, do not block the user)');
+      assert.match(result.stderr, /FORGERY/i,
+        'Missing pending_hmac when key is present must trigger FORGERY rejection');
+      assert.ok(!result.stderr.includes('PROTECTED ACTION APPROVED'),
+        'Request without pending_hmac must NOT be approved when a key exists');
+    });
+
+    it('should reject a request that has pending_hmac when the protection key is missing', async () => {
+      // The key file is intentionally NOT written — only the approval entry.
+      // G001 Fail-Closed: if we cannot verify, we must reject.
+      writeConfig(tempDir.path);
+      // No writeProtectionKey() call — key file is absent
+
+      const now = Date.now();
+      const expiresTimestamp = now + 5 * 60 * 1000;
+
+      // The HMAC value does not matter here because the key cannot be loaded
+      writePendingApproval(tempDir.path, {
+        code: 'HMAC01',
+        expires_timestamp: expiresTimestamp,
+        pending_hmac: 'deadbeef'.repeat(8), // any non-empty 64-char hex string
+      });
+
+      const result = await runHook('APPROVE TEST HMAC01', tempDir.path);
+
+      assert.strictEqual(result.exitCode, 0,
+        'Hook should still exit 0 (log warning, do not block the user)');
+      assert.match(result.stderr, /protection key missing/i,
+        'Should report that the protection key is missing when HMAC cannot be verified');
+      assert.ok(!result.stderr.includes('PROTECTED ACTION APPROVED'),
+        'Request must NOT be approved when the protection key is unavailable');
     });
   });
 });

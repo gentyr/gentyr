@@ -68,7 +68,7 @@ function writeKey(keyBase64) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(PROTECTION_KEY_PATH, keyBase64 + '\n', { mode: 0o600 });
+  fs.writeFileSync(PROTECTION_KEY_PATH, keyBase64 + '\n', { mode: 0o644 });
 }
 
 // ============================================================================
@@ -152,7 +152,7 @@ async function interactiveMode() {
     console.log('');
     console.log('IMPORTANT: After setup, make the key file root-owned:');
     console.log(`  sudo chown root:root ${PROTECTION_KEY_PATH}`);
-    console.log(`  sudo chmod 600 ${PROTECTION_KEY_PATH}`);
+    console.log(`  sudo chmod 644 ${PROTECTION_KEY_PATH}`);
   }
 
   console.log('');
@@ -259,7 +259,7 @@ Security:
   The protection key is stored at: .claude/protection-key
   After setup, make it root-owned:
     sudo chown root:root .claude/protection-key
-    sudo chmod 600 .claude/protection-key
+    sudo chmod 644 .claude/protection-key
 `);
 }
 
@@ -283,7 +283,7 @@ async function main() {
     console.log('');
     console.log('IMPORTANT: Make the key file root-owned:');
     console.log(`  sudo chown root:root ${PROTECTION_KEY_PATH}`);
-    console.log(`  sudo chmod 600 ${PROTECTION_KEY_PATH}`);
+    console.log(`  sudo chmod 644 ${PROTECTION_KEY_PATH}`);
     process.exit(0);
   }
 

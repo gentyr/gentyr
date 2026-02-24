@@ -20,6 +20,7 @@ import {
   GetCoverageStatusArgsSchema,
   PreflightCheckArgsSchema,
   RunAuthSetupArgsSchema,
+  RunDemoArgsSchema,
   PLAYWRIGHT_PROJECTS,
 } from '../types.js';
 import { parseTestOutput, truncateOutput } from '../helpers.js';
@@ -102,17 +103,17 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       }
     });
 
-    it('should reject invalid project name (G001 - fail loudly)', () => {
+    it('should accept any non-empty project name (validated by Playwright CLI at runtime)', () => {
       const result = LaunchUiModeArgsSchema.safeParse({
-        project: 'invalid-project',
+        project: 'custom-project',
       });
 
-      expect(result.success).toBe(false);
+      expect(result.success).toBe(true);
     });
 
-    it('should reject seed project (not allowed in UI mode)', () => {
+    it('should reject empty project name', () => {
       const result = LaunchUiModeArgsSchema.safeParse({
-        project: 'seed',
+        project: '',
       });
 
       expect(result.success).toBe(false);
@@ -361,17 +362,17 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       }
     });
 
-    it('should reject invalid project name', () => {
+    it('should accept any non-empty project name (validated by Playwright CLI at runtime)', () => {
       const result = PreflightCheckArgsSchema.safeParse({
-        project: 'invalid-project',
+        project: 'chromium',
       });
 
-      expect(result.success).toBe(false);
+      expect(result.success).toBe(true);
     });
 
-    it('should reject infrastructure projects (seed, auth-setup)', () => {
+    it('should reject empty project name', () => {
       const result = PreflightCheckArgsSchema.safeParse({
-        project: 'seed',
+        project: '',
       });
 
       expect(result.success).toBe(false);
@@ -470,6 +471,134 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should reject non-boolean seed_only', () => {
       const result = RunAuthSetupArgsSchema.safeParse({ seed_only: 'yes' });
       expect(result.success).toBe(false);
+    });
+  });
+
+  describe('RunDemoArgsSchema', () => {
+    it('should require project field', () => {
+      const result = RunDemoArgsSchema.safeParse({});
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept a valid project name', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.project).toBe('demo');
+      }
+    });
+
+    it('should accept any non-empty project name up to 100 chars', () => {
+      const projects = ['vendor-owner', 'extension', 'cross-persona', 'my-custom-project'];
+      for (const project of projects) {
+        const result = RunDemoArgsSchema.safeParse({ project });
+        expect(result.success).toBe(true);
+      }
+    });
+
+    it('should reject empty project name (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: '' });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject project name exceeding 100 characters (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'a'.repeat(101) });
+      expect(result.success).toBe(false);
+    });
+
+    it('should default slow_mo to 800 when omitted', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.slow_mo).toBe(800);
+      }
+    });
+
+    it('should accept slow_mo of 0 (no delay)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: 0 });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.slow_mo).toBe(0);
+      }
+    });
+
+    it('should accept slow_mo of 5000 (maximum)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: 5000 });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.slow_mo).toBe(5000);
+      }
+    });
+
+    it('should reject slow_mo below 0 (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: -1 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject slow_mo above 5000 (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: 5001 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject non-integer slow_mo (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: 1.5 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should coerce slow_mo from string to number via z.coerce', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: '500' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.slow_mo).toBe(500);
+        expect(typeof result.data.slow_mo).toBe('number');
+      }
+    });
+
+    it('should accept optional base_url', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        base_url: 'http://localhost:4000',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.base_url).toBe('http://localhost:4000');
+      }
+    });
+
+    it('should allow base_url to be omitted', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.base_url).toBeUndefined();
+      }
+    });
+
+    it('should reject invalid base_url (G003 URL validation)', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        base_url: 'not-a-url',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept all parameters together', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'vendor-owner',
+        slow_mo: 1200,
+        base_url: 'http://localhost:3000',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.project).toBe('vendor-owner');
+        expect(result.data.slow_mo).toBe(1200);
+        expect(result.data.base_url).toBe('http://localhost:3000');
+      }
+    });
+
+    it('should infer correct RunDemoArgs type', () => {
+      const args = RunDemoArgsSchema.parse({ project: 'demo', slow_mo: 800 });
+      expect(typeof args.project).toBe('string');
+      expect(typeof args.slow_mo).toBe('number');
     });
   });
 });
@@ -854,9 +983,9 @@ describe('Playwright MCP Server - Constants', () => {
 
 describe('Playwright MCP Server - Error Handling', () => {
   describe('Schema validation failures (G001 - fail loudly)', () => {
-    it('should fail loudly on invalid project enum', () => {
+    it('should fail loudly on empty project name', () => {
       const result = LaunchUiModeArgsSchema.safeParse({
-        project: 'bad-project',
+        project: '',
       });
 
       expect(result.success).toBe(false);

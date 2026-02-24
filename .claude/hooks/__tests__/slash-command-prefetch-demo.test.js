@@ -267,6 +267,67 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
   });
 
   // ============================================================================
+  // discoveredProjects — Playwright config project discovery
+  // ============================================================================
+
+  describe('discoveredProjects gathering', () => {
+    it('should populate discoveredProjects when config file is found', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      assert.match(handleDemoMatch[0], /discoveredProjects/);
+    });
+
+    it('should read playwright config file content to discover project names', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // Must read the config file
+      assert.match(handleDemoMatch[0], /readFileSync.*configFile/);
+    });
+
+    it('should use regex to extract name: "..." patterns from config', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // The name extraction regex: name: 'project-name' or name: "project-name"
+      assert.match(handleDemoMatch[0], /nameRegex/);
+    });
+
+    it('should assign matched names into an array', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      assert.match(handleDemoMatch[0], /projectNames\.push/);
+    });
+
+    it('should set discoveredProjects to empty array when no config file exists', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // Fallback when configFile is null
+      assert.match(handleDemoMatch[0], /discoveredProjects.*\[\]/);
+    });
+
+    it('should set discoveredProjects to empty array on read error', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // Must have a catch block that falls back to []
+      assert.match(handleDemoMatch[0], /catch[\s\S]*?discoveredProjects.*\[\]/);
+    });
+
+    it('should only discover projects when configFile is non-null', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // configFile is derived from the tsConfig / jsConfig existence check
+      assert.match(handleDemoMatch[0], /configFile/);
+      assert.match(handleDemoMatch[0], /if \(configFile\)/);
+    });
+
+    it('should include discoveredProjects in the gathered output object', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // Must write to output.gathered.discoveredProjects
+      assert.match(handleDemoMatch[0], /output\.gathered\.discoveredProjects/);
+    });
+  });
+
+  // ============================================================================
   // Consistency checks — demo should NOT require a database
   // ============================================================================
 
