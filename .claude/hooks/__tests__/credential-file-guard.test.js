@@ -1046,6 +1046,136 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
       assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.env/);
     });
 
+    // --- Quoted redirection bypass tests (M1 token-based fix) ---
+
+    it('should block double-quoted redirection target: echo hello > ".env"', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hello > ".env"' },
+        cwd: tempDir.path,
+      });
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Double-quoted redirection target ".env" should be blocked');
+    });
+
+    it('should block single-quoted redirection target: echo hello > \'.env\'', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: "echo hello > '.env'" },
+        cwd: tempDir.path,
+      });
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        "Single-quoted redirection target '.env' should be blocked");
+    });
+
+    it('should block quoted redirection from non-file command: sort data.txt > ".env"', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'sort data.txt > ".env"' },
+        cwd: tempDir.path,
+      });
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Quoted redirection target from sort should be blocked');
+    });
+
+    it('should block quoted append redirection: printf secret >> ".env.local"', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'printf secret >> ".env.local"' },
+        cwd: tempDir.path,
+      });
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Quoted append redirection to .env.local should be blocked');
+    });
+
+    it('should block quoted input redirection: cat file < ".env"', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'cat file < ".env"' },
+        cwd: tempDir.path,
+      });
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Quoted input redirection from .env should be blocked');
+    });
+
+    it('should block quoted stderr redirection: echo secret 2> ".env"', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'echo secret 2> ".env"' },
+        cwd: tempDir.path,
+      });
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Quoted stderr redirection to .env should be blocked');
+    });
+
+    // --- Explicit fd1 stdout redirection tests (1> / 1>>) ---
+
+    it('should block explicit stdout fd redirection: echo secret 1> .env', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'echo secret 1> .env' },
+        cwd: tempDir.path,
+      });
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Explicit stdout fd redirect 1> to .env should be blocked');
+    });
+
+    it('should block quoted explicit stdout fd redirection: echo secret 1> ".env"', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'echo secret 1> ".env"' },
+        cwd: tempDir.path,
+      });
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Quoted explicit stdout fd redirect 1> to ".env" should be blocked');
+    });
+
+    it('should block explicit stdout fd append: echo secret 1>> .env.local', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'echo secret 1>> .env.local' },
+        cwd: tempDir.path,
+      });
+
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      const output = JSON.parse(jsonMatch[0]);
+
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Explicit stdout fd append 1>> to .env.local should be blocked');
+    });
+
     it('should handle complex pipeline: cat .env | grep TOKEN | head -n 5', async () => {
       const result = await runHook({
         tool_name: 'Bash',
@@ -1874,7 +2004,10 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
         '.mcp.json should contain an approval code');
     });
 
-    it('should block approvable file (services.json) with deputy-cto-approval instructions', async () => {
+    it('should ALLOW Read of services.json without approval (removed from BLOCKED_PATH_SUFFIXES)', async () => {
+      // services.json was removed from BLOCKED_PATH_SUFFIXES so agents can read it
+      // for health monitoring. It contains service IDs (not secrets). Writes remain
+      // protected via protected-actions.json (deputy-CTO approval required to modify).
       setupApprovalEnv(tempDir.path);
 
       const result = await runHook({
@@ -1885,13 +2018,13 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
 
       assert.strictEqual(result.exitCode, 0);
       const jsonMatch = result.stdout.match(/\{.*\}/s);
-      const output = JSON.parse(jsonMatch[0]);
-
-      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
-      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('deputy-CTO'),
-        'services.json should mention deputy-CTO approval option');
-      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('APPROVE CONFIG'),
-        'services.json should show the APPROVE CONFIG phrase');
+      // Should NOT output a deny decision — the file is now unconditionally readable
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
+          'services.json should be allowed to read — it was removed from BLOCKED_PATH_SUFFIXES');
+      }
+      // No JSON at all is also valid (hook exits 0 silently when allowing)
     });
 
     it('should allow approvable file (.mcp.json) when valid approval exists', async () => {
@@ -2111,7 +2244,9 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
         'Grep to protection-key should be hard-blocked with no approval');
     });
 
-    it('should block Glob with path to approvable file and show approval code', async () => {
+    it('should ALLOW Glob with path to services.json (removed from BLOCKED_PATH_SUFFIXES)', async () => {
+      // services.json was removed from BLOCKED_PATH_SUFFIXES — Glob is now allowed
+      // without any approval. Agents need this for health monitoring enumeration.
       setupApprovalEnv(tempDir.path);
 
       const result = await runHook({
@@ -2122,35 +2257,13 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
 
       assert.strictEqual(result.exitCode, 0);
       const jsonMatch = result.stdout.match(/\{.*\}/s);
-      const output = JSON.parse(jsonMatch[0]);
-
-      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
-      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
-        'Glob path to approvable file should show Approval Required');
-      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('APPROVE CONFIG'),
-        'Glob path to services.json should show APPROVE CONFIG phrase');
-    });
-
-    it('should allow Glob with path to approvable file when approval exists', async () => {
-      setupApprovalEnv(tempDir.path, {
-        approvedFile: '.claude/config/services.json',
-        approvedCode: 'GL0B01',
-        approvedPhrase: 'APPROVE CONFIG',
-      });
-
-      const result = await runHook({
-        tool_name: 'Glob',
-        tool_input: { pattern: '*.json', path: `${tempDir.path}/.claude/config/services.json` },
-        cwd: tempDir.path,
-      }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
-
-      assert.strictEqual(result.exitCode, 0);
-      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      // Should NOT output a deny decision
       if (jsonMatch) {
         const output = JSON.parse(jsonMatch[0]);
         assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
-          'Glob path to services.json should be allowed when approval exists');
+          'Glob path to services.json should be allowed — removed from BLOCKED_PATH_SUFFIXES');
       }
+      // No JSON at all is also valid (hook exits 0 silently when allowing)
     });
 
     // --- HMAC integrity tests ---
@@ -2342,16 +2455,13 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
       }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
 
       assert.strictEqual(result.exitCode, 0);
-      // When protection-key exists, approvals without HMAC should still be accepted
-      // (backward compatibility — the checkApproval only rejects if HMAC is present AND invalid)
-      // This means the hook exits 0 with no JSON (allowed)
+      // G001 Fail-Closed: When protection-key exists, approvals without HMAC fields
+      // are treated as forgeries (undefined !== expected_hex). The hook should deny.
       const jsonMatch = result.stdout.match(/\{.*\}/s);
-      if (jsonMatch) {
-        const output = JSON.parse(jsonMatch[0]);
-        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
-          'Approval without HMAC fields should be accepted (backward compat) when key exists but no HMAC was set');
-      }
-      // No JSON output = allowed (exit 0 without deny)
+      assert.ok(jsonMatch, 'Hook should output JSON with deny decision');
+      const output = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
+        'G001 fail-closed: approval without HMAC fields must be rejected when protection key exists');
     });
   });
 
