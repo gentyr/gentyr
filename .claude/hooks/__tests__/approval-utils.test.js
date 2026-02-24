@@ -768,6 +768,231 @@ describe('approval-utils.js', () => {
       assert.ok(updated.approvals[code].approved_at,
         'Should have approved_at timestamp');
     });
+
+    // HMAC verification tests for validateApproval.
+    // These tests require a fresh module import per test (cache-busting) because
+    // APPROVALS_PATH and PROTECTION_KEY_PATH are resolved from CLAUDE_PROJECT_DIR
+    // at module load time (top-level constants).
+
+    it('should reject request with forged pending_hmac during validateApproval', async () => {
+      const hmacTempDir = createTempDir('validate-hmac-forgery');
+      try {
+        // Create .claude subdirectory (module reads from PROJECT_DIR/.claude/)
+        const claudeDir = path.join(hmacTempDir.path, '.claude');
+        fs.mkdirSync(claudeDir, { recursive: true });
+
+        // Write a real protection key
+        const keyBase64 = crypto.randomBytes(32).toString('base64');
+        fs.writeFileSync(path.join(claudeDir, 'protection-key'), keyBase64 + '\n', { mode: 0o600 });
+
+        // Create an approval with a valid structure but an INVALID pending_hmac
+        const now = Date.now();
+        const code = 'FRGD22';
+        const approvalsData = {
+          approvals: {
+            [code]: {
+              server: 'test-server',
+              tool: 'test-tool',
+              args: {},
+              argsHash: crypto.createHash('sha256').update('{}').digest('hex'),
+              phrase: 'APPROVE TEST',
+              code,
+              status: 'pending',
+              created_timestamp: now,
+              expires_timestamp: now + 5 * 60 * 1000,
+              // deliberately invalid (forged) HMAC
+              pending_hmac: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+            },
+          },
+        };
+        fs.writeFileSync(
+          path.join(claudeDir, 'protected-action-approvals.json'),
+          JSON.stringify(approvalsData)
+        );
+
+        // Set env and import fresh module (cache-bust with timestamp query)
+        process.env.CLAUDE_PROJECT_DIR = hmacTempDir.path;
+        const freshUtils = await import(`../lib/approval-utils.js?t=${Date.now()}`);
+
+        const result = freshUtils.validateApproval('APPROVE TEST', code);
+
+        assert.strictEqual(result.valid, false, 'Should reject forged pending_hmac');
+        assert.ok(
+          /FORGERY/i.test(result.reason) || /Invalid request signature/i.test(result.reason),
+          `Reason should mention forgery or invalid signature, got: ${result.reason}`
+        );
+      } finally {
+        hmacTempDir.cleanup();
+      }
+    });
+
+    it('should fail-closed when key is missing but request has pending_hmac during validateApproval', async () => {
+      const hmacTempDir = createTempDir('validate-hmac-no-key');
+      try {
+        // Create .claude subdirectory but do NOT write a protection key
+        const claudeDir = path.join(hmacTempDir.path, '.claude');
+        fs.mkdirSync(claudeDir, { recursive: true });
+
+        // Create an approval WITH a pending_hmac field (no key to verify against)
+        const now = Date.now();
+        const code = 'NOKEY3';
+        const approvalsData = {
+          approvals: {
+            [code]: {
+              server: 'test-server',
+              tool: 'test-tool',
+              args: {},
+              argsHash: crypto.createHash('sha256').update('{}').digest('hex'),
+              phrase: 'APPROVE TEST',
+              code,
+              status: 'pending',
+              created_timestamp: now,
+              expires_timestamp: now + 5 * 60 * 1000,
+              pending_hmac: 'aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd',
+            },
+          },
+        };
+        fs.writeFileSync(
+          path.join(claudeDir, 'protected-action-approvals.json'),
+          JSON.stringify(approvalsData)
+        );
+
+        // Set env and import fresh module (cache-bust with timestamp query)
+        process.env.CLAUDE_PROJECT_DIR = hmacTempDir.path;
+        const freshUtils = await import(`../lib/approval-utils.js?t=${Date.now()}`);
+
+        const result = freshUtils.validateApproval('APPROVE TEST', code);
+
+        assert.strictEqual(result.valid, false,
+          'Should fail-closed (G001) when key missing but pending_hmac present');
+        assert.ok(
+          /protection key missing/i.test(result.reason) || /Cannot verify/i.test(result.reason),
+          `Reason should mention missing protection key or inability to verify, got: ${result.reason}`
+        );
+      } finally {
+        hmacTempDir.cleanup();
+      }
+    });
+
+    it('should set approved_hmac when key is available during validateApproval', async () => {
+      const hmacTempDir = createTempDir('validate-hmac-set-approved');
+      try {
+        // Create .claude subdirectory
+        const claudeDir = path.join(hmacTempDir.path, '.claude');
+        fs.mkdirSync(claudeDir, { recursive: true });
+
+        // Generate and write a real protection key
+        const keyBase64 = crypto.randomBytes(32).toString('base64');
+        fs.writeFileSync(path.join(claudeDir, 'protection-key'), keyBase64 + '\n', { mode: 0o600 });
+
+        // Build approval with a valid computed pending_hmac
+        const now = Date.now();
+        const code = 'HMAC44';
+        const argsHash = ''; // validateApproval uses request.argsHash || ''
+        const expiresTimestamp = now + 5 * 60 * 1000;
+        const server = 'test-server';
+        const tool = 'test-tool';
+
+        // Compute the pending_hmac the same way the module does in createRequest()
+        const keyBuffer = Buffer.from(keyBase64, 'base64');
+        const validPendingHmac = crypto
+          .createHmac('sha256', keyBuffer)
+          .update([code, server, tool, argsHash, String(expiresTimestamp)].join('|'))
+          .digest('hex');
+
+        const approvalsData = {
+          approvals: {
+            [code]: {
+              server,
+              tool,
+              args: {},
+              // No argsHash field so module falls back to '' — matches our computation above
+              phrase: 'APPROVE TEST',
+              code,
+              status: 'pending',
+              created_timestamp: now,
+              expires_timestamp: expiresTimestamp,
+              pending_hmac: validPendingHmac,
+            },
+          },
+        };
+        fs.writeFileSync(
+          path.join(claudeDir, 'protected-action-approvals.json'),
+          JSON.stringify(approvalsData)
+        );
+
+        // Set env and import fresh module (cache-bust with timestamp query)
+        process.env.CLAUDE_PROJECT_DIR = hmacTempDir.path;
+        const freshUtils = await import(`../lib/approval-utils.js?t=${Date.now()}`);
+
+        const result = freshUtils.validateApproval('APPROVE TEST', code);
+
+        assert.strictEqual(result.valid, true,
+          'Should accept valid pending_hmac and approve the request');
+
+        // Read back the approvals file and verify approved_hmac was written
+        const updated = JSON.parse(
+          fs.readFileSync(path.join(claudeDir, 'protected-action-approvals.json'), 'utf8')
+        );
+        const updatedRequest = updated.approvals[code];
+
+        assert.ok(updatedRequest, 'Request should still exist in approvals file');
+        assert.strictEqual(updatedRequest.status, 'approved', 'Status should be approved');
+        assert.ok(
+          typeof updatedRequest.approved_hmac === 'string' && updatedRequest.approved_hmac.length > 0,
+          'approved_hmac should be a non-empty string'
+        );
+      } finally {
+        hmacTempDir.cleanup();
+      }
+    });
+
+    it('should allow legacy request without HMAC fields during validateApproval', async () => {
+      const hmacTempDir = createTempDir('validate-hmac-legacy');
+      try {
+        // Create .claude subdirectory
+        const claudeDir = path.join(hmacTempDir.path, '.claude');
+        fs.mkdirSync(claudeDir, { recursive: true });
+
+        // Write a real protection key (key IS present, but request has no HMAC fields)
+        const keyBase64 = crypto.randomBytes(32).toString('base64');
+        fs.writeFileSync(path.join(claudeDir, 'protection-key'), keyBase64 + '\n', { mode: 0o600 });
+
+        // Create a legacy approval WITHOUT any HMAC fields
+        const now = Date.now();
+        const code = 'LGCY55';
+        const approvalsData = {
+          approvals: {
+            [code]: {
+              server: 'test-server',
+              tool: 'test-tool',
+              args: {},
+              phrase: 'APPROVE TEST',
+              code,
+              status: 'pending',
+              created_timestamp: now,
+              expires_timestamp: now + 5 * 60 * 1000,
+              // No pending_hmac or approved_hmac — legacy request
+            },
+          },
+        };
+        fs.writeFileSync(
+          path.join(claudeDir, 'protected-action-approvals.json'),
+          JSON.stringify(approvalsData)
+        );
+
+        // Set env and import fresh module (cache-bust with timestamp query)
+        process.env.CLAUDE_PROJECT_DIR = hmacTempDir.path;
+        const freshUtils = await import(`../lib/approval-utils.js?t=${Date.now()}`);
+
+        const result = freshUtils.validateApproval('APPROVE TEST', code);
+
+        assert.strictEqual(result.valid, true,
+          'Should allow legacy request without HMAC fields (backward compatibility)');
+      } finally {
+        hmacTempDir.cleanup();
+      }
+    });
   });
 
   describe('checkApproval()', () => {

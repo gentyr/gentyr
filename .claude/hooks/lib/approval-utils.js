@@ -457,10 +457,33 @@ export function validateApproval(phrase, code) {
       };
     }
 
+    // HMAC verification: Verify the pending request was created by the gate hook
+    const key = readProtectionKey();
+    const keyBase64 = key ? key.toString('base64') : null;
+    const normalizedCode = code.toUpperCase();
+
+    if (keyBase64 && request.pending_hmac) {
+      const expectedPendingHmac = computeHmac(keyBase64, normalizedCode, request.server, request.tool, request.argsHash || '', String(request.expires_timestamp));
+      if (request.pending_hmac !== expectedPendingHmac) {
+        // Forged pending request - delete and reject
+        console.error(`[approval-utils] FORGERY DETECTED: Invalid pending_hmac for ${normalizedCode}. Deleting.`);
+        delete approvals.approvals[normalizedCode];
+        saveApprovals(approvals);
+        return { valid: false, reason: 'FORGERY: Invalid request signature' };
+      }
+    } else if (!keyBase64 && request.pending_hmac) {
+      // G001 Fail-Closed: Request has HMAC but we can't verify (key missing)
+      console.error(`[approval-utils] G001 FAIL-CLOSED: Cannot verify HMAC for ${normalizedCode} (protection key missing).`);
+      return { valid: false, reason: 'Cannot verify request signature (protection key missing)' };
+    }
+
     // Mark as approved
     request.status = 'approved';
     request.approved_at = new Date().toISOString();
     request.approved_timestamp = Date.now();
+    if (keyBase64) {
+      request.approved_hmac = computeHmac(keyBase64, normalizedCode, request.server, request.tool, 'approved', request.argsHash || '', String(request.expires_timestamp));
+    }
     saveApprovals(approvals);
 
     return {
@@ -516,6 +539,11 @@ export function checkApproval(server, tool, args) {
       }
 
       // HMAC verification: Verify signatures to prevent agent forgery
+      // NOTE: Individual HMAC fields are checked with `if (request.pending_hmac)` to
+      // support backward compatibility with pre-HMAC requests. Requests created before
+      // HMAC was introduced will not have these fields, and that is acceptable.
+      // The else-if branch below handles the case where HMAC fields ARE present but
+      // the protection key is missing (G001 fail-closed).
       if (keyBase64) {
         // Verify pending_hmac (was this request created by the hook with these args?)
         if (request.pending_hmac) {
