@@ -283,6 +283,16 @@ Force-spawns the deputy-CTO triage cycle immediately, bypassing the hourly autom
 - `update_question` — Appends timestamped investigation findings to a pending escalation's context field (append-only, 10KB cap). Blocked on `bypass-request` and `protected-action-request` types.
 - `resolve_question` — Resolves and archives a pending escalation atomically (answer + archive to `cleared_questions` + delete from active queue). Valid resolution types: `fixed`, `not_reproducible`, `duplicate`, `workaround_applied`, `no_longer_relevant`. CTO never sees resolved escalations, but they remain in `cleared_questions` for audit and deduplication.
 
+**Protected action approval tools on the deputy-cto MCP server:**
+- `list_pending_action_requests` — List all pending (non-expired) protected action requests. Shows code, server, tool, args, and approval mode for each. Used during triage to discover actions awaiting deputy-CTO sign-off.
+- `get_protected_action_request` — Get details of a specific pending request by its 6-character approval code. Use to inspect a request before approving or denying.
+- `approve_protected_action` — Approve a `deputy-cto` approval-mode request. Verifies `pending_hmac` against the protection key, then writes an HMAC-signed `approved_hmac` entry so the gate hook can confirm authenticity. Uses `O_CREAT|O_EXCL` advisory file locking (same algorithm as `approval-utils.js`) with exponential backoff (10 attempts, stale-lock cleanup at 10 s) to prevent concurrent read-modify-write races on `.claude/protected-action-approvals.json`. Only works for `approval_mode: "deputy-cto"` — CTO-mode actions must be escalated.
+- `deny_protected_action` — Remove a pending protected action request, recording a reason. Also uses `O_CREAT|O_EXCL` advisory file locking to prevent concurrent writes. Applicable to any approval mode.
+
+**`approval-utils.js` security model** (`.claude/hooks/lib/approval-utils.js`):
+- `validateApproval(phrase, code)` — called by the gate hook when an agent submits an approval phrase; verifies `pending_hmac` before marking approved; if protection key is present and `pending_hmac` is missing-or-invalid, rejects with `FORGERY` reason (G001 fail-closed); writes `approved_hmac` on success so `checkApproval()` can verify downstream
+- `saveApprovals()` in both `approval-utils.js` and `protected-action-gate.js` uses atomic write-via-rename (write to `.tmp.<pid>`, then `fs.renameSync`) to prevent partial writes from concurrent access leaving a corrupted approvals file; the tmp file is unlinked on rename failure
+
 ## Automatic Session Recovery
 
 GENTYR automatically detects and recovers sessions interrupted by API quota limits.
@@ -345,7 +355,7 @@ Hooks that need the AI to act on their output must include both:
 **GENTYR Auto-Sync Hook** (`.claude/hooks/gentyr-sync.js`):
 - Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
 - Fast path: reads `version.json` and `gentyr-state.json`, compares version + config hash — exits in <5ms when nothing has changed
-- When version or config hash mismatch detected: re-merges `settings.json`, regenerates `.mcp.json` (preserving OP token), updates the GENTYR section of `CLAUDE.md`, and symlinks new agent definitions
+- When version or config hash mismatch detected: re-merges `settings.json`, regenerates `.mcp.json` (preserving OP token), updates the GENTYR section of `CLAUDE.md`, and symlinks new agent definitions; handles missing `settings.json` gracefully by checking directory writability instead of file writability when the file does not yet exist
 - Auto-rebuilds MCP servers when `src/` mtime > `dist/` mtime (30s timeout); logs to stderr on failure (silent to agent)
 - Syncs husky hooks by comparing `husky/` against `.husky/` in the target project; re-copies if content differs
 - Falls back to legacy settings.json hook diff check when no `gentyr-state.json` exists (pre-migration projects)
@@ -412,8 +422,13 @@ The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tool
 - `get_coverage_status` — Report test count and coverage status per persona project
 - `preflight_check` — Validate environment readiness before launching; runs 8 checks: config exists, dependencies, browsers installed, test files, credentials valid, dev server reachable, compilation, and auth state freshness
 - `run_auth_setup` — Refresh Playwright auth state by running `seed` then `auth-setup` projects; generates `.auth/vendor-owner.json`, `.auth/vendor-admin.json`, `.auth/vendor-dev.json`, `.auth/vendor-viewer.json`; 4-minute timeout; supports `seed_only` flag to skip auth-setup
+- `run_demo` — Launch Playwright tests in a visible headed browser at human-watchable speed (auto-play mode). Accepts any project name from the target project's `playwright.config.ts`. Passes `DEMO_SLOW_MO` env var (default 800ms) for pace control — target project must read `parseInt(process.env.DEMO_SLOW_MO || '0')` in `use.launchOptions.slowMo`
 - `list_extension_tabs` — List open tabs in a CDP-connected extension test browser
 - `screenshot_extension_tab` — Screenshot a specific extension tab via CDP
+
+**`preflight_check` cross-project compatibility**:
+- `launch_ui_mode`, `run_demo`, `run_tests`, and `preflight_check` all accept any `project` string (not a hardcoded enum) — compatible with any target project's `playwright.config.ts` configuration
+- `test_files_exist` check (check #4): returns `skip` (not `fail`) when the project name has no known directory mapping — compilation check (#6) validates it instead; prevents false failures on projects with non-standard directory layouts
 
 **Auth state check in `preflight_check` (check #8)**:
 - Only runs when a `project` argument is provided
@@ -428,12 +443,13 @@ The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tool
 - Returns structured `RunAuthSetupResult` with per-phase success, `auth_files_refreshed` list, and `output_summary`
 - Deputy-CTO agent has `mcp__playwright__run_auth_setup` in `allowedTools` and is responsible for executing it when assigned an `auth_state` repair task from `/demo`
 
-**`/demo` command escalation flow** (`.claude/commands/demo.md`):
-- Replaces the old "stop on failure" gate with an "escalate all failures" pattern
-- When `preflight_check` returns `ready: false`, `/demo` creates a single urgent DEPUTY-CTO task describing every failed check with per-check repair instructions
+**`/demo` command suite** (`.claude/commands/demo.md`, `demo-auto.md`, `demo-interactive.md`):
+- Three commands: `/demo` (dispatcher — asks auto-play vs interactive), `/demo-auto` (headed browser, tests run automatically), `/demo-interactive` (Playwright UI mode, manual click-to-run)
+- All three use the same "escalate all failures" pattern — when `preflight_check` returns `ready: false`, a single urgent DEPUTY-CTO task is created describing every failed check with per-check repair instructions
+- `/demo-auto` calls `mcp__playwright__run_demo`; `/demo-interactive` calls `mcp__playwright__launch_ui_mode`
 - Repair mapping: `config_exists` → CODE-REVIEWER; `dependencies_installed`/`browsers_installed` → direct Bash fix; `test_files_exist` → TEST-WRITER; `credentials_valid` → INVESTIGATOR & PLANNER; `auth_state` → `run_auth_setup()` then INVESTIGATOR & PLANNER on failure
 - The `demo` agent identity is included in `SECTION_CREATOR_RESTRICTIONS` for DEPUTY-CTO (allows `mcp__todo-db__create_task` with `assigned_by: "demo"`)
-- `slash-command-prefetch.js` reads the cached `playwright-health.json` (1-hour TTL) written by the SessionStart hook, falling back to manual `.auth/vendor-owner.json` inspection on cache miss
+- `slash-command-prefetch.js` reads the cached `playwright-health.json` (1-hour TTL) written by the SessionStart hook, falling back to manual `.auth/vendor-owner.json` inspection on cache miss; also extracts `discoveredProjects` via regex from `playwright.config.ts` so commands can skip re-reading the config file
 
 ## Rotation Proxy
 

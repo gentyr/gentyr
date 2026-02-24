@@ -1234,6 +1234,27 @@ function handleDemo() {
     output.gathered.authState = authState;
   }
 
+  // Discover Playwright projects from config file
+  const configFile = fs.existsSync(tsConfig) ? tsConfig : (fs.existsSync(jsConfig) ? jsConfig : null);
+  if (configFile) {
+    try {
+      const configContent = fs.readFileSync(configFile, 'utf8');
+      // Match project name strings in the projects array.
+      // Playwright configs use: { name: 'project-name', ... }
+      const projectNames = [];
+      const nameRegex = /name:\s*['"]([^'"]+)['"]/g;
+      let match;
+      while ((match = nameRegex.exec(configContent)) !== null) {
+        projectNames.push(match[1]);
+      }
+      output.gathered.discoveredProjects = projectNames;
+    } catch {
+      output.gathered.discoveredProjects = [];
+    }
+  } else {
+    output.gathered.discoveredProjects = [];
+  }
+
   // Summary: critical issues
   const criticalIssues = [];
   if (!output.gathered.configExists) criticalIssues.push('playwright.config.ts not found');

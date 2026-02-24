@@ -262,9 +262,12 @@ function validateAndApprove(phrase, code) {
       return { valid: false, reason: 'Approval code has expired' };
     }
 
-    // HMAC verification (Fix 2): Verify the pending request was created by the gate hook
+    // HMAC verification: Verify the pending request was created by the gate hook.
+    // G001 Fail-Closed: pending_hmac is verified unconditionally when a protection key is
+    // present. If the field is missing (undefined), the comparison against the expected hex
+    // string fails correctly, blocking requests that were not created by the gate hook.
     const key = loadProtectionKey();
-    if (key && request.pending_hmac) {
+    if (key) {
       const expectedPendingHmac = computeHmac(key, normalizedCode, request.server, request.tool, request.argsHash || '', String(request.expires_timestamp));
       if (request.pending_hmac !== expectedPendingHmac) {
         // Forged pending request — delete and reject

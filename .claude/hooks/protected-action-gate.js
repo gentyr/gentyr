@@ -15,7 +15,7 @@
  *
  * SECURITY: This file should be root-owned via protect-framework.sh
  *
- * @version 2.0.0
+ * @version 2.1.0
  */
 
 import fs from 'fs';
@@ -37,6 +37,34 @@ const PROTECTION_KEY_PATH = path.join(PROJECT_DIR, '.claude', 'protection-key');
 // PreToolUse hooks receive tool info via environment variables
 const toolName = process.env.TOOL_NAME || '';
 const toolInput = process.env.TOOL_INPUT || '{}';
+
+// ============================================================================
+// Blocked Action Audit Log (G024)
+// ============================================================================
+
+const MAX_AUDIT_ENTRIES = 500;
+const blockedActionsLog = [];
+
+function logBlockedAction(server, tool, reason) {
+  if (blockedActionsLog.length >= MAX_AUDIT_ENTRIES) return;
+  blockedActionsLog.push({
+    server,
+    tool,
+    reason,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+function blockAndExit() {
+  if (blockedActionsLog.length > 0) {
+    console.error(JSON.stringify({
+      type: 'blocked_actions_audit',
+      count: blockedActionsLog.length,
+      entries: blockedActionsLog,
+    }));
+  }
+  process.exit(1);
+}
 
 // ============================================================================
 // HMAC Signing (Fix 2: Anti-Forgery)
@@ -84,8 +112,10 @@ function computeHmac(key, ...fields) {
  */
 function parseMcpToolName(name) {
   // Server name: alphanumeric + hyphens (no underscores)
-  // Tool name: alphanumeric + underscores + hyphens
-  const match = name.match(/^mcp__([a-zA-Z0-9-]+)__([a-zA-Z0-9_-]+)$/);
+  // Tool name: must start with alphanumeric, with only single _ or - separators between
+  // alphanumeric segments. Double underscores (__) are rejected because __ is the
+  // delimiter between server and tool name in MCP naming convention.
+  const match = name.match(/^mcp__([a-zA-Z0-9-]+)__([a-zA-Z0-9]+(?:[_-][a-zA-Z0-9]+)*)$/);
   if (!match) {
     return null;
   }
@@ -361,7 +391,8 @@ function createRequest(server, tool, args, phrase, options = {}) {
 
   // Acquire lock for atomic read-modify-write
   if (!acquireLock()) {
-    console.error('[protected-action-gate] Warning: Could not acquire lock for createRequest. Proceeding without lock.');
+    console.error('[protected-action-gate] G001 FAIL-CLOSED: Could not acquire approvals lock for createRequest. Blocking action.');
+    return null;
   }
 
   try {
@@ -420,6 +451,7 @@ function main() {
 
   // G001: If config is corrupted/unreadable, block ALL MCP actions
   if (config.error) {
+    logBlockedAction(mcpInfo.server, mcpInfo.tool, 'G001: config corrupted');
     console.error('');
     console.error('══════════════════════════════════════════════════════════════════════');
     console.error('  G001 FAIL-CLOSED: Protected actions config is corrupted');
@@ -430,12 +462,13 @@ function main() {
     console.error('  Fix the config file at: .claude/hooks/protected-actions.json');
     console.error('══════════════════════════════════════════════════════════════════════');
     console.error('');
-    process.exit(1);
+    blockAndExit();
   }
 
   // G001 Fail-Closed: If config file is missing, block ALL MCP actions
   // This prevents attack A4/C5: agent deletes/moves config to bypass protections
   if (config.notConfigured) {
+    logBlockedAction(mcpInfo.server, mcpInfo.tool, 'G001: config not found');
     console.error('');
     console.error('══════════════════════════════════════════════════════════════════════');
     console.error('  G001 FAIL-CLOSED: Protected actions config not found');
@@ -445,7 +478,7 @@ function main() {
     console.error('  Run: setup.sh --path <project> to reinstall GENTYR');
     console.error('══════════════════════════════════════════════════════════════════════');
     console.error('');
-    process.exit(1);
+    blockAndExit();
   }
 
   // Check if this action is protected
@@ -464,6 +497,7 @@ function main() {
     }
 
     // 3. Unknown server -> BLOCK (prevents MCP server aliasing attack C2)
+    logBlockedAction(mcpInfo.server, mcpInfo.tool, 'unrecognized MCP server');
     console.error('');
     console.error('══════════════════════════════════════════════════════════════════════');
     console.error('  BLOCKED: Unrecognized MCP Server');
@@ -476,7 +510,7 @@ function main() {
     console.error('  or "servers" in .claude/hooks/protected-actions.json');
     console.error('══════════════════════════════════════════════════════════════════════');
     console.error('');
-    process.exit(1);
+    blockAndExit();
   }
 
   // Parse tool arguments
@@ -491,6 +525,7 @@ function main() {
   // we cannot verify HMAC signatures. Block the action rather than allowing unsigned approvals.
   const protectionKey = loadProtectionKey();
   if (!protectionKey) {
+    logBlockedAction(mcpInfo.server, mcpInfo.tool, 'G001: protection key missing');
     console.error('');
     console.error('══════════════════════════════════════════════════════════════════════');
     console.error('  G001 FAIL-CLOSED: Protection key missing');
@@ -500,7 +535,7 @@ function main() {
     console.error('  Run: setup.sh --path <project> to reinstall GENTYR');
     console.error('══════════════════════════════════════════════════════════════════════');
     console.error('');
-    process.exit(1);
+    blockAndExit();
   }
 
   // Check for valid approval (HMAC-verified, args-scoped)
@@ -519,6 +554,15 @@ function main() {
   const request = createRequest(mcpInfo.server, mcpInfo.tool, args, protection.phrase, {
     approvalMode: isDeputyCtoMode ? 'deputy-cto' : 'cto',
   });
+
+  if (!request) {
+    logBlockedAction(mcpInfo.server, mcpInfo.tool, 'G001: failed to create approval request');
+    console.error(JSON.stringify({
+      error: '[protected-action-gate] G001 FAIL-CLOSED: Could not create approval request. Action blocked.'
+    }));
+    blockAndExit();
+    return;
+  }
 
   // Output block message
   console.error('');
@@ -563,7 +607,8 @@ function main() {
   console.error('');
 
   // Exit with error to block the tool call
-  process.exit(1);
+  logBlockedAction(mcpInfo.server, mcpInfo.tool, 'no valid approval');
+  blockAndExit();
 }
 
 main();

@@ -172,7 +172,7 @@ export function writeProtectionKey(keyBase64) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(PROTECTION_KEY_PATH, keyBase64 + '\n', { mode: 0o600 });
+  fs.writeFileSync(PROTECTION_KEY_PATH, keyBase64 + '\n', { mode: 0o644 });
 }
 
 /**
@@ -457,15 +457,19 @@ export function validateApproval(phrase, code) {
       };
     }
 
-    // HMAC verification: Verify the pending request was created by the gate hook
+    // HMAC verification: Verify the pending request was created by the gate hook.
+    // G001 Fail-Closed: pending_hmac is verified unconditionally when a protection key is
+    // present. If the field is missing (undefined), the comparison against the expected hex
+    // string fails correctly, blocking requests that were not created by the gate hook.
     const key = readProtectionKey();
     const keyBase64 = key ? key.toString('base64') : null;
     const normalizedCode = code.toUpperCase();
 
-    if (keyBase64 && request.pending_hmac) {
+    if (keyBase64) {
+      // Unconditionally verify pending_hmac - if field is missing, comparison fails correctly
       const expectedPendingHmac = computeHmac(keyBase64, normalizedCode, request.server, request.tool, request.argsHash || '', String(request.expires_timestamp));
       if (request.pending_hmac !== expectedPendingHmac) {
-        // Forged pending request - delete and reject
+        // Forged or missing pending_hmac - delete and reject
         console.error(`[approval-utils] FORGERY DETECTED: Invalid pending_hmac for ${normalizedCode}. Deleting.`);
         delete approvals.approvals[normalizedCode];
         saveApprovals(approvals);
@@ -538,33 +542,27 @@ export function checkApproval(server, tool, args) {
         continue; // Args don't match the approved request
       }
 
-      // HMAC verification: Verify signatures to prevent agent forgery
-      // NOTE: Individual HMAC fields are checked with `if (request.pending_hmac)` to
-      // support backward compatibility with pre-HMAC requests. Requests created before
-      // HMAC was introduced will not have these fields, and that is acceptable.
-      // The else-if branch below handles the case where HMAC fields ARE present but
-      // the protection key is missing (G001 fail-closed).
+      // HMAC verification: Verify signatures to prevent agent forgery.
+      // G001 Fail-Closed: Both pending_hmac and approved_hmac are verified unconditionally
+      // when a protection key is present. If either field is missing (undefined), the
+      // comparison against the expected hex string will fail, correctly blocking the request.
       if (keyBase64) {
-        // Verify pending_hmac (was this request created by the hook with these args?)
-        if (request.pending_hmac) {
-          const expectedPendingHmac = computeHmac(keyBase64, code, server, tool, request.argsHash || argsHash, String(request.expires_timestamp));
-          if (request.pending_hmac !== expectedPendingHmac) {
-            console.error(`[approval-utils] FORGERY DETECTED: Invalid pending_hmac for ${code}. Deleting.`);
-            delete approvals.approvals[code];
-            dirty = true;
-            continue;
-          }
+        // Verify pending_hmac unconditionally - if field is missing, comparison fails correctly
+        const expectedPendingHmac = computeHmac(keyBase64, code, server, tool, request.argsHash || argsHash, String(request.expires_timestamp));
+        if (request.pending_hmac !== expectedPendingHmac) {
+          console.error(`[approval-utils] FORGERY DETECTED: Invalid pending_hmac for ${code}. Deleting.`);
+          delete approvals.approvals[code];
+          dirty = true;
+          continue;
         }
 
-        // Verify approved_hmac (was this approval created by the approval hook?)
-        if (request.approved_hmac) {
-          const expectedApprovedHmac = computeHmac(keyBase64, code, server, tool, 'approved', request.argsHash || argsHash, String(request.expires_timestamp));
-          if (request.approved_hmac !== expectedApprovedHmac) {
-            console.error(`[approval-utils] FORGERY DETECTED: Invalid approved_hmac for ${code}. Deleting.`);
-            delete approvals.approvals[code];
-            dirty = true;
-            continue;
-          }
+        // Verify approved_hmac unconditionally - if field is missing, comparison fails correctly
+        const expectedApprovedHmac = computeHmac(keyBase64, code, server, tool, 'approved', request.argsHash || argsHash, String(request.expires_timestamp));
+        if (request.approved_hmac !== expectedApprovedHmac) {
+          console.error(`[approval-utils] FORGERY DETECTED: Invalid approved_hmac for ${code}. Deleting.`);
+          delete approvals.approvals[code];
+          dirty = true;
+          continue;
         }
       } else if (request.pending_hmac || request.approved_hmac) {
         // G001 Fail-Closed: Request has HMAC fields but we can't verify them

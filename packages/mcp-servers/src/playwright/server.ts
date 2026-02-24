@@ -49,6 +49,9 @@ import {
   RunAuthSetupArgsSchema,
   type RunAuthSetupArgs,
   type RunAuthSetupResult,
+  RunDemoArgsSchema,
+  type RunDemoArgs,
+  type RunDemoResult,
 } from './types.js';
 import { parseTestOutput, truncateOutput } from './helpers.js';
 
@@ -248,6 +251,105 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
       success: false,
       project,
       message: `Failed to launch Playwright UI: ${message}`,
+    };
+  }
+}
+
+/**
+ * Launch Playwright tests in headed auto-play mode.
+ * Runs tests in a visible browser at configurable speed via DEMO_SLOW_MO env var.
+ * Validates prerequisites, spawns a detached process, and monitors for early crashes.
+ */
+async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
+  const { project, slow_mo, base_url } = args;
+
+  // Pre-flight validation
+  const preflight = validatePrerequisites();
+  if (!preflight.ok) {
+    return {
+      success: false,
+      project,
+      message: `Environment validation failed:\n${preflight.errors.map(e => `  - ${e}`).join('\n')}`,
+    };
+  }
+
+  const cmdArgs = ['playwright', 'test', '--project', project, '--headed'];
+  const env: Record<string, string> = { ...process.env as Record<string, string> };
+
+  if (slow_mo !== undefined) {
+    env.DEMO_SLOW_MO = String(slow_mo);
+  }
+
+  if (base_url) {
+    env.PLAYWRIGHT_BASE_URL = base_url;
+  }
+
+  try {
+    const child = spawn('npx', cmdArgs, {
+      detached: true,
+      stdio: ['ignore', 'ignore', 'pipe'],
+      cwd: PROJECT_DIR,
+      env,
+    });
+
+    // Collect stderr for crash diagnostics
+    let stderrChunks: Buffer[] = [];
+    if (child.stderr) {
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrChunks.push(chunk);
+      });
+    }
+
+    // Wait up to 5s for early crash detection (longer than UI mode — headed browser startup is slower)
+    const earlyExit = await new Promise<{ code: number | null; signal: string | null } | null>(
+      (resolve) => {
+        const timer = setTimeout(() => resolve(null), 5000);
+
+        child.on('exit', (code, signal) => {
+          clearTimeout(timer);
+          resolve({ code, signal });
+        });
+
+        child.on('error', (err) => {
+          clearTimeout(timer);
+          resolve({ code: 1, signal: err.message });
+        });
+      }
+    );
+
+    if (earlyExit) {
+      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
+      const snippet = stderr.length > 500 ? stderr.slice(0, 500) + '...' : stderr;
+      return {
+        success: false,
+        project,
+        message: `Playwright process crashed within 5s (exit code: ${earlyExit.code}, signal: ${earlyExit.signal})${snippet ? `\nstderr: ${snippet}` : ''}`,
+      };
+    }
+
+    // Still running after 5s — detach and return success
+    if (child.stderr) {
+      child.stderr.destroy();
+    }
+    child.unref();
+
+    const warningText = preflight.warnings.length > 0
+      ? `\nWarnings:\n${preflight.warnings.map(w => `  - ${w}`).join('\n')}`
+      : '';
+
+    return {
+      success: true,
+      project,
+      message: `Headed auto-play demo launched for project "${project}" with ${slow_mo}ms slow motion. The browser window should open shortly.${warningText}`,
+      pid: child.pid,
+      slow_mo,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      success: false,
+      project,
+      message: `Failed to launch headed demo: ${message}`,
     };
   }
 }
@@ -688,7 +790,7 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
 
       const testDir = activeDirs[args.project!];
       if (!testDir) {
-        return { status: 'warn', message: `No known test directory for project "${args.project}"` };
+        return { status: 'skip', message: `No known test directory mapping for project "${args.project}" — compilation check (#6) will validate it` };
       }
 
       const fullDir = path.join(PROJECT_DIR, testDir);
@@ -1278,6 +1380,16 @@ const tools: AnyToolHandler[] = [
       'or a vendor role project to test as a specific persona.',
     schema: LaunchUiModeArgsSchema,
     handler: launchUiMode,
+  },
+  {
+    name: 'run_demo',
+    description:
+      'Launch Playwright tests in a visible headed browser that runs automatically at human-watchable speed. ' +
+      'No clicking required — tests play through on their own with configurable pace. ' +
+      'Best for presentations and demos. The target project\'s playwright.config.ts must read ' +
+      'parseInt(process.env.DEMO_SLOW_MO || "0") in use.launchOptions.slowMo for pace control to work.',
+    schema: RunDemoArgsSchema,
+    handler: runDemo,
   },
   {
     name: 'run_tests',

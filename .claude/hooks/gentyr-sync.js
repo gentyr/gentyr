@@ -156,7 +156,9 @@ function statBasedSync(frameworkDir) {
 
   // Fast check: version + config hash match → nothing to do
   const currentConfigHash = computeConfigHash(frameworkDir);
-  if (state.version === currentVersion && state.configHash === currentConfigHash) {
+  const settingsExists = fs.existsSync(path.join(projectDir, '.claude', 'settings.json'));
+  const mcpJsonExists = fs.existsSync(path.join(projectDir, '.mcp.json'));
+  if (state.version === currentVersion && state.configHash === currentConfigHash && settingsExists && mcpJsonExists) {
     return true; // Handled: no sync needed
   }
 
@@ -180,7 +182,9 @@ function statBasedSync(frameworkDir) {
         stdio: 'pipe', timeout: 10000,
       });
       changes.push('settings.json');
-    } catch {}
+    } catch (err) {
+      process.stderr.write(`[gentyr-sync] settings.json re-merge failed: ${err.message || err}\n`);
+    }
   }
 
   // b. Regenerate .mcp.json
@@ -218,7 +222,9 @@ function statBasedSync(frameworkDir) {
       }
 
       changes.push('.mcp.json');
-    } catch {}
+    } catch (err) {
+      process.stderr.write(`[gentyr-sync] .mcp.json re-merge failed: ${err.message || err}\n`);
+    }
   }
 
   // c. Update CLAUDE.md section
