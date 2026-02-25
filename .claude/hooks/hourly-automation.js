@@ -96,6 +96,24 @@ function ensureCredentials() {
 }
 
 /**
+ * Preflight check: verify that the 3 infrastructure credentials required by
+ * health monitor agents are available (either resolved from 1Password or
+ * already present in process.env).  Returns false and logs a message when
+ * any are missing, so the caller can skip the spawn.
+ */
+function hasHealthMonitorCredentials() {
+  ensureCredentials();
+  const required = ['RENDER_API_KEY', 'VERCEL_TOKEN', 'ELASTIC_API_KEY'];
+  const missing = required.filter(k => !resolvedCredentials[k] && !process.env[k]);
+  if (missing.length > 0) {
+    log(`Health monitor preflight: missing ${missing.join(', ')}. Skipping spawn.`);
+    log('Health monitor preflight: reinstall with: setup-automation-service.sh setup --op-token <TOKEN>');
+    return false;
+  }
+  return true;
+}
+
+/**
  * Pre-resolve all 1Password credentials needed by infrastructure MCP servers.
  * Reads vault-mappings.json for op:// references and protected-actions.json
  * for which keys each server needs. Calls `op read` once per unique reference.
@@ -2809,7 +2827,11 @@ async function main() {
       log('Staging health monitor: git fetch failed.');
     }
 
-    if (remoteBranchExists('staging')) {
+    if (!remoteBranchExists('staging')) {
+      log('Staging health monitor: staging branch does not exist, skipping.');
+    } else if (!hasHealthMonitorCredentials()) {
+      log('Staging health monitor: skipped (missing credentials).');
+    } else {
       log('Staging health monitor: spawning health check...');
       const result = spawnStagingHealthMonitor();
       if (result.success) {
@@ -2822,8 +2844,6 @@ async function main() {
       } else {
         log('Staging health monitor: spawn failed.');
       }
-    } else {
-      log('Staging health monitor: staging branch does not exist, skipping.');
     }
   } else if (!stagingHealthEnabled) {
     log('Staging Health Monitor is disabled in config.');
@@ -2840,17 +2860,21 @@ async function main() {
   const prodHealthEnabled = config.productionHealthMonitorEnabled !== false;
 
   if (timeSinceLastProdHealth >= PRODUCTION_HEALTH_COOLDOWN_MS && prodHealthEnabled) {
-    log('Production health monitor: spawning health check...');
-    const result = spawnProductionHealthMonitor();
-    if (result.success) {
-      const alive = await verifySpawnAlive(result.pid, 'Production health monitor');
-      if (alive) {
-        state.lastProductionHealthCheck = now;
-        saveState(state);
-      }
-      log('Production health monitor: spawned (fire-and-forget).');
+    if (!hasHealthMonitorCredentials()) {
+      log('Production health monitor: skipped (missing credentials).');
     } else {
-      log('Production health monitor: spawn failed.');
+      log('Production health monitor: spawning health check...');
+      const result = spawnProductionHealthMonitor();
+      if (result.success) {
+        const alive = await verifySpawnAlive(result.pid, 'Production health monitor');
+        if (alive) {
+          state.lastProductionHealthCheck = now;
+          saveState(state);
+        }
+        log('Production health monitor: spawned (fire-and-forget).');
+      } else {
+        log('Production health monitor: spawn failed.');
+      }
     }
   } else if (!prodHealthEnabled) {
     log('Production Health Monitor is disabled in config.');
