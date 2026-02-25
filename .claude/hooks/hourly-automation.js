@@ -236,6 +236,17 @@ function buildSpawnEnv(agentId) {
   if (missing.length > 0) {
     log(`buildSpawnEnv(${agentId}): MISSING infrastructure credentials: ${missing.join(', ')}`);
   }
+  // Resolve git-wrappers directory (follows symlinks for npm link model)
+  const hooksDir = path.join(PROJECT_DIR, '.claude', 'hooks');
+  let guardedPath = process.env.PATH || '/usr/bin:/bin';
+  try {
+    const realHooks = fs.realpathSync(hooksDir);
+    const wrappersDir = path.join(realHooks, 'git-wrappers');
+    if (fs.existsSync(path.join(wrappersDir, 'git'))) {
+      guardedPath = `${wrappersDir}:${guardedPath}`;
+    }
+  } catch {}
+
   return {
     ...process.env,
     ...resolvedCredentials,
@@ -246,6 +257,7 @@ function buildSpawnEnv(agentId) {
     HTTP_PROXY: 'http://localhost:18080',
     NO_PROXY: 'localhost,127.0.0.1',
     NODE_EXTRA_CA_CERTS: path.join(process.env.HOME || '/tmp', '.claude', 'proxy-certs', 'ca.pem'),
+    PATH: guardedPath,
   };
 }
 
@@ -1194,20 +1206,40 @@ Report completion via mcp__agent-reports__report_to_deputy_cto with a summary of
   // Store prompt now that it's built
   updateAgent(agentId, { prompt });
 
+  // --- Worktree setup (lint fixer must not run in main tree) ---
+  let agentCwd = PROJECT_DIR;
+  let agentMcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+  let worktreePath = null;
+
+  try {
+    const branchName = getFeatureBranchName('lint-fix', `lint-${Date.now()}`);
+    const worktree = createWorktree(branchName);
+    worktreePath = worktree.path;
+    agentCwd = worktree.path;
+    agentMcpConfig = path.join(worktree.path, '.mcp.json');
+    log(`Lint fixer: worktree ready at ${worktree.path} (branch ${branchName})`);
+    updateAgent(agentId, { metadata: { errorCount: errorLines.split('\n').length, worktreePath } });
+  } catch (err) {
+    log(`Lint fixer: worktree creation failed, aborting spawn (main tree must stay on main): ${err.message}`);
+    return Promise.reject(new Error(`Worktree creation failed: ${err.message}`));
+  }
+
   return new Promise((resolve, reject) => {
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
     const spawnArgs = [
       '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
+      '--mcp-config', agentMcpConfig,
       '-p',
       prompt,
     ];
 
     // Use stdio: 'inherit' - Claude CLI requires TTY-like environment
     const claude = spawn('claude', [...spawnArgs, '--output-format', 'json'], {
-      cwd: PROJECT_DIR,
+      cwd: agentCwd,
       stdio: 'inherit',
-      env: buildSpawnEnv(agentId),
+      env: {
+        ...buildSpawnEnv(agentId),
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,  // State files always in main project
+      },
     });
 
     claude.on('close', (code) => {
@@ -1578,7 +1610,8 @@ function spawnTaskAgent(task) {
     agentMcpConfig = path.join(worktree.path, '.mcp.json');
     log(`Task runner: worktree ready at ${worktree.path} (branch ${branchName}, created=${worktree.created})`);
   } catch (err) {
-    log(`Task runner: worktree creation failed, falling back to PROJECT_DIR: ${err.message}`);
+    log(`Task runner: worktree creation failed, aborting spawn (main tree must stay on main): ${err.message}`);
+    return false;
   }
 
   // Register first to get agentId for prompt embedding
