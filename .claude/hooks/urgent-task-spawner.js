@@ -115,6 +115,17 @@ function resetTaskToPending(taskId) {
  * inherit them from the env or use the proxy.
  */
 function buildSpawnEnv(agentId) {
+  // Resolve git-wrappers directory (follows symlinks for npm link model)
+  const hooksDir = path.join(PROJECT_DIR, '.claude', 'hooks');
+  let guardedPath = process.env.PATH || '/usr/bin:/bin';
+  try {
+    const realHooks = fs.realpathSync(hooksDir);
+    const wrappersDir = path.join(realHooks, 'git-wrappers');
+    if (fs.existsSync(path.join(wrappersDir, 'git'))) {
+      guardedPath = `${wrappersDir}:${guardedPath}`;
+    }
+  } catch {}
+
   return {
     ...process.env,
     CLAUDE_PROJECT_DIR: PROJECT_DIR,
@@ -124,6 +135,7 @@ function buildSpawnEnv(agentId) {
     HTTP_PROXY: `http://localhost:${PROXY_PORT}`,
     NO_PROXY: 'localhost,127.0.0.1',
     NODE_EXTRA_CA_CERTS: path.join(process.env.HOME || '/tmp', '.claude', 'proxy-certs', 'ca.pem'),
+    PATH: guardedPath,
   };
 }
 

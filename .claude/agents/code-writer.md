@@ -138,7 +138,7 @@ feature/* --PR--> preview --PR--> staging --PR--> main (production)
 
 ### Worktree Context
 
-You may be working inside a git worktree (a separate working directory on a feature branch). If so:
+You are working inside a git worktree (a separate working directory on a feature branch). **NEVER run `git checkout` or `git switch` to change branches** — the main tree must stay on `main`. If so:
 - Your working directory is isolated from the main project
 - Other agents may be working concurrently in their own worktrees
 - MCP tools (todo-db, deputy-cto, etc.) access shared state in the main project

@@ -49,14 +49,9 @@ mcp__specs-browser__get_spec({ spec_id: "G004" })       // No hardcoded credenti
 - `docs/<description>` -- Documentation changes
 - `chore/<description>` -- Maintenance tasks
 
-### Creating a Feature Branch
+### Working on a Feature Branch
 
-If not already on a feature branch:
-```bash
-git checkout preview
-git pull origin preview
-git checkout -b feature/<descriptive-name>
-```
+You will always be working inside a git worktree (an isolated working directory on a feature branch). Worktrees are created automatically by the task runner. **NEVER run `git checkout` or `git switch` to change branches** — the main working tree must stay on `main` to prevent drift.
 
 ### Merging to Preview
 
