@@ -11,7 +11,7 @@ import { z } from 'zod';
 // Constants
 // ============================================================================
 
-export const CONSUMPTION_MODES = ['gui', 'cli', 'api', 'sdk'] as const;
+export const CONSUMPTION_MODES = ['gui', 'cli', 'api', 'sdk', 'adk'] as const;
 export type ConsumptionMode = (typeof CONSUMPTION_MODES)[number];
 
 export const FEEDBACK_RUN_STATUS = ['pending', 'in_progress', 'completed', 'failed', 'partial'] as const;

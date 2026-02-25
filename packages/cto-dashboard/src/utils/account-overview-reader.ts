@@ -106,6 +106,7 @@ const ALLOWED_EVENTS = new Set([
   'key_exhausted',
   'key_switched',
   'account_quota_refreshed',
+  'account_removed',
 ]);
 
 function truncateKeyId(keyId: string): string {
@@ -158,6 +159,9 @@ function deriveDescription(
 
     case 'account_quota_refreshed':
       return `Account quota refreshed: ${displayName}`;
+
+    case 'account_removed':
+      return `Account removed by user: ${displayName}`;
 
     default:
       return null;

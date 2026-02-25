@@ -39,6 +39,7 @@ const DEFAULTS = {
   compliance_checker_file: 10080,      // 7 days in minutes (per-file cooldown)
   compliance_checker_spec: 10080,      // 7 days in minutes (per-spec cooldown)
   branch_drift_check: 30,              // 30 minutes
+  session_reviver: 10,                  // 10 minutes
 };
 
 /**

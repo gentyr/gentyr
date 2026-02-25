@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS personas (
     created_at TEXT NOT NULL,
     created_timestamp INTEGER NOT NULL,
     updated_at TEXT NOT NULL,
-    CONSTRAINT valid_mode CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk'))
+    CONSTRAINT valid_mode CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk', 'adk'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_personas_mode ON personas(consumption_mode);
@@ -226,6 +226,39 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       db.prepare("SELECT cto_protected FROM personas LIMIT 0").run();
     } catch {
       db.exec("ALTER TABLE personas ADD COLUMN cto_protected INTEGER NOT NULL DEFAULT 0");
+    }
+
+    // Auto-migration: rebuild personas table if CHECK constraint doesn't include 'adk'
+    try {
+      const probeId = `__adk_probe_${Date.now()}__`;
+      db.prepare(
+        "INSERT INTO personas (id, name, description, consumption_mode, behavior_traits, endpoints, created_at, created_timestamp, updated_at) VALUES (?, ?, ?, 'adk', '[]', '[]', '', 0, '')"
+      ).run(probeId, probeId, probeId);
+      db.prepare("DELETE FROM personas WHERE id = ?").run(probeId);
+    } catch {
+      // CHECK constraint rejected 'adk' — rebuild table with updated constraint
+      db.exec(`
+        CREATE TABLE personas_new (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          description TEXT NOT NULL,
+          consumption_mode TEXT NOT NULL DEFAULT 'gui',
+          behavior_traits TEXT NOT NULL DEFAULT '[]',
+          endpoints TEXT NOT NULL DEFAULT '[]',
+          credentials_ref TEXT,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          created_timestamp INTEGER NOT NULL,
+          updated_at TEXT NOT NULL,
+          cto_protected INTEGER NOT NULL DEFAULT 0,
+          CONSTRAINT valid_mode CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk', 'adk'))
+        );
+        INSERT INTO personas_new SELECT * FROM personas;
+        DROP TABLE personas;
+        ALTER TABLE personas_new RENAME TO personas;
+        CREATE INDEX IF NOT EXISTS idx_personas_mode ON personas(consumption_mode);
+        CREATE INDEX IF NOT EXISTS idx_personas_enabled ON personas(enabled);
+      `);
     }
 
     return db;

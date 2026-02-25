@@ -627,7 +627,7 @@ done
 # protected MCP actions do not fail-closed on a missing key file.
 if [ ! -f "$PROJECT_DIR/.claude/protection-key" ]; then
     echo "  Generating protection key..."
-    node "$FRAMEWORK_DIR/scripts/encrypt-credential.js" --generate-key
+    CLAUDE_PROJECT_DIR="$PROJECT_DIR" node "$FRAMEWORK_DIR/scripts/encrypt-credential.js" --generate-key
 fi
 
 # Pre-create autonomous-mode.json with all automations enabled by default
@@ -1543,7 +1543,7 @@ if [ "$PROTECT_MCP" = true ]; then
             # Generate or preserve protection key
             if [ ! -f "$PROTECTION_KEY_FILE" ]; then
                 echo "  Generating protection key..."
-                node "$FRAMEWORK_DIR/scripts/encrypt-credential.js" --generate-key
+                CLAUDE_PROJECT_DIR="$PROJECT_DIR" node "$FRAMEWORK_DIR/scripts/encrypt-credential.js" --generate-key
             else
                 echo "  Using existing protection key."
             fi

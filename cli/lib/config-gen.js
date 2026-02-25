@@ -249,6 +249,7 @@ export function updateGitignore(projectDir) {
     '.claude/config/',
     '.claude/state/',
     '.claude/worktrees/',
+    '.claude/hooks-protected/',
     '',
     '# Generated root-level files',
     '.mcp.json',

@@ -1120,8 +1120,9 @@ function handleDemo() {
   // Check playwright.config.ts existence
   const tsConfig = path.join(PROJECT_DIR, 'playwright.config.ts');
   const jsConfig = path.join(PROJECT_DIR, 'playwright.config.js');
-  output.gathered.configExists = fs.existsSync(tsConfig) || fs.existsSync(jsConfig);
-  output.gathered.configPath = fs.existsSync(tsConfig) ? 'playwright.config.ts' : (fs.existsSync(jsConfig) ? 'playwright.config.js' : null);
+  const configFile = fs.existsSync(tsConfig) ? tsConfig : (fs.existsSync(jsConfig) ? jsConfig : null);
+  output.gathered.configExists = !!configFile;
+  output.gathered.configPath = configFile ? path.basename(configFile) : null;
 
   // Check @playwright/test in node_modules
   const pwTestDir = path.join(PROJECT_DIR, 'node_modules', '@playwright', 'test');
@@ -1147,28 +1148,39 @@ function handleDemo() {
   }
   output.gathered.browsersInstalled = browsersFound;
 
-  // Credential env var status
-  const credentialKeys = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY'];
+  // Credential env var status — scan all env vars for unresolved op:// references
   const credentials = {};
-  for (const key of credentialKeys) {
-    const value = process.env[key];
-    if (!value) {
-      credentials[key] = 'missing';
-    } else if (value.startsWith('op://')) {
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value && value.startsWith('op://')) {
       credentials[key] = 'unresolved_op_ref';
-    } else {
-      credentials[key] = 'set';
     }
   }
   output.gathered.credentials = credentials;
+  output.gathered.credentialsOk = Object.keys(credentials).length === 0;
 
-  // Test file counts per project directory
-  const activeDirs = {
-    'vendor-owner': 'e2e/vendor',
-    'manual': 'e2e/manual',
-    'extension-manual': 'e2e/extension/manual',
-    'demo': 'e2e/demo',
-  };
+  // Test file counts per project directory (discovered from playwright config)
+  const activeDirs = {};
+  if (configFile) {
+    try {
+      const configContent = fs.readFileSync(configFile, 'utf8');
+      // Extract top-level testDir
+      const projectsStart = configContent.search(/projects\s*[:=]\s*\[/);
+      const textBeforeProjects = projectsStart > 0 ? configContent.slice(0, projectsStart) : configContent;
+      const defaultTestDirMatch = textBeforeProjects.match(/testDir\s*:\s*['"`]([^'"`]+)['"`]/);
+      const defaultTestDir = defaultTestDirMatch ? defaultTestDirMatch[1].replace(/^\.\//, '') : 'e2e';
+
+      const blockRegex = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)*name:\s*['"]([^'"]+)['"][^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
+      let blockMatch;
+      while ((blockMatch = blockRegex.exec(configContent)) !== null) {
+        const block = blockMatch[0];
+        const nameM = block.match(/name:\s*['"]([^'"]+)['"]/);
+        const tdM = block.match(/testDir:\s*['"]([^'"]+)['"]/);
+        if (nameM && !['seed', 'auth-setup', 'cleanup', 'setup'].includes(nameM[1])) {
+          activeDirs[nameM[1]] = tdM ? tdM[1].replace(/^\.\//, '') : defaultTestDir;
+        }
+      }
+    } catch { /* ignore */ }
+  }
   const testCounts = {};
   for (const [project, testDir] of Object.entries(activeDirs)) {
     const fullDir = path.join(PROJECT_DIR, testDir);
@@ -1206,10 +1218,26 @@ function handleDemo() {
   // Auth state freshness (manual check if cache miss)
   if (!authCheckedFromCache) {
     const authDir = path.join(PROJECT_DIR, '.auth');
-    const primaryAuth = path.join(authDir, 'vendor-owner.json');
+
+    // Discover primary auth file from playwright config or scan .auth/
+    let primaryAuthBasename = null;
+    if (configFile) {
+      try {
+        const cfgContent = fs.readFileSync(configFile, 'utf8');
+        const ssMatch = cfgContent.match(/storageState:\s*['"]([^'"]+)['"]/);
+        if (ssMatch) primaryAuthBasename = path.basename(ssMatch[1]);
+      } catch { /* ignore */ }
+    }
+    if (!primaryAuthBasename && fs.existsSync(authDir)) {
+      try {
+        const authFiles = fs.readdirSync(authDir).filter(f => f.endsWith('.json'));
+        if (authFiles.length) primaryAuthBasename = authFiles[0];
+      } catch { /* ignore */ }
+    }
+    const primaryAuth = primaryAuthBasename ? path.join(authDir, primaryAuthBasename) : null;
     let authState = { exists: false, ageHours: null, cookiesExpired: false, isStale: true };
 
-    if (fs.existsSync(primaryAuth)) {
+    if (primaryAuth && fs.existsSync(primaryAuth)) {
       try {
         const stat = fs.statSync(primaryAuth);
         const ageMs = Date.now() - stat.mtimeMs;
@@ -1235,7 +1263,6 @@ function handleDemo() {
   }
 
   // Discover Playwright projects from config file
-  const configFile = fs.existsSync(tsConfig) ? tsConfig : (fs.existsSync(jsConfig) ? jsConfig : null);
   if (configFile) {
     try {
       const configContent = fs.readFileSync(configFile, 'utf8');

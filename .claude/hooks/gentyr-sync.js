@@ -459,6 +459,17 @@ function tamperCheck() {
       }
     } catch {}
 
+    // Use copy-on-protect directory if present (linked projects)
+    if (state.hooksProtectedDir) {
+      const protectedDir = path.join(projectDir, state.hooksProtectedDir);
+      if (fs.existsSync(protectedDir)) {
+        hooksDir = protectedDir;
+      } else {
+        // Directory missing when state says it should exist — treat as tampering
+        warnings.push('hooks-protected/ directory missing (expected by protection-state.json)');
+      }
+    }
+
     const tampered = [];
     for (const hook of state.criticalHooks) {
       const filePath = path.join(hooksDir, hook);

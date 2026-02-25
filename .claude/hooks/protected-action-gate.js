@@ -21,10 +21,14 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Shared buffer for non-CPU-intensive synchronous sleep via Atomics.wait
+const _sleepBuf = new Int32Array(new SharedArrayBuffer(4));
 
 // ============================================================================
 // Configuration
@@ -180,6 +184,95 @@ function getProtection(server, tool, config) {
 }
 
 // ============================================================================
+// Branch-Aware Protection
+// ============================================================================
+
+/**
+ * Detect the current git branch.
+ * Checks GENTYR_CURRENT_BRANCH env var first (for testing), then falls back
+ * to `git branch --show-current`. Returns null if detection fails.
+ * @returns {string|null} Branch name or null on failure
+ */
+function detectCurrentBranch() {
+  // Allow test injection via environment variable
+  if (process.env.GENTYR_CURRENT_BRANCH) {
+    return process.env.GENTYR_CURRENT_BRANCH;
+  }
+
+  try {
+    const branch = execSync('git branch --show-current', {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    // An empty string means detached HEAD — treat as detection failure
+    return branch || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check whether a branch name matches an environment's branchPattern.
+ * Supports:
+ *   - Exact match: "main" matches "main"
+ *   - Glob prefix: "preview/*" matches any branch starting with "preview/"
+ * @param {string} branch - Current branch name
+ * @param {string} pattern - Branch pattern from environments config
+ * @returns {boolean}
+ */
+function branchMatchesPattern(branch, pattern) {
+  if (pattern.endsWith('/*')) {
+    // Glob prefix match: strip the "*" and check startsWith the remaining prefix
+    const prefix = pattern.slice(0, -1); // e.g. "preview/*" → "preview/"
+    return branch.startsWith(prefix);
+  }
+  // Exact match
+  return branch === pattern;
+}
+
+/**
+ * Determine whether the approval gate should be skipped for the current branch.
+ *
+ * Returns true ONLY when:
+ *   1. The protection has an `environments` map
+ *   2. The current branch can be detected
+ *   3. The branch matches an environment's branchPattern
+ *   4. That environment has `requireApproval: false`
+ *
+ * In all other cases (missing environments config, branch detection failure,
+ * no matching pattern, or requireApproval not explicitly false) returns false
+ * to fail-closed per G001.
+ *
+ * @param {object} protection - Protection config from protected-actions.json
+ * @returns {boolean} true if approval should be skipped for this branch
+ */
+function shouldSkipApproval(protection) {
+  // No environments config → backward compatible, require approval
+  if (!protection.environments || typeof protection.environments !== 'object') {
+    return false;
+  }
+
+  const branch = detectCurrentBranch();
+  if (!branch) {
+    // G001 Fail-Closed: cannot determine branch, assume approval required
+    return false;
+  }
+
+  for (const envConfig of Object.values(protection.environments)) {
+    if (!envConfig || typeof envConfig.branchPattern !== 'string') {
+      continue;
+    }
+    if (branchMatchesPattern(branch, envConfig.branchPattern)) {
+      // Only skip if requireApproval is explicitly false — any other value requires approval
+      return envConfig.requireApproval === false;
+    }
+  }
+
+  // No matching environment pattern → require approval (fail-closed)
+  return false;
+}
+
+// ============================================================================
 // Approval Check
 // ============================================================================
 
@@ -214,8 +307,7 @@ function acquireLock() {
 
       // Exponential backoff
       const delay = baseDelay * Math.pow(2, i);
-      const start = Date.now();
-      while (Date.now() - start < delay) { /* busy wait */ }
+      Atomics.wait(_sleepBuf, 0, 0, delay);
     }
   }
   return false;
@@ -291,7 +383,10 @@ function checkApproval(server, tool, args) {
       .update(JSON.stringify(args || {}))
       .digest('hex');
 
+    // Pass 1: Standard exact-match approvals (args-bound, single-use)
     for (const [code, request] of Object.entries(approvals.approvals)) {
+      // Skip pre-approvals — they use different HMAC domains and are handled in Pass 2
+      if (request.is_preapproval) continue;
       if (request.status !== 'approved') continue;
       if (request.expires_timestamp < now) continue;
       if (request.server !== server) continue;
@@ -335,6 +430,72 @@ function checkApproval(server, tool, args) {
       delete approvals.approvals[code];
       saveApprovals(approvals);
 
+      return request;
+    }
+
+    // Pass 2: Pre-approved bypasses (args-agnostic, burst-use)
+    for (const [code, request] of Object.entries(approvals.approvals)) {
+      if (!request.is_preapproval) continue;
+      if (request.status !== 'approved') continue;
+      if (request.expires_timestamp < now) continue;
+      if (request.server !== server) continue;
+      if (request.tool !== tool) continue;
+
+      // HMAC verification for pre-approvals (domain-separated from standard approvals)
+      if (key) {
+        const expectedPendingHmac = computeHmac(key, code, server, tool, 'preapproval-pending', String(request.expires_timestamp));
+        if (request.pending_hmac !== expectedPendingHmac) {
+          console.error(`[protected-action-gate] FORGERY DETECTED: Invalid pending_hmac for pre-approval ${code}. Deleting.`);
+          delete approvals.approvals[code];
+          dirty = true;
+          continue;
+        }
+
+        const expectedApprovedHmac = computeHmac(key, code, server, tool, 'preapproval-activated', String(request.expires_timestamp));
+        if (request.approved_hmac !== expectedApprovedHmac) {
+          console.error(`[protected-action-gate] FORGERY DETECTED: Invalid approved_hmac for pre-approval ${code}. Deleting.`);
+          delete approvals.approvals[code];
+          dirty = true;
+          continue;
+        }
+      } else {
+        // G001 Fail-Closed: No protection key available — reject pre-approval unconditionally.
+        // Without a key we cannot verify HMAC integrity, so we must block regardless of
+        // whether HMAC fields are present (prevents forged entries without HMAC fields).
+        console.error(`[protected-action-gate] G001 FAIL-CLOSED: Cannot verify HMAC for pre-approval ${code} (protection key missing). Skipping.`);
+        continue;
+      }
+
+      // Burst-use logic
+      if (!request.uses_remaining || request.uses_remaining <= 0) {
+        delete approvals.approvals[code];
+        dirty = true;
+        continue;
+      }
+
+      // Check burst window: if previously used, subsequent uses must be within 60s
+      if (request.last_used_timestamp) {
+        const elapsed = now - request.last_used_timestamp;
+        const burstWindow = request.burst_window_ms || 60000;
+        if (elapsed > burstWindow) {
+          console.error(`[protected-action-gate] Pre-approval ${code} burst window expired (${elapsed}ms > ${burstWindow}ms). Deleting.`);
+          delete approvals.approvals[code];
+          dirty = true;
+          continue;
+        }
+      }
+
+      // Consume one use
+      request.uses_remaining--;
+      request.last_used_timestamp = now;
+      console.error(`[protected-action-gate] Pre-approval ${code} consumed for ${server}:${tool} (${request.uses_remaining} uses remaining, reason: ${request.reason || 'N/A'})`);
+
+      if (request.uses_remaining <= 0) {
+        // Fully consumed
+        delete approvals.approvals[code];
+      }
+
+      saveApprovals(approvals);
       return request;
     }
 
@@ -511,6 +672,12 @@ function main() {
     console.error('══════════════════════════════════════════════════════════════════════');
     console.error('');
     blockAndExit();
+  }
+
+  // Check if this branch is exempt from approval for this protection
+  if (shouldSkipApproval(protection)) {
+    // This branch has requireApproval: false — allow without CTO approval
+    process.exit(0);
   }
 
   // Parse tool arguments

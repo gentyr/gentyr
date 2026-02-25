@@ -49,6 +49,28 @@ CREATE TABLE IF NOT EXISTS maintenance_state (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS archived_tasks (
+    id TEXT PRIMARY KEY,
+    section TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    assigned_by TEXT,
+    priority TEXT NOT NULL DEFAULT 'normal',
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    created_timestamp INTEGER NOT NULL,
+    completed_timestamp INTEGER,
+    followup_enabled INTEGER NOT NULL DEFAULT 0,
+    followup_section TEXT,
+    followup_prompt TEXT,
+    archived_at TEXT NOT NULL,
+    archived_timestamp INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_archived_tasks_archived ON archived_tasks(archived_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_archived_tasks_section ON archived_tasks(section);
 `;
 
 // ============================================================================
@@ -251,7 +273,7 @@ CREATE TABLE IF NOT EXISTS personas (
     created_at TEXT NOT NULL,
     created_timestamp INTEGER NOT NULL,
     updated_at TEXT NOT NULL,
-    CONSTRAINT valid_mode CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk'))
+    CONSTRAINT valid_mode CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk', 'adk'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_personas_mode ON personas(consumption_mode);
@@ -322,7 +344,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_status ON feedback_sessions(status);
 /**
  * Valid consumption modes for personas.
  */
-export const CONSUMPTION_MODES = ['gui', 'cli', 'api', 'sdk'] as const;
+export const CONSUMPTION_MODES = ['gui', 'cli', 'api', 'sdk', 'adk'] as const;
 
 export type ConsumptionMode = (typeof CONSUMPTION_MODES)[number];
 

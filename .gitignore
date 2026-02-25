@@ -24,6 +24,7 @@ TEST_COVERAGE_REPORT.md
 .claude/autonomous-mode.json
 .claude/settings.local.json
 .claude/protected-action-approvals.json
+.claude/protection-key
 .claude/state/
 .claude/worktrees/
 .claude/playwright-health.json

@@ -4,10 +4,7 @@
  * Provides MCP tools for launching Playwright in UI mode, running E2E tests
  * headlessly, seeding/cleaning test data, and checking test coverage.
  *
- * Persona mapping tied to AcmeIntegrate's three-persona architecture:
- * - SaaS Vendor (owner, admin, developer, viewer roles)
- * - End Customer (extension — headed Chromium with --load-extension)
- * - Platform Operator (deferred — requires operator panel)
+ * Project discovery is automatic from playwright.config.ts.
  *
  * @see playwright.config.ts
  * @see specs/global/G028-playwright-e2e-testing.md
@@ -20,8 +17,8 @@ import { z } from 'zod';
 // ============================================================================
 
 /**
- * Playwright project names mapped to AcmeIntegrate personas.
- * These match the `name` field in playwright.config.ts projects.
+ * @deprecated Use discoverPlaywrightConfig() from config-discovery.ts instead.
+ * Kept for backwards compatibility with existing test imports.
  */
 export const PLAYWRIGHT_PROJECTS = {
   // SaaS Vendor persona — primary dashboard user

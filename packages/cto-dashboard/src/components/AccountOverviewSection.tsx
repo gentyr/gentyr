@@ -108,6 +108,7 @@ function eventColor(event: string): string {
     case 'account_nearly_depleted': return 'yellow';
     case 'account_quota_refreshed': return 'green';
     case 'account_auth_failed': return 'red';
+    case 'account_removed': return 'yellow';
     default: return 'gray';
   }
 }

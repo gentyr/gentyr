@@ -88,6 +88,22 @@ describe('GENTYR AI User Feedback System - Integration Tests', () => {
       });
       expect(apiPersona.id).toBeDefined();
 
+      const sdkPersona = await ufClient.callTool<{ id: string; name: string }>('create_persona', {
+        name: 'sdk-developer',
+        description: 'A developer using the SDK package',
+        consumption_mode: 'sdk',
+        endpoints: ['@acme/sdk', 'https://docs.acme.com'],
+      });
+      expect(sdkPersona.id).toBeDefined();
+
+      const adkPersona = await ufClient.callTool<{ id: string; name: string }>('create_persona', {
+        name: 'adk-agent',
+        description: 'An AI agent consuming the SDK programmatically',
+        consumption_mode: 'adk',
+        endpoints: ['@acme/sdk', '/path/to/docs'],
+      });
+      expect(adkPersona.id).toBeDefined();
+
       // Register features with file patterns
       const authFeature = await ufClient.callTool<{ id: string; name: string }>('register_feature', {
         name: 'authentication',
@@ -138,6 +154,18 @@ describe('GENTYR AI User Feedback System - Integration Tests', () => {
         priority: 'high',
       });
 
+      await ufClient.callTool('map_persona_feature', {
+        persona_id: sdkPersona.id,
+        feature_id: tasksFeature.id,
+        priority: 'normal',
+      });
+
+      await ufClient.callTool('map_persona_feature', {
+        persona_id: adkPersona.id,
+        feature_id: tasksFeature.id,
+        priority: 'normal',
+      });
+
       // Verify get_personas_for_changes returns correct personas
       const changedFiles = ['src/auth/login.ts', 'src/tasks/create.ts'];
       const analysis = await ufClient.callTool<{
@@ -148,15 +176,21 @@ describe('GENTYR AI User Feedback System - Integration Tests', () => {
         matched_features: Array<{ id: string; name: string }>;
       }>('get_personas_for_changes', { changed_files: changedFiles });
 
-      expect(analysis.personas).toHaveLength(3);
+      expect(analysis.personas).toHaveLength(5);
       expect(analysis.matched_features).toHaveLength(2);
 
       const personaNames = analysis.personas.map(p => p.persona.name).sort();
-      expect(personaNames).toEqual(['api-consumer', 'cli-expert', 'power-user']);
+      expect(personaNames).toEqual(['adk-agent', 'api-consumer', 'cli-expert', 'power-user', 'sdk-developer']);
 
       // Verify gui persona has both features
       const guiAnalysis = analysis.personas.find(p => p.persona.name === 'power-user');
       expect(guiAnalysis?.matched_features).toHaveLength(2);
+
+      // Verify sdk and adk personas have tasks feature only
+      const sdkAnalysis = analysis.personas.find(p => p.persona.name === 'sdk-developer');
+      expect(sdkAnalysis?.matched_features).toHaveLength(1);
+      const adkAnalysis = analysis.personas.find(p => p.persona.name === 'adk-agent');
+      expect(adkAnalysis?.matched_features).toHaveLength(1);
     });
   });
 

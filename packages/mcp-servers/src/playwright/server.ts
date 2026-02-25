@@ -54,16 +54,18 @@ import {
   type RunDemoResult,
 } from './types.js';
 import { parseTestOutput, truncateOutput } from './helpers.js';
+import { discoverPlaywrightConfig } from './config-discovery.js';
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
 const PROJECT_DIR = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd());
+const pwConfig = discoverPlaywrightConfig(PROJECT_DIR);
 const REPORT_DIR = path.join(PROJECT_DIR, 'playwright-report');
 const RUN_TIMEOUT = 300_000; // 5 minutes for test runs
 
-// Map standard env names to NEXT_PUBLIC_ variants for Next.js webServer.
+// Convenience mapping for Next.js projects using Supabase — no-op when these vars are absent.
 // Credentials are injected by mcp-launcher.js from 1Password at runtime.
 if (process.env.SUPABASE_URL && !process.env.NEXT_PUBLIC_SUPABASE_URL) {
   process.env.NEXT_PUBLIC_SUPABASE_URL = process.env.SUPABASE_URL;
@@ -111,51 +113,42 @@ interface PreflightResult {
 
 /**
  * Validate that required environment variables are set and resolved.
- * Catches broken 1Password injection (op:// references still present)
- * and missing Supabase credentials before spawning Playwright.
+ * Two checks:
+ *   1. Unresolved op:// references → credential injection failed
+ *   2. When the project uses auth (storageState in config), at least one
+ *      credential env var must be present — catches completely missing credentials
+ *
+ * Project-agnostic: no hardcoded credential key names.
  */
 function validatePrerequisites(): PreflightResult {
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  const required = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY'] as const;
-
-  for (const name of required) {
-    const value = process.env[name];
-    if (!value) {
-      errors.push(`${name} is not set`);
-    } else if (value.startsWith('op://')) {
-      errors.push(`${name} contains unresolved 1Password reference (op:// prefix detected)`);
+  // Check 1: Unresolved 1Password references
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value && value.startsWith('op://')) {
+      errors.push(`${name} contains unresolved 1Password reference`);
     }
   }
 
-  const optional = ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY'] as const;
-
-  for (const name of optional) {
-    const value = process.env[name];
-    if (!value) {
-      warnings.push(`${name} is not set (will be derived from SUPABASE_* if available)`);
-    } else if (value.startsWith('op://')) {
-      errors.push(`${name} contains unresolved 1Password reference (op:// prefix detected)`);
+  // Check 2: When the project uses auth, at least one credential env var should be set.
+  // Credential env vars are those injected by mcp-launcher.js from 1Password (typically
+  // SUPABASE_URL, DATABASE_URL, API_KEY, etc.). We detect them by checking for env vars
+  // that are NOT standard Node/system vars and have non-empty values.
+  if (pwConfig.authFiles.length > 0) {
+    const credentialVars = Object.entries(process.env).filter(([name, value]) => {
+      if (!value || value.startsWith('op://')) return false;
+      // Skip known system/Node vars — credential vars are the remainder
+      const isSystem = /^(PATH|HOME|USER|SHELL|TERM|LANG|LC_|TMPDIR|PWD|OLDPWD|SHLVL|_|NODE|npm_|CLAUDE_|GENTYR_|HTTPS?_PROXY|NO_PROXY|HOSTNAME|LOGNAME|DISPLAY|XDG_|SSH_|GPG_)/i.test(name);
+      return !isSystem;
+    });
+    if (credentialVars.length === 0) {
+      errors.push('No credential environment variables found — 1Password injection may have failed entirely');
     }
   }
 
   return { ok: errors.length === 0, errors, warnings };
 }
-
-/** Persona descriptions for coverage reporting */
-const PERSONA_MAP: Record<string, string> = {
-  'vendor-owner': 'SaaS Vendor (Owner)',
-  'vendor-admin': 'SaaS Vendor (Admin)',
-  'vendor-dev': 'SaaS Vendor (Developer)',
-  'vendor-viewer': 'SaaS Vendor (Viewer)',
-  'cross-persona': 'Cross-Persona Workflows',
-  'auth-flows': 'Auth Flows (No Pre-auth)',
-  'manual': 'Manual QA Scaffolds',
-  'extension': 'End Customer (Extension)',
-  'extension-manual': 'Extension Manual QA',
-  'demo': 'Unified Demo (Dashboard + Extension)',
-};
 
 // ============================================================================
 // Tool Implementations
@@ -231,7 +224,8 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
 
     // Still running after 3s — detach and return success
     if (child.stderr) {
-      child.stderr.destroy();
+      child.stderr.removeAllListeners('data');
+      child.stderr.resume(); // keep pipe open and draining to prevent SIGPIPE
     }
     child.unref();
 
@@ -300,10 +294,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       });
     }
 
-    // Wait up to 5s for early crash detection (longer than UI mode — headed browser startup is slower)
+    // Wait up to 15s for early crash detection (longer than UI mode — headed browser + webServer startup is slower)
     const earlyExit = await new Promise<{ code: number | null; signal: string | null } | null>(
       (resolve) => {
-        const timer = setTimeout(() => resolve(null), 5000);
+        const timer = setTimeout(() => resolve(null), 15000);
 
         child.on('exit', (code, signal) => {
           clearTimeout(timer);
@@ -323,13 +317,14 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       return {
         success: false,
         project,
-        message: `Playwright process crashed within 5s (exit code: ${earlyExit.code}, signal: ${earlyExit.signal})${snippet ? `\nstderr: ${snippet}` : ''}`,
+        message: `Playwright process crashed within 15s (exit code: ${earlyExit.code}, signal: ${earlyExit.signal})${snippet ? `\nstderr: ${snippet}` : ''}`,
       };
     }
 
-    // Still running after 5s — detach and return success
+    // Still running after 15s — detach and return success
     if (child.stderr) {
-      child.stderr.destroy();
+      child.stderr.removeAllListeners('data');
+      child.stderr.resume(); // keep pipe open and draining to prevent SIGPIPE
     }
     child.unref();
 
@@ -590,6 +585,7 @@ function getReport(args: GetReportArgs): GetReportResult {
 /**
  * Check E2E test coverage by persona and page.
  * Reads the filesystem to determine which projects have tests.
+ * Projects are discovered dynamically from playwright.config.ts.
  */
 function getCoverageStatus(): GetCoverageStatusResult {
   const personas: CoverageEntry[] = [];
@@ -597,27 +593,14 @@ function getCoverageStatus(): GetCoverageStatusResult {
   let activeProjects = 0;
   let deferredProjects = 0;
 
-  // Active test directories
-  const activeDirs: Record<string, string> = {
-    'vendor-owner': 'e2e/vendor',
-    'vendor-admin': 'e2e/vendor-roles',
-    'vendor-dev': 'e2e/vendor-roles',
-    'vendor-viewer': 'e2e/vendor-roles',
-    'cross-persona': 'e2e/cross-persona',
-    'auth-flows': 'e2e/auth',
-    'manual': 'e2e/manual',
-    'extension': 'e2e/extension',
-    'extension-manual': 'e2e/extension/manual',
-    'demo': 'e2e/demo',
-  };
-
-  for (const [project, testDir] of Object.entries(activeDirs)) {
+  // Active test directories (discovered from playwright.config.ts)
+  for (const [project, testDir] of Object.entries(pwConfig.projectDirMap)) {
     const fullDir = path.join(PROJECT_DIR, testDir);
     const testCount = countTestFiles(fullDir, project);
 
     const entry: CoverageEntry = {
       project,
-      persona: PERSONA_MAP[project] || project,
+      persona: pwConfig.personaMap[project] || project,
       testDir,
       testCount,
       status: testCount > 0 ? 'active' : 'no-tests',
@@ -631,27 +614,35 @@ function getCoverageStatus(): GetCoverageStatusResult {
     personas.push(entry);
   }
 
-  // Deferred test directories
-  const deferredDirs: Record<string, string> = {
-    'operator': 'e2e/_deferred/operator',
-  };
+  // Deferred test directories: scan <defaultTestDir>/_deferred/ for subdirectories
+  const deferredBase = path.join(PROJECT_DIR, pwConfig.defaultTestDir, '_deferred');
+  if (fs.existsSync(deferredBase)) {
+    try {
+      const subdirs = fs.readdirSync(deferredBase, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name);
 
-  for (const [name, testDir] of Object.entries(deferredDirs)) {
-    const fullDir = path.join(PROJECT_DIR, testDir);
-    const testCount = countTestFiles(fullDir);
+      for (const name of subdirs) {
+        const testDir = path.join(pwConfig.defaultTestDir, '_deferred', name);
+        const fullDir = path.join(PROJECT_DIR, testDir);
+        const testCount = countTestFiles(fullDir);
 
-    const personaLabel = 'Platform Operator';
+        const personaLabel = name.charAt(0).toUpperCase() + name.slice(1).replace(/-/g, ' ');
 
-    personas.push({
-      project: `deferred-${name}`,
-      persona: personaLabel,
-      testDir,
-      testCount,
-      status: 'deferred',
-    });
+        personas.push({
+          project: `deferred-${name}`,
+          persona: personaLabel,
+          testDir,
+          testCount,
+          status: 'deferred',
+        });
 
-    if (testCount > 0) {
-      deferredProjects++;
+        if (testCount > 0) {
+          deferredProjects++;
+        }
+      }
+    } catch {
+      // _deferred directory unreadable — skip
     }
   }
 
@@ -681,13 +672,11 @@ function countTestFiles(dir: string, projectFilter?: string): number {
     const isManual = filename.endsWith('.manual.ts');
     if (!isSpec && !isManual) return false;
 
-    // Exclude manual/ subdirectory for the extension project (counted separately as extension-manual)
-    if (projectFilter === 'extension' && filename.includes('manual/')) return false;
-
-    // For role-specific projects, filter by matching spec file
-    if (projectFilter === 'vendor-admin') return filename.includes('admin');
-    if (projectFilter === 'vendor-dev') return filename.includes('developer');
-    if (projectFilter === 'vendor-viewer') return filename.includes('viewer');
+    // Exclude manual/ subdirectory for extension projects (counted separately as extension-manual)
+    if (projectFilter) {
+      const discovered = pwConfig.projects.find(p => p.name === projectFilter);
+      if (discovered?.isExtension && !discovered.isManual && filename.includes('manual/')) return false;
+    }
 
     return true;
   }).length;
@@ -698,6 +687,24 @@ function countTestFiles(dir: string, projectFilter?: string): number {
 // ============================================================================
 // Preflight Check
 // ============================================================================
+
+// Extension projects discovered from playwright.config.ts (names containing 'extension' or 'demo')
+
+/**
+ * Validate a Chrome extension match pattern per the Chrome docs spec.
+ * <scheme>://<host>/<path> where host is * | *.domain | exact domain.
+ * file:// has empty host (file:///path). No partial wildcards.
+ */
+function isValidChromeMatchPattern(pattern: string): boolean {
+  if (pattern === '<all_urls>') return true;
+  if (/^file:\/\/\/(.+)$/.test(pattern)) return true;
+  const m = pattern.match(/^(\*|https?):\/\/([^/]+)\/(.*)$/);
+  if (!m) return false;
+  const host = m[2];
+  if (host === '*') return true;
+  if (host.startsWith('*.')) return !host.slice(2).includes('*');
+  return !host.includes('*');
+}
 
 /**
  * Run a single preflight check and return a structured entry.
@@ -775,20 +782,7 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   // 4. Test files exist (when project specified)
   if (args.project) {
     checks.push(runCheck('test_files_exist', () => {
-      const activeDirs: Record<string, string> = {
-        'vendor-owner': 'e2e/vendor',
-        'vendor-admin': 'e2e/vendor-roles',
-        'vendor-dev': 'e2e/vendor-roles',
-        'vendor-viewer': 'e2e/vendor-roles',
-        'cross-persona': 'e2e/cross-persona',
-        'auth-flows': 'e2e/auth',
-        'manual': 'e2e/manual',
-        'extension': 'e2e/extension',
-        'extension-manual': 'e2e/extension/manual',
-        'demo': 'e2e/demo',
-      };
-
-      const testDir = activeDirs[args.project!];
+      const testDir = pwConfig.projectDirMap[args.project!];
       if (!testDir) {
         return { status: 'skip', message: `No known test directory mapping for project "${args.project}" — compilation check (#6) will validate it` };
       }
@@ -894,27 +888,54 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   if (args.project) {
     checks.push(runCheck('auth_state', () => {
       const authDir = path.join(PROJECT_DIR, '.auth');
-      const primaryFile = path.join(authDir, 'vendor-owner.json');
 
-      if (!fs.existsSync(primaryFile)) {
-        return { status: 'fail', message: '.auth/vendor-owner.json missing — run mcp__playwright__run_auth_setup to generate it' };
+      // Find primary auth file: from config discovery, or scan .auth/
+      let primaryFilePath: string | null = null;
+      if (pwConfig.primaryAuthFile) {
+        primaryFilePath = path.join(PROJECT_DIR, pwConfig.primaryAuthFile);
+      } else if (fs.existsSync(authDir)) {
+        try {
+          const files = fs.readdirSync(authDir).filter(f => f.endsWith('.json'));
+          if (files.length > 0) {
+            // Use the most recently modified
+            const sorted = files
+              .map(f => ({ f, mtime: fs.statSync(path.join(authDir, f)).mtimeMs }))
+              .sort((a, b) => b.mtime - a.mtime);
+            primaryFilePath = path.join(authDir, sorted[0].f);
+          }
+        } catch {
+          // ignore
+        }
       }
 
-      const stat = fs.statSync(primaryFile);
+      if (!primaryFilePath || !fs.existsSync(primaryFilePath)) {
+        // Fail-closed: if config declares storageState files, missing auth is a failure.
+        // Skip only when the project genuinely has no auth files configured.
+        if (pwConfig.authFiles.length > 0) {
+          return {
+            status: 'fail',
+            message: `Auth state file missing — expected ${pwConfig.primaryAuthFile || '.auth/*.json'}. Run mcp__playwright__run_auth_setup`,
+          };
+        }
+        return { status: 'skip', message: 'No auth state files configured in playwright.config' };
+      }
+
+      const primaryBasename = path.basename(primaryFilePath);
+      const stat = fs.statSync(primaryFilePath);
       const ageMs = Date.now() - stat.mtimeMs;
       const ageHours = ageMs / (1000 * 60 * 60);
 
       // Check cookie expiry from inside the JSON
       try {
-        const state = JSON.parse(fs.readFileSync(primaryFile, 'utf-8'));
+        const state = JSON.parse(fs.readFileSync(primaryFilePath, 'utf-8'));
         const cookies: Array<{ expires?: number }> = state.cookies || [];
         const now = Date.now() / 1000;
         const expired = cookies.filter(c => c.expires && c.expires > 0 && c.expires < now);
         if (expired.length > 0) {
-          return { status: 'fail', message: `Auth cookies are expired (${expired.length} expired) — run mcp__playwright__run_auth_setup` };
+          return { status: 'fail', message: `Auth cookies are expired (${expired.length} expired in .auth/${primaryBasename}) — run mcp__playwright__run_auth_setup` };
         }
       } catch {
-        return { status: 'warn', message: `Could not parse .auth/vendor-owner.json (${ageHours.toFixed(1)}h old)` };
+        return { status: 'warn', message: `Could not parse .auth/${primaryBasename} (${ageHours.toFixed(1)}h old)` };
       }
 
       if (ageHours > 24) {
@@ -927,6 +948,70 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
     }));
   } else {
     checks.push({ name: 'auth_state', status: 'skip', message: 'No project specified — skipping auth state check', duration_ms: 0 });
+  }
+
+  // 9. Extension manifest validation (only for extension projects)
+  if (args.project && pwConfig.extensionProjects.has(args.project)) {
+    checks.push(runCheck('extension_manifest', () => {
+      const distPath = process.env.GENTYR_EXTENSION_DIST_PATH;
+      if (!distPath) {
+        return { status: 'skip', message: 'GENTYR_EXTENSION_DIST_PATH not set — skipping manifest validation' };
+      }
+
+      // Try manifest at dist path, then parent directory
+      const primaryPath = path.join(PROJECT_DIR, distPath, 'manifest.json');
+      const fallbackPath = path.join(PROJECT_DIR, path.dirname(distPath), 'manifest.json');
+      let manifestPath: string | null = null;
+
+      if (fs.existsSync(primaryPath)) {
+        manifestPath = primaryPath;
+      } else if (fs.existsSync(fallbackPath)) {
+        manifestPath = fallbackPath;
+      }
+
+      if (!manifestPath) {
+        return { status: 'fail', message: `manifest.json not found at ${primaryPath} or ${fallbackPath}` };
+      }
+
+      let manifest: { content_scripts?: Array<{ matches?: string[]; exclude_matches?: string[] }> };
+      try {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { status: 'fail', message: `Failed to parse ${manifestPath}: ${msg}` };
+      }
+
+      const invalidPatterns: string[] = [];
+      const contentScripts = Array.isArray(manifest.content_scripts) ? manifest.content_scripts : [];
+      for (let i = 0; i < contentScripts.length; i++) {
+        const cs = contentScripts[i];
+        if (!cs || typeof cs !== 'object') continue;
+        const allPatterns: Array<[string, string]> = [
+          ...((Array.isArray(cs.matches) ? cs.matches : []) as string[]).map(p => ['matches', p] as [string, string]),
+          ...((Array.isArray(cs.exclude_matches) ? cs.exclude_matches : []) as string[]).map(p => ['exclude_matches', p] as [string, string]),
+        ];
+        for (const [field, pattern] of allPatterns) {
+          if (typeof pattern === 'string' && !isValidChromeMatchPattern(pattern)) {
+            invalidPatterns.push(`content_scripts[${i}].${field}: ${pattern}`);
+          }
+        }
+      }
+
+      if (invalidPatterns.length > 0) {
+        return {
+          status: 'fail',
+          message: `Invalid match patterns in ${path.relative(PROJECT_DIR, manifestPath)}:\n${invalidPatterns.map(p => `  - ${p}`).join('\n')}`,
+        };
+      }
+
+      const totalPatterns = contentScripts.reduce((sum, cs) => {
+        if (!cs || typeof cs !== 'object') return sum;
+        return sum + (Array.isArray(cs.matches) ? cs.matches.length : 0) + (Array.isArray(cs.exclude_matches) ? cs.exclude_matches.length : 0);
+      }, 0);
+      return { status: 'pass', message: `${totalPatterns} match pattern(s) validated in ${path.relative(PROJECT_DIR, manifestPath)}` };
+    }));
+  } else {
+    checks.push({ name: 'extension_manifest', status: 'skip', message: args.project ? `Project "${args.project}" is not an extension project` : 'No project specified', duration_ms: 0 });
   }
 
   // Aggregate results
@@ -955,13 +1040,16 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
         recoverySteps.push(`Create test files in the expected directory for project "${args.project}"`);
         break;
       case 'credentials_valid':
-        recoverySteps.push('Check 1Password credential injection — ensure MCP server has SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY');
+        recoverySteps.push('Check 1Password credential injection — ensure all op:// references in MCP server env are resolved');
         break;
       case 'compilation':
         recoverySteps.push('Fix TypeScript compilation errors — run: npx playwright test --list to see details');
         break;
       case 'auth_state':
         recoverySteps.push('Run: mcp__playwright__run_auth_setup() to refresh auth cookies');
+        break;
+      case 'extension_manifest':
+        recoverySteps.push('Fix invalid match patterns in manifest.json — Chrome requires host to be * | *.domain.com | exact.domain.com (no partial wildcards like *-admin.example.com)');
         break;
     }
   }
@@ -1049,7 +1137,9 @@ async function runAuthSetup(args: RunAuthSetupArgs): Promise<RunAuthSetupResult>
     phases.push({ name: 'auth-setup', success: true, message: 'Auth setup completed', duration_ms: Date.now() - authStart });
 
     const authDir = path.join(PROJECT_DIR, '.auth');
-    const expected = ['vendor-owner.json', 'vendor-admin.json', 'vendor-dev.json', 'vendor-viewer.json'];
+    const expected = pwConfig.authFiles.length > 0
+      ? pwConfig.authFiles.map(f => path.basename(f))
+      : (fs.existsSync(authDir) ? fs.readdirSync(authDir).filter(f => f.endsWith('.json')) : []);
     const refreshed = expected.filter(f => fs.existsSync(path.join(authDir, f)));
 
     return {
@@ -1375,9 +1465,7 @@ const tools: AnyToolHandler[] = [
     description:
       'Launch Playwright in interactive UI mode for manual testing and demos. ' +
       'Opens a browser with the Playwright test runner UI. ' +
-      'Use project "demo" for full product demos (dashboard + extension in one session), ' +
-      '"manual" for vendor dashboard demos, "extension-manual" for extension demos, ' +
-      'or a vendor role project to test as a specific persona.',
+      'Project names are discovered from the target project\'s playwright.config.ts.',
     schema: LaunchUiModeArgsSchema,
     handler: launchUiMode,
   },

@@ -29,6 +29,9 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Shared buffer for non-CPU-intensive synchronous sleep via Atomics.wait
+const _sleepBuf = new Int32Array(new SharedArrayBuffer(4));
+
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
 const PROTECTED_ACTIONS_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'protected-actions.json');
 const APPROVALS_PATH = path.join(PROJECT_DIR, '.claude', 'protected-action-approvals.json');
@@ -66,8 +69,7 @@ function acquireLock() {
 
       // Exponential backoff
       const delay = baseDelay * Math.pow(2, i);
-      const start = Date.now();
-      while (Date.now() - start < delay) { /* busy wait */ }
+      Atomics.wait(_sleepBuf, 0, 0, delay);
     }
   }
   return false;

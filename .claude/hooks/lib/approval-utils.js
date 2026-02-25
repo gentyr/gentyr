@@ -22,6 +22,9 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Shared buffer for non-CPU-intensive synchronous sleep via Atomics.wait
+const _sleepBuf = new Int32Array(new SharedArrayBuffer(4));
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -117,8 +120,7 @@ export function acquireLock() {
 
       // Exponential backoff
       const delay = baseDelay * Math.pow(2, i);
-      const start = Date.now();
-      while (Date.now() - start < delay) { /* busy wait */ }
+      Atomics.wait(_sleepBuf, 0, 0, delay);
     }
   }
   return false;
@@ -531,7 +533,10 @@ export function checkApproval(server, tool, args) {
       .update(JSON.stringify(args || {}))
       .digest('hex');
 
+    // Pass 1: Standard exact-match approvals (args-bound, single-use)
     for (const [code, request] of Object.entries(approvals.approvals)) {
+      // Skip pre-approvals — they use different HMAC domains and are handled in Pass 2
+      if (request.is_preapproval) continue;
       if (request.status !== 'approved') continue;
       if (request.expires_timestamp < now) continue;
       if (request.server !== server) continue;
@@ -575,6 +580,72 @@ export function checkApproval(server, tool, args) {
       delete approvals.approvals[code];
       saveApprovals(approvals);
 
+      return request;
+    }
+
+    // Pass 2: Pre-approved bypasses (args-agnostic, burst-use)
+    for (const [code, request] of Object.entries(approvals.approvals)) {
+      if (!request.is_preapproval) continue;
+      if (request.status !== 'approved') continue;
+      if (request.expires_timestamp < now) continue;
+      if (request.server !== server) continue;
+      if (request.tool !== tool) continue;
+
+      // HMAC verification for pre-approvals (domain-separated from standard approvals)
+      if (keyBase64) {
+        const expectedPendingHmac = computeHmac(keyBase64, code, server, tool, 'preapproval-pending', String(request.expires_timestamp));
+        if (request.pending_hmac !== expectedPendingHmac) {
+          console.error(`[approval-utils] FORGERY DETECTED: Invalid pending_hmac for pre-approval ${code}. Deleting.`);
+          delete approvals.approvals[code];
+          dirty = true;
+          continue;
+        }
+
+        const expectedApprovedHmac = computeHmac(keyBase64, code, server, tool, 'preapproval-activated', String(request.expires_timestamp));
+        if (request.approved_hmac !== expectedApprovedHmac) {
+          console.error(`[approval-utils] FORGERY DETECTED: Invalid approved_hmac for pre-approval ${code}. Deleting.`);
+          delete approvals.approvals[code];
+          dirty = true;
+          continue;
+        }
+      } else {
+        // G001 Fail-Closed: No protection key available — reject pre-approval unconditionally.
+        // Without a key we cannot verify HMAC integrity, so we must block regardless of
+        // whether HMAC fields are present (prevents forged entries without HMAC fields).
+        console.error(`[approval-utils] G001 FAIL-CLOSED: Cannot verify HMAC for pre-approval ${code} (protection key missing). Skipping.`);
+        continue;
+      }
+
+      // Burst-use logic
+      if (!request.uses_remaining || request.uses_remaining <= 0) {
+        delete approvals.approvals[code];
+        dirty = true;
+        continue;
+      }
+
+      // Check burst window: if previously used, subsequent uses must be within 60s
+      if (request.last_used_timestamp) {
+        const elapsed = now - request.last_used_timestamp;
+        const burstWindow = request.burst_window_ms || 60000;
+        if (elapsed > burstWindow) {
+          console.error(`[approval-utils] Pre-approval ${code} burst window expired (${elapsed}ms > ${burstWindow}ms). Deleting.`);
+          delete approvals.approvals[code];
+          dirty = true;
+          continue;
+        }
+      }
+
+      // Consume one use
+      request.uses_remaining--;
+      request.last_used_timestamp = now;
+      console.error(`[approval-utils] Pre-approval ${code} consumed for ${server}:${tool} (${request.uses_remaining} uses remaining, reason: ${request.reason || 'N/A'})`);
+
+      if (request.uses_remaining <= 0) {
+        // Fully consumed
+        delete approvals.approvals[code];
+      }
+
+      saveApprovals(approvals);
       return request;
     }
 
