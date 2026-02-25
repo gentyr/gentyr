@@ -23,10 +23,31 @@ function run() {
   if (!hasPwConfig) process.exit(0);
 
   const authDir = path.join(PROJECT_DIR, '.auth');
-  const primaryAuth = path.join(authDir, 'vendor-owner.json');
+
+  // Discover primary auth file from playwright config storageState
+  let primaryAuthBasename = null;
+  const cfgPath = [
+    path.join(PROJECT_DIR, 'playwright.config.ts'),
+    path.join(PROJECT_DIR, 'playwright.config.js'),
+  ].find(p => fs.existsSync(p));
+  if (cfgPath) {
+    try {
+      const content = fs.readFileSync(cfgPath, 'utf8');
+      const m = content.match(/storageState:\s*['"]([^'"]+)['"]/);
+      if (m) primaryAuthBasename = path.basename(m[1]);
+    } catch { /* ignore */ }
+  }
+  // Fallback: scan .auth/ for any .json file
+  if (!primaryAuthBasename && fs.existsSync(authDir)) {
+    try {
+      const files = fs.readdirSync(authDir).filter(f => f.endsWith('.json'));
+      if (files.length) primaryAuthBasename = files[0];
+    } catch { /* ignore */ }
+  }
+  const primaryAuth = primaryAuthBasename ? path.join(authDir, primaryAuthBasename) : null;
 
   let authState = { exists: false, ageHours: null, cookiesExpired: false, isStale: true };
-  if (fs.existsSync(primaryAuth)) {
+  if (primaryAuth && fs.existsSync(primaryAuth)) {
     try {
       const stat = fs.statSync(primaryAuth);
       const ageHours = (Date.now() - stat.mtimeMs) / 3_600_000;

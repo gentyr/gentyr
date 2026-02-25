@@ -48,6 +48,16 @@ Note: `.claude/` and `.claude/hooks/` are intentionally **not** root-owned as di
 - Configuration: `protected-actions.json`, `.claude/settings.json`, `.claude/protection-key`, `.mcp.json`, `eslint.config.js`, `package.json`
 - Git hooks: `.husky/pre-commit` (`755`, executable)
 
+**Copy-on-protect for linked projects** (npm link / legacy symlink installs):
+
+When `.claude/hooks` is a symlink (linked project), root-owning the 8 critical hook files at the symlink target would modify the framework source — breaking any edit, git operation, or agent session in the gentyr repo itself. To avoid this, `npx gentyr protect` in a linked project copies the critical files to a local `.claude/hooks-protected/` directory and root-owns the copies there instead.
+
+- Source of record: `protection-state.json` field `hooksProtectedDir: ".claude/hooks-protected"` — set only for linked projects
+- Ownership checks (commit-time and SessionStart) use `.claude/hooks-protected/` when the field is present
+- A missing `hooks-protected/` directory when `hooksProtectedDir` is set is treated as tampering
+- `npx gentyr unprotect` unprotects the files in `hooks-protected/` and removes the directory
+- `.claude/hooks-protected/` is gitignored (added by `updateGitignore()` in `config-gen.js`)
+
 ### Tamper Detection
 
 Because neither `.claude/` nor `.claude/hooks/` is root-owned as a directory, an agent could theoretically unlink and recreate files, or replace the hooks symlink. Two complementary layers close this gap:
@@ -59,10 +69,11 @@ Because neither `.claude/` nor `.claude/hooks/` is root-owned as a directory, an
 - This check runs before the file ownership check and is the primary anti-tampering mechanism for `.claude/`
 
 **File ownership check** (`husky/pre-commit` + `gentyr-sync.js`):
-- Uses `stat` to verify 8 critical hook files inside `.claude/hooks/` are still root-owned (uid 0)
-- Blocks the commit if any are not root-owned
-- `gentyr-sync.js` `tamperCheck()` runs the same checks at every interactive session start and emits a `systemMessage` warning
-- `protection-state.json` records `criticalHooks` as an array so both checks read the same source of truth
+- Uses `stat` to verify 8 critical hook files are still root-owned (uid 0)
+- Checks `.claude/hooks-protected/` when it exists (linked projects with copy-on-protect); falls back to `.claude/hooks/` for direct installs
+- Blocks the commit if any files are not root-owned
+- `gentyr-sync.js` `tamperCheck()` runs the same checks at every interactive session start; when `protection-state.json` contains `hooksProtectedDir`, checks that directory instead of the symlink target; a missing `hooks-protected/` directory is treated as tampering; emits a `systemMessage` warning if any check fails
+- `protection-state.json` records `criticalHooks` as an array and, for linked projects, `hooksProtectedDir: ".claude/hooks-protected"` so both checks read the same source of truth
 
 **Trustworthiness**: The `husky/pre-commit` script performing these checks lives in the root-owned `.husky/` directory, making it tamper-resistant.
 
@@ -76,7 +87,7 @@ Because neither `.claude/` nor `.claude/hooks/` is root-owned as a directory, an
 
 ### Protection State
 
-Written to `.claude/protection-state.json`:
+Written to `.claude/protection-state.json`. Direct installs (framework repo):
 ```json
 {
   "protected": true,
@@ -95,7 +106,18 @@ Written to `.claude/protection-state.json`:
 }
 ```
 
-The `criticalHooks` array is the single source of truth read by both the commit-time tamper check and the SessionStart tamper check.
+Linked project installs (npm link / legacy symlink) also include `hooksProtectedDir`:
+```json
+{
+  "protected": true,
+  "timestamp": "2026-02-20T12:00:00-08:00",
+  "modified_by": "original_user",
+  "criticalHooks": ["pre-commit-review.js", "..."],
+  "hooksProtectedDir": ".claude/hooks-protected"
+}
+```
+
+The `criticalHooks` array is the single source of truth for both the commit-time tamper check and the SessionStart tamper check. `hooksProtectedDir` redirects both checks to the local copy directory for linked projects.
 
 ## Layer 2: Protected Action Gate
 
@@ -366,8 +388,12 @@ Re-applies root ownership without reinstalling the framework.
 
 ### Verify Protection
 ```bash
-# Critical hook files should be root-owned
+# For direct installs — critical hook files should be root-owned in .claude/hooks/
 ls -la /path/to/project/.claude/hooks/protected-action-gate.js
+# Should show root:wheel ownership
+
+# For linked projects (npm link) — root-owned copies are in hooks-protected/
+ls -la /path/to/project/.claude/hooks-protected/protected-action-gate.js
 # Should show root:wheel ownership
 
 # .husky/ directory should be root-owned with sticky bit

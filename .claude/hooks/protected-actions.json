@@ -11,7 +11,8 @@
     "cto-reports",
     "elastic-logs",
     "claude-sessions",
-    "codecov"
+    "codecov",
+    "playwright"
   ],
   "servers": {
     "supabase": {
@@ -31,7 +32,24 @@
         "SUPABASE_ANON_KEY",
         "SUPABASE_ACCESS_TOKEN"
       ],
-      "description": "Production database - destructive operations require approval"
+      "description": "Supabase with branch-aware protection (G029) - main requires approval, staging/preview do not",
+      "environments": {
+        "production": {
+          "branchPattern": "main",
+          "requireApproval": true,
+          "description": "Production (main branch) - destructive operations require CTO approval"
+        },
+        "staging": {
+          "branchPattern": "staging",
+          "requireApproval": false,
+          "description": "Staging branch - destructive operations allowed without approval"
+        },
+        "preview": {
+          "branchPattern": "preview/*",
+          "requireApproval": false,
+          "description": "Preview branches - ephemeral, no approval needed"
+        }
+      }
     },
     "vercel": {
       "protection": "credential-isolated",

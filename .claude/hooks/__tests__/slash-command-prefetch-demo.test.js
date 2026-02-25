@@ -121,12 +121,15 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
       assert.match(handleDemoMatch[0], /chromium-/);
     });
 
-    it('should check credential env vars (SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY)', () => {
+    it('should check credentials by scanning all env vars for unresolved op:// references (project-agnostic)', () => {
       const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
       assert.ok(handleDemoMatch, 'handleDemo function must exist');
-      assert.match(handleDemoMatch[0], /SUPABASE_URL/);
-      assert.match(handleDemoMatch[0], /SUPABASE_ANON_KEY/);
-      assert.match(handleDemoMatch[0], /SUPABASE_SERVICE_ROLE_KEY/);
+      // The credential check scans all env vars for unresolved 1Password references.
+      // It is project-agnostic — no longer hardcodes specific key names like SUPABASE_URL.
+      assert.match(handleDemoMatch[0], /op:\/\//);
+      assert.match(handleDemoMatch[0], /process\.env/);
+      // credentialsOk is the aggregated result field
+      assert.match(handleDemoMatch[0], /credentialsOk/);
     });
 
     it('should check auth state freshness', () => {

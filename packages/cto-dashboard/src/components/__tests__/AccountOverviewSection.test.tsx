@@ -671,6 +671,7 @@ describe('AccountOverviewSection', () => {
         { event: 'account_nearly_depleted', desc: 'Account nearly depleted: user@test.io' },
         { event: 'account_quota_refreshed', desc: 'Account quota refreshed: user@test.io' },
         { event: 'account_auth_failed', desc: 'Account can no longer auth: user@test.io' },
+        { event: 'account_removed', desc: 'Account removed by user: user@test.io' },
       ];
 
       events.forEach(({ event, desc }) => {

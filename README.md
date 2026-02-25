@@ -24,7 +24,7 @@ TypeScript in strict mode is the only language. Next.js deploys to Vercel for th
 
 A pnpm monorepo organizes the project. GitHub Actions run CI/CD. 1Password resolves every secret at runtime through `op://` references. Cloudflare manages DNS. Elastic Cloud aggregates logs. Resend handles transactional email. Codecov tracks test coverage. Vitest runs unit tests. Playwright runs end-to-end tests.
 
-This stack is not configurable. Thirty MCP servers are built for these exact tools. If you want a different database or hosting provider, this is not for you.
+This stack is not configurable. Thirty-two MCP servers are built for these exact tools. If you want a different database or hosting provider, this is not for you.
 
 See [docs/STACK.md](docs/STACK.md) for technical details and MCP server mappings.
 
@@ -36,11 +36,11 @@ Eleven specialized roles. Fixed sequence: investigate, plan, write, test, review
 
 ### hooks
 
-Thirty automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Quota rotation, credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection. Hooks govern what agents can and cannot do.
+Thirty-five automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Quota rotation, credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection. Hooks govern what agents can and cannot do.
 
 ### servers
 
-Thirty protocol servers connecting agents to external systems. Deployment platforms, secret vaults, task databases, log aggregators, feedback pipelines, coverage reporters. Agents never touch raw APIs. Every external interaction goes through a typed MCP server with a schema and a handler.
+Thirty-two protocol servers connecting agents to external systems. Deployment platforms, secret vaults, task databases, log aggregators, feedback pipelines, coverage reporters. Agents never touch raw APIs. Every external interaction goes through a typed MCP server with a schema and a handler.
 
 ### the merge chain
 
@@ -89,9 +89,9 @@ This is what the CTO sees.
 ⏺ Bash(node packages/cto-dashboard/dist/index.js)
      ╭─ QUOTA & CAPACITY (2 keys) ─────────╮ ╭─ SYSTEM STATUS ──────────────────────╮
      │ 5-hour   ██████░░░░░░░░░░  35%      │ │ Deputy CTO: ENABLED                  │
-     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 9:19PM (3m… │
+     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 2:48AM (3m… │
      │ Rotations (24h): 2                  │ │ Protection: PROTECTED                │
-     │                                     │ │ Commits:    BLOCKED                  │
+     │  Tip: /show quota                   │ │ Commits:    BLOCKED                  │
      ╰─────────────────────────────────────╯ ╰──────────────────────────────────────╯
      
      ╭─ DEPUTY CTO ─────────────────────────────────────────────────────────────────╮
@@ -148,6 +148,7 @@ This is what the CTO sees.
      │ ◆  Session token expiry not validat…  high      ↑ Escalated 19h ago          │
      │ ◆  Missing index on foreign key: ta…  low       ✕ Dismissed 21h ago          │
      │ ◆  Compliance check: G004 hardcoded…  normal    ✓ Handled   22h ago          │
+     │  Tip: /show deputy-cto                                                       │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ AUTOMATED INSTANCES ────────────────────────────────────────────────────────╮
@@ -187,6 +188,7 @@ This is what the CTO sees.
      │                                                                              │
      │ Tip: Ask Claude Code to adjust frequency or switch modes (load balanced /    │
      │ static).                                                                     │
+     │  Tip: /show automations                                                      │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ METRICS SUMMARY ────────────────────────────────────────────────────────────╮
@@ -202,6 +204,7 @@ This is what the CTO sees.
      │ │ Skipped: 44     │ │ Escalated: 14  │ │ Triage: 0      │ │ Proj: 1.8%     │ │
      │ │ Failures: 3     │ │                │ │                │ │                │ │
      │ ╰─────────────────╯ ╰────────────────╯ ╰────────────────╯ ╰────────────────╯ │
+     │  Tip: /show tasks                                                            │
      ╰──────────────────────────────────────────────────────────────────────────────╯
 ──────────────────────────────────────────────────────────────────────────────────────
 ❯
@@ -220,7 +223,7 @@ npm run generate:readme
 
 ## the automation layer
 
-Thirty hooks and background timers keep the system running without human triggers.
+Thirty-five hooks and background timers keep the system running without human triggers.
 
 ### quota and credentials
 
@@ -250,7 +253,7 @@ See [docs/AUTOMATION-SYSTEMS.md](docs/AUTOMATION-SYSTEMS.md) for implementation 
 
 ## the feedback loop
 
-AI personas test the product as real users. Four modes: GUI, CLI, API, SDK. No source code access. Personas interact with the running application and report findings. Those findings go to the deputy-CTO triage pipeline. Not testing code. Testing product.
+AI personas test the product as real users. Five modes: GUI, CLI, API, SDK, ADK. No source code access. Personas interact with the running application and report findings. Those findings go to the deputy-CTO triage pipeline. SDK agents test the SDK in a scratch workspace with browser-based docs access; ADK agents do the same programmatically via the docs-feedback MCP server. Not testing code. Testing product.
 
 ## secret management
 
@@ -260,11 +263,11 @@ Zero secrets on disk. Zero secrets in agent context. 1Password is the single sou
 
 GENTYR supports local-only extensions via a gitignored `plugins/` directory. Each plugin is a self-contained Node package with a `config.json` (managed via MCP tools) and an optional MCP server that auto-registers in `.mcp.json` when working in the gentyr repo. The plugin-manager MCP server (`list_plugins`, `get_plugin_config`, `set_plugin_config`, `add_plugin_mapping`, `remove_plugin_mapping`) is the entry point for managing plugin configuration.
 
-The Notion plugin (`plugins/notion/`) syncs GENTYR's AI user feedback data — personas and review sessions — to Notion databases via a 60-second launchd daemon.
+The Notion plugin (`plugins/notion/`) syncs four GENTYR data sources to Notion databases via a 60-second launchd daemon: AI user feedback personas (full-sync each cycle), feedback review sessions (waterline on `completed_at`), worklog entries (waterline on `timestamp_completed`), and todo tasks (sync-time waterline for new tasks, status transitions, and archived task detection — tasks moved to the `archived_tasks` table are PATCHed to status `Done` and `Archived` checkbox `true` in Notion; all task upserts write the `Archived` checkbox unconditionally so the Tasks database remains filterable by archive state). Managed via five MCP tools: `notion_check_status`, `notion_sync`, `notion_start_service`, `notion_stop_service`, `notion_setup_instructions`.
 
 ## components
 
-30 MCP servers. 11 agents. 30 hooks. 11 commands. CLI dashboard. Plugin system with extensible local MCP servers.
+32 MCP servers. 11 agents. 35 hooks. 19 commands. CLI dashboard. Plugin system with extensible local MCP servers.
 
 ## documentation
 

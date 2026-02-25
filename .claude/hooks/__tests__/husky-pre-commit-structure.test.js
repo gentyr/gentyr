@@ -49,4 +49,49 @@ describe('husky/pre-commit structural verification', () => {
     assert.ok(content.includes('pre-commit-review.js'),
       'Must check pre-commit-review.js ownership');
   });
+
+  it('should prefer hooks-protected directory for ownership checks (copy-on-protect)', () => {
+    assert.ok(content.includes('.claude/hooks-protected'),
+      'Must check for copy-on-protect directory');
+    assert.ok(content.includes('HOOKS_CHECK_DIR'),
+      'Must use HOOKS_CHECK_DIR variable for directory selection');
+    assert.ok(content.includes('HOOKS_CHECK_DIR=".claude/hooks-protected"'),
+      'Must prefer hooks-protected when it exists');
+    assert.ok(content.includes('HOOKS_CHECK_DIR=".claude/hooks"'),
+      'Must fall back to .claude/hooks');
+  });
+
+  it('should use HOOKS_CHECK_DIR in ownership check loop', () => {
+    assert.ok(content.includes('$HOOKS_CHECK_DIR/$f'),
+      'Must use $HOOKS_CHECK_DIR/$f (not hardcoded .claude/hooks/$f) in the ownership check');
+  });
+
+  it('should include branch-checkout-guard.js in the ownership check loop', () => {
+    assert.ok(content.includes('branch-checkout-guard.js'),
+      'Ownership check loop must include branch-checkout-guard.js');
+  });
+
+  it('should include git-wrappers/git in the ownership check loop', () => {
+    assert.ok(content.includes('git-wrappers/git'),
+      'Ownership check loop must include git-wrappers/git wrapper binary');
+  });
+
+  it('should include all 10 critical hook files in the ownership check loop', () => {
+    const expectedHooks = [
+      'pre-commit-review.js',
+      'bypass-approval-hook.js',
+      'block-no-verify.js',
+      'protected-action-gate.js',
+      'protected-action-approval-hook.js',
+      'credential-file-guard.js',
+      'secret-leak-detector.js',
+      'protected-actions.json',
+      'branch-checkout-guard.js',
+      'git-wrappers/git',
+    ];
+    for (const hook of expectedHooks) {
+      assert.ok(content.includes(hook),
+        `Ownership check loop must include ${hook}`);
+    }
+  });
 });

@@ -153,9 +153,27 @@ describe('playwright-health-check hook', () => {
     assert.strictEqual(healthJson, null, 'should not write health file for spawned sessions');
   });
 
-  it('should set extensionBuilt=false when extension dist dir is missing', () => {
+  it('should set extensionBuilt=true when GENTYR_EXTENSION_DIST_PATH is not set (no extension configured)', () => {
+    // When GENTYR_EXTENSION_DIST_PATH is absent, extension is not configured for this project.
+    // The hook treats "no extension configured" as not a blocker and returns true.
     fs.writeFileSync(path.join(tmpDir, 'playwright.config.ts'), '// config');
     const { healthJson } = runHook(tmpDir);
+    assert.strictEqual(healthJson.extensionBuilt, true);
+  });
+
+  it('should set extensionBuilt=false when GENTYR_EXTENSION_DIST_PATH is set but the dist dir is missing', () => {
+    fs.writeFileSync(path.join(tmpDir, 'playwright.config.ts'), '// config');
+    // Point to a dist dir that does NOT exist
+    const { healthJson } = runHook(tmpDir, { GENTYR_EXTENSION_DIST_PATH: 'dist/extension' });
     assert.strictEqual(healthJson.extensionBuilt, false);
+    assert.strictEqual(healthJson.needsRepair, true);
+  });
+
+  it('should set extensionBuilt=true when GENTYR_EXTENSION_DIST_PATH points to an existing directory', () => {
+    fs.writeFileSync(path.join(tmpDir, 'playwright.config.ts'), '// config');
+    const extDistDir = path.join(tmpDir, 'dist', 'extension');
+    fs.mkdirSync(extDistDir, { recursive: true });
+    const { healthJson } = runHook(tmpDir, { GENTYR_EXTENSION_DIST_PATH: 'dist/extension' });
+    assert.strictEqual(healthJson.extensionBuilt, true);
   });
 });

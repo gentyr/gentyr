@@ -30,6 +30,7 @@ const COMMANDS = {
   uninstall: './commands/uninstall.js',
   migrate: './commands/migrate.js',
   scaffold: './commands/scaffold.js',
+  'remove-account': './commands/remove-account.js',
 };
 
 const RED = '\x1b[0;31m';
@@ -50,6 +51,7 @@ Commands:
   uninstall                   Remove GENTYR from project
   migrate                     Convert from .claude-framework to npm model
   scaffold <name>             Scaffold new project
+  remove-account <email>     Remove an account from rotation
 
 Options:
   --help, -h                  Show this help message

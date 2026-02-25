@@ -133,8 +133,11 @@ Before creating personas, gather context about the local project so personas hav
 5. For each new persona archetype, call `mcp__user-feedback__create_persona` with ALL fields:
    - `name`: descriptive persona name (e.g., "Impatient Power User", "Non-Technical Admin")
    - `description`: who this persona is, what they care about, how they evaluate products
-   - `consumption_mode`: use `gui` for web applications (feedback agents use Playwright for testing). Only use `api`, `cli`, or `sdk` if the project is specifically that type (API-only server, CLI tool, or SDK/library respectively)
-   - `endpoints`: array with the dev server URL from Phase 1 (e.g., `["http://localhost:3000"]`). This is critical — without it, feedback agents cannot reach the application
+   - `consumption_mode`: use `gui` for web applications (feedback agents use Playwright for testing). Only use `api`, `cli`, or `sdk` if the project is specifically that type (API-only server, CLI tool, or SDK/library respectively). Use `adk` when the persona represents an AI agent consuming an SDK programmatically via MCP tools rather than a browser. ADK personas access docs via programmatic search/read instead of browsing.
+   - `endpoints`: array whose contents depend on the consumption mode:
+     - **GUI/API/CLI personas**: `endpoints[0]` is the dev server URL from Phase 1 (e.g., `["http://localhost:3000"]`). This is critical — without it, feedback agents cannot reach the application.
+     - **SDK personas**: `endpoints[0]` is the comma-separated SDK package names (e.g., `"@my-org/sdk,@my-org/sdk-core"`), `endpoints[1]` is the docs portal URL (optional). If the docs URL cannot be auto-detected, leave `endpoints[1]` empty and note that docs need manual configuration.
+     - **ADK personas**: `endpoints[0]` is the comma-separated SDK package names (e.g., `"@my-org/sdk"`), `endpoints[1]` is the local docs directory path (optional, e.g., `"/path/to/project/docs"`). If the docs path cannot be auto-detected, leave `endpoints[1]` empty and note that docs need manual configuration.
    - `behavior_traits`: array of behavioral characteristics derived from the persona's pain points. Examples:
      - Pain point about "confusing navigation" → trait: "Easily frustrated by unclear menu hierarchies"
      - Pain point about "slow performance" → trait: "Abandons pages that take more than 3 seconds to load"

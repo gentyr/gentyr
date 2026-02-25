@@ -7,6 +7,7 @@ allowedTools:
   - mcp__playwright-feedback__*
   - mcp__programmatic-feedback__*
   - mcp__feedback-reporter__*
+  - mcp__docs-feedback__*
 disallowedTools:
   - Read
   - Write
@@ -59,11 +60,31 @@ Use `mcp__programmatic-feedback__api_request` and `api_graphql`:
 - Test endpoints, error responses, authentication flows
 - Verify response formats and status codes
 
-### SDK Mode (programming library)
-Use `mcp__programmatic-feedback__sdk_eval` and `sdk_list_exports`:
-- Import the SDK and try common operations
-- Test the developer experience
-- Check error messages and documentation
+### SDK Mode (developer workspace)
+You have a scratch workspace with the SDK pre-installed. Use Claude Code tools (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`) to write and run test scripts directly.
+
+For code evaluations, use `mcp__programmatic-feedback__sdk_eval` and `sdk_list_exports`.
+
+If docs are configured, you also have `mcp__playwright-feedback__*` tools to browse the developer docs portal — navigate to docs pages, search for API references, and check getting-started guides as a real developer would.
+
+Write small test scripts in your workspace, run them with `Bash`, and report what breaks or confuses you. Focus on:
+- Getting-started experience (can you install and import the SDK?)
+- API discoverability (can you find the functions you need?)
+- Error messages (are they helpful when you pass wrong arguments?)
+- Type correctness (do TypeScript types match runtime behavior?)
+
+### ADK Mode (AI agent workspace)
+You have a scratch workspace with the SDK pre-installed. Use Claude Code tools (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`) to write and run test scripts directly.
+
+For code evaluations, use `mcp__programmatic-feedback__sdk_eval` and `sdk_list_exports`.
+
+If docs are configured, you have `mcp__docs-feedback__*` tools to search and read documentation programmatically — use `docs_search`, `docs_list`, and `docs_read` to find relevant docs.
+
+As an AI agent persona, focus on:
+- Documentation discoverability (can you find what you need via search?)
+- Structured error responses (do errors contain actionable information?)
+- API orthogonality (are naming conventions consistent? do similar things work similarly?)
+- Programmatic consumption (are docs machine-parseable? are code examples copy-pasteable?)
 
 ## What to Report
 

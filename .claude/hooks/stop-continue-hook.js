@@ -163,8 +163,8 @@ function writeQuotaInterruptedSession(record) {
       data.sessions.push(record);
     }
 
-    // Clean up entries older than 30 minutes (matches session-reviver reader window)
-    const cutoff = Date.now() - 30 * 60 * 1000;
+    // Clean up entries older than 12 hours (session-reviver handles finer-grained discard)
+    const cutoff = Date.now() - 12 * 60 * 60 * 1000;
     data.sessions = data.sessions.filter(s => new Date(s.interruptedAt).getTime() > cutoff);
 
     fs.writeFileSync(QUOTA_INTERRUPTED_PATH, JSON.stringify(data, null, 2), 'utf8');

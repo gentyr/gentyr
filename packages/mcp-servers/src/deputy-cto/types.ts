@@ -149,6 +149,23 @@ export const DenyProtectedActionArgsSchema = z.object({
 
 export const ListPendingActionRequestsArgsSchema = z.object({});
 
+// Pre-approved bypass schemas
+export const RequestPreapprovedBypassArgsSchema = z.object({
+  server: z.string().min(1).describe('Target MCP server name'),
+  tool: z.string().min(1).describe('Target tool name'),
+  reason: z.string().min(1).max(1000).describe('Why this pre-approval is needed'),
+  expiry_hours: z.coerce.number().min(1).max(12).optional().default(8)
+    .describe('Hours until pre-approval expires (default 8, max 12)'),
+  max_uses: z.coerce.number().min(1).max(5).optional().default(3)
+    .describe('Max consumptions allowed (default 3, max 5). After first use, subsequent uses must occur within 60s of the previous use.'),
+});
+
+export const ActivatePreapprovedBypassArgsSchema = z.object({
+  code: z.string().length(6).describe('The 6-character pre-approval code'),
+});
+
+export const ListPreapprovedBypassesArgsSchema = z.object({});
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -178,6 +195,9 @@ export type GetProtectedActionRequestArgs = z.infer<typeof GetProtectedActionReq
 export type ApproveProtectedActionArgs = z.infer<typeof ApproveProtectedActionArgsSchema>;
 export type DenyProtectedActionArgs = z.infer<typeof DenyProtectedActionArgsSchema>;
 export type ListPendingActionRequestsArgs = z.infer<typeof ListPendingActionRequestsArgsSchema>;
+export type RequestPreapprovedBypassArgs = z.infer<typeof RequestPreapprovedBypassArgsSchema>;
+export type ActivatePreapprovedBypassArgs = z.infer<typeof ActivatePreapprovedBypassArgsSchema>;
+export type ListPreapprovedBypassesArgs = z.infer<typeof ListPreapprovedBypassesArgsSchema>;
 
 export interface QuestionRecord {
   id: string;
@@ -455,6 +475,47 @@ export interface PendingActionRequestItem {
 
 export interface ListPendingActionRequestsResult {
   requests: PendingActionRequestItem[];
+  count: number;
+  message: string;
+}
+
+// Pre-approved bypass result types
+export interface RequestPreapprovedBypassResult {
+  code: string;
+  server: string;
+  tool: string;
+  reason: string;
+  expires_at: string;
+  expiry_hours: number;
+  max_uses: number;
+  message: string;
+  instructions: string;
+}
+
+export interface ActivatePreapprovedBypassResult {
+  activated: boolean;
+  code: string;
+  server: string;
+  tool: string;
+  expires_at: string;
+  message: string;
+}
+
+export interface PreapprovedBypassItem {
+  code: string;
+  server: string;
+  tool: string;
+  reason: string;
+  status: string;
+  created_at: string;
+  expires_at: string;
+  expires_in_hours: number;
+  max_uses: number;
+  uses_remaining: number;
+}
+
+export interface ListPreapprovedBypassesResult {
+  bypasses: PreapprovedBypassItem[];
   count: number;
   message: string;
 }

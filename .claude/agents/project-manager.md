@@ -56,7 +56,7 @@ mcp__todo-db__list_tasks({ section: "INVESTIGATOR & PLANNER", limit: 20 })
 ```
 
 1. **Stale task escalation**: If tasks are in_progress for >4 hours, investigate
-2. **Cleanup**: Run `mcp__todo-db__cleanup({})` to remove stale starts (>30 min) and old completed tasks (>3 hrs)
+2. **Cleanup**: Run `mcp__todo-db__cleanup({})` to reset stale starts (>30 min), archive old completed tasks (>3 hrs), cap at 50 completed, and prune archives (>30 days & >500)
 
 ### Example: Creating a Task
 

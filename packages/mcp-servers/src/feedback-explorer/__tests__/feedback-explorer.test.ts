@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS personas (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   description TEXT NOT NULL,
-  consumption_mode TEXT NOT NULL CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk')),
+  consumption_mode TEXT NOT NULL CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk', 'adk')),
   behavior_traits TEXT NOT NULL DEFAULT '[]',
   endpoints TEXT NOT NULL DEFAULT '[]',
   credentials_ref TEXT,

@@ -181,6 +181,31 @@ process.exit(0);
 }
 
 /**
+ * Returns source for a worker that measures CPU usage during checkApproval().
+ * Reports wall time and CPU user time so the parent can assert non-spinning wait.
+ */
+function cpuMeasureWorkerSource() {
+  return `import { checkApproval } from ${JSON.stringify(APPROVAL_UTILS_PATH)};
+
+const { server, tool } = JSON.parse(process.argv[2]);
+
+const cpuBefore = process.cpuUsage();
+const wallBefore = performance.now();
+
+try {
+  checkApproval(server, tool, {});
+} catch {}
+
+const wallAfterMs = performance.now() - wallBefore;
+const cpuAfter = process.cpuUsage(cpuBefore);
+// cpuUsage returns microseconds, convert to ms
+const cpuUserMs = cpuAfter.user / 1000;
+
+process.send({ wallMs: wallAfterMs, cpuUserMs });
+`;
+}
+
+/**
  * Write a worker source to a temp .mjs file and return its path.
  */
 function writeTempWorker(dir, filename, source) {
@@ -744,6 +769,90 @@ describe('approval-utils.js – TOCTOU concurrency', () => {
 
       // Release the lock so subsequent tests are not affected
       try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+    });
+
+    it('should not consume significant CPU during lock backoff (non-spinning wait)', async () => {
+      // Verifies Atomics.wait is used instead of a CPU-burning busy-wait.
+      // Strategy: hold a fresh lock, fork a worker that tries checkApproval(),
+      // then compare CPU user time vs wall time. With Atomics.wait, CPU usage
+      // should be a tiny fraction of wall time.
+
+      const CODE = 'CPU01';
+      writeApprovalsFixture(
+        projectDir.path,
+        buildSingleApprovedFixture(CODE, 'cpu-server', 'cpu-tool')
+      );
+
+      const lockPath = path.join(
+        projectDir.path,
+        '.claude',
+        'protected-action-approvals.json.lock'
+      );
+
+      // Hold a fresh lock so the worker cannot acquire it immediately
+      fs.writeFileSync(lockPath, '99997', 'utf8');
+
+      // Write the CPU measurement worker
+      const workerDir = path.dirname(workerScript);
+      const cpuWorkerPath = writeTempWorker(
+        workerDir,
+        'cpu-measure.mjs',
+        cpuMeasureWorkerSource()
+      );
+
+      // Spawn the worker and collect CPU measurements
+      const result = await new Promise((resolve) => {
+        const workerArg = JSON.stringify({
+          server: 'cpu-server',
+          tool: 'cpu-tool',
+        });
+
+        const child = fork(cpuWorkerPath, [workerArg], {
+          execArgv: [],
+          env: {
+            ...process.env,
+            CLAUDE_PROJECT_DIR: projectDir.path,
+          },
+          stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        });
+
+        let msg = null;
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          resolve({ timedOut: true });
+        }, 20000);
+
+        child.on('message', (m) => { msg = m; });
+        child.on('exit', () => {
+          clearTimeout(timer);
+          resolve(msg || { error: 'no message' });
+        });
+        child.on('error', (err) => {
+          clearTimeout(timer);
+          resolve({ error: err.message });
+        });
+      });
+
+      // Clean up the lock
+      try { fs.unlinkSync(lockPath); } catch {}
+
+      // Validate we got measurements
+      assert.ok(result.wallMs, `Expected wall time measurement, got: ${JSON.stringify(result)}`);
+      assert.ok(
+        result.wallMs > 500,
+        `Expected >500ms wall time from backoff retries, got ${result.wallMs}ms`
+      );
+
+      // Core assertion: CPU user time must be a small fraction of wall time.
+      // With Atomics.wait: cpuUserMs ≈ 0-50ms regardless of wall time
+      // With busy-wait spin loop: cpuUserMs ≈ wallMs
+      const cpuFraction = result.cpuUserMs / result.wallMs;
+      assert.ok(
+        cpuFraction < 0.1,
+        `CPU user time should be <10% of wall time (non-spinning sleep). ` +
+        `Got: cpuUserMs=${result.cpuUserMs.toFixed(1)}, wallMs=${result.wallMs.toFixed(1)}, ` +
+        `ratio=${(cpuFraction * 100).toFixed(1)}%`
+      );
     });
   });
 });

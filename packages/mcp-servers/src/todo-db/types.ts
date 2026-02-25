@@ -100,6 +100,15 @@ export const GetWorklogArgsSchema = z.object({
     .describe('Include 30-day rolling metrics'),
 });
 
+export const ListArchivedTasksArgsSchema = z.object({
+  section: z.enum(VALID_SECTIONS).optional()
+    .describe('Filter by section'),
+  limit: z.coerce.number().min(1).max(100).optional().default(20)
+    .describe('Maximum tasks to return (1-100, default 20)'),
+  hours: z.coerce.number().min(1).max(720).optional().default(24)
+    .describe('Hours to look back (1-720, default 24)'),
+});
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -117,6 +126,7 @@ export type BrowseSessionArgs = z.infer<typeof BrowseSessionArgsSchema>;
 export type GetCompletedSinceArgs = z.infer<typeof GetCompletedSinceArgsSchema>;
 export type SummarizeWorkArgs = z.infer<typeof SummarizeWorkArgsSchema>;
 export type GetWorklogArgs = z.infer<typeof GetWorklogArgsSchema>;
+export type ListArchivedTasksArgs = z.infer<typeof ListArchivedTasksArgsSchema>;
 
 export interface TaskRecord {
   id: string;
@@ -176,6 +186,7 @@ export interface CompleteTaskResult {
 export interface DeleteTaskResult {
   deleted: boolean;
   id: string;
+  archived?: boolean;
 }
 
 export interface SectionStats {
@@ -194,8 +205,9 @@ export interface SummaryResult {
 
 export interface CleanupResult {
   stale_starts_cleared: number;
-  old_completed_removed: number;
-  completed_capped: number;
+  old_completed_archived: number;
+  completed_cap_archived: number;
+  archived_pruned: number;
   message: string;
 }
 
@@ -291,5 +303,29 @@ export interface SummarizeWorkResult {
 export interface GetWorklogResult {
   entries: WorklogEntry[];
   metrics: WorklogMetrics | null;
+  total: number;
+}
+
+export interface ArchivedTask {
+  id: string;
+  section: string;
+  title: string;
+  description: string | null;
+  assigned_by: string | null;
+  priority: string;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  created_timestamp: number;
+  completed_timestamp: number | null;
+  followup_enabled: number;
+  followup_section: string | null;
+  followup_prompt: string | null;
+  archived_at: string;
+  archived_timestamp: number;
+}
+
+export interface ListArchivedTasksResult {
+  tasks: ArchivedTask[];
   total: number;
 }

@@ -60,6 +60,7 @@ export const AGENT_TYPES = {
   HOTFIX_PROMOTION: 'hotfix-promotion',
   TASK_RUNNER_PRODUCT_MANAGER: 'task-runner-product-manager',
   PR_REVIEWER: 'pr-reviewer',
+  SESSION_REVIVED: 'session-revived',
 };
 
 /**
@@ -78,6 +79,7 @@ export const HOOK_TYPES = {
   TASK_RUNNER: 'task-runner',
   API_KEY_WATCHER: 'api-key-watcher',
   QUOTA_MONITOR: 'quota-monitor',
+  SESSION_REVIVER: 'session-reviver',
 };
 
 /**

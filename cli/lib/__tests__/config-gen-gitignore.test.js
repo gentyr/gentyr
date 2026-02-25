@@ -117,6 +117,7 @@ describe('updateGitignore()', () => {
       '.claude/playwright-health.json',
       '.claude/config/',
       '.claude/worktrees/',
+      '.claude/hooks-protected/',
       '.mcp.json',
       'op-secrets.conf',
     ];

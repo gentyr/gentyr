@@ -427,6 +427,20 @@ describe('Feedback System E2E', () => {
         consumption_mode: 'cli',
       });
 
+      const sdkPersona = await ufClient.callTool<{ id: string; name: string }>('create_persona', {
+        name: 'sdk-dev',
+        description: 'Tests SDK package',
+        consumption_mode: 'sdk',
+        endpoints: ['@acme/sdk', `${toyApp.baseUrl}/docs`],
+      });
+
+      const adkPersona = await ufClient.callTool<{ id: string; name: string }>('create_persona', {
+        name: 'adk-agent',
+        description: 'AI agent testing SDK programmatically',
+        consumption_mode: 'adk',
+        endpoints: ['@acme/sdk', '/tmp/docs'],
+      });
+
       const apiFeature = await ufClient.callTool<{ id: string; name: string }>('register_feature', {
         name: 'rest-api',
         file_patterns: ['src/api/**', 'server.js'],
@@ -446,6 +460,18 @@ describe('Feedback System E2E', () => {
       await ufClient.callTool('map_persona_feature', {
         persona_id: cliPersona.id,
         feature_id: cliFeature.id,
+        priority: 'normal',
+      });
+
+      await ufClient.callTool('map_persona_feature', {
+        persona_id: sdkPersona.id,
+        feature_id: apiFeature.id,
+        priority: 'normal',
+      });
+
+      await ufClient.callTool('map_persona_feature', {
+        persona_id: adkPersona.id,
+        feature_id: apiFeature.id,
         priority: 'normal',
       });
 
@@ -470,8 +496,8 @@ describe('Feedback System E2E', () => {
         matched_features: Array<{ id: string; name: string; description: string | null; file_patterns: string[]; url_patterns: string[]; category: string | null; created_at: string }>;
       }>('get_personas_for_changes', { changed_files: changedFiles });
 
-      expect(analysis.personas).toHaveLength(2);
-      expect(analysis.personas.map(p => p.persona.name).sort()).toEqual(['api-tester', 'cli-tester']);
+      expect(analysis.personas).toHaveLength(4);
+      expect(analysis.personas.map(p => p.persona.name).sort()).toEqual(['adk-agent', 'api-tester', 'cli-tester', 'sdk-dev']);
 
       // Start feedback run
       const run = await ufClient.callTool<{
@@ -498,7 +524,7 @@ describe('Feedback System E2E', () => {
       });
 
       expect(run.sessions).toBeDefined();
-      expect(run.sessions!).toHaveLength(2);
+      expect(run.sessions!).toHaveLength(4);
 
       // Simulate API persona finding Bug #4
       const apiSessionDb = createTestDb('');
@@ -605,24 +631,118 @@ describe('Feedback System E2E', () => {
         report_ids: [cliResult.report_id],
       });
 
+      // Simulate SDK persona finding type issues
+      const sdkSessionDb = createTestDb('');
+      const sdkSessionId = run.sessions![2].id;
+
+      sdkSessionDb.exec(`
+        CREATE TABLE IF NOT EXISTS findings (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          category TEXT NOT NULL,
+          severity TEXT NOT NULL,
+          description TEXT NOT NULL,
+          steps_to_reproduce TEXT DEFAULT '[]',
+          expected_behavior TEXT,
+          actual_behavior TEXT,
+          screenshot_ref TEXT,
+          url TEXT,
+          report_id TEXT,
+          created_at TEXT NOT NULL,
+          CONSTRAINT valid_category CHECK (category IN ('usability', 'functionality', 'performance', 'accessibility', 'visual', 'content', 'security', 'other')),
+          CONSTRAINT valid_severity CHECK (severity IN ('critical', 'high', 'medium', 'low', 'info'))
+        );
+      `);
+
+      const sdkReporterServer = createFeedbackReporterServer({
+        personaName: 'sdk-dev',
+        sessionId: sdkSessionId,
+        projectDir: '/tmp/test',
+        sessionDb: sdkSessionDb,
+        reportsDb,
+      });
+      const sdkReporterClient = new McpTestClient(sdkReporterServer);
+
+      const sdkResult = await sdkReporterClient.callTool<{ id: string; report_id: string }>('submit_finding', {
+        title: 'SDK missing TypeScript types for task response',
+        category: 'functionality',
+        severity: 'medium',
+        description: 'The SDK does not export TypeScript types for the task creation response',
+      });
+
+      await ufClient.callTool('complete_feedback_session', {
+        session_id: sdkSessionId,
+        status: 'completed',
+        findings_count: 1,
+        report_ids: [sdkResult.report_id],
+      });
+
+      // Simulate ADK persona finding docs discoverability issues
+      const adkSessionDb = createTestDb('');
+      const adkSessionId = run.sessions![3].id;
+
+      adkSessionDb.exec(`
+        CREATE TABLE IF NOT EXISTS findings (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          category TEXT NOT NULL,
+          severity TEXT NOT NULL,
+          description TEXT NOT NULL,
+          steps_to_reproduce TEXT DEFAULT '[]',
+          expected_behavior TEXT,
+          actual_behavior TEXT,
+          screenshot_ref TEXT,
+          url TEXT,
+          report_id TEXT,
+          created_at TEXT NOT NULL,
+          CONSTRAINT valid_category CHECK (category IN ('usability', 'functionality', 'performance', 'accessibility', 'visual', 'content', 'security', 'other')),
+          CONSTRAINT valid_severity CHECK (severity IN ('critical', 'high', 'medium', 'low', 'info'))
+        );
+      `);
+
+      const adkReporterServer = createFeedbackReporterServer({
+        personaName: 'adk-agent',
+        sessionId: adkSessionId,
+        projectDir: '/tmp/test',
+        sessionDb: adkSessionDb,
+        reportsDb,
+      });
+      const adkReporterClient = new McpTestClient(adkReporterServer);
+
+      const adkResult = await adkReporterClient.callTool<{ id: string; report_id: string }>('submit_finding', {
+        title: 'API error responses lack structured error codes',
+        category: 'functionality',
+        severity: 'medium',
+        description: 'Error responses return plain text instead of structured JSON with error codes, making programmatic error handling difficult for AI agents',
+      });
+
+      await ufClient.callTool('complete_feedback_session', {
+        session_id: adkSessionId,
+        status: 'completed',
+        findings_count: 1,
+        report_ids: [adkResult.report_id],
+      });
+
       // Verify the full pipeline
       interface ReportRow { id: string; reporting_agent: string; title: string; category: string; }
       const allReports = reportsDb.prepare('SELECT * FROM reports').all() as ReportRow[];
-      expect(allReports).toHaveLength(2);
+      expect(allReports).toHaveLength(4);
       expect(allReports.every(r => r.category === 'user-feedback')).toBe(true);
 
       const agents = allReports.map(r => r.reporting_agent).sort();
-      expect(agents).toEqual(['feedback-api-tester', 'feedback-cli-tester']);
+      expect(agents).toEqual(['feedback-adk-agent', 'feedback-api-tester', 'feedback-cli-tester', 'feedback-sdk-dev']);
 
       // Verify run summary
       interface SessionRow { id: string; status: string; findings_count: number; }
       const sessions = feedbackDb.prepare('SELECT * FROM feedback_sessions WHERE run_id = ?').all(run.id) as SessionRow[];
       expect(sessions.every(s => s.status === 'completed')).toBe(true);
       const totalFindings = sessions.reduce((sum, s) => sum + s.findings_count, 0);
-      expect(totalFindings).toBe(2);
+      expect(totalFindings).toBe(4);
 
       apiSessionDb.close();
       cliSessionDb.close();
+      sdkSessionDb.close();
+      adkSessionDb.close();
     });
   });
 

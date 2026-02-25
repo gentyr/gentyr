@@ -1069,3 +1069,500 @@ describe('Playwright MCP Server - Type Safety', () => {
     });
   });
 });
+
+// ============================================================================
+// isValidChromeMatchPattern Tests
+//
+// Mirrors the implementation in server.ts (which is not exported).
+// The function is duplicated here following the same pattern used for
+// countTestFiles above — this keeps coverage without a risky export change.
+// ============================================================================
+
+/**
+ * Exact copy of isValidChromeMatchPattern from server.ts.
+ * Must stay in sync whenever the production implementation changes.
+ *
+ * Validate a Chrome extension match pattern per the Chrome docs spec.
+ * <scheme>://<host>/<path> where host is * | *.domain | exact domain.
+ * file:// has empty host (file:///path). No partial wildcards.
+ */
+function isValidChromeMatchPattern(pattern: string): boolean {
+  if (pattern === '<all_urls>') return true;
+  if (/^file:\/\/\/(.+)$/.test(pattern)) return true;
+  const m = pattern.match(/^(\*|https?|ftp):\/\/([^/]+)\/(.*)$/);
+  if (!m) return false;
+  const host = m[2];
+  if (host === '*') return true;
+  if (host.startsWith('*.')) return !host.slice(2).includes('*');
+  return !host.includes('*');
+}
+
+describe('isValidChromeMatchPattern', () => {
+  describe('special keyword', () => {
+    it('should accept <all_urls>', () => {
+      expect(isValidChromeMatchPattern('<all_urls>')).toBe(true);
+    });
+
+    it('should reject partial match on all_urls keyword', () => {
+      expect(isValidChromeMatchPattern('all_urls')).toBe(false);
+      expect(isValidChromeMatchPattern('<all_urls> ')).toBe(false);
+    });
+  });
+
+  describe('file:// patterns', () => {
+    it('should accept file:///path', () => {
+      expect(isValidChromeMatchPattern('file:///path/to/file.html')).toBe(true);
+    });
+
+    it('should accept file:/// with trailing wildcard in path', () => {
+      expect(isValidChromeMatchPattern('file:///foo/*')).toBe(true);
+    });
+
+    it('should reject file:// with only two slashes (no host section)', () => {
+      // file://path is invalid per Chrome spec — needs three slashes
+      expect(isValidChromeMatchPattern('file://path/to/file')).toBe(false);
+    });
+  });
+
+  describe('wildcard scheme *://', () => {
+    it('should accept *://*/*', () => {
+      expect(isValidChromeMatchPattern('*://*/*')).toBe(true);
+    });
+
+    it('should accept *://example.com/*', () => {
+      expect(isValidChromeMatchPattern('*://example.com/*')).toBe(true);
+    });
+
+    it('should accept *://*.example.com/*', () => {
+      expect(isValidChromeMatchPattern('*://*.example.com/*')).toBe(true);
+    });
+
+    it('should reject *://host with no path separator', () => {
+      expect(isValidChromeMatchPattern('*://example.com')).toBe(false);
+    });
+  });
+
+  describe('https:// patterns', () => {
+    it('should accept https://example.com/*', () => {
+      expect(isValidChromeMatchPattern('https://example.com/*')).toBe(true);
+    });
+
+    it('should accept https://*.example.com/*', () => {
+      expect(isValidChromeMatchPattern('https://*.example.com/*')).toBe(true);
+    });
+
+    it('should accept https://*/* (wildcard host)', () => {
+      expect(isValidChromeMatchPattern('https://*/*')).toBe(true);
+    });
+
+    it('should accept https://sub.example.com/path/to/page', () => {
+      expect(isValidChromeMatchPattern('https://sub.example.com/path/to/page')).toBe(true);
+    });
+
+    it('should accept https://example.com/ (empty path)', () => {
+      expect(isValidChromeMatchPattern('https://example.com/')).toBe(true);
+    });
+
+    it('should reject partial wildcard in host like *-admin.example.com', () => {
+      // Partial wildcards are not allowed — only * alone or *.domain
+      expect(isValidChromeMatchPattern('https://*-admin.example.com/*')).toBe(false);
+    });
+
+    it('should reject double wildcard in subdomain *.*.example.com', () => {
+      expect(isValidChromeMatchPattern('https://*.*.example.com/*')).toBe(false);
+    });
+
+    it('should reject missing path component', () => {
+      expect(isValidChromeMatchPattern('https://example.com')).toBe(false);
+    });
+
+    it('should reject wildcard embedded in middle of hostname', () => {
+      expect(isValidChromeMatchPattern('https://foo.*.example.com/*')).toBe(false);
+    });
+  });
+
+  describe('http:// patterns', () => {
+    it('should accept http://localhost/*', () => {
+      expect(isValidChromeMatchPattern('http://localhost/*')).toBe(true);
+    });
+
+    it('should accept http://127.0.0.1/*', () => {
+      expect(isValidChromeMatchPattern('http://127.0.0.1/*')).toBe(true);
+    });
+
+    it('should accept http://*.example.com/path', () => {
+      expect(isValidChromeMatchPattern('http://*.example.com/path')).toBe(true);
+    });
+
+    it('should reject http://example.com (no trailing slash)', () => {
+      expect(isValidChromeMatchPattern('http://example.com')).toBe(false);
+    });
+  });
+
+  describe('ftp:// patterns', () => {
+    it('should accept ftp://ftp.example.com/*', () => {
+      expect(isValidChromeMatchPattern('ftp://ftp.example.com/*')).toBe(true);
+    });
+
+    it('should reject ftp:// without path', () => {
+      expect(isValidChromeMatchPattern('ftp://ftp.example.com')).toBe(false);
+    });
+  });
+
+  describe('invalid schemes', () => {
+    it('should reject ws:// (not in allowed schemes)', () => {
+      expect(isValidChromeMatchPattern('ws://example.com/*')).toBe(false);
+    });
+
+    it('should reject chrome-extension:// scheme', () => {
+      expect(isValidChromeMatchPattern('chrome-extension://*/*')).toBe(false);
+    });
+
+    it('should reject javascript: scheme', () => {
+      expect(isValidChromeMatchPattern('javascript:void(0)')).toBe(false);
+    });
+
+    it('should reject plain strings with no scheme', () => {
+      expect(isValidChromeMatchPattern('example.com/*')).toBe(false);
+    });
+
+    it('should reject empty string', () => {
+      expect(isValidChromeMatchPattern('')).toBe(false);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should reject pattern with only whitespace', () => {
+      expect(isValidChromeMatchPattern('   ')).toBe(false);
+    });
+
+    it('should reject pattern that starts with *. at scheme level', () => {
+      // *.example.com/* has no scheme — not valid
+      expect(isValidChromeMatchPattern('*.example.com/*')).toBe(false);
+    });
+
+    it('should accept https://*.co.uk/* (multi-part TLD)', () => {
+      expect(isValidChromeMatchPattern('https://*.co.uk/*')).toBe(true);
+    });
+
+    it('should accept https://example.com/api/v1/*', () => {
+      expect(isValidChromeMatchPattern('https://example.com/api/v1/*')).toBe(true);
+    });
+  });
+});
+
+// ============================================================================
+// EXTENSION_PROJECTS membership tests
+//
+// Verifies the set of projects that trigger extension_manifest check matches
+// the documented contract: demo, extension, extension-manual.
+// ============================================================================
+
+const EXTENSION_PROJECTS = new Set(['demo', 'extension', 'extension-manual']);
+
+describe('EXTENSION_PROJECTS set', () => {
+  it('should include demo', () => {
+    expect(EXTENSION_PROJECTS.has('demo')).toBe(true);
+  });
+
+  it('should include extension', () => {
+    expect(EXTENSION_PROJECTS.has('extension')).toBe(true);
+  });
+
+  it('should include extension-manual', () => {
+    expect(EXTENSION_PROJECTS.has('extension-manual')).toBe(true);
+  });
+
+  it('should not include non-extension projects', () => {
+    const nonExtensionProjects = [
+      'vendor-owner', 'vendor-admin', 'vendor-dev', 'vendor-viewer',
+      'cross-persona', 'auth-flows', 'manual', 'seed', 'auth-setup',
+    ];
+    for (const project of nonExtensionProjects) {
+      expect(EXTENSION_PROJECTS.has(project)).toBe(false);
+    }
+  });
+
+  it('should have exactly 3 members', () => {
+    expect(EXTENSION_PROJECTS.size).toBe(3);
+  });
+});
+
+// ============================================================================
+// extension_manifest check logic (simulated)
+//
+// The preflight check in server.ts reads manifest.json from disk and calls
+// isValidChromeMatchPattern on each content_scripts[i].matches entry.
+// These tests validate that logic directly using temp files, mirroring the
+// approach used for countTestFiles above.
+// ============================================================================
+
+describe('extension_manifest check logic (simulated)', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = path.join('/tmp', `playwright-manifest-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    fs.mkdirSync(tempDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Simulate the extension_manifest check from server.ts.
+   * Returns the same {status, message} shape as runCheck's fn callback.
+   */
+  function simulateExtensionManifestCheck(
+    distPath: string | undefined,
+    projectDir: string
+  ): { status: 'pass' | 'fail' | 'warn' | 'skip'; message: string } {
+    if (!distPath) {
+      return { status: 'skip', message: 'GENTYR_EXTENSION_DIST_PATH not set — skipping manifest validation' };
+    }
+
+    const primaryPath = path.join(projectDir, distPath, 'manifest.json');
+    const fallbackPath = path.join(projectDir, path.dirname(distPath), 'manifest.json');
+    let manifestPath: string | null = null;
+
+    if (fs.existsSync(primaryPath)) {
+      manifestPath = primaryPath;
+    } else if (fs.existsSync(fallbackPath)) {
+      manifestPath = fallbackPath;
+    }
+
+    if (!manifestPath) {
+      return { status: 'fail', message: `manifest.json not found at ${primaryPath} or ${fallbackPath}` };
+    }
+
+    let manifest: { content_scripts?: Array<{ matches?: string[] }> };
+    try {
+      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { status: 'fail', message: `Failed to parse ${manifestPath}: ${msg}` };
+    }
+
+    const invalidPatterns: string[] = [];
+    const contentScripts = manifest.content_scripts || [];
+    for (let i = 0; i < contentScripts.length; i++) {
+      const matches = contentScripts[i].matches || [];
+      for (const pattern of matches) {
+        if (!isValidChromeMatchPattern(pattern)) {
+          invalidPatterns.push(`content_scripts[${i}]: ${pattern}`);
+        }
+      }
+    }
+
+    if (invalidPatterns.length > 0) {
+      return {
+        status: 'fail',
+        message: `Invalid match patterns in ${path.relative(projectDir, manifestPath)}:\n${invalidPatterns.map(p => `  - ${p}`).join('\n')}`,
+      };
+    }
+
+    const totalPatterns = contentScripts.reduce((sum, cs) => sum + (cs.matches?.length || 0), 0);
+    return { status: 'pass', message: `${totalPatterns} match pattern(s) validated in ${path.relative(projectDir, manifestPath)}` };
+  }
+
+  it('should skip when GENTYR_EXTENSION_DIST_PATH is not set', () => {
+    const result = simulateExtensionManifestCheck(undefined, tempDir);
+
+    expect(result.status).toBe('skip');
+    expect(result.message).toContain('GENTYR_EXTENSION_DIST_PATH not set');
+  });
+
+  it('should fail when manifest.json is missing at both primary and fallback paths', () => {
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('fail');
+    expect(result.message).toContain('manifest.json not found');
+  });
+
+  it('should pass when manifest.json has no content_scripts', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      name: 'Test Extension',
+      version: '1.0.0',
+      manifest_version: 3,
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('0 match pattern(s)');
+  });
+
+  it('should pass with all valid content_scripts match patterns', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [
+        { matches: ['https://example.com/*', 'https://*.example.com/*'] },
+        { matches: ['*://*/*'] },
+      ],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('3 match pattern(s)');
+  });
+
+  it('should fail when a content_scripts entry has an invalid match pattern', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [
+        { matches: ['https://valid.example.com/*', 'https://*-admin.example.com/*'] },
+      ],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('fail');
+    expect(result.message).toContain('Invalid match patterns');
+    expect(result.message).toContain('content_scripts[0]: https://*-admin.example.com/*');
+  });
+
+  it('should report all invalid patterns across multiple content_scripts entries', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [
+        { matches: ['https://*-widget.example.com/*'] },
+        { matches: ['https://valid.example.com/*'] },
+        { matches: ['ws://realtime.example.com/*'] },
+      ],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('fail');
+    expect(result.message).toContain('content_scripts[0]: https://*-widget.example.com/*');
+    expect(result.message).toContain('content_scripts[2]: ws://realtime.example.com/*');
+    // Valid entry must NOT appear in the invalid list
+    expect(result.message).not.toContain('content_scripts[1]');
+  });
+
+  it('should fail when manifest.json contains invalid JSON', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), '{ broken json }}}');
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('fail');
+    expect(result.message).toContain('Failed to parse');
+  });
+
+  it('should find manifest.json at the fallback path (parent of distPath)', () => {
+    // primary: tempDir/dist/extension/manifest.json — does NOT exist
+    // fallback: tempDir/dist/manifest.json — exists
+    const parentDir = path.join(tempDir, 'dist');
+    fs.mkdirSync(parentDir, { recursive: true });
+    fs.writeFileSync(path.join(parentDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ matches: ['<all_urls>'] }],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('1 match pattern(s)');
+  });
+
+  it('should prefer primary path over fallback when both exist', () => {
+    // primary: tempDir/dist/extension/manifest.json — valid manifest
+    // fallback: tempDir/dist/manifest.json — invalid manifest
+    const primaryDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(primaryDir, { recursive: true });
+    fs.writeFileSync(path.join(primaryDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ matches: ['https://example.com/*'] }],
+    }));
+
+    const fallbackDir = path.join(tempDir, 'dist');
+    fs.writeFileSync(path.join(fallbackDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ matches: ['bad-pattern'] }],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    // Should use primary (valid), not fallback (invalid)
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('1 match pattern(s)');
+  });
+
+  it('should pass with <all_urls> match pattern', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ matches: ['<all_urls>'] }],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('1 match pattern(s)');
+  });
+
+  it('should pass with content_scripts entry that has empty matches array', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ matches: [] }, { matches: ['https://example.com/*'] }],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('1 match pattern(s)');
+  });
+
+  it('should handle content_scripts entry with no matches key', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ js: ['content.js'] }],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('0 match pattern(s)');
+  });
+
+  it('should include the relative manifest path in the pass message', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ matches: ['https://example.com/*'] }],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    // The message must contain a relative (not absolute) path
+    expect(result.message).toContain('manifest.json');
+    expect(result.message).not.toContain(tempDir);
+  });
+});
+
+// ============================================================================
+// Recovery step for extension_manifest check (G001 - fail loudly)
+// ============================================================================
+
+describe('extension_manifest recovery step', () => {
+  it('should provide actionable recovery step text for invalid patterns', () => {
+    // The recovery step text from server.ts switch case for extension_manifest.
+    // Validates the message is specific and actionable.
+    const recoveryStep = 'Fix invalid match patterns in manifest.json — Chrome requires host to be * | *.domain.com | exact.domain.com (no partial wildcards like *-admin.example.com)';
+
+    expect(recoveryStep).toContain('manifest.json');
+    expect(recoveryStep).toContain('*.domain.com');
+    expect(recoveryStep).toContain('no partial wildcards');
+    expect(recoveryStep.length).toBeGreaterThan(50);
+  });
+});

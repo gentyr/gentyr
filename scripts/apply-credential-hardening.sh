@@ -5,26 +5,75 @@
 #   sudo bash node_modules/gentyr/scripts/apply-credential-hardening.sh  (npm install model)
 #   sudo bash .claude-framework/scripts/apply-credential-hardening.sh    (legacy symlink)
 #
+# When running via a symlink (e.g. .claude-framework -> /path/to/gentyr), bash may resolve
+# BASH_SOURCE[0] through the physical path, causing PROJECT_ROOT auto-detection to fail.
+# In that case, pass the project root explicitly:
+#   sudo bash .claude-framework/scripts/apply-credential-hardening.sh --project-root /path/to/project
+#
 # Changes:
 # 1. Adds missing credentialKeys to protected-actions.json (github, resend, elastic, codecov)
-# 2. Adds full-path op CLI detection to block-no-verify.js
+# 2. Removes redundant full-path op CLI pattern from block-no-verify.js (cleanup)
 # 3. Fixes mismatched tool names in protected-actions.json (10 tools across 3 servers)
 
 set -euo pipefail
 
+# Parse --project-root <path> CLI argument
+EXPLICIT_PROJECT_ROOT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project-root)
+      EXPLICIT_PROJECT_ROOT="${2:-}"
+      if [ -z "$EXPLICIT_PROJECT_ROOT" ]; then
+        echo "ERROR: --project-root requires a path argument"
+        exit 1
+      fi
+      shift 2
+      ;;
+    *)
+      echo "ERROR: Unknown argument: $1"
+      echo "Usage: sudo bash $0 [--project-root <path>]"
+      exit 1
+      ;;
+  esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Resolve project root: detect whether running from node_modules/gentyr/scripts/ (npm install
-# model) or .claude-framework/scripts/ (legacy symlink model).
-_PARENT_DIR="$(dirname "$SCRIPT_DIR")"
-_GRANDPARENT_DIR="$(dirname "$_PARENT_DIR")"
-if [ "$(basename "$_GRANDPARENT_DIR")" = "node_modules" ]; then
-  # npm install model: node_modules/gentyr/scripts/ -> node_modules/ -> project root
-  PROJECT_ROOT="$(dirname "$_GRANDPARENT_DIR")"
+
+if [ -n "$EXPLICIT_PROJECT_ROOT" ]; then
+  # Explicit override: trust the caller, but still validate
+  PROJECT_ROOT="$(cd "$EXPLICIT_PROJECT_ROOT" && pwd)"
 else
-  # Legacy symlink model: .claude-framework/scripts/ -> .claude-framework/ -> project root
-  PROJECT_ROOT="$_GRANDPARENT_DIR"
+  # Auto-detect: resolve project root by walking up from SCRIPT_DIR.
+  # When BASH_SOURCE[0] resolves through a symlink's physical path (e.g.
+  # /Users/user/git/gentyr/scripts/ rather than .claude-framework/scripts/),
+  # the grandparent calculation below may land in the wrong directory.
+  # Use --project-root to override if auto-detection fails.
+  _PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+  _GRANDPARENT_DIR="$(dirname "$_PARENT_DIR")"
+  if [ "$(basename "$_GRANDPARENT_DIR")" = "node_modules" ]; then
+    # npm install model: node_modules/gentyr/scripts/ -> node_modules/ -> project root
+    PROJECT_ROOT="$(dirname "$_GRANDPARENT_DIR")"
+  else
+    # Legacy symlink model: .claude-framework/scripts/ -> .claude-framework/ -> project root
+    PROJECT_ROOT="$_GRANDPARENT_DIR"
+  fi
 fi
+
 HOOKS_DIR="$PROJECT_ROOT/.claude/hooks"
+
+# Validate that the resolved hooks directory actually exists
+if [ ! -d "$HOOKS_DIR" ]; then
+  echo "ERROR: Hooks directory not found at: $HOOKS_DIR"
+  echo ""
+  echo "This usually means the project root was resolved incorrectly."
+  echo "When running via symlink (e.g. .claude-framework -> /path/to/gentyr),"
+  echo "bash may resolve BASH_SOURCE[0] through the physical path and miss"
+  echo "the actual project directory."
+  echo ""
+  echo "Fix: Pass the project root explicitly:"
+  echo "  sudo bash $0 --project-root /path/to/your/project"
+  exit 1
+fi
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "ERROR: This script must be run with sudo"
@@ -119,6 +168,27 @@ elif 'credentialKeys' not in data['servers'].get('codecov', {}):
     data['servers']['codecov']['credentialKeys'] = ['CODECOV_TOKEN']
     changes.append('Added CODECOV_TOKEN to codecov.credentialKeys')
 
+# Add playwright credentialKeys (playwright MCP server needs Supabase creds for E2E tests)
+if 'playwright' not in data['servers']:
+    data['servers']['playwright'] = {
+        'credentialKeys': ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY']
+    }
+    changes.append('Added playwright with SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY credentialKeys')
+else:
+    keys = data['servers']['playwright'].get('credentialKeys', [])
+    for k in ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY']:
+        if k not in keys:
+            keys.append(k)
+            changes.append(f'Added {k} to playwright.credentialKeys')
+    data['servers']['playwright']['credentialKeys'] = keys
+
+# Add playwright to allowedUnprotectedServers if not present
+allowed = data.get('allowedUnprotectedServers', [])
+if 'playwright' not in allowed:
+    allowed.append('playwright')
+    data['allowedUnprotectedServers'] = allowed
+    changes.append('Added playwright to allowedUnprotectedServers')
+
 if changes:
     with open('$PA_FILE', 'w') as f:
         json.dump(data, f, indent=2)
@@ -131,45 +201,48 @@ else:
 
 echo ""
 
-# --- 2. Update block-no-verify.js ---
+# --- 2. Remove redundant full-path op CLI pattern from block-no-verify.js ---
+# Pattern 1 (\bop\s+...) already matches full-path invocations like /usr/local/bin/op
+# because \b fires at the boundary between / and o. The "full-path variant" pattern 3
+# ((?:^|[\/\s])op\s+...) is therefore redundant and should be cleaned up.
 BNV_FILE="$HOOKS_DIR/block-no-verify.js"
 if [ ! -f "$BNV_FILE" ]; then
-  echo "ERROR: $BNV_FILE not found"
-  exit 1
-fi
-
-echo "2. Hardening block-no-verify.js (full-path op detection)..."
-
-# Check if the full-path pattern already exists
-if grep -q 'full-path variant' "$BNV_FILE"; then
-  echo "   (already hardened, skipping)"
+  echo "2. block-no-verify.js not found, skipping redundant pattern cleanup"
 else
-  # Insert the new pattern after the existing op --flags pattern
-  python3 -c "
-import re
-
+  echo "2. Cleaning up redundant full-path op pattern in block-no-verify.js..."
+  if grep -q 'full-path variant' "$BNV_FILE"; then
+    python3 -c "
 with open('$BNV_FILE', 'r') as f:
-    content = f.read()
+    lines = f.readlines()
 
-old = \"\"\"  { pattern: /\\\\bop\\\\s+--/i,
-    reason: '1Password CLI access blocked — global op flags indicate CLI usage' },
-];\"\"\"
+# Remove lines containing 'full-path variant' and the preceding pattern line.
+# The redundant entry spans 2 lines:
+#   { pattern: /(?:^|[...])op...,
+#     reason: '...full-path variant...' },
+filtered = []
+skip_next = False
+removed = False
+for i, line in enumerate(lines):
+    if skip_next:
+        skip_next = False
+        continue
+    # Check if NEXT line contains the marker (pattern line precedes reason line)
+    if i + 1 < len(lines) and 'full-path variant' in lines[i + 1]:
+        skip_next = True
+        removed = True
+        continue
+    filtered.append(line)
 
-new = \"\"\"  { pattern: /\\\\bop\\\\s+--/i,
-    reason: '1Password CLI access blocked — global op flags indicate CLI usage' },
-  { pattern: /(?:^|[\\\\/\\\\s])op\\\\s+(run|read|item|inject|signin|signout|whoami|vault|document|connect|account|group|user|service-account|events-api|plugin)\\\\b/i,
-    reason: '1Password CLI access blocked (full-path variant) — secrets must only flow through MCP server env fields' },
-];\"\"\"
-
-if old in content:
-    content = content.replace(old, new)
+if removed:
     with open('$BNV_FILE', 'w') as f:
-        f.write(content)
-    print('   + Added full-path op CLI detection pattern')
+        f.writelines(filtered)
+    print('   + Removed redundant full-path op CLI pattern (2 lines)')
 else:
-    print('   WARNING: Could not find expected pattern in block-no-verify.js')
-    print('   Manual edit may be required')
+    print('   (pattern not found in expected format, may need manual removal)')
 "
+  else
+    echo "   (no redundant pattern found, skipping)"
+  fi
 fi
 
 echo ""

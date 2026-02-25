@@ -13,7 +13,7 @@ import { z } from 'zod';
 export const ListFeedbackPersonasArgsSchema = z.object({
   enabled_only: z.coerce.boolean().optional().default(false)
     .describe('Only show enabled personas'),
-  consumption_mode: z.enum(['gui', 'cli', 'api', 'sdk']).optional()
+  consumption_mode: z.enum(['gui', 'cli', 'api', 'sdk', 'adk']).optional()
     .describe('Filter by consumption mode'),
 });
 
@@ -63,7 +63,7 @@ export type GetFeedbackOverviewArgs = z.infer<typeof GetFeedbackOverviewArgsSche
 // Database Record Types
 // ============================================================================
 
-export type ConsumptionMode = 'gui' | 'cli' | 'api' | 'sdk';
+export type ConsumptionMode = 'gui' | 'cli' | 'api' | 'sdk' | 'adk';
 export type SessionStatus = 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'timeout';
 export type SatisfactionLevel = 'very_satisfied' | 'satisfied' | 'neutral' | 'dissatisfied' | 'very_dissatisfied';
 export type FindingCategory = 'usability' | 'functionality' | 'performance' | 'accessibility' | 'visual' | 'content' | 'security' | 'other';

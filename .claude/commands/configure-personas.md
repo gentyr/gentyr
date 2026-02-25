@@ -90,6 +90,8 @@ Based on your project analysis, offer appropriate preset personas using `AskUser
 | CLI Beginner | cli-beginner | cli | A developer using the CLI for the first time by following the README | follows README, tries basic commands first, confused by abbreviations |
 | CI/CD Scripter | cicd-scripter | cli | An automation engineer integrating the CLI into CI/CD pipelines | pipes output, uses --json flags, expects exit codes, tests with large inputs |
 | Load Tester | load-tester | api | A QA engineer validating API performance under concurrent load | sends rapid requests, tests rate limits, checks response times, tests concurrent access |
+| SDK Developer | sdk-developer | sdk | A developer integrating the SDK into their codebase, writing test scripts and browsing docs | reads docs first, writes test scripts, checks TypeScript types, validates error messages |
+| ADK Agent | adk-agent | adk | An AI agent consuming the SDK programmatically via MCP tools, testing docs discoverability and API consistency | searches docs programmatically, tests structured errors, checks API orthogonality, validates machine-readable responses |
 
 ### Step 4: Create Selected Personas
 
@@ -108,12 +110,19 @@ All other fields (name, description, mode, traits) come from the template. Creat
    - WHY: "This becomes the persona's ID. Keep it short and descriptive."
 2. **Description** — Who this persona represents and their goals
    - WHY: "The AI reads this to understand who it's pretending to be. Be specific about the user's skill level and goals."
-3. **Consumption mode** — gui / cli / api / sdk
-   - WHY: "This determines HOW the AI interacts with your app. `gui` uses a real browser via Playwright. `cli` runs terminal commands. `api` sends HTTP requests. `sdk` uses your library programmatically."
+3. **Consumption mode** — gui / cli / api / sdk / adk
+   - WHY: "This determines HOW the AI interacts with your app. `gui` uses a real browser via Playwright. `cli` runs terminal commands. `api` sends HTTP requests. `sdk` uses your library programmatically (agent browses docs portal). `adk` uses MCP tools to search/read documentation programmatically (for AI agent personas)."
 4. **Behavior traits** — comma-separated list
    - WHY: "These traits shape the AI's testing strategy. An 'impatient' persona abandons slow pages. A 'thorough' persona checks every form field. A 'non-technical' persona avoids developer tools."
-5. **Endpoint** — URL or path
-   - WHY: "This is where the AI persona will point its browser/requests."
+5. **Endpoint** — URL or path (interpretation depends on mode)
+   - WHY: "For `gui`/`api`/`cli` personas, this is the URL or path the AI will point its browser/requests to. For `sdk` personas, enter the comma-separated package name(s) as the first value; the docs portal URL is asked separately. For `adk` personas, enter the comma-separated package name(s) as the first value; the local docs directory is asked separately."
+
+   **If mode is `sdk`:** Ask: "What is the URL of your developer docs portal? (optional - leave empty for code-only testing)"
+   - Validate URL format if provided. Store in `endpoints[1]`. If skipped, note that the agent runs code-only without docs browsing.
+
+   **If mode is `adk`:** Ask: "Where is the local docs directory for this project? (optional - leave empty for code-only testing)"
+   - Validate the directory exists and contains `.md` files if provided. Store in `endpoints[1]`. If skipped, note that the agent runs code-only without programmatic docs access.
+
 6. **Credentials reference** — optional op:// vault ref or key name
    - WHY: "If this persona needs to log in, provide an `op://` reference so the AI can authenticate without exposing passwords."
 
@@ -149,6 +158,7 @@ Propose persona-to-feature mappings based on mode matching:
 - `cli` personas → all features (CLI tools typically test everything)
 - `api` personas → features with `/api/` in URL patterns, or all features if no URL patterns exist
 - `sdk` personas → all features
+- `adk` personas → all features
 
 Present the proposed mappings in a single confirmation step:
 

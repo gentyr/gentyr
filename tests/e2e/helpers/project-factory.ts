@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS personas (
   id TEXT PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,
   description TEXT NOT NULL,
-  consumption_mode TEXT NOT NULL CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk')),
+  consumption_mode TEXT NOT NULL CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk', 'adk')),
   behavior_traits TEXT NOT NULL DEFAULT '[]',
   endpoints TEXT NOT NULL DEFAULT '[]',
   credentials_ref TEXT,
@@ -110,7 +110,7 @@ CREATE INDEX IF NOT EXISTS idx_reports_triage_completed ON reports(triage_comple
 export interface PersonaInput {
   name: string;
   description: string;
-  consumption_mode: 'gui' | 'cli' | 'api' | 'sdk';
+  consumption_mode: 'gui' | 'cli' | 'api' | 'sdk' | 'adk';
   behavior_traits?: string[];
   endpoints?: string[];
 }

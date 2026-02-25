@@ -109,8 +109,11 @@ describe('Deputy-CTO HMAC argsHash Verification', () => {
     }
 
     // Verify pending_hmac with protection key
+    // G001 Fail-Closed: pending_hmac is verified unconditionally when a protection key is
+    // present. If the field is missing (undefined), the comparison against the expected hex
+    // string fails correctly, blocking requests that were not created by the gate hook.
     const key = loadProtectionKey();
-    if (key && request.pending_hmac) {
+    if (key) {
       // FIX: Include argsHash in HMAC computation
       const expectedPendingHmac = computeHmac(
         key,
@@ -122,15 +125,15 @@ describe('Deputy-CTO HMAC argsHash Verification', () => {
       );
 
       if (request.pending_hmac !== expectedPendingHmac) {
-        // Forged request - delete it
+        // Forged or missing pending_hmac - delete it
         delete data.approvals[code];
         saveApprovalsFile(data);
         return { error: `FORGERY DETECTED: Invalid pending signature for ${code}. Request deleted.` };
       }
-    } else if (!key && request.pending_hmac) {
+    } else if (request.pending_hmac) {
       // G001 Fail-Closed: Request has HMAC but we can't verify (key missing)
       return { error: `Cannot verify request signature for ${code} (protection key missing).` };
-    } else if (!key) {
+    } else {
       // G001 Fail-Closed: No protection key at all
       return { error: `Protection key missing. Cannot create HMAC-signed approval.` };
     }
@@ -481,6 +484,61 @@ describe('Deputy-CTO HMAC argsHash Verification', () => {
       );
 
       expect(request.approved_hmac).not.toBe(hmacWithoutArgsHash);
+    });
+
+    it('should reject request when pending_hmac is entirely absent and protection key is present', () => {
+      // This tests the exact HMAC bypass vulnerability that was fixed.
+      //
+      // Before fix: `if (key && request.pending_hmac)` — when pending_hmac is missing,
+      // the short-circuit caused HMAC verification to be SKIPPED entirely, allowing an
+      // attacker to inject a forged approval request with no HMAC at all.
+      //
+      // After fix: `if (key)` — unconditionally enters the verification block;
+      // `undefined !== expectedHexString` evaluates to true, triggering FORGERY DETECTED.
+
+      const key = generateProtectionKey();
+      saveProtectionKey(key);
+
+      const code = 'NOHMAC';
+      const server = 'supabase';
+      const tool = 'drop_database';
+      const now = Date.now();
+      const expiresTimestamp = now + 5 * 60 * 1000;
+
+      // Attacker injects a request with NO pending_hmac (the bypass vector)
+      const approvals = {
+        approvals: {
+          [code]: {
+            code,
+            server,
+            tool,
+            args: { database: 'production' },
+            argsHash: 'attackerhash',
+            phrase: 'APPROVE DATABASE',
+            status: 'pending',
+            approval_mode: 'deputy-cto',
+            created_at: new Date(now).toISOString(),
+            created_timestamp: now,
+            expires_at: new Date(expiresTimestamp).toISOString(),
+            expires_timestamp: expiresTimestamp,
+            // pending_hmac intentionally omitted — the attack vector
+          },
+        },
+      };
+
+      saveApprovalsFile(approvals);
+
+      // Act
+      const result = approveProtectedAction({ code });
+
+      // Assert — must be rejected as forgery, not approved
+      expect(result.approved).toBeUndefined();
+      expect(result.error).toBeDefined();
+      expect(result.error).toContain('FORGERY DETECTED');
+
+      // Verify the forged request was deleted from the approvals file
+      const updated = loadApprovalsFile();
+      expect(updated.approvals[code]).toBeUndefined();
     });
 
     it('should fail verification if pending_hmac was created without argsHash', () => {
