@@ -1,5 +1,152 @@
 # GENTYR Framework Changelog
 
+## 2026-02-26 - Worktree core.hooksPath Poisoning Defense
+
+### Summary
+
+4-layer defense-in-depth fix for a vulnerability where Claude Code sub-agent worktrees could write stale `core.hooksPath` entries to the main `.git/config`, silently bypassing all pre-commit hooks. Covers proactive cleanup at worktree removal, SessionStart auto-repair, pre-commit last-resort enforcement, and a `safeSymlink()` EINVAL fix for partially-provisioned worktrees.
+
+### Changed
+
+**`.claude/hooks/lib/worktree-manager.js`**:
+- `safeSymlink()`: Now calls `fs.lstatSync(linkPath)` before `readlinkSync` to determine item type. If the existing path is a real directory (e.g. git-tracked `.husky/` checked out into the worktree), removes it with `fs.rmSync(..., { recursive: true, force: true })` instead of calling `readlinkSync` which would throw EINVAL. This fixes a crash that left worktrees partially provisioned.
+- `removeWorktree()`: Before running `git worktree remove`, reads `core.hooksPath` from local git config. If it resolves into the worktree path being removed, resets it to `.husky`. Wrapped in try-catch — non-fatal if git config is unavailable.
+
+**`.claude/hooks/gentyr-sync.js`**:
+- `tamperCheck()`: Added Check 1.5 between the existing symlink check (Check 1) and ownership check (Check 2). Reads `core.hooksPath` via `execFileSync git config --local --get core.hooksPath`. Resolves relative paths against `projectDir`. If the result starts with `.claude/worktrees/`, attempts auto-repair (`git config --local core.hooksPath .husky`) and pushes a warning. On auto-repair failure, pushes a warning with manual fix instructions.
+
+**`husky/pre-commit`**:
+- Added `core.hooksPath WORKTREE CHECK` section (shell, runs before lint-staged). Reads `core.hooksPath` from git config. Uses `case` pattern match for `*/.claude/worktrees/*)` — auto-repairs to `.husky` and exits 1 to force the user to re-run the commit with the corrected path. Errors from `git config` are suppressed with `2>/dev/null || true`.
+
+### Added
+
+**`.claude/hooks/__tests__/worktree-hookspath-fix.test.js`** (new, 26 tests):
+- `safeSymlink() directory handling` (6 tests): structural and behavioral — covers lstatSync-before-readlinkSync, directory rmSync path, symlink correct-target short-circuit, regular file unlink path, and two behavioral end-to-end cases.
+- `removeWorktree() core.hooksPath reset` (4 tests): structural — hooksPath check before worktree remove, reset to .husky, path.resolve+startsWith comparison, try-catch wrapper.
+- `tamperCheck() core.hooksPath worktree detection` (8 tests): structural — Check 1.5 presence, execFileSync usage, worktrees dir comparison, absolute/relative path handling, auto-repair command, repair warning, bypass warning, ordering relative to Check 1 and Check 2.
+- `husky/pre-commit core.hooksPath worktree check` (8 tests): structural — section header, git config read, worktrees/ pattern match, .husky reset, exit-1-after-repair, placement before lint-staged, placement after symlink check, error suppression.
+
+### Test Results
+
+- All 26 new tests pass
+- Total: 149 tests across 6 test suites, 0 failures
+
+---
+
+## 2026-02-26 - Multi-Step Workflow Completion Guarantees
+
+### Summary
+
+Addresses a failure mode where the product-manager agent created demo scenario DB records but omitted the required CODE-REVIEWER implementation tasks. Three layers of defense added: forced follow-up hooks on all product-manager tasks, gap analysis in the `/product-manager` slash command, and prefetch-level demo scenario coverage surfacing uncovered personas proactively.
+
+### Added
+
+**`packages/mcp-servers/src/shared/constants.ts`**:
+- `product-manager` added to `FORCED_FOLLOWUP_CREATORS` — all tasks created by the product-manager agent now auto-enable `followup_enabled: true`, triggering verification after task completion
+
+**`.claude/commands/product-manager.md`**:
+- Option 6 "Demo scenarios" in the completed-analysis menu with sub-menu: Gap analysis, Create scenarios, View scenarios
+- Demo Scenario Gap Analysis section: detailed verification pattern that checks GUI personas, scenario counts, and CODE-REVIEWER task existence; renders a coverage table; offers to create missing tasks
+- CRITICAL annotation: after any demo scenario creation action, gap analysis is always re-run as completion verification
+
+**`.claude/hooks/slash-command-prefetch.js`**:
+- `handleProductManager()` extended to query `user-feedback.db` for GUI persona scenario counts; surfaces `demoScenarios.uncoveredPersonas` in prefetch output so the command has coverage data before display
+
+**`.claude/agents/product-manager.md`**:
+- Completion Checklist section: explicit verification steps for section writing, persona evaluation, demo scenario creation, and generic multi-step tasks
+
+**`packages/mcp-servers/src/todo-db/__tests__/todo-db.test.ts`**:
+- 3 new tests: product-manager creator gets forced followup, deputy-cto still gets forced followup, code-reviewer does not get forced followup
+
+**`.claude/hooks/__tests__/slash-command-prefetch-product-manager.test.js`**:
+- 8 new tests for demo scenario coverage: uncovered personas detection, guiPersonas array with scenarioCounts, totalScenarios count, feedbackDb failure non-fatal path, empty GUI persona set, mixed covered/uncovered, zero-scenarios case
+
+**`.claude/hooks/__tests__/slash-command-prefetch-show.test.js`**:
+- Section count corrected from 12 to 13 (added `product-market-fit`)
+- Test for `product-market-fit` section ID presence added
+
+### Test Results
+
+- `todo-db.test.ts`: 103/103 pass (3 new)
+- `slash-command-prefetch-product-manager.test.js`: 38/38 pass (8 new)
+- `slash-command-prefetch-show.test.js`: 38/38 pass (2 updated)
+- TypeScript: compiles clean
+
+---
+
+## 2026-02-26 - Demo Scenario System
+
+### Summary
+
+Redesigned the demo workflow from "select a Playwright project and run all tests" to "select a curated demo scenario and run just that one file." Introduces a `demo_scenarios` table in `user-feedback.db`, 5 new MCP tools on the `user-feedback` server, three redesigned `/demo*` commands, and N+1 feedback spawning for GUI personas.
+
+### Added
+
+**`packages/mcp-servers/src/user-feedback/types.ts`**:
+- `CreateScenarioArgsSchema`, `UpdateScenarioArgsSchema`, `DeleteScenarioArgsSchema`, `ListScenariosArgsSchema`, `GetScenarioArgsSchema` Zod schemas
+- Corresponding TypeScript types for all scenario tools
+
+**`packages/mcp-servers/src/user-feedback/__tests__/demo-scenarios.test.ts`** (new):
+- 22 tests covering: table migration, CRUD lifecycle, `.demo.ts` suffix enforcement, `gui`-only persona constraint, FK cascade on persona delete, `enabled`/`category` filters, `persona_name` JOIN in list/get
+
+**`.claude/commands/demo-autonomous.md`** (new):
+- `/demo-autonomous` — runs a curated scenario at human-watchable speed (slowMo 800ms), no pause at end. "Show me the product in action."
+
+### Modified
+
+**`packages/mcp-servers/src/user-feedback/server.ts`**:
+- `demo_scenarios` table migration in `initDb()`; FK `persona_id` references `personas(id)` with CASCADE DELETE
+- 5 new tools: `create_scenario` (validates `consumption_mode = 'gui'`, enforces `.demo.ts` suffix), `update_scenario`, `delete_scenario`, `list_scenarios` (JOIN for `persona_name`, filterable), `get_scenario`
+
+**`packages/mcp-servers/src/playwright/server.ts`**:
+- `run_demo`: new `test_file` positional arg (single-file filtering) and `pause_at_end` flag (sets `DEMO_PAUSE_AT_END=1` env var)
+- `launch_ui_mode`: new optional `test_file` for filtered UI mode
+- `countTestFiles()`: recognizes `.demo.ts` extension alongside `.spec.ts` and `.manual.ts`
+
+**`packages/mcp-servers/src/playwright/types.ts`**:
+- Added `test_file` and `pause_at_end` fields to `RunDemoArgsSchema` and `LaunchUiModeArgsSchema`
+
+**`.claude/commands/demo.md`**:
+- Rewritten as escape-hatch: launches Playwright UI mode showing ALL tests. Developer power-tool, not scenario-filtered.
+
+**`.claude/commands/demo-interactive.md`**:
+- Rewritten as scenario-based: selects from `list_scenarios`, runs `run_demo` with `pause_at_end: true` at full speed. "Take me to this screen."
+
+**`.claude/commands/demo-auto.md`**:
+- Deleted. Replaced by `/demo-autonomous`.
+
+**`.claude/hooks/slash-command-prefetch.js`**:
+- `demo-auto` sentinel replaced with `demo-autonomous`
+- Demo commands added to `needsDb` — `handleDemo()` now queries `user-feedback.db` for enabled scenarios and includes them in prefetch output
+
+**`.claude/hooks/feedback-launcher.js`**:
+- `getScenariosForPersona(personaId, projectDir)` — queries `demo_scenarios WHERE enabled = 1` for a persona
+- `buildPrompt()` accepts optional `scenario` arg; injects scenario context into feedback agent prompt
+
+**`.claude/hooks/feedback-orchestrator.js`**:
+- N+1 spawning: GUI personas spawn 1 default session + up to 3 scenario-anchored sessions
+- Each scenario session runs the demo file via `mcp__playwright__run_demo()` as a pre-step before feedback exploration
+- Demo coverage check: flags GUI personas with zero enabled scenarios in the orchestrator log
+
+**`.claude/agents/product-manager.md`**:
+- Added demo scenario management responsibilities: defines scenario DB records, creates CODE-REVIEWER tasks for `*.demo.ts` file implementation, ensures 2-4 scenarios per GUI persona
+
+**`.claude/agents/test-writer.md`**:
+- Added explicit exclusion rule: test-writer must NOT create or modify `*.demo.ts` files (those are managed by product-manager + code-reviewer)
+
+**`.claude/hooks/__tests__/slash-command-prefetch-demo.test.js`**:
+- Updated `demo-auto` → `demo-autonomous` throughout
+- Updated `needsDb` assertions: demo commands ARE now in `needsDb` (scenario DB queries)
+
+### Test Results
+
+- `demo-scenarios.test.ts`: 22/22 pass (new)
+- `playwright.test.ts`: 11 new tests; all pass
+- `slash-command-prefetch-demo.test.js`: 42/42 pass
+- MCP server suite: 1739/1739 pass across 33 test files
+
+---
+
 ## 2026-02-25 - Generalize Playwright MCP Server (Config Discovery)
 
 ### Summary

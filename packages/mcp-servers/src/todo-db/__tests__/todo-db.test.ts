@@ -1947,6 +1947,63 @@ ${originalTask}`;
       }
     });
 
+    it('should force follow-up when product-manager creates a task', () => {
+      const result = createTask({
+        section: 'CODE-REVIEWER',
+        title: 'Implement demo scenario: Onboarding Flow',
+        description: 'Write Playwright demo file at e2e/demo/onboarding-flow.demo.ts',
+        assigned_by: 'product-manager',
+      });
+
+      expect('error' in result).toBe(false);
+      if (!('error' in result)) {
+        expect(result.followup_enabled).toBe(1);
+        expect(result.followup_prompt).toContain('[Follow-up Verification]');
+        expect(result.followup_prompt).toContain('Implement demo scenario');
+      }
+    });
+
+    it('should reject product-manager task without description', () => {
+      const result = createTask({
+        section: 'CODE-REVIEWER',
+        title: 'No description PM task',
+        assigned_by: 'product-manager',
+      });
+
+      expect('error' in result).toBe(true);
+      if ('error' in result) {
+        expect(result.error).toContain('require a description');
+        expect(result.error).toContain('product-manager');
+      }
+    });
+
+    it('should create follow-up task when completing a product-manager-created task', () => {
+      const task = createTask({
+        section: 'CODE-REVIEWER',
+        title: 'Implement demo scenario: Dashboard Overview',
+        description: 'Write Playwright demo file at e2e/demo/dashboard-overview.demo.ts',
+        assigned_by: 'product-manager',
+      });
+
+      expect('error' in task).toBe(false);
+      if (!('error' in task)) {
+        const result = completeTask(task.id) as CompleteOrError;
+
+        expect('error' in result).toBe(false);
+        if (!('error' in result)) {
+          expect(result.followup_task_id).toBeDefined();
+
+          const followup = getTask(result.followup_task_id!) as TaskOrError;
+          expect('error' in followup).toBe(false);
+          if (!('error' in followup)) {
+            expect(followup.title).toBe('[Follow-up] Implement demo scenario: Dashboard Overview');
+            expect(followup.status).toBe('pending');
+            expect(followup.followup_enabled).toBe(0);
+          }
+        }
+      }
+    });
+
     it('should respect custom followup_section when completing a deputy-cto-created task', () => {
       const task = createTask({
         section: 'DEPUTY-CTO',

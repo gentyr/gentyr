@@ -933,6 +933,30 @@ function handleProductManager() {
     output.gathered.note = 'product-manager.db not found';
   }
 
+  // Demo scenario coverage
+  const feedbackDb = openDb(USER_FEEDBACK_DB);
+  if (feedbackDb) {
+    try {
+      const guiPersonas = feedbackDb.prepare(
+        "SELECT id, name FROM personas WHERE enabled = 1 AND consumption_mode = 'gui'"
+      ).all();
+      const scenarios = feedbackDb.prepare(
+        "SELECT persona_id, COUNT(*) as count FROM demo_scenarios WHERE enabled = 1 GROUP BY persona_id"
+      ).all();
+      const scenarioMap = Object.fromEntries(scenarios.map(s => [s.persona_id, s.count]));
+
+      output.gathered.demoScenarios = {
+        totalScenarios: scenarios.reduce((sum, s) => sum + s.count, 0),
+        guiPersonas: guiPersonas.map(p => ({
+          id: p.id, name: p.name,
+          scenarioCount: scenarioMap[p.id] || 0,
+        })),
+        uncoveredPersonas: guiPersonas.filter(p => !scenarioMap[p.id]).map(p => p.name),
+      };
+    } catch { /* non-fatal */ }
+    finally { feedbackDb.close(); }
+  }
+
   console.log(JSON.stringify({
     continue: true,
     hookSpecificOutput: {
@@ -1192,7 +1216,7 @@ function handleDemo() {
       const files = fs.readdirSync(fullDir, { recursive: true });
       testCounts[project] = files.filter(f => {
         const filename = String(f);
-        return filename.endsWith('.spec.ts') || filename.endsWith('.manual.ts');
+        return filename.endsWith('.spec.ts') || filename.endsWith('.manual.ts') || filename.endsWith('.demo.ts');
       }).length;
     } catch {
       testCounts[project] = 0;

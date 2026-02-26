@@ -66,6 +66,7 @@ export const LaunchUiModeArgsSchema = z.object({
     .describe('Override the base URL (default: http://localhost:3000)'),
   test_file: z.string()
     .max(500)
+    .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
     .optional()
     .describe('Relative path to a specific test file. When provided, only this file is shown in the UI.'),
 });
@@ -235,6 +236,7 @@ export const RunDemoArgsSchema = z.object({
     .describe('Override the base URL (default: http://localhost:3000)'),
   test_file: z.string()
     .max(500)
+    .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
     .optional()
     .describe('Relative path to a specific test file (e.g., e2e/demo/onboarding.demo.ts). When provided, only this file runs.'),
   pause_at_end: z.coerce.boolean()
@@ -253,6 +255,39 @@ export interface RunDemoResult {
   slow_mo?: number;
   test_file?: string;
   pause_at_end?: boolean;
+}
+
+export const CheckDemoResultArgsSchema = z.object({
+  pid: z.coerce.number().int().min(1)
+    .describe('Process ID returned by run_demo.'),
+});
+
+export type CheckDemoResultArgs = z.infer<typeof CheckDemoResultArgsSchema>;
+export type DemoRunStatus = 'running' | 'passed' | 'failed' | 'unknown';
+
+export interface CheckDemoResultResult {
+  status: DemoRunStatus;
+  pid: number;
+  project?: string;
+  test_file?: string;
+  started_at?: string;
+  ended_at?: string;
+  exit_code?: number;
+  failure_summary?: string;
+  screenshot_paths?: string[];
+  message: string;
+}
+
+export interface DemoRunState {
+  pid: number;
+  project: string;
+  test_file?: string;
+  started_at: string;
+  status: DemoRunStatus;
+  ended_at?: string;
+  exit_code?: number;
+  failure_summary?: string;
+  screenshot_paths?: string[];
 }
 
 export interface LaunchUiModeResult {

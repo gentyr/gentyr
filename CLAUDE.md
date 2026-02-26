@@ -55,8 +55,8 @@ npx gentyr unprotect        # Disable protection
 
 **Tamper detection** uses two layers — symlink target verification and file ownership checks:
 - **Symlink target verification** (`husky/pre-commit` + `gentyr-sync.js`): Verifies `.claude/hooks` symlink resolves to a directory whose grandparent contains `version.json` (GENTYR framework marker). Regular directories are only allowed in the framework repo itself. Replaces `.claude/` directory root-ownership as the anti-tampering mechanism.
-- **Commit-time check** (`husky/pre-commit`): Before each commit, verifies symlink target + 10 critical hook files are still root-owned via `stat`. Prefers `.claude/hooks-protected/` when it exists (copy-on-protect for linked projects); falls back to `.claude/hooks/` for direct installs. Blocks commit if any check fails. The pre-commit script itself lives in a root-owned `.husky/` directory, making it trustworthy.
-- **SessionStart check** (`gentyr-sync.js` `tamperCheck()`): At every interactive session start, verifies symlink target + reads `protection-state.json` and checks `criticalHooks` array ownership via `fs.statSync().uid`. When `state.hooksProtectedDir` is set (linked projects), ownership checks run against that directory instead of the live symlink target; a missing `hooks-protected/` directory is treated as tampering. Emits a `systemMessage` warning if any check fails.
+- **Commit-time check** (`husky/pre-commit`): Before each commit, verifies symlink target + 10 critical hook files are still root-owned via `stat`. Prefers `.claude/hooks-protected/` when it exists (copy-on-protect for linked projects); falls back to `.claude/hooks/` for direct installs. Blocks commit if any check fails. The pre-commit script itself lives in a root-owned `.husky/` directory, making it trustworthy. Also checks `core.hooksPath` — if it points into `.claude/worktrees/` (stale entry from a sub-agent worktree), auto-repairs to `.husky` and exits 1 to force a re-run.
+- **SessionStart check** (`gentyr-sync.js` `tamperCheck()`): At every interactive session start, runs three checks in order: (1) symlink target verification — confirms `.claude/hooks` resolves to a GENTYR framework; (1.5) `core.hooksPath` worktree check — if `core.hooksPath` resolves into `.claude/worktrees/`, auto-repairs to `.husky` and emits a warning; (2) file ownership check — reads `protection-state.json` and verifies each `criticalHooks` entry is still root-owned. When `state.hooksProtectedDir` is set (linked projects), ownership checks run against that directory instead of the live symlink target; a missing `hooks-protected/` directory is treated as tampering. Emits a `systemMessage` warning if any check fails.
 - `protection-state.json` records `criticalHooks` as an array and, for linked projects, `hooksProtectedDir: ".claude/hooks-protected"` so both checks read the same source of truth dynamically.
 
 ### Remove an Account from Rotation
@@ -128,6 +128,12 @@ When processing a `pr-reviewer`-assigned task, the deputy-CTO has `Bash` access 
 ### Worktrees
 
 Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/`. Each worktree is provisioned with symlinked GENTYR config (hooks, agents, commands) and a worktree-specific `.mcp.json` with absolute `CLAUDE_PROJECT_DIR` paths. Worktrees for merged branches are cleaned up every **30 minutes** by the hourly automation (`getCooldown('worktree_cleanup', 30)`).
+
+**`core.hooksPath` poisoning defense**: Claude Code sub-agents in worktrees can write stale `core.hooksPath` entries to the main `.git/config`, silently bypassing all pre-commit hooks. Four layers defend against this:
+1. **`removeWorktree()`** (`worktree-manager.js`): Before removing a worktree, reads `core.hooksPath` and resets it to `.husky` if it points into the worktree being removed.
+2. **`tamperCheck()` Check 1.5** (`gentyr-sync.js`): At every interactive SessionStart, detects and auto-repairs a stale `core.hooksPath` pointing into `.claude/worktrees/`.
+3. **`husky/pre-commit` worktree check**: At every commit, shell-level `case` match detects `.claude/worktrees/` in `core.hooksPath`, auto-repairs and exits 1 so the corrected path takes effect before lint-staged runs.
+4. **`safeSymlink()` EINVAL fix** (`worktree-manager.js`): When provisioning a worktree, `safeSymlink()` now checks `lstatSync` before `readlinkSync` to handle existing real directories (e.g. git-tracked `.husky/` checked out into the worktree), preventing EINVAL crashes that previously left worktrees partially provisioned.
 
 ## Propagation to Linked Projects
 
@@ -270,7 +276,9 @@ The `product-manager` agent also creates fully-functional personas automatically
 
 The product-manager MCP server (`packages/mcp-servers/src/product-manager/`) manages a 6-section product-market-fit (PMF) analysis pipeline. State is persisted in `.claude/state/product-manager.db`.
 
-**Access via `/product-manager` slash command** (prefetches current status from the database before display).
+**Access via `/product-manager` slash command** (prefetches current status from the database before display, including demo scenario coverage for GUI personas — surfaces uncovered personas via `demoScenarios.uncoveredPersonas` in prefetch data).
+
+**Command menu (when analysis is `completed`)**: Options include view section, run pipeline, regenerate markdown, finalize, persona compliance, list unmapped pain points, and **Demo scenarios** (Option 6). The demo scenarios sub-menu offers: Gap analysis (runs coverage table showing GUI personas, scenario counts, and CODE-REVIEWER task status), Create scenarios (spawns product-manager sub-agent for uncovered personas), and View scenarios (calls `mcp__user-feedback__list_scenarios`). After any demo scenario creation action, gap analysis is always re-run as a completion verification pattern — checks that every scenario has a matching `"Implement demo scenario: <title>"` CODE-REVIEWER task.
 
 **Scope**: All 6 sections are external market research. Section content must not reference the local project, compare competitors to the local product, or describe the local product's features, strengths, or positioning. The local codebase is read only to determine what market space to research.
 
@@ -308,6 +316,8 @@ Sections 2 and 6 are **list sections**: they use `add_entry` instead of `write_s
 **Sequential lock**: `assertPreviousSectionsPopulated()` blocks any write to section N until sections 1..N-1 are populated. `clear_and_respawn` creates all 6 tasks upfront (not sequentially via followup chain) because the sequential lock already prevents out-of-order execution.
 
 **Persona compliance**: After Section 6 is populated, pain points can be mapped to personas via `map_pain_point_persona`. Persona IDs are validated against `user-feedback.db` (read-only). `get_compliance_report` shows mapping coverage percentage.
+
+**Forced follow-ups**: `product-manager` is in `FORCED_FOLLOWUP_CREATORS` — all tasks created by the product-manager agent automatically have `followup_enabled: true`, ensuring verification tasks are created on completion.
 
 **Markdown output**: Every write operation regenerates `.claude/product-market-fit.md` with all section content.
 

@@ -31,3 +31,30 @@ Present these options:
 Present all options above plus:
 4. **Persona compliance** - Call `mcp__product-manager__get_compliance_report()` and display results
 5. **List unmapped pain points** - Call `mcp__product-manager__list_pain_points({unmapped_only: true})`
+6. **Demo scenarios** - Manage curated demo scenarios for GUI personas
+
+### If user selects "Demo scenarios":
+Present sub-menu:
+- **Gap analysis** - Run the demo scenario coverage analysis (see below)
+- **Create scenarios** - For each uncovered GUI persona, use the product-manager agent (via Task tool with `subagent_type: 'product-manager'`) with explicit instructions to create scenarios and CODE-REVIEWER implementation tasks. Do NOT use a generic Task agent.
+- **View scenarios** - Call `mcp__user-feedback__list_scenarios({enabled_only: true})` and display grouped by persona
+
+## Demo Scenario Gap Analysis
+
+**CRITICAL**: After ANY demo scenario creation action, ALWAYS run this gap analysis. This is the generic verification pattern for multi-step workflows.
+
+1. Call `mcp__user-feedback__list_scenarios({enabled_only: true})` to get all enabled scenarios
+2. Call `mcp__user-feedback__list_personas({enabled_only: true})` to get all personas
+3. Filter to GUI personas only (`consumption_mode = 'gui'`)
+4. For each GUI persona, count how many scenarios exist
+5. Call `mcp__todo-db__list_tasks({section: 'CODE-REVIEWER', status: 'pending'})` and `mcp__todo-db__list_tasks({section: 'CODE-REVIEWER', status: 'in_progress'})` to find implementation tasks
+6. For each scenario, check if a CODE-REVIEWER task exists with title matching `"Implement demo scenario: <title>"`
+7. Display a coverage table:
+
+```
+| Persona | Mode | Scenarios | Tasks (pending/done/missing) |
+|---------|------|-----------|------------------------------|
+| ...     | gui  | 3         | 2 pending / 1 done / 0 missing |
+```
+
+8. If any scenarios lack implementation tasks, offer to create the missing CODE-REVIEWER tasks now

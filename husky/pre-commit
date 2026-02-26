@@ -64,6 +64,28 @@ fi
 echo ""
 
 # =============================================================================
+# SECURITY: core.hooksPath WORKTREE CHECK
+# =============================================================================
+# If core.hooksPath points into .claude/worktrees/, it was set by a Claude Code
+# sub-agent worktree and should be reset. Auto-repairs to .husky.
+# =============================================================================
+
+HOOKS_PATH=$(git config --local --get core.hooksPath 2>/dev/null || true)
+if [ -n "$HOOKS_PATH" ]; then
+  case "$HOOKS_PATH" in
+    */.claude/worktrees/*)
+      echo "SECURITY: core.hooksPath points into a worktree: $HOOKS_PATH"
+      echo "  Auto-repairing to .husky..."
+      git config --local core.hooksPath .husky
+      echo "  Fixed. Re-run your commit."
+      exit 1
+      ;;
+  esac
+fi
+echo "core.hooksPath verified"
+echo ""
+
+# =============================================================================
 # LINT STAGED FILES
 # =============================================================================
 

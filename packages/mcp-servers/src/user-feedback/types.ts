@@ -357,7 +357,9 @@ export const CreateScenarioArgsSchema = z.object({
   description: z.string().min(1).max(2000).describe('What the scenario demonstrates — given to code-writer for implementation and to persona agents for context'),
   category: z.string().max(50).optional().describe('Optional grouping (e.g., "onboarding", "admin", "billing")'),
   playwright_project: z.string().min(1).max(100).describe('Playwright project name for auth state — must match a project in the target app\'s playwright.config.ts'),
-  test_file: z.string().min(1).max(500).describe('Relative path to the .demo.ts file (e.g., e2e/demo/vendor-onboarding.demo.ts)'),
+  test_file: z.string().min(1).max(500)
+    .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
+    .describe('Relative path to the .demo.ts file (e.g., e2e/demo/vendor-onboarding.demo.ts)'),
   sort_order: z.coerce.number().int().min(0).max(999).optional().default(0).describe('Display order within persona'),
 });
 
@@ -367,7 +369,9 @@ export const UpdateScenarioArgsSchema = z.object({
   description: z.string().min(1).max(2000).optional(),
   category: z.string().max(50).optional(),
   playwright_project: z.string().min(1).max(100).optional(),
-  test_file: z.string().min(1).max(500).optional(),
+  test_file: z.string().min(1).max(500)
+    .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
+    .optional(),
   sort_order: z.coerce.number().int().min(0).max(999).optional(),
   enabled: z.coerce.boolean().optional(),
 });
