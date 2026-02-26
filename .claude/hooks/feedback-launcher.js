@@ -283,8 +283,11 @@ function generateMcpConfig(sessionId, persona, projectDir = PROJECT_DIR) {
 /**
  * Build the system prompt for the feedback agent.
  * This is persona-specific - no CLAUDE.md, no project context, no source code.
+ * @param {object} persona - Persona object with behavior_traits, endpoints, features
+ * @param {string} sessionId - Unique session identifier
+ * @param {object|null} scenario - Optional demo scenario to anchor the session starting point
  */
-function buildPrompt(persona, sessionId) {
+function buildPrompt(persona, sessionId, scenario = null) {
   const traits = persona.behavior_traits.length > 0
     ? persona.behavior_traits.map(t => `- ${t}`).join('\n')
     : '- (no specific traits defined)';
@@ -366,7 +369,42 @@ Do NOT try to debug or fix issues. Just report what you experience.`;
     }
   }
 
+  if (scenario) {
+    prompt += `\n\n## Scenario Starting Point\n\n`;
+    prompt += `Before this session started, the demo file "${scenario.title}" was executed via Playwright.\n`;
+    prompt += `The app has been navigated to a specific state: ${scenario.description}\n\n`;
+    prompt += `Begin your testing from the CURRENT page state. Do NOT navigate to the homepage first.\n`;
+    prompt += `Focus your feedback on this specific flow and the screens you see.`;
+  }
+
   return prompt;
+}
+
+/**
+ * Get demo scenarios for a given persona from user-feedback.db.
+ * Returns an array of scenario objects, or an empty array if unavailable.
+ */
+async function getScenariosForPersona(personaId, projectDir = PROJECT_DIR) {
+  const dbPath = path.join(projectDir, '.claude', 'user-feedback.db');
+  if (!fs.existsSync(dbPath)) return [];
+  let Database;
+  try {
+    Database = (await import('better-sqlite3')).default;
+  } catch {
+    return [];
+  }
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    return db.prepare(`
+      SELECT id, title, description, playwright_project, test_file, sort_order
+      FROM demo_scenarios WHERE persona_id = ? AND enabled = 1
+      ORDER BY sort_order
+    `).all(personaId);
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -556,8 +594,8 @@ async function main() {
   }));
 }
 
-// Export for use by hourly-automation.js
-export { getPersona, generateMcpConfig, buildPrompt, spawnFeedbackAgent, runFeedbackAgent, cleanupOldConfigs, prepareWorkspace };
+// Export for use by hourly-automation.js and feedback-orchestrator.js
+export { getPersona, generateMcpConfig, buildPrompt, spawnFeedbackAgent, runFeedbackAgent, cleanupOldConfigs, prepareWorkspace, getScenariosForPersona };
 
 // Run if called directly
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename)) {

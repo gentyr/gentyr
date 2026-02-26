@@ -64,6 +64,10 @@ export const LaunchUiModeArgsSchema = z.object({
     .url()
     .optional()
     .describe('Override the base URL (default: http://localhost:3000)'),
+  test_file: z.string()
+    .max(500)
+    .optional()
+    .describe('Relative path to a specific test file. When provided, only this file is shown in the UI.'),
 });
 
 export const RunTestsArgsSchema = z.object({
@@ -229,6 +233,14 @@ export const RunDemoArgsSchema = z.object({
     .url()
     .optional()
     .describe('Override the base URL (default: http://localhost:3000)'),
+  test_file: z.string()
+    .max(500)
+    .optional()
+    .describe('Relative path to a specific test file (e.g., e2e/demo/onboarding.demo.ts). When provided, only this file runs.'),
+  pause_at_end: z.coerce.boolean()
+    .optional()
+    .default(false)
+    .describe('Set DEMO_PAUSE_AT_END=1 env var. Target project demo files that import the shared helper will call page.pause() at the end.'),
 });
 
 export type RunDemoArgs = z.infer<typeof RunDemoArgsSchema>;
@@ -239,6 +251,8 @@ export interface RunDemoResult {
   message: string;
   pid?: number;
   slow_mo?: number;
+  test_file?: string;
+  pause_at_end?: boolean;
 }
 
 export interface LaunchUiModeResult {
@@ -246,6 +260,7 @@ export interface LaunchUiModeResult {
   project: string;
   message: string;
   pid?: number;
+  test_file?: string;
 }
 
 export interface RunTestsResult {

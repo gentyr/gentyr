@@ -600,6 +600,109 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       expect(typeof args.project).toBe('string');
       expect(typeof args.slow_mo).toBe('number');
     });
+
+    it('should accept optional test_file', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'vendor-owner',
+        test_file: 'e2e/demo/onboarding.demo.ts',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.test_file).toBe('e2e/demo/onboarding.demo.ts');
+      }
+    });
+
+    it('should allow test_file to be omitted (backward compat)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.test_file).toBeUndefined();
+      }
+    });
+
+    it('should reject test_file exceeding 500 characters', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        test_file: 'a'.repeat(501),
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should default pause_at_end to false', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.pause_at_end).toBe(false);
+      }
+    });
+
+    it('should accept pause_at_end: true', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        pause_at_end: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.pause_at_end).toBe(true);
+      }
+    });
+
+    it('should coerce pause_at_end from string via z.coerce', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        pause_at_end: 'true',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.pause_at_end).toBe(true);
+      }
+    });
+
+    it('should accept all parameters including test_file and pause_at_end', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'vendor-owner',
+        slow_mo: 0,
+        base_url: 'http://localhost:3000',
+        test_file: 'e2e/demo/billing.demo.ts',
+        pause_at_end: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.project).toBe('vendor-owner');
+        expect(result.data.slow_mo).toBe(0);
+        expect(result.data.test_file).toBe('e2e/demo/billing.demo.ts');
+        expect(result.data.pause_at_end).toBe(true);
+      }
+    });
+  });
+
+  describe('LaunchUiModeArgsSchema - test_file', () => {
+    it('should accept optional test_file', () => {
+      const result = LaunchUiModeArgsSchema.safeParse({
+        project: 'vendor-owner',
+        test_file: 'e2e/demo/onboarding.demo.ts',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.test_file).toBe('e2e/demo/onboarding.demo.ts');
+      }
+    });
+
+    it('should allow test_file to be omitted (backward compat)', () => {
+      const result = LaunchUiModeArgsSchema.safeParse({ project: 'vendor-owner' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.test_file).toBeUndefined();
+      }
+    });
+
+    it('should reject test_file exceeding 500 characters', () => {
+      const result = LaunchUiModeArgsSchema.safeParse({
+        project: 'vendor-owner',
+        test_file: 'a'.repeat(501),
+      });
+      expect(result.success).toBe(false);
+    });
   });
 });
 

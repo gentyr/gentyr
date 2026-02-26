@@ -1,18 +1,19 @@
 /**
- * Tests for /demo, /demo-interactive, and /demo-auto slash command detection and prefetch
+ * Tests for /demo, /demo-interactive, and /demo-autonomous slash command detection and prefetch
  *
  * Validates:
- * 1. SENTINELS map includes 'demo', 'demo-interactive', and 'demo-auto' commands
+ * 1. SENTINELS map includes 'demo', 'demo-interactive', and 'demo-autonomous' commands
  * 2. All three aliases share the same '<!-- HOOK:GENTYR:demo -->' sentinel value
  * 3. matchesCommand() detects each command by bare slash name and by sentinel
  * 4. handleDemo() gathers the expected preflight readiness data
- * 5. main() routes /demo, /demo-interactive, and /demo-auto to handleDemo()
- * 6. The updated SENTINELS count (16) is consistent
+ * 5. main() routes /demo, /demo-interactive, and /demo-autonomous to handleDemo()
+ * 6. The updated SENTINELS count (17) is consistent
+ * 7. Demo commands ARE in needsDb — they query user-feedback.db for enabled scenarios
  *
  * Uses Node.js built-in test runner (node:test)
  * Run with: node --test .claude/hooks/__tests__/slash-command-prefetch-demo.test.js
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import { describe, it, beforeEach } from 'node:test';
@@ -22,7 +23,7 @@ import path from 'path';
 
 const SLASH_COMMAND_PREFETCH_HOOK = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'slash-command-prefetch.js');
 
-describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands', () => {
+describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-autonomous Commands', () => {
   let hookCode;
 
   beforeEach(() => {
@@ -46,10 +47,10 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
       assert.match(sentinelsMatch[0], /'demo-interactive':/);
     });
 
-    it('should include "demo-auto" command', () => {
+    it('should include "demo-autonomous" command', () => {
       const sentinelsMatch = hookCode.match(/const SENTINELS = \{[\s\S]*?\};/);
       assert.ok(sentinelsMatch, 'SENTINELS constant must exist');
-      assert.match(sentinelsMatch[0], /'demo-auto':/);
+      assert.match(sentinelsMatch[0], /'demo-autonomous':/);
     });
 
     it('should map "demo" to the demo sentinel marker', () => {
@@ -63,12 +64,12 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
       assert.match(sentinelsMatch[0], /'demo-interactive':\s*'<!-- HOOK:GENTYR:demo -->'/);
     });
 
-    it('should map "demo-auto" to the same demo sentinel marker', () => {
+    it('should map "demo-autonomous" to the same demo sentinel marker', () => {
       const sentinelsMatch = hookCode.match(/const SENTINELS = \{[\s\S]*?\};/);
-      assert.match(sentinelsMatch[0], /'demo-auto':\s*'<!-- HOOK:GENTYR:demo -->'/);
+      assert.match(sentinelsMatch[0], /'demo-autonomous':\s*'<!-- HOOK:GENTYR:demo -->'/);
     });
 
-    it('should have 16 total sentinel entries after adding demo-interactive and demo-auto', () => {
+    it('should have 17 total sentinel entries after adding demo-interactive and demo-autonomous', () => {
       const sentinelsMatch = hookCode.match(/const SENTINELS = \{[\s\S]*?\};/);
       assert.ok(sentinelsMatch, 'SENTINELS constant must exist');
       const commandCount = (sentinelsMatch[0].match(/'[\w-]+':/g) || []).length;
@@ -199,10 +200,10 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
       assert.match(mainMatch[0], /matchesCommand\(prompt, 'demo-interactive'\)/);
     });
 
-    it('should route /demo-auto to handleDemo()', () => {
+    it('should route /demo-autonomous to handleDemo()', () => {
       const mainMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
       assert.ok(mainMatch, 'main function must exist');
-      assert.match(mainMatch[0], /matchesCommand\(prompt, 'demo-auto'\)/);
+      assert.match(mainMatch[0], /matchesCommand\(prompt, 'demo-autonomous'\)/);
     });
 
     it('should have a dedicated if-block for /demo-interactive routing', () => {
@@ -214,20 +215,20 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
       assert.ok(demoInteractiveBlock, '/demo-interactive must have its own if-block routing to handleDemo()');
     });
 
-    it('should have a dedicated if-block for /demo-auto routing', () => {
+    it('should have a dedicated if-block for /demo-autonomous routing', () => {
       const mainMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
       assert.ok(mainMatch, 'main function must exist');
-      const demoAutoBlock = mainMatch[0].match(
-        /if \(matchesCommand\(prompt, 'demo-auto'\)\) \{[\s\S]*?handleDemo\(\)/
+      const demoAutonomousBlock = mainMatch[0].match(
+        /if \(matchesCommand\(prompt, 'demo-autonomous'\)\) \{[\s\S]*?handleDemo\(\)/
       );
-      assert.ok(demoAutoBlock, '/demo-auto must have its own if-block routing to handleDemo()');
+      assert.ok(demoAutonomousBlock, '/demo-autonomous must have its own if-block routing to handleDemo()');
     });
 
     it('should handle all commands including all three demo variants', () => {
       const mainMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
       assert.ok(mainMatch, 'main function must exist');
 
-      const demoCommands = ['demo', 'demo-interactive', 'demo-auto'];
+      const demoCommands = ['demo', 'demo-interactive', 'demo-autonomous'];
       for (const cmd of demoCommands) {
         assert.match(
           mainMatch[0],
@@ -331,27 +332,27 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
   });
 
   // ============================================================================
-  // Consistency checks — demo should NOT require a database
+  // Consistency checks — demo commands DO require a database (scenario queries)
   // ============================================================================
 
   describe('Database requirements', () => {
-    it('should NOT include "demo" in needsDb array (no DB access needed)', () => {
+    it('should include "demo" in needsDb array (queries user-feedback.db for scenarios)', () => {
       const needsDbMatch = hookCode.match(/const needsDb = \[[\s\S]*?\];/);
       assert.ok(needsDbMatch, 'needsDb array must exist');
-      // demo commands are filesystem-only checks, not DB-dependent
-      assert.doesNotMatch(needsDbMatch[0], /'demo'/);
+      // demo commands query user-feedback.db for enabled demo scenarios
+      assert.match(needsDbMatch[0], /'demo'/);
     });
 
-    it('should NOT include "demo-interactive" in needsDb array', () => {
+    it('should include "demo-interactive" in needsDb array', () => {
       const needsDbMatch = hookCode.match(/const needsDb = \[[\s\S]*?\];/);
       assert.ok(needsDbMatch, 'needsDb array must exist');
-      assert.doesNotMatch(needsDbMatch[0], /'demo-interactive'/);
+      assert.match(needsDbMatch[0], /'demo-interactive'/);
     });
 
-    it('should NOT include "demo-auto" in needsDb array', () => {
+    it('should include "demo-autonomous" in needsDb array', () => {
       const needsDbMatch = hookCode.match(/const needsDb = \[[\s\S]*?\];/);
       assert.ok(needsDbMatch, 'needsDb array must exist');
-      assert.doesNotMatch(needsDbMatch[0], /'demo-auto'/);
+      assert.match(needsDbMatch[0], /'demo-autonomous'/);
     });
   });
 });

@@ -41,6 +41,11 @@ import {
   CompleteFeedbackSessionArgsSchema,
   GetFeedbackRunSummaryArgsSchema,
   GetSessionAuditArgsSchema,
+  CreateScenarioArgsSchema,
+  UpdateScenarioArgsSchema,
+  DeleteScenarioArgsSchema,
+  ListScenariosArgsSchema,
+  GetScenarioArgsSchema,
   type CreatePersonaArgs,
   type UpdatePersonaArgs,
   type DeletePersonaArgs,
@@ -58,14 +63,21 @@ import {
   type CompleteFeedbackSessionArgs,
   type GetFeedbackRunSummaryArgs,
   type GetSessionAuditArgs,
+  type CreateScenarioArgs,
+  type UpdateScenarioArgs,
+  type DeleteScenarioArgs,
+  type ListScenariosArgs,
+  type GetScenarioArgs,
   type PersonaRecord,
   type FeatureRecord,
   type PersonaFeatureRecord,
   type FeedbackRunRecord,
   type FeedbackSessionRecord,
+  type ScenarioRecord,
   type ErrorResult,
   type PersonaResult,
   type FeatureResult,
+  type ScenarioResult,
   type PersonaForChangeResult,
   type FeedbackRunResult,
   type FeedbackRunSummaryResult,
@@ -168,6 +180,25 @@ CREATE TABLE IF NOT EXISTS feedback_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_run ON feedback_sessions(run_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON feedback_sessions(status);
+
+CREATE TABLE IF NOT EXISTS demo_scenarios (
+    id TEXT PRIMARY KEY,
+    persona_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    category TEXT,
+    playwright_project TEXT NOT NULL,
+    test_file TEXT NOT NULL UNIQUE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    created_timestamp INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_scenarios_persona ON demo_scenarios(persona_id);
+CREATE INDEX IF NOT EXISTS idx_scenarios_enabled ON demo_scenarios(enabled);
 `;
 
 // ============================================================================
@@ -261,6 +292,13 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       `);
     }
 
+    // Auto-migration: add scenario_id column to feedback_sessions if missing
+    try {
+      db.prepare("SELECT scenario_id FROM feedback_sessions LIMIT 0").run();
+    } catch {
+      db.exec("ALTER TABLE feedback_sessions ADD COLUMN scenario_id TEXT");
+    }
+
     return db;
   }
 
@@ -303,6 +341,23 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       url_patterns: JSON.parse(record.url_patterns) as string[],
       category: record.category,
       created_at: record.created_at,
+    };
+  }
+
+  function scenarioToResult(record: ScenarioRecord, personaName?: string): ScenarioResult {
+    return {
+      id: record.id,
+      persona_id: record.persona_id,
+      title: record.title,
+      description: record.description,
+      category: record.category,
+      playwright_project: record.playwright_project,
+      test_file: record.test_file,
+      sort_order: record.sort_order,
+      enabled: record.enabled === 1,
+      created_at: record.created_at,
+      updated_at: record.updated_at,
+      persona_name: personaName,
     };
   }
 
@@ -1027,6 +1082,165 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   }
 
   // ============================================================================
+  // Demo Scenario CRUD
+  // ============================================================================
+
+  function createScenario(args: CreateScenarioArgs): ScenarioResult | ErrorResult {
+    // Validate persona exists and has consumption_mode 'gui'
+    const persona = db.prepare('SELECT id, name, consumption_mode FROM personas WHERE id = ?').get(args.persona_id) as { id: string; name: string; consumption_mode: string } | undefined;
+    if (!persona) {
+      return { error: `Persona not found: ${args.persona_id}` };
+    }
+    if (persona.consumption_mode !== 'gui') {
+      return { error: `Demo scenarios require a GUI persona. Persona "${persona.name}" has consumption_mode "${persona.consumption_mode}". Only personas with consumption_mode "gui" can have Playwright demo scenarios.` };
+    }
+
+    // Enforce .demo.ts suffix
+    if (!args.test_file.endsWith('.demo.ts')) {
+      return { error: `test_file must end with ".demo.ts" — got "${args.test_file}"` };
+    }
+
+    const id = randomUUID();
+    const now = new Date();
+    const created_at = now.toISOString();
+    const created_timestamp = Math.floor(now.getTime() / 1000);
+
+    try {
+      db.prepare(`
+        INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, created_at, created_timestamp, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+      `).run(
+        id,
+        args.persona_id,
+        args.title,
+        args.description,
+        args.category ?? null,
+        args.playwright_project,
+        args.test_file,
+        args.sort_order ?? 0,
+        created_at,
+        created_timestamp,
+        created_at,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('UNIQUE constraint')) {
+        return { error: `A scenario with test_file "${args.test_file}" already exists` };
+      }
+      return { error: `Failed to create scenario: ${message}` };
+    }
+
+    const record = db.prepare('SELECT * FROM demo_scenarios WHERE id = ?').get(id) as ScenarioRecord;
+    return scenarioToResult(record, persona.name);
+  }
+
+  function updateScenario(args: UpdateScenarioArgs): ScenarioResult | ErrorResult {
+    const record = db.prepare('SELECT * FROM demo_scenarios WHERE id = ?').get(args.id) as ScenarioRecord | undefined;
+    if (!record) {
+      return { error: `Scenario not found: ${args.id}` };
+    }
+
+    // Enforce .demo.ts suffix on test_file if changed
+    if (args.test_file !== undefined && !args.test_file.endsWith('.demo.ts')) {
+      return { error: `test_file must end with ".demo.ts" — got "${args.test_file}"` };
+    }
+
+    const updates: string[] = [];
+    const params: unknown[] = [];
+
+    if (args.title !== undefined) { updates.push('title = ?'); params.push(args.title); }
+    if (args.description !== undefined) { updates.push('description = ?'); params.push(args.description); }
+    if (args.category !== undefined) { updates.push('category = ?'); params.push(args.category); }
+    if (args.playwright_project !== undefined) { updates.push('playwright_project = ?'); params.push(args.playwright_project); }
+    if (args.test_file !== undefined) { updates.push('test_file = ?'); params.push(args.test_file); }
+    if (args.sort_order !== undefined) { updates.push('sort_order = ?'); params.push(args.sort_order); }
+    if (args.enabled !== undefined) { updates.push('enabled = ?'); params.push(args.enabled ? 1 : 0); }
+
+    if (updates.length === 0) {
+      return { error: 'No fields to update' };
+    }
+
+    updates.push('updated_at = ?');
+    params.push(new Date().toISOString());
+    params.push(args.id);
+
+    try {
+      db.prepare(`UPDATE demo_scenarios SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('UNIQUE constraint')) {
+        return { error: `A scenario with test_file "${args.test_file}" already exists` };
+      }
+      return { error: `Failed to update scenario: ${message}` };
+    }
+
+    const updated = db.prepare('SELECT * FROM demo_scenarios WHERE id = ?').get(args.id) as ScenarioRecord;
+    const persona = db.prepare('SELECT name FROM personas WHERE id = ?').get(updated.persona_id) as { name: string } | undefined;
+    return scenarioToResult(updated, persona?.name);
+  }
+
+  function deleteScenario(args: DeleteScenarioArgs): { deleted: boolean; message: string } | ErrorResult {
+    const record = db.prepare('SELECT * FROM demo_scenarios WHERE id = ?').get(args.id) as ScenarioRecord | undefined;
+    if (!record) {
+      return { error: `Scenario not found: ${args.id}` };
+    }
+
+    db.prepare('DELETE FROM demo_scenarios WHERE id = ?').run(args.id);
+    return { deleted: true, message: `Scenario "${record.title}" deleted` };
+  }
+
+  function listScenarios(args: ListScenariosArgs): { scenarios: ScenarioResult[]; total: number } {
+    let sql = `
+      SELECT ds.*, p.name as persona_name
+      FROM demo_scenarios ds
+      JOIN personas p ON p.id = ds.persona_id
+    `;
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (args.persona_id) {
+      conditions.push('ds.persona_id = ?');
+      params.push(args.persona_id);
+    }
+    if (args.enabled_only) {
+      conditions.push('ds.enabled = 1');
+    }
+    if (args.category) {
+      conditions.push('ds.category = ?');
+      params.push(args.category);
+    }
+
+    if (conditions.length > 0) {
+      sql += ` WHERE ${conditions.join(' AND ')}`;
+    }
+
+    sql += ' ORDER BY p.name, ds.sort_order LIMIT ?';
+    params.push(args.limit ?? 50);
+
+    const records = db.prepare(sql).all(...params) as (ScenarioRecord & { persona_name: string })[];
+
+    return {
+      scenarios: records.map(r => scenarioToResult(r, r.persona_name)),
+      total: records.length,
+    };
+  }
+
+  function getScenario(args: GetScenarioArgs): ScenarioResult | ErrorResult {
+    const record = db.prepare(`
+      SELECT ds.*, p.name as persona_name
+      FROM demo_scenarios ds
+      JOIN personas p ON p.id = ds.persona_id
+      WHERE ds.id = ?
+    `).get(args.id) as (ScenarioRecord & { persona_name: string }) | undefined;
+
+    if (!record) {
+      return { error: `Scenario not found: ${args.id}` };
+    }
+
+    return scenarioToResult(record, record.persona_name);
+  }
+
+  // ============================================================================
   // Server Setup
   // ============================================================================
 
@@ -1137,6 +1351,37 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       description: 'Get MCP tool call audit trail for a feedback session. Shows all MCP tools called during the session with arguments, results, and timing.',
       schema: GetSessionAuditArgsSchema,
       handler: getSessionAudit,
+    },
+    // Demo Scenario CRUD
+    {
+      name: 'create_scenario',
+      description: 'Create a curated demo scenario for a GUI persona. Scenarios are product walkthroughs mapped to *.demo.ts Playwright files. Only personas with consumption_mode "gui" can have demo scenarios.',
+      schema: CreateScenarioArgsSchema,
+      handler: createScenario,
+    },
+    {
+      name: 'update_scenario',
+      description: 'Update an existing demo scenario. Only specified fields are changed.',
+      schema: UpdateScenarioArgsSchema,
+      handler: updateScenario,
+    },
+    {
+      name: 'delete_scenario',
+      description: 'Delete a demo scenario.',
+      schema: DeleteScenarioArgsSchema,
+      handler: deleteScenario,
+    },
+    {
+      name: 'list_scenarios',
+      description: 'List demo scenarios with optional filters (persona_id, enabled_only, category). Includes persona name enrichment.',
+      schema: ListScenariosArgsSchema,
+      handler: listScenarios,
+    },
+    {
+      name: 'get_scenario',
+      description: 'Get full details of a demo scenario including its persona name.',
+      schema: GetScenarioArgsSchema,
+      handler: getScenario,
     },
   ];
 

@@ -600,13 +600,50 @@ The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tool
 - Returns structured `RunAuthSetupResult` with per-phase success, `auth_files_refreshed` list, and `output_summary`
 - Deputy-CTO agent has `mcp__playwright__run_auth_setup` in `allowedTools` and is responsible for executing it when assigned an `auth_state` repair task from `/demo`
 
-**`/demo` command suite** (`.claude/commands/demo.md`, `demo-auto.md`, `demo-interactive.md`):
-- Three commands: `/demo` (dispatcher — asks auto-play vs interactive), `/demo-auto` (headed browser, tests run automatically), `/demo-interactive` (Playwright UI mode, manual click-to-run)
+**`/demo` command suite** (`.claude/commands/demo.md`, `demo-interactive.md`, `demo-autonomous.md`):
+- `/demo` — Escape hatch: launches Playwright UI mode showing ALL tests. No scenario filtering. Developer power-tool for browsing the full test suite.
+- `/demo-interactive` — Scenario-based: runs a chosen curated demo scenario at full speed, pauses at end for manual interaction. "Take me to this screen."
+- `/demo-autonomous` — Scenario-based: runs a chosen demo scenario at human-watchable speed (slowMo 800ms), no pause. "Show me the product in action."
 - All three use the same "escalate all failures" pattern — when `preflight_check` returns `ready: false`, a single urgent DEPUTY-CTO task is created describing every failed check with per-check repair instructions
-- `/demo-auto` calls `mcp__playwright__run_demo`; `/demo-interactive` calls `mcp__playwright__launch_ui_mode`
+- `/demo` calls `mcp__playwright__launch_ui_mode`; `/demo-interactive` and `/demo-autonomous` call `mcp__playwright__run_demo` with `test_file` and `pause_at_end` from the selected scenario
 - Repair mapping: `config_exists` → CODE-REVIEWER; `dependencies_installed`/`browsers_installed` → direct Bash fix; `test_files_exist` → TEST-WRITER; `credentials_valid` → INVESTIGATOR & PLANNER; `auth_state` → `run_auth_setup()` then INVESTIGATOR & PLANNER on failure; `extension_manifest` → CODE-REVIEWER (fix invalid match patterns in `manifest.json`)
 - The `demo` agent identity is included in `SECTION_CREATOR_RESTRICTIONS` for DEPUTY-CTO (allows `mcp__todo-db__create_task` with `assigned_by: "demo"`)
-- `slash-command-prefetch.js` reads the cached `playwright-health.json` (1-hour TTL) written by the SessionStart hook, falling back to dynamic `.auth/` scan on cache miss; discovers projects dynamically from `playwright.config.ts` via regex (no hardcoded project list); credential check uses generic `op://` env scan (no hardcoded credential key names)
+- `slash-command-prefetch.js` reads the cached `playwright-health.json` (1-hour TTL) written by the SessionStart hook, falling back to dynamic `.auth/` scan on cache miss; discovers projects dynamically from `playwright.config.ts` via regex (no hardcoded project list); credential check uses generic `op://` env scan (no hardcoded credential key names); also queries `user-feedback.db` for enabled demo scenarios
+
+## Demo Scenario System
+
+Curated product walkthroughs (NOT tests) mapped to personas. Scenarios are managed by the product-manager agent and implemented by code-writer agents. The test-writer agent is explicitly excluded from `*.demo.ts` files.
+
+**`demo_scenarios` table** (in `user-feedback.db`):
+- `id` TEXT PK, `persona_id` TEXT FK→personas, `title`, `description`, `category` (optional), `playwright_project`, `test_file` (UNIQUE, must end with `.demo.ts`), `sort_order`, `enabled`, timestamps
+- FK CASCADE: deleting a persona deletes its scenarios
+
+**5 MCP tools** (on `user-feedback` server):
+- `create_scenario` — validates persona exists AND `consumption_mode = 'gui'` (rejects non-GUI); enforces `.demo.ts` suffix
+- `update_scenario` — partial update; enforces `.demo.ts` if `test_file` changes
+- `delete_scenario` — simple DELETE
+- `list_scenarios` — JOIN to personas for `persona_name`; filters by `persona_id`, `enabled`, `category`
+- `get_scenario` — enriches with `persona_name`
+
+**Constraints:**
+- Only `gui` consumption_mode personas can have demo scenarios — SDK/CLI/API/ADK personas cannot
+- `*.demo.ts` file naming convention enforced by `create_scenario` and `update_scenario`
+- `DEMO_PAUSE_AT_END` env var — demo files import a shared helper that checks this and calls `page.pause()` if set
+
+**Playwright MCP extensions:**
+- `run_demo` accepts `test_file` (positional arg for single-file filtering) and `pause_at_end` (sets `DEMO_PAUSE_AT_END=1`)
+- `launch_ui_mode` accepts optional `test_file` for filtered UI mode
+- `countTestFiles()` recognizes `.demo.ts` alongside `.spec.ts` and `.manual.ts`
+
+**Feedback N+1 spawning pattern:**
+- When personas are spawned for feedback sessions, GUI personas get N+1 sessions: 1 default (no scenario) + up to 3 scenario sessions
+- Each scenario session runs the demo file first via `mcp__playwright__run_demo()` as a pre-step (scaffolds app state), then the feedback agent explores from the paused state
+- Demo coverage check: GUI personas with zero enabled scenarios are flagged in the feedback orchestrator log
+
+**Product-manager responsibilities:**
+- Defines scenario records (DB entries) with detailed descriptions
+- Creates CODE-REVIEWER tasks for `*.demo.ts` file implementation
+- Ensures every GUI persona has 2-4 demo scenarios covering key product flows
 
 ## Rotation Proxy
 
