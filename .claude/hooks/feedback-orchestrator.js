@@ -338,7 +338,35 @@ export async function runFeedbackPipeline(log, state, saveState, cooldownMs) {
   }
 
   // Spawn feedback agents (fire-and-forget via feedback-launcher)
-  const { spawnFeedbackAgent, generateMcpConfig, buildPrompt, getPersona } = await import('./feedback-launcher.js');
+  const { spawnFeedbackAgent, generateMcpConfig, buildPrompt, getPersona, getScenariosForPersona } = await import('./feedback-launcher.js');
+  const { randomUUID } = await import('crypto');
+
+  // N+1 pattern: Session 1 is the default free-form session; sessions 2..N+1 are scenario-anchored.
+  function buildScenarioPrompt(persona, sessionId, scenario) {
+    let prompt = buildPrompt(persona, sessionId, scenario);
+
+    // Prepend the demo pre-step instruction
+    const preStep = `
+## CRITICAL: Demo Pre-Step (execute FIRST)
+
+Before doing anything else, run the demo scenario to scaffold the app state:
+
+Call: mcp__playwright__run_demo({
+  project: "${scenario.playwright_project}",
+  test_file: "${scenario.test_file}",
+  slow_mo: 0,
+  pause_at_end: true
+})
+
+Wait for the demo to complete and the browser to pause. Then proceed with
+your feedback exploration from the current page state.
+
+`;
+
+    return preStep + prompt;
+  }
+
+  const MAX_SCENARIOS_PER_PERSONA = 3;
 
   let spawned = 0;
   for (const session of run.sessions) {
@@ -349,10 +377,44 @@ export async function runFeedbackPipeline(log, state, saveState, cooldownMs) {
       spawnFeedbackAgent(mcpConfigPath, prompt, session.id, persona.name);
       spawned++;
       log(`Feedback pipeline: spawned agent for persona "${persona.name}" (session ${session.id})`);
+
+      // Sessions 2..N+1: One per scenario (capped)
+      if (persona.consumption_mode === 'gui') {
+        const scenarios = await getScenariosForPersona(session.persona_id);
+        for (const scenario of scenarios.slice(0, MAX_SCENARIOS_PER_PERSONA)) {
+          const scenarioFile = path.join(PROJECT_DIR, scenario.test_file);
+          if (!fs.existsSync(scenarioFile)) {
+            log(`Feedback: skipping scenario "${scenario.title}" — file missing: ${scenario.test_file}`);
+            continue;
+          }
+
+          const sId = randomUUID();
+          const sMcp = generateMcpConfig(sId, persona);
+          const sPrompt = buildScenarioPrompt(persona, sId, scenario);
+          spawnFeedbackAgent(sMcp, sPrompt, sId, persona.name);
+          spawned++;
+          log(`Feedback: spawned scenario "${scenario.title}" for ${persona.name}`);
+        }
+      }
     } catch (err) {
       log(`Feedback pipeline: failed to spawn agent for session ${session.id}: ${err.message}`);
     }
   }
+
+  // Demo coverage: flag GUI personas with zero scenarios
+  try {
+    const Database = (await import('better-sqlite3')).default;
+    const db = new Database(USER_FEEDBACK_DB, { readonly: true });
+    const uncovered = db.prepare(`
+      SELECT p.name FROM personas p
+      WHERE p.enabled = 1 AND p.consumption_mode = 'gui'
+        AND p.id NOT IN (SELECT DISTINCT persona_id FROM demo_scenarios WHERE enabled = 1)
+    `).all();
+    db.close();
+    if (uncovered.length > 0) {
+      log(`Feedback: ${uncovered.length} GUI persona(s) lack demo scenarios: ${uncovered.map(p => p.name).join(', ')}`);
+    }
+  } catch { /* non-fatal */ }
 
   // Update state
   state.lastFeedbackCheck = now;

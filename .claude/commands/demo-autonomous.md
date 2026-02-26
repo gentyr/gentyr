@@ -1,11 +1,12 @@
 <!-- HOOK:GENTYR:demo -->
 
-# /demo-interactive - Launch Demo Scenario (Full Speed + Pause)
+# /demo-autonomous - Launch Auto-Play Demo (Human-Watchable Speed)
 
-Runs a chosen curated demo scenario at full Playwright speed, then pauses at
-the end so you can manually interact with the app from that scaffolded state.
+Runs a chosen curated demo scenario at human-watchable speed (slowMo 800ms)
+in a visible headed browser. No clicking required — the demo plays through
+automatically. No pause at the end.
 
-"Take me to this screen."
+"Show me the product in action."
 
 ## Instructions
 
@@ -43,35 +44,25 @@ Call `mcp__playwright__preflight_check({ project: "<scenario.playwright_project>
 ### Step 5: Escalate Failures
 
 If `ready: false`, create a single urgent DEPUTY-CTO task covering all failures
-with per-check repair instructions:
-
-| Failed check | Repair instruction for deputy-CTO |
-|---|---|
-| `config_exists` | Create `playwright.config.ts` in project root. Investigate existing test structure. Assign to CODE-REVIEWER section with urgent priority. |
-| `dependencies_installed` | Run `pnpm add -D @playwright/test` via Bash. Verify `node_modules/@playwright/test` exists afterward. |
-| `browsers_installed` | Run `npx playwright install chromium` via Bash. Verify Chromium appears in `~/Library/Caches/ms-playwright/`. |
-| `test_files_exist` | Create test files for project `<project>`. Check `e2e/<dir>` structure. Assign to TEST-WRITER section with urgent priority. |
-| `credentials_valid` | Check 1Password vault mappings. Assign to INVESTIGATOR & PLANNER with urgent priority if not resolvable directly. |
-| `compilation` | Fix TypeScript errors. Run `npx playwright test --list --project=<project>` for details. Assign to CODE-REVIEWER section with urgent priority. |
-| `auth_state` | Call `mcp__playwright__run_auth_setup()`. Verify `success: true` and all `.auth/*.json` files refreshed. If fails, assign to INVESTIGATOR & PLANNER section with urgent priority. |
-
-STOP — do not launch.
+with per-check repair instructions (same table as `/demo-interactive`). STOP.
 
 ### Step 6: Launch
 
 Call `mcp__playwright__run_demo({
   project: "<scenario.playwright_project>",
   test_file: "<scenario.test_file>",
-  slow_mo: 0,
-  pause_at_end: true
+  slow_mo: 800,
+  pause_at_end: false
 })`.
 
 ### Step 7: Report
 
 Show scenario title, persona, auth project, PID, and tips:
-- The scenario runs at full speed then pauses for you to interact
-- Close the browser window when done
-- To try another scenario, run `/demo-interactive` again
+- The demo runs automatically at human-watchable speed — just watch
+- Default pace is 800ms between actions
+- The browser closes when the scenario finishes
+- To try another scenario, run `/demo-autonomous` again
+- To interact after a demo: `/demo-interactive`
 - To browse all tests: `/demo`
 
 ## Rules

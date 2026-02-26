@@ -64,7 +64,7 @@ const SENTINELS = {
   'triage': '<!-- HOOK:GENTYR:triage -->',
   'demo': '<!-- HOOK:GENTYR:demo -->',
   'demo-interactive': '<!-- HOOK:GENTYR:demo -->',
-  'demo-auto': '<!-- HOOK:GENTYR:demo -->',
+  'demo-autonomous': '<!-- HOOK:GENTYR:demo -->',
   'persona-feedback': '<!-- HOOK:GENTYR:persona-feedback -->',
 };
 
@@ -1282,6 +1282,34 @@ function handleDemo() {
     output.gathered.discoveredProjects = [];
   }
 
+  // Query demo scenarios from user-feedback.db
+  if (fs.existsSync(USER_FEEDBACK_DB)) {
+    const scenariosDb = openDb(USER_FEEDBACK_DB);
+    if (scenariosDb) {
+      try {
+        const scenarios = scenariosDb.prepare(`
+          SELECT ds.id, ds.title, ds.description, ds.category,
+                 ds.playwright_project, ds.test_file, ds.sort_order,
+                 p.name as persona_name
+          FROM demo_scenarios ds
+          JOIN personas p ON p.id = ds.persona_id
+          WHERE ds.enabled = 1
+          ORDER BY p.name, ds.sort_order
+        `).all();
+        output.gathered.scenarios = scenarios;
+        output.gathered.scenarioCount = scenarios.length;
+      } catch {
+        output.gathered.scenarios = [];
+        output.gathered.scenarioCount = 0;
+      } finally {
+        scenariosDb.close();
+      }
+    } else {
+      output.gathered.scenarios = [];
+      output.gathered.scenarioCount = 0;
+    }
+  }
+
   // Summary: critical issues
   const criticalIssues = [];
   if (!output.gathered.configExists) criticalIssues.push('playwright.config.ts not found');
@@ -1310,7 +1338,7 @@ async function main() {
   const prompt = extractPrompt(raw);
 
   // Mode 2 handlers — load Database lazily only when needed
-  const needsDb = ['cto-report', 'deputy-cto', 'configure-personas', 'spawn-tasks', 'product-manager', 'triage', 'persona-feedback'];
+  const needsDb = ['cto-report', 'deputy-cto', 'configure-personas', 'spawn-tasks', 'product-manager', 'triage', 'persona-feedback', 'demo', 'demo-interactive', 'demo-autonomous'];
   const matchedCommand = Object.keys(SENTINELS).find(key => matchesCommand(prompt, key));
   if (matchedCommand) {
     if (needsDb.includes(matchedCommand)) {
@@ -1363,10 +1391,10 @@ async function main() {
   if (matchesCommand(prompt, 'demo')) {
     return handleDemo();
   }
-  if (matchesCommand(prompt, 'demo-interactive')) {
+  if (matchesCommand(prompt, 'demo-autonomous')) {
     return handleDemo();
   }
-  if (matchesCommand(prompt, 'demo-auto')) {
+  if (matchesCommand(prompt, 'demo-interactive')) {
     return handleDemo();
   }
 

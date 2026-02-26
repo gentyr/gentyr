@@ -159,7 +159,7 @@ function validatePrerequisites(): PreflightResult {
  * Validates prerequisites, spawns a detached process, and monitors for early crashes.
  */
 async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult> {
-  const { project, base_url } = args;
+  const { project, base_url, test_file } = args;
 
   // Pre-flight validation
   const preflight = validatePrerequisites();
@@ -173,6 +173,11 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
 
   const cmdArgs = ['playwright', 'test', '--project', project, '--ui'];
   const env: Record<string, string> = { ...process.env as Record<string, string> };
+
+  // Insert test_file as positional arg (after 'test', before '--project')
+  if (test_file) {
+    cmdArgs.splice(2, 0, test_file);
+  }
 
   if (base_url) {
     env.PLAYWRIGHT_BASE_URL = base_url;
@@ -236,8 +241,9 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
     return {
       success: true,
       project,
-      message: `Playwright UI mode launched for project "${project}". The browser window should open shortly.${warningText}`,
+      message: `Playwright UI mode launched for project "${project}".${test_file ? ` Filtered to: ${test_file}.` : ''} The browser window should open shortly.${warningText}`,
       pid: child.pid,
+      test_file,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -255,7 +261,7 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
  * Validates prerequisites, spawns a detached process, and monitors for early crashes.
  */
 async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
-  const { project, slow_mo, base_url } = args;
+  const { project, slow_mo, base_url, test_file, pause_at_end } = args;
 
   // Pre-flight validation
   const preflight = validatePrerequisites();
@@ -270,8 +276,17 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const cmdArgs = ['playwright', 'test', '--project', project, '--headed'];
   const env: Record<string, string> = { ...process.env as Record<string, string> };
 
+  // Insert test_file as positional arg (after 'test', before '--project')
+  if (test_file) {
+    cmdArgs.splice(2, 0, test_file);
+  }
+
   if (slow_mo !== undefined) {
     env.DEMO_SLOW_MO = String(slow_mo);
+  }
+
+  if (pause_at_end) {
+    env.DEMO_PAUSE_AT_END = '1';
   }
 
   if (base_url) {
@@ -335,9 +350,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     return {
       success: true,
       project,
-      message: `Headed auto-play demo launched for project "${project}" with ${slow_mo}ms slow motion. The browser window should open shortly.${warningText}`,
+      message: `Headed auto-play demo launched for project "${project}" with ${slow_mo}ms slow motion.${test_file ? ` Running file: ${test_file}.` : ''} The browser window should open shortly.${warningText}`,
       pid: child.pid,
       slow_mo,
+      test_file,
+      pause_at_end,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -670,7 +687,8 @@ function countTestFiles(dir: string, projectFilter?: string): number {
     const filename = String(f);
     const isSpec = filename.endsWith('.spec.ts');
     const isManual = filename.endsWith('.manual.ts');
-    if (!isSpec && !isManual) return false;
+    const isDemo = filename.endsWith('.demo.ts');
+    if (!isSpec && !isManual && !isDemo) return false;
 
     // Exclude manual/ subdirectory for extension projects (counted separately as extension-manual)
     if (projectFilter) {

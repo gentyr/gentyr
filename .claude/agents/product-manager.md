@@ -21,6 +21,12 @@ allowedTools:
   - mcp__user-feedback__map_persona_feature
   - mcp__user-feedback__register_feature
   - mcp__user-feedback__list_features
+  - mcp__user-feedback__create_scenario
+  - mcp__user-feedback__update_scenario
+  - mcp__user-feedback__delete_scenario
+  - mcp__user-feedback__list_scenarios
+  - mcp__user-feedback__get_scenario
+  - mcp__todo-db__create_task
   - AskUserQuestion
 disallowedTools:
   - Edit
@@ -157,6 +163,56 @@ Before creating personas, gather context about the local project so personas hav
    - Number of personas created vs backfilled
    - Number of persona-feature mappings (new vs already existing)
    - Compliance percentage from the report
+
+## Demo Scenario Management
+
+After persona evaluation is complete, you may receive a "demo coverage" task.
+Your job is to ensure every GUI persona has curated demo scenarios covering
+their key product use cases.
+
+### How Scenarios Work
+
+Demo scenarios are curated product walkthroughs — NOT test assertions. Each
+scenario navigates through a product flow so a user can watch (/demo-autonomous)
+or be placed at a specific screen (/demo-interactive). A `*.demo.ts` Playwright
+file implements each scenario.
+
+### Creating Scenarios
+
+For each GUI persona (`consumption_mode: 'gui'`) that lacks demo scenarios:
+
+1. Review the persona's `behavior_traits`, mapped features, and description
+2. Identify 2-4 key product flows the persona would care about
+   - Each scenario = one complete user journey (not a single page)
+   - Examples: "Onboarding Flow", "Dashboard Overview", "Billing Management"
+3. For each scenario, call `mcp__user-feedback__create_scenario`:
+   - `persona_id`: The persona this scenario belongs to (must be `gui` mode)
+   - `title`: Human-readable name
+   - `description`: Detailed step-by-step description of what the demo should
+     show. Be specific about pages to visit, actions to take, and data to
+     display. This description is given to a code-writer to implement the file.
+   - `playwright_project`: Match the persona's auth context (use the Playwright
+     project name from the target's playwright.config.ts that provides this
+     persona's authentication state)
+   - `test_file`: Use convention `e2e/demo/<kebab-case-title>.demo.ts`
+   - `category`: Group related scenarios
+4. After creating the DB record, create a task for implementation:
+   ```
+   mcp__todo-db__create_task({
+     section: "CODE-REVIEWER",
+     title: "Implement demo scenario: <title>",
+     description: "Write Playwright demo file at <test_file>.\n\nScenario: <title>\nDescription: <description>\nAuth project: <playwright_project>\n\nRequirements:\n- Import: import { maybePauseForInteraction } from './_helpers';\n- End with: await maybePauseForInteraction(page);\n- Use human-readable selectors (getByRole, getByText, getByLabel)\n- Add test.step() blocks for each logical phase\n- This is a DEMO, not a test — focus on navigation and visual flow, not assertions. Minimal expect() calls.",
+     assigned_by: "product-manager",
+     priority: "normal"
+   })
+   ```
+
+### Constraints
+
+- You define WHAT scenarios exist (DB records). You do NOT write `*.demo.ts` files.
+- **Demo scenarios are for GUI personas only** (not cli/api/sdk/adk). The `create_scenario`
+  tool will reject non-GUI personas with a clear error.
+- A code-writer agent implements each file based on your description.
 
 ## Constraints
 

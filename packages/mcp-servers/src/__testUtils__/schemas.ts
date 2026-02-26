@@ -331,6 +331,7 @@ CREATE TABLE IF NOT EXISTS feedback_sessions (
     findings_count INTEGER DEFAULT 0,
     report_ids TEXT DEFAULT '[]',
     satisfaction_level TEXT,
+    scenario_id TEXT,
     CONSTRAINT valid_status CHECK (status IN ('pending', 'queued', 'running', 'completed', 'failed', 'timeout')),
     CONSTRAINT valid_satisfaction CHECK (satisfaction_level IS NULL OR satisfaction_level IN ('very_satisfied', 'satisfied', 'neutral', 'dissatisfied', 'very_dissatisfied')),
     FOREIGN KEY (run_id) REFERENCES feedback_runs(id),
@@ -339,6 +340,25 @@ CREATE TABLE IF NOT EXISTS feedback_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_run ON feedback_sessions(run_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON feedback_sessions(status);
+
+CREATE TABLE IF NOT EXISTS demo_scenarios (
+    id TEXT PRIMARY KEY,
+    persona_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    category TEXT,
+    playwright_project TEXT NOT NULL,
+    test_file TEXT NOT NULL UNIQUE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    created_timestamp INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_scenarios_persona ON demo_scenarios(persona_id);
+CREATE INDEX IF NOT EXISTS idx_scenarios_enabled ON demo_scenarios(enabled);
 `;
 
 /**
