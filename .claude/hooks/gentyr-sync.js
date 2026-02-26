@@ -437,6 +437,34 @@ function tamperCheck() {
     // hooks path doesn't exist — will be caught by other checks
   }
 
+  // Check 1.5: core.hooksPath worktree check
+  // If core.hooksPath points into .claude/worktrees/, it's stale from a Claude Code
+  // sub-agent worktree. Auto-repair to .husky.
+  try {
+    const hooksPathConfig = execFileSync('git', ['config', '--local', '--get', 'core.hooksPath'], {
+      cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    }).trim();
+    if (hooksPathConfig) {
+      const resolved = path.isAbsolute(hooksPathConfig)
+        ? hooksPathConfig
+        : path.resolve(projectDir, hooksPathConfig);
+      const worktreesDir = path.join(projectDir, '.claude', 'worktrees');
+      if (resolved.startsWith(worktreesDir)) {
+        // Auto-repair: reset to .husky
+        try {
+          execFileSync('git', ['config', '--local', 'core.hooksPath', '.husky'], {
+            cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+          });
+          warnings.push(`core.hooksPath was pointing into a worktree (${hooksPathConfig}) — auto-repaired to .husky`);
+        } catch {
+          warnings.push(`core.hooksPath points into a worktree (${hooksPathConfig}) — pre-commit hooks are BYPASSED. Fix: git config --local core.hooksPath .husky`);
+        }
+      }
+    }
+  } catch {
+    // No hooksPath set or git error — default behavior is fine
+  }
+
   // Check 2: Critical hook file ownership (existing check)
   const statePath = path.join(projectDir, '.claude', 'protection-state.json');
   let state;

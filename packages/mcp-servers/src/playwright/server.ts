@@ -52,6 +52,10 @@ import {
   RunDemoArgsSchema,
   type RunDemoArgs,
   type RunDemoResult,
+  CheckDemoResultArgsSchema,
+  type CheckDemoResultArgs,
+  type CheckDemoResultResult,
+  type DemoRunState,
 } from './types.js';
 import { parseTestOutput, truncateOutput } from './helpers.js';
 import { discoverPlaywrightConfig } from './config-discovery.js';
@@ -64,6 +68,48 @@ const PROJECT_DIR = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd()
 const pwConfig = discoverPlaywrightConfig(PROJECT_DIR);
 const REPORT_DIR = path.join(PROJECT_DIR, 'playwright-report');
 const RUN_TIMEOUT = 300_000; // 5 minutes for test runs
+
+// ============================================================================
+// Demo Run Tracking
+// ============================================================================
+
+const DEMO_RUNS_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'demo-runs.json');
+const demoRuns = new Map<number, DemoRunState>();
+
+function loadPersistedDemoRuns(): void {
+  try {
+    if (!fs.existsSync(DEMO_RUNS_PATH)) return;
+    const data = JSON.parse(fs.readFileSync(DEMO_RUNS_PATH, 'utf-8'));
+    if (Array.isArray(data)) {
+      for (const entry of data) {
+        if (entry.pid && typeof entry.pid === 'number') {
+          demoRuns.set(entry.pid, entry);
+        }
+      }
+    }
+  } catch {
+    // State file corrupt or missing — start fresh
+  }
+}
+
+function persistDemoRuns(): void {
+  try {
+    const stateDir = path.dirname(DEMO_RUNS_PATH);
+    if (!fs.existsSync(stateDir)) {
+      fs.mkdirSync(stateDir, { recursive: true });
+    }
+    // Keep only last 20 entries to avoid unbounded growth
+    const entries = [...demoRuns.values()]
+      .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
+      .slice(0, 20);
+    fs.writeFileSync(DEMO_RUNS_PATH, JSON.stringify(entries, null, 2));
+  } catch {
+    // Non-fatal — state will be lost on MCP restart
+  }
+}
+
+// Load persisted state on startup
+loadPersistedDemoRuns();
 
 // Convenience mapping for Next.js projects using Supabase — no-op when these vars are absent.
 // Credentials are injected by mcp-launcher.js from 1Password at runtime.
@@ -341,6 +387,73 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       child.stderr.removeAllListeners('data');
       child.stderr.resume(); // keep pipe open and draining to prevent SIGPIPE
     }
+
+    // Register demo run for check_demo_result tracking
+    const demoPid = child.pid!;
+    const demoState: DemoRunState = {
+      pid: demoPid,
+      project,
+      test_file,
+      started_at: new Date().toISOString(),
+      status: 'running',
+    };
+    demoRuns.set(demoPid, demoState);
+    persistDemoRuns();
+
+    // Track exit for post-hoc status checks (fires even after unref since MCP server stays alive)
+    child.on('exit', (code) => {
+      const entry = demoRuns.get(demoPid);
+      if (!entry) return;
+
+      entry.ended_at = new Date().toISOString();
+      entry.exit_code = code ?? undefined;
+      entry.status = code === 0 ? 'passed' : 'failed';
+
+      if (entry.status === 'failed') {
+        // Read lastDemoFailure from test-failure-state.json for enriched context
+        try {
+          const failureStatePath = path.join(PROJECT_DIR, '.claude', 'test-failure-state.json');
+          if (fs.existsSync(failureStatePath)) {
+            const failureState = JSON.parse(fs.readFileSync(failureStatePath, 'utf-8'));
+            if (failureState.lastDemoFailure) {
+              entry.failure_summary = failureState.lastDemoFailure.failureDetails?.slice(0, 2000);
+              entry.screenshot_paths = failureState.lastDemoFailure.screenshotPaths;
+            }
+          }
+        } catch {
+          // Non-fatal — failure details unavailable
+        }
+
+        // Scan test-results/ for screenshot PNGs (capped at 5)
+        if (!entry.screenshot_paths || entry.screenshot_paths.length === 0) {
+          try {
+            const testResultsDir = path.join(PROJECT_DIR, 'test-results');
+            if (fs.existsSync(testResultsDir)) {
+              const screenshots: string[] = [];
+              const walk = (dir: string) => {
+                if (screenshots.length >= 5) return;
+                const entries = fs.readdirSync(dir, { withFileTypes: true });
+                for (const e of entries) {
+                  if (screenshots.length >= 5) return;
+                  const full = path.join(dir, e.name);
+                  if (e.isDirectory()) walk(full);
+                  else if (e.name.endsWith('.png')) screenshots.push(full);
+                }
+              };
+              walk(testResultsDir);
+              if (screenshots.length > 0) {
+                entry.screenshot_paths = screenshots;
+              }
+            }
+          } catch {
+            // Non-fatal
+          }
+        }
+      }
+
+      persistDemoRuns();
+    });
+
     child.unref();
 
     const warningText = preflight.warnings.length > 0
@@ -364,6 +477,77 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       message: `Failed to launch headed demo: ${message}`,
     };
   }
+}
+
+/**
+ * Check the result of a previously launched demo run.
+ * Reads from the in-memory tracking map (primary) or persisted state file (after MCP restart).
+ */
+function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
+  const { pid } = args;
+
+  // Check in-memory map first
+  let entry = demoRuns.get(pid);
+
+  // Fallback: reload persisted state (covers MCP restart)
+  if (!entry) {
+    loadPersistedDemoRuns();
+    entry = demoRuns.get(pid);
+  }
+
+  if (!entry) {
+    return {
+      status: 'unknown',
+      pid,
+      message: `No demo run found for PID ${pid}. The process may have been launched before the MCP server started, or the PID is incorrect.`,
+    };
+  }
+
+  // For 'running' entries, verify process is still alive
+  if (entry.status === 'running') {
+    try {
+      process.kill(pid, 0); // Signal 0 = check if process exists
+    } catch {
+      // Process no longer exists but we didn't get the exit event (e.g., MCP restarted)
+      entry.status = 'unknown';
+      entry.ended_at = new Date().toISOString();
+      persistDemoRuns();
+      return {
+        status: 'unknown',
+        pid,
+        project: entry.project,
+        test_file: entry.test_file,
+        started_at: entry.started_at,
+        ended_at: entry.ended_at,
+        message: `Demo process (PID ${pid}) is no longer running but exit status was not captured. Check test-results/ for output.`,
+      };
+    }
+  }
+
+  const durationMs = entry.ended_at
+    ? new Date(entry.ended_at).getTime() - new Date(entry.started_at).getTime()
+    : Date.now() - new Date(entry.started_at).getTime();
+  const durationSec = Math.round(durationMs / 1000);
+
+  const statusMessages: Record<string, string> = {
+    running: `Demo is still running (${durationSec}s elapsed). Poll again in 30s.`,
+    passed: `Demo completed successfully in ${durationSec}s.`,
+    failed: `Demo failed (exit code ${entry.exit_code}) after ${durationSec}s.${entry.failure_summary ? ' See failure_summary for details.' : ''}`,
+    unknown: `Demo status unknown for PID ${pid}.`,
+  };
+
+  return {
+    status: entry.status,
+    pid,
+    project: entry.project,
+    test_file: entry.test_file,
+    started_at: entry.started_at,
+    ended_at: entry.ended_at,
+    exit_code: entry.exit_code,
+    failure_summary: entry.failure_summary,
+    screenshot_paths: entry.screenshot_paths,
+    message: statusMessages[entry.status] || `Demo status: ${entry.status}`,
+  };
 }
 
 /**
@@ -971,24 +1155,41 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   // 9. Extension manifest validation (only for extension projects)
   if (args.project && pwConfig.extensionProjects.has(args.project)) {
     checks.push(runCheck('extension_manifest', () => {
-      const distPath = process.env.GENTYR_EXTENSION_DIST_PATH;
-      if (!distPath) {
-        return { status: 'skip', message: 'GENTYR_EXTENSION_DIST_PATH not set — skipping manifest validation' };
-      }
-
-      // Try manifest at dist path, then parent directory
-      const primaryPath = path.join(PROJECT_DIR, distPath, 'manifest.json');
-      const fallbackPath = path.join(PROJECT_DIR, path.dirname(distPath), 'manifest.json');
       let manifestPath: string | null = null;
 
-      if (fs.existsSync(primaryPath)) {
-        manifestPath = primaryPath;
-      } else if (fs.existsSync(fallbackPath)) {
-        manifestPath = fallbackPath;
-      }
-
-      if (!manifestPath) {
-        return { status: 'fail', message: `manifest.json not found at ${primaryPath} or ${fallbackPath}` };
+      const distPath = process.env.GENTYR_EXTENSION_DIST_PATH;
+      if (distPath) {
+        // Explicit path: try manifest at dist path, then parent directory
+        const primaryPath = path.join(PROJECT_DIR, distPath, 'manifest.json');
+        const fallbackPath = path.join(PROJECT_DIR, path.dirname(distPath), 'manifest.json');
+        if (fs.existsSync(primaryPath)) {
+          manifestPath = primaryPath;
+        } else if (fs.existsSync(fallbackPath)) {
+          manifestPath = fallbackPath;
+        }
+        if (!manifestPath) {
+          return { status: 'fail', message: `manifest.json not found at ${primaryPath} or ${fallbackPath}` };
+        }
+      } else {
+        // Auto-discover: check common build output directories
+        const candidates = ['dist/', 'build/', 'out/', 'extension/dist/', 'extension/build/'];
+        for (const candidate of candidates) {
+          const candidatePath = path.join(PROJECT_DIR, candidate, 'manifest.json');
+          if (!fs.existsSync(candidatePath)) continue;
+          // Verify it's a Chrome extension manifest (has content_scripts or background)
+          try {
+            const content = JSON.parse(fs.readFileSync(candidatePath, 'utf-8'));
+            if (content.content_scripts || content.background) {
+              manifestPath = candidatePath;
+              break;
+            }
+          } catch {
+            // Not valid JSON — skip
+          }
+        }
+        if (!manifestPath) {
+          return { status: 'skip', message: 'GENTYR_EXTENSION_DIST_PATH not set and no manifest.json auto-discovered in dist/, build/, out/, extension/dist/, extension/build/' };
+        }
       }
 
       let manifest: { content_scripts?: Array<{ matches?: string[]; exclude_matches?: string[] }> };
@@ -1496,6 +1697,15 @@ const tools: AnyToolHandler[] = [
       'parseInt(process.env.DEMO_SLOW_MO || "0") in use.launchOptions.slowMo for pace control to work.',
     schema: RunDemoArgsSchema,
     handler: runDemo,
+  },
+  {
+    name: 'check_demo_result',
+    description:
+      'Check the result of a previously launched demo run by PID. ' +
+      'Call after run_demo to determine if the demo passed or failed. ' +
+      'Returns status (running/passed/failed/unknown), exit code, failure summary, and screenshot paths.',
+    schema: CheckDemoResultArgsSchema,
+    handler: checkDemoResult,
   },
   {
     name: 'run_tests',

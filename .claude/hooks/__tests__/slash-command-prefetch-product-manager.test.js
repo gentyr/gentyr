@@ -250,6 +250,77 @@ describe('Slash Command Prefetch - /product-manager Command', () => {
   });
 
   // ============================================================================
+  // Demo Scenario Coverage
+  // ============================================================================
+
+  describe('Demo scenario coverage', () => {
+    it('should query user-feedback.db for GUI persona scenario coverage', () => {
+      const handleProductManagerMatch = hookCode.match(/function handleProductManager\(\) \{[\s\S]*?\n\}/);
+      const functionBody = handleProductManagerMatch[0];
+
+      // Should open user-feedback.db
+      assert.match(functionBody, /openDb\(USER_FEEDBACK_DB\)/);
+    });
+
+    it('should query only enabled GUI-mode personas', () => {
+      const handleProductManagerMatch = hookCode.match(/function handleProductManager\(\) \{[\s\S]*?\n\}/);
+      const functionBody = handleProductManagerMatch[0];
+
+      // Query must filter on enabled=1 and consumption_mode='gui'
+      assert.match(functionBody, /enabled = 1 AND consumption_mode = 'gui'/);
+    });
+
+    it('should query demo_scenarios table grouped by persona_id', () => {
+      const handleProductManagerMatch = hookCode.match(/function handleProductManager\(\) \{[\s\S]*?\n\}/);
+      const functionBody = handleProductManagerMatch[0];
+
+      assert.match(functionBody, /FROM demo_scenarios WHERE enabled = 1 GROUP BY persona_id/);
+    });
+
+    it('should output demoScenarios field with totalScenarios', () => {
+      const handleProductManagerMatch = hookCode.match(/function handleProductManager\(\) \{[\s\S]*?\n\}/);
+      const functionBody = handleProductManagerMatch[0];
+
+      // output.gathered.demoScenarios = { ... }
+      assert.match(functionBody, /output\.gathered\.demoScenarios/);
+      assert.match(functionBody, /totalScenarios:/);
+    });
+
+    it('should output guiPersonas array with scenarioCount per persona', () => {
+      const handleProductManagerMatch = hookCode.match(/function handleProductManager\(\) \{[\s\S]*?\n\}/);
+      const functionBody = handleProductManagerMatch[0];
+
+      assert.match(functionBody, /guiPersonas:/);
+      assert.match(functionBody, /scenarioCount:/);
+    });
+
+    it('should output uncoveredPersonas list of GUI persona names with no scenarios', () => {
+      const handleProductManagerMatch = hookCode.match(/function handleProductManager\(\) \{[\s\S]*?\n\}/);
+      const functionBody = handleProductManagerMatch[0];
+
+      assert.match(functionBody, /uncoveredPersonas:/);
+      // Filter logic: personas with no entry in scenarioMap
+      assert.match(functionBody, /scenarioMap\[p\.id\]/);
+    });
+
+    it('should close user-feedback.db after query', () => {
+      const handleProductManagerMatch = hookCode.match(/function handleProductManager\(\) \{[\s\S]*?\n\}/);
+      const functionBody = handleProductManagerMatch[0];
+
+      // feedbackDb.close() must appear in the function
+      assert.match(functionBody, /feedbackDb\.close\(\)/);
+    });
+
+    it('should silently ignore errors from user-feedback.db query', () => {
+      const handleProductManagerMatch = hookCode.match(/function handleProductManager\(\) \{[\s\S]*?\n\}/);
+      const functionBody = handleProductManagerMatch[0];
+
+      // The catch block for demoScenarios must be empty (non-fatal)
+      assert.match(functionBody, /catch \{ \/\* non-fatal \*\/ \}|catch \{[^}]*\}/);
+    });
+  });
+
+  // ============================================================================
   // Consistency with Other Handlers
   // ============================================================================
 
@@ -310,7 +381,7 @@ describe('Slash Command Prefetch - /product-manager Integration', () => {
     }
   });
 
-  it('should have 16 total slash commands (including demo-interactive and demo-auto)', () => {
+  it('should have 17 total slash commands (including demo-interactive and demo-autonomous)', () => {
     const sentinelsMatch = hookCode.match(/const SENTINELS = \{[\s\S]*?\};/);
     const sentinelsObject = sentinelsMatch[0];
 

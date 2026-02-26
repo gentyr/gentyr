@@ -21,7 +21,10 @@ import {
   PreflightCheckArgsSchema,
   RunAuthSetupArgsSchema,
   RunDemoArgsSchema,
+  CheckDemoResultArgsSchema,
   PLAYWRIGHT_PROJECTS,
+  type DemoRunState,
+  type CheckDemoResultResult,
 } from '../types.js';
 import { parseTestOutput, truncateOutput } from '../helpers.js';
 
@@ -676,6 +679,56 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
   });
 
+  describe('CheckDemoResultArgsSchema', () => {
+    it('should require pid field', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({});
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept a valid positive integer pid', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({ pid: 12345 });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.pid).toBe(12345);
+      }
+    });
+
+    it('should reject pid of 0 (must be >= 1)', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({ pid: 0 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject negative pid (G003)', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({ pid: -1 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject non-integer pid (G003)', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({ pid: 1.5 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should coerce pid from string to number via z.coerce', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({ pid: '99999' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.pid).toBe(99999);
+        expect(typeof result.data.pid).toBe('number');
+      }
+    });
+
+    it('should reject string that cannot coerce to an integer pid', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({ pid: 'not-a-pid' });
+      expect(result.success).toBe(false);
+    });
+
+    it('should infer correct CheckDemoResultArgs type', () => {
+      const args = CheckDemoResultArgsSchema.parse({ pid: 42 });
+      expect(typeof args.pid).toBe('number');
+      expect(args.pid).toBe(42);
+    });
+  });
+
   describe('LaunchUiModeArgsSchema - test_file', () => {
     it('should accept optional test_file', () => {
       const result = LaunchUiModeArgsSchema.safeParse({
@@ -858,8 +911,9 @@ Done.
     let tempDir: string;
 
     // This simulation mirrors the real countTestFiles in server.ts exactly.
-    // Both .spec.ts (automated) and .manual.ts (manual scaffolds) are counted.
-    // The extension project filter excludes files under a manual/ subdirectory.
+    // .spec.ts (automated), .manual.ts (manual scaffolds), and .demo.ts (demo scenarios) are counted.
+    // The extension project filter uses pwConfig.projects isExtension/isManual flags.
+    // For simplicity in tests we approximate: extension filter excludes manual/ subdirectory.
     function countTestFiles(dir: string, projectFilter?: string): number {
       if (!fs.existsSync(dir)) return 0;
 
@@ -869,9 +923,10 @@ Done.
           const filename = String(f);
           const isSpec = filename.endsWith('.spec.ts');
           const isManual = filename.endsWith('.manual.ts');
-          if (!isSpec && !isManual) return false;
+          const isDemo = filename.endsWith('.demo.ts');
+          if (!isSpec && !isManual && !isDemo) return false;
 
-          // Exclude manual/ subdirectory for the extension project (counted separately as extension-manual)
+          // Exclude manual/ subdirectory for extension projects (counted separately as extension-manual)
           if (projectFilter === 'extension' && filename.includes('manual/')) return false;
 
           // For role-specific projects, filter by matching spec file
@@ -1038,6 +1093,60 @@ Done.
       const count = countTestFiles(notADir);
 
       expect(count).toBe(0);
+    });
+
+    it('should count .demo.ts files (curated demo scenario files)', () => {
+      fs.writeFileSync(path.join(tempDir, 'onboarding.demo.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'billing.demo.ts'), '');
+
+      const count = countTestFiles(tempDir);
+
+      expect(count).toBe(2);
+    });
+
+    it('should count .demo.ts, .spec.ts, and .manual.ts files together', () => {
+      fs.writeFileSync(path.join(tempDir, 'auth.spec.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'ext-popup.manual.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'onboarding.demo.ts'), '');
+
+      const count = countTestFiles(tempDir);
+
+      expect(count).toBe(3);
+    });
+
+    it('should not count .demo.ts files that lack the suffix', () => {
+      // "demo" in filename but wrong suffix — not counted
+      fs.writeFileSync(path.join(tempDir, 'demo-helper.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'onboarding.demo.ts'), '');
+
+      const count = countTestFiles(tempDir);
+
+      expect(count).toBe(1); // Only onboarding.demo.ts
+    });
+
+    it('should count .demo.ts files in nested directories', () => {
+      const subdir = path.join(tempDir, 'demo');
+      fs.mkdirSync(subdir, { recursive: true });
+
+      fs.writeFileSync(path.join(subdir, 'checkout.demo.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'login.spec.ts'), '');
+
+      const count = countTestFiles(tempDir);
+
+      expect(count).toBe(2);
+    });
+
+    it('should count .demo.ts files for extension project filter (not excluded)', () => {
+      const manualSubdir = path.join(tempDir, 'manual');
+      fs.mkdirSync(manualSubdir, { recursive: true });
+
+      fs.writeFileSync(path.join(tempDir, 'extension-flow.demo.ts'), '');
+      fs.writeFileSync(path.join(manualSubdir, 'ext-popup.manual.ts'), ''); // excluded (in manual/)
+
+      const count = countTestFiles(tempDir, 'extension');
+
+      // .demo.ts is NOT in manual/ so it is counted; manual/ file is excluded
+      expect(count).toBe(1);
     });
   });
 });

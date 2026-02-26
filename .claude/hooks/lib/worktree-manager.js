@@ -51,12 +51,20 @@ function safeSymlink(target, linkPath) {
     fs.symlinkSync(target, linkPath);
   } catch (err) {
     if (err.code === 'EEXIST') {
-      // Verify existing link points to the right target
-      const existing = fs.readlinkSync(linkPath);
-      if (existing !== target) {
+      const stat = fs.lstatSync(linkPath);
+      if (stat.isSymbolicLink()) {
+        // Verify existing symlink points to the right target
+        const existing = fs.readlinkSync(linkPath);
+        if (existing === target) return;
         fs.unlinkSync(linkPath);
-        fs.symlinkSync(target, linkPath);
+      } else if (stat.isDirectory()) {
+        // Real directory (e.g., git-tracked .husky/) — remove and replace with symlink
+        fs.rmSync(linkPath, { recursive: true, force: true });
+      } else {
+        // Regular file — remove and replace
+        fs.unlinkSync(linkPath);
       }
+      fs.symlinkSync(target, linkPath);
       return;
     }
     throw err;
@@ -246,6 +254,16 @@ export function createWorktree(branchName, baseBranch = 'preview') {
 export function removeWorktree(branchName) {
   const sanitized = sanitizeBranchName(branchName);
   const worktreePath = path.join(WORKTREES_DIR, sanitized);
+
+  // Before removing, check if core.hooksPath points into this worktree and reset
+  try {
+    const hooksPath = execSync('git config --local --get core.hooksPath', GIT_OPTS).trim();
+    if (hooksPath && path.resolve(PROJECT_DIR, hooksPath).startsWith(worktreePath)) {
+      execSync('git config --local core.hooksPath .husky', GIT_OPTS);
+    }
+  } catch {
+    // No hooksPath set or git error — nothing to reset
+  }
 
   execSync(`git worktree remove ${worktreePath} --force`, GIT_OPTS);
 

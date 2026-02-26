@@ -55,9 +55,26 @@ Call `mcp__playwright__run_demo({
   pause_at_end: false
 })`.
 
-### Step 7: Report
+### Step 7: Report Launch
 
-Show scenario title, persona, auth project, PID, and tips:
+Show scenario title, persona, auth project, and PID.
+
+### Step 8: Monitor Demo Completion
+
+Wait 30 seconds, then call `mcp__playwright__check_demo_result({ pid: <PID> })`.
+
+- If `status: "running"`: wait another 30s and poll again (max 5 polls, ~2.5 min total).
+- If `status: "passed"`: report success with duration.
+- If `status: "failed"`: create an **urgent DEPUTY-CTO task** with:
+  - Failure summary (`failure_summary` field)
+  - Exit code
+  - Screenshot paths (if any) — include as a bulleted list
+  - The scenario title and test file for context
+  - Repair instruction: "Investigate the demo test failure and fix the underlying issue"
+- If polls exhausted (`status` still `"running"`): tell user the demo is still running and they can check later with `mcp__playwright__check_demo_result({ pid: <PID> })`.
+
+### Step 9: Tips
+
 - The demo runs automatically at human-watchable speed — just watch
 - Default pace is 800ms between actions
 - The browser closes when the scenario finishes

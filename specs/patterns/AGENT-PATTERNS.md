@@ -153,7 +153,7 @@ Tasks created by the deputy-cto have **forced follow-up verification** to ensure
 
 ### Enforcement Details
 
-- **Forced creators**: Defined in `FORCED_FOLLOWUP_CREATORS` constant (currently: `['deputy-cto']`)
+- **Forced creators**: Defined in `FORCED_FOLLOWUP_CREATORS` constant (currently: `['deputy-cto', 'product-manager']`)
 - **Description required**: Tasks without descriptions are rejected at the MCP level
 - **No opt-out**: Passing `followup_enabled: false` is overridden with a warning
 - **No chaining**: Follow-up tasks have `followup_enabled: 0` — completing them does not create another follow-up

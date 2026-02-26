@@ -214,6 +214,30 @@ For each GUI persona (`consumption_mode: 'gui'`) that lacks demo scenarios:
   tool will reject non-GUI personas with a clear error.
 - A code-writer agent implements each file based on your description.
 
+## Completion Checklist
+
+Before calling `mcp__todo-db__complete_task()` for ANY task, verify every applicable item:
+
+### For Section Writing Tasks (1-6):
+- [ ] Section content written via `write_section` or `add_entry`
+- [ ] Content is data-driven (citations, specific examples, real companies)
+- [ ] No references to the local project (sections are external market research)
+
+### For Persona Evaluation Tasks:
+- [ ] All GUI personas have `endpoints` populated
+- [ ] All personas have `behavior_traits` populated
+- [ ] Features registered with `file_patterns` and `url_patterns`
+- [ ] Persona-feature mappings created
+- [ ] Pain points mapped to personas (`get_compliance_report` shows 100%)
+
+### For Demo Scenario Tasks:
+- [ ] Every GUI persona has 2-4 scenarios (call `list_scenarios` to verify)
+- [ ] Each scenario has a CODE-REVIEWER implementation task (call `mcp__todo-db__list_tasks({section: 'CODE-REVIEWER'})` and verify matching titles)
+- [ ] If any implementation tasks are missing, create them NOW before completing
+
+### Generic:
+- [ ] Worklog entry recorded via `summarize_work`
+
 ## Constraints
 
 - You have **read-only** codebase access (no Edit/Write/Bash)
