@@ -58,6 +58,39 @@ export const AnalyzeSvgStructureSchema = z.object({
   svg_content: z.string().min(1).describe('SVG content string to analyze'),
 });
 
+export const RecolorSvgSchema = z.object({
+  svg_content: z.string().min(1).describe('SVG content string to recolor'),
+  color: z.string().min(1).describe('Target hex color (e.g., "#65A637")'),
+  output_path: z.string().optional().describe('If provided, write recolored SVG to this path'),
+});
+
+export const ListIconsSchema = z.object({});
+
+export const StoreIconSchema = z.object({
+  slug: z
+    .string()
+    .min(1)
+    .regex(/^[a-z0-9][a-z0-9-]*$/, 'Slug must be lowercase alphanumeric with hyphens, starting with alphanumeric')
+    .describe('Brand slug (e.g. "splunk") — used as the directory name in the global icon store'),
+  display_name: z.string().min(1).describe('Human-readable brand name (e.g. "Splunk")'),
+  brand_color: z
+    .string()
+    .min(1)
+    .regex(/^#[0-9a-fA-F]{3,8}$/, 'brand_color must be a valid hex color (e.g. "#65A637")')
+    .describe('Brand hex color (e.g. "#65A637")'),
+  svg_content: z.string().min(1).describe('Final SVG content for the brand-colored icon'),
+  source: z.string().optional().describe('Where the icon came from (e.g. "simple-icons", "brand website")'),
+  black_variant_svg: z.string().optional().describe('Black (#000000) variant SVG content'),
+});
+
+export const DeleteIconSchema = z.object({
+  slug: z
+    .string()
+    .min(1)
+    .regex(/^[a-z0-9][a-z0-9-]*$/, 'Slug must be lowercase alphanumeric with hyphens, starting with alphanumeric')
+    .describe('Brand slug to delete from the global icon store'),
+});
+
 // ============================================================================
 // Inferred Types
 // ============================================================================
@@ -70,6 +103,10 @@ export type TraceToSvgArgs = z.infer<typeof TraceToSvgSchema>;
 export type NormalizeSvgArgs = z.infer<typeof NormalizeSvgSchema>;
 export type OptimizeSvgArgs = z.infer<typeof OptimizeSvgSchema>;
 export type AnalyzeSvgStructureArgs = z.infer<typeof AnalyzeSvgStructureSchema>;
+export type RecolorSvgArgs = z.infer<typeof RecolorSvgSchema>;
+export type ListIconsArgs = z.infer<typeof ListIconsSchema>;
+export type StoreIconArgs = z.infer<typeof StoreIconSchema>;
+export type DeleteIconArgs = z.infer<typeof DeleteIconSchema>;
 
 // ============================================================================
 // Result Types
@@ -173,5 +210,39 @@ export interface OptimizeSvgResult {
   optimized_bytes: number;
   reduction_percent: number;
   output_path?: string;
+  error?: string;
+}
+
+export interface RecolorSvgResult {
+  success: boolean;
+  svg_content: string;
+  color_applied: string;
+  output_path?: string;
+  error?: string;
+}
+
+export interface StoredIconEntry {
+  slug: string;
+  display_name: string;
+  brand_color: string;
+  source?: string;
+  created_at: string;
+  has_black_variant: boolean;
+}
+
+export interface ListIconsResult {
+  icons: StoredIconEntry[];
+}
+
+export interface StoreIconResult {
+  success: boolean;
+  slug: string;
+  path: string;
+  error?: string;
+}
+
+export interface DeleteIconResult {
+  success: boolean;
+  slug: string;
   error?: string;
 }

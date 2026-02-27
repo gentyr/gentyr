@@ -12,6 +12,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { McpServer } from '../shared/server.js';
 import type { AnyToolHandler } from '../shared/server.js';
@@ -24,6 +25,10 @@ import {
   NormalizeSvgSchema,
   OptimizeSvgSchema,
   AnalyzeSvgStructureSchema,
+  RecolorSvgSchema,
+  ListIconsSchema,
+  StoreIconSchema,
+  DeleteIconSchema,
   type LookupSimpleIconArgs,
   type LookupSimpleIconResult,
   type DownloadImageArgs,
@@ -42,6 +47,15 @@ import {
   type AnalyzeSvgStructureArgs,
   type AnalyzeSvgStructureResult,
   type SvgShapeInfo,
+  type RecolorSvgArgs,
+  type RecolorSvgResult,
+  type ListIconsArgs,
+  type ListIconsResult,
+  type StoredIconEntry,
+  type StoreIconArgs,
+  type StoreIconResult,
+  type DeleteIconArgs,
+  type DeleteIconResult,
 } from './types.js';
 
 // ============================================================================
@@ -89,11 +103,34 @@ async function getSvgPathBbox() {
 }
 
 // ============================================================================
-// Utility Functions
+// Global Icon Store
 // ============================================================================
 
+/**
+ * Root directory for the global icon store.
+ * Exported so tests can override via reassignment before calling tool functions.
+ */
+export let ICONS_DIR = path.join(os.homedir(), '.claude', 'icons');
+
+/**
+ * Override the icons directory (for testing only).
+ */
+export function setIconsDir(dir: string): void {
+  ICONS_DIR = dir;
+}
+
+interface IconMetadata {
+  slug: string;
+  display_name: string;
+  brand_color: string;
+  source?: string;
+  created_at: string;
+  pipeline_version: string;
+  has_black_variant: boolean;
+}
+
 // ============================================================================
-// Security Helpers
+// Security + Utility Helpers
 // ============================================================================
 
 /** Max download size: 50 MB */
@@ -805,6 +842,215 @@ async function optimizeSvg(args: OptimizeSvgArgs): Promise<OptimizeSvgResult> {
   }
 }
 
+async function recolorSvg(args: RecolorSvgArgs): Promise<RecolorSvgResult> {
+  // Validate hex color format
+  if (!/^#[0-9a-fA-F]{3,8}$/.test(args.color)) {
+    return { success: false, svg_content: args.svg_content, color_applied: args.color, error: `Invalid hex color: ${args.color}` };
+  }
+
+  let svg = args.svg_content;
+
+  // Strategy: set fill on the root <svg> element and remove fill from children so they inherit.
+  // 1. Replace or add fill on <svg> tag
+  const svgTagMatch = svg.match(/<svg([^>]*)>/);
+  if (!svgTagMatch) {
+    return { success: false, svg_content: svg, color_applied: args.color, error: 'No <svg> element found' };
+  }
+
+  let svgAttrs = svgTagMatch[1];
+  if (/\bfill\s*=\s*"[^"]*"/.test(svgAttrs)) {
+    svgAttrs = svgAttrs.replace(/\bfill\s*=\s*"[^"]*"/, `fill="${args.color}"`);
+  } else {
+    svgAttrs = ` fill="${args.color}"` + svgAttrs;
+  }
+  svg = svg.replace(/<svg[^>]*>/, `<svg${svgAttrs}>`);
+
+  // 2. Remove explicit fill attributes from child elements so they inherit from root
+  //    (but preserve "none" fills — those are intentional cutouts)
+  svg = svg.replace(/(<(?!svg\b)[^>]*)\bfill="(?!none)[^"]*"/g, '$1');
+
+  // 3. Remove fill from inline styles on child elements
+  svg = svg.replace(/(<(?!svg\b)[^>]*style="[^"]*?)fill\s*:\s*(?!none)[^;"]*;?/g, '$1');
+
+  // 4. Remove fill from <g> elements too (they often override inheritance)
+  // Already handled by step 2 since it targets all non-svg elements
+
+  if (args.output_path) {
+    assertSafePath(args.output_path);
+    ensureDir(args.output_path);
+    fs.writeFileSync(args.output_path, svg, 'utf-8');
+  }
+
+  return { success: true, svg_content: svg, color_applied: args.color, output_path: args.output_path };
+}
+
+// ============================================================================
+// Global Icon Store Tool Implementations
+// ============================================================================
+
+async function listIcons(_args: ListIconsArgs): Promise<ListIconsResult> {
+  if (!fs.existsSync(ICONS_DIR)) {
+    return { icons: [] };
+  }
+
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(ICONS_DIR, { withFileTypes: true });
+  } catch (err) {
+    throw new Error(`Failed to read icons directory: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const icons: StoredIconEntry[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const slug = entry.name;
+    const brandDir = path.join(ICONS_DIR, slug);
+    // Use assertSafePath to guard against any malformed slugs that escaped validation
+    assertSafePath(brandDir);
+
+    const metadataPath = path.join(brandDir, 'metadata.json');
+    if (!fs.existsSync(metadataPath)) {
+      // Directory exists but no metadata — include with minimal info
+      icons.push({
+        slug,
+        display_name: slug,
+        brand_color: '#000000',
+        created_at: '',
+        has_black_variant: fs.existsSync(path.join(brandDir, 'icon-black.svg')),
+      });
+      continue;
+    }
+
+    try {
+      const raw = fs.readFileSync(metadataPath, 'utf-8');
+      const meta: IconMetadata = JSON.parse(raw);
+      icons.push({
+        slug: meta.slug,
+        display_name: meta.display_name,
+        brand_color: meta.brand_color,
+        source: meta.source,
+        created_at: meta.created_at,
+        has_black_variant: meta.has_black_variant,
+      });
+    } catch {
+      // Malformed metadata — include with minimal info derived from slug
+      icons.push({
+        slug,
+        display_name: slug,
+        brand_color: '#000000',
+        created_at: '',
+        has_black_variant: fs.existsSync(path.join(brandDir, 'icon-black.svg')),
+      });
+    }
+  }
+
+  // Sort alphabetically by slug for deterministic output
+  icons.sort((a, b) => a.slug.localeCompare(b.slug));
+  return { icons };
+}
+
+async function storeIcon(args: StoreIconArgs): Promise<StoreIconResult> {
+  const brandDir = path.join(ICONS_DIR, args.slug);
+
+  // assertSafePath guards against path traversal — slug validation in Zod schema
+  // provides the first layer; this provides defense-in-depth at the FS level.
+  assertSafePath(brandDir);
+
+  try {
+    fs.mkdirSync(brandDir, { recursive: true });
+  } catch (err) {
+    return {
+      success: false,
+      slug: args.slug,
+      path: brandDir,
+      error: `Failed to create directory: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  // Write brand-colored SVG
+  const iconPath = path.join(brandDir, 'icon.svg');
+  try {
+    fs.writeFileSync(iconPath, args.svg_content, 'utf-8');
+  } catch (err) {
+    return {
+      success: false,
+      slug: args.slug,
+      path: brandDir,
+      error: `Failed to write icon.svg: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  // Write black variant if provided
+  const hasBlackVariant = !!args.black_variant_svg;
+  if (args.black_variant_svg) {
+    const blackIconPath = path.join(brandDir, 'icon-black.svg');
+    try {
+      fs.writeFileSync(blackIconPath, args.black_variant_svg, 'utf-8');
+    } catch (err) {
+      return {
+        success: false,
+        slug: args.slug,
+        path: brandDir,
+        error: `Failed to write icon-black.svg: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  // Write metadata
+  const metadata: IconMetadata = {
+    slug: args.slug,
+    display_name: args.display_name,
+    brand_color: args.brand_color,
+    source: args.source,
+    created_at: new Date().toISOString(),
+    pipeline_version: '1.0.0',
+    has_black_variant: hasBlackVariant,
+  };
+
+  const metadataPath = path.join(brandDir, 'metadata.json');
+  try {
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
+  } catch (err) {
+    return {
+      success: false,
+      slug: args.slug,
+      path: brandDir,
+      error: `Failed to write metadata.json: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  return { success: true, slug: args.slug, path: brandDir };
+}
+
+async function deleteIcon(args: DeleteIconArgs): Promise<DeleteIconResult> {
+  const brandDir = path.join(ICONS_DIR, args.slug);
+  assertSafePath(brandDir);
+
+  if (!fs.existsSync(brandDir)) {
+    return {
+      success: false,
+      slug: args.slug,
+      error: `Icon not found: no directory at ${brandDir}`,
+    };
+  }
+
+  try {
+    fs.rmSync(brandDir, { recursive: true, force: false });
+  } catch (err) {
+    return {
+      success: false,
+      slug: args.slug,
+      error: `Failed to delete icon: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  return { success: true, slug: args.slug };
+}
+
 // ============================================================================
 // Server Registration
 // ============================================================================
@@ -858,6 +1104,30 @@ const tools: AnyToolHandler[] = [
     schema: AnalyzeSvgStructureSchema,
     handler: analyzeSvgStructure,
   },
+  {
+    name: 'recolor_svg',
+    description: 'Recolor an SVG to a single target color. Sets fill on the root <svg> element and removes explicit fills from child elements so they inherit. Preserves fill="none" (intentional cutouts). Use this to apply a brand color to a finalized icon.',
+    schema: RecolorSvgSchema,
+    handler: recolorSvg,
+  },
+  {
+    name: 'list_icons',
+    description: 'List all icons stored in the global icon store (~/.claude/icons/). Returns an array of stored icon entries with slug, display_name, brand_color, source, created_at, and has_black_variant.',
+    schema: ListIconsSchema,
+    handler: listIcons,
+  },
+  {
+    name: 'store_icon',
+    description: 'Store a finalized icon to the global icon store (~/.claude/icons/<slug>/). Creates icon.svg (brand-colored), optionally icon-black.svg, and metadata.json. Use this at the end of the icon-finder pipeline to persist results globally.',
+    schema: StoreIconSchema,
+    handler: storeIcon,
+  },
+  {
+    name: 'delete_icon',
+    description: 'Delete an icon from the global icon store (~/.claude/icons/<slug>/). Removes the entire brand directory including all SVG files and metadata. Requires CTO approval via the protected-action-gate.',
+    schema: DeleteIconSchema,
+    handler: deleteIcon,
+  },
 ];
 
 const server = new McpServer({
@@ -876,4 +1146,4 @@ if (isMainModule) {
 }
 
 // Export for testing
-export { server, tools, lookupSimpleIcon, downloadImage, analyzeImage, removeBackground, traceToSvg, normalizeSvg, optimizeSvg, analyzeSvgStructure };
+export { server, tools, lookupSimpleIcon, downloadImage, analyzeImage, removeBackground, traceToSvg, normalizeSvg, optimizeSvg, analyzeSvgStructure, listIcons, storeIcon, deleteIcon };

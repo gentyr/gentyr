@@ -189,6 +189,12 @@
         "SUPABASE_ANON_KEY",
         "SUPABASE_SERVICE_ROLE_KEY"
       ]
+    },
+    "icon-processor": {
+      "protection": "approval-only",
+      "phrase": "APPROVE ICON DELETE",
+      "tools": ["delete_icon"],
+      "description": "Icon store management — deletion requires CTO approval to prevent accidental loss"
     }
   },
   "files": {
