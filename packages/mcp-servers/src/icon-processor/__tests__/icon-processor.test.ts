@@ -10,7 +10,7 @@ import { randomUUID } from 'crypto';
 import { tmpdir } from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import { server } from '../server.js';
+import { server, setIconsDir } from '../server.js';
 import type { McpServer } from '../../shared/server.js';
 
 // ============================================================================
@@ -100,9 +100,34 @@ async function createTestPng(
 // Test: tools/list
 // ============================================================================
 
+// ============================================================================
+// Icon Store Test Helpers
+// ============================================================================
+
+let testIconsDir: string;
+
+function setupIconsDir() {
+  testIconsDir = path.join(tmpdir(), `icon-store-test-${randomUUID()}`);
+  fs.mkdirSync(testIconsDir, { recursive: true });
+  setIconsDir(testIconsDir);
+}
+
+function teardownIconsDir() {
+  if (testIconsDir && fs.existsSync(testIconsDir)) {
+    fs.rmSync(testIconsDir, { recursive: true, force: true });
+  }
+}
+
+const MINIMAL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M0 0h64v64H0z" fill="#65A637"/></svg>';
+const BLACK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M0 0h64v64H0z" fill="#000000"/></svg>';
+
+// ============================================================================
+// Tests
+// ============================================================================
+
 describe('icon-processor MCP server', () => {
   describe('tools/list', () => {
-    it('should list all 8 tools', async () => {
+    it('should list all 12 tools', async () => {
       const response = (await server.processRequest({
         jsonrpc: '2.0',
         id: 1,
@@ -115,11 +140,15 @@ describe('icon-processor MCP server', () => {
       expect(toolNames).toEqual([
         'analyze_image',
         'analyze_svg_structure',
+        'delete_icon',
         'download_image',
+        'list_icons',
         'lookup_simple_icon',
         'normalize_svg',
         'optimize_svg',
+        'recolor_svg',
         'remove_background',
+        'store_icon',
         'trace_to_svg',
       ]);
     });
@@ -561,6 +590,188 @@ describe('icon-processor MCP server', () => {
   // ============================================================================
   // Test: analyze_svg_structure
   // ============================================================================
+
+  // ============================================================================
+  // Test: list_icons
+  // ============================================================================
+
+  describe('list_icons', () => {
+    beforeEach(setupIconsDir);
+    afterEach(teardownIconsDir);
+
+    it('should return empty array when no icons exist', async () => {
+      const result = (await callTool('list_icons', {})) as { icons: unknown[] };
+      expect(result.icons).toEqual([]);
+    });
+
+    it('should list icons after store_icon writes one', async () => {
+      // Store an icon first
+      await callTool('store_icon', {
+        slug: 'testbrand',
+        display_name: 'Test Brand',
+        brand_color: '#FF0000',
+        svg_content: MINIMAL_SVG,
+        source: 'test',
+      });
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{ slug: string; display_name: string; brand_color: string; has_black_variant: boolean }>;
+      };
+
+      expect(result.icons).toHaveLength(1);
+      expect(result.icons[0].slug).toBe('testbrand');
+      expect(result.icons[0].display_name).toBe('Test Brand');
+      expect(result.icons[0].brand_color).toBe('#FF0000');
+      expect(result.icons[0].has_black_variant).toBe(false);
+    });
+
+    it('should return icons sorted alphabetically by slug', async () => {
+      await callTool('store_icon', { slug: 'zeta', display_name: 'Zeta', brand_color: '#000', svg_content: MINIMAL_SVG });
+      await callTool('store_icon', { slug: 'alpha', display_name: 'Alpha', brand_color: '#000', svg_content: MINIMAL_SVG });
+      await callTool('store_icon', { slug: 'mid', display_name: 'Mid', brand_color: '#000', svg_content: MINIMAL_SVG });
+
+      const result = (await callTool('list_icons', {})) as { icons: Array<{ slug: string }> };
+      expect(result.icons.map((i) => i.slug)).toEqual(['alpha', 'mid', 'zeta']);
+    });
+  });
+
+  // ============================================================================
+  // Test: store_icon
+  // ============================================================================
+
+  describe('store_icon', () => {
+    beforeEach(setupIconsDir);
+    afterEach(teardownIconsDir);
+
+    it('should create icon directory and files', async () => {
+      const result = (await callTool('store_icon', {
+        slug: 'splunk',
+        display_name: 'Splunk',
+        brand_color: '#65A637',
+        svg_content: MINIMAL_SVG,
+        source: 'simple-icons',
+      })) as { success: boolean; slug: string; path: string };
+
+      expect(result.success).toBe(true);
+      expect(result.slug).toBe('splunk');
+
+      // Verify icon.svg was written
+      expect(fs.existsSync(path.join(testIconsDir, 'splunk', 'icon.svg'))).toBe(true);
+      const iconContent = fs.readFileSync(path.join(testIconsDir, 'splunk', 'icon.svg'), 'utf-8');
+      expect(iconContent).toBe(MINIMAL_SVG);
+
+      // Verify metadata.json was written
+      expect(fs.existsSync(path.join(testIconsDir, 'splunk', 'metadata.json'))).toBe(true);
+      const meta = JSON.parse(fs.readFileSync(path.join(testIconsDir, 'splunk', 'metadata.json'), 'utf-8'));
+      expect(meta.slug).toBe('splunk');
+      expect(meta.display_name).toBe('Splunk');
+      expect(meta.brand_color).toBe('#65A637');
+      expect(meta.source).toBe('simple-icons');
+      expect(meta.pipeline_version).toBe('1.0.0');
+      expect(meta.has_black_variant).toBe(false);
+      expect(meta.created_at).toBeDefined();
+      expect(new Date(meta.created_at).getTime()).not.toBeNaN();
+    });
+
+    it('should create black variant when provided', async () => {
+      const result = (await callTool('store_icon', {
+        slug: 'splunk',
+        display_name: 'Splunk',
+        brand_color: '#65A637',
+        svg_content: MINIMAL_SVG,
+        black_variant_svg: BLACK_SVG,
+      })) as { success: boolean };
+
+      expect(result.success).toBe(true);
+
+      // Verify icon-black.svg was written
+      expect(fs.existsSync(path.join(testIconsDir, 'splunk', 'icon-black.svg'))).toBe(true);
+      const blackContent = fs.readFileSync(path.join(testIconsDir, 'splunk', 'icon-black.svg'), 'utf-8');
+      expect(blackContent).toBe(BLACK_SVG);
+
+      // Metadata should reflect has_black_variant: true
+      const meta = JSON.parse(fs.readFileSync(path.join(testIconsDir, 'splunk', 'metadata.json'), 'utf-8'));
+      expect(meta.has_black_variant).toBe(true);
+    });
+
+    it('should overwrite an existing icon when called again', async () => {
+      await callTool('store_icon', {
+        slug: 'splunk',
+        display_name: 'Splunk Old',
+        brand_color: '#000000',
+        svg_content: BLACK_SVG,
+      });
+
+      await callTool('store_icon', {
+        slug: 'splunk',
+        display_name: 'Splunk New',
+        brand_color: '#65A637',
+        svg_content: MINIMAL_SVG,
+      });
+
+      const meta = JSON.parse(fs.readFileSync(path.join(testIconsDir, 'splunk', 'metadata.json'), 'utf-8'));
+      expect(meta.display_name).toBe('Splunk New');
+      expect(meta.brand_color).toBe('#65A637');
+    });
+
+    it('should reject an invalid slug', async () => {
+      let threw = false;
+      try {
+        await callTool('store_icon', {
+          slug: '../evil',
+          display_name: 'Evil',
+          brand_color: '#000',
+          svg_content: MINIMAL_SVG,
+        });
+      } catch {
+        threw = true;
+      }
+      // Zod validation should reject slug that starts with '.'
+      // The tool call response may contain an error or throw
+      if (!threw) {
+        // If callTool returns instead of throwing, verify the store dir was not created
+        expect(fs.existsSync(path.join(testIconsDir, '../evil'))).toBe(false);
+      }
+    });
+  });
+
+  // ============================================================================
+  // Test: delete_icon
+  // ============================================================================
+
+  describe('delete_icon', () => {
+    beforeEach(setupIconsDir);
+    afterEach(teardownIconsDir);
+
+    it('should remove icon directory', async () => {
+      // Store first
+      await callTool('store_icon', {
+        slug: 'todelete',
+        display_name: 'To Delete',
+        brand_color: '#123456',
+        svg_content: MINIMAL_SVG,
+      });
+      expect(fs.existsSync(path.join(testIconsDir, 'todelete'))).toBe(true);
+
+      const result = (await callTool('delete_icon', { slug: 'todelete' })) as { success: boolean; slug: string };
+
+      expect(result.success).toBe(true);
+      expect(result.slug).toBe('todelete');
+      expect(fs.existsSync(path.join(testIconsDir, 'todelete'))).toBe(false);
+    });
+
+    it('should return error for non-existent slug', async () => {
+      const result = (await callTool('delete_icon', { slug: 'doesnotexist' })) as {
+        success: boolean;
+        slug: string;
+        error: string;
+      };
+
+      expect(result.success).toBe(false);
+      expect(result.slug).toBe('doesnotexist');
+      expect(result.error).toContain('Icon not found');
+    });
+  });
 
   describe('analyze_svg_structure', () => {
     it('should identify paths, text, and groups in an SVG', async () => {
