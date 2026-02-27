@@ -120,6 +120,8 @@ function teardownIconsDir() {
 
 const MINIMAL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M0 0h64v64H0z" fill="#65A637"/></svg>';
 const BLACK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M0 0h64v64H0z" fill="#000000"/></svg>';
+const WHITE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M0 0h64v64H0z" fill="#FFFFFF"/></svg>';
+const FULL_COLOR_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect x="0" y="0" width="32" height="64" fill="#FF0000"/><rect x="32" y="0" width="32" height="64" fill="#0000FF"/></svg>';
 
 // ============================================================================
 // Tests
@@ -625,6 +627,70 @@ describe('icon-processor MCP server', () => {
       expect(result.icons[0].has_black_variant).toBe(false);
     });
 
+    it('should return has_white_variant and has_full_color_variant when all 4 variants are stored', async () => {
+      await callTool('store_icon', {
+        slug: 'allvariantslist',
+        display_name: 'All Variants List',
+        brand_color: '#65A637',
+        svg_content: MINIMAL_SVG,
+        black_variant_svg: BLACK_SVG,
+        white_variant_svg: WHITE_SVG,
+        full_color_svg: FULL_COLOR_SVG,
+      });
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{
+          slug: string;
+          has_black_variant: boolean;
+          has_white_variant: boolean;
+          has_full_color_variant: boolean;
+        }>;
+      };
+
+      expect(result.icons).toHaveLength(1);
+      const entry = result.icons[0];
+      expect(entry.slug).toBe('allvariantslist');
+      expect(entry.has_black_variant).toBe(true);
+      expect(entry.has_white_variant).toBe(true);
+      expect(entry.has_full_color_variant).toBe(true);
+    });
+
+    it('should default has_white_variant and has_full_color_variant to false for old v1.0.0 metadata without those fields', async () => {
+      // Simulate a legacy metadata.json written by v1.0.0 — no has_white_variant or has_full_color_variant fields
+      const legacyDir = path.join(testIconsDir, 'legacy-icon');
+      fs.mkdirSync(legacyDir, { recursive: true });
+      fs.writeFileSync(path.join(legacyDir, 'icon.svg'), MINIMAL_SVG, 'utf-8');
+      fs.writeFileSync(
+        path.join(legacyDir, 'metadata.json'),
+        JSON.stringify({
+          slug: 'legacy-icon',
+          display_name: 'Legacy Icon',
+          brand_color: '#123456',
+          created_at: new Date().toISOString(),
+          pipeline_version: '1.0.0',
+          has_black_variant: false,
+          // has_white_variant intentionally absent (old format)
+          // has_full_color_variant intentionally absent (old format)
+        }),
+        'utf-8',
+      );
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{
+          slug: string;
+          has_white_variant: boolean;
+          has_full_color_variant: boolean;
+        }>;
+      };
+
+      expect(result.icons).toHaveLength(1);
+      const entry = result.icons[0];
+      expect(entry.slug).toBe('legacy-icon');
+      // IconMetadataSchema uses .default(false) so missing fields default to false
+      expect(entry.has_white_variant).toBe(false);
+      expect(entry.has_full_color_variant).toBe(false);
+    });
+
     it('should return icons sorted alphabetically by slug', async () => {
       await callTool('store_icon', { slug: 'zeta', display_name: 'Zeta', brand_color: '#000', svg_content: MINIMAL_SVG });
       await callTool('store_icon', { slug: 'alpha', display_name: 'Alpha', brand_color: '#000', svg_content: MINIMAL_SVG });
@@ -692,6 +758,64 @@ describe('icon-processor MCP server', () => {
       // Metadata should reflect has_black_variant: true
       const meta = JSON.parse(fs.readFileSync(path.join(testIconsDir, 'splunk', 'metadata.json'), 'utf-8'));
       expect(meta.has_black_variant).toBe(true);
+    });
+
+    it('should create all 4 variant files when all are provided', async () => {
+      const result = (await callTool('store_icon', {
+        slug: 'allvariants',
+        display_name: 'All Variants',
+        brand_color: '#65A637',
+        svg_content: MINIMAL_SVG,
+        black_variant_svg: BLACK_SVG,
+        white_variant_svg: WHITE_SVG,
+        full_color_svg: FULL_COLOR_SVG,
+      })) as { success: boolean };
+
+      expect(result.success).toBe(true);
+
+      // All 4 SVG files must exist on disk
+      expect(fs.existsSync(path.join(testIconsDir, 'allvariants', 'icon.svg'))).toBe(true);
+      expect(fs.existsSync(path.join(testIconsDir, 'allvariants', 'icon-black.svg'))).toBe(true);
+      expect(fs.existsSync(path.join(testIconsDir, 'allvariants', 'icon-white.svg'))).toBe(true);
+      expect(fs.existsSync(path.join(testIconsDir, 'allvariants', 'icon-full-color.svg'))).toBe(true);
+
+      // Verify file contents were written correctly
+      expect(fs.readFileSync(path.join(testIconsDir, 'allvariants', 'icon-white.svg'), 'utf-8')).toBe(WHITE_SVG);
+      expect(fs.readFileSync(path.join(testIconsDir, 'allvariants', 'icon-full-color.svg'), 'utf-8')).toBe(FULL_COLOR_SVG);
+
+      // Metadata must reflect all 4 variant flags
+      const meta = JSON.parse(fs.readFileSync(path.join(testIconsDir, 'allvariants', 'metadata.json'), 'utf-8'));
+      expect(meta.has_black_variant).toBe(true);
+      expect(meta.has_white_variant).toBe(true);
+      expect(meta.has_full_color_variant).toBe(true);
+      expect(meta.pipeline_version).toBe('1.1.0');
+    });
+
+    it('should not write white or full-color variant files when only brand and black are provided', async () => {
+      const result = (await callTool('store_icon', {
+        slug: 'twovariant',
+        display_name: 'Two Variant',
+        brand_color: '#65A637',
+        svg_content: MINIMAL_SVG,
+        black_variant_svg: BLACK_SVG,
+        // white_variant_svg intentionally omitted
+        // full_color_svg intentionally omitted
+      })) as { success: boolean };
+
+      expect(result.success).toBe(true);
+
+      // Brand and black must exist
+      expect(fs.existsSync(path.join(testIconsDir, 'twovariant', 'icon.svg'))).toBe(true);
+      expect(fs.existsSync(path.join(testIconsDir, 'twovariant', 'icon-black.svg'))).toBe(true);
+
+      // White and full-color must NOT exist
+      expect(fs.existsSync(path.join(testIconsDir, 'twovariant', 'icon-white.svg'))).toBe(false);
+      expect(fs.existsSync(path.join(testIconsDir, 'twovariant', 'icon-full-color.svg'))).toBe(false);
+
+      // Metadata must have the new booleans set to false
+      const meta = JSON.parse(fs.readFileSync(path.join(testIconsDir, 'twovariant', 'metadata.json'), 'utf-8'));
+      expect(meta.has_white_variant).toBe(false);
+      expect(meta.has_full_color_variant).toBe(false);
     });
 
     it('should overwrite an existing icon when called again', async () => {
@@ -1493,6 +1617,43 @@ describe('icon-processor MCP server', () => {
 
       const after = (await callTool('list_icons', {})) as { icons: Array<{ slug: string }> };
       expect(after.icons.map((i) => i.slug)).not.toContain('roundtrip');
+    });
+
+    it('should store all 4 variants, list them, delete, then list shows gone', async () => {
+      // Store with all 4 variants
+      const storeResult = (await callTool('store_icon', {
+        slug: 'fullroundtrip',
+        display_name: 'Full Round Trip',
+        brand_color: '#65A637',
+        svg_content: MINIMAL_SVG,
+        black_variant_svg: BLACK_SVG,
+        white_variant_svg: WHITE_SVG,
+        full_color_svg: FULL_COLOR_SVG,
+      })) as { success: boolean };
+      expect(storeResult.success).toBe(true);
+
+      // List: verify all variant flags are true
+      const beforeDelete = (await callTool('list_icons', {})) as {
+        icons: Array<{
+          slug: string;
+          has_black_variant: boolean;
+          has_white_variant: boolean;
+          has_full_color_variant: boolean;
+        }>;
+      };
+      const stored = beforeDelete.icons.find((i) => i.slug === 'fullroundtrip');
+      expect(stored).toBeDefined();
+      expect(stored!.has_black_variant).toBe(true);
+      expect(stored!.has_white_variant).toBe(true);
+      expect(stored!.has_full_color_variant).toBe(true);
+
+      // Delete
+      const delResult = (await callTool('delete_icon', { slug: 'fullroundtrip' })) as { success: boolean };
+      expect(delResult.success).toBe(true);
+
+      // List: verify gone
+      const afterDelete = (await callTool('list_icons', {})) as { icons: Array<{ slug: string }> };
+      expect(afterDelete.icons.map((i) => i.slug)).not.toContain('fullroundtrip');
     });
 
     it('should support multiple icons with mixed metadata states', async () => {

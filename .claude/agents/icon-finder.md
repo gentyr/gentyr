@@ -134,19 +134,42 @@ For each cleaned SVG:
    - **Centering**: Is the icon well-centered in its viewBox?
    - **Square proportions**: Does it fill the square well without being stretched?
    - **Simplicity**: Simpler is better for icon use cases
-3. **Apply the brand color**: Call `mcp__icon-processor__recolor_svg` with the winner's SVG content and the brand hex color from Phase 0. This sets the root fill and strips child fills so the entire icon renders in brand color. Also produce a black variant by calling `recolor_svg` with `#000000`.
+3. **Generate all 4 color variants** from the winner SVG. You MUST produce all four:
+
+   **3a. Black solid** (`icon-black.svg`):
+   Call `mcp__icon-processor__recolor_svg` with `color: "#000000"`. Save to `<workspace>/icon-black.svg`.
+
+   **3b. White solid** (`icon-white.svg`):
+   Call `mcp__icon-processor__recolor_svg` with `color: "#FFFFFF"`. Save to `<workspace>/icon-white.svg`.
+
+   **3c. Brand color solid** (`icon.svg`):
+   Call `mcp__icon-processor__recolor_svg` with the brand hex color from Phase 0. Save to `<workspace>/icon.svg`.
+
+   **3d. Full-color variant** (`icon-full-color.svg`):
+   This is the most nuanced variant. The goal is an icon with semantically correct per-shape colors:
+   1. Call `mcp__icon-processor__analyze_svg_structure` on the winner SVG to understand the element breakdown
+   2. Read the **original source SVG** (from `candidates/` or `cleaned/`, before any recoloring) with the `Read` tool to see what colors each element originally had
+   3. **Decision tree**:
+      - If the original SVG already has **distinct per-element colors** (multi-color icon with different fills on different paths): Use those original colors directly. The full-color variant preserves the original design intent. Copy or reconstruct the normalized SVG with original per-element fills.
+      - If the icon is **naturally single-color** (all paths use one fill, or it came from Simple Icons): The full-color variant equals the brand-color variant. Just copy `icon.svg` content.
+      - If the SVG was **traced from a raster** and lost original colors: Apply semantically meaningful colors based on your knowledge of the brand. Use the brand's primary and secondary colors from Phase 0 research (brand guidelines, press kit). Use `Edit` tool to set `fill` attributes on individual `<path>`, `<rect>`, `<circle>`, etc. elements.
+   4. Save to `<workspace>/icon-full-color.svg`.
+
 4. Save the brand-colored version to `<workspace>/icon.svg` (the workspace is temporary working space for this session)
 5. **Store to global icon store**: Call `mcp__icon-processor__store_icon` with:
    - `slug`: the brand slug (lowercase, hyphens, e.g. `"splunk"`)
    - `display_name`: human-readable brand name (e.g. `"Splunk"`)
    - `brand_color`: the hex color from Phase 0 (e.g. `"#65A637"`)
-   - `svg_content`: the brand-colored SVG from step 3
+   - `svg_content`: the brand-colored SVG from step 3c
    - `source`: where the winning candidate came from (e.g. `"simple-icons"`, `"brand website"`, `"svgrepo.com"`)
-   - `black_variant_svg`: the black variant SVG from step 3
+   - `black_variant_svg`: the black variant SVG from step 3a
+   - `white_variant_svg`: the white variant SVG from step 3b
+   - `full_color_svg`: the full-color variant SVG from step 3d
 6. Write `<workspace>/report.md` explaining:
    - The brand color used and its source
    - Which candidate won and why
    - What processing steps were applied
+   - The full-color variant approach taken (original colors preserved / single-color copy / manual coloring)
    - Any issues encountered and how they were resolved
    - Confirmation that the icon was stored to the global store (or any error if it failed)
 
@@ -170,5 +193,5 @@ The workspace path will be provided when you're invoked (typically `tmp/icons/<b
 - **Bigger source images trace better** — if downloading PNGs, get the largest available
 - **Check favicon sizes** — apple-touch-icon is often 180x180 or 192x192, good for tracing
 - **Some icons ARE text** — brands like IBM, HP, or CNN have text-based logos. In these cases, keep the text paths as they ARE the icon
-- **Color handling** — the final icon should always use the brand's primary color (identified in Phase 0). Produce a black variant as an alternative, but the winner (`icon.svg`) must be in brand color. For multi-color icons, preserve the original colors.
+- **Color handling** — you MUST produce all 4 variants: black solid, white solid, brand color solid, and full-color. The winner (`icon.svg`) is the brand-color solid version. The full-color variant (`icon-full-color.svg`) preserves the original multi-color design when applicable, or equals the brand-color version for single-color icons.
 - **viewBox matters more than width/height** — the normalize step handles this, but verify the viewBox looks correct in the final output
