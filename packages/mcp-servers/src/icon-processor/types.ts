@@ -83,6 +83,7 @@ export const StoreIconSchema = z.object({
   black_variant_svg: z.string().optional().describe('Black (#000000) variant SVG content'),
   white_variant_svg: z.string().optional().describe('White (#FFFFFF) variant SVG content'),
   full_color_svg: z.string().optional().describe('Full-color variant SVG content with per-shape coloring'),
+  report_md: z.string().optional().describe('Pipeline report markdown content documenting source, processing steps, and selection rationale'),
 });
 
 export const DeleteIconSchema = z.object({
@@ -232,6 +233,8 @@ export interface StoredIconEntry {
   has_black_variant: boolean;
   has_white_variant: boolean;
   has_full_color_variant: boolean;
+  has_artifacts: boolean;
+  has_report: boolean;
 }
 
 export interface ListIconsResult {
