@@ -14,17 +14,28 @@ For curated demo scenarios, use `/demo-interactive` or `/demo-autonomous`.
 
 Show all prefetch data briefly. Highlight any `criticalIssues` prominently.
 
-### Step 2: Discover and Select Project
+### Step 2: Select Persona
 
-1. If prefetch data includes `discoveredProjects`, use that
-2. Otherwise read the project's `playwright.config.ts` via the Read tool
-3. Exclude infrastructure projects (`setup`, `seed`, `auth-setup`, `cleanup`)
-4. If only one eligible project remains, use it directly
-5. If multiple, present via `AskUserQuestion`
+If prefetch `personaGroups` has entries, present persona selection:
+
+If only one persona, use it directly (skip prompt).
+
+Otherwise, present via `AskUserQuestion`:
+- **question**: "Which persona?"
+- **options**: One per persona from `personaGroups`. Label = `[N] <persona_display_name>` where N is that persona's scenario count (e.g., `[3] Vendor (Owner)`). Description = playwright project name. Also include an **"All tests"** option with description = "Browse the full test suite (all projects)" — this maps to no project filter.
+
+If `personaGroups` is empty or missing, fall back to the existing behavior:
+present `discoveredProjects` (excluding infrastructure: `setup`, `seed`, `auth-setup`, `cleanup`) as options via `AskUserQuestion`. If only one eligible project, use it directly.
+
+After selection:
+- If "All tests" chosen: launch UI mode with no project filter
+- Otherwise: use the selected persona's `playwright_project`
 
 ### Step 3: Run Preflight
 
 Call `mcp__playwright__preflight_check({ project: "<selected>" })`.
+
+Skip preflight if "All tests" was chosen (no single project to check).
 
 ### Step 4: Escalate Failures
 
@@ -47,9 +58,11 @@ STOP — do not launch.
 
 Call `mcp__playwright__launch_ui_mode({ project: "<selected>" })`.
 
+If "All tests" was chosen, call `mcp__playwright__launch_ui_mode({})` with no project filter.
+
 ### Step 6: Report
 
-Show project, PID, and tips:
+Show project (or "All"), PID, and tips:
 - Playwright UI mode is open — click tests to run them
 - All tests are visible (spec, manual, demo)
 - Close the Playwright window when done
@@ -58,6 +71,6 @@ Show project, PID, and tips:
 ## Rules
 
 - **Every failure goes to the deputy-CTO** — no failure is unrecoverable
-- **Never skip preflight**
+- **Never skip preflight** (except "All tests" mode)
 - **Never use CLI** — `npx playwright test` bypasses credential injection
 - **Never launch when preflight fails** — always escalate first

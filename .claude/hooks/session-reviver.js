@@ -33,6 +33,7 @@ import {
   checkKeyHealth,
   selectActiveKey,
 } from './key-sync.js';
+import { isProxyDisabled } from './lib/proxy-state.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
@@ -186,17 +187,22 @@ function buildSpawnEnv(agentId) {
     }
   } catch {}
 
-  return {
+  const env = {
     ...process.env,
     CLAUDE_PROJECT_DIR: PROJECT_DIR,
     CLAUDE_SPAWNED_SESSION: 'true',
     CLAUDE_AGENT_ID: agentId,
-    HTTPS_PROXY: 'http://localhost:18080',
-    HTTP_PROXY: 'http://localhost:18080',
-    NO_PROXY: 'localhost,127.0.0.1',
-    NODE_EXTRA_CA_CERTS: path.join(os.homedir(), '.claude', 'proxy-certs', 'ca.pem'),
     PATH: guardedPath,
   };
+
+  if (!isProxyDisabled()) {
+    env.HTTPS_PROXY = 'http://localhost:18080';
+    env.HTTP_PROXY = 'http://localhost:18080';
+    env.NO_PROXY = 'localhost,127.0.0.1';
+    env.NODE_EXTRA_CA_CERTS = path.join(os.homedir(), '.claude', 'proxy-certs', 'ca.pem');
+  }
+
+  return env;
 }
 
 /**
