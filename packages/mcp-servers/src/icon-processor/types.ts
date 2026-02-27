@@ -70,7 +70,7 @@ export const StoreIconSchema = z.object({
   slug: z
     .string()
     .min(1)
-    .regex(/^[a-z0-9][a-z0-9-]*$/, 'Slug must be lowercase alphanumeric with hyphens, starting with alphanumeric')
+    .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'Slug must be lowercase alphanumeric with single hyphens, no leading/trailing/consecutive hyphens')
     .describe('Brand slug (e.g. "splunk") — used as the directory name in the global icon store'),
   display_name: z.string().min(1).describe('Human-readable brand name (e.g. "Splunk")'),
   brand_color: z
@@ -81,13 +81,15 @@ export const StoreIconSchema = z.object({
   svg_content: z.string().min(1).describe('Final SVG content for the brand-colored icon'),
   source: z.string().optional().describe('Where the icon came from (e.g. "simple-icons", "brand website")'),
   black_variant_svg: z.string().optional().describe('Black (#000000) variant SVG content'),
+  white_variant_svg: z.string().optional().describe('White (#FFFFFF) variant SVG content'),
+  full_color_svg: z.string().optional().describe('Full-color variant SVG content with per-shape coloring'),
 });
 
 export const DeleteIconSchema = z.object({
   slug: z
     .string()
     .min(1)
-    .regex(/^[a-z0-9][a-z0-9-]*$/, 'Slug must be lowercase alphanumeric with hyphens, starting with alphanumeric')
+    .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'Slug must be lowercase alphanumeric with single hyphens, no leading/trailing/consecutive hyphens')
     .describe('Brand slug to delete from the global icon store'),
 });
 
@@ -228,6 +230,8 @@ export interface StoredIconEntry {
   source?: string;
   created_at: string;
   has_black_variant: boolean;
+  has_white_variant: boolean;
+  has_full_color_variant: boolean;
 }
 
 export interface ListIconsResult {
