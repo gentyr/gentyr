@@ -17,7 +17,7 @@ export const LookupSimpleIconSchema = z.object({
 });
 
 export const DownloadImageSchema = z.object({
-  url: z.string().min(1).describe('URL of the image to download'),
+  url: z.string().url().describe('URL of the image to download (must be http:// or https://)'),
   output_path: z.string().min(1).describe('Absolute path to save the downloaded file'),
 });
 

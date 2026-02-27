@@ -172,6 +172,122 @@ describe('icon-processor MCP server', () => {
   });
 
   // ============================================================================
+  // Test: download_image
+  // ============================================================================
+
+  describe('download_image', () => {
+    it('should return error for unreachable URL', async () => {
+      const result = (await callTool('download_image', {
+        url: 'http://localhost:1/nonexistent-image.png',
+        output_path: tmpPath('.png'),
+      })) as { success: boolean; error: string };
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Network error');
+    });
+
+    it('should block file:// protocol (SSRF prevention)', async () => {
+      const result = (await callTool('download_image', {
+        url: 'file:///etc/passwd',
+        output_path: tmpPath('.txt'),
+      })) as { success: boolean; error: string };
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/Blocked URL protocol/);
+    });
+
+    it('should block ftp:// protocol (SSRF prevention)', async () => {
+      const result = (await callTool('download_image', {
+        url: 'ftp://example.com/image.png',
+        output_path: tmpPath('.png'),
+      })) as { success: boolean; error: string };
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/Blocked URL protocol/);
+    });
+
+    it('should not write file when URL protocol is blocked', async () => {
+      const outputPath = tmpPath('.png');
+      await callTool('download_image', {
+        url: 'file:///etc/passwd',
+        output_path: outputPath,
+      });
+
+      expect(fs.existsSync(outputPath)).toBe(false);
+    });
+
+    it('should reject path traversal in output_path', async () => {
+      const result = (await callTool('download_image', {
+        url: 'http://localhost:1/test.png',
+        output_path: '/tmp/safe/../../../etc/evil.png',
+      })) as { error: string };
+
+      expect(result.error).toMatch(/Path traversal detected/);
+    });
+  });
+
+  // ============================================================================
+  // Test: Security — assertSafePath
+  // ============================================================================
+
+  describe('security: path traversal blocking', () => {
+    it('analyze_image: should reject path with .. traversal', async () => {
+      const result = (await callTool('analyze_image', {
+        input_path: '/tmp/icons/../../../etc/shadow',
+      })) as { error: string };
+
+      expect(result.error).toMatch(/Path traversal detected/);
+    });
+
+    it('remove_background: should reject traversal in output_path', async () => {
+      const { path: inputPath } = await createTestPng(64, 64);
+
+      const result = (await callTool('remove_background', {
+        input_path: inputPath,
+        output_path: '/tmp/../etc/cron.d/evil',
+      })) as { error: string };
+
+      expect(result.error).toMatch(/Path traversal detected/);
+      fs.unlinkSync(inputPath);
+    });
+
+    it('normalize_svg: should reject traversal in output_path', async () => {
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10z"/></svg>`;
+
+      const result = (await callTool('normalize_svg', {
+        svg_content: svg,
+        output_path: '/tmp/../../etc/evil.svg',
+      })) as { error: string };
+
+      expect(result.error).toMatch(/Path traversal detected/);
+    });
+
+    it('optimize_svg: should reject traversal in output_path', async () => {
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10z"/></svg>`;
+
+      const result = (await callTool('optimize_svg', {
+        svg_content: svg,
+        output_path: '/tmp/../../../etc/evil.svg',
+      })) as { error: string };
+
+      expect(result.error).toMatch(/Path traversal detected/);
+    });
+
+    it('clean absolute paths should pass validation', async () => {
+      const outputPath = tmpPath('.svg');
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0h10v10H0z"/></svg>`;
+
+      const result = (await callTool('optimize_svg', {
+        svg_content: svg,
+        output_path: outputPath,
+      })) as { success: boolean };
+
+      expect(result.success).toBe(true);
+      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    });
+  });
+
+  // ============================================================================
   // Test: analyze_image
   // ============================================================================
 
@@ -184,12 +300,14 @@ describe('icon-processor MCP server', () => {
 
       const result = (await callTool('analyze_image', {
         input_path: imgPath,
-      })) as { width: number; height: number; estimated_background: string };
+      })) as { width: number; height: number; estimated_background: string; background_color?: { hex: string } };
 
       expect(result.width).toBe(64);
       expect(result.height).toBe(64);
       // With a circle in the middle, corners are white = solid background
       expect(result.estimated_background).toBe('solid');
+      expect(result.background_color).toBeDefined();
+      expect(result.background_color!.hex).toBe('#ffffff');
 
       fs.unlinkSync(imgPath);
     });
@@ -210,6 +328,28 @@ describe('icon-processor MCP server', () => {
 
       expect(result.estimated_background).toBe('transparent');
       expect(result.has_alpha).toBe(true);
+
+      fs.unlinkSync(imgPath);
+    });
+
+    it('should detect a complex background PNG', async () => {
+      const sharp = (await import('sharp')).default;
+      const imgPath = tmpPath('.png');
+
+      // Create image with different colors in each corner (gradient-like)
+      const svgSource = `<svg width="64" height="64" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0" y="0" width="32" height="32" fill="red"/>
+        <rect x="32" y="0" width="32" height="32" fill="blue"/>
+        <rect x="0" y="32" width="32" height="32" fill="green"/>
+        <rect x="32" y="32" width="32" height="32" fill="yellow"/>
+      </svg>`;
+      await sharp(Buffer.from(svgSource)).png().toFile(imgPath);
+
+      const result = (await callTool('analyze_image', {
+        input_path: imgPath,
+      })) as { estimated_background: string };
+
+      expect(result.estimated_background).toBe('complex');
 
       fs.unlinkSync(imgPath);
     });
@@ -269,6 +409,16 @@ describe('icon-processor MCP server', () => {
   // ============================================================================
 
   describe('trace_to_svg', () => {
+    it('should return error for non-existent file', async () => {
+      const result = (await callTool('trace_to_svg', {
+        input_path: '/tmp/nonexistent-trace-input.png',
+        output_path: tmpPath('.svg'),
+      })) as { success: boolean; error: string };
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('File not found');
+    });
+
     it('should trace a simple shape PNG to SVG', async () => {
       const { path: inputPath } = await createTestPng(128, 128, {
         background: { r: 255, g: 255, b: 255 },
@@ -334,6 +484,22 @@ describe('icon-processor MCP server', () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain('No path elements');
     });
+
+    it('should return error for SVG with unparseable path data', async () => {
+      // A path with empty d="" is extracted but svgPathBbox can't compute a bbox
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg"><path d="" fill="black"/></svg>`;
+      const outputPath = tmpPath('.svg');
+
+      const result = (await callTool('normalize_svg', {
+        svg_content: svg,
+        output_path: outputPath,
+      })) as { success: boolean; error: string };
+
+      expect(result.success).toBe(false);
+      // The error could be "No path elements" or "Could not compute bounding box"
+      // depending on whether the regex matches empty d attributes
+      expect(result.error).toBeDefined();
+    });
   });
 
   // ============================================================================
@@ -362,6 +528,17 @@ describe('icon-processor MCP server', () => {
       expect(result.svg_content).toContain('<path');
       expect(result.svg_content).not.toContain('Adobe Illustrator');
       expect(result.svg_content).not.toContain('metadata');
+    });
+
+    it('should not set output_path when omitted', async () => {
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0h10v10H0z"/></svg>`;
+
+      const result = (await callTool('optimize_svg', {
+        svg_content: svg,
+      })) as { success: boolean; output_path?: string };
+
+      expect(result.success).toBe(true);
+      expect(result.output_path).toBeUndefined();
     });
 
     it('should write to output_path when provided', async () => {
