@@ -3277,6 +3277,29 @@ async function main() {
   }
 
   // =========================================================================
+  // TASK GATE STALE CLEANUP
+  // Auto-approve pending_review tasks older than 10 minutes (gate agent timed out)
+  // =========================================================================
+  if (Database) {
+    try {
+      const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
+      if (fs.existsSync(todoDbPath)) {
+        const todoDb = new Database(todoDbPath);
+        const nowTimestamp = Math.floor(Date.now() / 1000);
+        const result = todoDb.prepare(
+          "UPDATE tasks SET status = 'pending' WHERE status = 'pending_review' AND created_timestamp < ?"
+        ).run(nowTimestamp - 600);
+        if (result.changes > 0) {
+          log(`Task gate cleanup: auto-approved ${result.changes} stale pending_review task(s).`);
+        }
+        todoDb.close();
+      }
+    } catch (err) {
+      log(`Task gate cleanup error (non-fatal): ${err.message}`);
+    }
+  }
+
+  // =========================================================================
   // WORKTREE CLEANUP (30min cooldown)
   // Removes worktrees whose feature branches have been merged to preview
   // =========================================================================

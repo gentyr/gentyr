@@ -796,7 +796,7 @@ function handleConfigurePersonas() {
   if (feedbackDb) {
     try {
       const personas = feedbackDb.prepare(
-        "SELECT id, name, consumption_mode, enabled FROM personas ORDER BY name"
+        "SELECT id, name, COALESCE(display_name, name) as display_name, consumption_mode, enabled FROM personas ORDER BY name"
       ).all();
       const features = feedbackDb.prepare(
         "SELECT id, name, category FROM features ORDER BY name"
@@ -938,7 +938,7 @@ function handleProductManager() {
   if (feedbackDb) {
     try {
       const guiPersonas = feedbackDb.prepare(
-        "SELECT id, name FROM personas WHERE enabled = 1 AND consumption_mode = 'gui'"
+        "SELECT id, name, COALESCE(display_name, name) as display_name FROM personas WHERE enabled = 1 AND consumption_mode = 'gui'"
       ).all();
       const scenarios = feedbackDb.prepare(
         "SELECT persona_id, COUNT(*) as count FROM demo_scenarios WHERE enabled = 1 GROUP BY persona_id"
@@ -1068,7 +1068,7 @@ function handlePersonaFeedback() {
     try {
       // All enabled personas with basic info
       const personas = feedbackDb.prepare(
-        "SELECT id, name, consumption_mode, enabled FROM personas ORDER BY name"
+        "SELECT id, name, COALESCE(display_name, name) as display_name, consumption_mode, enabled FROM personas ORDER BY name"
       ).all();
       output.gathered.personas = personas;
       output.gathered.enabledCount = personas.filter(p => p.enabled).length;
@@ -1089,6 +1089,7 @@ function handlePersonaFeedback() {
           SELECT
             p.id,
             p.name,
+            COALESCE(p.display_name, p.name) as display_name,
             (SELECT MAX(s.completed_at) FROM feedback_sessions s WHERE s.persona_id = p.id) as last_session_date,
             (SELECT s.satisfaction_level FROM feedback_sessions s WHERE s.persona_id = p.id ORDER BY s.completed_at DESC LIMIT 1) as last_satisfaction
           FROM personas p
@@ -1314,7 +1315,8 @@ function handleDemo() {
         const scenarios = scenariosDb.prepare(`
           SELECT ds.id, ds.title, ds.description, ds.category,
                  ds.playwright_project, ds.test_file, ds.sort_order,
-                 p.name as persona_name
+                 p.name as persona_name,
+                 COALESCE(p.display_name, p.name) as persona_display_name
           FROM demo_scenarios ds
           JOIN personas p ON p.id = ds.persona_id
           WHERE ds.enabled = 1
@@ -1322,16 +1324,44 @@ function handleDemo() {
         `).all();
         output.gathered.scenarios = scenarios;
         output.gathered.scenarioCount = scenarios.length;
+
+        // Group scenarios by persona for two-step selection
+        const personaMap = new Map();
+        for (const s of scenarios) {
+          if (!personaMap.has(s.persona_name)) {
+            personaMap.set(s.persona_name, {
+              persona_name: s.persona_name,
+              persona_display_name: s.persona_display_name,
+              playwright_project: s.playwright_project,
+              scenarios: [],
+            });
+          }
+          personaMap.get(s.persona_name).scenarios.push({
+            id: s.id,
+            title: s.title,
+            description: s.description,
+            category: s.category,
+            test_file: s.test_file,
+            playwright_project: s.playwright_project,
+          });
+        }
+        output.gathered.personaGroups = [...personaMap.values()];
       } catch {
         output.gathered.scenarios = [];
         output.gathered.scenarioCount = 0;
+        output.gathered.personaGroups = [];
       } finally {
         scenariosDb.close();
       }
     } else {
       output.gathered.scenarios = [];
       output.gathered.scenarioCount = 0;
+      output.gathered.personaGroups = [];
     }
+  } else {
+    output.gathered.scenarios = [];
+    output.gathered.scenarioCount = 0;
+    output.gathered.personaGroups = [];
   }
 
   // Summary: critical issues

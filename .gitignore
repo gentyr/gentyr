@@ -66,6 +66,9 @@ CLAUDE.md.makerkit-section
 # Local plugins (gitignored — project-specific integrations, never published)
 plugins/
 
+# Icon workspace (agent output)
+tmp/
+
 # OS
 .DS_Store
 Thumbs.db
