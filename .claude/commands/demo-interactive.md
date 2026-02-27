@@ -13,12 +13,13 @@ the end so you can manually interact with the app from that scaffolded state.
 
 Show all prefetch data briefly. Highlight any `criticalIssues` prominently.
 
-### Step 2: List Available Scenarios
+### Step 2: Select Persona
 
-If prefetch data includes `scenarios`, use that. Otherwise call
-`mcp__user-feedback__list_scenarios({ enabled_only: true })`.
+If prefetch `personaGroups` is empty or missing, fall back to
+`mcp__user-feedback__list_scenarios({ enabled_only: true })` and group by
+`persona_name` into the same structure: `{ persona_name, playwright_project, scenarios[] }`.
 
-If zero scenarios exist:
+If zero personas have scenarios:
 > "No demo scenarios configured yet. The product-manager agent creates
 > scenarios — run a product-manager evaluation first, or create scenarios
 > manually via `mcp__user-feedback__create_scenario`."
@@ -26,15 +27,21 @@ If zero scenarios exist:
 > **Tip:** Use `/demo` to browse all tests in Playwright UI mode instead.
 > STOP.
 
+If only one persona has scenarios, use it directly (skip prompt).
+
+Otherwise, present via `AskUserQuestion`:
+- **question**: "Which persona?"
+- **options**: One per persona from `personaGroups`. Label = `[N] <persona_display_name>` where N is that persona's scenario count (e.g., `[3] Vendor (Owner)`). Description = playwright project name.
+
 ### Step 3: Select Scenario
 
-Group scenarios by persona name (and category if set). For each, show:
-- **Title** — the scenario name
-- **Description** — first sentence only (truncate for readability)
-- **Auth context** — the Playwright project (e.g., "as vendor-owner")
+Get the scenarios array from the selected persona's group.
 
-If only one scenario exists, use it directly.
-If multiple, present via `AskUserQuestion`.
+If only one scenario, use it directly (skip prompt).
+
+Otherwise, present via `AskUserQuestion`:
+- **question**: "Which scenario?"
+- **options**: One per scenario. Label = scenario title. Description = first sentence of description + category in parentheses if set.
 
 ### Step 4: Run Preflight
 

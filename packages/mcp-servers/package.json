@@ -34,7 +34,8 @@
     "mcp-setup-helper": "./dist/setup-helper/server.js",
     "mcp-chrome-bridge": "./dist/chrome-bridge/server.js",
     "mcp-product-manager": "./dist/product-manager/server.js",
-    "mcp-plugin-manager": "./dist/plugin-manager/server.js"
+    "mcp-plugin-manager": "./dist/plugin-manager/server.js",
+    "mcp-icon-processor": "./dist/icon-processor/server.js"
   },
   "scripts": {
     "build": "tsc",
@@ -50,12 +51,18 @@
     "@modelcontextprotocol/sdk": "^1.26.0",
     "better-sqlite3": "^12.6.2",
     "playwright": "^1.58.2",
+    "potrace": "^2.1.8",
+    "sharp": "^0.33.0",
+    "simple-icons": "^13.0.0",
+    "svg-path-bbox": "^2.0.0",
+    "svgo": "^3.2.0",
     "tweetnacl": "^1.0.3",
     "zod": "^3.22.4"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",
     "@types/node": "^20.10.0",
+    "@types/potrace": "^2.1.1",
     "typescript": "^5.3.0",
     "vitest": "^1.0.0"
   },
