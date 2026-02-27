@@ -622,6 +622,14 @@ for state_file in \
     [ -f "$state_file" ] || echo '{}' > "$state_file"
 done
 
+# Generate protection key if missing (required by protected-action-gate.js for G024)
+# This must happen during normal installation, not only during --protect-mcp, so that
+# protected MCP actions do not fail-closed on a missing key file.
+if [ ! -f "$PROJECT_DIR/.claude/protection-key" ]; then
+    echo "  Generating protection key..."
+    CLAUDE_PROJECT_DIR="$PROJECT_DIR" node "$FRAMEWORK_DIR/scripts/encrypt-credential.js" --generate-key
+fi
+
 # Pre-create autonomous-mode.json with all automations enabled by default
 # This eliminates the need for manual configuration after GENTYR installation
 auto_mode_file="$PROJECT_DIR/.claude/autonomous-mode.json"
@@ -1082,9 +1090,12 @@ echo ""
 echo -e "${YELLOW}Updating .gitignore...${NC}"
 GITIGNORE_ENTRIES="
 # GENTYR runtime
+# Runtime databases and WAL files
 .claude/*.db
 .claude/*.db-shm
 .claude/*.db-wal
+
+# State and config files
 .claude/*-state.json
 .claude/*.log
 .claude/api-key-rotation.json
@@ -1092,8 +1103,22 @@ GITIGNORE_ENTRIES="
 .claude/autonomous-mode.json
 .claude/vault-mappings.json
 .claude/credential-provider.json
-.claude/state/
 .claude/settings.local.json
+.claude/settings.json
+.claude/protection-key
+.claude/protected-action-approvals.json
+.claude/protection-state.json
+.claude/specs-config.json
+.claude/playwright-health.json
+
+# Generated directories
+.claude/config/
+.claude/state/
+.claude/worktrees/
+
+# Generated root-level files
+.mcp.json
+op-secrets.conf
 "
 if ! grep -q "# GENTYR runtime" "$PROJECT_DIR/.gitignore" 2>/dev/null; then
     echo "$GITIGNORE_ENTRIES" >> "$PROJECT_DIR/.gitignore"
@@ -1518,7 +1543,7 @@ if [ "$PROTECT_MCP" = true ]; then
             # Generate or preserve protection key
             if [ ! -f "$PROTECTION_KEY_FILE" ]; then
                 echo "  Generating protection key..."
-                node "$FRAMEWORK_DIR/scripts/encrypt-credential.js" --generate-key
+                CLAUDE_PROJECT_DIR="$PROJECT_DIR" node "$FRAMEWORK_DIR/scripts/encrypt-credential.js" --generate-key
             else
                 echo "  Using existing protection key."
             fi

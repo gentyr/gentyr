@@ -285,6 +285,38 @@ The product-manager feature is **opt-in** via the `productManagerEnabled` flag i
 
 Use `mcp__show__*` tools during briefings to view targeted dashboard sections without running the full report. Useful for checking `show_deployments` before promotion decisions, `show_quota` before spawning agents, or `show_testing` before approving commits.
 
+## Pre-approved Bypass System
+
+For scenarios where the CTO will be unavailable (e.g., overnight deployments) or where a single logical operation requires multiple protected actions (e.g., read + write), use pre-approved bypasses.
+
+### Tools
+
+- `mcp__deputy-cto__request_preapproved_bypass` — Create a pending pre-approval for a specific server+tool
+- `mcp__deputy-cto__activate_preapproved_bypass` — Activate after CTO confirms via AskUserQuestion
+- `mcp__deputy-cto__list_preapproved_bypasses` — List all active pre-approvals with remaining uses
+
+### Workflow
+
+1. Call `request_preapproved_bypass` with server, tool, reason, expiry_hours (1-12, default 8), max_uses (1-5, default 3)
+2. Use AskUserQuestion to present the pre-approval to the CTO:
+   - Show: server, tool, reason, expiry duration, max uses, burst window (60s)
+   - If CTO approves: proceed to step 3
+   - If CTO denies: abandon the pre-approval
+3. Call `activate_preapproved_bypass` with the returned code
+4. Later, any agent invoking the matching server+tool will have the pre-approval auto-consumed by the gate hook
+
+### Burst-Use Window
+
+After the first consumption, subsequent uses must occur within **60 seconds** of the previous use. If 60 seconds elapse without a use, remaining uses expire. This handles multi-step operations (e.g., read-then-write) without creating an open-ended multi-use token.
+
+### Constraints
+
+- Max 5 active pre-approvals at a time
+- One pre-approval per server+tool combination
+- Args-agnostic: matches ANY invocation of the server+tool
+- HMAC-signed with domain-separated formulas (cannot cross-forge with standard approvals)
+- CTO-gated: requires interactive AskUserQuestion confirmation
+
 ## Security Escalation Protocol
 
 When encountering bypass requests, locked/protected file issues, or permission escalation scenarios:

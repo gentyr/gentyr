@@ -202,12 +202,25 @@ function preResolveCredentials(projectDir) {
 
 function buildSpawnEnv(agentId, projectDir) {
   ensureCredentials(projectDir);
+
+  // Resolve git-wrappers directory (follows symlinks for npm link model)
+  const hooksDir = path.join(projectDir, '.claude', 'hooks');
+  let guardedPath = process.env.PATH || '/usr/bin:/bin';
+  try {
+    const realHooks = fs.realpathSync(hooksDir);
+    const wrappersDir = path.join(realHooks, 'git-wrappers');
+    if (fs.existsSync(path.join(wrappersDir, 'git'))) {
+      guardedPath = `${wrappersDir}:${guardedPath}`;
+    }
+  } catch {}
+
   return {
     ...process.env,
     ...resolvedCredentials,
     CLAUDE_PROJECT_DIR: projectDir,
     CLAUDE_SPAWNED_SESSION: 'true',
     CLAUDE_AGENT_ID: agentId,
+    PATH: guardedPath,
   };
 }
 

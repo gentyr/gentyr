@@ -55,6 +55,9 @@ import {
   ApproveProtectedActionArgsSchema,
   DenyProtectedActionArgsSchema,
   ListPendingActionRequestsArgsSchema,
+  RequestPreapprovedBypassArgsSchema,
+  ActivatePreapprovedBypassArgsSchema,
+  ListPreapprovedBypassesArgsSchema,
   GetMergeChainStatusArgsSchema,
   RequestHotfixPromotionArgsSchema,
   ExecuteHotfixPromotionArgsSchema,
@@ -75,6 +78,9 @@ import {
   type GetProtectedActionRequestArgs,
   type ApproveProtectedActionArgs,
   type DenyProtectedActionArgs,
+  type RequestPreapprovedBypassArgs,
+  type ActivatePreapprovedBypassArgs,
+  type ListPreapprovedBypassesArgs,
   type GetMergeChainStatusArgs,
   type RequestHotfixPromotionArgs,
   type ExecuteHotfixPromotionArgs,
@@ -110,6 +116,10 @@ import {
   type DenyProtectedActionResult,
   type PendingActionRequestItem,
   type ListPendingActionRequestsResult,
+  type RequestPreapprovedBypassResult,
+  type ActivatePreapprovedBypassResult,
+  type PreapprovedBypassItem,
+  type ListPreapprovedBypassesResult,
   type ClearedQuestionItem,
   type AutonomousModeConfig,
   type ErrorResult,
@@ -127,6 +137,7 @@ const AUTOMATION_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'autom
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
 const PROTECTED_ACTIONS_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'protected-actions.json');
 const PROTECTED_APPROVALS_PATH = path.join(PROJECT_DIR, '.claude', 'protected-action-approvals.json');
+const APPROVALS_LOCK_PATH = PROTECTED_APPROVALS_PATH + '.lock';
 const PROTECTION_KEY_PATH = path.join(PROJECT_DIR, '.claude', 'protection-key');
 const HOTFIX_APPROVAL_TOKEN_PATH = path.join(PROJECT_DIR, '.claude', 'hotfix-approval-token.json');
 const COOLDOWN_MINUTES = 55;
@@ -1236,10 +1247,11 @@ function listAutomationConfig(): ListAutomationConfigResult {
  * Generate a 6-character alphanumeric bypass code
  */
 function generateBypassCode(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Exclude confusing chars: 0/O, 1/I
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // Exclude confusing chars: 0/O, 1/I/L
   let code = '';
+  const randomBytes = crypto.randomBytes(6);
   for (let i = 0; i < 6; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
+    code += chars.charAt(randomBytes[i] % chars.length);
   }
   return code;
 }
@@ -1585,6 +1597,12 @@ interface ApprovalsFile {
     pending_hmac?: string;
     approved_hmac?: string;
     approval_mode?: string;
+    is_preapproval?: boolean;
+    reason?: string;
+    max_uses?: number;
+    uses_remaining?: number;
+    burst_window_ms?: number;
+    last_used_timestamp?: number | null;
   }>;
 }
 
@@ -1604,7 +1622,45 @@ function saveApprovalsFile(data: ApprovalsFile): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(PROTECTED_APPROVALS_PATH, JSON.stringify(data, null, 2));
+  const tmpPath = PROTECTED_APPROVALS_PATH + '.tmp.' + process.pid;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
+    fs.renameSync(tmpPath, PROTECTED_APPROVALS_PATH);
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    throw err;
+  }
+}
+
+function acquireApprovalsLock(): boolean {
+  const maxAttempts = 10;
+  const baseDelay = 50;
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const fd = fs.openSync(APPROVALS_LOCK_PATH, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      return true;
+    } catch {
+      try {
+        const stat = fs.statSync(APPROVALS_LOCK_PATH);
+        if (Date.now() - stat.mtimeMs > 10000) {
+          fs.unlinkSync(APPROVALS_LOCK_PATH);
+          continue;
+        }
+      } catch { /* lock file gone, retry */ }
+      const delay = baseDelay * Math.pow(2, i);
+      const start = Date.now();
+      while (Date.now() - start < delay) { /* busy wait */ }
+    }
+  }
+  return false;
+}
+
+function releaseApprovalsLock(): void {
+  try {
+    fs.unlinkSync(APPROVALS_LOCK_PATH);
+  } catch { /* already released */ }
 }
 
 /**
@@ -1613,63 +1669,75 @@ function saveApprovalsFile(data: ApprovalsFile): void {
  */
 function approveProtectedAction(args: ApproveProtectedActionArgs): ApproveProtectedActionResult | ErrorResult {
   const code = args.code.toUpperCase();
-  const data = loadApprovalsFile();
-  const request = data.approvals[code];
 
-  if (!request) {
-    return { error: `No pending request found with code: ${code}` };
+  if (!acquireApprovalsLock()) {
+    return { error: 'Could not acquire approvals file lock. Try again.' };
   }
 
-  if (request.status === 'approved') {
-    return { error: `Request ${code} has already been approved.` };
-  }
+  try {
+    const data = loadApprovalsFile();
+    const request = data.approvals[code];
 
-  if (Date.now() > request.expires_timestamp) {
-    delete data.approvals[code];
-    saveApprovalsFile(data);
-    return { error: `Request ${code} has expired.` };
-  }
+    if (!request) {
+      return { error: `No pending request found with code: ${code}` };
+    }
 
-  // Only deputy-cto-approval mode requests can be approved by deputy-cto
-  if (request.approval_mode !== 'deputy-cto') {
-    return {
-      error: `Request ${code} requires CTO approval (mode: ${request.approval_mode || 'cto'}). Deputy-CTO cannot approve this action. Escalate to CTO queue.`,
-    };
-  }
+    if (request.status === 'approved') {
+      return { error: `Request ${code} has already been approved.` };
+    }
 
-  // Verify pending_hmac with protection key
-  const key = loadProtectionKey();
-  if (key && request.pending_hmac) {
-    const expectedPendingHmac = computeHmac(key, code, request.server, request.tool, request.argsHash || '', String(request.expires_timestamp));
-    if (request.pending_hmac !== expectedPendingHmac) {
-      // Forged request - delete it
+    if (Date.now() > request.expires_timestamp) {
       delete data.approvals[code];
       saveApprovalsFile(data);
-      return { error: `FORGERY DETECTED: Invalid pending signature for ${code}. Request deleted.` };
+      return { error: `Request ${code} has expired.` };
     }
-  } else if (!key && request.pending_hmac) {
-    // G001 Fail-Closed: Request has HMAC but we can't verify (key missing)
-    return { error: `Cannot verify request signature for ${code} (protection key missing). Restore .claude/protection-key.` };
-  } else if (!key) {
-    // G001 Fail-Closed: No protection key at all — cannot sign approvals
-    return { error: `Protection key missing. Cannot create HMAC-signed approval. Restore .claude/protection-key.` };
+
+    // Only deputy-cto-approval mode requests can be approved by deputy-cto
+    if (request.approval_mode !== 'deputy-cto') {
+      return {
+        error: `Request ${code} requires CTO approval (mode: ${request.approval_mode || 'cto'}). Deputy-CTO cannot approve this action. Escalate to CTO queue.`,
+      };
+    }
+
+    // Verify pending_hmac with protection key
+    // G001 Fail-Closed: pending_hmac is verified unconditionally when a protection key is
+    // present. If the field is missing (undefined), the comparison against the expected hex
+    // string fails correctly, blocking requests that were not created by the gate hook.
+    const key = loadProtectionKey();
+    if (key) {
+      const expectedPendingHmac = computeHmac(key, code, request.server, request.tool, request.argsHash || '', String(request.expires_timestamp));
+      if (request.pending_hmac !== expectedPendingHmac) {
+        // Forged or missing pending_hmac - delete it
+        delete data.approvals[code];
+        saveApprovalsFile(data);
+        return { error: `FORGERY DETECTED: Invalid pending signature for ${code}. Request deleted.` };
+      }
+    } else if (request.pending_hmac) {
+      // G001 Fail-Closed: Request has HMAC but we can't verify (key missing)
+      return { error: `Cannot verify request signature for ${code} (protection key missing). Restore .claude/protection-key.` };
+    } else {
+      // G001 Fail-Closed: No protection key at all — cannot sign approvals
+      return { error: `Protection key missing. Cannot create HMAC-signed approval. Restore .claude/protection-key.` };
+    }
+
+    // Compute approved_hmac (same algorithm as approval hook)
+    request.status = 'approved';
+    request.approved_at = new Date().toISOString();
+    request.approved_timestamp = Date.now();
+    request.approved_hmac = computeHmac(key, code, request.server, request.tool, 'approved', request.argsHash || '', String(request.expires_timestamp));
+
+    saveApprovalsFile(data);
+
+    return {
+      approved: true,
+      code,
+      server: request.server,
+      tool: request.tool,
+      message: `Approved: ${request.server}.${request.tool} (code: ${code}). Agent can now retry the action.`,
+    };
+  } finally {
+    releaseApprovalsLock();
   }
-
-  // Compute approved_hmac (same algorithm as approval hook)
-  request.status = 'approved';
-  request.approved_at = new Date().toISOString();
-  request.approved_timestamp = Date.now();
-  request.approved_hmac = computeHmac(key, code, request.server, request.tool, 'approved', request.argsHash || '', String(request.expires_timestamp));
-
-  saveApprovalsFile(data);
-
-  return {
-    approved: true,
-    code,
-    server: request.server,
-    tool: request.tool,
-    message: `Approved: ${request.server}.${request.tool} (code: ${code}). Agent can now retry the action.`,
-  };
 }
 
 /**
@@ -1678,25 +1746,34 @@ function approveProtectedAction(args: ApproveProtectedActionArgs): ApproveProtec
  */
 function denyProtectedAction(args: DenyProtectedActionArgs): DenyProtectedActionResult | ErrorResult {
   const code = args.code.toUpperCase();
-  const data = loadApprovalsFile();
-  const request = data.approvals[code];
 
-  if (!request) {
-    return { error: `No pending request found with code: ${code}` };
+  if (!acquireApprovalsLock()) {
+    return { error: 'Could not acquire approvals file lock. Try again.' };
   }
 
-  // Remove the request
-  const server = request.server;
-  const tool = request.tool;
-  delete data.approvals[code];
-  saveApprovalsFile(data);
+  try {
+    const data = loadApprovalsFile();
+    const request = data.approvals[code];
 
-  return {
-    denied: true,
-    code,
-    reason: args.reason,
-    message: `Denied: ${server}.${tool} (code: ${code}). Reason: ${args.reason}`,
-  };
+    if (!request) {
+      return { error: `No pending request found with code: ${code}` };
+    }
+
+    // Remove the request
+    const server = request.server;
+    const tool = request.tool;
+    delete data.approvals[code];
+    saveApprovalsFile(data);
+
+    return {
+      denied: true,
+      code,
+      reason: args.reason,
+      message: `Denied: ${server}.${tool} (code: ${code}). Reason: ${args.reason}`,
+    };
+  } finally {
+    releaseApprovalsLock();
+  }
 }
 
 /**
@@ -1730,6 +1807,235 @@ function listPendingActionRequests(): ListPendingActionRequestsResult {
     message: requests.length === 0
       ? 'No pending protected action requests.'
       : `Found ${requests.length} pending request(s).`,
+  };
+}
+
+// ============================================================================
+// Pre-approved Bypass Functions
+// ============================================================================
+
+const MAX_ACTIVE_PREAPPROVALS = 5;
+const BURST_WINDOW_MS = 60000; // 60 seconds
+
+interface PreapprovalEntry {
+  code: string;
+  server: string;
+  tool: string;
+  status: 'pending' | 'approved';
+  is_preapproval: true;
+  approval_mode: 'cto';
+  reason: string;
+  max_uses: number;
+  uses_remaining: number;
+  burst_window_ms: number;
+  last_used_timestamp: number | null;
+  created_at: string;
+  created_timestamp: number;
+  expires_at: string;
+  expires_timestamp: number;
+  pending_hmac?: string;
+  approved_hmac?: string;
+}
+
+/**
+ * Request a pre-approved bypass for a protected action.
+ * Creates a pending entry that must be activated via AskUserQuestion + activatePreapprovedBypass.
+ */
+function requestPreapprovedBypass(args: RequestPreapprovedBypassArgs): RequestPreapprovedBypassResult | ErrorResult {
+  const { server, tool, reason, expiry_hours, max_uses } = args;
+
+  // Validate server+tool exists in protected-actions.json
+  try {
+    if (!fs.existsSync(PROTECTED_ACTIONS_PATH)) {
+      return { error: 'Protected actions config not found. Cannot create pre-approval.' };
+    }
+    const config = JSON.parse(fs.readFileSync(PROTECTED_ACTIONS_PATH, 'utf8')) as { servers: Record<string, { tools: string | string[] }> };
+    const serverConfig = config.servers?.[server];
+    if (!serverConfig) {
+      return { error: `Server "${server}" not found in protected-actions.json.` };
+    }
+    if (serverConfig.tools !== '*' && (!Array.isArray(serverConfig.tools) || !serverConfig.tools.includes(tool))) {
+      return { error: `Tool "${tool}" is not protected on server "${server}".` };
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to read protected actions config: ${message}` };
+  }
+
+  // Validate protection key exists
+  const key = loadProtectionKey();
+  if (!key) {
+    return { error: 'Protection key missing. Cannot create HMAC-signed pre-approval. Restore .claude/protection-key.' };
+  }
+
+  if (!acquireApprovalsLock()) {
+    return { error: 'Could not acquire approvals file lock. Try again.' };
+  }
+
+  try {
+    const data = loadApprovalsFile();
+    const now = Date.now();
+
+    // Count active pre-approvals (non-expired, is_preapproval)
+    let activeCount = 0;
+    for (const entry of Object.values(data.approvals)) {
+      if (entry.is_preapproval && entry.expires_timestamp > now) {
+        activeCount++;
+      }
+    }
+    if (activeCount >= MAX_ACTIVE_PREAPPROVALS) {
+      return { error: `Too many active pre-approvals (max ${MAX_ACTIVE_PREAPPROVALS}). Wait for existing ones to expire or be consumed.` };
+    }
+
+    // Deduplication: only one per server+tool
+    for (const entry of Object.values(data.approvals)) {
+      if (entry.is_preapproval && entry.server === server && entry.tool === tool && entry.expires_timestamp > now) {
+        return { error: `A pre-approval already exists for ${server}.${tool} (code: ${entry.code}). Wait for it to expire or be consumed.` };
+      }
+    }
+
+    const code = generateBypassCode();
+    const expiresTimestamp = now + (expiry_hours! * 60 * 60 * 1000);
+    const pendingHmac = computeHmac(key, code, server, tool, 'preapproval-pending', String(expiresTimestamp));
+
+    const entry: PreapprovalEntry = {
+      code,
+      server,
+      tool,
+      status: 'pending',
+      is_preapproval: true,
+      approval_mode: 'cto',
+      reason,
+      max_uses: max_uses!,
+      uses_remaining: max_uses!,
+      burst_window_ms: BURST_WINDOW_MS,
+      last_used_timestamp: null,
+      created_at: new Date(now).toISOString(),
+      created_timestamp: now,
+      expires_at: new Date(expiresTimestamp).toISOString(),
+      expires_timestamp: expiresTimestamp,
+      pending_hmac: pendingHmac,
+    };
+
+    data.approvals[code] = entry as unknown as ApprovalsFile['approvals'][string];
+    saveApprovalsFile(data);
+
+    return {
+      code,
+      server,
+      tool,
+      reason,
+      expires_at: entry.expires_at,
+      expiry_hours: expiry_hours!,
+      max_uses: max_uses!,
+      message: `Pre-approval request created (code: ${code}). CTO must confirm via AskUserQuestion, then call activate_preapproved_bypass.`,
+      instructions: `Use AskUserQuestion to present this pre-approval to the CTO:\n- Server: ${server}\n- Tool: ${tool}\n- Reason: ${reason}\n- Expires in: ${expiry_hours} hours\n- Max uses: ${max_uses} (burst window: 60s after first use)\n\nIf CTO approves, call activate_preapproved_bypass with code "${code}".`,
+    };
+  } finally {
+    releaseApprovalsLock();
+  }
+}
+
+/**
+ * Activate a pre-approved bypass after CTO confirmation.
+ * Sets status to 'approved' and computes the activated HMAC.
+ */
+function activatePreapprovedBypass(args: ActivatePreapprovedBypassArgs): ActivatePreapprovedBypassResult | ErrorResult {
+  const code = args.code.toUpperCase();
+
+  const key = loadProtectionKey();
+  if (!key) {
+    return { error: 'Protection key missing. Cannot verify pre-approval. Restore .claude/protection-key.' };
+  }
+
+  if (!acquireApprovalsLock()) {
+    return { error: 'Could not acquire approvals file lock. Try again.' };
+  }
+
+  try {
+    const data = loadApprovalsFile();
+    const entry = data.approvals[code] as unknown as PreapprovalEntry | undefined;
+
+    if (!entry) {
+      return { error: `No pre-approval request found with code: ${code}` };
+    }
+
+    if (!entry.is_preapproval) {
+      return { error: `Entry ${code} is not a pre-approval. Use approve_protected_action for standard requests.` };
+    }
+
+    if (entry.status === 'approved') {
+      return { error: `Pre-approval ${code} is already activated.` };
+    }
+
+    if (Date.now() > entry.expires_timestamp) {
+      delete data.approvals[code];
+      saveApprovalsFile(data);
+      return { error: `Pre-approval ${code} has expired.` };
+    }
+
+    // Verify pending_hmac
+    const expectedPendingHmac = computeHmac(key, code, entry.server, entry.tool, 'preapproval-pending', String(entry.expires_timestamp));
+    if (entry.pending_hmac !== expectedPendingHmac) {
+      delete data.approvals[code];
+      saveApprovalsFile(data);
+      return { error: `FORGERY DETECTED: Invalid pending signature for pre-approval ${code}. Entry deleted.` };
+    }
+
+    // Activate
+    entry.status = 'approved';
+    const approvedHmac = computeHmac(key, code, entry.server, entry.tool, 'preapproval-activated', String(entry.expires_timestamp));
+    (entry as PreapprovalEntry & { approved_hmac: string }).approved_hmac = approvedHmac;
+
+    data.approvals[code] = entry as unknown as ApprovalsFile['approvals'][string];
+    saveApprovalsFile(data);
+
+    return {
+      activated: true,
+      code,
+      server: entry.server,
+      tool: entry.tool,
+      expires_at: entry.expires_at,
+      message: `Pre-approval ${code} activated for ${entry.server}.${entry.tool}. ${entry.max_uses} uses available (burst window: 60s). Expires: ${entry.expires_at}.`,
+    };
+  } finally {
+    releaseApprovalsLock();
+  }
+}
+
+/**
+ * List all non-expired pre-approvals with status, remaining uses, and time left.
+ */
+function listPreapprovedBypasses(_args: ListPreapprovedBypassesArgs): ListPreapprovedBypassesResult {
+  const data = loadApprovalsFile();
+  const now = Date.now();
+  const bypasses: PreapprovedBypassItem[] = [];
+
+  for (const entry of Object.values(data.approvals)) {
+    const preapproval = entry as unknown as PreapprovalEntry;
+    if (!preapproval.is_preapproval) continue;
+    if (preapproval.expires_timestamp < now) continue;
+
+    bypasses.push({
+      code: preapproval.code,
+      server: preapproval.server,
+      tool: preapproval.tool,
+      reason: preapproval.reason,
+      status: preapproval.status,
+      created_at: preapproval.created_at,
+      expires_at: preapproval.expires_at,
+      expires_in_hours: Math.round((preapproval.expires_timestamp - now) / (60 * 60 * 1000) * 10) / 10,
+      max_uses: preapproval.max_uses,
+      uses_remaining: preapproval.uses_remaining,
+    });
+  }
+
+  return {
+    bypasses,
+    count: bypasses.length,
+    message: bypasses.length === 0
+      ? 'No active pre-approved bypasses.'
+      : `Found ${bypasses.length} pre-approved bypass(es).`,
   };
 }
 
@@ -2172,6 +2478,25 @@ const tools: AnyToolHandler[] = [
     description: 'List all pending (non-expired) protected action requests. Shows code, server, tool, args, and approval mode for each.',
     schema: ListPendingActionRequestsArgsSchema,
     handler: listPendingActionRequests,
+  },
+  // Pre-approved bypass tools
+  {
+    name: 'request_preapproved_bypass',
+    description: 'Request a long-lived, burst-use pre-approval for a protected action. Creates a pending entry. After CTO confirms via AskUserQuestion, call activate_preapproved_bypass. Pre-approvals match ANY invocation of the server+tool (args-agnostic). Max 5 active, one per server+tool.',
+    schema: RequestPreapprovedBypassArgsSchema,
+    handler: requestPreapprovedBypass,
+  },
+  {
+    name: 'activate_preapproved_bypass',
+    description: 'Activate a pre-approved bypass after CTO confirmation via AskUserQuestion. Sets status to approved and computes HMAC signature. The pre-approval can then be consumed by any agent invoking the matching server+tool.',
+    schema: ActivatePreapprovedBypassArgsSchema,
+    handler: activatePreapprovedBypass,
+  },
+  {
+    name: 'list_preapproved_bypasses',
+    description: 'List all active (non-expired) pre-approved bypasses with status, remaining uses, and time until expiry.',
+    schema: ListPreapprovedBypassesArgsSchema,
+    handler: listPreapprovedBypasses,
   },
   {
     name: 'get_merge_chain_status',

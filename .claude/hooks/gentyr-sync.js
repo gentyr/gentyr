@@ -156,7 +156,9 @@ function statBasedSync(frameworkDir) {
 
   // Fast check: version + config hash match → nothing to do
   const currentConfigHash = computeConfigHash(frameworkDir);
-  if (state.version === currentVersion && state.configHash === currentConfigHash) {
+  const settingsExists = fs.existsSync(path.join(projectDir, '.claude', 'settings.json'));
+  const mcpJsonExists = fs.existsSync(path.join(projectDir, '.mcp.json'));
+  if (state.version === currentVersion && state.configHash === currentConfigHash && settingsExists && mcpJsonExists) {
     return true; // Handled: no sync needed
   }
 
@@ -170,12 +172,19 @@ function statBasedSync(frameworkDir) {
     const settingsPath = path.join(projectDir, '.claude', 'settings.json');
     const templatePath = path.join(frameworkDir, '.claude', 'settings.json.template');
     try {
-      fs.accessSync(settingsPath, fs.constants.W_OK);
+      const fileExists = fs.existsSync(settingsPath);
+      if (fileExists) {
+        fs.accessSync(settingsPath, fs.constants.W_OK);
+      } else {
+        fs.accessSync(path.dirname(settingsPath), fs.constants.W_OK);
+      }
       execFileSync('node', [mergeScript, 'install', settingsPath, templatePath], {
         stdio: 'pipe', timeout: 10000,
       });
       changes.push('settings.json');
-    } catch {}
+    } catch (err) {
+      process.stderr.write(`[gentyr-sync] settings.json re-merge failed: ${err.message || err}\n`);
+    }
   }
 
   // b. Regenerate .mcp.json
@@ -213,7 +222,9 @@ function statBasedSync(frameworkDir) {
       }
 
       changes.push('.mcp.json');
-    } catch {}
+    } catch (err) {
+      process.stderr.write(`[gentyr-sync] .mcp.json re-merge failed: ${err.message || err}\n`);
+    }
   }
 
   // c. Update CLAUDE.md section
@@ -426,6 +437,34 @@ function tamperCheck() {
     // hooks path doesn't exist — will be caught by other checks
   }
 
+  // Check 1.5: core.hooksPath worktree check
+  // If core.hooksPath points into .claude/worktrees/, it's stale from a Claude Code
+  // sub-agent worktree. Auto-repair to .husky.
+  try {
+    const hooksPathConfig = execFileSync('git', ['config', '--local', '--get', 'core.hooksPath'], {
+      cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    }).trim();
+    if (hooksPathConfig) {
+      const resolved = path.isAbsolute(hooksPathConfig)
+        ? hooksPathConfig
+        : path.resolve(projectDir, hooksPathConfig);
+      const worktreesDir = path.join(projectDir, '.claude', 'worktrees');
+      if (resolved.startsWith(worktreesDir)) {
+        // Auto-repair: reset to .husky
+        try {
+          execFileSync('git', ['config', '--local', 'core.hooksPath', '.husky'], {
+            cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+          });
+          warnings.push(`core.hooksPath was pointing into a worktree (${hooksPathConfig}) — auto-repaired to .husky`);
+        } catch {
+          warnings.push(`core.hooksPath points into a worktree (${hooksPathConfig}) — pre-commit hooks are BYPASSED. Fix: git config --local core.hooksPath .husky`);
+        }
+      }
+    }
+  } catch {
+    // No hooksPath set or git error — default behavior is fine
+  }
+
   // Check 2: Critical hook file ownership (existing check)
   const statePath = path.join(projectDir, '.claude', 'protection-state.json');
   let state;
@@ -447,6 +486,17 @@ function tamperCheck() {
         hooksDir = fs.realpathSync(hooksDir);
       }
     } catch {}
+
+    // Use copy-on-protect directory if present (linked projects)
+    if (state.hooksProtectedDir) {
+      const protectedDir = path.join(projectDir, state.hooksProtectedDir);
+      if (fs.existsSync(protectedDir)) {
+        hooksDir = protectedDir;
+      } else {
+        // Directory missing when state says it should exist — treat as tampering
+        warnings.push('hooks-protected/ directory missing (expected by protection-state.json)');
+      }
+    }
 
     const tampered = [];
     for (const hook of state.criticalHooks) {

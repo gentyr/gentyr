@@ -528,7 +528,7 @@ describe('account-overview-reader', () => {
       expect(result.events[0].description).toBe('New account added: user@example.com');
     });
 
-    it('should allow all 6 whitelisted event types', () => {
+    it('should allow all 7 whitelisted event types', () => {
       const now = Date.now();
       const testData = {
         version: 1,
@@ -543,13 +543,14 @@ describe('account-overview-reader', () => {
           { timestamp: now - 3000, event: 'key_exhausted', key_id: 'key-1' },
           { timestamp: now - 4000, event: 'key_switched', key_id: 'key-1' },
           { timestamp: now - 5000, event: 'account_quota_refreshed', key_id: 'key-1', account_email: 'user@example.com' },
+          { timestamp: now - 6000, event: 'account_removed', key_id: 'key-1', account_email: 'user@example.com' },
         ],
       };
 
       fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
       const result = getAccountOverviewData();
 
-      expect(result.events).toHaveLength(6);
+      expect(result.events).toHaveLength(7);
       const eventTypes = result.events.map(e => e.event);
       expect(eventTypes).toContain('key_added');
       expect(eventTypes).toContain('account_auth_failed');
@@ -557,6 +558,7 @@ describe('account-overview-reader', () => {
       expect(eventTypes).toContain('key_exhausted');
       expect(eventTypes).toContain('key_switched');
       expect(eventTypes).toContain('account_quota_refreshed');
+      expect(eventTypes).toContain('account_removed');
     });
 
     it('should cap events at 20', () => {
@@ -1375,6 +1377,91 @@ describe('account-overview-reader', () => {
       expect(result.events).toHaveLength(1);
       expect(result.events[0].description).toBe('Account selected: key-no-e...');
     });
+
+    it('should describe account_removed with email', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': {
+            status: 'tombstone',
+            account_email: 'removed@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'account_removed',
+            key_id: 'key-1',
+            account_email: 'removed@example.com',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('Account removed by user: removed@example.com');
+    });
+
+    it('should fall back to key-level email for account_removed when entry-level email is null', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': {
+            status: 'tombstone',
+            account_email: 'keylevel@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'account_removed',
+            key_id: 'key-1',
+            account_email: null,
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].description).toBe('Account removed by user: keylevel@example.com');
+    });
+
+    it('should not filter account_removed events for tombstone-status keys', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': {
+            status: 'tombstone',
+            account_email: 'removed@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now,
+            event: 'account_removed',
+            key_id: 'key-1',
+            account_email: 'removed@example.com',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      // Tombstone keys should NOT be filtered (only invalid keys are filtered)
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].event).toBe('account_removed');
+    });
   });
 
   describe('Consecutive Event Deduplication', () => {
@@ -1405,6 +1492,41 @@ describe('account-overview-reader', () => {
       // All 20 identical events should collapse to just 1
       expect(result.events).toHaveLength(1);
       expect(result.events[0].event).toBe('account_auth_failed');
+    });
+
+    it('should collapse consecutive account_removed events for same key', () => {
+      const now = Date.now();
+      const testData = {
+        version: 1,
+        active_key_id: null,
+        keys: {
+          'key-1': {
+            status: 'tombstone',
+            account_email: 'removed@example.com',
+          },
+        },
+        rotation_log: [
+          {
+            timestamp: now - 1000,
+            event: 'account_removed',
+            key_id: 'key-1',
+            account_email: 'removed@example.com',
+          },
+          {
+            timestamp: now - 2000,
+            event: 'account_removed',
+            key_id: 'key-1',
+            account_email: 'removed@example.com',
+          },
+        ],
+      };
+
+      fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
+      const result = getAccountOverviewData();
+
+      // Consecutive identical events should collapse to 1
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].event).toBe('account_removed');
     });
 
     it('should not collapse non-consecutive identical events', () => {

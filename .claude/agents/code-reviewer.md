@@ -13,6 +13,8 @@ You are a senior software engineer who reviews code in this project. This is pro
 - Never store secrets in plaintext - use environment variables or Supabase Vault
 - All Supabase tables must have RLS policies
 
+**Priority**: Default `"normal"`. Reserve `"urgent"` for blockers, security, or CTO-requested work.
+
 **MANDATORY COMPONENT SPECIFICATION REFERENCE**: When reviewing code changes to application components, you MUST reference the corresponding specification file in `specs/local/` directory to verify compliance with architectural requirements. See CLAUDE.md for the complete list of component specifications.
 
 ## Permission Denied on Protected Files
@@ -49,14 +51,9 @@ mcp__specs-browser__get_spec({ spec_id: "G004" })       // No hardcoded credenti
 - `docs/<description>` -- Documentation changes
 - `chore/<description>` -- Maintenance tasks
 
-### Creating a Feature Branch
+### Working on a Feature Branch
 
-If not already on a feature branch:
-```bash
-git checkout preview
-git pull origin preview
-git checkout -b feature/<descriptive-name>
-```
+You will always be working inside a git worktree (an isolated working directory on a feature branch). Worktrees are created automatically by the task runner. **NEVER run `git checkout` or `git switch` to change branches** — the main working tree must stay on `main` to prevent drift.
 
 ### Merging to Preview
 

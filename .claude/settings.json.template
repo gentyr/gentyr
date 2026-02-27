@@ -24,6 +24,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/playwright-cli-guard.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/branch-checkout-guard.js",
+            "timeout": 5
           }
         ]
       },
@@ -174,6 +179,11 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/urgent-task-spawner.js",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/task-gate-spawner.js",
             "timeout": 15
           }
         ]

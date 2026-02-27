@@ -50,20 +50,19 @@ import {
   type SuccessResult,
 } from './types.js';
 
-const { RENDER_API_KEY } = process.env;
 const BASE_URL = 'https://api.render.com/v1';
-
-// G001: Fail-closed on missing API key
-if (!RENDER_API_KEY) {
-  console.error('RENDER_API_KEY environment variable is required');
-  process.exit(1);
-}
 
 /**
  * Generic fetch wrapper for Render API calls
  * Handles authentication, error handling, and response parsing
  */
 async function renderFetch(endpoint: string, options: RequestInit = {}): Promise<unknown> {
+  const RENDER_API_KEY = process.env.RENDER_API_KEY;
+  // G001: Fail-closed on missing API key (checked at invocation time for tool discoverability)
+  if (!RENDER_API_KEY) {
+    throw new Error('RENDER_API_KEY environment variable is required. Ensure 1Password credentials are configured.');
+  }
+
   const url = `${BASE_URL}${endpoint}`;
 
   const response = await fetch(url, {

@@ -48,16 +48,29 @@ npx gentyr unprotect        # Disable protection
 
 | Target | Ownership | Permissions | Rationale |
 |--------|-----------|-------------|-----------|
-| Critical hook files (pre-commit-review.js, bypass-approval-hook.js, etc.) | root:wheel | 644 | Prevents agent modification |
+| Critical hook files (pre-commit-review.js, bypass-approval-hook.js, etc.) | root:wheel | 644 | Prevents agent modification; linked projects use copy-on-protect (`.claude/hooks-protected/`) to avoid root-owning framework source |
 | `.claude/hooks/` directory | user:staff | 755 | Git needs write access for checkout/merge/stash |
 | `.claude/` directory | user:staff | 755 | Git needs write access for stash/checkout/merge; symlink target verification replaces directory ownership |
 | `.husky/` directory | root:wheel | 1755 | Prevents deletion of the pre-commit entry point |
 
 **Tamper detection** uses two layers — symlink target verification and file ownership checks:
 - **Symlink target verification** (`husky/pre-commit` + `gentyr-sync.js`): Verifies `.claude/hooks` symlink resolves to a directory whose grandparent contains `version.json` (GENTYR framework marker). Regular directories are only allowed in the framework repo itself. Replaces `.claude/` directory root-ownership as the anti-tampering mechanism.
-- **Commit-time check** (`husky/pre-commit`): Before each commit, verifies symlink target + 8 critical hook files are still root-owned via `stat`. Blocks commit if any check fails. The pre-commit script itself lives in a root-owned `.husky/` directory, making it trustworthy.
-- **SessionStart check** (`gentyr-sync.js` `tamperCheck()`): At every interactive session start, verifies symlink target + reads `protection-state.json` and checks `criticalHooks` array ownership via `fs.statSync().uid`. Emits a `systemMessage` warning if tampering is detected.
-- `protection-state.json` records `criticalHooks` as an array so both checks read the same source of truth dynamically.
+- **Commit-time check** (`husky/pre-commit`): Before each commit, verifies symlink target + 10 critical hook files are still root-owned via `stat`. Prefers `.claude/hooks-protected/` when it exists (copy-on-protect for linked projects); falls back to `.claude/hooks/` for direct installs. Blocks commit if any check fails. The pre-commit script itself lives in a root-owned `.husky/` directory, making it trustworthy. Also checks `core.hooksPath` — if it points into `.claude/worktrees/` (stale entry from a sub-agent worktree), auto-repairs to `.husky` and exits 1 to force a re-run.
+- **SessionStart check** (`gentyr-sync.js` `tamperCheck()`): At every interactive session start, runs three checks in order: (1) symlink target verification — confirms `.claude/hooks` resolves to a GENTYR framework; (1.5) `core.hooksPath` worktree check — if `core.hooksPath` resolves into `.claude/worktrees/`, auto-repairs to `.husky` and emits a warning; (2) file ownership check — reads `protection-state.json` and verifies each `criticalHooks` entry is still root-owned. When `state.hooksProtectedDir` is set (linked projects), ownership checks run against that directory instead of the live symlink target; a missing `hooks-protected/` directory is treated as tampering. Emits a `systemMessage` warning if any check fails.
+- `protection-state.json` records `criticalHooks` as an array and, for linked projects, `hooksProtectedDir: ".claude/hooks-protected"` so both checks read the same source of truth dynamically.
+
+### Remove an Account from Rotation
+
+```bash
+npx gentyr remove-account <email>           # Remove account (must not be the only account)
+npx gentyr remove-account <email> --force   # Remove even if it is the last account
+```
+
+Tombstones all keys for the given email address. If the active key belongs to the removed account, switches to the next available account first (seamless — no restart required). With `--force`, allows removal when no replacement exists, setting `active_key_id` to null.
+
+- Tombstoned keys are auto-cleaned after 24h by the existing `pruneDeadKeys` TTL mechanism.
+- Fires `key_switched` event (if active account changed) and `account_removed` event per tombstoned key.
+- Interactive wrapper: `/remove-account` slash command — prompts for account selection and confirmation before executing.
 
 ### Uninstall
 
@@ -115,6 +128,12 @@ When processing a `pr-reviewer`-assigned task, the deputy-CTO has `Bash` access 
 ### Worktrees
 
 Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/`. Each worktree is provisioned with symlinked GENTYR config (hooks, agents, commands) and a worktree-specific `.mcp.json` with absolute `CLAUDE_PROJECT_DIR` paths. Worktrees for merged branches are cleaned up every **30 minutes** by the hourly automation (`getCooldown('worktree_cleanup', 30)`).
+
+**`core.hooksPath` poisoning defense**: Claude Code sub-agents in worktrees can write stale `core.hooksPath` entries to the main `.git/config`, silently bypassing all pre-commit hooks. Four layers defend against this:
+1. **`removeWorktree()`** (`worktree-manager.js`): Before removing a worktree, reads `core.hooksPath` and resets it to `.husky` if it points into the worktree being removed.
+2. **`tamperCheck()` Check 1.5** (`gentyr-sync.js`): At every interactive SessionStart, detects and auto-repairs a stale `core.hooksPath` pointing into `.claude/worktrees/`.
+3. **`husky/pre-commit` worktree check**: At every commit, shell-level `case` match detects `.claude/worktrees/` in `core.hooksPath`, auto-repairs and exits 1 so the corrected path takes effect before lint-staged runs.
+4. **`safeSymlink()` EINVAL fix** (`worktree-manager.js`): When provisioning a worktree, `safeSymlink()` now checks `lstatSync` before `readlinkSync` to handle existing real directories (e.g. git-tracked `.husky/` checked out into the worktree), preventing EINVAL crashes that previously left worktrees partially provisioned.
 
 ## Propagation to Linked Projects
 
@@ -176,6 +195,39 @@ cd plugins/{name} && npm run build
 cd ~/git/gentyr && npx gentyr sync   # or restart Claude Code session
 ```
 
+### Notion Plugin (`plugins/notion/`)
+
+Syncs four GENTYR data sources to Notion databases via a 60-second launchd daemon (`com.local.gentyr-notion-sync`). All reads are read-only opens against the source SQLite databases to avoid write conflicts with MCP servers.
+
+**Synced entity types and waterline strategies:**
+
+| Entity | Source DB | Strategy | Waterline field |
+|--------|-----------|----------|----------------|
+| Personas | `user-feedback.db` | Full-sync every cycle | none (mutable, few entries) |
+| Reviews | `user-feedback.db` | Append-only waterline | `completed_at` |
+| Work Log | `worklog.db` | Append-only waterline | `timestamp_completed` |
+| Tasks | `todo.db` | Sync-time waterline | time of last sync (catches new + status transitions) |
+
+**State persistence** (`plugins/notion/state.json`): maps `projectDir → ProjectState` with page ID tracking (gentyr UUID → Notion page ID) for idempotency, plus per-entity waterline timestamps. The tasks waterline advances to the sync start time each cycle so already-processed status transitions are not re-PATCHed.
+
+**Task sync phases** (three-phase per cycle):
+1. **New tasks** — tasks created since last waterline; created in Notion and ID stored in `taskPageIds`
+2. **Modified tasks** — already-synced tasks whose `started_at` or `completed_at` changed since waterline; PATCHed in Notion
+3. **Archived tasks** — tasks currently in `taskPageIds` that have been moved to the `archived_tasks` table (by `cleanup` or `delete_task` on completed tasks); PATCHed to status `Done` and `Archived` checkbox `true` in Notion then removed from `taskPageIds` to avoid re-PATCHing next cycle; waterline only advances when all three phases succeed without errors
+
+All task upserts (new, modified, and archived) write the `Archived` checkbox unconditionally: `true` for archived tasks, `false` for active tasks. This keeps the Notion Tasks database filterable by archive state without relying on the status field alone.
+
+**5 MCP tools** (registered as `plugin-notion` server):
+- `notion_check_status` — token validity, database accessibility, service status, last sync timestamp
+- `notion_sync` — on-demand sync; supports `dryRun: true` and per-`projectDir` targeting
+- `notion_start_service` — writes plist to `~/Library/LaunchAgents/` and loads via `launchctl`
+- `notion_stop_service` — unloads service and removes plist
+- `notion_setup_instructions` — step-by-step setup guide returned as text
+
+**Config** (`plugins/notion/config.json`): `{ plugin, version, enabled, mappings[] }` where each mapping requires `projectDir`, `integrationSecret`, `personasDbId`, `reviewsDbId`, and optionally `worklogDbId` and `tasksDbId`. Managed via `plugin_manager` MCP tools (`set_plugin_config`, `add_plugin_mapping`, `remove_plugin_mapping`). Config is gitignored and never committed.
+
+**Logs**: `~/.claude/notion-sync.log` (stdout + stderr from the daemon, captured by launchd).
+
 ## AI User Feedback System
 
 Configure user personas to automatically test your app when staging changes are detected:
@@ -185,7 +237,30 @@ Configure user personas to automatically test your app when staging changes are 
 /configure-personas
 ```
 
-Creates personas (GUI/CLI/API/SDK modes), registers features with file patterns, and maps personas to features. Feedback agents spawn on staging changes and report findings to deputy-CTO triage pipeline.
+Creates personas (GUI/CLI/API/SDK/ADK modes), registers features with file patterns, and maps personas to features. Feedback agents spawn on staging changes and report findings to deputy-CTO triage pipeline.
+
+**5 Consumption Modes:**
+
+| Mode | Tools Available | Docs Access | Use Case |
+|------|----------------|-------------|----------|
+| `gui` | Playwright browser | N/A (browses app) | Web UI testing as a real user |
+| `cli` | programmatic-feedback (CLI) | N/A | Command-line tool testing |
+| `api` | programmatic-feedback (API) | N/A | REST/GraphQL API testing |
+| `sdk` | Claude Code tools + programmatic-feedback + Playwright | Docs portal via browser | Developer testing SDK in scratch workspace |
+| `adk` | Claude Code tools + programmatic-feedback + docs-feedback | Docs via MCP search/read | AI agent testing SDK programmatically |
+
+**SDK and ADK modes** spawn feedback agents with a scratch workspace (`/tmp/gentyr-feedback/workspace-{sessionId}/`) where the SDK is pre-installed via `npm install`. Agents have Claude Code tools (`Bash,Read,Write,Edit,Glob,Grep`) to write and run test scripts. The difference is docs access: SDK uses Playwright to browse the docs portal (human-like), ADK uses the `docs-feedback` MCP server for programmatic search/read (agent-like).
+
+**`endpoints` field semantics per mode:**
+- GUI: `[app-url]`
+- CLI: `[cli-command]`
+- API: `[api-base-url]`
+- SDK: `[sdk-packages-csv, docs-portal-url]` — `endpoints[1]` optional
+- ADK: `[sdk-packages-csv, docs-directory-path]` — `endpoints[1]` optional
+
+**Docs configuration** is user-driven via `/configure-personas` or the product-manager agent. If `endpoints[1]` is not configured for SDK/ADK personas, the agent runs without docs access (code-only testing) and receives a warning in the prompt.
+
+**`docs-feedback` MCP server** (`packages/mcp-servers/src/docs-feedback/`): Serves the project's own developer docs. Reads `FEEDBACK_DOCS_PATH` env var, recursively walks for `.md`/`.mdx` files, provides 4 tools: `docs_search`, `docs_list`, `docs_read`, `docs_status`. Uses `AuditedMcpServer` for audit trail.
 
 To browse a persona's feedback history or spawn a one-shot feedback session on demand:
 
@@ -195,13 +270,15 @@ To browse a persona's feedback history or spawn a one-shot feedback session on d
 
 Shows an overview of all personas and recent feedback runs, lets you pick a persona, view its satisfaction trend and CTO reports, drill into past session details, or spawn a live feedback session (fire-and-forget).
 
-The `product-manager` agent also creates fully-functional personas automatically as a post-analysis step. After Section 6 is completed, the agent receives a persona evaluation task where it first asks the user to choose between **Fill gaps only** (idempotent — backfill missing data without replacing existing) or **Full rebuild** (create everything fresh). It then reads `package.json` to detect the dev server URL and framework, scans for route/feature directories, registers them as features, creates or backfills personas with all required fields (`endpoints`, `behavior_traits`, `consumption_mode`), maps personas to features, maps pain points to personas, and reports compliance to the deputy-CTO. This is the primary automated path; `/configure-personas` is the interactive manual path for user-driven setup.
+The `product-manager` agent also creates fully-functional personas automatically as a post-analysis step. After Section 6 is completed, the agent receives a persona evaluation task where it first asks the user to choose between **Fill gaps only** (idempotent — backfill missing data without replacing existing) or **Full rebuild** (create everything fresh). It then reads `package.json` to detect the dev server URL and framework, scans for route/feature directories, registers them as features, creates or backfills personas with all required fields (`endpoints`, `behavior_traits`, `consumption_mode`), maps personas to features, maps pain points to personas, and reports compliance to the deputy-CTO. For SDK/ADK personas, the agent sets `endpoints[1]` to the project's docs path/URL when auto-detectable (e.g., `docs/` directory or `docs` script in `package.json`). This is the primary automated path; `/configure-personas` is the interactive manual path for user-driven setup.
 
 ## Product Manager MCP Server
 
 The product-manager MCP server (`packages/mcp-servers/src/product-manager/`) manages a 6-section product-market-fit (PMF) analysis pipeline. State is persisted in `.claude/state/product-manager.db`.
 
-**Access via `/product-manager` slash command** (prefetches current status from the database before display).
+**Access via `/product-manager` slash command** (prefetches current status from the database before display, including demo scenario coverage for GUI personas — surfaces uncovered personas via `demoScenarios.uncoveredPersonas` in prefetch data).
+
+**Command menu (when analysis is `completed`)**: Options include view section, run pipeline, regenerate markdown, finalize, persona compliance, list unmapped pain points, and **Demo scenarios** (Option 6). The demo scenarios sub-menu offers: Gap analysis (runs coverage table showing GUI personas, scenario counts, and CODE-REVIEWER task status), Create scenarios (spawns product-manager sub-agent for uncovered personas), and View scenarios (calls `mcp__user-feedback__list_scenarios`). After any demo scenario creation action, gap analysis is always re-run as a completion verification pattern — checks that every scenario has a matching `"Implement demo scenario: <title>"` CODE-REVIEWER task.
 
 **Scope**: All 6 sections are external market research. Section content must not reference the local project, compare competitors to the local product, or describe the local product's features, strengths, or positioning. The local codebase is read only to determine what market space to research.
 
@@ -239,6 +316,8 @@ Sections 2 and 6 are **list sections**: they use `add_entry` instead of `write_s
 **Sequential lock**: `assertPreviousSectionsPopulated()` blocks any write to section N until sections 1..N-1 are populated. `clear_and_respawn` creates all 6 tasks upfront (not sequentially via followup chain) because the sequential lock already prevents out-of-order execution.
 
 **Persona compliance**: After Section 6 is populated, pain points can be mapped to personas via `map_pain_point_persona`. Persona IDs are validated against `user-feedback.db` (read-only). `get_compliance_report` shows mapping coverage percentage.
+
+**Forced follow-ups**: `product-manager` is in `FORCED_FOLLOWUP_CREATORS` — all tasks created by the product-manager agent automatically have `followup_enabled: true`, ensuring verification tasks are created on completion.
 
 **Markdown output**: Every write operation regenerates `.claude/product-market-fit.md` with all section content.
 
@@ -283,9 +362,59 @@ Force-spawns the deputy-CTO triage cycle immediately, bypassing the hourly autom
 - `update_question` — Appends timestamped investigation findings to a pending escalation's context field (append-only, 10KB cap). Blocked on `bypass-request` and `protected-action-request` types.
 - `resolve_question` — Resolves and archives a pending escalation atomically (answer + archive to `cleared_questions` + delete from active queue). Valid resolution types: `fixed`, `not_reproducible`, `duplicate`, `workaround_applied`, `no_longer_relevant`. CTO never sees resolved escalations, but they remain in `cleared_questions` for audit and deduplication.
 
+**Protected action approval tools on the deputy-cto MCP server:**
+- `list_pending_action_requests` — List all pending (non-expired) protected action requests. Shows code, server, tool, args, and approval mode for each. Used during triage to discover actions awaiting deputy-CTO sign-off.
+- `get_protected_action_request` — Get details of a specific pending request by its 6-character approval code. Use to inspect a request before approving or denying.
+- `approve_protected_action` — Approve a `deputy-cto` approval-mode request. Verifies `pending_hmac` against the protection key unconditionally when a key is present (G001 fail-closed: a missing `pending_hmac` is treated as a forgery, not a skip), then writes an HMAC-signed `approved_hmac` entry so the gate hook can confirm authenticity. Uses `O_CREAT|O_EXCL` advisory file locking (same algorithm as `approval-utils.js`) with exponential backoff (10 attempts, stale-lock cleanup at 10 s) to prevent concurrent read-modify-write races on `.claude/protected-action-approvals.json`. Only works for `approval_mode: "deputy-cto"` — CTO-mode actions must be escalated.
+- `deny_protected_action` — Remove a pending protected action request, recording a reason. Also uses `O_CREAT|O_EXCL` advisory file locking to prevent concurrent writes. Applicable to any approval mode.
+
+**Pre-approved bypass tools on the deputy-cto MCP server:**
+- `request_preapproved_bypass` — Create a long-lived, burst-use pre-approval for a specific server+tool. Stores a pending entry in `protected-action-approvals.json` with HMAC signature (`preapproval-pending` domain, domain-separated from standard approval HMACs). Returns a 6-character code and instructions for CTO confirmation via AskUserQuestion. Constraints: max 5 active pre-approvals, one per server+tool combination, expiry 1–12 hours (default 8), max uses 1–5 (default 3).
+- `activate_preapproved_bypass` — Activate a pending pre-approval after CTO confirms interactively via AskUserQuestion. Verifies `pending_hmac`, sets `status: "approved"`, and writes `approved_hmac` (domain `preapproval-activated`). The activated entry can then be auto-consumed by any agent invoking the matching server+tool via the gate hook's Pass 2 path.
+- `list_preapproved_bypasses` — List all active (non-expired) pre-approvals with code, server, tool, reason, status, uses remaining, and hours until expiry.
+
+**Pre-approved bypass security model:**
+- HMAC domains are separated from standard approvals: `preapproval-pending` and `preapproval-activated` vs `pending` and `approved`. Cross-forging between standard approvals and pre-approvals is cryptographically blocked.
+- G001 fail-closed for pre-approvals: the gate hook's Pass 2 rejects any pre-approval if the protection key is missing, regardless of whether HMAC fields are present. This is stricter than Pass 1 (which allows legacy no-HMAC approvals) because pre-approvals are long-lived and higher risk.
+- Burst-use window: after the first consumption, subsequent uses must occur within 60 seconds (`burst_window_ms: 60000`). If the window elapses, remaining uses are expired. This constrains multi-step operations without creating an open-ended multi-use token.
+- Args-agnostic: matches ANY invocation of the server+tool regardless of arguments. Designed for operations where exact args are unpredictable at approval time (e.g., scheduled deployments).
+
+**`approval-utils.js` security model** (`.claude/hooks/lib/approval-utils.js`):
+- `validateApproval(phrase, code)` — called by the gate hook when an agent submits an approval phrase; verifies `pending_hmac` before marking approved; if protection key is present and `pending_hmac` is missing-or-invalid, rejects with `FORGERY` reason (G001 fail-closed); writes `approved_hmac` on success so `checkApproval()` can verify downstream
+- `checkApproval(server, tool, args)` — two-pass approval scan under file lock: Pass 1 checks standard exact-match approvals (args-bound, single-use, skips `is_preapproval` entries); Pass 2 checks pre-approved bypasses (args-agnostic, burst-use, requires protection key unconditionally). Both passes verify HMAC signatures and delete forged entries. Pre-approval entries identified by `is_preapproval: true` flag.
+- `saveApprovals()` in both `approval-utils.js` and `protected-action-gate.js` uses atomic write-via-rename (write to `.tmp.<pid>`, then `fs.renameSync`) to prevent partial writes from concurrent access leaving a corrupted approvals file; the tmp file is unlinked on rename failure
+
 ## Automatic Session Recovery
 
-GENTYR automatically detects and recovers sessions interrupted by API quota limits.
+GENTYR automatically detects and recovers sessions interrupted by API quota limits, unexpected process death, or full account exhaustion.
+
+**Session Reviver** (`.claude/hooks/session-reviver.js`):
+- Called from `hourly-automation.js` every automation cycle (10-minute cooldown via `getCooldown('session_reviver', 10)`)
+- Gate-exempt step: runs after key sync, not subject to the CTO activity gate, so recovery proceeds even when the CTO is inactive
+- **Retroactive first-run window**: On the first cycle after startup, uses a 12-hour stale window instead of 30 minutes, picking up sessions interrupted before the automation process started
+- **Revival prompt**: Each resumed session receives a structured context prompt with elapsed time, interruption reason, and task verification instructions — the agent must call `mcp__todo-db__get_task` or `mcp__todo-db__list_tasks` before continuing to avoid duplicating work already handled by another agent
+- **taskId resolution**: Resolved from `agent-tracker-history.json` metadata so the revival prompt can reference the specific task ID
+- **Mode 3 sessionId fallback**: When `paused-sessions.json` lacks an explicit `sessionId`, finds the session JSONL file by scanning for the `[AGENT:<agentId>]` marker in the first 2KB of each transcript file
+- Cap: 3 revivals per cycle (`MAX_REVIVALS_PER_CYCLE`); respects the running-agent concurrency limit
+
+**Three revival modes (priority order):**
+
+| Mode | Source state file | Trigger | Stale window |
+|------|-------------------|---------|--------------|
+| 1 — Quota-interrupted | `.claude/state/quota-interrupted-sessions.json` | `stop-continue-hook.js` writes on quota death | 30 min (12h retroactive on first run) |
+| 2 — Dead session recovery | `.claude/state/agent-tracker-history.json` | Agents reaped with `process_already_dead` + pending TODO task | 7 days |
+| 3 — Paused sessions | `.claude/state/paused-sessions.json` | `quota-monitor.js` `writePausedSession()` when all accounts exhausted | 24h |
+
+**Stop Hook** (`.claude/hooks/stop-continue-hook.js`):
+- Writes `quota-interrupted-sessions.json` entries with `status: 'pending_revival'` when a spawned session dies from a rate limit error
+- Cleanup window widened from 30 min to 12 h so records survive for retroactive revival on the first automation cycle after restart
+- Tombstone consumer: filters tombstoned rotation state keys before passing to `checkKeyHealth()`
+
+**`quota-monitor.js` Mode 3 integration**: Calls `writePausedSession(agentId)` when all accounts are exhausted and a spawned session is about to be abandoned; session-reviver resumes it once any account recovers below 90% usage
+
+**`agent-tracker.js` constants**: Exports `SESSION_REVIVED` (`'session-revived'`) and `SESSION_REVIVER` (`'session-reviver'`) agent/hook type constants consumed by session-reviver; mirrored in `packages/mcp-servers/src/agent-tracker/types.ts`
+
+**`config-reader.js` default**: `session_reviver: 10` minutes added to `DEFAULTS`; operators can override via `.claude/state/automation-config.json`
 
 **Quota Monitor Hook** (`.claude/hooks/quota-monitor.js`):
 - Runs after every tool call (throttled to 5-minute intervals)
@@ -345,7 +474,7 @@ Hooks that need the AI to act on their output must include both:
 **GENTYR Auto-Sync Hook** (`.claude/hooks/gentyr-sync.js`):
 - Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
 - Fast path: reads `version.json` and `gentyr-state.json`, compares version + config hash — exits in <5ms when nothing has changed
-- When version or config hash mismatch detected: re-merges `settings.json`, regenerates `.mcp.json` (preserving OP token), updates the GENTYR section of `CLAUDE.md`, and symlinks new agent definitions
+- When version or config hash mismatch detected: re-merges `settings.json`, regenerates `.mcp.json` (preserving OP token), updates the GENTYR section of `CLAUDE.md`, and symlinks new agent definitions; handles missing `settings.json` gracefully by checking directory writability instead of file writability when the file does not yet exist
 - Auto-rebuilds MCP servers when `src/` mtime > `dist/` mtime (30s timeout); logs to stderr on failure (silent to agent)
 - Syncs husky hooks by comparing `husky/` against `.husky/` in the target project; re-copies if content differs
 - Falls back to legacy settings.json hook diff check when no `gentyr-state.json` exists (pre-migration projects)
@@ -372,6 +501,16 @@ Hooks that need the AI to act on their output must include both:
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `UserPromptSubmit`
 - Tests at `.claude/hooks/__tests__/gentyr-sync-branch-drift.test.js` (18 tests, runs via `node --test`)
 
+**Branch Checkout Guard** (two-layer defense — `.claude/hooks/branch-checkout-guard.js` + `.claude/hooks/git-wrappers/git`):
+
+Prevents branch drift by blocking `git checkout`/`git switch` in the main working tree. Complements the warn-only Branch Drift Check with a hard enforcement layer:
+
+- **Layer 1 — Git wrapper** (`.claude/hooks/git-wrappers/git`): POSIX shell script placed in `git-wrappers/` directory; injected into spawned agent environments via `PATH` prepending in `buildSpawnEnv()` (hourly-automation, urgent-task-spawner, session-reviver, force-spawn-tasks, force-triage-reports). Intercepts `git checkout`/`git switch` invocations before the real git binary runs and exits 128 with a descriptive message. Zero-overhead fast path for all other git subcommands (`exec "$REAL_GIT" "$@"` immediately). Root-owned via `npx gentyr protect`.
+- **Layer 2 — PreToolUse hook** (`.claude/hooks/branch-checkout-guard.js`): Hard-blocking (`permissionDecision: "deny"`) Claude Code PreToolUse hook that catches checkout/switch at the tool-call level. Covers interactive sessions (where PATH injection is not active) and agents that invoke `/usr/bin/git` directly, bypassing the PATH wrapper. Uses the same quote-aware `tokenize()` + `splitOnShellOperators()` pattern from `credential-file-guard.js` for robust parsing of chained commands.
+- **Both layers**: Skip silently in worktrees (`.git` file check — `.git` is a file in a worktree, not a directory), non-repo directories, and skip global git flags (`-C`, `--git-dir`, etc.) when locating the subcommand. Always allow `git checkout main` (recovery path) and file restore invocations (`git checkout -- <file>`).
+- Registered in `settings.json.template` under `PreToolUse > Bash`. Root-owned and listed in `protection-state.json` `criticalHooks` array alongside `git-wrappers/git`. Included in the `husky/pre-commit` tamper-detection ownership loop.
+- Tests at `.claude/hooks/__tests__/branch-checkout-guard.test.js` (30 tests, runs via `node --test`)
+
 **Credential Health Check Hook** (`.claude/hooks/credential-health-check.js`):
 - Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions
 - Validates vault mappings against required keys in `protected-actions.json`
@@ -379,6 +518,16 @@ Hooks that need the AI to act on their output must include both:
 - **OP token desync detection**: Compares shell `OP_SERVICE_ACCOUNT_TOKEN` against `.mcp.json` value; if they differ, emits a warning and overwrites `process.env` with the `.mcp.json` value (source of truth); `.mcp.json` is always authoritative because it is updated by reinstall
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink
 - Shell sync validation also available via `scripts/setup-validate.js` `validateShellSync()` function, which checks the `# BEGIN GENTYR OP` / `# END GENTYR OP` block in `~/.zshrc` or `~/.bashrc`
+
+**Credential File Guard Hook** (`.claude/hooks/credential-file-guard.js`):
+- Runs at `PreToolUse` for Read, Write, Edit, Grep, Glob, and Bash tool calls; hard-blocking (uses `permissionDecision: "deny"` — not just a warning)
+- Blocks access to `BLOCKED_BASENAMES` (`.env`, `.zshrc`, `.bashrc`, etc.) and `BLOCKED_PATH_SUFFIXES` (`.claude/protection-key`, `.claude/api-key-rotation.json`, `.mcp.json`, etc.)
+- For Bash commands, uses a quote-aware shell tokenizer (`tokenize()`) to extract redirection targets (including quoted targets like `echo hello > ".env"`), command arguments, and inline path references; `NON_FILE_COMMANDS` set exempts echo/printf/git/package managers to avoid false positives
+- Redirection scan covers `>`, `>>`, `<`, `2>`, `2>>`, `1>`, `1>>`, `0<` and operates on tokenized output so quoted bypasses (e.g. `> ".env"`) are caught; also detects protected basename references in path context (`/basename` or `~basename` patterns) to block deep-path variants
+- `ALWAYS_BLOCKED_SUFFIXES` and `ALWAYS_BLOCKED_BASENAMES` are hard-blocked with no approval escape hatch; other protected paths can be approved via `protected-action-approvals.json`
+- Blocks credential environment variable references (`$TOKEN`, etc.) sourced from `protected-actions.json` `credentialKeys` arrays; also blocks environment dump commands (`env`, `printenv`, `export -p`)
+- Root-ownership of credential files at the OS level is the primary defense; this hook is defense-in-depth
+- Tests at `.claude/hooks/__tests__/credential-file-guard.test.js` (142 tests, runs via `node --test`)
 
 **Playwright CLI Guard Hook** (`.claude/hooks/playwright-cli-guard.js`):
 - Runs at `PreToolUse` for Bash tool calls only; non-blocking (emits `systemMessage` warning, never blocks execution)
@@ -393,15 +542,31 @@ Hooks that need the AI to act on their output must include both:
 - Fast-path exit when no `playwright.config.ts` or `playwright.config.js` exists in the project root (target projects that don't use Playwright are unaffected)
 - Writes `.claude/playwright-health.json` with auth state freshness, cookie expiry, and extension build status
 - `authState` fields: `exists`, `ageHours`, `cookiesExpired`, `isStale` (true when cookies expired or age >24h)
+- **Dynamic auth file discovery**: reads `storageState` from the first project entry in `playwright.config.ts` via regex; falls back to scanning `.auth/` for any `.json` file; no hardcoded auth file names (project-agnostic)
 - `extensionBuilt` checks for the directory specified by `GENTYR_EXTENSION_DIST_PATH` env var (relative to project root); defaults to `true` (no blocker) when unset
 - `needsRepair: true` when `authState.isStale || !extensionBuilt`
 - Emits a visible stderr warning when auth state is stale; read by `slash-command-prefetch.js` as a 1-hour cache (avoids re-reading `.auth/*.json` on every `/demo` invocation)
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `SessionStart` (timeout: 5)
-- Tests at `.claude/hooks/__tests__/playwright-health-check.test.js` (7 tests, runs via `node --test`)
+- Tests at `.claude/hooks/__tests__/playwright-health-check.test.js` (10 tests, runs via `node --test`)
 
 ## Playwright MCP Server
 
 The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tools for running E2E tests, managing auth state, and launching demos in linked target projects.
+
+**Project-agnostic config discovery** (`packages/mcp-servers/src/playwright/config-discovery.ts`):
+- Reads `playwright.config.ts` (or `.js`) as raw text using regex and brace-matching — no `require`/`import` of the config, avoiding TS compilation and side effects
+- Exports `discoverPlaywrightConfig(projectDir): PlaywrightConfig` and `resetConfigCache()` (for tests)
+- Discovered fields: `projects[]` (with `name`, `testDir`, `storageState`, `isInfrastructure`, `isManual`, `isExtension`), `defaultTestDir`, `projectDirMap`, `personaMap`, `extensionProjects` (Set), `authFiles[]`, `primaryAuthFile`
+- Infrastructure projects (`seed`, `auth-setup`, `cleanup`, `setup`) excluded from `projectDirMap` and `personaMap`
+- Extension projects detected by `name.includes('extension')` or `name === 'demo'`
+- Persona labels auto-generated: `vendor-owner` → `Vendor (Owner)`, `cross-persona` → `Cross Persona`, etc.
+- Results cached per `projectDir` for the lifetime of the MCP server process
+- Replaces ALL hardcoded maps previously in `server.ts` (`PERSONA_MAP`, `ACTIVE_DIRS`, `EXTENSION_PROJECTS`, `vendor-owner.json` references, `SUPABASE_*` credential checks)
+- 25 tests at `packages/mcp-servers/src/playwright/__tests__/config-discovery.test.ts` (runs via vitest)
+
+**`PLAYWRIGHT_PROJECTS` constant** (`packages/mcp-servers/src/playwright/types.ts`):
+- **Deprecated** — use `discoverPlaywrightConfig()` from `config-discovery.ts` instead
+- Kept for backwards compatibility with existing test imports only
 
 **Available Tools:**
 - `launch_ui_mode` — Launch Playwright in interactive UI mode for a given project (persona)
@@ -409,31 +574,86 @@ The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tool
 - `seed_data` — Seed test data via the `seed` Playwright project
 - `cleanup_data` — Remove test data via the `cleanup` Playwright project
 - `get_report` — Retrieve the last Playwright HTML report path and metadata
-- `get_coverage_status` — Report test count and coverage status per persona project
-- `preflight_check` — Validate environment readiness before launching; runs 8 checks: config exists, dependencies, browsers installed, test files, credentials valid, dev server reachable, compilation, and auth state freshness
-- `run_auth_setup` — Refresh Playwright auth state by running `seed` then `auth-setup` projects; generates `.auth/vendor-owner.json`, `.auth/vendor-admin.json`, `.auth/vendor-dev.json`, `.auth/vendor-viewer.json`; 4-minute timeout; supports `seed_only` flag to skip auth-setup
+- `get_coverage_status` — Report test count and coverage status per persona project; persona labels and test dirs derived from config discovery
+- `preflight_check` — Validate environment readiness before launching; runs 9 checks: config exists, dependencies, browsers installed, test files, credentials valid, dev server reachable, compilation, auth state freshness, and extension manifest valid
+- `run_auth_setup` — Refresh Playwright auth state by running `seed` then `auth-setup` projects; discovers expected auth files from `storageState` fields in config (or scans `.auth/` as fallback); 4-minute timeout; supports `seed_only` flag to skip auth-setup
+- `run_demo` — Launch Playwright tests in a visible headed browser at human-watchable speed (auto-play mode). Accepts any project name from the target project's `playwright.config.ts`. Passes `DEMO_SLOW_MO` env var (default 800ms) for pace control — target project must read `parseInt(process.env.DEMO_SLOW_MO || '0')` in `use.launchOptions.slowMo`. Monitors for early crashes during a 15s startup window (accommodates headed browser + webServer compilation); returns success once the process survives that window.
 - `list_extension_tabs` — List open tabs in a CDP-connected extension test browser
 - `screenshot_extension_tab` — Screenshot a specific extension tab via CDP
 
+**`preflight_check` cross-project compatibility**:
+- `launch_ui_mode`, `run_demo`, `run_tests`, and `preflight_check` all accept any `project` string (not a hardcoded enum) — compatible with any target project's `playwright.config.ts` configuration
+- `test_files_exist` check (check #4): returns `skip` (not `fail`) when the project name has no known directory mapping — compilation check (#6) validates it instead; prevents false failures on projects with non-standard directory layouts
+
 **Auth state check in `preflight_check` (check #8)**:
 - Only runs when a `project` argument is provided
-- Reads `.auth/vendor-owner.json` age and cookie expiry
+- **Dynamic auth file**: uses `pwConfig.primaryAuthFile` (from config discovery); falls back to scanning `.auth/` for any `.json` file; no hardcoded `vendor-owner.json`
 - Fails if file is missing, cookies are expired, or file is >24h old
 - Warns if file is 4–24h old
 - Recovery step: call `mcp__playwright__run_auth_setup()` to refresh
 
+**Extension manifest check in `preflight_check` (check #9)**:
+- Only runs when `project` is in `pwConfig.extensionProjects` (derived from config discovery — projects with `name.includes('extension')` or `name === 'demo'`); skips for all other projects
+- Skips when `GENTYR_EXTENSION_DIST_PATH` is not set
+- Resolves `manifest.json` at `$GENTYR_EXTENSION_DIST_PATH/manifest.json` then falls back to the parent directory
+- Validates every `matches` and `exclude_matches` pattern in each `content_scripts` entry against the Chrome match-pattern spec: `<all_urls>`, `file:///path`, `(*|https?):// host /path` where host is `*`, `*.domain`, or exact domain (no partial wildcards like `*-admin.example.com`)
+- Recovery step: fix invalid patterns in `manifest.json` — Chrome requires host to be `*`, `*.domain.com`, or `exact.domain.com`
+
+**Credentials check in `preflight_check` (check #5)**:
+- **Project-agnostic**: scans all `process.env` entries for unresolved `op://` references; no hardcoded credential key names
+- Any env var still containing an `op://` value indicates broken 1Password injection
+
 **`run_auth_setup` self-healing flow**:
 - Phase 1: runs `npx playwright test --project=seed` (5-min timeout)
 - Phase 2: runs `npx playwright test --project=auth-setup` (4-min timeout) — skipped if `seed_only: true`
+- Expected auth files: derived from `pwConfig.authFiles` (config discovery); falls back to scanning `.auth/` directory
 - Returns structured `RunAuthSetupResult` with per-phase success, `auth_files_refreshed` list, and `output_summary`
 - Deputy-CTO agent has `mcp__playwright__run_auth_setup` in `allowedTools` and is responsible for executing it when assigned an `auth_state` repair task from `/demo`
 
-**`/demo` command escalation flow** (`.claude/commands/demo.md`):
-- Replaces the old "stop on failure" gate with an "escalate all failures" pattern
-- When `preflight_check` returns `ready: false`, `/demo` creates a single urgent DEPUTY-CTO task describing every failed check with per-check repair instructions
-- Repair mapping: `config_exists` → CODE-REVIEWER; `dependencies_installed`/`browsers_installed` → direct Bash fix; `test_files_exist` → TEST-WRITER; `credentials_valid` → INVESTIGATOR & PLANNER; `auth_state` → `run_auth_setup()` then INVESTIGATOR & PLANNER on failure
+**`/demo` command suite** (`.claude/commands/demo.md`, `demo-interactive.md`, `demo-autonomous.md`):
+- `/demo` — Escape hatch: launches Playwright UI mode showing ALL tests. No scenario filtering. Developer power-tool for browsing the full test suite.
+- `/demo-interactive` — Scenario-based: runs a chosen curated demo scenario at full speed, pauses at end for manual interaction. "Take me to this screen."
+- `/demo-autonomous` — Scenario-based: runs a chosen demo scenario at human-watchable speed (slowMo 800ms), no pause. "Show me the product in action."
+- All three use the same "escalate all failures" pattern — when `preflight_check` returns `ready: false`, a single urgent DEPUTY-CTO task is created describing every failed check with per-check repair instructions
+- `/demo` calls `mcp__playwright__launch_ui_mode`; `/demo-interactive` and `/demo-autonomous` call `mcp__playwright__run_demo` with `test_file` and `pause_at_end` from the selected scenario
+- Repair mapping: `config_exists` → CODE-REVIEWER; `dependencies_installed`/`browsers_installed` → direct Bash fix; `test_files_exist` → TEST-WRITER; `credentials_valid` → INVESTIGATOR & PLANNER; `auth_state` → `run_auth_setup()` then INVESTIGATOR & PLANNER on failure; `extension_manifest` → CODE-REVIEWER (fix invalid match patterns in `manifest.json`)
 - The `demo` agent identity is included in `SECTION_CREATOR_RESTRICTIONS` for DEPUTY-CTO (allows `mcp__todo-db__create_task` with `assigned_by: "demo"`)
-- `slash-command-prefetch.js` reads the cached `playwright-health.json` (1-hour TTL) written by the SessionStart hook, falling back to manual `.auth/vendor-owner.json` inspection on cache miss
+- `slash-command-prefetch.js` reads the cached `playwright-health.json` (1-hour TTL) written by the SessionStart hook, falling back to dynamic `.auth/` scan on cache miss; discovers projects dynamically from `playwright.config.ts` via regex (no hardcoded project list); credential check uses generic `op://` env scan (no hardcoded credential key names); also queries `user-feedback.db` for enabled demo scenarios
+
+## Demo Scenario System
+
+Curated product walkthroughs (NOT tests) mapped to personas. Scenarios are managed by the product-manager agent and implemented by code-writer agents. The test-writer agent is explicitly excluded from `*.demo.ts` files.
+
+**`demo_scenarios` table** (in `user-feedback.db`):
+- `id` TEXT PK, `persona_id` TEXT FK→personas, `title`, `description`, `category` (optional), `playwright_project`, `test_file` (UNIQUE, must end with `.demo.ts`), `sort_order`, `enabled`, timestamps
+- FK CASCADE: deleting a persona deletes its scenarios
+
+**5 MCP tools** (on `user-feedback` server):
+- `create_scenario` — validates persona exists AND `consumption_mode = 'gui'` (rejects non-GUI); enforces `.demo.ts` suffix
+- `update_scenario` — partial update; enforces `.demo.ts` if `test_file` changes
+- `delete_scenario` — simple DELETE
+- `list_scenarios` — JOIN to personas for `persona_name`; filters by `persona_id`, `enabled`, `category`
+- `get_scenario` — enriches with `persona_name`
+
+**Constraints:**
+- Only `gui` consumption_mode personas can have demo scenarios — SDK/CLI/API/ADK personas cannot
+- `*.demo.ts` file naming convention enforced by `create_scenario` and `update_scenario`
+- `DEMO_PAUSE_AT_END` env var — demo files import a shared helper that checks this and calls `page.pause()` if set
+
+**Playwright MCP extensions:**
+- `run_demo` accepts `test_file` (positional arg for single-file filtering) and `pause_at_end` (sets `DEMO_PAUSE_AT_END=1`)
+- `launch_ui_mode` accepts optional `test_file` for filtered UI mode
+- `countTestFiles()` recognizes `.demo.ts` alongside `.spec.ts` and `.manual.ts`
+
+**Feedback N+1 spawning pattern:**
+- When personas are spawned for feedback sessions, GUI personas get N+1 sessions: 1 default (no scenario) + up to 3 scenario sessions
+- Each scenario session runs the demo file first via `mcp__playwright__run_demo()` as a pre-step (scaffolds app state), then the feedback agent explores from the paused state
+- Demo coverage check: GUI personas with zero enabled scenarios are flagged in the feedback orchestrator log
+
+**Product-manager responsibilities:**
+- Defines scenario records (DB entries) with detailed descriptions
+- Creates CODE-REVIEWER tasks for `*.demo.ts` file implementation
+- Ensures every GUI persona has 2-4 demo scenarios covering key product flows
 
 ## Rotation Proxy
 
@@ -543,15 +763,16 @@ The CTO dashboard (`packages/cto-dashboard/`) supports a `--mock` flag for devel
 
 The `/cto-report` slash command runs all three pages sequentially. Data fetching is optimized per page — sections not rendered on the active page skip their I/O readers in `index.tsx`.
 
-The **ACCOUNT OVERVIEW** section displays a curated EVENT HISTORY (last 24h, capped at 20 entries). Only 6 event types pass the `ALLOWED_EVENTS` whitelist in `account-overview-reader.ts`:
+The **ACCOUNT OVERVIEW** section displays a curated EVENT HISTORY (last 24h, capped at 20 entries). Only 7 event types pass the `ALLOWED_EVENTS` whitelist in `account-overview-reader.ts`:
 - `key_added` — new account registered (token-refresh re-additions filtered as noise)
 - `key_switched` — active account changed by rotation logic
 - `key_exhausted` — account reached 100% quota in any bucket
 - `account_nearly_depleted` — active account hit 95% (5-hour per-key cooldown; fired by quota-monitor)
 - `account_quota_refreshed` — previously exhausted account dropped below 100% (fired by quota-monitor and api-key-watcher)
 - `account_auth_failed` — account lost its last key to invalid_grant pruning (fired by pruneDeadKeys in key-sync)
+- `account_removed` — account explicitly removed by user via `npx gentyr remove-account` or `/remove-account`
 
-Event descriptions resolve account identity via entry-level `account_email` → key-level `account_email` → rotation_log history lookup (email captured in earlier events for the same key_id) → truncated key ID fallback. Consecutive identical events (same type + description) are deduplicated after sorting so a burst of duplicate `account_auth_failed` entries collapses to one. Events are colored in the dashboard: `key_switched`/`account_quota_refreshed` cyan/green, `key_exhausted`/`account_auth_failed` red, `account_nearly_depleted` yellow.
+Event descriptions resolve account identity via entry-level `account_email` → key-level `account_email` → rotation_log history lookup (email captured in earlier events for the same key_id) → truncated key ID fallback. Consecutive identical events (same type + description) are deduplicated after sorting so a burst of duplicate `account_auth_failed` entries collapses to one. Events are colored in the dashboard: `key_switched`/`account_quota_refreshed` cyan/green, `key_exhausted`/`account_auth_failed` red, `account_nearly_depleted`/`account_removed` yellow.
 
 ### WORKLOG System
 
@@ -569,6 +790,15 @@ Agents call `mcp__todo-db__summarize_work()` before `mcp__todo-db__complete_task
 - `section` — optional section filter
 - `limit` (default 20, max 100) — max entries
 - `include_metrics` (default true) — 30-day rolling metrics: coverage %, avg durations, avg tokens/task, cache hit rate
+
+**`list_archived_tasks` tool** (on `todo-db` MCP server):
+- `section` — optional section filter
+- `limit` (default 20, max 100) — max tasks to return
+- `hours` (default 24, max 720) — lookback window
+- Returns tasks moved to `archived_tasks` table by `cleanup` (old completed tasks) or `delete_task` (completed tasks are archived before deletion, non-completed are hard-deleted)
+- Useful for audit history and the Notion plugin's archived-task phase; archived tasks retain all original fields plus `archived_at` and `archived_timestamp`
+
+**`delete_task` archiving behavior**: When `delete_task` is called on a completed task, the task is first copied to `archived_tasks` and then deleted from `tasks` (atomic transaction). Non-completed tasks (pending, in_progress) are hard-deleted without archiving. The `DeleteTaskResult` includes `archived: true` when this path is taken.
 
 **CTO Dashboard section**: WORKLOG section shows recent entries (time, section, title, result, duration, tokens) with 30-day metrics block. Standalone view: `/show worklog`.
 

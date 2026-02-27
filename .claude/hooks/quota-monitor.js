@@ -45,6 +45,7 @@ import { registerHookExecution, HOOK_TYPES } from './agent-tracker.js';
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
 const THROTTLE_STATE_PATH = path.join(STATE_DIR, 'quota-monitor-state.json');
+const PAUSED_SESSIONS_PATH = path.join(STATE_DIR, 'paused-sessions.json');
 
 // Thresholds
 const ROTATION_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes anti-loop
@@ -113,6 +114,45 @@ function writeThrottleState(state) {
       fs.mkdirSync(STATE_DIR, { recursive: true });
     }
     fs.writeFileSync(THROTTLE_STATE_PATH, JSON.stringify(state, null, 2), 'utf8');
+  } catch {
+    // Non-fatal
+  }
+}
+
+/**
+ * Write a paused-session record for the session-reviver to pick up (Mode 3).
+ * Called when all accounts are exhausted and this is an automated session.
+ */
+function writePausedSession(agentId) {
+  try {
+    if (!fs.existsSync(STATE_DIR)) {
+      fs.mkdirSync(STATE_DIR, { recursive: true });
+    }
+
+    let data = { sessions: [] };
+    if (fs.existsSync(PAUSED_SESSIONS_PATH)) {
+      try {
+        data = JSON.parse(fs.readFileSync(PAUSED_SESSIONS_PATH, 'utf8'));
+        if (!Array.isArray(data.sessions)) data.sessions = [];
+      } catch {
+        data = { sessions: [] };
+      }
+    }
+
+    // Deduplicate by agentId
+    const existingIdx = data.sessions.findIndex(s => s.agentId === agentId);
+    const entry = { agentId, pausedAt: Date.now(), type: 'automated', reason: 'all_accounts_exhausted' };
+    if (existingIdx >= 0) {
+      data.sessions[existingIdx] = entry;
+    } else {
+      data.sessions.push(entry);
+    }
+
+    // Clean entries older than 24h
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    data.sessions = data.sessions.filter(s => s.pausedAt > cutoff);
+
+    fs.writeFileSync(PAUSED_SESSIONS_PATH, JSON.stringify(data, null, 2), 'utf8');
   } catch {
     // Non-fatal
   }
@@ -476,6 +516,12 @@ async function main() {
       const accountCount = Object.values(state.keys).filter(
         k => k.status === 'active' || k.status === 'exhausted'
       ).length;
+
+      // Write paused-session record for automated sessions so session-reviver can pick up later
+      if (isAutomated) {
+        const agentId = process.env.CLAUDE_AGENT_ID;
+        if (agentId) writePausedSession(agentId);
+      }
 
       writeThrottleState(throttle);
 

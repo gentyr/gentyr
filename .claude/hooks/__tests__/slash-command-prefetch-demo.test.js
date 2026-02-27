@@ -1,18 +1,19 @@
 /**
- * Tests for /demo, /demo-interactive, and /demo-auto slash command detection and prefetch
+ * Tests for /demo, /demo-interactive, and /demo-autonomous slash command detection and prefetch
  *
  * Validates:
- * 1. SENTINELS map includes 'demo', 'demo-interactive', and 'demo-auto' commands
+ * 1. SENTINELS map includes 'demo', 'demo-interactive', and 'demo-autonomous' commands
  * 2. All three aliases share the same '<!-- HOOK:GENTYR:demo -->' sentinel value
  * 3. matchesCommand() detects each command by bare slash name and by sentinel
  * 4. handleDemo() gathers the expected preflight readiness data
- * 5. main() routes /demo, /demo-interactive, and /demo-auto to handleDemo()
- * 6. The updated SENTINELS count (16) is consistent
+ * 5. main() routes /demo, /demo-interactive, and /demo-autonomous to handleDemo()
+ * 6. The updated SENTINELS count (17) is consistent
+ * 7. Demo commands ARE in needsDb — they query user-feedback.db for enabled scenarios
  *
  * Uses Node.js built-in test runner (node:test)
  * Run with: node --test .claude/hooks/__tests__/slash-command-prefetch-demo.test.js
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import { describe, it, beforeEach } from 'node:test';
@@ -22,7 +23,7 @@ import path from 'path';
 
 const SLASH_COMMAND_PREFETCH_HOOK = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'slash-command-prefetch.js');
 
-describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands', () => {
+describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-autonomous Commands', () => {
   let hookCode;
 
   beforeEach(() => {
@@ -46,10 +47,10 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
       assert.match(sentinelsMatch[0], /'demo-interactive':/);
     });
 
-    it('should include "demo-auto" command', () => {
+    it('should include "demo-autonomous" command', () => {
       const sentinelsMatch = hookCode.match(/const SENTINELS = \{[\s\S]*?\};/);
       assert.ok(sentinelsMatch, 'SENTINELS constant must exist');
-      assert.match(sentinelsMatch[0], /'demo-auto':/);
+      assert.match(sentinelsMatch[0], /'demo-autonomous':/);
     });
 
     it('should map "demo" to the demo sentinel marker', () => {
@@ -63,12 +64,12 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
       assert.match(sentinelsMatch[0], /'demo-interactive':\s*'<!-- HOOK:GENTYR:demo -->'/);
     });
 
-    it('should map "demo-auto" to the same demo sentinel marker', () => {
+    it('should map "demo-autonomous" to the same demo sentinel marker', () => {
       const sentinelsMatch = hookCode.match(/const SENTINELS = \{[\s\S]*?\};/);
-      assert.match(sentinelsMatch[0], /'demo-auto':\s*'<!-- HOOK:GENTYR:demo -->'/);
+      assert.match(sentinelsMatch[0], /'demo-autonomous':\s*'<!-- HOOK:GENTYR:demo -->'/);
     });
 
-    it('should have 16 total sentinel entries after adding demo-interactive and demo-auto', () => {
+    it('should have 17 total sentinel entries after adding demo-interactive and demo-autonomous', () => {
       const sentinelsMatch = hookCode.match(/const SENTINELS = \{[\s\S]*?\};/);
       assert.ok(sentinelsMatch, 'SENTINELS constant must exist');
       const commandCount = (sentinelsMatch[0].match(/'[\w-]+':/g) || []).length;
@@ -121,12 +122,15 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
       assert.match(handleDemoMatch[0], /chromium-/);
     });
 
-    it('should check credential env vars (SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY)', () => {
+    it('should check credentials by scanning all env vars for unresolved op:// references (project-agnostic)', () => {
       const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
       assert.ok(handleDemoMatch, 'handleDemo function must exist');
-      assert.match(handleDemoMatch[0], /SUPABASE_URL/);
-      assert.match(handleDemoMatch[0], /SUPABASE_ANON_KEY/);
-      assert.match(handleDemoMatch[0], /SUPABASE_SERVICE_ROLE_KEY/);
+      // The credential check scans all env vars for unresolved 1Password references.
+      // It is project-agnostic — no longer hardcodes specific key names like SUPABASE_URL.
+      assert.match(handleDemoMatch[0], /op:\/\//);
+      assert.match(handleDemoMatch[0], /process\.env/);
+      // credentialsOk is the aggregated result field
+      assert.match(handleDemoMatch[0], /credentialsOk/);
     });
 
     it('should check auth state freshness', () => {
@@ -196,10 +200,10 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
       assert.match(mainMatch[0], /matchesCommand\(prompt, 'demo-interactive'\)/);
     });
 
-    it('should route /demo-auto to handleDemo()', () => {
+    it('should route /demo-autonomous to handleDemo()', () => {
       const mainMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
       assert.ok(mainMatch, 'main function must exist');
-      assert.match(mainMatch[0], /matchesCommand\(prompt, 'demo-auto'\)/);
+      assert.match(mainMatch[0], /matchesCommand\(prompt, 'demo-autonomous'\)/);
     });
 
     it('should have a dedicated if-block for /demo-interactive routing', () => {
@@ -211,20 +215,20 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
       assert.ok(demoInteractiveBlock, '/demo-interactive must have its own if-block routing to handleDemo()');
     });
 
-    it('should have a dedicated if-block for /demo-auto routing', () => {
+    it('should have a dedicated if-block for /demo-autonomous routing', () => {
       const mainMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
       assert.ok(mainMatch, 'main function must exist');
-      const demoAutoBlock = mainMatch[0].match(
-        /if \(matchesCommand\(prompt, 'demo-auto'\)\) \{[\s\S]*?handleDemo\(\)/
+      const demoAutonomousBlock = mainMatch[0].match(
+        /if \(matchesCommand\(prompt, 'demo-autonomous'\)\) \{[\s\S]*?handleDemo\(\)/
       );
-      assert.ok(demoAutoBlock, '/demo-auto must have its own if-block routing to handleDemo()');
+      assert.ok(demoAutonomousBlock, '/demo-autonomous must have its own if-block routing to handleDemo()');
     });
 
     it('should handle all commands including all three demo variants', () => {
       const mainMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
       assert.ok(mainMatch, 'main function must exist');
 
-      const demoCommands = ['demo', 'demo-interactive', 'demo-auto'];
+      const demoCommands = ['demo', 'demo-interactive', 'demo-autonomous'];
       for (const cmd of demoCommands) {
         assert.match(
           mainMatch[0],
@@ -267,27 +271,219 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-auto Commands
   });
 
   // ============================================================================
-  // Consistency checks — demo should NOT require a database
+  // discoveredProjects — Playwright config project discovery
+  // ============================================================================
+
+  describe('discoveredProjects gathering', () => {
+    it('should populate discoveredProjects when config file is found', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      assert.match(handleDemoMatch[0], /discoveredProjects/);
+    });
+
+    it('should read playwright config file content to discover project names', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // Must read the config file
+      assert.match(handleDemoMatch[0], /readFileSync.*configFile/);
+    });
+
+    it('should use regex to extract name: "..." patterns from config', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // The name extraction regex: name: 'project-name' or name: "project-name"
+      assert.match(handleDemoMatch[0], /nameRegex/);
+    });
+
+    it('should assign matched names into an array', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      assert.match(handleDemoMatch[0], /projectNames\.push/);
+    });
+
+    it('should set discoveredProjects to empty array when no config file exists', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // Fallback when configFile is null
+      assert.match(handleDemoMatch[0], /discoveredProjects.*\[\]/);
+    });
+
+    it('should set discoveredProjects to empty array on read error', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // Must have a catch block that falls back to []
+      assert.match(handleDemoMatch[0], /catch[\s\S]*?discoveredProjects.*\[\]/);
+    });
+
+    it('should only discover projects when configFile is non-null', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // configFile is derived from the tsConfig / jsConfig existence check
+      assert.match(handleDemoMatch[0], /configFile/);
+      assert.match(handleDemoMatch[0], /if \(configFile\)/);
+    });
+
+    it('should include discoveredProjects in the gathered output object', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // Must write to output.gathered.discoveredProjects
+      assert.match(handleDemoMatch[0], /output\.gathered\.discoveredProjects/);
+    });
+  });
+
+  // ============================================================================
+  // Consistency checks — demo commands DO require a database (scenario queries)
   // ============================================================================
 
   describe('Database requirements', () => {
-    it('should NOT include "demo" in needsDb array (no DB access needed)', () => {
+    it('should include "demo" in needsDb array (queries user-feedback.db for scenarios)', () => {
       const needsDbMatch = hookCode.match(/const needsDb = \[[\s\S]*?\];/);
       assert.ok(needsDbMatch, 'needsDb array must exist');
-      // demo commands are filesystem-only checks, not DB-dependent
-      assert.doesNotMatch(needsDbMatch[0], /'demo'/);
+      // demo commands query user-feedback.db for enabled demo scenarios
+      assert.match(needsDbMatch[0], /'demo'/);
     });
 
-    it('should NOT include "demo-interactive" in needsDb array', () => {
+    it('should include "demo-interactive" in needsDb array', () => {
       const needsDbMatch = hookCode.match(/const needsDb = \[[\s\S]*?\];/);
       assert.ok(needsDbMatch, 'needsDb array must exist');
-      assert.doesNotMatch(needsDbMatch[0], /'demo-interactive'/);
+      assert.match(needsDbMatch[0], /'demo-interactive'/);
     });
 
-    it('should NOT include "demo-auto" in needsDb array', () => {
+    it('should include "demo-autonomous" in needsDb array', () => {
       const needsDbMatch = hookCode.match(/const needsDb = \[[\s\S]*?\];/);
       assert.ok(needsDbMatch, 'needsDb array must exist');
-      assert.doesNotMatch(needsDbMatch[0], /'demo-auto'/);
+      assert.match(needsDbMatch[0], /'demo-autonomous'/);
+    });
+  });
+
+  // ============================================================================
+  // personaGroups computation — two-step persona → scenario selection
+  // ============================================================================
+
+  describe('personaGroups computation', () => {
+    it('should include personaGroups field in the gathered output', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      assert.match(handleDemoMatch[0], /output\.gathered\.personaGroups/);
+    });
+
+    it('should group scenarios by persona_name using a Map', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // Must create a Map keyed by persona name and iterate over scenarios to populate it
+      assert.match(handleDemoMatch[0], /const personaMap = new Map\(\)/);
+      assert.match(handleDemoMatch[0], /personaMap\.has\(s\.persona_name\)/);
+      assert.match(handleDemoMatch[0], /personaMap\.set\(s\.persona_name/);
+    });
+
+    it('should include persona_name field on each persona group object', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      assert.match(handleDemoMatch[0], /persona_name:\s*s\.persona_name/);
+    });
+
+    it('should include playwright_project field on each persona group object', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // The top-level group object must carry playwright_project so the command knows
+      // which Playwright project to pass to run_demo without drilling into a scenario
+      assert.match(handleDemoMatch[0], /playwright_project:\s*s\.playwright_project/);
+    });
+
+    it('should include scenarios array field on each persona group object', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      assert.match(handleDemoMatch[0], /scenarios:\s*\[\]/);
+    });
+
+    it('should include playwright_project on each individual scenario object inside the group', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // Critical: each scenario pushed into the group's scenarios[] array must also carry
+      // playwright_project so commands that iterate individual scenarios can use it directly
+      // without referencing the parent group.  This was a bug found in code review.
+      const pushBlock = handleDemoMatch[0].match(/personaMap\.get\(s\.persona_name\)\.scenarios\.push\(\{[\s\S]*?\}\)/);
+      assert.ok(pushBlock, 'scenarios.push() block must exist');
+      assert.match(pushBlock[0], /playwright_project:\s*s\.playwright_project/);
+    });
+
+    it('should spread Map values into an array for personaGroups', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      assert.match(handleDemoMatch[0], /\[\.\.\.personaMap\.values\(\)\]/);
+    });
+
+    it('should set personaGroups to [] in the catch branch', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // The catch block following the scenarios query must reset personaGroups to []
+      const catchBlock = handleDemoMatch[0].match(/\} catch \{[\s\S]*?\} finally \{/);
+      assert.ok(catchBlock, 'catch block must exist before finally');
+      assert.match(catchBlock[0], /output\.gathered\.personaGroups\s*=\s*\[\]/);
+    });
+
+    it('should set personaGroups to [] when scenariosDb is falsy (inner else — openDb returned null)', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // The else branch of `if (scenariosDb)` sets personaGroups to []
+      // The inner else sits between the `} finally {` close and the outer `} else {`
+      const innerElseBlock = handleDemoMatch[0].match(/scenariosDb\.close\(\);\s*\}\s*\} else \{[\s\S]*?\}/);
+      assert.ok(innerElseBlock, 'inner else branch (scenariosDb falsy) must exist');
+      assert.match(innerElseBlock[0], /output\.gathered\.personaGroups\s*=\s*\[\]/);
+    });
+
+    it('should set personaGroups to [] when USER_FEEDBACK_DB does not exist (outer else)', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      // The outer else branch of `if (fs.existsSync(USER_FEEDBACK_DB))` must also set personaGroups to []
+      // Capture the final else block after the closing of the `if (scenariosDb)` chain
+      const outerElseBlock = handleDemoMatch[0].match(/\} else \{\s*output\.gathered\.scenarios\s*=\s*\[\];\s*output\.gathered\.scenarioCount\s*=\s*0;\s*output\.gathered\.personaGroups\s*=\s*\[\];\s*\}/);
+      assert.ok(outerElseBlock, 'outer else branch (USER_FEEDBACK_DB missing) must set personaGroups to []');
+    });
+  });
+
+  // ============================================================================
+  // testCounts — file counting includes .demo.ts
+  // ============================================================================
+
+  describe('testCounts file counting', () => {
+    it('should count .demo.ts files alongside .spec.ts and .manual.ts in testCounts', () => {
+      // The testCounts filter in handleDemo() must include .demo.ts suffix.
+      // This was added as part of the demo system improvements so that prefetch
+      // data accurately reflects total test/demo file counts per project.
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+
+      // The filter that populates testCounts must include .demo.ts
+      assert.match(
+        handleDemoMatch[0],
+        /\.demo\.ts/,
+        'testCounts filter must include .demo.ts files'
+      );
+    });
+
+    it('should count .spec.ts files in testCounts', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      assert.match(handleDemoMatch[0], /\.spec\.ts/);
+    });
+
+    it('should count .manual.ts files in testCounts', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      assert.match(handleDemoMatch[0], /\.manual\.ts/);
+    });
+
+    it('should use readdirSync with recursive:true to count test files', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      assert.match(handleDemoMatch[0], /readdirSync.*recursive.*true/s);
+    });
+
+    it('should store testCounts per project in gathered output', () => {
+      const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
+      assert.ok(handleDemoMatch, 'handleDemo function must exist');
+      assert.match(handleDemoMatch[0], /testCounts/);
     });
   });
 });

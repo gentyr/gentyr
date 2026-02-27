@@ -35,7 +35,7 @@ export const SECTION_CREATOR_RESTRICTIONS: Partial<Record<ValidSection, readonly
 /**
  * Creators whose tasks always have follow-up hooks enabled, regardless of section.
  */
-export const FORCED_FOLLOWUP_CREATORS: readonly string[] = ['deputy-cto'] as const;
+export const FORCED_FOLLOWUP_CREATORS: readonly string[] = ['deputy-cto', 'product-manager'] as const;
 
 // ============================================================================
 // Task Status

@@ -11,7 +11,7 @@ import { z } from 'zod';
 // Constants
 // ============================================================================
 
-export const CONSUMPTION_MODES = ['gui', 'cli', 'api', 'sdk'] as const;
+export const CONSUMPTION_MODES = ['gui', 'cli', 'api', 'sdk', 'adk'] as const;
 export type ConsumptionMode = (typeof CONSUMPTION_MODES)[number];
 
 export const FEEDBACK_RUN_STATUS = ['pending', 'in_progress', 'completed', 'failed', 'partial'] as const;
@@ -345,4 +345,84 @@ export interface GetSessionAuditResult {
   total_actions: number;
   total_duration_ms: number;
   transcript_session_id?: string;
+}
+
+// ============================================================================
+// Demo Scenario Schemas
+// ============================================================================
+
+export const CreateScenarioArgsSchema = z.object({
+  persona_id: z.string().describe('Persona UUID this scenario belongs to — persona must have consumption_mode "gui"'),
+  title: z.string().min(1).max(200).describe('Human-readable scenario title shown in /demo-interactive and /demo-autonomous menus'),
+  description: z.string().min(1).max(2000).describe('What the scenario demonstrates — given to code-writer for implementation and to persona agents for context'),
+  category: z.string().max(50).optional().describe('Optional grouping (e.g., "onboarding", "admin", "billing")'),
+  playwright_project: z.string().min(1).max(100).describe('Playwright project name for auth state — must match a project in the target app\'s playwright.config.ts'),
+  test_file: z.string().min(1).max(500)
+    .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
+    .describe('Relative path to the .demo.ts file (e.g., e2e/demo/vendor-onboarding.demo.ts)'),
+  sort_order: z.coerce.number().int().min(0).max(999).optional().default(0).describe('Display order within persona'),
+});
+
+export const UpdateScenarioArgsSchema = z.object({
+  id: z.string().describe('Scenario UUID'),
+  title: z.string().min(1).max(200).optional(),
+  description: z.string().min(1).max(2000).optional(),
+  category: z.string().max(50).optional(),
+  playwright_project: z.string().min(1).max(100).optional(),
+  test_file: z.string().min(1).max(500)
+    .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
+    .optional(),
+  sort_order: z.coerce.number().int().min(0).max(999).optional(),
+  enabled: z.coerce.boolean().optional(),
+});
+
+export const DeleteScenarioArgsSchema = z.object({
+  id: z.string().describe('Scenario UUID'),
+});
+
+export const ListScenariosArgsSchema = z.object({
+  persona_id: z.string().optional().describe('Filter by persona UUID'),
+  enabled_only: z.coerce.boolean().optional().default(true),
+  category: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(50),
+});
+
+export const GetScenarioArgsSchema = z.object({
+  id: z.string().describe('Scenario UUID'),
+});
+
+export type CreateScenarioArgs = z.infer<typeof CreateScenarioArgsSchema>;
+export type UpdateScenarioArgs = z.infer<typeof UpdateScenarioArgsSchema>;
+export type DeleteScenarioArgs = z.infer<typeof DeleteScenarioArgsSchema>;
+export type ListScenariosArgs = z.infer<typeof ListScenariosArgsSchema>;
+export type GetScenarioArgs = z.infer<typeof GetScenarioArgsSchema>;
+
+export interface ScenarioRecord {
+  id: string;
+  persona_id: string;
+  title: string;
+  description: string;
+  category: string | null;
+  playwright_project: string;
+  test_file: string;
+  sort_order: number;
+  enabled: number;
+  created_at: string;
+  created_timestamp: number;
+  updated_at: string;
+}
+
+export interface ScenarioResult {
+  id: string;
+  persona_id: string;
+  title: string;
+  description: string;
+  category: string | null;
+  playwright_project: string;
+  test_file: string;
+  sort_order: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  persona_name?: string;
 }

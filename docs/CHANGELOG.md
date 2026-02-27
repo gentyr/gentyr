@@ -1,5 +1,304 @@
 # GENTYR Framework Changelog
 
+## 2026-02-26 - Worktree core.hooksPath Poisoning Defense
+
+### Summary
+
+4-layer defense-in-depth fix for a vulnerability where Claude Code sub-agent worktrees could write stale `core.hooksPath` entries to the main `.git/config`, silently bypassing all pre-commit hooks. Covers proactive cleanup at worktree removal, SessionStart auto-repair, pre-commit last-resort enforcement, and a `safeSymlink()` EINVAL fix for partially-provisioned worktrees.
+
+### Changed
+
+**`.claude/hooks/lib/worktree-manager.js`**:
+- `safeSymlink()`: Now calls `fs.lstatSync(linkPath)` before `readlinkSync` to determine item type. If the existing path is a real directory (e.g. git-tracked `.husky/` checked out into the worktree), removes it with `fs.rmSync(..., { recursive: true, force: true })` instead of calling `readlinkSync` which would throw EINVAL. This fixes a crash that left worktrees partially provisioned.
+- `removeWorktree()`: Before running `git worktree remove`, reads `core.hooksPath` from local git config. If it resolves into the worktree path being removed, resets it to `.husky`. Wrapped in try-catch — non-fatal if git config is unavailable.
+
+**`.claude/hooks/gentyr-sync.js`**:
+- `tamperCheck()`: Added Check 1.5 between the existing symlink check (Check 1) and ownership check (Check 2). Reads `core.hooksPath` via `execFileSync git config --local --get core.hooksPath`. Resolves relative paths against `projectDir`. If the result starts with `.claude/worktrees/`, attempts auto-repair (`git config --local core.hooksPath .husky`) and pushes a warning. On auto-repair failure, pushes a warning with manual fix instructions.
+
+**`husky/pre-commit`**:
+- Added `core.hooksPath WORKTREE CHECK` section (shell, runs before lint-staged). Reads `core.hooksPath` from git config. Uses `case` pattern match for `*/.claude/worktrees/*)` — auto-repairs to `.husky` and exits 1 to force the user to re-run the commit with the corrected path. Errors from `git config` are suppressed with `2>/dev/null || true`.
+
+### Added
+
+**`.claude/hooks/__tests__/worktree-hookspath-fix.test.js`** (new, 26 tests):
+- `safeSymlink() directory handling` (6 tests): structural and behavioral — covers lstatSync-before-readlinkSync, directory rmSync path, symlink correct-target short-circuit, regular file unlink path, and two behavioral end-to-end cases.
+- `removeWorktree() core.hooksPath reset` (4 tests): structural — hooksPath check before worktree remove, reset to .husky, path.resolve+startsWith comparison, try-catch wrapper.
+- `tamperCheck() core.hooksPath worktree detection` (8 tests): structural — Check 1.5 presence, execFileSync usage, worktrees dir comparison, absolute/relative path handling, auto-repair command, repair warning, bypass warning, ordering relative to Check 1 and Check 2.
+- `husky/pre-commit core.hooksPath worktree check` (8 tests): structural — section header, git config read, worktrees/ pattern match, .husky reset, exit-1-after-repair, placement before lint-staged, placement after symlink check, error suppression.
+
+### Test Results
+
+- All 26 new tests pass
+- Total: 149 tests across 6 test suites, 0 failures
+
+---
+
+## 2026-02-26 - Multi-Step Workflow Completion Guarantees
+
+### Summary
+
+Addresses a failure mode where the product-manager agent created demo scenario DB records but omitted the required CODE-REVIEWER implementation tasks. Three layers of defense added: forced follow-up hooks on all product-manager tasks, gap analysis in the `/product-manager` slash command, and prefetch-level demo scenario coverage surfacing uncovered personas proactively.
+
+### Added
+
+**`packages/mcp-servers/src/shared/constants.ts`**:
+- `product-manager` added to `FORCED_FOLLOWUP_CREATORS` — all tasks created by the product-manager agent now auto-enable `followup_enabled: true`, triggering verification after task completion
+
+**`.claude/commands/product-manager.md`**:
+- Option 6 "Demo scenarios" in the completed-analysis menu with sub-menu: Gap analysis, Create scenarios, View scenarios
+- Demo Scenario Gap Analysis section: detailed verification pattern that checks GUI personas, scenario counts, and CODE-REVIEWER task existence; renders a coverage table; offers to create missing tasks
+- CRITICAL annotation: after any demo scenario creation action, gap analysis is always re-run as completion verification
+
+**`.claude/hooks/slash-command-prefetch.js`**:
+- `handleProductManager()` extended to query `user-feedback.db` for GUI persona scenario counts; surfaces `demoScenarios.uncoveredPersonas` in prefetch output so the command has coverage data before display
+
+**`.claude/agents/product-manager.md`**:
+- Completion Checklist section: explicit verification steps for section writing, persona evaluation, demo scenario creation, and generic multi-step tasks
+
+**`packages/mcp-servers/src/todo-db/__tests__/todo-db.test.ts`**:
+- 3 new tests: product-manager creator gets forced followup, deputy-cto still gets forced followup, code-reviewer does not get forced followup
+
+**`.claude/hooks/__tests__/slash-command-prefetch-product-manager.test.js`**:
+- 8 new tests for demo scenario coverage: uncovered personas detection, guiPersonas array with scenarioCounts, totalScenarios count, feedbackDb failure non-fatal path, empty GUI persona set, mixed covered/uncovered, zero-scenarios case
+
+**`.claude/hooks/__tests__/slash-command-prefetch-show.test.js`**:
+- Section count corrected from 12 to 13 (added `product-market-fit`)
+- Test for `product-market-fit` section ID presence added
+
+### Test Results
+
+- `todo-db.test.ts`: 103/103 pass (3 new)
+- `slash-command-prefetch-product-manager.test.js`: 38/38 pass (8 new)
+- `slash-command-prefetch-show.test.js`: 38/38 pass (2 updated)
+- TypeScript: compiles clean
+
+---
+
+## 2026-02-26 - Demo Scenario System
+
+### Summary
+
+Redesigned the demo workflow from "select a Playwright project and run all tests" to "select a curated demo scenario and run just that one file." Introduces a `demo_scenarios` table in `user-feedback.db`, 5 new MCP tools on the `user-feedback` server, three redesigned `/demo*` commands, and N+1 feedback spawning for GUI personas.
+
+### Added
+
+**`packages/mcp-servers/src/user-feedback/types.ts`**:
+- `CreateScenarioArgsSchema`, `UpdateScenarioArgsSchema`, `DeleteScenarioArgsSchema`, `ListScenariosArgsSchema`, `GetScenarioArgsSchema` Zod schemas
+- Corresponding TypeScript types for all scenario tools
+
+**`packages/mcp-servers/src/user-feedback/__tests__/demo-scenarios.test.ts`** (new):
+- 22 tests covering: table migration, CRUD lifecycle, `.demo.ts` suffix enforcement, `gui`-only persona constraint, FK cascade on persona delete, `enabled`/`category` filters, `persona_name` JOIN in list/get
+
+**`.claude/commands/demo-autonomous.md`** (new):
+- `/demo-autonomous` — runs a curated scenario at human-watchable speed (slowMo 800ms), no pause at end. "Show me the product in action."
+
+### Modified
+
+**`packages/mcp-servers/src/user-feedback/server.ts`**:
+- `demo_scenarios` table migration in `initDb()`; FK `persona_id` references `personas(id)` with CASCADE DELETE
+- 5 new tools: `create_scenario` (validates `consumption_mode = 'gui'`, enforces `.demo.ts` suffix), `update_scenario`, `delete_scenario`, `list_scenarios` (JOIN for `persona_name`, filterable), `get_scenario`
+
+**`packages/mcp-servers/src/playwright/server.ts`**:
+- `run_demo`: new `test_file` positional arg (single-file filtering) and `pause_at_end` flag (sets `DEMO_PAUSE_AT_END=1` env var)
+- `launch_ui_mode`: new optional `test_file` for filtered UI mode
+- `countTestFiles()`: recognizes `.demo.ts` extension alongside `.spec.ts` and `.manual.ts`
+
+**`packages/mcp-servers/src/playwright/types.ts`**:
+- Added `test_file` and `pause_at_end` fields to `RunDemoArgsSchema` and `LaunchUiModeArgsSchema`
+
+**`.claude/commands/demo.md`**:
+- Rewritten as escape-hatch: launches Playwright UI mode showing ALL tests. Developer power-tool, not scenario-filtered.
+
+**`.claude/commands/demo-interactive.md`**:
+- Rewritten as scenario-based: selects from `list_scenarios`, runs `run_demo` with `pause_at_end: true` at full speed. "Take me to this screen."
+
+**`.claude/commands/demo-auto.md`**:
+- Deleted. Replaced by `/demo-autonomous`.
+
+**`.claude/hooks/slash-command-prefetch.js`**:
+- `demo-auto` sentinel replaced with `demo-autonomous`
+- Demo commands added to `needsDb` — `handleDemo()` now queries `user-feedback.db` for enabled scenarios and includes them in prefetch output
+
+**`.claude/hooks/feedback-launcher.js`**:
+- `getScenariosForPersona(personaId, projectDir)` — queries `demo_scenarios WHERE enabled = 1` for a persona
+- `buildPrompt()` accepts optional `scenario` arg; injects scenario context into feedback agent prompt
+
+**`.claude/hooks/feedback-orchestrator.js`**:
+- N+1 spawning: GUI personas spawn 1 default session + up to 3 scenario-anchored sessions
+- Each scenario session runs the demo file via `mcp__playwright__run_demo()` as a pre-step before feedback exploration
+- Demo coverage check: flags GUI personas with zero enabled scenarios in the orchestrator log
+
+**`.claude/agents/product-manager.md`**:
+- Added demo scenario management responsibilities: defines scenario DB records, creates CODE-REVIEWER tasks for `*.demo.ts` file implementation, ensures 2-4 scenarios per GUI persona
+
+**`.claude/agents/test-writer.md`**:
+- Added explicit exclusion rule: test-writer must NOT create or modify `*.demo.ts` files (those are managed by product-manager + code-reviewer)
+
+**`.claude/hooks/__tests__/slash-command-prefetch-demo.test.js`**:
+- Updated `demo-auto` → `demo-autonomous` throughout
+- Updated `needsDb` assertions: demo commands ARE now in `needsDb` (scenario DB queries)
+
+### Test Results
+
+- `demo-scenarios.test.ts`: 22/22 pass (new)
+- `playwright.test.ts`: 11 new tests; all pass
+- `slash-command-prefetch-demo.test.js`: 42/42 pass
+- MCP server suite: 1739/1739 pass across 33 test files
+
+---
+
+## 2026-02-25 - Generalize Playwright MCP Server (Config Discovery)
+
+### Summary
+
+The Playwright MCP server is now fully project-agnostic. All hardcoded project maps, auth file names, credential key lists, and extension project sets have been replaced with runtime discovery from the target project's `playwright.config.ts`. Any GENTYR-linked project with a standard Playwright config now works without modification.
+
+### Added
+
+**`packages/mcp-servers/src/playwright/config-discovery.ts`** (new):
+- `discoverPlaywrightConfig(projectDir): PlaywrightConfig` — reads `playwright.config.ts` (or `.js`) as raw text via regex and brace-matching; no `require`/`import` of the config (avoids TS compilation and side effects)
+- Discovers: `projects[]` (name, testDir, storageState, isInfrastructure, isManual, isExtension), `defaultTestDir`, `projectDirMap`, `personaMap`, `extensionProjects` (Set), `authFiles[]`, `primaryAuthFile`
+- Infrastructure projects (`seed`, `auth-setup`, `cleanup`, `setup`) excluded from public maps; extension detection via `name.includes('extension')` or `name === 'demo'`; persona labels auto-generated from kebab-case (e.g. `vendor-owner` → `Vendor (Owner)`)
+- `resetConfigCache()` exported for test isolation
+- Module-level cache per `projectDir` for lifetime of MCP server process
+
+**`packages/mcp-servers/src/playwright/__tests__/config-discovery.test.ts`** (new):
+- 25 tests covering: minimal config parsing, fallbacks (no config, empty projects), caching, persona label generation, auth file collection, infrastructure/extension/manual detection
+
+### Modified
+
+**`packages/mcp-servers/src/playwright/server.ts`**:
+- All hardcoded maps removed: `PERSONA_MAP`, active dir map, `EXTENSION_PROJECTS`, `SUPABASE_*` credential key list, `vendor-owner.json` path reference
+- Config discovered once at module load via `discoverPlaywrightConfig(PROJECT_DIR)` and used throughout
+- `get_coverage_status`: persona labels and test dirs from `pwConfig.personaMap` / `pwConfig.projectDirMap`
+- `preflight_check` check #5 (credentials): generic `op://` env scan — any env var with an unresolved `op://` value triggers failure; no hardcoded key names
+- `preflight_check` check #8 (auth state): uses `pwConfig.primaryAuthFile`; falls back to `.auth/` scan; no hardcoded `vendor-owner.json`
+- `preflight_check` check #9 (extension manifest): uses `pwConfig.extensionProjects.has(args.project)` instead of `PLAYWRIGHT_PROJECTS` constant
+- `run_auth_setup`: expected auth file list from `pwConfig.authFiles`; falls back to `.auth/` scan
+
+**`packages/mcp-servers/src/playwright/types.ts`**:
+- `PLAYWRIGHT_PROJECTS` constant marked `@deprecated`; kept for backwards compatibility with existing test imports
+
+**`.claude/hooks/playwright-health-check.js`**:
+- Dynamic auth file discovery: reads `storageState` from first occurrence in `playwright.config.ts` via regex; falls back to `.auth/` directory scan; no hardcoded auth file names
+
+**`.claude/hooks/slash-command-prefetch.js`**:
+- Credential scanning: generic `op://` env scan instead of hardcoded credential key list
+- Project discovery: dynamic from `playwright.config.ts` via regex (no hardcoded project names)
+- Auth file fallback: scans `.auth/` directory instead of hardcoding `vendor-owner.json`
+
+**`.claude/hooks/__tests__/slash-command-prefetch-demo.test.js`**:
+- Updated credential check assertions for generalized `op://` scanning pattern
+
+### Test Results
+
+- Build: compiles cleanly (TypeScript)
+- `config-discovery.test.ts`: 25/25 pass
+- `playwright.test.ts`: 155/155 pass
+- `playwright-health-check.test.js`: 10/10 pass (previously 7/7 — 3 new tests for dynamic auth discovery)
+- `slash-command-prefetch-demo.test.js`: 42/42 pass
+
+---
+
+## 2026-02-25 - Fix `run_demo` Silent Failure (SIGPIPE / Crash Detection Window)
+
+### Summary
+
+Fixed a silent failure in `run_demo` where Playwright processes were killed by SIGPIPE shortly after the tool returned success. The root cause was `child.stderr.destroy()` closing the pipe's readable end — when the child process later wrote to stderr, the OS delivered SIGPIPE, terminating the process. Also extended the crash detection window from 5s to 15s to accommodate webServer compilation overhead in headed mode.
+
+### Fixed
+
+**`packages/mcp-servers/src/playwright/server.ts`**:
+- `launchUiMode()`: replaced `child.stderr.destroy()` with `child.stderr.removeAllListeners('data')` + `child.stderr.resume()` to keep the pipe open and draining without listening, preventing SIGPIPE delivery
+- `runDemo()`: same stderr fix applied; crash detection window extended from 5s to 15s to cover headed browser + webServer startup time (heavy stderr output at ~5s was the trigger for the SIGPIPE)
+- Error messages updated: "crashed within 5s" → "crashed within 15s"; success messages updated accordingly
+
+### Behavioral Change
+
+`run_demo` now holds open for up to 15s before returning success (previously 5s). This is visible to callers but necessary to confirm the process is stable through webServer compilation.
+
+---
+
+## 2026-02-24 - `remove-account` CLI Command
+
+### Summary
+
+New `npx gentyr remove-account <email>` command and `/remove-account` slash command for removing an account from the credential rotation system. Tombstones all keys for the given email, automatically switches to a replacement account if the removed account was active, and supports a `--force` flag to allow removal of the last account.
+
+### Added
+
+**`cli/commands/remove-account.js`** (new):
+- Exports `removeAccount(args)` default; accepts `--force` flag and `<email>` positional argument
+- Email format validation (must contain `@` and `.`) with a clear usage error message
+- `findKeysByEmail(keys, email)` — case-insensitive match across non-tombstone, non-invalid keys
+- `listAccountEmails(keys)` — lists unique active account emails for the "no match" error path
+- Active-account switching: builds a temp state without matched keys, calls `selectActiveKey()` to find a replacement, calls `updateActiveCredentials()` for seamless Keychain swap, fires a `key_switched` event with `reason: 'account_removed'`
+- `--force` path: when no replacement exists and `--force` is set, sets `active_key_id = null` with a warning; without `--force`, exits with an informative error
+- Tombstones each matched key: preserves `account_email`, sets `status: 'tombstone'`, `tombstoned_at: now`, fires `account_removed` event per key
+- Warns when `CLAUDE_CODE_OAUTH_TOKEN` env var is set (may need manual clearing)
+- Integrates with `readRotationState`, `writeRotationState`, `logRotationEvent`, `selectActiveKey`, `updateActiveCredentials` from `key-sync.js`
+
+**`.claude/commands/remove-account.md`** (new):
+- 5-step interactive flow: read state → ask which account → confirm → execute CLI → display updated state
+- Uses framework path resolution pattern (`GENTYR_DIR`) for slash-command compatibility across all install models
+- Step 1 reads state via `node -e "import(...).then(...)"` (avoids direct read of `api-key-rotation.json` to stay clear of credential-file-guard)
+- `AskUserQuestion` for account selection and removal confirmation
+
+**`cli/index.js`**:
+- Added `'remove-account': './commands/remove-account.js'` to `COMMANDS` map
+- Added `remove-account <email>` to `printUsage()` help text
+
+### Modified
+
+**`packages/cto-dashboard/src/utils/account-overview-reader.ts`**:
+- Added `'account_removed'` to `ALLOWED_EVENTS` set (now 7 event types, up from 6)
+- Added `case 'account_removed': return \`Account removed by user: ${displayName}\`` to `deriveDescription()`
+
+**`packages/cto-dashboard/src/components/AccountOverviewSection.tsx`**:
+- Added `case 'account_removed': return 'yellow'` to the event color switch
+
+### Tests
+
+**`cli/commands/__tests__/remove-account.test.js`** (new — 18 tests, all passing):
+- Coverage: basic removal, active account switching, --force flag, email validation, env var warning, empty state, flag ordering, no-match path, no-replacement guard, tombstone format, key_switched event, account_removed event per key, summary output
+
+**`packages/cto-dashboard/src/utils/__tests__/account-overview-reader.test.ts`**:
+- 3 new tests: null email fallback, tombstone key pass-through, deduplication of `account_removed` events (64 tests total, all passing)
+
+**`packages/cto-dashboard/src/components/__tests__/AccountOverviewSection.test.tsx`**:
+- Updated test for `account_removed` color (30 tests total, all passing)
+
+---
+
+## 2026-02-24 - Copy-on-Protect for Linked Projects
+
+### Summary
+
+When a project links to GENTYR via `pnpm link`, `.claude/hooks` is a symlink into the framework source. Previously, `npx gentyr protect` root-owned the 8 critical hook files at the symlink target — i.e., inside the gentyr repo itself. Any subsequent edit, git operation, or agent session in the gentyr repo would fail to write those files. This change introduces a copy-on-protect path: when `.claude/hooks` is a symlink, `protect` copies the critical files to a local `.claude/hooks-protected/` directory and root-owns those copies instead.
+
+### Changed
+
+**`cli/commands/protect.js`**:
+- `doProtect()`: detects whether `.claude/hooks` is a symlink (linked project); if so, creates `.claude/hooks-protected/`, copies the 8 critical hook files from the live symlink target to that directory, and root-owns the copies; writes `hooksProtectedDir: ".claude/hooks-protected"` into `protection-state.json` for downstream checks
+- `doUnprotect()`: detects presence of `hooks-protected/` via `hasLocalCopies` flag; unprotects files in that directory instead of the symlink target; skips the `hooksDir` bulk-fix sweep when local copies exist (avoids touching framework source); removes `.claude/hooks-protected/` after unprotecting
+
+**`husky/pre-commit`**:
+- Ownership check now prefers `.claude/hooks-protected/` (`HOOKS_CHECK_DIR`) when the directory exists; falls back to `.claude/hooks/` for direct installs
+
+**`.claude/hooks/gentyr-sync.js`** — `tamperCheck()`:
+- Reads `state.hooksProtectedDir` from `protection-state.json`; if set, resolves the path relative to `projectDir` and redirects the ownership check to that directory
+- Treats a missing `hooks-protected/` directory as tampering when `hooksProtectedDir` is present in state; adds `'hooks-protected/ directory missing (expected by protection-state.json)'` to warnings
+
+**`cli/lib/config-gen.js`** — `updateGitignore()`:
+- Added `.claude/hooks-protected/` to the GENTYR gitignore block so the local copy directory is never committed
+
+### Tests
+
+- `cli/lib/__tests__/config-gen-gitignore.test.js`: added `.claude/hooks-protected/` to expected gitignore patterns (9 tests pass)
+- `.claude/hooks/__tests__/husky-pre-commit-structure.test.js`: added 2 tests verifying the script prefers `hooks-protected/` when present and falls back to `hooks/` when absent (10 tests pass)
+
+---
+
 ## 2026-02-23 - `/persona-feedback` Slash Command
 
 ### Summary

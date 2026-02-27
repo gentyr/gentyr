@@ -30,6 +30,7 @@ import {
   GetCompletedSinceArgsSchema,
   SummarizeWorkArgsSchema,
   GetWorklogArgsSchema,
+  ListArchivedTasksArgsSchema,
   VALID_SECTIONS,
   SECTION_CREATOR_RESTRICTIONS,
   FORCED_FOLLOWUP_CREATORS,
@@ -44,6 +45,7 @@ import {
   type GetCompletedSinceArgs,
   type SummarizeWorkArgs,
   type GetWorklogArgs,
+  type ListArchivedTasksArgs,
   type ListTasksResult,
   type TaskResponse,
   type TaskRecord,
@@ -65,6 +67,8 @@ import {
   type WorklogMetrics,
   type SummarizeWorkResult,
   type GetWorklogResult,
+  type ArchivedTask,
+  type ListArchivedTasksResult,
 } from './types.js';
 
 // ============================================================================
@@ -112,6 +116,29 @@ CREATE TABLE IF NOT EXISTS maintenance_state (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- Mirrors tasks columns minus status (always 'completed') and metadata (unused legacy column).
+CREATE TABLE IF NOT EXISTS archived_tasks (
+    id TEXT PRIMARY KEY,
+    section TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    assigned_by TEXT,
+    priority TEXT NOT NULL DEFAULT 'normal',
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    created_timestamp INTEGER NOT NULL,
+    completed_timestamp INTEGER,
+    followup_enabled INTEGER NOT NULL DEFAULT 0,
+    followup_section TEXT,
+    followup_prompt TEXT,
+    archived_at TEXT NOT NULL,
+    archived_timestamp INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_archived_tasks_archived ON archived_tasks(archived_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_archived_tasks_section ON archived_tasks(section);
 `;
 
 const WORKLOG_SCHEMA = `
@@ -547,11 +574,36 @@ function deleteTask(args: DeleteTaskArgs): DeleteTaskResult | ErrorResult {
     return { error: `Task not found: ${args.id}` };
   }
 
-  db.prepare('DELETE FROM tasks WHERE id = ?').run(args.id);
+  let archived = false;
+
+  if (task.status === 'completed') {
+    // Archive completed tasks before deleting
+    const now = new Date();
+    const archived_at = now.toISOString();
+    const archived_timestamp = Math.floor(now.getTime() / 1000);
+
+    const archiveAndDelete = db.transaction(() => {
+      db.prepare(`
+        INSERT OR REPLACE INTO archived_tasks (id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        task.id, task.section, task.title, task.description, task.assigned_by,
+        task.priority ?? 'normal', task.created_at, task.started_at, task.completed_at,
+        task.created_timestamp, task.completed_timestamp, task.followup_enabled,
+        task.followup_section, task.followup_prompt, archived_at, archived_timestamp
+      );
+      db.prepare('DELETE FROM tasks WHERE id = ?').run(args.id);
+    });
+    archiveAndDelete();
+    archived = true;
+  } else {
+    db.prepare('DELETE FROM tasks WHERE id = ?').run(args.id);
+  }
 
   return {
     deleted: true,
     id: args.id,
+    archived,
   };
 }
 
@@ -593,10 +645,12 @@ function getSummary(): SummaryResult {
 function cleanup(): CleanupResult {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
+  const nowIso = new Date().toISOString();
   const changes = {
     stale_starts_cleared: 0,
-    old_completed_removed: 0,
-    completed_capped: 0,
+    old_completed_archived: 0,
+    completed_cap_archived: 0,
+    archived_pruned: 0,
   };
 
   // Clear stale starts (>30 min without completion)
@@ -609,34 +663,71 @@ function cleanup(): CleanupResult {
   `).run(now);
   changes.stale_starts_cleared = staleResult.changes;
 
-  // Remove completed tasks older than 3 hours
-  const oldResult = db.prepare(`
-    DELETE FROM tasks
-    WHERE status = 'completed'
-      AND completed_timestamp IS NOT NULL
-      AND (? - completed_timestamp) > 10800
-  `).run(now);
-  changes.old_completed_removed = oldResult.changes;
+  // Archive completed tasks older than 3 hours
+  const archiveOld = db.transaction(() => {
+    const insertResult = db.prepare(`
+      INSERT OR REPLACE INTO archived_tasks (id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
+      SELECT id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, ?, ?
+      FROM tasks
+      WHERE status = 'completed'
+        AND completed_timestamp IS NOT NULL
+        AND (? - completed_timestamp) > 10800
+    `).run(nowIso, now, now);
 
-  // Cap completed tasks at 50 (keep most recent)
+    db.prepare(`
+      DELETE FROM tasks
+      WHERE status = 'completed'
+        AND completed_timestamp IS NOT NULL
+        AND (? - completed_timestamp) > 10800
+    `).run(now);
+
+    return insertResult.changes;
+  });
+  changes.old_completed_archived = archiveOld();
+
+  // Cap completed tasks at 50 (archive overflow, keep most recent)
   interface CountResult { count: number }
   const completedCount = (db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'completed'").get() as CountResult).count;
   if (completedCount > 50) {
     const toRemove = completedCount - 50;
-    const capResult = db.prepare(`
-      DELETE FROM tasks WHERE id IN (
-        SELECT id FROM tasks
+    const archiveCap = db.transaction(() => {
+      const insertResult = db.prepare(`
+        INSERT INTO archived_tasks (id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
+        SELECT id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, ?, ?
+        FROM tasks
         WHERE status = 'completed'
         ORDER BY completed_timestamp ASC
         LIMIT ?
-      )
-    `).run(toRemove);
-    changes.completed_capped = capResult.changes;
+      `).run(nowIso, now, toRemove);
+
+      db.prepare(`
+        DELETE FROM tasks WHERE id IN (
+          SELECT id FROM tasks
+          WHERE status = 'completed'
+          ORDER BY completed_timestamp ASC
+          LIMIT ?
+        )
+      `).run(toRemove);
+
+      return insertResult.changes;
+    });
+    changes.completed_cap_archived = archiveCap();
   }
+
+  // Prune old archived tasks: keep last 500 OR anything within 30 days
+  const thirtyDaysAgo = now - (30 * 24 * 60 * 60);
+  const pruneResult = db.prepare(`
+    DELETE FROM archived_tasks
+    WHERE id NOT IN (
+      SELECT id FROM archived_tasks ORDER BY archived_timestamp DESC LIMIT 500
+    )
+    AND archived_timestamp < ?
+  `).run(thirtyDaysAgo);
+  changes.archived_pruned = pruneResult.changes;
 
   return {
     ...changes,
-    message: `Cleanup complete: ${changes.stale_starts_cleared} stale starts cleared, ${changes.old_completed_removed} old completed removed, ${changes.completed_capped} completed capped`,
+    message: `Cleanup complete: ${changes.stale_starts_cleared} stale starts cleared, ${changes.old_completed_archived} old completed archived, ${changes.completed_cap_archived} completed cap archived, ${changes.archived_pruned} archives pruned`,
   };
 }
 
@@ -1060,6 +1151,31 @@ function getWorklog(args: GetWorklogArgs): GetWorklogResult {
   };
 }
 
+function listArchivedTasks(args: ListArchivedTasksArgs): ListArchivedTasksResult {
+  const db = getDb();
+  const hours = args.hours ?? 24;
+  const limit = args.limit ?? 20;
+  const since = Math.floor((Date.now() - hours * 60 * 60 * 1000) / 1000);
+
+  let sql = 'SELECT * FROM archived_tasks WHERE archived_timestamp >= ?';
+  const params: unknown[] = [since];
+
+  if (args.section) {
+    sql += ' AND section = ?';
+    params.push(args.section);
+  }
+
+  sql += ' ORDER BY archived_timestamp DESC LIMIT ?';
+  params.push(limit);
+
+  const tasks = db.prepare(sql).all(...params) as ArchivedTask[];
+
+  return {
+    tasks,
+    total: tasks.length,
+  };
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -1109,7 +1225,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'cleanup',
-    description: 'Run cleanup logic: remove stale starts (>30 min), old completed (>3 hrs), cap at 50 completed.',
+    description: 'Run cleanup logic: reset stale starts (>30 min), archive old completed (>3 hrs), cap at 50 completed, prune archives (>30 days & >500).',
     schema: CleanupArgsSchema,
     handler: cleanup,
   },
@@ -1142,6 +1258,12 @@ const tools: AnyToolHandler[] = [
     description: 'Get recent worklog entries with optional 30-day rolling metrics (coverage, avg duration, avg tokens, cache hit rate).',
     schema: GetWorklogArgsSchema,
     handler: getWorklog,
+  },
+  {
+    name: 'list_archived_tasks',
+    description: 'List archived (previously completed) tasks. Useful for audit history. Tasks are archived automatically by cleanup or when deleted after completion.',
+    schema: ListArchivedTasksArgsSchema,
+    handler: listArchivedTasks,
   },
 ];
 

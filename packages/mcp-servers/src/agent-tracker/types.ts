@@ -26,6 +26,7 @@ export const AGENT_TYPES = {
   PLAN_EXECUTOR: 'plan-executor',
   CLAUDEMD_REFACTOR: 'claudemd-refactor',
   LINT_FIXER: 'lint-fixer',
+  SESSION_REVIVED: 'session-revived',
 } as const;
 
 export type AgentType = typeof AGENT_TYPES[keyof typeof AGENT_TYPES];

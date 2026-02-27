@@ -32,31 +32,43 @@ import {
 // Configuration
 // ============================================================================
 
-const {ELASTIC_CLOUD_ID} = process.env;
-const {ELASTIC_ENDPOINT} = process.env; // Direct endpoint URL (Serverless projects)
-const {ELASTIC_API_KEY} = process.env; // Read-only key
+// Lazy-initialized Elasticsearch client (deferred so server starts without credentials)
+let _client: Client | null = null;
 
-if (!ELASTIC_API_KEY) {
-  throw new Error(
-    'Missing ELASTIC_API_KEY. Required for Elasticsearch authentication.'
-  );
+/**
+ * Get the Elasticsearch client, initializing on first use.
+ * G001: Fail-closed on missing credentials (checked at invocation time for tool discoverability).
+ */
+function getClient(): Client {
+  if (_client) return _client;
+
+  const ELASTIC_API_KEY = process.env.ELASTIC_API_KEY;
+  const ELASTIC_CLOUD_ID = process.env.ELASTIC_CLOUD_ID;
+  const ELASTIC_ENDPOINT = process.env.ELASTIC_ENDPOINT;
+
+  if (!ELASTIC_API_KEY) {
+    throw new Error(
+      'Missing ELASTIC_API_KEY. Required for Elasticsearch authentication. Ensure 1Password credentials are configured.'
+    );
+  }
+
+  if (!ELASTIC_CLOUD_ID && !ELASTIC_ENDPOINT) {
+    throw new Error(
+      'Missing Elasticsearch connection. Required: ELASTIC_CLOUD_ID (hosted) or ELASTIC_ENDPOINT (Serverless). Ensure 1Password credentials are configured.'
+    );
+  }
+
+  _client = new Client({
+    ...(ELASTIC_CLOUD_ID
+      ? { cloud: { id: ELASTIC_CLOUD_ID } }
+      : { node: ELASTIC_ENDPOINT }),
+    auth: {
+      apiKey: ELASTIC_API_KEY,
+    },
+  });
+
+  return _client;
 }
-
-if (!ELASTIC_CLOUD_ID && !ELASTIC_ENDPOINT) {
-  throw new Error(
-    'Missing Elasticsearch connection. Required: ELASTIC_CLOUD_ID (hosted) or ELASTIC_ENDPOINT (Serverless)'
-  );
-}
-
-// Initialize Elasticsearch client — supports both hosted (Cloud ID) and Serverless (endpoint URL)
-const client = new Client({
-  ...(ELASTIC_CLOUD_ID
-    ? { cloud: { id: ELASTIC_CLOUD_ID } }
-    : { node: ELASTIC_ENDPOINT }),
-  auth: {
-    apiKey: ELASTIC_API_KEY,
-  },
-});
 
 // ============================================================================
 // Helper Functions
@@ -122,7 +134,7 @@ async function queryLogs(args: QueryLogsArgs): Promise<QueryLogsResult | ErrorRe
     const toTime = normalizeTime(to, 'now');
 
     // Execute search
-    const result = await client.search({
+    const result = await getClient().search({
       index: 'logs-*',
       body: {
         query: {
@@ -196,7 +208,7 @@ async function getLogStats(args: GetLogStatsArgs): Promise<GetLogStatsResult | E
     const toTime = normalizeTime(to, 'now');
 
     // Execute aggregation query
-    const result = await client.search({
+    const result = await getClient().search({
       index: 'logs-*',
       body: {
         query: {

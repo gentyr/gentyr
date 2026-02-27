@@ -1,41 +1,56 @@
 <!-- HOOK:GENTYR:demo -->
 
-# /demo-interactive - Launch Interactive Demo (UI Mode)
+# /demo-interactive - Launch Demo Scenario (Full Speed + Pause)
 
-Launches Playwright in interactive UI mode where you manually click tests to run them.
-Best for debugging, step-through inspection, and exploratory testing.
+Runs a chosen curated demo scenario at full Playwright speed, then pauses at
+the end so you can manually interact with the app from that scaffolded state.
 
-Detects environment deficiencies and escalates ALL failures as urgent deputy-CTO tasks.
-No failure is unrecoverable — agents can repair everything.
+"Take me to this screen."
 
 ## Instructions
 
 ### Step 1: Display Readiness Summary
 
-Show all prefetch data. Highlight any `criticalIssues` and auth staleness prominently. If `authState.isStale` is true, show a prominent warning that auth will need repair.
+Show all prefetch data briefly. Highlight any `criticalIssues` prominently.
 
-### Step 2: Ask User for Demo Project
+### Step 2: Select Persona
 
-Use `AskUserQuestion`:
+If prefetch `personaGroups` is empty or missing, fall back to
+`mcp__user-feedback__list_scenarios({ enabled_only: true })` and group by
+`persona_name` into the same structure: `{ persona_name, playwright_project, scenarios[] }`.
 
-| Option | Project | Description |
-|--------|---------|-------------|
-| Full product demo | `demo` | Dashboard + extension in single Chromium session |
-| Dashboard only | `manual` | Vendor dashboard with `page.pause()` for inspection |
-| Extension only | `extension-manual` | Browser extension scaffolds with `page.pause()` |
-| Vendor Owner walkthrough | `vendor-owner` | Full dashboard access as Owner persona |
+If zero personas have scenarios:
+> "No demo scenarios configured yet. The product-manager agent creates
+> scenarios — run a product-manager evaluation first, or create scenarios
+> manually via `mcp__user-feedback__create_scenario`."
+>
+> **Tip:** Use `/demo` to browse all tests in Playwright UI mode instead.
+> STOP.
 
-### Step 3: Run Preflight
+If only one persona has scenarios, use it directly (skip prompt).
 
-Call `mcp__playwright__preflight_check({ project: "<selected>" })`.
+Otherwise, present via `AskUserQuestion`:
+- **question**: "Which persona?"
+- **options**: One per persona from `personaGroups`. Label = `[N] <persona_display_name>` where N is that persona's scenario count (e.g., `[3] Vendor (Owner)`). Description = playwright project name.
 
-This runs all checks including auth_state freshness.
+### Step 3: Select Scenario
 
-### Step 4: Escalate ALL Failures as a Single Urgent Deputy-CTO Task
+Get the scenarios array from the selected persona's group.
 
-If `ready: false` (any failures at all):
+If only one scenario, use it directly (skip prompt).
 
-1. Build a description covering every failed check. For each entry in `failures[]`, append specific repair instructions using this mapping:
+Otherwise, present via `AskUserQuestion`:
+- **question**: "Which scenario?"
+- **options**: One per scenario. Label = scenario title. Description = first sentence of description + category in parentheses if set.
+
+### Step 4: Run Preflight
+
+Call `mcp__playwright__preflight_check({ project: "<scenario.playwright_project>" })`.
+
+### Step 5: Escalate Failures
+
+If `ready: false`, create a single urgent DEPUTY-CTO task covering all failures
+with per-check repair instructions:
 
 | Failed check | Repair instruction for deputy-CTO |
 |---|---|
@@ -43,51 +58,32 @@ If `ready: false` (any failures at all):
 | `dependencies_installed` | Run `pnpm add -D @playwright/test` via Bash. Verify `node_modules/@playwright/test` exists afterward. |
 | `browsers_installed` | Run `npx playwright install chromium` via Bash. Verify Chromium appears in `~/Library/Caches/ms-playwright/`. |
 | `test_files_exist` | Create test files for project `<project>`. Check `e2e/<dir>` structure. Assign to TEST-WRITER section with urgent priority. |
-| `credentials_valid` | Check 1Password vault mappings for SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY. Assign to INVESTIGATOR & PLANNER with urgent priority if not resolvable directly. |
+| `credentials_valid` | Check 1Password vault mappings. Assign to INVESTIGATOR & PLANNER with urgent priority if not resolvable directly. |
 | `compilation` | Fix TypeScript errors. Run `npx playwright test --list --project=<project>` for details. Assign to CODE-REVIEWER section with urgent priority. |
-| `auth_state` | Call `mcp__playwright__run_auth_setup()`. Verify `success: true` and all 4 `.auth/*.json` files refreshed. If fails, assign to INVESTIGATOR & PLANNER section with urgent priority. |
+| `auth_state` | Call `mcp__playwright__run_auth_setup()`. Verify `success: true` and all `.auth/*.json` files refreshed. If fails, assign to INVESTIGATOR & PLANNER section with urgent priority. |
 
-2. Call `mcp__todo-db__create_task` with:
-   - `section`: `"DEPUTY-CTO"`
-   - `priority`: `"urgent"`
-   - `assigned_by`: `"demo-interactive"`
-   - `title`: `"Repair Playwright environment — <N> preflight check(s) failed for project <project>"`
-   - `description`: Full description covering all failures and per-check repair instructions (see template below)
+STOP — do not launch.
 
-Description template:
-```
-Preflight failed for project '<project>'.
+### Step 6: Launch
 
-Failed checks:
-- <check_name>: <message>
-(one line per failure)
+Call `mcp__playwright__run_demo({
+  project: "<scenario.playwright_project>",
+  test_file: "<scenario.test_file>",
+  slow_mo: 0,
+  pause_at_end: true
+})`.
 
-Repair instructions:
-<per-check instructions from table above, only for failed checks>
+### Step 7: Report
 
-After all repairs, verify: mcp__playwright__preflight_check({ project: '<project>' }) returns ready: true.
-Assign sub-tasks with priority: urgent as needed. Do NOT defer.
-```
-
-3. Show the user a clear summary:
-   > "Found N issue(s): [list of failures]. Created urgent repair task #`<id>` for the deputy-CTO. A repair session will be dispatched within the next automation cycle (~10 min). Re-run `/demo-interactive` once repairs complete."
-
-4. **STOP** — do not launch.
-
-### Step 5: Launch
-
-If preflight passes (`ready: true`), call `mcp__playwright__launch_ui_mode({ project: "<selected>" })`.
-
-### Step 6: Report
-
-Show project, PID, and tips:
-- Tests appear in the left sidebar — click to run
-- Filter bar searches test names
-- This is interactive mode — you control which tests run and when
+Show scenario title, persona, auth project, PID, and tips:
+- The scenario runs at full speed then pauses for you to interact
+- Close the browser window when done
+- To try another scenario, run `/demo-interactive` again
+- To browse all tests: `/demo`
 
 ## Rules
 
-- **Every failure goes to the deputy-CTO** — no failure is unrecoverable by an agent
-- **Never skip preflight** — Playwright GUI can open but display zero tests (silent failure)
+- **Every failure goes to the deputy-CTO** — no failure is unrecoverable
+- **Never skip preflight**
 - **Never use CLI** — `npx playwright test` bypasses credential injection
 - **Never launch when preflight fails** — always escalate first
