@@ -92,6 +92,66 @@ async function getSvgPathBbox() {
 // Utility Functions
 // ============================================================================
 
+// ============================================================================
+// Security Helpers
+// ============================================================================
+
+/** Max download size: 50 MB */
+const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
+/** Download timeout: 30 seconds */
+const DOWNLOAD_TIMEOUT_MS = 30_000;
+
+/**
+ * Validate a URL is http:// or https:// only (block file://, ftp://, data:, etc.)
+ */
+function assertSafeUrl(url: string): void {
+  const parsed = new URL(url);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Blocked URL protocol: ${parsed.protocol} — only http:// and https:// are allowed`);
+  }
+}
+
+/**
+ * Validate that a file path is absolute and does not contain path traversal sequences.
+ * Rejects relative paths and any path containing '..' segments.
+ */
+function assertSafePath(filePath: string): void {
+  // Must be absolute
+  if (!path.isAbsolute(filePath)) {
+    throw new Error(`Path must be absolute: ${filePath}`);
+  }
+  // Block path traversal: if normalizing changes the path, it contained .. segments
+  if (path.normalize(filePath) !== filePath) {
+    throw new Error(`Path traversal detected: ${filePath}`);
+  }
+}
+
+/** Shared SVGO plugin list for normalization and optimization */
+const SVGO_PLUGINS = [
+  'removeDoctype',
+  'removeXMLProcInst',
+  'removeComments',
+  'removeMetadata',
+  'removeEditorsNSData',
+  'cleanupAttrs',
+  'mergeStyles',
+  'minifyStyles',
+  'cleanupIds',
+  'removeUselessDefs',
+  'cleanupNumericValues',
+  'convertColors',
+  'removeUnknownsAndDefaults',
+  'removeNonInheritableGroupAttrs',
+  'removeUselessStrokeAndFill',
+  'cleanupEnableBackground',
+  'convertPathData',
+  'convertTransform',
+  'removeEmptyAttrs',
+  'removeEmptyContainers',
+  'removeUnusedNS',
+  'sortAttrs',
+];
+
 function ensureDir(filePath: string): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
@@ -226,17 +286,36 @@ async function lookupSimpleIcon(args: LookupSimpleIconArgs): Promise<LookupSimpl
 }
 
 async function downloadImage(args: DownloadImageArgs): Promise<DownloadImageResult> {
+  // Security: validate URL protocol
+  try {
+    assertSafeUrl(args.url);
+  } catch (err) {
+    return {
+      success: false,
+      path: args.output_path,
+      format: 'unknown',
+      size_bytes: 0,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  // Security: validate output path
+  assertSafePath(args.output_path);
   ensureDir(args.output_path);
 
   let response: Response;
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
     response = await fetch(args.url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
         'Accept': 'image/*,*/*',
       },
       redirect: 'follow',
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
   } catch (err) {
     return {
       success: false,
@@ -244,6 +323,19 @@ async function downloadImage(args: DownloadImageArgs): Promise<DownloadImageResu
       format: 'unknown',
       size_bytes: 0,
       error: `Network error: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  // Security: validate final URL after redirects (prevents SSRF via redirect to internal network)
+  try {
+    assertSafeUrl(response.url);
+  } catch (err) {
+    return {
+      success: false,
+      path: args.output_path,
+      format: 'unknown',
+      size_bytes: 0,
+      error: `Redirect target blocked: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 
@@ -257,7 +349,30 @@ async function downloadImage(args: DownloadImageArgs): Promise<DownloadImageResu
     };
   }
 
+  // Security: check Content-Length before downloading body
+  const contentLength = parseInt(response.headers.get('content-length') || '0', 10);
+  if (contentLength > MAX_DOWNLOAD_BYTES) {
+    return {
+      success: false,
+      path: args.output_path,
+      format: 'unknown',
+      size_bytes: 0,
+      error: `Response too large: ${contentLength} bytes exceeds ${MAX_DOWNLOAD_BYTES} byte limit`,
+    };
+  }
+
   const buffer = Buffer.from(await response.arrayBuffer());
+
+  // Security: verify actual body size
+  if (buffer.length > MAX_DOWNLOAD_BYTES) {
+    return {
+      success: false,
+      path: args.output_path,
+      format: 'unknown',
+      size_bytes: buffer.length,
+      error: `Downloaded content too large: ${buffer.length} bytes exceeds ${MAX_DOWNLOAD_BYTES} byte limit`,
+    };
+  }
   fs.writeFileSync(args.output_path, buffer);
 
   const contentType = response.headers.get('content-type') || '';
@@ -297,6 +412,7 @@ async function downloadImage(args: DownloadImageArgs): Promise<DownloadImageResu
 }
 
 async function analyzeImage(args: AnalyzeImageArgs): Promise<AnalyzeImageResult> {
+  assertSafePath(args.input_path);
   if (!fs.existsSync(args.input_path)) {
     return { width: 0, height: 0, format: 'unknown', channels: 0, has_alpha: false, is_opaque: true, dominant_colors: [], estimated_background: 'complex', error: `File not found: ${args.input_path}` };
   }
@@ -387,6 +503,8 @@ async function analyzeImage(args: AnalyzeImageArgs): Promise<AnalyzeImageResult>
 }
 
 async function removeBackground(args: RemoveBackgroundArgs): Promise<RemoveBackgroundResult> {
+  assertSafePath(args.input_path);
+  assertSafePath(args.output_path);
   if (!fs.existsSync(args.input_path)) {
     return { success: false, output_path: args.output_path, pixels_removed_percentage: 0, error: `File not found: ${args.input_path}` };
   }
@@ -441,6 +559,8 @@ async function removeBackground(args: RemoveBackgroundArgs): Promise<RemoveBackg
 }
 
 async function traceToSvg(args: TraceToSvgArgs): Promise<TraceToSvgResult> {
+  assertSafePath(args.input_path);
+  assertSafePath(args.output_path);
   if (!fs.existsSync(args.input_path)) {
     return { success: false, output_path: args.output_path, svg_content: '', path_count: 0, error: `File not found: ${args.input_path}` };
   }
@@ -535,6 +655,7 @@ async function analyzeSvgStructure(args: AnalyzeSvgStructureArgs): Promise<Analy
 }
 
 async function normalizeSvg(args: NormalizeSvgArgs): Promise<NormalizeSvgResult> {
+  assertSafePath(args.output_path);
   const targetSize = args.target_size ?? 64;
   const paddingPercent = args.padding_percent ?? 5;
 
@@ -627,32 +748,7 @@ async function normalizeSvg(args: NormalizeSvgArgs): Promise<NormalizeSvgResult>
 
   // Optimize with SVGO
   try {
-    const optimized = svgoMod.optimize(normalizedSvg, {
-      plugins: [
-        'removeDoctype',
-        'removeXMLProcInst',
-        'removeComments',
-        'removeMetadata',
-        'removeEditorsNSData',
-        'cleanupAttrs',
-        'mergeStyles',
-        'minifyStyles',
-        'cleanupIds',
-        'removeUselessDefs',
-        'cleanupNumericValues',
-        'convertColors',
-        'removeUnknownsAndDefaults',
-        'removeNonInheritableGroupAttrs',
-        'removeUselessStrokeAndFill',
-        'cleanupEnableBackground',
-        'convertPathData',
-        'convertTransform',
-        'removeEmptyAttrs',
-        'removeEmptyContainers',
-        'removeUnusedNS',
-        'sortAttrs',
-      ],
-    });
+    const optimized = svgoMod.optimize(normalizedSvg, { plugins: [...SVGO_PLUGINS] as any });
     normalizedSvg = optimized.data;
   } catch {
     // SVGO failure is non-fatal, use unoptimized version
@@ -677,36 +773,14 @@ async function optimizeSvg(args: OptimizeSvgArgs): Promise<OptimizeSvgResult> {
 
   try {
     const result = svgoMod.optimize(args.svg_content, {
-      plugins: [
-        'removeDoctype',
-        'removeXMLProcInst',
-        'removeComments',
-        'removeMetadata',
-        'removeEditorsNSData',
-        'cleanupAttrs',
-        'mergeStyles',
-        'minifyStyles',
-        'cleanupIds',
-        'removeUselessDefs',
-        'cleanupNumericValues',
-        'convertColors',
-        'removeUnknownsAndDefaults',
-        'removeNonInheritableGroupAttrs',
-        'removeUselessStrokeAndFill',
-        'cleanupEnableBackground',
-        'convertPathData',
-        'convertTransform',
-        'removeEmptyAttrs',
-        'removeEmptyContainers',
-        'removeUnusedNS',
-        'sortAttrs',
-      ],
+      plugins: [...SVGO_PLUGINS] as any,
     });
 
     const optimizedBytes = Buffer.byteLength(result.data, 'utf-8');
     const reduction = originalBytes > 0 ? Math.round((1 - optimizedBytes / originalBytes) * 100) : 0;
 
     if (args.output_path) {
+      assertSafePath(args.output_path);
       ensureDir(args.output_path);
       fs.writeFileSync(args.output_path, result.data, 'utf-8');
     }
