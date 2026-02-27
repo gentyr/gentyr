@@ -699,6 +699,71 @@ describe('icon-processor MCP server', () => {
       const result = (await callTool('list_icons', {})) as { icons: Array<{ slug: string }> };
       expect(result.icons.map((i) => i.slug)).toEqual(['alpha', 'mid', 'zeta']);
     });
+
+    it('should return has_artifacts: true and has_report: true when both are present', async () => {
+      // Pre-create artifacts directory before calling store_icon
+      const brandDir = path.join(testIconsDir, 'fullartifacts');
+      fs.mkdirSync(path.join(brandDir, 'artifacts', 'candidates'), { recursive: true });
+
+      await callTool('store_icon', {
+        slug: 'fullartifacts',
+        display_name: 'Full Artifacts',
+        brand_color: '#FF0000',
+        svg_content: MINIMAL_SVG,
+        report_md: '# Full Artifacts Report\nDetails here.',
+      });
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{
+          slug: string;
+          has_artifacts: boolean;
+          has_report: boolean;
+        }>;
+      };
+
+      expect(result.icons).toHaveLength(1);
+      const entry = result.icons[0];
+      expect(entry.slug).toBe('fullartifacts');
+      expect(entry.has_artifacts).toBe(true);
+      expect(entry.has_report).toBe(true);
+    });
+
+    it('should return has_artifacts: false and has_report: false for old metadata without those fields (Zod defaults)', async () => {
+      // Simulate legacy metadata.json written before has_artifacts / has_report were added
+      const legacyDir = path.join(testIconsDir, 'legacy-artifacts');
+      fs.mkdirSync(legacyDir, { recursive: true });
+      fs.writeFileSync(path.join(legacyDir, 'icon.svg'), MINIMAL_SVG, 'utf-8');
+      fs.writeFileSync(
+        path.join(legacyDir, 'metadata.json'),
+        JSON.stringify({
+          slug: 'legacy-artifacts',
+          display_name: 'Legacy Artifacts',
+          brand_color: '#AABBCC',
+          created_at: new Date().toISOString(),
+          pipeline_version: '1.0.0',
+          has_black_variant: false,
+          has_white_variant: false,
+          has_full_color_variant: false,
+          // has_artifacts and has_report intentionally absent (old format)
+        }),
+        'utf-8',
+      );
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{
+          slug: string;
+          has_artifacts: boolean;
+          has_report: boolean;
+        }>;
+      };
+
+      expect(result.icons).toHaveLength(1);
+      const entry = result.icons[0];
+      expect(entry.slug).toBe('legacy-artifacts');
+      // IconMetadataSchema uses .default(false) so absent fields default to false
+      expect(entry.has_artifacts).toBe(false);
+      expect(entry.has_report).toBe(false);
+    });
   });
 
   // ============================================================================
@@ -838,6 +903,47 @@ describe('icon-processor MCP server', () => {
       expect(meta.brand_color).toBe('#65A637');
     });
 
+    it('should remove stale variant files when re-storing without those variants', async () => {
+      // First store with all 4 variants
+      await callTool('store_icon', {
+        slug: 'stale-cleanup',
+        display_name: 'Stale Cleanup',
+        brand_color: '#65A637',
+        svg_content: MINIMAL_SVG,
+        black_variant_svg: BLACK_SVG,
+        white_variant_svg: WHITE_SVG,
+        full_color_svg: FULL_COLOR_SVG,
+      });
+
+      const brandDir = path.join(testIconsDir, 'stale-cleanup');
+      expect(fs.existsSync(path.join(brandDir, 'icon-black.svg'))).toBe(true);
+      expect(fs.existsSync(path.join(brandDir, 'icon-white.svg'))).toBe(true);
+      expect(fs.existsSync(path.join(brandDir, 'icon-full-color.svg'))).toBe(true);
+
+      // Re-store with only brand-colored SVG (no variants at all)
+      const result = (await callTool('store_icon', {
+        slug: 'stale-cleanup',
+        display_name: 'Stale Cleanup V2',
+        brand_color: '#FF0000',
+        svg_content: BLACK_SVG,
+      })) as { success: boolean };
+
+      expect(result.success).toBe(true);
+
+      // Stale variant files must be cleaned up
+      expect(fs.existsSync(path.join(brandDir, 'icon.svg'))).toBe(true);
+      expect(fs.existsSync(path.join(brandDir, 'icon-black.svg'))).toBe(false);
+      expect(fs.existsSync(path.join(brandDir, 'icon-white.svg'))).toBe(false);
+      expect(fs.existsSync(path.join(brandDir, 'icon-full-color.svg'))).toBe(false);
+
+      // Metadata must reflect no variants
+      const meta = JSON.parse(fs.readFileSync(path.join(brandDir, 'metadata.json'), 'utf-8'));
+      expect(meta.has_black_variant).toBe(false);
+      expect(meta.has_white_variant).toBe(false);
+      expect(meta.has_full_color_variant).toBe(false);
+      expect(meta.display_name).toBe('Stale Cleanup V2');
+    });
+
     it('should reject an invalid slug', async () => {
       let threw = false;
       try {
@@ -856,6 +962,96 @@ describe('icon-processor MCP server', () => {
         // If callTool returns instead of throwing, verify the store dir was not created
         expect(fs.existsSync(path.join(testIconsDir, '../evil'))).toBe(false);
       }
+    });
+
+    it('should write report.md when report_md is provided and set has_report: true in metadata', async () => {
+      const reportContent = '# Test Report\nSome content';
+
+      const result = (await callTool('store_icon', {
+        slug: 'withreport',
+        display_name: 'With Report',
+        brand_color: '#123456',
+        svg_content: MINIMAL_SVG,
+        report_md: reportContent,
+      })) as { success: boolean };
+
+      expect(result.success).toBe(true);
+
+      // report.md must exist on disk with the exact content passed in
+      const reportPath = path.join(testIconsDir, 'withreport', 'report.md');
+      expect(fs.existsSync(reportPath)).toBe(true);
+      expect(fs.readFileSync(reportPath, 'utf-8')).toBe(reportContent);
+
+      // Metadata must record has_report: true
+      const meta = JSON.parse(
+        fs.readFileSync(path.join(testIconsDir, 'withreport', 'metadata.json'), 'utf-8'),
+      );
+      expect(meta.has_report).toBe(true);
+    });
+
+    it('should not write report.md when report_md is omitted and set has_report: false in metadata', async () => {
+      const result = (await callTool('store_icon', {
+        slug: 'noreport',
+        display_name: 'No Report',
+        brand_color: '#654321',
+        svg_content: MINIMAL_SVG,
+        // report_md intentionally omitted
+      })) as { success: boolean };
+
+      expect(result.success).toBe(true);
+
+      // report.md must NOT be written
+      const reportPath = path.join(testIconsDir, 'noreport', 'report.md');
+      expect(fs.existsSync(reportPath)).toBe(false);
+
+      // Metadata must record has_report: false
+      const meta = JSON.parse(
+        fs.readFileSync(path.join(testIconsDir, 'noreport', 'metadata.json'), 'utf-8'),
+      );
+      expect(meta.has_report).toBe(false);
+    });
+
+    it('should set has_artifacts: true in metadata when artifacts/ directory exists before store_icon is called', async () => {
+      // Pre-create the artifacts/candidates/ directory to simulate an agent writing artifacts
+      // before calling store_icon
+      const brandDir = path.join(testIconsDir, 'withartifacts');
+      fs.mkdirSync(path.join(brandDir, 'artifacts', 'candidates'), { recursive: true });
+
+      const result = (await callTool('store_icon', {
+        slug: 'withartifacts',
+        display_name: 'With Artifacts',
+        brand_color: '#ABCDEF',
+        svg_content: MINIMAL_SVG,
+      })) as { success: boolean };
+
+      expect(result.success).toBe(true);
+
+      // Metadata must record has_artifacts: true because artifacts/ directory is present
+      const meta = JSON.parse(
+        fs.readFileSync(path.join(testIconsDir, 'withartifacts', 'metadata.json'), 'utf-8'),
+      );
+      expect(meta.has_artifacts).toBe(true);
+    });
+
+    it('should set has_artifacts: false in metadata when no artifacts/ directory exists', async () => {
+      const result = (await callTool('store_icon', {
+        slug: 'noartifacts',
+        display_name: 'No Artifacts',
+        brand_color: '#000000',
+        svg_content: MINIMAL_SVG,
+        // No pre-created artifacts directory
+      })) as { success: boolean };
+
+      expect(result.success).toBe(true);
+
+      // Metadata must record has_artifacts: false
+      const meta = JSON.parse(
+        fs.readFileSync(path.join(testIconsDir, 'noartifacts', 'metadata.json'), 'utf-8'),
+      );
+      expect(meta.has_artifacts).toBe(false);
+
+      // artifacts/ directory must not have been created by store_icon itself
+      expect(fs.existsSync(path.join(testIconsDir, 'noartifacts', 'artifacts'))).toBe(false);
     });
   });
 

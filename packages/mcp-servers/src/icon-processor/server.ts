@@ -8,7 +8,7 @@
  *
  * Protocol: JSON-RPC 2.0 over stdin/stdout (stdio MCP)
  *
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 import * as fs from 'fs';
@@ -131,6 +131,8 @@ const IconMetadataSchema = z.object({
   has_black_variant: z.boolean(),
   has_white_variant: z.boolean().default(false),
   has_full_color_variant: z.boolean().default(false),
+  has_artifacts: z.boolean().default(false),
+  has_report: z.boolean().default(false),
 });
 type IconMetadata = z.infer<typeof IconMetadataSchema>;
 
@@ -928,6 +930,8 @@ async function listIcons(_args: ListIconsArgs): Promise<ListIconsResult> {
         has_black_variant: fs.existsSync(path.join(brandDir, 'icon-black.svg')),
         has_white_variant: fs.existsSync(path.join(brandDir, 'icon-white.svg')),
         has_full_color_variant: fs.existsSync(path.join(brandDir, 'icon-full-color.svg')),
+        has_artifacts: fs.existsSync(path.join(brandDir, 'artifacts')),
+        has_report: fs.existsSync(path.join(brandDir, 'report.md')),
       });
       continue;
     }
@@ -948,6 +952,8 @@ async function listIcons(_args: ListIconsArgs): Promise<ListIconsResult> {
           has_black_variant: meta.has_black_variant,
           has_white_variant: meta.has_white_variant,
           has_full_color_variant: meta.has_full_color_variant,
+          has_artifacts: meta.has_artifacts,
+          has_report: meta.has_report,
         });
       } else {
         // Zod validation failed — include with minimal info
@@ -959,6 +965,8 @@ async function listIcons(_args: ListIconsArgs): Promise<ListIconsResult> {
           has_black_variant: fs.existsSync(path.join(brandDir, 'icon-black.svg')),
           has_white_variant: fs.existsSync(path.join(brandDir, 'icon-white.svg')),
           has_full_color_variant: fs.existsSync(path.join(brandDir, 'icon-full-color.svg')),
+          has_artifacts: fs.existsSync(path.join(brandDir, 'artifacts')),
+          has_report: fs.existsSync(path.join(brandDir, 'report.md')),
         });
       }
     } catch {
@@ -971,6 +979,8 @@ async function listIcons(_args: ListIconsArgs): Promise<ListIconsResult> {
         has_black_variant: fs.existsSync(path.join(brandDir, 'icon-black.svg')),
         has_white_variant: fs.existsSync(path.join(brandDir, 'icon-white.svg')),
         has_full_color_variant: fs.existsSync(path.join(brandDir, 'icon-full-color.svg')),
+        has_artifacts: fs.existsSync(path.join(brandDir, 'artifacts')),
+        has_report: fs.existsSync(path.join(brandDir, 'report.md')),
       });
     }
   }
@@ -996,6 +1006,21 @@ async function storeIcon(args: StoreIconArgs): Promise<StoreIconResult> {
       path: brandDir,
       error: `Failed to create directory: ${err instanceof Error ? err.message : String(err)}`,
     };
+  }
+
+  // Clean up stale variant files from a previous store call.
+  // If a variant is omitted this time but existed on disk from a prior call,
+  // remove it so metadata and filesystem stay consistent.
+  const variantFiles = [
+    { provided: !!args.black_variant_svg, filename: 'icon-black.svg' },
+    { provided: !!args.white_variant_svg, filename: 'icon-white.svg' },
+    { provided: !!args.full_color_svg, filename: 'icon-full-color.svg' },
+  ];
+  for (const { provided, filename } of variantFiles) {
+    if (!provided) {
+      const variantPath = path.join(brandDir, filename);
+      try { fs.unlinkSync(variantPath); } catch { /* file may not exist — ignore */ }
+    }
   }
 
   // Write brand-colored SVG
@@ -1059,6 +1084,25 @@ async function storeIcon(args: StoreIconArgs): Promise<StoreIconResult> {
     }
   }
 
+  // Write report.md if provided
+  const hasReport = !!args.report_md;
+  if (args.report_md) {
+    const reportPath = path.join(brandDir, 'report.md');
+    try {
+      fs.writeFileSync(reportPath, args.report_md, 'utf-8');
+    } catch (err) {
+      return {
+        success: false,
+        slug: args.slug,
+        path: brandDir,
+        error: `Failed to write report.md: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  // Detect artifacts directory (written by agent before store_icon is called)
+  const hasArtifacts = fs.existsSync(path.join(brandDir, 'artifacts'));
+
   // Write metadata
   const metadata: IconMetadata = {
     slug: args.slug,
@@ -1070,6 +1114,8 @@ async function storeIcon(args: StoreIconArgs): Promise<StoreIconResult> {
     has_black_variant: hasBlackVariant,
     has_white_variant: hasWhiteVariant,
     has_full_color_variant: hasFullColorVariant,
+    has_artifacts: hasArtifacts,
+    has_report: hasReport,
   };
 
   const metadataPath = path.join(brandDir, 'metadata.json');
@@ -1193,7 +1239,7 @@ const tools: AnyToolHandler[] = [
 
 const server = new McpServer({
   name: 'icon-processor',
-  version: '1.0.0',
+  version: '1.1.0',
   tools,
 });
 
