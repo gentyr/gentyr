@@ -14,6 +14,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { z } from 'zod';
 import { McpServer } from '../shared/server.js';
 import type { AnyToolHandler } from '../shared/server.js';
 import {
@@ -119,15 +120,19 @@ export function setIconsDir(dir: string): void {
   ICONS_DIR = dir;
 }
 
-interface IconMetadata {
-  slug: string;
-  display_name: string;
-  brand_color: string;
-  source?: string;
-  created_at: string;
-  pipeline_version: string;
-  has_black_variant: boolean;
-}
+/** Zod schema for metadata.json validation (G003 compliance) */
+const IconMetadataSchema = z.object({
+  slug: z.string().min(1),
+  display_name: z.string().min(1),
+  brand_color: z.string().min(1),
+  source: z.string().optional(),
+  created_at: z.string(),
+  pipeline_version: z.string(),
+  has_black_variant: z.boolean(),
+  has_white_variant: z.boolean().default(false),
+  has_full_color_variant: z.boolean().default(false),
+});
+type IconMetadata = z.infer<typeof IconMetadataSchema>;
 
 // ============================================================================
 // Security + Utility Helpers
@@ -921,21 +926,41 @@ async function listIcons(_args: ListIconsArgs): Promise<ListIconsResult> {
         brand_color: '#000000',
         created_at: '',
         has_black_variant: fs.existsSync(path.join(brandDir, 'icon-black.svg')),
+        has_white_variant: fs.existsSync(path.join(brandDir, 'icon-white.svg')),
+        has_full_color_variant: fs.existsSync(path.join(brandDir, 'icon-full-color.svg')),
       });
       continue;
     }
 
     try {
       const raw = fs.readFileSync(metadataPath, 'utf-8');
-      const meta: IconMetadata = JSON.parse(raw);
-      icons.push({
-        slug: meta.slug,
-        display_name: meta.display_name,
-        brand_color: meta.brand_color,
-        source: meta.source,
-        created_at: meta.created_at,
-        has_black_variant: meta.has_black_variant,
-      });
+      const parsed = IconMetadataSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) {
+        const meta = parsed.data;
+        // Use directory name as authoritative slug, not metadata's slug field
+        // (metadata.json is user-writable and could be tampered with)
+        icons.push({
+          slug,
+          display_name: meta.display_name,
+          brand_color: meta.brand_color,
+          source: meta.source,
+          created_at: meta.created_at,
+          has_black_variant: meta.has_black_variant,
+          has_white_variant: meta.has_white_variant,
+          has_full_color_variant: meta.has_full_color_variant,
+        });
+      } else {
+        // Zod validation failed — include with minimal info
+        icons.push({
+          slug,
+          display_name: slug,
+          brand_color: '#000000',
+          created_at: '',
+          has_black_variant: fs.existsSync(path.join(brandDir, 'icon-black.svg')),
+          has_white_variant: fs.existsSync(path.join(brandDir, 'icon-white.svg')),
+          has_full_color_variant: fs.existsSync(path.join(brandDir, 'icon-full-color.svg')),
+        });
+      }
     } catch {
       // Malformed metadata — include with minimal info derived from slug
       icons.push({
@@ -944,6 +969,8 @@ async function listIcons(_args: ListIconsArgs): Promise<ListIconsResult> {
         brand_color: '#000000',
         created_at: '',
         has_black_variant: fs.existsSync(path.join(brandDir, 'icon-black.svg')),
+        has_white_variant: fs.existsSync(path.join(brandDir, 'icon-white.svg')),
+        has_full_color_variant: fs.existsSync(path.join(brandDir, 'icon-full-color.svg')),
       });
     }
   }
@@ -1000,6 +1027,38 @@ async function storeIcon(args: StoreIconArgs): Promise<StoreIconResult> {
     }
   }
 
+  // Write white variant if provided
+  const hasWhiteVariant = !!args.white_variant_svg;
+  if (args.white_variant_svg) {
+    const whiteIconPath = path.join(brandDir, 'icon-white.svg');
+    try {
+      fs.writeFileSync(whiteIconPath, args.white_variant_svg, 'utf-8');
+    } catch (err) {
+      return {
+        success: false,
+        slug: args.slug,
+        path: brandDir,
+        error: `Failed to write icon-white.svg: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  // Write full-color variant if provided
+  const hasFullColorVariant = !!args.full_color_svg;
+  if (args.full_color_svg) {
+    const fullColorIconPath = path.join(brandDir, 'icon-full-color.svg');
+    try {
+      fs.writeFileSync(fullColorIconPath, args.full_color_svg, 'utf-8');
+    } catch (err) {
+      return {
+        success: false,
+        slug: args.slug,
+        path: brandDir,
+        error: `Failed to write icon-full-color.svg: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
   // Write metadata
   const metadata: IconMetadata = {
     slug: args.slug,
@@ -1007,8 +1066,10 @@ async function storeIcon(args: StoreIconArgs): Promise<StoreIconResult> {
     brand_color: args.brand_color,
     source: args.source,
     created_at: new Date().toISOString(),
-    pipeline_version: '1.0.0',
+    pipeline_version: '1.1.0',
     has_black_variant: hasBlackVariant,
+    has_white_variant: hasWhiteVariant,
+    has_full_color_variant: hasFullColorVariant,
   };
 
   const metadataPath = path.join(brandDir, 'metadata.json');
@@ -1112,13 +1173,13 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'list_icons',
-    description: 'List all icons stored in the global icon store (~/.claude/icons/). Returns an array of stored icon entries with slug, display_name, brand_color, source, created_at, and has_black_variant.',
+    description: 'List all icons stored in the global icon store (~/.claude/icons/). Returns an array of stored icon entries with slug, display_name, brand_color, source, created_at, has_black_variant, has_white_variant, and has_full_color_variant.',
     schema: ListIconsSchema,
     handler: listIcons,
   },
   {
     name: 'store_icon',
-    description: 'Store a finalized icon to the global icon store (~/.claude/icons/<slug>/). Creates icon.svg (brand-colored), optionally icon-black.svg, and metadata.json. Use this at the end of the icon-finder pipeline to persist results globally.',
+    description: 'Store a finalized icon to the global icon store (~/.claude/icons/<slug>/). Creates icon.svg (brand-colored), optionally icon-black.svg, icon-white.svg, and icon-full-color.svg, and metadata.json. Use this at the end of the icon-finder pipeline to persist results globally.',
     schema: StoreIconSchema,
     handler: storeIcon,
   },
@@ -1146,4 +1207,4 @@ if (isMainModule) {
 }
 
 // Export for testing
-export { server, tools, lookupSimpleIcon, downloadImage, analyzeImage, removeBackground, traceToSvg, normalizeSvg, optimizeSvg, analyzeSvgStructure, listIcons, storeIcon, deleteIcon };
+export { server, tools, lookupSimpleIcon, downloadImage, analyzeImage, removeBackground, traceToSvg, normalizeSvg, optimizeSvg, analyzeSvgStructure, recolorSvg, listIcons, storeIcon, deleteIcon };

@@ -667,7 +667,7 @@ describe('icon-processor MCP server', () => {
       expect(meta.display_name).toBe('Splunk');
       expect(meta.brand_color).toBe('#65A637');
       expect(meta.source).toBe('simple-icons');
-      expect(meta.pipeline_version).toBe('1.0.0');
+      expect(meta.pipeline_version).toBe('1.1.0');
       expect(meta.has_black_variant).toBe(false);
       expect(meta.created_at).toBeDefined();
       expect(new Date(meta.created_at).getTime()).not.toBeNaN();
@@ -770,6 +770,781 @@ describe('icon-processor MCP server', () => {
       expect(result.success).toBe(false);
       expect(result.slug).toBe('doesnotexist');
       expect(result.error).toContain('Icon not found');
+    });
+  });
+
+  // ============================================================================
+  // Test: store_icon — slug validation (Zod schema enforcement)
+  // ============================================================================
+
+  describe('store_icon slug validation', () => {
+    beforeEach(setupIconsDir);
+    afterEach(teardownIconsDir);
+
+    it('should reject slug with uppercase letters', async () => {
+      let threw = false;
+      let result: unknown;
+      try {
+        result = await callTool('store_icon', {
+          slug: 'MyBrand',
+          display_name: 'My Brand',
+          brand_color: '#000',
+          svg_content: MINIMAL_SVG,
+        });
+      } catch {
+        threw = true;
+      }
+      // Zod rejects uppercase; callTool should throw or return an error
+      if (!threw) {
+        expect((result as { error?: string }).error).toBeDefined();
+      }
+      expect(fs.existsSync(path.join(testIconsDir, 'MyBrand'))).toBe(false);
+    });
+
+    it('should reject slug starting with a hyphen', async () => {
+      let threw = false;
+      let result: unknown;
+      try {
+        result = await callTool('store_icon', {
+          slug: '-evil',
+          display_name: 'Evil',
+          brand_color: '#000',
+          svg_content: MINIMAL_SVG,
+        });
+      } catch {
+        threw = true;
+      }
+      if (!threw) {
+        expect((result as { error?: string }).error).toBeDefined();
+      }
+      expect(fs.existsSync(path.join(testIconsDir, '-evil'))).toBe(false);
+    });
+
+    it('should reject slug with spaces', async () => {
+      let threw = false;
+      let result: unknown;
+      try {
+        result = await callTool('store_icon', {
+          slug: 'my brand',
+          display_name: 'My Brand',
+          brand_color: '#000',
+          svg_content: MINIMAL_SVG,
+        });
+      } catch {
+        threw = true;
+      }
+      if (!threw) {
+        expect((result as { error?: string }).error).toBeDefined();
+      }
+      expect(fs.existsSync(path.join(testIconsDir, 'my brand'))).toBe(false);
+    });
+
+    it('should accept slug with hyphens between words', async () => {
+      const result = (await callTool('store_icon', {
+        slug: 'my-brand',
+        display_name: 'My Brand',
+        brand_color: '#000',
+        svg_content: MINIMAL_SVG,
+      })) as { success: boolean; slug: string };
+
+      expect(result.success).toBe(true);
+      expect(result.slug).toBe('my-brand');
+      expect(fs.existsSync(path.join(testIconsDir, 'my-brand', 'icon.svg'))).toBe(true);
+    });
+
+    it('should accept slug with digits', async () => {
+      const result = (await callTool('store_icon', {
+        slug: 'brand123',
+        display_name: 'Brand 123',
+        brand_color: '#000',
+        svg_content: MINIMAL_SVG,
+      })) as { success: boolean; slug: string };
+
+      expect(result.success).toBe(true);
+      expect(result.slug).toBe('brand123');
+    });
+
+    it('should reject slug with trailing hyphen', async () => {
+      let threw = false;
+      let result: unknown;
+      try {
+        result = await callTool('store_icon', {
+          slug: 'slug-',
+          display_name: 'Trailing Hyphen',
+          brand_color: '#000',
+          svg_content: MINIMAL_SVG,
+        });
+      } catch {
+        threw = true;
+      }
+      if (!threw) {
+        expect((result as { error?: string }).error).toBeDefined();
+      }
+      expect(fs.existsSync(path.join(testIconsDir, 'slug-'))).toBe(false);
+    });
+
+    it('should reject slug with consecutive hyphens', async () => {
+      let threw = false;
+      let result: unknown;
+      try {
+        result = await callTool('store_icon', {
+          slug: 'slug--name',
+          display_name: 'Consecutive Hyphens',
+          brand_color: '#000',
+          svg_content: MINIMAL_SVG,
+        });
+      } catch {
+        threw = true;
+      }
+      if (!threw) {
+        expect((result as { error?: string }).error).toBeDefined();
+      }
+      expect(fs.existsSync(path.join(testIconsDir, 'slug--name'))).toBe(false);
+    });
+
+    it('should reject slug that is only a hyphen', async () => {
+      let threw = false;
+      let result: unknown;
+      try {
+        result = await callTool('store_icon', {
+          slug: '-',
+          display_name: 'Only Hyphen',
+          brand_color: '#000',
+          svg_content: MINIMAL_SVG,
+        });
+      } catch {
+        threw = true;
+      }
+      if (!threw) {
+        expect((result as { error?: string }).error).toBeDefined();
+      }
+      expect(fs.existsSync(path.join(testIconsDir, '-'))).toBe(false);
+    });
+  });
+
+  // ============================================================================
+  // Test: store_icon — return value structure
+  // ============================================================================
+
+  describe('store_icon return value', () => {
+    beforeEach(setupIconsDir);
+    afterEach(teardownIconsDir);
+
+    it('should return path pointing to the icon directory', async () => {
+      const result = (await callTool('store_icon', {
+        slug: 'pathtest',
+        display_name: 'Path Test',
+        brand_color: '#AABBCC',
+        svg_content: MINIMAL_SVG,
+      })) as { success: boolean; slug: string; path: string };
+
+      expect(result.success).toBe(true);
+      expect(result.path).toBe(path.join(testIconsDir, 'pathtest'));
+      expect(fs.existsSync(result.path)).toBe(true);
+    });
+
+    it('should store optional source field in metadata', async () => {
+      await callTool('store_icon', {
+        slug: 'sourced',
+        display_name: 'Sourced Brand',
+        brand_color: '#000',
+        svg_content: MINIMAL_SVG,
+        source: 'brand-website',
+      });
+
+      const meta = JSON.parse(
+        fs.readFileSync(path.join(testIconsDir, 'sourced', 'metadata.json'), 'utf-8'),
+      );
+      expect(meta.source).toBe('brand-website');
+    });
+
+    it('should omit source from metadata when not provided', async () => {
+      await callTool('store_icon', {
+        slug: 'nosource',
+        display_name: 'No Source',
+        brand_color: '#000',
+        svg_content: MINIMAL_SVG,
+        // source intentionally omitted
+      });
+
+      const meta = JSON.parse(
+        fs.readFileSync(path.join(testIconsDir, 'nosource', 'metadata.json'), 'utf-8'),
+      );
+      // source should be undefined (absent or null) when not provided
+      expect(meta.source).toBeUndefined();
+    });
+
+    it('should not write icon-black.svg when black_variant_svg is not provided', async () => {
+      await callTool('store_icon', {
+        slug: 'noblack',
+        display_name: 'No Black',
+        brand_color: '#FF0000',
+        svg_content: MINIMAL_SVG,
+      });
+
+      expect(fs.existsSync(path.join(testIconsDir, 'noblack', 'icon-black.svg'))).toBe(false);
+    });
+
+    it('should overwrite icon-black.svg when re-storing with a new black variant', async () => {
+      const UPDATED_BLACK = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M0 0h32v64H0z" fill="#000000"/></svg>';
+
+      await callTool('store_icon', {
+        slug: 'updateblack',
+        display_name: 'Update Black',
+        brand_color: '#FF0000',
+        svg_content: MINIMAL_SVG,
+        black_variant_svg: BLACK_SVG,
+      });
+
+      await callTool('store_icon', {
+        slug: 'updateblack',
+        display_name: 'Update Black',
+        brand_color: '#FF0000',
+        svg_content: MINIMAL_SVG,
+        black_variant_svg: UPDATED_BLACK,
+      });
+
+      const blackContent = fs.readFileSync(
+        path.join(testIconsDir, 'updateblack', 'icon-black.svg'),
+        'utf-8',
+      );
+      expect(blackContent).toBe(UPDATED_BLACK);
+    });
+
+    it('should set has_black_variant false in metadata when overwriting without black variant', async () => {
+      // Store with black variant first
+      await callTool('store_icon', {
+        slug: 'removeblack',
+        display_name: 'Remove Black',
+        brand_color: '#000',
+        svg_content: MINIMAL_SVG,
+        black_variant_svg: BLACK_SVG,
+      });
+
+      // Re-store without black variant
+      await callTool('store_icon', {
+        slug: 'removeblack',
+        display_name: 'Remove Black',
+        brand_color: '#000',
+        svg_content: MINIMAL_SVG,
+        // black_variant_svg omitted
+      });
+
+      const meta = JSON.parse(
+        fs.readFileSync(path.join(testIconsDir, 'removeblack', 'metadata.json'), 'utf-8'),
+      );
+      expect(meta.has_black_variant).toBe(false);
+    });
+  });
+
+  // ============================================================================
+  // Test: list_icons — fallback paths (no metadata, malformed metadata)
+  // ============================================================================
+
+  describe('list_icons fallback paths', () => {
+    beforeEach(setupIconsDir);
+    afterEach(teardownIconsDir);
+
+    it('should include directory with no metadata.json with slug as display_name', async () => {
+      // Create a bare icon directory without running store_icon
+      const bareDir = path.join(testIconsDir, 'bareicon');
+      fs.mkdirSync(bareDir, { recursive: true });
+      fs.writeFileSync(path.join(bareDir, 'icon.svg'), MINIMAL_SVG, 'utf-8');
+      // Intentionally no metadata.json
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{
+          slug: string;
+          display_name: string;
+          brand_color: string;
+          has_black_variant: boolean;
+        }>;
+      };
+
+      expect(result.icons).toHaveLength(1);
+      expect(result.icons[0].slug).toBe('bareicon');
+      expect(result.icons[0].display_name).toBe('bareicon');
+      expect(result.icons[0].brand_color).toBe('#000000');
+      expect(result.icons[0].has_black_variant).toBe(false);
+    });
+
+    it('should detect has_black_variant from filesystem when metadata is absent', async () => {
+      const bareDir = path.join(testIconsDir, 'bareblack');
+      fs.mkdirSync(bareDir, { recursive: true });
+      fs.writeFileSync(path.join(bareDir, 'icon.svg'), MINIMAL_SVG, 'utf-8');
+      fs.writeFileSync(path.join(bareDir, 'icon-black.svg'), BLACK_SVG, 'utf-8');
+      // No metadata.json
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{ slug: string; has_black_variant: boolean }>;
+      };
+
+      expect(result.icons[0].slug).toBe('bareblack');
+      expect(result.icons[0].has_black_variant).toBe(true);
+    });
+
+    it('should handle malformed metadata.json with slug fallback', async () => {
+      const brokenDir = path.join(testIconsDir, 'brokenicon');
+      fs.mkdirSync(brokenDir, { recursive: true });
+      fs.writeFileSync(path.join(brokenDir, 'icon.svg'), MINIMAL_SVG, 'utf-8');
+      fs.writeFileSync(path.join(brokenDir, 'metadata.json'), '{not valid json', 'utf-8');
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{ slug: string; display_name: string; brand_color: string }>;
+      };
+
+      expect(result.icons).toHaveLength(1);
+      expect(result.icons[0].slug).toBe('brokenicon');
+      expect(result.icons[0].display_name).toBe('brokenicon');
+      expect(result.icons[0].brand_color).toBe('#000000');
+    });
+
+    it('should detect has_black_variant from filesystem when metadata is malformed', async () => {
+      const brokenDir = path.join(testIconsDir, 'brokenblack');
+      fs.mkdirSync(brokenDir, { recursive: true });
+      fs.writeFileSync(path.join(brokenDir, 'icon.svg'), MINIMAL_SVG, 'utf-8');
+      fs.writeFileSync(path.join(brokenDir, 'icon-black.svg'), BLACK_SVG, 'utf-8');
+      fs.writeFileSync(path.join(brokenDir, 'metadata.json'), '{not valid json', 'utf-8');
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{ slug: string; has_black_variant: boolean }>;
+      };
+
+      expect(result.icons[0].has_black_variant).toBe(true);
+    });
+
+    it('should skip non-directory entries in the icons dir', async () => {
+      // Store a real icon
+      await callTool('store_icon', {
+        slug: 'realicon',
+        display_name: 'Real Icon',
+        brand_color: '#123456',
+        svg_content: MINIMAL_SVG,
+      });
+
+      // Place a loose file directly in the icons dir (not a subdir)
+      fs.writeFileSync(path.join(testIconsDir, 'readme.txt'), 'This is not an icon', 'utf-8');
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{ slug: string }>;
+      };
+
+      // The loose file must not appear as an icon entry
+      const slugs = result.icons.map((i) => i.slug);
+      expect(slugs).toContain('realicon');
+      expect(slugs).not.toContain('readme.txt');
+    });
+
+    it('should include source field from metadata when present', async () => {
+      await callTool('store_icon', {
+        slug: 'withsource',
+        display_name: 'With Source',
+        brand_color: '#FF0000',
+        svg_content: MINIMAL_SVG,
+        source: 'simple-icons',
+      });
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{ slug: string; source?: string }>;
+      };
+
+      expect(result.icons[0].source).toBe('simple-icons');
+    });
+
+    it('should not include source field when absent from metadata', async () => {
+      await callTool('store_icon', {
+        slug: 'nosource2',
+        display_name: 'No Source 2',
+        brand_color: '#0000FF',
+        svg_content: MINIMAL_SVG,
+        // source intentionally omitted
+      });
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{ slug: string; source?: string }>;
+      };
+
+      expect(result.icons[0].source).toBeUndefined();
+    });
+
+    it('should use directory name as slug even when metadata.json has a different slug field', async () => {
+      // Write metadata.json with a tampered slug field; the directory is named "real-slug"
+      const iconDir = path.join(testIconsDir, 'real-slug');
+      fs.mkdirSync(iconDir, { recursive: true });
+      fs.writeFileSync(path.join(iconDir, 'icon.svg'), MINIMAL_SVG, 'utf-8');
+      fs.writeFileSync(
+        path.join(iconDir, 'metadata.json'),
+        JSON.stringify({
+          slug: 'tampered-slug',
+          display_name: 'Real Brand',
+          brand_color: '#FF0000',
+          created_at: new Date().toISOString(),
+          pipeline_version: '1.0.0',
+          has_black_variant: false,
+        }),
+        'utf-8',
+      );
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{ slug: string; display_name: string }>;
+      };
+
+      expect(result.icons).toHaveLength(1);
+      // Authoritative slug comes from directory name, not metadata.json
+      expect(result.icons[0].slug).toBe('real-slug');
+      // display_name from metadata.json is still used (only slug is overridden)
+      expect(result.icons[0].display_name).toBe('Real Brand');
+    });
+
+    it('should use fallback values when metadata.json fails Zod validation', async () => {
+      // brand_color is 123 (number) instead of a string — Zod schema requires string
+      const iconDir = path.join(testIconsDir, 'zod-fail-icon');
+      fs.mkdirSync(iconDir, { recursive: true });
+      fs.writeFileSync(path.join(iconDir, 'icon.svg'), MINIMAL_SVG, 'utf-8');
+      fs.writeFileSync(
+        path.join(iconDir, 'metadata.json'),
+        JSON.stringify({
+          slug: 'zod-fail-icon',
+          display_name: 'Zod Fail',
+          brand_color: 123,  // invalid: number instead of string
+          created_at: new Date().toISOString(),
+          pipeline_version: '1.0.0',
+          has_black_variant: false,
+        }),
+        'utf-8',
+      );
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{ slug: string; display_name: string; brand_color: string; has_black_variant: boolean }>;
+      };
+
+      expect(result.icons).toHaveLength(1);
+      // Fallback: slug from directory name
+      expect(result.icons[0].slug).toBe('zod-fail-icon');
+      // Fallback: display_name from slug
+      expect(result.icons[0].display_name).toBe('zod-fail-icon');
+      // Fallback: default brand_color
+      expect(result.icons[0].brand_color).toBe('#000000');
+      // Fallback: filesystem check for black variant
+      expect(result.icons[0].has_black_variant).toBe(false);
+    });
+
+    it('should detect has_black_variant from filesystem when Zod validation fails', async () => {
+      const iconDir = path.join(testIconsDir, 'zod-fail-black');
+      fs.mkdirSync(iconDir, { recursive: true });
+      fs.writeFileSync(path.join(iconDir, 'icon.svg'), MINIMAL_SVG, 'utf-8');
+      fs.writeFileSync(path.join(iconDir, 'icon-black.svg'), BLACK_SVG, 'utf-8');
+      // brand_color is a number — Zod rejects this
+      fs.writeFileSync(
+        path.join(iconDir, 'metadata.json'),
+        JSON.stringify({
+          slug: 'zod-fail-black',
+          display_name: 'Zod Fail Black',
+          brand_color: 456,
+          created_at: new Date().toISOString(),
+          pipeline_version: '1.0.0',
+          has_black_variant: true,
+        }),
+        'utf-8',
+      );
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{ slug: string; has_black_variant: boolean }>;
+      };
+
+      expect(result.icons[0].slug).toBe('zod-fail-black');
+      // Fallback path uses filesystem check, not the (invalid) metadata value
+      expect(result.icons[0].has_black_variant).toBe(true);
+    });
+  });
+
+  // ============================================================================
+  // Test: delete_icon — slug validation (Zod schema enforcement)
+  // ============================================================================
+
+  describe('delete_icon slug validation', () => {
+    beforeEach(setupIconsDir);
+    afterEach(teardownIconsDir);
+
+    it('should reject invalid slug with uppercase letters', async () => {
+      let threw = false;
+      let result: unknown;
+      try {
+        result = await callTool('delete_icon', { slug: 'BadSlug' });
+      } catch {
+        threw = true;
+      }
+      if (!threw) {
+        expect((result as { error?: string }).error).toBeDefined();
+      }
+    });
+
+    it('should reject slug starting with a hyphen', async () => {
+      let threw = false;
+      let result: unknown;
+      try {
+        result = await callTool('delete_icon', { slug: '-bad' });
+      } catch {
+        threw = true;
+      }
+      if (!threw) {
+        expect((result as { error?: string }).error).toBeDefined();
+      }
+    });
+
+    it('should reject slug with trailing hyphen', async () => {
+      let threw = false;
+      let result: unknown;
+      try {
+        result = await callTool('delete_icon', { slug: 'brand-' });
+      } catch {
+        threw = true;
+      }
+      if (!threw) {
+        expect((result as { error?: string }).error).toBeDefined();
+      }
+    });
+
+    it('should reject slug with consecutive hyphens', async () => {
+      let threw = false;
+      let result: unknown;
+      try {
+        result = await callTool('delete_icon', { slug: 'brand--name' });
+      } catch {
+        threw = true;
+      }
+      if (!threw) {
+        expect((result as { error?: string }).error).toBeDefined();
+      }
+    });
+  });
+
+  // ============================================================================
+  // Test: recolor_svg
+  // ============================================================================
+
+  describe('recolor_svg', () => {
+    it('should apply a new color to a simple SVG', async () => {
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M0 0h64v64H0z" fill="#FFFFFF"/></svg>';
+
+      const result = (await callTool('recolor_svg', {
+        svg_content: svg,
+        color: '#FF0000',
+      })) as { success: boolean; svg_content: string; color_applied: string };
+
+      expect(result.success).toBe(true);
+      expect(result.color_applied).toBe('#FF0000');
+      expect(result.svg_content).toContain('fill="#FF0000"');
+    });
+
+    it('should set fill on root <svg> element', async () => {
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M0 0h64v64H0z"/></svg>';
+
+      const result = (await callTool('recolor_svg', {
+        svg_content: svg,
+        color: '#0000FF',
+      })) as { success: boolean; svg_content: string };
+
+      expect(result.success).toBe(true);
+      // The root <svg> tag should have the fill attribute
+      expect(result.svg_content).toMatch(/<svg[^>]*fill="#0000FF"/);
+    });
+
+    it('should preserve fill="none" on child elements', async () => {
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+        <path d="M0 0h64v64H0z" fill="#FFFFFF"/>
+        <path d="M10 10h44v44H10z" fill="none" stroke="black"/>
+      </svg>`;
+
+      const result = (await callTool('recolor_svg', {
+        svg_content: svg,
+        color: '#123456',
+      })) as { success: boolean; svg_content: string };
+
+      expect(result.success).toBe(true);
+      // fill="none" must be preserved
+      expect(result.svg_content).toContain('fill="none"');
+    });
+
+    it('should remove explicit fills from child elements so they inherit', async () => {
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+        <path d="M0 0h64v64H0z" fill="#AABBCC"/>
+        <path d="M10 10h44v44H10z" fill="#112233"/>
+      </svg>`;
+
+      const result = (await callTool('recolor_svg', {
+        svg_content: svg,
+        color: '#654321',
+      })) as { success: boolean; svg_content: string };
+
+      expect(result.success).toBe(true);
+      // Original child fills should be gone (so they inherit from root)
+      expect(result.svg_content).not.toContain('fill="#AABBCC"');
+      expect(result.svg_content).not.toContain('fill="#112233"');
+    });
+
+    it('should return error for invalid hex color', async () => {
+      const svg = MINIMAL_SVG;
+
+      const result = (await callTool('recolor_svg', {
+        svg_content: svg,
+        color: 'notacolor',
+      })) as { success: boolean; error: string };
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid hex color');
+    });
+
+    it('should return error when SVG has no <svg> element', async () => {
+      const result = (await callTool('recolor_svg', {
+        svg_content: '<not-an-svg><path d="M0 0h10z"/></not-an-svg>',
+        color: '#000000',
+      })) as { success: boolean; error: string };
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('No <svg> element found');
+    });
+
+    it('should replace existing fill on root <svg> element', async () => {
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" fill="#AAAAAA" viewBox="0 0 64 64"><path d="M0 0h64v64H0z"/></svg>';
+
+      const result = (await callTool('recolor_svg', {
+        svg_content: svg,
+        color: '#BBBBBB',
+      })) as { success: boolean; svg_content: string };
+
+      expect(result.success).toBe(true);
+      // Old color gone, new color present on svg element
+      expect(result.svg_content).not.toContain('fill="#AAAAAA"');
+      expect(result.svg_content).toContain('fill="#BBBBBB"');
+    });
+
+    it('should write output file when output_path is provided', async () => {
+      const outputPath = tmpPath('.svg');
+
+      const result = (await callTool('recolor_svg', {
+        svg_content: MINIMAL_SVG,
+        color: '#FF00FF',
+        output_path: outputPath,
+      })) as { success: boolean; output_path: string };
+
+      expect(result.success).toBe(true);
+      expect(result.output_path).toBe(outputPath);
+      expect(fs.existsSync(outputPath)).toBe(true);
+
+      const content = fs.readFileSync(outputPath, 'utf-8');
+      expect(content).toContain('#FF00FF');
+
+      fs.unlinkSync(outputPath);
+    });
+
+    it('should not set output_path when omitted', async () => {
+      const result = (await callTool('recolor_svg', {
+        svg_content: MINIMAL_SVG,
+        color: '#ABCDEF',
+      })) as { success: boolean; output_path?: string };
+
+      expect(result.success).toBe(true);
+      expect(result.output_path).toBeUndefined();
+    });
+
+    it('should reject path traversal in output_path', async () => {
+      const result = (await callTool('recolor_svg', {
+        svg_content: MINIMAL_SVG,
+        color: '#000000',
+        output_path: '/tmp/../../etc/evil.svg',
+      })) as { error?: string };
+
+      expect(result.error).toMatch(/Path traversal detected/);
+    });
+
+    it('should accept 3-digit hex color', async () => {
+      const result = (await callTool('recolor_svg', {
+        svg_content: MINIMAL_SVG,
+        color: '#FFF',
+      })) as { success: boolean; color_applied: string };
+
+      expect(result.success).toBe(true);
+      expect(result.color_applied).toBe('#FFF');
+    });
+  });
+
+  // ============================================================================
+  // Test: list_icons + store_icon + delete_icon — round-trip integration
+  // ============================================================================
+
+  describe('store/list/delete round-trip', () => {
+    beforeEach(setupIconsDir);
+    afterEach(teardownIconsDir);
+
+    it('should list then delete then list shows empty', async () => {
+      await callTool('store_icon', {
+        slug: 'roundtrip',
+        display_name: 'Round Trip',
+        brand_color: '#ABCDEF',
+        svg_content: MINIMAL_SVG,
+      });
+
+      const before = (await callTool('list_icons', {})) as { icons: Array<{ slug: string }> };
+      expect(before.icons.map((i) => i.slug)).toContain('roundtrip');
+
+      const del = (await callTool('delete_icon', { slug: 'roundtrip' })) as { success: boolean };
+      expect(del.success).toBe(true);
+
+      const after = (await callTool('list_icons', {})) as { icons: Array<{ slug: string }> };
+      expect(after.icons.map((i) => i.slug)).not.toContain('roundtrip');
+    });
+
+    it('should support multiple icons with mixed metadata states', async () => {
+      // Icon with full metadata
+      await callTool('store_icon', {
+        slug: 'alpha',
+        display_name: 'Alpha',
+        brand_color: '#AAAAAA',
+        svg_content: MINIMAL_SVG,
+        source: 'test',
+      });
+
+      // Icon with no metadata (bare directory)
+      const bareDir = path.join(testIconsDir, 'zeta');
+      fs.mkdirSync(bareDir, { recursive: true });
+      fs.writeFileSync(path.join(bareDir, 'icon.svg'), MINIMAL_SVG, 'utf-8');
+
+      const result = (await callTool('list_icons', {})) as {
+        icons: Array<{ slug: string; display_name: string }>;
+      };
+
+      // Sorted alphabetically
+      expect(result.icons[0].slug).toBe('alpha');
+      expect(result.icons[1].slug).toBe('zeta');
+      // zeta fallback uses slug as display_name
+      expect(result.icons[1].display_name).toBe('zeta');
+    });
+  });
+
+  // ============================================================================
+  // Test: recolorSvg named export
+  // ============================================================================
+
+  describe('recolorSvg named export', () => {
+    it('should be exported as a named function from server.ts', async () => {
+      const mod = await import('../server.js');
+      expect(typeof mod.recolorSvg).toBe('function');
+    });
+
+    it('should return a RecolorSvgResult-shaped object when called directly', async () => {
+      const mod = await import('../server.js');
+      const result = await mod.recolorSvg({
+        svg_content: MINIMAL_SVG,
+        color: '#123456',
+      });
+
+      expect(typeof result.success).toBe('boolean');
+      expect(result.success).toBe(true);
+      expect(typeof result.svg_content).toBe('string');
+      expect(typeof result.color_applied).toBe('string');
+      expect(result.color_applied).toBe('#123456');
+      expect(result.output_path).toBeUndefined();
     });
   });
 
