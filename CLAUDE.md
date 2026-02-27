@@ -270,7 +270,7 @@ To browse a persona's feedback history or spawn a one-shot feedback session on d
 
 Shows an overview of all personas and recent feedback runs, lets you pick a persona, view its satisfaction trend and CTO reports, drill into past session details, or spawn a live feedback session (fire-and-forget).
 
-The `product-manager` agent also creates fully-functional personas automatically as a post-analysis step. After Section 6 is completed, the agent receives a persona evaluation task where it first asks the user to choose between **Fill gaps only** (idempotent — backfill missing data without replacing existing) or **Full rebuild** (create everything fresh). It then reads `package.json` to detect the dev server URL and framework, scans for route/feature directories, registers them as features, creates or backfills personas with all required fields (`endpoints`, `behavior_traits`, `consumption_mode`), maps personas to features, maps pain points to personas, and reports compliance to the deputy-CTO. For SDK/ADK personas, the agent sets `endpoints[1]` to the project's docs path/URL when auto-detectable (e.g., `docs/` directory or `docs` script in `package.json`). This is the primary automated path; `/configure-personas` is the interactive manual path for user-driven setup.
+The `product-manager` agent also creates fully-functional personas automatically as a post-analysis step. After Section 6 is completed, the agent receives a persona evaluation task where it first asks the user to choose between **Fill gaps only** (idempotent — backfill missing data without replacing existing) or **Full rebuild** (create everything fresh). It then reads `package.json` to detect the dev server URL and framework, scans for route/feature directories, registers them as features, creates or backfills personas with all required fields (`name`, `display_name`, `endpoints`, `behavior_traits`, `consumption_mode`), maps personas to features, maps pain points to personas, and reports compliance to the deputy-CTO. For SDK/ADK personas, the agent sets `endpoints[1]` to the project's docs path/URL when auto-detectable (e.g., `docs/` directory or `docs` script in `package.json`). This is the primary automated path; `/configure-personas` is the interactive manual path for user-driven setup.
 
 ## Product Manager MCP Server
 
@@ -324,7 +324,7 @@ Sections 2 and 6 are **list sections**: they use `add_entry` instead of `write_s
 **Post-analysis persona evaluation** (product-manager agent, 3-phase):
 - **Mode selection**: Agent uses `AskUserQuestion` to ask whether to run **Fill gaps only** (idempotent — skips existing data) or **Full rebuild** (creates everything from scratch). `AskUserQuestion` is included in the agent's `allowedTools` for this purpose.
 - **Phase 1 — Project Context Gathering**: Reads `package.json` to detect dev server URL and framework; globs for route/feature/component directories (cap 20); excludes `_`-prefixed dirs, `node_modules`, build output
-- **Phase 2 — Register Features + Create Personas**: Calls `mcp__user-feedback__list_features()` to skip already-registered features (applies in both modes); in Fill gaps only mode, also calls `mcp__user-feedback__list_personas()` and `mcp__user-feedback__update_persona` to backfill existing personas where `endpoints` or `behavior_traits` is empty (never overwrites populated fields; skips `cto_protected: true` personas entirely); skips creating a new persona if an existing one covers the same archetype; calls `mcp__user-feedback__register_feature` for new dirs with `file_patterns` and `url_patterns`; creates personas via `mcp__user-feedback__create_persona` with all required fields: `endpoints` (dev server URL), `behavior_traits` (derived from pain points), `consumption_mode` (`gui` for web apps, `api`/`cli`/`sdk` for other types)
+- **Phase 2 — Register Features + Create Personas**: Calls `mcp__user-feedback__list_features()` to skip already-registered features (applies in both modes); in Fill gaps only mode, also calls `mcp__user-feedback__list_personas()` and `mcp__user-feedback__update_persona` to backfill existing personas where `endpoints` or `behavior_traits` is empty (never overwrites populated fields; skips `cto_protected: true` personas entirely); skips creating a new persona if an existing one covers the same archetype; calls `mcp__user-feedback__register_feature` for new dirs with `file_patterns` and `url_patterns`; creates personas via `mcp__user-feedback__create_persona` with all required fields: `name` (slug identifier, e.g. `power-user`), `display_name` (human-readable label shown in menus, e.g. `Power User`), `endpoints` (dev server URL), `behavior_traits` (derived from pain points), `consumption_mode` (`gui` for web apps, `api`/`cli`/`sdk` for other types)
 - **Phase 3 — Mapping**: Checks existing feature mappings via `mcp__user-feedback__get_persona` before adding — skips persona-feature pairs that already exist (idempotent); maps pain points to personas via `map_pain_point_persona` (`unmapped_only: true` filter ensures idempotency); verifies with `get_compliance_report`; reports results to deputy-CTO with new vs existing counts for features, personas, and mappings
 
 ## Automation Service
@@ -383,6 +383,51 @@ Force-spawns the deputy-CTO triage cycle immediately, bypassing the hourly autom
 - `validateApproval(phrase, code)` — called by the gate hook when an agent submits an approval phrase; verifies `pending_hmac` before marking approved; if protection key is present and `pending_hmac` is missing-or-invalid, rejects with `FORGERY` reason (G001 fail-closed); writes `approved_hmac` on success so `checkApproval()` can verify downstream
 - `checkApproval(server, tool, args)` — two-pass approval scan under file lock: Pass 1 checks standard exact-match approvals (args-bound, single-use, skips `is_preapproval` entries); Pass 2 checks pre-approved bypasses (args-agnostic, burst-use, requires protection key unconditionally). Both passes verify HMAC signatures and delete forged entries. Pre-approval entries identified by `is_preapproval: true` flag.
 - `saveApprovals()` in both `approval-utils.js` and `protected-action-gate.js` uses atomic write-via-rename (write to `.tmp.<pid>`, then `fs.renameSync`) to prevent partial writes from concurrent access leaving a corrupted approvals file; the tmp file is unlinked on rename failure
+
+## Task Gate System
+
+New tasks created by non-privileged agents enter `pending_review` status and are reviewed by a lightweight Haiku gate agent before entering the active queue.
+
+**Task state machine**: `pending_review` → `pending` → `in_progress` → `completed`
+
+**Gate bypass**: Tasks from trusted creators (`deputy-cto`, `cto`, `human`, `pr-reviewer`, `system-followup`, `demo`) skip the gate and enter `pending` directly.
+
+**Urgency auto-downgrade**: Only urgency-authorized creators (same list as gate bypass) can set `priority: "urgent"`. Tasks from other agents are auto-downgraded to `normal` with a warning.
+
+**Gate decision tools** (on `todo-db` server):
+- `gate_approve_task` — moves `pending_review` → `pending`
+- `gate_kill_task` — deletes a `pending_review` task with reason
+- `gate_escalate_task` — approves task AND creates a deputy-CTO report for review
+
+**PostToolUse hook** (`.claude/hooks/task-gate-spawner.js`): Fires on `mcp__todo-db__create_task`. When the response shows `status: 'pending_review'`, spawns a Haiku gate agent that checks for duplicates, feature stability locks, and CTO intent before deciding.
+
+**Crash recovery**: `hourly-automation.js` auto-approves stale `pending_review` tasks older than 10 minutes (gate agent timed out or crashed).
+
+**Race condition prevention**: `urgent-task-spawner.js` checks `toolInput.priority === 'urgent'` (input-side); `task-gate-spawner.js` checks `tool_response.status === 'pending_review'` (output-side). No overlap.
+
+## Feature Stability Registry
+
+CTO-gated mechanism to lock features and prevent endless agent nitpick chains on solid features.
+
+**`feature_stability` table** (in `user-feedback.db`): Stores stability locks linked to features via `feature_id` FK (CASCADE delete).
+
+**4 MCP tools** (on `user-feedback` server):
+- `lock_feature` — CTO-gated (only `cto` or `human` caller); creates a stability lock
+- `unlock_feature` — CTO-gated; removes a stability lock
+- `list_stable_features` — JOINs to features table; returns locked features with reasons
+- `check_feature_stability` — Checks file patterns and feature name against locked features; used by the gate agent to auto-kill tasks targeting stable features
+
+**CTO workflow**: Lock/unlock features in interactive sessions. Product-manager can request locks via deputy-CTO escalation.
+
+## CTO Session Search
+
+The `search_cto_sessions` tool on the `agent-tracker` MCP server filters session files to user-only (non-autonomous) sessions before searching.
+
+- Scans `~/.claude/projects/{encoded-project-path}/` for session JSONL files
+- Reads first 2KB of each file; skips sessions containing `[Task]` or `[AGENT:` markers (autonomous)
+- Searches remaining files for the query string (case-insensitive)
+- Returns matching excerpts with surrounding context lines
+- Used by the gate agent to check if the CTO recently discussed a topic (CTO intent check)
 
 ## Automatic Session Recovery
 
@@ -577,7 +622,8 @@ The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tool
 - `get_coverage_status` — Report test count and coverage status per persona project; persona labels and test dirs derived from config discovery
 - `preflight_check` — Validate environment readiness before launching; runs 9 checks: config exists, dependencies, browsers installed, test files, credentials valid, dev server reachable, compilation, auth state freshness, and extension manifest valid
 - `run_auth_setup` — Refresh Playwright auth state by running `seed` then `auth-setup` projects; discovers expected auth files from `storageState` fields in config (or scans `.auth/` as fallback); 4-minute timeout; supports `seed_only` flag to skip auth-setup
-- `run_demo` — Launch Playwright tests in a visible headed browser at human-watchable speed (auto-play mode). Accepts any project name from the target project's `playwright.config.ts`. Passes `DEMO_SLOW_MO` env var (default 800ms) for pace control — target project must read `parseInt(process.env.DEMO_SLOW_MO || '0')` in `use.launchOptions.slowMo`. Monitors for early crashes during a 15s startup window (accommodates headed browser + webServer compilation); returns success once the process survives that window.
+- `run_demo` — Launch Playwright tests in a visible headed browser at human-watchable speed (auto-play mode). Accepts any project name from the target project's `playwright.config.ts`. Passes `DEMO_SLOW_MO` env var (default 800ms) for pace control — target project must read `parseInt(process.env.DEMO_SLOW_MO || '0')` in `use.launchOptions.slowMo`. Returns an error immediately if the spawned child process has no PID. Monitors for early crashes during a 15s startup window (accommodates headed browser + webServer compilation); returns success once the process survives that window. Records the demo run state (PID, project, test file, started_at) in memory and persisted to `.claude/state/demo-runs.json` (capped at 20 entries, atomic write-via-rename). On load, persisted entries are validated via `isValidDemoRunState()` — entries with missing/invalid pid, project, started_at, or status fields are discarded.
+- `check_demo_result` — Poll the result of a `run_demo` call by PID. Returns `status` (`running`, `passed`, `failed`, `unknown`), exit code, `failure_summary`, and `screenshot_paths` when available. Checks process liveness for `running` status; reads persisted state from `.claude/state/demo-runs.json` for completed runs. Failure details are enriched from the playwright-failure-reporter's `lastDemoFailure` entry in `test-failure-state.json` when available.
 - `list_extension_tabs` — List open tabs in a CDP-connected extension test browser
 - `screenshot_extension_tab` — Screenshot a specific extension tab via CDP
 
@@ -594,8 +640,8 @@ The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tool
 
 **Extension manifest check in `preflight_check` (check #9)**:
 - Only runs when `project` is in `pwConfig.extensionProjects` (derived from config discovery — projects with `name.includes('extension')` or `name === 'demo'`); skips for all other projects
-- Skips when `GENTYR_EXTENSION_DIST_PATH` is not set
-- Resolves `manifest.json` at `$GENTYR_EXTENSION_DIST_PATH/manifest.json` then falls back to the parent directory
+- When `GENTYR_EXTENSION_DIST_PATH` is not set, auto-discovers the extension manifest by checking `dist/`, `build/`, `out/`, `extension/dist/`, `extension/build/` in the project root; returns `skip` only if no `manifest.json` is found in any of these locations
+- Resolves `manifest.json` at `$GENTYR_EXTENSION_DIST_PATH/manifest.json` then falls back to the parent directory (when env var is set)
 - Validates every `matches` and `exclude_matches` pattern in each `content_scripts` entry against the Chrome match-pattern spec: `<all_urls>`, `file:///path`, `(*|https?):// host /path` where host is `*`, `*.domain`, or exact domain (no partial wildcards like `*-admin.example.com`)
 - Recovery step: fix invalid patterns in `manifest.json` — Chrome requires host to be `*`, `*.domain.com`, or `exact.domain.com`
 
@@ -610,15 +656,22 @@ The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tool
 - Returns structured `RunAuthSetupResult` with per-phase success, `auth_files_refreshed` list, and `output_summary`
 - Deputy-CTO agent has `mcp__playwright__run_auth_setup` in `allowedTools` and is responsible for executing it when assigned an `auth_state` repair task from `/demo`
 
+**Playwright Failure Reporter** (`.claude/hooks/reporters/playwright-failure-reporter.js`):
+- Custom Playwright reporter that spawns Claude to fix test failures automatically (fire-and-forget, does not block test completion)
+- Per-suite cooldown (120 min, configurable via `test_failure_reporter` in automation config) + content-based SHA-256 deduplication (24h expiry) prevent duplicate spawns
+- `onTestEnd()` captures screenshot attachment paths from `result.attachments` for every failed test
+- `onEnd()` writes a `lastDemoFailure` entry to `test-failure-state.json` when any `.demo.ts` file fails — includes `testFile`, `suiteNames`, `failureDetails` (4KB cap), and `screenshotPaths` (up to 5). This enriches `check_demo_result` responses for demo run failures.
+- Spawn uses `[Task][test-failure-playwright]` prefix for CTO dashboard tracking; sets `CLAUDE_SPAWNED_SESSION=true` to prevent hook chain reactions
+
 **`/demo` command suite** (`.claude/commands/demo.md`, `demo-interactive.md`, `demo-autonomous.md`):
-- `/demo` — Escape hatch: launches Playwright UI mode showing ALL tests. No scenario filtering. Developer power-tool for browsing the full test suite.
-- `/demo-interactive` — Scenario-based: runs a chosen curated demo scenario at full speed, pauses at end for manual interaction. "Take me to this screen."
-- `/demo-autonomous` — Scenario-based: runs a chosen demo scenario at human-watchable speed (slowMo 800ms), no pause. "Show me the product in action."
+- `/demo` — Escape hatch: launches Playwright UI mode showing ALL tests. No scenario filtering. Developer power-tool for browsing the full test suite. Step 2 uses `personaGroups` from prefetch for persona-first selection with an "All tests" option; falls back to `discoveredProjects` when no `personaGroups` exist.
+- `/demo-interactive` — Scenario-based two-step flow: Step 2 selects a persona (with `[N]` scenario count labels), Step 3 selects a scenario within that persona. Single-item paths skip their prompts. Runs at full speed then pauses for manual interaction. "Take me to this screen."
+- `/demo-autonomous` — Scenario-based two-step flow (same persona → scenario selection as `/demo-interactive`): runs at human-watchable speed (slowMo 800ms), browser stays open after completion. "Show me the product in action." After launch, polls `check_demo_result` every 30 seconds (max 5 polls, ~2.5 min) to detect failures; creates an urgent DEPUTY-CTO task with failure summary, exit code, and screenshot paths on failure. If polls exhaust with status still `running`, the autonomous flow completed successfully (failures cause process exit) and the browser is paused at the final screen.
 - All three use the same "escalate all failures" pattern — when `preflight_check` returns `ready: false`, a single urgent DEPUTY-CTO task is created describing every failed check with per-check repair instructions
 - `/demo` calls `mcp__playwright__launch_ui_mode`; `/demo-interactive` and `/demo-autonomous` call `mcp__playwright__run_demo` with `test_file` and `pause_at_end` from the selected scenario
 - Repair mapping: `config_exists` → CODE-REVIEWER; `dependencies_installed`/`browsers_installed` → direct Bash fix; `test_files_exist` → TEST-WRITER; `credentials_valid` → INVESTIGATOR & PLANNER; `auth_state` → `run_auth_setup()` then INVESTIGATOR & PLANNER on failure; `extension_manifest` → CODE-REVIEWER (fix invalid match patterns in `manifest.json`)
 - The `demo` agent identity is included in `SECTION_CREATOR_RESTRICTIONS` for DEPUTY-CTO (allows `mcp__todo-db__create_task` with `assigned_by: "demo"`)
-- `slash-command-prefetch.js` reads the cached `playwright-health.json` (1-hour TTL) written by the SessionStart hook, falling back to dynamic `.auth/` scan on cache miss; discovers projects dynamically from `playwright.config.ts` via regex (no hardcoded project list); credential check uses generic `op://` env scan (no hardcoded credential key names); also queries `user-feedback.db` for enabled demo scenarios
+- `slash-command-prefetch.js` reads the cached `playwright-health.json` (1-hour TTL) written by the SessionStart hook, falling back to dynamic `.auth/` scan on cache miss; discovers projects dynamically from `playwright.config.ts` via regex (no hardcoded project list); credential check uses generic `op://` env scan (no hardcoded credential key names); also queries `user-feedback.db` for enabled demo scenarios; test file counts include `.demo.ts` files alongside `.spec.ts` and `.manual.ts`; pre-computes `personaGroups` — scenarios grouped by persona (`{ persona_name, persona_display_name, playwright_project, scenarios[] }`) where `persona_display_name` is `COALESCE(display_name, name)` from the personas table and each scenario object carries its own `playwright_project` field — enabling two-step persona → scenario selection in demo commands without redundant DB queries; all error/missing-db paths emit empty `personaGroups: []`
 
 ## Demo Scenario System
 
@@ -699,6 +752,27 @@ Claude Code ──HTTPS_PROXY──> localhost:18080 ──TLS──> api.anthro
 **Tombstone consumer filters**: Consumer hooks that iterate rotation state keys (`session-reviver.js`, `api-key-watcher.js`, `stop-continue-hook.js`, `quota-monitor.js`) filter out tombstoned entries before passing key data to `checkKeyHealth()`, preventing calls with `undefined` access tokens.
 
 **Complements existing rotation**: The proxy handles immediate token swap at the network level. Quota-monitor still handles usage detection and key selection. Key-sync still handles token refresh and Keychain writes.
+
+### Proxy Enable/Disable
+
+```bash
+npx gentyr proxy disable   # Stop proxy service, remove shell env, persist flag
+npx gentyr proxy enable    # Restart proxy service, restore shell env
+npx gentyr proxy status    # Show current state (default when no subcommand)
+npx gentyr proxy           # Same as status
+```
+
+Emergency kill switch for the rotation proxy. When the Anthropic usage API is degraded and the proxy's key-selection logic causes issues, `disable` takes the proxy completely out of the equation:
+
+1. Unloads the launchd/systemd service (stops the process, prevents auto-restart)
+2. Strips the `# BEGIN GENTYR PROXY` / `# END GENTYR PROXY` block from `~/.zshrc`/`~/.bashrc`
+3. Writes `~/.claude/proxy-disabled.json` with `{ disabled: true }` — read by all spawn helpers
+
+**State file**: `~/.claude/proxy-disabled.json` (global, not per-project — one proxy serves all projects).
+
+**Spawn helper integration**: `isProxyDisabled()` from `.claude/hooks/lib/proxy-state.js` is checked by `buildSpawnEnv()` in `hourly-automation.js`, `urgent-task-spawner.js`, `task-gate-spawner.js`, and `session-reviver.js`. When disabled, `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`/`NODE_EXTRA_CA_CERTS` are omitted from spawned agent environments — agents connect directly to `api.anthropic.com`.
+
+**Default**: Enabled. Missing state file = proxy enabled. `npx gentyr init` does not create this file.
 
 ## Chrome Browser Automation
 

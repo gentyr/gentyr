@@ -27,6 +27,7 @@ import { createWorktree, cleanupMergedWorktrees } from './lib/worktree-manager.j
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
 import { detectStaleWork, formatReport } from './stale-work-detector.js';
 import { reviveInterruptedSessions } from './session-reviver.js';
+import { isProxyDisabled } from './lib/proxy-state.js';
 
 // Try to import better-sqlite3 for task runner
 let Database = null;
@@ -265,18 +266,23 @@ function buildSpawnEnv(agentId) {
     }
   } catch {}
 
-  return {
+  const env = {
     ...process.env,
     ...resolvedCredentials,
     CLAUDE_PROJECT_DIR: PROJECT_DIR,
     CLAUDE_SPAWNED_SESSION: 'true',
     CLAUDE_AGENT_ID: agentId,
-    HTTPS_PROXY: 'http://localhost:18080',
-    HTTP_PROXY: 'http://localhost:18080',
-    NO_PROXY: 'localhost,127.0.0.1',
-    NODE_EXTRA_CA_CERTS: path.join(process.env.HOME || '/tmp', '.claude', 'proxy-certs', 'ca.pem'),
     PATH: guardedPath,
   };
+
+  if (!isProxyDisabled()) {
+    env.HTTPS_PROXY = 'http://localhost:18080';
+    env.HTTP_PROXY = 'http://localhost:18080';
+    env.NO_PROXY = 'localhost,127.0.0.1';
+    env.NODE_EXTRA_CA_CERTS = path.join(process.env.HOME || '/tmp', '.claude', 'proxy-certs', 'ca.pem');
+  }
+
+  return env;
 }
 
 /**
@@ -3274,6 +3280,29 @@ async function main() {
   } else {
     const minutesLeft = Math.ceil((PREVIEW_PROMOTION_COOLDOWN_MS - timeSinceLastPreviewPromotion) / 60000);
     log(`Preview promotion cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
+  // TASK GATE STALE CLEANUP
+  // Auto-approve pending_review tasks older than 10 minutes (gate agent timed out)
+  // =========================================================================
+  if (Database) {
+    try {
+      const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
+      if (fs.existsSync(todoDbPath)) {
+        const todoDb = new Database(todoDbPath);
+        const nowTimestamp = Math.floor(Date.now() / 1000);
+        const result = todoDb.prepare(
+          "UPDATE tasks SET status = 'pending' WHERE status = 'pending_review' AND created_timestamp < ?"
+        ).run(nowTimestamp - 600);
+        if (result.changes > 0) {
+          log(`Task gate cleanup: auto-approved ${result.changes} stale pending_review task(s).`);
+        }
+        todoDb.close();
+      }
+    } catch (err) {
+      log(`Task gate cleanup error (non-fatal): ${err.message}`);
+    }
   }
 
   // =========================================================================

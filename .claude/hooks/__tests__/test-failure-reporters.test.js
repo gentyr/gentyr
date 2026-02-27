@@ -10,7 +10,7 @@
  * Run with: node --test .claude/hooks/__tests__/test-failure-reporters.test.js
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert';
 import fs from 'fs';
 import path from 'path';
@@ -321,6 +321,119 @@ for (const reporter of REPORTERS) {
     });
   });
 }
+
+// ============================================================================
+// playwright-failure-reporter.js — lastDemoFailure enrichment
+//
+// When .demo.ts files fail, the reporter writes enriched failure state to
+// test-failure-state.json under a `lastDemoFailure` key. This data is
+// consumed by the check_demo_result MCP tool to return structured failure
+// context. These tests validate the structural presence of that behavior.
+// ============================================================================
+
+describe('playwright-failure-reporter - lastDemoFailure enrichment', () => {
+  const PLAYWRIGHT_REPORTER_PATH = path.join(
+    path.dirname(new URL(import.meta.url).pathname),
+    '..', 'reporters', 'playwright-failure-reporter.js'
+  );
+
+  let code;
+  beforeEach(() => {
+    ({ default: code } = { default: fs.readFileSync(PLAYWRIGHT_REPORTER_PATH, 'utf8') });
+  });
+
+  it('should write lastDemoFailure when .demo.ts files fail', () => {
+    // The onEnd() handler must detect .demo.ts failures and write lastDemoFailure state
+    assert.match(
+      code,
+      /lastDemoFailure/,
+      'Reporter must write lastDemoFailure state for check_demo_result consumption'
+    );
+  });
+
+  it('should filter failed tests by .demo.ts suffix for demo failure enrichment', () => {
+    assert.match(
+      code,
+      /\.demo\.ts/,
+      'Reporter must filter by .demo.ts suffix to identify demo failures'
+    );
+  });
+
+  it('should collect screenshot paths from test result attachments', () => {
+    // Screenshots are captured from result.attachments in onTestEnd()
+    assert.match(
+      code,
+      /attachments/,
+      'Reporter must read attachments from test results'
+    );
+    assert.match(
+      code,
+      /screenshots/,
+      'Reporter must collect screenshot paths'
+    );
+  });
+
+  it('should write lastDemoFailure.failureDetails capped at 4000 chars', () => {
+    // Prevents unbounded state file growth
+    assert.match(
+      code,
+      /failureDetails.*slice.*4000|slice.*4000.*failureDetails/s,
+      'failureDetails must be capped at 4000 characters'
+    );
+  });
+
+  it('should write lastDemoFailure.screenshotPaths capped at 5 entries', () => {
+    assert.match(
+      code,
+      /screenshotPaths.*slice.*5|slice.*5.*screenshotPaths/s,
+      'screenshotPaths must be capped at 5 entries'
+    );
+  });
+
+  it('should write lastDemoFailure.timestamp as ISO string', () => {
+    assert.match(
+      code,
+      /timestamp.*toISOString/s,
+      'lastDemoFailure must include an ISO timestamp'
+    );
+  });
+
+  it('should write lastDemoFailure.testFile with the first demo file path', () => {
+    assert.match(
+      code,
+      /testFile.*demoFailures/s,
+      'lastDemoFailure must record the demo test file path'
+    );
+  });
+
+  it('should write lastDemoFailure.suiteNames as array of demo suite basenames', () => {
+    assert.match(
+      code,
+      /suiteNames.*demoSuiteNames|demoSuiteNames.*suiteNames/s,
+      'lastDemoFailure must include suiteNames array'
+    );
+  });
+
+  it('should only write lastDemoFailure when demo failures are present (guard check)', () => {
+    // Must check demoFailures.length > 0 before writing
+    assert.match(
+      code,
+      /demoFailures\.length > 0/,
+      'Must guard lastDemoFailure write with demoFailures.length check'
+    );
+  });
+
+  it('should write lastDemoFailure via writeState() to persist to disk', () => {
+    // Must use the shared writeState() helper so it goes to test-failure-state.json
+    const onEndMatch = code.match(/async onEnd\(result\) \{[\s\S]*?\n  \}/);
+    assert.ok(onEndMatch, 'onEnd must exist');
+    assert.match(
+      onEndMatch[0],
+      /writeState\(/,
+      'Must call writeState() to persist lastDemoFailure to disk'
+    );
+  });
+});
 
 describe('Test Failure Reporters - Consistency Check', () => {
   it('should have identical getConfiguredCooldown() implementation across all reporters', () => {

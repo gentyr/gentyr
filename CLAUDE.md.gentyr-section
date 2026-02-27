@@ -26,6 +26,10 @@ Report to deputy-cto when you encounter:
 - **Breaking changes** - Changes affecting multiple components
 - **Blockers** - Issues preventing progress
 
+### Task Priority
+
+Default to `priority: "normal"`. Use `"urgent"` only for: broken CI, security vulnerabilities, blocking issues, or CTO-requested work. Do not create DEPUTY-CTO section tasks for routine implementation — use the specialist section (CODE-REVIEWER, TEST-WRITER, etc.) instead.
+
 ### CTO-Protected Actions
 
 Some MCP actions require CTO approval before execution. When you call a protected action:

@@ -66,6 +66,12 @@ CLAUDE.md.makerkit-section
 # Local plugins (gitignored — project-specific integrations, never published)
 plugins/
 
+# Temporary scratchpad / working files
+tmp/
+
+# direnv
+.envrc
+
 # OS
 .DS_Store
 Thumbs.db
