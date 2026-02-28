@@ -275,6 +275,7 @@ export interface CheckDemoResultResult {
   exit_code?: number;
   failure_summary?: string;
   screenshot_paths?: string[];
+  trace_summary?: string;
   message: string;
 }
 
@@ -288,6 +289,7 @@ export interface DemoRunState {
   exit_code?: number;
   failure_summary?: string;
   screenshot_paths?: string[];
+  trace_summary?: string;
 }
 
 export interface LaunchUiModeResult {

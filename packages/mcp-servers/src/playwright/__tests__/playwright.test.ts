@@ -1280,6 +1280,135 @@ describe('Playwright MCP Server - Type Safety', () => {
       expect(args.open_browser).toBe(false);
     });
   });
+
+  describe('CheckDemoResultResult - trace_summary field', () => {
+    it('should accept CheckDemoResultResult without trace_summary (field is optional)', () => {
+      const result: CheckDemoResultResult = {
+        status: 'passed',
+        pid: 12345,
+        project: 'vendor-owner',
+        message: 'Demo completed successfully.',
+      };
+
+      expect(result.trace_summary).toBeUndefined();
+      expect(result.status).toBe('passed');
+      expect(result.pid).toBe(12345);
+    });
+
+    it('should accept CheckDemoResultResult with trace_summary as a string', () => {
+      const result: CheckDemoResultResult = {
+        status: 'failed',
+        pid: 99999,
+        project: 'demo',
+        exit_code: 1,
+        message: 'Demo failed.',
+        trace_summary: '=== DEMO PLAY-BY-PLAY TRACE ===\n[  0.0s] NAV    Navigate to http://localhost:3000\n=== END TRACE ===',
+      };
+
+      expect(typeof result.trace_summary).toBe('string');
+      expect(result.trace_summary).toContain('DEMO PLAY-BY-PLAY TRACE');
+      expect(result.trace_summary).toContain('END TRACE');
+    });
+
+    it('should accept CheckDemoResultResult with all optional fields populated', () => {
+      const result: CheckDemoResultResult = {
+        status: 'failed',
+        pid: 42,
+        project: 'vendor-owner',
+        test_file: 'e2e/demo/onboarding.demo.ts',
+        started_at: '2026-02-28T00:00:00.000Z',
+        ended_at: '2026-02-28T00:01:00.000Z',
+        exit_code: 1,
+        failure_summary: 'Test timed out after 30000ms',
+        screenshot_paths: ['/tmp/test-results/screenshot.png'],
+        trace_summary: '=== DEMO PLAY-BY-PLAY TRACE ===\nTotal events: 1\n\n[  0.0s] NAV    Navigate to http://localhost:3000\n=== END TRACE ===',
+        message: 'Demo failed.',
+      };
+
+      expect(typeof result.trace_summary).toBe('string');
+      expect(result.trace_summary).not.toBeNull();
+      expect(result.trace_summary!.length).toBeGreaterThan(0);
+    });
+
+    it('trace_summary when present must be a non-empty string', () => {
+      const withTrace: CheckDemoResultResult = {
+        status: 'passed',
+        pid: 1,
+        message: 'ok',
+        trace_summary: '=== DEMO PLAY-BY-PLAY TRACE ===\nTotal events: 5\n=== END TRACE ===',
+      };
+
+      expect(typeof withTrace.trace_summary).toBe('string');
+      expect(withTrace.trace_summary!.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('DemoRunState - trace_summary field', () => {
+    it('should accept DemoRunState without trace_summary (field is optional)', () => {
+      const state: DemoRunState = {
+        pid: 12345,
+        project: 'vendor-owner',
+        started_at: '2026-02-28T00:00:00.000Z',
+        status: 'running',
+      };
+
+      expect(state.trace_summary).toBeUndefined();
+    });
+
+    it('should accept DemoRunState with trace_summary as a string', () => {
+      const state: DemoRunState = {
+        pid: 12345,
+        project: 'vendor-owner',
+        started_at: '2026-02-28T00:00:00.000Z',
+        status: 'passed',
+        ended_at: '2026-02-28T00:01:00.000Z',
+        exit_code: 0,
+        trace_summary: '=== DEMO PLAY-BY-PLAY TRACE ===\nTotal events: 12\n\n[  0.0s] NAV    Navigate to http://localhost:3000\n=== END TRACE ===',
+      };
+
+      expect(typeof state.trace_summary).toBe('string');
+      expect(state.trace_summary).toContain('Total events: 12');
+    });
+
+    it('DemoRunState round-trips through JSON serialization with trace_summary intact', () => {
+      const original: DemoRunState = {
+        pid: 777,
+        project: 'demo',
+        test_file: 'e2e/demo/billing.demo.ts',
+        started_at: '2026-02-28T00:00:00.000Z',
+        status: 'failed',
+        ended_at: '2026-02-28T00:02:00.000Z',
+        exit_code: 1,
+        failure_summary: 'Assertion failed',
+        screenshot_paths: ['/tmp/test-results/screenshot-1.png'],
+        trace_summary: '=== DEMO PLAY-BY-PLAY TRACE ===\nTotal events: 7\n\n[  0.0s] NAV    Navigate to http://localhost:3000\n[  1.2s] ACTION Click [data-testid="billing"]\n=== END TRACE ===',
+      };
+
+      const serialized = JSON.stringify(original);
+      const deserialized: DemoRunState = JSON.parse(serialized);
+
+      expect(deserialized.trace_summary).toBe(original.trace_summary);
+      expect(typeof deserialized.trace_summary).toBe('string');
+      expect(deserialized.pid).toBe(777);
+      expect(deserialized.status).toBe('failed');
+    });
+
+    it('DemoRunState without trace_summary round-trips through JSON with undefined preserved as absent', () => {
+      const original: DemoRunState = {
+        pid: 888,
+        project: 'vendor-owner',
+        started_at: '2026-02-28T00:00:00.000Z',
+        status: 'passed',
+      };
+
+      const serialized = JSON.stringify(original);
+      const deserialized: DemoRunState = JSON.parse(serialized);
+
+      // JSON.stringify omits undefined fields, so trace_summary is absent after round-trip
+      expect(deserialized.trace_summary).toBeUndefined();
+      expect('trace_summary' in deserialized).toBe(false);
+    });
+  });
 });
 
 // ============================================================================
