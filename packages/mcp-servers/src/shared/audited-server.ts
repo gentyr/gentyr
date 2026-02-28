@@ -63,12 +63,8 @@ export class AuditedMcpServer extends McpServer {
     const personaName = options.auditPersonaName ?? process.env['FEEDBACK_PERSONA_NAME'] ?? null;
     const serverName = options.name;
 
-    if (!sessionId) {
-      throw new Error(
-        `[${serverName}] AuditedMcpServer requires a session ID. ` +
-        'Provide auditSessionId in options or set FEEDBACK_SESSION_ID env var.',
-      );
-    }
+    // When no session ID is available (e.g. base interactive session), audit logging is a no-op.
+    // The server still starts and connects — tools return errors at invocation time if needed.
 
     // Audit state (closure-captured, not instance properties)
     // This avoids referencing `this` before super()
@@ -98,6 +94,7 @@ export class AuditedMcpServer extends McpServer {
       result: unknown,
       durationMs: number,
     ): void {
+      if (!sessionId) return; // No audit without a session
       try {
         const db = getAuditDb();
         db.prepare(`
@@ -124,6 +121,7 @@ export class AuditedMcpServer extends McpServer {
       error: unknown,
       durationMs: number,
     ): void {
+      if (!sessionId) return; // No audit without a session
       try {
         const db = getAuditDb();
         const errorMsg = error instanceof Error ? error.message : String(error);

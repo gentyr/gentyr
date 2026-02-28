@@ -626,13 +626,8 @@ export function createPlaywrightFeedbackServer(config: PlaywrightFeedbackConfig)
 
 const __filename = fileURLToPath(import.meta.url);
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename)) {
-  const baseUrl = process.env['FEEDBACK_BASE_URL'];
-  if (!baseUrl) {
-    throw new Error('FEEDBACK_BASE_URL environment variable is required');
-  }
-
   const config: PlaywrightFeedbackConfig = {
-    baseUrl,
+    baseUrl: process.env['FEEDBACK_BASE_URL'] || '',
     headless: process.env['FEEDBACK_BROWSER_HEADLESS'] !== 'false',
     viewportWidth: parseInt(process.env['FEEDBACK_BROWSER_VIEWPORT_WIDTH'] || '1280', 10),
     viewportHeight: parseInt(process.env['FEEDBACK_BROWSER_VIEWPORT_HEIGHT'] || '720', 10),

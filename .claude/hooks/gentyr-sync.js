@@ -283,6 +283,12 @@ function statBasedSync(frameworkDir) {
   if (mcpStale) {
     const mcpDir = path.join(frameworkDir, 'packages', 'mcp-servers');
     try {
+      // Install deps if node_modules is missing or incomplete (e.g. after git clean)
+      const mcpNodeModules = path.join(mcpDir, 'node_modules');
+      const hasTypesNode = fs.existsSync(path.join(mcpNodeModules, '@types', 'node'));
+      if (!hasTypesNode) {
+        execFileSync('npm', ['install', '--no-fund', '--no-audit'], { cwd: mcpDir, stdio: 'pipe', timeout: 120000 });
+      }
       execFileSync('npm', ['run', 'build'], { cwd: mcpDir, stdio: 'pipe', timeout: 30000 });
       changes.push('MCP servers rebuilt');
     } catch (err) {
