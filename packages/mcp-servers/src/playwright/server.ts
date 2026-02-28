@@ -59,6 +59,7 @@ import {
 } from './types.js';
 import { parseTestOutput, truncateOutput } from './helpers.js';
 import { discoverPlaywrightConfig } from './config-discovery.js';
+import { findTraceZip, parseTraceZip } from './trace-parser.js';
 
 // ============================================================================
 // Configuration
@@ -99,9 +100,11 @@ function persistDemoRuns(): void {
       fs.mkdirSync(stateDir, { recursive: true });
     }
     // Keep only last 20 entries to avoid unbounded growth
+    // Exclude trace_summary from persistence — it can be 50KB per entry
     const entries = [...demoRuns.values()]
       .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
-      .slice(0, 20);
+      .slice(0, 20)
+      .map(({ trace_summary, ...rest }) => rest);
     fs.writeFileSync(DEMO_RUNS_PATH, JSON.stringify(entries, null, 2));
   } catch {
     // Non-fatal — state will be lost on MCP restart
@@ -319,7 +322,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     };
   }
 
-  const cmdArgs = ['playwright', 'test', '--project', project, '--headed'];
+  const cmdArgs = ['playwright', 'test', '--project', project, '--headed', '--trace', 'on'];
   const env: Record<string, string> = { ...process.env as Record<string, string> };
 
   // Insert test_file as positional arg (after 'test', before '--project')
@@ -451,6 +454,20 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         }
       }
 
+      // Parse trace for play-by-play (runs for both passed and failed)
+      try {
+        const testResultsDir = path.join(PROJECT_DIR, 'test-results');
+        const traceZip = findTraceZip(testResultsDir);
+        if (traceZip) {
+          const summary = parseTraceZip(traceZip);
+          if (summary) {
+            entry.trace_summary = summary;
+          }
+        }
+      } catch {
+        // Non-fatal — trace parsing is best-effort
+      }
+
       persistDemoRuns();
     });
 
@@ -531,8 +548,8 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
 
   const statusMessages: Record<string, string> = {
     running: `Demo is still running (${durationSec}s elapsed). Poll again in 30s.`,
-    passed: `Demo completed successfully in ${durationSec}s.`,
-    failed: `Demo failed (exit code ${entry.exit_code}) after ${durationSec}s.${entry.failure_summary ? ' See failure_summary for details.' : ''}`,
+    passed: `Demo completed successfully in ${durationSec}s.${entry.trace_summary ? ' Play-by-play trace available in trace_summary.' : ''}`,
+    failed: `Demo failed (exit code ${entry.exit_code}) after ${durationSec}s.${entry.failure_summary ? ' See failure_summary for details.' : ''}${entry.trace_summary ? ' Play-by-play trace available in trace_summary.' : ''}`,
     unknown: `Demo status unknown for PID ${pid}.`,
   };
 
@@ -546,6 +563,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     exit_code: entry.exit_code,
     failure_summary: entry.failure_summary,
     screenshot_paths: entry.screenshot_paths,
+    trace_summary: entry.trace_summary,
     message: statusMessages[entry.status] || `Demo status: ${entry.status}`,
   };
 }
