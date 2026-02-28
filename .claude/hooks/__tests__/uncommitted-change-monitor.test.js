@@ -315,7 +315,7 @@ describe('uncommitted-change-monitor.js (PostToolUse hook)', () => {
       assert.strictEqual(state, null);
     });
 
-    it('processes spawned agents in worktrees', async () => {
+    it('skips spawned agents in worktrees', async () => {
       const wt = createWorktreeProject();
       try {
         const result = await runHook(
@@ -327,8 +327,9 @@ describe('uncommitted-change-monitor.js (PostToolUse hook)', () => {
         );
 
         assert.strictEqual(result.parsed.continue, true);
+        // Should not have written state because spawned agents are skipped
         const state = readState(wt.stateFile);
-        assert.strictEqual(state.changesSinceLastCommit, 1);
+        assert.strictEqual(state, null);
       } finally {
         wt.cleanup();
       }
