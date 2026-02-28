@@ -88,6 +88,7 @@ function doProtect(projectDir) {
     'secret-leak-detector.js',
     'protected-actions.json',
     'branch-checkout-guard.js',
+    'main-tree-commit-guard.js',
     'git-wrappers/git',
   ];
 
@@ -128,6 +129,7 @@ function doProtect(projectDir) {
     path.join(protectedHooksDir, 'secret-leak-detector.js'),
     path.join(protectedHooksDir, 'protected-actions.json'),
     path.join(protectedHooksDir, 'branch-checkout-guard.js'),
+    path.join(protectedHooksDir, 'main-tree-commit-guard.js'),
     path.join(protectedHooksDir, 'git-wrappers', 'git'),
     path.join(projectDir, '.claude', 'settings.json'),
     path.join(projectDir, '.claude', 'protection-key'),
@@ -227,6 +229,7 @@ function doUnprotect(projectDir) {
     path.join(hooksOwnershipDir, 'secret-leak-detector.js'),
     path.join(hooksOwnershipDir, 'protected-actions.json'),
     path.join(hooksOwnershipDir, 'branch-checkout-guard.js'),
+    path.join(hooksOwnershipDir, 'main-tree-commit-guard.js'),
     path.join(hooksOwnershipDir, 'git-wrappers', 'git'),
     path.join(projectDir, '.claude', 'settings.json'),
     path.join(projectDir, '.claude', 'TESTING.md'),

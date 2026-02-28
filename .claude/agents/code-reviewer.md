@@ -53,7 +53,7 @@ mcp__specs-browser__get_spec({ spec_id: "G004" })       // No hardcoded credenti
 
 ### Working on a Feature Branch
 
-You will always be working inside a git worktree (an isolated working directory on a feature branch). Worktrees are created automatically by the task runner. **NEVER run `git checkout` or `git switch` to change branches** — the main working tree must stay on `main` to prevent drift.
+**Before committing, you MUST verify you are in a worktree.** Run `test -f .git && echo "worktree" || echo "main-tree"`. If "main-tree": do NOT run `git add` or `git commit` — report your findings and exit. Only commit from a worktree. Worktrees are created automatically by the task runner. **NEVER run `git checkout` or `git switch` to change branches** — the main working tree must stay on `main` to prevent drift.
 
 ### Merging to Preview
 
@@ -79,18 +79,21 @@ gh pr merge --merge
 
 Once you've finished all the current code review you need to do:
 
-1. **Commit**: Run `git add .`, then `git commit -m "code-reviewer checkpoint"`. Always use "code-reviewer checkpoint" as your exact commit description. Don't ask permission, just make the commit and mention that you did. Address any linter or test failures that result from the hook on commits.
+1. **Verify worktree**: Run `test -f .git`. If it fails (main tree), skip commit/push entirely and report that you could not commit because you are not in a worktree.
+2. **Commit** (worktree only): Run `git add .`, then `git commit -m "code-reviewer checkpoint"`. Always use "code-reviewer checkpoint" as your exact commit description. Don't ask permission, just make the commit and mention that you did. Address any linter or test failures that result from the hook on commits.
+
+**Commit early, commit often.** After completing each logical unit of work (a single phase, a related group of file changes, or after every ~5 file edits), run `git add <specific-files> && git commit -m "wip: <description>"`. Do NOT accumulate a large set of uncommitted changes. Uncommitted work can be destroyed by git operations, session interruptions, or context compactions.
 
    **E2E verification (optional):** Before committing UI changes, consider running `mcp__playwright__run_tests` to verify E2E tests still pass.
 
-2. **Push**: After committing, push immediately and create a PR:
+3. **Push**: After committing, push immediately and create a PR:
 ```bash
 git push -u origin HEAD
 gh pr create --base preview --head "$(git branch --show-current)" \
   --title "Code review checkpoint" --body "Automated code-reviewer checkpoint" 2>/dev/null || true
 ```
 
-3. **Request PR review**: Create an urgent DEPUTY-CTO task to trigger immediate review:
+4. **Request PR review**: Create an urgent DEPUTY-CTO task to trigger immediate review:
 ```javascript
 mcp__todo-db__create_task({
   section: "DEPUTY-CTO",
@@ -105,7 +108,7 @@ mcp__todo-db__create_task({
    Code review happens asynchronously at PR time via deputy-CTO.
    Do NOT self-merge your PR -- deputy-CTO handles review and merge.
 
-4. **If push fails (tests fail)**: Do NOT attempt to fix the failures yourself. Simply inform the user:
+5. **If push fails (tests fail)**: Do NOT attempt to fix the failures yourself. Simply inform the user:
    - "Push failed due to test failures in the pre-push hook."
    - "Claude agents have been automatically spawned in the background to fix the failing tests."
    - "The test-failure-reporter will handle resolution - no action needed from this session."

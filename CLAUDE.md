@@ -135,6 +135,29 @@ Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/
 3. **`husky/pre-commit` worktree check**: At every commit, shell-level `case` match detects `.claude/worktrees/` in `core.hooksPath`, auto-repairs and exits 1 so the corrected path takes effect before lint-staged runs.
 4. **`safeSymlink()` EINVAL fix** (`worktree-manager.js`): When provisioning a worktree, `safeSymlink()` now checks `lstatSync` before `readlinkSync` to handle existing real directories (e.g. git-tracked `.husky/` checked out into the worktree), preventing EINVAL crashes that previously left worktrees partially provisioned.
 
+### Sub-Agent Working Tree Isolation
+
+Code-modifying sub-agents (`code-reviewer`, `code-writer`, `test-writer`) MUST be spawned with `isolation: "worktree"` when using the `Task` tool. This gives them their own branch and working directory where they can safely commit.
+
+**Base branch**: All agent worktrees branch from `preview` (the default in `createWorktree(branchName, baseBranch = 'preview')` in `worktree-manager.js`). `createWorktree()` creates a NEW unique branch (e.g., `feature/code-review-abc`) based on `origin/preview` — it does NOT check out the `preview` branch itself. Multiple agents can all branch from `preview` concurrently without conflict.
+
+**Why**: Without worktree isolation, sub-agents share the parent session's working tree. Any `git commit` triggers lint-staged which uses `git stash`/`git reset --hard` internally. A failed stash pop destroys ALL uncommitted working tree changes.
+
+**Enforcement**: `main-tree-commit-guard.js` hard-blocks `git add`/`git commit`/`git reset --hard`/`git stash`/`git clean`/`git pull` for spawned agents (`CLAUDE_SPAWNED_SESSION=true`) in the main tree as a safety net. Agents spawned without worktrees can still read/review code but cannot commit.
+
+**Example**:
+```
+// CORRECT: Agent gets its own worktree (branched from preview) and can commit safely
+Task(subagent_type: "code-reviewer", isolation: "worktree", ...)
+
+// WRONG: Agent shares parent's working tree, cannot commit
+Task(subagent_type: "code-reviewer", ...)  // Will be blocked from committing
+```
+
+**Read-only agents are exempt**: Agents that only read code (e.g., `Explore`, `Plan`, `investigator`) don't need worktree isolation since they never run git write operations.
+
+**Frequent commits required**: All agents (interactive and spawned) must commit after every logical milestone. The `uncommitted-change-monitor.js` hook warns after 5 uncommitted file edits. Treat these warnings as mandatory — commit immediately when warned.
+
 ## Propagation to Linked Projects
 
 When developing GENTYR locally with `pnpm link`, most changes auto-propagate to target projects:
@@ -151,7 +174,7 @@ MCP servers are referenced via `node_modules/gentyr/packages/mcp-servers/dist/`.
 cd packages/mcp-servers && npm run build
 ```
 
-The SessionStart hook also attempts auto-rebuild if `src/` is newer than `dist/`, but always build explicitly after TS changes to ensure correctness.
+The SessionStart hook also attempts auto-rebuild if `src/` is newer than `dist/`; before running `tsc` it checks for `@types/node` in `packages/mcp-servers/node_modules/` and runs `npm install` first if missing (covers `git clean` or fresh npm installs that omit `packages/mcp-servers/node_modules/`). Always build explicitly after TS changes to ensure correctness.
 
 ### Slash Command Path Resolution
 
@@ -520,7 +543,7 @@ Hooks that need the AI to act on their output must include both:
 - Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
 - Fast path: reads `version.json` and `gentyr-state.json`, compares version + config hash — exits in <5ms when nothing has changed
 - When version or config hash mismatch detected: re-merges `settings.json`, regenerates `.mcp.json` (preserving OP token), updates the GENTYR section of `CLAUDE.md`, and symlinks new agent definitions; handles missing `settings.json` gracefully by checking directory writability instead of file writability when the file does not yet exist
-- Auto-rebuilds MCP servers when `src/` mtime > `dist/` mtime (30s timeout); logs to stderr on failure (silent to agent)
+- Auto-rebuilds MCP servers when `src/` mtime > `dist/` mtime; checks for `@types/node` in `packages/mcp-servers/node_modules/` and runs `npm install` first if missing, then `npm run build` (30s timeout); logs to stderr on failure (silent to agent)
 - Syncs husky hooks by comparing `husky/` against `.husky/` in the target project; re-copies if content differs
 - Falls back to legacy settings.json hook diff check when no `gentyr-state.json` exists (pre-migration projects)
 - Supports both npm model (`node_modules/gentyr`) and legacy symlink model (`.claude-framework`)
@@ -550,11 +573,29 @@ Hooks that need the AI to act on their output must include both:
 
 Prevents branch drift by blocking `git checkout`/`git switch` in the main working tree. Complements the warn-only Branch Drift Check with a hard enforcement layer:
 
-- **Layer 1 — Git wrapper** (`.claude/hooks/git-wrappers/git`): POSIX shell script placed in `git-wrappers/` directory; injected into spawned agent environments via `PATH` prepending in `buildSpawnEnv()` (hourly-automation, urgent-task-spawner, session-reviver, force-spawn-tasks, force-triage-reports). Intercepts `git checkout`/`git switch` invocations before the real git binary runs and exits 128 with a descriptive message. Zero-overhead fast path for all other git subcommands (`exec "$REAL_GIT" "$@"` immediately). Root-owned via `npx gentyr protect`.
+- **Layer 1 — Git wrapper** (`.claude/hooks/git-wrappers/git`): POSIX shell script placed in `git-wrappers/` directory; injected into spawned agent environments via `PATH` prepending in `buildSpawnEnv()` (hourly-automation, urgent-task-spawner, session-reviver, force-spawn-tasks, force-triage-reports). Intercepts `git checkout`/`git switch` invocations (all sessions) and `git add`/`git commit`/`git reset --hard`/`git stash`/`git clean`/`git pull` (spawned agents with `CLAUDE_SPAWNED_SESSION=true` only; `GENTYR_PROMOTION_PIPELINE=true` exempted). Exits 128 with a descriptive message on blocked operations. Zero-overhead fast path for all other git subcommands. Root-owned via `npx gentyr protect`.
 - **Layer 2 — PreToolUse hook** (`.claude/hooks/branch-checkout-guard.js`): Hard-blocking (`permissionDecision: "deny"`) Claude Code PreToolUse hook that catches checkout/switch at the tool-call level. Covers interactive sessions (where PATH injection is not active) and agents that invoke `/usr/bin/git` directly, bypassing the PATH wrapper. Uses the same quote-aware `tokenize()` + `splitOnShellOperators()` pattern from `credential-file-guard.js` for robust parsing of chained commands.
 - **Both layers**: Skip silently in worktrees (`.git` file check — `.git` is a file in a worktree, not a directory), non-repo directories, and skip global git flags (`-C`, `--git-dir`, etc.) when locating the subcommand. Always allow `git checkout main` (recovery path) and file restore invocations (`git checkout -- <file>`).
 - Registered in `settings.json.template` under `PreToolUse > Bash`. Root-owned and listed in `protection-state.json` `criticalHooks` array alongside `git-wrappers/git`. Included in the `husky/pre-commit` tamper-detection ownership loop.
 - Tests at `.claude/hooks/__tests__/branch-checkout-guard.test.js` (30 tests, runs via `node --test`)
+
+**Main Tree Commit Guard Hook** (`.claude/hooks/main-tree-commit-guard.js`):
+- Runs at `PreToolUse` for Bash tool calls; hard-blocking (`permissionDecision: "deny"`) for spawned agents in the main working tree
+- Only fires when ALL three conditions are true: `CLAUDE_SPAWNED_SESSION=true`, `.git` is a directory (main tree, not a worktree), and `GENTYR_PROMOTION_PIPELINE !== 'true'`
+- Blocked subcommands: `git add` (staging triggers lint-staged chain), `git commit` (invokes pre-commit hooks including lint-staged `stash`/`reset --hard`), `git reset --hard` (directly destroys uncommitted changes), `git stash` (push/pop/drop/clear/apply — `list`/`show` are read-only and allowed), `git clean` (destroys untracked files), `git pull` (fetch+merge can clobber working tree)
+- Uses the same quote-aware `tokenize()` + `splitOnShellOperators()` pattern from `branch-checkout-guard.js` for robust multi-command parsing
+- Complements the Layer 1 git wrapper (which covers the same subcommands via PATH injection); together they form a two-layer defense against sub-agent data loss
+- Root-owned and listed in `protection-state.json` `criticalHooks` array; included in the `husky/pre-commit` tamper-detection ownership loop
+- Tests at `.claude/hooks/__tests__/main-tree-commit-guard.test.js` (56 tests, runs via `node --test`)
+
+**Uncommitted Change Monitor Hook** (`.claude/hooks/uncommitted-change-monitor.js`):
+- Runs at `PostToolUse` for Write and Edit tool calls
+- Tracks cumulative file-modifying tool calls since the last `git commit` via `.claude/state/uncommitted-changes-state.json`
+- At threshold (5 edits), injects an `additionalContext` warning instructing the agent to commit immediately; 3-minute cooldown between repeat warnings
+- Counter resets when a new commit is detected (HEAD hash change via `git log -1 --format=%H`)
+- Skips spawned agents in the main tree (they are blocked from committing by `main-tree-commit-guard.js` — warning them is counterproductive); fires for worktrees and interactive sessions only
+- Output uses `hookSpecificOutput.additionalContext` so the AI model receives the warning, not just the terminal display
+- Tests at `.claude/hooks/__tests__/uncommitted-change-monitor.test.js` (16 tests, runs via `node --test`)
 
 **Credential Health Check Hook** (`.claude/hooks/credential-health-check.js`):
 - Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions
@@ -796,6 +837,27 @@ The chrome-bridge server injects site-specific browser automation tips into tool
 
 No credentials required - communicates via local Unix domain socket with length-prefixed JSON framing protocol.
 
+## MCP Server Startup Behavior
+
+### Infrastructure Servers — Lazy Credential Validation
+
+Infrastructure MCP servers (`github`, `cloudflare`, `codecov`, `resend`, `supabase`) use lazy credential validation. Credentials are NOT checked at module load time. Instead, each server starts, connects to Claude Code, and exposes its tools normally regardless of whether credentials are configured. When a tool is invoked without the required credential, the fetch helper inside the handler throws an `Error` with a descriptive message (G001: fail-closed at invocation time). This pattern mirrors the existing `render` server and ensures all 29 project MCP servers appear in `claude mcp list` even in partially-configured environments.
+
+**Required env vars per server:**
+- `github` — `GITHUB_TOKEN`
+- `cloudflare` — `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID`
+- `codecov` — `CODECOV_TOKEN`
+- `resend` — `RESEND_API_KEY`
+- `supabase` — `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`
+
+### Feedback Servers — Graceful Startup
+
+Feedback MCP servers (`feedback-reporter`, `playwright-feedback`, `programmatic-feedback`) use empty-string fallbacks for optional environment variables (`FEEDBACK_PERSONA_NAME`, `FEEDBACK_SESSION_ID`) instead of exiting at startup. This allows them to start in base interactive sessions and non-feedback agent contexts without error. The `AuditedMcpServer` class likewise treats a missing `FEEDBACK_SESSION_ID` as a no-op: audit logging is skipped (all `recordAudit` and `recordAuditError` calls return early when `sessionId` is falsy) rather than throwing. Tools remain fully functional; only the audit trail is absent.
+
+### Root Package Runtime Dependencies
+
+The root `package.json` `dependencies` field includes MCP server runtime deps (`@elastic/elasticsearch`, `@modelcontextprotocol/sdk`, `playwright`, `potrace`, `sharp`, `simple-icons`, `svg-path-bbox`, `svgo`, `tweetnacl`) alongside the shared deps (`better-sqlite3`, `zod`, `ajv`, `ajv-formats`). This is required for npm-published installs where `packages/mcp-servers/node_modules/` is not included in the npm tarball — Node.js module resolution falls back to the root `node_modules/` to find these packages.
+
 ## Secret Management
 
 The secret-sync MCP server orchestrates secrets from 1Password to deployment platforms without exposing values to agent context.
@@ -824,6 +886,80 @@ The secret-sync MCP server orchestrates secrets from 1Password to deployment pla
 Configuration via `.claude/config/services.json` with `secrets.local` section. Auto-generates `op-secrets.conf` during setup (contains `op://` references only).
 
 See `packages/mcp-servers/src/secret-sync/README.md` for full documentation.
+
+## Icon Processor MCP Server
+
+The icon-processor MCP server (`packages/mcp-servers/src/icon-processor/`) provides tools for sourcing, downloading, processing, and storing brand/vendor icons into clean square SVG format. It is consumed by the `icon-finder` agent.
+
+**12 Available Tools:**
+- `lookup_simple_icon` — Offline lookup against the Simple Icons database (3000+ brands). Returns SVG content and brand hex color. No network required.
+- `download_image` — Download an image (PNG, SVG, ICO, WEBP) from a URL. 50 MB cap, 30 s timeout. Returns file metadata including format and dimensions.
+- `analyze_image` — Analyze a raster image: dimensions, channel count, alpha presence, and background type estimation (`transparent` / `solid` / `complex`) via corner-pixel sampling.
+- `remove_background` — Remove a solid-color background from a PNG/WEBP by detecting the background from corner pixels and making matching pixels transparent. Configurable color-distance threshold.
+- `trace_to_svg` — Convert a raster image to SVG using potrace bitmap tracing. Best with high-contrast images on transparent backgrounds. Returns SVG content and path count.
+- `normalize_svg` — Normalize an SVG to a square viewBox. Computes a tight bounding box across all path elements, centers content with configurable padding, sets target dimensions, and runs SVGO optimization.
+- `optimize_svg` — Optimize SVG content using SVGO (removes comments, metadata, editor cruft; optimizes paths/colors/transforms). Returns size reduction stats.
+- `analyze_svg_structure` — Structural analysis of an SVG: element breakdown (paths, text, groups), per-element attributes (fill, stroke, opacity), per-path bounding boxes, and overall content bounding box.
+- `recolor_svg` — Apply a single hex color to an SVG by setting fill on the root `<svg>` element and stripping explicit fills from child elements. Preserves `fill="none"` cutouts.
+- `list_icons` — List all icons in the global store (`~/.claude/icons/`). Returns slug, display_name, brand_color, source, created_at, and variant/report flags per entry.
+- `store_icon` — Persist a finalized icon to the global store (`~/.claude/icons/<slug>/`). Writes `icon.svg`, optional `icon-black.svg`, `icon-white.svg`, `icon-full-color.svg`, `report.md`, and `metadata.json` atomically. Cleans up stale variant files from prior store calls.
+- `delete_icon` — Delete an icon from the global store by slug (removes entire brand directory).
+
+**Global Icon Store** (`~/.claude/icons/`):
+
+Each stored icon lives at `~/.claude/icons/<slug>/` with the following layout:
+
+```
+~/.claude/icons/<slug>/
+  artifacts/
+    candidates/       ← Raw downloads (PNG, SVG, ICO, WEBP)
+    processed/        ← After bg removal + tracing
+    cleaned/          ← After text removal + variants
+    final/            ← After normalize + optimize
+  icon.svg            ← Winner (brand-colored)
+  icon-black.svg      ← Black solid
+  icon-white.svg      ← White solid
+  icon-full-color.svg ← Full-color
+  metadata.json       ← Written by store_icon tool (Zod-validated on read)
+  report.md           ← Selection rationale
+```
+
+**Dependencies** (added in `packages/mcp-servers/package.json` and root `package.json`):
+- `potrace` — bitmap tracing for PNG→SVG conversion
+- `sharp` — raster image analysis, background removal, alpha channel handling
+- `simple-icons` — offline brand icon database (3000+ brands)
+- `svg-path-bbox` — bounding box computation for SVG path data
+- `svgo` — SVG optimization
+
+All heavy dependencies are **lazy-loaded** at first tool invocation to keep server startup fast (avoids loading ~30 MB `simple-icons` at startup).
+
+**Security model:**
+- `assertSafeUrl()`: blocks all non-HTTP(S) protocols and validates the final URL after redirects (SSRF protection)
+- `assertSafePath()`: requires absolute paths and rejects path traversal (normalized path must equal input)
+- Download body is checked against a 50 MB hard cap both via `Content-Length` header and actual buffer size after download
+- Slug validation in `StoreIconSchema` enforces `[a-z0-9]+(-[a-z0-9]+)*` regex before any filesystem write
+- Metadata reads from `metadata.json` are validated with `IconMetadataSchema` (Zod); malformed entries fall back to minimal info rather than crashing
+
+**Known deferred items** (security/robustness, flagged by code review, not yet addressed):
+- Download OOM risk: `response.arrayBuffer()` loads the full body into memory before the size check — a malicious server omitting `Content-Length` can cause high memory usage up to the 50 MB cap before the check fires
+- SSRF blocking: only protocol is checked after redirects; redirects to `localhost` or RFC 1918 addresses are not blocked at the IP level
+
+### Icon Finder Agent
+
+The `icon-finder` agent (`.claude/agents/icon-finder.md`) implements a multi-phase pipeline for sourcing and processing brand icons:
+
+- **Phase -1**: Check global store — reports existing icons and stops early if already stored
+- **Phase 0**: Research brand color, icon shape, official asset sources, and any recent redesigns via web search
+- **Phase 1**: Simple Icons fast path (offline lookup via `lookup_simple_icon`)
+- **Phase 2**: Download 3-5 icon candidates from official sources, SVG repositories, and favicons
+- **Phase 2.5**: Candidate analysis and validation — describe each candidate's design concept, identify distinct design concepts across candidates, research the brand's current official icon when multiple concepts are found, prune outdated/wrong candidates, and document the analysis in `artifacts/candidate-analysis.md`
+- **Phase 3**: Process each candidate — background removal and PNG→SVG tracing for raster sources
+- **Phase 4**: SVG cleanup — remove text/wordmark elements, isolate the icon symbol using agent judgment
+- **Phase 4.5**: Variant generation — cutout, simplified, and fill variants for complex icons
+- **Phase 5**: Normalize and optimize each cleaned SVG
+- **Phase 6**: Select the best candidate and generate all 4 color variants (brand-colored, black, white, full-color), then call `store_icon` to persist to the global store; report references Phase 2.5 candidate analysis findings
+
+The agent uses `model: opus` and has all 12 `mcp__icon-processor__*` tools in its `allowedTools` alongside standard file and web tools.
 
 ## CTO Dashboard Development
 
