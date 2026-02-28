@@ -19,7 +19,7 @@ fi
 for f in pre-commit-review.js bypass-approval-hook.js block-no-verify.js \
          protected-action-gate.js protected-action-approval-hook.js \
          credential-file-guard.js secret-leak-detector.js protected-actions.json \
-         branch-checkout-guard.js git-wrappers/git; do
+         branch-checkout-guard.js main-tree-commit-guard.js git-wrappers/git; do
   if [ -f "$HOOKS_CHECK_DIR/$f" ]; then
     uid=$(stat -f '%u' "$HOOKS_CHECK_DIR/$f" 2>/dev/null || stat -c '%u' "$HOOKS_CHECK_DIR/$f" 2>/dev/null)
     if [ "$uid" != "0" ]; then

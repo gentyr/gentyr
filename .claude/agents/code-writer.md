@@ -138,7 +138,7 @@ feature/* --PR--> preview --PR--> staging --PR--> main (production)
 
 ### Worktree Context
 
-You are working inside a git worktree (a separate working directory on a feature branch). **NEVER run `git checkout` or `git switch` to change branches** — the main tree must stay on `main`. If so:
+**Before committing, you MUST verify you are in a worktree.** Run `test -f .git && echo "worktree" || echo "main-tree"`. If "main-tree": do NOT run `git add` or `git commit` — report your findings and exit. Only commit from a worktree. **NEVER run `git checkout` or `git switch` to change branches** — the main tree must stay on `main`. If in a worktree:
 - Your working directory is isolated from the main project
 - Other agents may be working concurrently in their own worktrees
 - MCP tools (todo-db, deputy-cto, etc.) access shared state in the main project
@@ -146,16 +146,19 @@ You are working inside a git worktree (a separate working directory on a feature
 
 ### Git Commit and Push Protocol
 
+**Commit early, commit often.** After completing each logical unit of work (a single phase, a related group of file changes, or after every ~5 file edits), run `git add <specific-files> && git commit -m "wip: <description>"`. Do NOT accumulate a large set of uncommitted changes. Uncommitted work can be destroyed by git operations, session interruptions, or context compactions.
+
 When your implementation work is complete:
-1. `git add <specific files>` (never `git add .` or `git add -A`)
-2. `git commit -m "descriptive message"`
-3. Push and create PR:
+1. **Verify worktree**: Run `test -f .git`. If it fails (main tree), skip commit/push entirely and report that you could not commit because you are not in a worktree.
+2. `git add <specific files>` (never `git add .` or `git add -A`)
+3. `git commit -m "descriptive message"`
+4. Push and create PR:
 ```bash
 git push -u origin HEAD
 gh pr create --base preview --head "$(git branch --show-current)" \
   --title "<title>" --body "<summary>" 2>/dev/null || true
 ```
-4. Request PR review via urgent DEPUTY-CTO task:
+5. Request PR review via urgent DEPUTY-CTO task:
 ```javascript
 mcp__todo-db__create_task({
   section: "DEPUTY-CTO",
