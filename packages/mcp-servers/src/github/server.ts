@@ -84,18 +84,17 @@ import {
   type SuccessResult,
 } from './types.js';
 
-const { GITHUB_TOKEN } = process.env;
 const BASE_URL = 'https://api.github.com';
-
-if (!GITHUB_TOKEN) {
-  console.error('GITHUB_TOKEN environment variable is required');
-  process.exit(1);
-}
 
 /**
  * Make a request to the GitHub API
  */
 async function githubFetch(endpoint: string, options: RequestInit = {}): Promise<unknown> {
+  const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+  // G001: Fail-closed on missing API key (checked at invocation time for tool discoverability)
+  if (!GITHUB_TOKEN) {
+    throw new Error('GITHUB_TOKEN environment variable is required. Ensure 1Password credentials are configured.');
+  }
   const url = `${BASE_URL}${endpoint}`;
 
   const response = await fetch(url, {

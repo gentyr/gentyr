@@ -136,6 +136,26 @@ describe('Lazy credential initialization — module-level import safety', () => 
       script: 'elastic-logs/server.js',
       serverInfoName: 'elastic-logs',
     },
+    {
+      name: 'GitHub',
+      script: 'github/server.js',
+      serverInfoName: 'github-mcp',
+    },
+    {
+      name: 'Cloudflare',
+      script: 'cloudflare/server.js',
+      serverInfoName: 'cloudflare-mcp',
+    },
+    {
+      name: 'Codecov',
+      script: 'codecov/server.js',
+      serverInfoName: 'codecov-mcp',
+    },
+    {
+      name: 'Resend',
+      script: 'resend/server.js',
+      serverInfoName: 'resend-mcp',
+    },
   ] as const;
 
   for (const { name, script, serverInfoName } of servers) {
@@ -558,6 +578,400 @@ describe('Elastic Logs server (getClient) — fail-closed credential checks', ()
 });
 
 // ---------------------------------------------------------------------------
+// GitHub Server — credential check at invocation time
+// ---------------------------------------------------------------------------
+
+describe('GitHub server (githubFetch) — fail-closed credential check', () => {
+  it('throws with clear message when GITHUB_TOKEN is missing', () => {
+    const { response, exitCode } = sendMcpRequest('github/server.js', {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'github_get_repo',
+        arguments: { owner: 'test-owner', repo: 'test-repo' },
+      },
+    });
+
+    // Server must not crash — exits 0 and surfaces the error in the result.
+    expect(exitCode).toBe(0);
+    expect(response).not.toBeNull();
+
+    // MCP isError flag must be set.
+    const result = response!.result as Record<string, unknown>;
+    expect(result.isError).toBe(true);
+
+    const toolResult = extractToolResult(response!);
+    expect(typeof toolResult.error).toBe('string');
+    const errorMsg = toolResult.error as string;
+    expect(errorMsg).toContain('GITHUB_TOKEN');
+    expect(errorMsg).toContain('environment variable is required');
+    expect(errorMsg).toContain('1Password');
+  });
+
+  it('fails-closed on every GitHub tool that calls githubFetch when GITHUB_TOKEN is missing', () => {
+    // A representative sample that covers repos, PRs, issues, and workflows —
+    // all funnel through githubFetch, so one missing-token check covers all.
+    const toolsToTest = [
+      { name: 'github_list_branches', arguments: { owner: 'test-owner', repo: 'test-repo' } },
+      { name: 'github_list_pull_requests', arguments: { owner: 'test-owner', repo: 'test-repo' } },
+      { name: 'github_list_issues', arguments: { owner: 'test-owner', repo: 'test-repo' } },
+      { name: 'github_list_secrets', arguments: { owner: 'test-owner', repo: 'test-repo' } },
+    ];
+
+    for (const { name: toolName, arguments: toolArgs } of toolsToTest) {
+      const { response } = sendMcpRequest('github/server.js', {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: toolName, arguments: toolArgs },
+      });
+
+      expect(response).not.toBeNull();
+
+      const result = response!.result as Record<string, unknown>;
+      expect(result.isError).toBe(true);
+
+      const toolResult = extractToolResult(response!);
+      expect(typeof toolResult.error).toBe('string');
+      expect(toolResult.error as string).toContain('GITHUB_TOKEN');
+    }
+  });
+
+  it('lists tools without GITHUB_TOKEN (tool discovery always works)', () => {
+    const { response, exitCode } = sendMcpRequest('github/server.js', {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/list',
+      params: {},
+    });
+
+    expect(exitCode).toBe(0);
+    expect(response).not.toBeNull();
+
+    const result = response!.result as Record<string, unknown>;
+    const tools = result.tools as unknown[];
+    expect(Array.isArray(tools)).toBe(true);
+    // GitHub server has many tools — at minimum repo, PR, issue, workflow coverage
+    expect(tools.length).toBeGreaterThan(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cloudflare Server — dual credential check at invocation time
+// ---------------------------------------------------------------------------
+
+describe('Cloudflare server (cloudflareFetch + getZoneId) — fail-closed credential checks', () => {
+  it('throws with clear message when CLOUDFLARE_API_TOKEN is missing', () => {
+    const { response, exitCode } = sendMcpRequest('cloudflare/server.js', {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'cloudflare_list_dns_records',
+        arguments: {},
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(response).not.toBeNull();
+
+    const result = response!.result as Record<string, unknown>;
+    expect(result.isError).toBe(true);
+
+    const toolResult = extractToolResult(response!);
+    expect(typeof toolResult.error).toBe('string');
+    const errorMsg = toolResult.error as string;
+    // Either credential may be caught first — both must be checked
+    const mentionsRequiredCredential =
+      errorMsg.includes('CLOUDFLARE_API_TOKEN') ||
+      errorMsg.includes('CLOUDFLARE_ZONE_ID');
+    expect(mentionsRequiredCredential).toBe(true);
+    expect(errorMsg).toContain('environment variable is required');
+    expect(errorMsg).toContain('1Password');
+  });
+
+  it('throws when CLOUDFLARE_ZONE_ID is missing but API token is present', () => {
+    /**
+     * listDnsRecords calls getZoneId() first (which reads CLOUDFLARE_ZONE_ID),
+     * then cloudflareFetch() (which reads CLOUDFLARE_API_TOKEN).
+     * When the API token is present but ZONE_ID is absent, getZoneId() throws.
+     */
+    const { response, exitCode } = sendMcpRequest(
+      'cloudflare/server.js',
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'cloudflare_list_dns_records',
+          arguments: {},
+        },
+      },
+      { CLOUDFLARE_API_TOKEN: 'fake-token-for-test' } // CLOUDFLARE_ZONE_ID absent
+    );
+
+    expect(exitCode).toBe(0);
+    expect(response).not.toBeNull();
+
+    const result = response!.result as Record<string, unknown>;
+    expect(result.isError).toBe(true);
+
+    const toolResult = extractToolResult(response!);
+    expect(typeof toolResult.error).toBe('string');
+    expect(toolResult.error as string).toContain('CLOUDFLARE_ZONE_ID');
+    expect(toolResult.error as string).toContain('environment variable is required');
+  });
+
+  it('throws when CLOUDFLARE_API_TOKEN is missing but ZONE_ID is present', () => {
+    /**
+     * When ZONE_ID is present, getZoneId() succeeds. cloudflareFetch() then
+     * checks CLOUDFLARE_API_TOKEN and throws if missing.
+     */
+    const { response, exitCode } = sendMcpRequest(
+      'cloudflare/server.js',
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'cloudflare_list_dns_records',
+          arguments: {},
+        },
+      },
+      { CLOUDFLARE_ZONE_ID: 'fake-zone-id' } // CLOUDFLARE_API_TOKEN absent
+    );
+
+    expect(exitCode).toBe(0);
+    expect(response).not.toBeNull();
+
+    const result = response!.result as Record<string, unknown>;
+    expect(result.isError).toBe(true);
+
+    const toolResult = extractToolResult(response!);
+    expect(typeof toolResult.error).toBe('string');
+    expect(toolResult.error as string).toContain('CLOUDFLARE_API_TOKEN');
+    expect(toolResult.error as string).toContain('environment variable is required');
+  });
+
+  it('fails-closed on every Cloudflare tool when both credentials are missing', () => {
+    const toolsToTest = [
+      { name: 'cloudflare_get_zone', arguments: {} },
+      { name: 'cloudflare_get_dns_record', arguments: { recordId: 'rec-test' } },
+      { name: 'cloudflare_delete_dns_record', arguments: { recordId: 'rec-test' } },
+    ];
+
+    for (const { name: toolName, arguments: toolArgs } of toolsToTest) {
+      const { response } = sendMcpRequest('cloudflare/server.js', {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: toolName, arguments: toolArgs },
+      });
+
+      expect(response).not.toBeNull();
+
+      const result = response!.result as Record<string, unknown>;
+      expect(result.isError).toBe(true);
+
+      const toolResult = extractToolResult(response!);
+      expect(typeof toolResult.error).toBe('string');
+      // Either credential is missing — the error must mention one of them
+      const errorMsg = toolResult.error as string;
+      const mentionsCredential =
+        errorMsg.includes('CLOUDFLARE_API_TOKEN') ||
+        errorMsg.includes('CLOUDFLARE_ZONE_ID');
+      expect(mentionsCredential).toBe(true);
+    }
+  });
+
+  it('lists tools without any Cloudflare credentials (tool discovery always works)', () => {
+    const { response, exitCode } = sendMcpRequest('cloudflare/server.js', {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/list',
+      params: {},
+    });
+
+    expect(exitCode).toBe(0);
+    expect(response).not.toBeNull();
+
+    const result = response!.result as Record<string, unknown>;
+    const tools = result.tools as unknown[];
+    expect(Array.isArray(tools)).toBe(true);
+    expect(tools.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Codecov Server — credential check at invocation time
+// ---------------------------------------------------------------------------
+
+describe('Codecov server (codecovFetch) — fail-closed credential check', () => {
+  it('throws with clear message when CODECOV_TOKEN is missing', () => {
+    const { response, exitCode } = sendMcpRequest('codecov/server.js', {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'codecov_list_repos',
+        arguments: { owner: 'test-owner' },
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(response).not.toBeNull();
+
+    const result = response!.result as Record<string, unknown>;
+    expect(result.isError).toBe(true);
+
+    const toolResult = extractToolResult(response!);
+    expect(typeof toolResult.error).toBe('string');
+    const errorMsg = toolResult.error as string;
+    expect(errorMsg).toContain('CODECOV_TOKEN');
+    expect(errorMsg).toContain('environment variable is required');
+    expect(errorMsg).toContain('1Password');
+  });
+
+  it('fails-closed on every Codecov tool when CODECOV_TOKEN is missing', () => {
+    const toolsToTest = [
+      { name: 'codecov_get_repo', arguments: { owner: 'test-owner', repo: 'test-repo' } },
+      { name: 'codecov_get_coverage', arguments: { owner: 'test-owner', repo: 'test-repo' } },
+      { name: 'codecov_list_commits', arguments: { owner: 'test-owner', repo: 'test-repo' } },
+    ];
+
+    for (const { name: toolName, arguments: toolArgs } of toolsToTest) {
+      const { response } = sendMcpRequest('codecov/server.js', {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: toolName, arguments: toolArgs },
+      });
+
+      expect(response).not.toBeNull();
+
+      const result = response!.result as Record<string, unknown>;
+      expect(result.isError).toBe(true);
+
+      const toolResult = extractToolResult(response!);
+      expect(typeof toolResult.error).toBe('string');
+      expect(toolResult.error as string).toContain('CODECOV_TOKEN');
+    }
+  });
+
+  it('lists tools without CODECOV_TOKEN (tool discovery always works)', () => {
+    const { response, exitCode } = sendMcpRequest('codecov/server.js', {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/list',
+      params: {},
+    });
+
+    expect(exitCode).toBe(0);
+    expect(response).not.toBeNull();
+
+    const result = response!.result as Record<string, unknown>;
+    const tools = result.tools as unknown[];
+    expect(Array.isArray(tools)).toBe(true);
+    expect(tools.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Resend Server — credential check at invocation time
+// ---------------------------------------------------------------------------
+
+describe('Resend server (resendFetch) — fail-closed credential check', () => {
+  it('throws with clear message when RESEND_API_KEY is missing', () => {
+    const { response, exitCode } = sendMcpRequest('resend/server.js', {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'resend_list_domains',
+        arguments: {},
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(response).not.toBeNull();
+
+    const result = response!.result as Record<string, unknown>;
+    expect(result.isError).toBe(true);
+
+    const toolResult = extractToolResult(response!);
+    expect(typeof toolResult.error).toBe('string');
+    const errorMsg = toolResult.error as string;
+    expect(errorMsg).toContain('RESEND_API_KEY');
+    expect(errorMsg).toContain('environment variable is required');
+    expect(errorMsg).toContain('1Password');
+  });
+
+  it('fails-closed on every Resend tool when RESEND_API_KEY is missing', () => {
+    const toolsToTest = [
+      { name: 'resend_list_emails', arguments: {} },
+      { name: 'resend_list_api_keys', arguments: {} },
+      { name: 'resend_get_email', arguments: { emailId: 'email-test' } },
+    ];
+
+    for (const { name: toolName, arguments: toolArgs } of toolsToTest) {
+      const { response } = sendMcpRequest('resend/server.js', {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: toolName, arguments: toolArgs },
+      });
+
+      expect(response).not.toBeNull();
+
+      const result = response!.result as Record<string, unknown>;
+      expect(result.isError).toBe(true);
+
+      const toolResult = extractToolResult(response!);
+      expect(typeof toolResult.error).toBe('string');
+      expect(toolResult.error as string).toContain('RESEND_API_KEY');
+    }
+  });
+
+  it('does not expose the RESEND_API_KEY value in error messages', () => {
+    // No key is provided — verify the key value itself is never echoed even
+    // if one were somehow present in a different env var.
+    const { response } = sendMcpRequest('resend/server.js', {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'resend_list_domains', arguments: {} },
+    });
+
+    expect(response).not.toBeNull();
+    const toolResult = extractToolResult(response!);
+    const errorText = JSON.stringify(toolResult);
+
+    // The error must not contain the credential variable value
+    // (using a sentinel that would never appear in a legitimate error message)
+    const wouldBeKeyValue = 're_xxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+    expect(errorText).not.toContain(wouldBeKeyValue);
+  });
+
+  it('lists tools without RESEND_API_KEY (tool discovery always works)', () => {
+    const { response, exitCode } = sendMcpRequest('resend/server.js', {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/list',
+      params: {},
+    });
+
+    expect(exitCode).toBe(0);
+    expect(response).not.toBeNull();
+
+    const result = response!.result as Record<string, unknown>;
+    const tools = result.tools as unknown[];
+    expect(Array.isArray(tools)).toBe(true);
+    expect(tools.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Cross-cutting: MCP protocol compliance without credentials
 // ---------------------------------------------------------------------------
 
@@ -566,6 +980,10 @@ describe('MCP protocol compliance without credentials (all servers)', () => {
     'render/server.js',
     'vercel/server.js',
     'elastic-logs/server.js',
+    'github/server.js',
+    'cloudflare/server.js',
+    'codecov/server.js',
+    'resend/server.js',
   ] as const;
 
   for (const script of serverScripts) {

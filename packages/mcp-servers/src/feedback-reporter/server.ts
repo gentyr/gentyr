@@ -504,18 +504,9 @@ export function createFeedbackReporterServer(config: FeedbackReporterConfig): Au
 
 const __filename = fileURLToPath(import.meta.url);
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename)) {
-  const personaName = process.env['FEEDBACK_PERSONA_NAME'];
-  const sessionId = process.env['FEEDBACK_SESSION_ID'];
+  const personaName = process.env['FEEDBACK_PERSONA_NAME'] || '';
+  const sessionId = process.env['FEEDBACK_SESSION_ID'] || '';
   const projectDir = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
-
-  if (!personaName) {
-    process.stderr.write('[feedback-reporter] ERROR: FEEDBACK_PERSONA_NAME environment variable is required\n');
-    process.exit(1);
-  }
-  if (!sessionId) {
-    process.stderr.write('[feedback-reporter] ERROR: FEEDBACK_SESSION_ID environment variable is required\n');
-    process.exit(1);
-  }
 
   const server = createFeedbackReporterServer({ personaName, sessionId, projectDir });
 

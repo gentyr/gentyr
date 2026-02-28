@@ -33,20 +33,22 @@ import {
   type PaginatedDnsRecordsResult,
 } from './types.js';
 
-const { CLOUDFLARE_API_TOKEN, CLOUDFLARE_ZONE_ID } = process.env;
 const BASE_URL = 'https://api.cloudflare.com/client/v4';
 
-if (!CLOUDFLARE_API_TOKEN) {
-  console.error('CLOUDFLARE_API_TOKEN environment variable is required');
-  process.exit(1);
-}
-
-if (!CLOUDFLARE_ZONE_ID) {
-  console.error('CLOUDFLARE_ZONE_ID environment variable is required');
-  process.exit(1);
+function getZoneId(): string {
+  const zoneId = process.env.CLOUDFLARE_ZONE_ID;
+  if (!zoneId) {
+    throw new Error('CLOUDFLARE_ZONE_ID environment variable is required. Ensure 1Password credentials are configured.');
+  }
+  return zoneId;
 }
 
 async function cloudflareFetch(endpoint: string, options: RequestInit = {}): Promise<unknown> {
+  const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
+  // G001: Fail-closed on missing API key (checked at invocation time for tool discoverability)
+  if (!CLOUDFLARE_API_TOKEN) {
+    throw new Error('CLOUDFLARE_API_TOKEN environment variable is required. Ensure 1Password credentials are configured.');
+  }
   const url = `${BASE_URL}${endpoint}`;
 
   const response = await fetch(url, {
@@ -90,7 +92,7 @@ async function listDnsRecords(args: ListDnsRecordsArgs): Promise<PaginatedDnsRec
   if (args.page) { params.set('page', args.page.toString()); }
   if (args.per_page) { params.set('per_page', args.per_page.toString()); }
 
-  const data = await cloudflareFetch(`/zones/${CLOUDFLARE_ZONE_ID}/dns_records?${params}`) as {
+  const data = await cloudflareFetch(`/zones/${getZoneId()}/dns_records?${params}`) as {
     result: Array<{
       id: string;
       type: string;
@@ -138,7 +140,7 @@ async function listDnsRecords(args: ListDnsRecordsArgs): Promise<PaginatedDnsRec
 }
 
 async function getDnsRecord(args: GetDnsRecordArgs): Promise<DnsRecordSummary> {
-  const data = await cloudflareFetch(`/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${args.recordId}`) as {
+  const data = await cloudflareFetch(`/zones/${getZoneId()}/dns_records/${args.recordId}`) as {
     result: {
       id: string;
       type: string;
@@ -190,7 +192,7 @@ async function createDnsRecord(args: CreateDnsRecordArgs): Promise<DnsRecordSumm
     body.comment = args.comment;
   }
 
-  const data = await cloudflareFetch(`/zones/${CLOUDFLARE_ZONE_ID}/dns_records`, {
+  const data = await cloudflareFetch(`/zones/${getZoneId()}/dns_records`, {
     method: 'POST',
     body: JSON.stringify(body),
   }) as {
@@ -239,7 +241,7 @@ async function updateDnsRecord(args: UpdateDnsRecordArgs): Promise<DnsRecordSumm
   if (args.priority !== undefined) { body.priority = args.priority; }
   if (args.comment !== undefined) { body.comment = args.comment; }
 
-  const data = await cloudflareFetch(`/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${args.recordId}`, {
+  const data = await cloudflareFetch(`/zones/${getZoneId()}/dns_records/${args.recordId}`, {
     method: 'PATCH',
     body: JSON.stringify(body),
   }) as {
@@ -278,14 +280,14 @@ async function updateDnsRecord(args: UpdateDnsRecordArgs): Promise<DnsRecordSumm
 }
 
 async function deleteDnsRecord(args: DeleteDnsRecordArgs): Promise<SuccessResult> {
-  await cloudflareFetch(`/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${args.recordId}`, {
+  await cloudflareFetch(`/zones/${getZoneId()}/dns_records/${args.recordId}`, {
     method: 'DELETE',
   });
   return { success: true, message: `Deleted DNS record ${args.recordId}` };
 }
 
 async function getZone(_args: GetZoneArgs): Promise<ZoneSummary> {
-  const data = await cloudflareFetch(`/zones/${CLOUDFLARE_ZONE_ID}`) as {
+  const data = await cloudflareFetch(`/zones/${getZoneId()}`) as {
     result: {
       id: string;
       name: string;

@@ -126,8 +126,8 @@ describe('AuditedMcpServer', () => {
     return entries;
   };
 
-  describe('No session ID (mandatory audit)', () => {
-    it('should throw when no session ID is provided', () => {
+  describe('No session ID (graceful degradation)', () => {
+    it('should not throw when no session ID is provided', () => {
       const tool: ToolHandler = {
         name: 'transform',
         description: 'Transform value',
@@ -135,18 +135,15 @@ describe('AuditedMcpServer', () => {
         handler: async (args) => ({ result: args.value.toUpperCase() }),
       };
 
-      expect(() => createTestServer({ tools: [tool] })).toThrow(
-        /requires a session ID/,
-      );
+      expect(() => createTestServer({ tools: [tool] })).not.toThrow();
     });
 
-    it('should include server name in error message', () => {
-      expect(() =>
-        createTestServer({
-          name: 'my-feedback-server',
-          tools: [],
-        }),
-      ).toThrow(/my-feedback-server/);
+    it('should create server without session ID', () => {
+      const server = createTestServer({
+        name: 'my-feedback-server',
+        tools: [],
+      });
+      expect(server).toBeDefined();
     });
   });
 

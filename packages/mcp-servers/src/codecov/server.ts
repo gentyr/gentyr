@@ -54,20 +54,20 @@ import {
 // Configuration
 // ============================================================================
 
-const { CODECOV_TOKEN, CODECOV_OWNER, CODECOV_REPO, CODECOV_SERVICE } = process.env;
+const { CODECOV_OWNER, CODECOV_REPO, CODECOV_SERVICE } = process.env;
 const BASE_URL = 'https://api.codecov.io/api/v2';
 const DEFAULT_SERVICE = CODECOV_SERVICE || 'github';
-
-if (!CODECOV_TOKEN) {
-  console.error('CODECOV_TOKEN environment variable is required');
-  process.exit(1);
-}
 
 // ============================================================================
 // API Helper
 // ============================================================================
 
 async function codecovFetch(endpoint: string, params?: Record<string, string | number | boolean | undefined>): Promise<unknown> {
+  const CODECOV_TOKEN = process.env.CODECOV_TOKEN;
+  // G001: Fail-closed on missing API key (checked at invocation time for tool discoverability)
+  if (!CODECOV_TOKEN) {
+    throw new Error('CODECOV_TOKEN environment variable is required. Ensure 1Password credentials are configured.');
+  }
   const url = new URL(`${BASE_URL}${endpoint}`);
 
   if (params) {
@@ -88,8 +88,7 @@ async function codecovFetch(endpoint: string, params?: Record<string, string | n
   if (!response.ok) {
     // G001: Fail-closed on authentication errors
     if (response.status === 401 || response.status === 403) {
-      console.error(`Codecov authentication failed (${response.status}) - token may be invalid or expired`);
-      process.exit(1);
+      throw new Error(`Codecov authentication failed (${response.status}) - CODECOV_TOKEN may be invalid or expired`);
     }
 
     const text = await response.text();

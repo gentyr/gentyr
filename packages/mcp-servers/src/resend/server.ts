@@ -46,19 +46,18 @@ import {
   type SendEmailResult,
 } from './types.js';
 
-const { RESEND_API_KEY } = process.env;
 const BASE_URL = 'https://api.resend.com';
-
-if (!RESEND_API_KEY) {
-  console.error('RESEND_API_KEY environment variable is required');
-  process.exit(1);
-}
 
 function toArray(value: string | string[]): string[] {
   return Array.isArray(value) ? value : [value];
 }
 
 async function resendFetch(endpoint: string, options: RequestInit = {}): Promise<unknown> {
+  const RESEND_API_KEY = process.env.RESEND_API_KEY;
+  // G001: Fail-closed on missing API key (checked at invocation time for tool discoverability)
+  if (!RESEND_API_KEY) {
+    throw new Error('RESEND_API_KEY environment variable is required. Ensure 1Password credentials are configured.');
+  }
   const url = `${BASE_URL}${endpoint}`;
 
   const response = await fetch(url, {
