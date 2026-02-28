@@ -138,37 +138,11 @@ feature/* --PR--> preview --PR--> staging --PR--> main (production)
 
 ### Worktree Context
 
-**Before committing, you MUST verify you are in a worktree.** Run `test -f .git && echo "worktree" || echo "main-tree"`. If "main-tree": do NOT run `git add` or `git commit` — report your findings and exit. Only commit from a worktree. **NEVER run `git checkout` or `git switch` to change branches** — the main tree must stay on `main`. If in a worktree:
+**You do NOT commit code.** Git write operations are the project-manager agent's responsibility. You may be working in a worktree or the main tree — either way, focus on writing code and leave git operations to the project-manager. **NEVER run `git checkout` or `git switch` to change branches** — the main tree must stay on `main`. If in a worktree:
 - Your working directory is isolated from the main project
 - Other agents may be working concurrently in their own worktrees
 - MCP tools (todo-db, deputy-cto, etc.) access shared state in the main project
-- Git operations (commit, push, PR) apply to YOUR worktree's branch only
 
-### Git Commit and Push Protocol
+### Git Operations
 
-**Commit early, commit often.** After completing each logical unit of work (a single phase, a related group of file changes, or after every ~5 file edits), run `git add <specific-files> && git commit -m "wip: <description>"`. Do NOT accumulate a large set of uncommitted changes. Uncommitted work can be destroyed by git operations, session interruptions, or context compactions.
-
-When your implementation work is complete:
-1. **Verify worktree**: Run `test -f .git`. If it fails (main tree), skip commit/push entirely and report that you could not commit because you are not in a worktree.
-2. `git add <specific files>` (never `git add .` or `git add -A`)
-3. `git commit -m "descriptive message"`
-4. Push and create PR:
-```bash
-git push -u origin HEAD
-gh pr create --base preview --head "$(git branch --show-current)" \
-  --title "<title>" --body "<summary>" 2>/dev/null || true
-```
-5. Request PR review via urgent DEPUTY-CTO task:
-```javascript
-mcp__todo-db__create_task({
-  section: "DEPUTY-CTO",
-  title: "Review PR: <title>",
-  description: "Review and merge PR #<number> from <branch> to preview. Run gh pr diff <number>, review for security/architecture/quality, then approve+merge or request changes.",
-  assigned_by: "pr-reviewer",
-  priority: "urgent"
-})
-```
-
-Note: Commits on feature branches pass through immediately (lint + security only).
-Code review happens asynchronously at PR time via deputy-CTO.
-Do NOT self-merge your PR -- deputy-CTO handles review and merge.
+**Do NOT commit, push, or create PRs.** The project-manager agent handles all git operations after your work is complete. Focus on writing code.

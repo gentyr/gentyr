@@ -100,7 +100,7 @@ GENTYR enforces a 4-stage merge chain: `feature/* -> preview -> staging -> main`
 
 Agents work on feature branches (`feature/*`, `fix/*`, `refactor/*`, `docs/*`, `chore/*`). At commit time, only lint and security checks run — no deputy-CTO review gate. This keeps commit latency low.
 
-After committing, the agent:
+After committing, the project-manager agent:
 1. Pushes the branch: `git push -u origin <branch>`
 2. Creates a PR to `preview`: `gh pr create --base preview --head <branch> --title "..."`
 3. Creates an urgent DEPUTY-CTO task for immediate PR review:
@@ -137,26 +137,26 @@ Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/
 
 ### Sub-Agent Working Tree Isolation
 
-Code-modifying sub-agents (`code-reviewer`, `code-writer`, `test-writer`) MUST be spawned with `isolation: "worktree"` when using the `Task` tool. This gives them their own branch and working directory where they can safely commit.
+Code-modifying sub-agents (`code-reviewer`, `code-writer`, `test-writer`) MUST be spawned with `isolation: "worktree"` when using the `Task` tool. This gives them their own branch and working directory, isolating their file changes from the main tree and other concurrent agents.
 
 **Base branch**: All agent worktrees branch from `preview` (the default in `createWorktree(branchName, baseBranch = 'preview')` in `worktree-manager.js`). `createWorktree()` creates a NEW unique branch (e.g., `feature/code-review-abc`) based on `origin/preview` — it does NOT check out the `preview` branch itself. Multiple agents can all branch from `preview` concurrently without conflict.
 
-**Why**: Without worktree isolation, sub-agents share the parent session's working tree. Any `git commit` triggers lint-staged which uses `git stash`/`git reset --hard` internally. A failed stash pop destroys ALL uncommitted working tree changes.
+**Why**: Without worktree isolation, sub-agents share the parent session's working tree. Concurrent file edits from multiple agents cause conflicts, and any git operation (stash, reset) in the main tree can destroy all agents' uncommitted work.
 
-**Enforcement**: `main-tree-commit-guard.js` hard-blocks `git add`/`git commit`/`git reset --hard`/`git stash`/`git clean`/`git pull` for spawned agents (`CLAUDE_SPAWNED_SESSION=true`) in the main tree as a safety net. Agents spawned without worktrees can still read/review code but cannot commit.
+**Enforcement**: `main-tree-commit-guard.js` hard-blocks `git add`/`git commit`/`git reset --hard`/`git stash`/`git clean`/`git pull` for spawned agents (`CLAUDE_SPAWNED_SESSION=true`) in the main tree as a safety net.
 
 **Example**:
 ```
-// CORRECT: Agent gets its own worktree (branched from preview) and can commit safely
-Task(subagent_type: "code-reviewer", isolation: "worktree", ...)
+// CORRECT: Agent gets its own isolated worktree (branched from preview)
+Task(subagent_type: "code-writer", isolation: "worktree", ...)
 
-// WRONG: Agent shares parent's working tree, cannot commit
-Task(subagent_type: "code-reviewer", ...)  // Will be blocked from committing
+// WRONG: Agent shares parent's working tree — file edits may conflict with other agents
+Task(subagent_type: "code-writer", ...)
 ```
 
 **Read-only agents are exempt**: Agents that only read code (e.g., `Explore`, `Plan`, `investigator`) don't need worktree isolation since they never run git write operations.
 
-**Frequent commits required**: All agents (interactive and spawned) must commit after every logical milestone. The `uncommitted-change-monitor.js` hook warns after 5 uncommitted file edits. Treat these warnings as mandatory — commit immediately when warned.
+**Commit ownership**: Only the project-manager agent and interactive (CTO) sessions commit. Code-reviewer, code-writer, and test-writer agents do NOT commit — they write/review code and leave git operations to the project-manager. The `uncommitted-change-monitor.js` hook warns after 5 uncommitted file edits; interactive sessions should treat these warnings as mandatory and commit immediately.
 
 ## Propagation to Linked Projects
 
@@ -593,7 +593,7 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 - Tracks cumulative file-modifying tool calls since the last `git commit` via `.claude/state/uncommitted-changes-state.json`
 - At threshold (5 edits), injects an `additionalContext` warning instructing the agent to commit immediately; 3-minute cooldown between repeat warnings
 - Counter resets when a new commit is detected (HEAD hash change via `git log -1 --format=%H`)
-- Skips spawned agents in the main tree (they are blocked from committing by `main-tree-commit-guard.js` — warning them is counterproductive); fires for worktrees and interactive sessions only
+- Skips all spawned agents (`CLAUDE_SPAWNED_SESSION=true`) — only the project-manager and interactive (CTO) sessions commit, so warning other spawned agents is counterproductive; fires for interactive sessions only
 - Output uses `hookSpecificOutput.additionalContext` so the AI model receives the warning, not just the terminal display
 - Tests at `.claude/hooks/__tests__/uncommitted-change-monitor.test.js` (16 tests, runs via `node --test`)
 

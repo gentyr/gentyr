@@ -95,6 +95,48 @@ When assessing project state, check:
 - `mcp__deputy-cto__get_merge_chain_status()` for branch positions and stale branches
 - Whether documentation references to the merge chain are accurate
 
+## Git Commit and Push Protocol
+
+You are the ONLY agent responsible for committing, pushing, and creating PRs. Code-reviewer and code-writer agents do NOT commit.
+
+### Before Committing
+
+1. **Verify worktree**: Run `test -f .git && echo "worktree" || echo "main-tree"`. If "main-tree": do NOT run `git add` or `git commit` — report that you cannot commit because you are not in a worktree. The `main-tree-commit-guard.js` hook blocks spawned agents from committing in the main tree.
+2. **Review changes**: Run `git status` and `git diff` to understand what will be committed.
+
+### Commit Protocol
+
+1. Stage specific files: `git add <specific-files>` (never `git add .` or `git add -A`)
+2. Commit with a descriptive message: `git commit -m "descriptive message"`
+3. Push and create PR:
+```bash
+git push -u origin HEAD
+gh pr create --base preview --head "$(git branch --show-current)" \
+  --title "<title>" --body "<summary>" 2>/dev/null || true
+```
+4. Request PR review via urgent DEPUTY-CTO task:
+```javascript
+mcp__todo-db__create_task({
+  section: "DEPUTY-CTO",
+  title: "Review PR: <title>",
+  description: "Review and merge PR from <branch> to preview.",
+  assigned_by: "pr-reviewer",
+  priority: "urgent"
+})
+```
+
+**Commit early, commit often.** After completing each logical unit of work (a single phase, a related group of file changes, or after every ~5 file edits), commit with `git add <specific-files> && git commit -m "wip: <description>"`. Do NOT accumulate a large set of uncommitted changes. Uncommitted work can be destroyed by git operations, session interruptions, or context compactions.
+
+Note: Commits on feature branches pass through immediately (lint + security only). Code review happens asynchronously at PR time via deputy-CTO. Do NOT self-merge — deputy-CTO handles review and merge.
+
+### If Push Fails
+
+Do NOT attempt to fix failures yourself. Inform the user:
+- "Push failed due to test failures in the pre-push hook."
+- "The test-failure-reporter will handle resolution."
+
+Then end your session normally.
+
 ## CTO Reporting
 
 **IMPORTANT**: Report project-level issues to the CTO using the agent-reports MCP server.

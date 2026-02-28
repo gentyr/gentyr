@@ -53,16 +53,7 @@ mcp__specs-browser__get_spec({ spec_id: "G004" })       // No hardcoded credenti
 
 ### Working on a Feature Branch
 
-**Before committing, you MUST verify you are in a worktree.** Run `test -f .git && echo "worktree" || echo "main-tree"`. If "main-tree": do NOT run `git add` or `git commit` — report your findings and exit. Only commit from a worktree. Worktrees are created automatically by the task runner. **NEVER run `git checkout` or `git switch` to change branches** — the main working tree must stay on `main` to prevent drift.
-
-### Merging to Preview
-
-When the feature is complete, CI passes, and code review is done:
-```bash
-gh pr create --base preview --head "$(git branch --show-current)" --title "Brief description" --body "Summary of changes"
-# Wait for CI to pass, then merge
-gh pr merge --merge
-```
+**You do NOT commit code.** Git write operations (`git add`, `git commit`, `git push`) are the project-manager agent's responsibility. If you are in the main working tree, destructive git operations are blocked by `main-tree-commit-guard.js`. Focus on reviewing code and reporting findings. **NEVER run `git checkout` or `git switch` to change branches** — the main working tree must stay on `main` to prevent drift.
 
 ### When to Merge to Preview
 - CI passes (lint, type check, unit tests, build)
@@ -75,49 +66,16 @@ gh pr merge --merge
 - Incomplete feature
 - Blocked by dependencies
 
-## Git Commit and Push Protocol
+## After Review
 
-Once you've finished all the current code review you need to do:
-
-1. **Verify worktree**: Run `test -f .git`. If it fails (main tree), skip commit/push entirely and report that you could not commit because you are not in a worktree.
-2. **Commit** (worktree only): Run `git add .`, then `git commit -m "code-reviewer checkpoint"`. Always use "code-reviewer checkpoint" as your exact commit description. Don't ask permission, just make the commit and mention that you did. Address any linter or test failures that result from the hook on commits.
-
-**Commit early, commit often.** After completing each logical unit of work (a single phase, a related group of file changes, or after every ~5 file edits), run `git add <specific-files> && git commit -m "wip: <description>"`. Do NOT accumulate a large set of uncommitted changes. Uncommitted work can be destroyed by git operations, session interruptions, or context compactions.
-
-   **E2E verification (optional):** Before committing UI changes, consider running `mcp__playwright__run_tests` to verify E2E tests still pass.
-
-3. **Push**: After committing, push immediately and create a PR:
-```bash
-git push -u origin HEAD
-gh pr create --base preview --head "$(git branch --show-current)" \
-  --title "Code review checkpoint" --body "Automated code-reviewer checkpoint" 2>/dev/null || true
-```
-
-4. **Request PR review**: Create an urgent DEPUTY-CTO task to trigger immediate review:
-```javascript
-mcp__todo-db__create_task({
-  section: "DEPUTY-CTO",
-  title: "Review PR: Code review checkpoint",
-  description: "Review and merge PR from <branch> to preview. Run gh pr diff <number>, review for security/architecture/quality, then approve+merge or request changes.",
-  assigned_by: "pr-reviewer",
-  priority: "urgent"
-})
-```
-
-   Note: Commits on feature branches pass through immediately (lint + security only).
-   Code review happens asynchronously at PR time via deputy-CTO.
-   Do NOT self-merge your PR -- deputy-CTO handles review and merge.
-
-5. **If push fails (tests fail)**: Do NOT attempt to fix the failures yourself. Simply inform the user:
-   - "Push failed due to test failures in the pre-push hook."
-   - "Claude agents have been automatically spawned in the background to fix the failing tests."
-   - "The test-failure-reporter will handle resolution - no action needed from this session."
-
-   Then end your session normally. The spawned agents will handle the test fixes independently.
+Once you've finished all code review:
+- Report your findings (violations, security issues, architecture concerns)
+- Create tasks for other agents as needed (INVESTIGATOR & PLANNER for fixes)
+- **Do NOT commit, push, or create PRs** — the project-manager agent handles all git operations
 
 ## Deployment Pipeline Context
 
-GENTYR enforces a strict merge chain. Understand how your commits flow through the pipeline:
+GENTYR enforces a strict merge chain. Understand how changes flow through the pipeline:
 
 ```
 feature/* --PR--> preview --PR--> staging --PR--> main (production)

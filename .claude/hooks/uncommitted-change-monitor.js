@@ -17,9 +17,9 @@
  *   - At threshold (5 edits), emits additionalContext warning
  *   - Resets counter when a new commit is detected (HEAD hash change)
  *   - Cooldown: warns at most once per 3 minutes
- *   - Worktree-aware: only fires in worktrees or interactive sessions
- *     (spawned agents in main tree are blocked from committing by
- *     main-tree-commit-guard.js, so warning them is counterproductive)
+ *   - Only fires for interactive (CTO) sessions — spawned agents are skipped
+ *     because only the project-manager agent commits, and it has its own
+ *     "commit early, commit often" guidance in its agent definition
  *
  * Input: JSON on stdin from Claude Code PostToolUse event
  * Output: JSON on stdout with continue + optional additionalContext
@@ -124,9 +124,12 @@ async function main() {
     return;
   }
 
-  // Skip spawned agents in main tree — they're blocked from committing by
-  // main-tree-commit-guard.js, so warning them to commit is counterproductive
-  if (isSpawnedSession() && !isWorktree()) {
+  // Skip all spawned agents — only the project-manager agent and interactive
+  // (CTO) sessions commit. Code-reviewer, code-writer, and test-writer agents
+  // do NOT commit; warning them to commit is counterproductive and contradicts
+  // their agent definitions. The project-manager has its own "commit early,
+  // commit often" guidance in its agent definition.
+  if (isSpawnedSession()) {
     process.stdout.write(JSON.stringify({ continue: true }));
     return;
   }
