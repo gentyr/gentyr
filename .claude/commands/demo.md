@@ -67,6 +67,7 @@ Show project (or "All"), PID, and tips:
 - All tests are visible (spec, manual, demo)
 - Close the Playwright window when done
 - For curated demos: `/demo-interactive` (pause) or `/demo-autonomous` (watch)
+- To validate the full demo suite headlessly: `/demo-validate`
 
 ## Rules
 
