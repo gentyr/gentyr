@@ -15,7 +15,6 @@ import type {
   ReportPriority,
   TriageStatus,
   QuestionType,
-  ConsumptionMode,
   FeaturePriority,
 } from './schemas.js';
 

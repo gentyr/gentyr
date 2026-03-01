@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS personas (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   description TEXT NOT NULL,
-  consumption_mode TEXT NOT NULL CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk', 'adk')),
+  consumption_modes TEXT NOT NULL DEFAULT '["gui"]',
   behavior_traits TEXT NOT NULL DEFAULT '[]',
   endpoints TEXT NOT NULL DEFAULT '[]',
   credentials_ref TEXT,
@@ -182,13 +182,13 @@ function createPersona(db: Database.Database, data: {
   const created_timestamp = Math.floor(now.getTime() / 1000);
 
   db.prepare(`
-    INSERT INTO personas (id, name, description, consumption_mode, behavior_traits, endpoints, enabled, created_at, created_timestamp, updated_at)
+    INSERT INTO personas (id, name, description, consumption_modes, behavior_traits, endpoints, enabled, created_at, created_timestamp, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     data.name,
     data.description,
-    data.consumption_mode,
+    JSON.stringify([data.consumption_mode]),
     JSON.stringify(data.behavior_traits ?? []),
     JSON.stringify(data.endpoints ?? []),
     data.enabled === false ? 0 : 1,
@@ -497,7 +497,7 @@ describe('Feedback Explorer MCP Server', () => {
 
       expect(result.name).toBe('test-persona');
       expect(result.description).toBe('Test description');
-      expect(result.consumption_mode).toBe('api');
+      expect(result.consumption_modes).toEqual(['api']);
       expect(result.behavior_traits).toEqual(['impatient', 'thorough']);
       expect(result.endpoints).toEqual(['/api/v1/tasks']);
       expect(result.enabled).toBe(true);
