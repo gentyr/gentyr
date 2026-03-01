@@ -1,5 +1,42 @@
 # GENTYR Framework Changelog
 
+## 2026-03-01 - Playwright CLI Guard: Hard Block Upgrade (v2.1.0)
+
+### Summary
+
+Upgraded `playwright-cli-guard.js` from a soft warning (`systemMessage`) to a hard block (`permissionDecision: "deny"`). Adds shell-operator-aware parsing to prevent chained-command bypass abuse, and a scoped escape hatch (`PLAYWRIGHT_CLI_BYPASS=1` env prefix) for legitimate non-test CLI use cases. Also promotes the hook to the protection critical-hooks list.
+
+### Changed
+
+**`.claude/hooks/playwright-cli-guard.js`** (v1.0.0 → v2.1.0):
+- Changed from `systemMessage` warning (non-blocking) to `permissionDecision: "deny"` (hard block)
+- Added `splitOnShellOperators()` shell parsing to catch bypass abuse in chained commands (e.g., `echo PLAYWRIGHT_CLI_BYPASS=1 && npx playwright test`)
+- Bypass is scoped per sub-command: `PLAYWRIGHT_CLI_BYPASS=1` must prefix the Playwright sub-command itself, not a preceding chain segment
+- G001 fail-closed on parse errors (was fail-open)
+
+**`cli/commands/protect.js`**:
+- Added `playwright-cli-guard.js` to `criticalHooks` array and `files` list for root-ownership protection
+
+**`husky/pre-commit`**:
+- Added `playwright-cli-guard.js` to the tamper-detection ownership check loop
+
+**`CLAUDE.md`**:
+- Updated Playwright CLI Guard Hook documentation to reflect hard-blocking behavior, escape hatch, and test count (23 → 41 tests)
+
+**`docs/AUTOMATION-SYSTEMS.md`**, **`docs/TESTING.md`**:
+- Updated hook descriptions from "warn (non-blocking)" to "block (hard deny)"
+
+### Added
+
+**`.claude/hooks/__tests__/playwright-cli-guard.test.js`** (23 → 41 tests):
+- Updated all "warn" assertions to expect `permissionDecision: "deny"`
+- 6 new tests for chained-command bypass abuse (all blocked)
+- 2 new tests for legitimate per-sub-command bypass in chained commands
+- 1 new test for G001 fail-closed on malformed JSON input
+- 1 new test for chained non-playwright + playwright blocking
+
+---
+
 ## 2026-02-26 - Worktree core.hooksPath Poisoning Defense
 
 ### Summary

@@ -46,7 +46,7 @@ launchd timer (10 min) ──> hourly-automation.js ──> CTO Activity Gate
 | **SessionStart** | api-key-watcher | Discover credentials, health-check, select optimal key |
 | **SessionStart** | credential-health-check | Vault mapping validation, OP token desync detection |
 | **PreToolUse(Bash)** | credential-sync-hook | Periodic credential sync (30-min throttle) |
-| **PreToolUse(Bash)** | playwright-cli-guard | Warn agents against CLI-based Playwright test invocation (non-blocking) |
+| **PreToolUse(Bash)** | playwright-cli-guard | Block CLI-based Playwright test invocations (hard deny); escape hatch: `PLAYWRIGHT_CLI_BYPASS=1` prefix |
 | **PostToolUse** | quota-monitor | Mid-session quota check (5-min throttle), rotate at 95% |
 
 ---
