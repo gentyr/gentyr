@@ -616,12 +616,13 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 - Tests at `.claude/hooks/__tests__/credential-file-guard.test.js` (142 tests, runs via `node --test`)
 
 **Playwright CLI Guard Hook** (`.claude/hooks/playwright-cli-guard.js`):
-- Runs at `PreToolUse` for Bash tool calls only; non-blocking (emits `systemMessage` warning, never blocks execution)
+- Runs at `PreToolUse` for Bash tool calls only; hard-blocking (`permissionDecision: "deny"`)
 - Detects CLI-based Playwright invocations (`npx playwright test`, `pnpm test:e2e`, `pnpm test:pw`, and equivalents for npm/yarn)
-- Warns agent to use MCP tools instead (`mcp__playwright__run_tests`, `mcp__playwright__launch_ui_mode`, etc.)
+- Blocks execution and directs agent to use MCP tools instead (`mcp__playwright__run_tests`, `mcp__playwright__launch_ui_mode`, etc.)
 - Rationale: CLI invocations bypass the Playwright MCP server's 1Password credential injection, causing tests to fail or skip silently without proper environment variables
+- **Escape hatch**: Prefix the command with `PLAYWRIGHT_CLI_BYPASS=1` to allow CLI execution for a single command (e.g., `PLAYWRIGHT_CLI_BYPASS=1 npx playwright install`). Valid reasons: codegen/trace viewer, debugging with custom Node flags, installing browsers
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `PreToolUse > Bash`
-- Tests at `.claude/hooks/__tests__/playwright-cli-guard.test.js` (23 tests, runs via `node --test`)
+- Tests at `.claude/hooks/__tests__/playwright-cli-guard.test.js` (41 tests, runs via `node --test`)
 
 **Playwright Health Check Hook** (`.claude/hooks/playwright-health-check.js`):
 - Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)

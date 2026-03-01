@@ -26,7 +26,7 @@ This plan provides a complete inventory of all node_modules/gentyr components an
 | Hook | Trigger | Purpose | Cooldown |
 |------|---------|---------|----------|
 | **block-no-verify.js** | PreToolUse | Blocks `--no-verify` and bypass commands | None |
-| **playwright-cli-guard.js** | PreToolUse(Bash) | Warn agents against CLI-based Playwright test invocation; advises MCP tools instead | None |
+| **playwright-cli-guard.js** | PreToolUse(Bash) | Block CLI-based Playwright test invocations (hard deny); directs agents to MCP tools; escape hatch: `PLAYWRIGHT_CLI_BYPASS=1` | None |
 | **api-key-watcher.js** | SessionStart | Auto-rotate API keys based on usage | Per-session |
 | **cto-notification-hook.js** | UserPromptSubmit | Display CTO status at session start | None |
 | **todo-maintenance.js** | UserPromptSubmit | Auto-spawn todo-processing agent | 15 min |
