@@ -30,7 +30,11 @@ export type FeaturePriority = (typeof FEATURE_PRIORITY)[number];
 export const CreatePersonaArgsSchema = z.object({
   name: z.string().min(1).max(100).describe('Unique persona name (e.g., "power-user", "first-time-visitor")'),
   description: z.string().min(1).max(500).describe('Description of who this persona represents'),
-  consumption_mode: z.enum(CONSUMPTION_MODES).describe('How this persona consumes the product'),
+  consumption_modes: z.union([
+    z.enum(CONSUMPTION_MODES),
+    z.array(z.enum(CONSUMPTION_MODES)).min(1),
+  ]).transform(v => Array.isArray(v) ? v : [v])
+    .describe('How this persona consumes the product (single mode or array of modes)'),
   behavior_traits: z.array(z.string().max(200)).max(10).optional()
     .describe('Behavioral traits (e.g., "impatient", "explores all menus", "uses keyboard shortcuts")'),
   endpoints: z.array(z.string().max(500)).max(20).optional()
@@ -46,7 +50,11 @@ export const UpdatePersonaArgsSchema = z.object({
   id: z.string().describe('Persona UUID'),
   name: z.string().min(1).max(100).optional(),
   description: z.string().min(1).max(500).optional(),
-  consumption_mode: z.enum(CONSUMPTION_MODES).optional(),
+  consumption_modes: z.union([
+    z.enum(CONSUMPTION_MODES),
+    z.array(z.enum(CONSUMPTION_MODES)).min(1),
+  ]).transform(v => Array.isArray(v) ? v : [v]).optional()
+    .describe('How this persona consumes the product (single mode or array of modes)'),
   behavior_traits: z.array(z.string().max(200)).max(10).optional(),
   endpoints: z.array(z.string().max(500)).max(20).optional(),
   credentials_ref: z.string().max(200).optional(),
@@ -193,7 +201,7 @@ export interface PersonaRecord {
   id: string;
   name: string;
   description: string;
-  consumption_mode: ConsumptionMode;
+  consumption_modes: string; // JSON array of ConsumptionMode
   behavior_traits: string; // JSON array
   endpoints: string; // JSON array
   credentials_ref: string | null;
@@ -260,7 +268,7 @@ export interface PersonaResult {
   id: string;
   name: string;
   description: string;
-  consumption_mode: ConsumptionMode;
+  consumption_modes: ConsumptionMode[];
   behavior_traits: string[];
   endpoints: string[];
   credentials_ref: string | null;
@@ -352,7 +360,7 @@ export interface GetSessionAuditResult {
 // ============================================================================
 
 export const CreateScenarioArgsSchema = z.object({
-  persona_id: z.string().describe('Persona UUID this scenario belongs to — persona must have consumption_mode "gui"'),
+  persona_id: z.string().describe('Persona UUID this scenario belongs to — persona must include "gui" in consumption_modes'),
   title: z.string().min(1).max(200).describe('Human-readable scenario title shown in /demo-interactive and /demo-autonomous menus'),
   description: z.string().min(1).max(2000).describe('What the scenario demonstrates — given to code-writer for implementation and to persona agents for context'),
   category: z.string().max(50).optional().describe('Optional grouping (e.g., "onboarding", "admin", "billing")'),

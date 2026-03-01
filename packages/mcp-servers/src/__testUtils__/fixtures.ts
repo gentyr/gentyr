@@ -509,7 +509,7 @@ export interface PersonaFixture {
   id: string;
   name: string;
   description: string;
-  consumption_mode: ConsumptionMode;
+  consumption_modes: string; // JSON array
   behavior_traits: string;
   endpoints: string;
   credentials_ref: string | null;
@@ -530,7 +530,7 @@ export function createPersonaFixture(overrides: Partial<PersonaFixture> = {}): P
     id: randomUUID(),
     name: 'test-persona',
     description: 'A test persona',
-    consumption_mode: 'gui',
+    consumption_modes: '["gui"]',
     behavior_traits: '[]',
     endpoints: '[]',
     credentials_ref: null,
@@ -548,14 +548,14 @@ export function createPersonaFixture(overrides: Partial<PersonaFixture> = {}): P
 export function insertPersonaFixture(db: Database.Database, persona: PersonaFixture): void {
   db.prepare(`
     INSERT INTO personas (
-      id, name, description, consumption_mode, behavior_traits, endpoints,
+      id, name, description, consumption_modes, behavior_traits, endpoints,
       credentials_ref, enabled, created_at, created_timestamp, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     persona.id,
     persona.name,
     persona.description,
-    persona.consumption_mode,
+    persona.consumption_modes,
     persona.behavior_traits,
     persona.endpoints,
     persona.credentials_ref,

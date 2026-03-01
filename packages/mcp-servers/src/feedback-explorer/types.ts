@@ -75,7 +75,7 @@ export interface PersonaRecord {
   id: string;
   name: string;
   description: string;
-  consumption_mode: ConsumptionMode;
+  consumption_modes: string; // JSON array of ConsumptionMode
   behavior_traits: string; // JSON
   endpoints: string; // JSON
   credentials_ref: string | null;
@@ -169,7 +169,7 @@ export interface PersonaSummary {
   id: string;
   name: string;
   description: string;
-  consumption_mode: ConsumptionMode;
+  consumption_modes: ConsumptionMode[];
   enabled: boolean;
   session_count: number;
   findings_count: number;
@@ -209,7 +209,7 @@ export interface PersonaDetails {
   id: string;
   name: string;
   description: string;
-  consumption_mode: ConsumptionMode;
+  consumption_modes: ConsumptionMode[];
   behavior_traits: string[];
   endpoints: string[];
   credentials_ref: string | null;

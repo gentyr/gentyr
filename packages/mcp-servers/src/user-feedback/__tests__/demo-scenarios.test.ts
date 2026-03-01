@@ -64,19 +64,20 @@ interface ErrorResult {
 function createPersona(db: Database.Database, args: {
   name: string;
   description: string;
-  consumption_mode: string;
+  consumption_mode: string | string[];
 }) {
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
   const created_timestamp = Math.floor(now.getTime() / 1000);
+  const modes = Array.isArray(args.consumption_mode) ? args.consumption_mode : [args.consumption_mode];
 
   db.prepare(`
-    INSERT INTO personas (id, name, description, consumption_mode, behavior_traits, endpoints, created_at, created_timestamp, updated_at)
+    INSERT INTO personas (id, name, description, consumption_modes, behavior_traits, endpoints, created_at, created_timestamp, updated_at)
     VALUES (?, ?, ?, ?, '[]', '[]', ?, ?, ?)
-  `).run(id, args.name, args.description, args.consumption_mode, created_at, created_timestamp, created_at);
+  `).run(id, args.name, args.description, JSON.stringify(modes), created_at, created_timestamp, created_at);
 
-  return { id, name: args.name, consumption_mode: args.consumption_mode };
+  return { id, name: args.name, consumption_modes: modes };
 }
 
 function scenarioToResult(row: ScenarioRow & { persona_name?: string }): ScenarioResult {
@@ -105,16 +106,17 @@ function createScenario(db: Database.Database, args: {
   test_file: string;
   sort_order?: number;
 }): ScenarioResult | ErrorResult {
-  // Validate persona exists and is GUI
-  const persona = db.prepare('SELECT id, name, consumption_mode FROM personas WHERE id = ?')
-    .get(args.persona_id) as { id: string; name: string; consumption_mode: string } | undefined;
+  // Validate persona exists and includes 'gui' in consumption_modes
+  const persona = db.prepare('SELECT id, name, consumption_modes FROM personas WHERE id = ?')
+    .get(args.persona_id) as { id: string; name: string; consumption_modes: string } | undefined;
 
   if (!persona) {
     return { error: `Persona not found: ${args.persona_id}` };
   }
-  if (persona.consumption_mode !== 'gui') {
+  const personaModes = JSON.parse(persona.consumption_modes) as string[];
+  if (!personaModes.includes('gui')) {
     return {
-      error: `Demo scenarios require a GUI persona. Persona "${persona.name}" has consumption_mode "${persona.consumption_mode}". Only personas with consumption_mode "gui" can have Playwright demo scenarios.`,
+      error: `Demo scenarios require a GUI persona. Persona "${persona.name}" has consumption_modes ${JSON.stringify(personaModes)}. Only personas that include "gui" in consumption_modes can have Playwright demo scenarios.`,
     };
   }
   if (!args.test_file.endsWith('.demo.ts')) {
@@ -315,7 +317,7 @@ describe('Demo Scenario CRUD', () => {
       expect(isErrorResult(result)).toBe(true);
       if (isErrorResult(result)) {
         expect(result.error).toContain('Demo scenarios require a GUI persona');
-        expect(result.error).toContain('consumption_mode "api"');
+        expect(result.error).toContain('"api"');
       }
     });
 
@@ -409,8 +411,30 @@ describe('Demo Scenario CRUD', () => {
 
         expect(isErrorResult(result)).toBe(true);
         if (isErrorResult(result)) {
-          expect(result.error).toContain(`consumption_mode "${mode}"`);
+          expect(result.error).toContain(`"${mode}"`);
         }
+      }
+    });
+
+    it('should allow scenario for multi-mode persona that includes gui', () => {
+      const multiModePersona = createPersona(db, {
+        name: 'sdk-gui-user',
+        description: 'An SDK+GUI persona',
+        consumption_mode: ['sdk', 'gui'],
+      });
+
+      const result = createScenario(db, {
+        persona_id: multiModePersona.id,
+        title: 'Multi-Mode Flow',
+        description: 'Test multi-mode flow',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/multi-mode-flow.demo.ts',
+      });
+
+      expect(isErrorResult(result)).toBe(false);
+      if (!isErrorResult(result)) {
+        expect(result.title).toBe('Multi-Mode Flow');
+        expect(result.persona_name).toBe('sdk-gui-user');
       }
     });
   });
