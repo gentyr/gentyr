@@ -167,7 +167,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
           p.id,
           p.name,
           p.description,
-          p.consumption_mode,
+          p.consumption_modes,
           p.enabled,
           p.created_at,
           COUNT(DISTINCT fs.id) as session_count,
@@ -184,7 +184,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
         conditions.push('p.enabled = 1');
       }
       if (args.consumption_mode) {
-        conditions.push('p.consumption_mode = ?');
+        conditions.push('EXISTS (SELECT 1 FROM json_each(p.consumption_modes) WHERE value = ?)');
         params.push(args.consumption_mode);
       }
 
@@ -198,7 +198,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
         id: string;
         name: string;
         description: string;
-        consumption_mode: ConsumptionMode;
+        consumption_modes: string;
         enabled: number;
         created_at: string;
         session_count: number;
@@ -212,7 +212,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
         id: row.id,
         name: row.name,
         description: row.description,
-        consumption_mode: row.consumption_mode,
+        consumption_modes: JSON.parse(row.consumption_modes) as ConsumptionMode[],
         enabled: row.enabled === 1,
         session_count: row.session_count,
         findings_count: row.findings_count,
@@ -314,7 +314,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
         id: persona.id,
         name: persona.name,
         description: persona.description,
-        consumption_mode: persona.consumption_mode,
+        consumption_modes: JSON.parse(persona.consumption_modes) as ConsumptionMode[],
         behavior_traits: JSON.parse(persona.behavior_traits) as string[],
         endpoints: JSON.parse(persona.endpoints) as string[],
         credentials_ref: persona.credentials_ref,

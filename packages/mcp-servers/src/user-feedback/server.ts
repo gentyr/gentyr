@@ -106,18 +106,15 @@ CREATE TABLE IF NOT EXISTS personas (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     description TEXT NOT NULL,
-    consumption_mode TEXT NOT NULL DEFAULT 'gui',
+    consumption_modes TEXT NOT NULL DEFAULT '["gui"]',
     behavior_traits TEXT NOT NULL DEFAULT '[]',
     endpoints TEXT NOT NULL DEFAULT '[]',
     credentials_ref TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     created_timestamp INTEGER NOT NULL,
-    updated_at TEXT NOT NULL,
-    CONSTRAINT valid_mode CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk', 'adk'))
+    updated_at TEXT NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_personas_mode ON personas(consumption_mode);
 CREATE INDEX IF NOT EXISTS idx_personas_enabled ON personas(enabled);
 
 CREATE TABLE IF NOT EXISTS features (
@@ -259,21 +256,17 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       db.exec("ALTER TABLE personas ADD COLUMN cto_protected INTEGER NOT NULL DEFAULT 0");
     }
 
-    // Auto-migration: rebuild personas table if CHECK constraint doesn't include 'adk'
+    // Auto-migration: migrate consumption_mode → consumption_modes (JSON array)
     try {
-      const probeId = `__adk_probe_${Date.now()}__`;
-      db.prepare(
-        "INSERT INTO personas (id, name, description, consumption_mode, behavior_traits, endpoints, created_at, created_timestamp, updated_at) VALUES (?, ?, ?, 'adk', '[]', '[]', '', 0, '')"
-      ).run(probeId, probeId, probeId);
-      db.prepare("DELETE FROM personas WHERE id = ?").run(probeId);
+      db.prepare("SELECT consumption_modes FROM personas LIMIT 0").run();
     } catch {
-      // CHECK constraint rejected 'adk' — rebuild table with updated constraint
+      // Old schema has consumption_mode (single value) — rebuild with consumption_modes (JSON array)
       db.exec(`
         CREATE TABLE personas_new (
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL UNIQUE,
           description TEXT NOT NULL,
-          consumption_mode TEXT NOT NULL DEFAULT 'gui',
+          consumption_modes TEXT NOT NULL DEFAULT '["gui"]',
           behavior_traits TEXT NOT NULL DEFAULT '[]',
           endpoints TEXT NOT NULL DEFAULT '[]',
           credentials_ref TEXT,
@@ -281,13 +274,12 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
           created_at TEXT NOT NULL,
           created_timestamp INTEGER NOT NULL,
           updated_at TEXT NOT NULL,
-          cto_protected INTEGER NOT NULL DEFAULT 0,
-          CONSTRAINT valid_mode CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk', 'adk'))
+          cto_protected INTEGER NOT NULL DEFAULT 0
         );
-        INSERT INTO personas_new SELECT * FROM personas;
+        INSERT INTO personas_new (id, name, description, consumption_modes, behavior_traits, endpoints, credentials_ref, enabled, created_at, created_timestamp, updated_at, cto_protected)
+          SELECT id, name, description, json_array(consumption_mode), behavior_traits, endpoints, credentials_ref, enabled, created_at, created_timestamp, updated_at, cto_protected FROM personas;
         DROP TABLE personas;
         ALTER TABLE personas_new RENAME TO personas;
-        CREATE INDEX IF NOT EXISTS idx_personas_mode ON personas(consumption_mode);
         CREATE INDEX IF NOT EXISTS idx_personas_enabled ON personas(enabled);
       `);
     }
@@ -321,7 +313,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       id: record.id,
       name: record.name,
       description: record.description,
-      consumption_mode: record.consumption_mode,
+      consumption_modes: JSON.parse(record.consumption_modes) as ConsumptionMode[],
       behavior_traits: JSON.parse(record.behavior_traits) as string[],
       endpoints: JSON.parse(record.endpoints) as string[],
       credentials_ref: record.credentials_ref,
@@ -373,13 +365,13 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
 
     try {
       db.prepare(`
-        INSERT INTO personas (id, name, description, consumption_mode, behavior_traits, endpoints, credentials_ref, cto_protected, created_at, created_timestamp, updated_at)
+        INSERT INTO personas (id, name, description, consumption_modes, behavior_traits, endpoints, credentials_ref, cto_protected, created_at, created_timestamp, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         args.name,
         args.description,
-        args.consumption_mode,
+        JSON.stringify(args.consumption_modes),
         JSON.stringify(args.behavior_traits ?? []),
         JSON.stringify(args.endpoints ?? []),
         args.credentials_ref ?? null,
@@ -417,7 +409,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
 
     if (args.name !== undefined) { updates.push('name = ?'); params.push(args.name); }
     if (args.description !== undefined) { updates.push('description = ?'); params.push(args.description); }
-    if (args.consumption_mode !== undefined) { updates.push('consumption_mode = ?'); params.push(args.consumption_mode); }
+    if (args.consumption_modes !== undefined) { updates.push('consumption_modes = ?'); params.push(JSON.stringify(args.consumption_modes)); }
     if (args.behavior_traits !== undefined) { updates.push('behavior_traits = ?'); params.push(JSON.stringify(args.behavior_traits)); }
     if (args.endpoints !== undefined) { updates.push('endpoints = ?'); params.push(JSON.stringify(args.endpoints)); }
     if (args.credentials_ref !== undefined) { updates.push('credentials_ref = ?'); params.push(args.credentials_ref); }
@@ -499,7 +491,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       conditions.push('enabled = 1');
     }
     if (args.consumption_mode) {
-      conditions.push('consumption_mode = ?');
+      conditions.push('EXISTS (SELECT 1 FROM json_each(consumption_modes) WHERE value = ?)');
       params.push(args.consumption_mode);
     }
 
@@ -670,7 +662,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     const mappings = db.prepare(`
       SELECT pf.persona_id, pf.feature_id, pf.priority, pf.test_scenarios,
              p.id as p_id, p.name as p_name, p.description as p_description,
-             p.consumption_mode as p_mode, p.behavior_traits as p_traits,
+             p.consumption_modes as p_modes, p.behavior_traits as p_traits,
              p.endpoints as p_endpoints, p.credentials_ref as p_creds,
              p.enabled as p_enabled, p.cto_protected as p_cto_protected,
              p.created_at as p_created,
@@ -689,7 +681,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
           WHEN 'low' THEN 4
         END
     `).all(...featureIdList) as (PersonaFeatureRecord & {
-      p_id: string; p_name: string; p_description: string; p_mode: ConsumptionMode;
+      p_id: string; p_name: string; p_description: string; p_modes: string;
       p_traits: string; p_endpoints: string; p_creds: string | null;
       p_enabled: number; p_cto_protected: number; p_created: string; p_updated: string; p_ts: number;
       f_name: string;
@@ -705,7 +697,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
             id: row.p_id,
             name: row.p_name,
             description: row.p_description,
-            consumption_mode: row.p_mode,
+            consumption_modes: JSON.parse(row.p_modes) as ConsumptionMode[],
             behavior_traits: JSON.parse(row.p_traits) as string[],
             endpoints: JSON.parse(row.p_endpoints) as string[],
             credentials_ref: row.p_creds,
@@ -1086,13 +1078,14 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   // ============================================================================
 
   function createScenario(args: CreateScenarioArgs): ScenarioResult | ErrorResult {
-    // Validate persona exists and has consumption_mode 'gui'
-    const persona = db.prepare('SELECT id, name, consumption_mode FROM personas WHERE id = ?').get(args.persona_id) as { id: string; name: string; consumption_mode: string } | undefined;
+    // Validate persona exists and includes 'gui' in consumption_modes
+    const persona = db.prepare('SELECT id, name, consumption_modes FROM personas WHERE id = ?').get(args.persona_id) as { id: string; name: string; consumption_modes: string } | undefined;
     if (!persona) {
       return { error: `Persona not found: ${args.persona_id}` };
     }
-    if (persona.consumption_mode !== 'gui') {
-      return { error: `Demo scenarios require a GUI persona. Persona "${persona.name}" has consumption_mode "${persona.consumption_mode}". Only personas with consumption_mode "gui" can have Playwright demo scenarios.` };
+    const personaModes = JSON.parse(persona.consumption_modes) as string[];
+    if (!personaModes.includes('gui')) {
+      return { error: `Demo scenarios require a GUI persona. Persona "${persona.name}" has consumption_modes ${JSON.stringify(personaModes)}. Only personas that include "gui" in consumption_modes can have Playwright demo scenarios.` };
     }
 
     // Enforce .demo.ts suffix
@@ -1355,7 +1348,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     // Demo Scenario CRUD
     {
       name: 'create_scenario',
-      description: 'Create a curated demo scenario for a GUI persona. Scenarios are product walkthroughs mapped to *.demo.ts Playwright files. Only personas with consumption_mode "gui" can have demo scenarios.',
+      description: 'Create a curated demo scenario for a GUI persona. Scenarios are product walkthroughs mapped to *.demo.ts Playwright files. Only personas that include "gui" in consumption_modes can have demo scenarios.',
       schema: CreateScenarioArgsSchema,
       handler: createScenario,
     },

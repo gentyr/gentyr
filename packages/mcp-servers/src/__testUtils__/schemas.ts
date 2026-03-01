@@ -265,18 +265,15 @@ CREATE TABLE IF NOT EXISTS personas (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     description TEXT NOT NULL,
-    consumption_mode TEXT NOT NULL DEFAULT 'gui',
+    consumption_modes TEXT NOT NULL DEFAULT '["gui"]',
     behavior_traits TEXT NOT NULL DEFAULT '[]',
     endpoints TEXT NOT NULL DEFAULT '[]',
     credentials_ref TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     created_timestamp INTEGER NOT NULL,
-    updated_at TEXT NOT NULL,
-    CONSTRAINT valid_mode CHECK (consumption_mode IN ('gui', 'cli', 'api', 'sdk', 'adk'))
+    updated_at TEXT NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_personas_mode ON personas(consumption_mode);
 CREATE INDEX IF NOT EXISTS idx_personas_enabled ON personas(enabled);
 
 CREATE TABLE IF NOT EXISTS features (

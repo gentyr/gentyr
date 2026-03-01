@@ -38,7 +38,7 @@ interface PersonaRow {
   id: string;
   name: string;
   description: string;
-  consumption_mode: string;
+  consumption_modes: string; // JSON array
   behavior_traits: string;
   endpoints: string;
   credentials_ref: string | null;
@@ -119,10 +119,10 @@ function createPersona(db: Database.Database, args: {
 
   try {
     db.prepare(`
-      INSERT INTO personas (id, name, description, consumption_mode, behavior_traits, endpoints, credentials_ref, created_at, created_timestamp, updated_at)
+      INSERT INTO personas (id, name, description, consumption_modes, behavior_traits, endpoints, credentials_ref, created_at, created_timestamp, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      id, args.name, args.description, args.consumption_mode,
+      id, args.name, args.description, JSON.stringify([args.consumption_mode]),
       JSON.stringify(args.behavior_traits ?? []),
       JSON.stringify(args.endpoints ?? []),
       args.credentials_ref ?? null,
@@ -290,7 +290,7 @@ describe('User Feedback Server', () => {
 
       const row = db.prepare('SELECT * FROM personas WHERE id = ?').get(result.id) as PersonaRow;
       expect(row.name).toBe('power-user');
-      expect(row.consumption_mode).toBe('gui');
+      expect(JSON.parse(row.consumption_modes)).toEqual(['gui']);
       expect(row.enabled).toBe(1);
       expect(JSON.parse(row.behavior_traits)).toEqual([]);
     });
@@ -306,7 +306,7 @@ describe('User Feedback Server', () => {
       });
 
       const row = db.prepare('SELECT * FROM personas WHERE id = ?').get(result.id) as PersonaRow;
-      expect(row.consumption_mode).toBe('api');
+      expect(JSON.parse(row.consumption_modes)).toEqual(['api']);
       expect(JSON.parse(row.behavior_traits)).toEqual(['impatient', 'reads docs carefully']);
       expect(JSON.parse(row.endpoints)).toEqual(['/api/v1/users', '/api/v1/tasks']);
       expect(row.credentials_ref).toBe('op://vault/api-key');
@@ -322,13 +322,17 @@ describe('User Feedback Server', () => {
       }
     });
 
-    it('should enforce valid consumption_mode constraint (G003)', () => {
-      expect(() => {
-        db.prepare(`
-          INSERT INTO personas (id, name, description, consumption_mode, created_at, created_timestamp, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(randomUUID(), 'test', 'desc', 'invalid', new Date().toISOString(), Math.floor(Date.now() / 1000), new Date().toISOString());
-      }).toThrow();
+    it('should store consumption_modes as JSON array', () => {
+      const result = createPersona(db, {
+        name: 'multi-mode-user',
+        description: 'A user with multiple modes',
+        consumption_mode: 'gui',
+      });
+
+      const row = db.prepare('SELECT consumption_modes FROM personas WHERE id = ?').get(result.id) as PersonaRow;
+      const modes = JSON.parse(row.consumption_modes);
+      expect(Array.isArray(modes)).toBe(true);
+      expect(modes).toContain('gui');
     });
 
     it('should accept all valid consumption modes', () => {
@@ -340,6 +344,19 @@ describe('User Feedback Server', () => {
         });
         expect(result.id).toBeDefined();
       }
+    });
+
+    it('should support multi-mode personas', () => {
+      const id = randomUUID();
+      const now = new Date();
+      db.prepare(`
+        INSERT INTO personas (id, name, description, consumption_modes, behavior_traits, endpoints, created_at, created_timestamp, updated_at)
+        VALUES (?, ?, ?, ?, '[]', '[]', ?, ?, ?)
+      `).run(id, 'multi-mode', 'A multi-mode user', JSON.stringify(['sdk', 'gui']), now.toISOString(), Math.floor(now.getTime() / 1000), now.toISOString());
+
+      const row = db.prepare('SELECT consumption_modes FROM personas WHERE id = ?').get(id) as PersonaRow;
+      const modes = JSON.parse(row.consumption_modes);
+      expect(modes).toEqual(['sdk', 'gui']);
     });
 
     it('should update persona fields', () => {
@@ -390,8 +407,8 @@ describe('User Feedback Server', () => {
       const all = db.prepare('SELECT * FROM personas').all() as PersonaRow[];
       expect(all).toHaveLength(3);
 
-      // Filter by mode
-      const guiOnly = db.prepare('SELECT * FROM personas WHERE consumption_mode = ?').all('gui') as PersonaRow[];
+      // Filter by mode (using json_each for array column)
+      const guiOnly = db.prepare("SELECT * FROM personas WHERE EXISTS (SELECT 1 FROM json_each(consumption_modes) WHERE value = ?)").all('gui') as PersonaRow[];
       expect(guiOnly).toHaveLength(2);
 
       // Filter by enabled
@@ -799,9 +816,9 @@ describe('User Feedback Server', () => {
   // ============================================================================
 
   describe('Database Schema', () => {
-    it('should have index on personas consumption_mode', () => {
+    it('should have index on personas enabled', () => {
       const indexes = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_personas_mode'")
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_personas_enabled'")
         .all();
       expect(indexes).toHaveLength(1);
     });
