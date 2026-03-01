@@ -370,12 +370,18 @@ class PlaywrightFailureReporter {
       this._failedTests.set(filePath, []);
     }
 
+    // Capture screenshot attachments for demo failure enrichment
+    const screenshots = (result.attachments || [])
+      .filter(a => a.contentType && a.contentType.startsWith('image/') && a.path)
+      .map(a => a.path);
+
     this._failedTests.get(filePath).push({
       titlePath: test.titlePath(),
       location: test.location,
       errors: result.errors || [],
       status: result.status,
       duration: result.duration,
+      screenshots,
     });
   }
 
@@ -439,6 +445,29 @@ class PlaywrightFailureReporter {
       for (const suite of suitesToSpawn) {
         console.log(`  - ${suite}`);
       }
+    }
+
+    // Write enriched lastDemoFailure for .demo.ts files (consumed by check_demo_result MCP tool)
+    const demoFailures = [...filteredFailedTests.entries()]
+      .filter(([fp]) => fp.endsWith('.demo.ts'));
+    if (demoFailures.length > 0) {
+      const allScreenshots = [];
+      const demoSuiteNames = [];
+      for (const [fp, tests] of demoFailures) {
+        demoSuiteNames.push(path.basename(fp));
+        for (const t of tests) {
+          if (t.screenshots) allScreenshots.push(...t.screenshots);
+        }
+      }
+      const state = readState();
+      state.lastDemoFailure = {
+        testFile: demoFailures[0][0],
+        suiteNames: demoSuiteNames,
+        failureDetails: failureDetails.slice(0, 4000),
+        screenshotPaths: allScreenshots.slice(0, 5),
+        timestamp: now.toISOString(),
+      };
+      writeState(state);
     }
   }
 }

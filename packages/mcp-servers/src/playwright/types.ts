@@ -4,10 +4,7 @@
  * Provides MCP tools for launching Playwright in UI mode, running E2E tests
  * headlessly, seeding/cleaning test data, and checking test coverage.
  *
- * Persona mapping tied to AcmeIntegrate's three-persona architecture:
- * - SaaS Vendor (owner, admin, developer, viewer roles)
- * - End Customer (extension — headed Chromium with --load-extension)
- * - Platform Operator (deferred — requires operator panel)
+ * Project discovery is automatic from playwright.config.ts.
  *
  * @see playwright.config.ts
  * @see specs/global/G028-playwright-e2e-testing.md
@@ -20,8 +17,8 @@ import { z } from 'zod';
 // ============================================================================
 
 /**
- * Playwright project names mapped to AcmeIntegrate personas.
- * These match the `name` field in playwright.config.ts projects.
+ * @deprecated Use discoverPlaywrightConfig() from config-discovery.ts instead.
+ * Kept for backwards compatibility with existing test imports.
  */
 export const PLAYWRIGHT_PROJECTS = {
   // SaaS Vendor persona — primary dashboard user
@@ -51,68 +48,37 @@ export const PLAYWRIGHT_PROJECTS = {
 
 export type PlaywrightProject = typeof PLAYWRIGHT_PROJECTS[keyof typeof PLAYWRIGHT_PROJECTS];
 
-/** Projects available for UI mode launch (user-facing personas + manual) */
-const UI_MODE_PROJECTS = [
-  'vendor-owner',
-  'vendor-admin',
-  'vendor-dev',
-  'vendor-viewer',
-  'manual',
-  'extension',
-  'extension-manual',
-  'demo',
-  'cross-persona',
-  'auth-flows',
-] as const;
-
-/** Projects available for headless test runs */
-const TEST_PROJECTS = [
-  'vendor-owner',
-  'vendor-admin',
-  'vendor-dev',
-  'vendor-viewer',
-  'extension',
-  'cross-persona',
-  'auth-flows',
-] as const;
-
 // ============================================================================
 // Zod Schemas (G003 Compliance)
 // ============================================================================
 
 export const LaunchUiModeArgsSchema = z.object({
-  project: z.enum(UI_MODE_PROJECTS)
+  project: z.string()
+    .min(1)
+    .max(100)
     .describe(
-      'Playwright project to launch in UI mode. ' +
-      'vendor-owner: SaaS Vendor (Owner) — Full dashboard access, primary vendor persona. ' +
-      'vendor-admin: SaaS Vendor (Admin) — Most features except billing and danger zone. ' +
-      'vendor-dev: SaaS Vendor (Developer) — API-focused features, limited admin access. ' +
-      'vendor-viewer: SaaS Vendor (Viewer) — Read-only access to all dashboard pages. ' +
-      'manual: Manual QA — Navigates to page with page.pause() for human inspection. Best for demos. ' +
-      'extension: Extension E2E — Browser extension tests with --load-extension (headed Chromium). ' +
-      'extension-manual: Extension Manual QA — Extension scaffolds with page.pause() for interactive inspection. ' +
-      'demo: Unified Demo — Dashboard + extension in a single Chromium session for full product demos. ' +
-      'cross-persona: Cross-Persona — Multi-context workflows testing interactions between roles. ' +
-      'auth-flows: Auth Flows — Signup/signin tests without pre-loaded auth state.'
+      'Playwright project name from the target project\'s playwright.config.ts. ' +
+      'Common examples: vendor-owner, manual, extension-manual, demo, cross-persona, auth-flows.'
     ),
   base_url: z.string()
     .url()
     .optional()
     .describe('Override the base URL (default: http://localhost:3000)'),
+  test_file: z.string()
+    .max(500)
+    .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
+    .optional()
+    .describe('Relative path to a specific test file. When provided, only this file is shown in the UI.'),
 });
 
 export const RunTestsArgsSchema = z.object({
-  project: z.enum(TEST_PROJECTS)
+  project: z.string()
+    .min(1)
+    .max(100)
     .optional()
     .describe(
-      'Playwright project to run. If omitted, runs vendor-owner + cross-persona (default). ' +
-      'vendor-owner: SaaS Vendor (Owner) — Full dashboard access. ' +
-      'vendor-admin: SaaS Vendor (Admin). ' +
-      'vendor-dev: SaaS Vendor (Developer). ' +
-      'vendor-viewer: SaaS Vendor (Viewer) — Read-only. ' +
-      'extension: Extension E2E — Browser extension tests (headed Chromium). ' +
-      'cross-persona: Multi-context workflows. ' +
-      'auth-flows: Signup/signin tests.'
+      'Playwright project name from the target project\'s playwright.config.ts. ' +
+      'If omitted, runs the default project set defined in the config.'
     ),
   grep: z.string()
     .max(200)
@@ -147,10 +113,12 @@ export const GetReportArgsSchema = z.object({
 export const GetCoverageStatusArgsSchema = z.object({});
 
 export const PreflightCheckArgsSchema = z.object({
-  project: z.enum(UI_MODE_PROJECTS)
+  project: z.string()
+    .min(1)
+    .max(100)
     .optional()
     .describe(
-      'Playwright project to validate. If omitted, checks general readiness only ' +
+      'Playwright project name to validate. If omitted, checks general readiness only ' +
       '(config, deps, browsers, credentials). If provided, also validates test files ' +
       'exist and compilation succeeds for that specific project.'
     ),
@@ -241,11 +209,95 @@ export interface RunAuthSetupResult {
   output_summary: string;
 }
 
+export const RunDemoArgsSchema = z.object({
+  project: z.string()
+    .min(1)
+    .max(100)
+    .describe(
+      'Playwright project name to run in headed auto-play mode. ' +
+      'Read the target project\'s playwright.config.ts to discover available project names. ' +
+      'Exclude infrastructure projects (setup, seed, auth-setup) and manual projects (*-manual, manual) ' +
+      'which use page.pause() and are incompatible with auto-play.'
+    ),
+  slow_mo: z.coerce.number()
+    .int()
+    .min(0)
+    .max(5000)
+    .optional()
+    .default(800)
+    .describe(
+      'Milliseconds to pause between Playwright actions (default: 800). ' +
+      'Target project must read process.env.DEMO_SLOW_MO in playwright.config.ts ' +
+      'under use.launchOptions.slowMo for this to take effect.'
+    ),
+  base_url: z.string()
+    .url()
+    .optional()
+    .describe('Override the base URL (default: http://localhost:3000)'),
+  test_file: z.string()
+    .max(500)
+    .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
+    .optional()
+    .describe('Relative path to a specific test file (e.g., e2e/demo/onboarding.demo.ts). When provided, only this file runs.'),
+  pause_at_end: z.coerce.boolean()
+    .optional()
+    .default(false)
+    .describe('Set DEMO_PAUSE_AT_END=1 env var. Target project demo files that import the shared helper will call page.pause() at the end.'),
+});
+
+export type RunDemoArgs = z.infer<typeof RunDemoArgsSchema>;
+
+export interface RunDemoResult {
+  success: boolean;
+  project: string;
+  message: string;
+  pid?: number;
+  slow_mo?: number;
+  test_file?: string;
+  pause_at_end?: boolean;
+}
+
+export const CheckDemoResultArgsSchema = z.object({
+  pid: z.coerce.number().int().min(1)
+    .describe('Process ID returned by run_demo.'),
+});
+
+export type CheckDemoResultArgs = z.infer<typeof CheckDemoResultArgsSchema>;
+export type DemoRunStatus = 'running' | 'passed' | 'failed' | 'unknown';
+
+export interface CheckDemoResultResult {
+  status: DemoRunStatus;
+  pid: number;
+  project?: string;
+  test_file?: string;
+  started_at?: string;
+  ended_at?: string;
+  exit_code?: number;
+  failure_summary?: string;
+  screenshot_paths?: string[];
+  trace_summary?: string;
+  message: string;
+}
+
+export interface DemoRunState {
+  pid: number;
+  project: string;
+  test_file?: string;
+  started_at: string;
+  status: DemoRunStatus;
+  ended_at?: string;
+  exit_code?: number;
+  failure_summary?: string;
+  screenshot_paths?: string[];
+  trace_summary?: string;
+}
+
 export interface LaunchUiModeResult {
   success: boolean;
   project: string;
   message: string;
   pid?: number;
+  test_file?: string;
 }
 
 export interface RunTestsResult {

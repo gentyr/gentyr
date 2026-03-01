@@ -661,6 +661,59 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
         'Should show G001 fail-closed message');
     });
 
+    it('should block and fail-closed when acquireLock() fails in createRequest() (G001)', async () => {
+      // Setup: write a valid config with a protected server so the hook reaches createRequest()
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '2.0.0',
+        servers: {
+          'deputy-cto': {
+            protection: 'approval-only',
+            phrase: 'APPROVE BYPASS',
+            tools: ['execute_bypass'],
+          },
+        },
+        allowedUnprotectedServers: [],
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      // Pre-create the lock file so acquireLock() always finds it held.
+      // We must keep its mtime fresh (< 10s old) so the stale-lock eviction
+      // path never removes it during the 10 retry attempts.
+      const lockPath = path.join(tempDir.path, '.claude', 'protected-action-approvals.json.lock');
+      fs.writeFileSync(lockPath, 'held-by-test');
+
+      // Touch the lock file every 50ms to prevent it from going stale
+      const touchInterval = setInterval(() => {
+        try {
+          const now = new Date();
+          fs.utimesSync(lockPath, now, now);
+        } catch { /* lock may have been removed after hook exits */ }
+      }, 50);
+
+      let result;
+      try {
+        // Run the hook with a tool that is protected and would reach createRequest()
+        result = await runHook('mcp__deputy-cto__execute_bypass', {}, tempDir.path);
+      } finally {
+        clearInterval(touchInterval);
+        // Clean up lock file so subsequent tests are not affected
+        try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+      }
+
+      // G001: createRequest() returns null when lock cannot be acquired.
+      // main() must then fail-closed: exit code 1 and emit the FAIL-CLOSED message.
+      assert.strictEqual(result.exitCode, 1,
+        'Should block (exit 1) when acquireLock() fails in createRequest() (G001 fail-closed)');
+      assert.match(result.stderr, /FAIL-CLOSED/,
+        'Should emit FAIL-CLOSED message when createRequest() cannot acquire lock');
+      assert.match(result.stderr, /[Cc]ould not create approval request|failed to create approval/,
+        'Should indicate that the approval request could not be created');
+    });
+
     it('should handle malformed tool input gracefully', async () => {
       const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -1308,6 +1361,577 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
       assert.ok(audit, 'Should emit audit log');
       assert.ok(audit.entries.length <= 500, 'Entries array should never exceed 500');
       assert.ok(audit.count <= 500, 'Count should never exceed 500');
+    });
+
+    it('should emit audit log to stderr when config file is missing (config not found path)', async () => {
+      // Trigger the G001 FAIL-CLOSED config-not-found block path.
+      // The beforeEach tempDir has no protected-actions.json, so calling any MCP
+      // tool hits the notConfigured branch which calls logBlockedAction + emitAuditLog.
+      const result = await runHook('mcp__some-server__some-tool', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 1, 'Should block when config is missing');
+
+      const audit = parseAuditLog(result.stderr);
+      assert.ok(audit, 'Should emit blocked_actions_audit JSON to stderr for config-not-found path');
+      assert.strictEqual(audit.type, 'blocked_actions_audit');
+      assert.ok(audit.count >= 1, 'Count should be at least 1');
+      assert.ok(Array.isArray(audit.entries), 'Should include entries array');
+
+      const entry = audit.entries[audit.entries.length - 1];
+      assert.strictEqual(entry.server, 'some-server', 'Should log the server name');
+      assert.strictEqual(entry.tool, 'some-tool', 'Should log the tool name');
+      assert.ok(entry.reason, 'Should include a reason');
+      assert.match(entry.reason, /config not found/i, 'Reason should mention config not found');
+      assert.ok(entry.timestamp, 'Should include a timestamp');
+
+      const parsedDate = new Date(entry.timestamp);
+      assert.ok(!isNaN(parsedDate.getTime()), 'timestamp should be a valid ISO date');
+    });
+
+    it('should emit audit log to stderr when config is corrupted (config error path)', async () => {
+      // Trigger the G001 FAIL-CLOSED config-error block path by writing invalid JSON.
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      // Write deliberately invalid JSON to trigger the config.error branch
+      fs.writeFileSync(configPath, '{ invalid json }');
+
+      const result = await runHook('mcp__some-server__some-tool', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 1, 'Should block when config is corrupted');
+
+      const audit = parseAuditLog(result.stderr);
+      assert.ok(audit, 'Should emit blocked_actions_audit JSON to stderr for config-error path');
+      assert.strictEqual(audit.type, 'blocked_actions_audit');
+      assert.ok(audit.count >= 1, 'Count should be at least 1');
+      assert.ok(Array.isArray(audit.entries), 'Should include entries array');
+
+      const entry = audit.entries[audit.entries.length - 1];
+      assert.strictEqual(entry.server, 'some-server', 'Should log the server name');
+      assert.strictEqual(entry.tool, 'some-tool', 'Should log the tool name');
+      assert.ok(entry.reason, 'Should include a reason');
+      assert.match(entry.reason, /config corrupted/i, 'Reason should mention config corrupted');
+      assert.ok(entry.timestamp, 'Should include a timestamp');
+
+      const parsedDate = new Date(entry.timestamp);
+      assert.ok(!isNaN(parsedDate.getTime()), 'timestamp should be a valid ISO date');
+    });
+  });
+
+  // ==========================================================================
+  // Branch-aware protection (shouldSkipApproval)
+  //
+  // These tests inject GENTYR_CURRENT_BRANCH into the child process environment
+  // to control branch detection without spawning a real git repository.
+  //
+  // A separate helper (runHookWithBranch) is used so that branch env injection
+  // is explicit and never leaks into other describe blocks.
+  // ==========================================================================
+
+  /**
+   * Execute the hook with an explicit branch name injected via GENTYR_CURRENT_BRANCH.
+   * Passing branch='' or branch=null omits the env var (simulates detection failure).
+   */
+  async function runHookWithBranch(toolName, toolInput, projectDir, branch) {
+    const hookPath = path.join(__dirname, '..', 'protected-action-gate.js');
+
+    const env = {
+      ...process.env,
+      TOOL_NAME: toolName,
+      TOOL_INPUT: JSON.stringify(toolInput),
+      CLAUDE_PROJECT_DIR: projectDir,
+    };
+
+    // Remove any inherited GENTYR_CURRENT_BRANCH before conditionally re-adding it
+    delete env.GENTYR_CURRENT_BRANCH;
+
+    if (branch) {
+      env.GENTYR_CURRENT_BRANCH = branch;
+    }
+
+    try {
+      const { stdout, stderr } = await execAsync(`node "${hookPath}"`, { env });
+      return { exitCode: 0, stdout, stderr };
+    } catch (err) {
+      return { exitCode: err.code || 1, stdout: err.stdout || '', stderr: err.stderr || '' };
+    }
+  }
+
+  /**
+   * Write a protected-actions.json config with a single protected server
+   * that includes an environments map for branch-aware skip logic.
+   * Returns the path to the config file (already written).
+   */
+  function writeBranchAwareConfig(projectDir, environments) {
+    const configPath = path.join(projectDir, '.claude', 'hooks', 'protected-actions.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+    const config = {
+      version: '2.0.0',
+      servers: {
+        'test-server': {
+          protection: 'approval-only',
+          phrase: 'APPROVE TEST',
+          tools: '*',
+          ...(environments !== undefined && { environments }),
+        },
+      },
+      allowedUnprotectedServers: [],
+    };
+
+    fs.writeFileSync(configPath, JSON.stringify(config));
+    return configPath;
+  }
+
+  describe('Branch-aware protection', () => {
+    it('should allow tool when branch matches staging pattern with requireApproval false', async () => {
+      // Test scenario 1: Staging operations skip approval
+      writeBranchAwareConfig(tempDir.path, {
+        staging: { branchPattern: 'staging', requireApproval: false },
+      });
+
+      const result = await runHookWithBranch(
+        'mcp__test-server__some-tool',
+        {},
+        tempDir.path,
+        'staging'
+      );
+
+      assert.strictEqual(result.exitCode, 0,
+        'Staging branch with requireApproval: false should allow the tool (exit 0)');
+    });
+
+    it('should allow tool when branch matches preview/* glob with requireApproval false', async () => {
+      // Test scenario 2: Preview/* operations skip approval (direct match)
+      writeBranchAwareConfig(tempDir.path, {
+        preview: { branchPattern: 'preview/*', requireApproval: false },
+      });
+
+      const result = await runHookWithBranch(
+        'mcp__test-server__some-tool',
+        {},
+        tempDir.path,
+        'preview/pr-123'
+      );
+
+      assert.strictEqual(result.exitCode, 0,
+        'Branch "preview/pr-123" matching "preview/*" with requireApproval: false should exit 0');
+    });
+
+    it('should trigger protection when branch matches main with requireApproval true', async () => {
+      // Test scenario 3: Main branch requires approval even when environments is present
+      writeBranchAwareConfig(tempDir.path, {
+        production: { branchPattern: 'main', requireApproval: true },
+      });
+
+      const result = await runHookWithBranch(
+        'mcp__test-server__some-tool',
+        {},
+        tempDir.path,
+        'main'
+      );
+
+      assert.strictEqual(result.exitCode, 1,
+        'Branch "main" with requireApproval: true should trigger protection (exit 1)');
+      assert.match(result.stderr, /PROTECTED ACTION BLOCKED/,
+        'Should show protection block message for main branch');
+    });
+
+    it('should trigger protection when branch cannot be detected (fail-closed G001)', async () => {
+      // Test scenario 4: Branch detection failure defaults to requiring approval.
+      // Passing no branch value omits GENTYR_CURRENT_BRANCH; the hook falls back to
+      // `git branch --show-current`. In a detached-HEAD or non-git environment this
+      // may return an empty string or throw — either way shouldSkipApproval returns false.
+      writeBranchAwareConfig(tempDir.path, {
+        staging: { branchPattern: 'staging', requireApproval: false },
+      });
+
+      // Run without injecting a branch — simulates detection failure / empty branch
+      const result = await runHookWithBranch(
+        'mcp__test-server__some-tool',
+        {},
+        tempDir.path,
+        null   // null → GENTYR_CURRENT_BRANCH is omitted entirely
+      );
+
+      // The hook must fail-closed: if we cannot detect the branch we require approval.
+      // It may still exit 1 because protection is triggered (no approval present).
+      // The important invariant is that it does NOT exit 0 when branch is undetectable.
+      // (git branch --show-current will return the actual branch in the repo but the
+      // protection config only has "staging" — if we're on a different branch the hook
+      // blocks, which is the same fail-closed result we want to validate.)
+      assert.strictEqual(result.exitCode, 1,
+        'Undetectable branch should fail-closed and require approval (exit 1)');
+    });
+
+    it('should trigger protection when branch does not match any environment pattern', async () => {
+      // Test scenario 5: Unmatched branch defaults to requiring approval (fail-closed)
+      writeBranchAwareConfig(tempDir.path, {
+        staging: { branchPattern: 'staging', requireApproval: false },
+        preview: { branchPattern: 'preview/*', requireApproval: false },
+      });
+
+      const result = await runHookWithBranch(
+        'mcp__test-server__some-tool',
+        {},
+        tempDir.path,
+        'feature/my-feature'
+      );
+
+      assert.strictEqual(result.exitCode, 1,
+        'Unmatched branch "feature/my-feature" should trigger protection (exit 1)');
+      assert.match(result.stderr, /PROTECTED ACTION BLOCKED/,
+        'Should show protection block message for unmatched branch');
+    });
+
+    it('should preserve existing behavior when environments field is absent', async () => {
+      // Test scenario 6: No environments field — backward compatible, always require approval
+      // Write config WITHOUT environments so protection falls back to the old path
+      writeBranchAwareConfig(tempDir.path, undefined);
+
+      const result = await runHookWithBranch(
+        'mcp__test-server__some-tool',
+        {},
+        tempDir.path,
+        'staging'   // Even on "staging", without environments the gate must block
+      );
+
+      assert.strictEqual(result.exitCode, 1,
+        'Absent environments field should require approval regardless of branch (backward compatible)');
+      assert.match(result.stderr, /PROTECTED ACTION BLOCKED/,
+        'Should show protection block message when environments is absent');
+    });
+
+    it('should allow tool when nested preview branch matches preview/* glob', async () => {
+      // Test scenario 7: Preview glob matches nested branches (e.g. preview/my-feature)
+      writeBranchAwareConfig(tempDir.path, {
+        preview: { branchPattern: 'preview/*', requireApproval: false },
+      });
+
+      const result = await runHookWithBranch(
+        'mcp__test-server__some-tool',
+        {},
+        tempDir.path,
+        'preview/my-feature'
+      );
+
+      assert.strictEqual(result.exitCode, 0,
+        'Branch "preview/my-feature" should match "preview/*" and exit 0');
+    });
+
+    it('should trigger protection when branch name only starts with preview- but not preview/', async () => {
+      // Test scenario 8: Preview glob rejects branches that share the prefix word
+      // but do not have the "/" separator required by "preview/*"
+      writeBranchAwareConfig(tempDir.path, {
+        preview: { branchPattern: 'preview/*', requireApproval: false },
+      });
+
+      const result = await runHookWithBranch(
+        'mcp__test-server__some-tool',
+        {},
+        tempDir.path,
+        'preview-fake'
+      );
+
+      assert.strictEqual(result.exitCode, 1,
+        'Branch "preview-fake" should NOT match "preview/*" and must trigger protection (exit 1)');
+      assert.match(result.stderr, /PROTECTED ACTION BLOCKED/,
+        'Should show protection block message for non-matching "preview-fake" branch');
+    });
+  });
+
+  // ==========================================================================
+  // Branch-aware protection (G029) - Supabase server with real environments config
+  //
+  // These tests use the actual supabase server config including its environments
+  // field (production/staging/preview) as defined in protected-actions.json.
+  // Branch names are injected via GENTYR_CURRENT_BRANCH so no real git repo
+  // is required.
+  //
+  // The supabase server has a specific tools list (not wildcard):
+  //   supabase_sql, supabase_delete, supabase_delete_user, supabase_delete_file,
+  //   supabase_push_migration, supabase_get_migration
+  //
+  // Tests verify:
+  //   - main branch requires CTO approval (requireApproval: true)
+  //   - staging branch skips approval (requireApproval: false)
+  //   - preview/* branches skip approval (requireApproval: false)
+  //   - unknown branches default to blocked (G001 fail-closed)
+  //   - unprotected tools on the supabase server always pass through
+  // ==========================================================================
+
+  /**
+   * Write a protected-actions.json config that mirrors the real supabase entry,
+   * including the environments field for branch-aware protection (G029).
+   */
+  function writeSupabaseBranchAwareConfig(projectDir) {
+    const configPath = path.join(projectDir, '.claude', 'hooks', 'protected-actions.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+    const config = {
+      version: '2.0.0',
+      servers: {
+        supabase: {
+          protection: 'credential-isolated',
+          phrase: 'APPROVE DATABASE',
+          tools: [
+            'supabase_sql',
+            'supabase_delete',
+            'supabase_delete_user',
+            'supabase_delete_file',
+            'supabase_push_migration',
+            'supabase_get_migration',
+          ],
+          description: 'Supabase with branch-aware protection (G029) - main requires approval, staging/preview do not',
+          environments: {
+            production: {
+              branchPattern: 'main',
+              requireApproval: true,
+              description: 'Production (main branch) - destructive operations require CTO approval',
+            },
+            staging: {
+              branchPattern: 'staging',
+              requireApproval: false,
+              description: 'Staging branch - destructive operations allowed without approval',
+            },
+            preview: {
+              branchPattern: 'preview/*',
+              requireApproval: false,
+              description: 'Preview branches - ephemeral, no approval needed',
+            },
+          },
+        },
+      },
+      allowedUnprotectedServers: [],
+    };
+
+    fs.writeFileSync(configPath, JSON.stringify(config));
+    return configPath;
+  }
+
+  describe('Branch-aware protection (G029)', () => {
+    it('should block supabase_sql on main branch (requireApproval: true)', async () => {
+      // main branch maps to production environment with requireApproval: true.
+      // Calling a protected tool must be blocked and trigger the approval gate.
+      writeSupabaseBranchAwareConfig(tempDir.path);
+
+      const result = await runHookWithBranch(
+        'mcp__supabase__supabase_sql',
+        { query: 'SELECT 1' },
+        tempDir.path,
+        'main'
+      );
+
+      assert.strictEqual(result.exitCode, 1,
+        'supabase_sql on main branch must be blocked (requireApproval: true)');
+      assert.match(result.stderr, /PROTECTED ACTION BLOCKED/,
+        'Should show protection block message for main branch');
+      assert.match(result.stderr, /APPROVE DATABASE [A-Z0-9]{6}/,
+        'Should display APPROVE DATABASE phrase and code for supabase server');
+    });
+
+    it('should allow supabase_sql on staging branch (requireApproval: false)', async () => {
+      // staging branch maps to staging environment with requireApproval: false.
+      // The approval gate is skipped; the tool should pass through (exit 0).
+      writeSupabaseBranchAwareConfig(tempDir.path);
+
+      const result = await runHookWithBranch(
+        'mcp__supabase__supabase_sql',
+        { query: 'SELECT count(*) FROM users' },
+        tempDir.path,
+        'staging'
+      );
+
+      assert.strictEqual(result.exitCode, 0,
+        'supabase_sql on staging branch must be allowed (requireApproval: false)');
+    });
+
+    it('should allow supabase_sql on preview/pr-123 branch (requireApproval: false)', async () => {
+      // preview/pr-123 matches the "preview/*" glob in the preview environment,
+      // which has requireApproval: false. The gate must be skipped.
+      writeSupabaseBranchAwareConfig(tempDir.path);
+
+      const result = await runHookWithBranch(
+        'mcp__supabase__supabase_sql',
+        { query: 'SELECT 1' },
+        tempDir.path,
+        'preview/pr-123'
+      );
+
+      assert.strictEqual(result.exitCode, 0,
+        'supabase_sql on preview/pr-123 must be allowed (preview/* with requireApproval: false)');
+    });
+
+    it('should block supabase_sql on unknown branch (G001 fail-closed)', async () => {
+      // feature/test does not match any environment pattern (main, staging, preview/*).
+      // G001 fail-closed: no match → require approval → block (exit 1).
+      writeSupabaseBranchAwareConfig(tempDir.path);
+
+      const result = await runHookWithBranch(
+        'mcp__supabase__supabase_sql',
+        { query: 'SELECT 1' },
+        tempDir.path,
+        'feature/test'
+      );
+
+      assert.strictEqual(result.exitCode, 1,
+        'supabase_sql on unknown branch must be blocked (G001 fail-closed, no matching environment)');
+      assert.match(result.stderr, /PROTECTED ACTION BLOCKED/,
+        'Should show protection block message for unmatched branch');
+    });
+
+    it('should allow supabase_list_tables on main branch (not a protected tool)', async () => {
+      // supabase_list_tables is NOT in the supabase tools list, so it is unprotected.
+      // Even on the main branch, unprotected tools on a known server pass through.
+      writeSupabaseBranchAwareConfig(tempDir.path);
+
+      const result = await runHookWithBranch(
+        'mcp__supabase__supabase_list_tables',
+        {},
+        tempDir.path,
+        'main'
+      );
+
+      assert.strictEqual(result.exitCode, 0,
+        'supabase_list_tables is not a protected tool and must pass through on any branch');
+    });
+  });
+
+  // ==========================================================================
+  // parseMcpToolName regex - double underscore defense
+  //
+  // Validates that the updated regex rejects tool names containing double
+  // underscores (the MCP namespace delimiter), leading/trailing underscores,
+  // and double hyphens, while continuing to accept valid names.
+  // ==========================================================================
+
+  describe('parseMcpToolName regex - double underscore defense', () => {
+    it('should reject tool names with double underscores (extra segment attack)', async () => {
+      // mcp__supabase__executeSql__extra uses __ inside the tool part,
+      // which is the MCP namespace delimiter. The regex must not parse this.
+      const result = await runHook('mcp__supabase__executeSql__extra', {}, tempDir.path);
+
+      // The hook will not parse the tool name as a valid MCP call.
+      // Without a valid parse, the hook treats the name as a non-MCP tool
+      // and passes through (exit 0), but critically it must NOT be dispatched
+      // as if it were mcp__supabase__executeSql. We verify the hook did not
+      // route it as a protected supabase tool by checking that it exited 0
+      // (treated as non-MCP, not as a mcp__supabase call that bypassed the gate).
+      // If it had been parsed as mcp__supabase__executeSql, it would hit the
+      // protected-actions config for supabase and exit 1.
+      // The key invariant: it must NOT be parsed and dispatched as a known
+      // protected server tool, so exit 0 (non-MCP pass-through) is correct
+      // and safe — the tool simply does not exist.
+      assert.strictEqual(result.exitCode, 0,
+        'Malformed tool with double underscore should not be parsed as valid MCP tool');
+    });
+
+    it('should reject tool names with leading underscore', async () => {
+      // mcp__supabase___leading has ___ between server and tool (leading _ on tool).
+      // The regex requires the tool segment start with [a-zA-Z0-9], so this is rejected.
+      const result = await runHook('mcp__supabase___leading', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 0,
+        'Tool name with leading underscore should not be parsed as valid MCP tool');
+    });
+
+    it('should reject tool names with trailing underscore', async () => {
+      // Tool segment ends with _ which violates the regex pattern
+      // requiring each separator group to have alphanumeric chars on both sides.
+      const result = await runHook('mcp__supabase__trailing_', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 0,
+        'Tool name with trailing underscore should not be parsed as valid MCP tool');
+    });
+
+    it('should reject tool names with double hyphens', async () => {
+      // Double hyphens (--) inside the tool segment are not valid separators.
+      const result = await runHook('mcp__supabase__foo--bar', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 0,
+        'Tool name with double hyphens should not be parsed as valid MCP tool');
+    });
+
+    it('should accept valid tool names with single underscores', async () => {
+      // mcp__supabase__list_tasks is the canonical valid form with underscore separator.
+      // With no config present, it should block as an unrecognized MCP server
+      // (not pass through as non-MCP), confirming the name was successfully parsed.
+      const result = await runHook('mcp__supabase__list_tasks', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 1,
+        'Valid MCP tool with single underscore should be parsed and blocked (no config present)');
+      assert.match(result.stderr, /config not found/i,
+        'Should be blocked due to missing config, confirming it was parsed as MCP tool');
+    });
+
+    it('should accept valid tool names with single hyphens', async () => {
+      // mcp__deputy-cto__approve_commit has a hyphenated server name and
+      // an underscored tool name — both are valid formats.
+      const result = await runHook('mcp__deputy-cto__approve_commit', {}, tempDir.path);
+
+      assert.strictEqual(result.exitCode, 1,
+        'Valid MCP tool with hyphenated server and underscored tool should be parsed and blocked');
+      assert.match(result.stderr, /config not found/i,
+        'Should be blocked due to missing config, confirming it was parsed as MCP tool');
+    });
+
+    it('security: malformed tool name on known server does not bypass gate (fail-closed)', async () => {
+      // Defense-in-depth test: even if an adversary crafts a name like
+      // mcp__supabase__executeSql__extra hoping the gate routes it as
+      // mcp__supabase__executeSql, the regex must reject the full name so it
+      // is never dispatched as a known protected tool.
+      //
+      // Set up a config that protects supabase with wildcard tools, then call
+      // the malformed name. The hook should NOT allow it through as an approved
+      // supabase action — it must either be blocked (exit 1) or be treated as
+      // an unrecognized non-MCP tool. Either outcome is safe; the critical
+      // invariant is that it does NOT return exit 0 while being routed as
+      // mcp__supabase__executeSql (which would mean the gate was bypassed).
+      const configPath = path.join(tempDir.path, '.claude', 'hooks', 'protected-actions.json');
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+      const config = {
+        version: '2.0.0',
+        servers: {
+          supabase: {
+            protection: 'credential-isolated',
+            phrase: 'APPROVE DATABASE',
+            tools: '*',
+          },
+        },
+        allowedUnprotectedServers: [],
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      const result = await runHook('mcp__supabase__executeSql__extra', {}, tempDir.path);
+
+      // The malformed name cannot be parsed as mcp__supabase__executeSql.
+      // Because it fails the regex, the hook treats it as a non-MCP tool
+      // (exits 0) — it is never routed to the supabase protection check.
+      // This is safe: the tool call itself is invalid and will fail at execution.
+      // Critically, the exit code must NOT be 0 via a path that approved a
+      // protected supabase action. We verify this by checking that when the
+      // gate exits 0, the stderr does NOT contain the supabase approval message.
+      assert.ok(
+        result.exitCode === 0 || result.exitCode === 1,
+        'Hook must exit 0 (non-MCP pass-through) or 1 (blocked), never silently approve'
+      );
+
+      if (result.exitCode === 0) {
+        // Exited as non-MCP pass-through: confirm it was NOT routed as supabase
+        assert.ok(
+          !result.stderr.includes('Approval verified'),
+          'A malformed tool name must never be approved as a protected supabase action'
+        );
+        assert.ok(
+          !result.stderr.includes('APPROVE DATABASE'),
+          'A malformed tool name must not trigger the supabase approval flow'
+        );
+      } else {
+        // Exited as blocked: also acceptable (fail-closed is always safe)
+        assert.ok(result.exitCode === 1, 'If blocked, exit code must be 1');
+      }
     });
   });
 });

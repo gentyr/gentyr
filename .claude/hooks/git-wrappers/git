@@ -1,0 +1,284 @@
+#!/bin/sh
+# =============================================================================
+# Git Wrapper: Branch Checkout Guard + Main Tree Commit Guard
+#
+# Prevents branch checkout/switch in the main working tree (all sessions).
+# Prevents destructive git ops (add, commit, reset --hard, stash) for
+# spawned agents in the main working tree.
+#
+# Injected into spawned agent environments via PATH prepending.
+#
+# Rules:
+#   - checkout/switch in main tree -> BLOCKED (exit 128)
+#   - checkout main (recovery) -> allowed
+#   - file restore (-- prefix) -> allowed
+#   - worktree (.git is a file) -> allowed
+#   - add/commit/reset --hard/stash in main tree (spawned only) -> BLOCKED
+#   - everything else (log, status, diff, etc.) -> passthrough
+#
+# SECURITY: This file should be root-owned via protect-framework.sh
+# =============================================================================
+
+# Find the real git by searching PATH entries that aren't our wrapper dir
+SELF_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+REAL_GIT=""
+OLD_IFS="$IFS"
+IFS=':'
+for dir in $PATH; do
+  case "$dir" in
+    "$SELF_DIR") continue ;;
+  esac
+  if [ -x "$dir/git" ]; then
+    REAL_GIT="$dir/git"
+    break
+  fi
+done
+IFS="$OLD_IFS"
+
+if [ -z "$REAL_GIT" ]; then
+  echo "FATAL: Cannot find real git binary" >&2
+  exit 127
+fi
+
+# Fast path: no arguments at all
+if [ $# -eq 0 ]; then
+  exec "$REAL_GIT"
+fi
+
+# Extract the git subcommand (skip global flags like -C, -c, --git-dir, etc.)
+SUBCMD=""
+i=0
+skip_next=0
+for arg in "$@"; do
+  if [ "$skip_next" = "1" ]; then
+    skip_next=0
+    continue
+  fi
+  case "$arg" in
+    -C|-c|--git-dir|--work-tree|--namespace)
+      skip_next=1
+      continue
+      ;;
+    --git-dir=*|--work-tree=*|--namespace=*|-C*)
+      continue
+      ;;
+    --bare|--no-pager|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--no-optional-locks)
+      continue
+      ;;
+    -*)
+      continue
+      ;;
+    *)
+      SUBCMD="$arg"
+      break
+      ;;
+  esac
+done
+
+# Fast path: commands we don't guard -> passthrough (zero overhead)
+case "$SUBCMD" in
+  checkout|switch) ;;
+  add|commit|reset|stash|clean|pull)
+    # Only guard spawned agents in main tree (exempt promotion pipeline)
+    if [ "$CLAUDE_SPAWNED_SESSION" = "true" ] && [ -d ".git" ] && [ "$GENTYR_PROMOTION_PIPELINE" != "true" ]; then
+      # --- git add: always blocked for spawned agents in main tree ---
+      if [ "$SUBCMD" = "add" ]; then
+        cat >&2 <<'BLOCKED_MSG'
+BLOCKED: Spawned agent cannot run 'git add' in the main working tree.
+  Staging files triggers lint-staged on commit, which can destroy
+  the parent session's uncommitted work via 'git stash' + 'git reset --hard'.
+  You must be spawned with isolation: "worktree" to commit changes.
+BLOCKED_MSG
+        exit 128
+      fi
+
+      # --- git commit: always blocked for spawned agents in main tree ---
+      if [ "$SUBCMD" = "commit" ]; then
+        cat >&2 <<'BLOCKED_MSG'
+BLOCKED: Spawned agent cannot run 'git commit' in the main working tree.
+  Commits trigger pre-commit hooks including lint-staged, which uses
+  'git stash push' / 'git stash pop' / 'git reset --hard' internally.
+  A failed stash pop destroys ALL uncommitted working tree changes.
+  You must be spawned with isolation: "worktree" to commit changes.
+BLOCKED_MSG
+        exit 128
+      fi
+
+      # --- git reset --hard: blocked; soft reset allowed ---
+      if [ "$SUBCMD" = "reset" ]; then
+        has_hard=0
+        for a in "$@"; do
+          case "$a" in
+            --hard) has_hard=1 ;;
+          esac
+        done
+        if [ "$has_hard" = "1" ]; then
+          cat >&2 <<'BLOCKED_MSG'
+BLOCKED: Spawned agent cannot run 'git reset --hard' in the main working tree.
+  This directly destroys all uncommitted working tree changes.
+  You must be spawned with isolation: "worktree" to use reset --hard.
+BLOCKED_MSG
+          exit 128
+        fi
+        # Soft reset / unstaging is fine
+        exec "$REAL_GIT" "$@"
+      fi
+
+      # --- git stash: block destructive actions, allow read-only ---
+      if [ "$SUBCMD" = "stash" ]; then
+        # Find the stash action (first non-flag arg after 'stash')
+        stash_action=""
+        past_stash=0
+        for a in "$@"; do
+          if [ "$past_stash" = "0" ]; then
+            if [ "$a" = "stash" ]; then
+              past_stash=1
+            fi
+            continue
+          fi
+          case "$a" in
+            -*) continue ;;
+            *)
+              stash_action="$a"
+              break
+              ;;
+          esac
+        done
+
+        # Read-only stash subcommands are always allowed
+        case "$stash_action" in
+          list|show)
+            exec "$REAL_GIT" "$@"
+            ;;
+        esac
+
+        # Everything else (push, pop, drop, clear, apply, bare stash) is blocked
+        cat >&2 <<'BLOCKED_MSG'
+BLOCKED: Spawned agent cannot run destructive 'git stash' in the main working tree.
+  Stash operations displace uncommitted changes and can cause data loss.
+  You must be spawned with isolation: "worktree" to use stash.
+BLOCKED_MSG
+        exit 128
+      fi
+
+      # --- git clean: always blocked for spawned agents in main tree ---
+      if [ "$SUBCMD" = "clean" ]; then
+        cat >&2 <<'BLOCKED_MSG'
+BLOCKED: Spawned agent cannot run 'git clean' in the main working tree.
+  This deletes untracked files created by the parent session.
+  You must be spawned with isolation: "worktree" to use git clean.
+BLOCKED_MSG
+        exit 128
+      fi
+
+      # --- git pull: blocked because fetch+merge can clobber working tree ---
+      if [ "$SUBCMD" = "pull" ]; then
+        cat >&2 <<'BLOCKED_MSG'
+BLOCKED: Spawned agent cannot run 'git pull' in the main working tree.
+  Pull runs fetch+merge which can overwrite uncommitted work with upstream changes.
+  You must be spawned with isolation: "worktree" to use git pull.
+BLOCKED_MSG
+        exit 128
+      fi
+    fi
+    exec "$REAL_GIT" "$@"
+    ;;
+  *) exec "$REAL_GIT" "$@" ;;
+esac
+
+# Check if we're in a worktree (.git is a file, not a directory)
+if [ -f ".git" ]; then
+  # Worktree — everything allowed
+  exec "$REAL_GIT" "$@"
+fi
+
+# Check if we're in a git repo at all
+if [ ! -d ".git" ]; then
+  # Not a repo — passthrough
+  exec "$REAL_GIT" "$@"
+fi
+
+# We're in the main working tree with checkout/switch. Parse args.
+has_dash_dash=0
+has_create_flag=0
+target_branch=""
+
+# Re-parse: skip the subcommand itself, collect remaining args
+past_subcmd=0
+for arg in "$@"; do
+  if [ "$past_subcmd" = "0" ]; then
+    # Skip until we find the subcommand
+    case "$arg" in
+      -C|-c|--git-dir|--work-tree|--namespace)
+        skip_next=1
+        continue
+        ;;
+    esac
+    if [ "$skip_next" = "1" ]; then
+      skip_next=0
+      continue
+    fi
+    case "$arg" in
+      --git-dir=*|--work-tree=*|--namespace=*|-C*)
+        continue
+        ;;
+      --bare|--no-pager|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--no-optional-locks)
+        continue
+        ;;
+      checkout|switch)
+        past_subcmd=1
+        continue
+        ;;
+    esac
+    continue
+  fi
+
+  # Now parsing checkout/switch args
+  case "$arg" in
+    --)
+      has_dash_dash=1
+      ;;
+    -b|-B|--create|--force-create|-c)
+      has_create_flag=1
+      ;;
+    -b*|-B*)
+      # -b<branch> combined form
+      has_create_flag=1
+      target_branch="${arg#-?}"
+      ;;
+    -*)
+      # Other flags (--force, --detach, etc.)
+      ;;
+    *)
+      # Positional argument = branch name or file
+      if [ -z "$target_branch" ]; then
+        target_branch="$arg"
+      fi
+      ;;
+  esac
+done
+
+# Rule: file restore (-- present) -> allow
+if [ "$has_dash_dash" = "1" ]; then
+  exec "$REAL_GIT" "$@"
+fi
+
+# Rule: checkout main (recovery path) -> allow
+if [ "$target_branch" = "main" ]; then
+  exec "$REAL_GIT" "$@"
+fi
+
+# Rule: no target and no create flag -> harmless (e.g. bare "git checkout")
+if [ -z "$target_branch" ] && [ "$has_create_flag" = "0" ]; then
+  exec "$REAL_GIT" "$@"
+fi
+
+# BLOCK: branch change in main working tree
+cat >&2 <<'BLOCKED_MSG'
+BLOCKED: Branch checkout in main working tree.
+  The main tree must stay on 'main' to prevent drift.
+  You are working in the main tree — use a worktree for feature work.
+  Worktrees are created automatically by the task runner.
+  To recover: 'git checkout main' is always allowed.
+BLOCKED_MSG
+exit 128

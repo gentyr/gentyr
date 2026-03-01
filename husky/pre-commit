@@ -10,13 +10,20 @@ echo ""
 # =============================================================================
 
 TAMPER=0
+# Prefer copy-on-protect directory (linked projects with local root-owned copies)
+if [ -d ".claude/hooks-protected" ]; then
+  HOOKS_CHECK_DIR=".claude/hooks-protected"
+else
+  HOOKS_CHECK_DIR=".claude/hooks"
+fi
 for f in pre-commit-review.js bypass-approval-hook.js block-no-verify.js \
          protected-action-gate.js protected-action-approval-hook.js \
-         credential-file-guard.js secret-leak-detector.js protected-actions.json; do
-  if [ -f ".claude/hooks/$f" ]; then
-    uid=$(stat -f '%u' ".claude/hooks/$f" 2>/dev/null || stat -c '%u' ".claude/hooks/$f" 2>/dev/null)
+         credential-file-guard.js secret-leak-detector.js protected-actions.json \
+         branch-checkout-guard.js main-tree-commit-guard.js git-wrappers/git; do
+  if [ -f "$HOOKS_CHECK_DIR/$f" ]; then
+    uid=$(stat -f '%u' "$HOOKS_CHECK_DIR/$f" 2>/dev/null || stat -c '%u' "$HOOKS_CHECK_DIR/$f" 2>/dev/null)
     if [ "$uid" != "0" ]; then
-      echo "SECURITY: .claude/hooks/$f not root-owned (uid=$uid)"
+      echo "SECURITY: $HOOKS_CHECK_DIR/$f not root-owned (uid=$uid)"
       TAMPER=1
     fi
   fi
@@ -54,6 +61,28 @@ else
   echo "COMMIT BLOCKED: .claude/hooks does not exist"
   exit 1
 fi
+echo ""
+
+# =============================================================================
+# SECURITY: core.hooksPath WORKTREE CHECK
+# =============================================================================
+# If core.hooksPath points into .claude/worktrees/, it was set by a Claude Code
+# sub-agent worktree and should be reset. Auto-repairs to .husky.
+# =============================================================================
+
+HOOKS_PATH=$(git config --local --get core.hooksPath 2>/dev/null || true)
+if [ -n "$HOOKS_PATH" ]; then
+  case "$HOOKS_PATH" in
+    */.claude/worktrees/*)
+      echo "SECURITY: core.hooksPath points into a worktree: $HOOKS_PATH"
+      echo "  Auto-repairing to .husky..."
+      git config --local core.hooksPath .husky
+      echo "  Fixed. Re-run your commit."
+      exit 1
+      ;;
+  esac
+fi
+echo "core.hooksPath verified"
 echo ""
 
 # =============================================================================

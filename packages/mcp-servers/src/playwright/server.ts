@@ -49,18 +49,72 @@ import {
   RunAuthSetupArgsSchema,
   type RunAuthSetupArgs,
   type RunAuthSetupResult,
+  RunDemoArgsSchema,
+  type RunDemoArgs,
+  type RunDemoResult,
+  CheckDemoResultArgsSchema,
+  type CheckDemoResultArgs,
+  type CheckDemoResultResult,
+  type DemoRunState,
 } from './types.js';
 import { parseTestOutput, truncateOutput } from './helpers.js';
+import { discoverPlaywrightConfig } from './config-discovery.js';
+import { findTraceZip, parseTraceZip } from './trace-parser.js';
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
 const PROJECT_DIR = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd());
+const pwConfig = discoverPlaywrightConfig(PROJECT_DIR);
 const REPORT_DIR = path.join(PROJECT_DIR, 'playwright-report');
 const RUN_TIMEOUT = 300_000; // 5 minutes for test runs
 
-// Map standard env names to NEXT_PUBLIC_ variants for Next.js webServer.
+// ============================================================================
+// Demo Run Tracking
+// ============================================================================
+
+const DEMO_RUNS_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'demo-runs.json');
+const demoRuns = new Map<number, DemoRunState>();
+
+function loadPersistedDemoRuns(): void {
+  try {
+    if (!fs.existsSync(DEMO_RUNS_PATH)) return;
+    const data = JSON.parse(fs.readFileSync(DEMO_RUNS_PATH, 'utf-8'));
+    if (Array.isArray(data)) {
+      for (const entry of data) {
+        if (entry.pid && typeof entry.pid === 'number') {
+          demoRuns.set(entry.pid, entry);
+        }
+      }
+    }
+  } catch {
+    // State file corrupt or missing — start fresh
+  }
+}
+
+function persistDemoRuns(): void {
+  try {
+    const stateDir = path.dirname(DEMO_RUNS_PATH);
+    if (!fs.existsSync(stateDir)) {
+      fs.mkdirSync(stateDir, { recursive: true });
+    }
+    // Keep only last 20 entries to avoid unbounded growth
+    // Exclude trace_summary from persistence — it can be 50KB per entry
+    const entries = [...demoRuns.values()]
+      .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
+      .slice(0, 20)
+      .map(({ trace_summary, ...rest }) => rest);
+    fs.writeFileSync(DEMO_RUNS_PATH, JSON.stringify(entries, null, 2));
+  } catch {
+    // Non-fatal — state will be lost on MCP restart
+  }
+}
+
+// Load persisted state on startup
+loadPersistedDemoRuns();
+
+// Convenience mapping for Next.js projects using Supabase — no-op when these vars are absent.
 // Credentials are injected by mcp-launcher.js from 1Password at runtime.
 if (process.env.SUPABASE_URL && !process.env.NEXT_PUBLIC_SUPABASE_URL) {
   process.env.NEXT_PUBLIC_SUPABASE_URL = process.env.SUPABASE_URL;
@@ -108,51 +162,42 @@ interface PreflightResult {
 
 /**
  * Validate that required environment variables are set and resolved.
- * Catches broken 1Password injection (op:// references still present)
- * and missing Supabase credentials before spawning Playwright.
+ * Two checks:
+ *   1. Unresolved op:// references → credential injection failed
+ *   2. When the project uses auth (storageState in config), at least one
+ *      credential env var must be present — catches completely missing credentials
+ *
+ * Project-agnostic: no hardcoded credential key names.
  */
 function validatePrerequisites(): PreflightResult {
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  const required = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY'] as const;
-
-  for (const name of required) {
-    const value = process.env[name];
-    if (!value) {
-      errors.push(`${name} is not set`);
-    } else if (value.startsWith('op://')) {
-      errors.push(`${name} contains unresolved 1Password reference (op:// prefix detected)`);
+  // Check 1: Unresolved 1Password references
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value && value.startsWith('op://')) {
+      errors.push(`${name} contains unresolved 1Password reference`);
     }
   }
 
-  const optional = ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY'] as const;
-
-  for (const name of optional) {
-    const value = process.env[name];
-    if (!value) {
-      warnings.push(`${name} is not set (will be derived from SUPABASE_* if available)`);
-    } else if (value.startsWith('op://')) {
-      errors.push(`${name} contains unresolved 1Password reference (op:// prefix detected)`);
+  // Check 2: When the project uses auth, at least one credential env var should be set.
+  // Credential env vars are those injected by mcp-launcher.js from 1Password (typically
+  // SUPABASE_URL, DATABASE_URL, API_KEY, etc.). We detect them by checking for env vars
+  // that are NOT standard Node/system vars and have non-empty values.
+  if (pwConfig.authFiles.length > 0) {
+    const credentialVars = Object.entries(process.env).filter(([name, value]) => {
+      if (!value || value.startsWith('op://')) return false;
+      // Skip known system/Node vars — credential vars are the remainder
+      const isSystem = /^(PATH|HOME|USER|SHELL|TERM|LANG|LC_|TMPDIR|PWD|OLDPWD|SHLVL|_|NODE|npm_|CLAUDE_|GENTYR_|HTTPS?_PROXY|NO_PROXY|HOSTNAME|LOGNAME|DISPLAY|XDG_|SSH_|GPG_)/i.test(name);
+      return !isSystem;
+    });
+    if (credentialVars.length === 0) {
+      errors.push('No credential environment variables found — 1Password injection may have failed entirely');
     }
   }
 
   return { ok: errors.length === 0, errors, warnings };
 }
-
-/** Persona descriptions for coverage reporting */
-const PERSONA_MAP: Record<string, string> = {
-  'vendor-owner': 'SaaS Vendor (Owner)',
-  'vendor-admin': 'SaaS Vendor (Admin)',
-  'vendor-dev': 'SaaS Vendor (Developer)',
-  'vendor-viewer': 'SaaS Vendor (Viewer)',
-  'cross-persona': 'Cross-Persona Workflows',
-  'auth-flows': 'Auth Flows (No Pre-auth)',
-  'manual': 'Manual QA Scaffolds',
-  'extension': 'End Customer (Extension)',
-  'extension-manual': 'Extension Manual QA',
-  'demo': 'Unified Demo (Dashboard + Extension)',
-};
 
 // ============================================================================
 // Tool Implementations
@@ -163,7 +208,7 @@ const PERSONA_MAP: Record<string, string> = {
  * Validates prerequisites, spawns a detached process, and monitors for early crashes.
  */
 async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult> {
-  const { project, base_url } = args;
+  const { project, base_url, test_file } = args;
 
   // Pre-flight validation
   const preflight = validatePrerequisites();
@@ -177,6 +222,11 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
 
   const cmdArgs = ['playwright', 'test', '--project', project, '--ui'];
   const env: Record<string, string> = { ...process.env as Record<string, string> };
+
+  // Insert test_file as positional arg (after 'test', before '--project')
+  if (test_file) {
+    cmdArgs.splice(2, 0, test_file);
+  }
 
   if (base_url) {
     env.PLAYWRIGHT_BASE_URL = base_url;
@@ -228,7 +278,8 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
 
     // Still running after 3s — detach and return success
     if (child.stderr) {
-      child.stderr.destroy();
+      child.stderr.removeAllListeners('data');
+      child.stderr.resume(); // keep pipe open and draining to prevent SIGPIPE
     }
     child.unref();
 
@@ -239,8 +290,9 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
     return {
       success: true,
       project,
-      message: `Playwright UI mode launched for project "${project}". The browser window should open shortly.${warningText}`,
+      message: `Playwright UI mode launched for project "${project}".${test_file ? ` Filtered to: ${test_file}.` : ''} The browser window should open shortly.${warningText}`,
       pid: child.pid,
+      test_file,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -250,6 +302,270 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
       message: `Failed to launch Playwright UI: ${message}`,
     };
   }
+}
+
+/**
+ * Launch Playwright tests in headed auto-play mode.
+ * Runs tests in a visible browser at configurable speed via DEMO_SLOW_MO env var.
+ * Validates prerequisites, spawns a detached process, and monitors for early crashes.
+ */
+async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
+  const { project, slow_mo, base_url, test_file, pause_at_end } = args;
+
+  // Pre-flight validation
+  const preflight = validatePrerequisites();
+  if (!preflight.ok) {
+    return {
+      success: false,
+      project,
+      message: `Environment validation failed:\n${preflight.errors.map(e => `  - ${e}`).join('\n')}`,
+    };
+  }
+
+  const cmdArgs = ['playwright', 'test', '--project', project, '--headed', '--trace', 'on'];
+  const env: Record<string, string> = { ...process.env as Record<string, string> };
+
+  // Insert test_file as positional arg (after 'test', before '--project')
+  if (test_file) {
+    cmdArgs.splice(2, 0, test_file);
+  }
+
+  if (slow_mo !== undefined) {
+    env.DEMO_SLOW_MO = String(slow_mo);
+  }
+
+  if (pause_at_end) {
+    env.DEMO_PAUSE_AT_END = '1';
+  }
+
+  if (base_url) {
+    env.PLAYWRIGHT_BASE_URL = base_url;
+  }
+
+  try {
+    const child = spawn('npx', cmdArgs, {
+      detached: true,
+      stdio: ['ignore', 'ignore', 'pipe'],
+      cwd: PROJECT_DIR,
+      env,
+    });
+
+    // Collect stderr for crash diagnostics
+    let stderrChunks: Buffer[] = [];
+    if (child.stderr) {
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrChunks.push(chunk);
+      });
+    }
+
+    // Wait up to 15s for early crash detection (longer than UI mode — headed browser + webServer startup is slower)
+    const earlyExit = await new Promise<{ code: number | null; signal: string | null } | null>(
+      (resolve) => {
+        const timer = setTimeout(() => resolve(null), 15000);
+
+        child.on('exit', (code, signal) => {
+          clearTimeout(timer);
+          resolve({ code, signal });
+        });
+
+        child.on('error', (err) => {
+          clearTimeout(timer);
+          resolve({ code: 1, signal: err.message });
+        });
+      }
+    );
+
+    if (earlyExit) {
+      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
+      const snippet = stderr.length > 500 ? stderr.slice(0, 500) + '...' : stderr;
+      return {
+        success: false,
+        project,
+        message: `Playwright process crashed within 15s (exit code: ${earlyExit.code}, signal: ${earlyExit.signal})${snippet ? `\nstderr: ${snippet}` : ''}`,
+      };
+    }
+
+    // Still running after 15s — detach and return success
+    if (child.stderr) {
+      child.stderr.removeAllListeners('data');
+      child.stderr.resume(); // keep pipe open and draining to prevent SIGPIPE
+    }
+
+    // Register demo run for check_demo_result tracking
+    const demoPid = child.pid!;
+    const demoState: DemoRunState = {
+      pid: demoPid,
+      project,
+      test_file,
+      started_at: new Date().toISOString(),
+      status: 'running',
+    };
+    demoRuns.set(demoPid, demoState);
+    persistDemoRuns();
+
+    // Track exit for post-hoc status checks (fires even after unref since MCP server stays alive)
+    child.on('exit', (code) => {
+      const entry = demoRuns.get(demoPid);
+      if (!entry) return;
+
+      entry.ended_at = new Date().toISOString();
+      entry.exit_code = code ?? undefined;
+      entry.status = code === 0 ? 'passed' : 'failed';
+
+      if (entry.status === 'failed') {
+        // Read lastDemoFailure from test-failure-state.json for enriched context
+        try {
+          const failureStatePath = path.join(PROJECT_DIR, '.claude', 'test-failure-state.json');
+          if (fs.existsSync(failureStatePath)) {
+            const failureState = JSON.parse(fs.readFileSync(failureStatePath, 'utf-8'));
+            if (failureState.lastDemoFailure) {
+              entry.failure_summary = failureState.lastDemoFailure.failureDetails?.slice(0, 2000);
+              entry.screenshot_paths = failureState.lastDemoFailure.screenshotPaths;
+            }
+          }
+        } catch {
+          // Non-fatal — failure details unavailable
+        }
+
+        // Scan test-results/ for screenshot PNGs (capped at 5)
+        if (!entry.screenshot_paths || entry.screenshot_paths.length === 0) {
+          try {
+            const testResultsDir = path.join(PROJECT_DIR, 'test-results');
+            if (fs.existsSync(testResultsDir)) {
+              const screenshots: string[] = [];
+              const walk = (dir: string) => {
+                if (screenshots.length >= 5) return;
+                const entries = fs.readdirSync(dir, { withFileTypes: true });
+                for (const e of entries) {
+                  if (screenshots.length >= 5) return;
+                  const full = path.join(dir, e.name);
+                  if (e.isDirectory()) walk(full);
+                  else if (e.name.endsWith('.png')) screenshots.push(full);
+                }
+              };
+              walk(testResultsDir);
+              if (screenshots.length > 0) {
+                entry.screenshot_paths = screenshots;
+              }
+            }
+          } catch {
+            // Non-fatal
+          }
+        }
+      }
+
+      // Parse trace for play-by-play (runs for both passed and failed)
+      try {
+        const testResultsDir = path.join(PROJECT_DIR, 'test-results');
+        const traceZip = findTraceZip(testResultsDir);
+        if (traceZip) {
+          const summary = parseTraceZip(traceZip);
+          if (summary) {
+            entry.trace_summary = summary;
+          }
+        }
+      } catch {
+        // Non-fatal — trace parsing is best-effort
+      }
+
+      persistDemoRuns();
+    });
+
+    child.unref();
+
+    const warningText = preflight.warnings.length > 0
+      ? `\nWarnings:\n${preflight.warnings.map(w => `  - ${w}`).join('\n')}`
+      : '';
+
+    return {
+      success: true,
+      project,
+      message: `Headed auto-play demo launched for project "${project}" with ${slow_mo}ms slow motion.${test_file ? ` Running file: ${test_file}.` : ''} The browser window should open shortly.${warningText}`,
+      pid: child.pid,
+      slow_mo,
+      test_file,
+      pause_at_end,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      success: false,
+      project,
+      message: `Failed to launch headed demo: ${message}`,
+    };
+  }
+}
+
+/**
+ * Check the result of a previously launched demo run.
+ * Reads from the in-memory tracking map (primary) or persisted state file (after MCP restart).
+ */
+function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
+  const { pid } = args;
+
+  // Check in-memory map first
+  let entry = demoRuns.get(pid);
+
+  // Fallback: reload persisted state (covers MCP restart)
+  if (!entry) {
+    loadPersistedDemoRuns();
+    entry = demoRuns.get(pid);
+  }
+
+  if (!entry) {
+    return {
+      status: 'unknown',
+      pid,
+      message: `No demo run found for PID ${pid}. The process may have been launched before the MCP server started, or the PID is incorrect.`,
+    };
+  }
+
+  // For 'running' entries, verify process is still alive
+  if (entry.status === 'running') {
+    try {
+      process.kill(pid, 0); // Signal 0 = check if process exists
+    } catch {
+      // Process no longer exists but we didn't get the exit event (e.g., MCP restarted)
+      entry.status = 'unknown';
+      entry.ended_at = new Date().toISOString();
+      persistDemoRuns();
+      return {
+        status: 'unknown',
+        pid,
+        project: entry.project,
+        test_file: entry.test_file,
+        started_at: entry.started_at,
+        ended_at: entry.ended_at,
+        message: `Demo process (PID ${pid}) is no longer running but exit status was not captured. Check test-results/ for output.`,
+      };
+    }
+  }
+
+  const durationMs = entry.ended_at
+    ? new Date(entry.ended_at).getTime() - new Date(entry.started_at).getTime()
+    : Date.now() - new Date(entry.started_at).getTime();
+  const durationSec = Math.round(durationMs / 1000);
+
+  const statusMessages: Record<string, string> = {
+    running: `Demo is still running (${durationSec}s elapsed). Poll again in 30s.`,
+    passed: `Demo completed successfully in ${durationSec}s.${entry.trace_summary ? ' Play-by-play trace available in trace_summary.' : ''}`,
+    failed: `Demo failed (exit code ${entry.exit_code}) after ${durationSec}s.${entry.failure_summary ? ' See failure_summary for details.' : ''}${entry.trace_summary ? ' Play-by-play trace available in trace_summary.' : ''}`,
+    unknown: `Demo status unknown for PID ${pid}.`,
+  };
+
+  return {
+    status: entry.status,
+    pid,
+    project: entry.project,
+    test_file: entry.test_file,
+    started_at: entry.started_at,
+    ended_at: entry.ended_at,
+    exit_code: entry.exit_code,
+    failure_summary: entry.failure_summary,
+    screenshot_paths: entry.screenshot_paths,
+    trace_summary: entry.trace_summary,
+    message: statusMessages[entry.status] || `Demo status: ${entry.status}`,
+  };
 }
 
 /**
@@ -488,6 +804,7 @@ function getReport(args: GetReportArgs): GetReportResult {
 /**
  * Check E2E test coverage by persona and page.
  * Reads the filesystem to determine which projects have tests.
+ * Projects are discovered dynamically from playwright.config.ts.
  */
 function getCoverageStatus(): GetCoverageStatusResult {
   const personas: CoverageEntry[] = [];
@@ -495,27 +812,14 @@ function getCoverageStatus(): GetCoverageStatusResult {
   let activeProjects = 0;
   let deferredProjects = 0;
 
-  // Active test directories
-  const activeDirs: Record<string, string> = {
-    'vendor-owner': 'e2e/vendor',
-    'vendor-admin': 'e2e/vendor-roles',
-    'vendor-dev': 'e2e/vendor-roles',
-    'vendor-viewer': 'e2e/vendor-roles',
-    'cross-persona': 'e2e/cross-persona',
-    'auth-flows': 'e2e/auth',
-    'manual': 'e2e/manual',
-    'extension': 'e2e/extension',
-    'extension-manual': 'e2e/extension/manual',
-    'demo': 'e2e/demo',
-  };
-
-  for (const [project, testDir] of Object.entries(activeDirs)) {
+  // Active test directories (discovered from playwright.config.ts)
+  for (const [project, testDir] of Object.entries(pwConfig.projectDirMap)) {
     const fullDir = path.join(PROJECT_DIR, testDir);
     const testCount = countTestFiles(fullDir, project);
 
     const entry: CoverageEntry = {
       project,
-      persona: PERSONA_MAP[project] || project,
+      persona: pwConfig.personaMap[project] || project,
       testDir,
       testCount,
       status: testCount > 0 ? 'active' : 'no-tests',
@@ -529,27 +833,35 @@ function getCoverageStatus(): GetCoverageStatusResult {
     personas.push(entry);
   }
 
-  // Deferred test directories
-  const deferredDirs: Record<string, string> = {
-    'operator': 'e2e/_deferred/operator',
-  };
+  // Deferred test directories: scan <defaultTestDir>/_deferred/ for subdirectories
+  const deferredBase = path.join(PROJECT_DIR, pwConfig.defaultTestDir, '_deferred');
+  if (fs.existsSync(deferredBase)) {
+    try {
+      const subdirs = fs.readdirSync(deferredBase, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name);
 
-  for (const [name, testDir] of Object.entries(deferredDirs)) {
-    const fullDir = path.join(PROJECT_DIR, testDir);
-    const testCount = countTestFiles(fullDir);
+      for (const name of subdirs) {
+        const testDir = path.join(pwConfig.defaultTestDir, '_deferred', name);
+        const fullDir = path.join(PROJECT_DIR, testDir);
+        const testCount = countTestFiles(fullDir);
 
-    const personaLabel = 'Platform Operator';
+        const personaLabel = name.charAt(0).toUpperCase() + name.slice(1).replace(/-/g, ' ');
 
-    personas.push({
-      project: `deferred-${name}`,
-      persona: personaLabel,
-      testDir,
-      testCount,
-      status: 'deferred',
-    });
+        personas.push({
+          project: `deferred-${name}`,
+          persona: personaLabel,
+          testDir,
+          testCount,
+          status: 'deferred',
+        });
 
-    if (testCount > 0) {
-      deferredProjects++;
+        if (testCount > 0) {
+          deferredProjects++;
+        }
+      }
+    } catch {
+      // _deferred directory unreadable — skip
     }
   }
 
@@ -577,15 +889,14 @@ function countTestFiles(dir: string, projectFilter?: string): number {
     const filename = String(f);
     const isSpec = filename.endsWith('.spec.ts');
     const isManual = filename.endsWith('.manual.ts');
-    if (!isSpec && !isManual) return false;
+    const isDemo = filename.endsWith('.demo.ts');
+    if (!isSpec && !isManual && !isDemo) return false;
 
-    // Exclude manual/ subdirectory for the extension project (counted separately as extension-manual)
-    if (projectFilter === 'extension' && filename.includes('manual/')) return false;
-
-    // For role-specific projects, filter by matching spec file
-    if (projectFilter === 'vendor-admin') return filename.includes('admin');
-    if (projectFilter === 'vendor-dev') return filename.includes('developer');
-    if (projectFilter === 'vendor-viewer') return filename.includes('viewer');
+    // Exclude manual/ subdirectory for extension projects (counted separately as extension-manual)
+    if (projectFilter) {
+      const discovered = pwConfig.projects.find(p => p.name === projectFilter);
+      if (discovered?.isExtension && !discovered.isManual && filename.includes('manual/')) return false;
+    }
 
     return true;
   }).length;
@@ -596,6 +907,24 @@ function countTestFiles(dir: string, projectFilter?: string): number {
 // ============================================================================
 // Preflight Check
 // ============================================================================
+
+// Extension projects discovered from playwright.config.ts (names containing 'extension' or 'demo')
+
+/**
+ * Validate a Chrome extension match pattern per the Chrome docs spec.
+ * <scheme>://<host>/<path> where host is * | *.domain | exact domain.
+ * file:// has empty host (file:///path). No partial wildcards.
+ */
+function isValidChromeMatchPattern(pattern: string): boolean {
+  if (pattern === '<all_urls>') return true;
+  if (/^file:\/\/\/(.+)$/.test(pattern)) return true;
+  const m = pattern.match(/^(\*|https?):\/\/([^/]+)\/(.*)$/);
+  if (!m) return false;
+  const host = m[2];
+  if (host === '*') return true;
+  if (host.startsWith('*.')) return !host.slice(2).includes('*');
+  return !host.includes('*');
+}
 
 /**
  * Run a single preflight check and return a structured entry.
@@ -673,22 +1002,9 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   // 4. Test files exist (when project specified)
   if (args.project) {
     checks.push(runCheck('test_files_exist', () => {
-      const activeDirs: Record<string, string> = {
-        'vendor-owner': 'e2e/vendor',
-        'vendor-admin': 'e2e/vendor-roles',
-        'vendor-dev': 'e2e/vendor-roles',
-        'vendor-viewer': 'e2e/vendor-roles',
-        'cross-persona': 'e2e/cross-persona',
-        'auth-flows': 'e2e/auth',
-        'manual': 'e2e/manual',
-        'extension': 'e2e/extension',
-        'extension-manual': 'e2e/extension/manual',
-        'demo': 'e2e/demo',
-      };
-
-      const testDir = activeDirs[args.project!];
+      const testDir = pwConfig.projectDirMap[args.project!];
       if (!testDir) {
-        return { status: 'warn', message: `No known test directory for project "${args.project}"` };
+        return { status: 'skip', message: `No known test directory mapping for project "${args.project}" — compilation check (#6) will validate it` };
       }
 
       const fullDir = path.join(PROJECT_DIR, testDir);
@@ -792,27 +1108,54 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   if (args.project) {
     checks.push(runCheck('auth_state', () => {
       const authDir = path.join(PROJECT_DIR, '.auth');
-      const primaryFile = path.join(authDir, 'vendor-owner.json');
 
-      if (!fs.existsSync(primaryFile)) {
-        return { status: 'fail', message: '.auth/vendor-owner.json missing — run mcp__playwright__run_auth_setup to generate it' };
+      // Find primary auth file: from config discovery, or scan .auth/
+      let primaryFilePath: string | null = null;
+      if (pwConfig.primaryAuthFile) {
+        primaryFilePath = path.join(PROJECT_DIR, pwConfig.primaryAuthFile);
+      } else if (fs.existsSync(authDir)) {
+        try {
+          const files = fs.readdirSync(authDir).filter(f => f.endsWith('.json'));
+          if (files.length > 0) {
+            // Use the most recently modified
+            const sorted = files
+              .map(f => ({ f, mtime: fs.statSync(path.join(authDir, f)).mtimeMs }))
+              .sort((a, b) => b.mtime - a.mtime);
+            primaryFilePath = path.join(authDir, sorted[0].f);
+          }
+        } catch {
+          // ignore
+        }
       }
 
-      const stat = fs.statSync(primaryFile);
+      if (!primaryFilePath || !fs.existsSync(primaryFilePath)) {
+        // Fail-closed: if config declares storageState files, missing auth is a failure.
+        // Skip only when the project genuinely has no auth files configured.
+        if (pwConfig.authFiles.length > 0) {
+          return {
+            status: 'fail',
+            message: `Auth state file missing — expected ${pwConfig.primaryAuthFile || '.auth/*.json'}. Run mcp__playwright__run_auth_setup`,
+          };
+        }
+        return { status: 'skip', message: 'No auth state files configured in playwright.config' };
+      }
+
+      const primaryBasename = path.basename(primaryFilePath);
+      const stat = fs.statSync(primaryFilePath);
       const ageMs = Date.now() - stat.mtimeMs;
       const ageHours = ageMs / (1000 * 60 * 60);
 
       // Check cookie expiry from inside the JSON
       try {
-        const state = JSON.parse(fs.readFileSync(primaryFile, 'utf-8'));
+        const state = JSON.parse(fs.readFileSync(primaryFilePath, 'utf-8'));
         const cookies: Array<{ expires?: number }> = state.cookies || [];
         const now = Date.now() / 1000;
         const expired = cookies.filter(c => c.expires && c.expires > 0 && c.expires < now);
         if (expired.length > 0) {
-          return { status: 'fail', message: `Auth cookies are expired (${expired.length} expired) — run mcp__playwright__run_auth_setup` };
+          return { status: 'fail', message: `Auth cookies are expired (${expired.length} expired in .auth/${primaryBasename}) — run mcp__playwright__run_auth_setup` };
         }
       } catch {
-        return { status: 'warn', message: `Could not parse .auth/vendor-owner.json (${ageHours.toFixed(1)}h old)` };
+        return { status: 'warn', message: `Could not parse .auth/${primaryBasename} (${ageHours.toFixed(1)}h old)` };
       }
 
       if (ageHours > 24) {
@@ -825,6 +1168,87 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
     }));
   } else {
     checks.push({ name: 'auth_state', status: 'skip', message: 'No project specified — skipping auth state check', duration_ms: 0 });
+  }
+
+  // 9. Extension manifest validation (only for extension projects)
+  if (args.project && pwConfig.extensionProjects.has(args.project)) {
+    checks.push(runCheck('extension_manifest', () => {
+      let manifestPath: string | null = null;
+
+      const distPath = process.env.GENTYR_EXTENSION_DIST_PATH;
+      if (distPath) {
+        // Explicit path: try manifest at dist path, then parent directory
+        const primaryPath = path.join(PROJECT_DIR, distPath, 'manifest.json');
+        const fallbackPath = path.join(PROJECT_DIR, path.dirname(distPath), 'manifest.json');
+        if (fs.existsSync(primaryPath)) {
+          manifestPath = primaryPath;
+        } else if (fs.existsSync(fallbackPath)) {
+          manifestPath = fallbackPath;
+        }
+        if (!manifestPath) {
+          return { status: 'fail', message: `manifest.json not found at ${primaryPath} or ${fallbackPath}` };
+        }
+      } else {
+        // Auto-discover: check common build output directories
+        const candidates = ['dist/', 'build/', 'out/', 'extension/dist/', 'extension/build/'];
+        for (const candidate of candidates) {
+          const candidatePath = path.join(PROJECT_DIR, candidate, 'manifest.json');
+          if (!fs.existsSync(candidatePath)) continue;
+          // Verify it's a Chrome extension manifest (has content_scripts or background)
+          try {
+            const content = JSON.parse(fs.readFileSync(candidatePath, 'utf-8'));
+            if (content.content_scripts || content.background) {
+              manifestPath = candidatePath;
+              break;
+            }
+          } catch {
+            // Not valid JSON — skip
+          }
+        }
+        if (!manifestPath) {
+          return { status: 'skip', message: 'GENTYR_EXTENSION_DIST_PATH not set and no manifest.json auto-discovered in dist/, build/, out/, extension/dist/, extension/build/' };
+        }
+      }
+
+      let manifest: { content_scripts?: Array<{ matches?: string[]; exclude_matches?: string[] }> };
+      try {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { status: 'fail', message: `Failed to parse ${manifestPath}: ${msg}` };
+      }
+
+      const invalidPatterns: string[] = [];
+      const contentScripts = Array.isArray(manifest.content_scripts) ? manifest.content_scripts : [];
+      for (let i = 0; i < contentScripts.length; i++) {
+        const cs = contentScripts[i];
+        if (!cs || typeof cs !== 'object') continue;
+        const allPatterns: Array<[string, string]> = [
+          ...((Array.isArray(cs.matches) ? cs.matches : []) as string[]).map(p => ['matches', p] as [string, string]),
+          ...((Array.isArray(cs.exclude_matches) ? cs.exclude_matches : []) as string[]).map(p => ['exclude_matches', p] as [string, string]),
+        ];
+        for (const [field, pattern] of allPatterns) {
+          if (typeof pattern === 'string' && !isValidChromeMatchPattern(pattern)) {
+            invalidPatterns.push(`content_scripts[${i}].${field}: ${pattern}`);
+          }
+        }
+      }
+
+      if (invalidPatterns.length > 0) {
+        return {
+          status: 'fail',
+          message: `Invalid match patterns in ${path.relative(PROJECT_DIR, manifestPath)}:\n${invalidPatterns.map(p => `  - ${p}`).join('\n')}`,
+        };
+      }
+
+      const totalPatterns = contentScripts.reduce((sum, cs) => {
+        if (!cs || typeof cs !== 'object') return sum;
+        return sum + (Array.isArray(cs.matches) ? cs.matches.length : 0) + (Array.isArray(cs.exclude_matches) ? cs.exclude_matches.length : 0);
+      }, 0);
+      return { status: 'pass', message: `${totalPatterns} match pattern(s) validated in ${path.relative(PROJECT_DIR, manifestPath)}` };
+    }));
+  } else {
+    checks.push({ name: 'extension_manifest', status: 'skip', message: args.project ? `Project "${args.project}" is not an extension project` : 'No project specified', duration_ms: 0 });
   }
 
   // Aggregate results
@@ -853,13 +1277,16 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
         recoverySteps.push(`Create test files in the expected directory for project "${args.project}"`);
         break;
       case 'credentials_valid':
-        recoverySteps.push('Check 1Password credential injection — ensure MCP server has SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY');
+        recoverySteps.push('Check 1Password credential injection — ensure all op:// references in MCP server env are resolved');
         break;
       case 'compilation':
         recoverySteps.push('Fix TypeScript compilation errors — run: npx playwright test --list to see details');
         break;
       case 'auth_state':
         recoverySteps.push('Run: mcp__playwright__run_auth_setup() to refresh auth cookies');
+        break;
+      case 'extension_manifest':
+        recoverySteps.push('Fix invalid match patterns in manifest.json — Chrome requires host to be * | *.domain.com | exact.domain.com (no partial wildcards like *-admin.example.com)');
         break;
     }
   }
@@ -947,7 +1374,9 @@ async function runAuthSetup(args: RunAuthSetupArgs): Promise<RunAuthSetupResult>
     phases.push({ name: 'auth-setup', success: true, message: 'Auth setup completed', duration_ms: Date.now() - authStart });
 
     const authDir = path.join(PROJECT_DIR, '.auth');
-    const expected = ['vendor-owner.json', 'vendor-admin.json', 'vendor-dev.json', 'vendor-viewer.json'];
+    const expected = pwConfig.authFiles.length > 0
+      ? pwConfig.authFiles.map(f => path.basename(f))
+      : (fs.existsSync(authDir) ? fs.readdirSync(authDir).filter(f => f.endsWith('.json')) : []);
     const refreshed = expected.filter(f => fs.existsSync(path.join(authDir, f)));
 
     return {
@@ -1273,11 +1702,28 @@ const tools: AnyToolHandler[] = [
     description:
       'Launch Playwright in interactive UI mode for manual testing and demos. ' +
       'Opens a browser with the Playwright test runner UI. ' +
-      'Use project "demo" for full product demos (dashboard + extension in one session), ' +
-      '"manual" for vendor dashboard demos, "extension-manual" for extension demos, ' +
-      'or a vendor role project to test as a specific persona.',
+      'Project names are discovered from the target project\'s playwright.config.ts.',
     schema: LaunchUiModeArgsSchema,
     handler: launchUiMode,
+  },
+  {
+    name: 'run_demo',
+    description:
+      'Launch Playwright tests in a visible headed browser that runs automatically at human-watchable speed. ' +
+      'No clicking required — tests play through on their own with configurable pace. ' +
+      'Best for presentations and demos. The target project\'s playwright.config.ts must read ' +
+      'parseInt(process.env.DEMO_SLOW_MO || "0") in use.launchOptions.slowMo for pace control to work.',
+    schema: RunDemoArgsSchema,
+    handler: runDemo,
+  },
+  {
+    name: 'check_demo_result',
+    description:
+      'Check the result of a previously launched demo run by PID. ' +
+      'Call after run_demo to determine if the demo passed or failed. ' +
+      'Returns status (running/passed/failed/unknown), exit code, failure summary, and screenshot paths.',
+    schema: CheckDemoResultArgsSchema,
+    handler: checkDemoResult,
   },
   {
     name: 'run_tests',

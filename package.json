@@ -31,9 +31,18 @@
     "generate:readme": "node scripts/generate-readme.js"
   },
   "dependencies": {
+    "@elastic/elasticsearch": "^8.11.0",
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "ajv": "^8.12.0",
     "ajv-formats": "^2.1.1",
     "better-sqlite3": "^12.6.2",
+    "playwright": "^1.58.2",
+    "potrace": "^2.1.8",
+    "sharp": "^0.33.0",
+    "simple-icons": "^13.0.0",
+    "svg-path-bbox": "^2.0.0",
+    "svgo": "^3.2.0",
+    "tweetnacl": "^1.0.3",
     "zod": "^3.22.4"
   },
   "devDependencies": {

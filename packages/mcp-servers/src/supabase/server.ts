@@ -58,30 +58,42 @@ import {
   type InfoMessage,
 } from './types.js';
 
-const { SUPABASE_ACCESS_TOKEN, SUPABASE_PROJECT_REF } = process.env;
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  console.error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables are required');
-  process.exit(1);
+// G001: Fail-closed credential helpers (checked at invocation time for tool discoverability)
+function getSupabaseUrl(): string {
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!url) {
+    throw new Error('SUPABASE_URL or NEXT_PUBLIC_SUPABASE_URL environment variable is required. Ensure 1Password credentials are configured.');
+  }
+  return url;
 }
 
-// Extract project ref from URL if not provided
-const projectRef = SUPABASE_PROJECT_REF || SUPABASE_URL.match(/https:\/\/([^.]+)/)?.[1];
+function getSupabaseServiceKey(): string {
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!key) {
+    throw new Error('SUPABASE_SERVICE_ROLE_KEY environment variable is required. Ensure 1Password credentials are configured.');
+  }
+  return key;
+}
+
+function getProjectRef(): string | undefined {
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  return process.env.SUPABASE_PROJECT_REF || url?.match(/https:\/\/([^.]+)/)?.[1];
+}
 
 interface FetchOptions extends RequestInit {
   prefer?: string;
 }
 
 async function supabaseRest(endpoint: string, options: FetchOptions = {}): Promise<unknown> {
-  const url = `${SUPABASE_URL}/rest/v1${endpoint}`;
+  const supabaseUrl = getSupabaseUrl();
+  const serviceKey = getSupabaseServiceKey();
+  const url = `${supabaseUrl}/rest/v1${endpoint}`;
 
   const response = await fetch(url, {
     ...options,
     headers: {
-      apikey: SUPABASE_SERVICE_KEY ?? '',
-      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
       'Content-Type': 'application/json',
       Prefer: options.prefer || 'return=representation',
       ...options.headers,
@@ -104,7 +116,8 @@ async function supabaseRest(endpoint: string, options: FetchOptions = {}): Promi
 }
 
 async function supabaseManagement(endpoint: string, options: RequestInit = {}): Promise<unknown> {
-  if (!SUPABASE_ACCESS_TOKEN) {
+  const accessToken = process.env.SUPABASE_ACCESS_TOKEN;
+  if (!accessToken) {
     throw new Error('SUPABASE_ACCESS_TOKEN is required for management API calls');
   }
 
@@ -113,7 +126,7 @@ async function supabaseManagement(endpoint: string, options: RequestInit = {}): 
   const response = await fetch(url, {
     ...options,
     headers: {
-      Authorization: `Bearer ${SUPABASE_ACCESS_TOKEN}`,
+      Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
       ...options.headers,
     },
@@ -129,8 +142,10 @@ async function supabaseManagement(endpoint: string, options: RequestInit = {}): 
 }
 
 async function executeSql(sql: string): Promise<unknown> {
-  if (SUPABASE_ACCESS_TOKEN && projectRef) {
-    return await supabaseManagement(`/v1/projects/${projectRef}/database/query`, {
+  const accessToken = process.env.SUPABASE_ACCESS_TOKEN;
+  const ref = getProjectRef();
+  if (accessToken && ref) {
+    return await supabaseManagement(`/v1/projects/${ref}/database/query`, {
       method: 'POST',
       body: JSON.stringify({ query: sql }),
     });
@@ -187,7 +202,7 @@ async function callRpc(args: RpcArgs): Promise<unknown> {
 
 async function listTables(): Promise<unknown | InfoMessage> {
   // Prefer Management API if available (more detailed results)
-  if (SUPABASE_ACCESS_TOKEN && projectRef) {
+  if (process.env.SUPABASE_ACCESS_TOKEN && getProjectRef()) {
     return await executeSql(`
       SELECT table_name, table_type
       FROM information_schema.tables
@@ -198,10 +213,10 @@ async function listTables(): Promise<unknown | InfoMessage> {
 
   // Fallback: Use PostgREST OpenAPI schema (works with service role key)
   try {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/`, {
+    const response = await fetch(`${getSupabaseUrl()}/rest/v1/`, {
       headers: {
-        apikey: SUPABASE_SERVICE_KEY ?? '',
-        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        apikey: getSupabaseServiceKey(),
+        Authorization: `Bearer ${getSupabaseServiceKey()}`,
       },
     });
 
@@ -235,7 +250,7 @@ async function listTables(): Promise<unknown | InfoMessage> {
 
 async function describeTable(args: DescribeTableArgs): Promise<unknown | InfoMessage> {
   // Prefer Management API if available (more detailed results)
-  if (SUPABASE_ACCESS_TOKEN && projectRef) {
+  if (process.env.SUPABASE_ACCESS_TOKEN && getProjectRef()) {
     return await executeSql(`
       SELECT
         column_name,
@@ -251,10 +266,10 @@ async function describeTable(args: DescribeTableArgs): Promise<unknown | InfoMes
 
   // Fallback: Use PostgREST OpenAPI schema definitions
   try {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/`, {
+    const response = await fetch(`${getSupabaseUrl()}/rest/v1/`, {
       headers: {
-        apikey: SUPABASE_SERVICE_KEY ?? '',
-        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        apikey: getSupabaseServiceKey(),
+        Authorization: `Bearer ${getSupabaseServiceKey()}`,
       },
     });
 
@@ -300,21 +315,21 @@ async function executeSqlQuery(args: SqlArgs): Promise<unknown> {
 }
 
 async function listBuckets(): Promise<unknown> {
-  const response = await fetch(`${SUPABASE_URL}/storage/v1/bucket`, {
+  const response = await fetch(`${getSupabaseUrl()}/storage/v1/bucket`, {
     headers: {
-      apikey: SUPABASE_SERVICE_KEY ?? '',
-      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      apikey: getSupabaseServiceKey(),
+      Authorization: `Bearer ${getSupabaseServiceKey()}`,
     },
   });
   return await response.json();
 }
 
 async function listFiles(args: ListFilesArgs): Promise<unknown> {
-  const response = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${args.bucket}`, {
+  const response = await fetch(`${getSupabaseUrl()}/storage/v1/object/list/${args.bucket}`, {
     method: 'POST',
     headers: {
-      apikey: SUPABASE_SERVICE_KEY ?? '',
-      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      apikey: getSupabaseServiceKey(),
+      Authorization: `Bearer ${getSupabaseServiceKey()}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -326,11 +341,11 @@ async function listFiles(args: ListFilesArgs): Promise<unknown> {
 }
 
 async function deleteFile(args: DeleteFileArgs): Promise<SuccessResult> {
-  const response = await fetch(`${SUPABASE_URL}/storage/v1/object/${args.bucket}/${args.path}`, {
+  const response = await fetch(`${getSupabaseUrl()}/storage/v1/object/${args.bucket}/${args.path}`, {
     method: 'DELETE',
     headers: {
-      apikey: SUPABASE_SERVICE_KEY ?? '',
-      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      apikey: getSupabaseServiceKey(),
+      Authorization: `Bearer ${getSupabaseServiceKey()}`,
     },
   });
   if (!response.ok) {
@@ -341,36 +356,36 @@ async function deleteFile(args: DeleteFileArgs): Promise<SuccessResult> {
 
 function getPublicUrl(args: GetPublicUrlArgs): PublicUrlResult {
   return {
-    publicUrl: `${SUPABASE_URL}/storage/v1/object/public/${args.bucket}/${args.path}`,
+    publicUrl: `${getSupabaseUrl()}/storage/v1/object/public/${args.bucket}/${args.path}`,
   };
 }
 
 async function listUsers(args: ListUsersArgs): Promise<unknown> {
-  const response = await fetch(`${SUPABASE_URL}/auth/v1/admin/users?page=${args.page || 1}&per_page=${args.perPage || 50}`, {
+  const response = await fetch(`${getSupabaseUrl()}/auth/v1/admin/users?page=${args.page || 1}&per_page=${args.perPage || 50}`, {
     headers: {
-      apikey: SUPABASE_SERVICE_KEY ?? '',
-      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      apikey: getSupabaseServiceKey(),
+      Authorization: `Bearer ${getSupabaseServiceKey()}`,
     },
   });
   return await response.json();
 }
 
 async function getUser(args: GetUserArgs): Promise<unknown> {
-  const response = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${args.userId}`, {
+  const response = await fetch(`${getSupabaseUrl()}/auth/v1/admin/users/${args.userId}`, {
     headers: {
-      apikey: SUPABASE_SERVICE_KEY ?? '',
-      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      apikey: getSupabaseServiceKey(),
+      Authorization: `Bearer ${getSupabaseServiceKey()}`,
     },
   });
   return await response.json();
 }
 
 async function deleteUser(args: DeleteUserArgs): Promise<SuccessResult> {
-  const response = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${args.userId}`, {
+  const response = await fetch(`${getSupabaseUrl()}/auth/v1/admin/users/${args.userId}`, {
     method: 'DELETE',
     headers: {
-      apikey: SUPABASE_SERVICE_KEY ?? '',
-      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      apikey: getSupabaseServiceKey(),
+      Authorization: `Bearer ${getSupabaseServiceKey()}`,
     },
   });
   if (!response.ok) {
@@ -380,24 +395,24 @@ async function deleteUser(args: DeleteUserArgs): Promise<SuccessResult> {
 }
 
 async function getProjectInfo(): Promise<unknown> {
-  if (!SUPABASE_ACCESS_TOKEN || !projectRef) {
+  if (!process.env.SUPABASE_ACCESS_TOKEN || !getProjectRef()) {
     throw new Error('SUPABASE_ACCESS_TOKEN and SUPABASE_PROJECT_REF are required');
   }
-  return await supabaseManagement(`/v1/projects/${projectRef}`);
+  return await supabaseManagement(`/v1/projects/${getProjectRef()}`);
 }
 
 async function listMigrations(): Promise<unknown> {
-  if (!SUPABASE_ACCESS_TOKEN || !projectRef) {
+  if (!process.env.SUPABASE_ACCESS_TOKEN || !getProjectRef()) {
     throw new Error('SUPABASE_ACCESS_TOKEN and SUPABASE_PROJECT_REF are required');
   }
-  return await supabaseManagement(`/v1/projects/${projectRef}/database/migrations`);
+  return await supabaseManagement(`/v1/projects/${getProjectRef()}/database/migrations`);
 }
 
 async function pushMigration(args: PushMigrationArgs): Promise<unknown> {
-  if (!SUPABASE_ACCESS_TOKEN || !projectRef) {
+  if (!process.env.SUPABASE_ACCESS_TOKEN || !getProjectRef()) {
     throw new Error('SUPABASE_ACCESS_TOKEN and SUPABASE_PROJECT_REF are required');
   }
-  return await supabaseManagement(`/v1/projects/${projectRef}/database/migrations`, {
+  return await supabaseManagement(`/v1/projects/${getProjectRef()}/database/migrations`, {
     method: 'POST',
     body: JSON.stringify({
       name: args.name,
@@ -407,10 +422,10 @@ async function pushMigration(args: PushMigrationArgs): Promise<unknown> {
 }
 
 async function getMigration(args: GetMigrationArgs): Promise<unknown> {
-  if (!SUPABASE_ACCESS_TOKEN || !projectRef) {
+  if (!process.env.SUPABASE_ACCESS_TOKEN || !getProjectRef()) {
     throw new Error('SUPABASE_ACCESS_TOKEN and SUPABASE_PROJECT_REF are required');
   }
-  return await supabaseManagement(`/v1/projects/${projectRef}/database/migrations/${args.version}`);
+  return await supabaseManagement(`/v1/projects/${getProjectRef()}/database/migrations/${args.version}`);
 }
 
 // ============================================================================

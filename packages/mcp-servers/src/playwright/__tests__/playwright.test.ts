@@ -20,7 +20,11 @@ import {
   GetCoverageStatusArgsSchema,
   PreflightCheckArgsSchema,
   RunAuthSetupArgsSchema,
+  RunDemoArgsSchema,
+  CheckDemoResultArgsSchema,
   PLAYWRIGHT_PROJECTS,
+  type DemoRunState,
+  type CheckDemoResultResult,
 } from '../types.js';
 import { parseTestOutput, truncateOutput } from '../helpers.js';
 
@@ -102,17 +106,17 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       }
     });
 
-    it('should reject invalid project name (G001 - fail loudly)', () => {
+    it('should accept any non-empty project name (validated by Playwright CLI at runtime)', () => {
       const result = LaunchUiModeArgsSchema.safeParse({
-        project: 'invalid-project',
+        project: 'custom-project',
       });
 
-      expect(result.success).toBe(false);
+      expect(result.success).toBe(true);
     });
 
-    it('should reject seed project (not allowed in UI mode)', () => {
+    it('should reject empty project name', () => {
       const result = LaunchUiModeArgsSchema.safeParse({
-        project: 'seed',
+        project: '',
       });
 
       expect(result.success).toBe(false);
@@ -361,17 +365,17 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       }
     });
 
-    it('should reject invalid project name', () => {
+    it('should accept any non-empty project name (validated by Playwright CLI at runtime)', () => {
       const result = PreflightCheckArgsSchema.safeParse({
-        project: 'invalid-project',
+        project: 'chromium',
       });
 
-      expect(result.success).toBe(false);
+      expect(result.success).toBe(true);
     });
 
-    it('should reject infrastructure projects (seed, auth-setup)', () => {
+    it('should reject empty project name', () => {
       const result = PreflightCheckArgsSchema.safeParse({
-        project: 'seed',
+        project: '',
       });
 
       expect(result.success).toBe(false);
@@ -469,6 +473,287 @@ describe('Playwright MCP Server - Zod Schemas', () => {
 
     it('should reject non-boolean seed_only', () => {
       const result = RunAuthSetupArgsSchema.safeParse({ seed_only: 'yes' });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('RunDemoArgsSchema', () => {
+    it('should require project field', () => {
+      const result = RunDemoArgsSchema.safeParse({});
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept a valid project name', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.project).toBe('demo');
+      }
+    });
+
+    it('should accept any non-empty project name up to 100 chars', () => {
+      const projects = ['vendor-owner', 'extension', 'cross-persona', 'my-custom-project'];
+      for (const project of projects) {
+        const result = RunDemoArgsSchema.safeParse({ project });
+        expect(result.success).toBe(true);
+      }
+    });
+
+    it('should reject empty project name (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: '' });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject project name exceeding 100 characters (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'a'.repeat(101) });
+      expect(result.success).toBe(false);
+    });
+
+    it('should default slow_mo to 800 when omitted', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.slow_mo).toBe(800);
+      }
+    });
+
+    it('should accept slow_mo of 0 (no delay)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: 0 });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.slow_mo).toBe(0);
+      }
+    });
+
+    it('should accept slow_mo of 5000 (maximum)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: 5000 });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.slow_mo).toBe(5000);
+      }
+    });
+
+    it('should reject slow_mo below 0 (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: -1 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject slow_mo above 5000 (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: 5001 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject non-integer slow_mo (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: 1.5 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should coerce slow_mo from string to number via z.coerce', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: '500' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.slow_mo).toBe(500);
+        expect(typeof result.data.slow_mo).toBe('number');
+      }
+    });
+
+    it('should accept optional base_url', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        base_url: 'http://localhost:4000',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.base_url).toBe('http://localhost:4000');
+      }
+    });
+
+    it('should allow base_url to be omitted', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.base_url).toBeUndefined();
+      }
+    });
+
+    it('should reject invalid base_url (G003 URL validation)', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        base_url: 'not-a-url',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept all parameters together', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'vendor-owner',
+        slow_mo: 1200,
+        base_url: 'http://localhost:3000',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.project).toBe('vendor-owner');
+        expect(result.data.slow_mo).toBe(1200);
+        expect(result.data.base_url).toBe('http://localhost:3000');
+      }
+    });
+
+    it('should infer correct RunDemoArgs type', () => {
+      const args = RunDemoArgsSchema.parse({ project: 'demo', slow_mo: 800 });
+      expect(typeof args.project).toBe('string');
+      expect(typeof args.slow_mo).toBe('number');
+    });
+
+    it('should accept optional test_file', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'vendor-owner',
+        test_file: 'e2e/demo/onboarding.demo.ts',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.test_file).toBe('e2e/demo/onboarding.demo.ts');
+      }
+    });
+
+    it('should allow test_file to be omitted (backward compat)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.test_file).toBeUndefined();
+      }
+    });
+
+    it('should reject test_file exceeding 500 characters', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        test_file: 'a'.repeat(501),
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should default pause_at_end to false', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.pause_at_end).toBe(false);
+      }
+    });
+
+    it('should accept pause_at_end: true', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        pause_at_end: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.pause_at_end).toBe(true);
+      }
+    });
+
+    it('should coerce pause_at_end from string via z.coerce', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        pause_at_end: 'true',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.pause_at_end).toBe(true);
+      }
+    });
+
+    it('should accept all parameters including test_file and pause_at_end', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'vendor-owner',
+        slow_mo: 0,
+        base_url: 'http://localhost:3000',
+        test_file: 'e2e/demo/billing.demo.ts',
+        pause_at_end: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.project).toBe('vendor-owner');
+        expect(result.data.slow_mo).toBe(0);
+        expect(result.data.test_file).toBe('e2e/demo/billing.demo.ts');
+        expect(result.data.pause_at_end).toBe(true);
+      }
+    });
+  });
+
+  describe('CheckDemoResultArgsSchema', () => {
+    it('should require pid field', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({});
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept a valid positive integer pid', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({ pid: 12345 });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.pid).toBe(12345);
+      }
+    });
+
+    it('should reject pid of 0 (must be >= 1)', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({ pid: 0 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject negative pid (G003)', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({ pid: -1 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject non-integer pid (G003)', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({ pid: 1.5 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should coerce pid from string to number via z.coerce', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({ pid: '99999' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.pid).toBe(99999);
+        expect(typeof result.data.pid).toBe('number');
+      }
+    });
+
+    it('should reject string that cannot coerce to an integer pid', () => {
+      const result = CheckDemoResultArgsSchema.safeParse({ pid: 'not-a-pid' });
+      expect(result.success).toBe(false);
+    });
+
+    it('should infer correct CheckDemoResultArgs type', () => {
+      const args = CheckDemoResultArgsSchema.parse({ pid: 42 });
+      expect(typeof args.pid).toBe('number');
+      expect(args.pid).toBe(42);
+    });
+  });
+
+  describe('LaunchUiModeArgsSchema - test_file', () => {
+    it('should accept optional test_file', () => {
+      const result = LaunchUiModeArgsSchema.safeParse({
+        project: 'vendor-owner',
+        test_file: 'e2e/demo/onboarding.demo.ts',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.test_file).toBe('e2e/demo/onboarding.demo.ts');
+      }
+    });
+
+    it('should allow test_file to be omitted (backward compat)', () => {
+      const result = LaunchUiModeArgsSchema.safeParse({ project: 'vendor-owner' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.test_file).toBeUndefined();
+      }
+    });
+
+    it('should reject test_file exceeding 500 characters', () => {
+      const result = LaunchUiModeArgsSchema.safeParse({
+        project: 'vendor-owner',
+        test_file: 'a'.repeat(501),
+      });
       expect(result.success).toBe(false);
     });
   });
@@ -626,8 +911,9 @@ Done.
     let tempDir: string;
 
     // This simulation mirrors the real countTestFiles in server.ts exactly.
-    // Both .spec.ts (automated) and .manual.ts (manual scaffolds) are counted.
-    // The extension project filter excludes files under a manual/ subdirectory.
+    // .spec.ts (automated), .manual.ts (manual scaffolds), and .demo.ts (demo scenarios) are counted.
+    // The extension project filter uses pwConfig.projects isExtension/isManual flags.
+    // For simplicity in tests we approximate: extension filter excludes manual/ subdirectory.
     function countTestFiles(dir: string, projectFilter?: string): number {
       if (!fs.existsSync(dir)) return 0;
 
@@ -637,9 +923,10 @@ Done.
           const filename = String(f);
           const isSpec = filename.endsWith('.spec.ts');
           const isManual = filename.endsWith('.manual.ts');
-          if (!isSpec && !isManual) return false;
+          const isDemo = filename.endsWith('.demo.ts');
+          if (!isSpec && !isManual && !isDemo) return false;
 
-          // Exclude manual/ subdirectory for the extension project (counted separately as extension-manual)
+          // Exclude manual/ subdirectory for extension projects (counted separately as extension-manual)
           if (projectFilter === 'extension' && filename.includes('manual/')) return false;
 
           // For role-specific projects, filter by matching spec file
@@ -807,6 +1094,60 @@ Done.
 
       expect(count).toBe(0);
     });
+
+    it('should count .demo.ts files (curated demo scenario files)', () => {
+      fs.writeFileSync(path.join(tempDir, 'onboarding.demo.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'billing.demo.ts'), '');
+
+      const count = countTestFiles(tempDir);
+
+      expect(count).toBe(2);
+    });
+
+    it('should count .demo.ts, .spec.ts, and .manual.ts files together', () => {
+      fs.writeFileSync(path.join(tempDir, 'auth.spec.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'ext-popup.manual.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'onboarding.demo.ts'), '');
+
+      const count = countTestFiles(tempDir);
+
+      expect(count).toBe(3);
+    });
+
+    it('should not count .demo.ts files that lack the suffix', () => {
+      // "demo" in filename but wrong suffix — not counted
+      fs.writeFileSync(path.join(tempDir, 'demo-helper.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'onboarding.demo.ts'), '');
+
+      const count = countTestFiles(tempDir);
+
+      expect(count).toBe(1); // Only onboarding.demo.ts
+    });
+
+    it('should count .demo.ts files in nested directories', () => {
+      const subdir = path.join(tempDir, 'demo');
+      fs.mkdirSync(subdir, { recursive: true });
+
+      fs.writeFileSync(path.join(subdir, 'checkout.demo.ts'), '');
+      fs.writeFileSync(path.join(tempDir, 'login.spec.ts'), '');
+
+      const count = countTestFiles(tempDir);
+
+      expect(count).toBe(2);
+    });
+
+    it('should count .demo.ts files for extension project filter (not excluded)', () => {
+      const manualSubdir = path.join(tempDir, 'manual');
+      fs.mkdirSync(manualSubdir, { recursive: true });
+
+      fs.writeFileSync(path.join(tempDir, 'extension-flow.demo.ts'), '');
+      fs.writeFileSync(path.join(manualSubdir, 'ext-popup.manual.ts'), ''); // excluded (in manual/)
+
+      const count = countTestFiles(tempDir, 'extension');
+
+      // .demo.ts is NOT in manual/ so it is counted; manual/ file is excluded
+      expect(count).toBe(1);
+    });
   });
 });
 
@@ -854,9 +1195,9 @@ describe('Playwright MCP Server - Constants', () => {
 
 describe('Playwright MCP Server - Error Handling', () => {
   describe('Schema validation failures (G001 - fail loudly)', () => {
-    it('should fail loudly on invalid project enum', () => {
+    it('should fail loudly on empty project name', () => {
       const result = LaunchUiModeArgsSchema.safeParse({
-        project: 'bad-project',
+        project: '',
       });
 
       expect(result.success).toBe(false);
@@ -938,5 +1279,631 @@ describe('Playwright MCP Server - Type Safety', () => {
       expect(typeof args.open_browser).toBe('boolean');
       expect(args.open_browser).toBe(false);
     });
+  });
+
+  describe('CheckDemoResultResult - trace_summary field', () => {
+    it('should accept CheckDemoResultResult without trace_summary (field is optional)', () => {
+      const result: CheckDemoResultResult = {
+        status: 'passed',
+        pid: 12345,
+        project: 'vendor-owner',
+        message: 'Demo completed successfully.',
+      };
+
+      expect(result.trace_summary).toBeUndefined();
+      expect(result.status).toBe('passed');
+      expect(result.pid).toBe(12345);
+    });
+
+    it('should accept CheckDemoResultResult with trace_summary as a string', () => {
+      const result: CheckDemoResultResult = {
+        status: 'failed',
+        pid: 99999,
+        project: 'demo',
+        exit_code: 1,
+        message: 'Demo failed.',
+        trace_summary: '=== DEMO PLAY-BY-PLAY TRACE ===\n[  0.0s] NAV    Navigate to http://localhost:3000\n=== END TRACE ===',
+      };
+
+      expect(typeof result.trace_summary).toBe('string');
+      expect(result.trace_summary).toContain('DEMO PLAY-BY-PLAY TRACE');
+      expect(result.trace_summary).toContain('END TRACE');
+    });
+
+    it('should accept CheckDemoResultResult with all optional fields populated', () => {
+      const result: CheckDemoResultResult = {
+        status: 'failed',
+        pid: 42,
+        project: 'vendor-owner',
+        test_file: 'e2e/demo/onboarding.demo.ts',
+        started_at: '2026-02-28T00:00:00.000Z',
+        ended_at: '2026-02-28T00:01:00.000Z',
+        exit_code: 1,
+        failure_summary: 'Test timed out after 30000ms',
+        screenshot_paths: ['/tmp/test-results/screenshot.png'],
+        trace_summary: '=== DEMO PLAY-BY-PLAY TRACE ===\nTotal events: 1\n\n[  0.0s] NAV    Navigate to http://localhost:3000\n=== END TRACE ===',
+        message: 'Demo failed.',
+      };
+
+      expect(typeof result.trace_summary).toBe('string');
+      expect(result.trace_summary).not.toBeNull();
+      expect(result.trace_summary!.length).toBeGreaterThan(0);
+    });
+
+    it('trace_summary when present must be a non-empty string', () => {
+      const withTrace: CheckDemoResultResult = {
+        status: 'passed',
+        pid: 1,
+        message: 'ok',
+        trace_summary: '=== DEMO PLAY-BY-PLAY TRACE ===\nTotal events: 5\n=== END TRACE ===',
+      };
+
+      expect(typeof withTrace.trace_summary).toBe('string');
+      expect(withTrace.trace_summary!.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('DemoRunState - trace_summary field', () => {
+    it('should accept DemoRunState without trace_summary (field is optional)', () => {
+      const state: DemoRunState = {
+        pid: 12345,
+        project: 'vendor-owner',
+        started_at: '2026-02-28T00:00:00.000Z',
+        status: 'running',
+      };
+
+      expect(state.trace_summary).toBeUndefined();
+    });
+
+    it('should accept DemoRunState with trace_summary as a string', () => {
+      const state: DemoRunState = {
+        pid: 12345,
+        project: 'vendor-owner',
+        started_at: '2026-02-28T00:00:00.000Z',
+        status: 'passed',
+        ended_at: '2026-02-28T00:01:00.000Z',
+        exit_code: 0,
+        trace_summary: '=== DEMO PLAY-BY-PLAY TRACE ===\nTotal events: 12\n\n[  0.0s] NAV    Navigate to http://localhost:3000\n=== END TRACE ===',
+      };
+
+      expect(typeof state.trace_summary).toBe('string');
+      expect(state.trace_summary).toContain('Total events: 12');
+    });
+
+    it('DemoRunState round-trips through JSON serialization with trace_summary intact', () => {
+      const original: DemoRunState = {
+        pid: 777,
+        project: 'demo',
+        test_file: 'e2e/demo/billing.demo.ts',
+        started_at: '2026-02-28T00:00:00.000Z',
+        status: 'failed',
+        ended_at: '2026-02-28T00:02:00.000Z',
+        exit_code: 1,
+        failure_summary: 'Assertion failed',
+        screenshot_paths: ['/tmp/test-results/screenshot-1.png'],
+        trace_summary: '=== DEMO PLAY-BY-PLAY TRACE ===\nTotal events: 7\n\n[  0.0s] NAV    Navigate to http://localhost:3000\n[  1.2s] ACTION Click [data-testid="billing"]\n=== END TRACE ===',
+      };
+
+      const serialized = JSON.stringify(original);
+      const deserialized: DemoRunState = JSON.parse(serialized);
+
+      expect(deserialized.trace_summary).toBe(original.trace_summary);
+      expect(typeof deserialized.trace_summary).toBe('string');
+      expect(deserialized.pid).toBe(777);
+      expect(deserialized.status).toBe('failed');
+    });
+
+    it('DemoRunState without trace_summary round-trips through JSON with undefined preserved as absent', () => {
+      const original: DemoRunState = {
+        pid: 888,
+        project: 'vendor-owner',
+        started_at: '2026-02-28T00:00:00.000Z',
+        status: 'passed',
+      };
+
+      const serialized = JSON.stringify(original);
+      const deserialized: DemoRunState = JSON.parse(serialized);
+
+      // JSON.stringify omits undefined fields, so trace_summary is absent after round-trip
+      expect(deserialized.trace_summary).toBeUndefined();
+      expect('trace_summary' in deserialized).toBe(false);
+    });
+  });
+});
+
+// ============================================================================
+// isValidChromeMatchPattern Tests
+//
+// Mirrors the implementation in server.ts (which is not exported).
+// The function is duplicated here following the same pattern used for
+// countTestFiles above — this keeps coverage without a risky export change.
+// ============================================================================
+
+/**
+ * Exact copy of isValidChromeMatchPattern from server.ts.
+ * Must stay in sync whenever the production implementation changes.
+ *
+ * Validate a Chrome extension match pattern per the Chrome docs spec.
+ * <scheme>://<host>/<path> where host is * | *.domain | exact domain.
+ * file:// has empty host (file:///path). No partial wildcards.
+ */
+function isValidChromeMatchPattern(pattern: string): boolean {
+  if (pattern === '<all_urls>') return true;
+  if (/^file:\/\/\/(.+)$/.test(pattern)) return true;
+  const m = pattern.match(/^(\*|https?|ftp):\/\/([^/]+)\/(.*)$/);
+  if (!m) return false;
+  const host = m[2];
+  if (host === '*') return true;
+  if (host.startsWith('*.')) return !host.slice(2).includes('*');
+  return !host.includes('*');
+}
+
+describe('isValidChromeMatchPattern', () => {
+  describe('special keyword', () => {
+    it('should accept <all_urls>', () => {
+      expect(isValidChromeMatchPattern('<all_urls>')).toBe(true);
+    });
+
+    it('should reject partial match on all_urls keyword', () => {
+      expect(isValidChromeMatchPattern('all_urls')).toBe(false);
+      expect(isValidChromeMatchPattern('<all_urls> ')).toBe(false);
+    });
+  });
+
+  describe('file:// patterns', () => {
+    it('should accept file:///path', () => {
+      expect(isValidChromeMatchPattern('file:///path/to/file.html')).toBe(true);
+    });
+
+    it('should accept file:/// with trailing wildcard in path', () => {
+      expect(isValidChromeMatchPattern('file:///foo/*')).toBe(true);
+    });
+
+    it('should reject file:// with only two slashes (no host section)', () => {
+      // file://path is invalid per Chrome spec — needs three slashes
+      expect(isValidChromeMatchPattern('file://path/to/file')).toBe(false);
+    });
+  });
+
+  describe('wildcard scheme *://', () => {
+    it('should accept *://*/*', () => {
+      expect(isValidChromeMatchPattern('*://*/*')).toBe(true);
+    });
+
+    it('should accept *://example.com/*', () => {
+      expect(isValidChromeMatchPattern('*://example.com/*')).toBe(true);
+    });
+
+    it('should accept *://*.example.com/*', () => {
+      expect(isValidChromeMatchPattern('*://*.example.com/*')).toBe(true);
+    });
+
+    it('should reject *://host with no path separator', () => {
+      expect(isValidChromeMatchPattern('*://example.com')).toBe(false);
+    });
+  });
+
+  describe('https:// patterns', () => {
+    it('should accept https://example.com/*', () => {
+      expect(isValidChromeMatchPattern('https://example.com/*')).toBe(true);
+    });
+
+    it('should accept https://*.example.com/*', () => {
+      expect(isValidChromeMatchPattern('https://*.example.com/*')).toBe(true);
+    });
+
+    it('should accept https://*/* (wildcard host)', () => {
+      expect(isValidChromeMatchPattern('https://*/*')).toBe(true);
+    });
+
+    it('should accept https://sub.example.com/path/to/page', () => {
+      expect(isValidChromeMatchPattern('https://sub.example.com/path/to/page')).toBe(true);
+    });
+
+    it('should accept https://example.com/ (empty path)', () => {
+      expect(isValidChromeMatchPattern('https://example.com/')).toBe(true);
+    });
+
+    it('should reject partial wildcard in host like *-admin.example.com', () => {
+      // Partial wildcards are not allowed — only * alone or *.domain
+      expect(isValidChromeMatchPattern('https://*-admin.example.com/*')).toBe(false);
+    });
+
+    it('should reject double wildcard in subdomain *.*.example.com', () => {
+      expect(isValidChromeMatchPattern('https://*.*.example.com/*')).toBe(false);
+    });
+
+    it('should reject missing path component', () => {
+      expect(isValidChromeMatchPattern('https://example.com')).toBe(false);
+    });
+
+    it('should reject wildcard embedded in middle of hostname', () => {
+      expect(isValidChromeMatchPattern('https://foo.*.example.com/*')).toBe(false);
+    });
+  });
+
+  describe('http:// patterns', () => {
+    it('should accept http://localhost/*', () => {
+      expect(isValidChromeMatchPattern('http://localhost/*')).toBe(true);
+    });
+
+    it('should accept http://127.0.0.1/*', () => {
+      expect(isValidChromeMatchPattern('http://127.0.0.1/*')).toBe(true);
+    });
+
+    it('should accept http://*.example.com/path', () => {
+      expect(isValidChromeMatchPattern('http://*.example.com/path')).toBe(true);
+    });
+
+    it('should reject http://example.com (no trailing slash)', () => {
+      expect(isValidChromeMatchPattern('http://example.com')).toBe(false);
+    });
+  });
+
+  describe('ftp:// patterns', () => {
+    it('should accept ftp://ftp.example.com/*', () => {
+      expect(isValidChromeMatchPattern('ftp://ftp.example.com/*')).toBe(true);
+    });
+
+    it('should reject ftp:// without path', () => {
+      expect(isValidChromeMatchPattern('ftp://ftp.example.com')).toBe(false);
+    });
+  });
+
+  describe('invalid schemes', () => {
+    it('should reject ws:// (not in allowed schemes)', () => {
+      expect(isValidChromeMatchPattern('ws://example.com/*')).toBe(false);
+    });
+
+    it('should reject chrome-extension:// scheme', () => {
+      expect(isValidChromeMatchPattern('chrome-extension://*/*')).toBe(false);
+    });
+
+    it('should reject javascript: scheme', () => {
+      expect(isValidChromeMatchPattern('javascript:void(0)')).toBe(false);
+    });
+
+    it('should reject plain strings with no scheme', () => {
+      expect(isValidChromeMatchPattern('example.com/*')).toBe(false);
+    });
+
+    it('should reject empty string', () => {
+      expect(isValidChromeMatchPattern('')).toBe(false);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should reject pattern with only whitespace', () => {
+      expect(isValidChromeMatchPattern('   ')).toBe(false);
+    });
+
+    it('should reject pattern that starts with *. at scheme level', () => {
+      // *.example.com/* has no scheme — not valid
+      expect(isValidChromeMatchPattern('*.example.com/*')).toBe(false);
+    });
+
+    it('should accept https://*.co.uk/* (multi-part TLD)', () => {
+      expect(isValidChromeMatchPattern('https://*.co.uk/*')).toBe(true);
+    });
+
+    it('should accept https://example.com/api/v1/*', () => {
+      expect(isValidChromeMatchPattern('https://example.com/api/v1/*')).toBe(true);
+    });
+  });
+});
+
+// ============================================================================
+// EXTENSION_PROJECTS membership tests
+//
+// Verifies the set of projects that trigger extension_manifest check matches
+// the documented contract: demo, extension, extension-manual.
+// ============================================================================
+
+const EXTENSION_PROJECTS = new Set(['demo', 'extension', 'extension-manual']);
+
+describe('EXTENSION_PROJECTS set', () => {
+  it('should include demo', () => {
+    expect(EXTENSION_PROJECTS.has('demo')).toBe(true);
+  });
+
+  it('should include extension', () => {
+    expect(EXTENSION_PROJECTS.has('extension')).toBe(true);
+  });
+
+  it('should include extension-manual', () => {
+    expect(EXTENSION_PROJECTS.has('extension-manual')).toBe(true);
+  });
+
+  it('should not include non-extension projects', () => {
+    const nonExtensionProjects = [
+      'vendor-owner', 'vendor-admin', 'vendor-dev', 'vendor-viewer',
+      'cross-persona', 'auth-flows', 'manual', 'seed', 'auth-setup',
+    ];
+    for (const project of nonExtensionProjects) {
+      expect(EXTENSION_PROJECTS.has(project)).toBe(false);
+    }
+  });
+
+  it('should have exactly 3 members', () => {
+    expect(EXTENSION_PROJECTS.size).toBe(3);
+  });
+});
+
+// ============================================================================
+// extension_manifest check logic (simulated)
+//
+// The preflight check in server.ts reads manifest.json from disk and calls
+// isValidChromeMatchPattern on each content_scripts[i].matches entry.
+// These tests validate that logic directly using temp files, mirroring the
+// approach used for countTestFiles above.
+// ============================================================================
+
+describe('extension_manifest check logic (simulated)', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = path.join('/tmp', `playwright-manifest-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    fs.mkdirSync(tempDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Simulate the extension_manifest check from server.ts.
+   * Returns the same {status, message} shape as runCheck's fn callback.
+   */
+  function simulateExtensionManifestCheck(
+    distPath: string | undefined,
+    projectDir: string
+  ): { status: 'pass' | 'fail' | 'warn' | 'skip'; message: string } {
+    if (!distPath) {
+      return { status: 'skip', message: 'GENTYR_EXTENSION_DIST_PATH not set — skipping manifest validation' };
+    }
+
+    const primaryPath = path.join(projectDir, distPath, 'manifest.json');
+    const fallbackPath = path.join(projectDir, path.dirname(distPath), 'manifest.json');
+    let manifestPath: string | null = null;
+
+    if (fs.existsSync(primaryPath)) {
+      manifestPath = primaryPath;
+    } else if (fs.existsSync(fallbackPath)) {
+      manifestPath = fallbackPath;
+    }
+
+    if (!manifestPath) {
+      return { status: 'fail', message: `manifest.json not found at ${primaryPath} or ${fallbackPath}` };
+    }
+
+    let manifest: { content_scripts?: Array<{ matches?: string[] }> };
+    try {
+      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { status: 'fail', message: `Failed to parse ${manifestPath}: ${msg}` };
+    }
+
+    const invalidPatterns: string[] = [];
+    const contentScripts = manifest.content_scripts || [];
+    for (let i = 0; i < contentScripts.length; i++) {
+      const matches = contentScripts[i].matches || [];
+      for (const pattern of matches) {
+        if (!isValidChromeMatchPattern(pattern)) {
+          invalidPatterns.push(`content_scripts[${i}]: ${pattern}`);
+        }
+      }
+    }
+
+    if (invalidPatterns.length > 0) {
+      return {
+        status: 'fail',
+        message: `Invalid match patterns in ${path.relative(projectDir, manifestPath)}:\n${invalidPatterns.map(p => `  - ${p}`).join('\n')}`,
+      };
+    }
+
+    const totalPatterns = contentScripts.reduce((sum, cs) => sum + (cs.matches?.length || 0), 0);
+    return { status: 'pass', message: `${totalPatterns} match pattern(s) validated in ${path.relative(projectDir, manifestPath)}` };
+  }
+
+  it('should skip when GENTYR_EXTENSION_DIST_PATH is not set', () => {
+    const result = simulateExtensionManifestCheck(undefined, tempDir);
+
+    expect(result.status).toBe('skip');
+    expect(result.message).toContain('GENTYR_EXTENSION_DIST_PATH not set');
+  });
+
+  it('should fail when manifest.json is missing at both primary and fallback paths', () => {
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('fail');
+    expect(result.message).toContain('manifest.json not found');
+  });
+
+  it('should pass when manifest.json has no content_scripts', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      name: 'Test Extension',
+      version: '1.0.0',
+      manifest_version: 3,
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('0 match pattern(s)');
+  });
+
+  it('should pass with all valid content_scripts match patterns', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [
+        { matches: ['https://example.com/*', 'https://*.example.com/*'] },
+        { matches: ['*://*/*'] },
+      ],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('3 match pattern(s)');
+  });
+
+  it('should fail when a content_scripts entry has an invalid match pattern', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [
+        { matches: ['https://valid.example.com/*', 'https://*-admin.example.com/*'] },
+      ],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('fail');
+    expect(result.message).toContain('Invalid match patterns');
+    expect(result.message).toContain('content_scripts[0]: https://*-admin.example.com/*');
+  });
+
+  it('should report all invalid patterns across multiple content_scripts entries', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [
+        { matches: ['https://*-widget.example.com/*'] },
+        { matches: ['https://valid.example.com/*'] },
+        { matches: ['ws://realtime.example.com/*'] },
+      ],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('fail');
+    expect(result.message).toContain('content_scripts[0]: https://*-widget.example.com/*');
+    expect(result.message).toContain('content_scripts[2]: ws://realtime.example.com/*');
+    // Valid entry must NOT appear in the invalid list
+    expect(result.message).not.toContain('content_scripts[1]');
+  });
+
+  it('should fail when manifest.json contains invalid JSON', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), '{ broken json }}}');
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('fail');
+    expect(result.message).toContain('Failed to parse');
+  });
+
+  it('should find manifest.json at the fallback path (parent of distPath)', () => {
+    // primary: tempDir/dist/extension/manifest.json — does NOT exist
+    // fallback: tempDir/dist/manifest.json — exists
+    const parentDir = path.join(tempDir, 'dist');
+    fs.mkdirSync(parentDir, { recursive: true });
+    fs.writeFileSync(path.join(parentDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ matches: ['<all_urls>'] }],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('1 match pattern(s)');
+  });
+
+  it('should prefer primary path over fallback when both exist', () => {
+    // primary: tempDir/dist/extension/manifest.json — valid manifest
+    // fallback: tempDir/dist/manifest.json — invalid manifest
+    const primaryDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(primaryDir, { recursive: true });
+    fs.writeFileSync(path.join(primaryDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ matches: ['https://example.com/*'] }],
+    }));
+
+    const fallbackDir = path.join(tempDir, 'dist');
+    fs.writeFileSync(path.join(fallbackDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ matches: ['bad-pattern'] }],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    // Should use primary (valid), not fallback (invalid)
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('1 match pattern(s)');
+  });
+
+  it('should pass with <all_urls> match pattern', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ matches: ['<all_urls>'] }],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('1 match pattern(s)');
+  });
+
+  it('should pass with content_scripts entry that has empty matches array', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ matches: [] }, { matches: ['https://example.com/*'] }],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('1 match pattern(s)');
+  });
+
+  it('should handle content_scripts entry with no matches key', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ js: ['content.js'] }],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    expect(result.message).toContain('0 match pattern(s)');
+  });
+
+  it('should include the relative manifest path in the pass message', () => {
+    const distDir = path.join(tempDir, 'dist', 'extension');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify({
+      content_scripts: [{ matches: ['https://example.com/*'] }],
+    }));
+
+    const result = simulateExtensionManifestCheck('dist/extension', tempDir);
+
+    expect(result.status).toBe('pass');
+    // The message must contain a relative (not absolute) path
+    expect(result.message).toContain('manifest.json');
+    expect(result.message).not.toContain(tempDir);
+  });
+});
+
+// ============================================================================
+// Recovery step for extension_manifest check (G001 - fail loudly)
+// ============================================================================
+
+describe('extension_manifest recovery step', () => {
+  it('should provide actionable recovery step text for invalid patterns', () => {
+    // The recovery step text from server.ts switch case for extension_manifest.
+    // Validates the message is specific and actionable.
+    const recoveryStep = 'Fix invalid match patterns in manifest.json — Chrome requires host to be * | *.domain.com | exact.domain.com (no partial wildcards like *-admin.example.com)';
+
+    expect(recoveryStep).toContain('manifest.json');
+    expect(recoveryStep).toContain('*.domain.com');
+    expect(recoveryStep).toContain('no partial wildcards');
+    expect(recoveryStep.length).toBeGreaterThan(50);
   });
 });

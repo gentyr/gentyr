@@ -33,6 +33,7 @@ import {
   checkKeyHealth,
   selectActiveKey,
 } from './key-sync.js';
+import { isProxyDisabled } from './lib/proxy-state.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
@@ -44,6 +45,8 @@ const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 // Limits
 const MAX_REVIVALS_PER_CYCLE = 3;
 const DEAD_SESSION_MAX_AGE_DAYS = 7;
+const RETROACTIVE_WINDOW_MS = 12 * 60 * 60 * 1000;
+const NORMAL_STALE_WINDOW_MS = 30 * 60 * 1000;
 
 // Lazy SQLite
 let Database = null;
@@ -51,6 +54,51 @@ try {
   Database = (await import('better-sqlite3')).default;
 } catch {
   // Non-fatal
+}
+
+/**
+ * Build the context prompt injected when a session is resumed.
+ * Tells the agent how long it was interrupted and to verify its task status.
+ */
+function buildRevivalPrompt({ reason, interruptedAt, taskId }) {
+  const elapsedMs = Date.now() - new Date(interruptedAt).getTime();
+  const hours = Math.floor(elapsedMs / (60 * 60 * 1000));
+  const minutes = Math.floor((elapsedMs % (60 * 60 * 1000)) / (60 * 1000));
+  const elapsed = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+
+  const reasonText = {
+    quota_interrupted: 'API quota exhaustion',
+    process_already_dead: 'unexpected process death',
+    account_recovered: 'all API accounts were exhausted',
+  }[reason] || reason;
+
+  let prompt = `[SESSION REVIVED] This session was interrupted ${elapsed} ago due to ${reasonText} and is now being resumed.\n\n`;
+  prompt += `IMPORTANT: Before continuing any work, you MUST first verify that your assigned task has not already been completed by another agent while you were interrupted. `;
+
+  if (taskId) {
+    prompt += `Check the status of task ${taskId} using mcp__todo-db__get_task. `;
+    prompt += `If the task status is 'completed', report that it was already handled and exit immediately. `;
+    prompt += `If the task is still 'pending' or 'in_progress', proceed with the work where you left off.`;
+  } else {
+    prompt += `Check mcp__todo-db__list_tasks for your section to see if your work has been completed. `;
+    prompt += `If it has, exit immediately. Otherwise, proceed where you left off.`;
+  }
+
+  return prompt;
+}
+
+/**
+ * Resolve taskId for an agentId by scanning agent-tracker history.
+ */
+function resolveTaskIdForAgent(agentId) {
+  if (!agentId) return null;
+  try {
+    if (!fs.existsSync(HISTORY_PATH)) return null;
+    const history = JSON.parse(fs.readFileSync(HISTORY_PATH, 'utf8'));
+    if (!Array.isArray(history.agents)) return null;
+    const agent = history.agents.find(a => a.id === agentId);
+    return agent?.metadata?.taskId || null;
+  } catch { return null; }
 }
 
 /**
@@ -128,29 +176,47 @@ function findSessionFileByAgentId(sessionDir, agentId) {
  * Re-uses the same pattern as hourly-automation.js buildSpawnEnv().
  */
 function buildSpawnEnv(agentId) {
-  return {
+  // Resolve git-wrappers directory (follows symlinks for npm link model)
+  const hooksDir = path.join(PROJECT_DIR, '.claude', 'hooks');
+  let guardedPath = process.env.PATH || '/usr/bin:/bin';
+  try {
+    const realHooks = fs.realpathSync(hooksDir);
+    const wrappersDir = path.join(realHooks, 'git-wrappers');
+    if (fs.existsSync(path.join(wrappersDir, 'git'))) {
+      guardedPath = `${wrappersDir}:${guardedPath}`;
+    }
+  } catch {}
+
+  const env = {
     ...process.env,
     CLAUDE_PROJECT_DIR: PROJECT_DIR,
     CLAUDE_SPAWNED_SESSION: 'true',
     CLAUDE_AGENT_ID: agentId,
-    HTTPS_PROXY: 'http://localhost:18080',
-    HTTP_PROXY: 'http://localhost:18080',
-    NO_PROXY: 'localhost,127.0.0.1',
-    NODE_EXTRA_CA_CERTS: path.join(os.homedir(), '.claude', 'proxy-certs', 'ca.pem'),
+    PATH: guardedPath,
   };
+
+  if (!isProxyDisabled()) {
+    env.HTTPS_PROXY = 'http://localhost:18080';
+    env.HTTP_PROXY = 'http://localhost:18080';
+    env.NO_PROXY = 'localhost,127.0.0.1';
+    env.NODE_EXTRA_CA_CERTS = path.join(os.homedir(), '.claude', 'proxy-certs', 'ca.pem');
+  }
+
+  return env;
 }
 
 /**
  * Spawn a resumed claude session.
  * Returns true if spawn succeeded.
  */
-function spawnResumedSession(sessionId, agentId, log) {
+function spawnResumedSession(sessionId, agentId, log, revivalPrompt) {
   const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
   const spawnArgs = [
     '--resume', sessionId,
     '--dangerously-skip-permissions',
     '--mcp-config', mcpConfig,
     '--output-format', 'json',
+    '-p', revivalPrompt,
   ];
 
   try {
@@ -180,7 +246,7 @@ function spawnResumedSession(sessionId, agentId, log) {
 // Mode 1: Quota-interrupted sessions
 // ============================================================================
 
-function reviveQuotaInterruptedSessions(log, maxRevivals) {
+function reviveQuotaInterruptedSessions(log, maxRevivals, staleWindowMs = NORMAL_STALE_WINDOW_MS) {
   let revived = 0;
 
   if (!fs.existsSync(QUOTA_INTERRUPTED_PATH)) return revived;
@@ -206,10 +272,11 @@ function reviveQuotaInterruptedSessions(log, maxRevivals) {
       continue;
     }
 
-    // Check if older than 30 minutes (stale signal)
+    // Check if older than the stale window
     const age = Date.now() - new Date(session.interruptedAt).getTime();
-    if (age > 30 * 60 * 1000) {
-      log(`  Quota-interrupted session ${session.agentId || 'unknown'} is stale (${Math.round(age / 60000)}m old), discarding.`);
+    if (age > staleWindowMs) {
+      const windowLabel = staleWindowMs > 60 * 60 * 1000 ? `${Math.round(staleWindowMs / (60 * 60 * 1000))}h` : `${Math.round(staleWindowMs / 60000)}m`;
+      log(`  Quota-interrupted session ${session.agentId || 'unknown'} is stale (${Math.round(age / 60000)}m old, window: ${windowLabel}), discarding.`);
       continue;
     }
 
@@ -232,7 +299,14 @@ function reviveQuotaInterruptedSessions(log, maxRevivals) {
       },
     });
 
-    if (spawnResumedSession(sessionId, newAgentId, log)) {
+    const taskId = resolveTaskIdForAgent(session.agentId);
+    const revivalPrompt = buildRevivalPrompt({
+      reason: 'quota_interrupted',
+      interruptedAt: session.interruptedAt,
+      taskId,
+    });
+
+    if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt)) {
       revived++;
       session.status = 'revived';
     } else {
@@ -327,7 +401,13 @@ function reviveDeadSessions(log, maxRevivals) {
         },
       });
 
-      if (spawnResumedSession(sessionId, newAgentId, log)) {
+      const revivalPrompt = buildRevivalPrompt({
+        reason: 'process_already_dead',
+        interruptedAt: agent.timestamp,
+        taskId,
+      });
+
+      if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt)) {
         revived++;
         // Mark task back to in_progress
         try {
@@ -426,23 +506,40 @@ async function resumePausedSessions(log, maxRevivals) {
       continue;
     }
 
-    if (!session.sessionId) {
+    // Resolve sessionId: prefer explicit, fall back to agent-tracker lookup
+    let sessionId = session.sessionId;
+    if (!sessionId && session.agentId) {
+      const sessionDir = getSessionDir(PROJECT_DIR);
+      if (sessionDir) {
+        const sessionFile = findSessionFileByAgentId(sessionDir, session.agentId);
+        sessionId = extractSessionIdFromPath(sessionFile);
+      }
+    }
+    if (!sessionId) {
+      log(`  Cannot determine session ID for paused session ${session.agentId || 'unknown'}, skipping.`);
       continue;
     }
 
     const newAgentId = registerSpawn({
       type: AGENT_TYPES.SESSION_REVIVED,
       hookType: HOOK_TYPES.SESSION_REVIVER,
-      description: `Resuming paused session ${session.sessionId.slice(0, 8)}`,
+      description: `Resuming paused session ${sessionId.slice(0, 8)}`,
       prompt: `[resumed after account recovery, original agent: ${session.agentId || 'unknown'}]`,
       metadata: {
         originalAgentId: session.agentId,
-        originalSessionId: session.sessionId,
+        originalSessionId: sessionId,
         revivalReason: 'account_recovered',
       },
     });
 
-    if (spawnResumedSession(session.sessionId, newAgentId, log)) {
+    const taskId = resolveTaskIdForAgent(session.agentId);
+    const revivalPrompt = buildRevivalPrompt({
+      reason: 'account_recovered',
+      interruptedAt: new Date(session.pausedAt).toISOString(),
+      taskId,
+    });
+
+    if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt)) {
       revived++;
     } else {
       remaining.push(session);
@@ -471,7 +568,7 @@ async function resumePausedSessions(log, maxRevivals) {
  * @param {number} [maxConcurrent=5] - Maximum concurrent agents
  * @returns {Promise<{revivedQuota: number, revivedDead: number, revivedPaused: number}>}
  */
-export async function reviveInterruptedSessions(log, maxConcurrent = 5) {
+export async function reviveInterruptedSessions(log, maxConcurrent = 5, options = {}) {
   const startTime = Date.now();
   const result = { revivedQuota: 0, revivedDead: 0, revivedPaused: 0 };
 
@@ -487,7 +584,8 @@ export async function reviveInterruptedSessions(log, maxConcurrent = 5) {
   let remainingSlots = Math.min(availableSlots, MAX_REVIVALS_PER_CYCLE);
 
   // Mode 1: Quota-interrupted sessions (highest priority)
-  result.revivedQuota = reviveQuotaInterruptedSessions(log, remainingSlots);
+  const staleWindowMs = options.retroactive ? RETROACTIVE_WINDOW_MS : NORMAL_STALE_WINDOW_MS;
+  result.revivedQuota = reviveQuotaInterruptedSessions(log, remainingSlots, staleWindowMs);
   remainingSlots -= result.revivedQuota;
 
   // Mode 2: Dead sessions with pending TODOs

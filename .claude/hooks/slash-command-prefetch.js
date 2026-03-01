@@ -64,7 +64,7 @@ const SENTINELS = {
   'triage': '<!-- HOOK:GENTYR:triage -->',
   'demo': '<!-- HOOK:GENTYR:demo -->',
   'demo-interactive': '<!-- HOOK:GENTYR:demo -->',
-  'demo-auto': '<!-- HOOK:GENTYR:demo -->',
+  'demo-autonomous': '<!-- HOOK:GENTYR:demo -->',
   'persona-feedback': '<!-- HOOK:GENTYR:persona-feedback -->',
 };
 
@@ -796,7 +796,7 @@ function handleConfigurePersonas() {
   if (feedbackDb) {
     try {
       const personas = feedbackDb.prepare(
-        "SELECT id, name, consumption_mode, enabled FROM personas ORDER BY name"
+        "SELECT id, name, COALESCE(display_name, name) as display_name, consumption_mode, enabled FROM personas ORDER BY name"
       ).all();
       const features = feedbackDb.prepare(
         "SELECT id, name, category FROM features ORDER BY name"
@@ -933,6 +933,30 @@ function handleProductManager() {
     output.gathered.note = 'product-manager.db not found';
   }
 
+  // Demo scenario coverage
+  const feedbackDb = openDb(USER_FEEDBACK_DB);
+  if (feedbackDb) {
+    try {
+      const guiPersonas = feedbackDb.prepare(
+        "SELECT id, name, COALESCE(display_name, name) as display_name FROM personas WHERE enabled = 1 AND consumption_mode = 'gui'"
+      ).all();
+      const scenarios = feedbackDb.prepare(
+        "SELECT persona_id, COUNT(*) as count FROM demo_scenarios WHERE enabled = 1 GROUP BY persona_id"
+      ).all();
+      const scenarioMap = Object.fromEntries(scenarios.map(s => [s.persona_id, s.count]));
+
+      output.gathered.demoScenarios = {
+        totalScenarios: scenarios.reduce((sum, s) => sum + s.count, 0),
+        guiPersonas: guiPersonas.map(p => ({
+          id: p.id, name: p.name,
+          scenarioCount: scenarioMap[p.id] || 0,
+        })),
+        uncoveredPersonas: guiPersonas.filter(p => !scenarioMap[p.id]).map(p => p.name),
+      };
+    } catch { /* non-fatal */ }
+    finally { feedbackDb.close(); }
+  }
+
   console.log(JSON.stringify({
     continue: true,
     hookSpecificOutput: {
@@ -1044,7 +1068,7 @@ function handlePersonaFeedback() {
     try {
       // All enabled personas with basic info
       const personas = feedbackDb.prepare(
-        "SELECT id, name, consumption_mode, enabled FROM personas ORDER BY name"
+        "SELECT id, name, COALESCE(display_name, name) as display_name, consumption_mode, enabled FROM personas ORDER BY name"
       ).all();
       output.gathered.personas = personas;
       output.gathered.enabledCount = personas.filter(p => p.enabled).length;
@@ -1065,6 +1089,7 @@ function handlePersonaFeedback() {
           SELECT
             p.id,
             p.name,
+            COALESCE(p.display_name, p.name) as display_name,
             (SELECT MAX(s.completed_at) FROM feedback_sessions s WHERE s.persona_id = p.id) as last_session_date,
             (SELECT s.satisfaction_level FROM feedback_sessions s WHERE s.persona_id = p.id ORDER BY s.completed_at DESC LIMIT 1) as last_satisfaction
           FROM personas p
@@ -1120,8 +1145,9 @@ function handleDemo() {
   // Check playwright.config.ts existence
   const tsConfig = path.join(PROJECT_DIR, 'playwright.config.ts');
   const jsConfig = path.join(PROJECT_DIR, 'playwright.config.js');
-  output.gathered.configExists = fs.existsSync(tsConfig) || fs.existsSync(jsConfig);
-  output.gathered.configPath = fs.existsSync(tsConfig) ? 'playwright.config.ts' : (fs.existsSync(jsConfig) ? 'playwright.config.js' : null);
+  const configFile = fs.existsSync(tsConfig) ? tsConfig : (fs.existsSync(jsConfig) ? jsConfig : null);
+  output.gathered.configExists = !!configFile;
+  output.gathered.configPath = configFile ? path.basename(configFile) : null;
 
   // Check @playwright/test in node_modules
   const pwTestDir = path.join(PROJECT_DIR, 'node_modules', '@playwright', 'test');
@@ -1147,28 +1173,39 @@ function handleDemo() {
   }
   output.gathered.browsersInstalled = browsersFound;
 
-  // Credential env var status
-  const credentialKeys = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY'];
+  // Credential env var status — scan all env vars for unresolved op:// references
   const credentials = {};
-  for (const key of credentialKeys) {
-    const value = process.env[key];
-    if (!value) {
-      credentials[key] = 'missing';
-    } else if (value.startsWith('op://')) {
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value && value.startsWith('op://')) {
       credentials[key] = 'unresolved_op_ref';
-    } else {
-      credentials[key] = 'set';
     }
   }
   output.gathered.credentials = credentials;
+  output.gathered.credentialsOk = Object.keys(credentials).length === 0;
 
-  // Test file counts per project directory
-  const activeDirs = {
-    'vendor-owner': 'e2e/vendor',
-    'manual': 'e2e/manual',
-    'extension-manual': 'e2e/extension/manual',
-    'demo': 'e2e/demo',
-  };
+  // Test file counts per project directory (discovered from playwright config)
+  const activeDirs = {};
+  if (configFile) {
+    try {
+      const configContent = fs.readFileSync(configFile, 'utf8');
+      // Extract top-level testDir
+      const projectsStart = configContent.search(/projects\s*[:=]\s*\[/);
+      const textBeforeProjects = projectsStart > 0 ? configContent.slice(0, projectsStart) : configContent;
+      const defaultTestDirMatch = textBeforeProjects.match(/testDir\s*:\s*['"`]([^'"`]+)['"`]/);
+      const defaultTestDir = defaultTestDirMatch ? defaultTestDirMatch[1].replace(/^\.\//, '') : 'e2e';
+
+      const blockRegex = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)*name:\s*['"]([^'"]+)['"][^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
+      let blockMatch;
+      while ((blockMatch = blockRegex.exec(configContent)) !== null) {
+        const block = blockMatch[0];
+        const nameM = block.match(/name:\s*['"]([^'"]+)['"]/);
+        const tdM = block.match(/testDir:\s*['"]([^'"]+)['"]/);
+        if (nameM && !['seed', 'auth-setup', 'cleanup', 'setup'].includes(nameM[1])) {
+          activeDirs[nameM[1]] = tdM ? tdM[1].replace(/^\.\//, '') : defaultTestDir;
+        }
+      }
+    } catch { /* ignore */ }
+  }
   const testCounts = {};
   for (const [project, testDir] of Object.entries(activeDirs)) {
     const fullDir = path.join(PROJECT_DIR, testDir);
@@ -1180,7 +1217,7 @@ function handleDemo() {
       const files = fs.readdirSync(fullDir, { recursive: true });
       testCounts[project] = files.filter(f => {
         const filename = String(f);
-        return filename.endsWith('.spec.ts') || filename.endsWith('.manual.ts');
+        return filename.endsWith('.spec.ts') || filename.endsWith('.manual.ts') || filename.endsWith('.demo.ts');
       }).length;
     } catch {
       testCounts[project] = 0;
@@ -1206,10 +1243,26 @@ function handleDemo() {
   // Auth state freshness (manual check if cache miss)
   if (!authCheckedFromCache) {
     const authDir = path.join(PROJECT_DIR, '.auth');
-    const primaryAuth = path.join(authDir, 'vendor-owner.json');
+
+    // Discover primary auth file from playwright config or scan .auth/
+    let primaryAuthBasename = null;
+    if (configFile) {
+      try {
+        const cfgContent = fs.readFileSync(configFile, 'utf8');
+        const ssMatch = cfgContent.match(/storageState:\s*['"]([^'"]+)['"]/);
+        if (ssMatch) primaryAuthBasename = path.basename(ssMatch[1]);
+      } catch { /* ignore */ }
+    }
+    if (!primaryAuthBasename && fs.existsSync(authDir)) {
+      try {
+        const authFiles = fs.readdirSync(authDir).filter(f => f.endsWith('.json'));
+        if (authFiles.length) primaryAuthBasename = authFiles[0];
+      } catch { /* ignore */ }
+    }
+    const primaryAuth = primaryAuthBasename ? path.join(authDir, primaryAuthBasename) : null;
     let authState = { exists: false, ageHours: null, cookiesExpired: false, isStale: true };
 
-    if (fs.existsSync(primaryAuth)) {
+    if (primaryAuth && fs.existsSync(primaryAuth)) {
       try {
         const stat = fs.statSync(primaryAuth);
         const ageMs = Date.now() - stat.mtimeMs;
@@ -1232,6 +1285,83 @@ function handleDemo() {
       } catch { /* ignore */ }
     }
     output.gathered.authState = authState;
+  }
+
+  // Discover Playwright projects from config file
+  if (configFile) {
+    try {
+      const configContent = fs.readFileSync(configFile, 'utf8');
+      // Match project name strings in the projects array.
+      // Playwright configs use: { name: 'project-name', ... }
+      const projectNames = [];
+      const nameRegex = /name:\s*['"]([^'"]+)['"]/g;
+      let match;
+      while ((match = nameRegex.exec(configContent)) !== null) {
+        projectNames.push(match[1]);
+      }
+      output.gathered.discoveredProjects = projectNames;
+    } catch {
+      output.gathered.discoveredProjects = [];
+    }
+  } else {
+    output.gathered.discoveredProjects = [];
+  }
+
+  // Query demo scenarios from user-feedback.db
+  if (fs.existsSync(USER_FEEDBACK_DB)) {
+    const scenariosDb = openDb(USER_FEEDBACK_DB);
+    if (scenariosDb) {
+      try {
+        const scenarios = scenariosDb.prepare(`
+          SELECT ds.id, ds.title, ds.description, ds.category,
+                 ds.playwright_project, ds.test_file, ds.sort_order,
+                 p.name as persona_name,
+                 COALESCE(p.display_name, p.name) as persona_display_name
+          FROM demo_scenarios ds
+          JOIN personas p ON p.id = ds.persona_id
+          WHERE ds.enabled = 1
+          ORDER BY p.name, ds.sort_order
+        `).all();
+        output.gathered.scenarios = scenarios;
+        output.gathered.scenarioCount = scenarios.length;
+
+        // Group scenarios by persona for two-step selection
+        const personaMap = new Map();
+        for (const s of scenarios) {
+          if (!personaMap.has(s.persona_name)) {
+            personaMap.set(s.persona_name, {
+              persona_name: s.persona_name,
+              persona_display_name: s.persona_display_name,
+              playwright_project: s.playwright_project,
+              scenarios: [],
+            });
+          }
+          personaMap.get(s.persona_name).scenarios.push({
+            id: s.id,
+            title: s.title,
+            description: s.description,
+            category: s.category,
+            test_file: s.test_file,
+            playwright_project: s.playwright_project,
+          });
+        }
+        output.gathered.personaGroups = [...personaMap.values()];
+      } catch {
+        output.gathered.scenarios = [];
+        output.gathered.scenarioCount = 0;
+        output.gathered.personaGroups = [];
+      } finally {
+        scenariosDb.close();
+      }
+    } else {
+      output.gathered.scenarios = [];
+      output.gathered.scenarioCount = 0;
+      output.gathered.personaGroups = [];
+    }
+  } else {
+    output.gathered.scenarios = [];
+    output.gathered.scenarioCount = 0;
+    output.gathered.personaGroups = [];
   }
 
   // Summary: critical issues
@@ -1262,7 +1392,7 @@ async function main() {
   const prompt = extractPrompt(raw);
 
   // Mode 2 handlers — load Database lazily only when needed
-  const needsDb = ['cto-report', 'deputy-cto', 'configure-personas', 'spawn-tasks', 'product-manager', 'triage', 'persona-feedback'];
+  const needsDb = ['cto-report', 'deputy-cto', 'configure-personas', 'spawn-tasks', 'product-manager', 'triage', 'persona-feedback', 'demo', 'demo-interactive', 'demo-autonomous'];
   const matchedCommand = Object.keys(SENTINELS).find(key => matchesCommand(prompt, key));
   if (matchedCommand) {
     if (needsDb.includes(matchedCommand)) {
@@ -1315,10 +1445,10 @@ async function main() {
   if (matchesCommand(prompt, 'demo')) {
     return handleDemo();
   }
-  if (matchesCommand(prompt, 'demo-interactive')) {
+  if (matchesCommand(prompt, 'demo-autonomous')) {
     return handleDemo();
   }
-  if (matchesCommand(prompt, 'demo-auto')) {
+  if (matchesCommand(prompt, 'demo-interactive')) {
     return handleDemo();
   }
 

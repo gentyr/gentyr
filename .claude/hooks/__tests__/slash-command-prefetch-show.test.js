@@ -116,15 +116,15 @@ describe('Slash Command Prefetch - /show Command', () => {
       assert.match(functionBody, /availableSections:/);
     });
 
-    it('should include all 12 section IDs', () => {
+    it('should include all 13 section IDs', () => {
       const handleShowMatch = hookCode.match(/function handleShow\(\) \{[\s\S]*?\n\}/);
       const functionBody = handleShowMatch[0];
 
-      // Should have an array with 12 sections
+      // Should have an array with 13 sections
       const sections = [
         'quota', 'accounts', 'deputy-cto', 'usage', 'automations',
         'testing', 'deployments', 'worktrees', 'infra', 'logging',
-        'timeline', 'tasks',
+        'timeline', 'tasks', 'product-market-fit',
       ];
 
       for (const section of sections) {
@@ -305,6 +305,12 @@ describe('Slash Command Prefetch - /show Command', () => {
       const functionBody = handleShowMatch[0];
       assert.match(functionBody, /'tasks'/);
     });
+
+    it('should include product-market-fit section', () => {
+      const handleShowMatch = hookCode.match(/function handleShow\(\) \{[\s\S]*?\n\}/);
+      const functionBody = handleShowMatch[0];
+      assert.match(functionBody, /'product-market-fit'/);
+    });
   });
 
   // ============================================================================
@@ -393,7 +399,7 @@ describe('Slash Command Prefetch - /show Integration', () => {
     }
   });
 
-  it('should have 16 total slash commands (including show, demo, demo-interactive, demo-auto)', () => {
+  it('should have 17 total slash commands (including show, demo, demo-interactive, demo-autonomous)', () => {
     const sentinelsMatch = hookCode.match(/const SENTINELS = \{[\s\S]*?\};/);
     const sentinelsObject = sentinelsMatch[0];
 

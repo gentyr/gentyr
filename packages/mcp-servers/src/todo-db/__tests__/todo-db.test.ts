@@ -68,6 +68,7 @@ interface CompleteTaskResult {
 interface DeleteTaskResult {
   deleted: boolean;
   id: string;
+  archived?: boolean;
 }
 
 type TaskOrError = TaskRow | ErrorResult;
@@ -283,11 +284,35 @@ ${originalTask}`;
   };
 
   const deleteTask = (id: string) => {
-    const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+    const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow | undefined;
     if (!task) {return { error: `Task not found: ${id}` };}
 
-    db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
-    return { deleted: true, id };
+    let archived = false;
+
+    if (task.status === 'completed') {
+      const now = new Date();
+      const archived_at = now.toISOString();
+      const archived_timestamp = Math.floor(now.getTime() / 1000);
+
+      const archiveAndDelete = db.transaction(() => {
+        db.prepare(`
+          INSERT OR REPLACE INTO archived_tasks (id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          task.id, task.section, task.title, task.description, task.assigned_by,
+          task.priority ?? 'normal', task.created_at, task.started_at, task.completed_at,
+          task.created_timestamp, task.completed_timestamp, task.followup_enabled,
+          task.followup_section, task.followup_prompt, archived_at, archived_timestamp
+        );
+        db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+      });
+      archiveAndDelete();
+      archived = true;
+    } else {
+      db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+    }
+
+    return { deleted: true, id, archived };
   };
 
   const getSummary = () => {
@@ -321,10 +346,12 @@ ${originalTask}`;
 
   const cleanup = () => {
     const now = Math.floor(Date.now() / 1000);
+    const nowIso = new Date().toISOString();
     const changes = {
       stale_starts_cleared: 0,
-      old_completed_removed: 0,
-      completed_capped: 0,
+      old_completed_archived: 0,
+      completed_cap_archived: 0,
+      archived_pruned: 0,
     };
 
     // Clear stale starts (>30 min = 1800 seconds)
@@ -337,33 +364,70 @@ ${originalTask}`;
     `).run(now);
     changes.stale_starts_cleared = staleResult.changes;
 
-    // Remove old completed (>3 hours = 10800 seconds)
-    const oldResult = db.prepare(`
-      DELETE FROM tasks
-      WHERE status = 'completed'
-        AND completed_timestamp IS NOT NULL
-        AND (? - completed_timestamp) > 10800
-    `).run(now);
-    changes.old_completed_removed = oldResult.changes;
+    // Archive old completed (>3 hours = 10800 seconds)
+    const archiveOld = db.transaction(() => {
+      const insertResult = db.prepare(`
+        INSERT OR REPLACE INTO archived_tasks (id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
+        SELECT id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, ?, ?
+        FROM tasks
+        WHERE status = 'completed'
+          AND completed_timestamp IS NOT NULL
+          AND (? - completed_timestamp) > 10800
+      `).run(nowIso, now, now);
 
-    // Cap completed at 50
+      db.prepare(`
+        DELETE FROM tasks
+        WHERE status = 'completed'
+          AND completed_timestamp IS NOT NULL
+          AND (? - completed_timestamp) > 10800
+      `).run(now);
+
+      return insertResult.changes;
+    });
+    changes.old_completed_archived = archiveOld();
+
+    // Cap completed at 50 (archive overflow)
     const completedCount = (db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'completed'").get() as { count: number }).count;
     if (completedCount > 50) {
       const toRemove = completedCount - 50;
-      const capResult = db.prepare(`
-        DELETE FROM tasks WHERE id IN (
-          SELECT id FROM tasks
+      const archiveCap = db.transaction(() => {
+        const insertResult = db.prepare(`
+          INSERT INTO archived_tasks (id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
+          SELECT id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, ?, ?
+          FROM tasks
           WHERE status = 'completed'
           ORDER BY completed_timestamp ASC
           LIMIT ?
-        )
-      `).run(toRemove);
-      changes.completed_capped = capResult.changes;
+        `).run(nowIso, now, toRemove);
+
+        db.prepare(`
+          DELETE FROM tasks WHERE id IN (
+            SELECT id FROM tasks
+            WHERE status = 'completed'
+            ORDER BY completed_timestamp ASC
+            LIMIT ?
+          )
+        `).run(toRemove);
+
+        return insertResult.changes;
+      });
+      changes.completed_cap_archived = archiveCap();
     }
+
+    // Prune old archived tasks: keep last 500 OR anything within 30 days
+    const thirtyDaysAgo = now - (30 * 24 * 60 * 60);
+    const pruneResult = db.prepare(`
+      DELETE FROM archived_tasks
+      WHERE id NOT IN (
+        SELECT id FROM archived_tasks ORDER BY archived_timestamp DESC LIMIT 500
+      )
+      AND archived_timestamp < ?
+    `).run(thirtyDaysAgo);
+    changes.archived_pruned = pruneResult.changes;
 
     return {
       ...changes,
-      message: `Cleanup complete: ${changes.stale_starts_cleared} stale starts cleared, ${changes.old_completed_removed} old completed removed, ${changes.completed_capped} completed capped`,
+      message: `Cleanup complete: ${changes.stale_starts_cleared} stale starts cleared, ${changes.old_completed_archived} old completed archived, ${changes.completed_cap_archived} completed cap archived, ${changes.archived_pruned} archives pruned`,
     };
   };
 
@@ -665,7 +729,7 @@ ${originalTask}`;
       expect(updated.status).toBe('in_progress');
     });
 
-    it('should remove old completed tasks (>3 hours)', () => {
+    it('should archive old completed tasks (>3 hours)', () => {
       const id = randomUUID();
       const oldTimestamp = Math.floor(Date.now() / 1000) - 11000; // >3 hours
       const created_at = new Date(oldTimestamp * 1000).toISOString();
@@ -677,13 +741,21 @@ ${originalTask}`;
       `).run(id, created_at, completed_at, oldTimestamp, oldTimestamp);
 
       const result = cleanup();
-      expect(result.old_completed_removed).toBe(1);
+      expect(result.old_completed_archived).toBe(1);
 
+      // Task should no longer be in tasks table
       const task = getTask(id) as TaskOrError;
       expect(task.error).toContain('Task not found');
+
+      // Task should exist in archived_tasks table
+      const archived = db.prepare('SELECT * FROM archived_tasks WHERE id = ?').get(id) as { id: string; title: string; archived_at: string } | undefined;
+      expect(archived).toBeDefined();
+      expect(archived!.id).toBe(id);
+      expect(archived!.title).toBe('Old task');
+      expect(archived!.archived_at).toBeDefined();
     });
 
-    it('should cap completed tasks at 50', () => {
+    it('should archive excess completed tasks beyond 50', () => {
       // Create 60 completed tasks
       for (let i = 0; i < 60; i++) {
         const task = createTask({ section: 'TEST-WRITER', title: `Task ${i}` });
@@ -691,13 +763,17 @@ ${originalTask}`;
       }
 
       const result = cleanup();
-      expect(result.completed_capped).toBe(10); // 60 - 50 = 10 removed
+      expect(result.completed_cap_archived).toBe(10); // 60 - 50 = 10 archived
 
       const summary = getSummary();
       expect(summary.completed).toBe(50);
+
+      // Verify overflow tasks moved to archived_tasks
+      const archivedCount = (db.prepare('SELECT COUNT(*) as count FROM archived_tasks').get() as { count: number }).count;
+      expect(archivedCount).toBe(10);
     });
 
-    it('should keep most recent 50 completed tasks', () => {
+    it('should keep most recent 50 completed tasks and archive oldest', () => {
       const taskIds: string[] = [];
 
       // Create 60 completed tasks with delays to ensure different timestamps
@@ -716,17 +792,517 @@ ${originalTask}`;
 
       cleanup();
 
-      // First 10 tasks (oldest) should be removed
+      // First 10 tasks (oldest) should be removed from tasks table
       for (let i = 0; i < 10; i++) {
         const task = getTask(taskIds[i]) as TaskOrError;
         expect(task.error).toContain('Task not found');
       }
 
-      // Last 50 tasks should remain
+      // First 10 tasks should be in archived_tasks
+      for (let i = 0; i < 10; i++) {
+        const archived = db.prepare('SELECT * FROM archived_tasks WHERE id = ?').get(taskIds[i]) as { id: string } | undefined;
+        expect(archived).toBeDefined();
+        expect(archived!.id).toBe(taskIds[i]);
+      }
+
+      // Last 50 tasks should remain in tasks table
       for (let i = 10; i < 60; i++) {
         const task = getTask(taskIds[i]) as TaskOrError;
         expect(task.id).toBe(taskIds[i]);
       }
+    });
+
+    it('should prune archived tasks older than 30 days when exceeding 500', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const thirtyOneDaysAgo = now - (31 * 24 * 60 * 60);
+      const twentyNineDaysAgo = now - (29 * 24 * 60 * 60);
+
+      // Insert 502 old archived tasks (>30 days)
+      for (let i = 0; i < 502; i++) {
+        const id = randomUUID();
+        const created_at = new Date((thirtyOneDaysAgo - i) * 1000).toISOString();
+        db.prepare(`
+          INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+          VALUES (?, 'TEST-WRITER', ?, 'normal', ?, ?, 0, ?, ?)
+        `).run(id, `Old archive ${i}`, created_at, thirtyOneDaysAgo - i, created_at, thirtyOneDaysAgo - i);
+      }
+
+      // Insert 2 recent archived tasks (<30 days) — these should survive
+      const recentIds: string[] = [];
+      for (let i = 0; i < 2; i++) {
+        const id = randomUUID();
+        const created_at = new Date((twentyNineDaysAgo + i) * 1000).toISOString();
+        db.prepare(`
+          INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+          VALUES (?, 'TEST-WRITER', ?, 'normal', ?, ?, 0, ?, ?)
+        `).run(id, `Recent archive ${i}`, created_at, twentyNineDaysAgo + i, created_at, twentyNineDaysAgo + i);
+        recentIds.push(id);
+      }
+
+      const result = cleanup();
+      // 504 total, top 500 kept (2 recent + 498 old), 4 candidates outside top 500,
+      // all 4 are older than 30 days, so all 4 are pruned
+      expect(result.archived_pruned).toBe(4);
+
+      // Recent archives should still exist
+      for (const id of recentIds) {
+        const archived = db.prepare('SELECT * FROM archived_tasks WHERE id = ?').get(id);
+        expect(archived).toBeDefined();
+      }
+    });
+
+    it('should archive completed tasks on deleteTask()', () => {
+      const task = createTask({ section: 'TEST-WRITER', title: 'Complete then delete' });
+      completeTask(task.id);
+
+      const result = deleteTask(task.id) as DeleteOrError;
+      expect(result.deleted).toBe(true);
+      expect(result.archived).toBe(true);
+
+      // Should not be in tasks table
+      const found = getTask(task.id) as TaskOrError;
+      expect(found.error).toContain('Task not found');
+
+      // Should be in archived_tasks table
+      const archived = db.prepare('SELECT * FROM archived_tasks WHERE id = ?').get(task.id) as { id: string; title: string } | undefined;
+      expect(archived).toBeDefined();
+      expect(archived!.title).toBe('Complete then delete');
+    });
+
+    it('should not archive pending tasks on deleteTask()', () => {
+      const task = createTask({ section: 'TEST-WRITER', title: 'Delete pending' });
+
+      const result = deleteTask(task.id) as DeleteOrError;
+      expect(result.deleted).toBe(true);
+      expect(result.archived).toBe(false);
+
+      // Should not be in archived_tasks table
+      const archived = db.prepare('SELECT * FROM archived_tasks WHERE id = ?').get(task.id);
+      expect(archived).toBeUndefined();
+    });
+
+    it('should not archive in_progress tasks on deleteTask()', () => {
+      const task = createTask({ section: 'TEST-WRITER', title: 'Delete in-progress' });
+      startTask(task.id);
+
+      const result = deleteTask(task.id) as DeleteOrError;
+      expect(result.deleted).toBe(true);
+      expect(result.archived).toBe(false);
+
+      // Should not be in archived_tasks table
+      const archived = db.prepare('SELECT * FROM archived_tasks WHERE id = ?').get(task.id);
+      expect(archived).toBeUndefined();
+    });
+  });
+
+  describe('Archive Queries', () => {
+    it('should have index on archived_tasks(archived_timestamp)', () => {
+      const indexes = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_archived_tasks_archived'")
+        .all();
+      expect(indexes).toHaveLength(1);
+    });
+
+    it('should have index on archived_tasks(section)', () => {
+      const indexes = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_archived_tasks_section'")
+        .all();
+      expect(indexes).toHaveLength(1);
+    });
+
+    it('should list archived tasks within time window', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const twoHoursAgo = now - (2 * 60 * 60);
+
+      // Insert an archived task
+      const id = randomUUID();
+      const created_at = new Date(twoHoursAgo * 1000).toISOString();
+      db.prepare(`
+        INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+        VALUES (?, 'TEST-WRITER', 'Archived task', 'normal', ?, ?, 0, ?, ?)
+      `).run(id, created_at, twoHoursAgo, created_at, twoHoursAgo);
+
+      // Query archived tasks within 24 hours
+      const tasks = db.prepare(
+        'SELECT * FROM archived_tasks WHERE archived_timestamp >= ? ORDER BY archived_timestamp DESC'
+      ).all(now - (24 * 60 * 60));
+      expect(tasks).toHaveLength(1);
+    });
+
+    it('should filter archived tasks by section', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const created_at = new Date(now * 1000).toISOString();
+
+      db.prepare(`
+        INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+        VALUES (?, 'TEST-WRITER', 'TW task', 'normal', ?, ?, 0, ?, ?)
+      `).run(randomUUID(), created_at, now, created_at, now);
+
+      db.prepare(`
+        INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+        VALUES (?, 'CODE-REVIEWER', 'CR task', 'normal', ?, ?, 0, ?, ?)
+      `).run(randomUUID(), created_at, now, created_at, now);
+
+      const twTasks = db.prepare(
+        "SELECT * FROM archived_tasks WHERE section = 'TEST-WRITER'"
+      ).all();
+      expect(twTasks).toHaveLength(1);
+    });
+
+    it('should preserve all task fields when archiving', () => {
+      // Create a task with all fields populated
+      const task = createTask({
+        section: 'DEPUTY-CTO',
+        title: 'Full fields task',
+        description: 'A task with all fields',
+        assigned_by: 'deputy-cto',
+        priority: 'urgent',
+      });
+
+      expect('error' in task).toBe(false);
+      if (!('error' in task)) {
+        startTask(task.id);
+        completeTask(task.id);
+
+        // Delete to trigger archival
+        deleteTask(task.id);
+
+        const archived = db.prepare('SELECT * FROM archived_tasks WHERE id = ?').get(task.id) as {
+          id: string; section: string; title: string; description: string;
+          assigned_by: string; priority: string; followup_enabled: number;
+          archived_at: string; archived_timestamp: number;
+        } | undefined;
+
+        expect(archived).toBeDefined();
+        expect(archived!.section).toBe('DEPUTY-CTO');
+        expect(archived!.title).toBe('Full fields task');
+        expect(archived!.description).toBe('A task with all fields');
+        expect(archived!.assigned_by).toBe('deputy-cto');
+        expect(archived!.priority).toBe('urgent');
+        expect(archived!.followup_enabled).toBe(1);
+        expect(archived!.archived_at).toBeDefined();
+        expect(archived!.archived_timestamp).toBeGreaterThan(0);
+      }
+    });
+  });
+
+  describe('List Archived Tasks', () => {
+    // Mirror of the server's listArchivedTasks implementation
+    const listArchivedTasks = (args: { section?: string; limit?: number; hours?: number }) => {
+      const hours = args.hours ?? 24;
+      const limit = args.limit ?? 20;
+      const since = Math.floor((Date.now() - hours * 60 * 60 * 1000) / 1000);
+
+      let sql = 'SELECT * FROM archived_tasks WHERE archived_timestamp >= ?';
+      const params: unknown[] = [since];
+
+      if (args.section) {
+        sql += ' AND section = ?';
+        params.push(args.section);
+      }
+
+      sql += ' ORDER BY archived_timestamp DESC LIMIT ?';
+      params.push(limit);
+
+      const tasks = db.prepare(sql).all(...params) as Array<{
+        id: string; section: string; title: string; description: string | null;
+        assigned_by: string | null; priority: string; created_at: string;
+        started_at: string | null; completed_at: string | null;
+        created_timestamp: number; completed_timestamp: number | null;
+        followup_enabled: number; followup_section: string | null;
+        followup_prompt: string | null; archived_at: string; archived_timestamp: number;
+      }>;
+
+      return { tasks, total: tasks.length };
+    };
+
+    it('should return empty result when no archived tasks exist', () => {
+      const result = listArchivedTasks({});
+      expect(result.tasks).toHaveLength(0);
+      expect(result.total).toBe(0);
+    });
+
+    it('should return archived tasks within default 24-hour window', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const twelveHoursAgo = now - (12 * 60 * 60);
+      const created_at = new Date(twelveHoursAgo * 1000).toISOString();
+
+      db.prepare(`
+        INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+        VALUES (?, 'TEST-WRITER', 'Recent archived', 'normal', ?, ?, 0, ?, ?)
+      `).run(randomUUID(), created_at, twelveHoursAgo, created_at, twelveHoursAgo);
+
+      const result = listArchivedTasks({});
+      expect(result.tasks).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(result.tasks[0].title).toBe('Recent archived');
+    });
+
+    it('should exclude archived tasks outside the time window', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const twentyFiveHoursAgo = now - (25 * 60 * 60);
+      const created_at = new Date(twentyFiveHoursAgo * 1000).toISOString();
+
+      db.prepare(`
+        INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+        VALUES (?, 'TEST-WRITER', 'Old archived', 'normal', ?, ?, 0, ?, ?)
+      `).run(randomUUID(), created_at, twentyFiveHoursAgo, created_at, twentyFiveHoursAgo);
+
+      const result = listArchivedTasks({});
+      expect(result.tasks).toHaveLength(0);
+      expect(result.total).toBe(0);
+    });
+
+    it('should filter archived tasks by section', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const created_at = new Date(now * 1000).toISOString();
+
+      db.prepare(`
+        INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+        VALUES (?, 'TEST-WRITER', 'TW archived', 'normal', ?, ?, 0, ?, ?)
+      `).run(randomUUID(), created_at, now, created_at, now);
+
+      db.prepare(`
+        INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+        VALUES (?, 'CODE-REVIEWER', 'CR archived', 'normal', ?, ?, 0, ?, ?)
+      `).run(randomUUID(), created_at, now, created_at, now);
+
+      const twResult = listArchivedTasks({ section: 'TEST-WRITER' });
+      expect(twResult.tasks).toHaveLength(1);
+      expect(twResult.tasks[0].section).toBe('TEST-WRITER');
+
+      const crResult = listArchivedTasks({ section: 'CODE-REVIEWER' });
+      expect(crResult.tasks).toHaveLength(1);
+      expect(crResult.tasks[0].section).toBe('CODE-REVIEWER');
+    });
+
+    it('should respect limit parameter and default to 20', () => {
+      const now = Math.floor(Date.now() / 1000);
+
+      for (let i = 0; i < 25; i++) {
+        const ts = now + i; // Ensure distinct timestamps
+        const created_at = new Date(ts * 1000).toISOString();
+        db.prepare(`
+          INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+          VALUES (?, 'TEST-WRITER', ?, 'normal', ?, ?, 0, ?, ?)
+        `).run(randomUUID(), `Archived ${i}`, created_at, ts, created_at, ts);
+      }
+
+      // Default limit is 20
+      const defaultResult = listArchivedTasks({});
+      expect(defaultResult.tasks).toHaveLength(20);
+      expect(defaultResult.total).toBe(20);
+
+      // Explicit limit
+      const limitResult = listArchivedTasks({ limit: 5 });
+      expect(limitResult.tasks).toHaveLength(5);
+      expect(limitResult.total).toBe(5);
+    });
+
+    it('should order results by archived_timestamp DESC', () => {
+      const now = Math.floor(Date.now() / 1000);
+
+      // Insert two tasks with different timestamps
+      const olderTs = now - 100;
+      const newerTs = now - 10;
+
+      const olderId = randomUUID();
+      const newerId = randomUUID();
+      const olderIso = new Date(olderTs * 1000).toISOString();
+      const newerIso = new Date(newerTs * 1000).toISOString();
+
+      db.prepare(`
+        INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+        VALUES (?, 'TEST-WRITER', 'Older task', 'normal', ?, ?, 0, ?, ?)
+      `).run(olderId, olderIso, olderTs, olderIso, olderTs);
+
+      db.prepare(`
+        INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+        VALUES (?, 'TEST-WRITER', 'Newer task', 'normal', ?, ?, 0, ?, ?)
+      `).run(newerId, newerIso, newerTs, newerIso, newerTs);
+
+      const result = listArchivedTasks({ hours: 1 });
+      expect(result.tasks).toHaveLength(2);
+      // Most recently archived first
+      expect(result.tasks[0].id).toBe(newerId);
+      expect(result.tasks[1].id).toBe(olderId);
+    });
+
+    it('should return all ArchivedTask fields', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const id = randomUUID();
+      const created_at = new Date(now * 1000).toISOString();
+
+      db.prepare(`
+        INSERT INTO archived_tasks (id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
+        VALUES (?, 'DEPUTY-CTO', 'Field test task', 'Some description', 'deputy-cto', 'urgent', ?, ?, ?, ?, ?, 1, 'TEST-WRITER', 'Followup prompt', ?, ?)
+      `).run(id, created_at, created_at, created_at, now, now, created_at, now);
+
+      const result = listArchivedTasks({ hours: 1 });
+      expect(result.tasks).toHaveLength(1);
+      const task = result.tasks[0];
+
+      expect(task.id).toBe(id);
+      expect(task.section).toBe('DEPUTY-CTO');
+      expect(task.title).toBe('Field test task');
+      expect(task.description).toBe('Some description');
+      expect(task.assigned_by).toBe('deputy-cto');
+      expect(task.priority).toBe('urgent');
+      expect(task.created_at).toBe(created_at);
+      expect(task.started_at).toBe(created_at);
+      expect(task.completed_at).toBe(created_at);
+      expect(task.created_timestamp).toBe(now);
+      expect(task.completed_timestamp).toBe(now);
+      expect(task.followup_enabled).toBe(1);
+      expect(task.followup_section).toBe('TEST-WRITER');
+      expect(task.followup_prompt).toBe('Followup prompt');
+      expect(task.archived_at).toBe(created_at);
+      expect(task.archived_timestamp).toBe(now);
+    });
+
+    it('should use hours parameter to expand or restrict the time window', () => {
+      const now = Math.floor(Date.now() / 1000);
+
+      // Task archived 36 hours ago
+      const thirtyHoursAgo = now - (36 * 60 * 60);
+      const oldIso = new Date(thirtyHoursAgo * 1000).toISOString();
+      db.prepare(`
+        INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+        VALUES (?, 'TEST-WRITER', 'Old task', 'normal', ?, ?, 0, ?, ?)
+      `).run(randomUUID(), oldIso, thirtyHoursAgo, oldIso, thirtyHoursAgo);
+
+      // Task archived 2 hours ago
+      const twoHoursAgo = now - (2 * 60 * 60);
+      const recentIso = new Date(twoHoursAgo * 1000).toISOString();
+      db.prepare(`
+        INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+        VALUES (?, 'TEST-WRITER', 'Recent task', 'normal', ?, ?, 0, ?, ?)
+      `).run(randomUUID(), recentIso, twoHoursAgo, recentIso, twoHoursAgo);
+
+      // 24-hour window: only sees recent task
+      const result24h = listArchivedTasks({ hours: 24 });
+      expect(result24h.total).toBe(1);
+      expect(result24h.tasks[0].title).toBe('Recent task');
+
+      // 48-hour window: sees both
+      const result48h = listArchivedTasks({ hours: 48 });
+      expect(result48h.total).toBe(2);
+    });
+
+    it('should count total equal to tasks array length', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const created_at = new Date(now * 1000).toISOString();
+
+      for (let i = 0; i < 3; i++) {
+        db.prepare(`
+          INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+          VALUES (?, 'TEST-WRITER', ?, 'normal', ?, ?, 0, ?, ?)
+        `).run(randomUUID(), `Task ${i}`, created_at, now + i, created_at, now + i);
+      }
+
+      const result = listArchivedTasks({});
+      expect(result.total).toBe(result.tasks.length);
+      expect(result.total).toBe(3);
+    });
+
+    it('should return tasks archived by cleanup as well as by deleteTask', () => {
+      // Archive via deleteTask
+      const task1 = createTask({ section: 'TEST-WRITER', title: 'Delete-archived' });
+      completeTask(task1.id);
+      deleteTask(task1.id);
+
+      // Archive via cleanup (old completed task)
+      const id2 = randomUUID();
+      const oldTimestamp = Math.floor(Date.now() / 1000) - 11000; // >3 hours
+      const oldIso = new Date(oldTimestamp * 1000).toISOString();
+      db.prepare(`
+        INSERT INTO tasks (id, section, status, title, created_at, completed_at, created_timestamp, completed_timestamp)
+        VALUES (?, 'CODE-REVIEWER', 'completed', 'Cleanup-archived', ?, ?, ?, ?)
+      `).run(id2, oldIso, oldIso, oldTimestamp, oldTimestamp);
+      cleanup();
+
+      const result = listArchivedTasks({ hours: 1 });
+      const titles = result.tasks.map(t => t.title);
+      expect(titles).toContain('Delete-archived');
+      expect(titles).toContain('Cleanup-archived');
+      expect(result.total).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  describe('Cleanup Edge Cases', () => {
+    it('should return 0 for all counts when database is empty', () => {
+      const result = cleanup();
+      expect(result.stale_starts_cleared).toBe(0);
+      expect(result.old_completed_archived).toBe(0);
+      expect(result.completed_cap_archived).toBe(0);
+      expect(result.archived_pruned).toBe(0);
+    });
+
+    it('should return cleanup message with correct format', () => {
+      const result = cleanup();
+      expect(result.message).toMatch(/Cleanup complete:/);
+      expect(result.message).toContain('stale starts cleared');
+      expect(result.message).toContain('old completed archived');
+      expect(result.message).toContain('completed cap archived');
+      expect(result.message).toContain('archives pruned');
+    });
+
+    it('should be idempotent when run twice on a clean database', () => {
+      // Create one fresh completed task (not old enough to archive)
+      const task = createTask({ section: 'TEST-WRITER', title: 'Fresh completed' });
+      completeTask(task.id);
+
+      const result1 = cleanup();
+      const result2 = cleanup();
+
+      // Second run should find nothing new to do
+      expect(result2.stale_starts_cleared).toBe(0);
+      expect(result2.old_completed_archived).toBe(0);
+      expect(result2.completed_cap_archived).toBe(0);
+      expect(result2.archived_pruned).toBe(0);
+
+      // First run also should have archived nothing (task is too recent)
+      expect(result1.old_completed_archived).toBe(0);
+    });
+
+    it('should not archive completed tasks with null completed_timestamp in old-completed pass', () => {
+      // Insert a completed task missing completed_timestamp (data integrity edge case)
+      const id = randomUUID();
+      const oldIso = new Date(Date.now() - 20000 * 1000).toISOString(); // very old
+      db.prepare(`
+        INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at)
+        VALUES (?, 'TEST-WRITER', 'completed', 'No timestamp', ?, ?, ?)
+      `).run(id, oldIso, Math.floor(Date.now() / 1000) - 20000, oldIso);
+
+      const result = cleanup();
+      // The archival pass skips tasks with NULL completed_timestamp
+      expect(result.old_completed_archived).toBe(0);
+
+      // The task should still be in tasks table (not archived, not deleted)
+      const stillInTasks = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+      expect(stillInTasks).toBeDefined();
+    });
+
+    it('should not prune archived tasks within 30 days even when exceeding 500', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const twentyNineDaysAgo = now - (29 * 24 * 60 * 60);
+
+      // Insert 510 archived tasks all within 30 days
+      for (let i = 0; i < 510; i++) {
+        const ts = twentyNineDaysAgo + i;
+        const iso = new Date(ts * 1000).toISOString();
+        db.prepare(`
+          INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
+          VALUES (?, 'TEST-WRITER', ?, 'normal', ?, ?, 0, ?, ?)
+        `).run(randomUUID(), `Task ${i}`, iso, ts, iso, ts);
+      }
+
+      const result = cleanup();
+      // None should be pruned because all are within 30 days
+      expect(result.archived_pruned).toBe(0);
+
+      const remaining = (db.prepare('SELECT COUNT(*) as count FROM archived_tasks').get() as { count: number }).count;
+      expect(remaining).toBe(510);
     });
   });
 
@@ -1368,6 +1944,63 @@ ${originalTask}`;
       if (!('error' in result)) {
         expect(result.followup_enabled).toBe(0);
         expect(result.warning).toBeUndefined();
+      }
+    });
+
+    it('should force follow-up when product-manager creates a task', () => {
+      const result = createTask({
+        section: 'CODE-REVIEWER',
+        title: 'Implement demo scenario: Onboarding Flow',
+        description: 'Write Playwright demo file at e2e/demo/onboarding-flow.demo.ts',
+        assigned_by: 'product-manager',
+      });
+
+      expect('error' in result).toBe(false);
+      if (!('error' in result)) {
+        expect(result.followup_enabled).toBe(1);
+        expect(result.followup_prompt).toContain('[Follow-up Verification]');
+        expect(result.followup_prompt).toContain('Implement demo scenario');
+      }
+    });
+
+    it('should reject product-manager task without description', () => {
+      const result = createTask({
+        section: 'CODE-REVIEWER',
+        title: 'No description PM task',
+        assigned_by: 'product-manager',
+      });
+
+      expect('error' in result).toBe(true);
+      if ('error' in result) {
+        expect(result.error).toContain('require a description');
+        expect(result.error).toContain('product-manager');
+      }
+    });
+
+    it('should create follow-up task when completing a product-manager-created task', () => {
+      const task = createTask({
+        section: 'CODE-REVIEWER',
+        title: 'Implement demo scenario: Dashboard Overview',
+        description: 'Write Playwright demo file at e2e/demo/dashboard-overview.demo.ts',
+        assigned_by: 'product-manager',
+      });
+
+      expect('error' in task).toBe(false);
+      if (!('error' in task)) {
+        const result = completeTask(task.id) as CompleteOrError;
+
+        expect('error' in result).toBe(false);
+        if (!('error' in result)) {
+          expect(result.followup_task_id).toBeDefined();
+
+          const followup = getTask(result.followup_task_id!) as TaskOrError;
+          expect('error' in followup).toBe(false);
+          if (!('error' in followup)) {
+            expect(followup.title).toBe('[Follow-up] Implement demo scenario: Dashboard Overview');
+            expect(followup.status).toBe('pending');
+            expect(followup.followup_enabled).toBe(0);
+          }
+        }
       }
     });
 

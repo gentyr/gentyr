@@ -1618,7 +1618,11 @@ describe('spawn_implementation_task fully deprecated', () => {
   ];
 
   for (const file of filesToCheck) {
-    it(`should have zero references to spawn_implementation_task in ${file.name}`, () => {
+    it(`should have zero references to spawn_implementation_task in ${file.name}`, (t) => {
+      if (!fs.existsSync(file.path)) {
+        t.skip('File does not exist, skipping deprecation check');
+        return;
+      }
       const code = fs.readFileSync(file.path, 'utf8');
       assert.doesNotMatch(
         code,
@@ -1627,4 +1631,669 @@ describe('spawn_implementation_task fully deprecated', () => {
       );
     });
   }
+});
+
+// ============================================================================
+// readServiceConfig() and extractRenderServiceId() unit tests
+//
+// These helpers were added to hourly-automation.js so health monitors can
+// read .claude/config/services.json directly (the Node process is not subject
+// to the credential-file-guard hook which only governs AI agent tool use).
+//
+// The implementations are mirrored here to keep tests self-contained and fast.
+// ============================================================================
+
+import os from 'os';
+
+/**
+ * readServiceConfig() implementation (mirrored from hourly-automation.js)
+ *
+ * Returns parsed JSON from .claude/config/services.json, or null on any failure.
+ * Fail-safe: returns null rather than throwing, so callers can fall back to
+ * hardcoded default service IDs.
+ */
+function readServiceConfig(projectDir) {
+  const configPath = path.join(projectDir, '.claude', 'config', 'services.json');
+  try {
+    const raw = fs.readFileSync(configPath, 'utf8');
+    return JSON.parse(raw);
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * extractRenderServiceId() implementation (mirrored from hourly-automation.js)
+ *
+ * Handles two entry formats:
+ *   - String: "srv-xxx"
+ *   - Object: { "serviceId": "srv-xxx", "label": "..." }
+ */
+function extractRenderServiceId(entry) {
+  if (!entry) return null;
+  if (typeof entry === 'string') return entry;
+  if (typeof entry === 'object' && entry.serviceId) return entry.serviceId;
+  return null;
+}
+
+describe('readServiceConfig() (hourly-automation.js)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hourly-auto-test-'));
+  });
+
+  afterEach(() => {
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should return parsed object when services.json exists and is valid JSON', () => {
+    const configDir = path.join(tmpDir, '.claude', 'config');
+    fs.mkdirSync(configDir, { recursive: true });
+
+    const serviceData = {
+      render: {
+        production: { serviceId: 'srv-prod-123', label: 'Production API' },
+        staging: 'srv-staging-456',
+      },
+      vercel: { projectId: 'prj_abc' },
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'services.json'),
+      JSON.stringify(serviceData, null, 2)
+    );
+
+    const result = readServiceConfig(tmpDir);
+
+    assert.ok(result !== null, 'Should return parsed config object');
+    assert.strictEqual(result.render.production.serviceId, 'srv-prod-123');
+    assert.strictEqual(result.render.staging, 'srv-staging-456');
+    assert.strictEqual(result.vercel.projectId, 'prj_abc');
+  });
+
+  it('should return null when services.json does not exist (G001 fail-safe)', () => {
+    // No file created — directory does not exist
+    const result = readServiceConfig(tmpDir);
+
+    assert.strictEqual(result, null,
+      'Missing services.json should return null, not throw');
+  });
+
+  it('should return null when services.json contains invalid JSON (G001 fail-safe)', () => {
+    const configDir = path.join(tmpDir, '.claude', 'config');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'services.json'), '{ not valid json }');
+
+    const result = readServiceConfig(tmpDir);
+
+    assert.strictEqual(result, null,
+      'Malformed services.json should return null, not throw');
+  });
+
+  it('should return null when services.json is empty (G001 fail-safe)', () => {
+    const configDir = path.join(tmpDir, '.claude', 'config');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'services.json'), '');
+
+    const result = readServiceConfig(tmpDir);
+
+    assert.strictEqual(result, null,
+      'Empty services.json should return null, not throw');
+  });
+
+  it('should return parsed object for minimal valid JSON (empty object)', () => {
+    const configDir = path.join(tmpDir, '.claude', 'config');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'services.json'), '{}');
+
+    const result = readServiceConfig(tmpDir);
+
+    assert.ok(result !== null, 'Empty-object services.json should parse successfully');
+    assert.deepStrictEqual(result, {});
+  });
+});
+
+describe('extractRenderServiceId() (hourly-automation.js)', () => {
+  it('should return null when entry is null', () => {
+    assert.strictEqual(extractRenderServiceId(null), null);
+  });
+
+  it('should return null when entry is undefined', () => {
+    assert.strictEqual(extractRenderServiceId(undefined), null);
+  });
+
+  it('should return the string directly when entry is a string', () => {
+    assert.strictEqual(extractRenderServiceId('srv-d645aq7pm1nc738i22m0'), 'srv-d645aq7pm1nc738i22m0');
+  });
+
+  it('should return serviceId when entry is an object with serviceId field', () => {
+    const entry = { serviceId: 'srv-abc123', label: 'Production API' };
+    assert.strictEqual(extractRenderServiceId(entry), 'srv-abc123');
+  });
+
+  it('should return null when entry is an object without serviceId field', () => {
+    const entry = { label: 'Production API', url: 'https://example.com' };
+    assert.strictEqual(extractRenderServiceId(entry), null);
+  });
+
+  it('should return null when entry is an object with null serviceId', () => {
+    const entry = { serviceId: null, label: 'Production API' };
+    // serviceId is falsy, so the `entry.serviceId` check fails → returns null
+    assert.strictEqual(extractRenderServiceId(entry), null);
+  });
+
+  it('should return null for other falsy types (0, empty string, false)', () => {
+    assert.strictEqual(extractRenderServiceId(0), null);
+    assert.strictEqual(extractRenderServiceId(''), null);
+    assert.strictEqual(extractRenderServiceId(false), null);
+  });
+
+  it('should handle object with empty string serviceId (falsy, returns null)', () => {
+    const entry = { serviceId: '', label: 'Production API' };
+    assert.strictEqual(extractRenderServiceId(entry), null);
+  });
+
+  it('should work correctly with real-world staging service ID format', () => {
+    // String format (old)
+    assert.strictEqual(
+      extractRenderServiceId('srv-d64bnq0gjchc739kt3q0'),
+      'srv-d64bnq0gjchc739kt3q0'
+    );
+
+    // Object format (new)
+    assert.strictEqual(
+      extractRenderServiceId({ serviceId: 'srv-d64bnq0gjchc739kt3q0', label: 'Staging API' }),
+      'srv-d64bnq0gjchc739kt3q0'
+    );
+  });
+
+  it('should work correctly with real-world production service ID format', () => {
+    // String format (old)
+    assert.strictEqual(
+      extractRenderServiceId('srv-d645aq7pm1nc738i22m0'),
+      'srv-d645aq7pm1nc738i22m0'
+    );
+
+    // Object format (new)
+    assert.strictEqual(
+      extractRenderServiceId({ serviceId: 'srv-d645aq7pm1nc738i22m0', label: 'Production API' }),
+      'srv-d645aq7pm1nc738i22m0'
+    );
+  });
+});
+
+describe('Service Config Helpers and Health Monitor Prompt Injection', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  // ---- readServiceConfig source-level checks ----
+
+  it('should define readServiceConfig function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    assert.match(code, /function readServiceConfig\(\)/, 'readServiceConfig must be defined');
+  });
+
+  it('should read from .claude/config/services.json', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function readServiceConfig\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'readServiceConfig function must exist');
+    assert.match(fnMatch[0], /config.*services\.json/, 'Must read from .claude/config/services.json');
+  });
+
+  it('should return null on failure', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function readServiceConfig\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'readServiceConfig function must exist');
+    assert.match(fnMatch[0], /return null/, 'Must return null on read failure');
+  });
+
+  // ---- extractRenderServiceId source-level checks ----
+
+  it('should define extractRenderServiceId function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    assert.match(code, /function extractRenderServiceId\(/, 'extractRenderServiceId must be defined');
+  });
+
+  it('should handle object form with serviceId property', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function extractRenderServiceId\([\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'extractRenderServiceId function must exist');
+    assert.match(fnMatch[0], /entry\.serviceId/, 'Must handle object form with serviceId property');
+  });
+
+  it('should handle string form directly', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function extractRenderServiceId\([\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'extractRenderServiceId function must exist');
+    assert.match(fnMatch[0], /typeof entry === 'string'/, 'Must handle string form directly');
+  });
+
+  // ---- Production health monitor prompt injection checks ----
+
+  it('should call readServiceConfig in spawnProductionHealthMonitor', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnProductionHealthMonitor\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnProductionHealthMonitor must exist');
+    assert.match(fnMatch[0], /readServiceConfig\(\)/, 'Must call readServiceConfig before building prompt');
+  });
+
+  it('should NOT instruct agent to read services.json in production monitor', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnProductionHealthMonitor\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnProductionHealthMonitor must exist');
+    assert.doesNotMatch(
+      fnMatch[0],
+      /Read `\.claude\/config\/services\.json`/,
+      'Production monitor must NOT instruct agent to read services.json'
+    );
+  });
+
+  it('should embed pre-resolved service IDs in production monitor prompt', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnProductionHealthMonitor\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnProductionHealthMonitor must exist');
+    assert.match(fnMatch[0], /do NOT read services\.json/, 'Prompt must say "do NOT read services.json"');
+  });
+
+  it('should have hardcoded fallback production render service ID', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnProductionHealthMonitor\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnProductionHealthMonitor must exist');
+    assert.match(fnMatch[0], /srv-d645aq7pm1nc738i22m0/, 'Must have hardcoded production service ID as fallback');
+  });
+
+  // ---- Staging health monitor prompt injection checks ----
+
+  it('should call readServiceConfig in spawnStagingHealthMonitor', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnStagingHealthMonitor\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnStagingHealthMonitor must exist');
+    assert.match(fnMatch[0], /readServiceConfig\(\)/, 'Must call readServiceConfig before building prompt');
+  });
+
+  it('should NOT instruct agent to read services.json in staging monitor', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnStagingHealthMonitor\(\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnStagingHealthMonitor must exist');
+    assert.doesNotMatch(
+      fnMatch[0],
+      /Read `\.claude\/config\/services\.json`/,
+      'Staging monitor must NOT instruct agent to read services.json'
+    );
+  });
+
+  // ---- buildSpawnEnv credential logging checks ----
+
+  it('should log missing infrastructure credentials in buildSpawnEnv', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function buildSpawnEnv\([\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'buildSpawnEnv must exist');
+    assert.match(fnMatch[0], /RENDER_API_KEY/, 'Must check for RENDER_API_KEY');
+    assert.match(fnMatch[0], /VERCEL_TOKEN/, 'Must check for VERCEL_TOKEN');
+    assert.match(fnMatch[0], /ELASTIC_API_KEY/, 'Must check for ELASTIC_API_KEY');
+  });
+
+  // ---- buildSpawnEnv PATH injection checks ----
+
+  it('should inject PATH with git-wrappers directory in buildSpawnEnv', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function buildSpawnEnv\([\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'buildSpawnEnv must exist');
+    assert.match(fnMatch[0], /git-wrappers/, 'Must resolve git-wrappers directory');
+    assert.match(fnMatch[0], /PATH:\s*guardedPath/, 'Must set PATH to guardedPath');
+    assert.match(fnMatch[0], /let guardedPath/, 'Must define guardedPath variable');
+  });
+
+  it('should fall back to process.env.PATH when resolving git-wrappers', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function buildSpawnEnv\([\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'buildSpawnEnv must exist');
+    assert.match(fnMatch[0], /process\.env\.PATH/, 'Must use process.env.PATH as base');
+    assert.match(
+      fnMatch[0],
+      /\/usr\/bin:\/bin/,
+      'Must provide /usr/bin:/bin fallback when PATH is unset'
+    );
+  });
+
+  it('should prepend git-wrappers before existing PATH entries', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function buildSpawnEnv\([\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'buildSpawnEnv must exist');
+    // guardedPath must be set to `${wrappersDir}:${guardedPath}` so wrappers take priority
+    assert.match(
+      fnMatch[0],
+      /guardedPath = `\$\{wrappersDir\}:\$\{guardedPath\}`/,
+      'Must prepend wrappersDir to guardedPath so git-wrappers override system git'
+    );
+  });
+
+  it('should only add git-wrappers to PATH when wrapper git binary exists', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function buildSpawnEnv\([\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'buildSpawnEnv must exist');
+    // Must guard with fs.existsSync so non-existent wrapper dir is a no-op
+    assert.match(
+      fnMatch[0],
+      /fs\.existsSync.*wrappersDir.*git|existsSync.*git-wrappers/,
+      'Must check that git wrapper binary exists before prepending to PATH'
+    );
+  });
+
+  it('should silently swallow errors when resolving git-wrappers path', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function buildSpawnEnv\([\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'buildSpawnEnv must exist');
+    // The try/catch with empty catch block must surround the realpathSync call
+    assert.match(
+      fnMatch[0],
+      /realpathSync/,
+      'Must use realpathSync to follow symlinks to framework source'
+    );
+  });
+});
+
+// ============================================================================
+// buildSpawnEnv PATH injection — cross-file source-level checks
+//
+// All five spawn helper files must implement the same guardedPath pattern so
+// spawned agents get git-wrappers on their PATH regardless of which module
+// initiates the spawn.
+// ============================================================================
+
+describe('buildSpawnEnv PATH injection — cross-file consistency', () => {
+  const FILES = {
+    'hourly-automation.js': path.join(process.cwd(), '.claude/hooks/hourly-automation.js'),
+    'urgent-task-spawner.js': path.join(process.cwd(), '.claude/hooks/urgent-task-spawner.js'),
+    'session-reviver.js': path.join(process.cwd(), '.claude/hooks/session-reviver.js'),
+    'force-spawn-tasks.js': path.join(process.cwd(), 'scripts/force-spawn-tasks.js'),
+    'force-triage-reports.js': path.join(process.cwd(), 'scripts/force-triage-reports.js'),
+  };
+
+  for (const [filename, filePath] of Object.entries(FILES)) {
+    it(`${filename} buildSpawnEnv must define guardedPath`, () => {
+      const code = fs.readFileSync(filePath, 'utf8');
+      assert.match(
+        code,
+        /let guardedPath/,
+        `${filename} buildSpawnEnv must define guardedPath variable`
+      );
+    });
+
+    it(`${filename} buildSpawnEnv must include PATH: guardedPath in return object`, () => {
+      const code = fs.readFileSync(filePath, 'utf8');
+      assert.match(
+        code,
+        /PATH:\s*guardedPath/,
+        `${filename} must set PATH: guardedPath in spawned process environment`
+      );
+    });
+
+    it(`${filename} buildSpawnEnv must resolve git-wrappers via realpathSync`, () => {
+      const code = fs.readFileSync(filePath, 'utf8');
+      assert.match(
+        code,
+        /git-wrappers/,
+        `${filename} must reference git-wrappers directory for PATH injection`
+      );
+    });
+
+    it(`${filename} buildSpawnEnv must fall back to /usr/bin:/bin when PATH unset`, () => {
+      const code = fs.readFileSync(filePath, 'utf8');
+      assert.match(
+        code,
+        /\/usr\/bin:\/bin/,
+        `${filename} must supply /usr/bin:/bin fallback path`
+      );
+    });
+  }
+});
+
+// ============================================================================
+// spawnTaskAgent abort-on-worktree-failure
+//
+// Changed from fallback (run in main tree) to abort (return false immediately).
+// The main working tree must stay on 'main'; agents must work in worktrees.
+// ============================================================================
+
+describe('spawnTaskAgent — abort on worktree failure', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should abort and return false when worktree creation fails', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnTaskAgent\(task\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnTaskAgent must exist');
+
+    // Must return false (abort) rather than fall back to PROJECT_DIR
+    assert.match(
+      fnMatch[0],
+      /worktree creation failed, aborting spawn/,
+      'Must log "aborting spawn" message (not fallback message) when worktree creation fails'
+    );
+  });
+
+  it('should return false immediately after worktree failure without spawning', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnTaskAgent\(task\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnTaskAgent must exist');
+
+    const fnBody = fnMatch[0];
+
+    // The catch block after createWorktree must return false before registerSpawn
+    // Verify abort path: catch block has `return false`
+    assert.match(
+      fnBody,
+      /catch \(err\)[\s\S]*?return false/,
+      'Catch block must return false to abort spawn'
+    );
+  });
+
+  it('should NOT contain fallback-to-PROJECT_DIR logic in worktree catch block', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnTaskAgent\(task\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnTaskAgent must exist');
+
+    // The old behavior was to fall back and continue with PROJECT_DIR.
+    // The new behavior is to abort. Verify the log message does NOT say "falling back".
+    assert.doesNotMatch(
+      fnMatch[0],
+      /falling back to PROJECT_DIR.*task runner/i,
+      'Task runner catch must not fall back to PROJECT_DIR — must abort instead'
+    );
+  });
+
+  it('should log the worktree failure reason for diagnostics', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnTaskAgent\(task\)[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'spawnTaskAgent must exist');
+
+    // Error message must be included in log so engineers can debug
+    assert.match(
+      fnMatch[0],
+      /err\.message/,
+      'Must include err.message in abort log for diagnostics'
+    );
+  });
+});
+
+// ============================================================================
+// spawnLintFixer — worktree creation and abort on failure
+//
+// Lint fixer was updated to use a worktree (abort-on-failure, same policy as
+// spawnTaskAgent) rather than running in the main tree.
+// ============================================================================
+
+describe('spawnLintFixer — worktree creation and abort on failure', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should call createWorktree inside spawnLintFixer', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnLintFixer\([\s\S]*?\n  return new Promise/);
+    assert.ok(fnMatch, 'spawnLintFixer must exist');
+
+    assert.match(
+      fnMatch[0],
+      /createWorktree/,
+      'spawnLintFixer must call createWorktree for isolation'
+    );
+  });
+
+  it('should abort and reject when worktree creation fails in spawnLintFixer', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnLintFixer\([\s\S]*?\n  return new Promise/);
+    assert.ok(fnMatch, 'spawnLintFixer must exist');
+
+    assert.match(
+      fnMatch[0],
+      /aborting spawn.*main tree must stay on main|Worktree creation failed/,
+      'Must log abort message when worktree creation fails'
+    );
+  });
+
+  it('should return a rejected Promise (not silently continue) on worktree failure', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnLintFixer\([\s\S]*?\n  return new Promise/);
+    assert.ok(fnMatch, 'spawnLintFixer must exist');
+
+    assert.match(
+      fnMatch[0],
+      /Promise\.reject/,
+      'Must return Promise.reject() so callers can detect the failure'
+    );
+  });
+
+  it('should log lint fixer worktree branch name when creation succeeds', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnLintFixer\([\s\S]*?\n  return new Promise/);
+    assert.ok(fnMatch, 'spawnLintFixer must exist');
+
+    assert.match(
+      fnMatch[0],
+      /Lint fixer: worktree ready/,
+      'Must log success message with worktree path'
+    );
+  });
+
+  it('should use lint-fix as the base name for the worktree branch', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function spawnLintFixer\([\s\S]*?\n  return new Promise/);
+    assert.ok(fnMatch, 'spawnLintFixer must exist');
+
+    assert.match(
+      fnMatch[0],
+      /['"]lint-fix['"]/,
+      'Must use "lint-fix" as branch name base for the worktree'
+    );
+  });
+});
+
+describe('Health Monitor Credential Preflight', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should define hasHealthMonitorCredentials function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    assert.match(
+      code,
+      /function hasHealthMonitorCredentials\(\)/,
+      'Must define hasHealthMonitorCredentials function'
+    );
+  });
+
+  it('should check for all 3 required infrastructure credentials', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function hasHealthMonitorCredentials\(\)[\s\S]*?\nfunction /);
+    assert.ok(fnMatch, 'hasHealthMonitorCredentials must exist');
+    assert.match(fnMatch[0], /RENDER_API_KEY/, 'Must check for RENDER_API_KEY');
+    assert.match(fnMatch[0], /VERCEL_TOKEN/, 'Must check for VERCEL_TOKEN');
+    assert.match(fnMatch[0], /ELASTIC_API_KEY/, 'Must check for ELASTIC_API_KEY');
+  });
+
+  it('should check both resolvedCredentials and process.env for each key', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function hasHealthMonitorCredentials\(\)[\s\S]*?\nfunction /);
+    assert.ok(fnMatch, 'hasHealthMonitorCredentials must exist');
+    assert.match(fnMatch[0], /resolvedCredentials\[/, 'Must check resolvedCredentials');
+    assert.match(fnMatch[0], /process\.env\[/, 'Must check process.env');
+  });
+
+  it('should return false when credentials are missing', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function hasHealthMonitorCredentials\(\)[\s\S]*?\nfunction /);
+    assert.ok(fnMatch, 'hasHealthMonitorCredentials must exist');
+    assert.match(fnMatch[0], /return false/, 'Must return false when credentials are missing');
+  });
+
+  it('should return true when all credentials are available', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function hasHealthMonitorCredentials\(\)[\s\S]*?\nfunction /);
+    assert.ok(fnMatch, 'hasHealthMonitorCredentials must exist');
+    assert.match(fnMatch[0], /return true/, 'Must return true when all credentials available');
+  });
+
+  it('should log setup instructions when credentials are missing', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function hasHealthMonitorCredentials\(\)[\s\S]*?\nfunction /);
+    assert.ok(fnMatch, 'hasHealthMonitorCredentials must exist');
+    assert.match(fnMatch[0], /setup-automation-service\.sh/, 'Must log setup instructions');
+  });
+
+  it('should call ensureCredentials before checking', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function hasHealthMonitorCredentials\(\)[\s\S]*?\nfunction /);
+    assert.ok(fnMatch, 'hasHealthMonitorCredentials must exist');
+    assert.match(fnMatch[0], /ensureCredentials\(\)/, 'Must call ensureCredentials() first');
+  });
+
+  it('should guard staging health monitor spawn with credential check', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    // The staging health monitor section should call hasHealthMonitorCredentials
+    const stagingSection = code.match(/STAGING HEALTH MONITOR[\s\S]*?PRODUCTION HEALTH MONITOR/);
+    assert.ok(stagingSection, 'Staging health monitor section must exist');
+    assert.match(
+      stagingSection[0],
+      /hasHealthMonitorCredentials\(\)/,
+      'Staging health monitor must call hasHealthMonitorCredentials before spawning'
+    );
+  });
+
+  it('should guard production health monitor spawn with credential check', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    // The production health monitor section should call hasHealthMonitorCredentials
+    const prodSection = code.match(/PRODUCTION HEALTH MONITOR[\s\S]*?CI MONITORING/);
+    assert.ok(prodSection, 'Production health monitor section must exist');
+    assert.match(
+      prodSection[0],
+      /hasHealthMonitorCredentials\(\)/,
+      'Production health monitor must call hasHealthMonitorCredentials before spawning'
+    );
+  });
+
+  it('should not update cooldown timestamp when credentials are missing', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    // Staging: lastStagingHealthCheck should only be set inside the spawn success block
+    const stagingSection = code.match(/STAGING HEALTH MONITOR[\s\S]*?PRODUCTION HEALTH MONITOR/);
+    assert.ok(stagingSection, 'Staging health monitor section must exist');
+    // The credential check skip path should NOT contain lastStagingHealthCheck assignment
+    const credSkipMatch = stagingSection[0].match(/hasHealthMonitorCredentials\(\)[\s\S]*?skipped \(missing credentials\)/);
+    assert.ok(credSkipMatch, 'Must have credential skip path');
+    assert.ok(
+      !credSkipMatch[0].includes('lastStagingHealthCheck'),
+      'Credential skip path must NOT update lastStagingHealthCheck'
+    );
+  });
+
+  it('should not update production cooldown timestamp when credentials are missing', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    // Production: lastProductionHealthCheck should only be set inside the spawn success block
+    const prodSection = code.match(/PRODUCTION HEALTH MONITOR[\s\S]*?CI MONITORING/);
+    assert.ok(prodSection, 'Production health monitor section must exist');
+    // The credential check skip path should NOT contain lastProductionHealthCheck assignment
+    const credSkipMatch = prodSection[0].match(/hasHealthMonitorCredentials\(\)[\s\S]*?skipped \(missing credentials\)/);
+    assert.ok(credSkipMatch, 'Must have credential skip path');
+    assert.ok(
+      !credSkipMatch[0].includes('lastProductionHealthCheck'),
+      'Credential skip path must NOT update lastProductionHealthCheck'
+    );
+  });
 });

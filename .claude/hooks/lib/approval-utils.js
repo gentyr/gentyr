@@ -22,6 +22,9 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Shared buffer for non-CPU-intensive synchronous sleep via Atomics.wait
+const _sleepBuf = new Int32Array(new SharedArrayBuffer(4));
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -117,8 +120,7 @@ export function acquireLock() {
 
       // Exponential backoff
       const delay = baseDelay * Math.pow(2, i);
-      const start = Date.now();
-      while (Date.now() - start < delay) { /* busy wait */ }
+      Atomics.wait(_sleepBuf, 0, 0, delay);
     }
   }
   return false;
@@ -172,7 +174,7 @@ export function writeProtectionKey(keyBase64) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(PROTECTION_KEY_PATH, keyBase64 + '\n', { mode: 0o600 });
+  fs.writeFileSync(PROTECTION_KEY_PATH, keyBase64 + '\n', { mode: 0o644 });
 }
 
 /**
@@ -332,7 +334,14 @@ export function saveApprovals(approvals) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(APPROVALS_PATH, JSON.stringify(approvals, null, 2));
+  const tmpPath = APPROVALS_PATH + '.tmp.' + process.pid;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(approvals, null, 2));
+    fs.renameSync(tmpPath, APPROVALS_PATH);
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    throw err;
+  }
 }
 
 /**
@@ -450,10 +459,37 @@ export function validateApproval(phrase, code) {
       };
     }
 
+    // HMAC verification: Verify the pending request was created by the gate hook.
+    // G001 Fail-Closed: pending_hmac is verified unconditionally when a protection key is
+    // present. If the field is missing (undefined), the comparison against the expected hex
+    // string fails correctly, blocking requests that were not created by the gate hook.
+    const key = readProtectionKey();
+    const keyBase64 = key ? key.toString('base64') : null;
+    const normalizedCode = code.toUpperCase();
+
+    if (keyBase64) {
+      // Unconditionally verify pending_hmac - if field is missing, comparison fails correctly
+      const expectedPendingHmac = computeHmac(keyBase64, normalizedCode, request.server, request.tool, request.argsHash || '', String(request.expires_timestamp));
+      if (request.pending_hmac !== expectedPendingHmac) {
+        // Forged or missing pending_hmac - delete and reject
+        console.error(`[approval-utils] FORGERY DETECTED: Invalid pending_hmac for ${normalizedCode}. Deleting.`);
+        delete approvals.approvals[normalizedCode];
+        saveApprovals(approvals);
+        return { valid: false, reason: 'FORGERY: Invalid request signature' };
+      }
+    } else if (!keyBase64 && request.pending_hmac) {
+      // G001 Fail-Closed: Request has HMAC but we can't verify (key missing)
+      console.error(`[approval-utils] G001 FAIL-CLOSED: Cannot verify HMAC for ${normalizedCode} (protection key missing).`);
+      return { valid: false, reason: 'Cannot verify request signature (protection key missing)' };
+    }
+
     // Mark as approved
     request.status = 'approved';
     request.approved_at = new Date().toISOString();
     request.approved_timestamp = Date.now();
+    if (keyBase64) {
+      request.approved_hmac = computeHmac(keyBase64, normalizedCode, request.server, request.tool, 'approved', request.argsHash || '', String(request.expires_timestamp));
+    }
     saveApprovals(approvals);
 
     return {
@@ -497,7 +533,10 @@ export function checkApproval(server, tool, args) {
       .update(JSON.stringify(args || {}))
       .digest('hex');
 
+    // Pass 1: Standard exact-match approvals (args-bound, single-use)
     for (const [code, request] of Object.entries(approvals.approvals)) {
+      // Skip pre-approvals — they use different HMAC domains and are handled in Pass 2
+      if (request.is_preapproval) continue;
       if (request.status !== 'approved') continue;
       if (request.expires_timestamp < now) continue;
       if (request.server !== server) continue;
@@ -508,28 +547,27 @@ export function checkApproval(server, tool, args) {
         continue; // Args don't match the approved request
       }
 
-      // HMAC verification: Verify signatures to prevent agent forgery
+      // HMAC verification: Verify signatures to prevent agent forgery.
+      // G001 Fail-Closed: Both pending_hmac and approved_hmac are verified unconditionally
+      // when a protection key is present. If either field is missing (undefined), the
+      // comparison against the expected hex string will fail, correctly blocking the request.
       if (keyBase64) {
-        // Verify pending_hmac (was this request created by the hook with these args?)
-        if (request.pending_hmac) {
-          const expectedPendingHmac = computeHmac(keyBase64, code, server, tool, request.argsHash || argsHash, String(request.expires_timestamp));
-          if (request.pending_hmac !== expectedPendingHmac) {
-            console.error(`[approval-utils] FORGERY DETECTED: Invalid pending_hmac for ${code}. Deleting.`);
-            delete approvals.approvals[code];
-            dirty = true;
-            continue;
-          }
+        // Verify pending_hmac unconditionally - if field is missing, comparison fails correctly
+        const expectedPendingHmac = computeHmac(keyBase64, code, server, tool, request.argsHash || argsHash, String(request.expires_timestamp));
+        if (request.pending_hmac !== expectedPendingHmac) {
+          console.error(`[approval-utils] FORGERY DETECTED: Invalid pending_hmac for ${code}. Deleting.`);
+          delete approvals.approvals[code];
+          dirty = true;
+          continue;
         }
 
-        // Verify approved_hmac (was this approval created by the approval hook?)
-        if (request.approved_hmac) {
-          const expectedApprovedHmac = computeHmac(keyBase64, code, server, tool, 'approved', request.argsHash || argsHash, String(request.expires_timestamp));
-          if (request.approved_hmac !== expectedApprovedHmac) {
-            console.error(`[approval-utils] FORGERY DETECTED: Invalid approved_hmac for ${code}. Deleting.`);
-            delete approvals.approvals[code];
-            dirty = true;
-            continue;
-          }
+        // Verify approved_hmac unconditionally - if field is missing, comparison fails correctly
+        const expectedApprovedHmac = computeHmac(keyBase64, code, server, tool, 'approved', request.argsHash || argsHash, String(request.expires_timestamp));
+        if (request.approved_hmac !== expectedApprovedHmac) {
+          console.error(`[approval-utils] FORGERY DETECTED: Invalid approved_hmac for ${code}. Deleting.`);
+          delete approvals.approvals[code];
+          dirty = true;
+          continue;
         }
       } else if (request.pending_hmac || request.approved_hmac) {
         // G001 Fail-Closed: Request has HMAC fields but we can't verify them
@@ -542,6 +580,72 @@ export function checkApproval(server, tool, args) {
       delete approvals.approvals[code];
       saveApprovals(approvals);
 
+      return request;
+    }
+
+    // Pass 2: Pre-approved bypasses (args-agnostic, burst-use)
+    for (const [code, request] of Object.entries(approvals.approvals)) {
+      if (!request.is_preapproval) continue;
+      if (request.status !== 'approved') continue;
+      if (request.expires_timestamp < now) continue;
+      if (request.server !== server) continue;
+      if (request.tool !== tool) continue;
+
+      // HMAC verification for pre-approvals (domain-separated from standard approvals)
+      if (keyBase64) {
+        const expectedPendingHmac = computeHmac(keyBase64, code, server, tool, 'preapproval-pending', String(request.expires_timestamp));
+        if (request.pending_hmac !== expectedPendingHmac) {
+          console.error(`[approval-utils] FORGERY DETECTED: Invalid pending_hmac for pre-approval ${code}. Deleting.`);
+          delete approvals.approvals[code];
+          dirty = true;
+          continue;
+        }
+
+        const expectedApprovedHmac = computeHmac(keyBase64, code, server, tool, 'preapproval-activated', String(request.expires_timestamp));
+        if (request.approved_hmac !== expectedApprovedHmac) {
+          console.error(`[approval-utils] FORGERY DETECTED: Invalid approved_hmac for pre-approval ${code}. Deleting.`);
+          delete approvals.approvals[code];
+          dirty = true;
+          continue;
+        }
+      } else {
+        // G001 Fail-Closed: No protection key available — reject pre-approval unconditionally.
+        // Without a key we cannot verify HMAC integrity, so we must block regardless of
+        // whether HMAC fields are present (prevents forged entries without HMAC fields).
+        console.error(`[approval-utils] G001 FAIL-CLOSED: Cannot verify HMAC for pre-approval ${code} (protection key missing). Skipping.`);
+        continue;
+      }
+
+      // Burst-use logic
+      if (!request.uses_remaining || request.uses_remaining <= 0) {
+        delete approvals.approvals[code];
+        dirty = true;
+        continue;
+      }
+
+      // Check burst window: if previously used, subsequent uses must be within 60s
+      if (request.last_used_timestamp) {
+        const elapsed = now - request.last_used_timestamp;
+        const burstWindow = request.burst_window_ms || 60000;
+        if (elapsed > burstWindow) {
+          console.error(`[approval-utils] Pre-approval ${code} burst window expired (${elapsed}ms > ${burstWindow}ms). Deleting.`);
+          delete approvals.approvals[code];
+          dirty = true;
+          continue;
+        }
+      }
+
+      // Consume one use
+      request.uses_remaining--;
+      request.last_used_timestamp = now;
+      console.error(`[approval-utils] Pre-approval ${code} consumed for ${server}:${tool} (${request.uses_remaining} uses remaining, reason: ${request.reason || 'N/A'})`);
+
+      if (request.uses_remaining <= 0) {
+        // Fully consumed
+        delete approvals.approvals[code];
+      }
+
+      saveApprovals(approvals);
       return request;
     }
 

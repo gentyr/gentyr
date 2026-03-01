@@ -29,6 +29,9 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Shared buffer for non-CPU-intensive synchronous sleep via Atomics.wait
+const _sleepBuf = new Int32Array(new SharedArrayBuffer(4));
+
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
 const PROTECTED_ACTIONS_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'protected-actions.json');
 const APPROVALS_PATH = path.join(PROJECT_DIR, '.claude', 'protected-action-approvals.json');
@@ -66,8 +69,7 @@ function acquireLock() {
 
       // Exponential backoff
       const delay = baseDelay * Math.pow(2, i);
-      const start = Date.now();
-      while (Date.now() - start < delay) { /* busy wait */ }
+      Atomics.wait(_sleepBuf, 0, 0, delay);
     }
   }
   return false;
@@ -219,7 +221,14 @@ function saveApprovals(approvals) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(APPROVALS_PATH, JSON.stringify(approvals, null, 2));
+  const tmpPath = APPROVALS_PATH + '.tmp.' + process.pid;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(approvals, null, 2));
+    fs.renameSync(tmpPath, APPROVALS_PATH);
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    throw err;
+  }
 }
 
 /**
@@ -255,9 +264,12 @@ function validateAndApprove(phrase, code) {
       return { valid: false, reason: 'Approval code has expired' };
     }
 
-    // HMAC verification (Fix 2): Verify the pending request was created by the gate hook
+    // HMAC verification: Verify the pending request was created by the gate hook.
+    // G001 Fail-Closed: pending_hmac is verified unconditionally when a protection key is
+    // present. If the field is missing (undefined), the comparison against the expected hex
+    // string fails correctly, blocking requests that were not created by the gate hook.
     const key = loadProtectionKey();
-    if (key && request.pending_hmac) {
+    if (key) {
       const expectedPendingHmac = computeHmac(key, normalizedCode, request.server, request.tool, request.argsHash || '', String(request.expires_timestamp));
       if (request.pending_hmac !== expectedPendingHmac) {
         // Forged pending request — delete and reject

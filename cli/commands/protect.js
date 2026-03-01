@@ -72,20 +72,65 @@ function getOriginalGroup() {
  * @param {string} projectDir
  */
 function doProtect(projectDir) {
+  const hooksPath = path.join(projectDir, '.claude', 'hooks');
   const hooksDir = getHooksDir(projectDir);
   const rootGroup = process.platform === 'darwin' ? 'wheel' : 'root';
 
   console.log(`${YELLOW}Enabling protection (sudo will prompt for password)...${NC}`);
 
+  const criticalHooks = [
+    'pre-commit-review.js',
+    'bypass-approval-hook.js',
+    'block-no-verify.js',
+    'protected-action-gate.js',
+    'protected-action-approval-hook.js',
+    'credential-file-guard.js',
+    'secret-leak-detector.js',
+    'protected-actions.json',
+    'branch-checkout-guard.js',
+    'main-tree-commit-guard.js',
+    'git-wrappers/git',
+  ];
+
+  // Detect if hooks is a symlink (linked project). If so, copy critical hooks
+  // to a local directory so root-owning them doesn't affect the framework source.
+  let isSymlinked = false;
+  try {
+    isSymlinked = fs.lstatSync(hooksPath).isSymbolicLink();
+  } catch {}
+
+  const hooksProtectedDir = path.join(projectDir, '.claude', 'hooks-protected');
+  let protectedHooksDir = hooksDir;
+
+  if (isSymlinked) {
+    // Create local copy directory for root-owned hooks
+    fs.mkdirSync(hooksProtectedDir, { recursive: true });
+    let copied = 0;
+    for (const hook of criticalHooks) {
+      const src = path.join(hooksDir, hook);
+      const dst = path.join(hooksProtectedDir, hook);
+      if (fs.existsSync(src)) {
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
+        fs.copyFileSync(src, dst);
+        copied++;
+      }
+    }
+    protectedHooksDir = hooksProtectedDir;
+    console.log(`  Copied ${copied} critical hooks to .claude/hooks-protected/`);
+  }
+
   const files = [
-    path.join(hooksDir, 'pre-commit-review.js'),
-    path.join(hooksDir, 'bypass-approval-hook.js'),
-    path.join(hooksDir, 'block-no-verify.js'),
-    path.join(hooksDir, 'protected-action-gate.js'),
-    path.join(hooksDir, 'protected-action-approval-hook.js'),
-    path.join(hooksDir, 'credential-file-guard.js'),
-    path.join(hooksDir, 'secret-leak-detector.js'),
-    path.join(hooksDir, 'protected-actions.json'),
+    path.join(protectedHooksDir, 'pre-commit-review.js'),
+    path.join(protectedHooksDir, 'bypass-approval-hook.js'),
+    path.join(protectedHooksDir, 'block-no-verify.js'),
+    path.join(protectedHooksDir, 'protected-action-gate.js'),
+    path.join(protectedHooksDir, 'protected-action-approval-hook.js'),
+    path.join(protectedHooksDir, 'credential-file-guard.js'),
+    path.join(protectedHooksDir, 'secret-leak-detector.js'),
+    path.join(protectedHooksDir, 'protected-actions.json'),
+    path.join(protectedHooksDir, 'branch-checkout-guard.js'),
+    path.join(protectedHooksDir, 'main-tree-commit-guard.js'),
+    path.join(protectedHooksDir, 'git-wrappers', 'git'),
     path.join(projectDir, '.claude', 'settings.json'),
     path.join(projectDir, '.claude', 'protection-key'),
     path.join(projectDir, '.mcp.json'),
@@ -108,23 +153,17 @@ function doProtect(projectDir) {
   ];
 
   // Write state BEFORE protecting directories (user needs write access to .claude/)
-  const criticalHooks = [
-    'pre-commit-review.js',
-    'bypass-approval-hook.js',
-    'block-no-verify.js',
-    'protected-action-gate.js',
-    'protected-action-approval-hook.js',
-    'credential-file-guard.js',
-    'secret-leak-detector.js',
-    'protected-actions.json',
-  ];
-  const stateFile = path.join(projectDir, '.claude', 'protection-state.json');
-  fs.writeFileSync(stateFile, JSON.stringify({
+  const statePayload = {
     protected: true,
     timestamp: new Date().toISOString(),
     modified_by: getOriginalUser(),
     criticalHooks,
-  }, null, 2) + '\n');
+  };
+  if (isSymlinked) {
+    statePayload.hooksProtectedDir = '.claude/hooks-protected';
+  }
+  const stateFile = path.join(projectDir, '.claude', 'protection-state.json');
+  fs.writeFileSync(stateFile, JSON.stringify(statePayload, null, 2) + '\n');
   sudoExec('chmod', ['644', stateFile]);
 
   for (const dir of dirs) {
@@ -175,15 +214,23 @@ function doUnprotect(projectDir) {
 
   console.log(`${YELLOW}Disabling protection (sudo will prompt for password)...${NC}`);
 
+  // Detect copy-on-protect directory (linked projects)
+  const hooksProtectedDir = path.join(projectDir, '.claude', 'hooks-protected');
+  const hasLocalCopies = fs.existsSync(hooksProtectedDir);
+  const hooksOwnershipDir = hasLocalCopies ? hooksProtectedDir : hooksDir;
+
   const files = [
-    path.join(hooksDir, 'pre-commit-review.js'),
-    path.join(hooksDir, 'bypass-approval-hook.js'),
-    path.join(hooksDir, 'block-no-verify.js'),
-    path.join(hooksDir, 'protected-action-gate.js'),
-    path.join(hooksDir, 'protected-action-approval-hook.js'),
-    path.join(hooksDir, 'credential-file-guard.js'),
-    path.join(hooksDir, 'secret-leak-detector.js'),
-    path.join(hooksDir, 'protected-actions.json'),
+    path.join(hooksOwnershipDir, 'pre-commit-review.js'),
+    path.join(hooksOwnershipDir, 'bypass-approval-hook.js'),
+    path.join(hooksOwnershipDir, 'block-no-verify.js'),
+    path.join(hooksOwnershipDir, 'protected-action-gate.js'),
+    path.join(hooksOwnershipDir, 'protected-action-approval-hook.js'),
+    path.join(hooksOwnershipDir, 'credential-file-guard.js'),
+    path.join(hooksOwnershipDir, 'secret-leak-detector.js'),
+    path.join(hooksOwnershipDir, 'protected-actions.json'),
+    path.join(hooksOwnershipDir, 'branch-checkout-guard.js'),
+    path.join(hooksOwnershipDir, 'main-tree-commit-guard.js'),
+    path.join(hooksOwnershipDir, 'git-wrappers', 'git'),
     path.join(projectDir, '.claude', 'settings.json'),
     path.join(projectDir, '.claude', 'TESTING.md'),
     path.join(projectDir, '.claude', 'protection-key'),
@@ -218,18 +265,27 @@ function doUnprotect(projectDir) {
   }
 
   // Bulk-fix remaining root-owned files
+  // Skip framework hooksDir when using local copies (avoid touching framework source)
   const fixDirs = [
     [path.join(projectDir, '.husky'), 1],
     [path.join(projectDir, '.claude'), 1],
     [path.join(projectDir, '.claude', 'state'), 1],
-    [hooksDir, 2],  // covers lib/, __tests__/
   ];
+  if (!hasLocalCopies) {
+    fixDirs.push([hooksDir, 2]);  // covers lib/, __tests__/
+  }
   for (const [dir, depth] of fixDirs) {
     if (fs.existsSync(dir)) {
       try {
         sudoExec('find', [dir, '-maxdepth', String(depth), '-type', 'f', '-user', 'root', '-exec', 'chown', ownership, '{}', ';']);
       } catch {}
     }
+  }
+
+  // Remove copy-on-protect directory after unprotecting its files
+  if (hasLocalCopies) {
+    fs.rmSync(hooksProtectedDir, { recursive: true, force: true });
+    console.log(`  Removed .claude/hooks-protected/`);
   }
 
   // Fix agents directory

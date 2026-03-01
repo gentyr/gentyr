@@ -22,7 +22,8 @@
     "feedback-explorer",
     "playwright-feedback",
     "programmatic-feedback",
-    "feedback-reporter"
+    "feedback-reporter",
+    "playwright"
   ],
   "settings": {
     "codeLength": 6,

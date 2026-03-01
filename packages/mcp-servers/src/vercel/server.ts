@@ -52,15 +52,16 @@ import {
   type SuccessResult,
 } from './types.js';
 
-const { VERCEL_TOKEN, VERCEL_TEAM_ID } = process.env;
 const BASE_URL = 'https://api.vercel.com';
 
-if (!VERCEL_TOKEN) {
-  console.error('VERCEL_TOKEN environment variable is required');
-  process.exit(1);
-}
-
 async function vercelFetch(endpoint: string, options: RequestInit = {}): Promise<unknown> {
+  const VERCEL_TOKEN = process.env.VERCEL_TOKEN;
+  const VERCEL_TEAM_ID = process.env.VERCEL_TEAM_ID;
+  // G001: Fail-closed on missing token (checked at invocation time for tool discoverability)
+  if (!VERCEL_TOKEN) {
+    throw new Error('VERCEL_TOKEN environment variable is required. Ensure 1Password credentials are configured.');
+  }
+
   const url = new URL(endpoint, BASE_URL);
   if (VERCEL_TEAM_ID) {
     url.searchParams.set('teamId', VERCEL_TEAM_ID);

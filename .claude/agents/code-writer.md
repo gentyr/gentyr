@@ -138,34 +138,11 @@ feature/* --PR--> preview --PR--> staging --PR--> main (production)
 
 ### Worktree Context
 
-You may be working inside a git worktree (a separate working directory on a feature branch). If so:
+**You do NOT commit code.** Git write operations are the project-manager agent's responsibility. You may be working in a worktree or the main tree — either way, focus on writing code and leave git operations to the project-manager. **NEVER run `git checkout` or `git switch` to change branches** — the main tree must stay on `main`. If in a worktree:
 - Your working directory is isolated from the main project
 - Other agents may be working concurrently in their own worktrees
 - MCP tools (todo-db, deputy-cto, etc.) access shared state in the main project
-- Git operations (commit, push, PR) apply to YOUR worktree's branch only
 
-### Git Commit and Push Protocol
+### Git Operations
 
-When your implementation work is complete:
-1. `git add <specific files>` (never `git add .` or `git add -A`)
-2. `git commit -m "descriptive message"`
-3. Push and create PR:
-```bash
-git push -u origin HEAD
-gh pr create --base preview --head "$(git branch --show-current)" \
-  --title "<title>" --body "<summary>" 2>/dev/null || true
-```
-4. Request PR review via urgent DEPUTY-CTO task:
-```javascript
-mcp__todo-db__create_task({
-  section: "DEPUTY-CTO",
-  title: "Review PR: <title>",
-  description: "Review and merge PR #<number> from <branch> to preview. Run gh pr diff <number>, review for security/architecture/quality, then approve+merge or request changes.",
-  assigned_by: "pr-reviewer",
-  priority: "urgent"
-})
-```
-
-Note: Commits on feature branches pass through immediately (lint + security only).
-Code review happens asynchronously at PR time via deputy-CTO.
-Do NOT self-merge your PR -- deputy-CTO handles review and merge.
+**Do NOT commit, push, or create PRs.** The project-manager agent handles all git operations after your work is complete. Focus on writing code.

@@ -23,6 +23,7 @@ import { spawn } from 'child_process';
 import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { createWorktree } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
+import { isProxyDisabled } from './lib/proxy-state.js';
 
 // Try to import better-sqlite3 for DB access
 let Database = null;
@@ -115,16 +116,33 @@ function resetTaskToPending(taskId) {
  * inherit them from the env or use the proxy.
  */
 function buildSpawnEnv(agentId) {
-  return {
+  // Resolve git-wrappers directory (follows symlinks for npm link model)
+  const hooksDir = path.join(PROJECT_DIR, '.claude', 'hooks');
+  let guardedPath = process.env.PATH || '/usr/bin:/bin';
+  try {
+    const realHooks = fs.realpathSync(hooksDir);
+    const wrappersDir = path.join(realHooks, 'git-wrappers');
+    if (fs.existsSync(path.join(wrappersDir, 'git'))) {
+      guardedPath = `${wrappersDir}:${guardedPath}`;
+    }
+  } catch {}
+
+  const env = {
     ...process.env,
     CLAUDE_PROJECT_DIR: PROJECT_DIR,
     CLAUDE_SPAWNED_SESSION: 'true',
     CLAUDE_AGENT_ID: agentId,
-    HTTPS_PROXY: `http://localhost:${PROXY_PORT}`,
-    HTTP_PROXY: `http://localhost:${PROXY_PORT}`,
-    NO_PROXY: 'localhost,127.0.0.1',
-    NODE_EXTRA_CA_CERTS: path.join(process.env.HOME || '/tmp', '.claude', 'proxy-certs', 'ca.pem'),
+    PATH: guardedPath,
   };
+
+  if (!isProxyDisabled()) {
+    env.HTTPS_PROXY = `http://localhost:${PROXY_PORT}`;
+    env.HTTP_PROXY = `http://localhost:${PROXY_PORT}`;
+    env.NO_PROXY = 'localhost,127.0.0.1';
+    env.NODE_EXTRA_CA_CERTS = path.join(process.env.HOME || '/tmp', '.claude', 'proxy-certs', 'ca.pem');
+  }
+
+  return env;
 }
 
 /**

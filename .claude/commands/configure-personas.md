@@ -82,14 +82,16 @@ Based on your project analysis, offer appropriate preset personas using `AskUser
 
 **Template definitions:**
 
-| Template | Name | Mode | Description | Traits |
-|---|---|---|---|---|
-| New User | new-user | gui | A first-time visitor exploring the product with no prior experience | unfamiliar with features, reads instructions carefully, gets confused by jargon, tries obvious path first |
-| Power User | power-user | gui | An experienced user who knows the product well and pushes boundaries | uses keyboard shortcuts, tries edge cases, multitabs, moves fast, skips tutorials |
-| API Consumer | api-consumer | api | A developer integrating with the API who tests thoroughly | reads API docs first, tests error handling, checks response formats, tries invalid inputs |
-| CLI Beginner | cli-beginner | cli | A developer using the CLI for the first time by following the README | follows README, tries basic commands first, confused by abbreviations |
-| CI/CD Scripter | cicd-scripter | cli | An automation engineer integrating the CLI into CI/CD pipelines | pipes output, uses --json flags, expects exit codes, tests with large inputs |
-| Load Tester | load-tester | api | A QA engineer validating API performance under concurrent load | sends rapid requests, tests rate limits, checks response times, tests concurrent access |
+| Template | Name | Display Name | Mode | Description | Traits |
+|---|---|---|---|---|---|
+| New User | new-user | New User | gui | A first-time visitor exploring the product with no prior experience | unfamiliar with features, reads instructions carefully, gets confused by jargon, tries obvious path first |
+| Power User | power-user | Power User | gui | An experienced user who knows the product well and pushes boundaries | uses keyboard shortcuts, tries edge cases, multitabs, moves fast, skips tutorials |
+| API Consumer | api-consumer | API Consumer | api | A developer integrating with the API who tests thoroughly | reads API docs first, tests error handling, checks response formats, tries invalid inputs |
+| CLI Beginner | cli-beginner | CLI Beginner | cli | A developer using the CLI for the first time by following the README | follows README, tries basic commands first, confused by abbreviations |
+| CI/CD Scripter | cicd-scripter | CI/CD Scripter | cli | An automation engineer integrating the CLI into CI/CD pipelines | pipes output, uses --json flags, expects exit codes, tests with large inputs |
+| Load Tester | load-tester | Load Tester | api | A QA engineer validating API performance under concurrent load | sends rapid requests, tests rate limits, checks response times, tests concurrent access |
+| SDK Developer | sdk-developer | SDK Developer | sdk | A developer integrating the SDK into their codebase, writing test scripts and browsing docs | reads docs first, writes test scripts, checks TypeScript types, validates error messages |
+| ADK Agent | adk-agent | ADK Agent | adk | An AI agent consuming the SDK programmatically via MCP tools, testing docs discoverability and API consistency | searches docs programmatically, tests structured errors, checks API orthogonality, validates machine-readable responses |
 
 ### Step 4: Create Selected Personas
 
@@ -100,21 +102,30 @@ Based on your project analysis, offer appropriate preset personas using `AskUser
 2. **Credentials reference** — optional, ask if they want to link a 1Password vault reference
    - WHY: "If this persona needs to log in, provide an `op://` reference so the AI can authenticate without exposing passwords."
 
-All other fields (name, description, mode, traits) come from the template. Create each persona via `mcp__user-feedback__create_persona`.
+All other fields (name, display_name, description, mode, traits) come from the template. Create each persona via `mcp__user-feedback__create_persona`. Always pass `display_name` from the template's Display Name column.
 
 **For "Custom persona":** Ask each question with a WHY explanation:
 
-1. **Name** — Short identifier (e.g., "power-user", "mobile-user")
-   - WHY: "This becomes the persona's ID. Keep it short and descriptive."
-2. **Description** — Who this persona represents and their goals
+1. **Name** — Short slug identifier (e.g., "power-user", "mobile-user")
+   - WHY: "This becomes the persona's unique ID. Use lowercase with hyphens."
+2. **Display Name** — Human-readable name (e.g., "Power User", "Mobile User")
+   - WHY: "This is what appears in menus like `/demo-interactive`. Make it readable."
+3. **Description** — Who this persona represents and their goals
    - WHY: "The AI reads this to understand who it's pretending to be. Be specific about the user's skill level and goals."
-3. **Consumption mode** — gui / cli / api / sdk
-   - WHY: "This determines HOW the AI interacts with your app. `gui` uses a real browser via Playwright. `cli` runs terminal commands. `api` sends HTTP requests. `sdk` uses your library programmatically."
-4. **Behavior traits** — comma-separated list
+4. **Consumption mode** — gui / cli / api / sdk / adk
+   - WHY: "This determines HOW the AI interacts with your app. `gui` uses a real browser via Playwright. `cli` runs terminal commands. `api` sends HTTP requests. `sdk` uses your library programmatically (agent browses docs portal). `adk` uses MCP tools to search/read documentation programmatically (for AI agent personas)."
+5. **Behavior traits** — comma-separated list
    - WHY: "These traits shape the AI's testing strategy. An 'impatient' persona abandons slow pages. A 'thorough' persona checks every form field. A 'non-technical' persona avoids developer tools."
-5. **Endpoint** — URL or path
-   - WHY: "This is where the AI persona will point its browser/requests."
-6. **Credentials reference** — optional op:// vault ref or key name
+6. **Endpoint** — URL or path (interpretation depends on mode)
+   - WHY: "For `gui`/`api`/`cli` personas, this is the URL or path the AI will point its browser/requests to. For `sdk` personas, enter the comma-separated package name(s) as the first value; the docs portal URL is asked separately. For `adk` personas, enter the comma-separated package name(s) as the first value; the local docs directory is asked separately."
+
+   **If mode is `sdk`:** Ask: "What is the URL of your developer docs portal? (optional - leave empty for code-only testing)"
+   - Validate URL format if provided. Store in `endpoints[1]`. If skipped, note that the agent runs code-only without docs browsing.
+
+   **If mode is `adk`:** Ask: "Where is the local docs directory for this project? (optional - leave empty for code-only testing)"
+   - Validate the directory exists and contains `.md` files if provided. Store in `endpoints[1]`. If skipped, note that the agent runs code-only without programmatic docs access.
+
+7. **Credentials reference** — optional op:// vault ref or key name
    - WHY: "If this persona needs to log in, provide an `op://` reference so the AI can authenticate without exposing passwords."
 
 ### Step 5: Register Detected Features
@@ -149,6 +160,7 @@ Propose persona-to-feature mappings based on mode matching:
 - `cli` personas → all features (CLI tools typically test everything)
 - `api` personas → features with `/api/` in URL patterns, or all features if no URL patterns exist
 - `sdk` personas → all features
+- `adk` personas → all features
 
 Present the proposed mappings in a single confirmation step:
 
@@ -213,7 +225,7 @@ Persona Feedback Configuration
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Personas ({count}):
-  {name} ({mode}) — mapped to: {feature1}, {feature2} — {enabled/disabled}
+  {display_name} [{name}] ({mode}) — mapped to: {feature1}, {feature2} — {enabled/disabled}
   ...
 
 Features ({count}):

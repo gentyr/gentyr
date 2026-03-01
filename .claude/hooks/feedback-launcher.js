@@ -21,7 +21,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -100,6 +100,52 @@ async function getPersona(personaId, projectDir = PROJECT_DIR) {
 }
 
 /**
+ * Prepare a scratch workspace for SDK/ADK personas.
+ * Creates a temp directory, initializes npm, and installs the SDK packages.
+ * Returns the workspace path.
+ */
+async function prepareWorkspace(persona, sessionId) {
+  const tmpDir = path.join(os.tmpdir(), 'gentyr-feedback');
+  if (!fs.existsSync(tmpDir)) {
+    fs.mkdirSync(tmpDir, { recursive: true });
+  }
+
+  const workspaceDir = path.join(tmpDir, `workspace-${sessionId}`);
+  fs.mkdirSync(workspaceDir, { recursive: true });
+
+  const sdkPackages = persona.endpoints[0] || '';
+  if (!sdkPackages) {
+    process.stderr.write(`[feedback] Warning: persona "${persona.name}" has no SDK packages in endpoints[0]\n`);
+    return workspaceDir;
+  }
+
+  try {
+    // Initialize package.json
+    execFileSync('npm', ['init', '-y'], {
+      cwd: workspaceDir,
+      timeout: 30000,
+      stdio: 'pipe',
+    });
+
+    // Install SDK packages
+    const packages = sdkPackages.split(',').map(p => p.trim()).filter(Boolean);
+    if (packages.length > 0) {
+      execFileSync('npm', ['install', ...packages], {
+        cwd: workspaceDir,
+        timeout: 120000, // 2-minute timeout
+        stdio: 'pipe',
+      });
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[feedback] Warning: workspace setup failed for "${persona.name}": ${message}\n`);
+    // Non-fatal: workspace exists but packages may not be installed
+  }
+
+  return workspaceDir;
+}
+
+/**
  * Generate temporary MCP config with ONLY feedback-specific servers.
  * This is the key isolation mechanism - the feedback agent cannot access
  * any project MCP servers (todo-db, specs-browser, deputy-cto, etc.)
@@ -152,6 +198,7 @@ function generateMcpConfig(sessionId, persona, projectDir = PROJECT_DIR) {
   }
 
   if (mode === 'sdk') {
+    // SDK gets programmatic-feedback for quick code evals
     config.mcpServers['programmatic-feedback'] = {
       command: 'node',
       args: [path.join(MCP_SERVERS_DIST, 'programmatic-feedback', 'server.js')],
@@ -163,6 +210,52 @@ function generateMcpConfig(sessionId, persona, projectDir = PROJECT_DIR) {
         FEEDBACK_PERSONA_NAME: persona.name,
       },
     };
+
+    // SDK also gets playwright-feedback for browsing docs portal (if configured)
+    const docsUrl = persona.endpoints[1];
+    if (docsUrl) {
+      config.mcpServers['playwright-feedback'] = {
+        command: 'node',
+        args: [path.join(MCP_SERVERS_DIST, 'playwright-feedback', 'server.js')],
+        env: {
+          CLAUDE_PROJECT_DIR: projectDir,
+          FEEDBACK_BASE_URL: docsUrl,
+          FEEDBACK_BROWSER_HEADLESS: 'true',
+          FEEDBACK_SESSION_ID: sessionId,
+          FEEDBACK_PERSONA_NAME: persona.name,
+        },
+      };
+    }
+  }
+
+  if (mode === 'adk') {
+    // ADK gets programmatic-feedback for quick code evals
+    config.mcpServers['programmatic-feedback'] = {
+      command: 'node',
+      args: [path.join(MCP_SERVERS_DIST, 'programmatic-feedback', 'server.js')],
+      env: {
+        CLAUDE_PROJECT_DIR: projectDir,
+        FEEDBACK_MODE: 'sdk',
+        FEEDBACK_SDK_PACKAGES: persona.endpoints[0] || '',
+        FEEDBACK_SESSION_ID: sessionId,
+        FEEDBACK_PERSONA_NAME: persona.name,
+      },
+    };
+
+    // ADK also gets docs-feedback for programmatic docs access (if configured)
+    const docsPath = persona.endpoints[1];
+    if (docsPath) {
+      config.mcpServers['docs-feedback'] = {
+        command: 'node',
+        args: [path.join(MCP_SERVERS_DIST, 'docs-feedback', 'server.js')],
+        env: {
+          CLAUDE_PROJECT_DIR: projectDir,
+          FEEDBACK_DOCS_PATH: docsPath,
+          FEEDBACK_SESSION_ID: sessionId,
+          FEEDBACK_PERSONA_NAME: persona.name,
+        },
+      };
+    }
   }
 
   // Always include feedback-reporter (for submitting findings)
@@ -190,8 +283,11 @@ function generateMcpConfig(sessionId, persona, projectDir = PROJECT_DIR) {
 /**
  * Build the system prompt for the feedback agent.
  * This is persona-specific - no CLAUDE.md, no project context, no source code.
+ * @param {object} persona - Persona object with behavior_traits, endpoints, features
+ * @param {string} sessionId - Unique session identifier
+ * @param {object|null} scenario - Optional demo scenario to anchor the session starting point
  */
-function buildPrompt(persona, sessionId) {
+function buildPrompt(persona, sessionId, scenario = null) {
   const traits = persona.behavior_traits.length > 0
     ? persona.behavior_traits.map(t => `- ${t}`).join('\n')
     : '- (no specific traits defined)';
@@ -236,12 +332,79 @@ Do NOT try to debug or fix issues. Just report what you experience.`;
   }
 
   if (persona.consumption_mode === 'sdk') {
-    prompt += `\n\n## SDK Testing Notes\n\nEach \`sdk_eval\` call runs in an isolated sandbox. Module state does NOT persist between calls.\n`;
-    prompt += `To test stateful operations (create then get, create then delete), put ALL related operations in a SINGLE \`sdk_eval\` call.\n`;
-    prompt += `Example: require the module, create a task, then immediately get it — all in one code block.`;
+    prompt += `\n\n## SDK Developer Testing Notes\n\nYou are a developer with a scratch workspace where the SDK is pre-installed. You have Claude Code tools (Bash, Read, Write, Edit, Glob, Grep) to write and run test scripts.\n`;
+    prompt += `\nFor quick code evaluations, use \`mcp__programmatic-feedback__sdk_eval\` — each call runs in an isolated sandbox.\n`;
+    prompt += `For more realistic testing, write .js/.ts files in your workspace and run them with Bash.\n`;
+    prompt += `\nFocus on:\n`;
+    prompt += `- Getting-started experience: Can you install and import the SDK?\n`;
+    prompt += `- API discoverability: Can you find the functions you need?\n`;
+    prompt += `- Error messages: Are they helpful when you pass wrong arguments?\n`;
+    prompt += `- Type correctness: Do TypeScript types match runtime behavior?\n`;
+
+    if (persona.endpoints[1]) {
+      prompt += `\nYou also have Playwright browser tools to browse the developer docs portal at: ${persona.endpoints[1]}\n`;
+      prompt += `Use \`navigate\`, \`read_visible_text\`, and \`screenshot\` to check docs quality and accuracy.`;
+    } else {
+      prompt += `\n**Note:** Documentation is not configured for this persona. You can only test the SDK code directly. To enable docs access, run \`/configure-personas\` and set the docs URL for this persona.`;
+    }
+  }
+
+  if (persona.consumption_mode === 'adk') {
+    prompt += `\n\n## ADK Agent Testing Notes\n\nYou are an AI agent with a scratch workspace where the SDK is pre-installed. You have Claude Code tools (Bash, Read, Write, Edit, Glob, Grep) to write and run test scripts.\n`;
+    prompt += `\nFor quick code evaluations, use \`mcp__programmatic-feedback__sdk_eval\` — each call runs in an isolated sandbox.\n`;
+    prompt += `For more realistic testing, write .js/.ts files in your workspace and run them with Bash.\n`;
+    prompt += `\nFocus on:\n`;
+    prompt += `- Docs discoverability: Can you find what you need via \`docs_search\`?\n`;
+    prompt += `- Structured error responses: Do errors contain actionable information?\n`;
+    prompt += `- API orthogonality: Are naming conventions consistent? Do similar things work similarly?\n`;
+    prompt += `- Programmatic consumption: Are docs machine-parseable? Are code examples copy-pasteable?\n`;
+
+    if (persona.endpoints[1]) {
+      prompt += `\nYou have MCP docs tools to search and read documentation programmatically:\n`;
+      prompt += `- \`mcp__docs-feedback__docs_search\` — Search docs by keywords\n`;
+      prompt += `- \`mcp__docs-feedback__docs_list\` — List all available doc files\n`;
+      prompt += `- \`mcp__docs-feedback__docs_read\` — Read a specific doc file\n`;
+    } else {
+      prompt += `\n**Note:** Documentation is not configured for this persona. You can only test the SDK code directly. To enable docs access, run \`/configure-personas\` and set the docs directory for this persona.`;
+    }
+  }
+
+  if (scenario) {
+    prompt += `\n\n## Scenario Starting Point\n\n`;
+    prompt += `Before this session started, the demo file "${scenario.title}" was executed via Playwright.\n`;
+    prompt += `The app has been navigated to a specific state: ${scenario.description}\n\n`;
+    prompt += `Begin your testing from the CURRENT page state. Do NOT navigate to the homepage first.\n`;
+    prompt += `Focus your feedback on this specific flow and the screens you see.`;
   }
 
   return prompt;
+}
+
+/**
+ * Get demo scenarios for a given persona from user-feedback.db.
+ * Returns an array of scenario objects, or an empty array if unavailable.
+ */
+async function getScenariosForPersona(personaId, projectDir = PROJECT_DIR) {
+  const dbPath = path.join(projectDir, '.claude', 'user-feedback.db');
+  if (!fs.existsSync(dbPath)) return [];
+  let Database;
+  try {
+    Database = (await import('better-sqlite3')).default;
+  } catch {
+    return [];
+  }
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    return db.prepare(`
+      SELECT id, title, description, playwright_project, test_file, sort_order
+      FROM demo_scenarios WHERE persona_id = ? AND enabled = 1
+      ORDER BY sort_order
+    `).all(personaId);
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -251,10 +414,12 @@ Do NOT try to debug or fix issues. Just report what you experience.`;
 function spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, options = {}) {
   const projectDir = options.projectDir || PROJECT_DIR;
   const model = options.model || 'sonnet';
+  const tools = options.tools !== undefined ? options.tools : '';
+  const cwd = options.cwd || projectDir;
 
   const spawnArgs = [
     '--dangerously-skip-permissions',
-    '--tools', '',
+    '--tools', tools,
     '--strict-mcp-config',
     '--mcp-config', mcpConfigPath,
     '--model', model,
@@ -266,7 +431,7 @@ function spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, optio
   const claude = spawn('claude', spawnArgs, {
     detached: true,
     stdio: 'ignore',
-    cwd: projectDir,
+    cwd,
     env: {
       ...process.env,
       CLAUDE_PROJECT_DIR: projectDir,
@@ -294,10 +459,12 @@ function runFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, options
   const projectDir = options.projectDir || PROJECT_DIR;
   const timeout = options.timeout || 120000;
   const model = options.model || 'sonnet';
+  const tools = options.tools !== undefined ? options.tools : '';
+  const cwd = options.cwd || projectDir;
 
   const spawnArgs = [
     '--dangerously-skip-permissions',
-    '--tools', '',
+    '--tools', tools,
     '--strict-mcp-config',
     '--mcp-config', mcpConfigPath,
     '--model', model,
@@ -308,7 +475,7 @@ function runFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, options
 
   return new Promise((resolve, reject) => {
     const proc = spawn('claude', spawnArgs, {
-      cwd: projectDir,
+      cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
@@ -357,16 +524,21 @@ function cleanupOldConfigs() {
 
   const oneHourAgo = Date.now() - (60 * 60 * 1000);
   try {
-    const files = fs.readdirSync(tmpDir);
-    for (const file of files) {
-      const filePath = path.join(tmpDir, file);
-      const stat = fs.statSync(filePath);
+    const entries = fs.readdirSync(tmpDir);
+    for (const entry of entries) {
+      const entryPath = path.join(tmpDir, entry);
+      const stat = fs.statSync(entryPath);
       if (stat.mtimeMs < oneHourAgo) {
-        fs.unlinkSync(filePath);
+        if (stat.isDirectory() && entry.startsWith('workspace-')) {
+          // Remove old workspace directories recursively
+          fs.rmSync(entryPath, { recursive: true, force: true });
+        } else if (stat.isFile()) {
+          fs.unlinkSync(entryPath);
+        }
       }
     }
   } catch {
-    // Non-fatal: old config cleanup failure is not critical
+    // Non-fatal: old config/workspace cleanup failure is not critical
   }
 }
 
@@ -391,6 +563,16 @@ async function main() {
   const persona = await getPersona(personaId);
   console.log(`Launching feedback agent for persona "${persona.name}" (${persona.consumption_mode} mode)`);
 
+  // Prepare workspace for SDK/ADK modes
+  const spawnOptions = {};
+  const mode = persona.consumption_mode;
+  if (mode === 'sdk' || mode === 'adk') {
+    const workspaceDir = await prepareWorkspace(persona, sessionId);
+    spawnOptions.cwd = workspaceDir;
+    spawnOptions.tools = 'Bash,Read,Write,Edit,Glob,Grep';
+    console.log(`Prepared workspace: ${workspaceDir}`);
+  }
+
   // Generate isolated MCP config
   const mcpConfigPath = generateMcpConfig(sessionId, persona);
   console.log(`Generated MCP config: ${mcpConfigPath}`);
@@ -399,7 +581,7 @@ async function main() {
   const prompt = buildPrompt(persona, sessionId);
 
   // Spawn isolated session
-  const result = spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, persona.name);
+  const result = spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, persona.name, spawnOptions);
   console.log(`Spawned feedback agent PID: ${result.pid}`);
 
   // Output JSON for orchestrator consumption
@@ -412,8 +594,8 @@ async function main() {
   }));
 }
 
-// Export for use by hourly-automation.js
-export { getPersona, generateMcpConfig, buildPrompt, spawnFeedbackAgent, runFeedbackAgent, cleanupOldConfigs };
+// Export for use by hourly-automation.js and feedback-orchestrator.js
+export { getPersona, generateMcpConfig, buildPrompt, spawnFeedbackAgent, runFeedbackAgent, cleanupOldConfigs, prepareWorkspace, getScenariosForPersona };
 
 // Run if called directly
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename)) {
