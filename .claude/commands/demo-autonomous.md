@@ -71,14 +71,14 @@ Show scenario title, persona, auth project, and PID.
 
 Wait 30 seconds, then call `mcp__playwright__check_demo_result({ pid: <PID> })`.
 
-- If `status: "running"`: wait another 30s and poll again (max 5 polls, ~2.5 min total).
+- If `status: "running"`: wait another 30s and poll again (max 10 polls, ~5 min total).
 - If `status: "failed"`: create an **urgent DEPUTY-CTO task** with:
   - Failure summary (`failure_summary` field)
   - Exit code
   - Screenshot paths (if any) — include as a bulleted list
   - The scenario title and test file for context
   - Repair instruction: "Investigate the demo test failure and fix the underlying issue"
-- If `status: "passed"`: report success with duration.
+- If `status: "passed"`: wait 5 seconds, then verify browser is still alive by checking PID. Report success with duration.
 - If polls exhausted (`status` still `"running"`): the autonomous flow completed successfully and the browser is paused at the final screen. Report success — if the test had failed, the process would have exited.
 
 ### Step 9: Tips

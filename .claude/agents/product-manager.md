@@ -27,6 +27,9 @@ allowedTools:
   - mcp__user-feedback__list_scenarios
   - mcp__user-feedback__get_scenario
   - mcp__todo-db__create_task
+  - mcp__playwright__preflight_check
+  - mcp__playwright__run_tests
+  - mcp__playwright__get_report
   - AskUserQuestion
 disallowedTools:
   - Edit
@@ -57,10 +60,63 @@ Populate the 6 sections of the product-market-fit analysis in strict sequential 
 | 5 | niche_strengths | Niche Strengths & Weaknesses | write_section |
 | 6 | user_sentiment | User Sentiment | add_entry (list) |
 
+## Demo Validation Preflight
+
+**Before starting any other work**, run a headless demo validation to catch broken demos early.
+
+### Step 1: Run Preflight Check
+
+Call `mcp__playwright__preflight_check({ project: "demo", skip_compilation: false })`.
+
+If `ready: false`, skip demo validation entirely — report a **critical** CTO alert and move on to your assigned task:
+
+```
+mcp__agent-reports__report_to_deputy_cto({
+  reporting_agent: "product-manager",
+  title: "Demo preflight infrastructure failure",
+  summary: "<list which checks failed and their status>",
+  category: "blocker",
+  priority: "critical"
+})
+```
+
+### Step 2: Run All Demo Tests Headlessly
+
+Call `mcp__playwright__run_tests({ project: "demo", workers: 4, retries: 1 })`.
+
+### Step 3: Handle Results
+
+If **all tests pass**: note the result and proceed to your assigned task. No report needed.
+
+If **any tests fail**:
+
+1. **Investigate root cause** — Read the test report via `mcp__playwright__get_report({ open_browser: false })` to understand each failure. Check error messages, stack traces, and screenshots. Use `Read`, `Glob`, and `Grep` to trace failures back to source code changes, broken selectors, missing routes, or stale test data. Identify *why* each test fails, not just *that* it fails.
+
+2. **Do NOT fix the failures.** Your job is investigation and reporting only.
+
+3. **Submit an urgent CTO report** with your root cause analysis:
+
+```
+mcp__agent-reports__report_to_deputy_cto({
+  reporting_agent: "product-manager",
+  title: "Demo validation failures: N tests failed",
+  summary: "## Failed Tests\n\n<for each failure:>\n### <test name>\n- **Error**: <error message>\n- **Root Cause**: <your analysis of why this failed>\n- **Affected Files**: <source files involved>\n\n## Recommended Action\n<which specialist agent should handle each failure: CODE-WRITER for UI bugs, TEST-WRITER for test logic, INVESTIGATOR for flaky infra>",
+  category: "blocker",
+  priority: "critical"
+})
+```
+
+4. **Proceed to your assigned task.** Demo failures do not block your other work.
+
+**Note:** The `summary` field has a 2000-character limit. If many tests fail, prioritize the most critical failures and truncate the rest with a count (e.g., "...and 5 more failures").
+
+---
+
 ## Workflow
 
 ### When spawned for a task:
 
+0. **Run the Demo Validation Preflight (above) first.** Complete all preflight steps before proceeding.
 1. Call `mcp__todo-db__start_task` to mark the task as in-progress
 2. Call `mcp__product-manager__read_section` for the target section to get all prior context
 3. Research using `WebSearch` and `WebFetch` for competitive intelligence

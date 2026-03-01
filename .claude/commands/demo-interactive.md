@@ -81,6 +81,20 @@ Show scenario title, persona, auth project, PID, and tips:
 - To try another scenario, run `/demo-interactive` again
 - To browse all tests: `/demo`
 
+### Step 8: Monitor Demo Completion
+
+Wait 30 seconds, then call `mcp__playwright__check_demo_result({ pid: <PID> })`.
+
+- If `status: "running"`: wait another 30s and poll again (max 10 polls, ~5 min total).
+- If `status: "passed"`: wait 5 seconds, then verify browser is still alive by checking PID. Report success with duration.
+- If `status: "failed"`: show failure details and create an **urgent DEPUTY-CTO task** with:
+  - Failure summary (`failure_summary` field)
+  - Exit code
+  - Screenshot paths (if any) — include as a bulleted list
+  - The scenario title and test file for context
+  - Repair instruction: "Investigate the demo test failure and fix the underlying issue"
+- If polls exhausted (`status` still `"running"`): success — the user is interacting with the paused browser. Report accordingly.
+
 ## Rules
 
 - **Every failure goes to the deputy-CTO** — no failure is unrecoverable
