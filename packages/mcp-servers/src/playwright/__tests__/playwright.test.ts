@@ -1759,6 +1759,86 @@ describe('Playwright MCP Server - Type Safety', () => {
       expect('progress_file' in deserialized).toBe(false);
     });
   });
+
+  describe('DemoRunState - auto-kill state shape', () => {
+    it('should accept DemoRunState with auto-kill failure summary', () => {
+      const state: DemoRunState = {
+        pid: 42000,
+        project: 'vendor-owner',
+        started_at: '2026-03-02T00:00:00.000Z',
+        status: 'failed',
+        ended_at: '2026-03-02T00:01:00.000Z',
+        failure_summary: 'Auto-killed: no poll received within 60s',
+      };
+
+      expect(state.status).toBe('failed');
+      expect(state.failure_summary).toBe('Auto-killed: no poll received within 60s');
+    });
+
+    it('auto-killed DemoRunState round-trips through JSON serialization', () => {
+      const original: DemoRunState = {
+        pid: 42001,
+        project: 'demo',
+        test_file: 'e2e/demo/onboarding.demo.ts',
+        started_at: '2026-03-02T00:00:00.000Z',
+        status: 'failed',
+        ended_at: '2026-03-02T00:01:00.000Z',
+        failure_summary: 'Auto-killed: no poll received within 60s',
+      };
+
+      const deserialized: DemoRunState = JSON.parse(JSON.stringify(original));
+
+      expect(deserialized.failure_summary).toBe('Auto-killed: no poll received within 60s');
+      expect(deserialized.status).toBe('failed');
+      expect(deserialized.pid).toBe(42001);
+    });
+
+    it('exit handler guard: should not overwrite a non-running entry', () => {
+      // Simulates the guard logic in child.on('exit'):
+      //   if (entry.status !== 'running') return;
+      // After autoKillDemo sets status to 'failed', the exit handler must not overwrite.
+      const entry: DemoRunState = {
+        pid: 42002,
+        project: 'vendor-owner',
+        started_at: '2026-03-02T00:00:00.000Z',
+        status: 'failed',
+        ended_at: '2026-03-02T00:01:00.000Z',
+        failure_summary: 'Auto-killed: no poll received within 60s',
+      };
+
+      // Simulate the exit handler guard
+      if (entry.status !== 'running') {
+        // Guard fires — entry is preserved as-is
+        expect(entry.failure_summary).toBe('Auto-killed: no poll received within 60s');
+        expect(entry.status).toBe('failed');
+      } else {
+        // This path should NOT be taken for auto-killed entries
+        throw new Error('Guard should have fired — entry.status is not running');
+      }
+    });
+
+    it('exit handler should proceed for running entries', () => {
+      const entry: DemoRunState = {
+        pid: 42003,
+        project: 'demo',
+        started_at: '2026-03-02T00:00:00.000Z',
+        status: 'running',
+      };
+
+      // Simulate exit handler — guard allows through for 'running' status
+      if (entry.status !== 'running') {
+        throw new Error('Guard should NOT fire — entry.status is running');
+      }
+
+      // Simulate exit handler setting state
+      entry.status = 'passed';
+      entry.ended_at = new Date().toISOString();
+      entry.exit_code = 0;
+
+      expect(entry.status).toBe('passed');
+      expect(entry.exit_code).toBe(0);
+    });
+  });
 });
 
 // ============================================================================

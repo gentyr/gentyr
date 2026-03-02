@@ -80,6 +80,8 @@ const RUN_TIMEOUT = 300_000; // 5 minutes for test runs
 
 const DEMO_RUNS_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'demo-runs.json');
 const demoRuns = new Map<number, DemoRunState>();
+const demoAutoKillTimers = new Map<number, ReturnType<typeof setTimeout>>();
+const DEMO_AUTO_KILL_MS = 60_000;
 
 function loadPersistedDemoRuns(): void {
   try {
@@ -112,6 +114,58 @@ function persistDemoRuns(): void {
     fs.writeFileSync(DEMO_RUNS_PATH, JSON.stringify(entries, null, 2));
   } catch {
     // Non-fatal — state will be lost on MCP restart
+  }
+}
+
+/**
+ * Auto-kill a demo process that hasn't been polled within DEMO_AUTO_KILL_MS.
+ * Prevents orphaned browser processes when the polling agent stops.
+ */
+function autoKillDemo(pid: number): void {
+  demoAutoKillTimers.delete(pid);
+  const entry = demoRuns.get(pid);
+  if (!entry || entry.status !== 'running') return;
+
+  // Kill the process group
+  try {
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    // Process may have already exited
+  }
+
+  entry.status = 'failed';
+  entry.ended_at = new Date().toISOString();
+  entry.failure_summary = 'Auto-killed: no poll received within 60s';
+
+  // Clean up progress file
+  if (entry.progress_file) {
+    try { fs.unlinkSync(entry.progress_file); } catch { /* Non-fatal */ }
+  }
+
+  persistDemoRuns();
+}
+
+/**
+ * Reset (or start) the auto-kill countdown for a demo process.
+ * Called on run_demo launch and on each check_demo_result poll.
+ */
+function resetAutoKillTimer(pid: number): void {
+  const existing = demoAutoKillTimers.get(pid);
+  if (existing) clearTimeout(existing);
+
+  const timer = setTimeout(() => autoKillDemo(pid), DEMO_AUTO_KILL_MS);
+  timer.unref(); // Don't prevent MCP process exit
+  demoAutoKillTimers.set(pid, timer);
+}
+
+/**
+ * Clear the auto-kill timer for a demo process (natural exit or manual stop).
+ */
+function clearAutoKillTimer(pid: number): void {
+  const existing = demoAutoKillTimers.get(pid);
+  if (existing) {
+    clearTimeout(existing);
+    demoAutoKillTimers.delete(pid);
   }
 }
 
@@ -509,8 +563,12 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
     // Track exit for post-hoc status checks (fires even after unref since MCP server stays alive)
     child.on('exit', (code) => {
+      clearAutoKillTimer(demoPid);
       const entry = demoRuns.get(demoPid);
       if (!entry) return;
+
+      // If autoKillDemo already finalized this entry, don't overwrite its state
+      if (entry.status !== 'running') return;
 
       entry.ended_at = new Date().toISOString();
       entry.exit_code = code ?? undefined;
@@ -581,6 +639,9 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     });
 
     child.unref();
+
+    // Start auto-kill countdown — reset on each check_demo_result poll
+    resetAutoKillTimer(demoPid);
 
     const warningText = preflight.warnings.length > 0
       ? `\nWarnings:\n${preflight.warnings.map(w => `  - ${w}`).join('\n')}`
@@ -705,8 +766,11 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
   if (entry.status === 'running') {
     try {
       process.kill(pid, 0); // Signal 0 = check if process exists
+      // Process alive — reset auto-kill countdown
+      resetAutoKillTimer(pid);
     } catch {
       // Process no longer exists but we didn't get the exit event (e.g., MCP restarted)
+      clearAutoKillTimer(pid);
       entry.status = 'unknown';
       entry.ended_at = new Date().toISOString();
       persistDemoRuns();
@@ -811,6 +875,9 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
       message: `Demo process (PID ${pid}) is no longer running.`,
     };
   }
+
+  // Cancel auto-kill — manual stop takes over
+  clearAutoKillTimer(pid);
 
   // Read final progress snapshot before killing
   const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
@@ -2045,7 +2112,9 @@ const tools: AnyToolHandler[] = [
       'Check the result of a previously launched demo run by PID. ' +
       'Call after run_demo to determine if the demo passed or failed. ' +
       'Returns status (running/passed/failed/unknown), exit code, failure summary, screenshot paths, ' +
-      'and a progress object with real-time test counts, current test name, and error detection.',
+      'and a progress object with real-time test counts, current test name, and error detection. ' +
+      'Auto-kill: demo processes are automatically killed if this tool is not called within 60 seconds. ' +
+      'Each poll resets the countdown. Prevents orphaned browser processes when the polling agent stops.',
     schema: CheckDemoResultArgsSchema,
     handler: checkDemoResult,
   },
