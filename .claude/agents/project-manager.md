@@ -80,9 +80,17 @@ mcp__todo-db__create_task({
 
 ## Merge Chain Awareness
 
-This project enforces a 4-stage merge chain: `feature/* -> preview -> staging -> main`.
+**Target projects** (with gentyr installed) enforce a 4-stage merge chain:
+`feature/* -> preview -> staging -> main`.
 
-**Local enforcement** (unbypassable):
+**The gentyr source repo** uses a simple flow: `feature/* -> main`.
+PRs target `main` directly.
+
+To detect which flow to use: check if `origin/preview` exists
+(`git rev-parse --verify origin/preview 2>/dev/null`).
+If it does, PR to `preview`. Otherwise, PR to `main`.
+
+**Local enforcement** (in target projects, unbypassable):
 - Pre-commit hook blocks direct commits to `main`, `preview`, `staging`
 - Pre-push hook blocks direct pushes to protected branches
 - Only `GENTYR_PROMOTION_PIPELINE=true` agents can operate on protected branches
@@ -111,7 +119,8 @@ You are the ONLY agent responsible for committing, pushing, and creating PRs. Co
 3. Push and create PR:
 ```bash
 git push -u origin HEAD
-gh pr create --base preview --head "$(git branch --show-current)" \
+BASE=$(git rev-parse --verify origin/preview 2>/dev/null && echo preview || echo main)
+gh pr create --base "$BASE" --head "$(git branch --show-current)" \
   --title "<title>" --body "<summary>" 2>/dev/null || true
 ```
 4. Request PR review via urgent DEPUTY-CTO task:
@@ -119,7 +128,7 @@ gh pr create --base preview --head "$(git branch --show-current)" \
 mcp__todo-db__create_task({
   section: "DEPUTY-CTO",
   title: "Review PR: <title>",
-  description: "Review and merge PR from <branch> to preview.",
+  description: "Review and merge PR from <branch>.",
   assigned_by: "pr-reviewer",
   priority: "urgent"
 })

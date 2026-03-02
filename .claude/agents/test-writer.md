@@ -359,4 +359,5 @@ You may be working inside a git worktree on a feature branch. If so:
 
 ### Merge Chain
 
-All code flows through: `feature/*` -> `preview` -> `staging` -> `main`
+In target projects: `feature/*` -> `preview` -> `staging` -> `main`.
+In the gentyr source repo: `feature/*` -> `main` directly.

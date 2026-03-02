@@ -105,7 +105,7 @@ mcp__agent-reports__report_to_deputy_cto({
 
 ## Feature Branch Workflow
 
-**All work MUST be on a feature branch.** Never commit directly to `preview`, `staging`, or `main`.
+**All work MUST be on a feature branch.** Never commit directly to `main` (or `preview`/`staging` in target projects).
 
 ### Branch Naming
 
@@ -117,24 +117,12 @@ mcp__agent-reports__report_to_deputy_cto({
 
 ### Merge Chain
 
-```
-feature/* --PR--> preview --PR--> staging --PR--> main (production)
-         |              |              |
-      No approval    Deputy-CTO      CTO
-```
+**In target projects** (with `origin/preview`), GENTYR enforces a 4-stage chain:
+`feature/* -> preview -> staging -> main`.
 
-### CRITICAL RULES
+**In the gentyr source repo** (no `origin/preview`), PRs go directly to `main`.
 
-| Merge | Status | Approval |
-|-------|--------|----------|
-| `feature/*` -> `preview` | ALLOWED | None |
-| `preview` -> `staging` | ALLOWED | Deputy-CTO |
-| `staging` -> `main` | ALLOWED | **CTO** |
-| `feature/*` -> `staging` | **FORBIDDEN** | - |
-| `feature/*` -> `main` | **FORBIDDEN** | - |
-| `preview` -> `main` | **FORBIDDEN** | - |
-
-**You MUST NEVER create a PR or merge that bypasses this chain.**
+You do not commit or create PRs, so this is for awareness only.
 
 ### Worktree Context
 
