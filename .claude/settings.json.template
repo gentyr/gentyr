@@ -199,6 +199,16 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-auto-merge-nudge.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "mcp__todo-db__create_task",
         "hooks": [
           {

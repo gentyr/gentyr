@@ -258,12 +258,12 @@ function statBasedSync(frameworkDir) {
   // d. Symlink new agent definitions
   const agentsDir = path.join(projectDir, '.claude', 'agents');
   try {
-    const frameworkAgents = fs.readdirSync(path.join(frameworkDir, '.claude', 'agents'))
+    const frameworkAgents = fs.readdirSync(path.join(frameworkDir, 'agents'))
       .filter(f => f.endsWith('.md'));
     const existingAgents = new Set(state.agentList || []);
     for (const agent of frameworkAgents) {
       if (!existingAgents.has(agent)) {
-        const target = `../../${frameworkRel}/.claude/agents/${agent}`;
+        const target = `../../${frameworkRel}/agents/${agent}`;
         const linkPath = path.join(agentsDir, agent);
         try { fs.symlinkSync(target, linkPath); changes.push(`agent:${agent}`); } catch {}
       }
@@ -316,6 +316,28 @@ function statBasedSync(frameworkDir) {
     }
   }
 
+  // f2. Migration: untrack .husky/ files if they're tracked (target projects only)
+  // In the gentyr repo itself, .husky/ files are source-of-truth and MUST stay tracked.
+  const isFrameworkItself = fs.existsSync(path.join(projectDir, 'version.json'));
+  if (!isFrameworkItself) {
+    const huskyFilesToUntrack = ['pre-commit', 'post-commit', 'pre-push'];
+    for (const file of huskyFilesToUntrack) {
+      try {
+        // Check if the file is tracked by git
+        execFileSync('git', ['ls-files', '--error-unmatch', `.husky/${file}`], {
+          cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+        });
+        // If we get here, the file is tracked — untrack it
+        execFileSync('git', ['rm', '--cached', `.husky/${file}`], {
+          cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+        });
+        changes.push(`untracked:.husky/${file}`);
+      } catch {
+        // Not tracked or git error — no-op
+      }
+    }
+  }
+
   // g. Write updated state
   try {
     const newState = {
@@ -324,7 +346,7 @@ function statBasedSync(frameworkDir) {
       claudeMdHash: currentMdHash,
       agentList: (() => {
         try {
-          return fs.readdirSync(path.join(frameworkDir, '.claude', 'agents'))
+          return fs.readdirSync(path.join(frameworkDir, 'agents'))
             .filter(f => f.endsWith('.md')).sort();
         } catch { return state.agentList || []; }
       })(),

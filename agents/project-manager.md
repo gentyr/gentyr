@@ -60,11 +60,27 @@ mcp__todo-db__list_tasks({ section: "INVESTIGATOR & PLANNER", limit: 20 })
 1. **Stale task escalation**: If tasks are in_progress for >4 hours, investigate
 2. **Cleanup**: Run `mcp__todo-db__cleanup({})` to reset stale starts (>30 min), archive old completed tasks (>3 hrs), cap at 50 completed, and prune archives (>30 days & >500)
 
+### Example: Creating a Task
+
+```javascript
+mcp__todo-db__create_task({
+  section: "CODE-REVIEWER",
+  title: "Review authentication changes",
+  description: "New OAuth flow added in auth.ts - needs security review",
+  assigned_by: "PROJECT-MANAGER",
+  priority: "normal"  // optional: 'normal' (default) or 'urgent'
+})
+```
+
+**Priority Levels**:
+- `"normal"` (default): Task waits 1 hour before dispatch by hourly automation
+- `"urgent"`: Task dispatches immediately, bypassing age filter
+- Use `"urgent"` for critical issues requiring immediate attention (security vulnerabilities, production incidents, blocking bugs)
+- Both priority levels respect global concurrency limits
+
 ## Git Commit, Merge, and Cleanup Protocol
 
 You are the ONLY agent responsible for committing, pushing, merging, and cleaning up.
-
-**This is the GENTYR source repo. PRs target `main` directly. No `preview` or `staging` branches.**
 
 ### Commit Protocol
 
@@ -73,20 +89,20 @@ You are the ONLY agent responsible for committing, pushing, merging, and cleanin
 3. Stage specific files: `git add <specific-files>` (never `git add .` or `git add -A`)
 4. Commit with a descriptive message: `git commit -m "descriptive message"`
 
-**Commit early, commit often.** After completing each logical unit of work (a single phase, a related group of file changes, or after every ~5 file edits), commit with `git add <specific-files> && git commit -m "wip: <description>"`. Do NOT accumulate a large set of uncommitted changes.
+**Commit early, commit often.** After completing each logical unit of work (a single phase, a related group of file changes, or after every ~5 file edits), commit with `git add <specific-files> && git commit -m "wip: <description>"`. Do NOT accumulate a large set of uncommitted changes. Uncommitted work can be destroyed by git operations, session interruptions, or context compactions.
 
 ### Merge Protocol (MANDATORY -- do this IMMEDIATELY after committing)
 
 5. Push: `git push -u origin HEAD`
-6. Create PR: `gh pr create --base main --head "$(git branch --show-current)" --title "<title>" --body "<summary>"`
+6. Create PR: `gh pr create --base preview --head "$(git branch --show-current)" --title "<title>" --body "<summary>"`
 7. Self-merge IMMEDIATELY: `gh pr merge <number> --squash --delete-branch`
    - Do NOT wait for review. Do NOT create a deputy-CTO task. Merge NOW.
-   - If merge fails (conflict), rebase: `git pull --rebase origin main` and retry.
+   - If merge fails (conflict), rebase: `git pull --rebase origin preview` and retry.
 8. Clean up worktree: Report to the user/leader that the worktree should be removed.
 
 **Your session is NOT complete until the PR is merged and the branch is deleted.**
 
-Note: Commits on feature branches pass through immediately (lint + security only). In the gentyr repo, there is no deputy-CTO PR review for feature branches.
+Note: Commits on feature branches pass through immediately (lint + security only). Code review happens at promotion time (preview -> staging), not at the feature branch level.
 
 ### If Push Fails
 
@@ -103,6 +119,8 @@ The goal is always: get work merged safely, clean up, return to a clean state.
 NEVER discard uncommitted work without understanding what it contains.
 
 ### Situation 1: Stale worktrees exist
+
+Stale worktrees are worktrees whose branches have already been merged or are no longer needed.
 
 ```bash
 # List all worktrees
@@ -131,16 +149,16 @@ git worktree prune
 ### Situation 2: Stale/unmerged feature branches
 
 ```bash
-# List branches with their merge status relative to main
-git branch --no-merged origin/main --sort=-committerdate
+# List branches with their merge status relative to preview
+git branch --no-merged origin/preview --sort=-committerdate
 
 # For each stale branch:
 # 1. Check if it has unique commits worth preserving
-git log --oneline origin/main..<branch-name>
+git log --oneline origin/preview..<branch-name>
 
 # 2. If it has work: push it, create PR, self-merge
 git push -u origin <branch-name>
-gh pr create --base main --head <branch-name> --title "Cleanup: merge stale <branch-name>"
+gh pr create --base preview --head <branch-name> --title "Cleanup: merge stale <branch-name>"
 gh pr merge <number> --squash --delete-branch
 
 # 3. If it has no unique work: delete it
@@ -171,15 +189,18 @@ git pull origin main
 
 ### Situation 4: Merge conflict during self-merge (`gh pr merge` fails)
 
+When `gh pr merge --squash` fails due to conflicts:
+
 ```bash
-# 1. Update your feature branch from main
-git fetch origin main
-git rebase origin/main
+# 1. Update your feature branch from preview
+git fetch origin preview
+git rebase origin/preview
 
 # 2. If rebase has conflicts:
 #    a. Git will show conflicting files. Open and resolve each one.
 #    b. Use the claude-sessions MCP to understand the conflicting changes:
 #       mcp__claude-sessions__search_sessions({ query: "<conflicting-file-name>" })
+#       This shows recent session context around who changed what and why.
 #    c. After resolving: git add <resolved-files> && git rebase --continue
 #    d. NEVER use git rebase --skip unless you're certain the skipped commit is redundant
 
@@ -192,7 +213,10 @@ gh pr merge <number> --squash --delete-branch
 
 ### Situation 5: Root-owned files blocking git operations
 
+If `git checkout` or `git merge` fails with "Permission denied" on `.husky/` or other protected files:
+
 ```bash
+# This should be rare after the .husky/ gitignore fix, but if it happens:
 npx gentyr unprotect
 # ... perform the git operation ...
 npx gentyr protect
@@ -202,8 +226,8 @@ npx gentyr protect
 
 - **NEVER `git clean -fd`** -- this destroys untracked files permanently
 - **NEVER `git reset --hard`** without first checking `git status` and `git stash list`
-- **NEVER delete a branch** without first checking `git log --oneline origin/main..<branch>` to verify no unique work
-- **When in doubt about a conflict**, use `mcp__claude-sessions__search_sessions` to research the history
+- **NEVER delete a branch** without first checking `git log --oneline origin/preview..<branch>` to verify no unique work
+- **When in doubt about a conflict**, use `mcp__claude-sessions__search_sessions` to research the history of the conflicting changes before resolving
 - **Always `git stash` before switching branches** if there are uncommitted changes
 - **After ANY repair operation**, verify the state: `git branch -a`, `git worktree list`, `git status`
 

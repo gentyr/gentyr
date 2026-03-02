@@ -109,7 +109,7 @@ export function readFrameworkVersion(frameworkDir) {
  * @returns {string[]} Array of agent markdown filenames
  */
 export function getFrameworkAgents(frameworkDir) {
-  const agentsDir = path.join(frameworkDir, '.claude', 'agents');
+  const agentsDir = path.join(frameworkDir, 'agents');
   try {
     return fs.readdirSync(agentsDir).filter(f => f.endsWith('.md')).sort();
   } catch {
