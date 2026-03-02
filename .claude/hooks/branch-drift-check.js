@@ -2,7 +2,8 @@
 /**
  * UserPromptSubmit Hook: Branch Drift Check
  *
- * Warns the AI agent when the main working tree is not on 'main'.
+ * Warns the AI agent when the main working tree is not on the expected base branch.
+ * Auto-detects the expected branch: 'preview' if origin/preview exists, else 'main'.
  * Uses a cooldown to avoid repeating the warning on every prompt.
  * Cooldown resets immediately if the branch changes.
  *
@@ -75,6 +76,21 @@ function writeState(state) {
 }
 
 // ============================================================================
+// Base branch detection (same pattern as worktree-manager, pre-commit-review, etc.)
+// ============================================================================
+
+function detectBaseBranch() {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', 'origin/preview'], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    });
+    return 'preview';
+  } catch {
+    return 'main';
+  }
+}
+
+// ============================================================================
 // Branch drift detection
 // ============================================================================
 
@@ -95,7 +111,9 @@ function detectDrift() {
   } catch { return null; }
 
   if (!currentBranch) return null; // Detached HEAD
-  if (currentBranch === 'main') return { branch: currentBranch, warning: null };
+
+  const expectedBranch = detectBaseBranch();
+  if (currentBranch === expectedBranch) return { branch: currentBranch, warning: null };
 
   // Check for uncommitted changes
   let hasChanges = false;
@@ -108,14 +126,14 @@ function detectDrift() {
 
   // Build warning message
   const parts = [
-    `BRANCH DRIFT: Main working tree is on '${currentBranch}' instead of 'main'.`,
+    `BRANCH DRIFT: Main working tree is on '${currentBranch}' instead of '${expectedBranch}'.`,
     'This may cause incorrect preflight checks, stale worktree bases, and promotion failures.',
   ];
 
   if (hasChanges) {
-    parts.push('Uncommitted changes detected. To restore: git stash && git checkout main && git stash pop (if changes belong on main) or create a worktree for in-progress work.');
+    parts.push(`Uncommitted changes detected. To restore: git stash && git checkout ${expectedBranch} && git stash pop (if changes belong on ${expectedBranch}) or create a worktree for in-progress work.`);
   } else {
-    parts.push('No uncommitted changes. To restore: git checkout main');
+    parts.push(`No uncommitted changes. To restore: git checkout ${expectedBranch}`);
   }
 
   return { branch: currentBranch, warning: parts.join(' ') };

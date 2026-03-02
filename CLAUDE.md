@@ -589,12 +589,13 @@ Hooks that need the AI to act on their output must include both:
 
 **Branch Drift Check Hook** (`.claude/hooks/branch-drift-check.js`):
 - Runs at `UserPromptSubmit` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
-- Detects when the main working tree is not on `main` and emits a warning via both `systemMessage` (terminal) and `additionalContext` (AI model context)
+- Detects when the main working tree is not on the expected base branch and emits a warning via both `systemMessage` (terminal) and `additionalContext` (AI model context)
+- Auto-detects expected branch: `preview` if `origin/preview` exists (target projects with merge chain), else `main` (gentyr repo or projects without preview); same pattern as worktree-manager, pre-commit-review, etc.
 - Uses `getCooldown('branch_drift_check', 30)` (30-minute default, configurable); cooldown resets immediately if the branch changes
 - State file: `.claude/state/branch-drift-state.json` with `{ lastCheck, lastBranch }`
 - Skips worktrees (`.git` file check), detached HEAD, and spawned sessions; warn-only — never auto-restores
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `UserPromptSubmit`
-- Tests at `.claude/hooks/__tests__/gentyr-sync-branch-drift.test.js` (18 tests, runs via `node --test`)
+- Tests at `.claude/hooks/__tests__/gentyr-sync-branch-drift.test.js` (22 tests, runs via `node --test`)
 
 **Branch Checkout Guard** (two-layer defense — `.claude/hooks/branch-checkout-guard.js` + `.claude/hooks/git-wrappers/git`):
 
