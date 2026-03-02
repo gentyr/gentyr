@@ -1,8 +1,9 @@
 /**
  * Unit tests for branch-drift-check.js (UserPromptSubmit hook)
  *
- * Tests that the hook detects when the main working tree is not on 'main'
- * and emits an appropriate systemMessage warning to the AI agent.
+ * Tests that the hook detects when the main working tree is not on the expected
+ * base branch and emits an appropriate systemMessage warning to the AI agent.
+ * Expected branch: 'preview' if origin/preview exists, else 'main'.
  * Also tests cooldown and branch-change state tracking.
  *
  * Uses Node.js built-in test runner (node:test)
@@ -65,6 +66,35 @@ function createGitRepo(dir, branch = 'main') {
   if (branch !== 'main') {
     execFileSync('git', ['checkout', '-b', branch], { cwd: dir, stdio: 'pipe' });
   }
+}
+
+/**
+ * Add a remote branch (origin/<branchName>) so detectBaseBranch() can find it.
+ * Creates a bare remote repo and pushes a branch to it.
+ */
+function addRemoteBranch(dir, branchName) {
+  const bareDir = fs.mkdtempSync(path.join(os.tmpdir(), `bare-remote-${branchName}-`));
+  execFileSync('git', ['init', '--bare'], { cwd: bareDir, stdio: 'pipe' });
+  execFileSync('git', ['remote', 'add', 'origin', bareDir], { cwd: dir, stdio: 'pipe' });
+  // Create the branch locally if it doesn't exist, push, then delete local copy
+  const currentBranch = execFileSync('git', ['branch', '--show-current'], {
+    cwd: dir, encoding: 'utf8', stdio: 'pipe',
+  }).trim();
+  try {
+    execFileSync('git', ['branch', branchName], { cwd: dir, stdio: 'pipe' });
+  } catch {
+    // Branch already exists — fine
+  }
+  execFileSync('git', ['push', 'origin', branchName], { cwd: dir, stdio: 'pipe' });
+  // Clean up local branch if we created it and it's not the current one
+  if (currentBranch !== branchName) {
+    try {
+      execFileSync('git', ['branch', '-D', branchName], { cwd: dir, stdio: 'pipe' });
+    } catch {
+      // Already deleted or is current — fine
+    }
+  }
+  return bareDir;
 }
 
 /**
@@ -204,26 +234,131 @@ describe('branch-drift-check hook', () => {
     }
   });
 
-  it('should warn on staging and preview branches (they are not main)', () => {
-    for (const branch of ['staging', 'preview']) {
-      const branchDir = fs.mkdtempSync(path.join(os.tmpdir(), `branch-drift-${branch}-`));
-      try {
-        createGitRepo(branchDir, branch);
-        const { exitCode, parsed } = runHook(branchDir);
-        assert.strictEqual(exitCode, 0, `exit code should be 0 on '${branch}'`);
-        assert.strictEqual(parsed.continue, true, `continue should be true on '${branch}'`);
-        assert.ok(parsed.systemMessage, `should emit a systemMessage on '${branch}'`);
+  it('should warn on staging branch (no origin/preview — expected branch is main)', () => {
+    const branchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'branch-drift-staging-'));
+    try {
+      createGitRepo(branchDir, 'staging');
+      const { exitCode, parsed } = runHook(branchDir);
+      assert.strictEqual(exitCode, 0);
+      assert.strictEqual(parsed.continue, true);
+      assert.ok(parsed.systemMessage, 'should emit a systemMessage on staging');
+      assert.ok(
+        parsed.systemMessage.includes('BRANCH DRIFT'),
+        'should include BRANCH DRIFT label on staging',
+      );
+      assert.ok(
+        parsed.systemMessage.includes("'staging'"),
+        "should include the branch name 'staging'",
+      );
+    } finally {
+      fs.rmSync(branchDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should warn on preview branch when no origin/preview exists (expected branch is main)', () => {
+    const branchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'branch-drift-preview-no-remote-'));
+    try {
+      createGitRepo(branchDir, 'preview');
+      // No remote — detectBaseBranch() returns 'main'
+      const { exitCode, parsed } = runHook(branchDir);
+      assert.strictEqual(exitCode, 0);
+      assert.strictEqual(parsed.continue, true);
+      assert.ok(parsed.systemMessage, 'should emit a systemMessage');
+      assert.ok(
+        parsed.systemMessage.includes('BRANCH DRIFT'),
+        'should include BRANCH DRIFT label',
+      );
+      assert.ok(
+        parsed.systemMessage.includes("'preview'"),
+        "should include the branch name 'preview'",
+      );
+      assert.ok(
+        parsed.systemMessage.includes("instead of 'main'"),
+        "should say expected branch is 'main'",
+      );
+    } finally {
+      fs.rmSync(branchDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should NOT warn on preview when origin/preview exists (preview is the expected branch)', () => {
+    const branchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'branch-drift-preview-with-remote-'));
+    let bareDir;
+    try {
+      createGitRepo(branchDir, 'preview');
+      bareDir = addRemoteBranch(branchDir, 'preview');
+      const { exitCode, parsed } = runHook(branchDir);
+      assert.strictEqual(exitCode, 0);
+      assert.strictEqual(parsed.continue, true);
+      if (parsed.systemMessage) {
         assert.ok(
-          parsed.systemMessage.includes('BRANCH DRIFT'),
-          `should include BRANCH DRIFT label on '${branch}'`,
+          !parsed.systemMessage.includes('BRANCH DRIFT'),
+          'should NOT warn about branch drift when on preview with origin/preview',
         );
-        assert.ok(
-          parsed.systemMessage.includes(`'${branch}'`),
-          `should include the branch name '${branch}'`,
-        );
-      } finally {
-        fs.rmSync(branchDir, { recursive: true, force: true });
       }
+    } finally {
+      fs.rmSync(branchDir, { recursive: true, force: true });
+      if (bareDir) fs.rmSync(bareDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should warn on main when origin/preview exists (expected branch is preview)', () => {
+    const branchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'branch-drift-main-with-preview-'));
+    let bareDir;
+    try {
+      createGitRepo(branchDir, 'main');
+      bareDir = addRemoteBranch(branchDir, 'preview');
+      const { exitCode, parsed } = runHook(branchDir);
+      assert.strictEqual(exitCode, 0);
+      assert.strictEqual(parsed.continue, true);
+      assert.ok(parsed.systemMessage, 'should emit a systemMessage');
+      assert.ok(
+        parsed.systemMessage.includes('BRANCH DRIFT'),
+        'should include BRANCH DRIFT label when on main but preview is expected',
+      );
+      assert.ok(
+        parsed.systemMessage.includes("'main'"),
+        "should include the current branch name 'main'",
+      );
+      assert.ok(
+        parsed.systemMessage.includes("instead of 'preview'"),
+        "should say expected branch is 'preview'",
+      );
+      assert.ok(
+        parsed.systemMessage.includes('git checkout preview'),
+        'recovery command should reference preview',
+      );
+    } finally {
+      fs.rmSync(branchDir, { recursive: true, force: true });
+      if (bareDir) fs.rmSync(bareDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should reference preview in stash recovery when origin/preview exists and there are uncommitted changes', () => {
+    const branchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'branch-drift-stash-preview-'));
+    let bareDir;
+    try {
+      createGitRepo(branchDir, 'feature/stash-preview-test');
+      bareDir = addRemoteBranch(branchDir, 'preview');
+      fs.writeFileSync(path.join(branchDir, 'dirty.txt'), 'uncommitted change');
+      const { exitCode, parsed } = runHook(branchDir);
+      assert.strictEqual(exitCode, 0);
+      assert.ok(parsed.systemMessage, 'should emit a systemMessage');
+      assert.ok(
+        parsed.systemMessage.includes('BRANCH DRIFT'),
+        'should include BRANCH DRIFT label',
+      );
+      assert.ok(
+        parsed.systemMessage.includes('git stash && git checkout preview'),
+        'stash recovery should reference preview, not main',
+      );
+      assert.ok(
+        parsed.systemMessage.includes("instead of 'preview'"),
+        "should say expected branch is 'preview'",
+      );
+    } finally {
+      fs.rmSync(branchDir, { recursive: true, force: true });
+      if (bareDir) fs.rmSync(bareDir, { recursive: true, force: true });
     }
   });
 
