@@ -519,7 +519,21 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
     if (result.type === 'early_exit') {
       const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
-      const snippet = stderr.length > 500 ? stderr.slice(0, 500) + '...' : stderr;
+      const snippet = stderr.length > 2000 ? stderr.slice(0, 2000) + '...' : stderr;
+
+      // Write crash event to progress file so check_demo_result can surface the error
+      try {
+        fs.mkdirSync(path.dirname(progressFilePath), { recursive: true });
+        const crashEvent = {
+          type: 'crash',
+          timestamp: new Date().toISOString(),
+          exit_code: result.code,
+          signal: result.signal,
+          stderr_snippet: stderr.slice(0, 5000),
+        };
+        fs.appendFileSync(progressFilePath, JSON.stringify(crashEvent) + '\n');
+      } catch { /* non-fatal */ }
+
       return {
         success: false,
         project,
@@ -529,7 +543,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
     if (result.type === 'stall') {
       const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
-      const snippet = stderr.length > 500 ? stderr.slice(0, 500) + '...' : stderr;
+      const snippet = stderr.length > 2000 ? stderr.slice(0, 2000) + '...' : stderr;
       const lastContext = lastOutputLine ? `\nLast output: ${lastOutputLine}` : '';
       return {
         success: false,
@@ -721,6 +735,12 @@ function readDemoProgress(progressFilePath: string): DemoProgress | null {
             // Don't set has_failures — stderr errors may be transient (404 for favicon,
             // hot-reload noise, etc.). Only actual test failures (test_end with failed status)
             // should trigger has_failures.
+            break;
+          case 'crash':
+            progress.has_failures = true;
+            if (event.stderr_snippet && progress.recent_errors.length < 10) {
+              progress.recent_errors.push(String(event.stderr_snippet).slice(0, 2000));
+            }
             break;
           case 'suite_end':
             progress.current_test = null;
