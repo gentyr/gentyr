@@ -27,6 +27,42 @@ try {
 }
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+/**
+ * Get current git branch and worktree name by reading .git directly (no subprocess).
+ * Returns { branch, worktreeName } or null if not in a git repo.
+ */
+function getGitContext() {
+  const gitPath = path.join(PROJECT_DIR, '.git');
+  try {
+    const stat = fs.lstatSync(gitPath);
+    let headPath;
+    let worktreeName = null;
+
+    if (stat.isFile()) {
+      // Worktree: .git is a file containing "gitdir: <path>"
+      const gitFile = fs.readFileSync(gitPath, 'utf8').trim();
+      const match = gitFile.match(/^gitdir:\s*(.+)$/);
+      if (!match) return null;
+      const gitDir = path.isAbsolute(match[1]) ? match[1] : path.resolve(PROJECT_DIR, match[1]);
+      headPath = path.join(gitDir, 'HEAD');
+      // Extract worktree name from .../.git/worktrees/<name>
+      const wtMatch = gitDir.match(/\.git\/worktrees\/(.+)$/);
+      worktreeName = wtMatch ? wtMatch[1] : path.basename(PROJECT_DIR);
+    } else {
+      // Main tree
+      headPath = path.join(gitPath, 'HEAD');
+    }
+
+    const head = fs.readFileSync(headPath, 'utf8').trim();
+    const branchMatch = head.match(/^ref: refs\/heads\/(.+)$/);
+    const branch = branchMatch ? branchMatch[1] : head.substring(0, 8); // detached HEAD
+
+    return { branch, worktreeName };
+  } catch {
+    return null;
+  }
+}
 const DEPUTY_CTO_DB = path.join(PROJECT_DIR, '.claude', 'deputy-cto.db');
 const CTO_REPORTS_DB = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
 const TODO_DB = path.join(PROJECT_DIR, '.claude', 'todo.db');
@@ -547,6 +583,7 @@ async function main() {
   }
 
   // Gather all metrics (quota is async, session metrics use incremental cache)
+  const gitContext = getGitContext();
   const sessionMetricsCached = getSessionMetricsCached();
   const aggregateQuota = getAggregateQuota();
   const [quota, deputyCto, unreadReports, autonomousMode, todoCounts] = await Promise.all([
@@ -561,6 +598,14 @@ async function main() {
 
   // Check if commits are blocked
   const isCritical = deputyCto.rejections > 0;
+
+  // Build git context label
+  let gitLabel = '';
+  if (gitContext) {
+    gitLabel = gitContext.worktreeName
+      ? `[${gitContext.branch} | wt:${gitContext.worktreeName}]`
+      : `[${gitContext.branch}]`;
+  }
 
   // Build autonomous status part
   let autonomousPart = '';
@@ -597,10 +642,15 @@ async function main() {
     if (quotaPart) parts.push(quotaPart);
     parts.push(`${formatTokens(tokenUsage)} tokens`);
     parts.push(autonomousPart);
-    message = `COMMITS BLOCKED: ${parts.join(' | ')}. Use /deputy-cto to address.`;
+    message = `${gitLabel ? gitLabel + ' ' : ''}COMMITS BLOCKED: ${parts.join(' | ')}. Use /deputy-cto to address.`;
   } else {
     // Normal CTO report format - multi-line for readability
     const lines = [];
+
+    // Line 0: Git context (branch + worktree)
+    if (gitLabel) {
+      lines.push(gitLabel);
+    }
 
     // Line 1: Quota status - use aggregate if available, otherwise single-key
     if (aggregateQuota && aggregateQuota.activeCount > 1) {
