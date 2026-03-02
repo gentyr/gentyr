@@ -491,6 +491,67 @@ async function main() {
   }
 
   // ============================================================================
+  // BRANCH AGE GUARD (feature branches only)
+  // ============================================================================
+  // Blocks commits on feature branches older than the configured limit.
+  // This prevents branch accumulation — merge existing work first.
+  // ============================================================================
+  if (!PROTECTED_BRANCHES.includes(currentBranchForGuard) && currentBranchForGuard !== 'unknown') {
+    try {
+      // Detect base branch
+      let baseBranch = 'main';
+      try {
+        execSync('git rev-parse --verify origin/preview', { encoding: 'utf8', stdio: 'pipe' });
+        baseBranch = 'preview';
+      } catch {}
+
+      // Get the timestamp of the merge-base (when this branch diverged)
+      const mergeBaseHash = execSync(
+        `git merge-base HEAD origin/${baseBranch}`,
+        { encoding: 'utf8', cwd: PROJECT_DIR, stdio: 'pipe' }
+      ).trim();
+      const mergeBaseTime = execSync(
+        `git log --format=%ct -1 ${mergeBaseHash}`,
+        { encoding: 'utf8', cwd: PROJECT_DIR, stdio: 'pipe' }
+      ).trim();
+      const branchAgeHours = (Date.now() / 1000 - parseInt(mergeBaseTime, 10)) / 3600;
+
+      // Read configurable limit (default 4 hours)
+      let branchAgeLimitHours = 4;
+      try {
+        const configPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
+        if (fs.existsSync(configPath)) {
+          const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          if (typeof config.branch_age_limit_hours === 'number') {
+            branchAgeLimitHours = config.branch_age_limit_hours;
+          }
+        }
+      } catch {}
+
+      if (branchAgeHours > branchAgeLimitHours) {
+        console.error('');
+        console.error('══════════════════════════════════════════════════════════════');
+        console.error(`  COMMIT BLOCKED: Feature branch is ${Math.round(branchAgeHours)}h old (limit: ${branchAgeLimitHours}h).`);
+        console.error('');
+        console.error(`  Merge existing work to ${baseBranch} before creating new commits.`);
+        console.error('');
+        console.error('  To merge:');
+        console.error('    git push -u origin HEAD');
+        console.error(`    gh pr create --base ${baseBranch}`);
+        console.error('    gh pr merge <number> --squash --delete-branch');
+        console.error('');
+        console.error('  To adjust the limit:');
+        console.error('    Set branch_age_limit_hours in .claude/state/automation-config.json');
+        console.error('══════════════════════════════════════════════════════════════');
+        console.error('');
+        process.exit(1);
+      }
+    } catch {
+      // Non-fatal: if we can't determine branch age, allow the commit
+    }
+  }
+
+  // ============================================================================
   // BYPASSABLE CHECKS (emergency bypass can skip CTO review, but NOT lint)
   // ============================================================================
 
