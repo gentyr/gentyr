@@ -53,9 +53,13 @@ import {
   type RunDemoArgs,
   type RunDemoResult,
   CheckDemoResultArgsSchema,
+  StopDemoArgsSchema,
   type CheckDemoResultArgs,
+  type StopDemoArgs,
   type CheckDemoResultResult,
+  type StopDemoResult,
   type DemoRunState,
+  type DemoProgress,
 } from './types.js';
 import { parseTestOutput, truncateOutput } from './helpers.js';
 import { discoverPlaywrightConfig } from './config-discovery.js';
@@ -104,7 +108,7 @@ function persistDemoRuns(): void {
     const entries = [...demoRuns.values()]
       .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
       .slice(0, 20)
-      .map(({ trace_summary, ...rest }) => rest);
+      .map(({ trace_summary, progress_file, ...rest }) => rest);
     fs.writeFileSync(DEMO_RUNS_PATH, JSON.stringify(entries, null, 2));
   } catch {
     // Non-fatal — state will be lost on MCP restart
@@ -322,13 +326,28 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     };
   }
 
-  const cmdArgs = ['playwright', 'test', '--project', project, '--headed', '--trace', 'on'];
+  // Fix 4: Generate progress file path for real-time progress reporting
+  const progressId = crypto.randomBytes(4).toString('hex');
+  const progressFilePath = path.join(PROJECT_DIR, '.claude', 'state', `demo-progress-${progressId}.jsonl`);
+
+  const cmdArgs = ['playwright', 'test', '--project', project, '--trace', 'on'];
   const env: Record<string, string> = { ...process.env as Record<string, string> };
+
+  // Set progress file env var for the progress reporter
+  env.DEMO_PROGRESS_FILE = progressFilePath;
 
   // Insert test_file as positional arg (after 'test', before '--project')
   if (test_file) {
     cmdArgs.splice(2, 0, test_file);
   }
+
+  // Headed mode is the default for demos; headless opt-in disables it
+  if (!args.headless) {
+    cmdArgs.push('--headed');
+  }
+
+  // Per-test timeout (default 120s for demos)
+  cmdArgs.push('--timeout', String(args.timeout ?? 120000));
 
   if (slow_mo !== undefined) {
     env.DEMO_SLOW_MO = String(slow_mo);
@@ -338,6 +357,14 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     env.DEMO_PAUSE_AT_END = '1';
   }
 
+  if (args.headless) {
+    env.DEMO_HEADLESS = '1';
+  }
+
+  if (args.show_cursor) {
+    env.DEMO_SHOW_CURSOR = '1';
+  }
+
   if (base_url) {
     env.PLAYWRIGHT_BASE_URL = base_url;
   }
@@ -345,50 +372,126 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   try {
     const child = spawn('npx', cmdArgs, {
       detached: true,
-      stdio: ['ignore', 'ignore', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       cwd: PROJECT_DIR,
       env,
     });
 
-    // Collect stderr for crash diagnostics
+    // Collect stderr for crash diagnostics and track progress
     let stderrChunks: Buffer[] = [];
+    let lastProgressAt = Date.now();
+
+    if (child.stdout) {
+      child.stdout.on('data', () => {
+        lastProgressAt = Date.now();
+      });
+    }
     if (child.stderr) {
       child.stderr.on('data', (chunk: Buffer) => {
         stderrChunks.push(chunk);
+        lastProgressAt = Date.now();
+        // Track last output line for stall diagnostics
+        const text = chunk.toString('utf8');
+        const lines = text.split('\n').filter(l => l.trim());
+        if (lines.length > 0) {
+          lastOutputLine = lines[lines.length - 1].trim().slice(0, 200);
+        }
       });
     }
 
-    // Wait up to 15s for early crash detection (longer than UI mode — headed browser + webServer startup is slower)
-    const earlyExit = await new Promise<{ code: number | null; signal: string | null } | null>(
+    // Progress-based crash/stall detection:
+    // - 60s startup grace period (no stall checks — browser + webServer boot is slow)
+    // - After grace, check every 5s — if 90s silence, kill and report stall
+    // - Early exit during grace period is reported immediately
+    // - Scale stall window for longer timeouts
+    const GRACE_MS = 60_000;
+    const STALL_MS = Math.max(90_000, (args.timeout ?? 120000) > 120000 ? (args.timeout ?? 120000) / 2 : 90_000);
+    const CHECK_INTERVAL_MS = 5_000;
+    let lastOutputLine = '';
+
+    const result = await new Promise<{ type: 'early_exit'; code: number | null; signal: string | null } | { type: 'stall' } | { type: 'ok' }>(
       (resolve) => {
-        const timer = setTimeout(() => resolve(null), 15000);
+        let settled = false;
+        let stallCheckInterval: ReturnType<typeof setInterval> | null = null;
+        let graceTimer: ReturnType<typeof setTimeout> | null = null;
+        let successTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const cleanup = () => {
+          if (stallCheckInterval) clearInterval(stallCheckInterval);
+          if (graceTimer) clearTimeout(graceTimer);
+          if (successTimer) clearTimeout(successTimer);
+        };
+
+        // Start stall checking after the grace period
+        graceTimer = setTimeout(() => {
+          if (settled) return;
+          stallCheckInterval = setInterval(() => {
+            if (settled) { cleanup(); return; }
+            const silenceMs = Date.now() - lastProgressAt;
+            if (silenceMs >= STALL_MS) {
+              settled = true;
+              cleanup();
+              if (child.pid) {
+                try { process.kill(-child.pid, 'SIGTERM'); } catch {}
+              }
+              resolve({ type: 'stall' });
+            }
+          }, CHECK_INTERVAL_MS);
+        }, GRACE_MS);
+
+        // Return success once past grace + first stall check window
+        successTimer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve({ type: 'ok' });
+        }, GRACE_MS + STALL_MS);
 
         child.on('exit', (code, signal) => {
-          clearTimeout(timer);
-          resolve({ code, signal });
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve({ type: 'early_exit', code, signal });
         });
 
         child.on('error', (err) => {
-          clearTimeout(timer);
-          resolve({ code: 1, signal: err.message });
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve({ type: 'early_exit', code: 1, signal: err.message });
         });
       }
     );
 
-    if (earlyExit) {
+    if (result.type === 'early_exit') {
       const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
       const snippet = stderr.length > 500 ? stderr.slice(0, 500) + '...' : stderr;
       return {
         success: false,
         project,
-        message: `Playwright process crashed within 15s (exit code: ${earlyExit.code}, signal: ${earlyExit.signal})${snippet ? `\nstderr: ${snippet}` : ''}`,
+        message: `Playwright process crashed during startup (exit code: ${result.code}, signal: ${result.signal})${snippet ? `\nstderr: ${snippet}` : ''}`,
       };
     }
 
-    // Still running after 15s — detach and return success
+    if (result.type === 'stall') {
+      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
+      const snippet = stderr.length > 500 ? stderr.slice(0, 500) + '...' : stderr;
+      const lastContext = lastOutputLine ? `\nLast output: ${lastOutputLine}` : '';
+      return {
+        success: false,
+        project,
+        message: `Playwright process stalled (no output for ${Math.round(STALL_MS / 1000)}s after startup grace period)${lastContext}${snippet ? `\nstderr: ${snippet}` : ''}`,
+      };
+    }
+
+    // Still running and producing output — detach and return success
+    if (child.stdout) {
+      child.stdout.removeAllListeners('data');
+      child.stdout.resume();
+    }
     if (child.stderr) {
       child.stderr.removeAllListeners('data');
-      child.stderr.resume(); // keep pipe open and draining to prevent SIGPIPE
+      child.stderr.resume();
     }
 
     // Register demo run for check_demo_result tracking
@@ -399,6 +502,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       test_file,
       started_at: new Date().toISOString(),
       status: 'running',
+      progress_file: progressFilePath,
     };
     demoRuns.set(demoPid, demoState);
     persistDemoRuns();
@@ -468,6 +572,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         // Non-fatal — trace parsing is best-effort
       }
 
+      // Clean up progress file (best-effort)
+      if (entry.progress_file) {
+        try { fs.unlinkSync(entry.progress_file); } catch { /* Non-fatal */ }
+      }
+
       persistDemoRuns();
     });
 
@@ -493,6 +602,78 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       project,
       message: `Failed to launch headed demo: ${message}`,
     };
+  }
+}
+
+/**
+ * Read and parse the JSONL progress file to build a DemoProgress snapshot.
+ */
+function readDemoProgress(progressFilePath: string): DemoProgress | null {
+  try {
+    if (!fs.existsSync(progressFilePath)) return null;
+    const content = fs.readFileSync(progressFilePath, 'utf-8');
+    const lines = content.trim().split('\n').filter(Boolean);
+    if (lines.length === 0) return null;
+
+    const progress: DemoProgress = {
+      tests_completed: 0,
+      tests_passed: 0,
+      tests_failed: 0,
+      total_tests: null,
+      current_test: null,
+      current_file: null,
+      has_failures: false,
+      recent_errors: [],
+      last_5_results: [],
+    };
+
+    for (const line of lines) {
+      try {
+        const event = JSON.parse(line);
+        switch (event.type) {
+          case 'suite_begin':
+            progress.total_tests = event.total_tests ?? null;
+            break;
+          case 'test_begin':
+            progress.current_test = event.title ?? null;
+            progress.current_file = event.file ?? null;
+            break;
+          case 'test_end':
+            progress.tests_completed++;
+            if (event.status === 'passed') progress.tests_passed++;
+            if (event.status === 'failed' || event.status === 'timedOut') {
+              progress.tests_failed++;
+              progress.has_failures = true;
+            }
+            progress.last_5_results.push({ title: event.title, status: event.status });
+            if (progress.last_5_results.length > 5) {
+              progress.last_5_results.shift();
+            }
+            // Current test is done
+            progress.current_test = null;
+            progress.current_file = null;
+            break;
+          case 'console_error':
+            if (progress.recent_errors.length < 10) {
+              progress.recent_errors.push(event.text?.slice(0, 500) ?? 'Unknown error');
+            }
+            // Don't set has_failures — stderr errors may be transient (404 for favicon,
+            // hot-reload noise, etc.). Only actual test failures (test_end with failed status)
+            // should trigger has_failures.
+            break;
+          case 'suite_end':
+            progress.current_test = null;
+            progress.current_file = null;
+            break;
+        }
+      } catch {
+        // Skip malformed lines
+      }
+    }
+
+    return progress;
+  } catch {
+    return null;
   }
 }
 
@@ -546,8 +727,24 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     : Date.now() - new Date(entry.started_at).getTime();
   const durationSec = Math.round(durationMs / 1000);
 
+  // Read progress data from JSONL file when available
+  const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
+
+  // Build status message with progress context
+  let runningMessage = `Demo is still running (${durationSec}s elapsed).`;
+  if (progress && entry.status === 'running') {
+    const total = progress.total_tests !== null ? `/${progress.total_tests}` : '';
+    runningMessage = `Running: ${progress.tests_completed}${total} tests (${progress.tests_passed} passed, ${progress.tests_failed} failed).`;
+    if (progress.current_test) {
+      runningMessage += ` Current: ${progress.current_test}`;
+    }
+    if (progress.has_failures) {
+      runningMessage += ` FAILURES DETECTED.`;
+    }
+  }
+
   const statusMessages: Record<string, string> = {
-    running: `Demo is still running (${durationSec}s elapsed). Poll again in 30s.`,
+    running: runningMessage,
     passed: `Demo completed successfully in ${durationSec}s.${entry.trace_summary ? ' Play-by-play trace available in trace_summary.' : ''}`,
     failed: `Demo failed (exit code ${entry.exit_code}) after ${durationSec}s.${entry.failure_summary ? ' See failure_summary for details.' : ''}${entry.trace_summary ? ' Play-by-play trace available in trace_summary.' : ''}`,
     unknown: `Demo status unknown for PID ${pid}.`,
@@ -564,7 +761,85 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     failure_summary: entry.failure_summary,
     screenshot_paths: entry.screenshot_paths,
     trace_summary: entry.trace_summary,
+    progress: progress ?? undefined,
     message: statusMessages[entry.status] || `Demo status: ${entry.status}`,
+  };
+}
+
+/**
+ * Stop a running demo by PID.
+ * Kills the process group and returns the final progress snapshot.
+ */
+function stopDemo(args: StopDemoArgs): StopDemoResult {
+  const { pid } = args;
+
+  let entry = demoRuns.get(pid);
+  if (!entry) {
+    loadPersistedDemoRuns();
+    entry = demoRuns.get(pid);
+  }
+
+  if (!entry) {
+    return {
+      success: false,
+      pid,
+      message: `No demo run found for PID ${pid}.`,
+    };
+  }
+
+  // Guard: only stop running demos
+  if (entry.status !== 'running') {
+    return {
+      success: false,
+      pid,
+      project: entry.project,
+      message: `Demo is not running (status: ${entry.status}).`,
+    };
+  }
+
+  // Verify process is still alive before killing (prevents PID recycling issues)
+  try {
+    process.kill(pid, 0);
+  } catch {
+    entry.status = 'unknown';
+    entry.ended_at = new Date().toISOString();
+    persistDemoRuns();
+    return {
+      success: false,
+      pid,
+      project: entry.project,
+      message: `Demo process (PID ${pid}) is no longer running.`,
+    };
+  }
+
+  // Read final progress snapshot before killing
+  const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
+
+  // Kill the process group
+  try {
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    // Process may have already exited between check and kill
+  }
+
+  // Update demo run state
+  entry.status = 'failed';
+  entry.ended_at = new Date().toISOString();
+  entry.failure_summary = 'Manually stopped';
+
+  // Clean up progress file
+  if (entry.progress_file) {
+    try { fs.unlinkSync(entry.progress_file); } catch { /* Non-fatal */ }
+  }
+
+  persistDemoRuns();
+
+  return {
+    success: true,
+    pid,
+    project: entry.project,
+    message: `Demo (PID ${pid}) stopped.${progress ? ` Final state: ${progress.tests_completed} tests completed (${progress.tests_passed} passed, ${progress.tests_failed} failed).` : ''}`,
+    progress: progress ?? undefined,
   };
 }
 
@@ -604,6 +879,9 @@ function runTests(args: RunTestsArgs): RunTestsResult {
   }
   if (args.workers !== undefined) {
     cmdArgs.push('--workers', String(args.workers));
+  }
+  if (args.timeout !== undefined) {
+    cmdArgs.push('--timeout', String(args.timeout));
   }
 
   // Use list reporter for parseable output
@@ -1061,7 +1339,7 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
     checks.push({ name: 'compilation', status: 'skip', message: `Skipped (${reason})`, duration_ms: 0 });
   }
 
-  // 7. Dev server reachable (warning only)
+  // 7. Dev server reachable (fail, not warn — if it's not up, demo will fail)
   const baseUrl = args.base_url || 'http://localhost:3000';
   const devServerCheck = await new Promise<PreflightCheckEntry>((resolve) => {
     const start = Date.now();
@@ -1071,15 +1349,56 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
         hostname: url.hostname,
         port: url.port || 80,
         path: url.pathname,
-        method: 'HEAD',
+        method: 'GET',
         timeout: 5000,
       },
       (res) => {
-        resolve({
-          name: 'dev_server',
-          status: 'pass',
-          message: `Dev server at ${baseUrl} responded with ${res.statusCode}`,
-          duration_ms: Date.now() - start,
+        // Read response body (capped at 16KB) to check for app-level errors
+        let body = '';
+        res.on('data', (chunk: Buffer) => {
+          if (body.length < 16384) {
+            body += chunk.toString('utf8').slice(0, 16384 - body.length);
+          }
+        });
+        res.on('end', () => {
+          const statusCode = res.statusCode ?? 0;
+
+          // Check for HTTP error status codes
+          if (statusCode >= 500) {
+            resolve({
+              name: 'dev_server',
+              status: 'fail',
+              message: `Dev server at ${baseUrl} returned HTTP ${statusCode}`,
+              duration_ms: Date.now() - start,
+            });
+            return;
+          }
+
+          // Check for app-level error indicators in the response body
+          const errorPatterns = [
+            'Unhandled Runtime Error',
+            'Missing Supabase environment variables',
+            'Internal Server Error',
+          ];
+          const bodyLower = body.toLowerCase();
+          for (const pattern of errorPatterns) {
+            if (bodyLower.includes(pattern.toLowerCase())) {
+              resolve({
+                name: 'dev_server',
+                status: 'fail',
+                message: `Dev server at ${baseUrl} responded but contains error: "${pattern}"`,
+                duration_ms: Date.now() - start,
+              });
+              return;
+            }
+          }
+
+          resolve({
+            name: 'dev_server',
+            status: 'pass',
+            message: `Dev server at ${baseUrl} responded with ${statusCode}`,
+            duration_ms: Date.now() - start,
+          });
         });
       }
     );
@@ -1087,16 +1406,16 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
       req.destroy();
       resolve({
         name: 'dev_server',
-        status: 'warn',
-        message: `Dev server at ${baseUrl} did not respond within 5s (may auto-start via playwright.config.ts webServer)`,
+        status: 'fail',
+        message: `Dev server at ${baseUrl} did not respond within 5s`,
         duration_ms: Date.now() - start,
       });
     });
     req.on('error', () => {
       resolve({
         name: 'dev_server',
-        status: 'warn',
-        message: `Dev server at ${baseUrl} is not reachable (may auto-start via playwright.config.ts webServer)`,
+        status: 'fail',
+        message: `Dev server at ${baseUrl} is not reachable`,
         duration_ms: Date.now() - start,
       });
     });
@@ -1284,6 +1603,9 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
         break;
       case 'auth_state':
         recoverySteps.push('Run: mcp__playwright__run_auth_setup() to refresh auth cookies');
+        break;
+      case 'dev_server':
+        recoverySteps.push('Start the dev server (e.g., pnpm dev) or verify playwright.config.ts webServer configuration');
         break;
       case 'extension_manifest':
         recoverySteps.push('Fix invalid match patterns in manifest.json — Chrome requires host to be * | *.domain.com | exact.domain.com (no partial wildcards like *-admin.example.com)');
@@ -1711,7 +2033,8 @@ const tools: AnyToolHandler[] = [
     description:
       'Launch Playwright tests in a visible headed browser that runs automatically at human-watchable speed. ' +
       'No clicking required — tests play through on their own with configurable pace. ' +
-      'Best for presentations and demos. The target project\'s playwright.config.ts must read ' +
+      'Best for presentations and demos. Supports headless mode (headless: true) for CI or screenshot capture, ' +
+      'and show_cursor for a visible cursor dot. The target project\'s playwright.config.ts must read ' +
       'parseInt(process.env.DEMO_SLOW_MO || "0") in use.launchOptions.slowMo for pace control to work.',
     schema: RunDemoArgsSchema,
     handler: runDemo,
@@ -1721,9 +2044,19 @@ const tools: AnyToolHandler[] = [
     description:
       'Check the result of a previously launched demo run by PID. ' +
       'Call after run_demo to determine if the demo passed or failed. ' +
-      'Returns status (running/passed/failed/unknown), exit code, failure summary, and screenshot paths.',
+      'Returns status (running/passed/failed/unknown), exit code, failure summary, screenshot paths, ' +
+      'and a progress object with real-time test counts, current test name, and error detection.',
     schema: CheckDemoResultArgsSchema,
     handler: checkDemoResult,
+  },
+  {
+    name: 'stop_demo',
+    description:
+      'Stop a running demo by PID. Kills the Playwright process group and returns ' +
+      'the final progress snapshot. Use when failures are detected mid-run and you ' +
+      'want to abort the remaining tests.',
+    schema: StopDemoArgsSchema,
+    handler: stopDemo,
   },
   {
     name: 'run_tests',
