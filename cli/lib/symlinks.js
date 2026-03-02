@@ -129,6 +129,7 @@ export function createReporterSymlinks(projectDir, frameworkRel) {
     { config: 'jest.config', name: 'jest-failure-reporter.js' },
     { config: 'vitest.config', name: 'vitest-failure-reporter.js' },
     { config: 'playwright.config', name: 'playwright-failure-reporter.js' },
+    { config: 'playwright.config', name: 'playwright-progress-reporter.js' },
   ];
 
   for (const { config, name } of reporters) {

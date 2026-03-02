@@ -29,6 +29,7 @@ with per-check repair instructions:
 | `test_files_exist` | Create test files for project `demo`. Check `e2e/demo` structure. Assign to TEST-WRITER section with urgent priority. |
 | `credentials_valid` | Check 1Password vault mappings. Assign to INVESTIGATOR & PLANNER with urgent priority if not resolvable directly. |
 | `compilation` | Fix TypeScript errors. Run `npx playwright test --list --project=demo` for details. Assign to CODE-REVIEWER section with urgent priority. |
+| `dev_server` | Start the dev server (e.g., `pnpm dev`) or verify `playwright.config.ts` webServer configuration. If the server shows app-level errors, investigate the error message. |
 | `auth_state` | Call `mcp__playwright__run_auth_setup()`. Verify `success: true` and all `.auth/*.json` files refreshed. If fails, assign to INVESTIGATOR & PLANNER section with urgent priority. |
 
 STOP — do not run tests.

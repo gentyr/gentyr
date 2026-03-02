@@ -1215,9 +1215,13 @@ if [ -n "$VITEST_CONFIG" ]; then
 fi
 
 if [ -n "$PLAYWRIGHT_CONFIG" ]; then
-    # Symlink Playwright reporter
+    # Symlink Playwright failure reporter
     ln -sf "../../$FRAMEWORK_REL/.claude/hooks/reporters/playwright-failure-reporter.js" "$PROJECT_DIR/.claude/reporters/playwright-failure-reporter.js"
     echo "  Symlink: .claude/reporters/playwright-failure-reporter.js"
+
+    # Symlink Playwright progress reporter
+    ln -sf "../../$FRAMEWORK_REL/.claude/hooks/reporters/playwright-progress-reporter.js" "$PROJECT_DIR/.claude/reporters/playwright-progress-reporter.js"
+    echo "  Symlink: .claude/reporters/playwright-progress-reporter.js"
 
     # Check if reporter is already configured
     if grep -q "playwright-failure-reporter" "$PLAYWRIGHT_CONFIG" 2>/dev/null; then

@@ -22,9 +22,11 @@ import {
   RunAuthSetupArgsSchema,
   RunDemoArgsSchema,
   CheckDemoResultArgsSchema,
+  StopDemoArgsSchema,
   PLAYWRIGHT_PROJECTS,
   type DemoRunState,
   type CheckDemoResultResult,
+  type DemoProgress,
 } from '../types.js';
 import { parseTestOutput, truncateOutput } from '../helpers.js';
 
@@ -259,15 +261,51 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       }
     });
 
+    it('should accept timeout within bounds (30000-600000)', () => {
+      const validTimeouts = [30000, 60000, 120000, 300000, 600000];
+      for (const timeout of validTimeouts) {
+        const result = RunTestsArgsSchema.safeParse({ timeout });
+        expect(result.success).toBe(true);
+        if (result.success) {
+          expect(result.data.timeout).toBe(timeout);
+        }
+      }
+    });
+
+    it('should reject timeout outside bounds (G003)', () => {
+      const invalidTimeouts = [0, 1000, 29999, 600001, 1000000];
+      for (const timeout of invalidTimeouts) {
+        const result = RunTestsArgsSchema.safeParse({ timeout });
+        expect(result.success).toBe(false);
+      }
+    });
+
+    it('should accept omitted timeout (uses Playwright config default)', () => {
+      const result = RunTestsArgsSchema.safeParse({});
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.timeout).toBeUndefined();
+      }
+    });
+
+    it('should reject non-integer timeout (G003)', () => {
+      const result = RunTestsArgsSchema.safeParse({ timeout: 60000.5 });
+      expect(result.success).toBe(false);
+    });
+
     it('should accept all parameters together', () => {
       const result = RunTestsArgsSchema.safeParse({
         project: 'cross-persona',
         grep: 'should handle.*workflow',
         retries: 2,
         workers: 4,
+        timeout: 120000,
       });
 
       expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.timeout).toBe(120000);
+      }
     });
   });
 
@@ -677,6 +715,121 @@ describe('Playwright MCP Server - Zod Schemas', () => {
         expect(result.data.pause_at_end).toBe(true);
       }
     });
+
+    it('should default timeout to 120000 when omitted', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.timeout).toBe(120000);
+      }
+    });
+
+    it('should accept timeout at lower bound (30000)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', timeout: 30000 });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.timeout).toBe(30000);
+      }
+    });
+
+    it('should accept timeout at upper bound (600000)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', timeout: 600000 });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.timeout).toBe(600000);
+      }
+    });
+
+    it('should reject timeout below 30000 (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', timeout: 29999 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject timeout above 600000 (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', timeout: 600001 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject non-integer timeout (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', timeout: 60000.5 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should coerce timeout from string via z.coerce', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', timeout: '60000' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.timeout).toBe(60000);
+        expect(typeof result.data.timeout).toBe('number');
+      }
+    });
+
+    it('should default headless to false when omitted', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.headless).toBe(false);
+      }
+    });
+
+    it('should accept headless: true', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', headless: true });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.headless).toBe(true);
+      }
+    });
+
+    it('should coerce headless from string via z.coerce', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', headless: 'true' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.headless).toBe(true);
+      }
+    });
+
+    it('should default show_cursor to false when omitted', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.show_cursor).toBe(false);
+      }
+    });
+
+    it('should accept show_cursor: true', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', show_cursor: true });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.show_cursor).toBe(true);
+      }
+    });
+
+    it('should coerce show_cursor from string via z.coerce', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', show_cursor: 'true' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.show_cursor).toBe(true);
+      }
+    });
+
+    it('should accept all parameters including new fields', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'vendor-owner',
+        slow_mo: 500,
+        base_url: 'http://localhost:3000',
+        test_file: 'e2e/demo/billing.demo.ts',
+        pause_at_end: true,
+        timeout: 60000,
+        headless: true,
+        show_cursor: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.timeout).toBe(60000);
+        expect(result.data.headless).toBe(true);
+        expect(result.data.show_cursor).toBe(true);
+      }
+    });
   });
 
   describe('CheckDemoResultArgsSchema', () => {
@@ -726,6 +879,45 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       const args = CheckDemoResultArgsSchema.parse({ pid: 42 });
       expect(typeof args.pid).toBe('number');
       expect(args.pid).toBe(42);
+    });
+  });
+
+  describe('StopDemoArgsSchema', () => {
+    it('should require pid field', () => {
+      const result = StopDemoArgsSchema.safeParse({});
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept a valid positive integer pid', () => {
+      const result = StopDemoArgsSchema.safeParse({ pid: 12345 });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.pid).toBe(12345);
+      }
+    });
+
+    it('should reject pid of 0 (must be >= 1)', () => {
+      const result = StopDemoArgsSchema.safeParse({ pid: 0 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject negative pid (G003)', () => {
+      const result = StopDemoArgsSchema.safeParse({ pid: -1 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject non-integer pid (G003)', () => {
+      const result = StopDemoArgsSchema.safeParse({ pid: 1.5 });
+      expect(result.success).toBe(false);
+    });
+
+    it('should coerce pid from string to number via z.coerce', () => {
+      const result = StopDemoArgsSchema.safeParse({ pid: '99999' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.pid).toBe(99999);
+        expect(typeof result.data.pid).toBe('number');
+      }
     });
   });
 
@@ -1407,6 +1599,164 @@ describe('Playwright MCP Server - Type Safety', () => {
       // JSON.stringify omits undefined fields, so trace_summary is absent after round-trip
       expect(deserialized.trace_summary).toBeUndefined();
       expect('trace_summary' in deserialized).toBe(false);
+    });
+  });
+
+  describe('DemoProgress type', () => {
+    it('should accept a valid DemoProgress object (type-level check)', () => {
+      const progress: DemoProgress = {
+        tests_completed: 3,
+        tests_passed: 2,
+        tests_failed: 1,
+        total_tests: 5,
+        current_test: 'should display dashboard',
+        current_file: 'e2e/demo/onboarding.demo.ts',
+        has_failures: true,
+        recent_errors: ['AssertionError: expected "Login" to equal "Sign In"'],
+        last_5_results: [
+          { title: 'should navigate to home', status: 'passed' },
+          { title: 'should display dashboard', status: 'failed' },
+        ],
+      };
+
+      expect(typeof progress.tests_completed).toBe('number');
+      expect(typeof progress.tests_passed).toBe('number');
+      expect(typeof progress.tests_failed).toBe('number');
+      expect(progress.total_tests).toBe(5);
+      expect(progress.current_test).toBe('should display dashboard');
+      expect(progress.current_file).toBe('e2e/demo/onboarding.demo.ts');
+      expect(progress.has_failures).toBe(true);
+      expect(Array.isArray(progress.recent_errors)).toBe(true);
+      expect(progress.recent_errors.length).toBe(1);
+      expect(Array.isArray(progress.last_5_results)).toBe(true);
+      expect(progress.last_5_results.length).toBe(2);
+    });
+
+    it('should accept DemoProgress with null nullable fields', () => {
+      const progress: DemoProgress = {
+        tests_completed: 0,
+        tests_passed: 0,
+        tests_failed: 0,
+        total_tests: null,
+        current_test: null,
+        current_file: null,
+        has_failures: false,
+        recent_errors: [],
+        last_5_results: [],
+      };
+
+      expect(progress.total_tests).toBeNull();
+      expect(progress.current_test).toBeNull();
+      expect(progress.current_file).toBeNull();
+      expect(progress.has_failures).toBe(false);
+      expect(progress.recent_errors).toHaveLength(0);
+      expect(progress.last_5_results).toHaveLength(0);
+    });
+  });
+
+  describe('CheckDemoResultResult - progress field', () => {
+    it('should accept CheckDemoResultResult without progress (existing behavior)', () => {
+      const result: CheckDemoResultResult = {
+        status: 'running',
+        pid: 12345,
+        project: 'vendor-owner',
+        message: 'Demo is still running.',
+      };
+
+      expect(result.progress).toBeUndefined();
+      expect(result.status).toBe('running');
+    });
+
+    it('should accept CheckDemoResultResult with progress object populated', () => {
+      const progress: DemoProgress = {
+        tests_completed: 2,
+        tests_passed: 2,
+        tests_failed: 0,
+        total_tests: 4,
+        current_test: 'should load billing page',
+        current_file: 'e2e/demo/billing.demo.ts',
+        has_failures: false,
+        recent_errors: [],
+        last_5_results: [
+          { title: 'should navigate to home', status: 'passed' },
+          { title: 'should open settings', status: 'passed' },
+        ],
+      };
+
+      const result: CheckDemoResultResult = {
+        status: 'running',
+        pid: 54321,
+        project: 'demo',
+        message: 'Demo is running. 2/4 tests completed.',
+        progress,
+      };
+
+      expect(result.progress).toBeDefined();
+      expect(result.progress!.tests_completed).toBe(2);
+      expect(result.progress!.tests_passed).toBe(2);
+      expect(result.progress!.tests_failed).toBe(0);
+      expect(result.progress!.total_tests).toBe(4);
+      expect(result.progress!.has_failures).toBe(false);
+      expect(typeof result.progress!.tests_completed).toBe('number');
+      expect(Array.isArray(result.progress!.last_5_results)).toBe(true);
+    });
+  });
+
+  describe('DemoRunState - progress_file field', () => {
+    it('should accept DemoRunState without progress_file', () => {
+      const state: DemoRunState = {
+        pid: 12345,
+        project: 'vendor-owner',
+        started_at: '2026-03-01T00:00:00.000Z',
+        status: 'running',
+      };
+
+      expect(state.progress_file).toBeUndefined();
+    });
+
+    it('should accept DemoRunState with progress_file string', () => {
+      const state: DemoRunState = {
+        pid: 12345,
+        project: 'demo',
+        started_at: '2026-03-01T00:00:00.000Z',
+        status: 'running',
+        progress_file: '/tmp/demo-progress-12345.json',
+      };
+
+      expect(typeof state.progress_file).toBe('string');
+      expect(state.progress_file).toBe('/tmp/demo-progress-12345.json');
+    });
+
+    it('DemoRunState with progress_file round-trips through JSON serialization', () => {
+      const original: DemoRunState = {
+        pid: 999,
+        project: 'vendor-owner',
+        started_at: '2026-03-01T00:00:00.000Z',
+        status: 'running',
+        progress_file: '/tmp/demo-progress-999.json',
+      };
+
+      const serialized = JSON.stringify(original);
+      const deserialized: DemoRunState = JSON.parse(serialized);
+
+      expect(deserialized.progress_file).toBe('/tmp/demo-progress-999.json');
+      expect(typeof deserialized.progress_file).toBe('string');
+      expect(deserialized.pid).toBe(999);
+    });
+
+    it('DemoRunState without progress_file is absent after JSON round-trip', () => {
+      const original: DemoRunState = {
+        pid: 111,
+        project: 'demo',
+        started_at: '2026-03-01T00:00:00.000Z',
+        status: 'passed',
+      };
+
+      const serialized = JSON.stringify(original);
+      const deserialized: DemoRunState = JSON.parse(serialized);
+
+      expect(deserialized.progress_file).toBeUndefined();
+      expect('progress_file' in deserialized).toBe(false);
     });
   });
 });

@@ -97,6 +97,12 @@ export const RunTestsArgsSchema = z.object({
     .max(16)
     .optional()
     .describe('Number of parallel workers (1-16, default: 1 locally, 4 in CI)'),
+  timeout: z.coerce.number()
+    .int()
+    .min(30000)
+    .max(600000)
+    .optional()
+    .describe('Per-test timeout in milliseconds (30s-600s). If omitted, uses Playwright config default.'),
 });
 
 export const SeedDataArgsSchema = z.object({});
@@ -243,6 +249,12 @@ export const RunDemoArgsSchema = z.object({
     .optional()
     .default(false)
     .describe('Set DEMO_PAUSE_AT_END=1 env var. Target project demo files that import the shared helper will call page.pause() at the end.'),
+  timeout: z.coerce.number().int().min(30000).max(600000).optional().default(120000)
+    .describe('Per-test timeout in milliseconds (30s-600s, default 120s)'),
+  headless: z.coerce.boolean().optional().default(false)
+    .describe('Run demos in headless mode. Sets DEMO_HEADLESS=1 env var. Extension demos will auto-skip.'),
+  show_cursor: z.coerce.boolean().optional().default(false)
+    .describe('Show a visible cursor dot during headed demos. Sets DEMO_SHOW_CURSOR=1 env var.'),
 });
 
 export type RunDemoArgs = z.infer<typeof RunDemoArgsSchema>;
@@ -262,8 +274,26 @@ export const CheckDemoResultArgsSchema = z.object({
     .describe('Process ID returned by run_demo.'),
 });
 
+export const StopDemoArgsSchema = z.object({
+  pid: z.coerce.number().int().min(1)
+    .describe('Process ID of the demo to stop (from run_demo).'),
+});
+
 export type CheckDemoResultArgs = z.infer<typeof CheckDemoResultArgsSchema>;
+export type StopDemoArgs = z.infer<typeof StopDemoArgsSchema>;
 export type DemoRunStatus = 'running' | 'passed' | 'failed' | 'unknown';
+
+export interface DemoProgress {
+  tests_completed: number;
+  tests_passed: number;
+  tests_failed: number;
+  total_tests: number | null;
+  current_test: string | null;
+  current_file: string | null;
+  has_failures: boolean;
+  recent_errors: string[];
+  last_5_results: Array<{ title: string; status: string }>;
+}
 
 export interface CheckDemoResultResult {
   status: DemoRunStatus;
@@ -276,6 +306,7 @@ export interface CheckDemoResultResult {
   failure_summary?: string;
   screenshot_paths?: string[];
   trace_summary?: string;
+  progress?: DemoProgress;
   message: string;
 }
 
@@ -290,6 +321,15 @@ export interface DemoRunState {
   failure_summary?: string;
   screenshot_paths?: string[];
   trace_summary?: string;
+  progress_file?: string;
+}
+
+export interface StopDemoResult {
+  success: boolean;
+  pid: number;
+  project?: string;
+  message: string;
+  progress?: DemoProgress;
 }
 
 export interface LaunchUiModeResult {

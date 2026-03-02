@@ -69,9 +69,18 @@ Show scenario title, persona, auth project, and PID.
 
 ### Step 8: Monitor Demo Completion
 
-Wait 30 seconds, then call `mcp__playwright__check_demo_result({ pid: <PID> })`.
+Wait 10 seconds, then call `mcp__playwright__check_demo_result({ pid: <PID> })`.
 
-- If `status: "running"`: wait another 30s and poll again (max 10 polls, ~5 min total).
+Poll every 10 seconds (max 30 polls, ~5 min total).
+
+Between polls, show progress updates to the user:
+```
+Progress: 3/8 tests (3 passed, 0 failed) - Current: Login Flow
+```
+
+- If `status: "running"` and `progress.has_failures: true`: call `mcp__playwright__stop_demo({ pid: <PID> })` to kill remaining tests immediately, then create an **urgent DEPUTY-CTO task** with the failure details from the progress snapshot.
+- If `status: "running"` and `progress.recent_errors` is non-empty: report errors to user immediately but continue polling (errors may be transient).
+- If `status: "running"`: show progress and poll again.
 - If `status: "failed"`: create an **urgent DEPUTY-CTO task** with:
   - Failure summary (`failure_summary` field)
   - Exit code
