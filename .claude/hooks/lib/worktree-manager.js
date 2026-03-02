@@ -209,10 +209,19 @@ export function provisionWorktree(worktreePath) {
  * If the worktree already exists, returns immediately without re-provisioning.
  *
  * @param {string} branchName - Git branch name (e.g. "feature/new-widget")
- * @param {string} [baseBranch='preview'] - Branch to base the new branch on
+ * @param {string} [baseBranch] - Branch to base the new branch on. Auto-detected if omitted:
+ *   uses 'preview' if origin/preview exists, otherwise 'main'.
  * @returns {{ path: string, branch: string, created: boolean }}
  */
-export function createWorktree(branchName, baseBranch = 'preview') {
+export function createWorktree(branchName, baseBranch) {
+  if (!baseBranch) {
+    try {
+      execSync('git rev-parse --verify origin/preview', { ...GIT_OPTS, stdio: 'pipe' });
+      baseBranch = 'preview';
+    } catch {
+      baseBranch = 'main';
+    }
+  }
   const sanitized = sanitizeBranchName(branchName);
   const worktreePath = path.join(WORKTREES_DIR, sanitized);
 
@@ -346,21 +355,30 @@ export function isWorktreeAvailable(branchName) {
 // ============================================================================
 
 /**
- * Remove worktrees whose branches have been fully merged to `origin/preview`.
+ * Remove worktrees whose branches have been fully merged to the base branch.
+ * Uses `origin/preview` if it exists, otherwise `origin/main`.
  *
  * @returns {number} Count of worktrees cleaned up
  */
 export function cleanupMergedWorktrees() {
-  // Fetch latest preview state (non-fatal)
+  // Detect base branch: preview for target projects, main for gentyr repo
+  let baseBranch = 'preview';
   try {
-    execSync('git fetch origin preview --quiet', GIT_OPTS);
+    execSync('git rev-parse --verify origin/preview', { ...GIT_OPTS, stdio: 'pipe' });
+  } catch {
+    baseBranch = 'main';
+  }
+
+  // Fetch latest base branch state (non-fatal)
+  try {
+    execSync(`git fetch origin ${baseBranch} --quiet`, GIT_OPTS);
   } catch {
     // Offline or remote unavailable
   }
 
   let mergedOutput;
   try {
-    mergedOutput = execSync('git branch --merged origin/preview', GIT_OPTS);
+    mergedOutput = execSync(`git branch --merged origin/${baseBranch}`, GIT_OPTS);
   } catch {
     return 0;
   }

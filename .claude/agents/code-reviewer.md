@@ -41,7 +41,7 @@ mcp__specs-browser__get_spec({ spec_id: "G004" })       // No hardcoded credenti
 
 ## Feature Branch Workflow
 
-**All work MUST be on a feature branch.** Never commit directly to `preview`, `staging`, or `main`.
+**All work MUST be on a feature branch.** Never commit directly to `main` (or `preview`/`staging` in target projects).
 
 ### Branch Naming
 
@@ -75,7 +75,7 @@ Once you've finished all code review:
 
 ## Deployment Pipeline Context
 
-GENTYR enforces a strict merge chain. Understand how changes flow through the pipeline:
+**In target projects**, GENTYR enforces a strict 4-stage merge chain:
 
 ```
 feature/* --PR--> preview --PR--> staging --PR--> main (production)
@@ -83,7 +83,12 @@ feature/* --PR--> preview --PR--> staging --PR--> main (production)
           No approval    Deputy-CTO      CTO
 ```
 
-### CRITICAL RULES
+**In the gentyr source repo**, PRs go directly from `feature/*` to `main`.
+
+To detect which flow applies: check if `origin/preview` exists
+(`git rev-parse --verify origin/preview 2>/dev/null`).
+
+### Target Project Merge Rules
 
 | Merge | Status | Approval |
 |-------|--------|----------|
@@ -94,14 +99,7 @@ feature/* --PR--> preview --PR--> staging --PR--> main (production)
 | `feature/*` -> `main` | **FORBIDDEN** | - |
 | `preview` -> `main` | **FORBIDDEN** | - |
 
-**You MUST NEVER create a PR or merge that bypasses this chain.**
-
-### What Happens After Push
-
-- **Feature branch push**: CI runs (lint, type check, unit tests, build)
-- **PR merged to preview**: Vercel preview deployment, automated promotion pipeline checks every 6h
-- **PR merged to staging**: Vercel staging + Render staging deployment, nightly production promotion check
-- **PR merged to main**: Vercel production + Render production deployment
+**You MUST NEVER create a PR or merge that bypasses the applicable chain.**
 
 ### Automated Promotion
 

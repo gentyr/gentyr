@@ -1491,11 +1491,12 @@ When your work is complete:
 3. Push and create PR:
 \`\`\`
 git push -u origin HEAD
-gh pr create --base preview --head "$(git branch --show-current)" --title "${task.title}" --body "Automated: ${task.section} task" 2>/dev/null || true
+BASE=$(git rev-parse --verify origin/preview 2>/dev/null && echo preview || echo main)
+gh pr create --base "$BASE" --head "$(git branch --show-current)" --title "${task.title}" --body "Automated: ${task.section} task" 2>/dev/null || true
 \`\`\`
 4. Request PR review (creates urgent task, triggers immediate deputy-CTO session):
 \`\`\`
-mcp__todo-db__create_task({ section: "DEPUTY-CTO", title: "Review PR: ${task.title}", description: "Review and merge the PR from this feature branch to preview. Run gh pr diff, review for security/architecture/quality, then approve+merge or request changes.", assigned_by: "pr-reviewer", priority: "urgent" })
+mcp__todo-db__create_task({ section: "DEPUTY-CTO", title: "Review PR: ${task.title}", description: "Review and merge the PR from this feature branch. Run gh pr diff, review for security/architecture/quality, then approve+merge or request changes.", assigned_by: "pr-reviewer", priority: "urgent" })
 \`\`\`
 
 Do NOT self-merge. Deputy-CTO reviews and merges PRs asynchronously.
@@ -1613,8 +1614,8 @@ ${completionBlock}`;
 
 /**
  * Spawn a fire-and-forget Claude agent for a task.
- * When worktrees are available (preview branch exists), each agent gets its
- * own isolated worktree on a feature branch.  Falls back to PROJECT_DIR if
+ * When worktrees are available, each agent gets its own isolated worktree
+ * on a feature branch (base auto-detected: preview or main).  Falls back to PROJECT_DIR if
  * worktree creation fails.
  */
 function spawnTaskAgent(task) {

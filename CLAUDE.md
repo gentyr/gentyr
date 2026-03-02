@@ -94,7 +94,9 @@ cd /path/to/project && claude mcp list
 
 ## Merge Chain and Agent Git Workflow
 
-GENTYR enforces a 4-stage merge chain: `feature/* -> preview -> staging -> main`. Direct commits to `main`, `staging`, and `preview` are blocked at the local level via pre-commit and pre-push hooks. Only promotion pipeline agents (`GENTYR_PROMOTION_PIPELINE=true`) may operate on protected branches.
+> **Gentyr source repo vs target projects**: The 4-stage merge chain below applies to **target projects** that install gentyr. The gentyr source repo itself uses a simple flow: `feature/* -> main` with PRs targeting `main` directly. To detect which flow applies at runtime, check for `origin/preview` (`git rev-parse --verify origin/preview 2>/dev/null`). If it exists, use the 4-stage chain. If not, PR to `main`.
+
+In target projects, GENTYR enforces a 4-stage merge chain: `feature/* -> preview -> staging -> main`. Direct commits to `main`, `staging`, and `preview` are blocked at the local level via pre-commit and pre-push hooks. Only promotion pipeline agents (`GENTYR_PROMOTION_PIPELINE=true`) may operate on protected branches.
 
 ### Feature Branch Commit Flow (Low-Friction)
 
@@ -102,7 +104,7 @@ Agents work on feature branches (`feature/*`, `fix/*`, `refactor/*`, `docs/*`, `
 
 After committing, the project-manager agent:
 1. Pushes the branch: `git push -u origin <branch>`
-2. Creates a PR to `preview`: `gh pr create --base preview --head <branch> --title "..."`
+2. Creates a PR to the appropriate base branch (`preview` in target projects, `main` in the gentyr repo): `gh pr create --base <base> --head <branch> --title "..."`
 3. Creates an urgent DEPUTY-CTO task for immediate PR review:
    ```javascript
    mcp__todo-db__create_task({
@@ -139,7 +141,7 @@ Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/
 
 Code-modifying sub-agents (`code-reviewer`, `code-writer`, `test-writer`) MUST be spawned with `isolation: "worktree"` when using the `Task` tool. This gives them their own branch and working directory, isolating their file changes from the main tree and other concurrent agents.
 
-**Base branch**: All agent worktrees branch from `preview` (the default in `createWorktree(branchName, baseBranch = 'preview')` in `worktree-manager.js`). `createWorktree()` creates a NEW unique branch (e.g., `feature/code-review-abc`) based on `origin/preview` — it does NOT check out the `preview` branch itself. Multiple agents can all branch from `preview` concurrently without conflict.
+**Base branch**: Agent worktrees branch from the project's base branch — `preview` in target projects, `main` in the gentyr repo. `createWorktree()` auto-detects by checking if `origin/preview` exists; if not, falls back to `origin/main`. It creates a NEW unique branch (e.g., `feature/code-review-abc`) based on the detected base — it does NOT check out the base branch itself. Multiple agents can all branch from the base concurrently without conflict.
 
 **Why**: Without worktree isolation, sub-agents share the parent session's working tree. Concurrent file edits from multiple agents cause conflicts, and any git operation (stash, reset) in the main tree can destroy all agents' uncommitted work.
 
@@ -147,7 +149,7 @@ Code-modifying sub-agents (`code-reviewer`, `code-writer`, `test-writer`) MUST b
 
 **Example**:
 ```
-// CORRECT: Agent gets its own isolated worktree (branched from preview)
+// CORRECT: Agent gets its own isolated worktree (branched from preview or main)
 Task(subagent_type: "code-writer", isolation: "worktree", ...)
 
 // WRONG: Agent shares parent's working tree — file edits may conflict with other agents

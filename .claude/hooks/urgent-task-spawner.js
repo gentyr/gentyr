@@ -213,7 +213,8 @@ When your work is complete:
 3. Push and create PR:
 \`\`\`
 git push -u origin HEAD
-gh pr create --base preview --head "$(git branch --show-current)" --title "${task.title}" --body "Automated: ${task.section} task (urgent)" 2>/dev/null || true
+BASE=$(git rev-parse --verify origin/preview 2>/dev/null && echo preview || echo main)
+gh pr create --base "$BASE" --head "$(git branch --show-current)" --title "${task.title}" --body "Automated: ${task.section} task (urgent)" 2>/dev/null || true
 \`\`\`
 ` : '';
 
