@@ -1632,37 +1632,6 @@ function saveApprovalsFile(data: ApprovalsFile): void {
   }
 }
 
-function acquireApprovalsLock(): boolean {
-  const maxAttempts = 10;
-  const baseDelay = 50;
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      const fd = fs.openSync(APPROVALS_LOCK_PATH, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-      fs.writeSync(fd, String(process.pid));
-      fs.closeSync(fd);
-      return true;
-    } catch {
-      try {
-        const stat = fs.statSync(APPROVALS_LOCK_PATH);
-        if (Date.now() - stat.mtimeMs > 10000) {
-          fs.unlinkSync(APPROVALS_LOCK_PATH);
-          continue;
-        }
-      } catch { /* lock file gone, retry */ }
-      const delay = baseDelay * Math.pow(2, i);
-      const start = Date.now();
-      while (Date.now() - start < delay) { /* busy wait */ }
-    }
-  }
-  return false;
-}
-
-function releaseApprovalsLock(): void {
-  try {
-    fs.unlinkSync(APPROVALS_LOCK_PATH);
-  } catch { /* already released */ }
-}
-
 /**
  * Acquire an advisory lock on the approvals file.
  * Uses exclusive file creation (O_CREAT | O_EXCL) as a cross-process mutex.

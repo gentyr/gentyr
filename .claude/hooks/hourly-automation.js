@@ -2987,10 +2987,68 @@ async function main() {
   }
 
   // =========================================================================
+  // PR SWEEP (10min cooldown)
+  // Auto-merges stale open PRs to prevent branch accumulation
+  // =========================================================================
+  const PR_SWEEP_COOLDOWN_MS = getCooldown('pr_sweep', 10) * 60 * 1000;
+  const timeSinceLastPrSweep = now - (state.lastPrSweep || 0);
+
+  if (timeSinceLastPrSweep >= PR_SWEEP_COOLDOWN_MS) {
+    log('PR sweep: checking for stale open PRs...');
+    try {
+      // Detect base branch: preview for target projects, main for gentyr repo
+      let prBaseBranch = 'main';
+      try {
+        execSync('git rev-parse --verify origin/preview', { cwd: PROJECT_DIR, encoding: 'utf8', stdio: 'pipe' });
+        prBaseBranch = 'preview';
+      } catch {}
+
+      const prListJson = execSync(
+        `gh pr list --base ${prBaseBranch} --state open --json number,createdAt,headRefName --limit 20`,
+        { cwd: PROJECT_DIR, encoding: 'utf8', stdio: 'pipe', timeout: 30000 }
+      ).trim();
+      const openPRs = JSON.parse(prListJson || '[]');
+      const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+      let merged = 0;
+
+      for (const pr of openPRs) {
+        const createdAt = new Date(pr.createdAt);
+        if (createdAt < thirtyMinutesAgo) {
+          try {
+            execSync(
+              `gh pr merge ${pr.number} --squash --delete-branch`,
+              { cwd: PROJECT_DIR, encoding: 'utf8', stdio: 'pipe', timeout: 30000 }
+            );
+            log(`PR sweep: auto-merged PR #${pr.number} (${pr.headRefName}), created ${pr.createdAt}`);
+            merged++;
+          } catch (mergeErr) {
+            log(`PR sweep: failed to merge PR #${pr.number}: ${mergeErr.message}`);
+          }
+        }
+      }
+
+      if (merged > 0) {
+        log(`PR sweep: auto-merged ${merged} stale PR(s).`);
+      } else if (openPRs.length === 0) {
+        log('PR sweep: no open PRs.');
+      } else {
+        log(`PR sweep: ${openPRs.length} open PR(s), none older than 30 minutes.`);
+      }
+    } catch (err) {
+      log(`PR sweep error (non-fatal): ${err.message}`);
+    }
+    state.lastPrSweep = now;
+    saveState(state);
+  } else {
+    const minutesLeft = Math.ceil((PR_SWEEP_COOLDOWN_MS - timeSinceLastPrSweep) / 60000);
+    log(`PR sweep cooldown active. ${minutesLeft} minutes until next check.`);
+  }
+
+  // =========================================================================
   // CTO GATE CHECK — exit if gate is closed after all monitoring-only steps
   // GAP 5: Everything above this point (Usage Optimizer, Key Sync, Session
   // Reviver, Triage, Health Monitors, CI Monitoring, Persistent Alerts,
-  // Merge Chain Gap, Urgent Dispatcher) runs regardless of CTO gate status.
+  // Merge Chain Gap, Urgent Dispatcher, PR Sweep) runs regardless of CTO gate status.
   // Everything below requires the gate to be open.
   // =========================================================================
   if (!ctoGateOpen) {
@@ -3308,7 +3366,7 @@ async function main() {
 
   // =========================================================================
   // WORKTREE CLEANUP (30min cooldown)
-  // Removes worktrees whose feature branches have been merged to preview
+  // Removes worktrees whose feature branches have been merged to the base branch
   // =========================================================================
   const WORKTREE_CLEANUP_COOLDOWN_MS = getCooldown('worktree_cleanup', 30) * 60 * 1000;
   const timeSinceLastWorktreeCleanup = now - (state.lastWorktreeCleanup || 0);

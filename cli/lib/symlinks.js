@@ -107,7 +107,7 @@ export function createAgentSymlinks(projectDir, frameworkRel, agents, opts = {})
 
   let created = 0;
   for (const agent of agents) {
-    const target = `../../${frameworkRel}/.claude/agents/${agent}`;
+    const target = `../../${frameworkRel}/agents/${agent}`;
     const linkPath = path.join(agentsDir, agent);
     safeSymlink(target, linkPath, { quiet: true });
     created++;

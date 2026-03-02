@@ -123,6 +123,8 @@ FRAMEWORK_AGENTS=(
     "antipattern-hunter.md"
     "repo-hygiene-expert.md"
     "secret-manager.md"
+    "feedback-agent.md"
+    "icon-finder.md"
 )
 
 # =============================================================================
@@ -794,7 +796,7 @@ fi
 
 # Create individual symlinks for framework agents
 for agent in "${FRAMEWORK_AGENTS[@]}"; do
-    ln -sf "../../$FRAMEWORK_REL/.claude/agents/$agent" "$PROJECT_DIR/.claude/agents/$agent"
+    ln -sf "../../$FRAMEWORK_REL/agents/$agent" "$PROJECT_DIR/.claude/agents/$agent"
 done
 echo "  Symlink: .claude/agents/ (${#FRAMEWORK_AGENTS[@]} framework agents)"
 
@@ -810,7 +812,7 @@ else
 fi
 
 if [ "$PM_ENABLED" = "yes" ]; then
-    ln -sf "../../$FRAMEWORK_REL/.claude/agents/product-manager.md" "$PROJECT_DIR/.claude/agents/product-manager.md"
+    ln -sf "../../$FRAMEWORK_REL/agents/product-manager.md" "$PROJECT_DIR/.claude/agents/product-manager.md"
     echo "    Symlink: product-manager.md (enabled)"
 else
     # Remove symlink if it exists but feature is disabled
@@ -1119,6 +1121,11 @@ GITIGNORE_ENTRIES="
 # Generated root-level files
 .mcp.json
 op-secrets.conf
+
+# Husky hooks (managed by GENTYR, regenerated on sync)
+.husky/pre-commit
+.husky/post-commit
+.husky/pre-push
 "
 if ! grep -q "# GENTYR runtime" "$PROJECT_DIR/.gitignore" 2>/dev/null; then
     echo "$GITIGNORE_ENTRIES" >> "$PROJECT_DIR/.gitignore"

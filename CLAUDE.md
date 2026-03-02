@@ -92,34 +92,53 @@ scripts/setup.sh --path /path/to/project --protect    # Will be removed in v2.0
 cd /path/to/project && claude mcp list
 ```
 
-## Merge Chain and Agent Git Workflow
+## Mandatory Git Workflow (GENTYR Source Repo)
 
-> **Gentyr source repo vs target projects**: The 4-stage merge chain below applies to **target projects** that install gentyr. The gentyr source repo itself uses a simple flow: `feature/* -> main` with PRs targeting `main` directly. To detect which flow applies at runtime, check for `origin/preview` (`git rev-parse --verify origin/preview 2>/dev/null`). If it exists, use the 4-stage chain. If not, PR to `main`.
+> This applies to the gentyr source repo ONLY. Target projects follow
+> the 4-stage merge chain described in CLAUDE.md.gentyr-section.
+
+### Rules (NON-NEGOTIABLE)
+
+1. **ALL changes on feature branches in worktrees.** Never commit to `main` directly.
+   Use `isolation: "worktree"` for all code-modifying sub-agents.
+
+2. **PRs target `main` directly.** No `preview` or `staging` branches in this repo.
+
+3. **Self-merge immediately.** After `gh pr create`, the project-manager runs
+   `gh pr merge --squash --delete-branch` in the same session. No waiting for review.
+
+4. **Clean up immediately.** After merge: delete local branch, remove worktree.
+   Feature branches must not exist for more than a few hours.
+
+5. **Sub-agents are different from target projects.** The agents in `.claude/agents/`
+   are gentyr-specific. Target projects get different agents from the `agents/` directory.
+
+## Merge Chain and Agent Git Workflow (Target Projects Only)
+
+> **Gentyr source repo vs target projects**: The 4-stage merge chain below applies
+> to **target projects** that install gentyr. The gentyr repo uses `feature -> main`
+> with immediate self-merge — see "Mandatory Git Workflow" above.
 
 In target projects, GENTYR enforces a 4-stage merge chain: `feature/* -> preview -> staging -> main`. Direct commits to `main`, `staging`, and `preview` are blocked at the local level via pre-commit and pre-push hooks. Only promotion pipeline agents (`GENTYR_PROMOTION_PIPELINE=true`) may operate on protected branches.
 
-### Feature Branch Commit Flow (Low-Friction)
+### Feature Branch Commit Flow (Self-Merge)
 
 Agents work on feature branches (`feature/*`, `fix/*`, `refactor/*`, `docs/*`, `chore/*`). At commit time, only lint and security checks run — no deputy-CTO review gate. This keeps commit latency low.
 
 After committing, the project-manager agent:
-1. Pushes the branch: `git push -u origin <branch>`
+1. Pushes the branch: `git push -u origin HEAD`
 2. Creates a PR to the appropriate base branch (`preview` in target projects, `main` in the gentyr repo): `gh pr create --base <base> --head <branch> --title "..."`
-3. Creates an urgent DEPUTY-CTO task for immediate PR review:
-   ```javascript
-   mcp__todo-db__create_task({
-     section: "DEPUTY-CTO",
-     title: "Review PR: <feature-title>",
-     description: "Review and merge the PR...",
-     assigned_by: "pr-reviewer",
-     priority: "urgent"
-   })
-   ```
+3. **Self-merges immediately**: `gh pr merge <number> --squash --delete-branch`
+4. Cleans up the worktree and local branch
 
-### Deputy-CTO PR Review Mode
+Code review happens at promotion time (preview -> staging), not at the feature branch level.
 
-When processing a `pr-reviewer`-assigned task, the deputy-CTO has `Bash` access to `gh` commands:
-- `gh pr diff <number>` — review changes
+### Deputy-CTO Promotion Review
+
+The deputy-CTO reviews promotion PRs (preview -> staging, staging -> main), NOT individual feature PRs. Feature PRs are self-merged by the project-manager immediately after creation.
+
+When reviewing a promotion PR, the deputy-CTO has `Bash` access to `gh` commands:
+- `gh pr diff <number>` — review accumulated changes
 - `gh pr review <number> --approve --body "..."` — approve
 - `gh pr review <number> --request-changes --body "..."` — reject with feedback
 - `gh pr merge <number> --merge --delete-branch` — merge and trigger worktree cleanup
@@ -129,7 +148,7 @@ When processing a `pr-reviewer`-assigned task, the deputy-CTO has `Bash` access 
 
 ### Worktrees
 
-Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/`. Each worktree is provisioned with symlinked GENTYR config (hooks, agents, commands) and a worktree-specific `.mcp.json` with absolute `CLAUDE_PROJECT_DIR` paths. Worktrees for merged branches are cleaned up every **30 minutes** by the hourly automation (`getCooldown('worktree_cleanup', 30)`).
+Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/`. Each worktree is provisioned with symlinked GENTYR config (hooks, agents, commands) and a worktree-specific `.mcp.json` with absolute `CLAUDE_PROJECT_DIR` paths. Worktrees for merged branches are cleaned up every **30 minutes** by the hourly automation (`getCooldown('worktree_cleanup', 30)`). The project-manager is responsible for cleaning up worktrees immediately after self-merge; the 30-minute automation is a safety net for missed cleanups.
 
 **`core.hooksPath` poisoning defense**: Claude Code sub-agents in worktrees can write stale `core.hooksPath` entries to the main `.git/config`, silently bypassing all pre-commit hooks. Four layers defend against this:
 1. **`removeWorktree()`** (`worktree-manager.js`): Before removing a worktree, reads `core.hooksPath` and resets it to `.husky` if it points into the worktree being removed.
@@ -158,12 +177,15 @@ Task(subagent_type: "code-writer", ...)
 
 **Read-only agents are exempt**: Agents that only read code (e.g., `Explore`, `Plan`, `investigator`) don't need worktree isolation since they never run git write operations.
 
+**Agent separation**: The gentyr repo uses repo-specific agents from `.claude/agents/` (e.g., project-manager merges to `main`). Target projects use shared agents from the `agents/` directory (e.g., project-manager merges to `preview`). Shared agents are symlinked into `.claude/agents/` in the gentyr repo for local use.
+
 **Commit ownership**: Only the project-manager agent and interactive (CTO) sessions commit. Code-reviewer, code-writer, and test-writer agents do NOT commit — they write/review code and leave git operations to the project-manager. The `uncommitted-change-monitor.js` hook warns after 5 uncommitted file edits; interactive sessions should treat these warnings as mandatory and commit immediately.
 
 ## Propagation to Linked Projects
 
 When developing GENTYR locally with `pnpm link`, most changes auto-propagate to target projects:
-- **Hooks, commands, agents, docs**: Immediate (directory/file symlinks)
+- **Hooks, commands, docs**: Immediate (directory symlinks)
+- **Agents**: Immediate (individual file symlinks from `agents/` directory)
 - **Config templates**: Next Claude Code session (SessionStart re-merges)
 - **CLAUDE.md.gentyr-section**: Next Claude Code session (SessionStart replaces managed section)
 - **Husky hooks**: Next Claude Code session (SessionStart auto-syncs)
@@ -598,6 +620,13 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 - Skips all spawned agents (`CLAUDE_SPAWNED_SESSION=true`) — only the project-manager and interactive (CTO) sessions commit, so warning other spawned agents is counterproductive; fires for interactive sessions only
 - Output uses `hookSpecificOutput.additionalContext` so the AI model receives the warning, not just the terminal display
 - Tests at `.claude/hooks/__tests__/uncommitted-change-monitor.test.js` (16 tests, runs via `node --test`)
+
+**PR Auto-Merge Nudge Hook** (`.claude/hooks/pr-auto-merge-nudge.js`):
+- Runs at `PostToolUse` for Bash tool calls only
+- Detects `gh pr create` commands that produce a PR URL in the response
+- Injects `additionalContext` reminding the agent to self-merge immediately with `gh pr merge <number> --squash --delete-branch`
+- No-op if the command is not `gh pr create` or if no PR URL is found in the response
+- Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `PostToolUse > Bash`
 
 **Credential Health Check Hook** (`.claude/hooks/credential-health-check.js`):
 - Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions
