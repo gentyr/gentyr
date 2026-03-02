@@ -125,6 +125,8 @@ In target projects, GENTYR enforces a 4-stage merge chain: `feature/* -> preview
 
 Agents work on feature branches (`feature/*`, `fix/*`, `refactor/*`, `docs/*`, `chore/*`). At commit time, only lint and security checks run — no deputy-CTO review gate. This keeps commit latency low.
 
+**Branch Age Guard** (`pre-commit-review.js`): Blocks commits on feature branches that are older than the configured limit (default 4 hours). The guard measures branch age from the merge-base with the base branch (`preview` or `main`, auto-detected). If the branch is too old, the commit is rejected with a message directing the agent to merge existing work first. The limit is configurable via `branch_age_limit_hours` in `.claude/state/automation-config.json`. Non-fatal: if branch age cannot be determined, the commit is allowed.
+
 After committing, the project-manager agent:
 1. Pushes the branch: `git push -u origin HEAD`
 2. Creates a PR to the appropriate base branch (`preview` in target projects, `main` in the gentyr repo): `gh pr create --base <base> --head <branch> --title "..."`
@@ -569,6 +571,7 @@ Hooks that need the AI to act on their output must include both:
 - When version or config hash mismatch detected: re-merges `settings.json`, regenerates `.mcp.json` (preserving OP token), updates the GENTYR section of `CLAUDE.md`, and symlinks new agent definitions; handles missing `settings.json` gracefully by checking directory writability instead of file writability when the file does not yet exist
 - Auto-rebuilds MCP servers when `src/` mtime > `dist/` mtime; checks for `@types/node` in `packages/mcp-servers/node_modules/` and runs `npm install` first if missing, then `npm run build` (30s timeout); logs to stderr on failure (silent to agent)
 - Syncs husky hooks by comparing `husky/` against `.husky/` in the target project; re-copies if content differs
+- **Husky untrack migration** (target projects only, skipped in gentyr repo itself): if `.husky/pre-commit`, `.husky/post-commit`, or `.husky/pre-push` are tracked by git, runs `git rm --cached .husky/<file>` to untrack them — these files are managed by GENTYR and should not be committed in target projects; logs each untracked file as a change entry
 - Falls back to legacy settings.json hook diff check when no `gentyr-state.json` exists (pre-migration projects)
 - Supports both npm model (`node_modules/gentyr`) and legacy symlink model (`.claude-framework`)
 - **`tamperCheck()`**: Runs before sync logic. Two checks: (1) symlink target verification — confirms `.claude/hooks` is a symlink resolving to a directory whose grandparent contains `version.json`; regular directories only allowed in the framework repo itself; (2) file ownership check — reads `protection-state.json`, if `protected: true` verifies each filename in `criticalHooks` array is still root-owned (`stat.uid === 0`). Emits a `systemMessage` warning listing all failed checks if any are detected.
