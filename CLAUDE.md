@@ -325,9 +325,9 @@ The `product-manager` agent also creates fully-functional personas automatically
 
 The product-manager MCP server (`packages/mcp-servers/src/product-manager/`) manages a 6-section product-market-fit (PMF) analysis pipeline. State is persisted in `.claude/state/product-manager.db`.
 
-**Access via `/product-manager` slash command** (prefetches current status from the database before display, including demo scenario coverage for GUI personas — surfaces uncovered personas via `demoScenarios.uncoveredPersonas` in prefetch data).
+**Access via `/product-manager` slash command** (prefetches current status from the database before display, including demo scenario coverage for GUI and ADK personas — surfaces uncovered personas via `demoScenarios.uncoveredPersonas` in prefetch data).
 
-**Command menu (when analysis is `completed`)**: Options include view section, run pipeline, regenerate markdown, finalize, persona compliance, list unmapped pain points, and **Demo scenarios** (Option 6). The demo scenarios sub-menu offers: Gap analysis (runs coverage table showing GUI personas, scenario counts, and CODE-REVIEWER task status), Create scenarios (spawns product-manager sub-agent for uncovered personas), and View scenarios (calls `mcp__user-feedback__list_scenarios`). After any demo scenario creation action, gap analysis is always re-run as a completion verification pattern — checks that every scenario has a matching `"Implement demo scenario: <title>"` CODE-REVIEWER task.
+**Command menu (when analysis is `completed`)**: Options include view section, run pipeline, regenerate markdown, finalize, persona compliance, list unmapped pain points, and **Demo scenarios** (Option 6). The demo scenarios sub-menu offers: Gap analysis (runs coverage table showing GUI and ADK personas, scenario counts, and CODE-REVIEWER task status), Create scenarios (spawns product-manager sub-agent for uncovered personas), and View scenarios (calls `mcp__user-feedback__list_scenarios`). After any demo scenario creation action, gap analysis is always re-run as a completion verification pattern — checks that every scenario has a matching `"Implement demo scenario: <title>"` CODE-REVIEWER task.
 
 **Scope**: All 6 sections are external market research. Section content must not reference the local project, compare competitors to the local product, or describe the local product's features, strengths, or positioning. The local codebase is read only to determine what market space to research.
 
@@ -780,14 +780,14 @@ Curated product walkthroughs (NOT tests) mapped to personas. Scenarios are manag
 - FK CASCADE: deleting a persona deletes its scenarios
 
 **5 MCP tools** (on `user-feedback` server):
-- `create_scenario` — validates persona exists AND `consumption_mode = 'gui'` (rejects non-GUI); enforces `.demo.ts` suffix
+- `create_scenario` — validates persona exists AND `consumption_mode` includes `'gui'` or `'adk'` (rejects other modes); enforces `.demo.ts` suffix
 - `update_scenario` — partial update; enforces `.demo.ts` if `test_file` changes
 - `delete_scenario` — simple DELETE
 - `list_scenarios` — JOIN to personas for `persona_name`; filters by `persona_id`, `enabled`, `category`
 - `get_scenario` — enriches with `persona_name`
 
 **Constraints:**
-- Only `gui` consumption_mode personas can have demo scenarios — SDK/CLI/API/ADK personas cannot
+- Only `gui` and `adk` consumption_mode personas can have demo scenarios — SDK/CLI/API personas cannot
 - `*.demo.ts` file naming convention enforced by `create_scenario` and `update_scenario`
 - `DEMO_PAUSE_AT_END` env var — demo files import a shared helper that checks this and calls `page.pause()` if set
 
@@ -799,12 +799,12 @@ Curated product walkthroughs (NOT tests) mapped to personas. Scenarios are manag
 **Feedback N+1 spawning pattern:**
 - When personas are spawned for feedback sessions, GUI personas get N+1 sessions: 1 default (no scenario) + up to 3 scenario sessions
 - Each scenario session runs the demo file first via `mcp__playwright__run_demo()` as a pre-step (scaffolds app state), then the feedback agent explores from the paused state
-- Demo coverage check: GUI personas with zero enabled scenarios are flagged in the feedback orchestrator log
+- Demo coverage check: GUI and ADK personas with zero enabled scenarios are flagged in the feedback orchestrator log
 
 **Product-manager responsibilities:**
 - Defines scenario records (DB entries) with detailed descriptions
 - Creates CODE-REVIEWER tasks for `*.demo.ts` file implementation
-- Ensures every GUI persona has 2-4 demo scenarios covering key product flows
+- Ensures every GUI and ADK persona has 2-4 demo scenarios covering key product flows
 
 **Session replay and consumption mode support:**
 - `/replay` — Browse and replay past feedback sessions. Fetches audit trail via `mcp__user-feedback__get_session_audit`, converts to RecordingActions, launches `session-replay-runner.demo.ts` in headed mode at 800ms slowMo with thinking bubble overlays. Supports consumption mode filtering. Passes `REPLAY_SESSION_ID` and `REPLAY_AUDIT_DATA` via `run_demo`'s `extra_env` parameter.

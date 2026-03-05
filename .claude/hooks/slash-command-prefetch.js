@@ -938,7 +938,7 @@ function handleProductManager() {
   if (feedbackDb) {
     try {
       const guiPersonas = feedbackDb.prepare(
-        "SELECT id, name, COALESCE(display_name, name) as display_name FROM personas WHERE enabled = 1 AND consumption_mode = 'gui'"
+        "SELECT id, name, COALESCE(display_name, name) as display_name FROM personas WHERE enabled = 1 AND consumption_mode IN ('gui', 'adk')"
       ).all();
       const scenarios = feedbackDb.prepare(
         "SELECT persona_id, COUNT(*) as count FROM demo_scenarios WHERE enabled = 1 GROUP BY persona_id"
