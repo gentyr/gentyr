@@ -255,6 +255,13 @@ export const RunDemoArgsSchema = z.object({
     .describe('Run demos in headless mode. Sets DEMO_HEADLESS=1 env var. Extension demos will auto-skip.'),
   show_cursor: z.coerce.boolean().optional().default(false)
     .describe('Show a visible cursor dot during headed demos. Sets DEMO_SHOW_CURSOR=1 env var.'),
+  extra_env: z.record(z.string(), z.string())
+    .optional()
+    .describe(
+      'Additional environment variables to pass to the Playwright child process. ' +
+      'Use for replay data (REPLAY_SESSION_ID, REPLAY_AUDIT_DATA) or custom flags. ' +
+      'Max 10 keys, max 512KB total size. Values are not persisted to demo-runs.json.'
+    ),
 });
 
 export type RunDemoArgs = z.infer<typeof RunDemoArgsSchema>;
