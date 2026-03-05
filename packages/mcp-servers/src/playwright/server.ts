@@ -84,6 +84,8 @@ const DEMO_RUNS_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'demo-runs.jso
 const demoRuns = new Map<number, DemoRunState>();
 const demoAutoKillTimers = new Map<number, ReturnType<typeof setTimeout>>();
 const DEMO_AUTO_KILL_MS = 60_000;
+// PIDs that were auto-killed after a suite_end event — treated as 'passed' by the exit handler.
+const suiteEndAutoKilledPids = new Set<number>();
 
 function loadPersistedDemoRuns(): void {
   try {
@@ -495,15 +497,92 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
     // Progress-based crash/stall detection:
     // - 60s startup grace period (no stall checks — browser + webServer boot is slow)
-    // - After grace, check every 5s — if 90s silence, kill and report stall
+    // - After grace, check every 5s — if 90s silence (based on JSONL progress events, not
+    //   raw stdout noise), kill and report stall
     // - Early exit during grace period is reported immediately
     // - Scale stall window for longer timeouts
+    // - suite_end detection: when a suite_end JSONL event is detected, wait 5s then auto-kill
+    //   the process group (gives user a moment to see the final state). Only applies in
+    //   run_demo mode (not launch_ui_mode — which never uses a progress file).
     const GRACE_MS = 60_000;
     const STALL_MS = Math.max(90_000, (args.timeout ?? 120000) > 120000 ? (args.timeout ?? 120000) / 2 : 90_000);
+    const SUITE_END_KILL_DELAY_MS = 5_000;
     const CHECK_INTERVAL_MS = 5_000;
     let lastOutputLine = '';
+    // lastProgressEventAt tracks the timestamp of the last meaningful JSONL event
+    // (test_begin, test_end, suite_begin, suite_end). Used for stall detection to avoid
+    // false stalls caused by raw stdout/stderr noise (browser console chatter, etc.).
+    let lastProgressEventAt = Date.now();
+    // Byte offset into the progress file — incremented after each read to avoid
+    // re-parsing the entire file on every stall check.
+    let progressFileOffset = 0;
+    // Timestamp when suite_end was detected in the JSONL file; null until then.
+    let suiteEndDetectedAt: number | null = null;
 
-    const result = await new Promise<{ type: 'early_exit'; code: number | null; signal: string | null } | { type: 'stall' } | { type: 'ok' }>(
+    /**
+     * Read new JSONL lines from the progress file since the last read offset.
+     * Updates lastProgressEventAt and suiteEndDetectedAt as a side effect.
+     * Returns the number of new meaningful events found.
+     */
+    const readNewProgressEvents = (): number => {
+      try {
+        if (!fs.existsSync(progressFilePath)) return 0;
+        const stat = fs.statSync(progressFilePath);
+        if (stat.size <= progressFileOffset) return 0;
+        // Read only the new bytes since last check
+        const fd = fs.openSync(progressFilePath, 'r');
+        let newData: Buffer;
+        try {
+          const newBytes = stat.size - progressFileOffset;
+          newData = Buffer.allocUnsafe(newBytes);
+          fs.readSync(fd, newData, 0, newBytes, progressFileOffset);
+          progressFileOffset = stat.size;
+        } finally {
+          fs.closeSync(fd);
+        }
+        const newText = newData.toString('utf-8');
+        // Only advance offset to last complete line boundary to avoid losing partial lines
+        const lastNewline = newText.lastIndexOf('\n');
+        if (lastNewline === -1) {
+          // No complete lines yet — rewind offset so we re-read next time
+          progressFileOffset -= newData.length;
+          return 0;
+        }
+        progressFileOffset -= (newData.length - (lastNewline + 1));
+        const completeText = newText.slice(0, lastNewline + 1);
+        const newLines = completeText.split('\n').filter(Boolean);
+        let meaningfulEventCount = 0;
+        for (const line of newLines) {
+          try {
+            const event = JSON.parse(line);
+            if (
+              event.type === 'test_begin' ||
+              event.type === 'test_end' ||
+              event.type === 'suite_begin' ||
+              event.type === 'suite_end'
+            ) {
+              lastProgressEventAt = Date.now();
+              meaningfulEventCount++;
+              if (event.type === 'suite_end' && suiteEndDetectedAt === null) {
+                suiteEndDetectedAt = Date.now();
+              }
+            }
+          } catch {
+            // Skip malformed JSONL lines
+          }
+        }
+        return meaningfulEventCount;
+      } catch {
+        return 0;
+      }
+    };
+
+    const result = await new Promise<
+      | { type: 'early_exit'; code: number | null; signal: string | null }
+      | { type: 'stall' }
+      | { type: 'suite_end_killed' }
+      | { type: 'ok' }
+    >(
       (resolve) => {
         let settled = false;
         let stallCheckInterval: ReturnType<typeof setInterval> | null = null;
@@ -521,7 +600,26 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           if (settled) return;
           stallCheckInterval = setInterval(() => {
             if (settled) { cleanup(); return; }
-            const silenceMs = Date.now() - lastProgressAt;
+
+            // Read new JSONL events to update lastProgressEventAt and suiteEndDetectedAt
+            readNewProgressEvents();
+
+            // Auto-kill after suite_end + SUITE_END_KILL_DELAY_MS
+            if (suiteEndDetectedAt !== null && Date.now() - suiteEndDetectedAt >= SUITE_END_KILL_DELAY_MS) {
+              settled = true;
+              cleanup();
+              if (child.pid) {
+                try { process.kill(-child.pid, 'SIGTERM'); } catch {}
+              }
+              resolve({ type: 'suite_end_killed' });
+              return;
+            }
+
+            // Stall detection: use the more recent of raw output and JSONL progress events.
+            // This prevents false stalls from processes that emit browser console chatter
+            // but no meaningful test progress events.
+            const lastActivity = Math.max(lastProgressAt, lastProgressEventAt);
+            const silenceMs = Date.now() - lastActivity;
             if (silenceMs >= STALL_MS) {
               settled = true;
               cleanup();
@@ -594,7 +692,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       };
     }
 
-    // Still running and producing output — detach and return success
+    // Still running (or auto-killed after suite_end) — detach and return success
     if (child.stdout) {
       child.stdout.removeAllListeners('data');
       child.stdout.resume();
@@ -606,14 +704,22 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
     // Register demo run for check_demo_result tracking
     const demoPid = child.pid!;
+    const isSuiteEndKilled = result.type === 'suite_end_killed';
     const demoState: DemoRunState = {
       pid: demoPid,
       project,
       test_file,
       started_at: new Date().toISOString(),
-      status: 'running',
+      // suite_end_killed: process was already sent SIGTERM — mark 'passed' directly
+      // to avoid a race where the exit handler never fires (process already dead)
+      status: isSuiteEndKilled ? 'passed' : 'running',
       progress_file: progressFilePath,
     };
+    if (isSuiteEndKilled) {
+      demoState.ended_at = new Date().toISOString();
+      demoState.stdout_tail = stdoutLines.join('\n').slice(0, 5000);
+      suiteEndAutoKilledPids.add(demoPid);
+    }
     demoRuns.set(demoPid, demoState);
     persistDemoRuns();
 
@@ -623,12 +729,12 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       const entry = demoRuns.get(demoPid);
       if (!entry) return;
 
-      // If autoKillDemo already finalized this entry, don't overwrite its state
+      // If suite_end_killed already finalized or autoKillDemo already finalized, don't overwrite
       if (entry.status !== 'running') return;
 
       entry.ended_at = new Date().toISOString();
       entry.exit_code = code ?? undefined;
-      entry.status = code === 0 ? 'passed' : 'failed';
+      entry.status = (code === 0) ? 'passed' : 'failed';
       entry.stdout_tail = stdoutLines.join('\n').slice(0, 5000);
 
       if (entry.status === 'failed') {
@@ -712,10 +818,14 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       ? `\nWarnings:\n${preflight.warnings.map(w => `  - ${w}`).join('\n')}`
       : '';
 
+    const launchMessage = result.type === 'suite_end_killed'
+      ? `Demo completed and process auto-killed after suite_end for project "${project}".${test_file ? ` File: ${test_file}.` : ''} Use check_demo_result to see the final status.${warningText}`
+      : `Headed auto-play demo launched for project "${project}" with ${slow_mo}ms slow motion.${test_file ? ` Running file: ${test_file}.` : ''} The browser window should open shortly.${warningText}`;
+
     return {
       success: true,
       project,
-      message: `Headed auto-play demo launched for project "${project}" with ${slow_mo}ms slow motion.${test_file ? ` Running file: ${test_file}.` : ''} The browser window should open shortly.${warningText}`,
+      message: launchMessage,
       pid: child.pid,
       slow_mo,
       test_file,
