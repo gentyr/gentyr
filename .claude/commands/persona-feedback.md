@@ -46,7 +46,7 @@ Use `AskUserQuestion` (single-select) to let the user pick a persona.
 
 Build options from the prefetch persona list. Each option:
 - **label**: persona name
-- **description**: `{consumption_mode} | Last session: {last_session_date or "never"} | Satisfaction: {satisfaction or "N/A"}`
+- **description**: `[{consumption_mode}] | Last session: {last_session_date or "never"} | Satisfaction: {satisfaction or "N/A"}`
 
 Include a **"Cancel"** option:
 - **label**: "Cancel"
@@ -65,6 +65,7 @@ Render a summary:
 ```
 {persona_name} ({consumption_mode})
 ------------------------------------
+Mode: [{consumption_mode}]
 Description: {description}
 Traits: {traits}
 Endpoint: {endpoint}
@@ -123,7 +124,21 @@ If the persona has past sessions (from Step 3 data), use `AskUserQuestion` to pi
 
 Then call `mcp__feedback-explorer__get_session_details({ session_id: <selected> })` and display the full session report.
 
-After showing details, return to Step 4 (action menu) so the user can take another action or exit.
+After showing details, present via `AskUserQuestion` (single-select):
+- **"Replay this session"** — Re-run visually in headed browser using audit trail
+- **"Back to action menu"** — Return to persona actions
+- **"Done"** — Exit
+
+If **"Replay this session"**:
+1. Call `mcp__playwright__preflight_check({ project: "demo" })`. If `ready: false` → create urgent DEPUTY-CTO task with failure details and STOP.
+2. Call `mcp__user-feedback__get_session_audit({ session_id: "<selected>" })`. If 0 actions → "No recorded actions for this session." → return to Step 4.
+3. Call `mcp__playwright__run_demo({ project: "demo", test_file: "e2e/demo/session-replay-runner.demo.ts", slow_mo: 800, pause_at_end: true, extra_env: { REPLAY_SESSION_ID: "<session_id>", REPLAY_AUDIT_DATA: JSON.stringify(auditActions) } })`.
+4. Poll every 10 seconds (max 20 polls). If `progress.has_failures: true` → call `stop_demo`, create urgent DEPUTY-CTO task, STOP.
+5. After replay completes → return to Step 4.
+
+If **"Back to action menu"** → return to Step 4.
+
+If **"Done"** → STOP.
 
 If the persona has **no past sessions**, inform the user and return to Step 4.
 

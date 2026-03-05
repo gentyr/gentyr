@@ -35,6 +35,21 @@ Otherwise, present via `AskUserQuestion`:
 - **question**: "Which persona?"
 - **options**: One per persona from `personaGroups`. Label = `[N] <persona_display_name>` where N is that persona's scenario count (e.g., `[3] Vendor (Owner)`). Description = playwright project name.
 
+### Step 2b: Filter by Consumption Mode (optional)
+
+If the selected persona's scenarios have more than one distinct `category` value,
+present via `AskUserQuestion` (single-select):
+- **"All modes"** (Recommended) — Show every scenario
+- **"[gui] Browser / UI"** — Playwright browser demos
+- **"[sdk] SDK / LiveCodes"** — Code playground demos
+- **"[api] API Management"** — Dashboard API demos
+- **"[adk] AI Agent Replay"** — Replay recorded AI sessions
+
+Only show mode options that exist in the persona's scenarios. If all scenarios share
+one category, skip this step.
+
+If a mode is selected, filter `scenarios[]` by matching `category` before Step 3.
+
 ### Step 3: Select Scenario
 
 Get the scenarios array from the selected persona's group.
@@ -43,7 +58,7 @@ If only one scenario, use it directly (skip prompt).
 
 Otherwise, present via `AskUserQuestion`:
 - **question**: "Which scenario?"
-- **options**: One per scenario. Label = scenario title. Description = first sentence of description + category in parentheses if set.
+- **options**: One per scenario. Label = `[{category}] {title}` with category padded to 5 chars for alignment (e.g., `[gui ] Onboarding Flow`). Description = first sentence of description.
 
 ### Step 4: Run Preflight
 
@@ -62,6 +77,31 @@ Call `mcp__playwright__run_demo({
   slow_mo: 800,
   pause_at_end: true
 })`.
+
+### Step 6b: ADK Replay Path
+
+If the selected scenario has `category: "adk"`:
+
+Instead of calling `run_demo` with the scenario's `test_file`, show:
+> "ADK scenarios use session replay. Checking for past sessions..."
+
+1. Call `mcp__user-feedback__list_feedback_runs({ limit: 5 })` and filter to the selected persona.
+2. If sessions exist:
+   - Call `mcp__user-feedback__get_session_audit({ session_id: "<most_recent_session_id>" })`.
+   - If audit has actions, call `mcp__playwright__run_demo({
+       project: "<scenario.playwright_project>",
+       test_file: "e2e/demo/session-replay-runner.demo.ts",
+       slow_mo: 800,
+       pause_at_end: true,
+       extra_env: {
+         REPLAY_SESSION_ID: "<session_id>",
+         REPLAY_AUDIT_DATA: JSON.stringify(auditActions)
+       }
+     })`.
+   - Continue to Step 7 with the returned PID.
+3. If no sessions exist:
+   > "No recorded sessions for this persona. Run this scenario via `/persona-feedback` first to generate a session that can be replayed."
+   > STOP.
 
 ### Step 7: Report Launch
 

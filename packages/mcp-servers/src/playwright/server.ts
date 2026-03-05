@@ -61,7 +61,7 @@ import {
   type DemoRunState,
   type DemoProgress,
 } from './types.js';
-import { parseTestOutput, truncateOutput } from './helpers.js';
+import { parseTestOutput, truncateOutput, validateExtraEnv } from './helpers.js';
 import { discoverPlaywrightConfig } from './config-discovery.js';
 import { findTraceZip, parseTraceZip } from './trace-parser.js';
 
@@ -421,6 +421,15 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
   if (base_url) {
     env.PLAYWRIGHT_BASE_URL = base_url;
+  }
+
+  // Apply extra_env AFTER all explicit args so it cannot override them
+  if (args.extra_env) {
+    const validationError = validateExtraEnv(args.extra_env);
+    if (validationError) {
+      return { success: false, project, message: validationError };
+    }
+    Object.assign(env, args.extra_env);
   }
 
   try {
