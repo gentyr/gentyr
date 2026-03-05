@@ -401,18 +401,18 @@ your feedback exploration from the current page state.
     }
   }
 
-  // Demo coverage: flag GUI personas with zero scenarios
+  // Demo coverage: flag GUI/ADK personas with zero scenarios
   try {
     const Database = (await import('better-sqlite3')).default;
     const db = new Database(USER_FEEDBACK_DB, { readonly: true });
     const uncovered = db.prepare(`
       SELECT p.name FROM personas p
-      WHERE p.enabled = 1 AND p.consumption_mode = 'gui'
+      WHERE p.enabled = 1 AND p.consumption_mode IN ('gui', 'adk')
         AND p.id NOT IN (SELECT DISTINCT persona_id FROM demo_scenarios WHERE enabled = 1)
     `).all();
     db.close();
     if (uncovered.length > 0) {
-      log(`Feedback: ${uncovered.length} GUI persona(s) lack demo scenarios: ${uncovered.map(p => p.name).join(', ')}`);
+      log(`Feedback: ${uncovered.length} GUI/ADK persona(s) lack demo scenarios: ${uncovered.map(p => p.name).join(', ')}`);
     }
   } catch { /* non-fatal */ }
 
