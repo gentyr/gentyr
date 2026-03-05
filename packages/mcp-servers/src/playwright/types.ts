@@ -314,6 +314,7 @@ export interface CheckDemoResultResult {
   screenshot_paths?: string[];
   trace_summary?: string;
   progress?: DemoProgress;
+  artifacts?: string[];
   message: string;
 }
 
@@ -329,6 +330,8 @@ export interface DemoRunState {
   screenshot_paths?: string[];
   trace_summary?: string;
   progress_file?: string;
+  stdout_tail?: string;
+  artifacts?: string[];
 }
 
 export interface StopDemoResult {

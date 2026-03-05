@@ -18,9 +18,10 @@
 
 import { execFileSync, spawn, type ChildProcess } from 'child_process';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { join, resolve } from 'path';
+import { resolve } from 'path';
 import { createServer } from 'net';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { INFRA_CRED_KEYS, opRead, loadServicesConfig as loadServicesConfigShared, resolveLocalSecrets } from '../shared/op-secrets.js';
 import {
   SyncSecretsArgsSchema,
   ListMappingsArgsSchema,
@@ -29,7 +30,6 @@ import {
   DevServerStopArgsSchema,
   DevServerStatusArgsSchema,
   RunCommandArgsSchema,
-  ServicesConfigSchema,
   type SyncSecretsArgs,
   type ListMappingsArgs,
   type VerifySecretsArgs,
@@ -55,7 +55,7 @@ import {
   type RunCommandBackgroundResult,
 } from './types.js';
 
-const { RENDER_API_KEY, VERCEL_TOKEN, VERCEL_TEAM_ID, OP_SERVICE_ACCOUNT_TOKEN } = process.env;
+const { RENDER_API_KEY, VERCEL_TOKEN, VERCEL_TEAM_ID } = process.env;
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || '.';
 
 function safeProjectPath(relativePath: string): string {
@@ -75,21 +75,7 @@ const VERCEL_BASE_URL = 'https://api.vercel.com';
 // ============================================================================
 
 function loadServicesConfig(): ServicesConfig {
-  const configPath = join(PROJECT_DIR, '.claude/config/services.json');
-  try {
-    const configData = readFileSync(configPath, 'utf-8');
-    const parsed = JSON.parse(configData) as unknown;
-    const result = ServicesConfigSchema.safeParse(parsed);
-
-    if (!result.success) {
-      throw new Error(`Invalid services.json: ${result.error.message}`);
-    }
-
-    return result.data;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to load services.json: ${message}`);
-  }
+  return loadServicesConfigShared(PROJECT_DIR);
 }
 
 // ============================================================================
@@ -196,28 +182,6 @@ function detectPort(lines: string[]): number | null {
   return null;
 }
 
-/**
- * Resolve local secrets from 1Password — values stay in MCP server memory.
- * Returns env vars ready to inject into child process, plus any failed keys.
- */
-function resolveLocalSecrets(config: ServicesConfig): { resolvedEnv: Record<string, string>; failedKeys: string[] } {
-  const resolvedEnv: Record<string, string> = {};
-  const failedKeys: string[] = [];
-  const localSecrets = config.secrets.local || {};
-
-  for (const [key, ref] of Object.entries(localSecrets)) {
-    try {
-      resolvedEnv[key] = opRead(ref);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[secret-sync] resolveLocalSecrets: failed to resolve ${key}: ${message}\n`);
-      failedKeys.push(key);
-    }
-  }
-
-  return { resolvedEnv, failedKeys };
-}
-
 function cleanupManagedProcesses(): void {
   for (const [name, managed] of managedProcesses.entries()) {
     try {
@@ -242,29 +206,6 @@ process.on('SIGTERM', () => {
   cleanupManagedProcesses();
   process.exit(0);
 });
-
-// ============================================================================
-// 1Password Operations
-// ============================================================================
-
-/**
- * Read a secret from 1Password (value stays in-process, never returned to agent)
- */
-function opRead(reference: string): string {
-  if (!OP_SERVICE_ACCOUNT_TOKEN) {
-    throw new Error('OP_SERVICE_ACCOUNT_TOKEN not set');
-  }
-
-  try {
-    return execFileSync('op', ['read', reference], {
-      encoding: 'utf-8',
-      env: { ...process.env, OP_SERVICE_ACCOUNT_TOKEN },
-    }).trim();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to read ${reference}: ${message}`);
-  }
-}
 
 // ============================================================================
 // Render Operations
@@ -766,16 +707,6 @@ async function verifySecrets(args: VerifySecretsArgs): Promise<VerifyResult> {
 // ============================================================================
 // Run Command — Security & Sanitization
 // ============================================================================
-
-/** Infrastructure credentials that must NOT leak to child processes */
-const INFRA_CRED_KEYS = new Set([
-  'OP_SERVICE_ACCOUNT_TOKEN',
-  'RENDER_API_KEY',
-  'VERCEL_TOKEN',
-  'VERCEL_TEAM_ID',
-  'GH_TOKEN',
-  'GITHUB_TOKEN',
-]);
 
 const DEFAULT_ALLOWED_EXECUTABLES = new Set([
   'pnpm', 'npx', 'node', 'tsx', 'playwright', 'prisma', 'drizzle-kit', 'vitest',
