@@ -14,10 +14,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as http from 'http';
+import * as https from 'https';
 import * as net from 'net';
 import * as crypto from 'crypto';
 import { spawn, execFileSync } from 'child_process';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { loadServicesConfig, resolveLocalSecrets, INFRA_CRED_KEYS, buildCleanEnv } from '../shared/op-secrets.js';
 import {
   LaunchUiModeArgsSchema,
   RunTestsArgsSchema,
@@ -110,7 +112,7 @@ function persistDemoRuns(): void {
     const entries = [...demoRuns.values()]
       .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
       .slice(0, 20)
-      .map(({ trace_summary, progress_file, ...rest }) => rest);
+      .map(({ trace_summary, progress_file, stdout_tail, ...rest }) => rest);
     fs.writeFileSync(DEMO_RUNS_PATH, JSON.stringify(entries, null, 2));
   } catch {
     // Non-fatal — state will be lost on MCP restart
@@ -281,6 +283,18 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
   const cmdArgs = ['playwright', 'test', '--project', project, '--ui'];
   const env: Record<string, string> = { ...process.env as Record<string, string> };
 
+  // Strip infrastructure credentials from child env (unconditional)
+  for (const key of INFRA_CRED_KEYS) delete env[key];
+
+  // Resolve 1Password secrets for child process (non-fatal)
+  try {
+    const config = loadServicesConfig(PROJECT_DIR);
+    const { resolvedEnv } = resolveLocalSecrets(config);
+    Object.assign(env, resolvedEnv);
+  } catch (err) {
+    process.stderr.write(`[playwright] Secret resolution skipped: ${err instanceof Error ? err.message : err}\n`);
+  }
+
   // Insert test_file as positional arg (after 'test', before '--project')
   if (test_file) {
     cmdArgs.splice(2, 0, test_file);
@@ -387,6 +401,18 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const cmdArgs = ['playwright', 'test', '--project', project, '--trace', 'on'];
   const env: Record<string, string> = { ...process.env as Record<string, string> };
 
+  // Strip infrastructure credentials from child env (unconditional)
+  for (const key of INFRA_CRED_KEYS) delete env[key];
+
+  // Resolve 1Password secrets for child process (non-fatal)
+  try {
+    const config = loadServicesConfig(PROJECT_DIR);
+    const { resolvedEnv } = resolveLocalSecrets(config);
+    Object.assign(env, resolvedEnv);
+  } catch (err) {
+    process.stderr.write(`[playwright] Secret resolution skipped: ${err instanceof Error ? err.message : err}\n`);
+  }
+
   // Set progress file env var for the progress reporter
   env.DEMO_PROGRESS_FILE = progressFilePath;
 
@@ -444,9 +470,14 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     let stderrChunks: Buffer[] = [];
     let lastProgressAt = Date.now();
 
+    const MAX_STDOUT_LINES = 50;
+    let stdoutLines: string[] = [];
     if (child.stdout) {
-      child.stdout.on('data', () => {
+      child.stdout.on('data', (chunk: Buffer) => {
         lastProgressAt = Date.now();
+        const lines = chunk.toString('utf8').split('\n').filter(l => l.trim());
+        stdoutLines.push(...lines);
+        if (stdoutLines.length > MAX_STDOUT_LINES) stdoutLines = stdoutLines.slice(-MAX_STDOUT_LINES);
       });
     }
     if (child.stderr) {
@@ -529,6 +560,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     if (result.type === 'early_exit') {
       const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
       const snippet = stderr.length > 2000 ? stderr.slice(0, 2000) + '...' : stderr;
+      const stdout = stdoutLines.join('\n').trim();
 
       // Write crash event to progress file so check_demo_result can surface the error
       try {
@@ -539,6 +571,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           exit_code: result.code,
           signal: result.signal,
           stderr_snippet: stderr.slice(0, 5000),
+          stdout_snippet: stdout.slice(0, 5000),
         };
         fs.appendFileSync(progressFilePath, JSON.stringify(crashEvent) + '\n');
       } catch { /* non-fatal */ }
@@ -546,7 +579,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       return {
         success: false,
         project,
-        message: `Playwright process crashed during startup (exit code: ${result.code}, signal: ${result.signal})${snippet ? `\nstderr: ${snippet}` : ''}`,
+        message: `Playwright process crashed during startup (exit code: ${result.code}, signal: ${result.signal})${stdout ? `\nstdout: ${stdout.slice(0, 2000)}` : ''}${snippet ? `\nstderr: ${snippet}` : ''}`,
       };
     }
 
@@ -596,6 +629,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       entry.ended_at = new Date().toISOString();
       entry.exit_code = code ?? undefined;
       entry.status = code === 0 ? 'passed' : 'failed';
+      entry.stdout_tail = stdoutLines.join('\n').slice(0, 5000);
 
       if (entry.status === 'failed') {
         // Read lastDemoFailure from test-failure-state.json for enriched context
@@ -637,6 +671,14 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
             // Non-fatal
           }
         }
+
+        // Fallback: use stdout tail if no failure details from test-failure-state.json
+        if (!entry.failure_summary && entry.stdout_tail) {
+          entry.failure_summary = entry.stdout_tail.slice(0, 2000);
+        }
+
+        // Scan for all artifacts
+        entry.artifacts = scanArtifacts();
       }
 
       // Parse trace for play-by-play (runs for both passed and failed)
@@ -750,6 +792,9 @@ function readDemoProgress(progressFilePath: string): DemoProgress | null {
             if (event.stderr_snippet && progress.recent_errors.length < 10) {
               progress.recent_errors.push(String(event.stderr_snippet).slice(0, 2000));
             }
+            if (event.stdout_snippet && progress.recent_errors.length < 10) {
+              progress.recent_errors.push(`[stdout] ${String(event.stdout_snippet).slice(0, 2000)}`);
+            }
             break;
           case 'suite_end':
             progress.current_test = null;
@@ -843,6 +888,9 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     unknown: `Demo status unknown for PID ${pid}.`,
   };
 
+  // Fallback failure_summary from stdout_tail
+  const failureSummary = entry.failure_summary || (entry.status === 'failed' ? entry.stdout_tail?.slice(0, 2000) : undefined);
+
   return {
     status: entry.status,
     pid,
@@ -851,10 +899,11 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     started_at: entry.started_at,
     ended_at: entry.ended_at,
     exit_code: entry.exit_code,
-    failure_summary: entry.failure_summary,
+    failure_summary: failureSummary,
     screenshot_paths: entry.screenshot_paths,
     trace_summary: entry.trace_summary,
     progress: progress ?? undefined,
+    artifacts: entry.artifacts || (entry.status === 'failed' || entry.status === 'unknown' ? scanArtifacts() : undefined),
     message: statusMessages[entry.status] || `Demo status: ${entry.status}`,
   };
 }
@@ -1278,6 +1327,46 @@ function countTestFiles(dir: string, projectFilter?: string): number {
 
 // parseTestOutput and truncateOutput imported from ./helpers.js
 
+/**
+ * Scan test-results/ and playwright-report/ for artifact files.
+ * Returns paths to screenshots, videos, traces, and error context files.
+ */
+function scanArtifacts(maxEntries = 20): string[] {
+  const artifacts: string[] = [];
+  const dirs = [
+    path.join(PROJECT_DIR, 'test-results'),
+    path.join(PROJECT_DIR, 'playwright-report'),
+  ];
+  const extensions = new Set(['.png', '.webm', '.zip']);
+
+  const walk = (dir: string, depth: number) => {
+    if (depth > 4 || artifacts.length >= maxEntries) return;
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const e of entries) {
+        if (artifacts.length >= maxEntries) return;
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          walk(full, depth + 1);
+        } else {
+          const ext = path.extname(e.name).toLowerCase();
+          if (extensions.has(ext) || e.name === 'error-context.md') {
+            artifacts.push(full);
+          }
+        }
+      }
+    } catch {
+      // Directory may not exist or be unreadable
+    }
+  };
+
+  for (const dir of dirs) {
+    walk(dir, 0);
+  }
+
+  return artifacts;
+}
+
 // ============================================================================
 // Preflight Check
 // ============================================================================
@@ -1298,6 +1387,157 @@ function isValidChromeMatchPattern(pattern: string): boolean {
   if (host === '*') return true;
   if (host.startsWith('*.')) return !host.slice(2).includes('*');
   return !host.includes('*');
+}
+
+/**
+ * Check if the dev server is reachable and healthy.
+ */
+async function checkDevServer(baseUrl: string): Promise<PreflightCheckEntry> {
+  return new Promise<PreflightCheckEntry>((resolve) => {
+    const start = Date.now();
+    const url = new URL(baseUrl);
+    const isHttps = url.protocol === 'https:';
+    const httpModule = isHttps ? https : http;
+    const req = httpModule.request(
+      {
+        hostname: url.hostname,
+        port: url.port || (isHttps ? 443 : 80),
+        path: url.pathname,
+        method: 'GET',
+        timeout: 5000,
+      },
+      (res) => {
+        let body = '';
+        res.on('data', (chunk: Buffer) => {
+          if (body.length < 16384) {
+            body += chunk.toString('utf8').slice(0, 16384 - body.length);
+          }
+        });
+        res.on('end', () => {
+          const statusCode = res.statusCode ?? 0;
+
+          if (statusCode >= 500) {
+            const cleanBody = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+            resolve({
+              name: 'dev_server',
+              status: 'fail',
+              message: `Dev server at ${baseUrl} returned HTTP ${statusCode}${cleanBody ? `: ${cleanBody}` : ''}`,
+              duration_ms: Date.now() - start,
+            });
+            return;
+          }
+
+          const errorPatterns = [
+            'Unhandled Runtime Error',
+            'Missing Supabase environment variables',
+            'Internal Server Error',
+          ];
+          const bodyLower = body.toLowerCase();
+          for (const pattern of errorPatterns) {
+            if (bodyLower.includes(pattern.toLowerCase())) {
+              const cleanBody = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+              resolve({
+                name: 'dev_server',
+                status: 'fail',
+                message: `Dev server at ${baseUrl} responded but contains error: "${pattern}"${cleanBody ? ` — ${cleanBody}` : ''}`,
+                duration_ms: Date.now() - start,
+              });
+              return;
+            }
+          }
+
+          resolve({
+            name: 'dev_server',
+            status: 'pass',
+            message: `Dev server at ${baseUrl} responded with ${statusCode}`,
+            duration_ms: Date.now() - start,
+          });
+        });
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({
+        name: 'dev_server',
+        status: 'fail',
+        message: `Dev server at ${baseUrl} did not respond within 5s`,
+        duration_ms: Date.now() - start,
+      });
+    });
+    req.on('error', () => {
+      resolve({
+        name: 'dev_server',
+        status: 'fail',
+        message: `Dev server at ${baseUrl} is not reachable`,
+        duration_ms: Date.now() - start,
+      });
+    });
+    req.end();
+  });
+}
+
+/**
+ * Attempt to auto-start the dev server via `pnpm run dev`.
+ * Returns a descriptive message on success, null on failure.
+ */
+async function attemptDevServerAutoStart(baseUrl: string): Promise<string | null> {
+  const url = new URL(baseUrl);
+  const port = url.port || '3000';
+  const isHttps = url.protocol === 'https:';
+  const httpModule = isHttps ? https : http;
+
+  // Build env with secrets if available (non-fatal)
+  let childEnv: Record<string, string>;
+  try {
+    const config = loadServicesConfig(PROJECT_DIR);
+    const { resolvedEnv } = resolveLocalSecrets(config);
+    childEnv = buildCleanEnv(resolvedEnv);
+  } catch {
+    childEnv = buildCleanEnv();
+  }
+  childEnv.PORT = port;
+
+  // Spawn detached dev server, track PID for cleanup
+  let childPid: number;
+  try {
+    const child = spawn('pnpm', ['run', 'dev'], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: PROJECT_DIR,
+      env: childEnv,
+    });
+    child.unref();
+    if (!child.pid) return null;
+    childPid = child.pid;
+  } catch {
+    return null;
+  }
+
+  // Poll health every 2s for max 30s
+  for (let i = 0; i < 15; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const ok = await new Promise<boolean>((resolve) => {
+        const req = httpModule.request(
+          { hostname: url.hostname, port: url.port || (isHttps ? 443 : 80), path: '/', method: 'GET', timeout: 3000 },
+          (res) => {
+            res.resume(); // drain
+            resolve((res.statusCode ?? 0) < 500);
+          }
+        );
+        req.on('error', () => resolve(false));
+        req.on('timeout', () => { req.destroy(); resolve(false); });
+        req.end();
+      });
+      if (ok) return `Dev server auto-started on port ${port} (pid ${childPid})`;
+    } catch {
+      // continue polling
+    }
+  }
+
+  // Health polling exhausted — kill the orphaned process
+  try { process.kill(childPid, 'SIGTERM'); } catch { /* already dead */ }
+  return null;
 }
 
 /**
@@ -1437,86 +1677,19 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
 
   // 7. Dev server reachable (fail, not warn — if it's not up, demo will fail)
   const baseUrl = args.base_url || 'http://localhost:3000';
-  const devServerCheck = await new Promise<PreflightCheckEntry>((resolve) => {
-    const start = Date.now();
-    const url = new URL(baseUrl);
-    const req = http.request(
-      {
-        hostname: url.hostname,
-        port: url.port || 80,
-        path: url.pathname,
-        method: 'GET',
-        timeout: 5000,
-      },
-      (res) => {
-        // Read response body (capped at 16KB) to check for app-level errors
-        let body = '';
-        res.on('data', (chunk: Buffer) => {
-          if (body.length < 16384) {
-            body += chunk.toString('utf8').slice(0, 16384 - body.length);
-          }
-        });
-        res.on('end', () => {
-          const statusCode = res.statusCode ?? 0;
+  let devServerCheck = await checkDevServer(baseUrl);
 
-          // Check for HTTP error status codes
-          if (statusCode >= 500) {
-            resolve({
-              name: 'dev_server',
-              status: 'fail',
-              message: `Dev server at ${baseUrl} returned HTTP ${statusCode}`,
-              duration_ms: Date.now() - start,
-            });
-            return;
-          }
-
-          // Check for app-level error indicators in the response body
-          const errorPatterns = [
-            'Unhandled Runtime Error',
-            'Missing Supabase environment variables',
-            'Internal Server Error',
-          ];
-          const bodyLower = body.toLowerCase();
-          for (const pattern of errorPatterns) {
-            if (bodyLower.includes(pattern.toLowerCase())) {
-              resolve({
-                name: 'dev_server',
-                status: 'fail',
-                message: `Dev server at ${baseUrl} responded but contains error: "${pattern}"`,
-                duration_ms: Date.now() - start,
-              });
-              return;
-            }
-          }
-
-          resolve({
-            name: 'dev_server',
-            status: 'pass',
-            message: `Dev server at ${baseUrl} responded with ${statusCode}`,
-            duration_ms: Date.now() - start,
-          });
-        });
+  // Auto-start: only attempt on connection refused (not on HTTP 500 / error patterns)
+  if (devServerCheck.status === 'fail' && devServerCheck.message.includes('is not reachable')) {
+    const autoStartResult = await attemptDevServerAutoStart(baseUrl);
+    if (autoStartResult) {
+      // Re-check after auto-start
+      devServerCheck = await checkDevServer(baseUrl);
+      if (devServerCheck.status === 'pass') {
+        devServerCheck.message = `${devServerCheck.message} (auto-started)`;
       }
-    );
-    req.on('timeout', () => {
-      req.destroy();
-      resolve({
-        name: 'dev_server',
-        status: 'fail',
-        message: `Dev server at ${baseUrl} did not respond within 5s`,
-        duration_ms: Date.now() - start,
-      });
-    });
-    req.on('error', () => {
-      resolve({
-        name: 'dev_server',
-        status: 'fail',
-        message: `Dev server at ${baseUrl} is not reachable`,
-        duration_ms: Date.now() - start,
-      });
-    });
-    req.end();
-  });
+    }
+  }
   checks.push(devServerCheck);
 
   // 8. Auth state freshness (only when a project is specified)
