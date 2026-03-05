@@ -45,6 +45,9 @@ Call `mcp__playwright__run_demo({
 
 No `test_file` filter — this runs the entire suite.
 
+> **Note:** ADK demo files (`category: "adk"`) self-skip when `REPLAY_SESSION_ID` is not set.
+> They will appear as "skipped" in the test results. Use `/replay` to run ADK demos.
+
 Report the PID returned so the user can monitor the process externally if desired.
 
 ### Step 4: Monitor Progress

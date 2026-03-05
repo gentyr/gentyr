@@ -28,7 +28,7 @@ import {
   type CheckDemoResultResult,
   type DemoProgress,
 } from '../types.js';
-import { parseTestOutput, truncateOutput } from '../helpers.js';
+import { parseTestOutput, truncateOutput, validateExtraEnv } from '../helpers.js';
 
 // ============================================================================
 // Zod Schema Validation Tests (G003 Compliance)
@@ -830,6 +830,91 @@ describe('Playwright MCP Server - Zod Schemas', () => {
         expect(result.data.show_cursor).toBe(true);
       }
     });
+
+    it('should accept optional extra_env with valid key-value pairs', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        extra_env: { REPLAY_SESSION_ID: 'abc-123', REPLAY_AUDIT_DATA: '[]' },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.extra_env).toEqual({
+          REPLAY_SESSION_ID: 'abc-123',
+          REPLAY_AUDIT_DATA: '[]',
+        });
+      }
+    });
+
+    it('should allow extra_env to be omitted (backward compat)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.extra_env).toBeUndefined();
+      }
+    });
+
+    it('should accept extra_env with empty object', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        extra_env: {},
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.extra_env).toEqual({});
+      }
+    });
+
+    it('should reject extra_env with non-string values', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        extra_env: { KEY: 123 },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject extra_env with non-string keys mapped to objects', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        extra_env: { KEY: { nested: 'value' } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept extra_env alongside all other parameters', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'vendor-owner',
+        slow_mo: 500,
+        base_url: 'http://localhost:3000',
+        test_file: 'e2e/demo/replay.demo.ts',
+        pause_at_end: true,
+        timeout: 60000,
+        headless: false,
+        show_cursor: true,
+        extra_env: {
+          REPLAY_SESSION_ID: 'sess-456',
+          REPLAY_AUDIT_DATA: JSON.stringify([{ type: 'navigate', url: 'http://example.com' }]),
+        },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.extra_env).toBeDefined();
+        expect(result.data.extra_env!['REPLAY_SESSION_ID']).toBe('sess-456');
+        expect(result.data.show_cursor).toBe(true);
+        expect(result.data.timeout).toBe(60000);
+      }
+    });
+
+    // Note: Zod schema accepts any string keys in extra_env.
+    // Security-sensitive keys (PATH, SUPABASE_*, DEMO_*, etc.) are rejected
+    // at runtime via validateExtraEnv() — see the dedicated test block below.
+    it('should accept extra_env with security-sensitive keys at schema level (blocked at runtime)', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        extra_env: { PATH: '/usr/bin', SUPABASE_URL: 'http://evil.com' },
+      });
+      // Schema accepts — runtime rejects
+      expect(result.success).toBe(true);
+    });
   });
 
   describe('CheckDemoResultArgsSchema', () => {
@@ -948,6 +1033,204 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       });
       expect(result.success).toBe(false);
     });
+  });
+});
+
+// ============================================================================
+// validateExtraEnv() — runtime guard for run_demo extra_env argument
+// ============================================================================
+
+describe('validateExtraEnv()', () => {
+  it('should return null for an empty object (valid)', () => {
+    expect(validateExtraEnv({})).toBeNull();
+  });
+
+  it('should return null for a single safe key-value pair', () => {
+    expect(validateExtraEnv({ REPLAY_SESSION_ID: 'abc-123' })).toBeNull();
+  });
+
+  it('should return null for multiple safe keys', () => {
+    expect(validateExtraEnv({
+      REPLAY_SESSION_ID: 'abc-123',
+      REPLAY_AUDIT_DATA: '[]',
+      MY_CUSTOM_FLAG: 'true',
+    })).toBeNull();
+  });
+
+  // --- Key count limit ---
+
+  it('should return null for exactly 10 keys (boundary)', () => {
+    const env: Record<string, string> = {};
+    for (let i = 0; i < 10; i++) env[`KEY_${i}`] = 'v';
+    expect(validateExtraEnv(env)).toBeNull();
+  });
+
+  it('should return an error for 11 keys (over limit)', () => {
+    const env: Record<string, string> = {};
+    for (let i = 0; i < 11; i++) env[`KEY_${i}`] = 'v';
+    const result = validateExtraEnv(env);
+    expect(result).not.toBeNull();
+    expect(result).toMatch(/max 10 keys/);
+  });
+
+  // --- Total size limit ---
+
+  it('should return null when total key+value bytes exactly equal 512KB', () => {
+    // One key: name length + value length = 512 * 1024
+    const key = 'K';          // 1 byte
+    const value = 'x'.repeat(512 * 1024 - 1);  // 524287 bytes => total 524288
+    expect(validateExtraEnv({ [key]: value })).toBeNull();
+  });
+
+  it('should return an error when total key+value bytes exceed 512KB', () => {
+    const key = 'K';
+    const value = 'x'.repeat(512 * 1024);  // total = 524289 bytes > limit
+    const result = validateExtraEnv({ [key]: value });
+    expect(result).not.toBeNull();
+    expect(result).toMatch(/512KB/);
+  });
+
+  // --- BLOCKED_PREFIXES: exact-name entries ---
+
+  it('should block PATH (exact match)', () => {
+    const result = validateExtraEnv({ PATH: '/usr/bin' });
+    expect(result).not.toBeNull();
+    expect(result).toMatch(/PATH/);
+  });
+
+  it('should block HOME (exact match)', () => {
+    expect(validateExtraEnv({ HOME: '/tmp' })).toMatch(/HOME/);
+  });
+
+  it('should block USER (exact match)', () => {
+    expect(validateExtraEnv({ USER: 'evil' })).toMatch(/USER/);
+  });
+
+  it('should block SHELL (exact match)', () => {
+    expect(validateExtraEnv({ SHELL: '/bin/sh' })).toMatch(/SHELL/);
+  });
+
+  it('should block NODE_OPTIONS (exact match)', () => {
+    expect(validateExtraEnv({ NODE_OPTIONS: '--inspect' })).toMatch(/NODE_OPTIONS/);
+  });
+
+  it('should block GITHUB_TOKEN (exact match)', () => {
+    expect(validateExtraEnv({ GITHUB_TOKEN: 'ghp_secret' })).toMatch(/GITHUB_TOKEN/);
+  });
+
+  it('should block OP_SERVICE_ACCOUNT_TOKEN (exact match)', () => {
+    expect(validateExtraEnv({ OP_SERVICE_ACCOUNT_TOKEN: 'ops_secret' })).toMatch(/OP_SERVICE_ACCOUNT_TOKEN/);
+  });
+
+  it('should block HTTPS_PROXY (exact match)', () => {
+    expect(validateExtraEnv({ HTTPS_PROXY: 'http://proxy' })).toMatch(/HTTPS_PROXY/);
+  });
+
+  it('should block HTTP_PROXY (exact match)', () => {
+    expect(validateExtraEnv({ HTTP_PROXY: 'http://proxy' })).toMatch(/HTTP_PROXY/);
+  });
+
+  it('should block NO_PROXY (exact match)', () => {
+    expect(validateExtraEnv({ NO_PROXY: 'localhost' })).toMatch(/NO_PROXY/);
+  });
+
+  it('should block PLAYWRIGHT_BASE_URL (exact match)', () => {
+    expect(validateExtraEnv({ PLAYWRIGHT_BASE_URL: 'http://evil.com' })).toMatch(/PLAYWRIGHT_BASE_URL/);
+  });
+
+  // --- BLOCKED_PREFIXES: prefix_ pattern entries (e.g. SUPABASE_URL) ---
+
+  it('should block SUPABASE_URL (prefix SUPABASE_ match)', () => {
+    expect(validateExtraEnv({ SUPABASE_URL: 'http://evil.com' })).toMatch(/SUPABASE_URL/);
+  });
+
+  it('should block DATABASE_URL (prefix DATABASE_ match)', () => {
+    expect(validateExtraEnv({ DATABASE_URL: 'postgres://evil' })).toMatch(/DATABASE_URL/);
+  });
+
+  it('should block CLOUDFLARE_API_TOKEN (prefix CLOUDFLARE_ match)', () => {
+    expect(validateExtraEnv({ CLOUDFLARE_API_TOKEN: 'secret' })).toMatch(/CLOUDFLARE_API_TOKEN/);
+  });
+
+  it('should block GENTYR_SOMETHING (prefix GENTYR_ match)', () => {
+    expect(validateExtraEnv({ GENTYR_INTERNAL: '1' })).toMatch(/GENTYR_INTERNAL/);
+  });
+
+  it('should block CLAUDE_PROJECT_DIR (prefix CLAUDE_ match)', () => {
+    expect(validateExtraEnv({ CLAUDE_PROJECT_DIR: '/tmp' })).toMatch(/CLAUDE_PROJECT_DIR/);
+  });
+
+  it('should block DEMO_SLOW_MO (explicit DEMO override protection)', () => {
+    expect(validateExtraEnv({ DEMO_SLOW_MO: '0' })).toMatch(/DEMO_SLOW_MO/);
+  });
+
+  it('should block DEMO_PAUSE_AT_END (explicit DEMO override protection)', () => {
+    expect(validateExtraEnv({ DEMO_PAUSE_AT_END: '1' })).toMatch(/DEMO_PAUSE_AT_END/);
+  });
+
+  it('should block DEMO_PROGRESS_FILE (explicit DEMO override protection)', () => {
+    expect(validateExtraEnv({ DEMO_PROGRESS_FILE: '/tmp/evil.jsonl' })).toMatch(/DEMO_PROGRESS_FILE/);
+  });
+
+  it('should block LD_PRELOAD (exact match)', () => {
+    expect(validateExtraEnv({ LD_PRELOAD: '/lib/evil.so' })).toMatch(/LD_PRELOAD/);
+  });
+
+  it('should block DYLD_INSERT_LIBRARIES (prefix DYLD_ match)', () => {
+    expect(validateExtraEnv({ DYLD_INSERT_LIBRARIES: '/lib/evil.dylib' })).toMatch(/DYLD_INSERT_LIBRARIES/);
+  });
+
+  // --- Boundary cases for the startsWith matching rule ---
+
+  // PATH is in the list without a trailing _; startsWith('PATH') means
+  // PATHFINDER would also be blocked. Pin this behavior explicitly so any
+  // future relaxation is a deliberate, reviewed change.
+  it('should block PATHFINDER because key starts with PATH (current behavior)', () => {
+    const result = validateExtraEnv({ PATHFINDER: 'value' });
+    expect(result).not.toBeNull();
+    expect(result).toMatch(/PATHFINDER/);
+  });
+
+  // GITHUB_TOKEN is an exact entry with no trailing _; GITHUB_TOKENS does
+  // NOT match startsWith('GITHUB_TOKEN_') but DOES match startsWith('GITHUB_TOKEN').
+  // Pin this so the behavior is explicit and auditable.
+  it('should block GITHUB_TOKENS because key starts with GITHUB_TOKEN (current behavior)', () => {
+    const result = validateExtraEnv({ GITHUB_TOKENS: 'value' });
+    expect(result).not.toBeNull();
+    expect(result).toMatch(/GITHUB_TOKENS/);
+  });
+
+  // --- Multi-key scenarios ---
+
+  it('should report all blocked keys when multiple are provided', () => {
+    const result = validateExtraEnv({ PATH: '/usr/bin', SUPABASE_URL: 'evil', REPLAY_SESSION_ID: 'ok' });
+    expect(result).not.toBeNull();
+    expect(result).toMatch(/PATH/);
+    expect(result).toMatch(/SUPABASE_URL/);
+    // The safe key must not appear in the error
+    expect(result).not.toMatch(/REPLAY_SESSION_ID/);
+  });
+
+  it('should return null when mix of valid keys is present with no blocked ones', () => {
+    expect(validateExtraEnv({
+      REPLAY_SESSION_ID: 'sess-1',
+      REPLAY_AUDIT_DATA: '[]',
+      CUSTOM_FEATURE_FLAG: 'on',
+    })).toBeNull();
+  });
+
+  // --- Return type guarantees ---
+
+  it('should return a string (not null) on any validation failure', () => {
+    const result = validateExtraEnv({ PATH: 'bad' });
+    expect(typeof result).toBe('string');
+    expect(result!.length).toBeGreaterThan(0);
+  });
+
+  it('should return exactly null (not undefined, not empty string) on success', () => {
+    const result = validateExtraEnv({ SAFE: 'value' });
+    expect(result).toBeNull();
+    expect(result).not.toBeUndefined();
   });
 });
 
