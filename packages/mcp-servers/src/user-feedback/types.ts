@@ -360,7 +360,7 @@ export interface GetSessionAuditResult {
 // ============================================================================
 
 export const CreateScenarioArgsSchema = z.object({
-  persona_id: z.string().describe('Persona UUID this scenario belongs to — persona must include "gui" in consumption_modes'),
+  persona_id: z.string().describe('Persona UUID this scenario belongs to — persona must include "gui" or "adk" in consumption_modes'),
   title: z.string().min(1).max(200).describe('Human-readable scenario title shown in /demo-interactive and /demo-autonomous menus'),
   description: z.string().min(1).max(2000).describe('What the scenario demonstrates — given to code-writer for implementation and to persona agents for context'),
   category: z.string().max(50).optional().describe('Optional grouping (e.g., "onboarding", "admin", "billing")'),

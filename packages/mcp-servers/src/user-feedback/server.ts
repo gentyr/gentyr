@@ -1078,14 +1078,14 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   // ============================================================================
 
   function createScenario(args: CreateScenarioArgs): ScenarioResult | ErrorResult {
-    // Validate persona exists and includes 'gui' in consumption_modes
+    // Validate persona exists and includes 'gui' or 'adk' in consumption_modes
     const persona = db.prepare('SELECT id, name, consumption_modes FROM personas WHERE id = ?').get(args.persona_id) as { id: string; name: string; consumption_modes: string } | undefined;
     if (!persona) {
       return { error: `Persona not found: ${args.persona_id}` };
     }
     const personaModes = JSON.parse(persona.consumption_modes) as string[];
-    if (!personaModes.includes('gui')) {
-      return { error: `Demo scenarios require a GUI persona. Persona "${persona.name}" has consumption_modes ${JSON.stringify(personaModes)}. Only personas that include "gui" in consumption_modes can have Playwright demo scenarios.` };
+    if (!personaModes.includes('gui') && !personaModes.includes('adk')) {
+      return { error: `Demo scenarios require a GUI or ADK persona. Persona "${persona.name}" has consumption_modes ${JSON.stringify(personaModes)}. Only personas that include "gui" or "adk" in consumption_modes can have demo scenarios.` };
     }
 
     // Enforce .demo.ts suffix
@@ -1348,7 +1348,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     // Demo Scenario CRUD
     {
       name: 'create_scenario',
-      description: 'Create a curated demo scenario for a GUI persona. Scenarios are product walkthroughs mapped to *.demo.ts Playwright files. Only personas that include "gui" in consumption_modes can have demo scenarios.',
+      description: 'Create a curated demo scenario for a GUI or ADK persona. GUI scenarios are product walkthroughs mapped to *.demo.ts Playwright files. ADK scenarios use session-replay-runner.demo.ts for replay. Only personas that include "gui" or "adk" in consumption_modes can have demo scenarios.',
       schema: CreateScenarioArgsSchema,
       handler: createScenario,
     },

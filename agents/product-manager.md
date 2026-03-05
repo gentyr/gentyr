@@ -226,7 +226,7 @@ Before creating personas, gather context about the local project so personas hav
 ## Demo Scenario Management
 
 After persona evaluation is complete, you may receive a "demo coverage" task.
-Your job is to ensure every GUI persona has curated demo scenarios covering
+Your job is to ensure every GUI and ADK persona has curated demo scenarios covering
 their key product use cases.
 
 ### How Scenarios Work
@@ -238,14 +238,14 @@ file implements each scenario.
 
 ### Creating Scenarios
 
-For each GUI persona (`consumption_mode: 'gui'`) that lacks demo scenarios:
+For each GUI or ADK persona (`consumption_mode: 'gui'` or `'adk'`) that lacks demo scenarios:
 
 1. Review the persona's `behavior_traits`, mapped features, and description
 2. Identify 2-4 key product flows the persona would care about
    - Each scenario = one complete user journey (not a single page)
    - Examples: "Onboarding Flow", "Dashboard Overview", "Billing Management"
 3. For each scenario, call `mcp__user-feedback__create_scenario`:
-   - `persona_id`: The persona this scenario belongs to (must be `gui` mode)
+   - `persona_id`: The persona this scenario belongs to (must be `gui` or `adk` mode)
    - `title`: Human-readable name
    - `description`: Detailed step-by-step description of what the demo should
      show. Be specific about pages to visit, actions to take, and data to
@@ -269,8 +269,8 @@ For each GUI persona (`consumption_mode: 'gui'`) that lacks demo scenarios:
 ### Constraints
 
 - You define WHAT scenarios exist (DB records). You do NOT write `*.demo.ts` files.
-- **Demo scenarios are for GUI personas only** (not cli/api/sdk/adk). The `create_scenario`
-  tool will reject non-GUI personas with a clear error.
+- **Demo scenarios are for GUI and ADK personas only** (not cli/api/sdk). The `create_scenario`
+  tool will reject other persona types with a clear error.
 - A code-writer agent implements each file based on your description.
 
 ## Completion Checklist
