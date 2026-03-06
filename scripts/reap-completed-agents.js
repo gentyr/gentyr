@@ -303,7 +303,15 @@ export function reapCompletedAgents(projectDir) {
     if (!isProcessAlive(pid)) {
       // Try to discover session file before marking dead (needed for TODO reconciliation)
       if (!agent.sessionFile) {
-        const discovered = findSessionFileByAgentId(sessionDir, agentId);
+        // Try main project session dir first
+        let discovered = findSessionFileByAgentId(sessionDir, agentId);
+        // If not found and agent ran in a worktree, try the worktree session dir
+        if (!discovered && agent.metadata?.worktreePath) {
+          const worktreeSessionDir = getSessionDir(agent.metadata.worktreePath);
+          if (worktreeSessionDir) {
+            discovered = findSessionFileByAgentId(worktreeSessionDir, agentId);
+          }
+        }
         if (discovered) {
           agent.sessionFile = discovered;
         }
@@ -327,6 +335,13 @@ export function reapCompletedAgents(projectDir) {
     let sessionFile = agent.sessionFile || null;
     if (!sessionFile) {
       sessionFile = findSessionFileByAgentId(sessionDir, agentId);
+      // Try worktree session dir if not found in main project
+      if (!sessionFile && agent.metadata?.worktreePath) {
+        const worktreeSessionDir = getSessionDir(agent.metadata.worktreePath);
+        if (worktreeSessionDir) {
+          sessionFile = findSessionFileByAgentId(worktreeSessionDir, agentId);
+        }
+      }
       if (!sessionFile) {
         result.skipped.push({ agentId, reason: 'session_file_not_found' });
         continue;

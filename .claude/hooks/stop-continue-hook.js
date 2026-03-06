@@ -294,10 +294,25 @@ async function main() {
 
         // Write recovery state for session-reviver
         const agentId = extractAgentId(input.transcript_path);
+
+        // Resolve worktreePath from agent-tracker history so session-reviver can resume in the correct CWD
+        let worktreePath = null;
+        if (agentId) {
+          try {
+            const historyPath = path.join(STATE_DIR, 'agent-tracker-history.json');
+            if (fs.existsSync(historyPath)) {
+              const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+              const agentEntry = Array.isArray(history.agents) && history.agents.find(a => a.id === agentId);
+              worktreePath = agentEntry?.metadata?.worktreePath || null;
+            }
+          } catch { /* non-fatal */ }
+        }
+
         writeQuotaInterruptedSession({
           sessionId: input.session_id || null,
           transcriptPath: input.transcript_path,
           agentId,
+          worktreePath,
           quotaMessage: quotaCheck.quotaMessage,
           interruptedAt: new Date().toISOString(),
           credentialsRotated: rotated,
