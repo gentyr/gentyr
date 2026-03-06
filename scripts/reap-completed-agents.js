@@ -250,7 +250,7 @@ function reconcileTodo(agent, projectDir, reapReason) {
 
     if (reapReason === 'process_already_dead') {
       // Session died unexpectedly - reset TODO so automation can re-spawn
-      db.prepare("UPDATE tasks SET status = 'pending', started_at = NULL WHERE id = ?").run(taskId);
+      db.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ?").run(taskId);
       return { action: 'reset_to_pending', taskId };
     }
 
