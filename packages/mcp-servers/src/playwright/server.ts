@@ -18,6 +18,7 @@ import * as https from 'https';
 import * as net from 'net';
 import * as crypto from 'crypto';
 import { spawn, execFileSync } from 'child_process';
+import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import { loadServicesConfig, resolveLocalSecrets, INFRA_CRED_KEYS, buildCleanEnv } from '../shared/op-secrets.js';
 import {
@@ -386,6 +387,29 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
 async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const { project, slow_mo, base_url, test_file, pause_at_end } = args;
 
+  // Opportunistic recording: auto-enable record_video if scenario_id is provided and recording is stale (>24h)
+  if (args.scenario_id && !args.record_video) {
+    try {
+      const userFeedbackDbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+      const db = new Database(userFeedbackDbPath, { readonly: true });
+      try {
+        const row = db.prepare('SELECT last_recorded_at FROM demo_scenarios WHERE id = ?').get(args.scenario_id) as { last_recorded_at: string | null } | undefined;
+        if (!row || !row.last_recorded_at) {
+          args.record_video = true;
+        } else {
+          const ageMs = Date.now() - new Date(row.last_recorded_at).getTime();
+          if (ageMs > 24 * 60 * 60 * 1000) {
+            args.record_video = true;
+          }
+        }
+      } finally {
+        db.close();
+      }
+    } catch {
+      // Non-fatal — skip auto-recording if DB is unavailable
+    }
+  }
+
   // Pre-flight validation
   const preflight = validatePrerequisites();
   if (!preflight.ok) {
@@ -721,6 +745,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       // to avoid a race where the exit handler never fires (process already dead)
       status: isSuiteEndKilled ? 'passed' : 'running',
       progress_file: progressFilePath,
+      scenario_id: args.scenario_id,
     };
     if (isSuiteEndKilled) {
       demoState.ended_at = new Date().toISOString();
@@ -806,6 +831,33 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         }
       } catch {
         // Non-fatal — trace parsing is best-effort
+      }
+
+      // Persist video recording for the scenario (runs for both passed and failed)
+      if (entry.scenario_id) {
+        try {
+          // Find a .webm video in artifacts
+          const allArtifacts = entry.artifacts?.length ? entry.artifacts : scanArtifacts();
+          const videoPath = allArtifacts.find(p => p.endsWith('.webm'));
+          if (videoPath && fs.existsSync(videoPath)) {
+            const recordingsDir = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos');
+            fs.mkdirSync(recordingsDir, { recursive: true });
+            const destPath = path.join(recordingsDir, `${entry.scenario_id}.webm`);
+            fs.copyFileSync(videoPath, destPath);
+
+            const userFeedbackDbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+            const db = new Database(userFeedbackDbPath);
+            try {
+              db.prepare(
+                'UPDATE demo_scenarios SET last_recorded_at = ?, recording_path = ? WHERE id = ?'
+              ).run(new Date().toISOString(), destPath, entry.scenario_id);
+            } finally {
+              db.close();
+            }
+          }
+        } catch {
+          // Non-fatal — recording persistence is best-effort
+        }
       }
 
       // Clean up progress file (best-effort)

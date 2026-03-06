@@ -69,6 +69,7 @@ STOP — do not launch.
 Call `mcp__playwright__run_demo({
   project: "<scenario.playwright_project>",
   test_file: "<scenario.test_file>",
+  scenario_id: "<scenario.id>",
   slow_mo: 0,
   pause_at_end: true
 })`.
