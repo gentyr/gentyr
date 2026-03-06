@@ -119,6 +119,11 @@
           },
           {
             "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/dead-agent-recovery.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-health-check.js",
             "timeout": 5
           },
