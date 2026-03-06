@@ -142,7 +142,7 @@ function readHistory() {
 }
 
 /**
- * Write the history file
+ * Write the history file atomically (write to tmp then rename)
  * @param {object} history
  */
 function writeHistory(history) {
@@ -151,9 +151,72 @@ function writeHistory(history) {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    fs.writeFileSync(CONFIG.HISTORY_FILE, JSON.stringify(history, null, 2), 'utf8');
+    // Atomic write: write to tmp file then rename to prevent partial writes
+    const tmpFile = CONFIG.HISTORY_FILE + `.tmp.${process.pid}`;
+    fs.writeFileSync(tmpFile, JSON.stringify(history, null, 2), 'utf8');
+    try {
+      fs.renameSync(tmpFile, CONFIG.HISTORY_FILE);
+    } catch (renameErr) {
+      try { fs.unlinkSync(tmpFile); } catch {}
+      throw renameErr;
+    }
   } catch (err) {
     console.error(`[agent-tracker] Failed to write history: ${err.message}`);
+  }
+}
+
+const LOCK_FILE = CONFIG.HISTORY_FILE + '.lock';
+const LOCK_STALE_MS = 10000; // 10 seconds
+const LOCK_MAX_ATTEMPTS = 10;
+
+/**
+ * Acquire advisory file lock using O_CREAT|O_EXCL
+ * Same pattern as approval-utils.js
+ * @returns {boolean} true if lock acquired
+ */
+function acquireLock() {
+  for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt++) {
+    try {
+      const fd = fs.openSync(LOCK_FILE, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      return true;
+    } catch (err) {
+      if (err.code === 'EEXIST') {
+        // Check for stale lock
+        try {
+          const stat = fs.statSync(LOCK_FILE);
+          if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+            try { fs.unlinkSync(LOCK_FILE); } catch {}
+            continue; // Retry immediately after cleaning stale lock
+          }
+        } catch {
+          // Lock file disappeared between open and stat — retry
+          continue;
+        }
+        // Wait with exponential backoff
+        const waitMs = 50 * Math.pow(2, attempt);
+        const sharedBuffer = new SharedArrayBuffer(4);
+        const view = new Int32Array(sharedBuffer);
+        Atomics.wait(view, 0, 0, waitMs);
+      } else {
+        // Unexpected error — proceed without lock
+        return false;
+      }
+    }
+  }
+  console.error('[agent-tracker] Warning: could not acquire lock after max attempts, proceeding without lock');
+  return false;
+}
+
+/**
+ * Release advisory file lock
+ */
+function releaseLock() {
+  try {
+    fs.unlinkSync(LOCK_FILE);
+  } catch {
+    // Already released or never acquired
   }
 }
 
@@ -185,33 +248,38 @@ export function registerSpawn(options) {
     return null;
   }
 
-  const history = readHistory();
   const agentId = generateAgentId();
+  const locked = acquireLock();
+  try {
+    const history = readHistory();
 
-  const agent = {
-    id: agentId,
-    type,
-    hookType,
-    description,
-    prompt: prompt ? prompt.substring(0, CONFIG.MAX_PROMPT_LENGTH) : null,
-    promptTruncated: prompt && prompt.length > CONFIG.MAX_PROMPT_LENGTH,
-    metadata,
-    projectDir,
-    timestamp: new Date().toISOString()
-  };
+    const agent = {
+      id: agentId,
+      type,
+      hookType,
+      description,
+      prompt: prompt ? prompt.substring(0, CONFIG.MAX_PROMPT_LENGTH) : null,
+      promptTruncated: prompt && prompt.length > CONFIG.MAX_PROMPT_LENGTH,
+      metadata,
+      projectDir,
+      timestamp: new Date().toISOString()
+    };
 
-  // Add to beginning (most recent first)
-  history.agents.unshift(agent);
+    // Add to beginning (most recent first)
+    history.agents.unshift(agent);
 
-  // Enforce max entries (remove oldest)
-  if (history.agents.length > CONFIG.MAX_ENTRIES) {
-    history.agents = history.agents.slice(0, CONFIG.MAX_ENTRIES);
+    // Enforce max entries (remove oldest)
+    if (history.agents.length > CONFIG.MAX_ENTRIES) {
+      history.agents = history.agents.slice(0, CONFIG.MAX_ENTRIES);
+    }
+
+    // Update stats
+    history.stats.totalSpawns = (history.stats.totalSpawns || 0) + 1;
+
+    writeHistory(history);
+  } finally {
+    if (locked) releaseLock();
   }
-
-  // Update stats
-  history.stats.totalSpawns = (history.stats.totalSpawns || 0) + 1;
-
-  writeHistory(history);
 
   return agentId;
 }
@@ -291,30 +359,35 @@ export function registerHookExecution(options) {
     return null;
   }
 
-  const history = readHistory();
   const executionId = generateExecutionId();
+  const locked = acquireLock();
+  try {
+    const history = readHistory();
 
-  const execution = {
-    id: executionId,
-    hookType,
-    status,
-    timestamp: new Date().toISOString(),
-    durationMs,
-    metadata
-  };
+    const execution = {
+      id: executionId,
+      hookType,
+      status,
+      timestamp: new Date().toISOString(),
+      durationMs,
+      metadata
+    };
 
-  // Add to beginning (most recent first)
-  history.hookExecutions.unshift(execution);
+    // Add to beginning (most recent first)
+    history.hookExecutions.unshift(execution);
 
-  // Enforce max entries (remove oldest)
-  if (history.hookExecutions.length > CONFIG.MAX_HOOK_EXECUTIONS) {
-    history.hookExecutions = history.hookExecutions.slice(0, CONFIG.MAX_HOOK_EXECUTIONS);
+    // Enforce max entries (remove oldest)
+    if (history.hookExecutions.length > CONFIG.MAX_HOOK_EXECUTIONS) {
+      history.hookExecutions = history.hookExecutions.slice(0, CONFIG.MAX_HOOK_EXECUTIONS);
+    }
+
+    // Update stats
+    history.stats.totalHookExecutions = (history.stats.totalHookExecutions || 0) + 1;
+
+    writeHistory(history);
+  } finally {
+    if (locked) releaseLock();
   }
-
-  // Update stats
-  history.stats.totalHookExecutions = (history.stats.totalHookExecutions || 0) + 1;
-
-  writeHistory(history);
 
   return executionId;
 }
@@ -415,15 +488,19 @@ export function updateAgent(agentId, updates) {
     return false;
   }
 
-  const history = readHistory();
-  const agent = history.agents.find(a => a.id === agentId);
-  if (!agent) {
-    return false;
+  const locked = acquireLock();
+  try {
+    const history = readHistory();
+    const agent = history.agents.find(a => a.id === agentId);
+    if (!agent) {
+      return false;
+    }
+    Object.assign(agent, filtered);
+    writeHistory(history);
+    return true;
+  } finally {
+    if (locked) releaseLock();
   }
-
-  Object.assign(agent, filtered);
-  writeHistory(history);
-  return true;
 }
 
 export default {
