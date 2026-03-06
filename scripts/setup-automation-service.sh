@@ -92,7 +92,7 @@ NC='\033[0m' # No Color
 # If running from a worktree path, resolve to the main project root
 case "$PROJECT_DIR" in
   */.claude/worktrees/*)
-    RESOLVED=$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null)
+    RESOLVED=$(dirname "$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")
     if [ -n "$RESOLVED" ]; then
       echo -e "${YELLOW}[WARN]${NC} Detected worktree path, resolving to main project: $RESOLVED"
       PROJECT_DIR="$RESOLVED"
@@ -102,7 +102,7 @@ esac
 
 # Also check if .git is a file (worktree indicator) rather than a directory
 if [ -f "$PROJECT_DIR/.git" ]; then
-  RESOLVED=$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null)
+  RESOLVED=$(dirname "$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")
   if [ -n "$RESOLVED" ] && [ "$RESOLVED" != "$PROJECT_DIR" ]; then
     echo -e "${YELLOW}[WARN]${NC} Detected worktree, resolving to main project: $RESOLVED"
     PROJECT_DIR="$RESOLVED"
