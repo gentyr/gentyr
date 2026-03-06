@@ -876,3 +876,237 @@ describe('DemoProgress structural validation', () => {
     }
   });
 });
+
+// ============================================================================
+// checkDemoResult dead-process status determination
+//
+// When process.kill(pid, 0) throws (process no longer alive), server.ts reads
+// the progress file and determines final status using this decision tree:
+//
+//   if (finalProgress && finalProgress.tests_completed > 0)
+//     status = finalProgress.has_failures ? 'failed' : 'passed'
+//   else
+//     status = 'unknown'
+//
+// These tests exercise that logic in isolation — no child process or file I/O.
+// The inline function mirrors server.ts exactly so any divergence is a bug.
+// ============================================================================
+
+/**
+ * Mirrors the status-determination branch in server.ts checkDemoResult()
+ * that runs when process.kill(pid, 0) throws.
+ */
+function determineDeadProcessStatus(finalProgress: DemoProgress | null): {
+  status: 'passed' | 'failed' | 'unknown';
+  failure_summary: string | undefined;
+} {
+  if (finalProgress && finalProgress.tests_completed > 0) {
+    if (finalProgress.has_failures) {
+      return {
+        status: 'failed',
+        failure_summary: `${finalProgress.tests_failed} test(s) failed out of ${finalProgress.tests_completed}`,
+      };
+    } else {
+      return { status: 'passed', failure_summary: undefined };
+    }
+  }
+  return { status: 'unknown', failure_summary: undefined };
+}
+
+describe('checkDemoResult dead-process status determination', () => {
+  describe('when progress has completed tests with failures', () => {
+    it('should return failed when has_failures is true and tests_completed > 0', () => {
+      const progress: DemoProgress = {
+        tests_completed: 3,
+        tests_passed: 1,
+        tests_failed: 2,
+        total_tests: 3,
+        current_test: null,
+        current_file: null,
+        has_failures: true,
+        recent_errors: [],
+        last_5_results: [],
+      };
+
+      const result = determineDeadProcessStatus(progress);
+
+      expect(result.status).toBe('failed');
+    });
+
+    it('should include tests_failed and tests_completed in the failure_summary', () => {
+      const progress: DemoProgress = {
+        tests_completed: 5,
+        tests_passed: 3,
+        tests_failed: 2,
+        total_tests: 5,
+        current_test: null,
+        current_file: null,
+        has_failures: true,
+        recent_errors: [],
+        last_5_results: [],
+      };
+
+      const result = determineDeadProcessStatus(progress);
+
+      expect(result.failure_summary).toContain('2');
+      expect(result.failure_summary).toContain('5');
+    });
+
+    it('should return failed when only one test failed', () => {
+      const progress: DemoProgress = {
+        tests_completed: 1,
+        tests_passed: 0,
+        tests_failed: 1,
+        total_tests: 1,
+        current_test: null,
+        current_file: null,
+        has_failures: true,
+        recent_errors: [],
+        last_5_results: [],
+      };
+
+      const result = determineDeadProcessStatus(progress);
+
+      expect(result.status).toBe('failed');
+      expect(result.failure_summary).toContain('1');
+    });
+  });
+
+  describe('when progress has completed tests with no failures', () => {
+    it('should return passed when has_failures is false and tests_completed > 0', () => {
+      const progress: DemoProgress = {
+        tests_completed: 4,
+        tests_passed: 4,
+        tests_failed: 0,
+        total_tests: 4,
+        current_test: null,
+        current_file: null,
+        has_failures: false,
+        recent_errors: [],
+        last_5_results: [],
+      };
+
+      const result = determineDeadProcessStatus(progress);
+
+      expect(result.status).toBe('passed');
+    });
+
+    it('should return undefined failure_summary when passed', () => {
+      const progress: DemoProgress = {
+        tests_completed: 2,
+        tests_passed: 2,
+        tests_failed: 0,
+        total_tests: 2,
+        current_test: null,
+        current_file: null,
+        has_failures: false,
+        recent_errors: [],
+        last_5_results: [],
+      };
+
+      const result = determineDeadProcessStatus(progress);
+
+      expect(result.failure_summary).toBeUndefined();
+    });
+
+    it('should return passed even when recent_errors exist but has_failures is false', () => {
+      // console_error events add to recent_errors but do NOT set has_failures
+      const progress: DemoProgress = {
+        tests_completed: 2,
+        tests_passed: 2,
+        tests_failed: 0,
+        total_tests: 2,
+        current_test: null,
+        current_file: null,
+        has_failures: false,
+        recent_errors: ['Failed to fetch /favicon.ico', 'Hot reload noise'],
+        last_5_results: [],
+      };
+
+      const result = determineDeadProcessStatus(progress);
+
+      expect(result.status).toBe('passed');
+    });
+  });
+
+  describe('when progress is unavailable or has no completed tests', () => {
+    it('should return unknown when finalProgress is null (no progress file)', () => {
+      const result = determineDeadProcessStatus(null);
+
+      expect(result.status).toBe('unknown');
+    });
+
+    it('should return unknown when tests_completed is 0 (process died before any test ran)', () => {
+      const progress: DemoProgress = {
+        tests_completed: 0,
+        tests_passed: 0,
+        tests_failed: 0,
+        total_tests: 3,
+        current_test: null,
+        current_file: null,
+        has_failures: false,
+        recent_errors: [],
+        last_5_results: [],
+      };
+
+      const result = determineDeadProcessStatus(progress);
+
+      expect(result.status).toBe('unknown');
+    });
+
+    it('should return unknown when tests_completed is 0 even if has_failures is true (e.g. crash before tests)', () => {
+      // A crash event sets has_failures but does not increment tests_completed.
+      // The guard condition requires tests_completed > 0, so we must return unknown.
+      const progress: DemoProgress = {
+        tests_completed: 0,
+        tests_passed: 0,
+        tests_failed: 0,
+        total_tests: null,
+        current_test: null,
+        current_file: null,
+        has_failures: true,
+        recent_errors: ['Browser crashed on startup'],
+        last_5_results: [],
+      };
+
+      const result = determineDeadProcessStatus(progress);
+
+      expect(result.status).toBe('unknown');
+    });
+
+    it('should return unknown failure_summary when status is unknown', () => {
+      const result = determineDeadProcessStatus(null);
+
+      expect(result.failure_summary).toBeUndefined();
+    });
+  });
+
+  describe('status type safety', () => {
+    it('should always return one of the three valid DemoRunStatus values', () => {
+      const validStatuses = ['passed', 'failed', 'unknown'];
+
+      const cases: DemoProgress[] = [
+        {
+          tests_completed: 0, tests_passed: 0, tests_failed: 0,
+          total_tests: null, current_test: null, current_file: null,
+          has_failures: false, recent_errors: [], last_5_results: [],
+        },
+        {
+          tests_completed: 2, tests_passed: 2, tests_failed: 0,
+          total_tests: 2, current_test: null, current_file: null,
+          has_failures: false, recent_errors: [], last_5_results: [],
+        },
+        {
+          tests_completed: 1, tests_passed: 0, tests_failed: 1,
+          total_tests: 1, current_test: null, current_file: null,
+          has_failures: true, recent_errors: [], last_5_results: [],
+        },
+      ];
+
+      for (const progress of cases) {
+        const result = determineDeadProcessStatus(progress);
+        expect(validStatuses).toContain(result.status);
+      }
+    });
+  });
+});
