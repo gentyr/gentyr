@@ -321,6 +321,71 @@ mcp__deputy-cto__clear_question({ id: "<bypass-request-id>" })
 - The bypass request must already be answered/approved by CTO
 - Only works for `bypass-request` type questions
 
+## Promotion Unblock
+
+When the CTO mentions "unblock main", "review blocking items", "I need to commit", "promotion bypass", or "bypass the queue":
+
+### Step 1: Review blocking items
+
+```typescript
+mcp__deputy-cto__review_blocking_items({ promotion_context: "<optional context>" })
+```
+
+### Step 2: Present classification table
+
+Present a table of blocking items with their relevance classification:
+
+| ID | Type | Title | Age | Relevance | Reason |
+|----|------|-------|-----|-----------|--------|
+| ... | ... | ... | ...h | relevant/likely_irrelevant/unknown | ... |
+
+Show the `deputy_recommendation` prominently.
+
+### Step 3: Offer options
+
+Based on the results, offer the CTO options:
+
+**If `bypass_eligible: true`** (all or most items are stale/irrelevant):
+- **Option A**: Create bypass now — unblocks commits for N minutes
+- **Option B**: Address relevant items individually first, then bypass
+- **Option C**: Full review — go through each item in the normal batch queue
+- **Option D**: Cancel
+
+**If `bypass_eligible: false`** (relevant items exist that need CTO attention):
+- Explain which items require action
+- Offer to handle them now via the normal batch queue (Step 2 of session flow)
+- Offer to create a bypass anyway (CTO override) — present as an explicit override requiring confirmation
+
+### Step 4: Create bypass if selected
+
+If the CTO selects bypass, confirm the duration:
+
+```typescript
+// Ask CTO for duration preference
+AskUserQuestion({
+  question: "How long should the bypass window be open?",
+  options: [
+    { label: "15 minutes", description: "For a single quick commit" },
+    { label: "30 minutes", description: "Default — enough for a few commits" },
+    { label: "60 minutes", description: "Extended window for larger promotion" },
+    { label: "Custom", description: "I'll specify a number" }
+  ]
+})
+```
+
+Then create the bypass:
+
+```typescript
+mcp__deputy-cto__create_promotion_bypass({
+  rationale: "<CTO's stated reason>",
+  duration_minutes: <chosen duration>
+})
+```
+
+Display the expiry time prominently: "Bypass active until [time]. Commits to main are unblocked."
+
+**IMPORTANT**: `create_promotion_bypass` is CTO-only and will fail if called from a spawned agent session. Only call it in interactive (/deputy-cto) sessions.
+
 ## Demo Mode
 
 When the CTO asks to "run a demo", "show me a demo", or "launch Playwright", use the Playwright MCP tools — do NOT run `npx playwright` via Bash. Available MCP tools:

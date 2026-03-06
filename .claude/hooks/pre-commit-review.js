@@ -161,12 +161,34 @@ function hasValidBypassDecision() {
       LIMIT 1
     `).get(fiveMinutesAgo);
 
-    db.close();
-
     if (bypass) {
+      db.close();
       console.log('[deputy-cto] ✓ Emergency bypass active - commit allowed');
       return true;
     }
+
+    // Check for time-limited promotion bypass
+    const promotionBypass = db.prepare(`
+      SELECT id, rationale, created_timestamp FROM commit_decisions
+      WHERE decision = 'approved'
+      AND rationale LIKE 'PROMOTION BYPASS%'
+      ORDER BY created_timestamp DESC LIMIT 1
+    `).get();
+
+    db.close();
+
+    if (promotionBypass) {
+      const match = promotionBypass.rationale.match(/PROMOTION BYPASS \((\d+)min\)/);
+      const durationMin = match ? parseInt(match[1], 10) : 30;
+      const expiresAt = promotionBypass.created_timestamp + (durationMin * 60);
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (nowSec < expiresAt) {
+        const minutesLeft = Math.ceil((expiresAt - nowSec) / 60);
+        console.log(`[deputy-cto] ✓ Promotion bypass active (${minutesLeft}m remaining) - commit allowed`);
+        return true;
+      }
+    }
+
     return false;
   } catch {
     return false;

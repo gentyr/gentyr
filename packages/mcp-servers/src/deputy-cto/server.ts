@@ -58,6 +58,8 @@ import {
   RequestPreapprovedBypassArgsSchema,
   ActivatePreapprovedBypassArgsSchema,
   ListPreapprovedBypassesArgsSchema,
+  ReviewBlockingItemsArgsSchema,
+  CreatePromotionBypassArgsSchema,
   GetMergeChainStatusArgsSchema,
   RequestHotfixPromotionArgsSchema,
   ExecuteHotfixPromotionArgsSchema,
@@ -81,6 +83,8 @@ import {
   type RequestPreapprovedBypassArgs,
   type ActivatePreapprovedBypassArgs,
   type ListPreapprovedBypassesArgs,
+  type ReviewBlockingItemsArgs,
+  type CreatePromotionBypassArgs,
   type GetMergeChainStatusArgs,
   type RequestHotfixPromotionArgs,
   type ExecuteHotfixPromotionArgs,
@@ -120,6 +124,9 @@ import {
   type ActivatePreapprovedBypassResult,
   type PreapprovedBypassItem,
   type ListPreapprovedBypassesResult,
+  type ReviewBlockingItemsResult,
+  type BlockingItemSummary,
+  type CreatePromotionBypassResult,
   type ClearedQuestionItem,
   type AutonomousModeConfig,
   type ErrorResult,
@@ -2242,6 +2249,174 @@ Complete within 25 minutes. If blocked, report and exit.`;
 }
 
 // ============================================================================
+// Promotion Bypass Functions
+// ============================================================================
+
+async function reviewBlockingItems(args: ReviewBlockingItemsArgs): Promise<string> {
+  const db = getDb();
+
+  // Get pending questions from deputy-cto.db
+  const questions = db.prepare(
+    "SELECT id, type, title, created_at, created_timestamp FROM questions WHERE status = 'pending' ORDER BY created_timestamp ASC"
+  ).all() as Array<{ id: string; type: string; title: string; created_at: string; created_timestamp: number }>;
+
+  // Get pending triage items from cto-reports.db
+  type TriageRow = { id: string; title: string; created_at: string; created_timestamp: number };
+  const triageItems: TriageRow[] = [];
+  if (fs.existsSync(CTO_REPORTS_DB_PATH)) {
+    try {
+      const reportsDb = openReadonlyDb(CTO_REPORTS_DB_PATH);
+      const columns = reportsDb.pragma('table_info(reports)') as { name: string }[];
+      const hasTriageStatus = columns.some(c => c.name === 'triage_status');
+      const hasCreatedTimestamp = columns.some(c => c.name === 'created_timestamp');
+
+      if (hasTriageStatus) {
+        const rows = reportsDb.prepare(
+          `SELECT id, title, created_at${hasCreatedTimestamp ? ', created_timestamp' : ', 0 as created_timestamp'} FROM reports WHERE triage_status = 'pending' ORDER BY ${hasCreatedTimestamp ? 'created_timestamp' : 'created_at'} ASC`
+        ).all() as TriageRow[];
+        triageItems.push(...rows);
+      } else {
+        const rows = reportsDb.prepare(
+          `SELECT id, title, created_at${hasCreatedTimestamp ? ', created_timestamp' : ', 0 as created_timestamp'} FROM reports WHERE triaged_at IS NULL ORDER BY ${hasCreatedTimestamp ? 'created_timestamp' : 'created_at'} ASC`
+        ).all() as TriageRow[];
+        triageItems.push(...rows);
+      }
+      reportsDb.close();
+    } catch (err) {
+      process.stderr.write(`[deputy-cto] review_blocking_items: Failed to read triage items: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
+
+  const now = Date.now();
+
+  const questionItems: BlockingItemSummary[] = questions.map(item => {
+    const ageHours = Math.round((now - item.created_timestamp * 1000) / 3600000 * 10) / 10;
+
+    let relevance: 'relevant' | 'likely_irrelevant' | 'unknown' = 'unknown';
+    let relevanceReason = '';
+
+    if (['bypass-request', 'protected-action-request', 'rejection'].includes(item.type)) {
+      relevance = 'relevant';
+      relevanceReason = `${item.type} requires CTO action`;
+    } else if (['decision', 'question'].includes(item.type) && ageHours > 24) {
+      relevance = 'likely_irrelevant';
+      relevanceReason = `${item.type} older than 24h (${Math.floor(ageHours)}h) — likely stale`;
+    } else if (item.type === 'escalation') {
+      relevance = 'unknown';
+      relevanceReason = 'Escalation needs CTO judgment';
+    } else {
+      relevance = 'unknown';
+      relevanceReason = `${item.type} needs CTO review`;
+    }
+
+    return {
+      id: item.id,
+      type: item.type,
+      title: item.title,
+      created_at: item.created_at,
+      age_hours: ageHours,
+      relevance,
+      relevance_reason: relevanceReason,
+    };
+  });
+
+  const triageItemsSummary: BlockingItemSummary[] = triageItems.map(item => {
+    const ageHours = item.created_timestamp > 0
+      ? Math.round((now - item.created_timestamp * 1000) / 3600000 * 10) / 10
+      : 0;
+
+    const relevance: 'relevant' | 'likely_irrelevant' | 'unknown' = ageHours > 24 && ageHours > 0
+      ? 'likely_irrelevant'
+      : 'unknown';
+    const relevanceReason = ageHours > 24 && ageHours > 0
+      ? `Triage item older than 24h — likely stale`
+      : 'Triage item needs review';
+
+    return {
+      id: String(item.id),
+      type: 'triage',
+      title: item.title,
+      created_at: item.created_at,
+      age_hours: ageHours,
+      relevance,
+      relevance_reason: relevanceReason,
+    };
+  });
+
+  const allItems = [...questionItems, ...triageItemsSummary];
+
+  const relevantCount = allItems.filter(i => i.relevance === 'relevant').length;
+  const irrelevantCount = allItems.filter(i => i.relevance === 'likely_irrelevant').length;
+  const unknownCount = allItems.filter(i => i.relevance === 'unknown').length;
+
+  let recommendation = '';
+  if (allItems.length === 0) {
+    recommendation = 'No blocking items found.';
+  } else if (relevantCount === 0 && irrelevantCount > 0) {
+    recommendation = `All ${allItems.length} items appear stale/irrelevant. Recommend creating a bypass to unblock main.`;
+  } else if (relevantCount > 0 && irrelevantCount > 0) {
+    recommendation = `${relevantCount} of ${allItems.length} items appear relevant. Recommend addressing those ${relevantCount} and bypassing the remaining ${irrelevantCount}.`;
+  } else if (relevantCount > 0) {
+    recommendation = `${relevantCount} items require CTO action. Address these before bypassing.`;
+  } else {
+    recommendation = `${unknownCount} items need manual review to determine relevance.`;
+  }
+
+  const result: ReviewBlockingItemsResult = {
+    total_blocking: allItems.length,
+    relevant_count: relevantCount,
+    irrelevant_count: irrelevantCount,
+    unknown_count: unknownCount,
+    items: allItems,
+    deputy_recommendation: recommendation,
+    bypass_eligible: irrelevantCount > 0 || (allItems.length > 0 && relevantCount === 0),
+  };
+
+  // Suppress unused-variable warning for optional context arg
+  void args;
+
+  return JSON.stringify(result, null, 2);
+}
+
+function createPromotionBypass(args: CreatePromotionBypassArgs): string {
+  // CTO-only gate: block spawned (agent) sessions
+  const isSpawned = process.env['CLAUDE_SPAWNED_SESSION'] === 'true';
+  if (isSpawned) {
+    return JSON.stringify({
+      success: false,
+      message: 'Promotion bypass can only be created in interactive (CTO) sessions.',
+    });
+  }
+
+  const db = getDb();
+  const id = randomUUID();
+  const nowTimestamp = Math.floor(Date.now() / 1000);
+  const durationMinutes = args.duration_minutes ?? 30;
+  const expiresAt = new Date((nowTimestamp + durationMinutes * 60) * 1000).toISOString();
+  const createdAt = new Date(nowTimestamp * 1000).toISOString();
+
+  db.prepare(`
+    INSERT INTO commit_decisions (id, question_id, decision, rationale, created_timestamp, created_at)
+    VALUES (?, NULL, 'approved', ?, ?, ?)
+  `).run(
+    id,
+    `PROMOTION BYPASS (${durationMinutes}min) - ${args.rationale}`,
+    nowTimestamp,
+    createdAt
+  );
+
+  const result: CreatePromotionBypassResult = {
+    success: true,
+    bypass_id: id,
+    expires_at: expiresAt,
+    duration_minutes: durationMinutes,
+    message: `Promotion bypass created. Commits to main unblocked for ${durationMinutes} minutes (until ${expiresAt}).`,
+  };
+
+  return JSON.stringify(result, null, 2);
+}
+
+// ============================================================================
 // Merge Chain Status
 // ============================================================================
 
@@ -2511,6 +2686,18 @@ const tools: AnyToolHandler[] = [
     description: 'List all active (non-expired) pre-approved bypasses with status, remaining uses, and time until expiry.',
     schema: ListPreapprovedBypassesArgsSchema,
     handler: listPreapprovedBypasses,
+  },
+  {
+    name: 'review_blocking_items',
+    description: 'Review all pending items blocking commits to main. Classifies each by relevance (relevant, likely_irrelevant, unknown) and recommends which can be bypassed vs addressed. Use before create_promotion_bypass to understand the landscape.',
+    schema: ReviewBlockingItemsArgsSchema,
+    handler: reviewBlockingItems,
+  },
+  {
+    name: 'create_promotion_bypass',
+    description: 'Create a time-limited bypass allowing commits to main despite pending blocking items. CTO-only — blocked in spawned agent sessions. Use after reviewing blocking items with review_blocking_items.',
+    schema: CreatePromotionBypassArgsSchema,
+    handler: createPromotionBypass,
   },
   {
     name: 'get_merge_chain_status',
