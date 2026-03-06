@@ -1431,10 +1431,12 @@ function markTaskInProgress(taskId) {
 
   try {
     const db = new Database(TODO_DB_PATH);
-    const now = new Date().toISOString();
+    const now = new Date();
+    const started_at = now.toISOString();
+    const started_timestamp = Math.floor(now.getTime() / 1000);
     db.prepare(
-      "UPDATE tasks SET status = 'in_progress', started_at = ? WHERE id = ?"
-    ).run(now, taskId);
+      "UPDATE tasks SET status = 'in_progress', started_at = ?, started_timestamp = ? WHERE id = ?"
+    ).run(started_at, started_timestamp, taskId);
     db.close();
     return true;
   } catch (err) {
