@@ -584,7 +584,7 @@ async function main() {
       console.error('══════════════════════════════════════════════════════════════');
       console.error('');
       process.exit(1);
-    } else if (currentBranch === 'develop' || currentBranch === 'staging') {
+    } else if (currentBranch === 'develop' || currentBranch === 'staging' || currentBranch === 'preview') {
       // STAGING/DEVELOP: Warn but allow commit
       console.warn('');
       console.warn('══════════════════════════════════════════════════════════════');
