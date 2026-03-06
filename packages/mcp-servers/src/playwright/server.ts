@@ -400,7 +400,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const progressId = crypto.randomBytes(4).toString('hex');
   const progressFilePath = path.join(PROJECT_DIR, '.claude', 'state', `demo-progress-${progressId}.jsonl`);
 
-  const cmdArgs = ['playwright', 'test', '--project', project, '--trace', 'on'];
+  const cmdArgs = ['playwright', 'test', '--project', project];
+  if (args.trace) {
+    cmdArgs.push('--trace', 'on');
+  }
   const env: Record<string, string> = { ...process.env as Record<string, string> };
 
   // Strip infrastructure credentials from child env (unconditional)
@@ -445,6 +448,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
   if (args.show_cursor) {
     env.DEMO_SHOW_CURSOR = '1';
+  }
+
+  if (args.record_video) {
+    env.DEMO_RECORD_VIDEO = '1';
   }
 
   if (base_url) {
