@@ -223,8 +223,17 @@ function buildSpawnEnv(agentId) {
  * Spawn a resumed claude session.
  * Returns true if spawn succeeded.
  */
-function spawnResumedSession(sessionId, agentId, log, revivalPrompt) {
-  const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+function spawnResumedSession(sessionId, agentId, log, revivalPrompt, resumeCwd = null) {
+  // Use original worktree CWD if it still exists, otherwise fall back to main project
+  const effectiveCwd = (resumeCwd && fs.existsSync(resumeCwd)) ? resumeCwd : PROJECT_DIR;
+  // Use worktree .mcp.json if resuming in a worktree, otherwise main project
+  const mcpConfig = path.join(effectiveCwd, '.mcp.json');
+
+  // If worktree was cleaned up, warn the agent
+  if (resumeCwd && !fs.existsSync(resumeCwd)) {
+    revivalPrompt += '\n\nNOTE: Your original worktree has been cleaned up. You are running from the main project directory. Create a new worktree if you need to make changes.';
+  }
+
   const spawnArgs = [
     '--resume', sessionId,
     '--dangerously-skip-permissions',
@@ -235,7 +244,7 @@ function spawnResumedSession(sessionId, agentId, log, revivalPrompt) {
 
   try {
     const claude = spawn('claude', spawnArgs, {
-      cwd: PROJECT_DIR,
+      cwd: effectiveCwd,
       stdio: 'ignore',
       detached: true,
       env: buildSpawnEnv(agentId),
@@ -320,7 +329,7 @@ function reviveQuotaInterruptedSessions(log, maxRevivals, staleWindowMs = NORMAL
       taskId,
     });
 
-    if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt)) {
+    if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt, session.worktreePath || null)) {
       revived++;
       session.status = 'revived';
     } else {
@@ -403,20 +412,31 @@ function reviveDeadSessions(log, maxRevivals) {
       if (isActuallyDead && Database) {
         try {
           const resetDb = new Database(todoDbPath);
-          const inProgressTask = resetDb.prepare('SELECT id FROM tasks WHERE id = ? AND status = ?').get(taskId, 'in_progress');
-          if (inProgressTask) {
+          const taskCheck = resetDb.prepare('SELECT id, status FROM tasks WHERE id = ?').get(taskId);
+          if (taskCheck && taskCheck.status === 'in_progress') {
             resetDb.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ?").run(taskId);
           }
           resetDb.close();
         } catch { /* non-fatal */ }
       }
 
-      // Check if TODO has been reset to pending (by the enhanced reaper or inline above)
-      const task = db.prepare('SELECT id, status FROM tasks WHERE id = ? AND status = ?').get(taskId, 'pending');
+      // Check if TODO is pending or in_progress (reaper may have reset it, or it may still be in_progress
+      // if the reaper ran but couldn't find the session file to complete reconciliation)
+      const task = db.prepare('SELECT id, status FROM tasks WHERE id = ? AND status IN (?, ?)').get(taskId, 'pending', 'in_progress');
       if (!task) continue;
 
       // Find session file
-      const sessionFile = agent.sessionFile || findSessionFileByAgentId(sessionDir, agent.id);
+      let sessionFile = agent.sessionFile;
+      if (!sessionFile) {
+        sessionFile = findSessionFileByAgentId(sessionDir, agent.id);
+        // Try worktree session dir if not found
+        if (!sessionFile && agent.metadata?.worktreePath) {
+          const worktreeSessionDir = getSessionDir(agent.metadata.worktreePath);
+          if (worktreeSessionDir) {
+            sessionFile = findSessionFileByAgentId(worktreeSessionDir, agent.id);
+          }
+        }
+      }
       if (!sessionFile) continue;
 
       const sessionId = extractSessionIdFromPath(sessionFile);
@@ -444,7 +464,7 @@ function reviveDeadSessions(log, maxRevivals) {
         taskId,
       });
 
-      if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt)) {
+      if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt, agent.metadata?.worktreePath || null)) {
         revived++;
         // Mark task back to in_progress
         try {
@@ -583,7 +603,7 @@ async function resumePausedSessions(log, maxRevivals) {
       taskId,
     });
 
-    if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt)) {
+    if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt, null)) {
       revived++;
     } else {
       remaining.push(session);

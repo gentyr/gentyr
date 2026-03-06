@@ -482,6 +482,14 @@ The `search_cto_sessions` tool on the `agent-tracker` MCP server filters session
 
 GENTYR automatically detects and recovers sessions interrupted by API quota limits, unexpected process death, or full account exhaustion.
 
+**Dead Agent Recovery Hook** (`.claude/hooks/dead-agent-recovery.js`):
+- Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
+- Immediate dead-agent detection at session start — catches dead agents right away instead of waiting for the next 5-minute automation cycle
+- Scans `agent-tracker-history.json` for agents with `status: 'running'` and a `pid`, checks liveness via `process.kill(pid, 0)`, and for each dead agent: marks it `completed` with `reapReason: 'process_already_dead'` and resets the linked TODO task from `in_progress` to `pending` (clears both `started_at` and `started_timestamp`)
+- Uses the same `agent-tracker-history.json.lock` file (O_CREAT|O_EXCL advisory locking, 10-attempt exponential backoff) as `agent-tracker.js` and `reap-completed-agents.js` to coordinate with concurrent automation processes; bails early if the lock cannot be acquired
+- Emits a `systemMessage` summary when agents are recovered (terminal-visible only)
+- 5-second timeout; registered in `settings.json.template` under `SessionStart` after `todo-maintenance.js`
+
 **Session Reviver** (`.claude/hooks/session-reviver.js`):
 - Called from `hourly-automation.js` every automation cycle (10-minute cooldown via `getCooldown('session_reviver', 10)`)
 - Gate-exempt step: runs after key sync, not subject to the CTO activity gate, so recovery proceeds even when the CTO is inactive
@@ -489,6 +497,9 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 - **Revival prompt**: Each resumed session receives a structured context prompt with elapsed time, interruption reason, and task verification instructions — the agent must call `mcp__todo-db__get_task` or `mcp__todo-db__list_tasks` before continuing to avoid duplicating work already handled by another agent
 - **taskId resolution**: Resolved from `agent-tracker-history.json` metadata so the revival prompt can reference the specific task ID
 - **Mode 3 sessionId fallback**: When `paused-sessions.json` lacks an explicit `sessionId`, finds the session JSONL file by scanning for the `[AGENT:<agentId>]` marker in the first 2KB of each transcript file
+- **Worktree CWD support** (`resumeCwd` param): `spawnResumedSession()` accepts an optional `resumeCwd` argument; resumes in the agent's original worktree path if it still exists, falls back to the main project directory otherwise (adds a note to the revival prompt when the worktree has been cleaned up)
+- **Worktree session discovery** (Mode 1 and 2): When `findSessionFileByAgentId` fails in the main project session directory, falls back to `agent.metadata?.worktreePath` via `getSessionDir()` — covers the ~95% of task-runner agents that run in worktrees and store sessions in worktree-specific directories
+- **Mode 2 `in_progress` task acceptance**: Queries TODO tasks with `status IN ('pending', 'in_progress')` — handles the case where the reaper ran and marked the agent dead but couldn't find the session file (so the task was never reset to `pending`); also performs inline reaping of running-but-dead agents found during the scan (sets task to `pending` before attempting revival)
 - Cap: 3 revivals per cycle (`MAX_REVIVALS_PER_CYCLE`); respects the running-agent concurrency limit
 
 **Three revival modes (priority order):**
@@ -496,13 +507,17 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 | Mode | Source state file | Trigger | Stale window |
 |------|-------------------|---------|--------------|
 | 1 — Quota-interrupted | `.claude/state/quota-interrupted-sessions.json` | `stop-continue-hook.js` writes on quota death | 30 min (12h retroactive on first run) |
-| 2 — Dead session recovery | `.claude/state/agent-tracker-history.json` | Agents reaped with `process_already_dead` + pending TODO task | 7 days |
+| 2 — Dead session recovery | `.claude/state/agent-tracker-history.json` | Agents reaped with `process_already_dead` + pending/in_progress TODO task | 7 days |
 | 3 — Paused sessions | `.claude/state/paused-sessions.json` | `quota-monitor.js` `writePausedSession()` when all accounts exhausted | 24h |
 
 **Stop Hook** (`.claude/hooks/stop-continue-hook.js`):
 - Writes `quota-interrupted-sessions.json` entries with `status: 'pending_revival'` when a spawned session dies from a rate limit error
+- **Worktree path capture**: Resolves `worktreePath` from `agent-tracker-history.json` (keyed by `agentId` extracted from the transcript) and includes it in the quota-interrupted session record so Mode 1 revival can resume the session in the correct worktree CWD
 - Cleanup window widened from 30 min to 12 h so records survive for retroactive revival on the first automation cycle after restart
 - Tombstone consumer: filters tombstoned rotation state keys before passing to `checkKeyHealth()`
+
+**Agent Reaper** (`scripts/reap-completed-agents.js`):
+- **Worktree session discovery**: Both the dead-process path and the live-process path now fall back to `agent.metadata?.worktreePath` via `getSessionDir()` when `findSessionFileByAgentId` returns null for the main project session directory — enables session file caching and TODO reconciliation for worktree agents
 
 **`quota-monitor.js` Mode 3 integration**: Calls `writePausedSession(agentId)` when all accounts are exhausted and a spawned session is about to be abandoned; session-reviver resumes it once any account recovers below 90% usage
 

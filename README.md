@@ -231,7 +231,7 @@ Multi-account rotation with restartless token swap. The quota monitor checks eve
 
 ### session recovery
 
-Three modes. Quota-interrupted sessions resume automatically via `--resume`. Dead agents are detected by cross-referencing the tracker database with running processes. Paused sessions wait for account recovery then re-spawn. Maximum three revivals per cycle. Seven-day historical scan window.
+Three modes. Quota-interrupted sessions resume automatically via `--resume`. Dead agents are detected immediately at session start and also cross-referenced by the periodic reaper. Session revival now follows worktree-based agents into their original working directories. Paused sessions wait for account recovery then re-spawn. Maximum three revivals per cycle. Seven-day historical scan window.
 
 ### task orchestration
 
