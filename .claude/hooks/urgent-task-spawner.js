@@ -100,7 +100,7 @@ function resetTaskToPending(taskId) {
   try {
     const db = new Database(TODO_DB_PATH);
     db.prepare(
-      "UPDATE tasks SET status = 'pending', started_at = NULL WHERE id = ?"
+      "UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ?"
     ).run(taskId);
     db.close();
   } catch (err) {

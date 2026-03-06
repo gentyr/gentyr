@@ -26,6 +26,7 @@ interface TaskRow {
   created_at: string;
   created_timestamp: number;
   started_at: string | null;
+  started_timestamp: number | null;
   completed_at: string | null;
   completed_timestamp: number | null;
   linked_session_id: string | null;
@@ -56,6 +57,7 @@ interface StartTaskResult {
   id: string;
   status: string;
   started_at: string;
+  started_timestamp: number;
 }
 
 interface CompleteTaskResult {
@@ -238,13 +240,16 @@ ${originalTask}`;
     if (task.status === 'completed') {return { error: `Task already completed: ${id}` };}
     if (task.status === 'in_progress') {return { error: `Task already in progress: ${id}` };}
 
-    const started_at = new Date().toISOString();
-    db.prepare(`UPDATE tasks SET status = 'in_progress', started_at = ? WHERE id = ?`).run(
+    const now = new Date();
+    const started_at = now.toISOString();
+    const started_timestamp = Math.floor(now.getTime() / 1000);
+    db.prepare(`UPDATE tasks SET status = 'in_progress', started_at = ?, started_timestamp = ? WHERE id = ?`).run(
       started_at,
+      started_timestamp,
       id
     );
 
-    return { id, status: 'in_progress', started_at };
+    return { id, status: 'in_progress', started_at, started_timestamp };
   };
 
   const completeTask = (id: string) => {
@@ -354,13 +359,13 @@ ${originalTask}`;
       archived_pruned: 0,
     };
 
-    // Clear stale starts (>30 min = 1800 seconds)
+    // Clear stale starts (>30 min = 1800 seconds), measured from started_timestamp
     const staleResult = db.prepare(`
       UPDATE tasks
-      SET status = 'pending', started_at = NULL
+      SET status = 'pending', started_at = NULL, started_timestamp = NULL
       WHERE status = 'in_progress'
-        AND started_at IS NOT NULL
-        AND (? - created_timestamp) > 1800
+        AND started_timestamp IS NOT NULL
+        AND (? - started_timestamp) > 1800
     `).run(now);
     changes.stale_starts_cleared = staleResult.changes;
 
@@ -574,13 +579,28 @@ ${originalTask}`;
   describe('Task Status Transitions', () => {
     it('should start a pending task', () => {
       const task = createTask({ section: 'TEST-WRITER', title: 'Task' });
+      const beforeStart = Math.floor(Date.now() / 1000);
       const result = startTask(task.id) as StartOrError;
 
       expect(result.status).toBe('in_progress');
       expect(result.started_at).toBeDefined();
 
+      // started_timestamp must be set and be a reasonable epoch integer
+      expect('error' in result).toBe(false);
+      if (!('error' in result)) {
+        expect(typeof result.started_timestamp).toBe('number');
+        expect(result.started_timestamp).toBeGreaterThanOrEqual(beforeStart);
+        expect(result.started_timestamp).toBeLessThanOrEqual(beforeStart + 5);
+      }
+
       const updated = getTask(task.id) as TaskOrError;
       expect(updated.status).toBe('in_progress');
+
+      // Verify started_timestamp is persisted to database
+      const row = db.prepare('SELECT started_timestamp FROM tasks WHERE id = ?').get(task.id) as { started_timestamp: number | null };
+      expect(row.started_timestamp).not.toBeNull();
+      expect(typeof row.started_timestamp).toBe('number');
+      expect(row.started_timestamp!).toBeGreaterThanOrEqual(beforeStart);
     });
 
     it('should complete a pending task', () => {
@@ -699,16 +719,19 @@ ${originalTask}`;
   });
 
   describe('Cleanup Operations', () => {
-    it('should clear stale in-progress tasks (>30 min)', () => {
-      // Create task with old timestamp (31 minutes ago)
+    it('should clear stale in-progress tasks (>30 min since start)', () => {
+      // Create a task that was created recently but started 31 minutes ago
       const id = randomUUID();
-      const oldTimestamp = Math.floor(Date.now() / 1000) - 1860; // 31 minutes
-      const created_at = new Date(oldTimestamp * 1000).toISOString();
+      const now = Math.floor(Date.now() / 1000);
+      const createdTimestamp = now - 60; // created 1 minute ago
+      const startedTimestamp = now - 1860; // started 31 minutes ago
+      const created_at = new Date(createdTimestamp * 1000).toISOString();
+      const started_at = new Date(startedTimestamp * 1000).toISOString();
 
       db.prepare(`
-        INSERT INTO tasks (id, section, status, title, created_at, started_at, created_timestamp)
-        VALUES (?, 'TEST-WRITER', 'in_progress', 'Stale task', ?, ?, ?)
-      `).run(id, created_at, created_at, oldTimestamp);
+        INSERT INTO tasks (id, section, status, title, created_at, started_at, created_timestamp, started_timestamp)
+        VALUES (?, 'TEST-WRITER', 'in_progress', 'Stale task', ?, ?, ?, ?)
+      `).run(id, created_at, started_at, createdTimestamp, startedTimestamp);
 
       const result = cleanup();
       expect(result.stale_starts_cleared).toBe(1);
@@ -716,6 +739,7 @@ ${originalTask}`;
       const task = getTask(id) as TaskOrError;
       expect(task.status).toBe('pending');
       expect(task.started_at).toBe(null);
+      expect((task as TaskRow).started_timestamp).toBe(null);
     });
 
     it('should not clear recent in-progress tasks', () => {
@@ -727,6 +751,53 @@ ${originalTask}`;
 
       const updated = getTask(task.id) as TaskOrError;
       expect(updated.status).toBe('in_progress');
+    });
+
+    it('should NOT clear in-progress tasks that were recently started even if created long ago', () => {
+      // This validates the core session-revival fix: cleanup uses started_timestamp,
+      // not created_timestamp. A long-running task that was recently picked up should
+      // not be reset just because it has an old created_timestamp.
+      const id = randomUUID();
+      const now = Math.floor(Date.now() / 1000);
+      const createdTimestamp = now - 7200; // created 2 hours ago
+      const startedTimestamp = now - 300;  // started only 5 minutes ago
+      const created_at = new Date(createdTimestamp * 1000).toISOString();
+      const started_at = new Date(startedTimestamp * 1000).toISOString();
+
+      db.prepare(`
+        INSERT INTO tasks (id, section, status, title, created_at, started_at, created_timestamp, started_timestamp)
+        VALUES (?, 'TEST-WRITER', 'in_progress', 'Recently started old task', ?, ?, ?, ?)
+      `).run(id, created_at, started_at, createdTimestamp, startedTimestamp);
+
+      const result = cleanup();
+      // Must NOT be cleared — started_timestamp is only 5 minutes old (< 1800 seconds)
+      expect(result.stale_starts_cleared).toBe(0);
+
+      const task = getTask(id) as TaskOrError;
+      expect(task.status).toBe('in_progress');
+      expect(task.started_at).toBe(started_at);
+      expect((task as TaskRow).started_timestamp).toBe(startedTimestamp);
+    });
+
+    it('should NOT clear in-progress tasks that have no started_timestamp (missing data)', () => {
+      // Tasks without started_timestamp (e.g. migrated from old schema) should be
+      // skipped by the stale-start cleanup, matching the server's IS NOT NULL guard.
+      const id = randomUUID();
+      const now = Math.floor(Date.now() / 1000);
+      const oldTimestamp = now - 7200; // created 2 hours ago
+      const created_at = new Date(oldTimestamp * 1000).toISOString();
+
+      db.prepare(`
+        INSERT INTO tasks (id, section, status, title, created_at, started_at, created_timestamp)
+        VALUES (?, 'TEST-WRITER', 'in_progress', 'No started_timestamp task', ?, ?, ?)
+      `).run(id, created_at, created_at, oldTimestamp);
+
+      const result = cleanup();
+      // started_timestamp IS NULL → not matched by the stale-start query
+      expect(result.stale_starts_cleared).toBe(0);
+
+      const task = getTask(id) as TaskOrError;
+      expect(task.status).toBe('in_progress');
     });
 
     it('should archive old completed tasks (>3 hours)', () => {

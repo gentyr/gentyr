@@ -57,6 +57,20 @@ try {
 }
 
 /**
+ * Check if a process is alive.
+ * @param {number} pid
+ * @returns {boolean}
+ */
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code !== 'ESRCH';
+  }
+}
+
+/**
  * Build the context prompt injected when a session is resumed.
  * Tells the agent how long it was interrupted and to verify its task status.
  */
@@ -357,13 +371,23 @@ function reviveDeadSessions(log, maxRevivals) {
 
   const cutoff = Date.now() - DEAD_SESSION_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 
+  let historyDirty = false;
+
   try {
     for (const agent of history.agents) {
       if (revived >= maxRevivals) break;
 
-      // Only look at reaped agents that died unexpectedly
-      const isDead = (agent.status === 'completed' && agent.reapReason === 'process_already_dead') ||
-                     (agent.status === 'reaped' && agent.reapReason === 'process_already_dead');
+      // Also check "running" agents that are actually dead (inline reaping)
+      const isActuallyDead = (agent.status === 'running' && agent.pid && !isProcessAlive(agent.pid));
+      if (isActuallyDead) {
+        agent.status = 'completed';
+        agent.reapReason = 'process_already_dead';
+        agent.reapedAt = new Date().toISOString();
+        historyDirty = true;
+      }
+      const isDead = isActuallyDead ||
+        (agent.status === 'completed' && agent.reapReason === 'process_already_dead') ||
+        (agent.status === 'reaped' && agent.reapReason === 'process_already_dead');
       if (!isDead) continue;
 
       // Must have a task ID
@@ -374,7 +398,20 @@ function reviveDeadSessions(log, maxRevivals) {
       const agentTime = new Date(agent.timestamp).getTime();
       if (agentTime < cutoff) continue;
 
-      // Check if TODO has been reset to pending (by the enhanced reaper)
+      // For inline-reaped agents (detected here rather than by the reaper script),
+      // reset the task to pending so the revival check below will find it.
+      if (isActuallyDead && Database) {
+        try {
+          const resetDb = new Database(todoDbPath);
+          const inProgressTask = resetDb.prepare('SELECT id FROM tasks WHERE id = ? AND status = ?').get(taskId, 'in_progress');
+          if (inProgressTask) {
+            resetDb.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ?").run(taskId);
+          }
+          resetDb.close();
+        } catch { /* non-fatal */ }
+      }
+
+      // Check if TODO has been reset to pending (by the enhanced reaper or inline above)
       const task = db.prepare('SELECT id, status FROM tasks WHERE id = ? AND status = ?').get(taskId, 'pending');
       if (!task) continue;
 
@@ -412,12 +449,19 @@ function reviveDeadSessions(log, maxRevivals) {
         // Mark task back to in_progress
         try {
           const writeDb = new Database(todoDbPath);
-          writeDb.prepare("UPDATE tasks SET status = 'in_progress', started_at = datetime('now') WHERE id = ?").run(taskId);
+          const now = new Date();
+          writeDb.prepare("UPDATE tasks SET status = 'in_progress', started_at = ?, started_timestamp = ? WHERE id = ?")
+            .run(now.toISOString(), Math.floor(now.getTime() / 1000), taskId);
           writeDb.close();
         } catch { /* non-fatal */ }
       }
     }
   } finally {
+    if (historyDirty) {
+      try {
+        fs.writeFileSync(HISTORY_PATH, JSON.stringify(history, null, 2), 'utf8');
+      } catch { /* non-fatal */ }
+    }
     db.close();
   }
 

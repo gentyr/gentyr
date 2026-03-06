@@ -41,6 +41,12 @@ const DEFAULTS = {
   branch_drift_check: 30,              // 30 minutes
   session_reviver: 10,                  // 10 minutes
   daily_feedback: 1440,                 // 24 hours
+  usage_optimizer: 5,                   // 5 minutes
+  key_sync: 5,                          // 5 minutes
+  version_watch: 5,                     // 5 minutes
+  pr_sweep: 10,                         // 10 minutes
+  worktree_cleanup: 30,                 // 30 minutes
+  stale_work_detector: 1440,            // 24 hours
 };
 
 /**
