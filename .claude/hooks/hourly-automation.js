@@ -22,7 +22,7 @@ import { registerSpawn, updateAgent, registerHookExecution, AGENT_TYPES, HOOK_TY
 import { getCooldown } from './config-reader.js';
 import { runUsageOptimizer } from './usage-optimizer.js';
 import { syncKeys } from './key-sync.js';
-import { runFeedbackPipeline } from './feedback-orchestrator.js';
+import { runFeedbackPipeline, startFeedbackRun } from './feedback-orchestrator.js';
 import { createWorktree, cleanupMergedWorktrees } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
 import { detectStaleWork, formatReport } from './stale-work-detector.js';
@@ -351,6 +351,7 @@ function getConfig() {
     standaloneAntipatternHunterEnabled: true,
     standaloneComplianceCheckerEnabled: true,
     productManagerEnabled: false,
+    dailyFeedbackEnabled: false,
     lastModified: null,
     intervals: {},
   };
@@ -3559,6 +3560,27 @@ Then exit.`;
         });
       } else {
         log(`User feedback: skipped - ${feedbackResult.reason}`);
+      }
+    },
+  });
+
+  // =========================================================================
+  // DAILY FEEDBACK PIPELINE (24h cooldown, disabled by default)
+  // Runs feedback for ALL enabled personas regardless of staging changes
+  // =========================================================================
+  await runIfDue('daily_feedback', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastDailyFeedbackCheck',
+    configToggle: 'dailyFeedbackEnabled',
+    config,
+    label: 'Daily feedback',
+    fn: async () => {
+      log('Daily feedback: querying all enabled personas...');
+      const feedbackResult = await startFeedbackRun('daily', null, [], null, 3);
+      if (feedbackResult.sessions && feedbackResult.sessions.length > 0) {
+        log(`Daily feedback: started run ${feedbackResult.run_id} with ${feedbackResult.sessions.length} persona(s).`);
+      } else {
+        log('Daily feedback: no enabled personas found or all ran recently.');
       }
     },
   });
