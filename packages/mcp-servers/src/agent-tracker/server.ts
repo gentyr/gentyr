@@ -523,7 +523,7 @@ function getAgentStats(): AgentStats {
     // Count by status (running/completed/reaped)
     if (agent.status) {
       stats.byStatus[agent.status] = (stats.byStatus[agent.status] || 0) + 1;
-      if (agent.status === 'reaped') {
+      if (agent.status === 'reaped' || agent.reapReason) {
         stats.totalReaped++;
       }
     }

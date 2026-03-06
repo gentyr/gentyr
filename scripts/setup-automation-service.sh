@@ -89,6 +89,35 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# If running from a worktree path, resolve to the main project root
+case "$PROJECT_DIR" in
+  */.claude/worktrees/*)
+    RESOLVED=$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null)
+    if [ -n "$RESOLVED" ]; then
+      echo -e "${YELLOW}[WARN]${NC} Detected worktree path, resolving to main project: $RESOLVED"
+      PROJECT_DIR="$RESOLVED"
+    fi
+    ;;
+esac
+
+# Also check if .git is a file (worktree indicator) rather than a directory
+if [ -f "$PROJECT_DIR/.git" ]; then
+  RESOLVED=$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null)
+  if [ -n "$RESOLVED" ] && [ "$RESOLVED" != "$PROJECT_DIR" ]; then
+    echo -e "${YELLOW}[WARN]${NC} Detected worktree, resolving to main project: $RESOLVED"
+    PROJECT_DIR="$RESOLVED"
+  fi
+fi
+
+# Hard-fail if still in a worktree
+case "$PROJECT_DIR" in
+  */.claude/worktrees/*)
+    echo -e "${RED}[ERROR]${NC} Cannot set up automation from a worktree path: $PROJECT_DIR"
+    echo "Run from the main project root instead."
+    exit 1
+    ;;
+esac
+
 log_info() {
   echo -e "${GREEN}[INFO]${NC} $1"
 }
