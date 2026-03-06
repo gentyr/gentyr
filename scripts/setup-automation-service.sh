@@ -522,7 +522,7 @@ $OP_TOKEN_PLIST
     </dict>
 
     <key>StartInterval</key>
-    <integer>600</integer>
+    <integer>300</integer>
 
     <key>WatchPaths</key>
     <array>
