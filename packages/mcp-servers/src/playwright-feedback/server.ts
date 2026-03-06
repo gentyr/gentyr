@@ -21,9 +21,11 @@
  * @version 1.0.0
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import type { Page, Locator } from 'playwright';
+import Database from 'better-sqlite3';
 import { type AnyToolHandler } from '../shared/server.js';
 import { AuditedMcpServer } from '../shared/audited-server.js';
 import { BrowserManager } from './browser-manager.js';
@@ -88,6 +90,8 @@ export interface PlaywrightFeedbackConfig {
   auditSessionId: string;
   auditPersonaName?: string;
   auditDbPath?: string;
+  recordVideo?: boolean;
+  projectDir?: string;
 }
 
 // ============================================================================
@@ -95,12 +99,17 @@ export interface PlaywrightFeedbackConfig {
 // ============================================================================
 
 export function createPlaywrightFeedbackServer(config: PlaywrightFeedbackConfig): AuditedMcpServer {
+  const viewportWidth = config.viewportWidth ?? 1280;
+  const viewportHeight = config.viewportHeight ?? 720;
+
   // Initialize browser manager with config
   const browserManager = new BrowserManager({
     baseUrl: config.baseUrl,
     headless: config.headless ?? true,
-    viewportWidth: config.viewportWidth ?? 1280,
-    viewportHeight: config.viewportHeight ?? 720,
+    viewportWidth,
+    viewportHeight,
+    recordVideo: config.recordVideo ?? false,
+    sessionId: config.auditSessionId,
   });
 
   // ============================================================================
@@ -612,7 +621,55 @@ export function createPlaywrightFeedbackServer(config: PlaywrightFeedbackConfig)
     auditDbPath: config.auditDbPath,
   });
 
-  // Clean up browser on process exit (sync-only — best effort)
+  // Persist video recording and clean up browser before process exits.
+  // Video must be saved BEFORE closing the browser context — Playwright finalizes
+  // the webm file when the context closes, and video.path() only works before that.
+  async function persistVideoAndClose(): Promise<void> {
+    if (config.recordVideo && config.auditSessionId && config.projectDir) {
+      try {
+        const videoSrc = await browserManager.getVideoPath();
+        if (videoSrc) {
+          const recordingsDir = path.join(config.projectDir, '.claude', 'recordings', 'feedback');
+          fs.mkdirSync(recordingsDir, { recursive: true });
+          const dest = path.join(recordingsDir, `${config.auditSessionId}.webm`);
+          fs.copyFileSync(videoSrc, dest);
+
+          // Update recording_path in user-feedback.db
+          try {
+            const dbPath = path.join(config.projectDir, '.claude', 'user-feedback.db');
+            if (fs.existsSync(dbPath)) {
+              const db = new Database(dbPath);
+              db.pragma('journal_mode = WAL');
+              // The recording_path column is added by the user-feedback server migration.
+              // We do a best-effort update — if the column doesn't exist yet, we skip silently.
+              try {
+                db.prepare(
+                  'UPDATE feedback_sessions SET recording_path = ? WHERE id = ?'
+                ).run(dest, config.auditSessionId);
+              } catch {
+                // Column may not exist yet — non-fatal
+              }
+              db.close();
+            }
+          } catch {
+            // Non-fatal: DB update failure should not prevent process exit
+          }
+        }
+      } catch {
+        // Non-fatal: video persistence failure should not prevent process exit
+      }
+    }
+    await browserManager.close();
+  }
+
+  // SIGINT/SIGTERM: persist video then exit cleanly
+  const handleSignal = (): void => {
+    persistVideoAndClose().finally(() => process.exit(0));
+  };
+  process.on('SIGINT', handleSignal);
+  process.on('SIGTERM', handleSignal);
+
+  // Clean up browser on process exit (best-effort sync fallback for unhandled exits)
   process.on('exit', () => {
     browserManager.close().catch(() => { /* best-effort */ });
   });
@@ -634,12 +691,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename
     auditSessionId: process.env['FEEDBACK_SESSION_ID'] || '',
     auditPersonaName: process.env['FEEDBACK_PERSONA_NAME'],
     auditDbPath: process.env['FEEDBACK_AUDIT_DB_PATH'],
+    recordVideo: process.env['FEEDBACK_RECORD_VIDEO'] === '1',
+    projectDir: process.env['CLAUDE_PROJECT_DIR'] || process.cwd(),
   };
 
   const server = createPlaywrightFeedbackServer(config);
-
-  process.on('SIGINT', () => process.exit(0));
-  process.on('SIGTERM', () => process.exit(0));
+  // SIGINT/SIGTERM are registered inside createPlaywrightFeedbackServer
+  // so that video persistence runs before exit.
 
   server.start();
 }

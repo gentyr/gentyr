@@ -165,6 +165,7 @@ function generateMcpConfig(sessionId, persona, projectDir = PROJECT_DIR) {
         FEEDBACK_BROWSER_HEADLESS: 'true',
         FEEDBACK_SESSION_ID: sessionId,
         FEEDBACK_PERSONA_NAME: persona.name,
+        FEEDBACK_RECORD_VIDEO: '1',
       },
     };
   }
@@ -223,6 +224,7 @@ function generateMcpConfig(sessionId, persona, projectDir = PROJECT_DIR) {
           FEEDBACK_BROWSER_HEADLESS: 'true',
           FEEDBACK_SESSION_ID: sessionId,
           FEEDBACK_PERSONA_NAME: persona.name,
+          FEEDBACK_RECORD_VIDEO: '1',
         },
       };
     }

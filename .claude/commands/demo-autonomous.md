@@ -74,6 +74,7 @@ with per-check repair instructions (same table as `/demo-interactive`). STOP.
 Call `mcp__playwright__run_demo({
   project: "<scenario.playwright_project>",
   test_file: "<scenario.test_file>",
+  scenario_id: "<scenario.id>",
   slow_mo: 800,
   pause_at_end: true
 })`.
@@ -91,6 +92,7 @@ Instead of calling `run_demo` with the scenario's `test_file`, show:
    - If audit has actions, call `mcp__playwright__run_demo({
        project: "<scenario.playwright_project>",
        test_file: "e2e/demo/session-replay-runner.demo.ts",
+       scenario_id: "<scenario.id>",
        slow_mo: 800,
        pause_at_end: true,
        extra_env: {

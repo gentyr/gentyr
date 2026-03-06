@@ -254,6 +254,8 @@ export interface FeedbackSessionRecord {
   findings_count: number;
   report_ids: string; // JSON array
   satisfaction_level: string | null;
+  scenario_id: string | null;
+  recording_path: string | null;
 }
 
 // ============================================================================
@@ -418,6 +420,8 @@ export interface ScenarioRecord {
   created_at: string;
   created_timestamp: number;
   updated_at: string;
+  last_recorded_at: string | null;
+  recording_path: string | null;
 }
 
 export interface ScenarioResult {
@@ -433,4 +437,76 @@ export interface ScenarioResult {
   created_at: string;
   updated_at: string;
   persona_name?: string;
+  last_recorded_at: string | null;
+  recording_path: string | null;
+}
+
+// ============================================================================
+// Recording Tool Schemas
+// ============================================================================
+
+export const ListRecordingsArgsSchema = z.object({
+  type: z.enum(['demo', 'feedback', 'all']).optional().default('all')
+    .describe('Filter by recording type: "demo" (scenario recordings), "feedback" (feedback session recordings), or "all"'),
+  persona_id: z.string().optional()
+    .describe('Filter recordings by persona UUID'),
+});
+
+export const GetRecordingArgsSchema = z.object({
+  scenario_id: z.string().optional().describe('Demo scenario UUID'),
+  session_id: z.string().optional().describe('Feedback session UUID'),
+}).refine(data => data.scenario_id !== undefined || data.session_id !== undefined, {
+  message: 'Either scenario_id or session_id must be provided',
+});
+
+export const PlayRecordingArgsSchema = z.object({
+  scenario_id: z.string().optional().describe('Demo scenario UUID'),
+  session_id: z.string().optional().describe('Feedback session UUID'),
+}).refine(data => data.scenario_id !== undefined || data.session_id !== undefined, {
+  message: 'Either scenario_id or session_id must be provided',
+});
+
+export type ListRecordingsArgs = z.infer<typeof ListRecordingsArgsSchema>;
+export type GetRecordingArgs = z.infer<typeof GetRecordingArgsSchema>;
+export type PlayRecordingArgs = z.infer<typeof PlayRecordingArgsSchema>;
+
+export interface DemoRecordingEntry {
+  scenario_id: string;
+  title: string;
+  persona_id: string;
+  persona_name: string;
+  test_file: string;
+  recording_path: string;
+  recorded_at: string;
+  stale: boolean; // true if recorded_at is >24h ago
+}
+
+export interface FeedbackRecordingEntry {
+  session_id: string;
+  persona_id: string;
+  persona_name: string;
+  recording_path: string;
+  recorded_at: string;
+  stale: boolean; // true if recorded_at is >24h ago
+}
+
+export interface ListRecordingsResult {
+  demos: DemoRecordingEntry[];
+  feedback: FeedbackRecordingEntry[];
+  total: number;
+}
+
+export interface GetRecordingResult {
+  exists: boolean;
+  path: string | null;
+  size_mb: number | null;
+  recorded_at: string | null;
+  details: {
+    type: 'demo' | 'feedback';
+    scenario_id?: string;
+    session_id?: string;
+    title?: string;
+    persona_id: string;
+    persona_name: string;
+  } | null;
 }

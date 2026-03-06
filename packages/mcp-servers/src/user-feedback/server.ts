@@ -18,6 +18,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { execFile } from 'child_process';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
@@ -46,6 +47,9 @@ import {
   DeleteScenarioArgsSchema,
   ListScenariosArgsSchema,
   GetScenarioArgsSchema,
+  ListRecordingsArgsSchema,
+  GetRecordingArgsSchema,
+  PlayRecordingArgsSchema,
   type CreatePersonaArgs,
   type UpdatePersonaArgs,
   type DeletePersonaArgs,
@@ -68,6 +72,9 @@ import {
   type DeleteScenarioArgs,
   type ListScenariosArgs,
   type GetScenarioArgs,
+  type ListRecordingsArgs,
+  type GetRecordingArgs,
+  type PlayRecordingArgs,
   type PersonaRecord,
   type FeatureRecord,
   type PersonaFeatureRecord,
@@ -85,6 +92,10 @@ import {
   type McpAuditAction,
   type ConsumptionMode,
   type FeedbackRunStatus,
+  type ListRecordingsResult,
+  type GetRecordingResult,
+  type DemoRecordingEntry,
+  type FeedbackRecordingEntry,
 } from './types.js';
 
 // ============================================================================
@@ -291,6 +302,25 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       db.exec("ALTER TABLE feedback_sessions ADD COLUMN scenario_id TEXT");
     }
 
+    // Auto-migration: add recording_path column to feedback_sessions if missing
+    try {
+      db.prepare("SELECT recording_path FROM feedback_sessions LIMIT 0").run();
+    } catch {
+      db.exec("ALTER TABLE feedback_sessions ADD COLUMN recording_path TEXT");
+    }
+
+    // Auto-migration: add last_recorded_at and recording_path columns to demo_scenarios if missing
+    try {
+      db.prepare("SELECT last_recorded_at FROM demo_scenarios LIMIT 0").run();
+    } catch {
+      db.exec("ALTER TABLE demo_scenarios ADD COLUMN last_recorded_at TEXT");
+    }
+    try {
+      db.prepare("SELECT recording_path FROM demo_scenarios LIMIT 0").run();
+    } catch {
+      db.exec("ALTER TABLE demo_scenarios ADD COLUMN recording_path TEXT");
+    }
+
     return db;
   }
 
@@ -350,6 +380,8 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       created_at: record.created_at,
       updated_at: record.updated_at,
       persona_name: personaName,
+      last_recorded_at: record.last_recorded_at ?? null,
+      recording_path: record.recording_path ?? null,
     };
   }
 
@@ -1234,6 +1266,276 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   }
 
   // ============================================================================
+  // Recording Tools
+  // ============================================================================
+
+  const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+  function listRecordings(args: ListRecordingsArgs): ListRecordingsResult {
+    const now = Date.now();
+
+    const demos: DemoRecordingEntry[] = [];
+    const feedbackEntries: FeedbackRecordingEntry[] = [];
+
+    if (args.type === 'demo' || args.type === 'all') {
+      let sql = `
+        SELECT ds.id as scenario_id, ds.title, ds.test_file, ds.persona_id,
+               ds.recording_path, ds.last_recorded_at,
+               p.name as persona_name
+        FROM demo_scenarios ds
+        JOIN personas p ON p.id = ds.persona_id
+        WHERE ds.recording_path IS NOT NULL
+      `;
+      const params: unknown[] = [];
+
+      if (args.persona_id) {
+        sql += ' AND ds.persona_id = ?';
+        params.push(args.persona_id);
+      }
+
+      sql += ' ORDER BY ds.last_recorded_at DESC';
+
+      const rows = db.prepare(sql).all(...params) as {
+        scenario_id: string;
+        title: string;
+        test_file: string;
+        persona_id: string;
+        recording_path: string;
+        last_recorded_at: string | null;
+        persona_name: string;
+      }[];
+
+      for (const row of rows) {
+        const recordedAt = row.last_recorded_at ?? '';
+        const recordedMs = recordedAt ? new Date(recordedAt).getTime() : 0;
+        demos.push({
+          scenario_id: row.scenario_id,
+          title: row.title,
+          persona_id: row.persona_id,
+          persona_name: row.persona_name,
+          test_file: row.test_file,
+          recording_path: row.recording_path,
+          recorded_at: recordedAt,
+          stale: recordedMs > 0 ? now - recordedMs > STALE_THRESHOLD_MS : true,
+        });
+      }
+    }
+
+    if (args.type === 'feedback' || args.type === 'all') {
+      let sql = `
+        SELECT fs.id as session_id, fs.persona_id, fs.recording_path, fs.completed_at,
+               p.name as persona_name
+        FROM feedback_sessions fs
+        JOIN personas p ON p.id = fs.persona_id
+        WHERE fs.recording_path IS NOT NULL
+      `;
+      const params: unknown[] = [];
+
+      if (args.persona_id) {
+        sql += ' AND fs.persona_id = ?';
+        params.push(args.persona_id);
+      }
+
+      sql += ' ORDER BY fs.completed_at DESC';
+
+      const rows = db.prepare(sql).all(...params) as {
+        session_id: string;
+        persona_id: string;
+        recording_path: string;
+        completed_at: string | null;
+        persona_name: string;
+      }[];
+
+      for (const row of rows) {
+        const recordedAt = row.completed_at ?? '';
+        const recordedMs = recordedAt ? new Date(recordedAt).getTime() : 0;
+        feedbackEntries.push({
+          session_id: row.session_id,
+          persona_id: row.persona_id,
+          persona_name: row.persona_name,
+          recording_path: row.recording_path,
+          recorded_at: recordedAt,
+          stale: recordedMs > 0 ? now - recordedMs > STALE_THRESHOLD_MS : true,
+        });
+      }
+    }
+
+    return {
+      demos,
+      feedback: feedbackEntries,
+      total: demos.length + feedbackEntries.length,
+    };
+  }
+
+  function getRecording(args: GetRecordingArgs): GetRecordingResult | ErrorResult {
+    if (args.scenario_id !== undefined) {
+      const row = db.prepare(`
+        SELECT ds.id, ds.title, ds.persona_id, ds.recording_path, ds.last_recorded_at,
+               p.name as persona_name
+        FROM demo_scenarios ds
+        JOIN personas p ON p.id = ds.persona_id
+        WHERE ds.id = ?
+      `).get(args.scenario_id) as {
+        id: string;
+        title: string;
+        persona_id: string;
+        recording_path: string | null;
+        last_recorded_at: string | null;
+        persona_name: string;
+      } | undefined;
+
+      if (!row) {
+        return { error: `Scenario not found: ${args.scenario_id}` };
+      }
+
+      if (!row.recording_path) {
+        return {
+          exists: false,
+          path: null,
+          size_mb: null,
+          recorded_at: null,
+          details: null,
+        };
+      }
+
+      let size_mb: number | null = null;
+      const fileExists = fs.existsSync(row.recording_path);
+      if (fileExists) {
+        try {
+          const stat = fs.statSync(row.recording_path);
+          size_mb = Math.round((stat.size / (1024 * 1024)) * 100) / 100;
+        } catch {
+          // File stat failed — treat as missing
+        }
+      }
+
+      return {
+        exists: fileExists,
+        path: row.recording_path,
+        size_mb,
+        recorded_at: row.last_recorded_at,
+        details: {
+          type: 'demo',
+          scenario_id: row.id,
+          title: row.title,
+          persona_id: row.persona_id,
+          persona_name: row.persona_name,
+        },
+      };
+    }
+
+    if (args.session_id !== undefined) {
+      const row = db.prepare(`
+        SELECT fs.id, fs.persona_id, fs.recording_path, fs.completed_at,
+               p.name as persona_name
+        FROM feedback_sessions fs
+        JOIN personas p ON p.id = fs.persona_id
+        WHERE fs.id = ?
+      `).get(args.session_id) as {
+        id: string;
+        persona_id: string;
+        recording_path: string | null;
+        completed_at: string | null;
+        persona_name: string;
+      } | undefined;
+
+      if (!row) {
+        return { error: `Feedback session not found: ${args.session_id}` };
+      }
+
+      if (!row.recording_path) {
+        return {
+          exists: false,
+          path: null,
+          size_mb: null,
+          recorded_at: null,
+          details: null,
+        };
+      }
+
+      let size_mb: number | null = null;
+      const fileExists = fs.existsSync(row.recording_path);
+      if (fileExists) {
+        try {
+          const stat = fs.statSync(row.recording_path);
+          size_mb = Math.round((stat.size / (1024 * 1024)) * 100) / 100;
+        } catch {
+          // File stat failed — treat as missing
+        }
+      }
+
+      return {
+        exists: fileExists,
+        path: row.recording_path,
+        size_mb,
+        recorded_at: row.completed_at,
+        details: {
+          type: 'feedback',
+          session_id: row.id,
+          persona_id: row.persona_id,
+          persona_name: row.persona_name,
+        },
+      };
+    }
+
+    return { error: 'Either scenario_id or session_id must be provided' };
+  }
+
+  function playRecording(args: PlayRecordingArgs): Promise<{ success: boolean; message: string } | ErrorResult> {
+    return new Promise((resolve) => {
+      let recordingPath: string | null = null;
+      let label = '';
+
+      if (args.scenario_id !== undefined) {
+        const row = db.prepare(
+          'SELECT recording_path, title FROM demo_scenarios WHERE id = ?'
+        ).get(args.scenario_id) as { recording_path: string | null; title: string } | undefined;
+
+        if (!row) {
+          resolve({ error: `Scenario not found: ${args.scenario_id}` });
+          return;
+        }
+
+        recordingPath = row.recording_path;
+        label = `demo scenario "${row.title}"`;
+      } else if (args.session_id !== undefined) {
+        const row = db.prepare(
+          'SELECT recording_path FROM feedback_sessions WHERE id = ?'
+        ).get(args.session_id) as { recording_path: string | null } | undefined;
+
+        if (!row) {
+          resolve({ error: `Feedback session not found: ${args.session_id}` });
+          return;
+        }
+
+        recordingPath = row.recording_path;
+        label = `feedback session ${args.session_id}`;
+      } else {
+        resolve({ error: 'Either scenario_id or session_id must be provided' });
+        return;
+      }
+
+      if (!recordingPath) {
+        resolve({ error: `No recording found for ${label}` });
+        return;
+      }
+
+      if (!fs.existsSync(recordingPath)) {
+        resolve({ error: `Recording file not found on disk: ${recordingPath}` });
+        return;
+      }
+
+      execFile('open', [recordingPath], (err) => {
+        if (err) {
+          resolve({ error: `Failed to open recording: ${err.message}` });
+          return;
+        }
+        resolve({ success: true, message: `Opened recording for ${label}: ${recordingPath}` });
+      });
+    });
+  }
+
+  // ============================================================================
   // Server Setup
   // ============================================================================
 
@@ -1375,6 +1677,25 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       description: 'Get full details of a demo scenario including its persona name.',
       schema: GetScenarioArgsSchema,
       handler: getScenario,
+    },
+    // Recording Tools
+    {
+      name: 'list_recordings',
+      description: 'List available demo and feedback session recordings with paths and freshness. Returns recordings grouped by type with stale flag for recordings older than 24h.',
+      schema: ListRecordingsArgsSchema,
+      handler: listRecordings,
+    },
+    {
+      name: 'get_recording',
+      description: 'Get recording file path and metadata for a specific demo scenario or feedback session. Verifies the file exists on disk and returns size.',
+      schema: GetRecordingArgsSchema,
+      handler: getRecording,
+    },
+    {
+      name: 'play_recording',
+      description: 'Open a recording in the system default video player. Resolves the recording path from scenario_id or session_id and launches it with the system open command.',
+      schema: PlayRecordingArgsSchema,
+      handler: playRecording,
     },
   ];
 
