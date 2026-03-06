@@ -40,6 +40,7 @@ const DEFAULTS = {
   compliance_checker_spec: 10080,      // 7 days in minutes (per-spec cooldown)
   branch_drift_check: 30,              // 30 minutes
   session_reviver: 10,                  // 10 minutes
+  daily_feedback: 1440,                 // 24 hours
 };
 
 /**

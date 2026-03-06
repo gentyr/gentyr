@@ -355,7 +355,9 @@ Call: mcp__playwright__run_demo({
   project: "${scenario.playwright_project}",
   test_file: "${scenario.test_file}",
   slow_mo: 0,
-  pause_at_end: true
+  pause_at_end: true,
+  trace: true,
+  record_video: true
 })
 
 Wait for the demo to complete and the browser to pause. Then proceed with
