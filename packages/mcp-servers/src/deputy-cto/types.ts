@@ -166,6 +166,19 @@ export const ActivatePreapprovedBypassArgsSchema = z.object({
 
 export const ListPreapprovedBypassesArgsSchema = z.object({});
 
+// Promotion bypass schemas
+export const ReviewBlockingItemsArgsSchema = z.object({
+  promotion_context: z.string().max(500).optional()
+    .describe('Optional context about what is being promoted'),
+});
+
+export const CreatePromotionBypassArgsSchema = z.object({
+  rationale: z.string().min(10).max(1000)
+    .describe('CTO rationale for bypassing blocking items'),
+  duration_minutes: z.coerce.number().min(5).max(120).optional().default(30)
+    .describe('Duration in minutes for the bypass window (default 30, max 120)'),
+});
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -198,6 +211,8 @@ export type ListPendingActionRequestsArgs = z.infer<typeof ListPendingActionRequ
 export type RequestPreapprovedBypassArgs = z.infer<typeof RequestPreapprovedBypassArgsSchema>;
 export type ActivatePreapprovedBypassArgs = z.infer<typeof ActivatePreapprovedBypassArgsSchema>;
 export type ListPreapprovedBypassesArgs = z.infer<typeof ListPreapprovedBypassesArgsSchema>;
+export type ReviewBlockingItemsArgs = z.infer<typeof ReviewBlockingItemsArgsSchema>;
+export type CreatePromotionBypassArgs = z.infer<typeof CreatePromotionBypassArgsSchema>;
 
 export interface QuestionRecord {
   id: string;
@@ -522,6 +537,35 @@ export interface ListPreapprovedBypassesResult {
 
 export const GetMergeChainStatusArgsSchema = z.object({});
 export type GetMergeChainStatusArgs = z.infer<typeof GetMergeChainStatusArgsSchema>;
+
+// Promotion bypass result types
+export interface BlockingItemSummary {
+  id: string;
+  type: string;
+  title: string;
+  created_at: string;
+  age_hours: number;
+  relevance: 'relevant' | 'likely_irrelevant' | 'unknown';
+  relevance_reason: string;
+}
+
+export interface ReviewBlockingItemsResult {
+  total_blocking: number;
+  relevant_count: number;
+  irrelevant_count: number;
+  unknown_count: number;
+  items: BlockingItemSummary[];
+  deputy_recommendation: string;
+  bypass_eligible: boolean;
+}
+
+export interface CreatePromotionBypassResult {
+  success: boolean;
+  bypass_id: string;
+  expires_at: string;
+  duration_minutes: number;
+  message: string;
+}
 
 // Hotfix Promotion
 export const RequestHotfixPromotionArgsSchema = z.object({});
