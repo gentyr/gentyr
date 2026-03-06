@@ -101,6 +101,30 @@ log_error() {
   echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Guard: if PROJECT_DIR is inside a worktree, resolve to the main project root.
+# Worktrees are ephemeral — baking their path into a persistent launchd/systemd
+# service would leave a broken plist once the worktree is cleaned up.
+if echo "$PROJECT_DIR" | grep -q '\.claude/worktrees/'; then
+  REAL_PROJECT_DIR="${PROJECT_DIR%%/.claude/worktrees/*}"
+  if [ -n "$REAL_PROJECT_DIR" ] && [ "$REAL_PROJECT_DIR" != "$PROJECT_DIR" ]; then
+    log_warn "Detected worktree path. Using main project root: $REAL_PROJECT_DIR"
+    PROJECT_DIR="$REAL_PROJECT_DIR"
+  fi
+fi
+
+# Validate .claude directory exists at resolved path
+if [ ! -d "$PROJECT_DIR/.claude" ]; then
+  log_error "No .claude directory found at $PROJECT_DIR — cannot install automation service."
+  exit 1
+fi
+
+# Hard-fail if PROJECT_DIR still points to a worktree after resolution
+if echo "$PROJECT_DIR" | grep -q '\.claude/worktrees/'; then
+  log_error "PROJECT_DIR still points to a worktree path: $PROJECT_DIR"
+  log_error "Worktrees are ephemeral. Use --path to specify the main project root."
+  exit 1
+fi
+
 # Detect OS
 detect_os() {
   case "$(uname -s)" in
