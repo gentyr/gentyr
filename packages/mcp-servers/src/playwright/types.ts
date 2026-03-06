@@ -259,6 +259,9 @@ export const RunDemoArgsSchema = z.object({
     .describe('Enable Playwright trace recording (--trace on). Default: false.'),
   record_video: z.coerce.boolean().optional().default(false)
     .describe('Enable video recording. Sets DEMO_RECORD_VIDEO=1 env var.'),
+  scenario_id: z.string()
+    .optional()
+    .describe('Demo scenario ID from user-feedback DB. When provided and recording is stale (>24h), record_video is auto-enabled.'),
   extra_env: z.record(z.string(), z.string())
     .optional()
     .describe(
@@ -336,6 +339,7 @@ export interface DemoRunState {
   progress_file?: string;
   stdout_tail?: string;
   artifacts?: string[];
+  scenario_id?: string;
 }
 
 export interface StopDemoResult {

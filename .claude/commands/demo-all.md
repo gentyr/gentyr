@@ -36,14 +36,24 @@ STOP — do not proceed until preflight passes.
 
 ### Step 3: Launch All Demos
 
+Before launching, check whether any scenario recordings are stale. Call
+`mcp__user-feedback__list_scenarios({ enabled_only: true })` and inspect the
+`last_recorded_at` field on each scenario (null or older than 24 hours = stale).
+If any scenarios have stale recordings, set `record_video: true` in the call
+below so the full suite run captures fresh recordings for all scenarios.
+
 Call `mcp__playwright__run_demo({
   project: "demo",
   slow_mo: 1200,
   pause_at_end: false,
-  show_cursor: true
+  show_cursor: true,
+  record_video: <true if any scenarios have stale recordings, otherwise omit>
 })`.
 
-No `test_file` filter — this runs the entire suite.
+No `test_file` filter — this runs the entire suite. Per-scenario `scenario_id`
+cannot be passed here since all tests run together; recordings are associated
+with their demo files by the Playwright server via the `scenario_id` embedded
+in each `*.demo.ts` file.
 
 > **Note:** ADK demo files (`category: "adk"`) self-skip when `REPLAY_SESSION_ID` is not set.
 > They will appear as "skipped" in the test results. Use `/replay` to run ADK demos.

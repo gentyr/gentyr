@@ -8,6 +8,8 @@
  * - Handles cleanup
  */
 
+import * as os from 'os';
+import * as path from 'path';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 
 export interface BrowserManagerConfig {
@@ -15,6 +17,8 @@ export interface BrowserManagerConfig {
   headless: boolean;
   viewportWidth: number;
   viewportHeight: number;
+  recordVideo?: boolean;
+  sessionId?: string; // retained for potential future use (e.g. named video files)
 }
 
 export class BrowserManager {
@@ -25,12 +29,14 @@ export class BrowserManager {
   private headless: boolean;
   private viewportWidth: number;
   private viewportHeight: number;
+  private recordVideo: boolean;
 
   constructor(config: BrowserManagerConfig) {
     this.baseUrl = config.baseUrl;
     this.headless = config.headless;
     this.viewportWidth = config.viewportWidth;
     this.viewportHeight = config.viewportHeight;
+    this.recordVideo = config.recordVideo ?? false;
   }
 
   /**
@@ -44,12 +50,21 @@ export class BrowserManager {
     }
 
     if (!this.context) {
-      this.context = await this.browser.newContext({
+      const contextOptions: Parameters<Browser['newContext']>[0] = {
         viewport: {
           width: this.viewportWidth,
           height: this.viewportHeight,
         },
-      });
+      };
+
+      if (this.recordVideo) {
+        contextOptions.recordVideo = {
+          dir: path.join(os.tmpdir(), 'gentyr-feedback-recordings'),
+          size: { width: this.viewportWidth, height: this.viewportHeight },
+        };
+      }
+
+      this.context = await this.browser.newContext(contextOptions);
     }
 
     if (!this.page) {
@@ -57,6 +72,21 @@ export class BrowserManager {
     }
 
     return this.page;
+  }
+
+  /**
+   * Get the path to the recorded video file for the current page.
+   * Returns null if recording was not enabled or no video was captured.
+   */
+  async getVideoPath(): Promise<string | null> {
+    if (!this.page) return null;
+    const video = this.page.video();
+    if (!video) return null;
+    try {
+      return await video.path();
+    } catch {
+      return null;
+    }
   }
 
   /**
