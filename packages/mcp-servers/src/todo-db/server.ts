@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     metadata TEXT,
     created_timestamp INTEGER NOT NULL,
     completed_timestamp INTEGER,
+    started_timestamp INTEGER,
     followup_enabled INTEGER NOT NULL DEFAULT 0,
     followup_section TEXT,
     followup_prompt TEXT,
@@ -224,6 +225,13 @@ function initializeDatabase(): Database.Database {
     db.prepare("SELECT priority FROM tasks LIMIT 0").run();
   } catch {
     db.exec("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'");
+  }
+
+  // Auto-migration: add started_timestamp column if missing (existing databases)
+  try {
+    db.prepare("SELECT started_timestamp FROM tasks LIMIT 0").get();
+  } catch {
+    db.exec("ALTER TABLE tasks ADD COLUMN started_timestamp INTEGER");
   }
 
   return db;
@@ -504,11 +512,12 @@ function startTask(args: StartTaskArgs): StartTaskResult | ErrorResult {
 
   const now = new Date();
   const started_at = now.toISOString();
+  const started_timestamp = Math.floor(now.getTime() / 1000);
 
   db.prepare(`
-    UPDATE tasks SET status = 'in_progress', started_at = ?
+    UPDATE tasks SET status = 'in_progress', started_at = ?, started_timestamp = ?
     WHERE id = ?
-  `).run(started_at, args.id);
+  `).run(started_at, started_timestamp, args.id);
 
   return {
     id: args.id,
@@ -656,10 +665,10 @@ function cleanup(): CleanupResult {
   // Clear stale starts (>30 min without completion)
   const staleResult = db.prepare(`
     UPDATE tasks
-    SET status = 'pending', started_at = NULL
+    SET status = 'pending', started_at = NULL, started_timestamp = NULL
     WHERE status = 'in_progress'
-      AND started_at IS NOT NULL
-      AND (? - created_timestamp) > 1800
+      AND started_timestamp IS NOT NULL
+      AND (? - started_timestamp) > 1800
   `).run(now);
   changes.stale_starts_cleared = staleResult.changes;
 

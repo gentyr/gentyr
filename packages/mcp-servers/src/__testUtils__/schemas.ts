@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     metadata TEXT,
     created_timestamp INTEGER NOT NULL,
     completed_timestamp INTEGER,
+    started_timestamp INTEGER,
     followup_enabled INTEGER NOT NULL DEFAULT 0,
     followup_section TEXT,
     followup_prompt TEXT,

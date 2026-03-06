@@ -22,7 +22,7 @@ import { registerSpawn, updateAgent, registerHookExecution, AGENT_TYPES, HOOK_TY
 import { getCooldown } from './config-reader.js';
 import { runUsageOptimizer } from './usage-optimizer.js';
 import { syncKeys } from './key-sync.js';
-import { runFeedbackPipeline, startFeedbackRun } from './feedback-orchestrator.js';
+import { runFeedbackPipeline, startFeedbackRun, personaRanRecently } from './feedback-orchestrator.js';
 import { createWorktree, cleanupMergedWorktrees } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
 import { detectStaleWork, formatReport } from './stale-work-detector.js';
@@ -1452,7 +1452,7 @@ function resetTaskToPending(taskId) {
   try {
     const db = new Database(TODO_DB_PATH);
     db.prepare(
-      "UPDATE tasks SET status = 'pending', started_at = NULL WHERE id = ?"
+      "UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ?"
     ).run(taskId);
     db.close();
   } catch (err) {
@@ -3576,11 +3576,48 @@ Then exit.`;
     label: 'Daily feedback',
     fn: async () => {
       log('Daily feedback: querying all enabled personas...');
-      const feedbackResult = await startFeedbackRun('daily', null, [], null, 3);
-      if (feedbackResult.sessions && feedbackResult.sessions.length > 0) {
-        log(`Daily feedback: started run ${feedbackResult.run_id} with ${feedbackResult.sessions.length} persona(s).`);
+
+      // Query all enabled personas from user-feedback.db
+      const feedbackDb = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+      if (!fs.existsSync(feedbackDb) || !Database) {
+        log('Daily feedback: user-feedback.db not found or Database unavailable.');
+        return;
+      }
+      let personaIds;
+      try {
+        const db = new Database(feedbackDb, { readonly: true });
+        const rows = db.prepare('SELECT id FROM personas WHERE enabled = 1').all();
+        db.close();
+        personaIds = rows.map(r => r.id);
+      } catch (err) {
+        log(`Daily feedback: failed to query personas: ${err.message}`);
+        return;
+      }
+      if (!personaIds.length) {
+        log('Daily feedback: no enabled personas found.');
+        return;
+      }
+
+      // Filter out personas that ran within 12h
+      const filtered = [];
+      for (const pid of personaIds) {
+        const recent = await personaRanRecently(pid, 12);
+        if (!recent) filtered.push(pid);
+      }
+      if (!filtered.length) {
+        log('Daily feedback: all personas ran recently (within 12h). Skipping.');
+        return;
+      }
+
+      // Cap at 5 personas per run
+      const capped = filtered.slice(0, 5);
+      log(`Daily feedback: spawning for ${capped.length} persona(s)...`);
+
+      const feedbackResult = await startFeedbackRun('daily', null, [], capped, 3);
+      if (feedbackResult && feedbackResult.sessions && feedbackResult.sessions.length > 0) {
+        log(`Daily feedback: started run ${feedbackResult.runId} with ${feedbackResult.sessions.length} persona(s).`);
       } else {
-        log('Daily feedback: no enabled personas found or all ran recently.');
+        log('Daily feedback: startFeedbackRun returned no sessions.');
       }
     },
   });

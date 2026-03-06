@@ -127,10 +127,10 @@ function performDatabaseCleanup(projectDir, now = new Date()) {
     // Clear stale starts (>30 min without completion)
     const staleResult = db.prepare(`
       UPDATE tasks
-      SET status = 'pending', started_at = NULL
+      SET status = 'pending', started_at = NULL, started_timestamp = NULL
       WHERE status = 'in_progress'
-        AND started_at IS NOT NULL
-        AND (? - created_timestamp) > 1800
+        AND started_timestamp IS NOT NULL
+        AND (? - started_timestamp) > 1800
     `).run(nowTimestamp);
     changes.staleStartsCleared = staleResult.changes;
 
