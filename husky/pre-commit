@@ -9,31 +9,37 @@ echo ""
 # This check is trustworthy: .husky/pre-commit is root-owned in a root-owned dir.
 # =============================================================================
 
-TAMPER=0
-# Prefer copy-on-protect directory (linked projects with local root-owned copies)
-if [ -d ".claude/hooks-protected" ]; then
-  HOOKS_CHECK_DIR=".claude/hooks-protected"
+# Skip root-ownership check in worktrees — .git is a file in worktrees, not a directory.
+# Worktree hooks are copies, not root-owned. Main tree checks run at merge time.
+if [ -f ".git" ]; then
+  echo "Worktree detected — skipping root-ownership check"
 else
-  HOOKS_CHECK_DIR=".claude/hooks"
-fi
-for f in pre-commit-review.js bypass-approval-hook.js block-no-verify.js \
-         protected-action-gate.js protected-action-approval-hook.js \
-         credential-file-guard.js secret-leak-detector.js protected-actions.json \
-         branch-checkout-guard.js main-tree-commit-guard.js playwright-cli-guard.js \
-         git-wrappers/git; do
-  if [ -f "$HOOKS_CHECK_DIR/$f" ]; then
-    uid=$(stat -f '%u' "$HOOKS_CHECK_DIR/$f" 2>/dev/null || stat -c '%u' "$HOOKS_CHECK_DIR/$f" 2>/dev/null)
-    if [ "$uid" != "0" ]; then
-      echo "SECURITY: $HOOKS_CHECK_DIR/$f not root-owned (uid=$uid)"
-      TAMPER=1
-    fi
+  TAMPER=0
+  # Prefer copy-on-protect directory (linked projects with local root-owned copies)
+  if [ -d ".claude/hooks-protected" ]; then
+    HOOKS_CHECK_DIR=".claude/hooks-protected"
+  else
+    HOOKS_CHECK_DIR=".claude/hooks"
   fi
-done
-if [ "$TAMPER" = "1" ]; then
-  echo "COMMIT BLOCKED: Hook tampering detected. Run 'npx gentyr protect'"
-  exit 1
+  for f in pre-commit-review.js bypass-approval-hook.js block-no-verify.js \
+           protected-action-gate.js protected-action-approval-hook.js \
+           credential-file-guard.js secret-leak-detector.js protected-actions.json \
+           branch-checkout-guard.js main-tree-commit-guard.js playwright-cli-guard.js \
+           git-wrappers/git; do
+    if [ -f "$HOOKS_CHECK_DIR/$f" ]; then
+      uid=$(stat -f '%u' "$HOOKS_CHECK_DIR/$f" 2>/dev/null || stat -c '%u' "$HOOKS_CHECK_DIR/$f" 2>/dev/null)
+      if [ "$uid" != "0" ]; then
+        echo "SECURITY: $HOOKS_CHECK_DIR/$f not root-owned (uid=$uid)"
+        TAMPER=1
+      fi
+    fi
+  done
+  if [ "$TAMPER" = "1" ]; then
+    echo "COMMIT BLOCKED: Hook tampering detected. Run 'npx gentyr protect'"
+    exit 1
+  fi
+  echo "Hook integrity verified"
 fi
-echo "Hook integrity verified"
 echo ""
 
 # =============================================================================
