@@ -31,6 +31,9 @@ import {
   PreflightCheckArgsSchema,
   ListExtensionTabsArgsSchema,
   ScreenshotExtensionTabArgsSchema,
+  OpenVideoArgsSchema,
+  type OpenVideoArgs,
+  type OpenVideoResult,
   type LaunchUiModeArgs,
   type RunTestsArgs,
   type GetReportArgs,
@@ -1012,19 +1015,57 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
       // Process alive — reset auto-kill countdown
       resetAutoKillTimer(pid);
     } catch {
-      // Process no longer exists but we didn't get the exit event (e.g., MCP restarted)
+      // Process no longer exists but we didn't get the exit event (e.g., MCP restarted, user closed browser)
       clearAutoKillTimer(pid);
-      entry.status = 'unknown';
       entry.ended_at = new Date().toISOString();
+
+      // Read progress file to determine final status instead of returning 'unknown'
+      const finalProgress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
+      if (finalProgress && finalProgress.tests_completed > 0) {
+        // We have test results — determine pass/fail from progress data
+        entry.status = finalProgress.has_failures ? 'failed' : 'passed';
+        entry.failure_summary = finalProgress.has_failures
+          ? `${finalProgress.tests_failed} test(s) failed out of ${finalProgress.tests_completed}`
+          : undefined;
+      } else {
+        entry.status = 'unknown';
+      }
+
+      // Scan for artifacts when process ended unexpectedly
+      entry.artifacts = scanArtifacts();
+
+      // Parse trace if available
+      try {
+        const testResultsDir = path.join(PROJECT_DIR, 'test-results');
+        const traceZip = findTraceZip(testResultsDir);
+        if (traceZip) {
+          const summary = parseTraceZip(traceZip);
+          if (summary) entry.trace_summary = summary;
+        }
+      } catch { /* non-fatal */ }
+
       persistDemoRuns();
+
+      const durationSec = Math.round((Date.now() - new Date(entry.started_at).getTime()) / 1000);
+      const statusMsg = entry.status === 'passed'
+        ? `Demo completed successfully in ${durationSec}s (status recovered from progress file).`
+        : entry.status === 'failed'
+          ? `Demo failed in ${durationSec}s — ${entry.failure_summary}. Status recovered from progress file.`
+          : `Demo process (PID ${pid}) is no longer running but no test results were captured. Check test-results/ for output.`;
+
       return {
-        status: 'unknown',
+        status: entry.status,
         pid,
         project: entry.project,
         test_file: entry.test_file,
         started_at: entry.started_at,
         ended_at: entry.ended_at,
-        message: `Demo process (PID ${pid}) is no longer running but exit status was not captured. Check test-results/ for output.`,
+        failure_summary: entry.failure_summary,
+        screenshot_paths: entry.screenshot_paths,
+        trace_summary: entry.trace_summary,
+        progress: finalProgress ?? undefined,
+        artifacts: entry.artifacts,
+        message: statusMsg,
       };
     }
   }
@@ -1497,6 +1538,65 @@ function countTestFiles(dir: string, projectFilter?: string): number {
 // parseTestOutput and truncateOutput imported from ./helpers.js
 
 /**
+ * Open a video file in the system's default media player.
+ */
+function openVideo(args: OpenVideoArgs): OpenVideoResult {
+  // Only allow relative paths — resolved from project dir
+  if (path.isAbsolute(args.video_path)) {
+    return {
+      success: false,
+      video_path: args.video_path,
+      message: 'video_path must be a relative path (resolved from the project directory)',
+    };
+  }
+
+  const videoPath = path.resolve(PROJECT_DIR, args.video_path);
+
+  // Containment check: resolved path must be within PROJECT_DIR
+  if (!videoPath.startsWith(PROJECT_DIR + path.sep) && videoPath !== PROJECT_DIR) {
+    return {
+      success: false,
+      video_path: args.video_path,
+      message: 'video_path resolves outside the project directory',
+    };
+  }
+
+  if (!fs.existsSync(videoPath)) {
+    return {
+      success: false,
+      video_path: videoPath,
+      message: `Video file not found: ${videoPath}`,
+    };
+  }
+
+  const ext = path.extname(videoPath).toLowerCase();
+  if (!['.webm', '.mp4', '.avi', '.mov', '.mkv'].includes(ext)) {
+    return {
+      success: false,
+      video_path: videoPath,
+      message: `Unsupported video format: ${ext}. Expected .webm, .mp4, .avi, .mov, or .mkv`,
+    };
+  }
+
+  try {
+    const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+    spawn(opener, [videoPath], { detached: true, stdio: 'ignore' }).unref();
+    return {
+      success: true,
+      video_path: videoPath,
+      message: `Opened ${path.basename(videoPath)} in default media player`,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      success: false,
+      video_path: videoPath,
+      message: `Failed to open video: ${msg}`,
+    };
+  }
+}
+
+/**
  * Scan test-results/ and playwright-report/ for artifact files.
  * Returns paths to screenshots, videos, traces, and error context files.
  */
@@ -1861,6 +1961,44 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   }
   checks.push(devServerCheck);
 
+  // 7b. WebServer URLs reachable (from playwright.config.ts webServer entries)
+  if (pwConfig.webServers.length > 0) {
+    const webServerUrls = pwConfig.webServers
+      .map(ws => ws.url)
+      .filter((url): url is string => url !== null);
+
+    // Filter out URLs that match the base_url already checked above, and unparseable URLs
+    const additionalUrls = webServerUrls.filter(url => {
+      try {
+        const wsUrl = new URL(url);
+        const baseUrlParsed = new URL(baseUrl);
+        // Skip if same host:port as the base URL
+        return !(wsUrl.hostname === baseUrlParsed.hostname && wsUrl.port === baseUrlParsed.port);
+      } catch {
+        return false; // Skip malformed URLs — they'll fail in checkDevServer anyway
+      }
+    });
+
+    for (const wsUrl of additionalUrls) {
+      let wsCheck: PreflightCheckEntry;
+      try {
+        wsCheck = await checkDevServer(wsUrl);
+      } catch {
+        wsCheck = { name: 'web_server', status: 'fail', message: `WebServer URL "${wsUrl}" is malformed or unreachable`, duration_ms: 0 };
+        checks.push(wsCheck);
+        continue;
+      }
+      // Rename the check to distinguish from the main dev_server check
+      wsCheck.name = 'web_server';
+      if (wsCheck.status === 'pass') {
+        wsCheck.message = `WebServer at ${wsUrl} is reachable`;
+      } else {
+        wsCheck.message = `WebServer at ${wsUrl} is not reachable — ${wsCheck.message}`;
+      }
+      checks.push(wsCheck);
+    }
+  }
+
   // 8. Auth state freshness (only when a project is specified)
   if (args.project) {
     checks.push(runCheck('auth_state', () => {
@@ -2044,6 +2182,9 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
         break;
       case 'dev_server':
         recoverySteps.push('Start the dev server (e.g., pnpm dev) or verify playwright.config.ts webServer configuration');
+        break;
+      case 'web_server':
+        recoverySteps.push(`Start the backend server — check the webServer entries in playwright.config.ts (${check.message})`);
         break;
       case 'extension_manifest':
         recoverySteps.push('Fix invalid match patterns in manifest.json — Chrome requires host to be * | *.domain.com | exact.domain.com (no partial wildcards like *-admin.example.com)');
@@ -2581,6 +2722,15 @@ const tools: AnyToolHandler[] = [
       'Requires the extension test browser to be running (see launch_ui_mode with project "demo").',
     schema: ScreenshotExtensionTabArgsSchema,
     handler: screenshotExtensionTab,
+  },
+  {
+    name: 'open_video',
+    description:
+      'Open a video file in the system\'s default media player. ' +
+      'Accepts absolute or relative paths (resolved from the project directory). ' +
+      'Use with video paths from check_demo_result artifacts or .claude/recordings/.',
+    schema: OpenVideoArgsSchema,
+    handler: openVideo,
   },
 ];
 

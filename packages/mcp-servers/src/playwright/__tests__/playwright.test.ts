@@ -23,6 +23,7 @@ import {
   RunDemoArgsSchema,
   CheckDemoResultArgsSchema,
   StopDemoArgsSchema,
+  OpenVideoArgsSchema,
   PLAYWRIGHT_PROJECTS,
   type DemoRunState,
   type CheckDemoResultResult,
@@ -2618,5 +2619,105 @@ describe('extension_manifest recovery step', () => {
     expect(recoveryStep).toContain('*.domain.com');
     expect(recoveryStep).toContain('no partial wildcards');
     expect(recoveryStep.length).toBeGreaterThan(50);
+  });
+});
+
+// ============================================================================
+// OpenVideoArgsSchema — schema validation (G003 Compliance)
+// ============================================================================
+
+describe('OpenVideoArgsSchema', () => {
+  it('should accept a valid relative path to a webm file', () => {
+    const result = OpenVideoArgsSchema.safeParse({
+      video_path: 'test-results/demo/video.webm',
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.video_path).toBe('test-results/demo/video.webm');
+    }
+  });
+
+  it('should accept a relative path in .claude/recordings', () => {
+    const result = OpenVideoArgsSchema.safeParse({
+      video_path: '.claude/recordings/demos/scenario.webm',
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('should accept a top-level relative filename', () => {
+    const result = OpenVideoArgsSchema.safeParse({
+      video_path: 'video.webm',
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('should accept a path starting with ./ (not an absolute path)', () => {
+    const result = OpenVideoArgsSchema.safeParse({
+      video_path: './test-results/video.webm',
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject a path containing ".." traversal (G003 path traversal guard)', () => {
+    const result = OpenVideoArgsSchema.safeParse({
+      video_path: '../outside/project/video.webm',
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject a path with ".." in the middle (G003 path traversal guard)', () => {
+    const result = OpenVideoArgsSchema.safeParse({
+      video_path: 'test-results/../../etc/video.webm',
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject an empty video_path (min length 1)', () => {
+    const result = OpenVideoArgsSchema.safeParse({
+      video_path: '',
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject a video_path exceeding 1000 characters (max length guard)', () => {
+    const result = OpenVideoArgsSchema.safeParse({
+      video_path: 'a'.repeat(1001),
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('should accept a video_path at exactly 1000 characters', () => {
+    // Build a 1000-char path: prefix + many 'a' chars, no '..' or leading '/'
+    const prefix = 'test-results/';
+    const filler = 'a'.repeat(1000 - prefix.length);
+    const result = OpenVideoArgsSchema.safeParse({
+      video_path: prefix + filler,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject a missing video_path field', () => {
+    const result = OpenVideoArgsSchema.safeParse({});
+
+    expect(result.success).toBe(false);
+  });
+
+  it('should preserve the exact video_path value when valid', () => {
+    const path = 'test-results/vendor-owner/recording.webm';
+    const result = OpenVideoArgsSchema.safeParse({ video_path: path });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.video_path).toBe(path);
+    }
   });
 });

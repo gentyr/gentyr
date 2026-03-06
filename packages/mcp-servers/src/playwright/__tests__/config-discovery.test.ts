@@ -545,3 +545,200 @@ describe('complex config parsing', () => {
     expect(config.extensionProjects.size).toBe(3); // extension, extension-manual, demo
   });
 });
+
+// ============================================================================
+// webServer parsing (extractWebServers)
+// ============================================================================
+
+describe('webServers', () => {
+  it('should return empty array when no webServer entry exists', () => {
+    writeConfig(`
+      export default defineConfig({
+        projects: [{ name: 'basic' }],
+      });
+    `);
+
+    const config = discoverPlaywrightConfig(tempDir);
+
+    expect(config.webServers).toEqual([]);
+  });
+
+  it('should parse a single-object webServer with command and url', () => {
+    writeConfig(`
+      export default defineConfig({
+        webServer: {
+          command: 'pnpm dev',
+          url: 'http://localhost:3000',
+        },
+        projects: [{ name: 'basic' }],
+      });
+    `);
+
+    const config = discoverPlaywrightConfig(tempDir);
+
+    expect(config.webServers).toHaveLength(1);
+    expect(config.webServers[0].command).toBe('pnpm dev');
+    expect(config.webServers[0].url).toBe('http://localhost:3000');
+    expect(config.webServers[0].port).toBeNull();
+  });
+
+  it('should parse a single-object webServer with a numeric port', () => {
+    writeConfig(`
+      export default defineConfig({
+        webServer: {
+          command: 'node server.js',
+          port: 8080,
+        },
+        projects: [{ name: 'basic' }],
+      });
+    `);
+
+    const config = discoverPlaywrightConfig(tempDir);
+
+    expect(config.webServers).toHaveLength(1);
+    expect(config.webServers[0].port).toBe(8080);
+    expect(config.webServers[0].url).toBeNull();
+  });
+
+  it('should parse a single-object webServer with both url and port', () => {
+    writeConfig(`
+      export default defineConfig({
+        webServer: {
+          command: 'npm start',
+          url: 'http://localhost:4000',
+          port: 4000,
+        },
+        projects: [{ name: 'basic' }],
+      });
+    `);
+
+    const config = discoverPlaywrightConfig(tempDir);
+
+    expect(config.webServers).toHaveLength(1);
+    expect(config.webServers[0].command).toBe('npm start');
+    expect(config.webServers[0].url).toBe('http://localhost:4000');
+    expect(config.webServers[0].port).toBe(4000);
+  });
+
+  it('should parse an array-form webServer with two entries', () => {
+    writeConfig(`
+      export default defineConfig({
+        webServer: [
+          {
+            command: 'pnpm dev:frontend',
+            url: 'http://localhost:3000',
+          },
+          {
+            command: 'pnpm dev:api',
+            url: 'http://localhost:3001',
+            port: 3001,
+          },
+        ],
+        projects: [{ name: 'basic' }],
+      });
+    `);
+
+    const config = discoverPlaywrightConfig(tempDir);
+
+    expect(config.webServers).toHaveLength(2);
+    expect(config.webServers[0].command).toBe('pnpm dev:frontend');
+    expect(config.webServers[0].url).toBe('http://localhost:3000');
+    expect(config.webServers[1].command).toBe('pnpm dev:api');
+    expect(config.webServers[1].url).toBe('http://localhost:3001');
+    expect(config.webServers[1].port).toBe(3001);
+  });
+
+  it('should parse an array-form webServer with three entries', () => {
+    writeConfig(`
+      export default defineConfig({
+        webServer: [
+          { command: 'start-a', url: 'http://localhost:3000' },
+          { command: 'start-b', url: 'http://localhost:3001' },
+          { command: 'start-c', port: 3002 },
+        ],
+        projects: [{ name: 'basic' }],
+      });
+    `);
+
+    const config = discoverPlaywrightConfig(tempDir);
+
+    expect(config.webServers).toHaveLength(3);
+    expect(config.webServers[2].port).toBe(3002);
+    expect(config.webServers[2].url).toBeNull();
+  });
+
+  it('should return null command when webServer block has no command', () => {
+    writeConfig(`
+      export default defineConfig({
+        webServer: {
+          url: 'http://localhost:3000',
+        },
+        projects: [{ name: 'basic' }],
+      });
+    `);
+
+    const config = discoverPlaywrightConfig(tempDir);
+
+    expect(config.webServers[0].command).toBeNull();
+    expect(config.webServers[0].url).toBe('http://localhost:3000');
+  });
+
+  it('should return null url and null port for a webServer block with only command', () => {
+    writeConfig(`
+      export default defineConfig({
+        webServer: {
+          command: 'pnpm dev',
+          reuseExistingServer: true,
+        },
+        projects: [{ name: 'basic' }],
+      });
+    `);
+
+    const config = discoverPlaywrightConfig(tempDir);
+
+    expect(config.webServers[0].command).toBe('pnpm dev');
+    expect(config.webServers[0].url).toBeNull();
+    expect(config.webServers[0].port).toBeNull();
+  });
+
+  it('should coexist with projects parsing — both are discovered correctly', () => {
+    writeConfig(`
+      export default defineConfig({
+        testDir: './e2e',
+        webServer: {
+          command: 'pnpm dev',
+          url: 'http://localhost:3000',
+        },
+        projects: [
+          { name: 'vendor-owner', use: { storageState: '.auth/vendor-owner.json' } },
+          { name: 'seed' },
+        ],
+      });
+    `);
+
+    const config = discoverPlaywrightConfig(tempDir);
+
+    expect(config.webServers).toHaveLength(1);
+    expect(config.webServers[0].url).toBe('http://localhost:3000');
+    expect(config.projects).toHaveLength(2);
+    expect(config.primaryAuthFile).toBe('.auth/vendor-owner.json');
+  });
+
+  it('should include webServers in the cached result', () => {
+    writeConfig(`
+      export default defineConfig({
+        webServer: {
+          command: 'pnpm start',
+          url: 'http://localhost:5000',
+        },
+        projects: [{ name: 'basic' }],
+      });
+    `);
+
+    const config1 = discoverPlaywrightConfig(tempDir);
+    const config2 = discoverPlaywrightConfig(tempDir); // should return cached copy
+
+    expect(config1).toBe(config2);
+    expect(config1.webServers[0].url).toBe('http://localhost:5000');
+  });
+});
