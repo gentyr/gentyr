@@ -255,6 +255,10 @@ export const RunDemoArgsSchema = z.object({
     .describe('Run demos in headless mode. Sets DEMO_HEADLESS=1 env var. Extension demos will auto-skip.'),
   show_cursor: z.coerce.boolean().optional().default(false)
     .describe('Show a visible cursor dot during headed demos. Sets DEMO_SHOW_CURSOR=1 env var.'),
+  trace: z.coerce.boolean().optional().default(false)
+    .describe('Enable Playwright trace recording (--trace on). Default: false.'),
+  record_video: z.coerce.boolean().optional().default(false)
+    .describe('Enable video recording. Sets DEMO_RECORD_VIDEO=1 env var.'),
   extra_env: z.record(z.string(), z.string())
     .optional()
     .describe(
