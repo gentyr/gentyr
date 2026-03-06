@@ -597,7 +597,7 @@ async function main() {
   const sessionMetrics = { task: sessionMetricsCached.taskSessions, user: sessionMetricsCached.userSessions };
 
   // Check if commits are blocked
-  const isCritical = deputyCto.rejections > 0;
+  const isCritical = deputyCto.pending > 0 || unreadReports > 0;
 
   // Build git context label
   let gitLabel = '';
@@ -638,11 +638,12 @@ async function main() {
   if (isCritical) {
     // Critical blocking mode - compact format
     const parts = [];
-    parts.push(`${deputyCto.rejections} rejection(s)`);
+    const itemCount = deputyCto.pending + unreadReports;
+    parts.push(`${itemCount} pending item(s)`);
     if (quotaPart) parts.push(quotaPart);
     parts.push(`${formatTokens(tokenUsage)} tokens`);
     parts.push(autonomousPart);
-    message = `${gitLabel ? gitLabel + ' ' : ''}COMMITS BLOCKED: ${parts.join(' | ')}. Use /deputy-cto to address.`;
+    message = `${gitLabel ? gitLabel + ' ' : ''}MAIN BLOCKED: ${parts.join(' | ')}. Use /deputy-cto to address.`;
   } else {
     // Normal CTO report format - multi-line for readability
     const lines = [];

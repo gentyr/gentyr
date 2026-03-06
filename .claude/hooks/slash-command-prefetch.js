@@ -429,7 +429,7 @@ function handleDeputyCto() {
       ).get();
       output.gathered.pendingQuestions = questions;
       output.gathered.pendingRejections = rejectionCount?.count ?? 0;
-      output.gathered.commitsBlocked = (rejectionCount?.count ?? 0) > 0;
+      output.gathered.commitsBlocked = questions.length > 0;
     } catch {
       output.gathered.pendingQuestions = [];
       output.gathered.error = 'deputy-cto query failed';
