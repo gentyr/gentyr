@@ -24,6 +24,12 @@ export interface DiscoveredProject {
   isExtension: boolean;       // name contains 'extension'
 }
 
+export interface WebServerConfig {
+  command: string | null;
+  url: string | null;
+  port: number | null;
+}
+
 export interface PlaywrightConfig {
   projects: DiscoveredProject[];
   defaultTestDir: string;                    // top-level testDir or 'e2e'
@@ -32,6 +38,7 @@ export interface PlaywrightConfig {
   extensionProjects: Set<string>;
   authFiles: string[];                       // storageState paths found
   primaryAuthFile: string | null;            // first storageState, or null
+  webServers: WebServerConfig[];             // webServer entries from config
 }
 
 // ============================================================================
@@ -175,6 +182,96 @@ function buildPersonaLabel(name: string): string {
     .join(' ');
 }
 
+/**
+ * Extract webServer entries from the config text.
+ * Handles both single object and array forms:
+ *   webServer: { command: '...', url: '...' }
+ *   webServer: [{ command: '...', url: '...' }, { ... }]
+ */
+function extractWebServers(configText: string): WebServerConfig[] {
+  const servers: WebServerConfig[] = [];
+
+  // Find `webServer:` or `webServer =` — could be object or array
+  const wsStart = configText.search(/webServer\s*[:=]\s*/);
+  if (wsStart === -1) return servers;
+
+  // Find what follows the key — `[` for array, `{` for single object
+  const afterKey = configText.slice(wsStart).replace(/^webServer\s*[:=]\s*/, '');
+  const firstChar = afterKey.trimStart()[0];
+
+  if (firstChar === '[') {
+    // Array form — extract each { ... } block
+    const bracketStart = configText.indexOf('[', wsStart);
+    if (bracketStart === -1) return servers;
+
+    let depth = 0;
+    let arrayEnd = -1;
+    for (let i = bracketStart; i < configText.length; i++) {
+      if (configText[i] === '[') depth++;
+      else if (configText[i] === ']') {
+        depth--;
+        if (depth === 0) { arrayEnd = i; break; }
+      }
+    }
+    if (arrayEnd === -1) return servers;
+
+    const arrayContent = configText.slice(bracketStart + 1, arrayEnd);
+    // Extract each top-level { ... } block
+    let blockStart = -1;
+    let braceDepth = 0;
+    for (let i = 0; i < arrayContent.length; i++) {
+      if (arrayContent[i] === '{') {
+        if (braceDepth === 0) blockStart = i;
+        braceDepth++;
+      } else if (arrayContent[i] === '}') {
+        braceDepth--;
+        if (braceDepth === 0 && blockStart !== -1) {
+          const block = arrayContent.slice(blockStart, i + 1);
+          servers.push(parseWebServerBlock(block));
+          blockStart = -1;
+        }
+      }
+    }
+  } else if (firstChar === '{') {
+    // Single object form
+    const braceStart = configText.indexOf('{', wsStart);
+    if (braceStart === -1) return servers;
+
+    let depth = 0;
+    let braceEnd = -1;
+    for (let i = braceStart; i < configText.length; i++) {
+      if (configText[i] === '{') depth++;
+      else if (configText[i] === '}') {
+        depth--;
+        if (depth === 0) { braceEnd = i; break; }
+      }
+    }
+    if (braceEnd === -1) return servers;
+
+    const block = configText.slice(braceStart, braceEnd + 1);
+    servers.push(parseWebServerBlock(block));
+  }
+
+  return servers;
+}
+
+/**
+ * Parse a single webServer block into a WebServerConfig.
+ */
+function parseWebServerBlock(block: string): WebServerConfig {
+  const command = extractStringValue(block, 'command');
+  const url = extractStringValue(block, 'url');
+
+  // Port can be a number literal: port: 3001
+  let port: number | null = null;
+  const portMatch = block.match(/port\s*:\s*(\d+)/);
+  if (portMatch) {
+    port = parseInt(portMatch[1], 10);
+  }
+
+  return { command, url, port };
+}
+
 // ============================================================================
 // Main entry point
 // ============================================================================
@@ -201,6 +298,7 @@ export function discoverPlaywrightConfig(projectDir: string): PlaywrightConfig {
     extensionProjects: new Set(),
     authFiles: [],
     primaryAuthFile: null,
+    webServers: [],
   };
 
   // Find config file
@@ -273,6 +371,9 @@ export function discoverPlaywrightConfig(projectDir: string): PlaywrightConfig {
 
   const primaryAuthFile = authFiles.length > 0 ? authFiles[0] : null;
 
+  // Extract webServer entries
+  const webServers = extractWebServers(configText);
+
   const config: PlaywrightConfig = {
     projects,
     defaultTestDir,
@@ -281,6 +382,7 @@ export function discoverPlaywrightConfig(projectDir: string): PlaywrightConfig {
     extensionProjects,
     authFiles,
     primaryAuthFile,
+    webServers,
   };
 
   cachedConfig = config;

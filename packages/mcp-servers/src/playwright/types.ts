@@ -408,6 +408,25 @@ export interface ErrorResult {
   error: string;
 }
 
+export const OpenVideoArgsSchema = z.object({
+  video_path: z.string()
+    .min(1)
+    .max(1000)
+    .refine(v => !v.includes('..'), 'video_path must not contain ".." traversal')
+    .describe(
+      'Relative path to a video file (e.g., test-results/demo/video.webm or .claude/recordings/demos/scenario.webm). ' +
+      'Resolved from the project directory. Must not contain ".." segments.'
+    ),
+});
+
+export type OpenVideoArgs = z.infer<typeof OpenVideoArgsSchema>;
+
+export interface OpenVideoResult {
+  success: boolean;
+  video_path: string;
+  message: string;
+}
+
 export type ListExtensionTabsArgs = z.infer<typeof ListExtensionTabsArgsSchema>;
 export type ScreenshotExtensionTabArgs = z.infer<typeof ScreenshotExtensionTabArgsSchema>;
 
