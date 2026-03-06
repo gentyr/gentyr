@@ -114,7 +114,7 @@ function resolveSectionAgentMap() {
 function countRunningAgents() {
   try {
     const result = execSync(
-      "pgrep -cf 'claude.*--dangerously-skip-permissions'",
+      "pgrep -f 'claude.*--dangerously-skip-permissions' 2>/dev/null | wc -l",
       { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
     ).trim();
     return parseInt(result, 10) || 0;

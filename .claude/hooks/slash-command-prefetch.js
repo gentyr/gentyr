@@ -860,7 +860,7 @@ function handleSpawnTasks() {
   let runningAgents = 0;
   try {
     const result = execSync(
-      "pgrep -cf 'claude.*--dangerously-skip-permissions'",
+      "pgrep -f 'claude.*--dangerously-skip-permissions' 2>/dev/null | wc -l",
       { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
     ).trim();
     runningAgents = parseInt(result, 10) || 0;
@@ -996,7 +996,7 @@ function handleTriage() {
   let runningAgents = 0;
   try {
     const result = execSync(
-      "pgrep -cf 'claude.*--dangerously-skip-permissions'",
+      "pgrep -f 'claude.*--dangerously-skip-permissions' 2>/dev/null | wc -l",
       { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
     ).trim();
     runningAgents = parseInt(result, 10) || 0;

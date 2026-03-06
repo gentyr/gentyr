@@ -867,7 +867,7 @@ function getConcurrencyStatus(_args: GetConcurrencyStatusArgs): ConcurrencyStatu
   let running = 0;
   try {
     const result = execSync(
-      "pgrep -cf 'claude.*--dangerously-skip-permissions'",
+      "pgrep -f 'claude.*--dangerously-skip-permissions' 2>/dev/null | wc -l",
       { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
     ).trim();
     running = parseInt(result, 10) || 0;
