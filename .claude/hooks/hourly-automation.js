@@ -352,6 +352,7 @@ function getConfig() {
     standaloneComplianceCheckerEnabled: true,
     productManagerEnabled: false,
     lastModified: null,
+    intervals: {},
   };
 
   if (!fs.existsSync(CONFIG_FILE)) {
@@ -360,7 +361,8 @@ function getConfig() {
 
   try {
     const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    return { ...defaults, ...config };
+    const mergedIntervals = { ...defaults.intervals, ...(config.intervals || {}) };
+    return { ...defaults, ...config, intervals: mergedIntervals };
   } catch (err) {
     // G001: Config corruption is logged but we fail-safe to disabled mode
     // This is intentional - corrupt config should never enable automation
@@ -722,6 +724,16 @@ function getState() {
       stagingFreezeActive: false,
       stagingFreezeActivatedAt: 0,
       lastSessionReviverCheck: 0,
+      lastUsageOptimizerRun: 0,
+      lastKeySyncRun: 0,
+      lastVersionWatchRun: 0,
+      lastCiMonitoringRun: 0,
+      lastMergeChainGapRun: 0,
+      lastPersistentAlertsRun: 0,
+      lastUrgentDispatcherRun: 0,
+      lastTaskGateCleanupRun: 0,
+      lastUserFeedbackRun: 0,
+      lastDailyFeedbackCheck: 0,
     };
   }
 
@@ -739,6 +751,16 @@ function getState() {
     if (state.stagingFreezeActive === undefined) state.stagingFreezeActive = false;
     if (state.stagingFreezeActivatedAt === undefined) state.stagingFreezeActivatedAt = 0;
     if (state.lastSessionReviverCheck === undefined) state.lastSessionReviverCheck = 0;
+    if (state.lastUsageOptimizerRun === undefined) state.lastUsageOptimizerRun = 0;
+    if (state.lastKeySyncRun === undefined) state.lastKeySyncRun = 0;
+    if (state.lastVersionWatchRun === undefined) state.lastVersionWatchRun = 0;
+    if (state.lastCiMonitoringRun === undefined) state.lastCiMonitoringRun = 0;
+    if (state.lastMergeChainGapRun === undefined) state.lastMergeChainGapRun = 0;
+    if (state.lastPersistentAlertsRun === undefined) state.lastPersistentAlertsRun = 0;
+    if (state.lastUrgentDispatcherRun === undefined) state.lastUrgentDispatcherRun = 0;
+    if (state.lastTaskGateCleanupRun === undefined) state.lastTaskGateCleanupRun = 0;
+    if (state.lastUserFeedbackRun === undefined) state.lastUserFeedbackRun = 0;
+    if (state.lastDailyFeedbackCheck === undefined) state.lastDailyFeedbackCheck = 0;
     return state;
   } catch (err) {
     log(`FATAL: State file corrupted: ${err.message}`);
@@ -757,6 +779,64 @@ function saveState(state) {
   } catch (err) {
     log(`FATAL: Cannot save state: ${err.message}`);
     process.exit(1);
+  }
+}
+
+/**
+ * Run a task if its cooldown has elapsed.
+ * Replaces the repeated manual cooldown pattern throughout main().
+ *
+ * @param {string} key - Cooldown key name
+ * @param {object} opts - Options
+ * @param {object} opts.state - Current state object
+ * @param {number} opts.now - Current timestamp (Date.now())
+ * @param {object} opts.intervals - Optional intervals from config (seconds)
+ * @param {string} opts.stateKey - Override state key (default: `${key}LastRun`)
+ * @param {string} opts.configToggle - Config toggle key to check
+ * @param {object} opts.config - Config object (for configToggle check)
+ * @param {Function} opts.fn - Async function to run
+ * @param {string} opts.label - Display label (default: key)
+ * @returns {Promise<{ran: boolean, skipped?: string, result?: any}>}
+ */
+async function runIfDue(key, opts) {
+  const { state, now, intervals, stateKey, configToggle, config, fn, label = key } = opts;
+
+  // Check feature toggle
+  if (configToggle && config && config[configToggle] === false) {
+    log(`${label}: disabled in config.`);
+    return { ran: false, skipped: 'disabled' };
+  }
+
+  const effectiveStateKey = stateKey || `${key}LastRun`;
+
+  // Resolve interval: autonomous-mode.json intervals (seconds) > getCooldown() (minutes)
+  let intervalMs;
+  if (intervals && typeof intervals[key] === 'number') {
+    intervalMs = intervals[key] * 1000;
+  } else {
+    intervalMs = getCooldown(key, null) * 60 * 1000;
+  }
+  if (intervalMs <= 0) intervalMs = 0;
+
+  const lastRun = state[effectiveStateKey] || 0;
+  const elapsed = now - lastRun;
+
+  if (intervalMs > 0 && elapsed < intervalMs) {
+    const minutesLeft = Math.ceil((intervalMs - elapsed) / 60000);
+    log(`${label} cooldown active. ${minutesLeft}m until next run.`);
+    return { ran: false, skipped: 'cooldown' };
+  }
+
+  try {
+    const result = await fn();
+    state[effectiveStateKey] = now;
+    saveState(state);
+    return { ran: true, result };
+  } catch (err) {
+    log(`${label} error (non-fatal): ${err.message}`);
+    state[effectiveStateKey] = now;
+    saveState(state);
+    return { ran: false, skipped: 'error' };
   }
 }
 
@@ -2621,16 +2701,8 @@ async function main() {
   // Check config
   const config = getConfig();
 
-  if (!config.enabled) {
-    log('Autonomous Deputy CTO Mode is DISABLED. Exiting.');
-    registerHookExecution({
-      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-      status: 'skipped',
-      durationMs: Date.now() - startTime,
-      metadata: { reason: 'disabled' }
-    });
-    process.exit(0);
-  }
+  // NOTE: !config.enabled check is deferred to after session reviver.
+  // Session reviver runs even when automation is disabled (recovery operation).
 
   // CTO Activity Gate: require /deputy-cto within last 24h
   // GAP 5: Gate is now a flag, not an early exit. Monitoring steps (health monitors,
@@ -2703,36 +2775,43 @@ async function main() {
   const now = Date.now();
 
   // =========================================================================
-  // USAGE OPTIMIZER (runs first - cheap: API call + math)
+  // USAGE OPTIMIZER (gate-exempt, cooldown-based)
   // =========================================================================
-  try {
-    const optimizerResult = await runUsageOptimizer(log);
-    if (optimizerResult.snapshotTaken) {
-      log(`Usage optimizer: snapshot taken. Adjustment: ${optimizerResult.adjustmentMade ? 'yes' : 'no'}.`);
-    }
-  } catch (err) {
-    log(`Usage optimizer error (non-fatal): ${err.message}`);
-  }
+  await runIfDue('usage_optimizer', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastUsageOptimizerRun',
+    label: 'Usage optimizer',
+    fn: async () => {
+      const optimizerResult = await runUsageOptimizer(log);
+      if (optimizerResult.snapshotTaken) {
+        log(`Usage optimizer: snapshot taken. Adjustment: ${optimizerResult.adjustmentMade ? 'yes' : 'no'}.`);
+      }
+    },
+  });
 
   // =========================================================================
-  // KEY SYNC (runs after usage optimizer - discovers keys from all sources)
-  // Triggered by both 10-min timer and WatchPaths file change events
+  // KEY SYNC (gate-exempt, cooldown-based)
+  // Discovers keys from all sources, refreshes expiring tokens
   // =========================================================================
-  try {
-    const syncResult = await syncKeys(log);
-    if (syncResult.keysAdded > 0) {
-      log(`Key sync: ${syncResult.keysAdded} new key(s) discovered.`);
-    }
-    if (syncResult.tokensRefreshed > 0) {
-      log(`Key sync: ${syncResult.tokensRefreshed} token(s) refreshed.`);
-    }
-  } catch (err) {
-    log(`Key sync error (non-fatal): ${err.message}`);
-  }
+  await runIfDue('key_sync', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastKeySyncRun',
+    label: 'Key sync',
+    fn: async () => {
+      const syncResult = await syncKeys(log);
+      if (syncResult.keysAdded > 0) {
+        log(`Key sync: ${syncResult.keysAdded} new key(s) discovered.`);
+      }
+      if (syncResult.tokensRefreshed > 0) {
+        log(`Key sync: ${syncResult.tokensRefreshed} token(s) refreshed.`);
+      }
+    },
+  });
 
   // =========================================================================
   // SESSION REVIVER (after key sync — credentials must be fresh first)
-  // Gate-exempt: recovery operation
+  // Gate-exempt: recovery operation. Runs even with config.enabled=false.
+  // NOTE: Keeps manual cooldown pattern (retroactive first-run logic)
   // =========================================================================
   const SESSION_REVIVER_COOLDOWN_MS = getCooldown('session_reviver', 10) * 60 * 1000;
   const timeSinceLastSessionReviver = now - (state.lastSessionReviverCheck || 0);
@@ -2758,46 +2837,53 @@ async function main() {
   }
 
   // =========================================================================
-  // BINARY PATCH VERSION WATCH (runs after key sync — detects Claude updates)
+  // ENABLED CHECK — session revival still ran above even if disabled
   // =========================================================================
-  try {
-    const { checkAndRepatch } = await import(
-      path.join(PROJECT_DIR, 'scripts', 'watch-claude-version.js')
-    );
-    await checkAndRepatch(log);
-  } catch (err) {
-    // Non-fatal: version watch is optional
-    if (err.code !== 'ERR_MODULE_NOT_FOUND') {
-      log(`Version watch error (non-fatal): ${err.message}`);
-    }
+  if (!config.enabled) {
+    log('Autonomous Deputy CTO Mode is DISABLED. Exiting.');
+    registerHookExecution({
+      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+      status: 'skipped',
+      durationMs: Date.now() - startTime,
+      metadata: { reason: 'disabled' }
+    });
+    process.exit(0);
   }
 
-  // Dynamic cooldowns from config
-  const TRIAGE_CHECK_INTERVAL_MS = getCooldown('triage_check', 5) * 60 * 1000;
-  const HOURLY_COOLDOWN_MS = getCooldown('hourly_tasks', 55) * 60 * 1000;
-  const LINT_COOLDOWN_MS = getCooldown('lint_checker', 30) * 60 * 1000;
-  const PREVIEW_PROMOTION_COOLDOWN_MS = getCooldown('preview_promotion', 360) * 60 * 1000;
-  const STAGING_PROMOTION_COOLDOWN_MS = getCooldown('staging_promotion', 1200) * 60 * 1000;
-  const STAGING_HEALTH_COOLDOWN_MS = getCooldown('staging_health_monitor', 180) * 60 * 1000;
-  const PRODUCTION_HEALTH_COOLDOWN_MS = getCooldown('production_health_monitor', 60) * 60 * 1000;
-  const STANDALONE_ANTIPATTERN_COOLDOWN_MS = getCooldown('standalone_antipattern_hunter', 180) * 60 * 1000;
-  const STANDALONE_COMPLIANCE_COOLDOWN_MS = getCooldown('standalone_compliance_checker', 60) * 60 * 1000;
-  const USER_FEEDBACK_COOLDOWN_MS = getCooldown('user_feedback', 120) * 60 * 1000;
+  // =========================================================================
+  // BINARY PATCH VERSION WATCH (gate-exempt, cooldown-based)
+  // Detects Claude updates and re-applies patches if needed
+  // =========================================================================
+  await runIfDue('version_watch', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastVersionWatchRun',
+    label: 'Version watch',
+    fn: async () => {
+      try {
+        const { checkAndRepatch } = await import(
+          path.join(PROJECT_DIR, 'scripts', 'watch-claude-version.js')
+        );
+        await checkAndRepatch(log);
+      } catch (err) {
+        // Non-fatal: version watch is optional (module may not exist)
+        if (err.code !== 'ERR_MODULE_NOT_FOUND') {
+          throw err;
+        }
+      }
+    },
+  });
 
   // =========================================================================
   // TRIAGE CHECK (dynamic interval, default 5 min)
   // Per-item cooldown is handled by the MCP server's get_reports_for_triage
   // =========================================================================
-  const timeSinceLastTriageCheck = now - state.lastTriageCheck;
-
-  if (timeSinceLastTriageCheck >= TRIAGE_CHECK_INTERVAL_MS) {
-    // Quick check if there are any pending reports
-    if (hasReportsReadyForTriage()) {
-      log('Pending reports found, spawning triage agent...');
-      state.lastTriageCheck = now;
-      saveState(state);
-
-      try {
+  await runIfDue('triage_check', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastTriageCheck',
+    label: 'Triage check',
+    fn: async () => {
+      if (hasReportsReadyForTriage()) {
+        log('Pending reports found, spawning triage agent...');
         // The agent will call get_reports_for_triage which handles cooldown filtering
         const result = await spawnReportTriage();
         if (result.code === 0) {
@@ -2805,90 +2891,81 @@ async function main() {
         } else {
           log(`Report triage exited with code ${result.code}`);
         }
-      } catch (err) {
-        log(`Report triage error: ${err.message}`);
+      } else {
+        log('No pending reports found.');
       }
-    } else {
-      log('No pending reports found.');
-      state.lastTriageCheck = now;
-      saveState(state);
-    }
-  } else {
-    const minutesLeft = Math.ceil((TRIAGE_CHECK_INTERVAL_MS - timeSinceLastTriageCheck) / 60000);
-    log(`Triage check cooldown active. ${minutesLeft} minutes until next check.`);
-  }
+    },
+  });
 
   // =========================================================================
   // STAGING HEALTH MONITOR (3h cooldown, fire-and-forget) [GATE-EXEMPT]
   // Checks staging infrastructure health
   // =========================================================================
-  const timeSinceLastStagingHealth = now - (state.lastStagingHealthCheck || 0);
-  const stagingHealthEnabled = config.stagingHealthMonitorEnabled !== false;
+  await runIfDue('staging_health_monitor', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastStagingHealthCheck',
+    configToggle: 'stagingHealthMonitorEnabled',
+    config,
+    label: 'Staging health monitor',
+    fn: async () => {
+      try {
+        execSync('git fetch origin staging --quiet 2>/dev/null || true', {
+          cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+        });
+      } catch {
+        log('Staging health monitor: git fetch failed.');
+      }
 
-  if (timeSinceLastStagingHealth >= STAGING_HEALTH_COOLDOWN_MS && stagingHealthEnabled) {
-    try {
-      execSync('git fetch origin staging --quiet 2>/dev/null || true', {
-        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
-      });
-    } catch {
-      log('Staging health monitor: git fetch failed.');
-    }
-
-    if (!remoteBranchExists('staging')) {
-      log('Staging health monitor: staging branch does not exist, skipping.');
-    } else if (!hasHealthMonitorCredentials()) {
-      log('Staging health monitor: skipped (missing credentials).');
-    } else {
+      if (!remoteBranchExists('staging')) {
+        log('Staging health monitor: staging branch does not exist, skipping.');
+        return;
+      }
+      if (!hasHealthMonitorCredentials()) {
+        log('Staging health monitor: skipped (missing credentials).');
+        return;
+      }
       log('Staging health monitor: spawning health check...');
       const result = spawnStagingHealthMonitor();
       if (result.success) {
         const alive = await verifySpawnAlive(result.pid, 'Staging health monitor');
-        if (alive) {
-          state.lastStagingHealthCheck = now;
-          saveState(state);
+        if (!alive) {
+          throw new Error('spawn died');
         }
         log('Staging health monitor: spawned (fire-and-forget).');
       } else {
         log('Staging health monitor: spawn failed.');
       }
-    }
-  } else if (!stagingHealthEnabled) {
-    log('Staging Health Monitor is disabled in config.');
-  } else {
-    const minutesLeft = Math.ceil((STAGING_HEALTH_COOLDOWN_MS - timeSinceLastStagingHealth) / 60000);
-    log(`Staging health monitor cooldown active. ${minutesLeft} minutes until next check.`);
-  }
+    },
+  });
 
   // =========================================================================
   // PRODUCTION HEALTH MONITOR (1h cooldown, fire-and-forget) [GATE-EXEMPT]
   // Checks production infrastructure health, escalates to CTO
   // =========================================================================
-  const timeSinceLastProdHealth = now - (state.lastProductionHealthCheck || 0);
-  const prodHealthEnabled = config.productionHealthMonitorEnabled !== false;
-
-  if (timeSinceLastProdHealth >= PRODUCTION_HEALTH_COOLDOWN_MS && prodHealthEnabled) {
-    if (!hasHealthMonitorCredentials()) {
-      log('Production health monitor: skipped (missing credentials).');
-    } else {
+  await runIfDue('production_health_monitor', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastProductionHealthCheck',
+    configToggle: 'productionHealthMonitorEnabled',
+    config,
+    label: 'Production health monitor',
+    fn: async () => {
+      if (!hasHealthMonitorCredentials()) {
+        log('Production health monitor: skipped (missing credentials).');
+        return;
+      }
       log('Production health monitor: spawning health check...');
       const result = spawnProductionHealthMonitor();
       if (result.success) {
         const alive = await verifySpawnAlive(result.pid, 'Production health monitor');
-        if (alive) {
-          state.lastProductionHealthCheck = now;
-          saveState(state);
+        if (!alive) {
+          throw new Error('spawn died');
         }
         log('Production health monitor: spawned (fire-and-forget).');
       } else {
         log('Production health monitor: spawn failed.');
       }
-    }
-  } else if (!prodHealthEnabled) {
-    log('Production Health Monitor is disabled in config.');
-  } else {
-    const minutesLeft = Math.ceil((PRODUCTION_HEALTH_COOLDOWN_MS - timeSinceLastProdHealth) / 60000);
-    log(`Production health monitor cooldown active. ${minutesLeft} minutes until next check.`);
-  }
+    },
+  });
 
   // =========================================================================
   // CI MONITORING (every cycle, gate-exempt)
@@ -2990,12 +3067,12 @@ async function main() {
   // PR SWEEP (10min cooldown)
   // Auto-merges stale open PRs to prevent branch accumulation
   // =========================================================================
-  const PR_SWEEP_COOLDOWN_MS = getCooldown('pr_sweep', 10) * 60 * 1000;
-  const timeSinceLastPrSweep = now - (state.lastPrSweep || 0);
-
-  if (timeSinceLastPrSweep >= PR_SWEEP_COOLDOWN_MS) {
-    log('PR sweep: checking for stale open PRs...');
-    try {
+  await runIfDue('pr_sweep', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastPrSweep',
+    label: 'PR sweep',
+    fn: async () => {
+      log('PR sweep: checking for stale open PRs...');
       // Detect base branch: preview for target projects, main for gentyr repo
       let prBaseBranch = 'main';
       try {
@@ -3034,15 +3111,8 @@ async function main() {
       } else {
         log(`PR sweep: ${openPRs.length} open PR(s), none older than 30 minutes.`);
       }
-    } catch (err) {
-      log(`PR sweep error (non-fatal): ${err.message}`);
-    }
-    state.lastPrSweep = now;
-    saveState(state);
-  } else {
-    const minutesLeft = Math.ceil((PR_SWEEP_COOLDOWN_MS - timeSinceLastPrSweep) / 60000);
-    log(`PR sweep cooldown active. ${minutesLeft} minutes until next check.`);
-  }
+    },
+  });
 
   // =========================================================================
   // CTO GATE CHECK — exit if gate is closed after all monitoring-only steps
@@ -3065,50 +3135,46 @@ async function main() {
   // =========================================================================
   // LINT CHECK (own cooldown, default 30 min)
   // =========================================================================
-  const timeSinceLastLint = now - (state.lastLintCheck || 0);
+  await runIfDue('lint_checker', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastLintCheck',
+    configToggle: 'lintCheckerEnabled',
+    config,
+    label: 'Lint check',
+    fn: async () => {
+      log('Running lint check...');
+      const lintResult = runLintCheck();
 
-  if (timeSinceLastLint >= LINT_COOLDOWN_MS && config.lintCheckerEnabled) {
-    log('Running lint check...');
-    const lintResult = runLintCheck();
-
-    if (lintResult.hasErrors) {
-      const errorCount = (lintResult.output.match(/\berror\b/gi) || []).length;
-      log(`Lint check found ${errorCount} error(s), spawning fixer...`);
-
-      try {
+      if (lintResult.hasErrors) {
+        const errorCount = (lintResult.output.match(/\berror\b/gi) || []).length;
+        log(`Lint check found ${errorCount} error(s), spawning fixer...`);
         const result = await spawnLintFixer(lintResult.output);
         if (result.code === 0) {
           log('Lint fixer completed successfully.');
         } else {
           log(`Lint fixer exited with code ${result.code}`);
         }
-      } catch (err) {
-        log(`Lint fixer error: ${err.message}`);
+      } else {
+        log('Lint check passed - no errors found.');
       }
-    } else {
-      log('Lint check passed - no errors found.');
-    }
-
-    state.lastLintCheck = now;
-    saveState(state);
-  } else if (!config.lintCheckerEnabled) {
-    log('Lint Checker is disabled in config.');
-  } else {
-    const minutesLeft = Math.ceil((LINT_COOLDOWN_MS - timeSinceLastLint) / 60000);
-    log(`Lint check cooldown active. ${minutesLeft} minutes until next check.`);
-  }
+    },
+  });
 
   // =========================================================================
   // TASK RUNNER CHECK (1h cooldown)
   // Spawns a separate Claude session for every pending TODO item >1h old
   // =========================================================================
-  const TASK_RUNNER_COOLDOWN_MS = getCooldown('task_runner', 60) * 60 * 1000;
-  const timeSinceLastTaskRunner = now - (state.lastTaskRunnerCheck || 0);
-
-  if (timeSinceLastTaskRunner >= TASK_RUNNER_COOLDOWN_MS && config.taskRunnerEnabled) {
-    if (!Database) {
-      log('Task runner: better-sqlite3 not available, skipping.');
-    } else {
+  await runIfDue('task_runner', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastTaskRunnerCheck',
+    configToggle: 'taskRunnerEnabled',
+    config,
+    label: 'Task runner',
+    fn: async () => {
+      if (!Database) {
+        log('Task runner: better-sqlite3 not available, skipping.');
+        return;
+      }
       log('Task runner: checking for pending tasks...');
       let candidates = getPendingTasksForRunner();
 
@@ -3154,87 +3220,76 @@ async function main() {
 
         log(`Task runner: spawned ${spawned} agent(s) this cycle.`);
       }
-    }
-
-    state.lastTaskRunnerCheck = now;
-    saveState(state);
-  } else if (!config.taskRunnerEnabled) {
-    log('Task Runner is disabled in config.');
-  } else {
-    const minutesLeft = Math.ceil((TASK_RUNNER_COOLDOWN_MS - timeSinceLastTaskRunner) / 60000);
-    log(`Task runner cooldown active. ${minutesLeft} minutes until next check.`);
-  }
+    },
+  });
 
   // =========================================================================
   // STAGING -> PRODUCTION PROMOTION (midnight window, 20h cooldown)
   // Checks nightly for stable staging to promote to production
   // NOTE: Runs BEFORE preview→staging to prevent clock-reset starvation
   // =========================================================================
-  const timeSinceLastStagingPromotion = now - (state.lastStagingPromotionCheck || 0);
-  const stagingPromotionEnabled = config.stagingPromotionEnabled !== false;
-  const currentHour = new Date().getHours();
-  const currentMinute = new Date().getMinutes();
-  const isMidnightWindow = currentHour === 0 && currentMinute <= 30;
+  {
+    const currentHour = new Date().getHours();
+    const currentMinute = new Date().getMinutes();
+    const isMidnightWindow = currentHour === 0 && currentMinute <= 30;
 
-  if (isMidnightWindow && timeSinceLastStagingPromotion >= STAGING_PROMOTION_COOLDOWN_MS && stagingPromotionEnabled) {
-    log('Staging promotion: midnight window - checking for promotable commits...');
+    if (isMidnightWindow) {
+      await runIfDue('staging_promotion', {
+        state, now, intervals: config.intervals,
+        stateKey: 'lastStagingPromotionCheck',
+        configToggle: 'stagingPromotionEnabled',
+        config,
+        label: 'Staging promotion',
+        fn: async () => {
+          log('Staging promotion: midnight window - checking for promotable commits...');
 
-    try {
-      execSync('git fetch origin staging main --quiet 2>/dev/null || true', {
-        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
-      });
-    } catch {
-      log('Staging promotion: git fetch failed, skipping.');
-    }
-
-    if (remoteBranchExists('staging') && remoteBranchExists('main')) {
-      const newCommits = getNewCommits('staging', 'main');
-
-      if (newCommits.length === 0) {
-        log('Staging promotion: no new commits on staging.');
-      } else {
-        const lastStagingTimestamp = getLastCommitTimestamp('staging');
-        const hoursSinceLastStagingCommit = lastStagingTimestamp > 0
-          ? Math.floor((Date.now() / 1000 - lastStagingTimestamp) / 3600) : 0;
-
-        if (hoursSinceLastStagingCommit >= 24) {
-          // GAP 6: Block promotion if production is in error state
-          const alertData = readPersistentAlerts();
-          const prodAlert = alertData.alerts['production_error'];
-          if (prodAlert && !prodAlert.resolved) {
-            const ageHours = Math.round((Date.now() - new Date(prodAlert.first_detected_at).getTime()) / 3600000);
-            log(`Staging promotion: BLOCKED — production in error state for ${ageHours}h. Fix production before promoting.`);
-          } else {
-            log(`Staging promotion: ${newCommits.length} commits ready. Staging stable for ${hoursSinceLastStagingCommit}h.`);
-
-            try {
-              const result = await spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit);
-              if (result.code === 0) {
-                log('Staging promotion pipeline completed successfully.');
-              } else {
-                log(`Staging promotion pipeline exited with code ${result.code}`);
-              }
-            } catch (err) {
-              log(`Staging promotion error: ${err.message}`);
-            }
+          try {
+            execSync('git fetch origin staging main --quiet 2>/dev/null || true', {
+              cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+            });
+          } catch {
+            log('Staging promotion: git fetch failed, skipping.');
           }
-        } else {
-          log(`Staging promotion: staging only ${hoursSinceLastStagingCommit}h old (need 24h stability).`);
-        }
-      }
-    } else {
-      log('Staging promotion: staging or main branch does not exist on remote.');
-    }
 
-    state.lastStagingPromotionCheck = now;
-    saveState(state);
-  } else if (!stagingPromotionEnabled) {
-    log('Staging Promotion is disabled in config.');
-  } else if (!isMidnightWindow) {
-    // Only log this at debug level since it runs every 10 minutes
-  } else {
-    const minutesLeft = Math.ceil((STAGING_PROMOTION_COOLDOWN_MS - timeSinceLastStagingPromotion) / 60000);
-    log(`Staging promotion cooldown active. ${minutesLeft} minutes until next check.`);
+          if (remoteBranchExists('staging') && remoteBranchExists('main')) {
+            const newCommits = getNewCommits('staging', 'main');
+
+            if (newCommits.length === 0) {
+              log('Staging promotion: no new commits on staging.');
+            } else {
+              const lastStagingTimestamp = getLastCommitTimestamp('staging');
+              const hoursSinceLastStagingCommit = lastStagingTimestamp > 0
+                ? Math.floor((Date.now() / 1000 - lastStagingTimestamp) / 3600) : 0;
+
+              if (hoursSinceLastStagingCommit >= 24) {
+                // GAP 6: Block promotion if production is in error state
+                const alertData = readPersistentAlerts();
+                const prodAlert = alertData.alerts['production_error'];
+                if (prodAlert && !prodAlert.resolved) {
+                  const ageHours = Math.round((Date.now() - new Date(prodAlert.first_detected_at).getTime()) / 3600000);
+                  log(`Staging promotion: BLOCKED — production in error state for ${ageHours}h. Fix production before promoting.`);
+                } else {
+                  log(`Staging promotion: ${newCommits.length} commits ready. Staging stable for ${hoursSinceLastStagingCommit}h.`);
+
+                  const result = await spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit);
+                  if (result.code === 0) {
+                    log('Staging promotion pipeline completed successfully.');
+                  } else {
+                    log(`Staging promotion pipeline exited with code ${result.code}`);
+                  }
+                }
+              } else {
+                log(`Staging promotion: staging only ${hoursSinceLastStagingCommit}h old (need 24h stability).`);
+              }
+            }
+          } else {
+            log('Staging promotion: staging or main branch does not exist on remote.');
+          }
+        },
+      });
+    } else {
+      // Only log at debug level since it runs every 5 minutes outside midnight window
+    }
   }
 
   // =========================================================================
@@ -3280,70 +3335,65 @@ async function main() {
   // Checks for new commits on preview, spawns review + promotion pipeline
   // NOTE: Gated by staging freeze to prevent staging→main starvation
   // =========================================================================
-  const timeSinceLastPreviewPromotion = now - (state.lastPreviewPromotionCheck || 0);
-  const previewPromotionEnabled = config.previewPromotionEnabled !== false;
-
   if (state.stagingFreezeActive) {
     log(`Preview promotion: PAUSED by staging freeze (staging ${Math.floor(stagingAgeHours)}h old, waiting for staging→main).`);
     // Do NOT update lastPreviewPromotionCheck — so it fires immediately when freeze lifts
-  } else if (timeSinceLastPreviewPromotion >= PREVIEW_PROMOTION_COOLDOWN_MS && previewPromotionEnabled) {
-    log('Preview promotion: checking for promotable commits...');
+  } else {
+    await runIfDue('preview_promotion', {
+      state, now, intervals: config.intervals,
+      stateKey: 'lastPreviewPromotionCheck',
+      configToggle: 'previewPromotionEnabled',
+      config,
+      label: 'Preview promotion',
+      fn: async () => {
+        log('Preview promotion: checking for promotable commits...');
 
-    try {
-      // Fetch latest remote state
-      execSync('git fetch origin preview staging --quiet 2>/dev/null || true', {
-        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
-      });
-    } catch {
-      log('Preview promotion: git fetch failed, skipping.');
-    }
+        try {
+          // Fetch latest remote state
+          execSync('git fetch origin preview staging --quiet 2>/dev/null || true', {
+            cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+          });
+        } catch {
+          log('Preview promotion: git fetch failed, skipping.');
+        }
 
-    if (remoteBranchExists('preview') && remoteBranchExists('staging')) {
-      const newCommits = getNewCommits('preview', 'staging');
+        if (remoteBranchExists('preview') && remoteBranchExists('staging')) {
+          const newCommits = getNewCommits('preview', 'staging');
 
-      if (newCommits.length === 0) {
-        log('Preview promotion: no new commits on preview.');
-      } else {
-        const lastStagingTimestamp = getLastCommitTimestamp('staging');
-        const hoursSinceLastStagingMerge = lastStagingTimestamp > 0
-          ? Math.floor((Date.now() / 1000 - lastStagingTimestamp) / 3600) : 999;
-        const hasBugFix = hasBugFixCommits(newCommits);
+          if (newCommits.length === 0) {
+            log('Preview promotion: no new commits on preview.');
+          } else {
+            const lastStagingTimestamp = getLastCommitTimestamp('staging');
+            const hoursSinceLastStagingMerge = lastStagingTimestamp > 0
+              ? Math.floor((Date.now() / 1000 - lastStagingTimestamp) / 3600) : 999;
+            const hasBugFix = hasBugFixCommits(newCommits);
 
-        if (hoursSinceLastStagingMerge >= 24 || hasBugFix) {
-          log(`Preview promotion: ${newCommits.length} commits ready. Staging age: ${hoursSinceLastStagingMerge}h. Bug fix: ${hasBugFix}.`);
+            if (hoursSinceLastStagingMerge >= 24 || hasBugFix) {
+              log(`Preview promotion: ${newCommits.length} commits ready. Staging age: ${hoursSinceLastStagingMerge}h. Bug fix: ${hasBugFix}.`);
 
-          try {
-            const result = await spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix);
-            if (result.code === 0) {
-              log('Preview promotion pipeline completed successfully.');
-              state.lastPreviewToStagingMergeAt = now;
-              saveState(state);
+              const result = await spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix);
+              if (result.code === 0) {
+                log('Preview promotion pipeline completed successfully.');
+                state.lastPreviewToStagingMergeAt = now;
+                saveState(state);
+              } else {
+                log(`Preview promotion pipeline exited with code ${result.code}`);
+              }
             } else {
-              log(`Preview promotion pipeline exited with code ${result.code}`);
+              log(`Preview promotion: ${newCommits.length} commits pending but staging only ${hoursSinceLastStagingMerge}h old (need 24h or bug fix).`);
             }
-          } catch (err) {
-            log(`Preview promotion error: ${err.message}`);
           }
         } else {
-          log(`Preview promotion: ${newCommits.length} commits pending but staging only ${hoursSinceLastStagingMerge}h old (need 24h or bug fix).`);
+          log('Preview promotion: preview or staging branch does not exist on remote.');
         }
-      }
-    } else {
-      log('Preview promotion: preview or staging branch does not exist on remote.');
-    }
-
-    state.lastPreviewPromotionCheck = now;
-    saveState(state);
-  } else if (!previewPromotionEnabled) {
-    log('Preview Promotion is disabled in config.');
-  } else {
-    const minutesLeft = Math.ceil((PREVIEW_PROMOTION_COOLDOWN_MS - timeSinceLastPreviewPromotion) / 60000);
-    log(`Preview promotion cooldown active. ${minutesLeft} minutes until next check.`);
+      },
+    });
   }
 
   // =========================================================================
   // TASK GATE STALE CLEANUP
   // Auto-approve pending_review tasks older than 10 minutes (gate agent timed out)
+  // Runs every cycle — no cooldown, simple DB update
   // =========================================================================
   if (Database) {
     try {
@@ -3368,42 +3418,35 @@ async function main() {
   // WORKTREE CLEANUP (30min cooldown)
   // Removes worktrees whose feature branches have been merged to the base branch
   // =========================================================================
-  const WORKTREE_CLEANUP_COOLDOWN_MS = getCooldown('worktree_cleanup', 30) * 60 * 1000;
-  const timeSinceLastWorktreeCleanup = now - (state.lastWorktreeCleanup || 0);
-  const worktreeCleanupEnabled = config.worktreeCleanupEnabled !== false;
-
-  if (timeSinceLastWorktreeCleanup >= WORKTREE_CLEANUP_COOLDOWN_MS && worktreeCleanupEnabled) {
-    log('Worktree cleanup: checking for merged worktrees...');
-    try {
+  await runIfDue('worktree_cleanup', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastWorktreeCleanup',
+    configToggle: 'worktreeCleanupEnabled',
+    config,
+    label: 'Worktree cleanup',
+    fn: async () => {
+      log('Worktree cleanup: checking for merged worktrees...');
       const cleaned = cleanupMergedWorktrees();
       if (cleaned > 0) {
         log(`Worktree cleanup: removed ${cleaned} merged worktree(s).`);
       } else {
         log('Worktree cleanup: no merged worktrees to remove.');
       }
-    } catch (err) {
-      log(`Worktree cleanup error (non-fatal): ${err.message}`);
-    }
-    state.lastWorktreeCleanup = now;
-    saveState(state);
-  } else if (!worktreeCleanupEnabled) {
-    log('Worktree Cleanup is disabled in config.');
-  } else {
-    const minutesLeft = Math.ceil((WORKTREE_CLEANUP_COOLDOWN_MS - timeSinceLastWorktreeCleanup) / 60000);
-    log(`Worktree cleanup cooldown active. ${minutesLeft} minutes until next check.`);
-  }
+    },
+  });
 
   // =========================================================================
   // STALE WORK DETECTOR (24h cooldown)
   // Reports uncommitted changes, unpushed branches, and stale feature branches
   // =========================================================================
-  const STALE_WORK_COOLDOWN_MS = getCooldown('stale_work_detector', 1440) * 60 * 1000;
-  const timeSinceLastStaleCheck = now - (state.lastStaleWorkCheck || 0);
-  const staleWorkEnabled = config.staleWorkDetectorEnabled !== false;
-
-  if (timeSinceLastStaleCheck >= STALE_WORK_COOLDOWN_MS && staleWorkEnabled) {
-    log('Stale work detector: scanning for stale work...');
-    try {
+  await runIfDue('stale_work_detector', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastStaleWorkCheck',
+    configToggle: 'staleWorkDetectorEnabled',
+    config,
+    label: 'Stale work detector',
+    fn: async () => {
+      log('Stale work detector: scanning for stale work...');
       const report = detectStaleWork();
       if (report.hasIssues) {
         const reportText = formatReport(report);
@@ -3443,82 +3486,68 @@ Then exit.`;
       } else {
         log('Stale work detector: no issues found.');
       }
-    } catch (err) {
-      log(`Stale work detector error (non-fatal): ${err.message}`);
-    }
-    state.lastStaleWorkCheck = now;
-    saveState(state);
-  } else if (!staleWorkEnabled) {
-    log('Stale Work Detector is disabled in config.');
-  } else {
-    const minutesLeft = Math.ceil((STALE_WORK_COOLDOWN_MS - timeSinceLastStaleCheck) / 60000);
-    log(`Stale work detector cooldown active. ${minutesLeft} minutes until next check.`);
-  }
+    },
+  });
 
   // =========================================================================
   // STANDALONE ANTIPATTERN HUNTER (3h cooldown, fire-and-forget)
   // Repo-wide spec violation scan, independent of git hooks
   // =========================================================================
-  const timeSinceLastAntipatternHunt = now - (state.lastStandaloneAntipatternHunt || 0);
-  const antipatternHuntEnabled = config.standaloneAntipatternHunterEnabled !== false;
-
-  if (timeSinceLastAntipatternHunt >= STANDALONE_ANTIPATTERN_COOLDOWN_MS && antipatternHuntEnabled) {
-    log('Standalone antipattern hunter: spawning repo-wide scan...');
-    const success = spawnStandaloneAntipatternHunter();
-    if (success) {
-      log('Standalone antipattern hunter: spawned (fire-and-forget).');
-    } else {
-      log('Standalone antipattern hunter: spawn failed.');
-    }
-
-    state.lastStandaloneAntipatternHunt = now;
-    saveState(state);
-  } else if (!antipatternHuntEnabled) {
-    log('Standalone Antipattern Hunter is disabled in config.');
-  } else {
-    const minutesLeft = Math.ceil((STANDALONE_ANTIPATTERN_COOLDOWN_MS - timeSinceLastAntipatternHunt) / 60000);
-    log(`Standalone antipattern hunter cooldown active. ${minutesLeft} minutes until next hunt.`);
-  }
+  await runIfDue('standalone_antipattern_hunter', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastStandaloneAntipatternHunt',
+    configToggle: 'standaloneAntipatternHunterEnabled',
+    config,
+    label: 'Standalone antipattern hunter',
+    fn: async () => {
+      log('Standalone antipattern hunter: spawning repo-wide scan...');
+      const success = spawnStandaloneAntipatternHunter();
+      if (success) {
+        log('Standalone antipattern hunter: spawned (fire-and-forget).');
+      } else {
+        throw new Error('spawn failed');
+      }
+    },
+  });
 
   // =========================================================================
   // STANDALONE COMPLIANCE CHECKER (1h cooldown, fire-and-forget)
   // Picks a random spec and audits the codebase against it
   // =========================================================================
-  const timeSinceLastComplianceCheck = now - (state.lastStandaloneComplianceCheck || 0);
-  const complianceCheckEnabled = config.standaloneComplianceCheckerEnabled !== false;
-
-  if (timeSinceLastComplianceCheck >= STANDALONE_COMPLIANCE_COOLDOWN_MS && complianceCheckEnabled) {
-    const randomSpec = getRandomSpec();
-    if (randomSpec) {
-      log(`Standalone compliance checker: spawning audit for spec ${randomSpec.id}...`);
-      const success = spawnStandaloneComplianceChecker(randomSpec);
-      if (success) {
-        log(`Standalone compliance checker: spawned for ${randomSpec.id} (fire-and-forget).`);
+  await runIfDue('standalone_compliance_checker', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastStandaloneComplianceCheck',
+    configToggle: 'standaloneComplianceCheckerEnabled',
+    config,
+    label: 'Standalone compliance checker',
+    fn: async () => {
+      const randomSpec = getRandomSpec();
+      if (randomSpec) {
+        log(`Standalone compliance checker: spawning audit for spec ${randomSpec.id}...`);
+        const success = spawnStandaloneComplianceChecker(randomSpec);
+        if (success) {
+          log(`Standalone compliance checker: spawned for ${randomSpec.id} (fire-and-forget).`);
+        } else {
+          throw new Error('spawn failed');
+        }
       } else {
-        log('Standalone compliance checker: spawn failed.');
+        log('Standalone compliance checker: no specs found in specs/global/ or specs/local/.');
       }
-    } else {
-      log('Standalone compliance checker: no specs found in specs/global/ or specs/local/.');
-    }
-
-    state.lastStandaloneComplianceCheck = now;
-    saveState(state);
-  } else if (!complianceCheckEnabled) {
-    log('Standalone Compliance Checker is disabled in config.');
-  } else {
-    const minutesLeft = Math.ceil((STANDALONE_COMPLIANCE_COOLDOWN_MS - timeSinceLastComplianceCheck) / 60000);
-    log(`Standalone compliance checker cooldown active. ${minutesLeft} minutes until next check.`);
-  }
+    },
+  });
 
   // =========================================================================
   // USER FEEDBACK PIPELINE (2h cooldown, fire-and-forget agents)
   // Detects staging changes, matches personas, spawns feedback agents
   // =========================================================================
-  const userFeedbackEnabled = config.userFeedbackEnabled !== false;
-
-  if (userFeedbackEnabled) {
-    try {
-      const feedbackResult = await runFeedbackPipeline(log, state, saveState, USER_FEEDBACK_COOLDOWN_MS);
+  await runIfDue('user_feedback', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastUserFeedbackRun',
+    configToggle: 'userFeedbackEnabled',
+    config,
+    label: 'User feedback',
+    fn: async () => {
+      const feedbackResult = await runFeedbackPipeline(log, state, saveState, getCooldown('user_feedback', 120) * 60 * 1000);
       if (feedbackResult.ran) {
         log(`User feedback: ${feedbackResult.reason}`);
         registerSpawn({
@@ -3531,60 +3560,38 @@ Then exit.`;
       } else {
         log(`User feedback: skipped - ${feedbackResult.reason}`);
       }
-    } catch (err) {
-      log(`User feedback pipeline error (non-fatal): ${err.message}`);
-    }
-  } else {
-    log('User Feedback Pipeline is disabled in config.');
-  }
+    },
+  });
 
   // =========================================================================
   // HOURLY TASKS (dynamic cooldown, default 55 min)
   // =========================================================================
-  const timeSinceLastRun = now - state.lastRun;
-
-  if (timeSinceLastRun < HOURLY_COOLDOWN_MS) {
-    const minutesLeft = Math.ceil((HOURLY_COOLDOWN_MS - timeSinceLastRun) / 60000);
-    log(`Hourly tasks cooldown active. ${minutesLeft} minutes until next run.`);
-    log('=== Hourly Automation Complete ===');
-    registerHookExecution({
-      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-      status: 'success',
-      durationMs: Date.now() - startTime,
-      metadata: { fullRun: false, minutesUntilNext: minutesLeft }
-    });
-    return;
-  }
-
-  // Update state for hourly tasks
-  state.lastRun = now;
-  saveState(state);
-
-  // Check CLAUDE.md size and run refactor if needed
-  if (config.claudeMdRefactorEnabled) {
-    const claudeMdSize = getClaudeMdSize();
-    log(`CLAUDE.md size: ${claudeMdSize} characters (threshold: ${CLAUDE_MD_SIZE_THRESHOLD})`);
-
-    if (claudeMdSize > CLAUDE_MD_SIZE_THRESHOLD) {
-      log('CLAUDE.md exceeds threshold, spawning refactor...');
-      try {
-        const result = await spawnClaudeMdRefactor();
-        if (result.code === 0) {
-          log('CLAUDE.md refactor completed.');
-          state.lastClaudeMdRefactor = now;
-          saveState(state);
+  await runIfDue('hourly_tasks', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastRun',
+    label: 'Hourly tasks',
+    fn: async () => {
+      if (config.claudeMdRefactorEnabled) {
+        const claudeMdSize = getClaudeMdSize();
+        log(`CLAUDE.md size: ${claudeMdSize} characters (threshold: ${CLAUDE_MD_SIZE_THRESHOLD})`);
+        if (claudeMdSize > CLAUDE_MD_SIZE_THRESHOLD) {
+          log('CLAUDE.md exceeds threshold, spawning refactor...');
+          const result = await spawnClaudeMdRefactor();
+          if (result.code === 0) {
+            log('CLAUDE.md refactor completed.');
+            state.lastClaudeMdRefactor = now;
+            saveState(state);
+          } else {
+            log(`CLAUDE.md refactor exited with code ${result.code}`);
+          }
         } else {
-          log(`CLAUDE.md refactor exited with code ${result.code}`);
+          log('CLAUDE.md size is within threshold.');
         }
-      } catch (err) {
-        log(`CLAUDE.md refactor error: ${err.message}`);
+      } else {
+        log('CLAUDE.md Refactor is disabled in config.');
       }
-    } else {
-      log('CLAUDE.md size is within threshold.');
-    }
-  } else {
-    log('CLAUDE.md Refactor is disabled in config.');
-  }
+    },
+  });
 
   log('=== Hourly Automation Complete ===');
 
