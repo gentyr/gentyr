@@ -307,6 +307,7 @@ export interface DemoProgress {
   has_failures: boolean;
   recent_errors: string[];
   last_5_results: Array<{ title: string; status: string }>;
+  suite_completed: boolean;
 }
 
 export interface CheckDemoResultResult {
