@@ -40,6 +40,7 @@ function readDemoProgress(content: string): DemoProgress | null {
       has_failures: false,
       recent_errors: [],
       last_5_results: [],
+      suite_completed: false,
     };
 
     for (const line of lines) {
@@ -78,10 +79,14 @@ function readDemoProgress(content: string): DemoProgress | null {
             if (event.stderr_snippet && progress.recent_errors.length < 10) {
               progress.recent_errors.push(String(event.stderr_snippet).slice(0, 2000));
             }
+            if (event.stdout_snippet && progress.recent_errors.length < 10) {
+              progress.recent_errors.push(`[stdout] ${String(event.stdout_snippet).slice(0, 2000)}`);
+            }
             break;
           case 'suite_end':
             progress.current_test = null;
             progress.current_file = null;
+            progress.suite_completed = true;
             break;
         }
       } catch {
@@ -350,6 +355,53 @@ describe('readDemoProgress — JSONL progress parsing', () => {
       expect(progress!.has_failures).toBe(true);
       expect(progress!.recent_errors).toHaveLength(2);
     });
+
+    it('should append stdout_snippet to recent_errors with [stdout] prefix on crash', () => {
+      const content = JSON.stringify({ type: 'crash', stdout_snippet: 'process output before crash' });
+      const progress = readDemoProgress(content);
+
+      expect(progress!.recent_errors).toHaveLength(1);
+      expect(progress!.recent_errors[0]).toBe('[stdout] process output before crash');
+    });
+
+    it('should append both stderr_snippet and stdout_snippet to recent_errors on crash', () => {
+      const content = JSON.stringify({
+        type: 'crash',
+        stderr_snippet: 'stderr message',
+        stdout_snippet: 'stdout message',
+      });
+      const progress = readDemoProgress(content);
+
+      expect(progress!.recent_errors).toHaveLength(2);
+      expect(progress!.recent_errors[0]).toBe('stderr message');
+      expect(progress!.recent_errors[1]).toBe('[stdout] stdout message');
+    });
+
+    it('should truncate stdout_snippet at 2000 characters with [stdout] prefix', () => {
+      const longSnippet = 's'.repeat(3000);
+      const content = JSON.stringify({ type: 'crash', stdout_snippet: longSnippet });
+      const progress = readDemoProgress(content);
+
+      // '[stdout] ' prefix is 9 chars; total = 9 + 2000 = 2009
+      expect(progress!.recent_errors[0].startsWith('[stdout] ')).toBe(true);
+      expect(progress!.recent_errors[0].length).toBe(9 + 2000);
+    });
+
+    it('should not add stdout_snippet when recent_errors is already at cap of 10', () => {
+      const lines = [
+        // Fill the cap with console_errors first
+        ...Array.from({ length: 10 }, (_, i) =>
+          JSON.stringify({ type: 'console_error', text: `error-${i}` })
+        ),
+        JSON.stringify({ type: 'crash', stdout_snippet: 'overflow stdout' }),
+      ].join('\n');
+
+      const progress = readDemoProgress(lines);
+
+      // Cap is 10 — the crash stdout_snippet must be discarded
+      expect(progress!.recent_errors).toHaveLength(10);
+      expect(progress!.recent_errors.every(e => !e.startsWith('[stdout]'))).toBe(true);
+    });
   });
 
   describe('suite_end event', () => {
@@ -363,6 +415,50 @@ describe('readDemoProgress — JSONL progress parsing', () => {
 
       expect(progress!.current_test).toBeNull();
       expect(progress!.current_file).toBeNull();
+    });
+
+    it('should set suite_completed to true on suite_end', () => {
+      const content = JSON.stringify({ type: 'suite_end' });
+      const progress = readDemoProgress(content);
+
+      expect(progress!.suite_completed).toBe(true);
+    });
+
+    it('should keep suite_completed false when no suite_end event is present', () => {
+      const lines = [
+        JSON.stringify({ type: 'suite_begin', total_tests: 2 }),
+        JSON.stringify({ type: 'test_end', title: 'test A', status: 'passed' }),
+      ].join('\n');
+
+      const progress = readDemoProgress(lines);
+
+      expect(progress!.suite_completed).toBe(false);
+    });
+
+    it('should set suite_completed true even when suite_end has no extra fields', () => {
+      // suite_end carries no required payload — bare event still triggers the flag
+      const lines = [
+        JSON.stringify({ type: 'suite_begin', total_tests: 1 }),
+        JSON.stringify({ type: 'test_end', title: 'only test', status: 'passed' }),
+        JSON.stringify({ type: 'suite_end' }),
+      ].join('\n');
+
+      const progress = readDemoProgress(lines);
+
+      expect(progress!.suite_completed).toBe(true);
+      expect(progress!.tests_completed).toBe(1);
+    });
+
+    it('should set suite_completed true alongside has_failures when tests failed', () => {
+      const lines = [
+        JSON.stringify({ type: 'test_end', title: 'bad test', status: 'failed' }),
+        JSON.stringify({ type: 'suite_end' }),
+      ].join('\n');
+
+      const progress = readDemoProgress(lines);
+
+      expect(progress!.suite_completed).toBe(true);
+      expect(progress!.has_failures).toBe(true);
     });
   });
 
@@ -389,6 +485,8 @@ describe('readDemoProgress — JSONL progress parsing', () => {
       expect(progress!.has_failures).toBe(false);
       expect(progress!.current_test).toBeNull();
       expect(progress!.last_5_results).toHaveLength(3);
+      // Full sequence includes suite_end — must be marked complete
+      expect(progress!.suite_completed).toBe(true);
     });
 
     it('should correctly parse a mixed pass/fail sequence', () => {
@@ -409,6 +507,8 @@ describe('readDemoProgress — JSONL progress parsing', () => {
       expect(progress!.has_failures).toBe(true);
       expect(progress!.recent_errors).toHaveLength(1);
       expect(progress!.recent_errors[0]).toBe('404 not found');
+      // No suite_end in this sequence — not complete
+      expect(progress!.suite_completed).toBe(false);
     });
   });
 });
@@ -788,6 +888,7 @@ describe('DemoProgress structural validation', () => {
       has_failures: true,
       recent_errors: [],
       last_5_results: [],
+      suite_completed: false,
     };
 
     expect(Number.isInteger(progress.tests_completed)).toBe(true);
@@ -809,6 +910,7 @@ describe('DemoProgress structural validation', () => {
       has_failures: true,
       recent_errors: [],
       last_5_results: [],
+      suite_completed: false,
     };
 
     expect(progress.tests_passed + progress.tests_failed).toBeLessThanOrEqual(progress.tests_completed);
@@ -827,6 +929,7 @@ describe('DemoProgress structural validation', () => {
       has_failures: true,
       recent_errors: [],
       last_5_results: [{ title: 'broken test', status: 'failed' }],
+      suite_completed: false,
     };
 
     if (progress.tests_failed > 0) {
@@ -848,6 +951,7 @@ describe('DemoProgress structural validation', () => {
         { title: 'test one', status: 'passed' },
         { title: 'test two', status: 'failed' },
       ],
+      suite_completed: false,
     };
 
     for (const result of progress.last_5_results) {
@@ -868,6 +972,7 @@ describe('DemoProgress structural validation', () => {
       has_failures: false,
       recent_errors: ['Error: connection refused', 'Warning: deprecated API'],
       last_5_results: [],
+      suite_completed: false,
     };
 
     expect(Array.isArray(progress.recent_errors)).toBe(true);
@@ -926,6 +1031,7 @@ describe('checkDemoResult dead-process status determination', () => {
         has_failures: true,
         recent_errors: [],
         last_5_results: [],
+        suite_completed: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -944,6 +1050,7 @@ describe('checkDemoResult dead-process status determination', () => {
         has_failures: true,
         recent_errors: [],
         last_5_results: [],
+        suite_completed: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -963,6 +1070,7 @@ describe('checkDemoResult dead-process status determination', () => {
         has_failures: true,
         recent_errors: [],
         last_5_results: [],
+        suite_completed: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -984,6 +1092,7 @@ describe('checkDemoResult dead-process status determination', () => {
         has_failures: false,
         recent_errors: [],
         last_5_results: [],
+        suite_completed: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -1002,6 +1111,7 @@ describe('checkDemoResult dead-process status determination', () => {
         has_failures: false,
         recent_errors: [],
         last_5_results: [],
+        suite_completed: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -1021,6 +1131,7 @@ describe('checkDemoResult dead-process status determination', () => {
         has_failures: false,
         recent_errors: ['Failed to fetch /favicon.ico', 'Hot reload noise'],
         last_5_results: [],
+        suite_completed: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -1047,6 +1158,7 @@ describe('checkDemoResult dead-process status determination', () => {
         has_failures: false,
         recent_errors: [],
         last_5_results: [],
+        suite_completed: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -1067,6 +1179,7 @@ describe('checkDemoResult dead-process status determination', () => {
         has_failures: true,
         recent_errors: ['Browser crashed on startup'],
         last_5_results: [],
+        suite_completed: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -1090,16 +1203,19 @@ describe('checkDemoResult dead-process status determination', () => {
           tests_completed: 0, tests_passed: 0, tests_failed: 0,
           total_tests: null, current_test: null, current_file: null,
           has_failures: false, recent_errors: [], last_5_results: [],
+          suite_completed: false,
         },
         {
           tests_completed: 2, tests_passed: 2, tests_failed: 0,
           total_tests: 2, current_test: null, current_file: null,
           has_failures: false, recent_errors: [], last_5_results: [],
+          suite_completed: false,
         },
         {
           tests_completed: 1, tests_passed: 0, tests_failed: 1,
           total_tests: 1, current_test: null, current_file: null,
           has_failures: true, recent_errors: [], last_5_results: [],
+          suite_completed: false,
         },
       ];
 
@@ -1107,6 +1223,211 @@ describe('checkDemoResult dead-process status determination', () => {
         const result = determineDeadProcessStatus(progress);
         expect(validStatuses).toContain(result.status);
       }
+    });
+  });
+});
+
+// ============================================================================
+// checkDemoResult auto-kill on suite_completed
+//
+// When checkDemoResult is called and the process is still alive but
+// progress.suite_completed is true, it immediately kills the process and
+// resolves the status from progress data. This mirrors the branch in server.ts:
+//
+//   if (progress?.suite_completed) {
+//     entry.status = progress.has_failures ? 'failed' : 'passed';
+//     entry.failure_summary = ...
+//     return { status: entry.status, ... }
+//   }
+//
+// The auto-kill status determination is identical to determineDeadProcessStatus
+// but checks suite_completed (not tests_completed) as its trigger, so it can
+// correctly report 'passed'/'failed' based on has_failures.
+// ============================================================================
+
+/**
+ * Mirrors the suite_completed auto-kill status-determination branch in
+ * checkDemoResult() that fires when process.kill(pid, 0) succeeds but
+ * progress.suite_completed is true.
+ */
+function determineSuiteCompletedStatus(progress: DemoProgress): {
+  status: 'passed' | 'failed';
+  failure_summary: string | undefined;
+} {
+  if (progress.has_failures) {
+    return {
+      status: 'failed',
+      failure_summary: `${progress.tests_failed} test(s) failed out of ${progress.tests_completed}`,
+    };
+  }
+  return { status: 'passed', failure_summary: undefined };
+}
+
+describe('checkDemoResult — suite_completed auto-kill status determination', () => {
+  describe('when suite completed with no failures', () => {
+    it('should return passed when has_failures is false', () => {
+      const progress: DemoProgress = {
+        tests_completed: 3,
+        tests_passed: 3,
+        tests_failed: 0,
+        total_tests: 3,
+        current_test: null,
+        current_file: null,
+        has_failures: false,
+        recent_errors: [],
+        last_5_results: [],
+        suite_completed: true,
+      };
+
+      const result = determineSuiteCompletedStatus(progress);
+
+      expect(result.status).toBe('passed');
+    });
+
+    it('should return undefined failure_summary when all tests passed', () => {
+      const progress: DemoProgress = {
+        tests_completed: 5,
+        tests_passed: 5,
+        tests_failed: 0,
+        total_tests: 5,
+        current_test: null,
+        current_file: null,
+        has_failures: false,
+        recent_errors: [],
+        last_5_results: [],
+        suite_completed: true,
+      };
+
+      const result = determineSuiteCompletedStatus(progress);
+
+      expect(result.failure_summary).toBeUndefined();
+    });
+
+    it('should return passed even when recent_errors exist but has_failures is false', () => {
+      // console_error events populate recent_errors without setting has_failures
+      const progress: DemoProgress = {
+        tests_completed: 2,
+        tests_passed: 2,
+        tests_failed: 0,
+        total_tests: 2,
+        current_test: null,
+        current_file: null,
+        has_failures: false,
+        recent_errors: ['Failed to load resource: favicon.ico'],
+        last_5_results: [],
+        suite_completed: true,
+      };
+
+      const result = determineSuiteCompletedStatus(progress);
+
+      expect(result.status).toBe('passed');
+    });
+  });
+
+  describe('when suite completed with failures', () => {
+    it('should return failed when has_failures is true', () => {
+      const progress: DemoProgress = {
+        tests_completed: 4,
+        tests_passed: 2,
+        tests_failed: 2,
+        total_tests: 4,
+        current_test: null,
+        current_file: null,
+        has_failures: true,
+        recent_errors: [],
+        last_5_results: [],
+        suite_completed: true,
+      };
+
+      const result = determineSuiteCompletedStatus(progress);
+
+      expect(result.status).toBe('failed');
+    });
+
+    it('should include tests_failed and tests_completed in failure_summary', () => {
+      const progress: DemoProgress = {
+        tests_completed: 6,
+        tests_passed: 4,
+        tests_failed: 2,
+        total_tests: 6,
+        current_test: null,
+        current_file: null,
+        has_failures: true,
+        recent_errors: [],
+        last_5_results: [],
+        suite_completed: true,
+      };
+
+      const result = determineSuiteCompletedStatus(progress);
+
+      expect(result.failure_summary).toContain('2');
+      expect(result.failure_summary).toContain('6');
+    });
+
+    it('should return failed when a crash set has_failures but tests_completed is 0', () => {
+      // Unlike determineDeadProcessStatus (which guards on tests_completed > 0),
+      // the suite_completed branch trusts has_failures directly. A crash before
+      // any test produces suite_completed=true + has_failures=true + tests_completed=0.
+      const progress: DemoProgress = {
+        tests_completed: 0,
+        tests_passed: 0,
+        tests_failed: 0,
+        total_tests: null,
+        current_test: null,
+        current_file: null,
+        has_failures: true,
+        recent_errors: ['Browser crashed at launch'],
+        last_5_results: [],
+        suite_completed: true,
+      };
+
+      const result = determineSuiteCompletedStatus(progress);
+
+      // has_failures dominates — even without completed tests
+      expect(result.status).toBe('failed');
+    });
+  });
+
+  describe('contract difference from determineDeadProcessStatus', () => {
+    it('never returns unknown — suite_completed guarantees a definitive pass/fail', () => {
+      // determineDeadProcessStatus can return 'unknown' when tests_completed === 0.
+      // determineSuiteCompletedStatus always returns 'passed' or 'failed'.
+      const progress: DemoProgress = {
+        tests_completed: 0,
+        tests_passed: 0,
+        tests_failed: 0,
+        total_tests: null,
+        current_test: null,
+        current_file: null,
+        has_failures: false,
+        recent_errors: [],
+        last_5_results: [],
+        suite_completed: true,
+      };
+
+      const result = determineSuiteCompletedStatus(progress);
+
+      expect(['passed', 'failed']).toContain(result.status);
+    });
+
+    it('suite_completed + no failures returns passed regardless of tests_completed count', () => {
+      // Edge: suite_end fired but total_tests was 0 (empty suite). Still 'passed'.
+      const progress: DemoProgress = {
+        tests_completed: 0,
+        tests_passed: 0,
+        tests_failed: 0,
+        total_tests: 0,
+        current_test: null,
+        current_file: null,
+        has_failures: false,
+        recent_errors: [],
+        last_5_results: [],
+        suite_completed: true,
+      };
+
+      const result = determineSuiteCompletedStatus(progress);
+
+      expect(result.status).toBe('passed');
     });
   });
 });
