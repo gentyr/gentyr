@@ -923,6 +923,7 @@ function readDemoProgress(progressFilePath: string): DemoProgress | null {
       has_failures: false,
       recent_errors: [],
       last_5_results: [],
+      suite_completed: false,
     };
 
     for (const line of lines) {
@@ -971,6 +972,7 @@ function readDemoProgress(progressFilePath: string): DemoProgress | null {
           case 'suite_end':
             progress.current_test = null;
             progress.current_file = null;
+            progress.suite_completed = true;
             break;
         }
       } catch {
@@ -1012,7 +1014,60 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
   if (entry.status === 'running') {
     try {
       process.kill(pid, 0); // Signal 0 = check if process exists
-      // Process alive — reset auto-kill countdown
+
+      // Process alive — but check if suite already completed (stops unnecessary video recording)
+      const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
+      if (progress?.suite_completed) {
+        // Suite done — kill process to stop video recording
+        clearAutoKillTimer(pid);
+        try { process.kill(-pid, 'SIGTERM'); } catch {}
+        suiteEndAutoKilledPids.add(pid);
+        entry.status = progress.has_failures ? 'failed' : 'passed';
+        entry.ended_at = new Date().toISOString();
+        entry.failure_summary = progress.has_failures
+          ? `${progress.tests_failed} test(s) failed out of ${progress.tests_completed}`
+          : undefined;
+
+        // Clean up progress file
+        if (entry.progress_file) {
+          try { fs.unlinkSync(entry.progress_file); } catch { /* Non-fatal */ }
+        }
+
+        // Scan for artifacts
+        entry.artifacts = scanArtifacts();
+
+        // Parse trace if available
+        try {
+          const testResultsDir = path.join(PROJECT_DIR, 'test-results');
+          const traceZip = findTraceZip(testResultsDir);
+          if (traceZip) {
+            const summary = parseTraceZip(traceZip);
+            if (summary) entry.trace_summary = summary;
+          }
+        } catch { /* non-fatal */ }
+
+        persistDemoRuns();
+
+        const durationSec = Math.round((Date.now() - new Date(entry.started_at).getTime()) / 1000);
+        return {
+          status: entry.status,
+          pid,
+          project: entry.project,
+          test_file: entry.test_file,
+          started_at: entry.started_at,
+          ended_at: entry.ended_at,
+          failure_summary: entry.failure_summary,
+          screenshot_paths: entry.screenshot_paths,
+          trace_summary: entry.trace_summary,
+          progress,
+          artifacts: entry.artifacts,
+          message: entry.status === 'passed'
+            ? `Demo completed successfully in ${durationSec}s (auto-killed after suite completion).`
+            : `Demo failed in ${durationSec}s — ${entry.failure_summary}. Auto-killed after suite completion.`,
+        };
+      }
+
+      // Suite still running — reset auto-kill countdown
       resetAutoKillTimer(pid);
     } catch {
       // Process no longer exists but we didn't get the exit event (e.g., MCP restarted, user closed browser)
