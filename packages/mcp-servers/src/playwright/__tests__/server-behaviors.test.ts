@@ -637,11 +637,38 @@ describe('DemoRunState — stdout_tail field', () => {
       status: 'running',
     };
 
-    // stdout_tail is not defined in types.ts yet — this test documents
-    // the expected shape once the field is added.
-    // When the field exists: expect((state as any).stdout_tail).toBeUndefined();
     expect(state.pid).toBe(12345);
     expect(state.status).toBe('running');
+    expect(state.stdout_tail).toBeUndefined();
+  });
+
+  it('should accept DemoRunState with stdout_tail populated (early_exit code 0 path)', () => {
+    const state: DemoRunState = {
+      pid: 22222,
+      project: 'demo',
+      started_at: '2026-02-28T00:00:00.000Z',
+      status: 'passed',
+      ended_at: '2026-02-28T00:00:45.000Z',
+      exit_code: 0,
+      stdout_tail: 'Running 3 tests...\n  ✓ navigate to home (1.2s)\n  ✓ view billing (2.3s)\n  ✓ update profile (1.8s)',
+    };
+
+    expect(typeof state.stdout_tail).toBe('string');
+    expect(state.stdout_tail!.length).toBeGreaterThan(0);
+    expect(state.status).toBe('passed');
+    expect(state.exit_code).toBe(0);
+  });
+
+  it('stdout_tail should be a string when set', () => {
+    const state: DemoRunState = {
+      pid: 33333,
+      project: 'vendor-owner',
+      started_at: '2026-02-28T00:00:00.000Z',
+      status: 'failed',
+      stdout_tail: 'Error: expect(received).toBe(expected)',
+    };
+
+    expect(typeof state.stdout_tail).toBe('string');
   });
 
   it('should accept DemoRunState with all required fields for running status', () => {
@@ -1429,5 +1456,261 @@ describe('checkDemoResult — suite_completed auto-kill status determination', (
 
       expect(result.status).toBe('passed');
     });
+  });
+});
+
+// ============================================================================
+// early_exit code 0 status determination
+//
+// When the Playwright process exits with code 0 during the monitoring window,
+// runDemo() reads the progress file and determines status:
+//
+//   null progress → 'passed' (no progress file means no test failures reported)
+//   progress.has_failures → 'failed'
+//   else → 'passed'
+//
+// This mirrors the code-0 branch in runDemo's early_exit handler.
+// ============================================================================
+
+/**
+ * Mirrors the status-determination logic for early_exit code 0 in runDemo().
+ */
+function determineEarlyExitCode0Status(progress: DemoProgress | null): {
+  status: 'passed' | 'failed';
+  hasFailures: boolean;
+} {
+  const hasFailures = progress?.has_failures ?? false;
+  return {
+    status: hasFailures ? 'failed' : 'passed',
+    hasFailures,
+  };
+}
+
+describe('early_exit code 0 — status determination', () => {
+  describe('when progress is null (no progress file)', () => {
+    it('should return passed — no evidence of failures', () => {
+      const result = determineEarlyExitCode0Status(null);
+
+      expect(result.status).toBe('passed');
+      expect(result.hasFailures).toBe(false);
+    });
+  });
+
+  describe('when all tests passed', () => {
+    it('should return passed when has_failures is false', () => {
+      const progress: DemoProgress = {
+        tests_completed: 3,
+        tests_passed: 3,
+        tests_failed: 0,
+        total_tests: 3,
+        current_test: null,
+        current_file: null,
+        has_failures: false,
+        recent_errors: [],
+        last_5_results: [],
+        suite_completed: true,
+      };
+
+      const result = determineEarlyExitCode0Status(progress);
+
+      expect(result.status).toBe('passed');
+      expect(result.hasFailures).toBe(false);
+    });
+  });
+
+  describe('when tests have failures', () => {
+    it('should return failed when has_failures is true', () => {
+      const progress: DemoProgress = {
+        tests_completed: 3,
+        tests_passed: 1,
+        tests_failed: 2,
+        total_tests: 3,
+        current_test: null,
+        current_file: null,
+        has_failures: true,
+        recent_errors: [],
+        last_5_results: [],
+        suite_completed: true,
+      };
+
+      const result = determineEarlyExitCode0Status(progress);
+
+      expect(result.status).toBe('failed');
+      expect(result.hasFailures).toBe(true);
+    });
+  });
+
+  describe('contract difference from determineDeadProcessStatus', () => {
+    it('never returns unknown — code 0 always yields passed or failed', () => {
+      const cases: (DemoProgress | null)[] = [
+        null,
+        {
+          tests_completed: 0, tests_passed: 0, tests_failed: 0,
+          total_tests: null, current_test: null, current_file: null,
+          has_failures: false, recent_errors: [], last_5_results: [],
+          suite_completed: false,
+        },
+        {
+          tests_completed: 1, tests_passed: 0, tests_failed: 1,
+          total_tests: 1, current_test: null, current_file: null,
+          has_failures: true, recent_errors: [], last_5_results: [],
+          suite_completed: true,
+        },
+      ];
+
+      for (const progress of cases) {
+        const result = determineEarlyExitCode0Status(progress);
+        expect(['passed', 'failed']).toContain(result.status);
+      }
+    });
+  });
+});
+
+// ============================================================================
+// effectivePauseAtEnd — auto-disable pause_at_end when record_video is true
+//
+// page.pause() holds the browser open, preventing context.close() which is
+// required to finalize the .webm video file. When both are requested,
+// record_video wins and pause_at_end is silently disabled.
+// ============================================================================
+
+/**
+ * Mirrors the effectivePauseAtEnd computation in runDemo().
+ */
+function computeEffectivePauseAtEnd(record_video: boolean, pause_at_end: boolean): boolean {
+  return (record_video && pause_at_end) ? false : pause_at_end;
+}
+
+describe('computeEffectivePauseAtEnd — record_video vs pause_at_end', () => {
+  it('should return false when both record_video and pause_at_end are true', () => {
+    expect(computeEffectivePauseAtEnd(true, true)).toBe(false);
+  });
+
+  it('should return true when pause_at_end is true and record_video is false', () => {
+    expect(computeEffectivePauseAtEnd(false, true)).toBe(true);
+  });
+
+  it('should return false when pause_at_end is false and record_video is true', () => {
+    expect(computeEffectivePauseAtEnd(true, false)).toBe(false);
+  });
+
+  it('should return false when both are false', () => {
+    expect(computeEffectivePauseAtEnd(false, false)).toBe(false);
+  });
+});
+
+// ============================================================================
+// Crash event JSONL written by early_exit non-zero path
+//
+// When a Playwright process exits with a non-zero code within the monitoring
+// window, server.ts writes a crash event to the progress file so that
+// check_demo_result can surface the error. This tests that the JSONL
+// structure written by that branch is well-formed and consumable by
+// readDemoProgress().
+//
+// The crash event shape (from server.ts lines ~782-791):
+//   { type: 'crash', timestamp, exit_code, signal, stderr_snippet, stdout_snippet }
+// ============================================================================
+
+describe('early_exit non-zero — crash event JSONL structure', () => {
+  /**
+   * Build the crash event exactly as server.ts does in the non-zero early_exit path.
+   */
+  function buildCrashEvent(opts: {
+    exitCode: number | null;
+    signal: string | null;
+    stderr: string;
+    stdout: string;
+  }) {
+    return {
+      type: 'crash',
+      timestamp: new Date().toISOString(),
+      exit_code: opts.exitCode,
+      signal: opts.signal,
+      stderr_snippet: opts.stderr.slice(0, 5000),
+      stdout_snippet: opts.stdout.slice(0, 5000),
+    };
+  }
+
+  it('crash event should have type "crash"', () => {
+    const event = buildCrashEvent({ exitCode: 1, signal: null, stderr: 'fatal error', stdout: '' });
+    expect(event.type).toBe('crash');
+  });
+
+  it('crash event should include exit_code', () => {
+    const event = buildCrashEvent({ exitCode: 1, signal: null, stderr: '', stdout: '' });
+    expect(event.exit_code).toBe(1);
+  });
+
+  it('crash event should include signal when process was killed by a signal', () => {
+    const event = buildCrashEvent({ exitCode: null, signal: 'SIGKILL', stderr: '', stdout: '' });
+    expect(event.signal).toBe('SIGKILL');
+  });
+
+  it('crash event should cap stderr_snippet at 5000 characters', () => {
+    const longStderr = 'e'.repeat(6000);
+    const event = buildCrashEvent({ exitCode: 1, signal: null, stderr: longStderr, stdout: '' });
+    expect(event.stderr_snippet.length).toBe(5000);
+  });
+
+  it('crash event should cap stdout_snippet at 5000 characters', () => {
+    const longStdout = 's'.repeat(6000);
+    const event = buildCrashEvent({ exitCode: 1, signal: null, stderr: '', stdout: longStdout });
+    expect(event.stdout_snippet.length).toBe(5000);
+  });
+
+  it('crash event JSONL should be parseable back through readDemoProgress', () => {
+    const event = buildCrashEvent({
+      exitCode: 1,
+      signal: null,
+      stderr: 'Cannot find module playwright',
+      stdout: 'Launching browser...',
+    });
+    const jsonl = JSON.stringify(event) + '\n';
+
+    const progress = readDemoProgress(jsonl);
+
+    expect(progress).not.toBeNull();
+    // crash sets has_failures
+    expect(progress!.has_failures).toBe(true);
+    // stderr_snippet goes into recent_errors
+    expect(progress!.recent_errors).toContain('Cannot find module playwright');
+    // stdout_snippet goes into recent_errors with [stdout] prefix
+    expect(progress!.recent_errors.some(e => e.startsWith('[stdout]'))).toBe(true);
+  });
+
+  it('crash event with empty stderr and stdout should not add to recent_errors', () => {
+    const event = buildCrashEvent({ exitCode: 127, signal: null, stderr: '', stdout: '' });
+    const jsonl = JSON.stringify(event) + '\n';
+
+    const progress = readDemoProgress(jsonl);
+
+    expect(progress).not.toBeNull();
+    expect(progress!.has_failures).toBe(true);
+    // Empty strings: server.ts checks `event.stderr_snippet` and `event.stdout_snippet`
+    // with a truthy check — empty strings are falsy so nothing is added
+    expect(progress!.recent_errors).toHaveLength(0);
+  });
+
+  it('crash event timestamp should be a valid ISO 8601 string', () => {
+    const event = buildCrashEvent({ exitCode: 1, signal: null, stderr: '', stdout: '' });
+    expect(() => new Date(event.timestamp)).not.toThrow();
+    expect(new Date(event.timestamp).getTime()).not.toBeNaN();
+  });
+
+  it('crash JSONL round-trips through JSON.stringify + JSON.parse correctly', () => {
+    const event = buildCrashEvent({
+      exitCode: 2,
+      signal: null,
+      stderr: 'Module not found',
+      stdout: 'Starting test runner',
+    });
+    const serialized = JSON.stringify(event);
+    const parsed = JSON.parse(serialized);
+
+    expect(parsed.type).toBe('crash');
+    expect(parsed.exit_code).toBe(2);
+    expect(parsed.stderr_snippet).toBe('Module not found');
+    expect(parsed.stdout_snippet).toBe('Starting test runner');
   });
 });

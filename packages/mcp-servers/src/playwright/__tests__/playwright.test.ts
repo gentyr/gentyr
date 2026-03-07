@@ -916,6 +916,116 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       // Schema accepts — runtime rejects
       expect(result.success).toBe(true);
     });
+
+    // -------------------------------------------------------------------------
+    // record_video field (added with DEMO_RECORD_VIDEO env var support)
+    // -------------------------------------------------------------------------
+
+    it('should default record_video to false when omitted', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.record_video).toBe(false);
+      }
+    });
+
+    it('should accept record_video: true', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        record_video: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.record_video).toBe(true);
+      }
+    });
+
+    it('should accept record_video: false', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        record_video: false,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.record_video).toBe(false);
+      }
+    });
+
+    it('should coerce record_video from string "true" via z.coerce', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        record_video: 'true',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.record_video).toBe(true);
+      }
+    });
+
+    it('should coerce record_video from string "false" to true via z.coerce (non-empty string is truthy)', () => {
+      // z.coerce.boolean() uses Boolean() coercion: any non-empty string is true.
+      // Callers must pass the boolean false directly to opt out of recording.
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        record_video: 'false',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        // "false" is a non-empty string — Boolean("false") === true in JS
+        expect(result.data.record_video).toBe(true);
+      }
+    });
+
+    it('should accept record_video alongside pause_at_end (both can be true in input)', () => {
+      // The schema accepts this combination; server.ts resolves the conflict at
+      // runtime via effectivePauseAtEnd (pause_at_end is suppressed when record_video=true)
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        record_video: true,
+        pause_at_end: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.record_video).toBe(true);
+        expect(result.data.pause_at_end).toBe(true);
+      }
+    });
+
+    // -------------------------------------------------------------------------
+    // scenario_id field (added with opportunistic video-recording support)
+    // -------------------------------------------------------------------------
+
+    it('should accept optional scenario_id as a string', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        scenario_id: 'abc-123-scenario',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.scenario_id).toBe('abc-123-scenario');
+      }
+    });
+
+    it('should allow scenario_id to be omitted (backward compat)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.scenario_id).toBeUndefined();
+      }
+    });
+
+    it('should accept scenario_id alongside record_video', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        scenario_id: 'scenario-456',
+        record_video: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.scenario_id).toBe('scenario-456');
+        expect(result.data.record_video).toBe(true);
+      }
+    });
   });
 
   describe('CheckDemoResultArgsSchema', () => {
@@ -1167,6 +1277,10 @@ describe('validateExtraEnv()', () => {
 
   it('should block DEMO_PAUSE_AT_END (explicit DEMO override protection)', () => {
     expect(validateExtraEnv({ DEMO_PAUSE_AT_END: '1' })).toMatch(/DEMO_PAUSE_AT_END/);
+  });
+
+  it('should block DEMO_RECORD_VIDEO (explicit DEMO override protection)', () => {
+    expect(validateExtraEnv({ DEMO_RECORD_VIDEO: '1' })).toMatch(/DEMO_RECORD_VIDEO/);
   });
 
   it('should block DEMO_PROGRESS_FILE (explicit DEMO override protection)', () => {
