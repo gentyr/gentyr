@@ -74,6 +74,19 @@ const BLOCKED_PATH_SUFFIXES = [
 // path at ~/.claude/api-key-rotation.json since both end with the same suffix.
 
 /**
+ * Path substrings that block Write/Edit/NotebookEdit but NOT Read (G027 A1/A2).
+ * These are directory prefixes — agents need to read hook files for debugging,
+ * but must never be allowed to modify them. Primary defense is root-ownership
+ * (protect-framework.sh); this is defense-in-depth.
+ *
+ * Uses .includes() matching (not .endsWith()) since these are directory prefixes.
+ */
+const WRITE_BLOCKED_PATH_CONTAINS = [
+  '.claude/hooks/',   // All hook scripts and config — modifying any hook bypasses protections
+  '.husky/',          // Git hook entry points — modifying bypasses pre-commit enforcement
+];
+
+/**
  * Path suffixes that are ALWAYS hard-blocked with no approval escape hatch.
  * These files control the approval system itself — granting access would
  * compromise the security model.
@@ -114,6 +127,27 @@ const BLOCKED_PATH_PATTERNS = [
 // ============================================================================
 // Bash Command Analysis
 // ============================================================================
+
+/**
+ * Commands that write to file paths. Used to detect write operations targeting
+ * WRITE_BLOCKED_PATH_CONTAINS directories (G027 A1/A2).
+ * When any of these commands appears in a command string, the raw scan will
+ * also check for write-blocked path references.
+ *
+ * Note: Output redirection (>, >>) is always a write operation — that case
+ * is handled separately by checking redirection targets.
+ */
+const WRITE_COMMANDS = new Set([
+  'tee', 'cp', 'mv', 'install', 'rsync', 'scp', 'dd',
+  'sed', 'awk', 'perl', 'python', 'python3', 'node', 'ruby',
+  'patch',
+]);
+
+/**
+ * Regex patterns for redirection operators that indicate write operations.
+ * Matches >, >>, 1>, 1>>, 2>, 2>> followed by a space or path.
+ */
+const WRITE_REDIRECT_PATTERN = /(?:^|\s)(?:1?>?>|2>>?)\s/;
 
 /**
  * Commands that do NOT access files via their arguments, so their arguments
@@ -306,6 +340,39 @@ function splitOnShellOperators(command) {
 }
 
 /**
+ * Determine whether a bash command performs write operations.
+ * A command is a write operation if it:
+ *   - Uses output redirection (>, >>)
+ *   - Invokes a known write command (tee, cp, mv, sed -i, etc.)
+ *   - Uses a scripting interpreter that may write files (python3, node, perl, etc.)
+ *
+ * Used to decide whether to check WRITE_BLOCKED_PATH_CONTAINS (G027 A1/A2).
+ * False positives (marking a read as write) are safe — they just add extra checking.
+ *
+ * @param {string} command
+ * @returns {boolean}
+ */
+function isBashWriteOperation(command) {
+  // Presence of output redirection is always a write
+  if (WRITE_REDIRECT_PATTERN.test(command)) {
+    return true;
+  }
+
+  // Check if any sub-command uses a known write command
+  const subCommands = splitOnShellOperators(command);
+  for (const sub of subCommands) {
+    const tokens = tokenize(sub.trim());
+    if (tokens.length === 0) continue;
+    const cmd = path.basename(tokens[0]);
+    if (WRITE_COMMANDS.has(cmd)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Extract file paths from a bash command that may access protected files.
  * Splits on pipes, semicolons, && and || to process individual sub-commands,
  * respecting shell quoting to avoid mangling quoted paths.
@@ -398,10 +465,15 @@ function extractFilePathsFromCommand(command) {
  * SECURITY FIX (C2): Provides a second layer of defense against bypass via
  * scripting language interpreters.
  *
+ * SECURITY FIX (G027 A1/A2): Also checks WRITE_BLOCKED_PATH_CONTAINS for commands
+ * that perform write operations (output redirection, tee, cp, mv, etc.) to prevent
+ * agents from scripting writes to hook or husky files.
+ *
  * @param {string} command
- * @returns {{ blocked: boolean, reason: string, matchedSuffix?: string, matchedBasename?: string }}
+ * @param {boolean} [checkWriteBlocked=false] - Also check WRITE_BLOCKED_PATH_CONTAINS
+ * @returns {{ blocked: boolean, reason: string, matchedSuffix?: string, matchedBasename?: string, matchedWritePath?: string }}
  */
-function scanRawCommandForProtectedPaths(command) {
+function scanRawCommandForProtectedPaths(command, checkWriteBlocked = false) {
   // Check for blocked path suffixes as substrings in the command.
   // These are specific enough to not cause false positives.
   for (const suffix of BLOCKED_PATH_SUFFIXES) {
@@ -426,6 +498,21 @@ function scanRawCommandForProtectedPaths(command) {
         reason: `Command references protected file "${basename}" in path context`,
         matchedBasename: basename,
       };
+    }
+  }
+
+  // For write operations, also check WRITE_BLOCKED_PATH_CONTAINS (G027 A1/A2).
+  // These directory substrings are checked as raw substrings — they're specific
+  // enough (e.g., ".claude/hooks/") to avoid false positives.
+  if (checkWriteBlocked) {
+    for (const substring of WRITE_BLOCKED_PATH_CONTAINS) {
+      if (command.includes(substring)) {
+        return {
+          blocked: true,
+          reason: `Command writes to protected directory "${substring}" — hook and husky files are read-only for agents (G027)`,
+          matchedWritePath: substring,
+        };
+      }
     }
   }
 
@@ -524,6 +611,23 @@ function isAlwaysBlocked(normalizedPath) {
  */
 function isAlwaysBlockedSuffix(suffix) {
   return ALWAYS_BLOCKED_SUFFIXES.has(suffix);
+}
+
+/**
+ * Check if a file path is in the write-only blocked set (G027 A1/A2).
+ * These paths block Write/Edit/NotebookEdit but allow Read.
+ * Defense-in-depth for hook and husky files — primary defense is root-ownership.
+ *
+ * @param {string} normalizedPath - Resolved, normalized file path (forward slashes)
+ * @returns {boolean}
+ */
+function isWriteBlocked(normalizedPath) {
+  for (const substring of WRITE_BLOCKED_PATH_CONTAINS) {
+    if (normalizedPath.includes(substring)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -895,6 +999,10 @@ process.stdin.on('end', () => {
         process.exit(0);
       }
 
+      // Detect whether this command performs write operations.
+      // Write operations must also be checked against WRITE_BLOCKED_PATH_CONTAINS (G027).
+      const isWriteOp = isBashWriteOperation(command);
+
       // Check 1: File paths extracted from command tokens
       const filePaths = extractFilePathsFromCommand(command);
       const blockedApprovable = [];
@@ -919,6 +1027,16 @@ process.stdin.on('end', () => {
             // Blocked but not in approvable config → hard block
             hasAlwaysBlocked = true;
             break;
+          }
+        }
+
+        // For write operations, also check WRITE_BLOCKED_PATH_CONTAINS (G027 A1/A2).
+        // Hook and husky files must never be written to by agents.
+        if (isWriteOp && !hasAlwaysBlocked) {
+          const normalizedFp = path.resolve(fp).replace(/\\/g, '/');
+          if (isWriteBlocked(normalizedFp)) {
+            blockBash(command, `Command writes to protected directory — hook and husky files are read-only for agents (G027). Path: ${fp}`);
+            return;
           }
         }
       }
@@ -958,9 +1076,17 @@ process.stdin.on('end', () => {
 
       // Check 2: Raw command scan for embedded protected path references
       // Catches: python3 -c "open('.mcp.json')", node -e "fs.readFileSync('.env')", etc.
-      const rawScanResult = scanRawCommandForProtectedPaths(command);
+      // For write operations, also checks WRITE_BLOCKED_PATH_CONTAINS (G027 A1/A2).
+      const rawScanResult = scanRawCommandForProtectedPaths(command, isWriteOp);
       if (rawScanResult.blocked) {
         const matchedSuffix = rawScanResult.matchedSuffix;
+
+        // matchedWritePath: always hard-blocked — write-blocked directories have no
+        // approval escape hatch. Modifying hook or husky files destroys the security model.
+        if (rawScanResult.matchedWritePath) {
+          blockBash(command, rawScanResult.reason);
+          return;
+        }
 
         // Skip if this path was already approved in Check 1 (token extraction)
         const alreadyApproved = matchedSuffix && !isAlwaysBlockedSuffix(matchedSuffix) &&
@@ -1116,14 +1242,28 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    // --- Read/Write/Edit tools: check file_path ---
+    // --- Read/Write/Edit/NotebookEdit tools: check file_path ---
     const filePath = toolInput.file_path || '';
 
     if (!filePath) {
       process.exit(0);
     }
 
-    // Check if this file is protected
+    const normalizedFilePath = path.resolve(filePath).replace(/\\/g, '/');
+
+    // For Write/Edit/NotebookEdit: additionally check WRITE_BLOCKED_PATH_CONTAINS (G027 A1/A2).
+    // Hook and husky files are read-only for agents — agents may read them for debugging
+    // but must never be able to modify them. No approval escape hatch.
+    const isWriteTool = toolName === 'Write' || toolName === 'Edit' || toolName === 'NotebookEdit';
+    if (isWriteTool && isWriteBlocked(normalizedFilePath)) {
+      blockRead(filePath,
+        `Write/Edit access to hook and husky files is blocked for agents (G027). ` +
+        `These files are protected by GENTYR to prevent security bypass. ` +
+        `Path: ${filePath}`);
+      return;
+    }
+
+    // Check if this file is protected (credential-file checks for all Read/Write/Edit)
     const result = checkFilePath(filePath, projectDir);
 
     if (result.blocked) {
