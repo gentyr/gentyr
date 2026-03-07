@@ -413,6 +413,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     }
   }
 
+  // Auto-disable pause_at_end when recording video — page.pause() prevents
+  // context.close() which is required to finalize the .webm file.
+  const effectivePauseAtEnd = (args.record_video && pause_at_end) ? false : pause_at_end;
+
   // Pre-flight validation
   const preflight = validatePrerequisites();
   if (!preflight.ok) {
@@ -465,7 +469,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     env.DEMO_SLOW_MO = String(slow_mo);
   }
 
-  if (pause_at_end) {
+  if (effectivePauseAtEnd) {
     env.DEMO_PAUSE_AT_END = '1';
   }
 
@@ -694,6 +698,85 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       const snippet = stderr.length > 2000 ? stderr.slice(0, 2000) + '...' : stderr;
       const stdout = stdoutLines.join('\n').trim();
 
+      if (result.code === 0) {
+        // Tests completed successfully within the monitoring window — treat as success.
+        // Read progress for test result details.
+        const progress = readDemoProgress(progressFilePath);
+        const hasFailures = progress?.has_failures ?? false;
+        const demoPid = child.pid!;
+        const demoState: DemoRunState = {
+          pid: demoPid,
+          project,
+          test_file,
+          started_at: new Date().toISOString(),
+          status: hasFailures ? 'failed' : 'passed',
+          ended_at: new Date().toISOString(),
+          exit_code: 0,
+          progress_file: progressFilePath,
+          scenario_id: args.scenario_id,
+          stdout_tail: stdout.slice(0, 5000),
+        };
+
+        if (hasFailures) {
+          demoState.failure_summary = progress
+            ? `${progress.tests_failed} test(s) failed out of ${progress.tests_completed}`
+            : undefined;
+          demoState.artifacts = scanArtifacts();
+        }
+
+        // Parse trace for play-by-play
+        try {
+          const testResultsDir = path.join(PROJECT_DIR, 'test-results');
+          const traceZip = findTraceZip(testResultsDir);
+          if (traceZip) {
+            const summary = parseTraceZip(traceZip);
+            if (summary) demoState.trace_summary = summary;
+          }
+        } catch { /* Non-fatal */ }
+
+        // Persist video recording for the scenario
+        if (demoState.scenario_id) {
+          try {
+            const allArtifacts = demoState.artifacts?.length ? demoState.artifacts : scanArtifacts();
+            const videoPath = allArtifacts.find(p => p.endsWith('.webm'));
+            if (videoPath && fs.existsSync(videoPath)) {
+              const recordingsDir = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos');
+              fs.mkdirSync(recordingsDir, { recursive: true });
+              const destPath = path.join(recordingsDir, `${demoState.scenario_id}.webm`);
+              fs.copyFileSync(videoPath, destPath);
+              const userFeedbackDbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+              const db = new Database(userFeedbackDbPath);
+              try {
+                db.prepare(
+                  'UPDATE demo_scenarios SET last_recorded_at = ?, recording_path = ? WHERE id = ?'
+                ).run(new Date().toISOString(), destPath, demoState.scenario_id);
+              } finally {
+                db.close();
+              }
+            }
+          } catch { /* Non-fatal */ }
+        }
+
+        // Clean up progress file
+        try { fs.unlinkSync(progressFilePath); } catch { /* Non-fatal */ }
+
+        demoRuns.set(demoPid, demoState);
+        persistDemoRuns();
+
+        return {
+          success: !hasFailures,
+          project,
+          message: hasFailures
+            ? `Demo completed with failures (exit code 0).${stdout ? `\nstdout: ${stdout.slice(0, 2000)}` : ''}`
+            : `Demo completed successfully.${test_file ? ` File: ${test_file}.` : ''} Use check_demo_result with PID ${demoPid} to see details.`,
+          pid: demoPid,
+          slow_mo,
+          test_file,
+          pause_at_end: effectivePauseAtEnd,
+        };
+      }
+
+      // Non-zero exit code — actual crash
       // Write crash event to progress file so check_demo_result can surface the error
       try {
         fs.mkdirSync(path.dirname(progressFilePath), { recursive: true });
@@ -891,7 +974,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       pid: child.pid,
       slow_mo,
       test_file,
-      pause_at_end,
+      pause_at_end: effectivePauseAtEnd,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
