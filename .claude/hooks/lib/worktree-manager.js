@@ -12,7 +12,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 // ============================================================================
 // Configuration
@@ -351,12 +351,41 @@ export function isWorktreeAvailable(branchName) {
 }
 
 // ============================================================================
+// Active Session Detection
+// ============================================================================
+
+/**
+ * Check if a worktree directory has active processes using it.
+ * Uses `lsof` to detect open file descriptors in the directory.
+ * Non-fatal: returns false (safe to clean) on any error.
+ *
+ * @param {string} worktreePath - Absolute path to the worktree directory
+ * @returns {boolean} true if active processes are detected
+ */
+function isWorktreeInUse(worktreePath) {
+  try {
+    // lsof +D checks for open files in the directory recursively
+    // Returns exit code 0 if matches found, 1 if not
+    const result = execFileSync('lsof', ['+D', worktreePath, '-t'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return result.trim().length > 0;
+  } catch {
+    // lsof returned no results (exit 1) or failed — safe to clean up
+    return false;
+  }
+}
+
+// ============================================================================
 // Maintenance
 // ============================================================================
 
 /**
  * Remove worktrees whose branches have been fully merged to the base branch.
  * Uses `origin/preview` if it exists, otherwise `origin/main`.
+ * Skips worktrees that have active processes to prevent CWD corruption.
  *
  * @returns {number} Count of worktrees cleaned up
  */
@@ -395,6 +424,11 @@ export function cleanupMergedWorktrees() {
 
   for (const wt of managed) {
     if (wt.branch && mergedBranches.has(wt.branch)) {
+      // Safety check: skip worktrees with active processes to prevent CWD corruption
+      if (wt.path && isWorktreeInUse(wt.path)) {
+        console.log(`[worktree-manager] Skipping ${wt.branch} — active session(s) detected in ${wt.path}`);
+        continue;
+      }
       try {
         removeWorktree(wt.branch);
         cleaned++;

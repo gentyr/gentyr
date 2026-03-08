@@ -99,6 +99,35 @@ echo "core.hooksPath verified"
 echo ""
 
 # =============================================================================
+# FAST PROTECTED BRANCH GUARD (before lint-staged)
+# =============================================================================
+# Prevents lint-staged's stash/restore cycle from running on doomed commits.
+# The full guard in pre-commit-review.js is the canonical check; this is an
+# early-exit optimization that prevents working tree corruption.
+# =============================================================================
+
+CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
+case "$CURRENT_BRANCH" in
+  main|preview|staging)
+    if [ "$GENTYR_PROMOTION_PIPELINE" != "true" ]; then
+      echo ""
+      echo "══════════════════════════════════════════════════════════════"
+      echo "  COMMIT BLOCKED: Direct commits to '$CURRENT_BRANCH' are forbidden."
+      echo ""
+      echo "  Merge chain: feature/* -> preview -> staging -> main"
+      echo ""
+      echo "  Create a feature branch:"
+      echo "    git checkout -b feature/<name> preview"
+      echo "══════════════════════════════════════════════════════════════"
+      echo ""
+      exit 1
+    fi
+    ;;
+esac
+echo "Branch guard passed"
+echo ""
+
+# =============================================================================
 # LINT STAGED FILES
 # =============================================================================
 
