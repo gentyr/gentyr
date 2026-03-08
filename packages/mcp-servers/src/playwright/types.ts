@@ -428,6 +428,9 @@ export interface OpenVideoResult {
   message: string;
 }
 
+export const ForceRecordNextDemoArgsSchema = z.object({});
+export type ForceRecordNextDemoArgs = z.infer<typeof ForceRecordNextDemoArgsSchema>;
+
 export type ListExtensionTabsArgs = z.infer<typeof ListExtensionTabsArgsSchema>;
 export type ScreenshotExtensionTabArgs = z.infer<typeof ScreenshotExtensionTabArgsSchema>;
 

@@ -56,6 +56,7 @@ import {
   type RunAuthSetupArgs,
   type RunAuthSetupResult,
   RunDemoArgsSchema,
+  ForceRecordNextDemoArgsSchema,
   type RunDemoArgs,
   type RunDemoResult,
   CheckDemoResultArgsSchema,
@@ -389,6 +390,15 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
  */
 async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const { project, slow_mo, base_url, test_file, pause_at_end } = args;
+
+  // Force-record override: one-shot flag from force_record_next_demo tool
+  const forceRecordPath = path.join(PROJECT_DIR, '.claude', 'state', 'demo-force-record.json');
+  try {
+    if (fs.existsSync(forceRecordPath)) {
+      args.record_video = true;
+      fs.unlinkSync(forceRecordPath);
+    }
+  } catch { /* Non-fatal */ }
 
   // Opportunistic recording: auto-enable record_video if scenario_id is provided and recording is stale (>24h)
   if (args.scenario_id && !args.record_video) {
@@ -2869,6 +2879,19 @@ const tools: AnyToolHandler[] = [
       'Use with video paths from check_demo_result artifacts or .claude/recordings/.',
     schema: OpenVideoArgsSchema,
     handler: openVideo,
+  },
+  {
+    name: 'force_record_next_demo',
+    description:
+      'Force the next run_demo call to record video, regardless of staleness or agent choice. ' +
+      'One-shot: consumed by the next run_demo invocation.',
+    schema: ForceRecordNextDemoArgsSchema,
+    handler: async () => {
+      const flagPath = path.join(PROJECT_DIR, '.claude', 'state', 'demo-force-record.json');
+      fs.mkdirSync(path.dirname(flagPath), { recursive: true });
+      fs.writeFileSync(flagPath, JSON.stringify({ force: true, created_at: new Date().toISOString() }));
+      return 'Force-record flag set. The next run_demo call will record video and consume this flag.';
+    },
   },
 ];
 
