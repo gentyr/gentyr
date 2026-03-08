@@ -790,30 +790,6 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       }
     });
 
-    it('should default show_cursor to false when omitted', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.show_cursor).toBe(false);
-      }
-    });
-
-    it('should accept show_cursor: true', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', show_cursor: true });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.show_cursor).toBe(true);
-      }
-    });
-
-    it('should coerce show_cursor from string via z.coerce', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', show_cursor: 'true' });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.show_cursor).toBe(true);
-      }
-    });
-
     it('should accept all parameters including new fields', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'vendor-owner',
@@ -823,13 +799,11 @@ describe('Playwright MCP Server - Zod Schemas', () => {
         pause_at_end: true,
         timeout: 60000,
         headless: true,
-        show_cursor: true,
       });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.timeout).toBe(60000);
         expect(result.data.headless).toBe(true);
-        expect(result.data.show_cursor).toBe(true);
       }
     });
 
@@ -891,7 +865,6 @@ describe('Playwright MCP Server - Zod Schemas', () => {
         pause_at_end: true,
         timeout: 60000,
         headless: false,
-        show_cursor: true,
         extra_env: {
           REPLAY_SESSION_ID: 'sess-456',
           REPLAY_AUDIT_DATA: JSON.stringify([{ type: 'navigate', url: 'http://example.com' }]),
@@ -901,7 +874,6 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       if (result.success) {
         expect(result.data.extra_env).toBeDefined();
         expect(result.data.extra_env!['REPLAY_SESSION_ID']).toBe('sess-456');
-        expect(result.data.show_cursor).toBe(true);
         expect(result.data.timeout).toBe(60000);
       }
     });
