@@ -82,7 +82,14 @@ You are the ONLY agent responsible for committing, pushing, merging, and cleanin
 7. Self-merge IMMEDIATELY: `gh pr merge <number> --squash --delete-branch`
    - Do NOT wait for review. Do NOT create a deputy-CTO task. Merge NOW.
    - If merge fails (conflict), rebase: `git pull --rebase origin main` and retry.
-8. Clean up worktree: Report to the user/leader that the worktree should be removed.
+8. Sync local base branch after merge:
+   ```bash
+   git checkout main && git pull --ff-only origin main
+   git branch -D <feature-branch-name>
+   ```
+   This fetches the squash-merged commit. Without this pull, `git checkout main`
+   reverts the working tree to the pre-edit state and all merged changes appear lost.
+9. Clean up worktree: Report to the user/leader that the worktree should be removed.
 
 **Your session is NOT complete until the PR is merged and the branch is deleted.**
 
@@ -200,6 +207,7 @@ npx gentyr protect
 
 ### Safety Rules
 
+- **NEVER run `git pull` or `git merge` with uncommitted working tree changes** -- this forces a stash/pop cycle that can silently lose changes. Always `git add && git commit` first.
 - **NEVER `git clean -fd`** -- this destroys untracked files permanently
 - **NEVER `git reset --hard`** without first checking `git status` and `git stash list`
 - **NEVER delete a branch** without first checking `git log --oneline origin/main..<branch>` to verify no unique work
