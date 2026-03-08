@@ -24,6 +24,7 @@ import {
   CheckDemoResultArgsSchema,
   StopDemoArgsSchema,
   OpenVideoArgsSchema,
+  ForceRecordNextDemoArgsSchema,
   PLAYWRIGHT_PROJECTS,
   type DemoRunState,
   type CheckDemoResultResult,
@@ -2833,5 +2834,21 @@ describe('OpenVideoArgsSchema', () => {
     if (result.success) {
       expect(result.data.video_path).toBe(path);
     }
+  });
+});
+
+// ============================================================================
+// ForceRecordNextDemoArgsSchema — schema validation (G003 Compliance)
+// ============================================================================
+
+describe('ForceRecordNextDemoArgsSchema', () => {
+  it('should accept an empty object', () => {
+    const result = ForceRecordNextDemoArgsSchema.safeParse({});
+    expect(result.success).toBe(true);
+  });
+
+  it('should strip unknown properties', () => {
+    const result = ForceRecordNextDemoArgsSchema.safeParse({ extra: 'field' });
+    expect(result.success).toBe(true);
   });
 });
