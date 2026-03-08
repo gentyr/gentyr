@@ -51,6 +51,8 @@ class PlaywrightProgressReporter {
     this._failed = 0;
     /** @type {number} */
     this._skipped = 0;
+    /** @type {Map<string, number>} */
+    this._annotationCounts = new Map();
   }
 
   /**
@@ -170,6 +172,20 @@ class PlaywrightProgressReporter {
       event.error = errors || undefined;
     }
 
+    // Surface test annotations (info, warning, skip, fixme)
+    const allowedTypes = new Set(['info', 'warning', 'skip', 'fixme']);
+    const annotations = (result.annotations || [])
+      .filter(a => allowedTypes.has(a.type))
+      .slice(0, 10)
+      .map(a => ({ type: a.type, description: (a.description || '').slice(0, 300) }));
+
+    if (annotations.length > 0) {
+      event.annotations = annotations;
+      for (const ann of annotations) {
+        this._annotationCounts.set(ann.type, (this._annotationCounts.get(ann.type) || 0) + 1);
+      }
+    }
+
     this._writeEvent(event);
   }
 
@@ -215,15 +231,23 @@ class PlaywrightProgressReporter {
   onEnd(result) {
     if (!this._progressFile) return;
 
-    // Always write suite_end even if limit reached
-    this._writeEvent({
+    // Build suite_end event
+    const suiteEnd = {
       type: 'suite_end',
       status: result.status,
       passed: this._passed,
       failed: this._failed,
       skipped: this._skipped,
       duration_ms: result.duration,
-    }, true);
+    };
+
+    // Include annotation counts if any annotations were recorded
+    if (this._annotationCounts.size > 0) {
+      suiteEnd.annotation_counts = Object.fromEntries(this._annotationCounts);
+    }
+
+    // Always write suite_end even if limit reached
+    this._writeEvent(suiteEnd, true);
   }
 
   /**

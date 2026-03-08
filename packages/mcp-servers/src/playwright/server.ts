@@ -1016,6 +1016,8 @@ function readDemoProgress(progressFilePath: string): DemoProgress | null {
       recent_errors: [],
       last_5_results: [],
       suite_completed: false,
+      annotations: [],
+      has_warnings: false,
     };
 
     for (const line of lines) {
@@ -1039,6 +1041,20 @@ function readDemoProgress(progressFilePath: string): DemoProgress | null {
             progress.last_5_results.push({ title: event.title, status: event.status });
             if (progress.last_5_results.length > 5) {
               progress.last_5_results.shift();
+            }
+            // Parse annotations from test_end events
+            if (Array.isArray(event.annotations) && event.annotations.length > 0) {
+              for (const ann of event.annotations) {
+                if (progress.annotations.length >= 50) break;
+                progress.annotations.push({
+                  test_title: event.title ?? '',
+                  type: ann.type ?? '',
+                  description: ann.description ?? '',
+                });
+                if (ann.type === 'warning') {
+                  progress.has_warnings = true;
+                }
+              }
             }
             // Current test is done
             progress.current_test = null;
@@ -1076,6 +1092,17 @@ function readDemoProgress(progressFilePath: string): DemoProgress | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Extract degraded feature descriptions from warning annotations.
+ */
+function extractDegradedFeatures(progress: DemoProgress | null | undefined): string[] | undefined {
+  if (!progress?.annotations?.length) return undefined;
+  const degraded = progress.annotations
+    .filter(a => a.type === 'warning')
+    .map(a => `${a.test_title}: ${a.description}`);
+  return degraded.length > 0 ? degraded : undefined;
 }
 
 /**
@@ -1141,6 +1168,8 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
         persistDemoRuns();
 
         const durationSec = Math.round((Date.now() - new Date(entry.started_at).getTime()) / 1000);
+        const degraded = extractDegradedFeatures(progress);
+        const degradedSuffix = degraded?.length ? ` (${degraded.length} degraded feature(s))` : '';
         return {
           status: entry.status,
           pid,
@@ -1153,8 +1182,9 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
           trace_summary: entry.trace_summary,
           progress,
           artifacts: entry.artifacts,
+          degraded_features: degraded,
           message: entry.status === 'passed'
-            ? `Demo completed successfully in ${durationSec}s (auto-killed after suite completion).`
+            ? `Demo completed successfully in ${durationSec}s (auto-killed after suite completion).${degradedSuffix}`
             : `Demo failed in ${durationSec}s — ${entry.failure_summary}. Auto-killed after suite completion.`,
         };
       }
@@ -1212,6 +1242,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
         trace_summary: entry.trace_summary,
         progress: finalProgress ?? undefined,
         artifacts: entry.artifacts,
+        degraded_features: extractDegradedFeatures(finalProgress),
         message: statusMsg,
       };
     }
@@ -1248,6 +1279,12 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
   // Fallback failure_summary from stdout_tail
   const failureSummary = entry.failure_summary || (entry.status === 'failed' ? entry.stdout_tail?.slice(0, 2000) : undefined);
 
+  const degraded_features = extractDegradedFeatures(progress);
+  let message = statusMessages[entry.status] || `Demo status: ${entry.status}`;
+  if (degraded_features && degraded_features.length > 0 && entry.status !== 'running') {
+    message += ` (${degraded_features.length} degraded feature(s))`;
+  }
+
   return {
     status: entry.status,
     pid,
@@ -1261,7 +1298,8 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     trace_summary: entry.trace_summary,
     progress: progress ?? undefined,
     artifacts: entry.artifacts || (entry.status === 'failed' || entry.status === 'unknown' ? scanArtifacts() : undefined),
-    message: statusMessages[entry.status] || `Demo status: ${entry.status}`,
+    degraded_features,
+    message,
   };
 }
 
@@ -2773,7 +2811,8 @@ const tools: AnyToolHandler[] = [
       'Returns status (running/passed/failed/unknown), exit code, failure summary, screenshot paths, ' +
       'and a progress object with real-time test counts, current test name, and error detection. ' +
       'Auto-kill: demo processes are automatically killed if this tool is not called within 60 seconds. ' +
-      'Each poll resets the countdown. Prevents orphaned browser processes when the polling agent stops.',
+      'Each poll resets the countdown. Prevents orphaned browser processes when the polling agent stops. ' +
+      'Includes degraded_features array when tests report warning annotations on soft-guarded features.',
     schema: CheckDemoResultArgsSchema,
     handler: checkDemoResult,
   },

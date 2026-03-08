@@ -306,6 +306,8 @@ export interface DemoProgress {
   recent_errors: string[];
   last_5_results: Array<{ title: string; status: string }>;
   suite_completed: boolean;
+  annotations: Array<{ test_title: string; type: string; description: string }>;
+  has_warnings: boolean;
 }
 
 export interface CheckDemoResultResult {
@@ -321,6 +323,7 @@ export interface CheckDemoResultResult {
   trace_summary?: string;
   progress?: DemoProgress;
   artifacts?: string[];
+  degraded_features?: string[];
   message: string;
 }
 
