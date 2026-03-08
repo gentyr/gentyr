@@ -1843,3 +1843,158 @@ describe('early_exit non-zero — crash event JSONL structure', () => {
     expect(parsed.stdout_snippet).toBe('Starting test runner');
   });
 });
+
+// ============================================================================
+// code_freshness — newestMtime helper and source-vs-build comparison logic
+// ============================================================================
+
+describe('code_freshness — source vs build timestamp logic', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'freshness-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Inline the newestMtime helper for unit testing (mirrors server.ts)
+  function newestMtime(dir: string, extensions: Set<string>, maxDepth: number = 5): number | null {
+    let newest: number | null = null;
+    function walk(current: string, depth: number) {
+      if (depth > maxDepth) return;
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+        const full = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          walk(full, depth + 1);
+        } else if (extensions.has(path.extname(entry.name))) {
+          try {
+            const mtime = fs.statSync(full).mtimeMs;
+            if (newest === null || mtime > newest) newest = mtime;
+          } catch { /* skip */ }
+        }
+      }
+    }
+    walk(dir, 0);
+    return newest;
+  }
+
+  it('returns null for non-existent directory', () => {
+    const result = newestMtime(path.join(tmpDir, 'does-not-exist'), new Set(['.ts']));
+    expect(result).toBeNull();
+  });
+
+  it('finds newest file by mtime', () => {
+    const subDir = path.join(tmpDir, 'src');
+    fs.mkdirSync(subDir, { recursive: true });
+
+    const oldFile = path.join(subDir, 'old.ts');
+    const newFile = path.join(subDir, 'new.ts');
+
+    fs.writeFileSync(oldFile, 'old');
+    fs.writeFileSync(newFile, 'new');
+
+    // Set old file to 10 seconds ago
+    const now = Date.now() / 1000;
+    fs.utimesSync(oldFile, now - 10, now - 10);
+    fs.utimesSync(newFile, now, now);
+
+    const result = newestMtime(subDir, new Set(['.ts']));
+    expect(result).not.toBeNull();
+    // Newest should be close to `now * 1000`
+    expect(result!).toBeGreaterThan((now - 1) * 1000);
+  });
+
+  it('skips node_modules and dotfiles', () => {
+    const nmDir = path.join(tmpDir, 'node_modules');
+    const dotDir = path.join(tmpDir, '.hidden');
+    fs.mkdirSync(nmDir, { recursive: true });
+    fs.mkdirSync(dotDir, { recursive: true });
+
+    fs.writeFileSync(path.join(nmDir, 'mod.ts'), 'nm');
+    fs.writeFileSync(path.join(dotDir, 'secret.ts'), 'dot');
+
+    const result = newestMtime(tmpDir, new Set(['.ts']));
+    expect(result).toBeNull();
+  });
+
+  it('respects extension filter', () => {
+    fs.writeFileSync(path.join(tmpDir, 'file.ts'), 'ts');
+    fs.writeFileSync(path.join(tmpDir, 'file.txt'), 'txt');
+
+    const tsOnly = newestMtime(tmpDir, new Set(['.ts']));
+    expect(tsOnly).not.toBeNull();
+
+    const pyOnly = newestMtime(tmpDir, new Set(['.py']));
+    expect(pyOnly).toBeNull();
+  });
+
+  it('respects maxDepth', () => {
+    // Create a file at depth 3
+    const deep = path.join(tmpDir, 'a', 'b', 'c');
+    fs.mkdirSync(deep, { recursive: true });
+    fs.writeFileSync(path.join(deep, 'deep.ts'), 'deep');
+
+    // maxDepth 2 should not reach depth 3
+    const shallow = newestMtime(tmpDir, new Set(['.ts']), 2);
+    expect(shallow).toBeNull();
+
+    // maxDepth 3 should reach it
+    const found = newestMtime(tmpDir, new Set(['.ts']), 3);
+    expect(found).not.toBeNull();
+  });
+
+  it('detects stale build when source is newer (drift > 5s)', () => {
+    const now = Date.now() / 1000;
+    const newestSource = (now) * 1000;  // now in ms
+    const newestBuild = (now - 30) * 1000;  // 30 seconds ago in ms
+
+    const driftMs = newestSource - newestBuild;
+    expect(driftMs).toBeGreaterThan(5000);
+
+    // Simulate the check logic
+    const driftSec = Math.round(driftMs / 1000);
+    const result = driftMs > 5000
+      ? { status: 'warn' as const, message: `Dev server may be serving stale code — source files modified ${driftSec}s after last build output. Consider restarting the dev server.` }
+      : { status: 'pass' as const, message: 'Source files are in sync with build output' };
+
+    expect(result.status).toBe('warn');
+    expect(result.message).toContain('stale code');
+    expect(result.message).toContain('30s');
+  });
+
+  it('passes when build is newer than source', () => {
+    const now = Date.now() / 1000;
+    const newestSource = (now - 10) * 1000;
+    const newestBuild = (now) * 1000;
+
+    const driftMs = newestSource - newestBuild;
+    expect(driftMs).toBeLessThanOrEqual(0);
+
+    const result = driftMs > 5000
+      ? { status: 'warn' as const, message: 'stale' }
+      : { status: 'pass' as const, message: 'Source files are in sync with build output' };
+
+    expect(result.status).toBe('pass');
+  });
+
+  it('passes within 5s grace period (HMR in-progress)', () => {
+    const now = Date.now() / 1000;
+    const newestSource = (now) * 1000;
+    const newestBuild = (now - 3) * 1000;  // 3 seconds ago — within grace
+
+    const driftMs = newestSource - newestBuild;
+    expect(driftMs).toBe(3000);
+    expect(driftMs).toBeLessThanOrEqual(5000);
+
+    const result = driftMs > 5000
+      ? { status: 'warn' as const, message: 'stale' }
+      : { status: 'pass' as const, message: 'Source files are in sync with build output' };
+
+    expect(result.status).toBe('pass');
+  });
+});

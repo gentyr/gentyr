@@ -2012,6 +2012,33 @@ function runCheck(
 }
 
 /**
+ * Walk a directory tree and return the newest mtime (in ms) among files
+ * matching the given extensions. Returns null if no matching files found.
+ */
+function newestMtime(dir: string, extensions: Set<string>, maxDepth: number = 5): number | null {
+  let newest: number | null = null;
+  function walk(current: string, depth: number) {
+    if (depth > maxDepth) return;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(full, depth + 1);
+      } else if (extensions.has(path.extname(entry.name))) {
+        try {
+          const mtime = fs.statSync(full).mtimeMs;
+          if (newest === null || mtime > newest) newest = mtime;
+        } catch { /* skip unreadable files */ }
+      }
+    }
+  }
+  walk(dir, 0);
+  return newest;
+}
+
+/**
  * Comprehensive pre-flight validation before launching Playwright.
  * Checks config, deps, browsers, test files, credentials, compilation, and dev server.
  */
@@ -2183,6 +2210,51 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
       checks.push(wsCheck);
     }
   }
+
+  // 7c. Code freshness — warn if source files are newer than build output (Next.js)
+  checks.push(runCheck('code_freshness', () => {
+    const nextDir = path.join(PROJECT_DIR, '.next');
+    if (!fs.existsSync(nextDir)) {
+      return { status: 'skip', message: 'No .next/ directory found — code freshness check requires Next.js' };
+    }
+
+    const srcDir = path.join(PROJECT_DIR, 'src');
+    const sourceDir = fs.existsSync(srcDir) ? srcDir : path.join(PROJECT_DIR, 'app');
+    if (!fs.existsSync(sourceDir)) {
+      return { status: 'skip', message: 'No src/ or app/ directory found — cannot determine source location' };
+    }
+
+    const sourceExts = new Set(['.ts', '.tsx', '.js', '.jsx']);
+    const newestSource = newestMtime(sourceDir, sourceExts);
+    if (newestSource === null) {
+      return { status: 'skip', message: 'No source files found in source directory' };
+    }
+
+    // Check .next/static or .next/server for build artifacts
+    const buildDirs = ['static', 'server'].map(d => path.join(nextDir, d));
+    const buildExts = new Set(['.js', '.css', '.json']);
+    let newestBuild: number | null = null;
+    for (const bd of buildDirs) {
+      if (!fs.existsSync(bd)) continue;
+      const t = newestMtime(bd, buildExts, 3);
+      if (t !== null && (newestBuild === null || t > newestBuild)) newestBuild = t;
+    }
+
+    if (newestBuild === null) {
+      return { status: 'warn', message: 'Dev server may be serving stale code — .next/ build artifacts not found. Consider restarting the dev server.' };
+    }
+
+    const driftMs = newestSource - newestBuild;
+    if (driftMs > 5000) {  // 5s grace for HMR in-progress
+      const driftSec = Math.round(driftMs / 1000);
+      return {
+        status: 'warn',
+        message: `Dev server may be serving stale code — source files modified ${driftSec}s after last build output. Consider restarting the dev server.`,
+      };
+    }
+
+    return { status: 'pass', message: 'Source files are in sync with build output' };
+  }));
 
   // 8. Auth state freshness (only when a project is specified)
   if (args.project) {
@@ -2373,6 +2445,9 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
         break;
       case 'extension_manifest':
         recoverySteps.push('Fix invalid match patterns in manifest.json — Chrome requires host to be * | *.domain.com | exact.domain.com (no partial wildcards like *-admin.example.com)');
+        break;
+      case 'code_freshness':
+        recoverySteps.push('Restart the dev server to recompile source changes, or wait for HMR to complete');
         break;
     }
   }
@@ -2875,6 +2950,7 @@ const tools: AnyToolHandler[] = [
       'Run comprehensive pre-flight validation before launching Playwright. ' +
       'Checks config file, dependencies, browsers, test files, credentials, ' +
       'compilation, dev server, and auth state freshness. ALWAYS run before launch_ui_mode or run_tests. ' +
+      'Also detects stale dev server builds by comparing source file timestamps against .next/ build artifacts (Next.js). ' +
       'Returns structured result with pass/fail per check and recovery steps.',
     schema: PreflightCheckArgsSchema,
     handler: preflightCheck,
