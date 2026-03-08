@@ -388,6 +388,31 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `SessionStart` (timeout: 5)
 - Tests at `.claude/hooks/__tests__/playwright-health-check.test.js` (10 tests, runs via `node --test`)
 
+### Worktree Path Guard Hook
+
+**Worktree Path Guard Hook** (`.claude/hooks/worktree-path-guard.js`):
+- Runs at `PreToolUse` for `Write`, `Edit`, and `NotebookEdit` tool calls; hard-blocking (`permissionDecision: "deny"`)
+- Only active when the session is running inside a git worktree (detected by `.git` being a file, not a directory)
+- Reads `.git` file to extract the worktree root and main repo root from the `gitdir:` line
+- Blocks file write operations targeting paths **outside** the worktree root, preventing agents from accidentally writing to the main repo's working tree due to path confusion
+- **Safe pass-through paths**: `/tmp/`, OS tmpdir (`os.tmpdir()`), and `~/.claude/` (user-level config writes are always allowed)
+- **Helpful error output**: includes the blocked target path, worktree root, and a suggested corrected path when the target appears to be the main-repo equivalent of the intended worktree path
+- Fail-open on JSON parse errors or unexpected exceptions (does not block valid operations)
+- Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `PreToolUse > Write`, `PreToolUse > Edit`, and `PreToolUse > NotebookEdit`
+- Tests at `.claude/hooks/__tests__/worktree-path-guard.test.js` (runs via `node --test`)
+
+### Worktree CWD Guard Hook
+
+**Worktree CWD Guard Hook** (`.claude/hooks/worktree-cwd-guard.js`):
+- Runs at `PreToolUse` for `Bash` tool calls; hard-blocking (`permissionDecision: "deny"`)
+- Detects when the session's working directory (`CLAUDE_PROJECT_DIR` or `event.cwd`) no longer exists on disk — the primary cause being a worktree deleted by cleanup automation or manual removal
+- Prevents cryptic "no such file or directory" shell errors by intercepting Bash calls before they execute in a missing directory
+- **Recovery escape hatch**: commands starting with `cd` are always allowed so the agent can navigate to a valid directory and recover the session without manual intervention
+- Extracts the main project directory from the worktree path pattern (`/path/to/project/.claude/worktrees/<name>/`) for a precise recovery hint in the error message
+- Fail-open when CWD cannot be determined or on unexpected exceptions
+- Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `PreToolUse > Bash` (alongside `main-tree-commit-guard.js`)
+- Tests at `.claude/hooks/__tests__/worktree-cwd-guard.test.js` (runs via `node --test`)
+
 ---
 
 ## Playwright MCP Server
