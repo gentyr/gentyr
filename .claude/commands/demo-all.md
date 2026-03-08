@@ -46,7 +46,6 @@ Call `mcp__playwright__run_demo({
   project: "demo",
   slow_mo: 1200,
   pause_at_end: false,
-  show_cursor: true,
   record_video: <true if any scenarios have stale recordings, otherwise omit>
 })`.
 
@@ -122,12 +121,12 @@ Then create a single **urgent DEPUTY-CTO task** via `mcp__cto-reports__report_to
 
 ## Key Differences from Other Demo Commands
 
-| Command | Mode | slowMo | Cursor | Scope |
-|---|---|---|---|---|
-| `/demo` | Interactive UI | n/a | n/a | Browse all tests |
-| `/demo-autonomous` | Headed auto-play | 800ms | Off | Single scenario |
-| `/demo-all` | Headed auto-play | 1200ms | On | Full suite |
-| `/demo-validate` | Headless | n/a | n/a | Full suite |
+| Command | Mode | slowMo | Scope |
+|---|---|---|---|
+| `/demo` | Interactive UI | n/a | Browse all tests |
+| `/demo-autonomous` | Headed auto-play | 800ms | Single scenario |
+| `/demo-all` | Headed auto-play | 1200ms | Full suite |
+| `/demo-validate` | Headless | n/a | Full suite |
 
 ## Rules
 
