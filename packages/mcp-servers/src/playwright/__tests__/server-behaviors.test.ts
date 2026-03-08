@@ -41,6 +41,8 @@ function readDemoProgress(content: string): DemoProgress | null {
       recent_errors: [],
       last_5_results: [],
       suite_completed: false,
+      annotations: [],
+      has_warnings: false,
     };
 
     for (const line of lines) {
@@ -64,6 +66,20 @@ function readDemoProgress(content: string): DemoProgress | null {
             progress.last_5_results.push({ title: event.title, status: event.status });
             if (progress.last_5_results.length > 5) {
               progress.last_5_results.shift();
+            }
+            // Parse annotations from test_end events
+            if (Array.isArray(event.annotations) && event.annotations.length > 0) {
+              for (const ann of event.annotations) {
+                if (progress.annotations.length >= 50) break;
+                progress.annotations.push({
+                  test_title: event.title ?? '',
+                  type: ann.type ?? '',
+                  description: ann.description ?? '',
+                });
+                if (ann.type === 'warning') {
+                  progress.has_warnings = true;
+                }
+              }
             }
             progress.current_test = null;
             progress.current_file = null;
@@ -459,6 +475,119 @@ describe('readDemoProgress — JSONL progress parsing', () => {
 
       expect(progress!.suite_completed).toBe(true);
       expect(progress!.has_failures).toBe(true);
+    });
+  });
+
+  describe('readDemoProgress — annotations', () => {
+    it('should parse annotations from test_end events', () => {
+      const lines = [
+        JSON.stringify({
+          type: 'test_end', title: 'histogram chart', status: 'passed',
+          annotations: [{ type: 'warning', description: 'histogram API returned 404, using fallback data' }],
+        }),
+      ].join('\n');
+
+      const progress = readDemoProgress(lines);
+
+      expect(progress!.annotations).toHaveLength(1);
+      expect(progress!.annotations[0]).toEqual({
+        test_title: 'histogram chart',
+        type: 'warning',
+        description: 'histogram API returned 404, using fallback data',
+      });
+    });
+
+    it('should set has_warnings for warning-type annotations', () => {
+      const lines = [
+        JSON.stringify({
+          type: 'test_end', title: 'test A', status: 'passed',
+          annotations: [{ type: 'warning', description: 'degraded' }],
+        }),
+      ].join('\n');
+
+      const progress = readDemoProgress(lines);
+
+      expect(progress!.has_warnings).toBe(true);
+    });
+
+    it('should keep has_warnings false when no warning annotations', () => {
+      const lines = [
+        JSON.stringify({
+          type: 'test_end', title: 'test A', status: 'passed',
+          annotations: [
+            { type: 'info', description: 'loaded config' },
+            { type: 'skip', description: 'feature disabled' },
+            { type: 'fixme', description: 'known flaky' },
+          ],
+        }),
+      ].join('\n');
+
+      const progress = readDemoProgress(lines);
+
+      expect(progress!.has_warnings).toBe(false);
+      expect(progress!.annotations).toHaveLength(3);
+    });
+
+    it('should handle backward compatibility: old JSONL without annotations', () => {
+      const lines = [
+        JSON.stringify({ type: 'test_end', title: 'old test', status: 'passed', duration: 100 }),
+        JSON.stringify({ type: 'suite_end' }),
+      ].join('\n');
+
+      const progress = readDemoProgress(lines);
+
+      expect(progress!.annotations).toEqual([]);
+      expect(progress!.has_warnings).toBe(false);
+      expect(progress!.suite_completed).toBe(true);
+    });
+
+    it('should cap annotations at 50 total', () => {
+      const events = [];
+      // 6 test_end events, each with 10 annotations = 60 total, should cap at 50
+      for (let i = 0; i < 6; i++) {
+        const annotations = Array.from({ length: 10 }, (_, j) => ({
+          type: 'info',
+          description: `annotation ${i}-${j}`,
+        }));
+        events.push(JSON.stringify({
+          type: 'test_end', title: `test ${i}`, status: 'passed', annotations,
+        }));
+      }
+      const lines = events.join('\n');
+
+      const progress = readDemoProgress(lines);
+
+      expect(progress!.annotations).toHaveLength(50);
+    });
+
+    it('should support degraded_features extraction from warning annotations', () => {
+      const lines = [
+        JSON.stringify({
+          type: 'test_end', title: 'histogram chart', status: 'passed',
+          annotations: [{ type: 'warning', description: 'API returned 404' }],
+        }),
+        JSON.stringify({
+          type: 'test_end', title: 'analytics panel', status: 'passed',
+          annotations: [
+            { type: 'info', description: 'loaded config' },
+            { type: 'warning', description: 'cache miss, cold start' },
+          ],
+        }),
+        JSON.stringify({ type: 'suite_end' }),
+      ].join('\n');
+
+      const progress = readDemoProgress(lines);
+
+      // Extract degraded features the same way checkDemoResult does
+      const degraded = progress!.annotations
+        .filter(a => a.type === 'warning')
+        .map(a => `${a.test_title}: ${a.description}`);
+
+      expect(degraded).toEqual([
+        'histogram chart: API returned 404',
+        'analytics panel: cache miss, cold start',
+      ]);
+      expect(progress!.has_warnings).toBe(true);
     });
   });
 
