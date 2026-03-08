@@ -487,9 +487,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     env.DEMO_HEADLESS = '1';
   }
 
-  if (args.show_cursor) {
-    env.DEMO_SHOW_CURSOR = '1';
-  }
+  // Always show cursor dot in headed demos
+  env.DEMO_SHOW_CURSOR = '1';
 
   if (args.record_video) {
     env.DEMO_RECORD_VIDEO = '1';
@@ -2761,7 +2760,7 @@ const tools: AnyToolHandler[] = [
       'Launch Playwright tests in a visible headed browser that runs automatically at human-watchable speed. ' +
       'No clicking required — tests play through on their own with configurable pace. ' +
       'Best for presentations and demos. Supports headless mode (headless: true) for CI or screenshot capture, ' +
-      'and show_cursor for a visible cursor dot. The target project\'s playwright.config.ts must read ' +
+      'Cursor dot is always visible in headed mode. The target project\'s playwright.config.ts must read ' +
       'parseInt(process.env.DEMO_SLOW_MO || "0") in use.launchOptions.slowMo for pace control to work.',
     schema: RunDemoArgsSchema,
     handler: runDemo,

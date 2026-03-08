@@ -253,8 +253,6 @@ export const RunDemoArgsSchema = z.object({
     .describe('Per-test timeout in milliseconds (30s-600s, default 120s)'),
   headless: z.coerce.boolean().optional().default(false)
     .describe('Run demos in headless mode. Sets DEMO_HEADLESS=1 env var. Extension demos will auto-skip.'),
-  show_cursor: z.coerce.boolean().optional().default(false)
-    .describe('Show a visible cursor dot during headed demos. Sets DEMO_SHOW_CURSOR=1 env var.'),
   trace: z.coerce.boolean().optional().default(false)
     .describe('Enable Playwright trace recording (--trace on). Default: false.'),
   record_video: z.coerce.boolean().optional().default(false)
