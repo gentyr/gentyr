@@ -174,8 +174,13 @@ function buildDependencies(frameworkDir) {
   console.log(`\n${YELLOW}Building MCP servers...${NC}`);
   const mcpDir = path.join(frameworkDir, 'packages', 'mcp-servers');
   try {
-    execFileSync('npm', ['install', '--no-fund', '--no-audit'], { cwd: mcpDir, stdio: 'pipe', timeout: 120000 });
-    console.log('  Dependencies installed');
+    const hasTypesNode = fs.existsSync(path.join(mcpDir, 'node_modules', '@types', 'node'));
+    if (!hasTypesNode) {
+      execFileSync('npm', ['install', '--no-fund', '--no-audit'], { cwd: mcpDir, stdio: 'pipe', timeout: 120000 });
+      console.log('  Dependencies installed');
+    } else {
+      console.log('  Dependencies already present, skipping npm install');
+    }
     execFileSync('npm', ['run', 'build'], { cwd: mcpDir, stdio: 'pipe', timeout: 120000 });
     console.log('  TypeScript built');
   } catch (err) {
