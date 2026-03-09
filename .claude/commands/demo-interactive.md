@@ -1,11 +1,11 @@
 <!-- HOOK:GENTYR:demo -->
 
-# /demo-interactive - Launch Demo Scenario (Full Speed + Pause)
+# /demo-interactive - Launch Demo Scenario (Full Speed + Recording)
 
-Runs a chosen curated demo scenario at full Playwright speed, then pauses at
-the end so you can manually interact with the app from that scaffolded state.
+Runs a chosen curated demo scenario at near-full speed with video recording.
+The browser closes when the demo completes.
 
-"Take me to this screen."
+"Run this scenario quickly and record it."
 
 ## Instructions
 
@@ -70,15 +70,15 @@ Call `mcp__playwright__run_demo({
   project: "<scenario.playwright_project>",
   test_file: "<scenario.test_file>",
   scenario_id: "<scenario.id>",
-  slow_mo: 0,
-  pause_at_end: true
+  slow_mo: 200
 })`.
 
 ### Step 7: Report
 
 Show scenario title, persona, auth project, PID, and tips:
-- The scenario runs at full speed then pauses for you to interact
-- Close the browser window when done
+- The scenario runs at near-full speed with video recording
+- Video is saved to `.claude/recordings/demos/{scenarioId}.webm`
+- The browser closes when the demo completes
 - To try another scenario, run `/demo-interactive` again
 - To browse all tests: `/demo`
 
@@ -94,7 +94,7 @@ Wait 30 seconds, then call `mcp__playwright__check_demo_result({ pid: <PID> })`.
   - Screenshot paths (if any) — include as a bulleted list
   - The scenario title and test file for context
   - Repair instruction: "Investigate the demo test failure and fix the underlying issue"
-- If polls exhausted (`status` still `"running"`): success — the user is interacting with the paused browser. Report accordingly.
+- If polls exhausted (`status` still `"running"`): the demo is still running. Continue polling every 30 seconds until completion.
 
 ## Rules
 

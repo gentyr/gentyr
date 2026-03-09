@@ -24,7 +24,6 @@ import {
   CheckDemoResultArgsSchema,
   StopDemoArgsSchema,
   OpenVideoArgsSchema,
-  ForceRecordNextDemoArgsSchema,
   PLAYWRIGHT_PROJECTS,
   type DemoRunState,
   type CheckDemoResultResult,
@@ -671,53 +670,6 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       expect(result.success).toBe(false);
     });
 
-    it('should default pause_at_end to false', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.pause_at_end).toBe(false);
-      }
-    });
-
-    it('should accept pause_at_end: true', () => {
-      const result = RunDemoArgsSchema.safeParse({
-        project: 'demo',
-        pause_at_end: true,
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.pause_at_end).toBe(true);
-      }
-    });
-
-    it('should coerce pause_at_end from string via z.coerce', () => {
-      const result = RunDemoArgsSchema.safeParse({
-        project: 'demo',
-        pause_at_end: 'true',
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.pause_at_end).toBe(true);
-      }
-    });
-
-    it('should accept all parameters including test_file and pause_at_end', () => {
-      const result = RunDemoArgsSchema.safeParse({
-        project: 'vendor-owner',
-        slow_mo: 0,
-        base_url: 'http://localhost:3000',
-        test_file: 'e2e/demo/billing.demo.ts',
-        pause_at_end: true,
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.project).toBe('vendor-owner');
-        expect(result.data.slow_mo).toBe(0);
-        expect(result.data.test_file).toBe('e2e/demo/billing.demo.ts');
-        expect(result.data.pause_at_end).toBe(true);
-      }
-    });
-
     it('should default timeout to 120000 when omitted', () => {
       const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
       expect(result.success).toBe(true);
@@ -796,7 +748,6 @@ describe('Playwright MCP Server - Zod Schemas', () => {
         slow_mo: 500,
         base_url: 'http://localhost:3000',
         test_file: 'e2e/demo/billing.demo.ts',
-        pause_at_end: true,
         timeout: 60000,
         headless: true,
       });
@@ -862,7 +813,6 @@ describe('Playwright MCP Server - Zod Schemas', () => {
         slow_mo: 500,
         base_url: 'http://localhost:3000',
         test_file: 'e2e/demo/replay.demo.ts',
-        pause_at_end: true,
         timeout: 60000,
         headless: false,
         extra_env: {
@@ -891,80 +841,6 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     // -------------------------------------------------------------------------
-    // record_video field (added with DEMO_RECORD_VIDEO env var support)
-    // -------------------------------------------------------------------------
-
-    it('should default record_video to false when omitted', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.record_video).toBe(false);
-      }
-    });
-
-    it('should accept record_video: true', () => {
-      const result = RunDemoArgsSchema.safeParse({
-        project: 'demo',
-        record_video: true,
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.record_video).toBe(true);
-      }
-    });
-
-    it('should accept record_video: false', () => {
-      const result = RunDemoArgsSchema.safeParse({
-        project: 'demo',
-        record_video: false,
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.record_video).toBe(false);
-      }
-    });
-
-    it('should coerce record_video from string "true" via z.coerce', () => {
-      const result = RunDemoArgsSchema.safeParse({
-        project: 'demo',
-        record_video: 'true',
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.record_video).toBe(true);
-      }
-    });
-
-    it('should coerce record_video from string "false" to true via z.coerce (non-empty string is truthy)', () => {
-      // z.coerce.boolean() uses Boolean() coercion: any non-empty string is true.
-      // Callers must pass the boolean false directly to opt out of recording.
-      const result = RunDemoArgsSchema.safeParse({
-        project: 'demo',
-        record_video: 'false',
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        // "false" is a non-empty string — Boolean("false") === true in JS
-        expect(result.data.record_video).toBe(true);
-      }
-    });
-
-    it('should accept record_video alongside pause_at_end (both can be true in input)', () => {
-      // The schema accepts this combination; server.ts resolves the conflict at
-      // runtime via effectivePauseAtEnd (pause_at_end is suppressed when record_video=true)
-      const result = RunDemoArgsSchema.safeParse({
-        project: 'demo',
-        record_video: true,
-        pause_at_end: true,
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.record_video).toBe(true);
-        expect(result.data.pause_at_end).toBe(true);
-      }
-    });
-
-    // -------------------------------------------------------------------------
     // scenario_id field (added with opportunistic video-recording support)
     // -------------------------------------------------------------------------
 
@@ -987,16 +863,14 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       }
     });
 
-    it('should accept scenario_id alongside record_video', () => {
+    it('should accept scenario_id alongside other fields', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'demo',
         scenario_id: 'scenario-456',
-        record_video: true,
       });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.scenario_id).toBe('scenario-456');
-        expect(result.data.record_video).toBe(true);
       }
     });
   });
@@ -2809,18 +2683,3 @@ describe('OpenVideoArgsSchema', () => {
   });
 });
 
-// ============================================================================
-// ForceRecordNextDemoArgsSchema — schema validation (G003 Compliance)
-// ============================================================================
-
-describe('ForceRecordNextDemoArgsSchema', () => {
-  it('should accept an empty object', () => {
-    const result = ForceRecordNextDemoArgsSchema.safeParse({});
-    expect(result.success).toBe(true);
-  });
-
-  it('should strip unknown properties', () => {
-    const result = ForceRecordNextDemoArgsSchema.safeParse({ extra: 'field' });
-    expect(result.success).toBe(true);
-  });
-});

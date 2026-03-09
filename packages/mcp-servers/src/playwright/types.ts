@@ -245,21 +245,15 @@ export const RunDemoArgsSchema = z.object({
     .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
     .optional()
     .describe('Relative path to a specific test file (e.g., e2e/demo/onboarding.demo.ts). When provided, only this file runs.'),
-  pause_at_end: z.coerce.boolean()
-    .optional()
-    .default(false)
-    .describe('Set DEMO_PAUSE_AT_END=1 env var. Target project demo files that import the shared helper will call page.pause() at the end.'),
   timeout: z.coerce.number().int().min(30000).max(600000).optional().default(120000)
     .describe('Per-test timeout in milliseconds (30s-600s, default 120s)'),
   headless: z.coerce.boolean().optional().default(false)
     .describe('Run demos in headless mode. Sets DEMO_HEADLESS=1 env var. Extension demos will auto-skip.'),
   trace: z.coerce.boolean().optional().default(false)
     .describe('Enable Playwright trace recording (--trace on). Default: false.'),
-  record_video: z.coerce.boolean().optional().default(false)
-    .describe('Enable video recording. Sets DEMO_RECORD_VIDEO=1 env var.'),
   scenario_id: z.string()
     .optional()
-    .describe('Demo scenario ID from user-feedback DB. When provided and recording is stale (>24h), record_video is auto-enabled.'),
+    .describe('Demo scenario ID from user-feedback DB. Video is automatically persisted to `.claude/recordings/demos/{scenarioId}.webm` after the run completes.'),
   extra_env: z.record(z.string(), z.string())
     .optional()
     .describe(
@@ -278,7 +272,6 @@ export interface RunDemoResult {
   pid?: number;
   slow_mo?: number;
   test_file?: string;
-  pause_at_end?: boolean;
 }
 
 export const CheckDemoResultArgsSchema = z.object({
@@ -429,9 +422,6 @@ export interface OpenVideoResult {
   message: string;
 }
 
-export const ForceRecordNextDemoArgsSchema = z.object({});
-export type ForceRecordNextDemoArgs = z.infer<typeof ForceRecordNextDemoArgsSchema>;
-
 // ============================================================================
 // Batch Demo Schemas & Types
 // ============================================================================
@@ -445,8 +435,6 @@ export const RunDemoBatchArgsSchema = z.object({
     .describe('Number of scenarios to run per batch (default: 5).'),
   headless: z.coerce.boolean().optional().default(true)
     .describe('Run in headless mode (default: true). Set false for watchable demos.'),
-  record_video: z.coerce.boolean().optional().default(true)
-    .describe('Record video for each scenario (default: true).'),
   slow_mo: z.coerce.number().int().min(0).max(5000).optional().default(0)
     .describe('Milliseconds between actions (default: 0 for batch, 800 for sessions).'),
   timeout: z.coerce.number().int().min(30000).max(600000).optional().default(120000)
