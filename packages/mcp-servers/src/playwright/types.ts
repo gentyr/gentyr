@@ -432,6 +432,109 @@ export interface OpenVideoResult {
 export const ForceRecordNextDemoArgsSchema = z.object({});
 export type ForceRecordNextDemoArgs = z.infer<typeof ForceRecordNextDemoArgsSchema>;
 
+// ============================================================================
+// Batch Demo Schemas & Types
+// ============================================================================
+
+export const RunDemoBatchArgsSchema = z.object({
+  project: z.string()
+    .min(1)
+    .max(100)
+    .describe('Playwright project name (e.g., "demo").'),
+  batch_size: z.coerce.number().int().min(1).max(20).optional().default(5)
+    .describe('Number of scenarios to run per batch (default: 5).'),
+  headless: z.coerce.boolean().optional().default(true)
+    .describe('Run in headless mode (default: true). Set false for watchable demos.'),
+  record_video: z.coerce.boolean().optional().default(true)
+    .describe('Record video for each scenario (default: true).'),
+  slow_mo: z.coerce.number().int().min(0).max(5000).optional().default(0)
+    .describe('Milliseconds between actions (default: 0 for batch, 800 for sessions).'),
+  timeout: z.coerce.number().int().min(30000).max(600000).optional().default(120000)
+    .describe('Per-test timeout in milliseconds (default: 120s).'),
+  stop_on_failure: z.coerce.boolean().optional().default(false)
+    .describe('Stop the entire batch run if any scenario fails.'),
+  scenario_ids: z.array(z.string()).optional()
+    .describe('Run specific scenarios by ID. When omitted, discovers all enabled scenarios.'),
+  persona_ids: z.array(z.string()).optional()
+    .describe('Run all scenarios for these persona IDs.'),
+  category_filter: z.string().max(50).optional()
+    .describe('Filter scenarios by category (e.g., "gui", "sdk", "adk").'),
+  base_url: z.string().url().optional()
+    .describe('Override the base URL (default: http://localhost:3000).'),
+  trace: z.coerce.boolean().optional().default(false)
+    .describe('Enable Playwright trace recording.'),
+});
+
+export type RunDemoBatchArgs = z.infer<typeof RunDemoBatchArgsSchema>;
+
+export const CheckDemoBatchResultArgsSchema = z.object({
+  batch_id: z.string()
+    .min(1)
+    .describe('Batch ID returned by run_demo_batch.'),
+});
+
+export type CheckDemoBatchResultArgs = z.infer<typeof CheckDemoBatchResultArgsSchema>;
+
+export const StopDemoBatchArgsSchema = z.object({
+  batch_id: z.string()
+    .min(1)
+    .describe('Batch ID of the batch run to stop.'),
+});
+
+export type StopDemoBatchArgs = z.infer<typeof StopDemoBatchArgsSchema>;
+
+export type DemoBatchStatus = 'running' | 'passed' | 'failed' | 'stopped';
+
+export interface BatchScenarioResult {
+  scenario_id: string;
+  scenario_title: string;
+  test_file: string;
+  status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
+  duration_ms?: number;
+  failure_summary?: string;
+  video_path?: string;
+}
+
+export interface DemoBatchProgress {
+  total_scenarios: number;
+  completed: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  current_batch: number;
+  total_batches: number;
+  current_scenario?: string;
+}
+
+export interface CheckDemoBatchResultResult {
+  status: DemoBatchStatus;
+  batch_id: string;
+  progress: DemoBatchProgress;
+  scenarios: BatchScenarioResult[];
+  message: string;
+}
+
+export interface StopDemoBatchResult {
+  success: boolean;
+  batch_id: string;
+  progress: DemoBatchProgress;
+  scenarios: BatchScenarioResult[];
+  message: string;
+}
+
+export interface DemoBatchState {
+  batch_id: string;
+  project: string;
+  status: DemoBatchStatus;
+  started_at: string;
+  ended_at?: string;
+  scenarios: BatchScenarioResult[];
+  progress: DemoBatchProgress;
+  current_pid?: number;
+  current_progress_file?: string;
+  stop_on_failure: boolean;
+}
+
 export type ListExtensionTabsArgs = z.infer<typeof ListExtensionTabsArgsSchema>;
 export type ScreenshotExtensionTabArgs = z.infer<typeof ScreenshotExtensionTabArgsSchema>;
 

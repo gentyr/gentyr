@@ -402,6 +402,25 @@ Curated product walkthroughs mapped to personas. Managed by product-manager agen
 
 > Full details: [Demo Scenario System](docs/CLAUDE-REFERENCE.md#demo-scenario-system)
 
+### Demo Command Decision Tree
+
+| User Request | Command |
+|---|---|
+| "Show me everything working" | `/demo-all` (headed, watchable speed, full suite) |
+| "Run all demos" / "Record all demos" | `/demo-bulk` (headless, batched, recording) |
+| "Show me these specific demos" | `/demo-session` (headed, curated selection, recording) |
+| "Are all demos passing?" | `/demo-validate` (headless, fast, pass/fail only) |
+| "Show me this one scenario" | `/demo-autonomous` (headed, single scenario) |
+| "Browse tests interactively" | `/demo` (Playwright UI mode) |
+
+**Bulk defaults** (`/demo-bulk` or `run_demo_batch`):
+headless=true, record_video=true, batch_size=5, slow_mo=0
+
+**Session defaults** (`/demo-session` or `run_demo_batch` with headed):
+headless=false, record_video=true, slow_mo=800
+
+Dev server is auto-started if not running — no manual setup needed.
+
 ## Rotation Proxy
 
 Local MITM proxy on `localhost:18080` for transparent credential rotation. Intercepts `api.anthropic.com` and `mcp-proxy.anthropic.com` (TLS MITM + header swap); everything else passes through. Handles 429 retry with automatic key rotation. Runs as a launchd KeepAlive service. Enable/disable via `npx gentyr proxy enable|disable`.

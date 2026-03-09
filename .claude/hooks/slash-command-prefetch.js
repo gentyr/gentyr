@@ -65,6 +65,8 @@ const SENTINELS = {
   'demo': '<!-- HOOK:GENTYR:demo -->',
   'demo-interactive': '<!-- HOOK:GENTYR:demo -->',
   'demo-autonomous': '<!-- HOOK:GENTYR:demo -->',
+  'demo-bulk': '<!-- HOOK:GENTYR:demo -->',
+  'demo-session': '<!-- HOOK:GENTYR:demo -->',
   'persona-feedback': '<!-- HOOK:GENTYR:persona-feedback -->',
 };
 
@@ -1441,6 +1443,12 @@ async function main() {
   }
   if (matchesCommand(prompt, 'show')) {
     return handleShow();
+  }
+  if (matchesCommand(prompt, 'demo-bulk')) {
+    return handleDemo();
+  }
+  if (matchesCommand(prompt, 'demo-session')) {
+    return handleDemo();
   }
   if (matchesCommand(prompt, 'demo')) {
     return handleDemo();
