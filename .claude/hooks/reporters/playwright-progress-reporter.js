@@ -158,6 +158,7 @@ class PlaywrightProgressReporter {
     const event = {
       type: 'test_end',
       title: test.title,
+      file: test.location?.file ? test.location.file.split('/').pop() : undefined,
       status: result.status,
       duration_ms: result.duration,
       index: this._testIndex,
