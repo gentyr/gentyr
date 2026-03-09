@@ -41,7 +41,6 @@ Based on the user's choice, build the filter parameters:
 Call `mcp__playwright__run_demo_batch({
   project: "demo",
   headless: false,
-  record_video: true,
   slow_mo: 800,
   batch_size: <number of selected scenarios>,
   <filter params from Step 3>
@@ -51,6 +50,7 @@ Key differences from `/demo-bulk`:
 - `headless: false` — browser window visible
 - `slow_mo: 800` — watchable speed
 - `batch_size` set to selection size — runs all selected in one batch for seamless viewing
+- All demos are automatically recorded
 
 Report the batch_id and scenario count.
 
@@ -95,7 +95,7 @@ billing and webhook demos"), the agent should:
 
 ## Rules
 
-- **Always record** — `record_video: true` is non-negotiable for sessions
+- **All demos are automatically recorded** — video recording is always enabled
 - **Every failure goes to the deputy-CTO**
 - **Never skip preflight**
 - **Never use CLI** — `npx playwright test` bypasses credential injection

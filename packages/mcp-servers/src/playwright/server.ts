@@ -56,7 +56,6 @@ import {
   type RunAuthSetupArgs,
   type RunAuthSetupResult,
   RunDemoArgsSchema,
-  ForceRecordNextDemoArgsSchema,
   type RunDemoArgs,
   type RunDemoResult,
   CheckDemoResultArgsSchema,
@@ -287,8 +286,6 @@ function validatePrerequisites(): PreflightResult {
 function buildDemoEnv(opts: {
   slow_mo?: number;
   headless?: boolean;
-  record_video?: boolean;
-  pause_at_end?: boolean;
   base_url?: string;
   trace?: boolean;
   extra_env?: Record<string, string>;
@@ -310,9 +307,8 @@ function buildDemoEnv(opts: {
 
   if (opts.progress_file) env.DEMO_PROGRESS_FILE = opts.progress_file;
   if (opts.slow_mo !== undefined) env.DEMO_SLOW_MO = String(opts.slow_mo);
-  if (opts.pause_at_end) env.DEMO_PAUSE_AT_END = '1';
   if (opts.headless) env.DEMO_HEADLESS = '1';
-  if (opts.record_video) env.DEMO_RECORD_VIDEO = '1';
+  env.DEMO_RECORD_VIDEO = '1';
   if (opts.base_url) env.PLAYWRIGHT_BASE_URL = opts.base_url;
 
   // Always show cursor dot in headed demos
@@ -475,43 +471,7 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
  * Validates prerequisites, spawns a detached process, and monitors for early crashes.
  */
 async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
-  const { project, slow_mo, base_url, test_file, pause_at_end } = args;
-
-  // Force-record override: one-shot flag from force_record_next_demo tool
-  const forceRecordPath = path.join(PROJECT_DIR, '.claude', 'state', 'demo-force-record.json');
-  try {
-    if (fs.existsSync(forceRecordPath)) {
-      args.record_video = true;
-      fs.unlinkSync(forceRecordPath);
-    }
-  } catch { /* Non-fatal */ }
-
-  // Opportunistic recording: auto-enable record_video if scenario_id is provided and recording is stale (>24h)
-  if (args.scenario_id && !args.record_video) {
-    try {
-      const userFeedbackDbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
-      const db = new Database(userFeedbackDbPath, { readonly: true });
-      try {
-        const row = db.prepare('SELECT last_recorded_at FROM demo_scenarios WHERE id = ?').get(args.scenario_id) as { last_recorded_at: string | null } | undefined;
-        if (!row || !row.last_recorded_at) {
-          args.record_video = true;
-        } else {
-          const ageMs = Date.now() - new Date(row.last_recorded_at).getTime();
-          if (ageMs > 24 * 60 * 60 * 1000) {
-            args.record_video = true;
-          }
-        }
-      } finally {
-        db.close();
-      }
-    } catch {
-      // Non-fatal — skip auto-recording if DB is unavailable
-    }
-  }
-
-  // Auto-disable pause_at_end when recording video — page.pause() prevents
-  // context.close() which is required to finalize the .webm file.
-  const effectivePauseAtEnd = (args.record_video && pause_at_end) ? false : pause_at_end;
+  const { project, slow_mo, base_url, test_file } = args;
 
   // Pre-flight validation
   const preflight = validatePrerequisites();
@@ -548,8 +508,6 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const env = buildDemoEnv({
     slow_mo,
     headless: args.headless,
-    record_video: args.record_video,
-    pause_at_end: effectivePauseAtEnd,
     base_url,
     trace: args.trace,
     extra_env: args.extra_env,
@@ -848,7 +806,6 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           pid: demoPid,
           slow_mo,
           test_file,
-          pause_at_end: effectivePauseAtEnd,
         };
       }
 
@@ -1032,7 +989,6 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       pid: child.pid,
       slow_mo,
       test_file,
-      pause_at_end: effectivePauseAtEnd,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -3099,7 +3055,6 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs): 
     const env = buildDemoEnv({
       slow_mo: args.slow_mo,
       headless: args.headless,
-      record_video: args.record_video,
       base_url: args.base_url,
       trace: args.trace,
       progress_file: progressFile,
@@ -3190,44 +3145,42 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs): 
       }
 
       // Walk batch output dir for video files and persist recordings
-      if (args.record_video) {
-        try {
-          const walkForVideos = (dir: string): string[] => {
-            const videos: string[] = [];
-            if (!fs.existsSync(dir)) return videos;
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
-            for (const e of entries) {
-              const full = path.join(dir, e.name);
-              if (e.isDirectory()) videos.push(...walkForVideos(full));
-              else if (e.name.endsWith('.webm')) videos.push(full);
-            }
-            return videos;
-          };
+      try {
+        const walkForVideos = (dir: string): string[] => {
+          const videos: string[] = [];
+          if (!fs.existsSync(dir)) return videos;
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const e of entries) {
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) videos.push(...walkForVideos(full));
+            else if (e.name.endsWith('.webm')) videos.push(full);
+          }
+          return videos;
+        };
 
-          const videos = walkForVideos(batchOutputDir);
-          // First pass: match videos to scenarios by encoded path
-          for (const videoPath of videos) {
-            const parentDir = path.basename(path.dirname(videoPath));
-            for (const s of batchScenarios) {
-              if (s.video_path) continue; // already matched
-              const encoded = s.test_file.replace(/\//g, '-').replace(/\.ts$/, '');
-              if (parentDir.includes(encoded)) {
-                s.video_path = videoPath;
-                persistScenarioRecording(s.scenario_id, videoPath);
-                break;
-              }
+        const videos = walkForVideos(batchOutputDir);
+        // First pass: match videos to scenarios by encoded path
+        for (const videoPath of videos) {
+          const parentDir = path.basename(path.dirname(videoPath));
+          for (const s of batchScenarios) {
+            if (s.video_path) continue; // already matched
+            const encoded = s.test_file.replace(/\//g, '-').replace(/\.ts$/, '');
+            if (parentDir.includes(encoded)) {
+              s.video_path = videoPath;
+              persistScenarioRecording(s.scenario_id, videoPath);
+              break;
             }
           }
-          // Second pass: assign unmatched videos to unmatched scenarios (1:1 only)
-          const unmatchedVideos = videos.filter(v => !batchScenarios.some(s => s.video_path === v));
-          const unmatchedScenarios = batchScenarios.filter(s => !s.video_path);
-          if (unmatchedVideos.length === 1 && unmatchedScenarios.length === 1) {
-            unmatchedScenarios[0].video_path = unmatchedVideos[0];
-            persistScenarioRecording(unmatchedScenarios[0].scenario_id, unmatchedVideos[0]);
-          }
-        } catch {
-          // Non-fatal — video matching is best-effort
         }
+        // Second pass: assign unmatched videos to unmatched scenarios (1:1 only)
+        const unmatchedVideos = videos.filter(v => !batchScenarios.some(s => s.video_path === v));
+        const unmatchedScenarios = batchScenarios.filter(s => !s.video_path);
+        if (unmatchedVideos.length === 1 && unmatchedScenarios.length === 1) {
+          unmatchedScenarios[0].video_path = unmatchedVideos[0];
+          persistScenarioRecording(unmatchedScenarios[0].scenario_id, unmatchedVideos[0]);
+        }
+      } catch {
+        // Non-fatal — video matching is best-effort
       }
 
       // Clean up progress file
@@ -3494,7 +3447,8 @@ const tools: AnyToolHandler[] = [
     description:
       'Launch Playwright tests in a visible headed browser that runs automatically at human-watchable speed. ' +
       'No clicking required — tests play through on their own with configurable pace. ' +
-      'Best for presentations and demos. Supports headless mode (headless: true) for CI or screenshot capture, ' +
+      'Video is always recorded. Scenario videos are persisted to `.claude/recordings/demos/{scenarioId}.webm`. ' +
+      'Best for presentations and demos. Supports headless mode (headless: true) for CI or screenshot capture. ' +
       'Cursor dot is always visible in headed mode. The target project\'s playwright.config.ts must read ' +
       'parseInt(process.env.DEMO_SLOW_MO || "0") in use.launchOptions.slowMo for pace control to work.',
     schema: RunDemoArgsSchema,
@@ -3617,23 +3571,10 @@ const tools: AnyToolHandler[] = [
     handler: openVideo,
   },
   {
-    name: 'force_record_next_demo',
-    description:
-      'Force the next run_demo call to record video, regardless of staleness or agent choice. ' +
-      'One-shot: consumed by the next run_demo invocation.',
-    schema: ForceRecordNextDemoArgsSchema,
-    handler: async () => {
-      const flagPath = path.join(PROJECT_DIR, '.claude', 'state', 'demo-force-record.json');
-      fs.mkdirSync(path.dirname(flagPath), { recursive: true });
-      fs.writeFileSync(flagPath, JSON.stringify({ force: true, created_at: new Date().toISOString() }));
-      return 'Force-record flag set. The next run_demo call will record video and consume this flag.';
-    },
-  },
-  {
     name: 'run_demo_batch',
     description:
-      'Run multiple demo scenarios in sequential batches with recording. ' +
-      'Defaults: headless=true, record_video=true, batch_size=5. ' +
+      'Run multiple demo scenarios in sequential batches. ' +
+      'Video is always recorded. Defaults: headless=true, batch_size=5. ' +
       'Discovers scenarios from user-feedback.db — filter by scenario_ids, persona_ids, or category. ' +
       'Each batch gets isolated output directories to prevent Playwright from cleaning previous recordings. ' +
       'Returns a batch_id for polling via check_demo_batch_result. ' +

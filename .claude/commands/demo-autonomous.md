@@ -4,8 +4,7 @@
 
 Runs a chosen curated demo scenario at human-watchable speed (slowMo 800ms)
 in a visible headed browser. No clicking required — the demo plays through
-automatically. The browser stays open after the scenario finishes so you can
-inspect the final state.
+automatically with video recording. The browser closes when the demo completes.
 
 "Show me the product in action."
 
@@ -75,8 +74,7 @@ Call `mcp__playwright__run_demo({
   project: "<scenario.playwright_project>",
   test_file: "<scenario.test_file>",
   scenario_id: "<scenario.id>",
-  slow_mo: 800,
-  pause_at_end: true
+  slow_mo: 800
 })`.
 
 ### Step 6b: ADK Replay Path
@@ -94,7 +92,6 @@ Instead of calling `run_demo` with the scenario's `test_file`, show:
        test_file: "e2e/demo/session-replay-runner.demo.ts",
        scenario_id: "<scenario.id>",
        slow_mo: 800,
-       pause_at_end: true,
        extra_env: {
          REPLAY_SESSION_ID: "<session_id>",
          REPLAY_AUDIT_DATA: JSON.stringify(auditActions)
@@ -130,16 +127,16 @@ Progress: 3/8 tests (3 passed, 0 failed) - Current: Login Flow
   - The scenario title and test file for context
   - Repair instruction: "Investigate the demo test failure and fix the underlying issue"
 - If `status: "passed"`: wait 5 seconds, then verify browser is still alive by checking PID. Report success with duration.
-- If polls exhausted (`status` still `"running"`): the autonomous flow completed successfully and the browser is paused at the final screen. Report success — if the test had failed, the process would have exited.
+- If polls exhausted (`status` still `"running"`): the demo is still running (large scenario). Continue polling every 30 seconds until completion.
 
 ### Step 9: Tips
 
 - The demo runs automatically at human-watchable speed — just watch
 - Default pace is 800ms between actions
-- The browser stays open after the scenario finishes — you can inspect the final state
-- Close the browser manually when done, or just leave it
+- Video is always recorded to `.claude/recordings/demos/{scenarioId}.webm`
+- The browser closes when the demo completes
 - To try another scenario, run `/demo-autonomous` again
-- To interact after a demo: `/demo-interactive`
+- To interact with the app: `/demo-interactive`
 - To browse all tests: `/demo`
 
 ## Rules

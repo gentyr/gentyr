@@ -392,7 +392,7 @@ Individual hook specifications for all GENTYR hooks (auto-sync, CTO notification
 
 ## Playwright MCP Server
 
-The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tools for running E2E tests, managing auth state, and launching demos. Uses project-agnostic config discovery from `playwright.config.ts`. Key tools: `launch_ui_mode`, `run_tests`, `run_demo`, `check_demo_result`, `preflight_check`, `run_auth_setup`, `open_video`, `force_record_next_demo`.
+The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tools for running E2E tests, managing auth state, and launching demos. Uses project-agnostic config discovery from `playwright.config.ts`. Key tools: `launch_ui_mode`, `run_tests`, `run_demo`, `check_demo_result`, `preflight_check`, `run_auth_setup`, `open_video`.
 
 > Full details: [Playwright MCP Server](docs/CLAUDE-REFERENCE.md#playwright-mcp-server)
 
@@ -407,17 +407,19 @@ Curated product walkthroughs mapped to personas. Managed by product-manager agen
 | User Request | Command |
 |---|---|
 | "Show me everything working" | `/demo-all` (headed, watchable speed, full suite) |
-| "Run all demos" / "Record all demos" | `/demo-bulk` (headless, batched, recording) |
-| "Show me these specific demos" | `/demo-session` (headed, curated selection, recording) |
+| "Run all demos" | `/demo-bulk` (headless, batched) |
+| "Show me these specific demos" | `/demo-session` (headed, curated selection) |
 | "Are all demos passing?" | `/demo-validate` (headless, fast, pass/fail only) |
 | "Show me this one scenario" | `/demo-autonomous` (headed, single scenario) |
 | "Browse tests interactively" | `/demo` (Playwright UI mode) |
 
 **Bulk defaults** (`/demo-bulk` or `run_demo_batch`):
-headless=true, record_video=true, batch_size=5, slow_mo=0
+headless=true, batch_size=5, slow_mo=0
 
 **Session defaults** (`/demo-session` or `run_demo_batch` with headed):
-headless=false, record_video=true, slow_mo=800
+headless=false, slow_mo=800
+
+Video recording is always enabled. Scenario videos: `.claude/recordings/demos/{scenarioId}.webm`
 
 Dev server is auto-started if not running — no manual setup needed.
 
