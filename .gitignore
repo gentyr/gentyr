@@ -66,6 +66,10 @@ CLAUDE.md.makerkit-section
 # Local plugins (gitignored — project-specific integrations, never published)
 plugins/
 
+# pnpm artifacts (project uses npm; pnpm lockfiles are local dev artifacts)
+packages/mcp-servers/pnpm-lock.yaml
+packages/mcp-servers/pnpm-workspace.yaml
+
 # Temporary scratchpad / working files
 tmp/
 
