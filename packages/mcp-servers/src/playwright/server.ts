@@ -67,6 +67,16 @@ import {
   type StopDemoResult,
   type DemoRunState,
   type DemoProgress,
+  RunDemoBatchArgsSchema,
+  CheckDemoBatchResultArgsSchema,
+  StopDemoBatchArgsSchema,
+  type RunDemoBatchArgs,
+  type CheckDemoBatchResultArgs,
+  type StopDemoBatchArgs,
+  type CheckDemoBatchResultResult,
+  type StopDemoBatchResult,
+  type DemoBatchState,
+  type BatchScenarioResult,
 } from './types.js';
 import { parseTestOutput, truncateOutput, validateExtraEnv } from './helpers.js';
 import { discoverPlaywrightConfig } from './config-discovery.js';
@@ -267,6 +277,82 @@ function validatePrerequisites(): PreflightResult {
 }
 
 // ============================================================================
+// Shared Demo Helpers
+// ============================================================================
+
+/**
+ * Build a clean environment for demo child processes.
+ * Strips infrastructure credentials, resolves 1Password secrets, applies demo-specific vars.
+ */
+function buildDemoEnv(opts: {
+  slow_mo?: number;
+  headless?: boolean;
+  record_video?: boolean;
+  pause_at_end?: boolean;
+  base_url?: string;
+  trace?: boolean;
+  extra_env?: Record<string, string>;
+  progress_file?: string;
+}): Record<string, string> {
+  const env: Record<string, string> = { ...process.env as Record<string, string> };
+
+  // Strip infrastructure credentials from child env (unconditional)
+  for (const key of INFRA_CRED_KEYS) delete env[key];
+
+  // Resolve 1Password secrets for child process (non-fatal)
+  try {
+    const config = loadServicesConfig(PROJECT_DIR);
+    const { resolvedEnv } = resolveLocalSecrets(config);
+    Object.assign(env, resolvedEnv);
+  } catch (err) {
+    process.stderr.write(`[playwright] Secret resolution skipped: ${err instanceof Error ? err.message : err}\n`);
+  }
+
+  if (opts.progress_file) env.DEMO_PROGRESS_FILE = opts.progress_file;
+  if (opts.slow_mo !== undefined) env.DEMO_SLOW_MO = String(opts.slow_mo);
+  if (opts.pause_at_end) env.DEMO_PAUSE_AT_END = '1';
+  if (opts.headless) env.DEMO_HEADLESS = '1';
+  if (opts.record_video) env.DEMO_RECORD_VIDEO = '1';
+  if (opts.base_url) env.PLAYWRIGHT_BASE_URL = opts.base_url;
+
+  // Always show cursor dot in headed demos
+  env.DEMO_SHOW_CURSOR = '1';
+
+  // Apply extra_env last — may override explicit demo vars (same as original inline behavior)
+  if (opts.extra_env) {
+    Object.assign(env, opts.extra_env);
+  }
+
+  return env;
+}
+
+/**
+ * Persist a video recording for a demo scenario.
+ * Copies the video to .claude/recordings/demos/ and updates the DB.
+ */
+function persistScenarioRecording(scenarioId: string, videoPath: string): void {
+  try {
+    if (!fs.existsSync(videoPath)) return;
+    const recordingsDir = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos');
+    fs.mkdirSync(recordingsDir, { recursive: true });
+    const destPath = path.join(recordingsDir, `${scenarioId}.webm`);
+    fs.copyFileSync(videoPath, destPath);
+
+    const userFeedbackDbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+    const db = new Database(userFeedbackDbPath);
+    try {
+      db.prepare(
+        'UPDATE demo_scenarios SET last_recorded_at = ?, recording_path = ? WHERE id = ?'
+      ).run(new Date().toISOString(), destPath, scenarioId);
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Non-fatal — recording persistence is best-effort
+  }
+}
+
+// ============================================================================
 // Tool Implementations
 // ============================================================================
 
@@ -437,30 +523,43 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     };
   }
 
+  // Ensure dev server is running before launching demo
+  const devServer = await ensureDevServer(base_url || 'http://localhost:3000');
+  if (!devServer.ready) {
+    return {
+      success: false,
+      project,
+      message: `Dev server not ready: ${devServer.message}`,
+    };
+  }
+
+  // Validate extra_env before building the environment
+  if (args.extra_env) {
+    const validationError = validateExtraEnv(args.extra_env);
+    if (validationError) {
+      return { success: false, project, message: validationError };
+    }
+  }
+
   // Fix 4: Generate progress file path for real-time progress reporting
   const progressId = crypto.randomBytes(4).toString('hex');
   const progressFilePath = path.join(PROJECT_DIR, '.claude', 'state', `demo-progress-${progressId}.jsonl`);
+
+  const env = buildDemoEnv({
+    slow_mo,
+    headless: args.headless,
+    record_video: args.record_video,
+    pause_at_end: effectivePauseAtEnd,
+    base_url,
+    trace: args.trace,
+    extra_env: args.extra_env,
+    progress_file: progressFilePath,
+  });
 
   const cmdArgs = ['playwright', 'test', '--project', project];
   if (args.trace) {
     cmdArgs.push('--trace', 'on');
   }
-  const env: Record<string, string> = { ...process.env as Record<string, string> };
-
-  // Strip infrastructure credentials from child env (unconditional)
-  for (const key of INFRA_CRED_KEYS) delete env[key];
-
-  // Resolve 1Password secrets for child process (non-fatal)
-  try {
-    const config = loadServicesConfig(PROJECT_DIR);
-    const { resolvedEnv } = resolveLocalSecrets(config);
-    Object.assign(env, resolvedEnv);
-  } catch (err) {
-    process.stderr.write(`[playwright] Secret resolution skipped: ${err instanceof Error ? err.message : err}\n`);
-  }
-
-  // Set progress file env var for the progress reporter
-  env.DEMO_PROGRESS_FILE = progressFilePath;
 
   // Insert test_file as positional arg (after 'test', before '--project')
   if (test_file) {
@@ -474,38 +573,6 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
   // Per-test timeout (default 120s for demos)
   cmdArgs.push('--timeout', String(args.timeout ?? 120000));
-
-  if (slow_mo !== undefined) {
-    env.DEMO_SLOW_MO = String(slow_mo);
-  }
-
-  if (effectivePauseAtEnd) {
-    env.DEMO_PAUSE_AT_END = '1';
-  }
-
-  if (args.headless) {
-    env.DEMO_HEADLESS = '1';
-  }
-
-  // Always show cursor dot in headed demos
-  env.DEMO_SHOW_CURSOR = '1';
-
-  if (args.record_video) {
-    env.DEMO_RECORD_VIDEO = '1';
-  }
-
-  if (base_url) {
-    env.PLAYWRIGHT_BASE_URL = base_url;
-  }
-
-  // Apply extra_env AFTER all explicit args so it cannot override them
-  if (args.extra_env) {
-    const validationError = validateExtraEnv(args.extra_env);
-    if (validationError) {
-      return { success: false, project, message: validationError };
-    }
-    Object.assign(env, args.extra_env);
-  }
 
   try {
     const child = spawn('npx', cmdArgs, {
@@ -930,28 +997,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
       // Persist video recording for the scenario (runs for both passed and failed)
       if (entry.scenario_id) {
-        try {
-          // Find a .webm video in artifacts
-          const allArtifacts = entry.artifacts?.length ? entry.artifacts : scanArtifacts();
-          const videoPath = allArtifacts.find(p => p.endsWith('.webm'));
-          if (videoPath && fs.existsSync(videoPath)) {
-            const recordingsDir = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos');
-            fs.mkdirSync(recordingsDir, { recursive: true });
-            const destPath = path.join(recordingsDir, `${entry.scenario_id}.webm`);
-            fs.copyFileSync(videoPath, destPath);
-
-            const userFeedbackDbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
-            const db = new Database(userFeedbackDbPath);
-            try {
-              db.prepare(
-                'UPDATE demo_scenarios SET last_recorded_at = ?, recording_path = ? WHERE id = ?'
-              ).run(new Date().toISOString(), destPath, entry.scenario_id);
-            } finally {
-              db.close();
-            }
-          }
-        } catch {
-          // Non-fatal — recording persistence is best-effort
+        const allArtifacts = entry.artifacts?.length ? entry.artifacts : scanArtifacts();
+        const videoFile = allArtifacts.find(p => p.endsWith('.webm'));
+        if (videoFile) {
+          persistScenarioRecording(entry.scenario_id, videoFile);
         }
       }
 
@@ -1995,6 +2044,25 @@ async function attemptDevServerAutoStart(baseUrl: string): Promise<string | null
 }
 
 /**
+ * Ensure the dev server is healthy before demo execution.
+ * Checks health first; if not reachable, auto-starts.
+ */
+async function ensureDevServer(baseUrl: string = 'http://localhost:3000'): Promise<{ ready: boolean; message: string }> {
+  const health = await checkDevServer(baseUrl);
+  if (health.status === 'pass') return { ready: true, message: 'Dev server healthy' };
+
+  // If not reachable, attempt auto-start
+  if (health.message.includes('not reachable') || health.message.includes('did not respond')) {
+    const result = await attemptDevServerAutoStart(baseUrl);
+    if (result) return { ready: true, message: result };
+    return { ready: false, message: `Dev server auto-start failed for ${baseUrl}` };
+  }
+
+  // HTTP error or app-level error
+  return { ready: false, message: `Dev server unhealthy: ${health.message}` };
+}
+
+/**
  * Run a single preflight check and return a structured entry.
  */
 function runCheck(
@@ -2485,6 +2553,19 @@ async function runAuthSetup(args: RunAuthSetupArgs): Promise<RunAuthSetupResult>
     };
   }
 
+  // Ensure dev server is running before auth setup
+  const devServer = await ensureDevServer();
+  if (!devServer.ready) {
+    return {
+      success: false,
+      phases: [],
+      auth_files_refreshed: [],
+      total_duration_ms: Date.now() - startTime,
+      error: `Dev server not ready: ${devServer.message}`,
+      output_summary: '',
+    };
+  }
+
   const phases: RunAuthSetupResult['phases'] = [];
 
   // Phase 1: Seed
@@ -2854,6 +2935,547 @@ async function screenshotExtensionTab(args: ScreenshotExtensionTabArgs): Promise
 }
 
 // ============================================================================
+// Demo Batch Execution
+// ============================================================================
+
+const DEMO_BATCHES_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'demo-batches.json');
+const demoBatches = new Map<string, DemoBatchState>();
+const demoBatchAutoKillTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const DEMO_BATCH_AUTO_KILL_MS = 120_000; // 2 min between polls
+
+function loadPersistedDemoBatches(): void {
+  try {
+    if (!fs.existsSync(DEMO_BATCHES_PATH)) return;
+    const data = JSON.parse(fs.readFileSync(DEMO_BATCHES_PATH, 'utf-8'));
+    if (Array.isArray(data)) {
+      for (const entry of data) {
+        if (entry.batch_id) demoBatches.set(entry.batch_id, entry);
+      }
+    }
+  } catch {
+    // State file corrupt or missing — start fresh
+  }
+}
+
+function persistDemoBatches(): void {
+  try {
+    const stateDir = path.dirname(DEMO_BATCHES_PATH);
+    if (!fs.existsSync(stateDir)) fs.mkdirSync(stateDir, { recursive: true });
+    const entries = [...demoBatches.values()]
+      .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
+      .slice(0, 10);
+    fs.writeFileSync(DEMO_BATCHES_PATH, JSON.stringify(entries, null, 2));
+  } catch {
+    // Non-fatal
+  }
+}
+
+function autoKillBatch(batchId: string): void {
+  demoBatchAutoKillTimers.delete(batchId);
+  const state = demoBatches.get(batchId);
+  if (!state || state.status !== 'running') return;
+
+  if (state.current_pid) {
+    try { process.kill(-state.current_pid, 'SIGTERM'); } catch { /* already dead */ }
+  }
+
+  state.status = 'stopped';
+  state.ended_at = new Date().toISOString();
+  // Mark remaining pending scenarios as skipped
+  for (const s of state.scenarios) {
+    if (s.status === 'pending' || s.status === 'running') s.status = 'skipped';
+  }
+  state.progress.skipped = state.scenarios.filter(s => s.status === 'skipped').length;
+  persistDemoBatches();
+}
+
+function resetBatchAutoKillTimer(batchId: string): void {
+  const existing = demoBatchAutoKillTimers.get(batchId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => autoKillBatch(batchId), DEMO_BATCH_AUTO_KILL_MS);
+  timer.unref();
+  demoBatchAutoKillTimers.set(batchId, timer);
+}
+
+function clearBatchAutoKillTimer(batchId: string): void {
+  const existing = demoBatchAutoKillTimers.get(batchId);
+  if (existing) {
+    clearTimeout(existing);
+    demoBatchAutoKillTimers.delete(batchId);
+  }
+}
+
+loadPersistedDemoBatches();
+
+/**
+ * Discover demo scenarios from user-feedback.db.
+ * Returns scenarios matching the provided filters.
+ */
+function discoverScenarios(opts: {
+  scenario_ids?: string[];
+  persona_ids?: string[];
+  category_filter?: string;
+}): Array<{ id: string; title: string; test_file: string; persona_id?: string }> {
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+  if (!fs.existsSync(dbPath)) return [];
+
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    // Check table exists
+    const tableCheck = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='demo_scenarios'"
+    ).get() as { name: string } | undefined;
+    if (!tableCheck) return [];
+
+    let query = 'SELECT id, title, test_file, persona_id FROM demo_scenarios WHERE enabled = 1';
+    const params: string[] = [];
+
+    if (opts.scenario_ids?.length) {
+      const placeholders = opts.scenario_ids.map(() => '?').join(',');
+      query += ` AND id IN (${placeholders})`;
+      params.push(...opts.scenario_ids);
+    }
+
+    if (opts.persona_ids?.length) {
+      const placeholders = opts.persona_ids.map(() => '?').join(',');
+      query += ` AND persona_id IN (${placeholders})`;
+      params.push(...opts.persona_ids);
+    }
+
+    if (opts.category_filter) {
+      query += ' AND category = ?';
+      params.push(opts.category_filter);
+    }
+
+    query += ' ORDER BY sort_order ASC, title ASC';
+
+    const rows = db.prepare(query).all(...params) as Array<{
+      id: string; title: string; test_file: string; persona_id: string | null;
+    }>;
+    return rows.map(r => ({
+      id: r.id,
+      title: r.title,
+      test_file: r.test_file,
+      persona_id: r.persona_id ?? undefined,
+    }));
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Run a batch of demo scenarios sequentially.
+ * Each batch gets its own output directory to prevent Playwright's cleanup from destroying previous recordings.
+ */
+async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs): Promise<void> {
+  const batchSize = args.batch_size ?? 5;
+  const scenarios = state.scenarios;
+  const totalBatches = Math.ceil(scenarios.length / batchSize);
+
+  for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+    // Check if stopped
+    if (state.status !== 'running') break;
+
+    state.progress.current_batch = batchIdx + 1;
+    const batchStart = batchIdx * batchSize;
+    const batchEnd = Math.min(batchStart + batchSize, scenarios.length);
+    const batchScenarios = scenarios.slice(batchStart, batchEnd);
+
+    // Mark batch scenarios as running
+    for (const s of batchScenarios) s.status = 'running';
+    state.progress.current_scenario = batchScenarios[0]?.scenario_title;
+    persistDemoBatches();
+
+    // Batch-specific output directory to prevent Playwright cleanup from destroying previous recordings
+    const batchOutputDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-batch-${state.batch_id}`, `batch-${batchIdx}`);
+    fs.mkdirSync(batchOutputDir, { recursive: true });
+
+    // Progress file for this batch
+    const progressId = crypto.randomBytes(4).toString('hex');
+    const progressFile = path.join(PROJECT_DIR, '.claude', 'state', `demo-batch-progress-${progressId}.jsonl`);
+    state.current_progress_file = progressFile;
+
+    // Build environment
+    const env = buildDemoEnv({
+      slow_mo: args.slow_mo,
+      headless: args.headless,
+      record_video: args.record_video,
+      base_url: args.base_url,
+      trace: args.trace,
+      progress_file: progressFile,
+    });
+
+    // Build command args — include all test files in this batch
+    const cmdArgs = ['playwright', 'test', '--project', args.project];
+    for (const s of batchScenarios) {
+      cmdArgs.push(s.test_file);
+    }
+    if (args.trace) cmdArgs.push('--trace', 'on');
+    if (!args.headless) cmdArgs.push('--headed');
+    cmdArgs.push('--timeout', String(args.timeout ?? 120000));
+    cmdArgs.push('--output', batchOutputDir);
+
+    // Spawn the batch process
+    try {
+      const exitResult = await new Promise<{ code: number | null }>((resolve) => {
+        const child = spawn('npx', cmdArgs, {
+          detached: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          cwd: PROJECT_DIR,
+          env,
+        });
+
+        if (!child.pid) {
+          resolve({ code: 1 });
+          return;
+        }
+
+        state.current_pid = child.pid;
+        persistDemoBatches();
+
+        child.stdout?.resume();
+        child.stderr?.resume();
+
+        child.on('exit', (code) => {
+          resolve({ code });
+        });
+
+        child.on('error', () => {
+          resolve({ code: 1 });
+        });
+
+        child.unref();
+      });
+
+      // Build per-file result map from the JSONL progress file (reads ALL events, not just last 5)
+      const fileResultMap = new Map<string, 'passed' | 'failed'>();
+      try {
+        if (fs.existsSync(progressFile)) {
+          const lines = fs.readFileSync(progressFile, 'utf-8').trim().split('\n').filter(Boolean);
+          for (const line of lines) {
+            try {
+              const event = JSON.parse(line);
+              if (event.type === 'test_end' && event.file) {
+                const status = (event.status === 'failed' || event.status === 'timedOut') ? 'failed' : 'passed';
+                // If any test in a file fails, the file is failed
+                if (status === 'failed' || !fileResultMap.has(event.file)) {
+                  fileResultMap.set(event.file, status);
+                }
+              }
+            } catch { /* skip malformed lines */ }
+          }
+        }
+      } catch { /* Non-fatal */ }
+
+      const progress = readDemoProgress(progressFile);
+
+      // Map results back to scenarios using per-file results
+      for (const s of batchScenarios) {
+        const fileResult = fileResultMap.get(s.test_file);
+        if (fileResult) {
+          s.status = fileResult;
+        } else {
+          // No progress event for this file — use exit code as fallback
+          s.status = exitResult.code === 0 ? 'passed' : 'failed';
+        }
+
+        if (s.status === 'failed') {
+          s.failure_summary = progress?.recent_errors?.[0]?.slice(0, 500) ?? `Exit code: ${exitResult.code}`;
+        }
+
+        // Update progress counters
+        if (s.status === 'passed') state.progress.passed++;
+        else if (s.status === 'failed') state.progress.failed++;
+        state.progress.completed++;
+      }
+
+      // Walk batch output dir for video files and persist recordings
+      if (args.record_video) {
+        try {
+          const walkForVideos = (dir: string): string[] => {
+            const videos: string[] = [];
+            if (!fs.existsSync(dir)) return videos;
+            const entries = fs.readdirSync(dir, { withFileTypes: true });
+            for (const e of entries) {
+              const full = path.join(dir, e.name);
+              if (e.isDirectory()) videos.push(...walkForVideos(full));
+              else if (e.name.endsWith('.webm')) videos.push(full);
+            }
+            return videos;
+          };
+
+          const videos = walkForVideos(batchOutputDir);
+          // First pass: match videos to scenarios by encoded path
+          for (const videoPath of videos) {
+            const parentDir = path.basename(path.dirname(videoPath));
+            for (const s of batchScenarios) {
+              if (s.video_path) continue; // already matched
+              const encoded = s.test_file.replace(/\//g, '-').replace(/\.ts$/, '');
+              if (parentDir.includes(encoded)) {
+                s.video_path = videoPath;
+                persistScenarioRecording(s.scenario_id, videoPath);
+                break;
+              }
+            }
+          }
+          // Second pass: assign unmatched videos to unmatched scenarios (1:1 only)
+          const unmatchedVideos = videos.filter(v => !batchScenarios.some(s => s.video_path === v));
+          const unmatchedScenarios = batchScenarios.filter(s => !s.video_path);
+          if (unmatchedVideos.length === 1 && unmatchedScenarios.length === 1) {
+            unmatchedScenarios[0].video_path = unmatchedVideos[0];
+            persistScenarioRecording(unmatchedScenarios[0].scenario_id, unmatchedVideos[0]);
+          }
+        } catch {
+          // Non-fatal — video matching is best-effort
+        }
+      }
+
+      // Clean up progress file
+      try { fs.unlinkSync(progressFile); } catch { /* Non-fatal */ }
+
+      persistDemoBatches();
+
+      // Check stop_on_failure
+      if (args.stop_on_failure && state.progress.failed > 0) {
+        // Mark remaining scenarios as skipped
+        for (const s of scenarios) {
+          if (s.status === 'pending') {
+            s.status = 'skipped';
+            state.progress.skipped++;
+          }
+        }
+        state.status = 'failed';
+        state.ended_at = new Date().toISOString();
+        persistDemoBatches();
+        return;
+      }
+    } catch (err) {
+      // Batch process failed to spawn
+      for (const s of batchScenarios) {
+        s.status = 'failed';
+        s.failure_summary = err instanceof Error ? err.message : String(err);
+        state.progress.failed++;
+        state.progress.completed++;
+      }
+      persistDemoBatches();
+    }
+  }
+
+  // All batches complete
+  if (state.status === 'running') {
+    state.status = state.progress.failed > 0 ? 'failed' : 'passed';
+    state.ended_at = new Date().toISOString();
+  }
+  state.current_pid = undefined;
+  state.current_progress_file = undefined;
+  state.progress.current_scenario = undefined;
+
+  // Clean up batch output directories (videos already persisted)
+  try {
+    const batchDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-batch-${state.batch_id}`);
+    if (fs.existsSync(batchDir)) {
+      fs.rmSync(batchDir, { recursive: true, force: true });
+    }
+  } catch {
+    // Non-fatal
+  }
+
+  clearBatchAutoKillTimer(state.batch_id);
+  persistDemoBatches();
+}
+
+/**
+ * Start a batch demo run.
+ * Discovers scenarios, partitions into batches, and runs them sequentially in the background.
+ */
+async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
+  // Ensure dev server is running
+  const devServer = await ensureDevServer(args.base_url || 'http://localhost:3000');
+  if (!devServer.ready) {
+    return JSON.stringify({ error: `Dev server not ready: ${devServer.message}` });
+  }
+
+  // Discover scenarios
+  const scenarios = discoverScenarios({
+    scenario_ids: args.scenario_ids,
+    persona_ids: args.persona_ids,
+    category_filter: args.category_filter,
+  });
+
+  if (scenarios.length === 0) {
+    return JSON.stringify({ error: 'No matching scenarios found. Check filters or ensure demo_scenarios table has enabled entries.' });
+  }
+
+  const batchId = crypto.randomBytes(8).toString('hex');
+  const batchSize = args.batch_size ?? 5;
+  const totalBatches = Math.ceil(scenarios.length / batchSize);
+
+  const batchScenarios: BatchScenarioResult[] = scenarios.map(s => ({
+    scenario_id: s.id,
+    scenario_title: s.title,
+    test_file: s.test_file,
+    status: 'pending' as const,
+  }));
+
+  const state: DemoBatchState = {
+    batch_id: batchId,
+    project: args.project,
+    status: 'running',
+    started_at: new Date().toISOString(),
+    scenarios: batchScenarios,
+    progress: {
+      total_scenarios: scenarios.length,
+      completed: 0,
+      passed: 0,
+      failed: 0,
+      skipped: 0,
+      current_batch: 0,
+      total_batches: totalBatches,
+    },
+    stop_on_failure: args.stop_on_failure ?? false,
+  };
+
+  demoBatches.set(batchId, state);
+  persistDemoBatches();
+  resetBatchAutoKillTimer(batchId);
+
+  // Start background execution (non-blocking)
+  runBatchSequence(state, args).catch((err) => {
+    state.status = 'failed';
+    state.ended_at = new Date().toISOString();
+    process.stderr.write(`[playwright] Batch ${batchId} crashed: ${err instanceof Error ? err.message : err}\n`);
+    persistDemoBatches();
+  });
+
+  return JSON.stringify({
+    batch_id: batchId,
+    total_scenarios: scenarios.length,
+    total_batches: totalBatches,
+    scenarios: batchScenarios.map(s => ({ id: s.scenario_id, title: s.scenario_title, test_file: s.test_file })),
+    message: `Batch run started: ${scenarios.length} scenarios in ${totalBatches} batch(es) of ${batchSize}. Use check_demo_batch_result to monitor progress.`,
+  });
+}
+
+/**
+ * Check the progress/result of a batch demo run.
+ */
+function checkDemoBatchResult(args: CheckDemoBatchResultArgs): CheckDemoBatchResultResult {
+  const { batch_id } = args;
+  let state = demoBatches.get(batch_id);
+
+  if (!state) {
+    loadPersistedDemoBatches();
+    state = demoBatches.get(batch_id);
+  }
+
+  if (!state) {
+    return {
+      status: 'failed',
+      batch_id,
+      progress: { total_scenarios: 0, completed: 0, passed: 0, failed: 0, skipped: 0, current_batch: 0, total_batches: 0 },
+      scenarios: [],
+      message: `No batch run found for ID ${batch_id}.`,
+    };
+  }
+
+  // If running, update progress from current progress file
+  if (state.status === 'running' && state.current_progress_file) {
+    const progress = readDemoProgress(state.current_progress_file);
+    if (progress) {
+      state.progress.current_scenario = progress.current_test ?? state.progress.current_scenario;
+    }
+    resetBatchAutoKillTimer(batch_id);
+  }
+
+  const durationSec = state.ended_at
+    ? Math.round((new Date(state.ended_at).getTime() - new Date(state.started_at).getTime()) / 1000)
+    : Math.round((Date.now() - new Date(state.started_at).getTime()) / 1000);
+
+  let message: string;
+  switch (state.status) {
+    case 'running':
+      message = `Batch running: ${state.progress.completed}/${state.progress.total_scenarios} completed ` +
+        `(${state.progress.passed} passed, ${state.progress.failed} failed) — ` +
+        `batch ${state.progress.current_batch}/${state.progress.total_batches}` +
+        (state.progress.current_scenario ? ` — current: ${state.progress.current_scenario}` : '') +
+        ` (${durationSec}s elapsed)`;
+      break;
+    case 'passed':
+      message = `Batch completed: all ${state.progress.total_scenarios} scenarios passed in ${durationSec}s.`;
+      break;
+    case 'failed':
+      message = `Batch completed with failures: ${state.progress.passed} passed, ${state.progress.failed} failed` +
+        (state.progress.skipped > 0 ? `, ${state.progress.skipped} skipped` : '') +
+        ` in ${durationSec}s.`;
+      break;
+    case 'stopped':
+      message = `Batch stopped: ${state.progress.completed}/${state.progress.total_scenarios} completed before stop.`;
+      break;
+  }
+
+  return {
+    status: state.status,
+    batch_id,
+    progress: { ...state.progress },
+    scenarios: state.scenarios.map(s => ({ ...s })),
+    message,
+  };
+}
+
+/**
+ * Stop a running batch demo run.
+ */
+function stopDemoBatch(args: StopDemoBatchArgs): StopDemoBatchResult {
+  const { batch_id } = args;
+  const state = demoBatches.get(batch_id);
+
+  if (!state) {
+    return {
+      success: false,
+      batch_id,
+      progress: { total_scenarios: 0, completed: 0, passed: 0, failed: 0, skipped: 0, current_batch: 0, total_batches: 0 },
+      scenarios: [],
+      message: `No batch run found for ID ${batch_id}.`,
+    };
+  }
+
+  if (state.status !== 'running') {
+    return {
+      success: true,
+      batch_id,
+      progress: { ...state.progress },
+      scenarios: state.scenarios.map(s => ({ ...s })),
+      message: `Batch already ${state.status}.`,
+    };
+  }
+
+  // Kill current process
+  if (state.current_pid) {
+    try { process.kill(-state.current_pid, 'SIGTERM'); } catch { /* already dead */ }
+  }
+
+  state.status = 'stopped';
+  state.ended_at = new Date().toISOString();
+  for (const s of state.scenarios) {
+    if (s.status === 'pending' || s.status === 'running') {
+      s.status = 'skipped';
+    }
+  }
+  state.progress.skipped = state.scenarios.filter(s => s.status === 'skipped').length;
+
+  clearBatchAutoKillTimer(batch_id);
+  persistDemoBatches();
+
+  return {
+    success: true,
+    batch_id,
+    progress: { ...state.progress },
+    scenarios: state.scenarios.map(s => ({ ...s })),
+    message: `Batch stopped. ${state.progress.completed}/${state.progress.total_scenarios} completed.`,
+  };
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -3006,6 +3628,35 @@ const tools: AnyToolHandler[] = [
       fs.writeFileSync(flagPath, JSON.stringify({ force: true, created_at: new Date().toISOString() }));
       return 'Force-record flag set. The next run_demo call will record video and consume this flag.';
     },
+  },
+  {
+    name: 'run_demo_batch',
+    description:
+      'Run multiple demo scenarios in sequential batches with recording. ' +
+      'Defaults: headless=true, record_video=true, batch_size=5. ' +
+      'Discovers scenarios from user-feedback.db — filter by scenario_ids, persona_ids, or category. ' +
+      'Each batch gets isolated output directories to prevent Playwright from cleaning previous recordings. ' +
+      'Returns a batch_id for polling via check_demo_batch_result. ' +
+      'Dev server is auto-started if not running.',
+    schema: RunDemoBatchArgsSchema,
+    handler: runDemoBatch,
+  },
+  {
+    name: 'check_demo_batch_result',
+    description:
+      'Check progress or final result of a batch demo run. ' +
+      'Returns per-scenario status, video paths, failure summaries, and aggregate progress. ' +
+      'Auto-kill: batch runs are stopped if not polled within 2 minutes. Each poll resets the countdown.',
+    schema: CheckDemoBatchResultArgsSchema,
+    handler: checkDemoBatchResult,
+  },
+  {
+    name: 'stop_demo_batch',
+    description:
+      'Stop a running batch demo run. Kills the current Playwright process and marks remaining scenarios as skipped. ' +
+      'Returns the final progress snapshot.',
+    schema: StopDemoBatchArgsSchema,
+    handler: stopDemoBatch,
   },
 ];
 
