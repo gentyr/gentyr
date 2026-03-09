@@ -38,9 +38,9 @@ Call `mcp__playwright__run_demo_batch({ project: "demo" })`.
 
 All defaults are correct:
 - `headless: true` — no browser window
-- `record_video: true` — every scenario recorded
 - `batch_size: 5` — balanced throughput
 - `slow_mo: 0` — full speed
+- Video recording is always enabled
 
 Report the batch_id and scenario count.
 

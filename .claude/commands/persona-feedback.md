@@ -132,7 +132,7 @@ After showing details, present via `AskUserQuestion` (single-select):
 If **"Replay this session"**:
 1. Call `mcp__playwright__preflight_check({ project: "demo" })`. If `ready: false` → create urgent DEPUTY-CTO task with failure details and STOP.
 2. Call `mcp__user-feedback__get_session_audit({ session_id: "<selected>" })`. If 0 actions → "No recorded actions for this session." → return to Step 4.
-3. Call `mcp__playwright__run_demo({ project: "demo", test_file: "e2e/demo/session-replay-runner.demo.ts", slow_mo: 800, pause_at_end: true, extra_env: { REPLAY_SESSION_ID: "<session_id>", REPLAY_AUDIT_DATA: JSON.stringify(auditActions) } })`.
+3. Call `mcp__playwright__run_demo({ project: "demo", test_file: "e2e/demo/session-replay-runner.demo.ts", slow_mo: 800, extra_env: { REPLAY_SESSION_ID: "<session_id>", REPLAY_AUDIT_DATA: JSON.stringify(auditActions) } })`.
 4. Poll every 10 seconds (max 20 polls). If `progress.has_failures: true` → call `stop_demo`, create urgent DEPUTY-CTO task, STOP.
 5. After replay completes → return to Step 4.
 

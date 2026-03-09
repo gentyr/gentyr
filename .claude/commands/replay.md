@@ -82,7 +82,6 @@ Call `mcp__playwright__run_demo({
   project: "demo",
   test_file: "e2e/demo/session-replay-runner.demo.ts",
   slow_mo: 800,
-  pause_at_end: true,
   extra_env: {
     REPLAY_SESSION_ID: "<session_id>",
     REPLAY_AUDIT_DATA: JSON.stringify(auditActions)

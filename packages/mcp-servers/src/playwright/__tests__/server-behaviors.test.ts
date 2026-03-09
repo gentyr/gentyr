@@ -1696,39 +1696,6 @@ describe('early_exit code 0 — status determination', () => {
 });
 
 // ============================================================================
-// effectivePauseAtEnd — auto-disable pause_at_end when record_video is true
-//
-// page.pause() holds the browser open, preventing context.close() which is
-// required to finalize the .webm video file. When both are requested,
-// record_video wins and pause_at_end is silently disabled.
-// ============================================================================
-
-/**
- * Mirrors the effectivePauseAtEnd computation in runDemo().
- */
-function computeEffectivePauseAtEnd(record_video: boolean, pause_at_end: boolean): boolean {
-  return (record_video && pause_at_end) ? false : pause_at_end;
-}
-
-describe('computeEffectivePauseAtEnd — record_video vs pause_at_end', () => {
-  it('should return false when both record_video and pause_at_end are true', () => {
-    expect(computeEffectivePauseAtEnd(true, true)).toBe(false);
-  });
-
-  it('should return true when pause_at_end is true and record_video is false', () => {
-    expect(computeEffectivePauseAtEnd(false, true)).toBe(true);
-  });
-
-  it('should return false when pause_at_end is false and record_video is true', () => {
-    expect(computeEffectivePauseAtEnd(true, false)).toBe(false);
-  });
-
-  it('should return false when both are false', () => {
-    expect(computeEffectivePauseAtEnd(false, false)).toBe(false);
-  });
-});
-
-// ============================================================================
 // Crash event JSONL written by early_exit non-zero path
 //
 // When a Playwright process exits with a non-zero code within the monitoring
