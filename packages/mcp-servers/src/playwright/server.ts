@@ -3126,7 +3126,7 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs): 
 
       // Map results back to scenarios using per-file results
       for (const s of batchScenarios) {
-        const fileResult = fileResultMap.get(s.test_file);
+        const fileResult = fileResultMap.get(path.basename(s.test_file));
         if (fileResult) {
           s.status = fileResult;
         } else {
