@@ -3062,9 +3062,9 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs): 
 
     // Build command args — include all test files in this batch
     const cmdArgs = ['playwright', 'test', '--project', args.project];
-    for (const s of batchScenarios) {
-      cmdArgs.push(s.test_file);
-    }
+    // Insert test files BEFORE --project (Playwright treats post-project positional args as project names)
+    const testFiles = batchScenarios.map(s => s.test_file);
+    cmdArgs.splice(2, 0, ...testFiles);
     if (args.trace) cmdArgs.push('--trace', 'on');
     if (!args.headless) cmdArgs.push('--headed');
     cmdArgs.push('--timeout', String(args.timeout ?? 120000));
