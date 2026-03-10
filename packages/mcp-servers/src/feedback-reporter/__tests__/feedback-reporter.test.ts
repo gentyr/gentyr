@@ -84,7 +84,7 @@ interface ReportRecord {
   category: string;
   priority: string;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   triage_status: string;
 }
 
@@ -119,7 +119,7 @@ function submitFinding(
   const reportId = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
 
   // 1. Store finding in local session DB
   sessionDb.prepare(`
@@ -198,7 +198,7 @@ function submitSummary(
   const reportId = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
 
   // 1. Store summary in local session DB
   sessionDb.prepare(`

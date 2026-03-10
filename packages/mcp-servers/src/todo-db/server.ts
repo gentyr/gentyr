@@ -96,9 +96,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_at TEXT,
     assigned_by TEXT,
     metadata TEXT,
-    created_timestamp INTEGER NOT NULL,
-    completed_timestamp INTEGER,
-    started_timestamp INTEGER,
+    created_timestamp TEXT NOT NULL,
+    completed_timestamp TEXT,
+    started_timestamp TEXT,
     followup_enabled INTEGER NOT NULL DEFAULT 0,
     followup_section TEXT,
     followup_prompt TEXT,
@@ -129,13 +129,13 @@ CREATE TABLE IF NOT EXISTS archived_tasks (
     created_at TEXT NOT NULL,
     started_at TEXT,
     completed_at TEXT,
-    created_timestamp INTEGER NOT NULL,
-    completed_timestamp INTEGER,
+    created_timestamp TEXT NOT NULL,
+    completed_timestamp TEXT,
     followup_enabled INTEGER NOT NULL DEFAULT 0,
     followup_section TEXT,
     followup_prompt TEXT,
     archived_at TEXT NOT NULL,
-    archived_timestamp INTEGER NOT NULL
+    archived_timestamp TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_archived_tasks_archived ON archived_tasks(archived_timestamp DESC);
@@ -198,7 +198,7 @@ function initializeDatabase(): Database.Database {
   // Auto-migration: ensure DEPUTY-CTO is in CHECK constraint
   try {
     const testId = 'migration-check-' + Date.now();
-    db.prepare("INSERT INTO tasks (id, section, status, title, created_at, created_timestamp) VALUES (?, 'DEPUTY-CTO', 'pending', '_migration_test', ?, ?)").run(testId, new Date().toISOString(), Math.floor(Date.now() / 1000));
+    db.prepare("INSERT INTO tasks (id, section, status, title, created_at, created_timestamp) VALUES (?, 'DEPUTY-CTO', 'pending', '_migration_test', ?, ?)").run(testId, new Date().toISOString(), new Date().toISOString());
     db.prepare("DELETE FROM tasks WHERE id = ?").run(testId);
   } catch {
     // Old CHECK constraint — recreate table preserving data
@@ -211,7 +211,7 @@ function initializeDatabase(): Database.Database {
   // Auto-migration: ensure PRODUCT-MANAGER is in CHECK constraint
   try {
     const testId = 'migration-pm-check-' + Date.now();
-    db.prepare("INSERT INTO tasks (id, section, status, title, created_at, created_timestamp) VALUES (?, 'PRODUCT-MANAGER', 'pending', '_migration_test', ?, ?)").run(testId, new Date().toISOString(), Math.floor(Date.now() / 1000));
+    db.prepare("INSERT INTO tasks (id, section, status, title, created_at, created_timestamp) VALUES (?, 'PRODUCT-MANAGER', 'pending', '_migration_test', ?, ?)").run(testId, new Date().toISOString(), new Date().toISOString());
     db.prepare("DELETE FROM tasks WHERE id = ?").run(testId);
   } catch {
     db.exec("ALTER TABLE tasks RENAME TO tasks_old");
@@ -231,8 +231,16 @@ function initializeDatabase(): Database.Database {
   try {
     db.prepare("SELECT started_timestamp FROM tasks LIMIT 0").get();
   } catch {
-    db.exec("ALTER TABLE tasks ADD COLUMN started_timestamp INTEGER");
+    db.exec("ALTER TABLE tasks ADD COLUMN started_timestamp TEXT");
   }
+
+  // Migration: Convert any existing INTEGER timestamps to ISO 8601 TEXT (G005)
+  db.exec(`UPDATE tasks SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
+  db.exec(`UPDATE tasks SET completed_timestamp = datetime(completed_timestamp, 'unixepoch') || 'Z' WHERE typeof(completed_timestamp) = 'integer'`);
+  db.exec(`UPDATE tasks SET started_timestamp = datetime(started_timestamp, 'unixepoch') || 'Z' WHERE typeof(started_timestamp) = 'integer'`);
+  db.exec(`UPDATE archived_tasks SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
+  db.exec(`UPDATE archived_tasks SET completed_timestamp = datetime(completed_timestamp, 'unixepoch') || 'Z' WHERE typeof(completed_timestamp) = 'integer'`);
+  db.exec(`UPDATE archived_tasks SET archived_timestamp = datetime(archived_timestamp, 'unixepoch') || 'Z' WHERE typeof(archived_timestamp) = 'integer'`);
 
   return db;
 }
@@ -469,7 +477,7 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
 
   const priority = args.priority ?? 'normal';
 
@@ -512,7 +520,7 @@ function startTask(args: StartTaskArgs): StartTaskResult | ErrorResult {
 
   const now = new Date();
   const started_at = now.toISOString();
-  const started_timestamp = Math.floor(now.getTime() / 1000);
+  const started_timestamp = now.toISOString();
 
   db.prepare(`
     UPDATE tasks SET status = 'in_progress', started_at = ?, started_timestamp = ?
@@ -540,7 +548,7 @@ function completeTask(args: CompleteTaskArgs): CompleteTaskResult | ErrorResult 
 
   const now = new Date();
   const completed_at = now.toISOString();
-  const completed_timestamp = Math.floor(now.getTime() / 1000);
+  const completed_timestamp = now.toISOString();
 
   db.prepare(`
     UPDATE tasks SET status = 'completed', completed_at = ?, completed_timestamp = ?
@@ -556,7 +564,7 @@ function completeTask(args: CompleteTaskArgs): CompleteTaskResult | ErrorResult 
     const title = `[Follow-up] ${task.title}`;
     const description = task.followup_prompt;
     const followup_created_at = now.toISOString();
-    const followup_timestamp = Math.floor(now.getTime() / 1000);
+    const followup_timestamp = now.toISOString();
 
     // priority intentionally omitted — follow-ups default to 'normal' regardless of parent's priority
     db.prepare(`
@@ -589,7 +597,7 @@ function deleteTask(args: DeleteTaskArgs): DeleteTaskResult | ErrorResult {
     // Archive completed tasks before deleting
     const now = new Date();
     const archived_at = now.toISOString();
-    const archived_timestamp = Math.floor(now.getTime() / 1000);
+    const archived_timestamp = now.toISOString();
 
     const archiveAndDelete = db.transaction(() => {
       db.prepare(`
@@ -653,8 +661,9 @@ function getSummary(): SummaryResult {
 
 function cleanup(): CleanupResult {
   const db = getDb();
-  const now = Math.floor(Date.now() / 1000);
   const nowIso = new Date().toISOString();
+  const staleStartCutoff = new Date(Date.now() - 1800000).toISOString();
+  const oldCompletedCutoff = new Date(Date.now() - 10800000).toISOString();
   const changes = {
     stale_starts_cleared: 0,
     old_completed_archived: 0,
@@ -668,8 +677,8 @@ function cleanup(): CleanupResult {
     SET status = 'pending', started_at = NULL, started_timestamp = NULL
     WHERE status = 'in_progress'
       AND started_timestamp IS NOT NULL
-      AND (? - started_timestamp) > 1800
-  `).run(now);
+      AND started_timestamp < ?
+  `).run(staleStartCutoff);
   changes.stale_starts_cleared = staleResult.changes;
 
   // Archive completed tasks older than 3 hours
@@ -680,15 +689,15 @@ function cleanup(): CleanupResult {
       FROM tasks
       WHERE status = 'completed'
         AND completed_timestamp IS NOT NULL
-        AND (? - completed_timestamp) > 10800
-    `).run(nowIso, now, now);
+        AND completed_timestamp < ?
+    `).run(nowIso, nowIso, oldCompletedCutoff);
 
     db.prepare(`
       DELETE FROM tasks
       WHERE status = 'completed'
         AND completed_timestamp IS NOT NULL
-        AND (? - completed_timestamp) > 10800
-    `).run(now);
+        AND completed_timestamp < ?
+    `).run(oldCompletedCutoff);
 
     return insertResult.changes;
   });
@@ -707,7 +716,7 @@ function cleanup(): CleanupResult {
         WHERE status = 'completed'
         ORDER BY completed_timestamp ASC
         LIMIT ?
-      `).run(nowIso, now, toRemove);
+      `).run(nowIso, nowIso, toRemove);
 
       db.prepare(`
         DELETE FROM tasks WHERE id IN (
@@ -724,7 +733,7 @@ function cleanup(): CleanupResult {
   }
 
   // Prune old archived tasks: keep last 500 OR anything within 30 days
-  const thirtyDaysAgo = now - (30 * 24 * 60 * 60);
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const pruneResult = db.prepare(`
     DELETE FROM archived_tasks
     WHERE id NOT IN (
@@ -771,7 +780,7 @@ function getSessionsForTask(args: GetSessionsForTaskArgs): GetSessionsForTaskRes
   }
 
   // Find all sessions within time window
-  const completionTime = task.completed_timestamp * 1000; // Convert to ms
+  const completionTime = new Date(task.completed_timestamp).getTime();
 
   try {
     const files = fs.readdirSync(sessionDir)
@@ -905,7 +914,7 @@ function getCompletedSince(args: GetCompletedSinceArgs): GetCompletedSinceResult
   const db = getDb();
   const hours = args.hours ?? 24;
   const since = Date.now() - (hours * 60 * 60 * 1000);
-  const sinceTimestamp = Math.floor(since / 1000);
+  const sinceIso = new Date(since).toISOString();
 
   interface CountRow {
     section: string;
@@ -918,7 +927,7 @@ function getCompletedSince(args: GetCompletedSinceArgs): GetCompletedSinceResult
     WHERE status = 'completed' AND completed_timestamp >= ?
     GROUP BY section
     ORDER BY count DESC
-  `).all(sinceTimestamp) as CountRow[];
+  `).all(sinceIso) as CountRow[];
 
   const total = rows.reduce((sum, row) => sum + row.count, 0);
 
@@ -1125,11 +1134,11 @@ function getWorklog(args: GetWorklogArgs): GetWorklogResult {
 
     // Count completed tasks from todo.db for coverage
     const db = getDb();
-    const thirtyDaysAgoTimestamp = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
+    const thirtyDaysAgoIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     interface CountResult { count: number }
     const completedCount = (db.prepare(
       "SELECT COUNT(*) as count FROM tasks WHERE status = 'completed' AND completed_timestamp >= ?"
-    ).get(thirtyDaysAgoTimestamp) as CountResult).count;
+    ).get(thirtyDaysAgoIso) as CountResult).count;
 
     const cacheHitPct = metricRow.sum_input && metricRow.sum_cache_read
       ? Math.round((metricRow.sum_cache_read / (metricRow.sum_input + metricRow.sum_cache_read)) * 1000) / 10
@@ -1164,10 +1173,10 @@ function listArchivedTasks(args: ListArchivedTasksArgs): ListArchivedTasksResult
   const db = getDb();
   const hours = args.hours ?? 24;
   const limit = args.limit ?? 20;
-  const since = Math.floor((Date.now() - hours * 60 * 60 * 1000) / 1000);
+  const sinceIso = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
 
   let sql = 'SELECT * FROM archived_tasks WHERE archived_timestamp >= ?';
-  const params: unknown[] = [since];
+  const params: unknown[] = [sinceIso];
 
   if (args.section) {
     sql += ' AND section = ?';

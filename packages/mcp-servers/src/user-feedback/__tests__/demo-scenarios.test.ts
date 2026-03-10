@@ -34,7 +34,7 @@ interface ScenarioRow {
   sort_order: number;
   enabled: number;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   updated_at: string;
 }
 
@@ -69,7 +69,7 @@ function createPersona(db: Database.Database, args: {
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
   const modes = Array.isArray(args.consumption_mode) ? args.consumption_mode : [args.consumption_mode];
 
   db.prepare(`
@@ -126,7 +126,7 @@ function createScenario(db: Database.Database, args: {
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
 
   try {
     db.prepare(`

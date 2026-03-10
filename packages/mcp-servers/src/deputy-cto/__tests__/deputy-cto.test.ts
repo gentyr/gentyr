@@ -26,7 +26,7 @@ interface QuestionRow {
   context?: string;
   recommendation?: string;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   answered_at?: string;
   answer?: string;
 }
@@ -180,7 +180,7 @@ describe('Deputy-CTO Server', () => {
     const id = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
-    const created_timestamp = Math.floor(now.getTime() / 1000);
+    const created_timestamp = now.toISOString();
 
     db.prepare(`
       INSERT INTO questions (id, type, status, title, description, context, suggested_options, recommendation, investigation_task_id, created_at, created_timestamp)
@@ -233,7 +233,7 @@ describe('Deputy-CTO Server', () => {
     const id = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
-    const created_timestamp = Math.floor(now.getTime() / 1000);
+    const created_timestamp = now.toISOString();
 
     db.prepare(`
       INSERT INTO commit_decisions (id, decision, rationale, created_at, created_timestamp)
@@ -252,7 +252,7 @@ describe('Deputy-CTO Server', () => {
     const questionId = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
-    const created_timestamp = Math.floor(now.getTime() / 1000);
+    const created_timestamp = now.toISOString();
 
     // Create commit decision
     db.prepare(`
@@ -328,7 +328,7 @@ describe('Deputy-CTO Server', () => {
 
     const now = new Date();
     const cleared_at = now.toISOString();
-    const cleared_timestamp = Math.floor(now.getTime() / 1000);
+    const cleared_timestamp = now.toISOString();
 
     db.prepare(`
       INSERT INTO cleared_questions (id, type, title, description, recommendation, answer, answered_at, decided_by, cleared_at, cleared_timestamp)
@@ -362,11 +362,11 @@ describe('Deputy-CTO Server', () => {
     description: string;
     status?: string;
     context?: string;
-    created_timestamp?: number;
+    created_timestamp?: string;
   }) => {
     const id = randomUUID();
-    const ts = args.created_timestamp ?? Math.floor(Date.now() / 1000);
-    const created_at = new Date(ts * 1000).toISOString();
+    const created_timestamp = args.created_timestamp ?? new Date().toISOString();
+    const created_at = created_timestamp;
 
     db.prepare(`
       INSERT INTO questions (id, type, status, title, description, context, created_at, created_timestamp)
@@ -379,7 +379,7 @@ describe('Deputy-CTO Server', () => {
       args.description,
       args.context ?? null,
       created_at,
-      ts
+      created_timestamp
     );
 
     return id;
@@ -817,7 +817,7 @@ describe('Deputy-CTO Server', () => {
           'Test',
           'Description',
           new Date().toISOString(),
-          Math.floor(Date.now() / 1000)
+          new Date().toISOString()
         );
       }).toThrow();
     });
@@ -834,7 +834,7 @@ describe('Deputy-CTO Server', () => {
           'Test',
           'Description',
           new Date().toISOString(),
-          Math.floor(Date.now() / 1000)
+          new Date().toISOString()
         );
       }).toThrow();
     });
@@ -908,6 +908,634 @@ describe('Deputy-CTO Server', () => {
     });
   });
 
+  // ============================================================================
+  // G011 Idempotency Tests for spawn_implementation_task
+  //
+  // These tests validate that spawn_implementation_task is idempotent by
+  // description for active ('spawned' status) tasks. The partial unique index
+  // idx_spawned_tasks_description_active ON spawned_tasks(description)
+  // WHERE status = 'spawned' and the SELECT-before-INSERT pattern ensure
+  // duplicate calls return the existing PID rather than spawning a new process.
+  //
+  // All tests operate at the DATABASE level only — no real Claude processes
+  // are spawned. We INSERT rows directly into spawned_tasks to simulate
+  // previously spawned tasks, then call local helpers that mirror the
+  // server-side dedup logic.
+  // ============================================================================
+
+  describe('G011: spawn_implementation_task idempotency', () => {
+    // Mirrors the dedup portion of spawnImplementationTask() in server.ts.
+    // Does NOT call spawn() — returns a simulated result based purely on DB state.
+    const checkSpawnDedup = (description: string, fakePid: number = 12345): {
+      spawned: boolean;
+      pid: number | null;
+      message: string;
+    } => {
+      // G011: Check for existing active task with same description before spawning.
+      const existing = db.prepare(
+        `SELECT id, pid, description, created_at FROM spawned_tasks WHERE description = ? AND status = 'spawned'`
+      ).get(description) as { id: number; pid: number; description: string; created_at: string } | undefined;
+
+      if (existing) {
+        return {
+          spawned: false,
+          pid: existing.pid,
+          message: `Task already active: ${existing.description} (PID: ${existing.pid}, created: ${existing.created_at}). Skipped duplicate spawn.`,
+        };
+      }
+
+      // Simulate a successful spawn by inserting a tracking row with a fake PID.
+      // In production, spawn() would be called here. We skip it in tests.
+      const promptHash = 'testhash0123456';
+      db.prepare(
+        `INSERT INTO spawned_tasks (description, prompt_hash, pid, status) VALUES (?, ?, ?, 'spawned')`
+      ).run(description, promptHash, fakePid);
+
+      return {
+        spawned: true,
+        pid: fakePid,
+        message: `Task spawned: ${description} (PID: ${fakePid})`,
+      };
+    };
+
+    // Helper to insert a spawned_tasks row directly with a given status.
+    const insertSpawnedTask = (description: string, pid: number, status: 'spawned' | 'completed') => {
+      db.prepare(
+        `INSERT INTO spawned_tasks (description, prompt_hash, pid, status) VALUES (?, ?, ?, ?)`
+      ).run(description, 'deadbeef01234567', pid, status);
+    };
+
+    // Helper to insert a spawned_tasks row with a custom created_at timestamp
+    // (SQLite datetime string) to simulate aged records for cleanup tests.
+    const insertSpawnedTaskWithAge = (description: string, pid: number, status: 'spawned' | 'completed', createdAt: string) => {
+      db.prepare(
+        `INSERT INTO spawned_tasks (description, prompt_hash, pid, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(description, 'deadbeef01234567', pid, status, createdAt, createdAt);
+    };
+
+    // Mirrors the spawned_tasks portion of cleanupOldRecordsInternal() in server.ts.
+    const cleanupSpawnedTasks = () => {
+      const result = db.prepare(
+        `DELETE FROM spawned_tasks WHERE created_at < datetime('now', '-7 days')`
+      ).run();
+      return { spawned_tasks_deleted: result.changes };
+    };
+
+    it('should return spawned: false with existing PID when same description has active task (dedup: same description returns existing task)', () => {
+      // Arrange: insert an active spawned_tasks row directly
+      const existingPid = 99001;
+      insertSpawnedTask('Test Task', existingPid, 'spawned');
+
+      // Act: call dedup logic with the same description
+      const result = checkSpawnDedup('Test Task', 99999 /* would-be new PID */);
+
+      // Assert: duplicate is detected, existing PID returned, no new spawn
+      expect(result.spawned).toBe(false);
+      expect(result.pid).toBe(existingPid);
+      expect(typeof result.pid).toBe('number');
+      expect(result.message).toContain('already active');
+      expect(result.message).toContain('Test Task');
+      expect(result.message).toContain(String(existingPid));
+
+      // Only one row should exist in the table
+      const count = db.prepare('SELECT COUNT(*) as count FROM spawned_tasks').get() as { count: number };
+      expect(count.count).toBe(1);
+    });
+
+    it('should return spawned: true when description differs (different descriptions create separate records)', () => {
+      // Arrange: insert an active task for description 'Task A'
+      insertSpawnedTask('Task A', 88001, 'spawned');
+
+      // Act: spawn with a different description 'Task B'
+      const result = checkSpawnDedup('Task B', 88002);
+
+      // Assert: no dedup — new task created
+      expect(result.spawned).toBe(true);
+      expect(result.pid).toBe(88002);
+      expect(result.message).toContain('Task B');
+
+      // Two rows should exist: one for Task A, one for Task B
+      const count = db.prepare('SELECT COUNT(*) as count FROM spawned_tasks').get() as { count: number };
+      expect(count.count).toBe(2);
+
+      // Verify Task B was recorded
+      const taskB = db.prepare(
+        `SELECT * FROM spawned_tasks WHERE description = 'Task B'`
+      ).get() as { description: string; pid: number; status: string } | undefined;
+      expect(taskB).toBeDefined();
+      expect(taskB?.pid).toBe(88002);
+      expect(taskB?.status).toBe('spawned');
+    });
+
+    it('should return spawned: true when prior task with same description is completed (completed task allows re-spawn)', () => {
+      // Arrange: insert a completed task with the same description
+      insertSpawnedTask('Test Task', 77001, 'completed');
+
+      // Act: spawn with the same description — completed tasks should not block
+      const result = checkSpawnDedup('Test Task', 77002);
+
+      // Assert: completed task is NOT treated as active, new spawn proceeds
+      expect(result.spawned).toBe(true);
+      expect(result.pid).toBe(77002);
+      expect(result.message).not.toContain('already active');
+
+      // Two rows should exist: the old completed one and the new spawned one
+      const count = db.prepare('SELECT COUNT(*) as count FROM spawned_tasks').get() as { count: number };
+      expect(count.count).toBe(2);
+
+      // Verify a spawned row now exists alongside the completed row
+      const activeCount = db.prepare(
+        `SELECT COUNT(*) as count FROM spawned_tasks WHERE description = 'Test Task' AND status = 'spawned'`
+      ).get() as { count: number };
+      expect(activeCount.count).toBe(1);
+
+      const completedCount = db.prepare(
+        `SELECT COUNT(*) as count FROM spawned_tasks WHERE description = 'Test Task' AND status = 'completed'`
+      ).get() as { count: number };
+      expect(completedCount.count).toBe(1);
+    });
+
+    it('should delete spawned_tasks older than 7 days and preserve recent ones (cleanup removes old spawned_tasks)', () => {
+      // Arrange: insert rows with old timestamps (>7 days) and recent timestamps
+      const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').split('.')[0];
+      const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').split('.')[0];
+      const oneDayAgo = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').split('.')[0];
+
+      // Old rows that should be deleted
+      insertSpawnedTaskWithAge('Old Task A', 1001, 'spawned', eightDaysAgo);
+      insertSpawnedTaskWithAge('Old Task B', 1002, 'completed', tenDaysAgo);
+
+      // Recent row that must be preserved
+      insertSpawnedTaskWithAge('Recent Task C', 1003, 'spawned', oneDayAgo);
+
+      // Act: run cleanup
+      const result = cleanupSpawnedTasks();
+
+      // Assert: 2 old rows deleted
+      expect(result.spawned_tasks_deleted).toBe(2);
+      expect(typeof result.spawned_tasks_deleted).toBe('number');
+
+      // Only the recent row remains
+      const remaining = db.prepare('SELECT COUNT(*) as count FROM spawned_tasks').get() as { count: number };
+      expect(remaining.count).toBe(1);
+
+      const recentTask = db.prepare(
+        `SELECT description FROM spawned_tasks`
+      ).get() as { description: string } | undefined;
+      expect(recentTask).toBeDefined();
+      expect(recentTask?.description).toBe('Recent Task C');
+    });
+
+    it('should have the correct unique partial index on spawned_tasks(description) where status = "spawned" (schema has correct index)', () => {
+      const indexes = db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_spawned_tasks_description_active'"
+        )
+        .all() as { name: string }[];
+
+      expect(indexes).toHaveLength(1);
+      expect(indexes[0].name).toBe('idx_spawned_tasks_description_active');
+    });
+
+    it('should enforce the unique constraint at the database level for concurrent spawns of the same description (UNIQUE constraint race condition fallback)', () => {
+      // Arrange: pre-insert a spawned row for 'Race Task'
+      insertSpawnedTask('Race Task', 55001, 'spawned');
+
+      // Act: attempt to directly insert a second spawned row with the same description.
+      // This simulates a race condition where two callers both passed the SELECT check
+      // before either INSERT ran. The UNIQUE partial index must reject the second INSERT.
+      expect(() => {
+        db.prepare(
+          `INSERT INTO spawned_tasks (description, prompt_hash, pid, status) VALUES (?, ?, ?, 'spawned')`
+        ).run('Race Task', 'anotherhash1234', 55002);
+      }).toThrow();
+
+      // Only one spawned row should exist for 'Race Task'
+      const count = db.prepare(
+        `SELECT COUNT(*) as count FROM spawned_tasks WHERE description = 'Race Task' AND status = 'spawned'`
+      ).get() as { count: number };
+      expect(count.count).toBe(1);
+    });
+  });
+
+  // ============================================================================
+  // G011 Idempotency Tests for reject_commit
+  //
+  // These tests validate that rejectCommit() is idempotent by title for pending
+  // rejection questions. The SELECT-first dedup pattern ensures duplicate calls
+  // return the existing record rather than creating duplicate questions or
+  // commit_decisions rows. Both INSERTs are wrapped in a transaction for
+  // atomicity: either both records are created or neither is.
+  // ============================================================================
+
+  describe('G011 idempotency - reject_commit', () => {
+    // Mirrors the G011-compliant rejectCommit() logic from server.ts.
+    // Uses SELECT-first dedup on type='rejection' AND title AND status != 'answered',
+    // then wraps the dual INSERT in a transaction.
+    const rejectCommitIdempotent = (args: { title: string; description: string }): {
+      rejected: boolean;
+      decision_id: string;
+      question_id: string;
+      message: string;
+    } => {
+      // G011: Check for existing pending rejection question with the same title
+      const existingQuestion = db.prepare(`
+        SELECT id FROM questions WHERE type = 'rejection' AND title = ? AND status != 'answered' LIMIT 1
+      `).get(args.title) as { id: string } | undefined;
+
+      if (existingQuestion) {
+        const existingDecision = db.prepare(`
+          SELECT id FROM commit_decisions WHERE question_id = ? ORDER BY created_timestamp DESC LIMIT 1
+        `).get(existingQuestion.id) as { id: string } | undefined;
+
+        return {
+          rejected: true,
+          decision_id: existingDecision?.id ?? '',
+          question_id: existingQuestion.id,
+          message: `Commit rejection already recorded (deduplicated). Question ID: ${existingQuestion.id}. Commits will be blocked until CTO addresses this.`,
+        };
+      }
+
+      const decisionId = randomUUID();
+      const questionId = randomUUID();
+      const now = new Date();
+      const created_at = now.toISOString();
+      const created_timestamp = now.toISOString();
+
+      // Wrap both INSERTs in a transaction for atomicity
+      const insertBoth = db.transaction(() => {
+        db.prepare(`
+          INSERT INTO commit_decisions (id, decision, rationale, question_id, created_at, created_timestamp)
+          VALUES (?, 'rejected', ?, ?, ?, ?)
+        `).run(decisionId, args.description, questionId, created_at, created_timestamp);
+
+        db.prepare(`
+          INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+          VALUES (?, 'rejection', 'pending', ?, ?, ?, ?)
+        `).run(questionId, args.title, args.description, created_at, created_timestamp);
+      });
+
+      insertBoth();
+
+      return {
+        rejected: true,
+        decision_id: decisionId,
+        question_id: questionId,
+        message: `Commit rejected. Question created for CTO (ID: ${questionId}). Commits will be blocked until CTO addresses this.`,
+      };
+    };
+
+    it('should return the same question_id on the second call with the same title (duplicate rejection returns existing record)', () => {
+      const args = { title: 'Breaking API change', description: 'This breaks the v2 API contract' };
+
+      const first = rejectCommitIdempotent(args);
+      const second = rejectCommitIdempotent(args);
+
+      // Both calls must report rejection
+      expect(first.rejected).toBe(true);
+      expect(second.rejected).toBe(true);
+
+      // Same question_id must be returned — no new question created
+      expect(second.question_id).toBe(first.question_id);
+      expect(typeof second.question_id).toBe('string');
+      expect(second.question_id.length).toBeGreaterThan(0);
+    });
+
+    it('should create only one question row after two calls with the same title (no duplicate DB rows)', () => {
+      const args = { title: 'Security vulnerability found', description: 'SQL injection risk in user input handler' };
+
+      rejectCommitIdempotent(args);
+      rejectCommitIdempotent(args);
+
+      const questionCount = db.prepare(
+        "SELECT COUNT(*) as count FROM questions WHERE type = 'rejection' AND title = ?"
+      ).get(args.title) as { count: number };
+
+      expect(questionCount.count).toBe(1);
+    });
+
+    it('should create only one commit_decision row after two calls with the same title (no duplicate commit_decisions)', () => {
+      const args = { title: 'Missing test coverage', description: 'Auth module has no tests' };
+
+      rejectCommitIdempotent(args);
+      rejectCommitIdempotent(args);
+
+      const decisionCount = db.prepare(
+        "SELECT COUNT(*) as count FROM commit_decisions WHERE decision = 'rejected'"
+      ).get() as { count: number };
+
+      expect(decisionCount.count).toBe(1);
+    });
+
+    it('should preserve the original question_id in the second response (dedup returns the original record)', () => {
+      const args = { title: 'Config drift detected', description: 'Production config differs from staging' };
+
+      const first = rejectCommitIdempotent(args);
+      // Second call uses different description — dedup must return the original record
+      const second = rejectCommitIdempotent({ ...args, description: 'Different description on retry' });
+
+      expect(second.question_id).toBe(first.question_id);
+
+      // The stored description must be the ORIGINAL (first call's) description
+      const row = db.prepare(
+        'SELECT description FROM questions WHERE id = ?'
+      ).get(first.question_id) as { description: string };
+      expect(row.description).toBe('Production config differs from staging');
+    });
+
+    it('should create both commit_decision and question atomically — both records exist after a single call (transaction safety)', () => {
+      const args = { title: 'Atomic transaction test', description: 'Verify both records are created together' };
+
+      const result = rejectCommitIdempotent(args);
+
+      // Both records must exist
+      const question = db.prepare(
+        'SELECT id, type, status FROM questions WHERE id = ?'
+      ).get(result.question_id) as { id: string; type: string; status: string } | undefined;
+
+      const decision = db.prepare(
+        'SELECT id, decision, question_id FROM commit_decisions WHERE id = ?'
+      ).get(result.decision_id) as { id: string; decision: string; question_id: string } | undefined;
+
+      expect(question).toBeDefined();
+      expect(question?.type).toBe('rejection');
+      expect(question?.status).toBe('pending');
+
+      expect(decision).toBeDefined();
+      expect(decision?.decision).toBe('rejected');
+      // The commit_decision must reference the question
+      expect(decision?.question_id).toBe(result.question_id);
+    });
+
+    it('should include "deduplicated" in the message for the second call (message signals dedup occurred)', () => {
+      const args = { title: 'Linting errors', description: 'ESLint found 15 errors' };
+
+      rejectCommitIdempotent(args);
+      const second = rejectCommitIdempotent(args);
+
+      expect(second.message).toContain('deduplicated');
+      expect(second.message).toContain(second.question_id);
+    });
+
+    it('should allow a new rejection with the same title after the prior question is answered (answered question allows re-rejection)', () => {
+      const args = { title: 'Recurring policy violation', description: 'First occurrence' };
+
+      const original = rejectCommitIdempotent(args);
+
+      // Mark the question as answered (CTO addressed it)
+      const now = new Date().toISOString();
+      db.prepare(
+        "UPDATE questions SET status = 'answered', answer = 'Fixed', answered_at = ?, decided_by = 'cto' WHERE id = ?"
+      ).run(now, original.question_id);
+
+      // A new rejection with the same title must produce a new question
+      const reissued = rejectCommitIdempotent({ ...args, description: 'Second occurrence' });
+
+      expect(reissued.question_id).not.toBe(original.question_id);
+      expect(reissued.rejected).toBe(true);
+
+      // Two question rows should now exist: one answered + one pending
+      const totalCount = db.prepare(
+        "SELECT COUNT(*) as count FROM questions WHERE type = 'rejection' AND title = ?"
+      ).get(args.title) as { count: number };
+      expect(totalCount.count).toBe(2);
+    });
+
+    it('should keep exactly one pending question even after duplicate calls — approve_commit must remain blocked (commit still blocked after dedup)', () => {
+      const rejectArgs = { title: 'Blocking issue for approval test', description: 'Must be resolved before merging' };
+
+      rejectCommitIdempotent(rejectArgs);
+      // Duplicate call must not double-count pending questions
+      rejectCommitIdempotent(rejectArgs);
+
+      // Exactly one pending question should exist
+      const pendingCount = db.prepare(
+        "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
+      ).get() as { count: number };
+      expect(pendingCount.count).toBe(1);
+
+      // approveCommit must be blocked since the pending question still exists
+      const approvalAttempt = approveCommit('Trying to sneak this through');
+      expect(approvalAttempt.approved).toBe(false);
+      expect(approvalAttempt.message).toContain('Cannot approve commit');
+    });
+
+    it('should return consistent response structure for both first and deduplicated calls (response shape parity)', () => {
+      const args = { title: 'Shape parity test', description: 'Verifying response object structure' };
+
+      const first = rejectCommitIdempotent(args);
+      const second = rejectCommitIdempotent(args);
+
+      // Both responses must have the same keys
+      expect(Object.keys(second).sort()).toEqual(Object.keys(first).sort());
+
+      // All fields must be the correct type
+      expect(typeof second.rejected).toBe('boolean');
+      expect(typeof second.decision_id).toBe('string');
+      expect(typeof second.question_id).toBe('string');
+      expect(typeof second.message).toBe('string');
+
+      expect(second.rejected).toBe(true);
+      expect(second.question_id.length).toBeGreaterThan(0);
+      expect(second.message.length).toBeGreaterThan(0);
+    });
+
+    it('should enforce the UNIQUE partial index as a race-condition safety net for duplicate rejections (UNIQUE constraint rejects concurrent INSERT)', () => {
+      const title = 'Race condition rejection test';
+      const nowIso = new Date().toISOString();
+
+      // First INSERT succeeds
+      db.prepare(`
+        INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+        VALUES (?, 'rejection', 'pending', ?, ?, ?, ?)
+      `).run(randomUUID(), title, 'First rejection', nowIso, nowIso);
+
+      // Second INSERT must be rejected by the UNIQUE partial index on (type, title) WHERE status != 'answered'
+      expect(() => {
+        db.prepare(`
+          INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+          VALUES (?, 'rejection', 'pending', ?, ?, ?, ?)
+        `).run(randomUUID(), title, 'Duplicate rejection', nowIso, nowIso);
+      }).toThrow();
+
+      // Only one row should exist
+      const count = db.prepare(
+        "SELECT COUNT(*) as count FROM questions WHERE type = 'rejection' AND title = ?"
+      ).get(title) as { count: number };
+      expect(count.count).toBe(1);
+    });
+  });
+
+  // ============================================================================
+  // G011 Idempotency Tests for approve_commit
+  //
+  // These tests validate that approveCommit() is idempotent by rationale within
+  // a 60-second dedup window. The SELECT-first pattern checks for an existing
+  // approved decision with the same rationale and created_timestamp >= now - 60s
+  // before inserting a new one. Duplicate calls within the window return the
+  // existing decision_id without clearing and re-creating the approval token.
+  // ============================================================================
+
+  describe('G011 idempotency - approve_commit', () => {
+    // Mirrors the G011-compliant approveCommit() dedup logic from server.ts.
+    // Omits the file-system token write and G020 triage check (tested separately).
+    const approveCommitIdempotent = (rationale: string): {
+      approved: boolean;
+      decision_id: string;
+      message: string;
+    } => {
+      const pendingCount = db.prepare(
+        "SELECT COUNT(*) as count FROM questions WHERE status = 'pending'"
+      ).get() as { count: number };
+
+      if (pendingCount.count > 0) {
+        return {
+          approved: false,
+          decision_id: '',
+          message: `Cannot approve commit: ${pendingCount.count} CTO question(s) must be addressed first.`,
+        };
+      }
+
+      // G011: Check for existing recent approved decision with the same rationale (within 60s)
+      const sixtySecondsAgo = new Date(Date.now() - 60 * 1000).toISOString();
+      const existingApproval = db.prepare(`
+        SELECT id, created_at FROM commit_decisions
+        WHERE decision = 'approved' AND rationale = ? AND created_timestamp >= ?
+        ORDER BY created_timestamp DESC LIMIT 1
+      `).get(rationale, sixtySecondsAgo) as { id: string; created_at: string } | undefined;
+
+      if (existingApproval) {
+        return {
+          approved: true,
+          decision_id: existingApproval.id,
+          message: `Commit already approved (deduplicated). Decision ID: ${existingApproval.id}. Retry your commit within 5 minutes.`,
+        };
+      }
+
+      const id = randomUUID();
+      const now = new Date();
+      const created_at = now.toISOString();
+      const created_timestamp = now.toISOString();
+
+      db.prepare(`
+        INSERT INTO commit_decisions (id, decision, rationale, created_at, created_timestamp)
+        VALUES (?, 'approved', ?, ?, ?)
+      `).run(id, rationale, created_at, created_timestamp);
+
+      return {
+        approved: true,
+        decision_id: id,
+        message: `Commit approved. Token written - retry your commit within 5 minutes.`,
+      };
+    };
+
+    it('should return the same decision_id on the second call with the same rationale (duplicate approval returns existing record)', () => {
+      const rationale = 'All tests pass, no security concerns';
+
+      const first = approveCommitIdempotent(rationale);
+      const second = approveCommitIdempotent(rationale);
+
+      expect(first.approved).toBe(true);
+      expect(second.approved).toBe(true);
+
+      // Same decision_id must be returned — no new record created
+      expect(second.decision_id).toBe(first.decision_id);
+      expect(typeof second.decision_id).toBe('string');
+      expect(second.decision_id.length).toBeGreaterThan(0);
+    });
+
+    it('should create only one commit_decision row after two calls with the same rationale within 60 seconds (no duplicate rows)', () => {
+      const rationale = 'Code reviewed, documentation updated';
+
+      approveCommitIdempotent(rationale);
+      approveCommitIdempotent(rationale);
+
+      const count = db.prepare(
+        "SELECT COUNT(*) as count FROM commit_decisions WHERE decision = 'approved' AND rationale = ?"
+      ).get(rationale) as { count: number };
+
+      expect(count.count).toBe(1);
+    });
+
+    it('should include "deduplicated" in the message for the second call (message signals dedup occurred)', () => {
+      const rationale = 'Minor refactor, backward compatible';
+
+      approveCommitIdempotent(rationale);
+      const second = approveCommitIdempotent(rationale);
+
+      expect(second.message).toContain('deduplicated');
+      expect(second.message).toContain(second.decision_id);
+    });
+
+    it('should create a new approval when the rationale differs (different rationale creates a new record)', () => {
+      const first = approveCommitIdempotent('First approval rationale');
+      const second = approveCommitIdempotent('Second approval rationale - different');
+
+      // Different rationale means different dedup key — different decision IDs expected
+      expect(second.decision_id).not.toBe(first.decision_id);
+      expect(second.approved).toBe(true);
+    });
+
+    it('should block approval when pending questions exist — even when same rationale is in the dedup window (G001 fail-closed takes priority)', () => {
+      const rationale = 'Looks good to me';
+
+      // First approval succeeds when the question queue is empty
+      const first = approveCommitIdempotent(rationale);
+      expect(first.approved).toBe(true);
+
+      // Add a pending question after the approval
+      const questionId = randomUUID();
+      const nowIso = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+        VALUES (?, 'decision', 'pending', 'Urgent architecture question', 'Must answer before merging', ?, ?)
+      `).run(questionId, nowIso, nowIso);
+
+      // Approval must now be blocked even though the same rationale is within the 60-second window
+      const blocked = approveCommitIdempotent(rationale);
+      expect(blocked.approved).toBe(false);
+      expect(blocked.message).toContain('Cannot approve commit');
+    });
+
+    it('should enforce the 60-second dedup window — old approval with same rationale gets a fresh record (time-bounded dedup)', () => {
+      const rationale = 'Time-window dedup test rationale';
+
+      // Insert an "old" approval (70 seconds ago — outside the 60-second dedup window)
+      const oldId = randomUUID();
+      const oldTimestamp = new Date(Date.now() - 70 * 1000).toISOString();
+      db.prepare(`
+        INSERT INTO commit_decisions (id, decision, rationale, created_at, created_timestamp)
+        VALUES (?, 'approved', ?, ?, ?)
+      `).run(oldId, rationale, oldTimestamp, oldTimestamp);
+
+      // Calling approveCommitIdempotent must NOT deduplicate against the old record
+      const result = approveCommitIdempotent(rationale);
+
+      // A new record should be created with a different ID
+      expect(result.decision_id).not.toBe(oldId);
+      expect(result.approved).toBe(true);
+      expect(result.message).not.toContain('deduplicated');
+    });
+
+    it('should return consistent response structure for both first and deduplicated calls (response shape parity)', () => {
+      const rationale = 'All CI checks green, reviewed by deputy-cto';
+
+      const first = approveCommitIdempotent(rationale);
+      const second = approveCommitIdempotent(rationale);
+
+      // Both responses must have the same keys
+      expect(Object.keys(second).sort()).toEqual(Object.keys(first).sort());
+
+      expect(typeof second.approved).toBe('boolean');
+      expect(typeof second.decision_id).toBe('string');
+      expect(typeof second.message).toBe('string');
+
+      expect(second.approved).toBe(true);
+      expect(second.decision_id.length).toBeGreaterThan(0);
+      expect(second.message.length).toBeGreaterThan(0);
+    });
+  });
+
   describe('Database Indexes', () => {
     it('should have index on questions.status', () => {
       const indexes = db
@@ -942,6 +1570,309 @@ describe('Deputy-CTO Server', () => {
     });
   });
 
+  // ============================================================================
+  // G011 Idempotency Tests for request_bypass
+  //
+  // These tests validate that request_bypass is idempotent by reporting_agent:
+  // the deterministic title `Bypass Request [${agent}]` combined with a
+  // SELECT-before-INSERT dedup check ensures repeated calls from the same agent
+  // return the same request_id and bypass_code without creating duplicate rows.
+  //
+  // The unique partial index idx_questions_type_title_dedup on
+  // questions(type, title) WHERE status != 'answered' acts as a race-condition
+  // safety net, and a try/catch UNIQUE fallback handles the window between
+  // SELECT and INSERT.
+  //
+  // All tests operate at the DATABASE level — the helpers below mirror the
+  // server-side requestBypass() logic without running the full MCP server.
+  // ============================================================================
+
+  describe('request_bypass idempotency (G011)', () => {
+    // Mirrors generateBypassCode() from server.ts
+    const generateBypassCode = (): string => {
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      let code = '';
+      for (let i = 0; i < 6; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return code;
+    };
+
+    // Mirrors requestBypass() from server.ts, operating against the shared test db.
+    const requestBypassIdempotent = (args: {
+      reason: string;
+      blocked_by: string;
+      reporting_agent: string;
+    }): { request_id: string; bypass_code: string; message: string; instructions: string } => {
+      // G011: Deterministic title keyed by agent so duplicate calls are idempotent.
+      const title = `Bypass Request [${args.reporting_agent}]`;
+
+      const existingBypass = db.prepare(`
+        SELECT id, context FROM questions
+        WHERE type = 'bypass-request' AND title = ? AND status = 'pending' LIMIT 1
+      `).get(title) as { id: string; context: string } | undefined;
+
+      if (existingBypass) {
+        const existingCode = existingBypass.context;
+        return {
+          request_id: existingBypass.id,
+          bypass_code: existingCode,
+          message: `Bypass request already pending (deduplicated). To approve, the CTO must type: APPROVE BYPASS ${existingCode}`,
+          instructions: `STOP attempting commits. Ask the CTO to type exactly: APPROVE BYPASS ${existingCode}`,
+        };
+      }
+
+      const id = randomUUID();
+      const bypassCode = generateBypassCode();
+      const now = new Date();
+      const created_at = now.toISOString();
+      const created_timestamp = now.toISOString();
+
+      const description = `**Bypass requested by:** ${args.reporting_agent}\n\n**Reason:** ${args.reason}\n\n${args.blocked_by ? `**Blocked by:** ${args.blocked_by}` : ''}\n\n---\n\n**CTO Action Required:**\nTo approve this bypass, type exactly: **APPROVE BYPASS ${bypassCode}**`;
+
+      try {
+        db.prepare(`
+          INSERT INTO questions (id, type, status, title, description, context, created_at, created_timestamp)
+          VALUES (?, 'bypass-request', 'pending', ?, ?, ?, ?, ?)
+        `).run(id, title, description, bypassCode, created_at, created_timestamp);
+      } catch (err: unknown) {
+        if (
+          err instanceof Error &&
+          (err as Error & { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE'
+        ) {
+          // Race condition: another call inserted between our SELECT and INSERT.
+          const fallback = db.prepare(`
+            SELECT id, context FROM questions
+            WHERE type = 'bypass-request' AND title = ? AND status = 'pending' LIMIT 1
+          `).get(title) as { id: string; context: string } | undefined;
+          if (fallback) {
+            const fallbackCode = fallback.context;
+            return {
+              request_id: fallback.id,
+              bypass_code: fallbackCode,
+              message: `Bypass request already pending (deduplicated). To approve, the CTO must type: APPROVE BYPASS ${fallbackCode}`,
+              instructions: `STOP attempting commits. Ask the CTO to type exactly: APPROVE BYPASS ${fallbackCode}`,
+            };
+          }
+        }
+        throw err;
+      }
+
+      return {
+        request_id: id,
+        bypass_code: bypassCode,
+        message: `Bypass request submitted. To approve, the CTO must type: APPROVE BYPASS ${bypassCode}`,
+        instructions: `STOP attempting commits. Ask the CTO to type exactly: APPROVE BYPASS ${bypassCode}`,
+      };
+    };
+
+    // Helper to mark a bypass-request question as answered, simulating CTO resolution.
+    const answerBypassRequest = (questionId: string) => {
+      const now = new Date().toISOString();
+      db.prepare(`
+        UPDATE questions SET status = 'answered', answer = 'Approved', answered_at = ?, decided_by = 'cto'
+        WHERE id = ?
+      `).run(now, questionId);
+    };
+
+    it('should create a bypass request and return request_id, bypass_code, message, and instructions (happy path)', () => {
+      const result = requestBypassIdempotent({
+        reason: 'Pre-commit hook blocking valid commit after 3 retries',
+        blocked_by: 'deputy-cto pre-commit hook',
+        reporting_agent: 'code-writer',
+      });
+
+      // Validate all required fields are present and are strings
+      expect(typeof result.request_id).toBe('string');
+      expect(result.request_id.length).toBeGreaterThan(0);
+
+      expect(typeof result.bypass_code).toBe('string');
+      expect(result.bypass_code.length).toBe(6);
+      // Bypass code uses only unambiguous uppercase alphanumeric chars
+      expect(result.bypass_code).toMatch(/^[A-HJ-NP-Z2-9]{6}$/);
+
+      expect(typeof result.message).toBe('string');
+      expect(result.message.length).toBeGreaterThan(0);
+      expect(result.message).toContain('APPROVE BYPASS');
+      expect(result.message).toContain(result.bypass_code);
+
+      expect(typeof result.instructions).toBe('string');
+      expect(result.instructions.length).toBeGreaterThan(0);
+      expect(result.instructions).toContain('APPROVE BYPASS');
+      expect(result.instructions).toContain(result.bypass_code);
+
+      // Verify the row was persisted in the database
+      const row = db.prepare(
+        "SELECT id, type, status, title, context FROM questions WHERE id = ?"
+      ).get(result.request_id) as { id: string; type: string; status: string; title: string; context: string } | undefined;
+      expect(row).toBeDefined();
+      expect(row?.type).toBe('bypass-request');
+      expect(row?.status).toBe('pending');
+      expect(row?.title).toBe('Bypass Request [code-writer]');
+      expect(row?.context).toBe(result.bypass_code);
+    });
+
+    it('should return the same request_id and bypass_code when the same agent calls twice (dedup on retry)', () => {
+      const args = {
+        reason: 'Hook blocking commit after auth fix',
+        blocked_by: 'pre-commit hook',
+        reporting_agent: 'test-agent',
+      };
+
+      const first = requestBypassIdempotent(args);
+      const second = requestBypassIdempotent({ ...args, reason: 'Same agent, same call' });
+
+      // Both calls must return the same identifiers
+      expect(second.request_id).toBe(first.request_id);
+      expect(second.bypass_code).toBe(first.bypass_code);
+
+      // The returned IDs must be valid strings
+      expect(typeof second.request_id).toBe('string');
+      expect(second.request_id.length).toBeGreaterThan(0);
+      expect(typeof second.bypass_code).toBe('string');
+      expect(second.bypass_code.length).toBe(6);
+
+      // Only one row should exist for this agent in the database
+      const count = db.prepare(
+        "SELECT COUNT(*) as count FROM questions WHERE type = 'bypass-request' AND title = 'Bypass Request [test-agent]'"
+      ).get() as { count: number };
+      expect(count.count).toBe(1);
+
+      // The second call message must indicate deduplication
+      expect(second.message).toContain('deduplicated');
+    });
+
+    it('should return the same request_id regardless of reason text (dedup key is agent, not reason)', () => {
+      const agent = 'reason-agnostic-agent';
+
+      const first = requestBypassIdempotent({
+        reason: 'First reason: hook timeout',
+        blocked_by: 'pre-commit hook',
+        reporting_agent: agent,
+      });
+
+      // Same agent, completely different reason text
+      const second = requestBypassIdempotent({
+        reason: 'Totally different reason: network error during review',
+        blocked_by: 'deputy-cto review step',
+        reporting_agent: agent,
+      });
+
+      // Dedup is by agent identity, not reason content
+      expect(second.request_id).toBe(first.request_id);
+      expect(second.bypass_code).toBe(first.bypass_code);
+
+      // Verify only one row exists
+      const count = db.prepare(
+        `SELECT COUNT(*) as count FROM questions WHERE type = 'bypass-request' AND title = 'Bypass Request [${agent}]'`
+      ).get() as { count: number };
+      expect(count.count).toBe(1);
+
+      // Verify the stored description reflects the FIRST call's reason (not overwritten)
+      const row = db.prepare(
+        `SELECT description FROM questions WHERE id = ?`
+      ).get(first.request_id) as { description: string } | undefined;
+      expect(row).toBeDefined();
+      expect(row?.description).toContain('First reason: hook timeout');
+      expect(row?.description).not.toContain('Totally different reason');
+    });
+
+    it('should create separate bypass requests for different agents (separate agents get separate requests)', () => {
+      const firstResult = requestBypassIdempotent({
+        reason: 'Blocked by hook after security patch',
+        blocked_by: 'pre-commit hook',
+        reporting_agent: 'agent-alpha',
+      });
+
+      const secondResult = requestBypassIdempotent({
+        reason: 'Blocked by hook after refactor',
+        blocked_by: 'pre-commit hook',
+        reporting_agent: 'agent-beta',
+      });
+
+      // Different agents must get different request IDs and bypass codes
+      expect(secondResult.request_id).not.toBe(firstResult.request_id);
+
+      // Both IDs must be valid strings
+      expect(typeof firstResult.request_id).toBe('string');
+      expect(firstResult.request_id.length).toBeGreaterThan(0);
+      expect(typeof secondResult.request_id).toBe('string');
+      expect(secondResult.request_id.length).toBeGreaterThan(0);
+
+      // Both bypass codes must be valid 6-char strings
+      expect(firstResult.bypass_code.length).toBe(6);
+      expect(secondResult.bypass_code.length).toBe(6);
+
+      // Verify two separate rows exist in the database
+      const totalCount = db.prepare(
+        "SELECT COUNT(*) as count FROM questions WHERE type = 'bypass-request'"
+      ).get() as { count: number };
+      expect(totalCount.count).toBe(2);
+
+      // Confirm each row has the correct title
+      const alphaRow = db.prepare(
+        "SELECT title FROM questions WHERE id = ?"
+      ).get(firstResult.request_id) as { title: string } | undefined;
+      expect(alphaRow?.title).toBe('Bypass Request [agent-alpha]');
+
+      const betaRow = db.prepare(
+        "SELECT title FROM questions WHERE id = ?"
+      ).get(secondResult.request_id) as { title: string } | undefined;
+      expect(betaRow?.title).toBe('Bypass Request [agent-beta]');
+    });
+
+    it('should create a fresh bypass request when the prior one is no longer pending (re-creation after terminal state)', () => {
+      const agent = 'recurring-agent';
+      const args = {
+        reason: 'Original block reason',
+        blocked_by: 'pre-commit hook',
+        reporting_agent: agent,
+      };
+
+      // Create the original bypass request
+      const original = requestBypassIdempotent(args);
+      expect(typeof original.request_id).toBe('string');
+      expect(original.message).not.toContain('deduplicated');
+
+      // Verify it deduplicates while still pending
+      const dupWhilePending = requestBypassIdempotent(args);
+      expect(dupWhilePending.request_id).toBe(original.request_id);
+      expect(dupWhilePending.message).toContain('deduplicated');
+
+      // CTO answers (resolves) the bypass request
+      answerBypassRequest(original.request_id);
+
+      // Verify the question is now answered
+      const answeredRow = db.prepare("SELECT status FROM questions WHERE id = ?").get(original.request_id) as { status: string };
+      expect(answeredRow.status).toBe('answered');
+
+      // After the original is answered, a new call from the same agent should create a fresh request
+      const fresh = requestBypassIdempotent({
+        reason: 'New block — different deployment',
+        blocked_by: 'pre-commit hook',
+        reporting_agent: agent,
+      });
+
+      // Must be a NEW request, not the answered one
+      expect(fresh.request_id).not.toBe(original.request_id);
+      expect(typeof fresh.request_id).toBe('string');
+      expect(fresh.request_id.length).toBeGreaterThan(0);
+      expect(fresh.message).not.toContain('deduplicated');
+
+      // Both rows should coexist: original (answered) + fresh (pending)
+      const allRows = db.prepare(
+        `SELECT COUNT(*) as count FROM questions WHERE type = 'bypass-request' AND title = 'Bypass Request [${agent}]'`
+      ).get() as { count: number };
+      expect(allRows.count).toBe(2);
+
+      // Verify only the fresh one is pending
+      const pendingCount = db.prepare(
+        `SELECT COUNT(*) as count FROM questions WHERE type = 'bypass-request' AND title = 'Bypass Request [${agent}]' AND status = 'pending'`
+      ).get() as { count: number };
+      expect(pendingCount.count).toBe(1);
+    });
+  });
+
   describe('Data Cleanup Functions', () => {
     const cleanupOldRecords = () => {
       // Clean commit_decisions: keep only last 100
@@ -952,7 +1883,7 @@ describe('Deputy-CTO Server', () => {
       `).run();
 
       // Clean cleared_questions: keep last 500 OR anything within 30 days
-      const thirtyDaysAgo = Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60);
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
       const clearedQuestionsResult = db.prepare(`
         DELETE FROM cleared_questions
         WHERE cleared_timestamp < ?
@@ -979,21 +1910,21 @@ describe('Deputy-CTO Server', () => {
       // Add only 10 commit decisions
       for (let i = 0; i < 10; i++) {
         const id = randomUUID();
-        const now = Date.now();
+        const nowIso = new Date().toISOString();
         db.prepare(`
           INSERT INTO commit_decisions (id, decision, rationale, created_at, created_timestamp)
           VALUES (?, 'approved', ?, ?, ?)
-        `).run(id, 'test', new Date(now).toISOString(), Math.floor(now / 1000));
+        `).run(id, 'test', nowIso, nowIso);
       }
 
       // Add only 10 cleared questions
       for (let i = 0; i < 10; i++) {
         const id = randomUUID();
-        const now = Date.now();
+        const nowIso = new Date().toISOString();
         db.prepare(`
           INSERT INTO cleared_questions (id, type, title, description, cleared_at, cleared_timestamp)
           VALUES (?, 'decision', ?, ?, ?, ?)
-        `).run(id, 'Test', 'Description', new Date(now).toISOString(), Math.floor(now / 1000));
+        `).run(id, 'Test', 'Description', nowIso, nowIso);
       }
 
       const result = cleanupOldRecords();
@@ -1009,11 +1940,11 @@ describe('Deputy-CTO Server', () => {
       for (let i = 0; i < 150; i++) {
         const id = randomUUID();
         ids.push(id);
-        const now = Date.now() - i * 1000; // Stagger timestamps
+        const nowIso = new Date(Date.now() - i * 1000).toISOString(); // Stagger timestamps
         db.prepare(`
           INSERT INTO commit_decisions (id, decision, rationale, created_at, created_timestamp)
           VALUES (?, 'approved', ?, ?, ?)
-        `).run(id, 'test', new Date(now).toISOString(), Math.floor(now / 1000));
+        `).run(id, 'test', nowIso, nowIso);
       }
 
       const result = cleanupOldRecords();
@@ -1030,7 +1961,8 @@ describe('Deputy-CTO Server', () => {
 
     it('should NOT delete old records if total count is under 500 (retention policy protects last 500)', () => {
       const now = Date.now();
-      const fortyDaysAgo = now - 40 * 24 * 60 * 60 * 1000;
+      const fortyDaysAgoIso = new Date(now - 40 * 24 * 60 * 60 * 1000).toISOString();
+      const nowIso = new Date(now).toISOString();
 
       // Add 10 old cleared questions (>30 days)
       for (let i = 0; i < 10; i++) {
@@ -1042,8 +1974,8 @@ describe('Deputy-CTO Server', () => {
           id,
           'Old Test',
           'Description',
-          new Date(fortyDaysAgo).toISOString(),
-          Math.floor(fortyDaysAgo / 1000)
+          fortyDaysAgoIso,
+          fortyDaysAgoIso
         );
       }
 
@@ -1053,7 +1985,7 @@ describe('Deputy-CTO Server', () => {
         db.prepare(`
           INSERT INTO cleared_questions (id, type, title, description, cleared_at, cleared_timestamp)
           VALUES (?, 'decision', ?, ?, ?, ?)
-        `).run(id, 'New Test', 'Description', new Date(now).toISOString(), Math.floor(now / 1000));
+        `).run(id, 'New Test', 'Description', nowIso, nowIso);
       }
 
       const result = cleanupOldRecords();
@@ -1076,7 +2008,7 @@ describe('Deputy-CTO Server', () => {
       // Add 550 old cleared questions (all >30 days)
       for (let i = 0; i < 550; i++) {
         const id = randomUUID();
-        const timestamp = fortyDaysAgo - i * 1000; // Stagger timestamps
+        const timestampIso = new Date(fortyDaysAgo - i * 1000).toISOString(); // Stagger timestamps
         db.prepare(`
           INSERT INTO cleared_questions (id, type, title, description, cleared_at, cleared_timestamp)
           VALUES (?, 'decision', ?, ?, ?, ?)
@@ -1084,8 +2016,8 @@ describe('Deputy-CTO Server', () => {
           id,
           'Test',
           'Description',
-          new Date(timestamp).toISOString(),
-          Math.floor(timestamp / 1000)
+          timestampIso,
+          timestampIso
         );
       }
 
@@ -1105,11 +2037,11 @@ describe('Deputy-CTO Server', () => {
       // Add 150 commit decisions
       for (let i = 0; i < 150; i++) {
         const id = randomUUID();
-        const now = Date.now() - i * 1000;
+        const nowIso = new Date(Date.now() - i * 1000).toISOString();
         db.prepare(`
           INSERT INTO commit_decisions (id, decision, rationale, created_at, created_timestamp)
           VALUES (?, 'approved', ?, ?, ?)
-        `).run(id, 'test', new Date(now).toISOString(), Math.floor(now / 1000));
+        `).run(id, 'test', nowIso, nowIso);
       }
 
       // First cleanup
@@ -1130,11 +2062,11 @@ describe('Deputy-CTO Server', () => {
       // Add 150 commit decisions to trigger cleanup
       for (let i = 0; i < 150; i++) {
         const id = randomUUID();
-        const now = Date.now() - i * 1000;
+        const nowIso = new Date(Date.now() - i * 1000).toISOString();
         db.prepare(`
           INSERT INTO commit_decisions (id, decision, rationale, created_at, created_timestamp)
           VALUES (?, 'approved', ?, ?, ?)
-        `).run(id, 'test', new Date(now).toISOString(), Math.floor(now / 1000));
+        `).run(id, 'test', nowIso, nowIso);
       }
 
       const result = cleanupOldRecords();
@@ -2196,7 +3128,7 @@ describe('Deputy-CTO Server', () => {
 
       // Helper mirroring expireStaleBypassRequests logic
       const expireStaleBypassRequests = (): number => {
-        const cutoff = Math.floor(Date.now() / 1000) - BYPASS_REQUEST_TTL_S;
+        const cutoff = new Date(Date.now() - BYPASS_REQUEST_TTL_S * 1000).toISOString();
         const result = db.prepare(`
           DELETE FROM questions
           WHERE type = 'bypass-request' AND status = 'pending'
@@ -2215,7 +3147,7 @@ describe('Deputy-CTO Server', () => {
           )
         `).run();
 
-        const thirtyDaysAgo = Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60);
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
         const clearedQuestionsResult = db.prepare(`
           DELETE FROM cleared_questions
           WHERE cleared_timestamp < ?
@@ -2242,7 +3174,7 @@ describe('Deputy-CTO Server', () => {
       };
 
       it('should expire stale bypass-requests during cleanup', () => {
-        const twoHoursAgo = Math.floor(Date.now() / 1000) - 7200;
+        const twoHoursAgo = new Date(Date.now() - 7200 * 1000).toISOString();
 
         insertQuestionDirectly({
           type: 'bypass-request',
@@ -2264,7 +3196,7 @@ describe('Deputy-CTO Server', () => {
       });
 
       it('should preserve recent bypass-requests during cleanup', () => {
-        const thirtyMinAgo = Math.floor(Date.now() / 1000) - 1800;
+        const thirtyMinAgo = new Date(Date.now() - 1800 * 1000).toISOString();
 
         insertQuestionDirectly({
           type: 'bypass-request',
@@ -2286,7 +3218,7 @@ describe('Deputy-CTO Server', () => {
       });
 
       it('should self-clean stale requests before rate-limit in requestBypass', () => {
-        const twoHoursAgo = Math.floor(Date.now() / 1000) - 7200;
+        const twoHoursAgo = new Date(Date.now() - 7200 * 1000).toISOString();
 
         // Insert 3 stale bypass requests (would hit rate limit)
         for (let i = 0; i < 3; i++) {
@@ -2316,7 +3248,7 @@ describe('Deputy-CTO Server', () => {
       });
 
       it('should exclude expired bypass-requests from getPendingCount', () => {
-        const twoHoursAgo = Math.floor(Date.now() / 1000) - 7200;
+        const twoHoursAgo = new Date(Date.now() - 7200 * 1000).toISOString();
 
         // Insert one expired bypass-request
         insertQuestionDirectly({
@@ -2342,7 +3274,7 @@ describe('Deputy-CTO Server', () => {
       });
 
       it('should not expire answered bypass-requests', () => {
-        const twoHoursAgo = Math.floor(Date.now() / 1000) - 7200;
+        const twoHoursAgo = new Date(Date.now() - 7200 * 1000).toISOString();
 
         insertQuestionDirectly({
           type: 'bypass-request',
@@ -2364,7 +3296,7 @@ describe('Deputy-CTO Server', () => {
       });
 
       it('should not expire non-bypass-request questions', () => {
-        const twoHoursAgo = Math.floor(Date.now() / 1000) - 7200;
+        const twoHoursAgo = new Date(Date.now() - 7200 * 1000).toISOString();
 
         insertQuestionDirectly({
           type: 'decision',
@@ -2405,7 +3337,7 @@ describe('Deputy-CTO Server', () => {
         const bypassCode = 'TEST01';
         const now = new Date();
         const created_at = now.toISOString();
-        const created_timestamp = Math.floor(now.getTime() / 1000);
+        const created_timestamp = now.toISOString();
 
         db.prepare(`
           INSERT INTO questions (id, type, status, title, description, context, created_at, created_timestamp)
@@ -2541,7 +3473,7 @@ describe('Deputy-CTO Server', () => {
 
       const now = new Date();
       const answered_at = now.toISOString();
-      const cleared_timestamp = Math.floor(now.getTime() / 1000);
+      const cleared_timestamp = now.toISOString();
       const answer = `[Resolved by investigation: ${args.resolution}]\n${args.resolution_detail}`;
 
       const txn = db.transaction(() => {

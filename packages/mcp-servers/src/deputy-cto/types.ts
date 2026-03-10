@@ -107,6 +107,11 @@ export const ResolveQuestionArgsSchema = z.object({
 
 export const CleanupOldRecordsArgsSchema = z.object({});
 
+export const SpawnImplementationTaskArgsSchema = z.object({
+  description: z.string().min(1).max(500).describe('Brief description of the task to implement (used as dedup key)'),
+  prompt: z.string().min(1).max(10000).describe('Full prompt for the implementation task'),
+});
+
 // Automation mode schemas
 export const AUTOMATION_MODES = ['load_balanced', 'static'] as const;
 export type AutomationMode = typeof AUTOMATION_MODES[number];
@@ -199,6 +204,7 @@ export type SearchClearedItemsArgs = z.infer<typeof SearchClearedItemsArgsSchema
 export type UpdateQuestionArgs = z.infer<typeof UpdateQuestionArgsSchema>;
 export type ResolveQuestionArgs = z.infer<typeof ResolveQuestionArgsSchema>;
 export type CleanupOldRecordsArgs = z.infer<typeof CleanupOldRecordsArgsSchema>;
+export type SpawnImplementationTaskArgs = z.infer<typeof SpawnImplementationTaskArgsSchema>;
 export type SetAutomationModeArgs = z.infer<typeof SetAutomationModeArgsSchema>;
 export type ListAutomationConfigArgs = z.infer<typeof ListAutomationConfigArgsSchema>;
 export type RequestBypassArgs = z.infer<typeof RequestBypassArgsSchema>;
@@ -225,7 +231,7 @@ export interface QuestionRecord {
   recommendation: string | null;
   answer: string | null;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   answered_at: string | null;
   decided_by: DecisionMaker | null;
   investigation_task_id: string | null;
@@ -384,6 +390,7 @@ export interface ResolveQuestionResult {
 export interface CleanupOldRecordsResult {
   commit_decisions_deleted: number;
   cleared_questions_deleted: number;
+  spawned_tasks_deleted: number;
   bypass_requests_expired: number;
   message: string;
 }
@@ -426,6 +433,12 @@ export interface RequestBypassResult {
 
 export interface ExecuteBypassResult {
   executed: boolean;
+  message: string;
+}
+
+export interface SpawnImplementationTaskResult {
+  spawned: boolean;
+  pid: number | null;
   message: string;
 }
 

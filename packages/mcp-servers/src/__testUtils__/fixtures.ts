@@ -33,8 +33,8 @@ export interface TaskFixture {
   completed_at: string | null;
   assigned_by: string | null;
   metadata: string | null;
-  created_timestamp: number;
-  completed_timestamp: number | null;
+  created_timestamp: string;
+  completed_timestamp: string | null;
 }
 
 /**
@@ -49,7 +49,6 @@ export interface TaskFixture {
  */
 export function createTask(overrides: Partial<TaskFixture> = {}): TaskFixture {
   const now = new Date();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
 
   return {
     id: randomUUID(),
@@ -62,7 +61,7 @@ export function createTask(overrides: Partial<TaskFixture> = {}): TaskFixture {
     completed_at: null,
     assigned_by: null,
     metadata: null,
-    created_timestamp,
+    created_timestamp: now.toISOString(),
     completed_timestamp: null,
     ...overrides,
   };
@@ -85,12 +84,11 @@ export function createInProgressTask(overrides: Partial<TaskFixture> = {}): Task
  */
 export function createCompletedTask(overrides: Partial<TaskFixture> = {}): TaskFixture {
   const now = new Date();
-  const completed_timestamp = Math.floor(now.getTime() / 1000);
   return createTask({
     status: 'completed',
     started_at: now.toISOString(),
     completed_at: now.toISOString(),
-    completed_timestamp,
+    completed_timestamp: now.toISOString(),
     ...overrides,
   });
 }
@@ -107,7 +105,7 @@ export interface ReportFixture {
   category: ReportCategory;
   priority: ReportPriority;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   read_at: string | null;
   acknowledged_at: string | null;
   triage_status: TriageStatus;
@@ -132,7 +130,6 @@ export interface ReportFixture {
  */
 export function createReport(overrides: Partial<ReportFixture> = {}): ReportFixture {
   const now = new Date();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
 
   return {
     id: randomUUID(),
@@ -142,7 +139,7 @@ export function createReport(overrides: Partial<ReportFixture> = {}): ReportFixt
     category: 'other',
     priority: 'normal',
     created_at: now.toISOString(),
-    created_timestamp,
+    created_timestamp: now.toISOString(),
     read_at: null,
     acknowledged_at: null,
     triage_status: 'pending',
@@ -213,7 +210,7 @@ export interface QuestionFixture {
   suggested_options: string | null;
   answer: string | null;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   answered_at: string | null;
   decided_by: 'cto' | 'deputy-cto' | null;
 }
@@ -230,7 +227,6 @@ export interface QuestionFixture {
  */
 export function createQuestion(overrides: Partial<QuestionFixture> = {}): QuestionFixture {
   const now = new Date();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
 
   return {
     id: randomUUID(),
@@ -242,7 +238,7 @@ export function createQuestion(overrides: Partial<QuestionFixture> = {}): Questi
     suggested_options: null,
     answer: null,
     created_at: now.toISOString(),
-    created_timestamp,
+    created_timestamp: now.toISOString(),
     answered_at: null,
     decided_by: null,
     ...overrides,
@@ -290,7 +286,7 @@ export interface CommitDecisionFixture {
   rationale: string;
   question_id: string | null;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
 }
 
 /**
@@ -301,7 +297,6 @@ export function createCommitDecision(
   overrides: Partial<CommitDecisionFixture> = {}
 ): CommitDecisionFixture {
   const now = new Date();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
 
   return {
     id: randomUUID(),
@@ -309,7 +304,7 @@ export function createCommitDecision(
     rationale: decision === 'approved' ? 'Changes look good' : 'Security issue found',
     question_id: null,
     created_at: now.toISOString(),
-    created_timestamp,
+    created_timestamp: now.toISOString(),
     ...overrides,
   };
 }
@@ -325,7 +320,7 @@ export function createTasks(count: number, overrides: Partial<TaskFixture> = {})
   return Array.from({ length: count }, (_, i) =>
     createTask({
       title: `Task ${i + 1}`,
-      created_timestamp: Math.floor(Date.now() / 1000) + i, // Stagger timestamps
+      created_timestamp: new Date(Date.now() + i * 1000).toISOString(), // Stagger timestamps
       ...overrides,
     })
   );
@@ -341,7 +336,7 @@ export function createReports(
   return Array.from({ length: count }, (_, i) =>
     createReport({
       title: `Report ${i + 1}`,
-      created_timestamp: Math.floor(Date.now() / 1000) + i, // Stagger timestamps
+      created_timestamp: new Date(Date.now() + i * 1000).toISOString(), // Stagger timestamps
       ...overrides,
     })
   );
@@ -357,7 +352,7 @@ export function createQuestions(
   return Array.from({ length: count }, (_, i) =>
     createQuestion({
       title: `Question ${i + 1}`,
-      created_timestamp: Math.floor(Date.now() / 1000) + i, // Stagger timestamps
+      created_timestamp: new Date(Date.now() + i * 1000).toISOString(), // Stagger timestamps
       ...overrides,
     })
   );
@@ -514,7 +509,7 @@ export interface PersonaFixture {
   credentials_ref: string | null;
   enabled: number;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   updated_at: string;
 }
 
@@ -523,7 +518,6 @@ export interface PersonaFixture {
  */
 export function createPersonaFixture(overrides: Partial<PersonaFixture> = {}): PersonaFixture {
   const now = new Date();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
 
   return {
     id: randomUUID(),
@@ -535,7 +529,7 @@ export function createPersonaFixture(overrides: Partial<PersonaFixture> = {}): P
     credentials_ref: null,
     enabled: 1,
     created_at: now.toISOString(),
-    created_timestamp,
+    created_timestamp: now.toISOString(),
     updated_at: now.toISOString(),
     ...overrides,
   };
@@ -577,7 +571,7 @@ export interface FeatureFixture {
   url_patterns: string;
   category: string | null;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
 }
 
 /**
@@ -585,7 +579,6 @@ export interface FeatureFixture {
  */
 export function createFeatureFixture(overrides: Partial<FeatureFixture> = {}): FeatureFixture {
   const now = new Date();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
 
   return {
     id: randomUUID(),
@@ -595,7 +588,7 @@ export function createFeatureFixture(overrides: Partial<FeatureFixture> = {}): F
     url_patterns: '[]',
     category: null,
     created_at: now.toISOString(),
-    created_timestamp,
+    created_timestamp: now.toISOString(),
     ...overrides,
   };
 }
