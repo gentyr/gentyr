@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LiveCodes Playground</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; background: #1e1e2e; color: #cdd6f4; }
+    #container { width: 100%; height: 100%; }
+    #loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 14px;
+      color: #6c7086;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="loading">Loading playground...</div>
+  </div>
+
+  <script type="module">
+    import { createPlayground } from 'https://cdn.jsdelivr.net/npm/livecodes@0.7.0/+esm';
+
+    // Parse ?config={...} from URL
+    function getConfig() {
+      const params = new URLSearchParams(window.location.search);
+      const raw = params.get('config');
+      if (!raw) return {};
+      try {
+        return JSON.parse(raw);
+      } catch {
+        console.warn('[livecodes-standalone] Invalid config param, using defaults');
+        return {};
+      }
+    }
+
+    const userConfig = getConfig();
+
+    const defaultConfig = {
+      markup: { language: 'html', content: '' },
+      script: {
+        language: userConfig.language || 'typescript',
+        content: userConfig.code || userConfig.initialCode || '',
+      },
+      style: { language: 'css', content: '' },
+      activeEditor: 'script',
+      tools: { status: 'open', active: 'console' },
+      theme: userConfig.theme || 'dark',
+    };
+
+    // Merge user overrides into default config
+    const config = { ...defaultConfig, ...userConfig };
+    // Ensure script content is set from shorthand
+    if (userConfig.code && !userConfig.script) {
+      config.script = { ...defaultConfig.script, content: userConfig.code };
+    }
+
+    const playground = await createPlayground('#container', {
+      config,
+      view: userConfig.view || 'editor|console',
+      params: { console: 'open' },
+    });
+
+    // Update title if provided
+    if (userConfig.title) {
+      document.title = userConfig.title;
+    }
+  </script>
+</body>
+</html>

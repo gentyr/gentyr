@@ -173,6 +173,64 @@ export const WaitForIdleArgsSchema = z.object({
 });
 
 // ============================================================================
+// Thought Bubble Schemas
+// ============================================================================
+
+export const ShowThoughtArgsSchema = z.object({
+  text: z.string().max(500).describe('The thought to display in the overlay bubble. Think out loud about what you see, expect, or feel.'),
+});
+
+export const HideThoughtArgsSchema = z.object({});
+
+// ============================================================================
+// Tab Management Schemas
+// ============================================================================
+
+export const OpenTabArgsSchema = z.object({
+  name: z.string().min(1).max(50).describe('Name for the tab (e.g., "terminal", "editor")'),
+  url: z.string().url().describe('URL to open in the new tab'),
+});
+
+export const SwitchTabArgsSchema = z.object({
+  name: z.string().min(1).max(50).describe('Name of the tab to switch to'),
+});
+
+export const ListTabsArgsSchema = z.object({});
+
+export const CloseTabArgsSchema = z.object({
+  name: z.string().min(1).max(50).describe('Name of the tab to close'),
+});
+
+// ============================================================================
+// Terminal Interaction Schemas
+// ============================================================================
+
+export const TypeTerminalCommandArgsSchema = z.object({
+  command: z.string().describe('Command to type in the terminal'),
+  delay: z.coerce.number().optional().default(40).describe('Delay between keystrokes in ms (default: 40)'),
+  press_enter: z.coerce.boolean().optional().default(true).describe('Press Enter after typing (default: true)'),
+});
+
+export const WaitForTerminalOutputArgsSchema = z.object({
+  pattern: z.string().describe('Text pattern to wait for in terminal output'),
+  timeout: z.coerce.number().optional().default(30000).describe('Timeout in ms (default: 30000)'),
+});
+
+// ============================================================================
+// Editor Interaction Schemas
+// ============================================================================
+
+export const TypeCodeArgsSchema = z.object({
+  code: z.string().describe('Code to type in the editor'),
+  delay: z.coerce.number().optional().default(30).describe('Delay between keystrokes in ms (default: 30)'),
+  clear_first: z.coerce.boolean().optional().default(true).describe('Clear existing content before typing (default: true)'),
+});
+
+export const RunCodeArgsSchema = z.object({});
+
+export const GetCodeOutputArgsSchema = z.object({});
+
+// ============================================================================
 // Type Definitions
 // ============================================================================
 
@@ -196,6 +254,17 @@ export type ScrollArgs = z.infer<typeof ScrollArgsSchema>;
 export type ScrollToTextArgs = z.infer<typeof ScrollToTextArgsSchema>;
 export type WaitForTextArgs = z.infer<typeof WaitForTextArgsSchema>;
 export type WaitForIdleArgs = z.infer<typeof WaitForIdleArgsSchema>;
+export type ShowThoughtArgs = z.infer<typeof ShowThoughtArgsSchema>;
+export type HideThoughtArgs = z.infer<typeof HideThoughtArgsSchema>;
+export type OpenTabArgs = z.infer<typeof OpenTabArgsSchema>;
+export type SwitchTabArgs = z.infer<typeof SwitchTabArgsSchema>;
+export type ListTabsArgs = z.infer<typeof ListTabsArgsSchema>;
+export type CloseTabArgs = z.infer<typeof CloseTabArgsSchema>;
+export type TypeTerminalCommandArgs = z.infer<typeof TypeTerminalCommandArgsSchema>;
+export type WaitForTerminalOutputArgs = z.infer<typeof WaitForTerminalOutputArgsSchema>;
+export type TypeCodeArgs = z.infer<typeof TypeCodeArgsSchema>;
+export type RunCodeArgs = z.infer<typeof RunCodeArgsSchema>;
+export type GetCodeOutputArgs = z.infer<typeof GetCodeOutputArgsSchema>;
 
 // ============================================================================
 // Result Types
@@ -226,4 +295,8 @@ export interface UrlResult {
 export interface SuccessResult {
   success: boolean;
   message?: string;
+}
+
+export interface TabListResult {
+  tabs: { name: string; url: string; active: boolean }[];
 }
