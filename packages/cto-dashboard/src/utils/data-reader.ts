@@ -604,7 +604,7 @@ function collectAllKeys(): { keys: CollectedKey[]; rotationState: KeyRotationSta
       if (state?.version === 1 && typeof state.keys === 'object') {
         rotationState = state;
         for (const [keyId, keyData] of Object.entries(state.keys)) {
-          if (keyData.status === 'invalid' || keyData.status === 'expired') continue;
+          if (keyData.status === 'invalid' || keyData.status === 'expired' || keyData.status === 'tombstone') continue;
           if (!keyData.accessToken) continue;
           keyMap.set(keyId, {
             key_id: keyId,
