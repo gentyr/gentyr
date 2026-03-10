@@ -98,6 +98,14 @@ export default async function sync(args) {
     // Non-fatal — may not be a git repo or no tracked files match
   }
 
+  // 5d. Recreate vault-mappings.json if missing
+  const vaultMappingsPath = path.join(claudeDir, 'vault-mappings.json');
+  if (!fs.existsSync(vaultMappingsPath)) {
+    console.log(`\n${YELLOW}Recreating vault-mappings.json...${NC}`);
+    fs.writeFileSync(vaultMappingsPath, JSON.stringify({ provider: '1password', mappings: {} }, null, 2), 'utf8');
+    console.log('  Created empty vault-mappings.json scaffold');
+  }
+
   // 6. Sync husky hooks
   console.log(`\n${YELLOW}Syncing husky hooks...${NC}`);
   const huskyDir = path.join(frameworkDir, 'husky');

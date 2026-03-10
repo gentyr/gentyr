@@ -114,19 +114,24 @@ function eventColor(event: string): string {
 }
 
 function AccountRow({ account }: { account: DeduplicatedAccount }): React.ReactElement {
+  const isTombstone = account.bestStatus === 'tombstone';
   const marker = account.isCurrent ? '* ' : '  ';
-  const emailDisplay = account.email.length > 26
-    ? account.email.slice(0, 23) + '...'
+  const prefix = isTombstone ? '[x] ' : '';
+  const maxEmailLen = 26 - prefix.length;
+  const emailDisplay = account.email.length > maxEmailLen
+    ? account.email.slice(0, maxEmailLen - 3) + '...'
     : account.email;
-  const emailPad = emailDisplay.padEnd(26);
+  const emailPad = (prefix + emailDisplay).padEnd(26);
 
-  const tokenStr = account.hasValidToken ? 'valid' : 'invalid';
-  const tokenColor = account.hasValidToken ? 'green' : 'red';
+  const tokenStr = isTombstone ? 'removed' : account.hasValidToken ? 'valid' : 'invalid';
+  const tokenColor = isTombstone ? 'gray' : account.hasValidToken ? 'green' : 'red';
 
-  const usageStr = account.bestStatus === 'invalid'
-    ? '-'
-    : account.hasUsage ? 'available' : 'exhausted';
-  const usageColor = account.hasUsage ? 'green' : account.bestStatus === 'invalid' ? 'gray' : 'red';
+  const usageStr = isTombstone
+    ? 're-auth'
+    : account.bestStatus === 'invalid'
+      ? '-'
+      : account.hasUsage ? 'available' : 'exhausted';
+  const usageColor = isTombstone ? 'yellow' : account.hasUsage ? 'green' : account.bestStatus === 'invalid' ? 'gray' : 'red';
 
   const fiveH = account.fiveHourPct != null ? `${account.fiveHourPct}%` : '-';
   const sevenD = account.sevenDayPct != null ? `${account.sevenDayPct}%` : '-';
