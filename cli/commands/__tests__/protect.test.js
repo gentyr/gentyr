@@ -53,7 +53,7 @@ describe('protect.js — criticalHooks array', () => {
     );
   });
 
-  it('should include all 10 critical hook entries in criticalHooks', () => {
+  it('should include all 11 critical hook entries in criticalHooks', () => {
     const match = code.match(/const criticalHooks = \[[\s\S]*?\]/);
     assert.ok(match, 'criticalHooks array must exist');
 
@@ -67,6 +67,7 @@ describe('protect.js — criticalHooks array', () => {
       'secret-leak-detector.js',
       'protected-actions.json',
       'branch-checkout-guard.js',
+      'block-team-tools.js',
       'git-wrappers/git',
     ];
 

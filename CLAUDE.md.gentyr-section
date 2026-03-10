@@ -134,4 +134,8 @@ Section mapping for task creation:
 
 When the user asks to spawn agents in plain English (e.g., "spawn an agent to fix the login bug", "have an investigator look at the auth module"), create tasks via `mcp__todo-db__create_task` with `assigned_by: "human"`, spawn via `mcp__agent-tracker__force_spawn_tasks({ taskIds: [...] })`, and monitor via `mcp__agent-tracker__monitor_agents`.
 
+### Team Agent Tools — Not Supported
+
+Claude Code's built-in team tools (`TeamCreate`, `TeamDelete`, `SendMessage`) are **blocked**. Team agent worktrees bypass GENTYR's merge chain and cleanup lifecycle, causing lost work. Use GENTYR's agent spawning system instead (see "Agent Spawning" above) or `/spawn-tasks`.
+
 <!-- GENTYR-FRAMEWORK-END -->
