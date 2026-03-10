@@ -78,16 +78,11 @@ Tests for basic CRUD operations on questions:
 2. **Type Constraint**: Enforces valid question types at database level
 3. **Status Constraint**: Enforces valid status values at database level
 
-### G011: spawn_implementation_task Idempotency
+### G011: spawn_implementation_task Idempotency (ORPHANED — tests failing)
 
-Tests that verify G011-compliant deduplication for `spawn_implementation_task`:
-
-1. **Duplicate description returns existing record**: Two calls with the same description return the same task ID and PID without spawning a second process
-2. **Different descriptions create separate records**: Two calls with distinct descriptions each spawn independently
-3. **Re-spawn after status change**: Marking a task as 'completed' allows a new spawn with the same description
-4. **Response shape parity**: Fresh spawn and deduplicated return have the same keys
-5. **Partial unique index exists**: `idx_spawned_tasks_description_active` present in sqlite_master
-6. **UNIQUE constraint as safety net**: Raw duplicate INSERT when status='spawned' throws UNIQUE constraint violation
+`spawn_implementation_task` was removed from the deputy-cto server (PR #48). The `spawned_tasks`
+table no longer exists in the schema. These 6 test cases remain in the test file but are expected
+to fail until they are cleaned up. They do not affect CI for the features currently in production.
 
 ### G011: reject_commit Idempotency
 
@@ -151,23 +146,23 @@ npx vitest watch src/deputy-cto/__tests__/deputy-cto.test.ts
 ## Test Results
 
 ```
-✓ src/deputy-cto/__tests__/deputy-cto.test.ts  (110 tests)
+✓ src/deputy-cto/__tests__/deputy-cto.test.ts  (138 tests | 7 failing)
   ✓ G001 Fail-Closed: getAutonomousConfig()  (6 tests)
   ✓ G001 Fail-Closed: getNextRunMinutes()  (6 tests)
-  ✓ G001 Fail-Closed: getAutonomousModeStatus()  (5 tests)
-  ✓ Question Management  (3 tests)
+  ✓ G001 Fail-Closed: getAutonomousModeStatus()  (11 tests)
+  ✓ Question Management  (7 tests)
   ✓ Commit Approval/Rejection  (4 tests)
   ✓ G020 Triage Check: approveCommit()  (6 tests)
   ✓ Response Shape: pending_triage_count field  (7 tests)
   ✓ G011: add_question idempotency  (6 tests)
-  ✓ G011: spawn_implementation_task idempotency  (6 tests)
-  ✓ G011 idempotency - reject_commit  (10 tests)
+  ✗ G011: spawn_implementation_task idempotency  (6 tests — ORPHANED, spawned_tasks table removed)
+  ✓ G011 idempotency - reject_commit  (9 tests passing, 1 failing — UNIQUE constraint test stale)
   ✓ G011 idempotency - approve_commit  (7 tests)
   ✓ Database Indexes  (5 tests)
   ✓ request_bypass idempotency (G011)  (5 tests)
   ✓ Data Cleanup Functions  (6 tests)
 
-All tests passing ✅
+131 tests passing, 7 failing (orphaned spawn_implementation_task tests need cleanup) ⚠️
 ```
 
 ## G001 Compliance Summary
