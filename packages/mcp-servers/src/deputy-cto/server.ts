@@ -25,7 +25,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 
-const { randomUUID, createHash } = crypto;
+const { randomUUID } = crypto;
 import Database from 'better-sqlite3';
 import { openReadonlyDb } from '../shared/readonly-db.js';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';

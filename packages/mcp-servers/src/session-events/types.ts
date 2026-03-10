@@ -173,6 +173,7 @@ export interface TimelineResult {
 export interface RecordEventResult {
   id: string;
   success: boolean;
+  deduplicated?: boolean;
 }
 
 export interface ErrorResult {

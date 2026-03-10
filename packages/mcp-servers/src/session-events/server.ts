@@ -287,25 +287,39 @@ function recordEvent(args: RecordEventArgs): RecordEventResult {
   const id = randomUUID();
   const category = EVENT_CATEGORIES[args.eventType] || 'other';
 
-  db.prepare(`
-    INSERT INTO session_events (id, session_id, agent_id, integration_id, event_type, event_category, input, output, error, duration_ms, page_url, page_title, element_selector, metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    args.sessionId,
-    args.agentId ?? null,
-    args.integrationId ?? null,
-    args.eventType,
-    category,
-    JSON.stringify(args.input),
-    args.output ? JSON.stringify(args.output) : null,
-    args.error ? JSON.stringify(args.error) : null,
-    args.durationMs ?? null,
-    args.pageUrl ?? null,
-    args.pageTitle ?? null,
-    args.elementSelector ?? null,
-    JSON.stringify(args.metadata ?? {})
-  );
+  try {
+    db.prepare(`
+      INSERT INTO session_events (id, session_id, agent_id, integration_id, event_type, event_category, input, output, error, duration_ms, page_url, page_title, element_selector, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      args.sessionId,
+      args.agentId ?? null,
+      args.integrationId ?? null,
+      args.eventType,
+      category,
+      JSON.stringify(args.input),
+      args.output ? JSON.stringify(args.output) : null,
+      args.error ? JSON.stringify(args.error) : null,
+      args.durationMs ?? null,
+      args.pageUrl ?? null,
+      args.pageTitle ?? null,
+      args.elementSelector ?? null,
+      JSON.stringify(args.metadata ?? {})
+    );
+  } catch (err: unknown) {
+    if (
+      err instanceof Error &&
+      (err as Error & { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE'
+    ) {
+      // Fallback: return the record that won the race
+      const fallback = db
+        .prepare('SELECT id FROM session_events WHERE id = ?')
+        .get(id) as { id: string } | undefined;
+      if (fallback) {return { id: fallback.id, success: true, deduplicated: true };}
+    }
+    throw err; // Re-throw unexpected errors
+  }
 
   return { id, success: true };
 }

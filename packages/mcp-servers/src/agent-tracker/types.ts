@@ -70,12 +70,23 @@ export const GetConcurrencyStatusArgsSchema = z.object({});
 
 export const ForceSpawnTasksArgsSchema = z.object({
   sections: z.array(z.string()).min(1)
-    .describe('Sections to spawn tasks from (e.g., ["CODE-REVIEWER", "TEST-WRITER"])'),
+    .describe('Sections to spawn tasks from (e.g., ["CODE-REVIEWER", "TEST-WRITER"])')
+    .optional(),
+  taskIds: z.array(z.string())
+    .describe('Specific task IDs to spawn (overrides section-based selection)')
+    .optional(),
   maxConcurrent: z.coerce.number().optional().default(10)
     .describe('Maximum concurrent agents allowed (default: 10)'),
+}).refine(data => data.sections || data.taskIds, {
+  message: 'Either sections or taskIds must be provided',
 });
 
 export const ForceTriageReportsArgsSchema = z.object({});
+
+export const MonitorAgentsArgsSchema = z.object({
+  agentIds: z.array(z.string()).min(1)
+    .describe('Agent IDs to monitor (from force_spawn_tasks response)'),
+});
 
 // ============================================================================
 // Session Browser Schemas (Unified Session Browser)
@@ -159,6 +170,7 @@ export type GetAgentStatsArgs = z.infer<typeof GetAgentStatsArgsSchema>;
 export type GetConcurrencyStatusArgs = z.infer<typeof GetConcurrencyStatusArgsSchema>;
 export type ForceSpawnTasksArgs = z.infer<typeof ForceSpawnTasksArgsSchema>;
 export type ForceTriageReportsArgs = z.infer<typeof ForceTriageReportsArgsSchema>;
+export type MonitorAgentsArgs = z.infer<typeof MonitorAgentsArgsSchema>;
 
 // Session Browser Types
 export type ListSessionsArgs = z.infer<typeof ListSessionsArgsSchema>;
@@ -305,6 +317,22 @@ export interface ForceTriageReportsResult {
   pendingReports: number;
   message?: string;
   error?: string;
+}
+
+export interface MonitorAgentsResult {
+  agents: Array<{
+    agentId: string;
+    status: 'running' | 'completed' | 'reaped' | 'unknown';
+    pid: number | null;
+    pidAlive: boolean;
+    taskId: string | null;
+    taskStatus: string | null;
+    taskTitle: string | null;
+    elapsedSeconds: number;
+    section: string | null;
+  }>;
+  allComplete: boolean;
+  summary: string;
 }
 
 // ============================================================================

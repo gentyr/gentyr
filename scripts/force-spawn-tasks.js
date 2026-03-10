@@ -30,6 +30,7 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const result = {
     sections: [],
+    taskIds: [],
     projectDir: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
     maxConcurrent: 10,
   };
@@ -37,6 +38,8 @@ function parseArgs() {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--sections' && args[i + 1]) {
       result.sections = args[++i].split(',').map(s => s.trim()).filter(Boolean);
+    } else if (args[i] === '--task-ids' && args[i + 1]) {
+      result.taskIds = args[++i].split(',').map(s => s.trim()).filter(Boolean);
     } else if (args[i] === '--project-dir' && args[i + 1]) {
       result.projectDir = args[++i];
     } else if (args[i] === '--max-concurrent' && args[i + 1]) {
@@ -471,24 +474,26 @@ ${completionBlock}`;
 async function main() {
   const config = parseArgs();
 
-  if (config.sections.length === 0) {
+  if (config.sections.length === 0 && config.taskIds.length === 0) {
     console.log(JSON.stringify({
       spawned: [],
       skipped: [],
-      errors: [{ message: 'No sections specified. Use --sections "SECTION1,SECTION2"' }],
+      errors: [{ message: 'No sections or task IDs specified. Use --sections or --task-ids' }],
     }));
     process.exit(1);
   }
 
-  // Validate sections against the static key map (before AGENT_TYPES is loaded)
-  const invalidSections = config.sections.filter(s => !SECTION_AGENT_MAP_KEYS[s]);
-  if (invalidSections.length > 0) {
-    console.log(JSON.stringify({
-      spawned: [],
-      skipped: [],
-      errors: [{ message: `Invalid sections: ${invalidSections.join(', ')}. Valid: ${Object.keys(SECTION_AGENT_MAP_KEYS).join(', ')}` }],
-    }));
-    process.exit(1);
+  // Validate sections only when using section-based mode
+  if (config.sections.length > 0) {
+    const invalidSections = config.sections.filter(s => !SECTION_AGENT_MAP_KEYS[s]);
+    if (invalidSections.length > 0) {
+      console.log(JSON.stringify({
+        spawned: [],
+        skipped: [],
+        errors: [{ message: `Invalid sections: ${invalidSections.join(', ')}. Valid: ${Object.keys(SECTION_AGENT_MAP_KEYS).join(', ')}` }],
+      }));
+      process.exit(1);
+    }
   }
 
   // Load dependencies
@@ -517,20 +522,36 @@ async function main() {
     process.exit(1);
   }
 
-  // Query ALL pending tasks in requested sections — NO age filter, NO batch limit
+  // Query ALL pending tasks — NO age filter, NO batch limit
   let candidates;
   try {
     const db = new Database(todoDbPath, { readonly: true });
-    const placeholders = config.sections.map(() => '?').join(',');
-    candidates = db.prepare(`
-      SELECT id, section, title, description, priority
-      FROM tasks
-      WHERE status = 'pending'
-        AND section IN (${placeholders})
-      ORDER BY
-        CASE WHEN priority = 'urgent' THEN 0 ELSE 1 END,
-        created_timestamp ASC
-    `).all(...config.sections);
+
+    if (config.taskIds.length > 0) {
+      // Task ID mode: query specific tasks by ID
+      const placeholders = config.taskIds.map(() => '?').join(',');
+      candidates = db.prepare(`
+        SELECT id, section, title, description, priority
+        FROM tasks
+        WHERE status = 'pending'
+          AND id IN (${placeholders})
+        ORDER BY
+          CASE WHEN priority = 'urgent' THEN 0 ELSE 1 END,
+          created_timestamp ASC
+      `).all(...config.taskIds);
+    } else {
+      // Section mode: existing behavior
+      const placeholders = config.sections.map(() => '?').join(',');
+      candidates = db.prepare(`
+        SELECT id, section, title, description, priority
+        FROM tasks
+        WHERE status = 'pending'
+          AND section IN (${placeholders})
+        ORDER BY
+          CASE WHEN priority = 'urgent' THEN 0 ELSE 1 END,
+          created_timestamp ASC
+      `).all(...config.sections);
+    }
     db.close();
   } catch (err) {
     console.log(JSON.stringify({
@@ -572,6 +593,16 @@ async function main() {
   for (let i = 0; i < candidates.length; i++) {
     const task = candidates[i];
     const mapping = SECTION_AGENT_MAP[task.section];
+
+    if (!mapping) {
+      skipped.push({
+        taskId: task.id,
+        title: task.title,
+        section: task.section,
+        reason: `Unknown section: ${task.section}. Valid: ${Object.keys(SECTION_AGENT_MAP_KEYS).join(', ')}`,
+      });
+      continue;
+    }
 
     if (i >= availableSlots) {
       skipped.push({
