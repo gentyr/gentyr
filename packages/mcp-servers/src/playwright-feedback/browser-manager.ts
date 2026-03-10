@@ -92,20 +92,29 @@ export class BrowserManager {
    * Inject the persona/feature overlay into a page via page.evaluate.
    * The evaluate callback runs in the browser context where DOM APIs are available.
    */
+  /** Escape HTML entities to prevent injection in overlay innerHTML */
+  private escapeHtml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
   private async injectFeedbackOverlay(page: Page): Promise<void> {
     if (!this.personaName) return;
 
     const borderColor = this.personaColor || '#9ca3af';
 
-    const personaDescSection = this.personaDescription
-      ? `<div style="font-size:11px;color:rgba(255,255,255,0.75);line-height:1.5;margin-bottom:8px;">${this.personaDescription}</div>`
+    const safeDesc = this.personaDescription ? this.escapeHtml(this.personaDescription) : '';
+    const safeFeatureName = this.featureName ? this.escapeHtml(this.featureName) : '';
+    const safeFeatureDesc = this.featureDescription ? this.escapeHtml(this.featureDescription) : '';
+
+    const personaDescSection = safeDesc
+      ? `<div style="font-size:11px;color:rgba(255,255,255,0.75);line-height:1.5;margin-bottom:8px;">${safeDesc}</div>`
       : '';
 
-    const featureSection = this.featureName
+    const featureSection = safeFeatureName
       ? `<div style="border-top:1px solid rgba(255,255,255,0.15);margin-top:6px;padding-top:8px;">
           <div style="font-size:11px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Reviewing</div>
-          <div style="font-size:12px;font-weight:500;${this.featureDescription ? 'margin-bottom:4px;' : ''}">${this.featureName}</div>
-          ${this.featureDescription ? `<div style="font-size:11px;color:rgba(255,255,255,0.65);line-height:1.5;">${this.featureDescription}</div>` : ''}
+          <div style="font-size:12px;font-weight:500;${safeFeatureDesc ? 'margin-bottom:4px;' : ''}">${safeFeatureName}</div>
+          ${safeFeatureDesc ? `<div style="font-size:11px;color:rgba(255,255,255,0.65);line-height:1.5;">${safeFeatureDesc}</div>` : ''}
         </div>`
       : '';
 
@@ -164,7 +173,7 @@ export class BrowserManager {
       win['__demoOverlayMouseHandler'] = handler;
       document.addEventListener('mousemove', handler as unknown as EventListener);
     }, {
-      name: this.personaName,
+      name: this.escapeHtml(this.personaName),
       bc: borderColor,
       descSection: personaDescSection,
       featSection: featureSection,
@@ -215,6 +224,7 @@ export class BrowserManager {
     await page.goto(url, { waitUntil: 'load' });
     this.pages.set(name, page);
     this.activeTab = name;
+    await this.injectFeedbackOverlay(page);
     return page;
   }
 
