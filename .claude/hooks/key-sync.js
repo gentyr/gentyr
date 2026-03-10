@@ -548,6 +548,30 @@ export function pruneDeadKeys(state, log) {
     prunedKeyIds.push(keyId);
   }
 
+  // Clean up old tombstones (24h TTL) — must run even when no new invalid keys
+  const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
+  const expiredTombstones = [];
+  for (const [keyId, keyData] of Object.entries(state.keys)) {
+    if (keyData.status === 'tombstone') {
+      if (!keyData.tombstoned_at) keyData.tombstoned_at = Date.now();
+      if (Date.now() - keyData.tombstoned_at > TOMBSTONE_TTL_MS) {
+        expiredTombstones.push(keyId);
+      }
+    }
+  }
+  for (const tombId of expiredTombstones) {
+    delete state.keys[tombId];
+    logFn(`[key-sync] Cleaned up expired tombstone ${tombId.slice(0, 8)}...`);
+  }
+
+  // Remove orphaned rotation_log entries only for actually-deleted tombstones
+  const deletedSet = new Set(expiredTombstones);
+  if (deletedSet.size > 0) {
+    state.rotation_log = state.rotation_log.filter(
+      entry => !entry.key_id || !deletedSet.has(entry.key_id) || entry.event === 'account_auth_failed'
+    );
+  }
+
   if (prunedKeyIds.length === 0) return;
 
   // Log account_auth_failed only for accounts losing their LAST viable key
@@ -612,30 +636,6 @@ export function pruneDeadKeys(state, log) {
     logFn(`[key-sync] Tombstoned dead key ${keyId.slice(0, 8)}... (invalid → tombstone)`);
   }
 
-  // Clean up old tombstones (24h TTL)
-  const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
-  const expiredTombstones = [];
-  for (const [keyId, keyData] of Object.entries(state.keys)) {
-    if (keyData.status === 'tombstone') {
-      if (!keyData.tombstoned_at) keyData.tombstoned_at = Date.now();
-      if (Date.now() - keyData.tombstoned_at > TOMBSTONE_TTL_MS) {
-        expiredTombstones.push(keyId);
-      }
-    }
-  }
-  for (const keyId of expiredTombstones) {
-    delete state.keys[keyId];
-    logFn(`[key-sync] Cleaned up expired tombstone ${keyId.slice(0, 8)}...`);
-  }
-
-  // Remove orphaned rotation_log entries only for actually-deleted tombstones
-  // (freshly tombstoned keys still exist in state, so keep their log entries)
-  const deletedSet = new Set(expiredTombstones);
-  if (deletedSet.size > 0) {
-    state.rotation_log = state.rotation_log.filter(
-      entry => !entry.key_id || !deletedSet.has(entry.key_id) || entry.event === 'account_auth_failed'
-    );
-  }
 }
 
 // ============================================================================

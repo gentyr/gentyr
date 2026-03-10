@@ -194,10 +194,10 @@ export function getAccountOverviewData(): AccountOverviewData {
 
   if (state.version !== 1) return empty;
 
-  // Build accounts (skip invalid keys — they've been revoked and are noise)
+  // Build accounts (skip invalid/tombstone keys — they've been revoked and are noise)
   const accounts: AccountKeyDetail[] = [];
   for (const [keyId, keyData] of Object.entries(state.keys)) {
-    if (keyData.status === 'invalid') continue;
+    if (keyData.status === 'invalid' || keyData.status === 'tombstone') continue;
     accounts.push({
       keyId: truncateKeyId(keyId),
       status: keyData.status,
@@ -246,8 +246,8 @@ export function getAccountOverviewData(): AccountOverviewData {
     const keyId = entry.key_id ?? 'unknown';
     const keyData = keyId !== 'unknown' ? state.keys[keyId] : undefined;
 
-    // Skip events for keys explicitly marked invalid (revoked credentials)
-    if (keyData?.status === 'invalid') continue;
+    // Skip events for keys explicitly marked invalid or tombstoned (revoked credentials)
+    if (keyData?.status === 'invalid' || keyData?.status === 'tombstone') continue;
 
     const entryEmail = entry.account_email;
     const desc = deriveDescription(entry.event, entry.reason, keyId, entryEmail, keyData, emailByKeyId);

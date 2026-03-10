@@ -286,7 +286,7 @@ describe('key-sync.js - pruneDeadKeys() code structure', () => {
 
     assert.match(
       fnBody,
-      /delete state\.keys\[keyId\]/,
+      /delete state\.keys\[tombId\]/,
       'pruneDeadKeys must delete expired tombstones from state.keys'
     );
   });
@@ -783,14 +783,14 @@ describe('pruneDeadKeys() - account_auth_failed event emission', () => {
     assert.ok(pruneMatch, 'pruneDeadKeys function must be defined');
     const pruneBody = pruneMatch[0];
 
-    // account_auth_failed must appear BEFORE the delete loop
+    // account_auth_failed must appear BEFORE the invalid→tombstone conversion loop
     const authFailedIdx = pruneBody.indexOf("'account_auth_failed'");
-    const deleteIdx = pruneBody.indexOf('delete state.keys[keyId]');
+    const tombstoneIdx = pruneBody.indexOf("status: 'tombstone'", pruneBody.indexOf('for (const keyId of prunedKeyIds)'));
     assert.ok(authFailedIdx > -1, 'pruneDeadKeys must emit account_auth_failed event');
-    assert.ok(deleteIdx > -1, 'pruneDeadKeys must delete pruned keys');
+    assert.ok(tombstoneIdx > -1, 'pruneDeadKeys must tombstone pruned keys');
     assert.ok(
-      authFailedIdx < deleteIdx,
-      'account_auth_failed must be emitted BEFORE keys are deleted from state.keys'
+      authFailedIdx < tombstoneIdx,
+      'account_auth_failed must be emitted BEFORE keys are tombstoned'
     );
   });
 
@@ -1602,5 +1602,169 @@ describe('pruneDeadKeys() - email resolution from sibling keys and rotation_log'
       /!hasOtherViableKey/,
       'pruneDeadKeys must only emit account_auth_failed when hasOtherViableKey is false'
     );
+  });
+});
+
+// ============================================================================
+// pruneDeadKeys() — tombstone TTL cleanup with zero invalid keys (regression)
+//
+// Regression scenario: tombstone TTL cleanup was placed AFTER the early return
+// guarded by `prunedKeyIds.length === 0`, making it unreachable when no invalid
+// keys existed. The fix moved tombstone cleanup BEFORE that early return.
+//
+// This describe block calls the REAL pruneDeadKeys() from key-sync.js to
+// verify the behavioral fix — not a code-shape assertion, not a manual
+// simulation of the logic.
+// ============================================================================
+
+describe('pruneDeadKeys() - tombstone TTL cleanup runs even when zero invalid keys exist', () => {
+  it('should delete an expired tombstone when there are zero invalid keys', async () => {
+    // Import the real function to catch any regression where tombstone cleanup
+    // is placed after (or inside) the prunedKeyIds.length === 0 early return.
+    const { pruneDeadKeys } = await import(KEY_SYNC_PATH);
+
+    const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    const state = {
+      active_key_id: 'active-key',
+      keys: {
+        'active-key': { status: 'active' },
+        // No invalid keys — prunedKeyIds will be empty, triggering the early return
+        // if tombstone cleanup is incorrectly ordered after it.
+        'expired-tombstone': {
+          status: 'tombstone',
+          tombstoned_at: now - TOMBSTONE_TTL_MS - 1000, // >24h ago — must be deleted
+          account_email: 'removed@example.com',
+        },
+      },
+      rotation_log: [
+        { key_id: 'expired-tombstone', event: 'key_removed', reason: 'refresh_token_invalid_grant' },
+        { key_id: 'active-key', event: 'key_added' },
+      ],
+    };
+
+    const logMessages = [];
+    pruneDeadKeys(state, (msg) => logMessages.push(msg));
+
+    assert.ok(
+      !state.keys['expired-tombstone'],
+      'Expired tombstone must be deleted from state.keys even when no invalid keys are present'
+    );
+    assert.ok(
+      state.keys['active-key'],
+      'Active key must be untouched'
+    );
+    assert.ok(
+      logMessages.some(m => m.includes('expired tombstone')),
+      'pruneDeadKeys must log the tombstone cleanup'
+    );
+  });
+
+  it('should remove rotation_log entries for the expired tombstone when there are zero invalid keys', async () => {
+    const { pruneDeadKeys } = await import(KEY_SYNC_PATH);
+
+    const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    const state = {
+      active_key_id: 'active-key',
+      keys: {
+        'active-key': { status: 'active' },
+        'expired-tombstone': {
+          status: 'tombstone',
+          tombstoned_at: now - TOMBSTONE_TTL_MS - 5000,
+          account_email: null,
+        },
+      },
+      rotation_log: [
+        // key_removed entries for expired tombstones must be pruned
+        { key_id: 'expired-tombstone', event: 'key_removed', reason: 'refresh_token_invalid_grant' },
+        // account_auth_failed entries for expired tombstones must be preserved
+        { key_id: 'expired-tombstone', event: 'account_auth_failed', reason: 'invalid_key_pruned' },
+        // Unrelated entry must be untouched
+        { key_id: 'active-key', event: 'key_added' },
+      ],
+    };
+
+    pruneDeadKeys(state, () => {});
+
+    const keyIds = state.rotation_log.map(e => `${e.key_id}:${e.event}`);
+
+    assert.ok(
+      !keyIds.includes('expired-tombstone:key_removed'),
+      'key_removed entry for expired tombstone must be removed from rotation_log'
+    );
+    assert.ok(
+      keyIds.includes('expired-tombstone:account_auth_failed'),
+      'account_auth_failed entry for expired tombstone must be preserved in rotation_log'
+    );
+    assert.ok(
+      keyIds.includes('active-key:key_added'),
+      'Unrelated rotation_log entry must be untouched'
+    );
+  });
+
+  it('should leave a fresh tombstone in place when there are zero invalid keys', async () => {
+    const { pruneDeadKeys } = await import(KEY_SYNC_PATH);
+
+    const now = Date.now();
+
+    const state = {
+      active_key_id: null,
+      keys: {
+        'fresh-tombstone': {
+          status: 'tombstone',
+          tombstoned_at: now - 1000, // only 1s old — must NOT be deleted
+          account_email: null,
+        },
+      },
+      rotation_log: [
+        { key_id: 'fresh-tombstone', event: 'account_auth_failed' },
+      ],
+    };
+
+    pruneDeadKeys(state, () => {});
+
+    assert.ok(
+      state.keys['fresh-tombstone'],
+      'Fresh tombstone (< 24h) must remain in state.keys regardless of zero invalid keys'
+    );
+    assert.strictEqual(
+      state.rotation_log.length,
+      1,
+      'rotation_log must be unchanged when fresh tombstone is kept'
+    );
+  });
+
+  it('should handle a state with only tombstones and no invalid or active keys without throwing', async () => {
+    const { pruneDeadKeys } = await import(KEY_SYNC_PATH);
+
+    const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    const state = {
+      active_key_id: null,
+      keys: {
+        'expired-tombstone-A': {
+          status: 'tombstone',
+          tombstoned_at: now - TOMBSTONE_TTL_MS - 2000,
+          account_email: 'a@example.com',
+        },
+        'expired-tombstone-B': {
+          status: 'tombstone',
+          tombstoned_at: now - TOMBSTONE_TTL_MS - 3000,
+          account_email: 'b@example.com',
+        },
+      },
+      rotation_log: [],
+    };
+
+    // Must not throw even with no active/invalid keys
+    pruneDeadKeys(state, () => {});
+
+    assert.ok(!state.keys['expired-tombstone-A'], 'Expired tombstone A must be deleted');
+    assert.ok(!state.keys['expired-tombstone-B'], 'Expired tombstone B must be deleted');
+    assert.strictEqual(Object.keys(state.keys).length, 0, 'state.keys must be empty after all tombstones are cleaned up');
   });
 });
