@@ -90,6 +90,7 @@ function doProtect(projectDir) {
     'branch-checkout-guard.js',
     'main-tree-commit-guard.js',
     'playwright-cli-guard.js',
+    'block-team-tools.js',
     'git-wrappers/git',
   ];
 
@@ -132,6 +133,7 @@ function doProtect(projectDir) {
     path.join(protectedHooksDir, 'branch-checkout-guard.js'),
     path.join(protectedHooksDir, 'main-tree-commit-guard.js'),
     path.join(protectedHooksDir, 'playwright-cli-guard.js'),
+    path.join(protectedHooksDir, 'block-team-tools.js'),
     path.join(protectedHooksDir, 'git-wrappers', 'git'),
     path.join(projectDir, '.claude', 'settings.json'),
     path.join(projectDir, '.claude', 'protection-key'),
@@ -232,6 +234,7 @@ function doUnprotect(projectDir) {
     path.join(hooksOwnershipDir, 'protected-actions.json'),
     path.join(hooksOwnershipDir, 'branch-checkout-guard.js'),
     path.join(hooksOwnershipDir, 'main-tree-commit-guard.js'),
+    path.join(hooksOwnershipDir, 'block-team-tools.js'),
     path.join(hooksOwnershipDir, 'git-wrappers', 'git'),
     path.join(projectDir, '.claude', 'settings.json'),
     path.join(projectDir, '.claude', 'TESTING.md'),
