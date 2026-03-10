@@ -78,6 +78,54 @@ Tests for basic CRUD operations on questions:
 2. **Type Constraint**: Enforces valid question types at database level
 3. **Status Constraint**: Enforces valid status values at database level
 
+### G011: spawn_implementation_task Idempotency
+
+Tests that verify G011-compliant deduplication for `spawn_implementation_task`:
+
+1. **Duplicate description returns existing record**: Two calls with the same description return the same task ID and PID without spawning a second process
+2. **Different descriptions create separate records**: Two calls with distinct descriptions each spawn independently
+3. **Re-spawn after status change**: Marking a task as 'completed' allows a new spawn with the same description
+4. **Response shape parity**: Fresh spawn and deduplicated return have the same keys
+5. **Partial unique index exists**: `idx_spawned_tasks_description_active` present in sqlite_master
+6. **UNIQUE constraint as safety net**: Raw duplicate INSERT when status='spawned' throws UNIQUE constraint violation
+
+### G011: reject_commit Idempotency
+
+Tests that verify G011-compliant deduplication for `reject_commit`:
+
+1. **Returns existing rejection on duplicate call**: Two calls with identical code/message/rationale return the same question ID
+2. **Does not create duplicate commit_decisions**: Second call with same args produces exactly one DB row in commit_decisions
+3. **Transaction atomicity**: Both commit_decisions and questions are inserted atomically
+4. **Different rationale creates new rejection**: Different rationale produces a new question ID
+5. **Dedup only applies to pending rejections**: Re-rejection after answering creates a new record
+6. **Question title uses commit hash prefix**: Title is derived from the code parameter
+7. **First call returns correct structure**: Response shape is correct on first invocation
+8. **Deduplicated call returns same structure**: Response shape matches on deduplication
+9. **UNIQUE constraint fallback**: Raw duplicate INSERT raises UNIQUE constraint violation
+10. **Partial unique index exists**: `idx_questions_type_title_dedup` correctly enforces dedup
+
+### G011: approve_commit Idempotency
+
+Tests that verify G011-compliant deduplication for `approve_commit`:
+
+1. **Duplicate approval within 60s returns same result**: Two calls with the same rationale within 60 seconds are deduplicated
+2. **Dedup does not create extra decisions**: Only one commit_decision row is created for duplicate calls
+3. **Different rationale creates new approval**: A different rationale string produces a new decision record
+4. **Re-approval after 60s window**: A new approval is allowed once the 60-second dedup window expires (simulated)
+5. **First call clears rejections**: Approval removes any pending rejection questions
+6. **Response structure is consistent**: Both fresh and deduplicated approvals return `{ approved: true }`
+7. **UNIQUE constraint fallback**: Race condition INSERT raises SQLITE_CONSTRAINT_UNIQUE
+
+### G011: request_bypass Idempotency
+
+Tests that verify G011-compliant deduplication for `request_bypass`:
+
+1. **Duplicate request returns existing record**: Two calls from the same agent return the same question ID
+2. **Only one row created in questions**: Triple-call produces exactly one DB row
+3. **Deterministic title prevents duplicates**: Title is `Bypass Request [<agent>]` enabling SELECT-first dedup
+4. **Different agents create separate bypass requests**: Each agent has its own bypass question
+5. **Re-request after resolution**: A new bypass request is allowed once the prior one is answered
+
 ### Database Indexes
 
 Tests that verify performance indexes exist:
@@ -103,13 +151,21 @@ npx vitest watch src/deputy-cto/__tests__/deputy-cto.test.ts
 ## Test Results
 
 ```
-✓ src/deputy-cto/__tests__/deputy-cto.test.ts  (28 tests)
+✓ src/deputy-cto/__tests__/deputy-cto.test.ts  (110 tests)
   ✓ G001 Fail-Closed: getAutonomousConfig()  (6 tests)
   ✓ G001 Fail-Closed: getNextRunMinutes()  (6 tests)
-  ✓ G001 Fail-Closed: getAutonomousModeStatus()  (6 tests)
-  ✓ Commit Approval/Rejection  (4 tests)
+  ✓ G001 Fail-Closed: getAutonomousModeStatus()  (5 tests)
   ✓ Question Management  (3 tests)
-  ✓ Database Indexes  (4 tests)
+  ✓ Commit Approval/Rejection  (4 tests)
+  ✓ G020 Triage Check: approveCommit()  (6 tests)
+  ✓ Response Shape: pending_triage_count field  (7 tests)
+  ✓ G011: add_question idempotency  (6 tests)
+  ✓ G011: spawn_implementation_task idempotency  (6 tests)
+  ✓ G011 idempotency - reject_commit  (10 tests)
+  ✓ G011 idempotency - approve_commit  (7 tests)
+  ✓ Database Indexes  (5 tests)
+  ✓ request_bypass idempotency (G011)  (5 tests)
+  ✓ Data Cleanup Functions  (6 tests)
 
 All tests passing ✅
 ```

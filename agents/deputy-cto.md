@@ -139,7 +139,7 @@ For each PENDING or IN-PROGRESS plan:
 
 **ALL task spawning now routes through the TODO database for full governance**.
 
-Use `mcp__todo-db__create_task` with `priority` field to control dispatch timing:
+Use `mcp__todo-db__create_task` with `priority` field to control dispatch timing. For immediate dispatch of specific tasks, use `mcp__agent-tracker__force_spawn_tasks({ taskIds: [...] })` after creating them.
 
 **Urgent tasks** (`priority: "urgent"` - dispatch immediately):
 - Security issues or vulnerabilities

@@ -113,4 +113,25 @@ GENTYR is installed as an npm package (`node_modules/gentyr`). The following fil
 
 **If you need changes to any of these**, do not modify them in this project. Instead, ask the user to make the change in the GENTYR package source and run `npx gentyr sync` here to propagate. Provide the user with a prompt they can give to a Claude Code session in the GENTYR repo, including what needs to change, why, and relevant context from this project.
 
+### Agent Spawning
+
+Spawn background agents through the unified task system:
+
+1. **Create tasks**: `mcp__todo-db__create_task({ section, title, description, assigned_by: "human", priority: "normal" })`
+2. **Spawn immediately**: `mcp__agent-tracker__force_spawn_tasks({ taskIds: [<created IDs>] })`
+3. **Monitor progress**: `mcp__agent-tracker__monitor_agents({ agentIds: [<agent IDs from spawn response>] })`
+
+Section mapping for task creation:
+
+| Work type | Section |
+|---|---|
+| Code changes, features, bug fixes, refactoring | `CODE-REVIEWER` |
+| Research, analysis, investigation | `INVESTIGATOR & PLANNER` |
+| Test creation, coverage improvements | `TEST-WRITER` |
+| Documentation, cleanup, project tasks | `PROJECT-MANAGER` |
+| Strategic, cross-cutting orchestration | `DEPUTY-CTO` |
+| Product analysis, personas, PMF | `PRODUCT-MANAGER` |
+
+When the user asks to spawn agents in plain English (e.g., "spawn an agent to fix the login bug", "have an investigator look at the auth module"), create tasks via `mcp__todo-db__create_task` with `assigned_by: "human"`, spawn via `mcp__agent-tracker__force_spawn_tasks({ taskIds: [...] })`, and monitor via `mcp__agent-tracker__monitor_agents`.
+
 <!-- GENTYR-FRAMEWORK-END -->
