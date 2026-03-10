@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS personas (
     credentials_ref TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL,
+    created_timestamp TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_personas_enabled ON personas(enabled);
@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS features (
     url_patterns TEXT NOT NULL DEFAULT '[]',
     category TEXT,
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL
+    created_timestamp TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_features_category ON features(category);
@@ -200,7 +200,7 @@ CREATE TABLE IF NOT EXISTS demo_scenarios (
     sort_order INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL,
+    created_timestamp TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE
 );
@@ -283,7 +283,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
           credentials_ref TEXT,
           enabled INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL,
-          created_timestamp INTEGER NOT NULL,
+          created_timestamp TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           cto_protected INTEGER NOT NULL DEFAULT 0
         );
@@ -320,6 +320,11 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     } catch {
       db.exec("ALTER TABLE demo_scenarios ADD COLUMN recording_path TEXT");
     }
+
+    // Migration: Convert any existing INTEGER timestamps to ISO 8601 TEXT (G005)
+    db.exec(`UPDATE personas SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
+    db.exec(`UPDATE features SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
+    db.exec(`UPDATE demo_scenarios SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
 
     return db;
   }
@@ -393,7 +398,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     const id = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
-    const created_timestamp = Math.floor(now.getTime() / 1000);
+    const created_timestamp = now.toISOString();
 
     try {
       db.prepare(`
@@ -550,7 +555,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     const id = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
-    const created_timestamp = Math.floor(now.getTime() / 1000);
+    const created_timestamp = now.toISOString();
 
     try {
       db.prepare(`
@@ -1128,7 +1133,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     const id = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
-    const created_timestamp = Math.floor(now.getTime() / 1000);
+    const created_timestamp = now.toISOString();
 
     try {
       db.prepare(`

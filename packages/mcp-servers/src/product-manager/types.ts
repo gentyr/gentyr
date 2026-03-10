@@ -164,7 +164,7 @@ export interface SectionEntryRecord {
   content: string;
   metadata: string;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   updated_at: string;
 }
 

@@ -208,7 +208,7 @@ export interface PersonaRecord {
   enabled: number; // SQLite boolean
   cto_protected: number; // SQLite boolean
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   updated_at: string;
 }
 
@@ -220,7 +220,7 @@ export interface FeatureRecord {
   url_patterns: string; // JSON array
   category: string | null;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
 }
 
 export interface PersonaFeatureRecord {
@@ -418,7 +418,7 @@ export interface ScenarioRecord {
   sort_order: number;
   enabled: number;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   updated_at: string;
   last_recorded_at: string | null;
   recording_path: string | null;

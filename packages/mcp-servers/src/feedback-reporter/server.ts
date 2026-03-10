@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS reports (
     category TEXT NOT NULL DEFAULT 'other',
     priority TEXT NOT NULL DEFAULT 'normal',
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL,
+    created_timestamp TEXT NOT NULL,
     read_at TEXT,
     acknowledged_at TEXT,
     triage_status TEXT NOT NULL DEFAULT 'pending',
@@ -230,6 +230,10 @@ export function createFeedbackReporterServer(config: FeedbackReporterConfig): Au
     const db = new Database(reportsDbPath);
     db.pragma('journal_mode = WAL');
     db.exec(REPORTS_SCHEMA);
+
+    // Migration: Convert any existing INTEGER timestamps to ISO 8601 TEXT (G005)
+    db.exec(`UPDATE reports SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
+
     return db;
   }
 
@@ -271,7 +275,7 @@ export function createFeedbackReporterServer(config: FeedbackReporterConfig): Au
     const reportId = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
-    const created_timestamp = Math.floor(now.getTime() / 1000);
+    const created_timestamp = now.toISOString();
 
     try {
       // 1. Store finding in local session DB
@@ -352,7 +356,7 @@ export function createFeedbackReporterServer(config: FeedbackReporterConfig): Au
     const reportId = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
-    const created_timestamp = Math.floor(now.getTime() / 1000);
+    const created_timestamp = now.toISOString();
 
     try {
       // 1. Store summary in local session DB

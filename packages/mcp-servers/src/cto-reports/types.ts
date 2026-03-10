@@ -122,7 +122,7 @@ export interface ReportRecord {
   category: ReportCategory;
   priority: 'low' | 'normal' | 'high' | 'critical';
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   read_at: string | null;
   acknowledged_at: string | null;
   // Triage lifecycle fields

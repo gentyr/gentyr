@@ -119,7 +119,7 @@ export function createTempFile(
 // ============================================================================
 
 /**
- * Gets a Unix timestamp offset from now.
+ * Gets an ISO 8601 timestamp string offset from now.
  * Useful for creating test data with specific timestamps.
  *
  * @example
@@ -132,16 +132,15 @@ export function createTempFile(
 export function getTimestamp(
   offset: number,
   unit: 'seconds' | 'minutes' | 'hours' | 'days' = 'seconds'
-): number {
+): string {
   const multipliers = {
-    seconds: 1,
-    minutes: 60,
-    hours: 60 * 60,
-    days: 24 * 60 * 60,
+    seconds: 1000,
+    minutes: 60 * 1000,
+    hours: 60 * 60 * 1000,
+    days: 24 * 60 * 60 * 1000,
   };
 
-  const now = Math.floor(Date.now() / 1000);
-  return now + offset * multipliers[unit];
+  return new Date(Date.now() + offset * multipliers[unit]).toISOString();
 }
 
 /**
@@ -151,8 +150,7 @@ export function getISOTimestamp(
   offset: number,
   unit: 'seconds' | 'minutes' | 'hours' | 'days' = 'seconds'
 ): string {
-  const timestamp = getTimestamp(offset, unit);
-  return new Date(timestamp * 1000).toISOString();
+  return getTimestamp(offset, unit);
 }
 
 // ============================================================================

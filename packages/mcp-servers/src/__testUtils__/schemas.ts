@@ -29,9 +29,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_at TEXT,
     assigned_by TEXT,
     metadata TEXT,
-    created_timestamp INTEGER NOT NULL,
-    completed_timestamp INTEGER,
-    started_timestamp INTEGER,
+    created_timestamp TEXT NOT NULL,
+    completed_timestamp TEXT,
+    started_timestamp TEXT,
     followup_enabled INTEGER NOT NULL DEFAULT 0,
     followup_section TEXT,
     followup_prompt TEXT,
@@ -61,13 +61,13 @@ CREATE TABLE IF NOT EXISTS archived_tasks (
     created_at TEXT NOT NULL,
     started_at TEXT,
     completed_at TEXT,
-    created_timestamp INTEGER NOT NULL,
-    completed_timestamp INTEGER,
+    created_timestamp TEXT NOT NULL,
+    completed_timestamp TEXT,
     followup_enabled INTEGER NOT NULL DEFAULT 0,
     followup_section TEXT,
     followup_prompt TEXT,
     archived_at TEXT NOT NULL,
-    archived_timestamp INTEGER NOT NULL
+    archived_timestamp TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_archived_tasks_archived ON archived_tasks(archived_timestamp DESC);
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS questions (
     recommendation TEXT,
     answer TEXT,
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL,
+    created_timestamp TEXT NOT NULL,
     answered_at TEXT,
     decided_by TEXT,
     investigation_task_id TEXT,
@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS commit_decisions (
     rationale TEXT NOT NULL,
     question_id TEXT,
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL,
+    created_timestamp TEXT NOT NULL,
     CONSTRAINT valid_decision CHECK (decision IN ('approved', 'rejected'))
 );
 
@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS cleared_questions (
     answered_at TEXT,
     decided_by TEXT,
     cleared_at TEXT NOT NULL,
-    cleared_timestamp INTEGER NOT NULL,
+    cleared_timestamp TEXT NOT NULL,
     CONSTRAINT valid_decided_by CHECK (decided_by IS NULL OR decided_by IN ('cto', 'deputy-cto'))
 );
 
@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS reports (
     category TEXT NOT NULL DEFAULT 'other',
     priority TEXT NOT NULL DEFAULT 'normal',
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL,
+    created_timestamp TEXT NOT NULL,
     read_at TEXT,
     acknowledged_at TEXT,
     -- Triage lifecycle fields
@@ -272,7 +272,7 @@ CREATE TABLE IF NOT EXISTS personas (
     credentials_ref TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL,
+    created_timestamp TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_personas_enabled ON personas(enabled);
@@ -285,7 +285,7 @@ CREATE TABLE IF NOT EXISTS features (
     url_patterns TEXT NOT NULL DEFAULT '[]',
     category TEXT,
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL
+    created_timestamp TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_features_category ON features(category);
@@ -350,7 +350,7 @@ CREATE TABLE IF NOT EXISTS demo_scenarios (
     sort_order INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL,
+    created_timestamp TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE
 );

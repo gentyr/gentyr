@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS section_entries (
     content TEXT NOT NULL,
     metadata TEXT DEFAULT '{}',
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL,
+    created_timestamp TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     CONSTRAINT valid_entry_section CHECK (section_number IN (2, 6))
 );
@@ -271,7 +271,7 @@ function addEntry(db: Database.Database, args: {
   const id = randomUUID();
   const now = new Date();
   const createdAt = now.toISOString();
-  const createdTimestamp = Math.floor(now.getTime() / 1000);
+  const createdTimestamp = now.toISOString();
 
   db.prepare(`
     INSERT INTO section_entries (id, section_number, title, content, metadata, created_at, created_timestamp, updated_at)
@@ -589,7 +589,7 @@ describe('Product Manager MCP Server', () => {
         db.prepare(`
           INSERT INTO section_entries (id, section_number, title, content, created_at, created_timestamp, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(randomUUID(), 3, 'Invalid', 'Content', now.toISOString(), Math.floor(now.getTime() / 1000), now.toISOString());
+        `).run(randomUUID(), 3, 'Invalid', 'Content', now.toISOString(), now.toISOString(), now.toISOString());
       }).toThrow();
     });
 
@@ -792,7 +792,7 @@ describe('Product Manager MCP Server', () => {
     it('should enforce entry section constraint (2 or 6 only)', () => {
       const now = new Date();
       const createdAt = now.toISOString();
-      const createdTimestamp = Math.floor(now.getTime() / 1000);
+      const createdTimestamp = now.toISOString();
 
       // Section 2 should work
       db.prepare(`

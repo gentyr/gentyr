@@ -139,8 +139,9 @@ export interface TaskRecord {
   completed_at: string | null;
   assigned_by: string | null;
   metadata: string | null;
-  created_timestamp: number;
-  completed_timestamp: number | null;
+  created_timestamp: string;
+  completed_timestamp: string | null;
+  started_timestamp: string | null;
   followup_enabled: number;        // 0 or 1 (SQLite boolean)
   followup_section: string | null;
   followup_prompt: string | null;
@@ -316,13 +317,13 @@ export interface ArchivedTask {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
-  created_timestamp: number;
-  completed_timestamp: number | null;
+  created_timestamp: string;
+  completed_timestamp: string | null;
   followup_enabled: number;
   followup_section: string | null;
   followup_prompt: string | null;
   archived_at: string;
-  archived_timestamp: number;
+  archived_timestamp: string;
 }
 
 export interface ListArchivedTasksResult {

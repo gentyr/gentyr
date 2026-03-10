@@ -81,7 +81,7 @@ export interface PersonaRecord {
   credentials_ref: string | null;
   enabled: number;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   updated_at: string;
 }
 
@@ -93,7 +93,7 @@ export interface FeatureRecord {
   url_patterns: string; // JSON
   category: string | null;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
 }
 
 export interface FeedbackSessionRecord {
@@ -143,7 +143,7 @@ export interface ReportRecord {
   category: string;
   priority: string;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   read_at: string | null;
   acknowledged_at: string | null;
   triage_status: string;
