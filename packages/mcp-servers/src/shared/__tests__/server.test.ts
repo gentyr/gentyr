@@ -731,6 +731,36 @@ describe('McpServer', () => {
       expect(response.result.content).toBeDefined();
     });
 
+    it('should handle schema with .refine() (ZodEffects)', async () => {
+      const tool: AnyToolHandler = {
+        name: 'refined_tool',
+        description: 'Test',
+        schema: z.object({
+          sections: z.array(z.string()).optional(),
+          taskIds: z.array(z.string()).optional(),
+        }).refine(data => data.sections || data.taskIds, {
+          message: 'Either sections or taskIds must be provided',
+        }),
+        handler: async () => ({ ok: true }),
+      };
+
+      const server = createTestServer([tool]);
+
+      await sendRequest(server, {
+        jsonrpc: '2.0',
+        id: 'refine-1',
+        method: 'tools/list',
+      });
+
+      const response = getLastResponse();
+      const { inputSchema } = response.result.tools[0];
+      expect(inputSchema.type).toBe('object');
+      expect(inputSchema.properties.sections).toBeDefined();
+      expect(inputSchema.properties.sections.type).toBe('array');
+      expect(inputSchema.properties.taskIds).toBeDefined();
+      expect(inputSchema.properties.taskIds.type).toBe('array');
+    });
+
     it('should handle empty schema object', async () => {
       const tool: ToolHandler = {
         name: 'empty_schema',
