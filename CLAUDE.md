@@ -114,7 +114,7 @@ In target projects, GENTYR enforces a 4-stage merge chain: `feature/* -> preview
 
 Agents work on feature branches (`feature/*`, `fix/*`, `refactor/*`, `docs/*`, `chore/*`). At commit time, only lint and security checks run — no deputy-CTO review gate. This keeps commit latency low.
 
-**Branch Age Guard** (`pre-commit-review.js`): Blocks commits on feature branches that are older than the configured limit (default 4 hours). The guard measures branch age from the merge-base with the base branch (`preview` or `main`, auto-detected). If the branch is too old, the commit is rejected with a message directing the agent to merge existing work first. The limit is configurable via `branch_age_limit_hours` in `.claude/state/automation-config.json`. Non-fatal: if branch age cannot be determined, the commit is allowed.
+**Branch Age Guard** (`pre-commit-review.js`): Blocks commits on feature branches when the last branch-specific commit is older than the configured limit (default 4 hours). Measures from the most recent commit on the branch (not the merge-base) to avoid deadlocks on interrupted sessions. First commits on a branch are always allowed (no commits to measure against). Merge resolution commits (`MERGE_HEAD` present) are exempt from the age check. The limit is configurable via `branch_age_limit_hours` in `.claude/state/automation-config.json`. Non-fatal: if branch age cannot be determined, the commit is allowed.
 
 After committing, the project-manager agent:
 1. Pushes the branch: `git push -u origin HEAD`
