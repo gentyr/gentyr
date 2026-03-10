@@ -785,7 +785,7 @@ function getSessionsForTask(args: GetSessionsForTaskArgs): GetSessionsForTaskRes
   }
 
   // Find all sessions within time window
-  const completionTime = task.completed_timestamp * 1000; // Convert to ms
+  const completionTime = Number(task.completed_timestamp) * 1000; // Convert to ms
 
   try {
     const files = fs.readdirSync(sessionDir)
