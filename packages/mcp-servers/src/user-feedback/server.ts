@@ -50,6 +50,8 @@ import {
   ListRecordingsArgsSchema,
   GetRecordingArgsSchema,
   PlayRecordingArgsSchema,
+  GetLatestFeatureFeedbackArgsSchema,
+  PlayFeatureFeedbackArgsSchema,
   type CreatePersonaArgs,
   type UpdatePersonaArgs,
   type DeletePersonaArgs,
@@ -75,6 +77,10 @@ import {
   type ListRecordingsArgs,
   type GetRecordingArgs,
   type PlayRecordingArgs,
+  type GetLatestFeatureFeedbackArgs,
+  type PlayFeatureFeedbackArgs,
+  type LatestFeatureFeedbackEntry,
+  type LatestFeatureFeedbackResult,
   type PersonaRecord,
   type FeatureRecord,
   type PersonaFeatureRecord,
@@ -308,6 +314,29 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     } catch {
       db.exec("ALTER TABLE feedback_sessions ADD COLUMN recording_path TEXT");
     }
+
+    // Auto-migration: add feature_id column to feedback_sessions if missing
+    try {
+      db.prepare("SELECT feature_id FROM feedback_sessions LIMIT 0").run();
+    } catch {
+      db.exec("ALTER TABLE feedback_sessions ADD COLUMN feature_id TEXT REFERENCES features(id)");
+    }
+
+    // Create latest_feature_feedback tracking table
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS latest_feature_feedback (
+        feature_id TEXT NOT NULL,
+        persona_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        recording_path TEXT,
+        completed_at TEXT,
+        satisfaction_level TEXT,
+        PRIMARY KEY (feature_id, persona_id),
+        FOREIGN KEY (feature_id) REFERENCES features(id) ON DELETE CASCADE,
+        FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
+        FOREIGN KEY (session_id) REFERENCES feedback_sessions(id)
+      );
+    `);
 
     // Auto-migration: add last_recorded_at and recording_path columns to demo_scenarios if missing
     try {
@@ -897,6 +926,13 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     }
 
     const now = new Date().toISOString();
+
+    // Write feature_id if provided (enables per-feature tracking)
+    if (args.feature_id) {
+      db.prepare('UPDATE feedback_sessions SET feature_id = ? WHERE id = ?')
+        .run(args.feature_id, args.session_id);
+    }
+
     db.prepare(`
       UPDATE feedback_sessions
       SET status = ?, completed_at = ?, findings_count = ?, report_ids = ?, satisfaction_level = ?
@@ -909,6 +945,30 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       args.satisfaction_level ?? null,
       args.session_id,
     );
+
+    // Upsert into latest_feature_feedback if this session has a feature_id
+    const sessionRow = db.prepare(
+      'SELECT feature_id, persona_id, recording_path FROM feedback_sessions WHERE id = ?'
+    ).get(args.session_id) as { feature_id: string | null; persona_id: string; recording_path: string | null } | undefined;
+
+    if (sessionRow?.feature_id) {
+      db.prepare(`
+        INSERT INTO latest_feature_feedback (feature_id, persona_id, session_id, recording_path, completed_at, satisfaction_level)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(feature_id, persona_id) DO UPDATE SET
+          session_id = excluded.session_id,
+          recording_path = excluded.recording_path,
+          completed_at = excluded.completed_at,
+          satisfaction_level = excluded.satisfaction_level
+      `).run(
+        sessionRow.feature_id,
+        sessionRow.persona_id,
+        args.session_id,
+        sessionRow.recording_path,
+        new Date().toISOString(),
+        args.satisfaction_level ?? null,
+      );
+    }
 
     // Check if all sessions in the run are done
     interface CountResult { count: number }
@@ -1329,9 +1389,11 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     if (args.type === 'feedback' || args.type === 'all') {
       let sql = `
         SELECT fs.id as session_id, fs.persona_id, fs.recording_path, fs.completed_at,
+               fs.feature_id, f.name as feature_name,
                p.name as persona_name
         FROM feedback_sessions fs
         JOIN personas p ON p.id = fs.persona_id
+        LEFT JOIN features f ON f.id = fs.feature_id
         WHERE fs.recording_path IS NOT NULL
       `;
       const params: unknown[] = [];
@@ -1348,20 +1410,29 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
         persona_id: string;
         recording_path: string;
         completed_at: string | null;
+        feature_id: string | null;
+        feature_name: string | null;
         persona_name: string;
       }[];
 
       for (const row of rows) {
         const recordedAt = row.completed_at ?? '';
         const recordedMs = recordedAt ? new Date(recordedAt).getTime() : 0;
-        feedbackEntries.push({
+        const entry: FeedbackRecordingEntry = {
           session_id: row.session_id,
           persona_id: row.persona_id,
           persona_name: row.persona_name,
           recording_path: row.recording_path,
           recorded_at: recordedAt,
           stale: recordedMs > 0 ? now - recordedMs > STALE_THRESHOLD_MS : true,
-        });
+        };
+        if (row.feature_id !== null) {
+          entry.feature_id = row.feature_id;
+        }
+        if (row.feature_name !== null) {
+          entry.feature_name = row.feature_name;
+        }
+        feedbackEntries.push(entry);
       }
     }
 
@@ -1541,6 +1612,105 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   }
 
   // ============================================================================
+  // Feature Feedback Tools
+  // ============================================================================
+
+  function getLatestFeatureFeedback(args: GetLatestFeatureFeedbackArgs): LatestFeatureFeedbackResult {
+    let sql = `
+      SELECT lff.feature_id, f.name as feature_name, lff.persona_id, p.name as persona_name,
+             lff.session_id, lff.recording_path, lff.completed_at, lff.satisfaction_level
+      FROM latest_feature_feedback lff
+      JOIN features f ON f.id = lff.feature_id
+      JOIN personas p ON p.id = lff.persona_id
+      WHERE 1=1
+    `;
+    const params: unknown[] = [];
+
+    if (args.feature_id) {
+      sql += ' AND lff.feature_id = ?';
+      params.push(args.feature_id);
+    }
+    if (args.feature_name) {
+      sql += ' AND f.name = ?';
+      params.push(args.feature_name);
+    }
+    if (args.persona_id) {
+      sql += ' AND lff.persona_id = ?';
+      params.push(args.persona_id);
+    }
+
+    sql += ' ORDER BY lff.completed_at DESC';
+
+    const rows = db.prepare(sql).all(...params) as {
+      feature_id: string;
+      feature_name: string;
+      persona_id: string;
+      persona_name: string;
+      session_id: string;
+      recording_path: string | null;
+      completed_at: string | null;
+      satisfaction_level: string | null;
+    }[];
+
+    const entries: LatestFeatureFeedbackEntry[] = rows.map(row => ({
+      ...row,
+      exists_on_disk: row.recording_path ? fs.existsSync(row.recording_path) : false,
+    }));
+
+    return { entries, total: entries.length };
+  }
+
+  function playFeatureFeedback(args: PlayFeatureFeedbackArgs): Promise<{ success: boolean; message: string } | ErrorResult> {
+    return new Promise((resolve) => {
+      let sql = `
+        SELECT lff.recording_path, f.name as feature_name, p.name as persona_name
+        FROM latest_feature_feedback lff
+        JOIN features f ON f.id = lff.feature_id
+        JOIN personas p ON p.id = lff.persona_id
+        WHERE f.name = ?
+      `;
+      const params: unknown[] = [args.feature_name];
+
+      if (args.persona_name) {
+        sql += ' AND p.name = ?';
+        params.push(args.persona_name);
+      }
+
+      sql += ' ORDER BY lff.completed_at DESC LIMIT 1';
+
+      const row = db.prepare(sql).get(...params) as {
+        recording_path: string | null;
+        feature_name: string;
+        persona_name: string;
+      } | undefined;
+
+      if (!row) {
+        resolve({ error: `No feedback recording found for feature "${args.feature_name}"${args.persona_name ? ` by persona "${args.persona_name}"` : ''}` });
+        return;
+      }
+      if (!row.recording_path) {
+        resolve({ error: `No recording file for latest feedback on "${args.feature_name}" by ${row.persona_name}` });
+        return;
+      }
+      if (!fs.existsSync(row.recording_path)) {
+        resolve({ error: `Recording file not found on disk: ${row.recording_path}` });
+        return;
+      }
+
+      execFile('open', [row.recording_path], (err) => {
+        if (err) {
+          resolve({ error: `Failed to open recording: ${err.message}` });
+          return;
+        }
+        resolve({
+          success: true,
+          message: `Opened latest feedback recording for "${row.feature_name}" by ${row.persona_name}: ${row.recording_path}`,
+        });
+      });
+    });
+  }
+
+  // ============================================================================
   // Server Setup
   // ============================================================================
 
@@ -1701,6 +1871,19 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       description: 'Open a recording in the system default video player. Resolves the recording path from scenario_id or session_id and launches it with the system open command.',
       schema: PlayRecordingArgsSchema,
       handler: playRecording,
+    },
+    // Feature Feedback
+    {
+      name: 'get_latest_feature_feedback',
+      description: 'Get the latest feedback session and recording for each feature-persona combination. Filter by feature name, feature ID, or persona.',
+      schema: GetLatestFeatureFeedbackArgsSchema,
+      handler: getLatestFeatureFeedback,
+    },
+    {
+      name: 'play_feature_feedback',
+      description: 'Play the latest feedback recording for a specific feature. Optionally filter by persona name.',
+      schema: PlayFeatureFeedbackArgsSchema,
+      handler: playFeatureFeedback,
     },
   ];
 

@@ -519,7 +519,7 @@ async function downloadImage(args: DownloadImageArgs): Promise<DownloadImageResu
     };
   }
   try {
-    for await (const chunk of body) {
+    for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
       const buf = Buffer.from(chunk);
       totalBytes += buf.length;
       if (totalBytes > MAX_DOWNLOAD_BYTES) {

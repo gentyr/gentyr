@@ -160,6 +160,8 @@ export const CompleteFeedbackSessionArgsSchema = z.object({
     .describe('IDs of agent-reports submitted during this session'),
   satisfaction_level: z.enum(SATISFACTION_LEVEL).optional()
     .describe('Satisfaction level reported by the persona'),
+  feature_id: z.string().optional()
+    .describe('Feature ID being reviewed (for per-feature tracking)'),
 });
 
 export const GetFeedbackRunSummaryArgsSchema = z.object({
@@ -256,6 +258,7 @@ export interface FeedbackSessionRecord {
   satisfaction_level: string | null;
   scenario_id: string | null;
   recording_path: string | null;
+  feature_id: string | null;
 }
 
 // ============================================================================
@@ -470,6 +473,24 @@ export type ListRecordingsArgs = z.infer<typeof ListRecordingsArgsSchema>;
 export type GetRecordingArgs = z.infer<typeof GetRecordingArgsSchema>;
 export type PlayRecordingArgs = z.infer<typeof PlayRecordingArgsSchema>;
 
+// ============================================================================
+// Feature Feedback Schemas
+// ============================================================================
+
+export const GetLatestFeatureFeedbackArgsSchema = z.object({
+  feature_name: z.string().optional().describe('Filter by feature name'),
+  feature_id: z.string().optional().describe('Filter by feature ID'),
+  persona_id: z.string().optional().describe('Filter by persona'),
+});
+
+export const PlayFeatureFeedbackArgsSchema = z.object({
+  feature_name: z.string().describe('Feature name to play feedback for'),
+  persona_name: z.string().optional().describe('Specific persona (plays latest if omitted)'),
+});
+
+export type GetLatestFeatureFeedbackArgs = z.infer<typeof GetLatestFeatureFeedbackArgsSchema>;
+export type PlayFeatureFeedbackArgs = z.infer<typeof PlayFeatureFeedbackArgsSchema>;
+
 export interface DemoRecordingEntry {
   scenario_id: string;
   title: string;
@@ -488,6 +509,8 @@ export interface FeedbackRecordingEntry {
   recording_path: string;
   recorded_at: string;
   stale: boolean; // true if recorded_at is >24h ago
+  feature_id?: string;
+  feature_name?: string;
 }
 
 export interface ListRecordingsResult {
@@ -509,4 +532,21 @@ export interface GetRecordingResult {
     persona_id: string;
     persona_name: string;
   } | null;
+}
+
+export interface LatestFeatureFeedbackEntry {
+  feature_id: string;
+  feature_name: string;
+  persona_id: string;
+  persona_name: string;
+  session_id: string;
+  recording_path: string | null;
+  completed_at: string | null;
+  satisfaction_level: string | null;
+  exists_on_disk: boolean;
+}
+
+export interface LatestFeatureFeedbackResult {
+  entries: LatestFeatureFeedbackEntry[];
+  total: number;
 }

@@ -15,10 +15,15 @@
  * - FEEDBACK_BROWSER_HEADLESS: Optional. Default "true"
  * - FEEDBACK_BROWSER_VIEWPORT_WIDTH: Optional. Default 1280
  * - FEEDBACK_BROWSER_VIEWPORT_HEIGHT: Optional. Default 720
+ * - FEEDBACK_MODE: Optional. Persona consumption mode (gui/cli/sdk/adk)
+ * - FEEDBACK_PERSONA_DESCRIPTION: Optional. Persona description for overlay
+ * - FEEDBACK_PERSONA_COLOR: Optional. Hex color for overlay border
+ * - FEEDBACK_FEATURE_NAME: Optional. Feature name for overlay
+ * - FEEDBACK_FEATURE_DESCRIPTION: Optional. Feature description for overlay
  *
  * Protocol: JSON-RPC 2.0 over stdin/stdout (stdio MCP)
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import * as fs from 'fs';
@@ -50,6 +55,17 @@ import {
   ScrollToTextArgsSchema,
   WaitForTextArgsSchema,
   WaitForIdleArgsSchema,
+  ShowThoughtArgsSchema,
+  HideThoughtArgsSchema,
+  OpenTabArgsSchema,
+  SwitchTabArgsSchema,
+  ListTabsArgsSchema,
+  CloseTabArgsSchema,
+  TypeTerminalCommandArgsSchema,
+  WaitForTerminalOutputArgsSchema,
+  TypeCodeArgsSchema,
+  RunCodeArgsSchema,
+  GetCodeOutputArgsSchema,
   type NavigateArgs,
   type GoBackArgs,
   type GoForwardArgs,
@@ -70,12 +86,24 @@ import {
   type ScrollToTextArgs,
   type WaitForTextArgs,
   type WaitForIdleArgs,
+  type ShowThoughtArgs,
+  type HideThoughtArgs,
+  type OpenTabArgs,
+  type SwitchTabArgs,
+  type ListTabsArgs,
+  type CloseTabArgs,
+  type TypeTerminalCommandArgs,
+  type WaitForTerminalOutputArgs,
+  type TypeCodeArgs,
+  type RunCodeArgs,
+  type GetCodeOutputArgs,
   type ErrorResult,
   type NavigationResult,
   type ScreenshotResult,
   type TextResult,
   type UrlResult,
   type SuccessResult,
+  type TabListResult,
 } from './types.js';
 
 // ============================================================================
@@ -92,6 +120,12 @@ export interface PlaywrightFeedbackConfig {
   auditDbPath?: string;
   recordVideo?: boolean;
   projectDir?: string;
+  // Overlay and mode config
+  feedbackMode?: string;
+  personaDescription?: string;
+  personaColor?: string;
+  featureName?: string;
+  featureDescription?: string;
 }
 
 // ============================================================================
@@ -110,6 +144,12 @@ export function createPlaywrightFeedbackServer(config: PlaywrightFeedbackConfig)
     viewportHeight,
     recordVideo: config.recordVideo ?? false,
     sessionId: config.auditSessionId,
+    // Overlay config
+    personaName: config.auditPersonaName,
+    personaDescription: config.personaDescription,
+    personaColor: config.personaColor,
+    featureName: config.featureName,
+    featureDescription: config.featureDescription,
   });
 
   // ============================================================================
@@ -477,6 +517,187 @@ export function createPlaywrightFeedbackServer(config: PlaywrightFeedbackConfig)
   }
 
   // ============================================================================
+  // Thought Bubble Tools
+  // ============================================================================
+
+  const THINKING_BUBBLE_CSS = `position:fixed;bottom:0;right:24px;z-index:999998;background:rgba(0,0,0,0.85);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:rgba(255,255,255,0.85);padding:10px 12px;border-radius:8px;border-left:3px solid hsl(220,70%,55%);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.5;box-shadow:0 4px 16px rgba(0,0,0,0.4),0 1px 4px rgba(0,0,0,0.3);pointer-events:none;user-select:none;max-width:320px;max-height:200px;overflow-y:auto;opacity:0;transition:opacity 200ms ease,bottom 200ms ease;word-wrap:break-word;`;
+
+  async function showThought(args: ShowThoughtArgs): Promise<SuccessResult | ErrorResult> {
+    try {
+      const page = await browserManager.getPage();
+      await page.evaluate(({ text, css }: { text: string; css: string }) => {
+        const win = window as unknown as Record<string, unknown>;
+        if (win['__demoThinkingHideTimer']) {
+          clearTimeout(win['__demoThinkingHideTimer'] as number);
+          delete win['__demoThinkingHideTimer'];
+        }
+        let bubble = document.getElementById('demo-thinking-bubble');
+        if (!bubble) {
+          bubble = document.createElement('div');
+          bubble.id = 'demo-thinking-bubble';
+          bubble.style.cssText = css;
+          document.body.appendChild(bubble);
+        }
+        const overlay = document.getElementById('demo-persona-overlay');
+        if (overlay) {
+          const rect = overlay.getBoundingClientRect();
+          bubble.style.bottom = `${window.innerHeight - rect.top + 8}px`;
+        } else {
+          bubble.style.bottom = '120px';
+        }
+        bubble.textContent = text;
+        requestAnimationFrame(() => { bubble!.style.opacity = '1'; });
+      }, { text: args.text, css: THINKING_BUBBLE_CSS });
+      return { success: true, message: 'Thought displayed' };
+    } catch (err) {
+      return { error: `Show thought failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  async function hideThought(_args: HideThoughtArgs): Promise<SuccessResult | ErrorResult> {
+    try {
+      const page = await browserManager.getPage();
+      await page.evaluate(() => {
+        const bubble = document.getElementById('demo-thinking-bubble');
+        if (!bubble) return;
+        bubble.style.opacity = '0';
+        const win = window as unknown as Record<string, unknown>;
+        win['__demoThinkingHideTimer'] = setTimeout(() => { bubble.remove(); delete win['__demoThinkingHideTimer']; }, 200);
+      });
+      return { success: true, message: 'Thought hidden' };
+    } catch (err) {
+      return { error: `Hide thought failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  // ============================================================================
+  // Tab Management Tools
+  // ============================================================================
+
+  async function openTab(args: OpenTabArgs): Promise<SuccessResult | ErrorResult> {
+    try {
+      // Tab URLs must be within the allowed base URL (same as navigate)
+      const baseUrl = browserManager.getBaseUrl();
+      validateUrl(args.url, baseUrl);
+      await browserManager.openTab(args.name, args.url);
+      return { success: true, message: `Opened tab "${args.name}" at ${args.url}` };
+    } catch (err) {
+      return { error: `Open tab failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  async function switchTab(args: SwitchTabArgs): Promise<SuccessResult | ErrorResult> {
+    try {
+      browserManager.switchTab(args.name);
+      return { success: true, message: `Switched to tab "${args.name}"` };
+    } catch (err) {
+      return { error: `Switch tab failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  async function listTabs(_args: ListTabsArgs): Promise<TabListResult | ErrorResult> {
+    try {
+      return { tabs: browserManager.listTabs() };
+    } catch (err) {
+      return { error: `List tabs failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  async function closeTab(args: CloseTabArgs): Promise<SuccessResult | ErrorResult> {
+    try {
+      await browserManager.closeTab(args.name);
+      return { success: true, message: `Closed tab "${args.name}"` };
+    } catch (err) {
+      return { error: `Close tab failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  // ============================================================================
+  // Terminal Tools
+  // ============================================================================
+
+  const XTERM_SELECTORS = { container: '.xterm', rows: '.xterm-rows', input: '.xterm-helper-textarea' };
+
+  async function typeTerminalCommand(args: TypeTerminalCommandArgs): Promise<SuccessResult | ErrorResult> {
+    try {
+      const page = await browserManager.getPage();
+      const input = page.locator(XTERM_SELECTORS.input);
+      await input.focus();
+      await input.pressSequentially(args.command, { delay: args.delay });
+      if (args.press_enter) { await page.keyboard.press('Enter'); }
+      return { success: true, message: `Typed command: ${args.command}` };
+    } catch (err) {
+      return { error: `Type terminal command failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  async function waitForTerminalOutput(args: WaitForTerminalOutputArgs): Promise<SuccessResult | ErrorResult> {
+    try {
+      const page = await browserManager.getPage();
+      const escaped = args.pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      await page.waitForFunction(
+        ({ selector, pattern }: { selector: string; pattern: string }) => {
+          const rows = document.querySelector(selector);
+          if (!rows) return false;
+          return new RegExp(pattern, 'i').test(rows.textContent || '');
+        },
+        { selector: XTERM_SELECTORS.rows, pattern: escaped },
+        { timeout: args.timeout },
+      );
+      return { success: true, message: `Found output matching "${args.pattern}"` };
+    } catch (err) {
+      return { error: `Wait for terminal output failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  // ============================================================================
+  // Editor Tools
+  // ============================================================================
+
+  const EDITOR_SELECTORS = { editor: '.cm-editor', content: '.cm-editor .cm-content', runButton: '[data-hint="Run"]', consoleOutput: '.open-in-new-page ~ div, [class*="console"]' };
+
+  async function typeCode(args: TypeCodeArgs): Promise<SuccessResult | ErrorResult> {
+    try {
+      const page = await browserManager.getPage();
+      const editor = page.locator(EDITOR_SELECTORS.content).first();
+      await editor.waitFor({ timeout: 10_000 });
+      await editor.click();
+      if (args.clear_first) {
+        const selectAll = process.platform === 'darwin' ? 'Meta+a' : 'Control+a';
+        await page.keyboard.press(selectAll);
+        await page.keyboard.press('Delete');
+      }
+      await editor.pressSequentially(args.code, { delay: args.delay });
+      return { success: true, message: 'Code typed' };
+    } catch (err) {
+      return { error: `Type code failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  async function runCode(_args: RunCodeArgs): Promise<SuccessResult | ErrorResult> {
+    try {
+      const page = await browserManager.getPage();
+      const runBtn = page.locator(EDITOR_SELECTORS.runButton);
+      await runBtn.waitFor({ timeout: 10_000 });
+      await runBtn.click();
+      return { success: true, message: 'Code executed' };
+    } catch (err) {
+      return { error: `Run code failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  async function getCodeOutput(_args: GetCodeOutputArgs): Promise<TextResult | ErrorResult> {
+    try {
+      const page = await browserManager.getPage();
+      const consolePanel = page.locator(EDITOR_SELECTORS.consoleOutput).first();
+      await consolePanel.waitFor({ timeout: 10_000 });
+      return { text: await consolePanel.innerText() };
+    } catch (err) {
+      return { error: `Get code output failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  // ============================================================================
   // Tool Definitions
   // ============================================================================
 
@@ -608,13 +829,47 @@ export function createPlaywrightFeedbackServer(config: PlaywrightFeedbackConfig)
     },
   ];
 
+  // Thought bubble tools — always available
+  tools.push(
+    { name: 'show_thought', description: 'Show a thought bubble in the browser overlay. Use every 2-3 actions to narrate your experience.', schema: ShowThoughtArgsSchema, handler: showThought },
+    { name: 'hide_thought', description: 'Hide the current thought bubble.', schema: HideThoughtArgsSchema, handler: hideThought },
+  );
+
+  // Tab management tools — available for modes that use multiple tabs
+  const feedbackMode = config.feedbackMode;
+  if (feedbackMode === 'sdk' || feedbackMode === 'adk' || feedbackMode === 'cli') {
+    tools.push(
+      { name: 'open_tab', description: 'Open a new named browser tab at a URL.', schema: OpenTabArgsSchema, handler: openTab },
+      { name: 'switch_tab', description: 'Switch to a named browser tab for subsequent interactions.', schema: SwitchTabArgsSchema, handler: switchTab },
+      { name: 'list_tabs', description: 'List all open browser tabs.', schema: ListTabsArgsSchema, handler: listTabs },
+      { name: 'close_tab', description: 'Close a named browser tab.', schema: CloseTabArgsSchema, handler: closeTab },
+    );
+  }
+
+  // Terminal tools — available for CLI, SDK, ADK modes
+  if (feedbackMode === 'cli' || feedbackMode === 'sdk' || feedbackMode === 'adk') {
+    tools.push(
+      { name: 'type_terminal_command', description: 'Type a command in the terminal tab character by character.', schema: TypeTerminalCommandArgsSchema, handler: typeTerminalCommand },
+      { name: 'wait_for_terminal_output', description: 'Wait for a text pattern to appear in terminal output.', schema: WaitForTerminalOutputArgsSchema, handler: waitForTerminalOutput },
+    );
+  }
+
+  // Editor tools — available for SDK, ADK modes
+  if (feedbackMode === 'sdk' || feedbackMode === 'adk') {
+    tools.push(
+      { name: 'type_code', description: 'Type code in the LiveCodes editor tab.', schema: TypeCodeArgsSchema, handler: typeCode },
+      { name: 'run_code', description: 'Click the Run button in the LiveCodes editor.', schema: RunCodeArgsSchema, handler: runCode },
+      { name: 'get_code_output', description: 'Get console output from the LiveCodes editor.', schema: GetCodeOutputArgsSchema, handler: getCodeOutput },
+    );
+  }
+
   // ============================================================================
   // Server Setup
   // ============================================================================
 
   const server = new AuditedMcpServer({
     name: 'playwright-feedback',
-    version: '1.0.0',
+    version: '2.0.0',
     tools,
     auditSessionId: config.auditSessionId,
     auditPersonaName: config.auditPersonaName,
@@ -693,6 +948,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename
     auditDbPath: process.env['FEEDBACK_AUDIT_DB_PATH'],
     recordVideo: process.env['FEEDBACK_RECORD_VIDEO'] === '1',
     projectDir: process.env['CLAUDE_PROJECT_DIR'] || process.cwd(),
+    // Overlay and mode config
+    feedbackMode: process.env['FEEDBACK_MODE'],
+    personaDescription: process.env['FEEDBACK_PERSONA_DESCRIPTION'],
+    personaColor: process.env['FEEDBACK_PERSONA_COLOR'],
+    featureName: process.env['FEEDBACK_FEATURE_NAME'],
+    featureDescription: process.env['FEEDBACK_FEATURE_DESCRIPTION'],
   };
 
   const server = createPlaywrightFeedbackServer(config);
