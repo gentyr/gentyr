@@ -71,7 +71,10 @@ This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your sec
 
 1. **Before starting work**: `mcp__todo-db__start_task({ id: "task-uuid" })`
 2. **After completing work**: `mcp__todo-db__complete_task({ id: "task-uuid" })`
-3. **Creating tasks for others**:
+3. **Creating tasks for others** (ONLY for critical issues):
+   - Security vulnerabilities or architecture spec violations
+   - Do NOT create tasks for style, refactoring, or nice-to-have improvements
+   - Document suggestions in your review summary instead
 ```javascript
 mcp__todo-db__create_task({
   section: "INVESTIGATOR & PLANNER",

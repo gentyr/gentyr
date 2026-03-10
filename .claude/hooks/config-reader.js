@@ -46,6 +46,7 @@ const DEFAULTS = {
   version_watch: 5,                     // 5 minutes
   pr_sweep: 10,                         // 10 minutes
   worktree_cleanup: 30,                 // 30 minutes
+  abandoned_worktree_rescue: 30,        // 30 minutes
   stale_work_detector: 1440,            // 24 hours
 };
 
