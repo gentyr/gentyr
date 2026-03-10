@@ -307,7 +307,12 @@ By default, the automation service runs without 1Password credentials in backgro
 /spawn-tasks
 ```
 
-Bypasses the hourly automation's age filter, batch limit, cooldowns, and CTO activity gate to force-spawn pending TODO tasks immediately. The command prefetches current agent counts and concurrency limits, asks which sections to spawn and what concurrency cap to use, then calls `force_spawn_tasks` on the agent-tracker MCP server. Preserves the concurrency guard and task status tracking.
+Unified agent spawning command with two modes:
+
+- **Bare mode** (`/spawn-tasks`): Browse pending tasks by section and spawn them immediately
+- **Description mode** (`/spawn-tasks <description>`): Create new tasks from plain English, then spawn
+
+Bypasses the hourly automation's age filter, batch limit, cooldowns, and CTO activity gate. Prefetches current agent counts and concurrency limits. Uses `force_spawn_tasks` on the agent-tracker MCP server with optional `taskIds` for targeted spawning, and `monitor_agents` to poll spawned agent status. Preserves the concurrency guard and task status tracking.
 
 ### On-Demand Triage
 

@@ -17,12 +17,12 @@ Run `/cto-report` in any GENTYR-managed project to see the live version.
 ⏺ Bash(node packages/cto-dashboard/dist/index.js)
      ╭──────────────────────────────────────────────────────────────────────────────╮
      │ GENTYR CTO DASHBOARD                                        Period: Last 24h │
-     │ Generated: 2026-02-26 19:51                                                  │
+     │ Generated: 2026-03-09 18:36                                                  │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ QUOTA & CAPACITY (2 keys) ─────────╮ ╭─ SYSTEM STATUS ──────────────────────╮
      │ 5-hour   ██████░░░░░░░░░░  35%      │ │ Deputy CTO: ENABLED                  │
-     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 7:55PM (3m… │
+     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 6:39PM (3m… │
      │ Rotations (24h): 2                  │ │ Protection: PROTECTED                │
      │  Tip: /show quota                   │ │ Commits:    BLOCKED                  │
      ╰─────────────────────────────────────╯ ╰──────────────────────────────────────╯
@@ -35,14 +35,14 @@ Run `/cto-report` in any GENTYR-managed project to see the live version.
      │   Per-account quota bars in USAGE TRAJECTORY below.                          │
      │                                                                              │
      │   EVENT HISTORY (last 24h)                                                   │
-     │   7:13PM  Account selected: dev@gentyr.io                                    │
-     │   6:39PM  Account fully depleted: ops@gentyr.io                              │
-     │   5:21PM  Account nearly depleted: ops@gentyr.io                             │
-     │   3:45PM  Account selected: ops@gentyr.io                                    │
-     │   2:03PM  New account added: backup@gentyr.io                                │
-     │  11:33AM  Account quota refreshed: dev@gentyr.io                             │
-     │   8:09AM  Account selected: dev@gentyr.io                                    │
-     │   5:39AM  Account can no longer auth: old@gentyr.io                          │
+     │   5:58PM  Account selected: dev@gentyr.io                                    │
+     │   5:24PM  Account fully depleted: ops@gentyr.io                              │
+     │   4:06PM  Account nearly depleted: ops@gentyr.io                             │
+     │   2:30PM  Account selected: ops@gentyr.io                                    │
+     │  12:48PM  New account added: backup@gentyr.io                                │
+     │  10:18AM  Account quota refreshed: dev@gentyr.io                             │
+     │   6:54AM  Account selected: dev@gentyr.io                                    │
+     │   4:24AM  Account can no longer auth: old@gentyr.io                          │
      │  Tip: /show accounts                                                         │
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
@@ -416,72 +416,72 @@ Run `/cto-report` in any GENTYR-managed project to see the live version.
      ╰──────────────────────────────────────────────────────────────────────────────╯
      
      ╭─ TIMELINE (24h) ─────────────────────────────────────────────────────────────╮
-     │ 19:48  o  SESSION   User session started — CTO dashboard review              │
+     │ 18:33  o  SESSION   User session started — CTO dashboard review              │
      │                     └─ task-triggered via autonomous mode                    │
      │                                                                              │
-     │ 19:44  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
+     │ 18:29  *  HOOK      PreCommit review passed — packages/api/src/auth/token.ts │
      │                     └─ No violations detected by deputy-cto-review agent     │
      │                                                                              │
-     │ 19:37  !  REPORT    Hardcoded JWT secret detected in auth middleware [CRITI… │
+     │ 18:22  !  REPORT    Hardcoded JWT secret detected in auth middleware [CRITI… │
      │                     └─Spec G004 violation — credential must be in env or     │
      │                       Vault                                                  │
      │                                                                              │
-     │ 19:30  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
+     │ 18:15  +  TASK      Completed: Add Zod validation to /api/webhooks route ha… │
      │                     └─ task-runner-code-reviewer — 8 files changed           │
      │                                                                              │
-     │ 19:23  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or OS k… │
+     │ 18:08  ?  QUESTION  Should oauth tokens be stored in Supabase Vault or OS k… │
      │                     └─ Awaiting CTO decision                                 │
      │                                                                              │
-     │ 19:15  *  HOOK      PostToolUse: Write blocked — attempt to modify .claude/… │
+     │ 18:00  *  HOOK      PostToolUse: Write blocked — attempt to modify .claude/… │
      │                     └─ Protected path enforcement triggered                  │
      │                                                                              │
-     │ 19:07  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
+     │ 17:52  !  REPORT    Missing RLS policy on user_sessions table [HIGH]         │
      │                     └─Supabase row-level security gap — G003 compliance risk │
      │                                                                              │
      │                                                                              │
-     │ 18:59  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
+     │ 17:44  o  SESSION   Lint fixer session — packages/frontend/src/components/   │
      │                     └─ 12 ESLint errors resolved across 5 files              │
      │                                                                              │
-     │ 18:50  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
+     │ 17:35  +  TASK      Started: Refactor CLAUDE.md to remove duplicate spec re… │
      │                     └─ claudemd-refactor agent                               │
      │                                                                              │
-     │ 18:40  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
+     │ 17:25  *  HOOK      PreCommit: ESLint failure — 3 errors in webhook.ts       │
      │                     └─ Commit blocked — lint-fixer spawned automatically     │
      │                                                                              │
-     │ 18:29  !  REPORT    Antipattern scan: silent catch in payment processing fl… │
+     │ 17:14  !  REPORT    Antipattern scan: silent catch in payment processing fl… │
      │                     └─ G001 violation — silent failure must be converted to  │
      │                        loud failure                                          │
      │                                                                              │
-     │ 18:18  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
+     │ 17:03  ?  QUESTION  Approve relaxing CSP to allow inline styles for chart t… │
      │                     └─Architecture question — deputy CTO recommends          │
      │                       rejection                                              │
      │                                                                              │
-     │ 18:06  o  SESSION   Staging health monitor — all checks passed               │
+     │ 16:51  o  SESSION   Staging health monitor — all checks passed               │
      │                     └─ staging-health-monitor agent — 6 services healthy     │
      │                                                                              │
-     │ 17:53  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
+     │ 16:38  +  TASK      Completed: Enable TypeScript strict mode in packages/api │
      │                     └─ task-runner-code-reviewer — 14 type errors fixed      │
      │                                                                              │
-     │ 17:39  !  REPORT    CORS wildcard on production endpoints — policy violatio… │
+     │ 16:24  !  REPORT    CORS wildcard on production endpoints — policy violatio… │
      │                     └─Escalated to CTO for explicit origin allowlist         │
      │                       decision                                               │
      │                                                                              │
-     │ 17:23  *  HOOK      Compliance check triggered — 3 files changed in package… │
+     │ 16:08  *  HOOK      Compliance check triggered — 3 files changed in package… │
      │                     └─ compliance-global agent: all G001–G011 specs verified │
      │                                                                              │
-     │ 17:08  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
+     │ 15:53  ?  QUESTION  Should the triage pipeline use a dedicated queue or sta… │
      │                     └─Scale threshold discussion — recommendation: stay      │
      │                       SQLite until 5k/day                                    │
      │                                                                              │
-     │ 16:52  o  SESSION   Investigator session — tracing API latency spike in pro… │
+     │ 15:37  o  SESSION   Investigator session — tracing API latency spike in pro… │
      │                     └─ task-runner-investigator — root cause: N+1 query in   │
      │                        reports endpoint                                      │
      │                                                                              │
-     │ 16:34  +  TASK      Completed: Rotate leaked service account credential      │
+     │ 15:19  +  TASK      Completed: Rotate leaked service account credential      │
      │                     └─security task — Supabase service role key revoked and  │
      │                       replaced                                               │
      │                                                                              │
-     │ 16:17  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
+     │ 15:02  !  REPORT    Dependency audit: lodash prototype pollution CVE resolv… │
      │                     └─ Self-handled by deputy CTO — bumped to 4.17.21        │
      │                                                                              │
      │  Tip: /show timeline                                                         │

@@ -23,6 +23,7 @@ import {
   GetConcurrencyStatusArgsSchema,
   ForceSpawnTasksArgsSchema,
   ForceTriageReportsArgsSchema,
+  MonitorAgentsArgsSchema,
   ListSessionsArgsSchema,
   SearchSessionsArgsSchema,
   GetSessionSummaryArgsSchema,
@@ -35,7 +36,9 @@ import {
   type GetSessionSummaryArgs,
   type GetConcurrencyStatusArgs,
   type ForceSpawnTasksArgs,
+  type MonitorAgentsArgs,
   type ForceTriageReportsResult,
+  type MonitorAgentsResult,
   type ListSpawnedAgentsResult,
   type GetAgentPromptResult,
   type GetAgentSessionResult,
@@ -920,12 +923,13 @@ function forceSpawnTasks(args: ForceSpawnTasksArgs): ForceSpawnTasksResult | Err
   }
 
   try {
-    const output = execFileSync('node', [
-      scriptPath,
-      '--sections', args.sections.join(','),
-      '--project-dir', PROJECT_DIR,
-      '--max-concurrent', String(args.maxConcurrent),
-    ], {
+    const scriptArgs = [scriptPath, '--project-dir', PROJECT_DIR, '--max-concurrent', String(args.maxConcurrent)];
+    if (args.taskIds) {
+      scriptArgs.push('--task-ids', args.taskIds.join(','));
+    } else if (args.sections) {
+      scriptArgs.push('--sections', args.sections.join(','));
+    }
+    const output = execFileSync('node', scriptArgs, {
       encoding: 'utf8',
       timeout: 120000,
       env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR },
@@ -979,6 +983,114 @@ function forceTriageReports(): ForceTriageReportsResult | ErrorResult {
   }
 }
 
+/**
+ * Monitor specific agents by ID - lightweight polling for status
+ */
+function monitorAgents(args: MonitorAgentsArgs): MonitorAgentsResult {
+  const history = readHistory();
+  const agents = history.agents ?? [];
+  const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
+  const todoDbExists = fs.existsSync(todoDbPath);
+
+  const results: MonitorAgentsResult['agents'] = [];
+  let completedCount = 0;
+
+  for (const agentId of args.agentIds) {
+    const agent = agents.find(a => a.id === agentId);
+
+    if (!agent) {
+      results.push({
+        agentId,
+        status: 'unknown',
+        pid: null,
+        pidAlive: false,
+        taskId: null,
+        taskStatus: null,
+        taskTitle: null,
+        elapsedSeconds: 0,
+        section: null,
+      });
+      completedCount++; // Unknown agents count as complete for polling purposes
+      continue;
+    }
+
+    // Check PID liveness
+    let pidAlive = false;
+    if (agent.pid) {
+      try {
+        process.kill(agent.pid, 0);
+        pidAlive = true;
+      } catch {
+        pidAlive = false;
+      }
+    }
+
+    // Determine status - if agent is marked running but PID is gone, treat as completed
+    let status: 'running' | 'completed' | 'reaped' | 'unknown' = agent.status ?? 'unknown';
+    if (status === 'running' && !pidAlive) {
+      status = 'completed';
+    }
+
+    // Get task info from metadata
+    const taskId = (agent.metadata?.taskId as string) ?? null;
+    const section = (agent.metadata?.section as string) ?? null;
+    let taskStatus: string | null = null;
+    let taskTitle: string | null = null;
+
+    // Try to query todo.db for task status using sqlite3 CLI
+    if (taskId && todoDbExists) {
+      try {
+        const sanitizedTaskId = taskId.replace(/'/g, "''");
+        const result = execSync(
+          `sqlite3 "${todoDbPath}" "SELECT status, title FROM tasks WHERE id = '${sanitizedTaskId}'"`,
+          { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
+        ).trim();
+        if (result) {
+          const pipeIndex = result.indexOf('|');
+          if (pipeIndex !== -1) {
+            taskStatus = result.substring(0, pipeIndex) || null;
+            taskTitle = result.substring(pipeIndex + 1) || null;
+          }
+        }
+      } catch {
+        // sqlite3 CLI not available or query failed - fall back to agent description
+        taskTitle = agent.description?.replace(/^Force-spawn: \w+ - /, '') ?? null;
+      }
+    } else if (!taskTitle) {
+      taskTitle = agent.description ?? null;
+    }
+
+    // Calculate elapsed time from spawn timestamp
+    const elapsedMs = Date.now() - new Date(agent.timestamp).getTime();
+    const elapsedSeconds = Math.floor(elapsedMs / 1000);
+
+    if (status !== 'running') {
+      completedCount++;
+    }
+
+    results.push({
+      agentId,
+      status,
+      pid: agent.pid ?? null,
+      pidAlive,
+      taskId,
+      taskStatus,
+      taskTitle: taskTitle || agent.description || null,
+      elapsedSeconds,
+      section,
+    });
+  }
+
+  const total = args.agentIds.length;
+  const allComplete = completedCount >= total;
+  const runningCount = total - completedCount;
+  const summary = allComplete
+    ? `All ${total} agent(s) complete`
+    : `${completedCount}/${total} complete (${runningCount} still running)`;
+
+  return { agents: results, allComplete, summary };
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -1026,6 +1138,12 @@ const tools: AnyToolHandler[] = [
     description: 'Force-spawn a deputy-CTO triage agent to process all pending reports immediately, bypassing the hourly automation triage interval. Returns the spawned agent ID, PID, and session ID.',
     schema: ForceTriageReportsArgsSchema,
     handler: forceTriageReports,
+  },
+  {
+    name: 'monitor_agents',
+    description: 'Monitor specific agents by ID. Returns current status, PID liveness, linked task status, and elapsed time. Use for polling after force_spawn_tasks.',
+    schema: MonitorAgentsArgsSchema,
+    handler: monitorAgents,
   },
   // Session Browser Tools
   {
