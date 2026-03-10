@@ -150,7 +150,7 @@ async function prepareWorkspace(persona, sessionId) {
  * This is the key isolation mechanism - the feedback agent cannot access
  * any project MCP servers (todo-db, specs-browser, deputy-cto, etc.)
  */
-function generateMcpConfig(sessionId, persona, projectDir = PROJECT_DIR) {
+function generateMcpConfig(sessionId, persona, projectDir = PROJECT_DIR, options = {}) {
   const config = { mcpServers: {} };
 
   const mode = persona.consumption_mode;
@@ -166,6 +166,11 @@ function generateMcpConfig(sessionId, persona, projectDir = PROJECT_DIR) {
         FEEDBACK_SESSION_ID: sessionId,
         FEEDBACK_PERSONA_NAME: persona.name,
         FEEDBACK_RECORD_VIDEO: '1',
+        FEEDBACK_PERSONA_DESCRIPTION: persona.description || '',
+        FEEDBACK_PERSONA_COLOR: persona.accent_color || '',
+        FEEDBACK_FEATURE_NAME: options.featureName || '',
+        FEEDBACK_FEATURE_DESCRIPTION: options.featureDescription || '',
+        FEEDBACK_MODE: 'gui',
       },
     };
   }
@@ -225,6 +230,11 @@ function generateMcpConfig(sessionId, persona, projectDir = PROJECT_DIR) {
           FEEDBACK_SESSION_ID: sessionId,
           FEEDBACK_PERSONA_NAME: persona.name,
           FEEDBACK_RECORD_VIDEO: '1',
+          FEEDBACK_PERSONA_DESCRIPTION: persona.description || '',
+          FEEDBACK_PERSONA_COLOR: persona.accent_color || '',
+          FEEDBACK_FEATURE_NAME: options.featureName || '',
+          FEEDBACK_FEATURE_DESCRIPTION: options.featureDescription || '',
+          FEEDBACK_MODE: 'sdk',
         },
       };
     }
@@ -237,10 +247,10 @@ function generateMcpConfig(sessionId, persona, projectDir = PROJECT_DIR) {
       args: [path.join(MCP_SERVERS_DIST, 'programmatic-feedback', 'server.js')],
       env: {
         CLAUDE_PROJECT_DIR: projectDir,
-        FEEDBACK_MODE: 'sdk',
         FEEDBACK_SDK_PACKAGES: persona.endpoints[0] || '',
         FEEDBACK_SESSION_ID: sessionId,
         FEEDBACK_PERSONA_NAME: persona.name,
+        FEEDBACK_MODE: 'adk',
       },
     };
 
@@ -349,6 +359,12 @@ Do NOT try to debug or fix issues. Just report what you experience.`;
     } else {
       prompt += `\n**Note:** Documentation is not configured for this persona. You can only test the SDK code directly. To enable docs access, run \`/configure-personas\` and set the docs URL for this persona.`;
     }
+
+    prompt += `\n\nYou may have multiple tabs available:\n`;
+    prompt += `1. Browser tab — for browsing docs (if configured)\n`;
+    prompt += `2. Editor tab — for writing and running test scripts\n`;
+    prompt += `3. Terminal tab — for npm install, running scripts, checking output\n`;
+    prompt += `Use \`open_tab\`, \`switch_tab\`, and \`list_tabs\` to manage tabs.`;
   }
 
   if (persona.consumption_mode === 'adk') {
@@ -369,7 +385,23 @@ Do NOT try to debug or fix issues. Just report what you experience.`;
     } else {
       prompt += `\n**Note:** Documentation is not configured for this persona. You can only test the SDK code directly. To enable docs access, run \`/configure-personas\` and set the docs directory for this persona.`;
     }
+
+    prompt += `\n\nYou may have multiple tabs available:\n`;
+    prompt += `1. Editor tab — for writing test scripts\n`;
+    prompt += `2. Terminal tab — for running scripts and checking output\n`;
+    prompt += `Use \`open_tab\`, \`switch_tab\`, and \`list_tabs\` to manage tabs.`;
   }
+
+  // Thought bubble instructions (all modes)
+  prompt += `\n\n## Thinking Out Loud\n\n`;
+  prompt += `You have a \`show_thought\` MCP tool. Use it frequently to narrate your experience:\n`;
+  prompt += `- "Let me check if the dashboard loads quickly..."\n`;
+  prompt += `- "Hmm, I expected a confirmation dialog here"\n`;
+  prompt += `- "This is confusing — where do I find the settings?"\n`;
+  prompt += `- "Nice, the search results are relevant and fast"\n\n`;
+  prompt += `Call \`show_thought\` every 2-3 actions. This creates a visible thought stream\n`;
+  prompt += `in the overlay that makes recordings more informative.\n`;
+  prompt += `Call \`hide_thought\` when you're done with a thought and about to act.`;
 
   if (scenario) {
     prompt += `\n\n## Scenario Starting Point\n\n`;
@@ -440,6 +472,8 @@ function spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, optio
       CLAUDE_SPAWNED_SESSION: 'true',
       FEEDBACK_SESSION_ID: sessionId,
       FEEDBACK_PERSONA_NAME: personaName,
+      FEEDBACK_FEATURE_ID: options.featureId || '',
+      FEEDBACK_FEATURE_NAME: options.featureName || '',
     },
   });
 
@@ -485,6 +519,8 @@ function runFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, options
         CLAUDE_SPAWNED_SESSION: 'true',
         FEEDBACK_SESSION_ID: sessionId,
         FEEDBACK_PERSONA_NAME: personaName,
+        FEEDBACK_FEATURE_ID: options.featureId || '',
+        FEEDBACK_FEATURE_NAME: options.featureName || '',
       },
     });
 
@@ -557,6 +593,9 @@ async function main() {
 
   const personaId = args['persona-id'];
   const sessionId = args['session-id'];
+  const featureId = args['feature-id'] || '';
+  const featureName = args['feature-name'] || '';
+  const featureDescription = args['feature-description'] || '';
 
   // Clean up old temp configs
   cleanupOldConfigs();
@@ -576,14 +615,21 @@ async function main() {
   }
 
   // Generate isolated MCP config
-  const mcpConfigPath = generateMcpConfig(sessionId, persona);
+  const mcpConfigPath = generateMcpConfig(sessionId, persona, PROJECT_DIR, {
+    featureName,
+    featureDescription,
+  });
   console.log(`Generated MCP config: ${mcpConfigPath}`);
 
   // Build persona-specific prompt
   const prompt = buildPrompt(persona, sessionId);
 
   // Spawn isolated session
-  const result = spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, persona.name, spawnOptions);
+  const result = spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, persona.name, {
+    ...spawnOptions,
+    featureId,
+    featureName,
+  });
   console.log(`Spawned feedback agent PID: ${result.pid}`);
 
   // Output JSON for orchestrator consumption
