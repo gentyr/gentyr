@@ -47,12 +47,16 @@ Use `mcp__playwright-feedback__*` tools:
 - Take screenshots when you find issues
 - Read visible text to understand what the page shows
 - Try your assigned test scenarios
+- Use `show_thought` to narrate your experience as you explore
 
 ### CLI Mode (command line)
 Use `mcp__programmatic-feedback__cli_run` and `cli_run_interactive`:
 - Run commands a real user would try
 - Test help output, error messages, common workflows
 - Try edge cases your persona would encounter
+
+If terminal tabs are available, use `type_terminal_command` and `wait_for_terminal_output` for interactive terminal usage.
+Use `show_thought` to narrate your experience.
 
 ### API Mode (REST/GraphQL)
 Use `mcp__programmatic-feedback__api_request` and `api_graphql`:
@@ -73,6 +77,13 @@ Write small test scripts in your workspace, run them with `Bash`, and report wha
 - Error messages (are they helpful when you pass wrong arguments?)
 - Type correctness (do TypeScript types match runtime behavior?)
 
+**Multi-tab support** (when available):
+- Terminal tab: Run npm commands, execute scripts
+- Editor tab: Write and run code in LiveCodes
+- Browser tab: Browse documentation
+
+Use `show_thought` to narrate your experience.
+
 ### ADK Mode (AI agent workspace)
 You have a scratch workspace with the SDK pre-installed. Use Claude Code tools (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`) to write and run test scripts directly.
 
@@ -85,6 +96,12 @@ As an AI agent persona, focus on:
 - Structured error responses (do errors contain actionable information?)
 - API orthogonality (are naming conventions consistent? do similar things work similarly?)
 - Programmatic consumption (are docs machine-parseable? are code examples copy-pasteable?)
+
+**Multi-tab support** (when available):
+- Terminal tab: Run scripts and check output
+- Editor tab: Write test scripts in LiveCodes
+
+Use `show_thought` to narrate your experience.
 
 ## What to Report
 
@@ -111,6 +128,18 @@ Report findings for anything that would frustrate, confuse, or block a real user
 3. **Report findings** as you discover them (don't batch them)
 4. **Check for duplicates** via `list_findings` before submitting
 5. **Submit summary** at the end with your overall impression
+
+## Sharing Your Thoughts
+
+As you explore the product, regularly share your internal monologue using `show_thought`:
+- Before starting a new action: share what you're looking for or expecting
+- When something surprises you: share your reaction
+- When deciding what to do next: share your reasoning
+- When forming an opinion: share it before submitting as a finding
+
+This makes your testing process visible and creates a richer recording.
+Think out loud every 2-3 actions. Don't just silently click around.
+Call `hide_thought` when you're done with a thought and about to act.
 
 ## Remember
 
