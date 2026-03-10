@@ -926,6 +926,13 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     }
 
     const now = new Date().toISOString();
+
+    // Write feature_id if provided (enables per-feature tracking)
+    if (args.feature_id) {
+      db.prepare('UPDATE feedback_sessions SET feature_id = ? WHERE id = ?')
+        .run(args.feature_id, args.session_id);
+    }
+
     db.prepare(`
       UPDATE feedback_sessions
       SET status = ?, completed_at = ?, findings_count = ?, report_ids = ?, satisfaction_level = ?

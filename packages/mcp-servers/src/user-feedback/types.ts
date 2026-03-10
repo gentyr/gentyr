@@ -160,6 +160,8 @@ export const CompleteFeedbackSessionArgsSchema = z.object({
     .describe('IDs of agent-reports submitted during this session'),
   satisfaction_level: z.enum(SATISFACTION_LEVEL).optional()
     .describe('Satisfaction level reported by the persona'),
+  feature_id: z.string().optional()
+    .describe('Feature ID being reviewed (for per-feature tracking)'),
 });
 
 export const GetFeedbackRunSummaryArgsSchema = z.object({
