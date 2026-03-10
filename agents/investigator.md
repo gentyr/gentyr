@@ -105,7 +105,10 @@ This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your sec
 1. **Check your tasks**: `mcp__todo-db__list_tasks({ section: "INVESTIGATOR & PLANNER", status: "pending" })`
 2. **Before starting work**: `mcp__todo-db__start_task({ id: "task-uuid" })`
 3. **After completing work**: `mcp__todo-db__complete_task({ id: "task-uuid" })`
-4. **Creating tasks for others**:
+4. **Creating tasks for others** (be conservative):
+   - Create 1-3 focused tasks for the specific issue investigated
+   - Do NOT create a wishlist of tangential improvements
+   - Document peripheral findings in your summary instead
 ```javascript
 mcp__todo-db__create_task({
   section: "CODE-REVIEWER",

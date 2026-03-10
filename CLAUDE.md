@@ -141,6 +141,8 @@ When reviewing a promotion PR, the deputy-CTO has `Bash` access to `gh` commands
 
 Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/`. Each worktree is provisioned with symlinked GENTYR config (hooks, agents, commands) and a worktree-specific `.mcp.json` with absolute `CLAUDE_PROJECT_DIR` paths. Worktrees for merged branches are cleaned up every **30 minutes** by the hourly automation (`getCooldown('worktree_cleanup', 30)`). The project-manager is responsible for cleaning up worktrees immediately after self-merge; the 30-minute automation is a safety net for missed cleanups.
 
+**Abandoned worktree rescue**: `rescueAbandonedWorktrees()` in `hourly-automation.js` detects worktrees that have uncommitted changes but no active agent process, then spawns a project-manager to commit, push, and merge the orphaned work. Runs every **30 minutes** (`getCooldown('abandoned_worktree_rescue', 30)`).
+
 **Active session protection**: `cleanupMergedWorktrees()` in `worktree-manager.js` uses `isWorktreeInUse()` (`lsof +D`) to detect open file descriptors before removing a worktree. Worktrees with active processes are skipped to prevent CWD eviction of live sessions. The `worktree-cwd-guard.js` hook additionally detects stale CWD at tool-call time and blocks Bash execution with a recovery hint if the worktree directory no longer exists.
 
 `core.hooksPath` poisoning is defended by 4 layers (removeWorktree, tamperCheck, husky pre-commit, safeSymlink EINVAL fix).
@@ -391,7 +393,7 @@ Hooks that need the AI to act on their output must include both:
 
 ## Hooks Reference
 
-Individual hook specifications for all GENTYR hooks (auto-sync, CTO notification, branch drift, branch checkout guard, main tree commit guard, uncommitted change monitor, PR auto-merge nudge, credential health check, credential file guard, playwright CLI guard, playwright health check, worktree path guard, worktree CWD guard).
+Individual hook specifications for all GENTYR hooks (auto-sync, CTO notification, branch drift, branch checkout guard, main tree commit guard, uncommitted change monitor, PR auto-merge nudge, project-manager reminder, credential health check, credential file guard, playwright CLI guard, playwright health check, worktree path guard, worktree CWD guard).
 
 > Full details: [Hooks Reference](docs/CLAUDE-REFERENCE.md#hooks-reference)
 

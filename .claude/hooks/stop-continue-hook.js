@@ -18,6 +18,7 @@
  */
 
 import { createInterface } from 'readline';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -342,10 +343,36 @@ async function main() {
 
     if (isTaskSession && !alreadyContinuing) {
       // First stop of a [Task] session - force one continuation
-      debugLog('Decision: BLOCK (first stop of [Task] session)');
+      // Check if in a worktree with uncommitted changes
+      let uncommittedInWorktree = false;
+      try {
+        const cwd = process.cwd();
+        const gitPath = path.join(cwd, '.git');
+        const stat = fs.lstatSync(gitPath);
+        if (stat.isFile()) {
+          // We're in a worktree — check for uncommitted changes
+          const status = execFileSync('git', ['status', '--porcelain'], {
+            cwd,
+            encoding: 'utf8',
+            timeout: 5000,
+            stdio: 'pipe',
+          }).trim();
+          uncommittedInWorktree = status.length > 0;
+        }
+      } catch {
+        // Not in a worktree or git status failed — ignore
+      }
+
+      let reason;
+      if (uncommittedInWorktree) {
+        reason = 'You have UNCOMMITTED CHANGES in your worktree. You MUST spawn Task(subagent_type=\'project-manager\') to commit, push, and merge your work before stopping.';
+      } else {
+        reason = 'If there is more work to investigate or resolve related to the initial [Task] request, continue working. Otherwise, you may stop.';
+      }
+      debugLog('Decision: BLOCK (first stop of [Task] session)', { uncommittedInWorktree });
       console.log(JSON.stringify({
         decision: 'block',
-        reason: 'If there is more work to investigate or resolve related to the initial [Task] request, continue working. Otherwise, you may stop.'
+        reason,
       }));
     } else {
       // Either not a [Task] session, or already continued once - allow stop
