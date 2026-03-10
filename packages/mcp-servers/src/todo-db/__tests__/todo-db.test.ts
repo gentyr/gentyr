@@ -24,11 +24,11 @@ interface TaskRow {
   status: string;
   assigned_by: string | null;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   started_at: string | null;
-  started_timestamp: number | null;
+  started_timestamp: string | null;
   completed_at: string | null;
-  completed_timestamp: number | null;
+  completed_timestamp: string | null;
   linked_session_id: string | null;
   followup_enabled: number;
   followup_section: string | null;
@@ -57,7 +57,7 @@ interface StartTaskResult {
   id: string;
   status: string;
   started_at: string;
-  started_timestamp: number;
+  started_timestamp: string;
 }
 
 interface CompleteTaskResult {
@@ -188,7 +188,7 @@ ${originalTask}`;
     const id = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
-    const created_timestamp = Math.floor(now.getTime() / 1000);
+    const created_timestamp = now.toISOString();
     const priority = args.priority ?? 'normal';
 
     db.prepare(`
@@ -242,7 +242,7 @@ ${originalTask}`;
 
     const now = new Date();
     const started_at = now.toISOString();
-    const started_timestamp = Math.floor(now.getTime() / 1000);
+    const started_timestamp = now.toISOString();
     db.prepare(`UPDATE tasks SET status = 'in_progress', started_at = ?, started_timestamp = ? WHERE id = ?`).run(
       started_at,
       started_timestamp,
@@ -259,7 +259,7 @@ ${originalTask}`;
 
     const now = new Date();
     const completed_at = now.toISOString();
-    const completed_timestamp = Math.floor(now.getTime() / 1000);
+    const completed_timestamp = now.toISOString();
 
     db.prepare(`
       UPDATE tasks SET status = 'completed', completed_at = ?, completed_timestamp = ?
@@ -275,7 +275,7 @@ ${originalTask}`;
       const title = `[Follow-up] ${task.title}`;
       const description = task.followup_prompt;
       const followup_created_at = now.toISOString();
-      const followup_timestamp = Math.floor(now.getTime() / 1000);
+      const followup_timestamp = now.toISOString();
 
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt)
@@ -297,7 +297,7 @@ ${originalTask}`;
     if (task.status === 'completed') {
       const now = new Date();
       const archived_at = now.toISOString();
-      const archived_timestamp = Math.floor(now.getTime() / 1000);
+      const archived_timestamp = now.toISOString();
 
       const archiveAndDelete = db.transaction(() => {
         db.prepare(`
@@ -350,7 +350,6 @@ ${originalTask}`;
   };
 
   const cleanup = () => {
-    const now = Math.floor(Date.now() / 1000);
     const nowIso = new Date().toISOString();
     const changes = {
       stale_starts_cleared: 0,
@@ -365,8 +364,8 @@ ${originalTask}`;
       SET status = 'pending', started_at = NULL, started_timestamp = NULL
       WHERE status = 'in_progress'
         AND started_timestamp IS NOT NULL
-        AND (? - started_timestamp) > 1800
-    `).run(now);
+        AND (strftime('%s', ?) - strftime('%s', started_timestamp)) > 1800
+    `).run(nowIso);
     changes.stale_starts_cleared = staleResult.changes;
 
     // Archive old completed (>3 hours = 10800 seconds)
@@ -377,15 +376,15 @@ ${originalTask}`;
         FROM tasks
         WHERE status = 'completed'
           AND completed_timestamp IS NOT NULL
-          AND (? - completed_timestamp) > 10800
-      `).run(nowIso, now, now);
+          AND (strftime('%s', ?) - strftime('%s', completed_timestamp)) > 10800
+      `).run(nowIso, nowIso, nowIso);
 
       db.prepare(`
         DELETE FROM tasks
         WHERE status = 'completed'
           AND completed_timestamp IS NOT NULL
-          AND (? - completed_timestamp) > 10800
-      `).run(now);
+          AND (strftime('%s', ?) - strftime('%s', completed_timestamp)) > 10800
+      `).run(nowIso);
 
       return insertResult.changes;
     });
@@ -403,7 +402,7 @@ ${originalTask}`;
           WHERE status = 'completed'
           ORDER BY completed_timestamp ASC
           LIMIT ?
-        `).run(nowIso, now, toRemove);
+        `).run(nowIso, nowIso, toRemove);
 
         db.prepare(`
           DELETE FROM tasks WHERE id IN (
@@ -420,7 +419,7 @@ ${originalTask}`;
     }
 
     // Prune old archived tasks: keep last 500 OR anything within 30 days
-    const thirtyDaysAgo = now - (30 * 24 * 60 * 60);
+    const thirtyDaysAgo = new Date(Date.now() - (30 * 24 * 60 * 60 * 1000)).toISOString();
     const pruneResult = db.prepare(`
       DELETE FROM archived_tasks
       WHERE id NOT IN (
@@ -549,9 +548,9 @@ ${originalTask}`;
 
       // Insert task2 with a later timestamp
       const id2 = randomUUID();
-      const now = new Date();
+      const now = new Date(Date.now() + 1000); // 1 second later
       const created_at = now.toISOString();
-      const created_timestamp = Math.floor(now.getTime() / 1000) + 1; // 1 second later
+      const created_timestamp = now.toISOString();
 
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, created_timestamp)
@@ -579,28 +578,27 @@ ${originalTask}`;
   describe('Task Status Transitions', () => {
     it('should start a pending task', () => {
       const task = createTask({ section: 'TEST-WRITER', title: 'Task' });
-      const beforeStart = Math.floor(Date.now() / 1000);
+      const beforeStart = new Date().toISOString();
       const result = startTask(task.id) as StartOrError;
 
       expect(result.status).toBe('in_progress');
       expect(result.started_at).toBeDefined();
 
-      // started_timestamp must be set and be a reasonable epoch integer
+      // started_timestamp must be set and be a reasonable ISO 8601 string
       expect('error' in result).toBe(false);
       if (!('error' in result)) {
-        expect(typeof result.started_timestamp).toBe('number');
-        expect(result.started_timestamp).toBeGreaterThanOrEqual(beforeStart);
-        expect(result.started_timestamp).toBeLessThanOrEqual(beforeStart + 5);
+        expect(typeof result.started_timestamp).toBe('string');
+        expect(result.started_timestamp >= beforeStart).toBe(true);
       }
 
       const updated = getTask(task.id) as TaskOrError;
       expect(updated.status).toBe('in_progress');
 
       // Verify started_timestamp is persisted to database
-      const row = db.prepare('SELECT started_timestamp FROM tasks WHERE id = ?').get(task.id) as { started_timestamp: number | null };
+      const row = db.prepare('SELECT started_timestamp FROM tasks WHERE id = ?').get(task.id) as { started_timestamp: string | null };
       expect(row.started_timestamp).not.toBeNull();
-      expect(typeof row.started_timestamp).toBe('number');
-      expect(row.started_timestamp!).toBeGreaterThanOrEqual(beforeStart);
+      expect(typeof row.started_timestamp).toBe('string');
+      expect(row.started_timestamp! >= beforeStart).toBe(true);
     });
 
     it('should complete a pending task', () => {
@@ -722,16 +720,13 @@ ${originalTask}`;
     it('should clear stale in-progress tasks (>30 min since start)', () => {
       // Create a task that was created recently but started 31 minutes ago
       const id = randomUUID();
-      const now = Math.floor(Date.now() / 1000);
-      const createdTimestamp = now - 60; // created 1 minute ago
-      const startedTimestamp = now - 1860; // started 31 minutes ago
-      const created_at = new Date(createdTimestamp * 1000).toISOString();
-      const started_at = new Date(startedTimestamp * 1000).toISOString();
+      const created_at = new Date(Date.now() - 60 * 1000).toISOString(); // created 1 minute ago
+      const started_at = new Date(Date.now() - 1860 * 1000).toISOString(); // started 31 minutes ago
 
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, started_at, created_timestamp, started_timestamp)
         VALUES (?, 'TEST-WRITER', 'in_progress', 'Stale task', ?, ?, ?, ?)
-      `).run(id, created_at, started_at, createdTimestamp, startedTimestamp);
+      `).run(id, created_at, started_at, created_at, started_at);
 
       const result = cleanup();
       expect(result.stale_starts_cleared).toBe(1);
@@ -758,16 +753,13 @@ ${originalTask}`;
       // not created_timestamp. A long-running task that was recently picked up should
       // not be reset just because it has an old created_timestamp.
       const id = randomUUID();
-      const now = Math.floor(Date.now() / 1000);
-      const createdTimestamp = now - 7200; // created 2 hours ago
-      const startedTimestamp = now - 300;  // started only 5 minutes ago
-      const created_at = new Date(createdTimestamp * 1000).toISOString();
-      const started_at = new Date(startedTimestamp * 1000).toISOString();
+      const created_at = new Date(Date.now() - 7200 * 1000).toISOString(); // created 2 hours ago
+      const started_at = new Date(Date.now() - 300 * 1000).toISOString();  // started only 5 minutes ago
 
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, started_at, created_timestamp, started_timestamp)
         VALUES (?, 'TEST-WRITER', 'in_progress', 'Recently started old task', ?, ?, ?, ?)
-      `).run(id, created_at, started_at, createdTimestamp, startedTimestamp);
+      `).run(id, created_at, started_at, created_at, started_at);
 
       const result = cleanup();
       // Must NOT be cleared — started_timestamp is only 5 minutes old (< 1800 seconds)
@@ -776,21 +768,19 @@ ${originalTask}`;
       const task = getTask(id) as TaskOrError;
       expect(task.status).toBe('in_progress');
       expect(task.started_at).toBe(started_at);
-      expect((task as TaskRow).started_timestamp).toBe(startedTimestamp);
+      expect((task as TaskRow).started_timestamp).toBe(started_at);
     });
 
     it('should NOT clear in-progress tasks that have no started_timestamp (missing data)', () => {
       // Tasks without started_timestamp (e.g. migrated from old schema) should be
       // skipped by the stale-start cleanup, matching the server's IS NOT NULL guard.
       const id = randomUUID();
-      const now = Math.floor(Date.now() / 1000);
-      const oldTimestamp = now - 7200; // created 2 hours ago
-      const created_at = new Date(oldTimestamp * 1000).toISOString();
+      const created_at = new Date(Date.now() - 7200 * 1000).toISOString(); // created 2 hours ago
 
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, started_at, created_timestamp)
         VALUES (?, 'TEST-WRITER', 'in_progress', 'No started_timestamp task', ?, ?, ?)
-      `).run(id, created_at, created_at, oldTimestamp);
+      `).run(id, created_at, created_at, created_at);
 
       const result = cleanup();
       // started_timestamp IS NULL → not matched by the stale-start query
@@ -802,14 +792,12 @@ ${originalTask}`;
 
     it('should archive old completed tasks (>3 hours)', () => {
       const id = randomUUID();
-      const oldTimestamp = Math.floor(Date.now() / 1000) - 11000; // >3 hours
-      const created_at = new Date(oldTimestamp * 1000).toISOString();
-      const completed_at = created_at;
+      const oldIso = new Date(Date.now() - 11000 * 1000).toISOString(); // >3 hours ago
 
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, completed_at, created_timestamp, completed_timestamp)
         VALUES (?, 'TEST-WRITER', 'completed', 'Old task', ?, ?, ?, ?)
-      `).run(id, created_at, completed_at, oldTimestamp, oldTimestamp);
+      `).run(id, oldIso, oldIso, oldIso, oldIso);
 
       const result = cleanup();
       expect(result.old_completed_archived).toBe(1);
@@ -850,13 +838,13 @@ ${originalTask}`;
       // Create 60 completed tasks with delays to ensure different timestamps
       for (let i = 0; i < 60; i++) {
         const id = randomUUID();
-        const timestamp = Math.floor(Date.now() / 1000) + i; // Each task 1 second apart
-        const created_at = new Date(timestamp * 1000).toISOString();
+        // Each task 1 millisecond apart to ensure distinct ISO timestamps
+        const created_at = new Date(Date.now() + i).toISOString();
 
         db.prepare(`
           INSERT INTO tasks (id, section, status, title, created_at, completed_at, created_timestamp, completed_timestamp)
           VALUES (?, 'TEST-WRITER', 'completed', ?, ?, ?, ?, ?)
-        `).run(id, `Task ${i}`, created_at, created_at, timestamp, timestamp);
+        `).run(id, `Task ${i}`, created_at, created_at, created_at, created_at);
 
         taskIds.push(id);
       }
@@ -884,29 +872,29 @@ ${originalTask}`;
     });
 
     it('should prune archived tasks older than 30 days when exceeding 500', () => {
-      const now = Math.floor(Date.now() / 1000);
-      const thirtyOneDaysAgo = now - (31 * 24 * 60 * 60);
-      const twentyNineDaysAgo = now - (29 * 24 * 60 * 60);
+      const nowMs = Date.now();
+      const thirtyOneDaysAgoMs = nowMs - (31 * 24 * 60 * 60 * 1000);
+      const twentyNineDaysAgoMs = nowMs - (29 * 24 * 60 * 60 * 1000);
 
       // Insert 502 old archived tasks (>30 days)
       for (let i = 0; i < 502; i++) {
         const id = randomUUID();
-        const created_at = new Date((thirtyOneDaysAgo - i) * 1000).toISOString();
+        const ts = new Date(thirtyOneDaysAgoMs - i * 1000).toISOString();
         db.prepare(`
           INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
           VALUES (?, 'TEST-WRITER', ?, 'normal', ?, ?, 0, ?, ?)
-        `).run(id, `Old archive ${i}`, created_at, thirtyOneDaysAgo - i, created_at, thirtyOneDaysAgo - i);
+        `).run(id, `Old archive ${i}`, ts, ts, ts, ts);
       }
 
       // Insert 2 recent archived tasks (<30 days) — these should survive
       const recentIds: string[] = [];
       for (let i = 0; i < 2; i++) {
         const id = randomUUID();
-        const created_at = new Date((twentyNineDaysAgo + i) * 1000).toISOString();
+        const ts = new Date(twentyNineDaysAgoMs + i * 1000).toISOString();
         db.prepare(`
           INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
           VALUES (?, 'TEST-WRITER', ?, 'normal', ?, ?, 0, ?, ?)
-        `).run(id, `Recent archive ${i}`, created_at, twentyNineDaysAgo + i, created_at, twentyNineDaysAgo + i);
+        `).run(id, `Recent archive ${i}`, ts, ts, ts, ts);
         recentIds.push(id);
       }
 
@@ -982,37 +970,35 @@ ${originalTask}`;
     });
 
     it('should list archived tasks within time window', () => {
-      const now = Math.floor(Date.now() / 1000);
-      const twoHoursAgo = now - (2 * 60 * 60);
+      const twoHoursAgo = new Date(Date.now() - (2 * 60 * 60 * 1000)).toISOString();
 
       // Insert an archived task
       const id = randomUUID();
-      const created_at = new Date(twoHoursAgo * 1000).toISOString();
       db.prepare(`
         INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
         VALUES (?, 'TEST-WRITER', 'Archived task', 'normal', ?, ?, 0, ?, ?)
-      `).run(id, created_at, twoHoursAgo, created_at, twoHoursAgo);
+      `).run(id, twoHoursAgo, twoHoursAgo, twoHoursAgo, twoHoursAgo);
 
       // Query archived tasks within 24 hours
+      const since24h = new Date(Date.now() - (24 * 60 * 60 * 1000)).toISOString();
       const tasks = db.prepare(
         'SELECT * FROM archived_tasks WHERE archived_timestamp >= ? ORDER BY archived_timestamp DESC'
-      ).all(now - (24 * 60 * 60));
+      ).all(since24h);
       expect(tasks).toHaveLength(1);
     });
 
     it('should filter archived tasks by section', () => {
-      const now = Math.floor(Date.now() / 1000);
-      const created_at = new Date(now * 1000).toISOString();
+      const created_at = new Date().toISOString();
 
       db.prepare(`
         INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
         VALUES (?, 'TEST-WRITER', 'TW task', 'normal', ?, ?, 0, ?, ?)
-      `).run(randomUUID(), created_at, now, created_at, now);
+      `).run(randomUUID(), created_at, created_at, created_at, created_at);
 
       db.prepare(`
         INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
         VALUES (?, 'CODE-REVIEWER', 'CR task', 'normal', ?, ?, 0, ?, ?)
-      `).run(randomUUID(), created_at, now, created_at, now);
+      `).run(randomUUID(), created_at, created_at, created_at, created_at);
 
       const twTasks = db.prepare(
         "SELECT * FROM archived_tasks WHERE section = 'TEST-WRITER'"
@@ -1041,7 +1027,7 @@ ${originalTask}`;
         const archived = db.prepare('SELECT * FROM archived_tasks WHERE id = ?').get(task.id) as {
           id: string; section: string; title: string; description: string;
           assigned_by: string; priority: string; followup_enabled: number;
-          archived_at: string; archived_timestamp: number;
+          archived_at: string; archived_timestamp: string;
         } | undefined;
 
         expect(archived).toBeDefined();
@@ -1052,7 +1038,7 @@ ${originalTask}`;
         expect(archived!.priority).toBe('urgent');
         expect(archived!.followup_enabled).toBe(1);
         expect(archived!.archived_at).toBeDefined();
-        expect(archived!.archived_timestamp).toBeGreaterThan(0);
+        expect(typeof archived!.archived_timestamp).toBe('string');
       }
     });
   });
@@ -1062,7 +1048,7 @@ ${originalTask}`;
     const listArchivedTasks = (args: { section?: string; limit?: number; hours?: number }) => {
       const hours = args.hours ?? 24;
       const limit = args.limit ?? 20;
-      const since = Math.floor((Date.now() - hours * 60 * 60 * 1000) / 1000);
+      const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
 
       let sql = 'SELECT * FROM archived_tasks WHERE archived_timestamp >= ?';
       const params: unknown[] = [since];
@@ -1079,9 +1065,9 @@ ${originalTask}`;
         id: string; section: string; title: string; description: string | null;
         assigned_by: string | null; priority: string; created_at: string;
         started_at: string | null; completed_at: string | null;
-        created_timestamp: number; completed_timestamp: number | null;
+        created_timestamp: string; completed_timestamp: string | null;
         followup_enabled: number; followup_section: string | null;
-        followup_prompt: string | null; archived_at: string; archived_timestamp: number;
+        followup_prompt: string | null; archived_at: string; archived_timestamp: string;
       }>;
 
       return { tasks, total: tasks.length };
@@ -1094,14 +1080,12 @@ ${originalTask}`;
     });
 
     it('should return archived tasks within default 24-hour window', () => {
-      const now = Math.floor(Date.now() / 1000);
-      const twelveHoursAgo = now - (12 * 60 * 60);
-      const created_at = new Date(twelveHoursAgo * 1000).toISOString();
+      const twelveHoursAgo = new Date(Date.now() - (12 * 60 * 60 * 1000)).toISOString();
 
       db.prepare(`
         INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
         VALUES (?, 'TEST-WRITER', 'Recent archived', 'normal', ?, ?, 0, ?, ?)
-      `).run(randomUUID(), created_at, twelveHoursAgo, created_at, twelveHoursAgo);
+      `).run(randomUUID(), twelveHoursAgo, twelveHoursAgo, twelveHoursAgo, twelveHoursAgo);
 
       const result = listArchivedTasks({});
       expect(result.tasks).toHaveLength(1);
@@ -1110,14 +1094,12 @@ ${originalTask}`;
     });
 
     it('should exclude archived tasks outside the time window', () => {
-      const now = Math.floor(Date.now() / 1000);
-      const twentyFiveHoursAgo = now - (25 * 60 * 60);
-      const created_at = new Date(twentyFiveHoursAgo * 1000).toISOString();
+      const twentyFiveHoursAgo = new Date(Date.now() - (25 * 60 * 60 * 1000)).toISOString();
 
       db.prepare(`
         INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
         VALUES (?, 'TEST-WRITER', 'Old archived', 'normal', ?, ?, 0, ?, ?)
-      `).run(randomUUID(), created_at, twentyFiveHoursAgo, created_at, twentyFiveHoursAgo);
+      `).run(randomUUID(), twentyFiveHoursAgo, twentyFiveHoursAgo, twentyFiveHoursAgo, twentyFiveHoursAgo);
 
       const result = listArchivedTasks({});
       expect(result.tasks).toHaveLength(0);
@@ -1125,18 +1107,17 @@ ${originalTask}`;
     });
 
     it('should filter archived tasks by section', () => {
-      const now = Math.floor(Date.now() / 1000);
-      const created_at = new Date(now * 1000).toISOString();
+      const created_at = new Date().toISOString();
 
       db.prepare(`
         INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
         VALUES (?, 'TEST-WRITER', 'TW archived', 'normal', ?, ?, 0, ?, ?)
-      `).run(randomUUID(), created_at, now, created_at, now);
+      `).run(randomUUID(), created_at, created_at, created_at, created_at);
 
       db.prepare(`
         INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
         VALUES (?, 'CODE-REVIEWER', 'CR archived', 'normal', ?, ?, 0, ?, ?)
-      `).run(randomUUID(), created_at, now, created_at, now);
+      `).run(randomUUID(), created_at, created_at, created_at, created_at);
 
       const twResult = listArchivedTasks({ section: 'TEST-WRITER' });
       expect(twResult.tasks).toHaveLength(1);
@@ -1148,15 +1129,13 @@ ${originalTask}`;
     });
 
     it('should respect limit parameter and default to 20', () => {
-      const now = Math.floor(Date.now() / 1000);
-
       for (let i = 0; i < 25; i++) {
-        const ts = now + i; // Ensure distinct timestamps
-        const created_at = new Date(ts * 1000).toISOString();
+        // Ensure distinct ISO timestamps by adding i milliseconds
+        const ts = new Date(Date.now() + i).toISOString();
         db.prepare(`
           INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
           VALUES (?, 'TEST-WRITER', ?, 'normal', ?, ?, 0, ?, ?)
-        `).run(randomUUID(), `Archived ${i}`, created_at, ts, created_at, ts);
+        `).run(randomUUID(), `Archived ${i}`, ts, ts, ts, ts);
       }
 
       // Default limit is 20
@@ -1171,26 +1150,20 @@ ${originalTask}`;
     });
 
     it('should order results by archived_timestamp DESC', () => {
-      const now = Math.floor(Date.now() / 1000);
-
-      // Insert two tasks with different timestamps
-      const olderTs = now - 100;
-      const newerTs = now - 10;
-
       const olderId = randomUUID();
       const newerId = randomUUID();
-      const olderIso = new Date(olderTs * 1000).toISOString();
-      const newerIso = new Date(newerTs * 1000).toISOString();
+      const olderIso = new Date(Date.now() - 100000).toISOString(); // 100 seconds ago
+      const newerIso = new Date(Date.now() - 10000).toISOString();  // 10 seconds ago
 
       db.prepare(`
         INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
         VALUES (?, 'TEST-WRITER', 'Older task', 'normal', ?, ?, 0, ?, ?)
-      `).run(olderId, olderIso, olderTs, olderIso, olderTs);
+      `).run(olderId, olderIso, olderIso, olderIso, olderIso);
 
       db.prepare(`
         INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
         VALUES (?, 'TEST-WRITER', 'Newer task', 'normal', ?, ?, 0, ?, ?)
-      `).run(newerId, newerIso, newerTs, newerIso, newerTs);
+      `).run(newerId, newerIso, newerIso, newerIso, newerIso);
 
       const result = listArchivedTasks({ hours: 1 });
       expect(result.tasks).toHaveLength(2);
@@ -1200,14 +1173,13 @@ ${originalTask}`;
     });
 
     it('should return all ArchivedTask fields', () => {
-      const now = Math.floor(Date.now() / 1000);
       const id = randomUUID();
-      const created_at = new Date(now * 1000).toISOString();
+      const created_at = new Date().toISOString();
 
       db.prepare(`
         INSERT INTO archived_tasks (id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
         VALUES (?, 'DEPUTY-CTO', 'Field test task', 'Some description', 'deputy-cto', 'urgent', ?, ?, ?, ?, ?, 1, 'TEST-WRITER', 'Followup prompt', ?, ?)
-      `).run(id, created_at, created_at, created_at, now, now, created_at, now);
+      `).run(id, created_at, created_at, created_at, created_at, created_at, created_at, created_at);
 
       const result = listArchivedTasks({ hours: 1 });
       expect(result.tasks).toHaveLength(1);
@@ -1222,33 +1194,29 @@ ${originalTask}`;
       expect(task.created_at).toBe(created_at);
       expect(task.started_at).toBe(created_at);
       expect(task.completed_at).toBe(created_at);
-      expect(task.created_timestamp).toBe(now);
-      expect(task.completed_timestamp).toBe(now);
+      expect(task.created_timestamp).toBe(created_at);
+      expect(task.completed_timestamp).toBe(created_at);
       expect(task.followup_enabled).toBe(1);
       expect(task.followup_section).toBe('TEST-WRITER');
       expect(task.followup_prompt).toBe('Followup prompt');
       expect(task.archived_at).toBe(created_at);
-      expect(task.archived_timestamp).toBe(now);
+      expect(task.archived_timestamp).toBe(created_at);
     });
 
     it('should use hours parameter to expand or restrict the time window', () => {
-      const now = Math.floor(Date.now() / 1000);
-
       // Task archived 36 hours ago
-      const thirtyHoursAgo = now - (36 * 60 * 60);
-      const oldIso = new Date(thirtyHoursAgo * 1000).toISOString();
+      const oldIso = new Date(Date.now() - (36 * 60 * 60 * 1000)).toISOString();
       db.prepare(`
         INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
         VALUES (?, 'TEST-WRITER', 'Old task', 'normal', ?, ?, 0, ?, ?)
-      `).run(randomUUID(), oldIso, thirtyHoursAgo, oldIso, thirtyHoursAgo);
+      `).run(randomUUID(), oldIso, oldIso, oldIso, oldIso);
 
       // Task archived 2 hours ago
-      const twoHoursAgo = now - (2 * 60 * 60);
-      const recentIso = new Date(twoHoursAgo * 1000).toISOString();
+      const recentIso = new Date(Date.now() - (2 * 60 * 60 * 1000)).toISOString();
       db.prepare(`
         INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
         VALUES (?, 'TEST-WRITER', 'Recent task', 'normal', ?, ?, 0, ?, ?)
-      `).run(randomUUID(), recentIso, twoHoursAgo, recentIso, twoHoursAgo);
+      `).run(randomUUID(), recentIso, recentIso, recentIso, recentIso);
 
       // 24-hour window: only sees recent task
       const result24h = listArchivedTasks({ hours: 24 });
@@ -1261,14 +1229,12 @@ ${originalTask}`;
     });
 
     it('should count total equal to tasks array length', () => {
-      const now = Math.floor(Date.now() / 1000);
-      const created_at = new Date(now * 1000).toISOString();
-
       for (let i = 0; i < 3; i++) {
+        const ts = new Date(Date.now() + i).toISOString();
         db.prepare(`
           INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
           VALUES (?, 'TEST-WRITER', ?, 'normal', ?, ?, 0, ?, ?)
-        `).run(randomUUID(), `Task ${i}`, created_at, now + i, created_at, now + i);
+        `).run(randomUUID(), `Task ${i}`, ts, ts, ts, ts);
       }
 
       const result = listArchivedTasks({});
@@ -1284,12 +1250,11 @@ ${originalTask}`;
 
       // Archive via cleanup (old completed task)
       const id2 = randomUUID();
-      const oldTimestamp = Math.floor(Date.now() / 1000) - 11000; // >3 hours
-      const oldIso = new Date(oldTimestamp * 1000).toISOString();
+      const oldIso = new Date(Date.now() - 11000 * 1000).toISOString(); // >3 hours ago
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, completed_at, created_timestamp, completed_timestamp)
         VALUES (?, 'CODE-REVIEWER', 'completed', 'Cleanup-archived', ?, ?, ?, ?)
-      `).run(id2, oldIso, oldIso, oldTimestamp, oldTimestamp);
+      `).run(id2, oldIso, oldIso, oldIso, oldIso);
       cleanup();
 
       const result = listArchivedTasks({ hours: 1 });
@@ -1343,7 +1308,7 @@ ${originalTask}`;
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at)
         VALUES (?, 'TEST-WRITER', 'completed', 'No timestamp', ?, ?, ?)
-      `).run(id, oldIso, Math.floor(Date.now() / 1000) - 20000, oldIso);
+      `).run(id, oldIso, oldIso, oldIso);
 
       const result = cleanup();
       // The archival pass skips tasks with NULL completed_timestamp
@@ -1355,17 +1320,15 @@ ${originalTask}`;
     });
 
     it('should not prune archived tasks within 30 days even when exceeding 500', () => {
-      const now = Math.floor(Date.now() / 1000);
-      const twentyNineDaysAgo = now - (29 * 24 * 60 * 60);
+      const twentyNineDaysAgoMs = Date.now() - (29 * 24 * 60 * 60 * 1000);
 
       // Insert 510 archived tasks all within 30 days
       for (let i = 0; i < 510; i++) {
-        const ts = twentyNineDaysAgo + i;
-        const iso = new Date(ts * 1000).toISOString();
+        const iso = new Date(twentyNineDaysAgoMs + i).toISOString();
         db.prepare(`
           INSERT INTO archived_tasks (id, section, title, priority, created_at, created_timestamp, followup_enabled, archived_at, archived_timestamp)
           VALUES (?, 'TEST-WRITER', ?, 'normal', ?, ?, 0, ?, ?)
-        `).run(randomUUID(), `Task ${i}`, iso, ts, iso, ts);
+        `).run(randomUUID(), `Task ${i}`, iso, iso, iso, iso);
       }
 
       const result = cleanup();
@@ -1448,7 +1411,7 @@ ${originalTask}`;
   describe('Get Completed Since', () => {
     const getCompletedSince = (hours: number) => {
       const since = Date.now() - (hours * 60 * 60 * 1000);
-      const sinceTimestamp = Math.floor(since / 1000);
+      const sinceTimestamp = new Date(since).toISOString();
 
       interface CountRow {
         section: string;
@@ -1474,8 +1437,9 @@ ${originalTask}`;
     };
 
     it('should return completed tasks within time range', () => {
-      const now = Math.floor(Date.now() / 1000);
-      const twoHoursAgo = now - (2 * 60 * 60);
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const twoHoursAgoIso = new Date(nowMs - 2 * 60 * 60 * 1000).toISOString();
 
       // Create completed tasks
       const id1 = randomUUID();
@@ -1485,12 +1449,12 @@ ${originalTask}`;
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at, completed_timestamp)
         VALUES (?, 'TEST-WRITER', 'completed', 'Task 1', ?, ?, ?, ?)
-      `).run(id1, created_at, now, created_at, twoHoursAgo);
+      `).run(id1, created_at, nowIso, created_at, twoHoursAgoIso);
 
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at, completed_timestamp)
         VALUES (?, 'CODE-REVIEWER', 'completed', 'Task 2', ?, ?, ?, ?)
-      `).run(id2, created_at, now, created_at, twoHoursAgo);
+      `).run(id2, created_at, nowIso, created_at, twoHoursAgoIso);
 
       const result = getCompletedSince(24);
 
@@ -1501,8 +1465,9 @@ ${originalTask}`;
     });
 
     it('should group by section', () => {
-      const now = Math.floor(Date.now() / 1000);
-      const oneHourAgo = now - (1 * 60 * 60);
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const oneHourAgoIso = new Date(nowMs - 1 * 60 * 60 * 1000).toISOString();
 
       // Create multiple tasks for same section
       for (let i = 0; i < 3; i++) {
@@ -1511,7 +1476,7 @@ ${originalTask}`;
         db.prepare(`
           INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at, completed_timestamp)
           VALUES (?, 'TEST-WRITER', 'completed', ?, ?, ?, ?, ?)
-        `).run(id, `Task ${i}`, created_at, now, created_at, oneHourAgo);
+        `).run(id, `Task ${i}`, created_at, nowIso, created_at, oneHourAgoIso);
       }
 
       // Create one task for different section
@@ -1520,7 +1485,7 @@ ${originalTask}`;
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at, completed_timestamp)
         VALUES (?, 'CODE-REVIEWER', 'completed', 'Task X', ?, ?, ?, ?)
-      `).run(id, created_at, now, created_at, oneHourAgo);
+      `).run(id, created_at, nowIso, created_at, oneHourAgoIso);
 
       const result = getCompletedSince(24);
 
@@ -1535,8 +1500,9 @@ ${originalTask}`;
     });
 
     it('should order by count descending', () => {
-      const now = Math.floor(Date.now() / 1000);
-      const oneHourAgo = now - (1 * 60 * 60);
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const oneHourAgoIso = new Date(nowMs - 1 * 60 * 60 * 1000).toISOString();
 
       // Create 5 tasks for TEST-WRITER
       for (let i = 0; i < 5; i++) {
@@ -1545,7 +1511,7 @@ ${originalTask}`;
         db.prepare(`
           INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at, completed_timestamp)
           VALUES (?, 'TEST-WRITER', 'completed', ?, ?, ?, ?, ?)
-        `).run(id, `Task ${i}`, created_at, now, created_at, oneHourAgo);
+        `).run(id, `Task ${i}`, created_at, nowIso, created_at, oneHourAgoIso);
       }
 
       // Create 2 tasks for CODE-REVIEWER
@@ -1555,7 +1521,7 @@ ${originalTask}`;
         db.prepare(`
           INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at, completed_timestamp)
           VALUES (?, 'CODE-REVIEWER', 'completed', ?, ?, ?, ?, ?)
-        `).run(id, `Task ${i}`, created_at, now, created_at, oneHourAgo);
+        `).run(id, `Task ${i}`, created_at, nowIso, created_at, oneHourAgoIso);
       }
 
       const result = getCompletedSince(24);
@@ -1567,9 +1533,10 @@ ${originalTask}`;
     });
 
     it('should filter by time range', () => {
-      const now = Math.floor(Date.now() / 1000);
-      const twoHoursAgo = now - (2 * 60 * 60);
-      const twentyFiveHoursAgo = now - (25 * 60 * 60);
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const twoHoursAgoIso = new Date(nowMs - 2 * 60 * 60 * 1000).toISOString();
+      const twentyFiveHoursAgoIso = new Date(nowMs - 25 * 60 * 60 * 1000).toISOString();
 
       // Create recent task
       const id1 = randomUUID();
@@ -1577,7 +1544,7 @@ ${originalTask}`;
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at, completed_timestamp)
         VALUES (?, 'TEST-WRITER', 'completed', 'Recent', ?, ?, ?, ?)
-      `).run(id1, created_at1, now, created_at1, twoHoursAgo);
+      `).run(id1, created_at1, nowIso, created_at1, twoHoursAgoIso);
 
       // Create old task (should be filtered out)
       const id2 = randomUUID();
@@ -1585,7 +1552,7 @@ ${originalTask}`;
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at, completed_timestamp)
         VALUES (?, 'CODE-REVIEWER', 'completed', 'Old', ?, ?, ?, ?)
-      `).run(id2, created_at2, now, created_at2, twentyFiveHoursAgo);
+      `).run(id2, created_at2, nowIso, created_at2, twentyFiveHoursAgoIso);
 
       const result = getCompletedSince(24);
 
@@ -1595,8 +1562,8 @@ ${originalTask}`;
     });
 
     it('should exclude non-completed tasks', () => {
-      const now = Math.floor(Date.now() / 1000);
-      const oneHourAgo = now - (1 * 60 * 60);
+      const nowIso = new Date().toISOString();
+      const oneHourAgoIso = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
 
       // Create completed task
       const id1 = randomUUID();
@@ -1604,7 +1571,7 @@ ${originalTask}`;
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at, completed_timestamp)
         VALUES (?, 'TEST-WRITER', 'completed', 'Completed', ?, ?, ?, ?)
-      `).run(id1, created_at1, now, created_at1, oneHourAgo);
+      `).run(id1, created_at1, nowIso, created_at1, oneHourAgoIso);
 
       // Create pending task (should be excluded)
       const id2 = randomUUID();
@@ -1612,7 +1579,7 @@ ${originalTask}`;
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, created_timestamp)
         VALUES (?, 'TEST-WRITER', 'pending', 'Pending', ?, ?)
-      `).run(id2, created_at2, now);
+      `).run(id2, created_at2, nowIso);
 
       // Create in-progress task (should be excluded)
       const id3 = randomUUID();
@@ -1621,7 +1588,7 @@ ${originalTask}`;
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, started_at, created_timestamp)
         VALUES (?, 'TEST-WRITER', 'in_progress', 'In Progress', ?, ?, ?)
-      `).run(id3, created_at3, started_at, now);
+      `).run(id3, created_at3, started_at, nowIso);
 
       const result = getCompletedSince(24);
 
@@ -1653,24 +1620,25 @@ ${originalTask}`;
     });
 
     it('should handle different time ranges', () => {
-      const now = Math.floor(Date.now() / 1000);
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
 
       // Create tasks at different times
       const times = [
         { hours: 1, title: '1h ago' },
         { hours: 12, title: '12h ago' },
         { hours: 48, title: '48h ago' },
-        { hours: 168, title: '1 week ago' },
+        { hours: 167, title: '1 week ago' },
       ];
 
       for (const time of times) {
         const id = randomUUID();
         const created_at = new Date().toISOString();
-        const timestamp = now - (time.hours * 60 * 60);
+        const timestampIso = new Date(nowMs - time.hours * 60 * 60 * 1000).toISOString();
         db.prepare(`
           INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at, completed_timestamp)
           VALUES (?, 'TEST-WRITER', 'completed', ?, ?, ?, ?, ?)
-        `).run(id, time.title, created_at, now, created_at, timestamp);
+        `).run(id, time.title, created_at, nowIso, created_at, timestampIso);
       }
 
       // Test 24-hour range
@@ -1687,7 +1655,7 @@ ${originalTask}`;
     });
 
     it('should handle tasks with null completed_timestamp gracefully', () => {
-      const now = Math.floor(Date.now() / 1000);
+      const nowIso = new Date().toISOString();
 
       // Create task with status='completed' but null timestamp (data integrity issue)
       const id = randomUUID();
@@ -1695,7 +1663,7 @@ ${originalTask}`;
       db.prepare(`
         INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at)
         VALUES (?, 'TEST-WRITER', 'completed', 'Bad Data', ?, ?, ?)
-      `).run(id, created_at, now, created_at);
+      `).run(id, created_at, nowIso, created_at);
 
       const result = getCompletedSince(24);
 
@@ -1711,8 +1679,9 @@ ${originalTask}`;
       expect(indexes).toHaveLength(1);
 
       // Create many tasks to verify query performance
-      const now = Math.floor(Date.now() / 1000);
-      const oneHourAgo = now - (1 * 60 * 60);
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const oneHourAgoIso = new Date(nowMs - 1 * 60 * 60 * 1000).toISOString();
 
       for (let i = 0; i < 100; i++) {
         const id = randomUUID();
@@ -1720,7 +1689,7 @@ ${originalTask}`;
         db.prepare(`
           INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, completed_at, completed_timestamp)
           VALUES (?, 'TEST-WRITER', 'completed', ?, ?, ?, ?, ?)
-        `).run(id, `Task ${i}`, created_at, now, created_at, oneHourAgo);
+        `).run(id, `Task ${i}`, created_at, nowIso, created_at, oneHourAgoIso);
       }
 
       const startTime = Date.now();
@@ -2187,7 +2156,7 @@ ${originalTask}`;
         db.prepare(`
           INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, priority)
           VALUES (?, 'TEST-WRITER', 'pending', 'Bad priority', ?, ?, 'critical')
-        `).run(randomUUID(), new Date().toISOString(), Math.floor(Date.now() / 1000));
+        `).run(randomUUID(), new Date().toISOString(), new Date().toISOString());
       }).toThrow();
     });
 

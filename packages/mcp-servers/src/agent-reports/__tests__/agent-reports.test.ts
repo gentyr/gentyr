@@ -41,7 +41,7 @@ interface ReportRow {
   category: string;
   priority: string;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   read_at: string | null;
   acknowledged_at: string | null;
   triage_status: string;
@@ -121,7 +121,7 @@ describe('Agent Reports Server', () => {
     const id = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
-    const created_timestamp = Math.floor(now.getTime() / 1000);
+    const created_timestamp = now.toISOString();
 
     db.prepare(`
       INSERT INTO reports (id, reporting_agent, title, summary, category, priority, created_at, created_timestamp)
@@ -518,7 +518,7 @@ describe('Agent Reports Server', () => {
           'invalid-category',
           'normal',
           new Date().toISOString(),
-          Math.floor(Date.now() / 1000)
+          new Date().toISOString()
         );
       }).toThrow();
     });
@@ -538,7 +538,7 @@ describe('Agent Reports Server', () => {
           'other',
           'invalid-priority',
           new Date().toISOString(),
-          Math.floor(Date.now() / 1000)
+          new Date().toISOString()
         );
       }).toThrow();
     });
@@ -1017,7 +1017,7 @@ describe('Agent Reports Server', () => {
           'other',
           'normal',
           new Date().toISOString(),
-          Math.floor(Date.now() / 1000),
+          new Date().toISOString(),
           'invalid_status'
         );
       }).toThrow();
@@ -1039,7 +1039,7 @@ describe('Agent Reports Server', () => {
           'other',
           'normal',
           new Date().toISOString(),
-          Math.floor(Date.now() / 1000),
+          new Date().toISOString(),
           status
         );
 

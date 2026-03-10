@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS reports (
     category TEXT NOT NULL DEFAULT 'other',
     priority TEXT NOT NULL DEFAULT 'normal',
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL,
+    created_timestamp TEXT NOT NULL,
     read_at TEXT,
     acknowledged_at TEXT,
     -- Triage lifecycle fields
@@ -161,6 +161,9 @@ function initializeDatabase(): Database.Database {
     // Indexes may already exist
   }
 
+  // Migration: Convert any existing INTEGER timestamps to ISO 8601 TEXT (G005)
+  db.exec(`UPDATE reports SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
+
   return db;
 }
 
@@ -184,9 +187,7 @@ function closeDb(): void {
 
 function runCleanup(): { deleted_old: number; deleted_excess: number } {
   const db = getDb();
-  const now = Math.floor(Date.now() / 1000);
-  const maxAge = MAX_AGE_DAYS * 24 * 60 * 60;
-  const cutoff = now - maxAge;
+  const cutoff = new Date(Date.now() - MAX_AGE_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
   // Delete reports older than 7 days
   const oldResult = db.prepare(`
@@ -229,7 +230,7 @@ function reportToCto(args: ReportToCtoArgs): ReportToCtoResult {
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
 
   db.prepare(`
     INSERT INTO reports (id, reporting_agent, title, summary, category, priority, created_at, created_timestamp)

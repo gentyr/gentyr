@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS personas (
   credentials_ref TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
-  created_timestamp INTEGER NOT NULL,
+  created_timestamp TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS features (
   url_patterns TEXT NOT NULL DEFAULT '[]',
   category TEXT,
   created_at TEXT NOT NULL,
-  created_timestamp INTEGER NOT NULL
+  created_timestamp TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS persona_features (
@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS reports (
   category TEXT NOT NULL DEFAULT 'general',
   priority TEXT NOT NULL DEFAULT 'normal',
   created_at TEXT NOT NULL,
-  created_timestamp INTEGER NOT NULL,
+  created_timestamp TEXT NOT NULL,
   read_at TEXT,
   acknowledged_at TEXT,
   triage_status TEXT DEFAULT 'pending',
@@ -179,7 +179,7 @@ function createPersona(db: Database.Database, data: {
   const id = data.id || randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
 
   db.prepare(`
     INSERT INTO personas (id, name, description, consumption_modes, behavior_traits, endpoints, enabled, created_at, created_timestamp, updated_at)
@@ -216,7 +216,7 @@ function createFeature(db: Database.Database, data: {
     data.name,
     JSON.stringify(data.file_patterns),
     now.toISOString(),
-    Math.floor(now.getTime() / 1000)
+    now.toISOString()
   );
 
   return id;
@@ -304,7 +304,7 @@ function createReport(db: Database.Database, data: {
     data.category ?? 'user-feedback',
     data.priority ?? 'normal',
     now.toISOString(),
-    Math.floor(now.getTime() / 1000),
+    now.toISOString(),
     data.triage_status ?? 'pending',
     data.triage_outcome ?? null
   );

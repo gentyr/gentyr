@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS section_entries (
     content TEXT NOT NULL,
     metadata TEXT DEFAULT '{}',
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL,
+    created_timestamp TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     CONSTRAINT valid_entry_section CHECK (section_number IN (2, 6))
 );
@@ -187,6 +187,9 @@ function initializeDatabase(): Database.Database {
       'INSERT INTO analysis_meta (id, status, md_path) VALUES (?, ?, ?)'
     ).run('default', 'not_started', '.claude/product-market-fit.md');
   }
+
+  // Migration: Convert any existing INTEGER timestamps to ISO 8601 TEXT (G005)
+  db.exec(`UPDATE section_entries SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
 
   return db;
 }
@@ -510,7 +513,7 @@ function addEntry(args: AddEntryArgs): AddEntryResult | ErrorResult {
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
 
   db.prepare(
     'INSERT INTO section_entries (id, section_number, title, content, metadata, created_at, created_timestamp, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
@@ -738,7 +741,7 @@ function clearAndRespawn(args: ClearAndRespawnArgs): ClearAndRespawnResult | Err
     try {
       const todoDb = new Database(TODO_DB_PATH);
       todoDb.pragma('journal_mode = WAL');
-      const created_timestamp = Math.floor(Date.now() / 1000);
+      const created_timestamp = new Date().toISOString();
 
       const taskDescriptions = [
         {

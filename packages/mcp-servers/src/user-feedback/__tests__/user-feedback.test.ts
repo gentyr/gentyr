@@ -44,7 +44,7 @@ interface PersonaRow {
   credentials_ref: string | null;
   enabled: number;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
   updated_at: string;
 }
 
@@ -56,7 +56,7 @@ interface FeatureRow {
   url_patterns: string;
   category: string | null;
   created_at: string;
-  created_timestamp: number;
+  created_timestamp: string;
 }
 
 interface MappingRow {
@@ -115,7 +115,7 @@ function createPersona(db: Database.Database, args: {
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
 
   try {
     db.prepare(`
@@ -159,7 +159,7 @@ function registerFeature(db: Database.Database, args: {
       JSON.stringify(args.url_patterns ?? []),
       args.category ?? null,
       now.toISOString(),
-      Math.floor(now.getTime() / 1000),
+      now.toISOString(),
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -352,7 +352,7 @@ describe('User Feedback Server', () => {
       db.prepare(`
         INSERT INTO personas (id, name, description, consumption_modes, behavior_traits, endpoints, created_at, created_timestamp, updated_at)
         VALUES (?, ?, ?, ?, '[]', '[]', ?, ?, ?)
-      `).run(id, 'multi-mode', 'A multi-mode user', JSON.stringify(['sdk', 'gui']), now.toISOString(), Math.floor(now.getTime() / 1000), now.toISOString());
+      `).run(id, 'multi-mode', 'A multi-mode user', JSON.stringify(['sdk', 'gui']), now.toISOString(), now.toISOString(), now.toISOString());
 
       const row = db.prepare('SELECT consumption_modes FROM personas WHERE id = ?').get(id) as PersonaRow;
       const modes = JSON.parse(row.consumption_modes);

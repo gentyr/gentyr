@@ -25,7 +25,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 
-const { randomUUID } = crypto;
+const { randomUUID, createHash } = crypto;
 import Database from 'better-sqlite3';
 import { openReadonlyDb } from '../shared/readonly-db.js';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS questions (
     recommendation TEXT,
     answer TEXT,
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL,
+    created_timestamp TEXT NOT NULL,
     answered_at TEXT,
     decided_by TEXT,
     investigation_task_id TEXT,
@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS commit_decisions (
     rationale TEXT NOT NULL,
     question_id TEXT,
     created_at TEXT NOT NULL,
-    created_timestamp INTEGER NOT NULL,
+    created_timestamp TEXT NOT NULL,
     CONSTRAINT valid_decision CHECK (decision IN ('approved', 'rejected'))
 );
 
@@ -194,7 +194,7 @@ CREATE TABLE IF NOT EXISTS cleared_questions (
     answered_at TEXT,
     decided_by TEXT,
     cleared_at TEXT NOT NULL,
-    cleared_timestamp INTEGER NOT NULL,
+    cleared_timestamp TEXT NOT NULL,
     CONSTRAINT valid_decided_by CHECK (decided_by IS NULL OR decided_by IN ('cto', 'deputy-cto'))
 );
 
@@ -213,6 +213,21 @@ CREATE INDEX IF NOT EXISTS idx_cleared_questions_cleared ON cleared_questions(cl
 CREATE INDEX IF NOT EXISTS idx_questions_type ON questions(type);
 CREATE INDEX IF NOT EXISTS idx_commit_decisions_created ON commit_decisions(created_timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_hotfix_requests_code ON hotfix_requests(code);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_questions_type_title_dedup
+  ON questions(type, title) WHERE status != 'answered';
+
+CREATE TABLE IF NOT EXISTS spawned_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  description TEXT NOT NULL,
+  prompt_hash TEXT NOT NULL,
+  pid INTEGER,
+  status TEXT NOT NULL DEFAULT 'spawned',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spawned_tasks_description_active
+  ON spawned_tasks(description) WHERE status = 'spawned';
 `;
 
 // ============================================================================
@@ -230,6 +245,11 @@ function initializeDatabase(): Database.Database {
   const db = new Database(DB_PATH);
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA);
+
+  // Migration: Convert any existing INTEGER timestamps to ISO 8601 TEXT (G005)
+  db.exec(`UPDATE questions SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
+  db.exec(`UPDATE commit_decisions SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
+  db.exec(`UPDATE cleared_questions SET cleared_timestamp = datetime(cleared_timestamp, 'unixepoch') || 'Z' WHERE typeof(cleared_timestamp) = 'integer'`);
 
   // Migration: Add decided_by column if it doesn't exist (for existing databases)
   const questionsColumns = db.pragma('table_info(questions)') as { name: string }[];
@@ -253,7 +273,7 @@ function initializeDatabase(): Database.Database {
   // Run cleanup on startup to prevent unbounded database growth
   // This is safe to call on every startup (idempotent)
   const cleanup = cleanupOldRecordsInternal(db);
-  if (cleanup.commit_decisions_deleted > 0 || cleanup.cleared_questions_deleted > 0 || cleanup.bypass_requests_expired > 0) {
+  if (cleanup.commit_decisions_deleted > 0 || cleanup.cleared_questions_deleted > 0 || cleanup.bypass_requests_expired > 0 || cleanup.spawned_tasks_deleted > 0) {
     console.error(`[deputy-cto] Startup cleanup: ${cleanup.message}`);
   }
 
@@ -373,23 +393,40 @@ function addQuestion(args: AddQuestionArgs): AddQuestionResult | ErrorResult {
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
 
-  db.prepare(`
-    INSERT INTO questions (id, type, status, title, description, context, suggested_options, recommendation, investigation_task_id, created_at, created_timestamp)
-    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    args.type,
-    args.title,
-    args.description,
-    args.context ?? null,
-    args.suggested_options ? JSON.stringify(args.suggested_options) : null,
-    args.recommendation ?? null,
-    args.investigation_task_id ?? null,
-    created_at,
-    created_timestamp
-  );
+  try {
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, context, suggested_options, recommendation, investigation_task_id, created_at, created_timestamp)
+      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      args.type,
+      args.title,
+      args.description,
+      args.context ?? null,
+      args.suggested_options ? JSON.stringify(args.suggested_options) : null,
+      args.recommendation ?? null,
+      args.investigation_task_id ?? null,
+      created_at,
+      created_timestamp
+    );
+  } catch (err: unknown) {
+    if (
+      err instanceof Error &&
+      (err as Error & { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE'
+    ) {
+      // Fallback: return the record that won the race
+      const fallback = db.prepare(`
+        SELECT id FROM questions WHERE type = ? AND title = ? AND status != 'answered' LIMIT 1
+      `).get(args.type, args.title) as { id: string } | undefined;
+      if (fallback) {return {
+        id: fallback.id,
+        message: `Question already exists for CTO (deduplicated). ID: ${fallback.id}`,
+      };}
+    }
+    throw err; // Re-throw unexpected errors
+  }
 
   return {
     id,
@@ -515,7 +552,7 @@ function clearQuestion(args: ClearQuestionArgs): ClearQuestionResult | ErrorResu
 
   const now = new Date();
   const cleared_at = now.toISOString();
-  const cleared_timestamp = Math.floor(now.getTime() / 1000);
+  const cleared_timestamp = now.toISOString();
 
   // Archive the question before deleting
   db.prepare(`
@@ -569,7 +606,7 @@ const BYPASS_REQUEST_TTL_S = 3600;
  * These are requests from agents that have since terminated without cleanup.
  */
 function expireStaleBypassRequests(db: Database.Database): number {
-  const cutoff = Math.floor(Date.now() / 1000) - BYPASS_REQUEST_TTL_S;
+  const cutoff = new Date(Date.now() - BYPASS_REQUEST_TTL_S * 1000).toISOString();
   const result = db.prepare(`
     DELETE FROM questions
     WHERE type = 'bypass-request' AND status = 'pending'
@@ -608,13 +645,33 @@ function approveCommit(args: ApproveCommitArgs): ApproveCommitResult {
     };
   }
 
+  // G011: Check for an existing recent approved decision with the same rationale before
+  // clearing and re-inserting. This makes approve_commit idempotent: repeated calls with
+  // the same rationale within 60 seconds return the same decision without deleting and
+  // re-creating the approval token file.
+  const sixtySecondsAgo = new Date(Date.now() - 60 * 1000).toISOString();
+  const existingApproval = db.prepare(`
+    SELECT id, created_at FROM commit_decisions
+    WHERE decision = 'approved' AND rationale = ? AND created_timestamp >= ?
+    ORDER BY created_timestamp DESC LIMIT 1
+  `).get(args.rationale, sixtySecondsAgo) as { id: string; created_at: string } | undefined;
+
+  if (existingApproval) {
+    const diffHash = process.env['DEPUTY_CTO_DIFF_HASH'] || '';
+    return {
+      approved: true,
+      decision_id: existingApproval.id,
+      message: `Commit already approved (deduplicated). Decision ID: ${existingApproval.id}. Retry your commit within 5 minutes.${diffHash ? ` (hash: ${diffHash})` : ''}`,
+    };
+  }
+
   // Clear any existing decision
   clearLatestCommitDecision();
 
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
 
   db.prepare(`
     INSERT INTO commit_decisions (id, decision, rationale, created_at, created_timestamp)
@@ -661,6 +718,28 @@ function approveCommit(args: ApproveCommitArgs): ApproveCommitResult {
 function rejectCommit(args: RejectCommitArgs): RejectCommitResult {
   const db = getDb();
 
+  // G011: Check for an existing pending rejection question with the same title before
+  // inserting. The unique partial index on (type, title) WHERE status != 'answered'
+  // acts as a safety net for race conditions, but this SELECT-first approach preserves
+  // the original question's ID and timestamps and avoids crashing on the UNIQUE constraint.
+  const existingQuestion = db.prepare(`
+    SELECT id FROM questions WHERE type = 'rejection' AND title = ? AND status != 'answered' LIMIT 1
+  `).get(args.title) as { id: string } | undefined;
+
+  if (existingQuestion) {
+    // Find the associated commit decision (if any) for completeness
+    const existingDecision = db.prepare(`
+      SELECT id FROM commit_decisions WHERE question_id = ? ORDER BY created_timestamp DESC LIMIT 1
+    `).get(existingQuestion.id) as { id: string } | undefined;
+
+    return {
+      rejected: true,
+      decision_id: existingDecision?.id ?? '',
+      question_id: existingQuestion.id,
+      message: `Commit rejection already recorded (deduplicated). Question ID: ${existingQuestion.id}. Commits will be blocked until CTO addresses this.`,
+    };
+  }
+
   // Clear any existing decision
   clearLatestCommitDecision();
 
@@ -668,19 +747,50 @@ function rejectCommit(args: RejectCommitArgs): RejectCommitResult {
   const questionId = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
 
-  // Create commit decision
-  db.prepare(`
-    INSERT INTO commit_decisions (id, decision, rationale, question_id, created_at, created_timestamp)
-    VALUES (?, 'rejected', ?, ?, ?, ?)
-  `).run(decisionId, args.description, questionId, created_at, created_timestamp);
+  // Wrap both INSERTs in a transaction for atomicity: either both records are created
+  // or neither is, preventing orphaned commit_decisions or questions records.
+  const insertBoth = db.transaction(() => {
+    // Create commit decision
+    db.prepare(`
+      INSERT INTO commit_decisions (id, decision, rationale, question_id, created_at, created_timestamp)
+      VALUES (?, 'rejected', ?, ?, ?, ?)
+    `).run(decisionId, args.description, questionId, created_at, created_timestamp);
 
-  // Create question entry for CTO to address
-  db.prepare(`
-    INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
-    VALUES (?, 'rejection', 'pending', ?, ?, ?, ?)
-  `).run(questionId, args.title, args.description, created_at, created_timestamp);
+    // Create question entry for CTO to address
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+      VALUES (?, 'rejection', 'pending', ?, ?, ?, ?)
+    `).run(questionId, args.title, args.description, created_at, created_timestamp);
+  });
+
+  try {
+    insertBoth();
+  } catch (err: unknown) {
+    if (
+      err instanceof Error &&
+      (err as Error & { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE'
+    ) {
+      // Race condition: another call inserted between our SELECT and INSERT.
+      // Re-SELECT to return the winning record.
+      const fallback = db.prepare(`
+        SELECT id FROM questions WHERE type = 'rejection' AND title = ? AND status != 'answered' LIMIT 1
+      `).get(args.title) as { id: string } | undefined;
+      if (fallback) {
+        const fallbackDecision = db.prepare(`
+          SELECT id FROM commit_decisions WHERE question_id = ? ORDER BY created_timestamp DESC LIMIT 1
+        `).get(fallback.id) as { id: string } | undefined;
+        return {
+          rejected: true,
+          decision_id: fallbackDecision?.id ?? '',
+          question_id: fallback.id,
+          message: `Commit rejection already recorded (deduplicated). Question ID: ${fallback.id}. Commits will be blocked until CTO addresses this.`,
+        };
+      }
+    }
+    throw err; // Re-throw unexpected errors
+  }
 
   return {
     rejected: true,
@@ -981,7 +1091,7 @@ function resolveQuestion(args: ResolveQuestionArgs): ResolveQuestionResult | Err
 
   const now = new Date();
   const answered_at = now.toISOString();
-  const cleared_timestamp = Math.floor(now.getTime() / 1000);
+  const cleared_timestamp = now.toISOString();
   const answer = `[Resolved by investigation: ${args.resolution}]\n${args.resolution_detail}`;
 
   // Single transaction: answer, archive, delete
@@ -1037,6 +1147,7 @@ function resolveQuestion(args: ResolveQuestionArgs): ResolveQuestionResult | Err
  * - Keep last 100 commit decisions
  * - Keep cleared questions for 30 days
  * - Keep at least 500 most recent cleared questions (even if < 30 days old)
+ * - Delete spawned_tasks older than 7 days (regardless of status)
  */
 function cleanupOldRecordsInternal(db: Database.Database): CleanupOldRecordsResult {
   // Expire stale bypass-request questions (dead agent cleanup)
@@ -1050,7 +1161,7 @@ function cleanupOldRecordsInternal(db: Database.Database): CleanupOldRecordsResu
   `).run();
 
   // Clean cleared_questions: keep last 500 OR anything within 30 days
-  const thirtyDaysAgo = Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60);
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const clearedQuestionsResult = db.prepare(`
     DELETE FROM cleared_questions
     WHERE cleared_timestamp < ?
@@ -1059,24 +1170,32 @@ function cleanupOldRecordsInternal(db: Database.Database): CleanupOldRecordsResu
     )
   `).run(thirtyDaysAgo);
 
+  // Clean spawned_tasks: remove entries older than 7 days (prevents dedup table from growing unboundedly)
+  const spawnedTasksResult = db.prepare(
+    `DELETE FROM spawned_tasks WHERE created_at < datetime('now', '-7 days')`
+  ).run();
+
   const commitDeleted = commitDecisionsResult.changes;
   const clearedDeleted = clearedQuestionsResult.changes;
-  const totalDeleted = commitDeleted + clearedDeleted + bypassExpired;
+  const spawnedTasksDeleted = spawnedTasksResult.changes;
+  const totalDeleted = commitDeleted + clearedDeleted + spawnedTasksDeleted + bypassExpired;
 
   let message: string;
   if (totalDeleted === 0) {
     message = 'No old records found to clean up. Database is within retention limits.';
   } else {
     const parts: string[] = [];
-    if (commitDeleted > 0) parts.push(`${commitDeleted} commit decision(s)`);
-    if (clearedDeleted > 0) parts.push(`${clearedDeleted} cleared question(s)`);
-    if (bypassExpired > 0) parts.push(`${bypassExpired} stale bypass request(s)`);
+    if (commitDeleted > 0) {parts.push(`${commitDeleted} commit decision(s)`);}
+    if (clearedDeleted > 0) {parts.push(`${clearedDeleted} cleared question(s)`);}
+    if (spawnedTasksDeleted > 0) {parts.push(`${spawnedTasksDeleted} spawned task(s)`);}
+    if (bypassExpired > 0) {parts.push(`${bypassExpired} stale bypass request(s)`);}
     message = `Cleaned up ${totalDeleted} old record(s): ${parts.join(', ')}.`;
   }
 
   return {
     commit_decisions_deleted: commitDeleted,
     cleared_questions_deleted: clearedDeleted,
+    spawned_tasks_deleted: spawnedTasksDeleted,
     bypass_requests_expired: bypassExpired,
     message,
   };
@@ -1269,6 +1388,25 @@ function requestBypass(args: RequestBypassArgs): RequestBypassResult {
   // Self-clean stale bypass requests before rate-limit check
   expireStaleBypassRequests(db);
 
+  // G011: Use a deterministic title keyed by agent so duplicate calls are idempotent.
+  // The unique index on (type, title) WHERE status != 'answered' acts as a safety net for race
+  // conditions, but this SELECT-first approach preserves the original request's ID and bypass code.
+  const title = `Bypass Request [${args.reporting_agent}]`;
+  const existingBypass = db.prepare(`
+    SELECT id, context FROM questions
+    WHERE type = 'bypass-request' AND title = ? AND status = 'pending' LIMIT 1
+  `).get(title) as { id: string; context: string } | undefined;
+
+  if (existingBypass) {
+    const existingCode = existingBypass.context;
+    return {
+      request_id: existingBypass.id,
+      bypass_code: existingCode,
+      message: `Bypass request already pending (deduplicated). To approve, the CTO must type: APPROVE BYPASS ${existingCode}`,
+      instructions: `STOP attempting commits. Ask the CTO to type exactly: APPROVE BYPASS ${existingCode}`,
+    };
+  }
+
   // Rate limit: max 3 pending bypass requests at a time
   const pendingBypasses = db.prepare(
     "SELECT COUNT(*) as count FROM questions WHERE type = 'bypass-request' AND status = 'pending'"
@@ -1286,7 +1424,7 @@ function requestBypass(args: RequestBypassArgs): RequestBypassResult {
   const bypassCode = generateBypassCode();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
 
   const description = `**Bypass requested by:** ${args.reporting_agent}
 
@@ -1304,10 +1442,34 @@ Approving creates an approval token that allows the agent to execute the bypass.
 Denying removes the request from the queue.`;
 
   // Store bypass code in context field for validation
-  db.prepare(`
-    INSERT INTO questions (id, type, status, title, description, context, created_at, created_timestamp)
-    VALUES (?, 'bypass-request', 'pending', ?, ?, ?, ?, ?)
-  `).run(id, `Bypass Request: ${args.reason.substring(0, 100)}`, description, bypassCode, created_at, created_timestamp);
+  try {
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, context, created_at, created_timestamp)
+      VALUES (?, 'bypass-request', 'pending', ?, ?, ?, ?, ?)
+    `).run(id, title, description, bypassCode, created_at, created_timestamp);
+  } catch (err: unknown) {
+    if (
+      err instanceof Error &&
+      (err as Error & { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE'
+    ) {
+      // Race condition: another call inserted between our SELECT and INSERT.
+      // Re-SELECT to return the winning record.
+      const fallback = db.prepare(`
+        SELECT id, context FROM questions
+        WHERE type = 'bypass-request' AND title = ? AND status = 'pending' LIMIT 1
+      `).get(title) as { id: string; context: string } | undefined;
+      if (fallback) {
+        const fallbackCode = fallback.context;
+        return {
+          request_id: fallback.id,
+          bypass_code: fallbackCode,
+          message: `Bypass request already pending (deduplicated). To approve, the CTO must type: APPROVE BYPASS ${fallbackCode}`,
+          instructions: `STOP attempting commits. Ask the CTO to type exactly: APPROVE BYPASS ${fallbackCode}`,
+        };
+      }
+    }
+    throw err; // Re-throw unexpected errors
+  }
 
   return {
     request_id: id,
@@ -1405,7 +1567,7 @@ function executeBypass(args: ExecuteBypassArgs): ExecuteBypassResult | ErrorResu
   const bypassId = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
-  const created_timestamp = Math.floor(now.getTime() / 1000);
+  const created_timestamp = now.toISOString();
 
   // Create an approval record that the pre-commit hook can check
   db.prepare(`
@@ -2258,10 +2420,10 @@ async function reviewBlockingItems(args: ReviewBlockingItemsArgs): Promise<strin
   // Get pending questions from deputy-cto.db
   const questions = db.prepare(
     "SELECT id, type, title, created_at, created_timestamp FROM questions WHERE status = 'pending' ORDER BY created_timestamp ASC"
-  ).all() as Array<{ id: string; type: string; title: string; created_at: string; created_timestamp: number }>;
+  ).all() as Array<{ id: string; type: string; title: string; created_at: string; created_timestamp: string }>;
 
   // Get pending triage items from cto-reports.db
-  type TriageRow = { id: string; title: string; created_at: string; created_timestamp: number };
+  type TriageRow = { id: string; title: string; created_at: string; created_timestamp: string };
   const triageItems: TriageRow[] = [];
   if (fs.existsSync(CTO_REPORTS_DB_PATH)) {
     try {
@@ -2290,7 +2452,7 @@ async function reviewBlockingItems(args: ReviewBlockingItemsArgs): Promise<strin
   const now = Date.now();
 
   const questionItems: BlockingItemSummary[] = questions.map(item => {
-    const ageHours = Math.round((now - item.created_timestamp * 1000) / 3600000 * 10) / 10;
+    const ageHours = Math.round((now - new Date(item.created_timestamp).getTime()) / 3600000 * 10) / 10;
 
     let relevance: 'relevant' | 'likely_irrelevant' | 'unknown' = 'unknown';
     let relevanceReason = '';
@@ -2321,8 +2483,8 @@ async function reviewBlockingItems(args: ReviewBlockingItemsArgs): Promise<strin
   });
 
   const triageItemsSummary: BlockingItemSummary[] = triageItems.map(item => {
-    const ageHours = item.created_timestamp > 0
-      ? Math.round((now - item.created_timestamp * 1000) / 3600000 * 10) / 10
+    const ageHours = item.created_timestamp
+      ? Math.round((now - new Date(item.created_timestamp).getTime()) / 3600000 * 10) / 10
       : 0;
 
     const relevance: 'relevant' | 'likely_irrelevant' | 'unknown' = ageHours > 24 && ageHours > 0
@@ -2390,10 +2552,11 @@ function createPromotionBypass(args: CreatePromotionBypassArgs): string {
 
   const db = getDb();
   const id = randomUUID();
-  const nowTimestamp = Math.floor(Date.now() / 1000);
+  const now = new Date();
+  const nowTimestamp = now.toISOString();
   const durationMinutes = args.duration_minutes ?? 30;
-  const expiresAt = new Date((nowTimestamp + durationMinutes * 60) * 1000).toISOString();
-  const createdAt = new Date(nowTimestamp * 1000).toISOString();
+  const expiresAt = new Date(now.getTime() + durationMinutes * 60 * 1000).toISOString();
+  const createdAt = now.toISOString();
 
   db.prepare(`
     INSERT INTO commit_decisions (id, question_id, decision, rationale, created_timestamp, created_at)

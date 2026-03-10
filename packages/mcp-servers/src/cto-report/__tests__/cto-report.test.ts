@@ -72,8 +72,8 @@ describe('CTO Report Server', () => {
         completed_at TEXT,
         assigned_by TEXT,
         metadata TEXT,
-        created_timestamp INTEGER NOT NULL,
-        completed_timestamp INTEGER,
+        created_timestamp TEXT NOT NULL,
+        completed_timestamp TEXT,
         followup_enabled INTEGER NOT NULL DEFAULT 0,
         followup_section TEXT,
         followup_prompt TEXT,
@@ -145,13 +145,13 @@ describe('CTO Report Server', () => {
     section: string;
     status: string;
     title: string;
-    created_timestamp?: number;
-    completed_timestamp?: number;
+    created_timestamp?: string;
+    completed_timestamp?: string;
   }) => {
     const id = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
-    const created_timestamp = args.created_timestamp ?? Math.floor(now.getTime() / 1000);
+    const created_timestamp = args.created_timestamp ?? now.toISOString();
     const completed_at = args.status === 'completed' ? now.toISOString() : null;
     const completed_timestamp = args.status === 'completed'
       ? (args.completed_timestamp ?? created_timestamp)
@@ -1043,8 +1043,8 @@ describe('CTO Report Server', () => {
           title TEXT NOT NULL,
           created_at TEXT NOT NULL,
           completed_at TEXT,
-          created_timestamp INTEGER NOT NULL,
-          completed_timestamp INTEGER
+          created_timestamp TEXT NOT NULL,
+          completed_timestamp TEXT
         );
       `);
 
@@ -1104,14 +1104,13 @@ describe('CTO Report Server', () => {
           title TEXT NOT NULL,
           created_at TEXT NOT NULL,
           completed_at TEXT,
-          created_timestamp INTEGER NOT NULL,
-          completed_timestamp INTEGER
+          created_timestamp TEXT NOT NULL,
+          completed_timestamp TEXT
         );
       `);
 
-      const now = Math.floor(Date.now() / 1000);
-      const twoHoursAgo = now - (2 * 60 * 60);
-      const twentyFiveHoursAgo = now - (25 * 60 * 60);
+      const twoHoursAgo = new Date(Date.now() - (2 * 60 * 60 * 1000)).toISOString();
+      const twentyFiveHoursAgo = new Date(Date.now() - (25 * 60 * 60 * 1000)).toISOString();
 
       createTask({
         section: 'TEST-WRITER',
@@ -1138,8 +1137,7 @@ describe('CTO Report Server', () => {
         }
 
         const db = new Database(todoDBPath, { readonly: true });
-        const _since = Date.now() - (_hours * 60 * 60 * 1000);
-        const sinceTimestamp = Math.floor(_since / 1000);
+        const sinceTimestamp = new Date(Date.now() - (_hours * 60 * 60 * 1000)).toISOString();
 
         const completed = db.prepare(`
           SELECT section, COUNT(*) as count
@@ -1336,7 +1334,7 @@ describe('CTO Report Server', () => {
           content TEXT NOT NULL,
           metadata TEXT DEFAULT '{}',
           created_at TEXT NOT NULL,
-          created_timestamp INTEGER NOT NULL,
+          created_timestamp TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           CONSTRAINT valid_entry_section CHECK (section_number IN (2, 6))
         );
@@ -1399,11 +1397,10 @@ describe('CTO Report Server', () => {
       );
 
       // Add entry to section 2 (list section)
-      const createdTimestamp = Math.floor(new Date(now).getTime() / 1000);
       pmDB.prepare(`
         INSERT INTO section_entries (id, section_number, title, content, created_at, created_timestamp, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(randomUUID(), 2, 'Enterprise Buyer', 'Buyer persona content', now, createdTimestamp, now);
+      `).run(randomUUID(), 2, 'Enterprise Buyer', 'Buyer persona content', now, now, now);
 
       // Add pain points to section 6
       const painPoint1 = randomUUID();
@@ -1411,11 +1408,11 @@ describe('CTO Report Server', () => {
       pmDB.prepare(`
         INSERT INTO section_entries (id, section_number, title, content, created_at, created_timestamp, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(painPoint1, 6, 'Deployment complexity', 'Pain point content', now, createdTimestamp, now);
+      `).run(painPoint1, 6, 'Deployment complexity', 'Pain point content', now, now, now);
       pmDB.prepare(`
         INSERT INTO section_entries (id, section_number, title, content, created_at, created_timestamp, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(painPoint2, 6, 'Documentation gaps', 'Pain point content', now, createdTimestamp, now);
+      `).run(painPoint2, 6, 'Documentation gaps', 'Pain point content', now, now, now);
 
       // Map one pain point to a persona
       const personaId = randomUUID();
