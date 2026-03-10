@@ -616,9 +616,11 @@ export function pruneDeadKeys(state, log) {
   const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
   const expiredTombstones = [];
   for (const [keyId, keyData] of Object.entries(state.keys)) {
-    if (keyData.status === 'tombstone' &&
-        keyData.tombstoned_at && Date.now() - keyData.tombstoned_at > TOMBSTONE_TTL_MS) {
-      expiredTombstones.push(keyId);
+    if (keyData.status === 'tombstone') {
+      if (!keyData.tombstoned_at) keyData.tombstoned_at = Date.now();
+      if (Date.now() - keyData.tombstoned_at > TOMBSTONE_TTL_MS) {
+        expiredTombstones.push(keyId);
+      }
     }
   }
   for (const keyId of expiredTombstones) {

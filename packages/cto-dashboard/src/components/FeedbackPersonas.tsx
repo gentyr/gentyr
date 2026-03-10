@@ -140,7 +140,7 @@ function PersonaBlock({ persona }: { persona: FeedbackPersonaSummary }): React.R
       {/* Persona header line */}
       <Box>
         <Text color="cyan" bold>{persona.name}</Text>
-        <Text color="gray"> ({persona.consumption_mode}) </Text>
+        <Text color="gray"> ({persona.consumption_modes}) </Text>
         <Text color={statusColor}>{statusText}</Text>
         <Text color="gray"> | </Text>
         <Text>{persona.session_count} sessions</Text>
