@@ -292,6 +292,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "mcp__todo-db__summarize_work",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/project-manager-reminder.js",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [

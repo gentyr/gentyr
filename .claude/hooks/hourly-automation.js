@@ -23,7 +23,7 @@ import { getCooldown } from './config-reader.js';
 import { runUsageOptimizer } from './usage-optimizer.js';
 import { syncKeys } from './key-sync.js';
 import { runFeedbackPipeline, startFeedbackRun, personaRanRecently } from './feedback-orchestrator.js';
-import { createWorktree, cleanupMergedWorktrees } from './lib/worktree-manager.js';
+import { createWorktree, cleanupMergedWorktrees, listWorktrees } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
 import { detectStaleWork, formatReport } from './stale-work-detector.js';
 import { reviveInterruptedSessions } from './session-reviver.js';
@@ -1537,7 +1537,7 @@ This will automatically create a follow-up verification task.
 ## Constraints
 
 - Do NOT write code yourself (you have no Edit/Write tools)
-- Create 3-8 specific sub-tasks per high-level task
+- Create the minimum sub-tasks needed (prefer 1-3 focused tasks over exhaustive decomposition)
 - Each sub-task must be self-contained with enough context to execute independently
 - Only delegate tasks that align with project specs and plans
 - Report blockers via mcp__agent-reports__report_to_deputy_cto
@@ -1557,32 +1557,13 @@ function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
 - **Title**: ${task.title}
 ${task.description ? `- **Description**: ${task.description}` : ''}`;
 
-  // Git workflow block for worktree-based agents
-  const gitWorkflowBlock = worktreePath ? `
-## Git Workflow
+  // Working directory note for worktree-based agents
+  const worktreeNote = worktreePath ? `
+## Working Directory
 
-You are working in a git worktree on a feature branch.
-Your working directory: ${worktreePath}
-MCP tools access shared state in the main project directory.
-
-Commits on feature branches are non-blocking (lint + security only, no review gate).
-Code review happens asynchronously at PR time.
-
-When your work is complete:
-1. \`git add <specific files>\` (never \`git add .\` or \`git add -A\`)
-2. \`git commit -m "descriptive message"\`
-3. Push and create PR:
-\`\`\`
-git push -u origin HEAD
-BASE=$(git rev-parse --verify origin/preview 2>/dev/null && echo preview || echo main)
-gh pr create --base "$BASE" --head "$(git branch --show-current)" --title "${task.title}" --body "Automated: ${task.section} task" 2>/dev/null || true
-\`\`\`
-4. Request PR review (creates urgent task, triggers immediate deputy-CTO session):
-\`\`\`
-mcp__todo-db__create_task({ section: "DEPUTY-CTO", title: "Review PR: ${task.title}", description: "Review and merge the PR from this feature branch. Run gh pr diff, review for security/architecture/quality, then approve+merge or request changes.", assigned_by: "pr-reviewer", priority: "urgent" })
-\`\`\`
-
-Do NOT self-merge. Deputy-CTO reviews and merges PRs asynchronously.
+You are in a git worktree at: ${worktreePath}
+All git operations (commit, push, PR, merge) are handled by the project-manager sub-agent.
+You MUST NOT run git add, git commit, git push, or gh pr create yourself.
 ` : '';
 
   const completionBlock = `## When Done
@@ -1597,11 +1578,11 @@ task_id is auto-resolved from your CLAUDE_AGENT_ID — do not pass it manually.
 \`\`\`
 mcp__todo-db__complete_task({ id: "${task.id}" })
 \`\`\`
-${gitWorkflowBlock}
+${worktreeNote}
 ## Constraints
 
 - Focus only on this specific task
-- Do not create new tasks unless absolutely necessary
+- Do NOT create new tasks. Report findings in your summarize_work summary instead
 - Report any issues via mcp__agent-reports__report_to_deputy_cto`;
 
   // Section-specific workflow instructions
@@ -1616,7 +1597,7 @@ You are an ORCHESTRATOR. Do NOT edit files directly. Follow this sequence using 
 2. \`Task(subagent_type='code-writer')\` - Implement the changes
 3. \`Task(subagent_type='test-writer')\` - Add/update tests
 4. \`Task(subagent_type='code-reviewer')\` - Review changes, commit
-5. \`Task(subagent_type='project-manager')\` - Sync documentation (ALWAYS LAST)
+5. \`Task(subagent_type='project-manager')\` - Commit, push, and merge (ALWAYS LAST)
 
 Pass the full task context to each sub-agent. Each sub-agent has specialized
 instructions loaded from .claude/agents/ configs.
@@ -1628,6 +1609,7 @@ instructions loaded from .claude/agents/ configs.
 - Skipping investigation before implementation
 - Skipping code-reviewer after any code/test changes
 - Skipping project-manager at the end
+- Running git add, git commit, git push, or gh pr create yourself
 
 ${completionBlock}`;
   }
@@ -1651,19 +1633,23 @@ ${completionBlock}`;
   if (task.section === 'TEST-WRITER') {
     return `${taskDetails}
 
-## IMMEDIATE ACTION
+## MANDATORY SUB-AGENT WORKFLOW
 
-Your first action MUST be:
-\`\`\`
-Task(subagent_type='test-writer', prompt='${task.title}. ${task.description || ''}')
-\`\`\`
+You are an ORCHESTRATOR. Do NOT edit files directly. Follow this sequence using the Task tool:
 
-Then after test-writer completes:
-\`\`\`
-Task(subagent_type='code-reviewer', prompt='Review the test changes from the previous step')
-\`\`\`
+1. \`Task(subagent_type='test-writer')\` - Write/update tests
+2. \`Task(subagent_type='code-reviewer')\` - Review the test changes
+3. \`Task(subagent_type='project-manager')\` - Commit, push, and merge (ALWAYS LAST)
 
-Each sub-agent has specialized instructions loaded from .claude/agents/ configs.
+Pass the full task context to each sub-agent. Each sub-agent has specialized
+instructions loaded from .claude/agents/ configs.
+
+**YOU ARE PROHIBITED FROM:**
+- Directly editing ANY files using Edit, Write, or NotebookEdit tools
+- Making test changes without the test-writer sub-agent
+- Skipping code-reviewer after test changes
+- Skipping project-manager at the end
+- Running git add, git commit, git push, or gh pr create yourself
 
 ${completionBlock}`;
   }
@@ -1765,6 +1751,121 @@ function spawnTaskAgent(task) {
     log(`Task runner: Failed to spawn ${mapping.agent} for task ${task.id}: ${err.message}`);
     return false;
   }
+}
+
+// =========================================================================
+// ABANDONED WORKTREE RESCUE
+// =========================================================================
+
+/**
+ * Detect worktrees with uncommitted changes that have no active agent running.
+ * Spawns a project-manager for each to commit, push, and merge the abandoned work.
+ *
+ * @returns {number} Number of rescue agents spawned
+ */
+function rescueAbandonedWorktrees() {
+  const worktrees = listWorktrees();
+  let rescued = 0;
+
+  for (const wt of worktrees) {
+    if (!wt.path || !fs.existsSync(wt.path)) continue;
+
+    // Check for uncommitted changes
+    let hasChanges = false;
+    try {
+      const status = execFileSync('git', ['status', '--porcelain'], {
+        cwd: wt.path,
+        encoding: 'utf8',
+        timeout: 5000,
+        stdio: 'pipe',
+      }).trim();
+      hasChanges = status.length > 0;
+    } catch {
+      continue;
+    }
+
+    if (!hasChanges) continue;
+
+    // Check if any agent process is still active in this worktree
+    let inUse = false;
+    try {
+      const result = execFileSync('lsof', ['+D', wt.path, '-t'], {
+        encoding: 'utf8',
+        timeout: 5000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      inUse = result.trim().length > 0;
+    } catch {
+      // lsof returned no results (exit 1) or failed — not in use
+    }
+
+    if (inUse) {
+      log(`Rescue: skipping ${wt.path} (active processes detected)`);
+      continue;
+    }
+
+    // Spawn project-manager to rescue this worktree
+    log(`Rescue: spawning project-manager for abandoned worktree ${wt.path} (branch: ${wt.branch})`);
+
+    const agentId = registerSpawn({
+      type: AGENT_TYPES.TASK_RUNNER_PROJECT_MANAGER,
+      hookType: HOOK_TYPES.TASK_RUNNER,
+      description: `Rescue abandoned worktree: ${wt.branch}`,
+      prompt: '',
+      metadata: { worktreePath: wt.path, branch: wt.branch, source: 'rescue-abandoned-worktree' },
+    });
+
+    const prompt = `[Task][rescue-project-manager][AGENT:${agentId}] You are a project-manager rescuing abandoned work in a worktree.
+
+## Context
+
+A previous agent left uncommitted changes in this worktree at: ${wt.path}
+Branch: ${wt.branch}
+
+## Your Mission
+
+1. Run \`git status\` to see what changed
+2. Run \`git diff\` to understand the changes
+3. Stage the relevant files: \`git add <specific files>\` (never \`git add .\`)
+4. Commit with a descriptive message
+5. Push and create a PR:
+\`\`\`
+git push -u origin HEAD
+BASE=$(git rev-parse --verify origin/preview 2>/dev/null && echo preview || echo main)
+gh pr create --base "$BASE" --head "$(git branch --show-current)" --title "Rescue: ${wt.branch}" --body "Automated rescue of abandoned worktree changes" 2>/dev/null || true
+\`\`\`
+6. Self-merge: \`gh pr merge --squash --delete-branch\`
+
+Then summarize and exit.`;
+
+    updateAgent(agentId, { prompt });
+
+    try {
+      const mcpConfig = path.join(wt.path, '.mcp.json');
+      const actualMcp = fs.existsSync(mcpConfig) ? mcpConfig : path.join(PROJECT_DIR, '.mcp.json');
+
+      const claude = spawn('claude', [
+        '--dangerously-skip-permissions',
+        '--mcp-config', actualMcp,
+        '--output-format', 'json',
+        '-p',
+        prompt,
+      ], {
+        detached: true,
+        stdio: 'ignore',
+        cwd: wt.path,
+        env: buildSpawnEnv(agentId),
+      });
+
+      claude.unref();
+      updateAgent(agentId, { pid: claude.pid, status: 'running' });
+      rescued++;
+    } catch (err) {
+      log(`Rescue: failed to spawn for ${wt.path}: ${err.message}`);
+    }
+  }
+
+  return rescued;
 }
 
 // =========================================================================
@@ -3434,6 +3535,27 @@ async function main() {
         log(`Worktree cleanup: removed ${cleaned} merged worktree(s).`);
       } else {
         log('Worktree cleanup: no merged worktrees to remove.');
+      }
+    },
+  });
+
+  // =========================================================================
+  // ABANDONED WORKTREE RESCUE (30min cooldown)
+  // Spawns project-manager for worktrees with uncommitted changes and no active agent
+  // =========================================================================
+  await runIfDue('abandoned_worktree_rescue', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastAbandonedWorktreeRescue',
+    configToggle: 'abandonedWorktreeRescueEnabled',
+    config,
+    label: 'Abandoned worktree rescue',
+    fn: async () => {
+      log('Abandoned worktree rescue: scanning for abandoned worktrees...');
+      const rescued = rescueAbandonedWorktrees();
+      if (rescued > 0) {
+        log(`Abandoned worktree rescue: spawned ${rescued} project-manager(s) for abandoned worktrees.`);
+      } else {
+        log('Abandoned worktree rescue: no abandoned worktrees found.');
       }
     },
   });

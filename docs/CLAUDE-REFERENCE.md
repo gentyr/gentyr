@@ -203,6 +203,7 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 - **Worktree path capture**: Resolves `worktreePath` from `agent-tracker-history.json` (keyed by `agentId` extracted from the transcript) and includes it in the quota-interrupted session record so Mode 1 revival can resume the session in the correct worktree CWD
 - Cleanup window widened from 30 min to 12 h so records survive for retroactive revival on the first automation cycle after restart
 - Tombstone consumer: filters tombstoned rotation state keys before passing to `checkKeyHealth()`
+- **First [Task] stop — uncommitted changes gate**: On the first stop event for a spawned session, checks for uncommitted changes in the worktree; if found, injects a specific `additionalContext` instruction to spawn project-manager before exiting rather than a generic continue message. Ensures git discipline even when orchestrators reach their natural stop without explicitly invoking project-manager.
 
 **Agent Reaper** (`scripts/reap-completed-agents.js`):
 - **Worktree session discovery**: Both the dead-process path and the live-process path now fall back to `agent.metadata?.worktreePath` via `getSessionDir()` when `findSessionFileByAgentId` returns null for the main project session directory — enables session file caching and TODO reconciliation for worktree agents
@@ -211,7 +212,7 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 
 **`agent-tracker.js` constants**: Exports `SESSION_REVIVED` (`'session-revived'`) and `SESSION_REVIVER` (`'session-reviver'`) agent/hook type constants consumed by session-reviver; mirrored in `packages/mcp-servers/src/agent-tracker/types.ts`
 
-**`config-reader.js` default**: `session_reviver: 10` minutes added to `DEFAULTS`; operators can override via `.claude/state/automation-config.json`
+**`config-reader.js` defaults**: `session_reviver: 10` and `abandoned_worktree_rescue: 30` minutes added to `DEFAULTS`; operators can override via `.claude/state/automation-config.json`
 
 ### Quota Monitor Hook
 
@@ -340,6 +341,16 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 - Injects `additionalContext` reminding the agent to self-merge immediately with `gh pr merge <number> --squash --delete-branch`
 - No-op if the command is not `gh pr create` or if no PR URL is found in the response
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `PostToolUse > Bash`
+
+### Project Manager Reminder Hook
+
+**Project Manager Reminder Hook** (`.claude/hooks/project-manager-reminder.js`):
+- Runs at `PostToolUse` after `mcp__todo-db__summarize_work` tool calls
+- Only active for spawned sessions (`CLAUDE_SPAWNED_SESSION=true`) running in a worktree (`.git` is a file, not a directory)
+- Checks for uncommitted changes via `git status --porcelain`; if found, injects `additionalContext` instructing the orchestrator to spawn project-manager before calling `complete_task`
+- Fail-open design: any error (git failure, missing `.git`, etc.) exits with `{ continue: true }` and no injection
+- Complements the Stop Hook first-stop check; this hook fires at work-summary time so orchestrators receive the reminder while still active rather than only at the final stop event
+- Registered in `settings.json.template` under `PostToolUse > mcp__todo-db__summarize_work`
 
 ### Credential Health Check Hook
 

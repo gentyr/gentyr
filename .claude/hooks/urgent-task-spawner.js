@@ -158,34 +158,76 @@ function buildDeputyCtoTaskPrompt(task, agentId) {
 - **Task ID**: ${task.id}
 - **Section**: ${task.section}
 - **Title**: ${task.title}
+- **Priority**: URGENT (spawned immediately by urgent-task-spawner hook)
 ${task.description ? `- **Description**: ${task.description}` : ''}
 
 ## Your Mission
 
-Break down this high-level task and execute it using the appropriate sub-agents.
-Use the Task tool to spawn specialized agents as needed:
-- Task(subagent_type='investigator') for research
-- Task(subagent_type='code-writer') for implementation
-- Task(subagent_type='test-writer') for tests
-- Task(subagent_type='code-reviewer') for review
+You are an ORCHESTRATOR. You do NOT implement tasks yourself — you evaluate, decompose, and delegate.
 
-## When Done
+## Process (FOLLOW THIS ORDER)
 
-### Step 1: Summarize Your Work (MANDATORY)
+### Step 1: Evaluate Alignment
+Before doing anything, evaluate whether this task aligns with:
+- The project's specs (read specs/global/ and specs/local/ as needed)
+- Existing plans (check plans/ directory)
+- CTO directives (check mcp__deputy-cto__list_questions for relevant decisions)
+
+If the task does NOT align with specs, plans, or CTO requests:
+- Report the misalignment via mcp__agent-reports__report_to_deputy_cto
+- Mark this task complete WITHOUT creating sub-tasks
+- Explain in the completion why you declined
+
+### Step 2: Create Investigator Task FIRST
+Always start by creating an urgent investigator task:
 \`\`\`
-mcp__todo-db__summarize_work({ summary: "<concise description of what you did and the outcome>", success: true/false })
+mcp__todo-db__create_task({
+  section: "INVESTIGATOR & PLANNER",
+  title: "Investigate: ${task.title}",
+  description: "You are the INVESTIGATOR. Analyze the following task and create a detailed implementation plan with specific sub-tasks:\\n\\nTask: ${task.title}\\n${task.description || ''}\\n\\nInvestigate the codebase, read relevant specs, and create TODO items in the appropriate sections via mcp__todo-db__create_task for each sub-task you identify.",
+  assigned_by: "deputy-cto",
+  priority: "urgent"
+})
 \`\`\`
 
-### Step 2: Mark Task Complete
+### Step 3: Create Implementation Sub-Tasks
+Based on your own analysis (don't wait for the investigator — it runs async), create concrete sub-tasks:
+
+For non-urgent work (picked up by hourly automation):
+\`\`\`
+mcp__todo-db__create_task({
+  section: "INVESTIGATOR & PLANNER",  // or CODE-REVIEWER, TEST-WRITER, PROJECT-MANAGER
+  title: "Specific actionable task title",
+  description: "Detailed context and acceptance criteria",
+  assigned_by: "deputy-cto"
+})
+\`\`\`
+
+Section mapping:
+- Code changes (triggers full agent sequence: investigator → code-writer → test-writer → code-reviewer → project-manager) → CODE-REVIEWER
+- Research, analysis, planning only → INVESTIGATOR & PLANNER
+- Test creation/updates only → TEST-WRITER
+- Documentation, cleanup only → PROJECT-MANAGER
+
+### Step 4: Summarize and Complete
+After all sub-tasks are created:
+\`\`\`
+mcp__todo-db__summarize_work({ summary: "<what you triaged, how many sub-tasks created, key decisions>", success: true/false })
+\`\`\`
+Then:
 \`\`\`
 mcp__todo-db__complete_task({ id: "${task.id}" })
 \`\`\`
+This will automatically create a follow-up verification task.
 
 ## Constraints
 
-- Focus only on this specific task
-- Do not create new tasks unless absolutely necessary
-- Report any issues via mcp__agent-reports__report_to_deputy_cto`;
+- Do NOT write code yourself (you have no Edit/Write tools)
+- Create the minimum sub-tasks needed (prefer 1-3 focused tasks over exhaustive decomposition)
+- Each sub-task must be self-contained with enough context to execute independently
+- Only delegate tasks that align with project specs and plans
+- Report blockers via mcp__agent-reports__report_to_deputy_cto
+- If the task needs CTO input, create a question via mcp__deputy-cto__add_question`;
 }
 
 /**
@@ -202,22 +244,12 @@ function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
 - **Priority**: URGENT (spawned immediately by urgent-task-spawner hook)
 ${task.description ? `- **Description**: ${task.description}` : ''}`;
 
-  const gitWorkflowBlock = worktreePath ? `
-## Git Workflow
+  const worktreeNote = worktreePath ? `
+## Working Directory
 
-You are working in a git worktree on a feature branch.
-Your working directory: ${worktreePath}
-MCP tools access shared state in the main project directory.
-
-When your work is complete:
-1. \`git add <specific files>\` (never \`git add .\` or \`git add -A\`)
-2. \`git commit -m "descriptive message"\`
-3. Push and create PR:
-\`\`\`
-git push -u origin HEAD
-BASE=$(git rev-parse --verify origin/preview 2>/dev/null && echo preview || echo main)
-gh pr create --base "$BASE" --head "$(git branch --show-current)" --title "${task.title}" --body "Automated: ${task.section} task (urgent)" 2>/dev/null || true
-\`\`\`
+You are in a git worktree at: ${worktreePath}
+All git operations (commit, push, PR, merge) are handled by the project-manager sub-agent.
+You MUST NOT run git add, git commit, git push, or gh pr create yourself.
 ` : '';
 
   const completionBlock = `## When Done
@@ -226,16 +258,17 @@ gh pr create --base "$BASE" --head "$(git branch --show-current)" --title "${tas
 \`\`\`
 mcp__todo-db__summarize_work({ summary: "<concise description of what you did and the outcome>", success: true/false })
 \`\`\`
+task_id is auto-resolved from your CLAUDE_AGENT_ID — do not pass it manually.
 
 ### Step 2: Mark Task Complete
 \`\`\`
 mcp__todo-db__complete_task({ id: "${task.id}" })
 \`\`\`
-${gitWorkflowBlock}
+${worktreeNote}
 ## Constraints
 
 - Focus only on this specific task
-- Do not create new tasks unless absolutely necessary
+- Do NOT create new tasks. Report findings in your summarize_work summary instead
 - Report any issues via mcp__agent-reports__report_to_deputy_cto`;
 
   // Section-specific immediate actions
@@ -243,11 +276,22 @@ ${gitWorkflowBlock}
     'CODE-REVIEWER': `
 ## MANDATORY SUB-AGENT WORKFLOW
 
+You are an ORCHESTRATOR. Do NOT edit files directly. Follow this sequence using the Task tool:
+
 1. \`Task(subagent_type='investigator')\` - Research the task
 2. \`Task(subagent_type='code-writer')\` - Implement the changes
 3. \`Task(subagent_type='test-writer')\` - Add/update tests
 4. \`Task(subagent_type='code-reviewer')\` - Review changes, commit
-5. \`Task(subagent_type='project-manager')\` - Sync documentation`,
+5. \`Task(subagent_type='project-manager')\` - Commit, push, and merge (ALWAYS LAST)
+
+**YOU ARE PROHIBITED FROM:**
+- Directly editing ANY files using Edit, Write, or NotebookEdit tools
+- Making code changes without the code-writer sub-agent
+- Making test changes without the test-writer sub-agent
+- Skipping investigation before implementation
+- Skipping code-reviewer after any code/test changes
+- Skipping project-manager at the end
+- Running git add, git commit, git push, or gh pr create yourself`,
 
     'INVESTIGATOR & PLANNER': `
 ## IMMEDIATE ACTION
@@ -258,17 +302,22 @@ Task(subagent_type='investigator', prompt='${task.title}. ${task.description || 
 \`\`\``,
 
     'TEST-WRITER': `
-## IMMEDIATE ACTION
+## MANDATORY SUB-AGENT WORKFLOW
 
-Your first action MUST be:
-\`\`\`
-Task(subagent_type='test-writer', prompt='${task.title}. ${task.description || ''}')
-\`\`\`
+You are an ORCHESTRATOR. Do NOT edit files directly. Follow this sequence using the Task tool:
 
-Then after test-writer completes:
-\`\`\`
-Task(subagent_type='code-reviewer', prompt='Review the test changes')
-\`\`\``,
+1. \`Task(subagent_type='test-writer')\` - Write/update tests
+2. \`Task(subagent_type='code-reviewer')\` - Review the test changes
+3. \`Task(subagent_type='project-manager')\` - Commit, push, and merge (ALWAYS LAST)
+
+Pass the full task context to each sub-agent.
+
+**YOU ARE PROHIBITED FROM:**
+- Directly editing ANY files using Edit, Write, or NotebookEdit tools
+- Making test changes without the test-writer sub-agent
+- Skipping code-reviewer after test changes
+- Skipping project-manager at the end
+- Running git add, git commit, git push, or gh pr create yourself`,
 
     'PROJECT-MANAGER': `
 ## IMMEDIATE ACTION

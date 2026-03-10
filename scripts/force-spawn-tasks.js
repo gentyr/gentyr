@@ -81,6 +81,32 @@ async function loadAgentTracker(projectDir) {
 }
 
 // ---------------------------------------------------------------------------
+// WORKTREE IMPORTS
+// ---------------------------------------------------------------------------
+
+let createWorktree, getFeatureBranchName;
+
+async function loadWorktreeHelpers(projectDir) {
+  const worktreePath = path.join(projectDir, '.claude', 'hooks', 'lib', 'worktree-manager.js');
+  const branchPath = path.join(projectDir, '.claude', 'hooks', 'lib', 'feature-branch-helper.js');
+
+  if (!fs.existsSync(worktreePath) || !fs.existsSync(branchPath)) {
+    // Fallback: try framework-relative path
+    const fwWorktree = path.resolve(__dirname, '..', '.claude', 'hooks', 'lib', 'worktree-manager.js');
+    const fwBranch = path.resolve(__dirname, '..', '.claude', 'hooks', 'lib', 'feature-branch-helper.js');
+    if (fs.existsSync(fwWorktree) && fs.existsSync(fwBranch)) {
+      createWorktree = (await import(fwWorktree)).createWorktree;
+      getFeatureBranchName = (await import(fwBranch)).getFeatureBranchName;
+      return;
+    }
+    // Non-fatal: worktree creation will be skipped
+    return;
+  }
+  createWorktree = (await import(worktreePath)).createWorktree;
+  getFeatureBranchName = (await import(branchPath)).getFeatureBranchName;
+}
+
+// ---------------------------------------------------------------------------
 // DUPLICATED FROM hourly-automation.js (stable functions)
 // Why: hourly-automation.js runs main() at module level — importing it
 // triggers the entire automation cycle. Extracting a shared module is a
@@ -335,8 +361,12 @@ Section mapping:
 - Test creation/updates only → TEST-WRITER
 - Documentation, cleanup only → PROJECT-MANAGER
 
-### Step 4: Mark Complete
+### Step 4: Summarize and Complete
 After all sub-tasks are created:
+\`\`\`
+mcp__todo-db__summarize_work({ summary: "<what you triaged, how many sub-tasks created, key decisions>", success: true/false })
+\`\`\`
+Then:
 \`\`\`
 mcp__todo-db__complete_task({ id: "${task.id}" })
 \`\`\`
@@ -345,14 +375,14 @@ This will automatically create a follow-up verification task.
 ## Constraints
 
 - Do NOT write code yourself (you have no Edit/Write/Bash tools)
-- Create 3-8 specific sub-tasks per high-level task
+- Create the minimum sub-tasks needed (prefer 1-3 focused tasks over exhaustive decomposition)
 - Each sub-task must be self-contained with enough context to execute independently
 - Only delegate tasks that align with project specs and plans
 - Report blockers via mcp__agent-reports__report_to_deputy_cto
 - If the task needs CTO input, create a question via mcp__deputy-cto__add_question`;
 }
 
-function buildTaskRunnerPrompt(task, agentName, agentId) {
+function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
   const taskDetails = `[Task][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing a TODO task.
 
 ## Task Details
@@ -362,18 +392,32 @@ function buildTaskRunnerPrompt(task, agentName, agentId) {
 - **Title**: ${task.title}
 ${task.description ? `- **Description**: ${task.description}` : ''}`;
 
+  // Working directory note for worktree-based agents
+  const worktreeNote = worktreePath ? `
+## Working Directory
+
+You are in a git worktree at: ${worktreePath}
+All git operations (commit, push, PR, merge) are handled by the project-manager sub-agent.
+You MUST NOT run git add, git commit, git push, or gh pr create yourself.
+` : '';
+
   const completionBlock = `## When Done
 
-You MUST call this MCP tool to mark the task as completed:
+### Step 1: Summarize Your Work (MANDATORY)
+\`\`\`
+mcp__todo-db__summarize_work({ summary: "<concise description of what you did and the outcome>", success: true/false })
+\`\`\`
+task_id is auto-resolved from your CLAUDE_AGENT_ID — do not pass it manually.
 
+### Step 2: Mark Task Complete
 \`\`\`
 mcp__todo-db__complete_task({ id: "${task.id}" })
 \`\`\`
-
+${worktreeNote}
 ## Constraints
 
 - Focus only on this specific task
-- Do not create new tasks unless absolutely necessary
+- Do NOT create new tasks. Report findings in your summarize_work summary instead
 - Report any issues via mcp__agent-reports__report_to_deputy_cto`;
 
   // Section-specific workflow instructions
@@ -388,7 +432,7 @@ You are an ORCHESTRATOR. Do NOT edit files directly. Follow this sequence using 
 2. \`Task(subagent_type='code-writer')\` - Implement the changes
 3. \`Task(subagent_type='test-writer')\` - Add/update tests
 4. \`Task(subagent_type='code-reviewer')\` - Review changes, commit
-5. \`Task(subagent_type='project-manager')\` - Sync documentation (ALWAYS LAST)
+5. \`Task(subagent_type='project-manager')\` - Commit, push, and merge (ALWAYS LAST)
 
 Pass the full task context to each sub-agent. Each sub-agent has specialized
 instructions loaded from .claude/agents/ configs.
@@ -400,6 +444,7 @@ instructions loaded from .claude/agents/ configs.
 - Skipping investigation before implementation
 - Skipping code-reviewer after any code/test changes
 - Skipping project-manager at the end
+- Running git add, git commit, git push, or gh pr create yourself
 
 ${completionBlock}`;
   }
@@ -423,19 +468,23 @@ ${completionBlock}`;
   if (task.section === 'TEST-WRITER') {
     return `${taskDetails}
 
-## IMMEDIATE ACTION
+## MANDATORY SUB-AGENT WORKFLOW
 
-Your first action MUST be:
-\`\`\`
-Task(subagent_type='test-writer', prompt='${task.title}. ${task.description || ''}')
-\`\`\`
+You are an ORCHESTRATOR. Do NOT edit files directly. Follow this sequence using the Task tool:
 
-Then after test-writer completes:
-\`\`\`
-Task(subagent_type='code-reviewer', prompt='Review the test changes from the previous step')
-\`\`\`
+1. \`Task(subagent_type='test-writer')\` - Write/update tests
+2. \`Task(subagent_type='code-reviewer')\` - Review the test changes
+3. \`Task(subagent_type='project-manager')\` - Commit, push, and merge (ALWAYS LAST)
 
-Each sub-agent has specialized instructions loaded from .claude/agents/ configs.
+Pass the full task context to each sub-agent. Each sub-agent has specialized
+instructions loaded from .claude/agents/ configs.
+
+**YOU ARE PROHIBITED FROM:**
+- Directly editing ANY files using Edit, Write, or NotebookEdit tools
+- Making test changes without the test-writer sub-agent
+- Skipping code-reviewer after test changes
+- Skipping project-manager at the end
+- Running git add, git commit, git push, or gh pr create yourself
 
 ${completionBlock}`;
   }
@@ -499,6 +548,7 @@ async function main() {
   // Load dependencies
   await loadDatabase();
   await loadAgentTracker(config.projectDir);
+  await loadWorktreeHelpers(config.projectDir);
 
   // Resolve SECTION_AGENT_MAP now that AGENT_TYPES is available
   resolveSectionAgentMap();
@@ -624,19 +674,37 @@ async function main() {
       continue;
     }
 
+    // --- Worktree setup (best-effort) ---
+    let agentCwd = config.projectDir;
+    let agentMcpConfig = path.join(config.projectDir, '.mcp.json');
+    let worktreePath = null;
+
+    if (createWorktree && getFeatureBranchName) {
+      try {
+        const branchName = getFeatureBranchName(task.title, task.id);
+        const worktree = createWorktree(branchName);
+        worktreePath = worktree.path;
+        agentCwd = worktree.path;
+        agentMcpConfig = path.join(worktree.path, '.mcp.json');
+      } catch (err) {
+        // Non-fatal: fall back to project dir
+        process.stderr.write(`[force-spawn] Worktree creation failed for task ${task.id}, using project dir: ${err.message}\n`);
+      }
+    }
+
     // Register with agent tracker first (to get agentId for prompt embedding)
     const agentId = registerSpawn({
       type: mapping.agentType,
       hookType: HOOK_TYPES.TASK_RUNNER,
       description: `Force-spawn: ${mapping.agent} - ${task.title}`,
       prompt: '',  // Will be set after prompt is built
-      metadata: { taskId: task.id, section: task.section, source: 'force-spawn-tasks' },
+      metadata: { taskId: task.id, section: task.section, worktreePath, source: 'force-spawn-tasks' },
     });
 
     // Build prompt with embedded agent ID for reaper tracking
     const prompt = mapping.agent === 'deputy-cto'
       ? buildDeputyCtoTaskPrompt(task, agentId)
-      : buildTaskRunnerPrompt(task, mapping.agent, agentId);
+      : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath);
 
     // Store the prompt now that it's built
     if (updateAgent) {
@@ -645,17 +713,16 @@ async function main() {
 
     // Spawn detached claude process
     try {
-      const mcpConfig = path.join(config.projectDir, '.mcp.json');
       const claude = spawn('claude', [
         '--dangerously-skip-permissions',
-        '--mcp-config', mcpConfig,
+        '--mcp-config', agentMcpConfig,
         '--output-format', 'json',
         '-p',
         prompt,
       ], {
         detached: true,
         stdio: 'ignore',
-        cwd: config.projectDir,
+        cwd: agentCwd,
         env: buildSpawnEnv(agentId, config.projectDir),
       });
 
@@ -673,6 +740,7 @@ async function main() {
         agent: mapping.agent,
         agentId: agentId,
         pid: claude.pid,
+        worktreePath,
       });
     } catch (err) {
       resetTaskToPending(task.id, todoDbPath);
