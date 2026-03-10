@@ -238,7 +238,7 @@ export interface SatisfactionDistribution {
 
 export interface FeedbackPersonaSummary {
   name: string;
-  consumption_mode: string;
+  consumption_modes: string;
   enabled: boolean;
   session_count: number;
   last_satisfaction: string | null;
@@ -1172,8 +1172,14 @@ export function getHookExecutions(): HookExecutions {
 export function getKeyRotationMetrics(hours: number): KeyRotationMetrics | null {
   if (!fs.existsSync(KEY_ROTATION_STATE_PATH)) return null;
 
-  const content = fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8');
-  const state = KeyRotationStateSchema.parse(JSON.parse(content));
+  let state: z.infer<typeof KeyRotationStateSchema>;
+  try {
+    const content = fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8');
+    state = KeyRotationStateSchema.parse(JSON.parse(content));
+  } catch {
+    process.stderr.write(`[data-reader] Failed to parse key rotation state at ${KEY_ROTATION_STATE_PATH}\n`);
+    return null;
+  }
 
   if (!state || state.version !== 1 || typeof state.keys !== 'object') {
     process.stderr.write(`[data-reader] Invalid key rotation state format at ${KEY_ROTATION_STATE_PATH}\n`);
@@ -1277,8 +1283,14 @@ export function getUsageProjection(): UsageProjection {
 
   if (!fs.existsSync(AUTOMATION_CONFIG_PATH)) return result;
 
-  const content = fs.readFileSync(AUTOMATION_CONFIG_PATH, 'utf8');
-  const config = AutomationConfigFileSchema.parse(JSON.parse(content));
+  let config: z.infer<typeof AutomationConfigFileSchema>;
+  try {
+    const content = fs.readFileSync(AUTOMATION_CONFIG_PATH, 'utf8');
+    config = AutomationConfigFileSchema.parse(JSON.parse(content));
+  } catch {
+    process.stderr.write(`[data-reader] Failed to parse automation config at ${AUTOMATION_CONFIG_PATH}\n`);
+    return result;
+  }
 
   if (!config || config.version !== 1) {
     process.stderr.write(`[data-reader] Invalid automation config format at ${AUTOMATION_CONFIG_PATH}\n`);
@@ -1467,14 +1479,14 @@ export function getFeedbackPersonas(): FeedbackPersonasData {
   // Query personas with aggregated session data
   interface PersonaRow {
     name: string;
-    consumption_mode: string;
+    consumption_modes: string;
     enabled: number;
     session_count: number;
     findings_count: number;
   }
 
   const personas = db.prepare(`
-    SELECT p.name, p.consumption_mode, p.enabled,
+    SELECT p.name, p.consumption_modes, p.enabled,
            COUNT(fs.id) as session_count,
            COALESCE(SUM(fs.findings_count), 0) as findings_count
     FROM personas p
@@ -1541,7 +1553,7 @@ export function getFeedbackPersonas(): FeedbackPersonasData {
 
   const result: FeedbackPersonaSummary[] = personas.map((p) => ({
     name: p.name,
-    consumption_mode: p.consumption_mode,
+    consumption_modes: p.consumption_modes,
     enabled: p.enabled === 1,
     session_count: p.session_count,
     last_satisfaction: satisfactionMap.get(p.name) ?? null,

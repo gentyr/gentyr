@@ -9,40 +9,28 @@
  * - Tombstone behavior (correct fields, stripped token data)
  * - Rotation log (account_removed events logged)
  * - Env var warning
+ *
+ * Uses a temp HOME directory so tests never touch ~/.claude/api-key-rotation.json.
  */
 
-import { describe, it, beforeEach, afterEach, mock } from 'node:test';
+import { describe, it, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'os';
 
-const ROTATION_STATE_PATH = path.join(os.homedir(), '.claude', 'api-key-rotation.json');
+// Redirect HOME to a temp directory BEFORE any dynamic imports load key-sync.js.
+// key-sync.js computes ROTATION_STATE_PATH at module load time via os.homedir(),
+// which reads process.env.HOME on Unix.
+const originalHome = process.env.HOME;
+const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'remove-account-test-'));
+const tmpClaudeDir = path.join(tmpHome, '.claude');
+fs.mkdirSync(tmpClaudeDir, { recursive: true });
+process.env.HOME = tmpHome;
 
-// Save/restore rotation state around tests
-let originalContent = null;
-let fileExisted = false;
-
-function backupState() {
-  if (fs.existsSync(ROTATION_STATE_PATH)) {
-    originalContent = fs.readFileSync(ROTATION_STATE_PATH, 'utf8');
-    fileExisted = true;
-  }
-}
-
-function restoreState() {
-  if (fileExisted && originalContent !== null) {
-    fs.writeFileSync(ROTATION_STATE_PATH, originalContent, 'utf8');
-  } else if (fs.existsSync(ROTATION_STATE_PATH)) {
-    fs.unlinkSync(ROTATION_STATE_PATH);
-  }
-  originalContent = null;
-  fileExisted = false;
-}
+const ROTATION_STATE_PATH = path.join(tmpHome, '.claude', 'api-key-rotation.json');
 
 function writeState(state) {
-  const dir = path.dirname(ROTATION_STATE_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(ROTATION_STATE_PATH, JSON.stringify(state, null, 2), 'utf8');
 }
 
@@ -75,12 +63,14 @@ function captureExit() {
 }
 
 describe('remove-account CLI', () => {
-  beforeEach(() => {
-    backupState();
+  after(() => {
+    process.env.HOME = originalHome;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
   afterEach(() => {
-    restoreState();
+    // Clean state file between tests
+    try { fs.unlinkSync(ROTATION_STATE_PATH); } catch {}
   });
 
   describe('List mode', () => {

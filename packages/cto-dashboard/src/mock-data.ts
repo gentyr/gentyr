@@ -707,7 +707,7 @@ export function getMockDashboardData(): DashboardData {
     personas: [
       {
         name: 'GUI Developer',
-        consumption_mode: 'gui',
+        consumption_modes: 'gui',
         enabled: true,
         session_count: 28,
         last_satisfaction: 'satisfied',
@@ -716,7 +716,7 @@ export function getMockDashboardData(): DashboardData {
       },
       {
         name: 'CLI Power User',
-        consumption_mode: 'cli',
+        consumption_modes: 'cli',
         enabled: true,
         session_count: 19,
         last_satisfaction: 'very_satisfied',
@@ -725,7 +725,7 @@ export function getMockDashboardData(): DashboardData {
       },
       {
         name: 'API Integrator',
-        consumption_mode: 'api',
+        consumption_modes: 'api',
         enabled: true,
         session_count: 22,
         last_satisfaction: 'neutral',
@@ -734,7 +734,7 @@ export function getMockDashboardData(): DashboardData {
       },
       {
         name: 'SDK Automation',
-        consumption_mode: 'sdk',
+        consumption_modes: 'sdk',
         enabled: true,
         session_count: 15,
         last_satisfaction: 'satisfied',

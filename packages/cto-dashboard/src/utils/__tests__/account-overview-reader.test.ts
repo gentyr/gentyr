@@ -11,37 +11,55 @@
  * - Rotation count calculation
  *
  * Philosophy: Validate structure and behavior, not implementation details.
+ *
+ * Uses a temp HOME directory so tests never touch ~/.claude/api-key-rotation.json.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
-import { getAccountOverviewData } from '../account-overview-reader.js';
+
+// vi.hoisted runs in the hoisted scope (before vi.mock factories), so tmpHome is
+// available when the mock factory references it.
+const { tmpHome, testFilePath } = vi.hoisted(() => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const _fs = require('fs') as typeof import('fs');
+  const _os = require('os') as typeof import('os');
+  const _path = require('path') as typeof import('path');
+  const home = _fs.mkdtempSync(_path.join(_os.tmpdir(), 'account-overview-test-'));
+  _fs.mkdirSync(_path.join(home, '.claude'), { recursive: true });
+  return {
+    tmpHome: home,
+    testFilePath: _path.join(home, '.claude', 'api-key-rotation.json'),
+  };
+});
+
+// Mock os.homedir() to return our temp directory
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      homedir: () => tmpHome,
+    },
+    homedir: () => tmpHome,
+  };
+});
+
+// Import after mocking so the module picks up the mocked homedir
+const { getAccountOverviewData } = await import('../account-overview-reader.js');
 import type { AccountOverviewData } from '../account-overview-reader.js';
 
 describe('account-overview-reader', () => {
-  const testFilePath = path.join(os.homedir(), '.claude', 'api-key-rotation.json');
-  let originalContent: string | null = null;
-  let fileExisted = false;
-
-  beforeEach(() => {
-    // Backup original file if it exists
-    if (fs.existsSync(testFilePath)) {
-      originalContent = fs.readFileSync(testFilePath, 'utf8');
-      fileExisted = true;
-    }
+  afterAll(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
   afterEach(() => {
-    // Restore original file
-    if (fileExisted && originalContent !== null) {
-      fs.writeFileSync(testFilePath, originalContent, 'utf8');
-    } else if (fs.existsSync(testFilePath)) {
-      fs.unlinkSync(testFilePath);
-    }
-    originalContent = null;
-    fileExisted = false;
+    // Clean state file between tests
+    try { fs.unlinkSync(testFilePath); } catch {}
   });
 
   describe('Schema Validation - Nullable Fields', () => {
@@ -286,9 +304,8 @@ describe('account-overview-reader', () => {
 
   describe('Empty State Handling', () => {
     it('should return empty data when file does not exist', () => {
-      if (fs.existsSync(testFilePath)) {
-        fs.unlinkSync(testFilePath);
-      }
+      // Ensure file doesn't exist
+      try { fs.unlinkSync(testFilePath); } catch {}
 
       const result = getAccountOverviewData();
 
