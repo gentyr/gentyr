@@ -54,7 +54,6 @@ import {
   type MetricBoxData,
 } from './components/index.js';
 import { formatNumber, calculateCacheRate } from './utils/formatters.js';
-import { deduplicateAccounts } from './components/AccountOverviewSection.js';
 
 // ============================================================================
 // Section IDs
@@ -142,13 +141,12 @@ async function renderSection(sectionId: SectionId, mock: boolean, hours: number,
   switch (sectionId) {
     case 'quota': {
       const data = mock ? getMockDashboardData() : await getDashboardData(hours);
-      const accountOverview = mock ? getMockAccountOverview() : getAccountOverviewData();
       const { verified_quota } = data;
       const { aggregate } = verified_quota;
-      const accountCount = deduplicateAccounts(accountOverview.accounts).length;
+      const activeAccounts = verified_quota.healthy_count;
       const fiveHourPct = aggregate.five_hour?.utilization ?? 0;
       const sevenDayPct = aggregate.seven_day?.utilization ?? 0;
-      const title = `QUOTA & CAPACITY (${accountCount} account${accountCount !== 1 ? 's' : ''})`;
+      const title = `QUOTA & CAPACITY (${activeAccounts} account${activeAccounts !== 1 ? 's' : ''})`;
       return (
         <Section title={title}>
           <Box flexDirection="column">
