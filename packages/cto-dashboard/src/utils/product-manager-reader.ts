@@ -4,6 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { openReadonlyDb } from './readonly-db.js';
 
 // ============================================================================
 // Public interfaces
@@ -55,40 +56,11 @@ export function getProductManagerData(): ProductManagerData {
     return EMPTY;
   }
 
-  let Database;
-  try {
-    Database = require('better-sqlite3');
-  } catch {
-    return EMPTY;
-  }
-
   let db;
   try {
-    db = new Database(dbPath, { readonly: true });
-    // Force WAL init
-    db.pragma('journal_mode');
+    db = openReadonlyDb(dbPath);
   } catch {
-    // Fall back to temp copy for root-owned dirs
-    try {
-      const os = require('os');
-      const tmpPath = path.join(
-        os.tmpdir(),
-        `gentyr-ro-product-manager-${process.pid}-${Date.now()}.db`
-      );
-      fs.copyFileSync(dbPath, tmpPath);
-      const tmpDb = new Database(tmpPath);
-      tmpDb.pragma('journal_mode = DELETE');
-      tmpDb.close();
-      db = new Database(tmpPath, { readonly: true });
-      const originalClose = db.close.bind(db);
-      db.close = () => {
-        const result = originalClose();
-        try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
-        return result;
-      };
-    } catch {
-      return EMPTY;
-    }
+    return EMPTY;
   }
 
   try {
