@@ -42,6 +42,7 @@ import type { DeploymentsData } from './utils/deployments-reader.js';
 import type { InfraData } from './utils/infra-reader.js';
 import type { LoggingData } from './utils/logging-reader.js';
 import type { AccountOverviewData } from './utils/account-overview-reader.js';
+import { deduplicateAccounts } from './components/AccountOverviewSection.js';
 import type { WorktreeData } from './utils/worktree-reader.js';
 import type { ProductManagerData } from './utils/product-manager-reader.js';
 import type { WorklogData } from './utils/worklog-reader.js';
@@ -80,14 +81,14 @@ function Header({ data }: { data: DashboardData }): React.ReactElement {
   );
 }
 
-function QuotaSection({ data, width, tip }: { data: DashboardData; width?: number | string; tip?: string }): React.ReactElement {
+function QuotaSection({ data, accountOverview, width, tip }: { data: DashboardData; accountOverview: AccountOverviewData; width?: number | string; tip?: string }): React.ReactElement {
   const { verified_quota } = data;
   const { aggregate } = verified_quota;
 
-  const activeKeys = verified_quota.healthy_count;
+  const accountCount = deduplicateAccounts(accountOverview.accounts).length;
   const fiveHourPct = aggregate.five_hour?.utilization ?? 0;
   const sevenDayPct = aggregate.seven_day?.utilization ?? 0;
-  const title = `QUOTA & CAPACITY (${activeKeys} key${activeKeys !== 1 ? 's' : ''})`;
+  const title = `QUOTA & CAPACITY (${accountCount} account${accountCount !== 1 ? 's' : ''})`;
 
   return (
     <Section title={title} width={width ?? "100%"} tip={tip}>
@@ -267,7 +268,7 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       {/* Quota & System Status - side by side */}
       {showPage1 && (
         <Box marginTop={1} flexDirection="row" gap={1}>
-          <QuotaSection data={data} width={leftWidth} tip="/show quota" />
+          <QuotaSection data={data} accountOverview={accountOverview} width={leftWidth} tip="/show quota" />
           <SystemStatusSection data={data} width={rightWidth} />
         </Box>
       )}
