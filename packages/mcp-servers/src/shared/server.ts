@@ -51,6 +51,11 @@ export interface McpServerOptions {
  * Convert a single Zod type to JSON Schema representation
  */
 function zodTypeToJsonSchema(schema: ZodSchema): Record<string, unknown> {
+  // Handle effects wrapper (.refine(), .transform(), .superRefine())
+  if (schema instanceof z.ZodEffects) {
+    return zodTypeToJsonSchema(schema._def.schema);
+  }
+
   // Handle optional wrapper
   if (schema instanceof z.ZodOptional) {
     return zodTypeToJsonSchema(schema.unwrap());
@@ -111,6 +116,11 @@ function zodTypeToJsonSchema(schema: ZodSchema): Record<string, unknown> {
  * Exported for use by MCP servers that don't extend McpServer.
  */
 export function zodToJsonSchema(schema: ZodSchema): McpToolDefinition['inputSchema'] {
+  // Unwrap ZodEffects (.refine(), .transform(), .superRefine())
+  if (schema instanceof z.ZodEffects) {
+    return zodToJsonSchema(schema._def.schema);
+  }
+
   // For object schemas, extract properties
   if (schema instanceof z.ZodObject) {
     const shape = schema.shape as Record<string, ZodSchema>;
