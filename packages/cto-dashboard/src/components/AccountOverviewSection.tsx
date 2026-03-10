@@ -41,7 +41,7 @@ interface DeduplicatedAccount {
   hasUsage: boolean;
 }
 
-function deduplicateAccounts(accounts: AccountKeyDetail[]): DeduplicatedAccount[] {
+export function deduplicateAccounts(accounts: AccountKeyDetail[]): DeduplicatedAccount[] {
   const map = new Map<string, { keys: AccountKeyDetail[]; isCurrent: boolean }>();
 
   for (const acct of accounts) {
