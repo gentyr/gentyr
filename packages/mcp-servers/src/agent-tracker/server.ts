@@ -15,6 +15,7 @@ import * as os from 'os';
 import { execSync, execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { openReadonlyDb } from '../shared/readonly-db.js';
 import {
   ListSpawnedAgentsArgsSchema,
   GetAgentPromptArgsSchema,
@@ -1037,23 +1038,17 @@ function monitorAgents(args: MonitorAgentsArgs): MonitorAgentsResult {
     let taskStatus: string | null = null;
     let taskTitle: string | null = null;
 
-    // Try to query todo.db for task status using sqlite3 CLI
+    // Query todo.db for task status using better-sqlite3 (parameterized)
     if (taskId && todoDbExists) {
       try {
-        const sanitizedTaskId = taskId.replace(/'/g, "''");
-        const result = execSync(
-          `sqlite3 "${todoDbPath}" "SELECT status, title FROM tasks WHERE id = '${sanitizedTaskId}'"`,
-          { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
-        ).trim();
-        if (result) {
-          const pipeIndex = result.indexOf('|');
-          if (pipeIndex !== -1) {
-            taskStatus = result.substring(0, pipeIndex) || null;
-            taskTitle = result.substring(pipeIndex + 1) || null;
-          }
+        const db = openReadonlyDb(todoDbPath);
+        const row = db.prepare('SELECT status, title FROM tasks WHERE id = ?').get(taskId) as { status: string; title: string } | undefined;
+        db.close();
+        if (row) {
+          taskStatus = row.status;
+          taskTitle = row.title;
         }
       } catch {
-        // sqlite3 CLI not available or query failed - fall back to agent description
         taskTitle = agent.description?.replace(/^Force-spawn: \w+ - /, '') ?? null;
       }
     } else if (!taskTitle) {
