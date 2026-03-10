@@ -401,6 +401,14 @@ The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tool
 
 > Full details: [Playwright MCP Server](docs/CLAUDE-REFERENCE.md#playwright-mcp-server)
 
+## Playwright Helpers Package
+
+Shared TypeScript utilities for Playwright-based feedback agents and demo scenarios. Located at `packages/playwright-helpers/`. Published as `@gentyr/playwright-helpers`. Exports helper functions for persona overlay injection, cursor highlighting, tab management (open/switch/close), terminal interaction (type commands, wait for output), and editor interaction (type code, run code). Built to `dist/` (gitignored). Consumed by feedback agents and demo scenario implementations via `@playwright/test` peer dependency.
+
+```bash
+cd packages/playwright-helpers && npm run build
+```
+
 ## Demo Scenario System
 
 Curated product walkthroughs mapped to personas. Managed by product-manager agent, implemented by code-writer agents. Only `gui` and `adk` consumption_mode personas can have scenarios. `*.demo.ts` naming convention enforced.
