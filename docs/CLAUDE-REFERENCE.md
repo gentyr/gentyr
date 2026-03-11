@@ -444,6 +444,19 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `PreToolUse > Bash` (alongside `main-tree-commit-guard.js`)
 - Tests at `.claude/hooks/__tests__/worktree-cwd-guard.test.js` (runs via `node --test`)
 
+### Interactive Agent Guard Hook
+
+**Interactive Agent Guard Hook** (`.claude/hooks/interactive-agent-guard.js`):
+- Runs at `PreToolUse` for `Agent` tool calls; hard-blocking (`permissionDecision: "deny"`)
+- Blocks code-modifying agent invocations in interactive (non-spawned) sessions; spawned sessions (`CLAUDE_SPAWNED_SESSION=true`) are always allowed
+- **Root cause**: Claude Code's built-in Agent tool creates worktrees WITHOUT GENTYR provisioning (no hooks, no MCP config, no guards) and causes branch switching in the main tree when processing results — exactly the isolation violations the GENTYR worktree system prevents
+- **Allowed interactive types** (read-only, no git operations): `Explore`, `Plan`, `claude-code-guide`, `statusline-setup`; all other types are denied
+- **Deny message** directs the CTO to use GENTYR's task system: `/spawn-tasks <description>`, `/spawn-tasks`, or `create_task + force_spawn_tasks` MCP tools
+- Defaults `subagent_type` to `'general-purpose'` when omitted — also denied
+- Fail-open on JSON parse errors or unexpected exceptions (`{ allow: true }`)
+- Root-owned and listed in `protection-state.json` `criticalHooks` array; registered in `settings.json.template` under `PreToolUse > Agent`
+- Tests at `.claude/hooks/__tests__/interactive-agent-guard.test.js` (21 tests, runs via `node --test`)
+
 ---
 
 ## Playwright MCP Server
