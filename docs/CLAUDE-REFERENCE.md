@@ -185,9 +185,13 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 - **Revival prompt**: Each resumed session receives a structured context prompt with elapsed time, interruption reason, and task verification instructions — the agent must call `mcp__todo-db__get_task` or `mcp__todo-db__list_tasks` before continuing to avoid duplicating work already handled by another agent
 - **taskId resolution**: Resolved from `agent-tracker-history.json` metadata so the revival prompt can reference the specific task ID
 - **Mode 3 sessionId fallback**: When `paused-sessions.json` lacks an explicit `sessionId`, finds the session JSONL file by scanning for the `[AGENT:<agentId>]` marker in the first 2KB of each transcript file
+- **Mode 3 worktree path**: Resolves `worktreePath` from `agent-tracker-history.json` by `agentId` (same lookup as Mode 1), fixing a gap where Mode 3 sessions were resumed in the main project directory instead of their original worktree CWD
 - **Worktree CWD support** (`resumeCwd` param): `spawnResumedSession()` accepts an optional `resumeCwd` argument; resumes in the agent's original worktree path if it still exists, falls back to the main project directory otherwise (adds a note to the revival prompt when the worktree has been cleaned up)
 - **Worktree session discovery** (Mode 1 and 2): When `findSessionFileByAgentId` fails in the main project session directory, falls back to `agent.metadata?.worktreePath` via `getSessionDir()` — covers the ~95% of task-runner agents that run in worktrees and store sessions in worktree-specific directories
 - **Mode 2 `in_progress` task acceptance**: Queries TODO tasks with `status IN ('pending', 'in_progress')` — handles the case where the reaper ran and marked the agent dead but couldn't find the session file (so the task was never reset to `pending`); also performs inline reaping of running-but-dead agents found during the scan (sets task to `pending` before attempting revival)
+- **Duplicate revival guard**: Checks `quota-interrupted-sessions.json` for `status: 'revived'` before attempting Mode 1 spawns — prevents double-revival when inline revival in the stop hook already succeeded
+- **Advisory file locking**: Uses `acquireLock`/`releaseLock` from `agent-tracker.js` around history-file reads and writes to coordinate with concurrent automation processes; includes lock leak fix on error paths
+- **Memory pressure gate**: `shouldAllowSpawn()` from `lib/memory-pressure.js` checked before each spawn; revival is queued (not permanently skipped) when memory-blocked
 - Cap: 3 revivals per cycle (`MAX_REVIVALS_PER_CYCLE`); respects the running-agent concurrency limit
 
 **Three revival modes (priority order):**
@@ -200,19 +204,33 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 
 **Stop Hook** (`.claude/hooks/stop-continue-hook.js`):
 - Writes `quota-interrupted-sessions.json` entries with `status: 'pending_revival'` when a spawned session dies from a rate limit error
+- **Phase 1 — Inline revival**: After successful credential rotation, immediately spawns `claude --resume <sessionId>` via `inlineRevive()` — reducing revival latency from 5-15 minutes to 0-2 seconds. The safety-net record is written to `quota-interrupted-sessions.json` first (with `status: 'pending_revival'`); if inline revival succeeds the record is updated to `status: 'revived'` so session-reviver skips it. If all keys are exhausted, inline revival is skipped and session-reviver Modes 1 + 3 handle recovery once keys recover.
+- **Memory pressure gate**: `shouldAllowSpawn()` from `lib/memory-pressure.js` is called before inline revival; spawn is blocked at critical pressure (blocked inline, queued for session-reviver).
 - **Worktree path capture**: Resolves `worktreePath` from `agent-tracker-history.json` (keyed by `agentId` extracted from the transcript) and includes it in the quota-interrupted session record so Mode 1 revival can resume the session in the correct worktree CWD
 - Cleanup window widened from 30 min to 12 h so records survive for retroactive revival on the first automation cycle after restart
 - Tombstone consumer: filters tombstoned rotation state keys before passing to `checkKeyHealth()`
 - **First [Task] stop — uncommitted changes gate**: On the first stop event for a spawned session, checks for uncommitted changes in the worktree; if found, injects a specific `additionalContext` instruction to spawn project-manager before exiting rather than a generic continue message. Ensures git discipline even when orchestrators reach their natural stop without explicitly invoking project-manager.
+- Uses `lib/revival-utils.js` helpers (`buildRevivalPrompt`, `resolveTaskIdForAgent`, `extractSessionIdFromPath`) and `lib/spawn-env.js` (`buildSpawnEnv`) shared modules.
 
 **Agent Reaper** (`scripts/reap-completed-agents.js`):
 - **Worktree session discovery**: Both the dead-process path and the live-process path now fall back to `agent.metadata?.worktreePath` via `getSessionDir()` when `findSessionFileByAgentId` returns null for the main project session directory — enables session file caching and TODO reconciliation for worktree agents
 
 **`quota-monitor.js` Mode 3 integration**: Calls `writePausedSession(agentId)` when all accounts are exhausted and a spawned session is about to be abandoned; session-reviver resumes it once any account recovers below 90% usage
 
-**`agent-tracker.js` constants**: Exports `SESSION_REVIVED` (`'session-revived'`) and `SESSION_REVIVER` (`'session-reviver'`) agent/hook type constants consumed by session-reviver; mirrored in `packages/mcp-servers/src/agent-tracker/types.ts`
+**`agent-tracker.js` constants**: Exports `SESSION_REVIVED` (`'session-revived'`) and `SESSION_REVIVER` (`'session-reviver'`) agent/hook type constants consumed by session-reviver; mirrored in `packages/mcp-servers/src/agent-tracker/types.ts`. Also exports `acquireLock` / `releaseLock` for advisory file locking, used by session-reviver and dead-agent-recovery to coordinate concurrent history-file access.
 
 **`config-reader.js` defaults**: `session_reviver: 10` and `abandoned_worktree_rescue: 30` minutes added to `DEFAULTS`; operators can override via `.claude/state/automation-config.json`
+
+**Shared Revival Modules** (`lib/`):
+- **`lib/memory-pressure.js`**: Monitors free RAM using `vm_stat` (macOS) or `/proc/meminfo` (Linux). Exports `shouldAllowSpawn({ priority, context })` — returns `{ allowed: boolean, reason: string }`. Critical pressure (< 256 MB free) blocks all spawning; high pressure (< 512 MB free) blocks non-urgent spawning. Spawns blocked by memory pressure are not permanently skipped — they remain in their source queue (quota-interrupted, paused-sessions, or task DB) for the next automation cycle or reviver pass.
+- **`lib/spawn-env.js`**: Exports `buildSpawnEnv(projectDir)`, shared across stop-continue-hook, session-reviver, urgent-task-spawner, and hourly-automation. Consolidates proxy env-var injection (`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`/`NODE_EXTRA_CA_CERTS`) with `isProxyDisabled()` check.
+- **`lib/revival-utils.js`**: Exports `buildRevivalPrompt({ reason, interruptedAt, taskId })`, `resolveTaskIdForAgent(agentId, projectDir)`, and `extractSessionIdFromPath(sessionPath)`. Used by both stop-continue-hook (inline revival) and session-reviver to produce consistent revival context prompts.
+
+**Revival Daemon** (`scripts/revival-daemon.js`):
+- Persistent daemon using `fs.watch()` + polling fallback for sub-second crash detection
+- Watches `agent-tracker-history.json` for status changes to `completed`/`process_already_dead`; triggers revival pipeline on detection
+- Registered as a launchd service (`com.local.gentyr-revival-daemon`) and systemd unit via `setup-automation-service.sh`
+- Complements — does not replace — the 10-minute session-reviver cooldown in hourly automation; the daemon catches crashes within seconds while the reviver handles retroactive recovery after restarts
 
 ### Quota Monitor Hook
 
@@ -650,7 +668,7 @@ Emergency kill switch for the rotation proxy. When the Anthropic usage API is de
 
 **State file**: `~/.claude/proxy-disabled.json` (global, not per-project — one proxy serves all projects).
 
-**Spawn helper integration**: `isProxyDisabled()` from `.claude/hooks/lib/proxy-state.js` is checked by `buildSpawnEnv()` in `hourly-automation.js`, `urgent-task-spawner.js`, `task-gate-spawner.js`, and `session-reviver.js`. When disabled, `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`/`NODE_EXTRA_CA_CERTS` are omitted from spawned agent environments — agents connect directly to `api.anthropic.com`.
+**Spawn helper integration**: `isProxyDisabled()` from `.claude/hooks/lib/proxy-state.js` is checked by `buildSpawnEnv()` in `.claude/hooks/lib/spawn-env.js` (shared module) — consumed by `hourly-automation.js`, `urgent-task-spawner.js`, `task-gate-spawner.js`, and `session-reviver.js`. When disabled, `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`/`NODE_EXTRA_CA_CERTS` are omitted from spawned agent environments — agents connect directly to `api.anthropic.com`.
 
 **Default**: Enabled. Missing state file = proxy enabled. `npx gentyr init` does not create this file.
 

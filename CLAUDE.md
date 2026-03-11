@@ -145,6 +145,8 @@ Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/
 
 **Active session protection**: `cleanupMergedWorktrees()` in `worktree-manager.js` uses `isWorktreeInUse()` (`lsof +D`) to detect open file descriptors before removing a worktree. Worktrees with active processes are skipped to prevent CWD eviction of live sessions. The `worktree-cwd-guard.js` hook additionally detects stale CWD at tool-call time and blocks Bash execution with a recovery hint if the worktree directory no longer exists.
 
+**Deferred fetch** (`skipFetch` option): `createWorktree()` accepts `{ skipFetch: true }` to skip the `git fetch origin` step, reducing worktree creation latency from 3-8s to under 1 second. Used by `force-spawn-tasks.js` when the caller has already ensured remote refs are up to date. Not recommended for cold-start provisioning where the base branch ref may be stale.
+
 `core.hooksPath` poisoning is defended by 4 layers (removeWorktree, tamperCheck, husky pre-commit, safeSymlink EINVAL fix).
 
 > Full details: [Worktrees core.hooksPath Poisoning Defense](docs/CLAUDE-REFERENCE.md#worktrees-corehookspath-poisoning-defense)
@@ -341,7 +343,7 @@ New tasks created by non-privileged agents enter `pending_review` status and are
 
 **Crash recovery**: `hourly-automation.js` auto-approves stale `pending_review` tasks older than 10 minutes (gate agent timed out or crashed).
 
-**Race condition prevention**: `urgent-task-spawner.js` checks `toolInput.priority === 'urgent'` (input-side); `task-gate-spawner.js` checks `tool_response.status === 'pending_review'` (output-side). No overlap.
+**Race condition prevention**: `urgent-task-spawner.js` (Universal Task Spawner v2.0.0) checks quota-zone gating on the input side — urgent tasks always spawn, normal tasks are gated by API quota utilization (green/yellow/red zones); `task-gate-spawner.js` checks `tool_response.status === 'pending_review'` (output-side). No overlap.
 
 ## Feature Stability Registry
 
@@ -370,6 +372,12 @@ The `search_cto_sessions` tool on the `agent-tracker` MCP server filters session
 ## Automatic Session Recovery
 
 GENTYR automatically detects and recovers sessions interrupted by API quota limits, unexpected process death, or full account exhaustion. Three revival modes: (1) quota-interrupted sessions, (2) dead session recovery, (3) paused sessions. Dead Agent Recovery Hook runs at SessionStart; Session Reviver runs every 10 minutes from hourly automation.
+
+**Inline revival** (Phase 1): When quota rotation succeeds inside the stop hook, `stop-continue-hook.js` spawns `claude --resume` immediately — reducing revival latency from 5-15 minutes to 0-2 seconds. A safety-net record is written to `quota-interrupted-sessions.json` first so session-reviver picks up if inline revival fails.
+
+**Revival daemon** (`scripts/revival-daemon.js`): Persistent `fs.watch()` + polling daemon for sub-second crash detection. Integrated as a launchd/systemd service via `setup-automation-service.sh`.
+
+**Memory pressure rate limiting** (`lib/memory-pressure.js`): Shared module monitoring free RAM (macOS `vm_stat` / Linux `/proc/meminfo`). Blocks all spawning at critical pressure; defers non-urgent spawning at high pressure. Used by stop hook, session reviver, universal task spawner, and hourly automation.
 
 > Full details: [Automatic Session Recovery](docs/CLAUDE-REFERENCE.md#automatic-session-recovery)
 
