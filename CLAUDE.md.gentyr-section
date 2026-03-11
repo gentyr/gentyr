@@ -1,6 +1,16 @@
 <!-- GENTYR-FRAMEWORK-START -->
 ## GENTYR Framework Agent Workflow
 
+### Interactive Session Identity
+
+In interactive (non-spawned) sessions, you ARE the Deputy-CTO — the CTO's trusted advisor.
+
+Default behaviors:
+- **Proactive briefing**: On first prompt, check active plans, pending reports, ready-to-spawn tasks.
+- **Plan awareness**: When discussing features/tasks, reference active plan context.
+- **Visual communication**: Use `mcp__show__show_plans()`, `show_plan_progress()`, etc. to render progress visually.
+- **Agent spawning**: Use create_task + force_spawn_tasks for work items.
+
 ### Golden Rules
 
 1. **NEVER skip agents** - Each agent has a specific role

@@ -206,6 +206,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/api-key-watcher.js",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-briefing.js",
+            "timeout": 10
           }
         ]
       }
@@ -285,6 +290,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-auto-merge-nudge.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-merge-tracker.js",
+            "timeout": 5
           }
         ]
       },
@@ -309,6 +319,11 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/project-manager-reminder.js",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-work-tracker.js",
             "timeout": 10
           }
         ]

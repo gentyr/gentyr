@@ -11,6 +11,7 @@ export const SECTION_IDS = [
   'quota', 'accounts', 'deputy-cto', 'usage', 'automations',
   'testing', 'deployments', 'worktrees', 'infra', 'logging',
   'timeline', 'tasks', 'product-market-fit', 'worklog',
+  'plans', 'plan-progress', 'plan-timeline', 'plan-audit',
 ] as const;
 
 export type SectionId = typeof SECTION_IDS[number];
@@ -37,4 +38,8 @@ export const SECTION_DESCRIPTIONS: Record<SectionId, string> = {
   tasks: 'Show task metrics (pending, active, completed) and token usage summary',
   'product-market-fit': 'Show product-market-fit analysis with full section content and persona compliance',
   worklog: 'Show agent worklog entries with durations, tokens, and 30-day rolling metrics',
+  plans: 'Show active plans with phase progress bars and ready-to-spawn summary',
+  'plan-progress': 'Show detailed plan progress with agent assignments, completions, and ready tasks',
+  'plan-timeline': 'Show plan state changes timeline (task completions, agent spawns, dependency unlocks)',
+  'plan-audit': 'Show agent work metrics per plan (tasks, completions, PRs, phase efficiency)',
 };

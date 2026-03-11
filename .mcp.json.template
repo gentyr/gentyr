@@ -209,6 +209,13 @@
       "env": {
         "CLAUDE_PROJECT_DIR": "."
       }
+    },
+    "plan-orchestrator": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/plan-orchestrator/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
     }
   }
 }

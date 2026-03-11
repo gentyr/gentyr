@@ -9,7 +9,7 @@ The prefetch hook has pre-gathered key metrics (pending questions, task counts, 
 
 Resolve the framework path (supports npm link, legacy symlink, and running from within the gentyr repo), then run the dashboard in three pages to avoid output truncation. Run these three Bash commands **sequentially**:
 
-**Page 1 — Intelligence** (Header, Quota, Status, Accounts, Deputy-CTO, Usage, Automations):
+**Page 1 — Intelligence** (Header, Quota, Status, Accounts, Deputy-CTO, Plans, Usage, Automations):
 
 ```bash
 GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })" && node "$GENTYR_DIR/packages/cto-dashboard/dist/index.js" --page 1
