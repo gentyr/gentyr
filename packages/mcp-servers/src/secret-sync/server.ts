@@ -1217,7 +1217,7 @@ async function devServerStatus(_args: DevServerStatusArgs): Promise<DevServerSta
 // Server Setup
 // ============================================================================
 
-const tools = [
+export const tools = [
   {
     name: 'secret_sync_secrets',
     description: 'Sync secrets from 1Password to Render, Vercel, or local dev (op-secrets.conf). Secret values are never exposed to the agent.',
@@ -1262,10 +1262,10 @@ const tools = [
   },
 ] satisfies AnyToolHandler[];
 
-const server = new McpServer({
+export const server = new McpServer({
   name: 'secret-sync-mcp',
   version: '1.0.0',
   tools,
 });
 
-server.start();
+if (!process.env.MCP_SHARED_DAEMON) { server.start(); }
