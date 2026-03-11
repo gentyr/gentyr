@@ -1,20 +1,23 @@
 #!/usr/bin/env node
 /**
- * PostToolUse Hook: Urgent Task Spawner
+ * PostToolUse Hook: Universal Task Spawner
  *
- * Fires after mcp__todo-db__create_task. When priority is 'urgent', spawns
- * an agent immediately instead of waiting for the hourly automation cycle.
+ * Fires after mcp__todo-db__create_task. Uses quota-based gating to decide
+ * whether to spawn an agent immediately:
+ *
+ *   - Urgent tasks: always spawn (backward compatible)
+ *   - Normal tasks with < 75% quota: spawn immediately
+ *   - Normal tasks with 75-90% quota: spawn if < 3 running agents
+ *   - Normal tasks with > 90% quota: only urgent tasks
  *
  * Deduplication strategy:
  *   1. markTaskInProgress() as atomic gate — hourly dispatcher skips in_progress tasks
  *   2. Status-based exclusion — hourly naturally skips tasks already started
  *
- * No concurrency limit — urgent tasks always spawn immediately.
- *
  * PostToolUse hooks MUST always exit 0 (the tool already ran, blocking is meaningless).
  * All errors go to stderr for verbose mode debugging.
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import fs from 'fs';
@@ -23,7 +26,9 @@ import { spawn } from 'child_process';
 import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { createWorktree } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
-import { isProxyDisabled } from './lib/proxy-state.js';
+import { buildSpawnEnv } from './lib/spawn-env.js';
+import { readRotationState } from './key-sync.js';
+import { shouldAllowSpawn } from './lib/memory-pressure.js';
 
 // Try to import better-sqlite3 for DB access
 let Database = null;
@@ -49,8 +54,6 @@ const SECTION_AGENT_MAP = {
   'DEPUTY-CTO': { agent: 'deputy-cto', agentType: AGENT_TYPES.TASK_RUNNER_DEPUTY_CTO },
   'PRODUCT-MANAGER': { agent: 'product-manager', agentType: AGENT_TYPES.TASK_RUNNER_PRODUCT_MANAGER },
 };
-
-const PROXY_PORT = process.env.GENTYR_PROXY_PORT || 18080;
 
 // ============================================================================
 // Logging
@@ -111,40 +114,80 @@ function resetTaskToPending(taskId) {
 }
 
 /**
- * Build the env object for spawning (mirrors hourly-automation.js:199-212)
- * Note: Does NOT resolve 1Password credentials (ensureCredentials).
- * The hook runs in the user's interactive session where env vars are already
- * available via process.env. Agent MCP servers that need 1Password credentials
- * inherit them from the env or use the proxy.
+ * Phase 2: Quota-based gating for task spawning.
+ *
+ * Reads aggregate quota usage across all valid keys and determines whether
+ * to spawn based on current load:
+ *   - < 75%: spawn immediately, no limit
+ *   - 75-90%: spawn only if < 3 running agents (fast check via history file)
+ *   - > 90%: only urgent tasks (backward compatible)
+ *
+ * Fails open on errors (returns true).
+ *
+ * @param {string} priority - Task priority ('urgent' or 'normal')
+ * @returns {boolean} Whether to proceed with spawning
  */
-function buildSpawnEnv(agentId) {
-  // Resolve git-wrappers directory (follows symlinks for npm link model)
-  const hooksDir = path.join(PROJECT_DIR, '.claude', 'hooks');
-  let guardedPath = process.env.PATH || '/usr/bin:/bin';
-  try {
-    const realHooks = fs.realpathSync(hooksDir);
-    const wrappersDir = path.join(realHooks, 'git-wrappers');
-    if (fs.existsSync(path.join(wrappersDir, 'git'))) {
-      guardedPath = `${wrappersDir}:${guardedPath}`;
-    }
-  } catch {}
-
-  const env = {
-    ...process.env,
-    CLAUDE_PROJECT_DIR: PROJECT_DIR,
-    CLAUDE_SPAWNED_SESSION: 'true',
-    CLAUDE_AGENT_ID: agentId,
-    PATH: guardedPath,
-  };
-
-  if (!isProxyDisabled()) {
-    env.HTTPS_PROXY = `http://localhost:${PROXY_PORT}`;
-    env.HTTP_PROXY = `http://localhost:${PROXY_PORT}`;
-    env.NO_PROXY = 'localhost,127.0.0.1';
-    env.NODE_EXTRA_CA_CERTS = path.join(process.env.HOME || '/tmp', '.claude', 'proxy-certs', 'ca.pem');
+function evaluateQuotaGating(priority) {
+  // Memory pressure check — runs before quota check, blocks even urgent tasks if critical
+  const memCheck = shouldAllowSpawn({ priority, context: 'task-spawner' });
+  if (!memCheck.allowed) {
+    log(memCheck.reason);
+    return false;
   }
+  if (memCheck.reason) log(memCheck.reason);
 
-  return env;
+  // Urgent tasks always spawn (memory check already passed)
+  if (priority === 'urgent') return true;
+
+  try {
+    const state = readRotationState();
+    if (!state.keys || Object.keys(state.keys).length === 0) return true;
+
+    // Calculate best (lowest) max usage across all valid keys
+    let bestMaxUsage = 100;
+    for (const [, keyData] of Object.entries(state.keys)) {
+      if (keyData.status === 'invalid' || keyData.status === 'tombstone') continue;
+      const usage = keyData.last_usage;
+      if (!usage) continue;
+      const maxUsage = Math.max(usage.five_hour || 0, usage.seven_day || 0, usage.seven_day_sonnet || 0);
+      if (maxUsage < bestMaxUsage) bestMaxUsage = maxUsage;
+    }
+
+    if (bestMaxUsage < 75) {
+      // Green zone: spawn freely
+      log(`Quota gating: green zone (${Math.round(bestMaxUsage)}% best key), spawning`);
+      return true;
+    }
+
+    if (bestMaxUsage < 90) {
+      // Yellow zone: spawn if < 3 running agents (quick file-based check, no pgrep fork)
+      let runningCount = 0;
+      try {
+        const historyPath = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
+        if (fs.existsSync(historyPath)) {
+          const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+          if (Array.isArray(history.agents)) {
+            runningCount = history.agents.filter(a => a.status === 'running').length;
+          }
+        }
+      } catch { /* fail open */ }
+
+      if (runningCount < 3) {
+        log(`Quota gating: yellow zone (${Math.round(bestMaxUsage)}%, ${runningCount} running), spawning`);
+        return true;
+      }
+      log(`Quota gating: yellow zone (${Math.round(bestMaxUsage)}%, ${runningCount} running), deferring to hourly`);
+      return false;
+    }
+
+    // Red zone: only urgent
+    log(`Quota gating: red zone (${Math.round(bestMaxUsage)}%), deferring normal task to hourly`);
+    return false;
+  } catch (err) {
+    // Fail open
+    log(`Quota gating error (fail open): ${err.message}`);
+    return true;
+  }
 }
 
 /**
@@ -352,7 +395,8 @@ function spawnTaskAgent(task) {
 
   try {
     const branchName = getFeatureBranchName(task.title, task.id);
-    const worktree = createWorktree(branchName);
+    // Phase 2: skipFetch for latency-critical spawning (drops 3-8s to <1s)
+    const worktree = createWorktree(branchName, undefined, { skipFetch: true });
     worktreePath = worktree.path;
     agentCwd = worktree.path;
     agentMcpConfig = path.join(worktree.path, '.mcp.json');
@@ -388,15 +432,26 @@ function spawnTaskAgent(task) {
       detached: true,
       stdio: 'ignore',
       cwd: agentCwd,
-      env: {
-        ...buildSpawnEnv(agentId),
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-      },
+      env: buildSpawnEnv(agentId, { projectDir: PROJECT_DIR }),
     });
 
     claude.unref();
     updateAgent(agentId, { pid: claude.pid, status: 'running' });
     log(`Spawned ${mapping.agent} (PID ${claude.pid}) for task ${task.id}: "${task.title}"`);
+
+    // Phase 2: Background fetch after spawn — non-blocking, ensures worktree
+    // has fresh base branch for subsequent operations
+    if (worktreePath) {
+      try {
+        const fetchProc = spawn('git', ['fetch', 'origin', '--quiet'], {
+          cwd: worktreePath,
+          stdio: 'ignore',
+          detached: true,
+        });
+        fetchProc.unref();
+      } catch { /* non-fatal */ }
+    }
+
     return true;
   } catch (err) {
     log(`Failed to spawn ${mapping.agent} for task ${task.id}: ${err.message}`);
@@ -419,8 +474,10 @@ process.stdin.on('end', () => {
     const hookInput = JSON.parse(input);
     const toolInput = hookInput.tool_input || {};
 
-    // Only act on urgent priority tasks
-    if (toolInput.priority !== 'urgent') {
+    // Phase 2: Quota-based gating replaces the old urgent-only guard.
+    // All priorities can trigger immediate spawning based on quota headroom.
+    const shouldSpawn = evaluateQuotaGating(toolInput.priority);
+    if (!shouldSpawn) {
       process.exit(0);
     }
 
