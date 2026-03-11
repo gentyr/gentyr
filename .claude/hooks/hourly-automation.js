@@ -28,6 +28,7 @@ import { getFeatureBranchName } from './lib/feature-branch-helper.js';
 import { detectStaleWork, formatReport } from './stale-work-detector.js';
 import { reviveInterruptedSessions } from './session-reviver.js';
 import { isProxyDisabled } from './lib/proxy-state.js';
+import { shouldAllowSpawn } from './lib/memory-pressure.js';
 
 // Try to import better-sqlite3 for task runner
 let Database = null;
@@ -1691,6 +1692,14 @@ function spawnTaskAgent(task) {
   const mapping = SECTION_AGENT_MAP[task.section];
   if (!mapping) return false;
 
+  // Memory pressure check — defer spawning if system is under pressure
+  const memCheck = shouldAllowSpawn({ priority: task.priority || 'normal', context: 'hourly-task-spawner' });
+  if (!memCheck.allowed) {
+    log(memCheck.reason);
+    return false;
+  }
+  if (memCheck.reason) log(memCheck.reason);
+
   // --- Worktree setup (best-effort) ---
   let agentCwd = PROJECT_DIR;
   let agentMcpConfig = path.join(PROJECT_DIR, '.mcp.json');
@@ -2861,20 +2870,6 @@ async function main() {
     log(`Reaper: skipped (${err.message})`);
   }
 
-  // Concurrency guard: skip cycle if too many agents are already running
-  const runningAgents = countRunningAgents();
-  if (runningAgents >= effectiveMaxConcurrent) {
-    log(`Concurrency limit reached (${runningAgents}/${effectiveMaxConcurrent} agents running). Skipping this cycle.`);
-    registerHookExecution({
-      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-      status: 'skipped',
-      durationMs: Date.now() - startTime,
-      metadata: { reason: 'concurrency_limit', runningAgents }
-    });
-    process.exit(0);
-  }
-  log(`Running agents: ${runningAgents}/${effectiveMaxConcurrent}`);
-
   const state = getState();
   const now = Date.now();
 
@@ -2915,6 +2910,8 @@ async function main() {
   // =========================================================================
   // SESSION REVIVER (after key sync — credentials must be fresh first)
   // Gate-exempt: recovery operation. Runs even with config.enabled=false.
+  // Phase 4a: Moved BEFORE concurrency guard so revival is never blocked by
+  // a full agent pool. The reviver has its own internal concurrency check.
   // NOTE: Keeps manual cooldown pattern (retroactive first-run logic)
   // =========================================================================
   const SESSION_REVIVER_COOLDOWN_MS = getCooldown('session_reviver', 10) * 60 * 1000;
@@ -2939,6 +2936,21 @@ async function main() {
     const minutesLeft = Math.ceil((SESSION_REVIVER_COOLDOWN_MS - timeSinceLastSessionReviver) / 60000);
     log(`Session reviver cooldown active. ${minutesLeft}m until next check.`);
   }
+
+  // Concurrency guard: skip cycle if too many agents are already running
+  // Phase 4a: Placed AFTER session reviver so recovery is never blocked
+  const runningAgents = countRunningAgents();
+  if (runningAgents >= effectiveMaxConcurrent) {
+    log(`Concurrency limit reached (${runningAgents}/${effectiveMaxConcurrent} agents running). Skipping this cycle.`);
+    registerHookExecution({
+      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+      status: 'skipped',
+      durationMs: Date.now() - startTime,
+      metadata: { reason: 'concurrency_limit', runningAgents }
+    });
+    process.exit(0);
+  }
+  log(`Running agents: ${runningAgents}/${effectiveMaxConcurrent}`);
 
   // =========================================================================
   // ENABLED CHECK — session revival still ran above even if disabled

@@ -199,6 +199,7 @@ SYSTEMD_USER_DIR="$REAL_HOME/.config/systemd/user"
 SERVICE_FILE="$SYSTEMD_USER_DIR/${SERVICE_NAME}.service"
 TIMER_FILE="$SYSTEMD_USER_DIR/${SERVICE_NAME}.timer"
 PROXY_SERVICE_FILE="$SYSTEMD_USER_DIR/gentyr-rotation-proxy.service"
+REVIVAL_SERVICE_FILE="$SYSTEMD_USER_DIR/gentyr-revival-daemon.service"
 
 setup_linux() {
   log_info "Setting up systemd user service..."
@@ -255,6 +256,37 @@ EOF
     log_warn "Rotation proxy script not found — skipping proxy service."
   fi
 
+  # --- Revival Daemon Service (Restart=always, sub-second crash recovery) ---
+  if [ -n "$FRAMEWORK_DIR" ] && [ -f "$FRAMEWORK_DIR/scripts/revival-daemon.js" ]; then
+    cat > "$REVIVAL_SERVICE_FILE" << EOF
+[Unit]
+Description=GENTYR Revival Daemon - sub-second crash recovery for agent processes
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$PROJECT_DIR
+ExecStart=/usr/bin/node $FRAMEWORK_DIR/scripts/revival-daemon.js
+Environment=CLAUDE_PROJECT_DIR=$PROJECT_DIR
+Environment=GENTYR_LAUNCHD_SERVICE=true
+Environment=HTTPS_PROXY=http://localhost:18080
+Environment=HTTP_PROXY=http://localhost:18080
+Environment=NO_PROXY=localhost,127.0.0.1
+Environment=NODE_EXTRA_CA_CERTS=$REAL_HOME/.claude/proxy-certs/ca.pem
+Restart=always
+RestartSec=5
+StandardOutput=append:$PROJECT_DIR/.claude/revival-daemon.log
+StandardError=append:$PROJECT_DIR/.claude/revival-daemon.log
+
+[Install]
+WantedBy=default.target
+EOF
+
+    log_info "Created $REVIVAL_SERVICE_FILE"
+  else
+    log_warn "Revival daemon script not found — skipping revival daemon service."
+  fi
+
   # --- Automation Service ---
   # Create service file
   cat > "$SERVICE_FILE" << EOF
@@ -302,6 +334,7 @@ EOF
   if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
     chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo staff)" "$SERVICE_FILE" "$TIMER_FILE"
     [ -f "$PROXY_SERVICE_FILE" ] && chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo staff)" "$PROXY_SERVICE_FILE"
+    [ -f "$REVIVAL_SERVICE_FILE" ] && chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo staff)" "$REVIVAL_SERVICE_FILE"
   fi
 
   # Reload systemd and enable services
@@ -311,6 +344,12 @@ EOF
       run_systemctl_user enable "gentyr-rotation-proxy.service" 2>/dev/null || true
       run_systemctl_user start "gentyr-rotation-proxy.service" 2>/dev/null || true
       log_info "Rotation proxy service enabled and started."
+    fi
+    # Start revival daemon
+    if [ -f "$REVIVAL_SERVICE_FILE" ]; then
+      run_systemctl_user enable "gentyr-revival-daemon.service" 2>/dev/null || true
+      run_systemctl_user start "gentyr-revival-daemon.service" 2>/dev/null || true
+      log_info "Revival daemon service enabled and started."
     fi
     # Then timer
     run_systemctl_user enable "${SERVICE_NAME}.timer" && \
@@ -327,6 +366,12 @@ remove_linux() {
   run_systemctl_user disable "gentyr-rotation-proxy.service" 2>/dev/null || true
   rm -f "$PROXY_SERVICE_FILE"
   log_info "Rotation proxy service removed."
+
+  # Stop and disable revival daemon
+  run_systemctl_user stop "gentyr-revival-daemon.service" 2>/dev/null || true
+  run_systemctl_user disable "gentyr-revival-daemon.service" 2>/dev/null || true
+  rm -f "$REVIVAL_SERVICE_FILE"
+  log_info "Revival daemon service removed."
 
   # Stop and disable timer
   run_systemctl_user stop "${SERVICE_NAME}.timer" 2>/dev/null || true
@@ -358,6 +403,27 @@ status_linux() {
   echo ""
   echo "Proxy health:"
   curl -sf http://localhost:18080/__health 2>/dev/null || echo "  Proxy not responding"
+
+  echo ""
+  echo "=== Revival Daemon Status (Linux) ==="
+  echo ""
+
+  if [ -f "$REVIVAL_SERVICE_FILE" ]; then
+    echo "Revival daemon service: $REVIVAL_SERVICE_FILE (exists)"
+  else
+    echo "Revival daemon service: $REVIVAL_SERVICE_FILE (NOT FOUND)"
+  fi
+
+  echo "Revival daemon systemd status:"
+  run_systemctl_user status "gentyr-revival-daemon.service" 2>/dev/null || echo "  Revival daemon not found or not running"
+
+  echo ""
+  if [ -f "$PROJECT_DIR/.claude/revival-daemon.log" ]; then
+    echo "Last 5 revival daemon log lines:"
+    tail -5 "$PROJECT_DIR/.claude/revival-daemon.log"
+  else
+    echo "No revival daemon log file found yet."
+  fi
 
   echo ""
   echo "=== Hourly Automation Status (Linux) ==="
@@ -399,6 +465,7 @@ status_linux() {
 LAUNCHD_DIR="$HOME/Library/LaunchAgents"
 PLIST_FILE="$LAUNCHD_DIR/com.local.${SERVICE_NAME}.plist"
 PROXY_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-rotation-proxy.plist"
+REVIVAL_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-revival-daemon.plist"
 
 setup_macos() {
   log_info "Setting up launchd agent..."
@@ -483,6 +550,65 @@ EOF
     log_warn "Rotation proxy script not found — skipping proxy service."
   fi
 
+  # --- Revival Daemon (KeepAlive, sub-second crash recovery) ---
+  if [ -n "$FRAMEWORK_DIR" ] && [ -f "$FRAMEWORK_DIR/scripts/revival-daemon.js" ]; then
+    cat > "$REVIVAL_PLIST_FILE" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.gentyr-revival-daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$NODE_PATH</string>
+        <string>$FRAMEWORK_DIR/scripts/revival-daemon.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>$PROJECT_DIR</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CLAUDE_PROJECT_DIR</key>
+        <string>$PROJECT_DIR</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>GENTYR_LAUNCHD_SERVICE</key>
+        <string>true</string>
+        <key>HTTPS_PROXY</key>
+        <string>http://localhost:18080</string>
+        <key>HTTP_PROXY</key>
+        <string>http://localhost:18080</string>
+        <key>NO_PROXY</key>
+        <string>localhost,127.0.0.1</string>
+        <key>NODE_EXTRA_CA_CERTS</key>
+        <string>$HOME/.claude/proxy-certs/ca.pem</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>$PROJECT_DIR/.claude/revival-daemon.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>$PROJECT_DIR/.claude/revival-daemon.log</string>
+</dict>
+</plist>
+EOF
+
+    launchctl unload "$REVIVAL_PLIST_FILE" 2>/dev/null || true
+    launchctl load "$REVIVAL_PLIST_FILE"
+    log_info "Revival daemon service loaded (KeepAlive, RunAtLoad)."
+  else
+    log_warn "Revival daemon script not found — skipping revival daemon service."
+  fi
+
   # --- Automation Service (10-min interval) ---
   # Create plist file
   cat > "$PLIST_FILE" << EOF
@@ -559,6 +685,11 @@ EOF
 remove_macos() {
   log_info "Removing launchd agents..."
 
+  # Unload and remove revival daemon
+  launchctl unload "$REVIVAL_PLIST_FILE" 2>/dev/null || true
+  rm -f "$REVIVAL_PLIST_FILE"
+  log_info "Revival daemon service removed."
+
   # Unload and remove rotation proxy service
   launchctl unload "$PROXY_PLIST_FILE" 2>/dev/null || true
   rm -f "$PROXY_PLIST_FILE"
@@ -587,6 +718,27 @@ status_macos() {
   echo ""
   echo "Proxy health:"
   curl -sf http://localhost:18080/__health 2>/dev/null || echo "  Proxy not responding"
+
+  echo ""
+  echo "=== Revival Daemon Status (macOS) ==="
+  echo ""
+
+  if [ -f "$REVIVAL_PLIST_FILE" ]; then
+    echo "Revival plist: $REVIVAL_PLIST_FILE (exists)"
+  else
+    echo "Revival plist: $REVIVAL_PLIST_FILE (NOT FOUND)"
+  fi
+
+  echo "Revival daemon launchd:"
+  launchctl list | grep "gentyr-revival-daemon" || echo "  Revival daemon not loaded"
+
+  echo ""
+  if [ -f "$PROJECT_DIR/.claude/revival-daemon.log" ]; then
+    echo "Last 5 revival daemon log lines:"
+    tail -5 "$PROJECT_DIR/.claude/revival-daemon.log"
+  else
+    echo "No revival daemon log file found yet."
+  fi
 
   echo ""
   echo "=== Hourly Automation Status (macOS) ==="

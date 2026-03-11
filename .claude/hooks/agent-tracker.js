@@ -503,6 +503,9 @@ export function updateAgent(agentId, updates) {
   }
 }
 
+// Export lock functions for external consumers (session-reviver, revival-daemon)
+export { acquireLock, releaseLock };
+
 export default {
   AGENT_TYPES,
   HOOK_TYPES,
@@ -512,5 +515,7 @@ export default {
   findRecentSpawn,
   registerHookExecution,
   getRecentHookExecutions,
-  getHookExecutionStats
+  getHookExecutionStats,
+  acquireLock,
+  releaseLock,
 };

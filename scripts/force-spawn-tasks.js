@@ -682,7 +682,8 @@ async function main() {
     if (createWorktree && getFeatureBranchName) {
       try {
         const branchName = getFeatureBranchName(task.title, task.id);
-        const worktree = createWorktree(branchName);
+        // Phase 3: skipFetch for latency-critical spawning (user expects instant)
+        const worktree = createWorktree(branchName, undefined, { skipFetch: true });
         worktreePath = worktree.path;
         agentCwd = worktree.path;
         agentMcpConfig = path.join(worktree.path, '.mcp.json');
