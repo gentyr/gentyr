@@ -902,7 +902,7 @@ describe('Data Reader - Key Rotation Metrics', () => {
       five_hour: number;
       seven_day: number;
     } | null;
-    status: 'active' | 'exhausted' | 'invalid' | 'expired';
+    status: 'active' | 'exhausted' | 'invalid' | 'expired' | 'merged';
     account_uuid?: string | null;
     account_email?: string | null;
   }

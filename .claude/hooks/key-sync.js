@@ -309,7 +309,7 @@ export function updateActiveCredentials(keyData) {
  * @returns {Promise<{accessToken: string, refreshToken: string, expiresAt: number}|'invalid_grant'|null>}
  */
 export async function refreshExpiredToken(keyData) {
-  if (!keyData.refreshToken || keyData.status === 'invalid' || keyData.status === 'tombstone') return null;
+  if (!keyData.refreshToken || keyData.status === 'invalid' || keyData.status === 'tombstone' || keyData.status === 'merged') return null;
 
   try {
     const response = await fetch(OAUTH_TOKEN_ENDPOINT, {
@@ -383,7 +383,7 @@ export async function syncKeys(log) {
         last_usage: null,
         account_uuid: null,
         account_email: null,
-        status: 'active',
+        status: (cred.expiresAt && cred.expiresAt < now) ? 'expired' : 'active',
       };
 
       logRotationEvent(state, {
@@ -563,8 +563,24 @@ export function pruneDeadKeys(state, log) {
     logFn(`[key-sync] Cleaned up expired tombstone ${tombId.slice(0, 8)}...`);
   }
 
+  // Clean up expired merged keys (24h TTL)
+  const MERGED_TTL_MS = 24 * 60 * 60 * 1000;
+  const expiredMerged = [];
+  for (const [keyId, keyData] of Object.entries(state.keys)) {
+    if (keyData.status === 'merged') {
+      if (!keyData.merged_at) keyData.merged_at = Date.now();
+      if (Date.now() - keyData.merged_at > MERGED_TTL_MS) {
+        expiredMerged.push(keyId);
+      }
+    }
+  }
+  for (const mergedId of expiredMerged) {
+    delete state.keys[mergedId];
+    logFn(`[key-sync] Cleaned up expired merged key ${mergedId.slice(0, 8)}...`);
+  }
+
   // Remove orphaned rotation_log entries only for actually-deleted tombstones
-  const deletedSet = new Set(expiredTombstones);
+  const deletedSet = new Set([...expiredTombstones, ...expiredMerged]);
   if (deletedSet.size > 0) {
     state.rotation_log = state.rotation_log.filter(
       entry => !entry.key_id || !deletedSet.has(entry.key_id) || entry.event === 'account_auth_failed'
@@ -608,7 +624,7 @@ export function pruneDeadKeys(state, log) {
     // Check if any other non-pruned key belongs to the same account
     const hasOtherViableKey = Object.entries(state.keys).some(([otherId, otherData]) => {
       if (otherId === keyId || prunedSet.has(otherId)) return false;
-      if (otherData.status === 'invalid' || otherData.status === 'expired' || otherData.status === 'tombstone') return false;
+      if (otherData.status === 'invalid' || otherData.status === 'expired' || otherData.status === 'tombstone' || otherData.status === 'merged') return false;
       if (!email) return false; // Can't match by email if this key has none
       return otherData.account_email === email;
     });
@@ -876,7 +892,12 @@ export function deduplicateKeys(state) {
         state.active_key_id = survivor.id;
       }
 
-      delete state.keys[removedId];
+      state.keys[removedId] = {
+        status: 'merged',
+        merged_into: survivor.id,
+        merged_at: Date.now(),
+        account_email: entries[i].data.account_email || survivor.data.account_email || null,
+      };
       result.merged++;
       result.details.push({
         removed: removedId.slice(0, 8),
