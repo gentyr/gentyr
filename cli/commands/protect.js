@@ -92,6 +92,9 @@ function doProtect(projectDir) {
     'playwright-cli-guard.js',
     'block-team-tools.js',
     'interactive-agent-guard.js',
+    'plan-briefing.js',
+    'plan-work-tracker.js',
+    'plan-merge-tracker.js',
     'git-wrappers/git',
   ];
 

@@ -4,7 +4,7 @@ GENTYR chose managed services so every agent, hook, and server is purpose-built 
 
 Every technology below exists for one reason: it removes a decision that agents would otherwise need a human to make. Supabase provides auth, storage, and a database behind a single API. Vercel deploys frontend on push. Render deploys backend on push. 1Password resolves secrets without exposing values. The stack is not configurable because configurability is the enemy of autonomous operation.
 
-Thirty MCP servers connect agents to these services. Each server speaks one protocol to one provider. When an agent needs to deploy, it talks to the Render server. When it needs a secret, it talks to the 1Password server. When it needs to query logs, it talks to the Elastic server. No adapters. No middleware. No indirection.
+Thirty-three MCP servers connect agents to these services. Each server speaks one protocol to one provider. When an agent needs to deploy, it talks to the Render server. When it needs a secret, it talks to the 1Password server. When it needs to query logs, it talks to the Elastic server. No adapters. No middleware. No indirection.
 
 This is the stack. Learn it or choose a different framework.
 
@@ -68,6 +68,7 @@ Internal MCP servers (not tied to external providers):
 | Server | Purpose |
 |--------|---------|
 | `todo-db` | Task database (SQLite) |
+| `plan-orchestrator` | Structured execution plans, phases, tasks, substeps, dependency graph |
 | `deputy-cto` | Triage pipeline, commit review, CTO questions |
 | `agent-tracker` | Agent lifecycle, spawn/reap tracking |
 | `agent-reports` | Report submission and query |

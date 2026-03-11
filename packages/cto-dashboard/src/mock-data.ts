@@ -40,6 +40,7 @@ import type { AccountOverviewData } from './utils/account-overview-reader.js';
 import type { WorktreeData } from './utils/worktree-reader.js';
 import type { ProductManagerData } from './utils/product-manager-reader.js';
 import type { WorklogData } from './utils/worklog-reader.js';
+import type { PlanData, PlanProgressData, PlanTimelineData, PlanAuditData } from './utils/plan-reader.js';
 
 // ============================================================================
 // Deterministic PRNG (LCG — no Math.random())
@@ -1885,5 +1886,147 @@ export function getMockWorklog(): WorklogData {
       avg_tokens_per_task: 1_400_000,
       cache_hit_pct: 34.2,
     },
+  };
+}
+
+// ============================================================================
+// Plan data
+// ============================================================================
+
+export function getMockPlanData(): PlanData {
+  return {
+    hasData: true,
+    total_ready: 3,
+    total_active: 2,
+    plans: [
+      {
+        id: 'plan-001',
+        title: 'SDK v2 API Migration',
+        status: 'active',
+        progress_pct: 62,
+        phase_count: 3,
+        task_count: 8,
+        completed_tasks: 5,
+        ready_tasks: 2,
+        active_tasks: 1,
+        current_phase: 'Phase 2: Service Layer',
+        phases: [
+          { id: 'ph-001', title: 'Database Schema', phase_order: 1, status: 'completed', progress_pct: 100, task_count: 3, completed_tasks: 3 },
+          { id: 'ph-002', title: 'Service Layer', phase_order: 2, status: 'in_progress', progress_pct: 67, task_count: 3, completed_tasks: 2 },
+          { id: 'ph-003', title: 'API Endpoints', phase_order: 3, status: 'pending', progress_pct: 0, task_count: 2, completed_tasks: 0 },
+        ],
+        updated_at: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+      },
+      {
+        id: 'plan-002',
+        title: 'Auth Refactor',
+        status: 'active',
+        progress_pct: 33,
+        phase_count: 3,
+        task_count: 6,
+        completed_tasks: 2,
+        ready_tasks: 1,
+        active_tasks: 1,
+        current_phase: 'Phase 1: Token System',
+        phases: [
+          { id: 'ph-004', title: 'Token System', phase_order: 1, status: 'in_progress', progress_pct: 67, task_count: 3, completed_tasks: 2 },
+          { id: 'ph-005', title: 'OAuth Integration', phase_order: 2, status: 'pending', progress_pct: 0, task_count: 2, completed_tasks: 0 },
+          { id: 'ph-006', title: 'Session Management', phase_order: 3, status: 'pending', progress_pct: 0, task_count: 1, completed_tasks: 0 },
+        ],
+        updated_at: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+      },
+    ],
+  };
+}
+
+export function getMockPlanProgressData(): PlanProgressData {
+  return {
+    hasData: true,
+    plans: [
+      {
+        id: 'plan-001',
+        title: 'SDK v2 API Migration',
+        status: 'active',
+        progress_pct: 62,
+        phase_count: 3,
+        task_count: 8,
+        completed_tasks: 5,
+        ready_tasks: 2,
+        active_tasks: 1,
+        current_phase: 'Phase 2: Service Layer',
+        phases: [
+          { id: 'ph-001', title: 'Database Schema', phase_order: 1, status: 'completed', progress_pct: 100, task_count: 3, completed_tasks: 3 },
+          { id: 'ph-002', title: 'Service Layer', phase_order: 2, status: 'in_progress', progress_pct: 67, task_count: 3, completed_tasks: 2 },
+          { id: 'ph-003', title: 'API Endpoints', phase_order: 3, status: 'pending', progress_pct: 0, task_count: 2, completed_tasks: 0 },
+        ],
+        updated_at: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+        tasks_by_phase: [
+          {
+            phase: 'Database Schema',
+            tasks: [
+              { id: 't-p1', title: 'Schema migration v2', status: 'completed', agent_type: 'code-writer', pr_number: 42, pr_merged: true, progress_pct: 100, substeps: [] },
+              { id: 't-p2', title: 'Seed data update', status: 'completed', agent_type: 'code-writer', pr_number: 43, pr_merged: true, progress_pct: 100, substeps: [] },
+              { id: 't-p3', title: 'RLS policies', status: 'completed', agent_type: 'code-writer', pr_number: 44, pr_merged: true, progress_pct: 100, substeps: [] },
+            ],
+          },
+          {
+            phase: 'Service Layer',
+            tasks: [
+              { id: 't-p4', title: 'Query executor', status: 'completed', agent_type: 'code-writer', pr_number: 45, pr_merged: true, progress_pct: 100, substeps: [] },
+              { id: 't-p5', title: 'Mapping applicator', status: 'in_progress', agent_type: 'code-writer', pr_number: null, pr_merged: false, progress_pct: 60, substeps: [
+                { id: 's1', title: 'Override loading', completed: true },
+                { id: 's2', title: 'Expression evaluation', completed: true },
+                { id: 's3', title: 'Type coercion', completed: true },
+                { id: 's4', title: 'Batch processing', completed: false },
+                { id: 's5', title: 'Error recovery', completed: false },
+              ] },
+              { id: 't-p6', title: 'Cache layer', status: 'ready', agent_type: 'code-writer', pr_number: null, pr_merged: false, progress_pct: 0, substeps: [] },
+            ],
+          },
+          {
+            phase: 'API Endpoints',
+            tasks: [
+              { id: 't-p7', title: 'Entity convenience routes', status: 'blocked', agent_type: 'code-writer', pr_number: null, pr_merged: false, progress_pct: 0, substeps: [] },
+              { id: 't-p8', title: 'Batch operations', status: 'blocked', agent_type: 'code-writer', pr_number: null, pr_merged: false, progress_pct: 0, substeps: [] },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+export function getMockPlanTimelineData(): PlanTimelineData {
+  const now = Date.now();
+  return {
+    hasData: true,
+    entries: [
+      { time: new Date(now - 15 * 60 * 1000).toISOString(), entity_type: 'task', label: 'Query executor service', field: 'status', old_value: 'in_progress', new_value: 'completed' },
+      { time: new Date(now - 18 * 60 * 1000).toISOString(), entity_type: 'task', label: 'Mapping applicator', field: 'status', old_value: 'ready', new_value: 'in_progress' },
+      { time: new Date(now - 25 * 60 * 1000).toISOString(), entity_type: 'substep', label: 'Expression evaluation', field: 'completed', old_value: '0', new_value: '1' },
+      { time: new Date(now - 40 * 60 * 1000).toISOString(), entity_type: 'substep', label: 'Override loading', field: 'completed', old_value: '0', new_value: '1' },
+      { time: new Date(now - 2 * 60 * 60 * 1000).toISOString(), entity_type: 'task', label: 'Entity convenience routes', field: 'status', old_value: 'pending', new_value: 'ready' },
+      { time: new Date(now - 4 * 60 * 60 * 1000).toISOString(), entity_type: 'phase', label: 'Phase 1: Database Schema', field: 'status', old_value: 'in_progress', new_value: 'completed' },
+    ],
+  };
+}
+
+export function getMockPlanAuditData(): PlanAuditData {
+  return {
+    hasData: true,
+    plans: [
+      {
+        title: 'SDK v2 API Migration',
+        agents: [
+          { agent_type: 'code-writer', tasks_assigned: 7, tasks_completed: 5, prs_merged: 4 },
+          { agent_type: 'test-writer', tasks_assigned: 1, tasks_completed: 0, prs_merged: 0 },
+        ],
+        phases: [
+          { id: 'ph-001', title: 'Database Schema', phase_order: 1, status: 'completed', progress_pct: 100, task_count: 3, completed_tasks: 3 },
+          { id: 'ph-002', title: 'Service Layer', phase_order: 2, status: 'in_progress', progress_pct: 67, task_count: 3, completed_tasks: 2 },
+          { id: 'ph-003', title: 'API Endpoints', phase_order: 3, status: 'pending', progress_pct: 0, task_count: 2, completed_tasks: 0 },
+        ],
+      },
+    ],
   };
 }

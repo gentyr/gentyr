@@ -22,3 +22,7 @@ export { AccountOverviewSection, type AccountOverviewSectionProps } from './Acco
 export { WorktreeSection, type WorktreeSectionProps } from './WorktreeSection.js';
 export { ProductManagerSection, type ProductManagerSectionProps } from './ProductManagerSection.js';
 export { WorklogSection, type WorklogSectionProps } from './WorklogSection.js';
+export { PlanSection, type PlanSectionProps } from './PlanSection.js';
+export { PlanProgressSection, type PlanProgressSectionProps } from './PlanProgressSection.js';
+export { PlanTimelineSection, type PlanTimelineSectionProps } from './PlanTimelineSection.js';
+export { PlanAuditSection, type PlanAuditSectionProps } from './PlanAuditSection.js';

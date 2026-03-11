@@ -28,11 +28,13 @@ import { getAccountOverviewData } from './utils/account-overview-reader.js';
 import { getWorktreeData } from './utils/worktree-reader.js';
 import { getProductManagerData } from './utils/product-manager-reader.js';
 import { getWorklogData } from './utils/worklog-reader.js';
+import { getPlanData, getPlanProgressData, getPlanTimelineData, getPlanAuditData } from './utils/plan-reader.js';
 import {
   getMockDashboardData, getMockTimelineEvents, getMockTrajectory,
   getMockAutomatedInstances, getMockDeputyCto, getMockTesting,
   getMockDeployments, getMockInfra, getMockLogging, getMockAccountOverview,
   getMockWorktrees, getMockProductManager, getMockWorklog,
+  getMockPlanData, getMockPlanProgressData, getMockPlanTimelineData, getMockPlanAuditData,
 } from './mock-data.js';
 import {
   Section,
@@ -51,6 +53,10 @@ import {
   WorktreeSection,
   ProductManagerSection,
   WorklogSection,
+  PlanSection,
+  PlanProgressSection,
+  PlanTimelineSection,
+  PlanAuditSection,
   type MetricBoxData,
 } from './components/index.js';
 import { formatNumber, calculateCacheRate } from './utils/formatters.js';
@@ -64,6 +70,7 @@ const SECTION_IDS = [
   'quota', 'accounts', 'deputy-cto', 'usage', 'automations',
   'testing', 'deployments', 'worktrees', 'infra', 'logging',
   'timeline', 'tasks', 'product-market-fit', 'worklog',
+  'plans', 'plan-progress', 'plan-timeline', 'plan-audit',
 ] as const;
 
 type SectionId = typeof SECTION_IDS[number];
@@ -292,6 +299,26 @@ async function renderSection(sectionId: SectionId, mock: boolean, hours: number,
       return <WorklogSection data={worklog} />;
     }
 
+    case 'plans': {
+      const planData = mock ? getMockPlanData() : getPlanData();
+      return <PlanSection data={planData} />;
+    }
+
+    case 'plan-progress': {
+      const planProgress = mock ? getMockPlanProgressData() : getPlanProgressData();
+      return <PlanProgressSection data={planProgress} />;
+    }
+
+    case 'plan-timeline': {
+      const planTimeline = mock ? getMockPlanTimelineData() : getPlanTimelineData();
+      return <PlanTimelineSection data={planTimeline} />;
+    }
+
+    case 'plan-audit': {
+      const planAudit = mock ? getMockPlanAuditData() : getPlanAuditData();
+      return <PlanAuditSection data={planAudit} />;
+    }
+
     default: {
       const _exhaustive: never = sectionId;
       throw new Error(`Unhandled section: ${_exhaustive}`);
@@ -325,7 +352,7 @@ async function main(): Promise<void> {
     const needPage2 = !page || page === 2;
     const needPage3 = !page || page === 3;
 
-    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager, worklog;
+    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager, worklog, planData;
 
     // Empty defaults for sections not needed on the current page
     const emptyDeployments = { hasData: false, render: { services: [], recentDeploys: [] }, vercel: { projects: [], recentDeploys: [] }, pipeline: { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null, localDevCount: 0, stagingFreezeActive: false }, combined: [], byEnvironment: { preview: [], staging: [], production: [] }, stats: { totalDeploys24h: 0, successCount24h: 0, failedCount24h: 0 } } as const;
@@ -347,6 +374,7 @@ async function main(): Promise<void> {
       worktrees = needPage2 ? getMockWorktrees() : { hasData: false } as any;
       productManager = needPage3 ? getMockProductManager() : { hasData: false } as any;
       worklog = needPage3 ? getMockWorklog() : { hasData: false } as any;
+      planData = needPage1 ? getMockPlanData() : { hasData: false } as any;
     } else {
       // Always fetch core data (used by Header, Quota, Status, FeedbackPersonas, and MetricsSummary)
       data = await getDashboardData(hours);
@@ -356,6 +384,7 @@ async function main(): Promise<void> {
       automatedInstances = needPage1 ? getAutomatedInstances() : { hasData: false } as any;
       deputyCto = needPage1 ? getDeputyCtoData() : { hasData: false } as any;
       accountOverview = needPage1 ? getAccountOverviewData() : { hasData: false } as any;
+      planData = needPage1 ? getPlanData() : { hasData: false } as any;
 
       // Page 2 sync fetches
       testing = needPage2 ? getTestingData() : { hasData: false } as any;
@@ -420,6 +449,7 @@ async function main(): Promise<void> {
         worktrees={worktrees}
         productManager={productManager}
         worklog={worklog}
+        planData={planData}
         page={page ?? undefined}
       />,
       { exitOnCtrlC: true }

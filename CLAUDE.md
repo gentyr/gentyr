@@ -516,6 +516,27 @@ The icon-processor MCP server provides 12 tools for sourcing, downloading, proce
 
 > Full details: [Icon Processor MCP Server](docs/CLAUDE-REFERENCE.md#icon-processor-mcp-server)
 
+## Plan Orchestrator MCP Server
+
+The plan-orchestrator MCP server (`packages/mcp-servers/src/plan-orchestrator/`) manages structured execution plans with phases, tasks, substeps, dependencies, and cross-DB integration with `todo.db`. State is in `.claude/state/plans.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
+
+**16 tools**: `create_plan`, `get_plan`, `list_plans`, `update_plan_status`, `add_phase`, `update_phase`, `add_plan_task`, `update_task_progress`, `link_task`, `add_substeps`, `complete_substep`, `add_dependency`, `get_spawn_ready_tasks`, `plan_dashboard`, `plan_timeline`, `plan_audit`.
+
+**6-table SQLite schema**: `plans`, `phases`, `plan_tasks`, `substeps`, `dependencies`, `state_changes`. Cycle detection on dependency graph. Progress rollup from substep → task → phase → plan.
+
+**Cross-DB integration**: `add_plan_task` optionally creates a corresponding `todo.db` task and links them via `todo_task_id`. `plan-merge-tracker.js` hook detects `gh pr merge` calls (PostToolUse Bash) and auto-advances linked plan tasks to `completed`, then cascades `ready` status to unblocked dependents.
+
+**3 hooks registered in `settings.json.template`**:
+- `plan-briefing.js` (SessionStart) — briefs the active session on current plan state
+- `plan-work-tracker.js` (PostToolUse `summarize_work`) — records agent work against plan tasks
+- `plan-merge-tracker.js` (PostToolUse Bash) — detects PR merges and auto-completes plan tasks
+
+**4 slash commands**: `/plan`, `/plan-progress`, `/plan-timeline`, `/plan-audit`.
+
+**CTO Dashboard integration**: 4 new sections (`plans`, `plan-progress`, `plan-timeline`, `plan-audit`) rendered via `PlanSection`, `PlanProgressSection`, `PlanTimelineSection`, `PlanAuditSection` components. Data read from `plans.db` via `packages/cto-dashboard/src/utils/plan-reader.ts`.
+
+All 3 hooks are in the `criticalHooks` list in `cli/commands/protect.js` and are root-owned when protection is enabled.
+
 ## CTO Dashboard Development
 
 The CTO dashboard (`packages/cto-dashboard/`) supports `--mock` for development and `--page N` to split rendering across 3 pages. `/cto-report` runs all three pages. Includes WORKLOG system for agent work tracking via `summarize_work` tool.
