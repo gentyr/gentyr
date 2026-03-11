@@ -18,7 +18,7 @@
  */
 
 import { createInterface } from 'readline';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -30,6 +30,14 @@ import {
   selectActiveKey,
   refreshExpiredToken,
 } from './key-sync.js';
+import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { buildSpawnEnv } from './lib/spawn-env.js';
+import {
+  buildRevivalPrompt,
+  resolveTaskIdForAgent,
+  extractSessionIdFromPath,
+} from './lib/revival-utils.js';
+import { shouldAllowSpawn } from './lib/memory-pressure.js';
 
 // Debug logging - writes to file since stdout is used for hook response
 const DEBUG = true;
@@ -259,6 +267,98 @@ async function attemptQuotaRotation() {
   }
 }
 
+/**
+ * Phase 1: Inline revival — spawn `claude --resume` directly in the stop hook
+ * instead of waiting for the session-reviver (5-15 min delay).
+ *
+ * Only called when credentials were successfully rotated. On failure, falls through
+ * to the session-reviver via the quota-interrupted-sessions.json record.
+ *
+ * @param {object} params
+ * @param {string} params.sessionId - Session UUID to resume
+ * @param {string} params.agentId - Original agent ID
+ * @param {string} [params.worktreePath] - Worktree CWD for the resumed session
+ * @param {string} params.quotaMessage - Quota error message for context
+ * @returns {boolean} Whether inline revival succeeded
+ */
+function inlineRevive({ sessionId, agentId, worktreePath, quotaMessage }) {
+  if (!sessionId) {
+    debugLog('Inline revival: no sessionId, skipping');
+    return false;
+  }
+
+  // Memory pressure check — block revival if system is under critical/high pressure
+  const memCheck = shouldAllowSpawn({ priority: 'normal', context: 'inline-revival' });
+  if (!memCheck.allowed) {
+    debugLog(`Inline revival blocked by memory pressure: ${memCheck.reason}`);
+    return false;
+  }
+  if (memCheck.reason) debugLog(memCheck.reason);
+
+  try {
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+    // Register the revival in agent tracker
+    const newAgentId = registerSpawn({
+      type: AGENT_TYPES.SESSION_REVIVED,
+      hookType: HOOK_TYPES.SESSION_REVIVER,
+      description: `Inline revival of quota-interrupted session ${sessionId.slice(0, 8)}`,
+      prompt: `[inline revival from stop hook, original agent: ${agentId || 'unknown'}]`,
+      metadata: {
+        originalAgentId: agentId,
+        originalSessionId: sessionId,
+        revivalReason: 'inline_revival',
+        worktreePath,
+      },
+    });
+
+    const taskId = resolveTaskIdForAgent(agentId, projectDir);
+    const revivalPrompt = buildRevivalPrompt({
+      reason: 'inline_revival',
+      interruptedAt: new Date().toISOString(),
+      taskId,
+    });
+
+    // Use original worktree CWD if it still exists, otherwise fall back to main project
+    const effectiveCwd = (worktreePath && fs.existsSync(worktreePath)) ? worktreePath : projectDir;
+    const mcpConfig = path.join(effectiveCwd, '.mcp.json');
+
+    const spawnArgs = [
+      '--resume', sessionId,
+      '--dangerously-skip-permissions',
+      '--mcp-config', mcpConfig,
+      '--output-format', 'json',
+      '-p', revivalPrompt,
+    ];
+
+    const claude = spawn('claude', spawnArgs, {
+      cwd: effectiveCwd,
+      stdio: 'ignore',
+      detached: true,
+      env: buildSpawnEnv(newAgentId, { projectDir }),
+    });
+
+    claude.unref();
+
+    if (claude.pid) {
+      updateAgent(newAgentId, { pid: claude.pid, status: 'running' });
+      debugLog('Inline revival succeeded', {
+        sessionId: sessionId.slice(0, 8),
+        newAgentId,
+        pid: claude.pid,
+        cwd: effectiveCwd,
+      });
+      return true;
+    }
+
+    debugLog('Inline revival: spawn returned no PID');
+    return false;
+  } catch (err) {
+    debugLog('Inline revival failed', { error: err.message });
+    return false;
+  }
+}
+
 async function main() {
   debugLog('Stop hook triggered');
 
@@ -309,7 +409,9 @@ async function main() {
           } catch { /* non-fatal */ }
         }
 
-        writeQuotaInterruptedSession({
+        // Write recovery state as safety net BEFORE inline revival attempt.
+        // If inline revival fails, session-reviver picks this up later.
+        const record = {
           sessionId: input.session_id || null,
           transcriptPath: input.transcript_path,
           agentId,
@@ -318,11 +420,34 @@ async function main() {
           interruptedAt: new Date().toISOString(),
           credentialsRotated: rotated,
           status: 'pending_revival',
-        });
+        };
+        writeQuotaInterruptedSession(record);
+
+        // Phase 1: Inline revival — spawn immediately if credentials rotated
+        let inlineRevived = false;
+        if (rotated && record.sessionId) {
+          inlineRevived = inlineRevive({
+            sessionId: record.sessionId,
+            agentId,
+            worktreePath,
+            quotaMessage: quotaCheck.quotaMessage,
+          });
+          if (inlineRevived) {
+            // Mark as revived so session-reviver doesn't double-spawn
+            record.status = 'revived';
+            writeQuotaInterruptedSession(record);
+          }
+        } else if (!rotated) {
+          // Phase 4f: All keys exhausted — proxy returned raw 429.
+          // Don't attempt inline revival (would hit same wall).
+          // Session-reviver Mode 1 + Mode 3 will pick up when keys recover.
+          debugLog('Inline revival skipped: rotation failed (all keys exhausted), deferring to session-reviver');
+        }
 
         debugLog('Decision: APPROVE (quota death - recorded for revival)', {
           agentId,
           rotated,
+          inlineRevived,
           quotaMessage: quotaCheck.quotaMessage,
         });
 

@@ -24,7 +24,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { execSync, spawn } from 'child_process';
-import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES, registerHookExecution } from './agent-tracker.js';
+import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES, registerHookExecution, acquireLock, releaseLock } from './agent-tracker.js';
 import {
   readRotationState,
   writeRotationState,
@@ -34,6 +34,7 @@ import {
   selectActiveKey,
 } from './key-sync.js';
 import { isProxyDisabled } from './lib/proxy-state.js';
+import { shouldAllowSpawn } from './lib/memory-pressure.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
@@ -46,7 +47,10 @@ const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const MAX_REVIVALS_PER_CYCLE = 3;
 const DEAD_SESSION_MAX_AGE_DAYS = 7;
 const RETROACTIVE_WINDOW_MS = 12 * 60 * 60 * 1000;
-const NORMAL_STALE_WINDOW_MS = 30 * 60 * 1000;
+// 12h window: sessions interrupted during laptop sleep > 30min were being
+// discarded. Match RETROACTIVE_WINDOW_MS since the stop hook already cleans
+// entries older than 12h.
+const NORMAL_STALE_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 // Lazy SQLite
 let Database = null;
@@ -353,28 +357,51 @@ function reviveDeadSessions(log, maxRevivals) {
   let revived = 0;
   if (!Database) return revived;
 
+  // Memory pressure check — skip entire revival cycle if system is under pressure
+  const memCheck = shouldAllowSpawn({ priority: 'normal', context: 'session-reviver' });
+  if (!memCheck.allowed) {
+    log(memCheck.reason);
+    return revived;
+  }
+  if (memCheck.reason) log(memCheck.reason);
+
+  // Phase 4d: Use advisory lock to prevent concurrent history mutations
+  const locked = acquireLock();
+
   let history;
   try {
-    if (!fs.existsSync(HISTORY_PATH)) return revived;
+    if (!fs.existsSync(HISTORY_PATH)) {
+      if (locked) releaseLock();
+      return revived;
+    }
     history = JSON.parse(fs.readFileSync(HISTORY_PATH, 'utf8'));
-    if (!Array.isArray(history.agents)) return revived;
+    if (!Array.isArray(history.agents)) {
+      if (locked) releaseLock();
+      return revived;
+    }
   } catch {
+    if (locked) releaseLock();
     return revived;
   }
 
   const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
-  if (!fs.existsSync(todoDbPath)) return revived;
+  if (!fs.existsSync(todoDbPath)) {
+    if (locked) releaseLock();
+    return revived;
+  }
 
   let db;
   try {
     db = new Database(todoDbPath, { readonly: true });
   } catch {
+    if (locked) releaseLock();
     return revived;
   }
 
   const sessionDir = getSessionDir(PROJECT_DIR);
   if (!sessionDir) {
     db.close();
+    if (locked) releaseLock();
     return revived;
   }
 
@@ -385,6 +412,9 @@ function reviveDeadSessions(log, maxRevivals) {
   try {
     for (const agent of history.agents) {
       if (revived >= maxRevivals) break;
+
+      // Phase 4b: Skip agents that were already attempted for revival
+      if (agent.revivalAttempted) continue;
 
       // Also check "running" agents that are actually dead (inline reaping)
       const isActuallyDead = (agent.status === 'running' && agent.pid && !isProcessAlive(agent.pid));
@@ -464,6 +494,10 @@ function reviveDeadSessions(log, maxRevivals) {
         taskId,
       });
 
+      // Phase 4b: Mark revival attempted regardless of outcome to prevent loops
+      agent.revivalAttempted = true;
+      historyDirty = true;
+
       if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt, agent.metadata?.worktreePath || null)) {
         revived++;
         // Mark task back to in_progress
@@ -482,6 +516,7 @@ function reviveDeadSessions(log, maxRevivals) {
         fs.writeFileSync(HISTORY_PATH, JSON.stringify(history, null, 2), 'utf8');
       } catch { /* non-fatal */ }
     }
+    if (locked) releaseLock();
     db.close();
   }
 
@@ -603,7 +638,8 @@ async function resumePausedSessions(log, maxRevivals) {
       taskId,
     });
 
-    if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt, null)) {
+    // Phase 4c: Pass worktreePath so resumed session runs in correct CWD
+    if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt, session.worktreePath || null)) {
       revived++;
     } else {
       remaining.push(session);

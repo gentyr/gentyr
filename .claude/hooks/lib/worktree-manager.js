@@ -211,9 +211,12 @@ export function provisionWorktree(worktreePath) {
  * @param {string} branchName - Git branch name (e.g. "feature/new-widget")
  * @param {string} [baseBranch] - Branch to base the new branch on. Auto-detected if omitted:
  *   uses 'preview' if origin/preview exists, otherwise 'main'.
+ * @param {object} [options] - Options
+ * @param {boolean} [options.skipFetch=false] - Skip git fetch for latency-critical paths.
+ *   Callers should fire a background fetch after spawn if using this option.
  * @returns {{ path: string, branch: string, created: boolean }}
  */
-export function createWorktree(branchName, baseBranch) {
+export function createWorktree(branchName, baseBranch, options = {}) {
   if (!baseBranch) {
     try {
       execSync('git rev-parse --verify origin/preview', { ...GIT_OPTS, stdio: 'pipe' });
@@ -233,10 +236,14 @@ export function createWorktree(branchName, baseBranch) {
   fs.mkdirSync(WORKTREES_DIR, { recursive: true });
 
   // Fetch the base branch (non-fatal if it fails, e.g. offline)
-  try {
-    execSync(`git fetch origin ${baseBranch} --quiet`, GIT_OPTS);
-  } catch {
-    // Non-fatal: base branch may already be up-to-date locally
+  // skipFetch: latency-critical paths (urgent-task-spawner, force-spawn) skip this
+  // and fire a background fetch after spawn instead
+  if (!options.skipFetch) {
+    try {
+      execSync(`git fetch origin ${baseBranch} --quiet`, GIT_OPTS);
+    } catch {
+      // Non-fatal: base branch may already be up-to-date locally
+    }
   }
 
   // Create the branch if it does not exist yet

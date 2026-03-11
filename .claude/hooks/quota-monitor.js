@@ -139,9 +139,23 @@ function writePausedSession(agentId) {
       }
     }
 
+    // Phase 4c: Resolve worktreePath from agent-tracker history so session-reviver
+    // can resume in the correct CWD
+    let worktreePath = null;
+    if (agentId) {
+      try {
+        const historyPath = path.join(STATE_DIR, 'agent-tracker-history.json');
+        if (fs.existsSync(historyPath)) {
+          const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+          const agentEntry = Array.isArray(history.agents) && history.agents.find(a => a.id === agentId);
+          worktreePath = agentEntry?.metadata?.worktreePath || null;
+        }
+      } catch { /* non-fatal */ }
+    }
+
     // Deduplicate by agentId
     const existingIdx = data.sessions.findIndex(s => s.agentId === agentId);
-    const entry = { agentId, pausedAt: Date.now(), type: 'automated', reason: 'all_accounts_exhausted' };
+    const entry = { agentId, pausedAt: Date.now(), type: 'automated', reason: 'all_accounts_exhausted', worktreePath };
     if (existingIdx >= 0) {
       data.sessions[existingIdx] = entry;
     } else {
