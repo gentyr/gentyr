@@ -248,12 +248,24 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 - Fires `account_nearly_depleted` rotation log event when active key reaches 95% usage (5-hour per-key cooldown to avoid re-firing every check cycle)
 - Fires `account_quota_refreshed` rotation log event when a previously exhausted key's usage drops back below 100% (also fires in `api-key-watcher.js` during SessionStart health checks)
 
+### API Key Watcher Hook
+
+**API Key Watcher Hook** (`.claude/hooks/api-key-watcher.js`):
+- Runs at `SessionStart` for interactive sessions only; performs health checks on all registered keys
+- **Refresh-before-invalidate**: When a health check fails (401/invalid), calls `refreshExpiredToken(keyData)` before marking the key `invalid`. Three outcomes:
+  - `refreshed === 'invalid_grant'` — refresh token permanently revoked; marks key `invalid`, logs `health_check_failed_then_invalid_grant`
+  - `refreshed` truthy — access token recovered; updates `accessToken`/`refreshToken`/`expiresAt`, marks key `active`, logs `key_added` with reason `token_refreshed_after_health_check_failure`
+  - `refreshed` falsy (transient error) — marks key `expired` (recoverable), logs `health_check_failed_*_refresh_failed`
+- This replaces the previous behavior of immediately marking keys `invalid` on any health check failure, preventing false-positive permanent invalidation of keys with expired (but refreshable) access tokens
+- Fires `account_quota_refreshed` when a previously exhausted key's usage drops back below 100%
+
 ### Key Sync Module
 
 **Key Sync Module** (`.claude/hooks/key-sync.js`):
 - Shared library used by api-key-watcher, hourly-automation, credential-sync-hook, and quota-monitor
 - Exports `EXPIRY_BUFFER_MS` (10 min) and `HEALTH_DATA_MAX_AGE_MS` (15 min) constants for consistent timing across all rotation logic
 - `refreshExpiredToken` returns `'invalid_grant'` sentinel (distinct from `null`) when OAuth responds 400 + `error: invalid_grant`; all callers mark the key `status: 'invalid'` and log `refresh_token_invalid_grant`
+- `readCredentialSources()` no longer filters Keychain entries by `expiresAt`: expired Keychain tokens are included so `syncKeys()` can pick them up and call `refreshExpiredToken()` to obtain a new access token. Previously, expired Keychain tokens were silently dropped before reaching the refresh path, causing auth failures.
 - `syncKeys()` proactively refreshes non-active tokens approaching expiry (within `EXPIRY_BUFFER_MS`), resolves account profiles for keys missing `account_uuid` via `fetchAccountProfile()`, and performs pre-expiry restartless swap to Keychain; covers idle sessions because hourly-automation calls `syncKeys()` every 10 min via launchd even when no Claude Code process is active
 - `fetchAccountProfile(accessToken)` — exported function that calls `https://api.anthropic.com/api/oauth/profile` to resolve `account_uuid` and `email` for keys added by automation or token refresh that skipped the interactive SessionStart profile-resolution path; non-fatal, retried on next sync
 - `selectActiveKey()` freshness gate: nulls out usage data older than 15 minutes to prevent uninformed switches based on stale health checks; stale keys pass "usable" filter but are excluded from comparison logic, causing system to stay put rather than make blind decisions
@@ -834,8 +846,10 @@ The CTO dashboard (`packages/cto-dashboard/`) supports a `--mock` flag for devel
 
 The `/cto-report` slash command runs all three pages sequentially. Data fetching is optimized per page — sections not rendered on the active page skip their I/O readers in `index.tsx`.
 
+**`getVerifiedQuota()` fallback** (`packages/cto-dashboard/src/utils/data-reader.ts`): When no live API health checks succeed (all keys unreachable or offline), quota display falls back to stored `last_usage` data from `api-key-rotation.json` instead of showing "No healthy keys". Accounts with `status: 'invalid'` or `'tombstone'` are excluded; remaining accounts are deduplicated by `account_uuid` or `account_email`. The `account_email` field is now included in `KeyRotationKeyDataSchema` to support this deduplication path.
+
 The **ACCOUNT OVERVIEW** section displays a curated EVENT HISTORY (last 24h, capped at 20 entries). Only 7 event types pass the `ALLOWED_EVENTS` whitelist in `account-overview-reader.ts`:
-- `key_added` — new account registered (token-refresh re-additions filtered as noise)
+- `key_added` — new account registered (token-refresh re-additions filtered as noise); also fires when `api-key-watcher.js` recovers a key via `refreshExpiredToken()` after a failed health check (reason: `token_refreshed_after_health_check_failure`)
 - `key_switched` — active account changed by rotation logic
 - `key_exhausted` — account reached 100% quota in any bucket
 - `account_nearly_depleted` — active account hit 95% (5-hour per-key cooldown; fired by quota-monitor)

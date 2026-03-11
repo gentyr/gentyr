@@ -1173,7 +1173,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
       );
     });
 
-    it('should mark invalid tokens', () => {
+    it('should attempt token refresh before marking invalid', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
       const functionMatch = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/);
@@ -1186,18 +1186,39 @@ describe('api-key-watcher.js - Unit Tests', () => {
         'Must check if health check result is invalid'
       );
 
-      // Should set status to 'invalid'
+      // Should call refreshExpiredToken before marking invalid
+      assert.match(
+        functionBody,
+        /refreshExpiredToken\(keyData\)/,
+        'Must attempt token refresh before marking invalid'
+      );
+
+      // Only invalid_grant should lead to 'invalid' status
+      assert.match(
+        functionBody,
+        /refreshed === ['"]invalid_grant['"]/,
+        'Must check for invalid_grant response from refresh'
+      );
+
+      // Should set status to 'invalid' only on invalid_grant
       assert.match(
         functionBody,
         /keyData\.status = ['"]invalid['"]/,
-        'Must set status to invalid for failed health checks'
+        'Must set status to invalid only for permanent refresh failure (invalid_grant)'
       );
 
-      // Should log key_removed event
+      // Should set status to 'expired' on transient refresh failure
       assert.match(
         functionBody,
-        /event:\s*['"]key_removed['"]/,
-        'Must log key_removed event for invalid keys'
+        /keyData\.status = ['"]expired['"]/,
+        'Must set status to expired for transient refresh failures'
+      );
+
+      // Should set status to 'active' on successful refresh
+      assert.match(
+        functionBody,
+        /keyData\.status = ['"]active['"]/,
+        'Must set status to active after successful token refresh'
       );
     });
 

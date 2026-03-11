@@ -355,6 +355,7 @@ const KeyRotationKeyDataSchema = z.object({
   }).nullable().optional(),
   status: z.enum(['active', 'exhausted', 'invalid', 'expired', 'tombstone']),
   account_uuid: z.string().nullable().optional(),
+  account_email: z.string().nullable().optional(),
   tombstoned_at: z.number().optional(),
 }).passthrough();
 
@@ -672,7 +673,41 @@ export async function getVerifiedQuota(hours: number): Promise<VerifiedQuotaResu
   const healthyKeys = results.filter(k => k.healthy && k.quota);
 
   // Aggregate: average utilization across healthy keys
-  const aggregate = buildAggregate(healthyKeys);
+  let aggregate = buildAggregate(healthyKeys);
+  let healthyCount = healthyKeys.length;
+
+  // Fallback: when no live keys responded, use stored last_usage from rotation state.
+  // Stale data is better than "No healthy keys".
+  if (healthyKeys.length === 0 && rotationState) {
+    const storedAccounts: Array<{ fiveHour: number; sevenDay: number }> = [];
+    const seen = new Set<string>();
+    for (const [, keyData] of Object.entries(rotationState.keys)) {
+      if (keyData.status === 'invalid' || keyData.status === 'tombstone') continue;
+      if (!keyData.last_usage) continue;
+      const dedupeKey = keyData.account_uuid || keyData.account_email || 'unknown';
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      storedAccounts.push({
+        fiveHour: keyData.last_usage.five_hour ?? 0,
+        sevenDay: keyData.last_usage.seven_day ?? 0,
+      });
+    }
+    if (storedAccounts.length > 0) {
+      const avgFiveHour = Math.round(
+        storedAccounts.reduce((s, a) => s + a.fiveHour, 0) / storedAccounts.length
+      );
+      const avgSevenDay = Math.round(
+        storedAccounts.reduce((s, a) => s + a.sevenDay, 0) / storedAccounts.length
+      );
+      aggregate = {
+        five_hour: { utilization: avgFiveHour, resets_at: '', resets_in_hours: 0 },
+        seven_day: { utilization: avgSevenDay, resets_at: '', resets_in_hours: 0 },
+        extra_usage_enabled: false,
+        error: null,
+      };
+      healthyCount = storedAccounts.length;
+    }
+  }
 
   // Rotation events from state file
   let rotationEvents24h = 0;
@@ -685,7 +720,7 @@ export async function getVerifiedQuota(hours: number): Promise<VerifiedQuotaResu
 
   return {
     keys: results,
-    healthy_count: healthyKeys.length,
+    healthy_count: healthyCount,
     total_attempted: keys.length,
     aggregate,
     rotation_events_24h: rotationEvents24h,

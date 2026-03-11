@@ -45,6 +45,8 @@ interface KeyRotationState {
       seven_day: number;
     } | null;
     status: 'active' | 'exhausted' | 'invalid' | 'expired';
+    account_uuid?: string | null;
+    account_email?: string | null;
   }>;
   rotation_log: {
     timestamp: number;

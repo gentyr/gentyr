@@ -87,8 +87,7 @@ export function readCredentialSources() {
       const creds = JSON.parse(raw);
       if (creds?.claudeAiOauth?.accessToken) {
         const oauth = creds.claudeAiOauth;
-        if (!oauth.expiresAt || oauth.expiresAt > now) {
-          sources.push({
+        sources.push({
             accessToken: oauth.accessToken,
             refreshToken: oauth.refreshToken,
             expiresAt: oauth.expiresAt,
@@ -96,7 +95,6 @@ export function readCredentialSources() {
             rateLimitTier: oauth.rateLimitTier,
             source: 'keychain',
           });
-        }
       }
     } catch {
       // Keychain not available (locked, no entry, or non-macOS)
