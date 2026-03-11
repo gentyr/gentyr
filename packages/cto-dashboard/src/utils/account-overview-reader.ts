@@ -246,8 +246,8 @@ export function getAccountOverviewData(): AccountOverviewData {
     const keyId = entry.key_id ?? 'unknown';
     const keyData = keyId !== 'unknown' ? state.keys[keyId] : undefined;
 
-    // Skip events for keys explicitly tombstoned (removed by user)
-    if (keyData?.status === 'tombstone') continue;
+    // Skip events for tombstoned keys, except account_removed (which records the removal itself)
+    if (keyData?.status === 'tombstone' && entry.event !== 'account_removed') continue;
 
     const entryEmail = entry.account_email;
     const desc = deriveDescription(entry.event, entry.reason, keyId, entryEmail, keyData, emailByKeyId);
