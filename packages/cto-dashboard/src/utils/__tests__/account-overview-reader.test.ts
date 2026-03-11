@@ -408,7 +408,7 @@ describe('account-overview-reader', () => {
       const result = getAccountOverviewData();
 
       expect(result.accounts).toHaveLength(4);
-      // Order: active, exhausted, expired, invalid (tombstone keys are filtered out; invalid keys are shown)
+      // Order: active, exhausted, expired, invalid (only tombstone is filtered out)
       expect(result.accounts[0].status).toBe('active');
       expect(result.accounts[1].status).toBe('exhausted');
       expect(result.accounts[2].status).toBe('expired');
@@ -1476,7 +1476,7 @@ describe('account-overview-reader', () => {
       fs.writeFileSync(testFilePath, JSON.stringify(testData), 'utf8');
       const result = getAccountOverviewData();
 
-      // Tombstone keys' events should NOT be filtered (tombstone keys themselves are not in account list)
+      // Tombstone keys should NOT be filtered (only invalid keys are filtered)
       expect(result.events).toHaveLength(1);
       expect(result.events[0].event).toBe('account_removed');
     });
@@ -1749,7 +1749,7 @@ describe('account-overview-reader', () => {
       expect(statuses).toContain('active');
       expect(statuses).toContain('exhausted');
       expect(statuses).toContain('expired');
-      // invalid keys are shown (only tombstone keys are filtered out)
+      // invalid keys are now shown (only tombstone is filtered out)
       expect(statuses).toContain('invalid');
     });
   });
