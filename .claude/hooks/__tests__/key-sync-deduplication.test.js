@@ -585,18 +585,23 @@ describe('key-sync.js - deduplicateKeys() function', () => {
       );
     });
 
-    it('should delete non-survivor entries from state.keys', () => {
+    it('should soft-delete non-survivor entries with merged status', () => {
       const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
 
       const fnMatch = code.match(/export function deduplicateKeys\([\s\S]*?\n\}/);
       assert.ok(fnMatch, 'deduplicateKeys must be defined');
       const fnBody = fnMatch[0];
 
-      // Should delete removed keys
+      // Should soft-delete with merged status
       assert.match(
         fnBody,
-        /delete state\.keys\[/,
-        'Must delete non-survivor keys from state.keys'
+        /status:\s*'merged'/,
+        'Must set status to merged for non-survivor keys'
+      );
+      assert.match(
+        fnBody,
+        /merged_into:\s*survivor\.id/,
+        'Must record merged_into pointing to survivor'
       );
     });
 
@@ -705,7 +710,12 @@ describe('key-sync.js - deduplicateKeys() function', () => {
           if (state.active_key_id === removedId) {
             state.active_key_id = survivor.id;
           }
-          delete state.keys[removedId];
+          state.keys[removedId] = {
+            status: 'merged',
+            merged_into: survivor.id,
+            merged_at: Date.now(),
+            account_email: entries[i].data.account_email || survivor.data.account_email || null,
+          };
           result.merged++;
           result.details.push({
             removed: removedId.slice(0, 8),
@@ -715,10 +725,12 @@ describe('key-sync.js - deduplicateKeys() function', () => {
         }
       }
 
+      // Soft-deleted keys still exist in state with merged status
+      const activeKeys = Object.entries(state.keys).filter(([, v]) => v.status !== 'merged');
       assert.strictEqual(
-        Object.keys(state.keys).length,
+        activeKeys.length,
         1,
-        'Must merge 2 keys into 1'
+        'Must merge 2 keys into 1 (non-merged count)'
       );
 
       assert.strictEqual(
@@ -797,7 +809,12 @@ describe('key-sync.js - deduplicateKeys() function', () => {
           if (state.active_key_id === removedId) {
             state.active_key_id = survivor.id;
           }
-          delete state.keys[removedId];
+          state.keys[removedId] = {
+            status: 'merged',
+            merged_into: survivor.id,
+            merged_at: Date.now(),
+            account_email: entries[i].data.account_email || survivor.data.account_email || null,
+          };
           result.merged++;
           result.details.push({
             removed: removedId.slice(0, 8),
@@ -936,7 +953,12 @@ describe('key-sync.js - deduplicateKeys() function', () => {
           if (state.active_key_id === removedId) {
             state.active_key_id = survivor.id;
           }
-          delete state.keys[removedId];
+          state.keys[removedId] = {
+            status: 'merged',
+            merged_into: survivor.id,
+            merged_at: Date.now(),
+            account_email: entries[i].data.account_email || survivor.data.account_email || null,
+          };
           result.merged++;
           result.details.push({
             removed: removedId.slice(0, 8),
@@ -946,10 +968,11 @@ describe('key-sync.js - deduplicateKeys() function', () => {
         }
       }
 
+      const activeKeys3 = Object.entries(state.keys).filter(([, v]) => v.status !== 'merged');
       assert.strictEqual(
-        Object.keys(state.keys).length,
+        activeKeys3.length,
         1,
-        'Must merge 3 keys into 1'
+        'Must merge 3 keys into 1 (non-merged count)'
       );
 
       assert.strictEqual(

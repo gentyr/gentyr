@@ -758,7 +758,7 @@ describe('pruneDeadKeys() - tombstone behavior', () => {
 
     const hasOtherViableKey = Object.entries(keys).some(([otherId, otherData]) => {
       if (otherId === 'invalid-key' || prunedSet.has(otherId)) return false;
-      if (otherData.status === 'invalid' || otherData.status === 'expired' || otherData.status === 'tombstone') return false;
+      if (otherData.status === 'invalid' || otherData.status === 'expired' || otherData.status === 'tombstone' || otherData.status === 'merged') return false;
       if (!email) return false;
       return otherData.account_email === email;
     });
@@ -1127,7 +1127,7 @@ describe('pruneDeadKeys() - email resolution from sibling keys and rotation_log'
       // Gap G: only emit if this account has no other viable key
       const hasOtherViableKey = Object.entries(state.keys).some(([otherId, otherData]) => {
         if (otherId === keyId || prunedSet.has(otherId)) return false;
-        if (otherData.status === 'invalid' || otherData.status === 'expired' || otherData.status === 'tombstone') return false;
+        if (otherData.status === 'invalid' || otherData.status === 'expired' || otherData.status === 'tombstone' || otherData.status === 'merged') return false;
         if (!email) return false;
         return otherData.account_email === email;
       });
