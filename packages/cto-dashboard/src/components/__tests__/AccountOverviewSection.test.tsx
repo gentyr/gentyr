@@ -207,8 +207,7 @@ describe('AccountOverviewSection', () => {
       const output = lastFrame();
 
       expect(output).toContain('test@example.com');
-      expect(output).toContain('active');
-      expect(output).toContain('valid');
+      expect(output).toContain('OK');
       expect(output).toContain('available');
       expect(output).toContain('5h: 25%');
       expect(output).toContain('7d: 50%');
@@ -453,8 +452,8 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain('valid');
-      expect(output).toContain('exhausted');
+      expect(output).toContain('OK');
+      expect(output).toContain('depleted');
     });
 
     it('should display invalid token status for expired/invalid accounts', () => {
@@ -485,7 +484,7 @@ describe('AccountOverviewSection', () => {
       const { lastFrame } = render(<AccountOverviewSection data={data} />);
       const output = lastFrame();
 
-      expect(output).toContain('invalid');
+      expect(output).toContain('failed');
     });
 
     it('should display available usage for active non-exhausted accounts', () => {
@@ -857,9 +856,9 @@ describe('AccountOverviewSection', () => {
       // Title should show 1 account (deduplicated by email)
       expect(output).toContain('1 account');
 
-      // Should show the account with the better status (active)
+      // Should show the account with OK auth (best status = active)
       expect(output).toContain('user@example.com');
-      expect(output).toContain('active');
+      expect(output).toContain('OK');
     });
   });
 
