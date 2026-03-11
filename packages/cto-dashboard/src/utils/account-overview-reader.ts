@@ -194,10 +194,11 @@ export function getAccountOverviewData(): AccountOverviewData {
 
   if (state.version !== 1) return empty;
 
-  // Build accounts (skip invalid/tombstone keys — they've been revoked and are noise)
+  // Build accounts (skip tombstone keys only — invalid/exhausted/expired accounts
+  // are still shown so users can see why the dashboard may appear empty)
   const accounts: AccountKeyDetail[] = [];
   for (const [keyId, keyData] of Object.entries(state.keys)) {
-    if (keyData.status === 'invalid' || keyData.status === 'tombstone') continue;
+    if (keyData.status === 'tombstone') continue;
     accounts.push({
       keyId: truncateKeyId(keyId),
       status: keyData.status,
@@ -246,9 +247,8 @@ export function getAccountOverviewData(): AccountOverviewData {
     const keyId = entry.key_id ?? 'unknown';
     const keyData = keyId !== 'unknown' ? state.keys[keyId] : undefined;
 
-    // Skip events for keys explicitly marked invalid or tombstoned (revoked credentials)
-    if (keyData?.status === 'invalid' || keyData?.status === 'tombstone') continue;
-
+    // No status-based event filtering — events for invalid and tombstone keys
+    // are still shown (e.g. "Account removed", "Account can no longer auth").
     const entryEmail = entry.account_email;
     const desc = deriveDescription(entry.event, entry.reason, keyId, entryEmail, keyData, emailByKeyId);
     if (!desc) continue;
