@@ -145,13 +145,40 @@ async function main() {
     keyData.last_health_check = now;
 
     if (!result.valid) {
-      keyData.status = 'invalid';
-      logRotationEvent(state, {
-        timestamp: now,
-        event: 'key_removed',
-        key_id: keyId,
-        reason: `health_check_failed_${result.error}`,
-      });
+      // Attempt token refresh before marking invalid — a 401 may just mean
+      // the access token expired, not that the account is permanently dead.
+      const refreshed = await refreshExpiredToken(keyData);
+      if (refreshed === 'invalid_grant') {
+        // Refresh token permanently revoked — mark invalid
+        keyData.status = 'invalid';
+        logRotationEvent(state, {
+          timestamp: now,
+          event: 'key_removed',
+          key_id: keyId,
+          reason: 'health_check_failed_then_invalid_grant',
+        });
+      } else if (refreshed) {
+        // Refresh succeeded — update token and reactivate
+        keyData.accessToken = refreshed.accessToken;
+        keyData.refreshToken = refreshed.refreshToken;
+        keyData.expiresAt = refreshed.expiresAt;
+        keyData.status = 'active';
+        logRotationEvent(state, {
+          timestamp: now,
+          event: 'key_added',
+          key_id: keyId,
+          reason: 'token_refreshed_after_health_check_failure',
+        });
+      } else {
+        // Refresh failed (network, transient error) — mark expired (recoverable)
+        keyData.status = 'expired';
+        logRotationEvent(state, {
+          timestamp: now,
+          event: 'key_removed',
+          key_id: keyId,
+          reason: `health_check_failed_${result.error}_refresh_failed`,
+        });
+      }
     } else if (result.usage) {
       keyData.last_usage = {
         ...result.usage,

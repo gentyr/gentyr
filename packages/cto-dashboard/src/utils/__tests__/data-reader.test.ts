@@ -904,6 +904,7 @@ describe('Data Reader - Key Rotation Metrics', () => {
     } | null;
     status: 'active' | 'exhausted' | 'invalid' | 'expired';
     account_uuid?: string | null;
+    account_email?: string | null;
   }
 
   interface KeyRotationState {
