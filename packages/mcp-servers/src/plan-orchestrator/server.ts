@@ -15,6 +15,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
@@ -35,6 +36,7 @@ import {
   PlanDashboardArgsSchema,
   PlanTimelineArgsSchema,
   PlanAuditArgsSchema,
+  PlanSessionsArgsSchema,
   type CreatePlanArgs,
   type GetPlanArgs,
   type ListPlansArgs,
@@ -51,6 +53,7 @@ import {
   type PlanDashboardArgs,
   type PlanTimelineArgs,
   type PlanAuditArgs,
+  type PlanSessionsArgs,
   type PlanRecord,
   type PhaseRecord,
   type PlanTaskRecord,
@@ -64,6 +67,8 @@ import {
   formatStatus,
   formatTimeAgo,
   formatTokens,
+  formatDuration,
+  formatCompactTime,
   type TimelineEntry,
   formatTimeline,
 } from './format.js';
@@ -1077,6 +1082,359 @@ function planAudit(args: PlanAuditArgs) {
   return { audit: lines.join('\n') };
 }
 
+function planSessions(args: PlanSessionsArgs) {
+  const homeDir = os.homedir();
+
+  // Step 1: Collect plan tasks with todo_task_id from plans.db
+  const db = getDb();
+
+  let tasksQuery: PlanTaskRecord[];
+  if (args.plan_id) {
+    const plan = db.prepare('SELECT id, title FROM plans WHERE id = ?').get(args.plan_id) as { id: string; title: string } | undefined;
+    if (!plan) return { error: `Plan not found: ${args.plan_id}` } as ErrorResult;
+    tasksQuery = db.prepare(
+      "SELECT * FROM plan_tasks WHERE plan_id = ? AND todo_task_id IS NOT NULL"
+    ).all(args.plan_id) as PlanTaskRecord[];
+  } else {
+    tasksQuery = db.prepare(
+      `SELECT pt.* FROM plan_tasks pt
+       JOIN plans p ON pt.plan_id = p.id
+       WHERE pt.todo_task_id IS NOT NULL
+         AND p.status IN ('draft', 'active', 'paused')`
+    ).all() as PlanTaskRecord[];
+  }
+
+  if (tasksQuery.length === 0) {
+    return { sessions: 'No plan tasks with todo_task_id links found.' };
+  }
+
+  const todoTaskToPlantTask = new Map<string, { planTaskId: string; planTaskTitle: string }>(
+    tasksQuery.map((t) => [t.todo_task_id!, { planTaskId: t.id, planTaskTitle: t.title }])
+  );
+
+  // Step 2: Read agent-tracker-history.json
+  let allAgentHistory: Array<{
+    id: string; type: string; pid?: number | null;
+    timestamp: string; reapedAt?: string | null; status?: string;
+    metadata?: { taskId?: string; resumedAgentId?: string; [key: string]: unknown };
+  }> = [];
+
+  try {
+    const historyPath = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
+    if (fs.existsSync(historyPath)) {
+      const raw = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+      if (Array.isArray(raw)) allAgentHistory = raw;
+    }
+  } catch {
+    // unavailable
+  }
+
+  const since = Date.now() - args.hours * 60 * 60 * 1000;
+  const matchedAgents = allAgentHistory.filter(
+    (a) => a.metadata?.taskId && todoTaskToPlantTask.has(a.metadata.taskId)
+      && new Date(a.timestamp).getTime() >= since
+  );
+
+  if (matchedAgents.length === 0) {
+    return { sessions: 'No agents found correlated to plan tasks. Agents must be linked via metadata.taskId.' };
+  }
+
+  // Step 3: Build session info for each matched agent
+  interface SessionEvent {
+    timestamp: string;
+    label: string;
+    detail?: string;
+  }
+
+  interface SessionInfo {
+    agentId: string;
+    agentType: string;
+    pid: number | null;
+    planTaskTitle: string;
+    planTaskId: string;
+    todoTaskId: string;
+    status: string;
+    spawnedAt: string;
+    reapedAt: string | null;
+    tokensTotal: number;
+    isRevived: boolean;
+    events: SessionEvent[];
+  }
+
+  const sessions: SessionInfo[] = matchedAgents.map((agent) => {
+    const todoTaskId = agent.metadata!.taskId as string;
+    const planInfo = todoTaskToPlantTask.get(todoTaskId)!;
+    const agentStatus = (() => {
+      if (!agent.reapedAt) return 'running';
+      const s = agent.status?.toLowerCase() ?? '';
+      if (s === 'completed' || s === 'success') return 'completed';
+      if (s === 'interrupted') return 'interrupted';
+      if (s === 'paused') return 'paused';
+      return 'completed';
+    })();
+
+    return {
+      agentId: agent.id,
+      agentType: agent.type,
+      pid: agent.pid ?? null,
+      planTaskTitle: planInfo.planTaskTitle,
+      planTaskId: planInfo.planTaskId,
+      todoTaskId,
+      status: agentStatus,
+      spawnedAt: agent.timestamp,
+      reapedAt: agent.reapedAt ?? null,
+      tokensTotal: 0,
+      isRevived: false,
+      events: [{
+        timestamp: agent.timestamp,
+        label: `Session Spawned (${agent.type}, PID ${agent.pid ?? 'unknown'})`,
+      }],
+    };
+  });
+
+  const sessionById = new Map<string, SessionInfo>(sessions.map((s) => [s.agentId, s]));
+  const sessionByTodoTaskId = new Map<string, SessionInfo[]>();
+  for (const s of sessions) {
+    const arr = sessionByTodoTaskId.get(s.todoTaskId) ?? [];
+    arr.push(s);
+    sessionByTodoTaskId.set(s.todoTaskId, arr);
+  }
+  const agentById = new Map(matchedAgents.map((a) => [a.id, a]));
+
+  // Step 4: Rotation log — proxy rotations within agent time windows
+  try {
+    const rotationPath = path.join(homeDir, '.claude', 'api-key-rotation.json');
+    if (fs.existsSync(rotationPath)) {
+      const rotData = JSON.parse(fs.readFileSync(rotationPath, 'utf8'));
+      const rotLog: Array<{ event: string; timestamp: number; [k: string]: unknown }> = rotData.rotation_log ?? [];
+
+      for (const session of sessions) {
+        const agent = agentById.get(session.agentId);
+        if (!agent) continue;
+        const windowStart = new Date(agent.timestamp).getTime();
+        const windowEnd = agent.reapedAt ? new Date(agent.reapedAt).getTime() : Date.now();
+
+        for (const entry of rotLog) {
+          if (entry.event !== 'key_switched') continue;
+          if (typeof entry.timestamp !== 'number') continue;
+          if (entry.timestamp >= windowStart && entry.timestamp <= windowEnd) {
+            session.events.push({
+              timestamp: new Date(entry.timestamp).toISOString(),
+              label: 'Proxy Rotated',
+              detail: String(entry.to_key_id ?? 'new key'),
+            });
+          }
+        }
+      }
+    }
+  } catch { /* non-fatal */ }
+
+  // Step 5: Quota-interrupted sessions
+  try {
+    const quotaPath = path.join(PROJECT_DIR, '.claude', 'state', 'quota-interrupted-sessions.json');
+    if (fs.existsSync(quotaPath)) {
+      const entries: Array<{ agentId?: string; interrupted_at?: string; reason?: string }> =
+        JSON.parse(fs.readFileSync(quotaPath, 'utf8'));
+      for (const entry of (Array.isArray(entries) ? entries : [])) {
+        if (!entry.agentId) continue;
+        const session = sessionById.get(entry.agentId);
+        if (!session) continue;
+        const agent = agentById.get(entry.agentId);
+        const ts = entry.interrupted_at ?? agent?.reapedAt ?? new Date().toISOString();
+        session.events.push({ timestamp: ts, label: `Quota Interrupt (${entry.reason ?? 'quota exhausted'})` });
+        session.events.push({ timestamp: ts, label: 'Session Interrupted' });
+        if (session.status === 'running') session.status = 'interrupted';
+      }
+    }
+  } catch { /* non-fatal */ }
+
+  // Step 6: Paused sessions
+  try {
+    const pausedPath = path.join(PROJECT_DIR, '.claude', 'state', 'paused-sessions.json');
+    if (fs.existsSync(pausedPath)) {
+      const entries: Array<{ agentId?: string; paused_at?: string }> =
+        JSON.parse(fs.readFileSync(pausedPath, 'utf8'));
+      for (const entry of (Array.isArray(entries) ? entries : [])) {
+        if (!entry.agentId) continue;
+        const session = sessionById.get(entry.agentId);
+        if (!session) continue;
+        const ts = entry.paused_at ?? new Date().toISOString();
+        session.events.push({ timestamp: ts, label: 'Session Paused' });
+        if (session.status === 'running') session.status = 'paused';
+      }
+    }
+  } catch { /* non-fatal */ }
+
+  // Step 7: Revival agents
+  try {
+    for (const revivalAgent of allAgentHistory) {
+      if (revivalAgent.type !== 'session-revived') continue;
+      const resumedId = revivalAgent.metadata?.resumedAgentId as string | undefined;
+      if (!resumedId) continue;
+      const originalSession = sessionById.get(resumedId);
+      if (!originalSession) continue;
+      originalSession.isRevived = true;
+      originalSession.events.push({
+        timestamp: revivalAgent.timestamp,
+        label: `Session Revived (by ${revivalAgent.id})`,
+      });
+    }
+  } catch { /* non-fatal */ }
+
+  // Step 8: Worklog entries
+  try {
+    if (fs.existsSync(WORKLOG_DB_PATH)) {
+      const wdb = new Database(WORKLOG_DB_PATH, { readonly: true });
+      try {
+        const todoTaskIds = Array.from(sessionByTodoTaskId.keys());
+        if (todoTaskIds.length > 0) {
+          const placeholders = todoTaskIds.map(() => '?').join(',');
+          const rows = wdb.prepare(
+            `SELECT task_id, tokens_total, created_at, outcome FROM worklog_entries WHERE task_id IN (${placeholders}) ORDER BY created_at ASC`
+          ).all(...todoTaskIds) as Array<{ task_id: string; tokens_total: number; created_at: string; outcome: string | null }>;
+
+          for (const row of rows) {
+            const relatedSessions = sessionByTodoTaskId.get(row.task_id) ?? [];
+            const session = relatedSessions[relatedSessions.length - 1];
+            if (!session) continue;
+            session.tokensTotal += row.tokens_total ?? 0;
+            session.events.push({
+              timestamp: row.created_at,
+              label: `Worklog Entry (${row.outcome ?? formatTokens(row.tokens_total ?? 0) + ' tokens'})`,
+            });
+          }
+        }
+      } finally {
+        try { wdb.close(); } catch { /* ignore */ }
+      }
+    }
+  } catch { /* non-fatal */ }
+
+  // Step 9: State changes from plans.db — route events to correct session by timestamp window
+  try {
+    const processedPlanTaskIds = new Set<string>();
+    for (const session of sessions) {
+      if (processedPlanTaskIds.has(session.planTaskId)) continue;
+      processedPlanTaskIds.add(session.planTaskId);
+
+      const substepIds = (
+        db.prepare('SELECT id FROM substeps WHERE task_id = ?').all(session.planTaskId) as Array<{ id: string }>
+      ).map((r) => r.id);
+
+      const entityIds = [session.planTaskId, ...substepIds];
+
+      const placeholders = entityIds.map(() => '?').join(',');
+      const changes = db.prepare(
+        `SELECT entity_type, entity_id, field_name, old_value, new_value, changed_at
+         FROM state_changes WHERE entity_id IN (${placeholders}) ORDER BY changed_at ASC`
+      ).all(...entityIds) as StateChangeRecord[];
+
+      // Get all sessions for this plan task
+      const relatedSessions = sessionByTodoTaskId.get(session.todoTaskId) ?? [session];
+
+      for (const change of changes) {
+        // Route to correct session by timestamp window
+        const changeMs = new Date(change.changed_at).getTime();
+        let target: SessionInfo | undefined;
+        for (const s of relatedSessions) {
+          const spawnMs = new Date(s.spawnedAt).getTime();
+          const endMs = s.reapedAt ? new Date(s.reapedAt).getTime() : Date.now();
+          if (changeMs >= spawnMs && changeMs <= endMs) { target = s; break; }
+        }
+        if (!target) target = relatedSessions[relatedSessions.length - 1];
+
+        if (change.entity_type === 'substep' && change.field_name === 'completed' && change.new_value === '1') {
+          const substepRow = db.prepare('SELECT title FROM substeps WHERE id = ?').get(change.entity_id) as { title: string } | undefined;
+          target.events.push({
+            timestamp: change.changed_at,
+            label: `Substep Completed (${substepRow?.title ?? change.entity_id.substring(0, 8)})`,
+          });
+        } else if (change.entity_type === 'task' && change.field_name === 'status') {
+          if (change.new_value === 'completed') {
+            target.events.push({ timestamp: change.changed_at, label: 'Plan Task Completed' });
+          } else {
+            target.events.push({
+              timestamp: change.changed_at,
+              label: `Task Status Changed (${change.old_value ?? '?'} → ${change.new_value ?? '?'})`,
+            });
+          }
+        } else if (change.entity_type === 'task' && change.field_name === 'pr_number' && change.new_value) {
+          target.events.push({
+            timestamp: change.changed_at,
+            label: `PR #${change.new_value} Created`,
+          });
+        } else if (change.entity_type === 'task' && change.field_name === 'pr_merged' && change.new_value === '1') {
+          const taskRow = db.prepare('SELECT pr_number FROM plan_tasks WHERE id = ?').get(change.entity_id) as { pr_number: number | null } | undefined;
+          const prNum = taskRow?.pr_number;
+          target.events.push({
+            timestamp: change.changed_at,
+            label: prNum ? `PR #${prNum} Merged` : 'PR Merged',
+          });
+        }
+      }
+    }
+  } catch { /* non-fatal */ }
+
+  // Step 10: Sort events, build output
+  const now = Date.now();
+  const lines: string[] = [];
+
+  let runningCount = 0;
+  let completedCount = 0;
+  let interruptedCount = 0;
+  let revivedCount = 0;
+  let totalTokens = 0;
+
+  for (const session of sessions) {
+    session.events.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+    const startMs = new Date(session.spawnedAt).getTime();
+    const endMs = session.reapedAt ? new Date(session.reapedAt).getTime() : now;
+    const durationMs = Math.max(0, endMs - startMs);
+    const durationStr = formatDuration(durationMs);
+    const titleTrunc = session.planTaskTitle.length > 30
+      ? session.planTaskTitle.substring(0, 27) + '...'
+      : session.planTaskTitle;
+
+    if (session.status === 'running') {
+      lines.push(`SESSION: ${session.agentId} | Task: "${titleTrunc}" | RUNNING (${durationStr})`);
+      runningCount++;
+    } else {
+      const tokenStr = session.tokensTotal > 0 ? ` | ${formatTokens(session.tokensTotal)} tokens` : '';
+      lines.push(`SESSION: ${session.agentId} | Task: "${titleTrunc}" | ${durationStr}${tokenStr}`);
+      if (session.status === 'completed') completedCount++;
+      else if (session.status === 'interrupted' || session.status === 'paused') interruptedCount++;
+    }
+
+    for (const event of session.events) {
+      const time = formatCompactTime(event.timestamp);
+      const detail = event.detail ? ` (${event.detail})` : '';
+      lines.push(`  ${time}  → ${event.label}${detail}`);
+    }
+
+    if (session.status === 'running') {
+      lines.push('  ...currently running...');
+    }
+
+    if (session.isRevived) revivedCount++;
+    totalTokens += session.tokensTotal;
+
+    lines.push('');
+  }
+
+  const tokenStr = formatTokens(totalTokens);
+  const parts = [
+    `${sessions.length} session${sessions.length !== 1 ? 's' : ''}`,
+    `${runningCount} running`,
+    `${completedCount} completed`,
+  ];
+  if (interruptedCount > 0) parts.push(`${interruptedCount} interrupted`);
+  parts.push(`${revivedCount} revived`, `${tokenStr} tokens`);
+  lines.push(`Summary: ${parts.join(' | ')}`);
+
+  return { sessions: lines.join('\n') };
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -1177,6 +1535,12 @@ const tools: AnyToolHandler[] = [
     description: 'Agent work metrics per plan with phase efficiency breakdown. Cross-references worklog.',
     schema: PlanAuditArgsSchema,
     handler: planAudit,
+  },
+  {
+    name: 'plan_sessions',
+    description: 'Per-session lifecycle timeline showing spawns, rotations, interrupts, revivals, worklogs, and PR merges for plan task agents.',
+    schema: PlanSessionsArgsSchema,
+    handler: planSessions,
   },
 ];
 

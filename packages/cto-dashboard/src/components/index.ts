@@ -26,3 +26,4 @@ export { PlanSection, type PlanSectionProps } from './PlanSection.js';
 export { PlanProgressSection, type PlanProgressSectionProps } from './PlanProgressSection.js';
 export { PlanTimelineSection, type PlanTimelineSectionProps } from './PlanTimelineSection.js';
 export { PlanAuditSection, type PlanAuditSectionProps } from './PlanAuditSection.js';
+export { PlanSessionSection, type PlanSessionSectionProps } from './PlanSessionSection.js';
