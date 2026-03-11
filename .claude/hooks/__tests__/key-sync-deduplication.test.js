@@ -400,6 +400,72 @@ describe('key-sync.js - deduplicateKeys() function', () => {
         /merged/,
         'Result object must include merged count'
       );
+
+      // Result must also include details array (added for account visibility in hook messages)
+      assert.match(
+        fnBody,
+        /details/,
+        'Result object must include details array'
+      );
+    });
+
+    it('should initialize result with both merged counter and details array', () => {
+      const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+      const fnMatch = code.match(/export function deduplicateKeys\([\s\S]*?\n\}/);
+      assert.ok(fnMatch, 'deduplicateKeys must be defined');
+      const fnBody = fnMatch[0];
+
+      // result must be initialized with merged: 0 AND details: []
+      assert.match(
+        fnBody,
+        /result\s*=\s*\{[^}]*merged:\s*0[^}]*details:\s*\[\]/,
+        'Must initialize result with { merged: 0, details: [] }'
+      );
+    });
+
+    it('should push detail entry for each removed key', () => {
+      const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+      const fnMatch = code.match(/export function deduplicateKeys\([\s\S]*?\n\}/);
+      assert.ok(fnMatch, 'deduplicateKeys must be defined');
+      const fnBody = fnMatch[0];
+
+      // Should push to result.details
+      assert.match(
+        fnBody,
+        /result\.details\.push\(/,
+        'Must push detail entry to result.details for each removed key'
+      );
+    });
+
+    it('should include removed, survivor and email in each detail entry', () => {
+      const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+      const fnMatch = code.match(/export function deduplicateKeys\([\s\S]*?\n\}/);
+      assert.ok(fnMatch, 'deduplicateKeys must be defined');
+      const fnBody = fnMatch[0];
+
+      // Detail entry must contain removed field (truncated key ID)
+      assert.match(
+        fnBody,
+        /removed:/,
+        'Detail entry must include removed field'
+      );
+
+      // Detail entry must contain survivor field (truncated key ID)
+      assert.match(
+        fnBody,
+        /survivor:/,
+        'Detail entry must include survivor field'
+      );
+
+      // Detail entry must contain email field. The implementation uses ES shorthand
+      // property syntax (email,) rather than email: value, so match either form.
+      assert.ok(
+        fnBody.includes('email:') || fnBody.includes('email,'),
+        'Detail entry must include email field (either "email:" or shorthand "email,")'
+      );
     });
 
     it('should group keys by account_uuid', () => {
@@ -582,6 +648,7 @@ describe('key-sync.js - deduplicateKeys() function', () => {
           'key-old': {
             accessToken: 'old-token',
             account_uuid: 'account-A',
+            account_email: 'user@example.com',
             expiresAt: now + 1000,
             last_usage: { five_hour: 50, seven_day: 50, seven_day_sonnet: 50 },
             last_health_check: now - 1000,
@@ -589,6 +656,7 @@ describe('key-sync.js - deduplicateKeys() function', () => {
           'key-fresh': {
             accessToken: 'fresh-token',
             account_uuid: 'account-A',
+            account_email: 'user@example.com',
             expiresAt: now + 10000,
             last_usage: null,
             last_health_check: null,
@@ -597,7 +665,7 @@ describe('key-sync.js - deduplicateKeys() function', () => {
         rotation_log: [],
       };
 
-      // Simulate deduplicateKeys logic
+      // Simulate deduplicateKeys logic (mirrors actual implementation including details)
       const accountGroups = new Map();
       for (const [keyId, keyData] of Object.entries(state.keys)) {
         const uuid = keyData.account_uuid;
@@ -608,8 +676,8 @@ describe('key-sync.js - deduplicateKeys() function', () => {
         accountGroups.get(uuid).push({ id: keyId, data: keyData });
       }
 
-      let merged = 0;
-      for (const [uuid, entries] of accountGroups) {
+      const result = { merged: 0, details: [] };
+      for (const [, entries] of accountGroups) {
         if (entries.length <= 1) continue;
 
         // Sort by expiresAt descending
@@ -633,11 +701,17 @@ describe('key-sync.js - deduplicateKeys() function', () => {
         // Remove non-survivors
         for (let i = 1; i < entries.length; i++) {
           const removedId = entries[i].id;
+          const email = entries[i].data.account_email || survivor.data.account_email || null;
           if (state.active_key_id === removedId) {
             state.active_key_id = survivor.id;
           }
           delete state.keys[removedId];
-          merged++;
+          result.merged++;
+          result.details.push({
+            removed: removedId.slice(0, 8),
+            survivor: survivor.id.slice(0, 8),
+            email,
+          });
         }
       }
 
@@ -648,10 +722,17 @@ describe('key-sync.js - deduplicateKeys() function', () => {
       );
 
       assert.strictEqual(
-        merged,
+        result.merged,
         1,
         'Must report 1 key merged'
       );
+
+      // Validate details array shape
+      assert.strictEqual(result.details.length, 1, 'Must have 1 detail entry');
+      const detail = result.details[0];
+      assert.ok(typeof detail.removed === 'string', 'detail.removed must be a string (truncated key ID)');
+      assert.ok(typeof detail.survivor === 'string', 'detail.survivor must be a string (truncated key ID)');
+      assert.strictEqual(detail.email, 'user@example.com', 'detail.email must carry the account email');
 
       const survivorKey = state.keys['key-fresh'];
       assert.ok(survivorKey, 'key-fresh must survive (freshest token)');
@@ -704,6 +785,7 @@ describe('key-sync.js - deduplicateKeys() function', () => {
         accountGroups.get(uuid).push({ id: keyId, data: keyData });
       }
 
+      const result = { merged: 0, details: [] };
       for (const entries of accountGroups.values()) {
         if (entries.length <= 1) continue;
         entries.sort((a, b) => (b.data.expiresAt || 0) - (a.data.expiresAt || 0));
@@ -711,10 +793,17 @@ describe('key-sync.js - deduplicateKeys() function', () => {
 
         for (let i = 1; i < entries.length; i++) {
           const removedId = entries[i].id;
+          const email = entries[i].data.account_email || survivor.data.account_email || null;
           if (state.active_key_id === removedId) {
             state.active_key_id = survivor.id;
           }
           delete state.keys[removedId];
+          result.merged++;
+          result.details.push({
+            removed: removedId.slice(0, 8),
+            survivor: survivor.id.slice(0, 8),
+            email,
+          });
         }
       }
 
@@ -723,6 +812,11 @@ describe('key-sync.js - deduplicateKeys() function', () => {
         'key-fresh',
         'Must redirect active_key_id to survivor when merged-away key was active'
       );
+
+      // details array must record the merge
+      assert.strictEqual(result.details.length, 1, 'Must have 1 detail entry for the redirect merge');
+      assert.ok(result.details[0].removed.length > 0, 'detail.removed must be non-empty');
+      assert.ok(result.details[0].survivor.length > 0, 'detail.survivor must be non-empty');
     });
 
     it('should skip keys without account_uuid', () => {
@@ -816,7 +910,7 @@ describe('key-sync.js - deduplicateKeys() function', () => {
         accountGroups.get(uuid).push({ id: keyId, data: keyData });
       }
 
-      let merged = 0;
+      const result = { merged: 0, details: [] };
       for (const entries of accountGroups.values()) {
         if (entries.length <= 1) continue;
 
@@ -838,11 +932,17 @@ describe('key-sync.js - deduplicateKeys() function', () => {
 
         for (let i = 1; i < entries.length; i++) {
           const removedId = entries[i].id;
+          const email = entries[i].data.account_email || survivor.data.account_email || null;
           if (state.active_key_id === removedId) {
             state.active_key_id = survivor.id;
           }
           delete state.keys[removedId];
-          merged++;
+          result.merged++;
+          result.details.push({
+            removed: removedId.slice(0, 8),
+            survivor: survivor.id.slice(0, 8),
+            email,
+          });
         }
       }
 
@@ -853,10 +953,24 @@ describe('key-sync.js - deduplicateKeys() function', () => {
       );
 
       assert.strictEqual(
-        merged,
+        result.merged,
         2,
         'Must report 2 keys merged'
       );
+
+      // details must have 2 entries (one per removed key)
+      assert.strictEqual(
+        result.details.length,
+        2,
+        'Must have 2 detail entries for the 2 removed keys'
+      );
+
+      // Each detail entry must have the expected shape
+      for (const detail of result.details) {
+        assert.ok(typeof detail.removed === 'string' && detail.removed.length > 0, 'detail.removed must be a non-empty string');
+        assert.ok(typeof detail.survivor === 'string' && detail.survivor.length > 0, 'detail.survivor must be a non-empty string');
+        assert.strictEqual(typeof detail.email, 'object', 'detail.email must be null when no account_email set');
+      }
 
       const survivorKey = state.keys['key3'];
       assert.ok(survivorKey, 'key3 must survive (freshest)');

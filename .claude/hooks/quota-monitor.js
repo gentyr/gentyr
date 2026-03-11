@@ -516,9 +516,11 @@ async function main() {
     // All sessions: seamless rotation via rotation proxy.
     // Credentials written to Keychain via updateActiveCredentials() above.
     // Rotation proxy adopts immediately; SRA() picks up at token expiry.
+    const toEmail = state.keys[selectedKeyId]?.account_email || selectedKeyId.slice(0, 8);
+    const fromEmail = state.keys[previousKeyId]?.account_email || previousKeyId.slice(0, 8);
     process.stdout.write(JSON.stringify({
       continue: true,
-      systemMessage: `Account rotated to ${selectedKeyId.slice(0, 8)}... (${Math.round(maxUsage)}% usage on previous). Credentials written to Keychain. Rotation proxy will use new key immediately.`,
+      systemMessage: `Account rotated: ${fromEmail} (${Math.round(maxUsage)}%) \u2192 ${toEmail}. Proxy active.`,
     }));
     return;
   }
@@ -546,9 +548,13 @@ async function main() {
         metadata: { maxUsage: Math.round(maxUsage), action: 'all_exhausted', accountCount },
       });
 
+      const activeEmail = activeKeyData.account_email || state.active_key_id?.slice(0, 8) || 'unknown';
+      const exhaustionMsg = isAutomated
+        ? `All ${accountCount} accounts exhausted (active: ${activeEmail}). Session paused — will resume when quota resets.`
+        : `All ${accountCount} accounts exhausted (active: ${activeEmail}). Run /login to add a fresh account, or wait for quota to reset.`;
       process.stdout.write(JSON.stringify({
         continue: true,
-        systemMessage: `All ${accountCount} accounts exhausted. Quota will reset automatically — no action needed.`,
+        systemMessage: exhaustionMsg,
       }));
       return;
     }

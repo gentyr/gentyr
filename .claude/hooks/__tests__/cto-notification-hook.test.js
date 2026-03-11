@@ -505,6 +505,57 @@ describe('cto-notification-hook.js - Bug Fixes', () => {
         'Must suppress output for spawned sessions'
       );
     });
+
+    it('should show aggregate quota for single-account setups (activeCount >= 1)', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // Previously only showed aggregate for activeCount > 1 (multi-account).
+      // Now shows aggregate for activeCount >= 1 (single-account too).
+      // The >= 1 guard must appear at least twice: once in the compact (critical) path
+      // and once in the normal multi-line path.
+      const geMatches = [...hookCode.matchAll(/aggregateQuota\.activeCount\s*>=\s*1/g)];
+      assert.ok(
+        geMatches.length >= 2,
+        `Must use aggregateQuota.activeCount >= 1 guard in both display paths. Found ${geMatches.length} occurrence(s).`
+      );
+
+      // The > 1 guard must NOT appear in an if/else condition context (only valid
+      // use of > 1 is for pluralization: activeCount > 1 ? 's' : '').
+      // Verify: any line containing activeCount > 1 followed by '?' is only for plural.
+      const gtLines = hookCode.split('\n').filter(l => /activeCount\s*>\s*1/.test(l));
+      for (const line of gtLines) {
+        assert.match(
+          line,
+          />\s*1\s*\?\s*['"]s['"]/,
+          `"activeCount > 1" must only appear in pluralization ternary, not as a display guard. Offending line: ${line.trim()}`
+        );
+      }
+    });
+
+    it('should include active account email in compact (critical) quota display', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // The compact quotaPart (for isCritical mode) must show which account is active.
+      // activeLabel is derived from the active account's email or 'unknown'.
+      assert.match(
+        hookCode,
+        /activeLabel/,
+        'Must define activeLabel variable for active account display'
+      );
+
+      assert.match(
+        hookCode,
+        /activeAccount.*email|email.*activeAccount/,
+        'Must resolve active account email for activeLabel'
+      );
+
+      // The compact format must embed activeLabel in brackets
+      assert.match(
+        hookCode,
+        /\[.*activeLabel.*\]|\`\[.*\$\{activeLabel\}.*\]\`/,
+        'Must include activeLabel in brackets in compact quota format'
+      );
+    });
   });
 });
 
