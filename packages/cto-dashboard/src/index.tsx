@@ -29,12 +29,14 @@ import { getWorktreeData } from './utils/worktree-reader.js';
 import { getProductManagerData } from './utils/product-manager-reader.js';
 import { getWorklogData } from './utils/worklog-reader.js';
 import { getPlanData, getPlanProgressData, getPlanTimelineData, getPlanAuditData } from './utils/plan-reader.js';
+import { getPlanSessionData } from './utils/plan-session-reader.js';
 import {
   getMockDashboardData, getMockTimelineEvents, getMockTrajectory,
   getMockAutomatedInstances, getMockDeputyCto, getMockTesting,
   getMockDeployments, getMockInfra, getMockLogging, getMockAccountOverview,
   getMockWorktrees, getMockProductManager, getMockWorklog,
   getMockPlanData, getMockPlanProgressData, getMockPlanTimelineData, getMockPlanAuditData,
+  getMockPlanSessionData,
 } from './mock-data.js';
 import {
   Section,
@@ -57,6 +59,7 @@ import {
   PlanProgressSection,
   PlanTimelineSection,
   PlanAuditSection,
+  PlanSessionSection,
   type MetricBoxData,
 } from './components/index.js';
 import { formatNumber, calculateCacheRate } from './utils/formatters.js';
@@ -70,7 +73,7 @@ const SECTION_IDS = [
   'quota', 'accounts', 'deputy-cto', 'usage', 'automations',
   'testing', 'deployments', 'worktrees', 'infra', 'logging',
   'timeline', 'tasks', 'product-market-fit', 'worklog',
-  'plans', 'plan-progress', 'plan-timeline', 'plan-audit',
+  'plans', 'plan-progress', 'plan-timeline', 'plan-audit', 'plan-sessions',
 ] as const;
 
 type SectionId = typeof SECTION_IDS[number];
@@ -317,6 +320,11 @@ async function renderSection(sectionId: SectionId, mock: boolean, hours: number,
     case 'plan-audit': {
       const planAudit = mock ? getMockPlanAuditData() : getPlanAuditData();
       return <PlanAuditSection data={planAudit} />;
+    }
+
+    case 'plan-sessions': {
+      const planSessions = mock ? getMockPlanSessionData() : getPlanSessionData();
+      return <PlanSessionSection data={planSessions} />;
     }
 
     default: {

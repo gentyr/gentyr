@@ -250,6 +250,13 @@ export interface StateChangeRecord {
   changed_by: string | null;
 }
 
+// Sessions
+export const PlanSessionsArgsSchema = z.object({
+  plan_id: z.string().optional().describe('Plan UUID. If omitted, shows all active plans.'),
+  hours: z.coerce.number().optional().default(24).describe('Hours of history'),
+});
+export type PlanSessionsArgs = z.infer<typeof PlanSessionsArgsSchema>;
+
 // ============================================================================
 // Result Types
 // ============================================================================

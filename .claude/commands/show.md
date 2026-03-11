@@ -25,6 +25,7 @@ View individual dashboard sections using `mcp__show__*` tools.
 | `mcp__show__show_plan_progress()` | Detailed plan progress with agent assignments |
 | `mcp__show__show_plan_timeline()` | Plan state changes timeline |
 | `mcp__show__show_plan_audit()` | Agent work metrics per plan |
+| `mcp__show__show_plan_sessions()` | Per-session lifecycle timeline (spawns, rotations, revivals) |
 
 ## Usage
 
