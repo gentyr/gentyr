@@ -148,6 +148,16 @@
         ]
       },
       {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/interactive-agent-guard.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "mcp__*",
         "hooks": [
           {

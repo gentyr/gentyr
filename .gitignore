@@ -15,6 +15,7 @@ coverage/
 TEST_COVERAGE_REPORT.md
 
 # Runtime state files (project-specific)
+.claude/projects/
 .claude/*.db
 .claude/*.db-shm
 .claude/*.db-wal
