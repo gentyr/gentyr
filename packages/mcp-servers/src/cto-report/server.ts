@@ -1153,7 +1153,7 @@ function getTaskMetrics(args: GetTaskMetricsArgs): TaskMetricsResult {
 // Server Setup
 // ============================================================================
 
-const tools: AnyToolHandler[] = [
+export const tools: AnyToolHandler[] = [
   {
     name: 'get_report',
     description: 'Generate comprehensive CTO report with token usage, session metrics, pending items, and task status.',
@@ -1174,10 +1174,10 @@ const tools: AnyToolHandler[] = [
   },
 ];
 
-const server = new McpServer({
+export const server = new McpServer({
   name: 'cto-report',
   version: '1.0.0',
   tools,
 });
 
-server.start();
+if (!process.env.MCP_SHARED_DAEMON) { server.start(); }

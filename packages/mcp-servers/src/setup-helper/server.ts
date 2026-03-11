@@ -501,7 +501,7 @@ Three-phase workflow:
 
 For OP token commands, instruct the user to run in their terminal (not through Claude) so the token stays private.`;
 
-const tools: AnyToolHandler[] = [
+export const tools: AnyToolHandler[] = [
   {
     name: 'gentyr_setup',
     description: TOOL_DESCRIPTION,
@@ -510,10 +510,10 @@ const tools: AnyToolHandler[] = [
   },
 ];
 
-const server = new McpServer({
+export const server = new McpServer({
   name: 'setup-helper',
   version: '1.0.0',
   tools,
 });
 
-server.start();
+if (!process.env.MCP_SHARED_DAEMON) { server.start(); }
