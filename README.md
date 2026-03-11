@@ -42,6 +42,8 @@ Thirty-five automation hooks triggered by session events, commits, timers, and f
 
 Thirty-two protocol servers connecting agents to external systems. Deployment platforms, secret vaults, task databases, log aggregators, feedback pipelines, coverage reporters. Agents never touch raw APIs. Every external interaction goes through a typed MCP server with a schema and a handler.
 
+Fifteen stateless API-proxy servers (GitHub, Cloudflare, Supabase, Vercel, Render, and others) run as a single shared HTTP daemon instead of one process per agent session. A single daemon process on port 18090 replaces up to 15 per-session stdio processes, saving ~750MB RAM per concurrent agent. Installed via `setup-automation-service.sh`; auto-detected by `config-gen.js` which rewrites `.mcp.json` with HTTP entries when the daemon is running.
+
 ### the merge chain
 
 Four stages: feature, preview, staging, main. Enforced locally by root-owned hooks that agents cannot modify. Preview requires passing tests. Staging requires deputy-CTO approval. Main requires CTO sign-off. Stale work is detected and reported automatically.

@@ -200,6 +200,7 @@ SERVICE_FILE="$SYSTEMD_USER_DIR/${SERVICE_NAME}.service"
 TIMER_FILE="$SYSTEMD_USER_DIR/${SERVICE_NAME}.timer"
 PROXY_SERVICE_FILE="$SYSTEMD_USER_DIR/gentyr-rotation-proxy.service"
 REVIVAL_SERVICE_FILE="$SYSTEMD_USER_DIR/gentyr-revival-daemon.service"
+MCP_DAEMON_SERVICE_FILE="$SYSTEMD_USER_DIR/gentyr-mcp-daemon.service"
 
 setup_linux() {
   log_info "Setting up systemd user service..."
@@ -287,6 +288,38 @@ EOF
     log_warn "Revival daemon script not found — skipping revival daemon service."
   fi
 
+  # --- Shared MCP Server Daemon Service (Restart=always, HTTP transport) ---
+  MCP_DAEMON_OP_TOKEN_ENV=""
+  if [ -n "$OP_TOKEN_FOR_SERVICE" ]; then
+    MCP_DAEMON_OP_TOKEN_ENV="Environment=OP_SERVICE_ACCOUNT_TOKEN=$OP_TOKEN_FOR_SERVICE"
+  fi
+  if [ -n "$FRAMEWORK_DIR" ] && [ -f "$FRAMEWORK_DIR/scripts/mcp-server-daemon.js" ]; then
+    cat > "$MCP_DAEMON_SERVICE_FILE" << EOF
+[Unit]
+Description=GENTYR Shared MCP Server Daemon - HTTP transport for Tier 1 servers
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$PROJECT_DIR
+ExecStart=/usr/bin/node $FRAMEWORK_DIR/scripts/mcp-server-daemon.js
+Environment=CLAUDE_PROJECT_DIR=$PROJECT_DIR
+Environment=GENTYR_LAUNCHD_SERVICE=true
+$MCP_DAEMON_OP_TOKEN_ENV
+Restart=always
+RestartSec=5
+StandardOutput=append:$PROJECT_DIR/.claude/mcp-daemon.log
+StandardError=append:$PROJECT_DIR/.claude/mcp-daemon.log
+
+[Install]
+WantedBy=default.target
+EOF
+
+    log_info "Created $MCP_DAEMON_SERVICE_FILE"
+  else
+    log_warn "MCP server daemon script not found — skipping MCP daemon service."
+  fi
+
   # --- Automation Service ---
   # Create service file
   cat > "$SERVICE_FILE" << EOF
@@ -335,6 +368,7 @@ EOF
     chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo staff)" "$SERVICE_FILE" "$TIMER_FILE"
     [ -f "$PROXY_SERVICE_FILE" ] && chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo staff)" "$PROXY_SERVICE_FILE"
     [ -f "$REVIVAL_SERVICE_FILE" ] && chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo staff)" "$REVIVAL_SERVICE_FILE"
+    [ -f "$MCP_DAEMON_SERVICE_FILE" ] && chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo staff)" "$MCP_DAEMON_SERVICE_FILE"
   fi
 
   # Reload systemd and enable services
@@ -351,6 +385,12 @@ EOF
       run_systemctl_user start "gentyr-revival-daemon.service" 2>/dev/null || true
       log_info "Revival daemon service enabled and started."
     fi
+    # Start shared MCP daemon
+    if [ -f "$MCP_DAEMON_SERVICE_FILE" ]; then
+      run_systemctl_user enable "gentyr-mcp-daemon.service" 2>/dev/null || true
+      run_systemctl_user start "gentyr-mcp-daemon.service" 2>/dev/null || true
+      log_info "Shared MCP daemon service enabled and started."
+    fi
     # Then timer
     run_systemctl_user enable "${SERVICE_NAME}.timer" && \
     run_systemctl_user start "${SERVICE_NAME}.timer"
@@ -360,6 +400,12 @@ EOF
 
 remove_linux() {
   log_info "Removing systemd user services..."
+
+  # Stop and disable shared MCP daemon
+  run_systemctl_user stop "gentyr-mcp-daemon.service" 2>/dev/null || true
+  run_systemctl_user disable "gentyr-mcp-daemon.service" 2>/dev/null || true
+  rm -f "$MCP_DAEMON_SERVICE_FILE"
+  log_info "Shared MCP daemon service removed."
 
   # Stop and disable rotation proxy
   run_systemctl_user stop "gentyr-rotation-proxy.service" 2>/dev/null || true
@@ -387,6 +433,31 @@ remove_linux() {
 }
 
 status_linux() {
+  echo ""
+  echo "=== Shared MCP Daemon Status (Linux) ==="
+  echo ""
+
+  if [ -f "$MCP_DAEMON_SERVICE_FILE" ]; then
+    echo "MCP daemon service: $MCP_DAEMON_SERVICE_FILE (exists)"
+  else
+    echo "MCP daemon service: $MCP_DAEMON_SERVICE_FILE (NOT FOUND)"
+  fi
+
+  echo "MCP daemon systemd status:"
+  run_systemctl_user status "gentyr-mcp-daemon.service" 2>/dev/null || echo "  MCP daemon not found or not running"
+
+  echo ""
+  echo "MCP daemon health:"
+  curl -sf http://localhost:18090/health 2>/dev/null || echo "  MCP daemon not responding"
+
+  echo ""
+  if [ -f "$PROJECT_DIR/.claude/mcp-daemon.log" ]; then
+    echo "Last 5 MCP daemon log lines:"
+    tail -5 "$PROJECT_DIR/.claude/mcp-daemon.log"
+  else
+    echo "No MCP daemon log file found yet."
+  fi
+
   echo ""
   echo "=== Rotation Proxy Status (Linux) ==="
   echo ""
@@ -466,6 +537,7 @@ LAUNCHD_DIR="$HOME/Library/LaunchAgents"
 PLIST_FILE="$LAUNCHD_DIR/com.local.${SERVICE_NAME}.plist"
 PROXY_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-rotation-proxy.plist"
 REVIVAL_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-revival-daemon.plist"
+MCP_DAEMON_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-mcp-daemon.plist"
 
 setup_macos() {
   log_info "Setting up launchd agent..."
@@ -609,6 +681,59 @@ EOF
     log_warn "Revival daemon script not found — skipping revival daemon service."
   fi
 
+  # --- Shared MCP Server Daemon (KeepAlive, HTTP transport on port 18090) ---
+  if [ -n "$FRAMEWORK_DIR" ] && [ -f "$FRAMEWORK_DIR/scripts/mcp-server-daemon.js" ]; then
+    cat > "$MCP_DAEMON_PLIST_FILE" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.gentyr-mcp-daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$NODE_PATH</string>
+        <string>$FRAMEWORK_DIR/scripts/mcp-server-daemon.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>$PROJECT_DIR</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CLAUDE_PROJECT_DIR</key>
+        <string>$PROJECT_DIR</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>GENTYR_LAUNCHD_SERVICE</key>
+        <string>true</string>$(if [ -n "$OP_TOKEN_FOR_SERVICE" ]; then echo "
+        <key>OP_SERVICE_ACCOUNT_TOKEN</key>
+        <string>$OP_TOKEN_FOR_SERVICE</string>"; fi)
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>$PROJECT_DIR/.claude/mcp-daemon.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>$PROJECT_DIR/.claude/mcp-daemon.log</string>
+</dict>
+</plist>
+EOF
+
+    launchctl unload "$MCP_DAEMON_PLIST_FILE" 2>/dev/null || true
+    launchctl load "$MCP_DAEMON_PLIST_FILE"
+    log_info "Shared MCP daemon service loaded (KeepAlive, RunAtLoad, port 18090)."
+  else
+    log_warn "MCP server daemon script not found — skipping MCP daemon service."
+  fi
+
   # --- Automation Service (10-min interval) ---
   # Create plist file
   cat > "$PLIST_FILE" << EOF
@@ -685,6 +810,11 @@ EOF
 remove_macos() {
   log_info "Removing launchd agents..."
 
+  # Unload and remove shared MCP daemon
+  launchctl unload "$MCP_DAEMON_PLIST_FILE" 2>/dev/null || true
+  rm -f "$MCP_DAEMON_PLIST_FILE"
+  log_info "Shared MCP daemon service removed."
+
   # Unload and remove revival daemon
   launchctl unload "$REVIVAL_PLIST_FILE" 2>/dev/null || true
   rm -f "$REVIVAL_PLIST_FILE"
@@ -702,6 +832,31 @@ remove_macos() {
 }
 
 status_macos() {
+  echo ""
+  echo "=== Shared MCP Daemon Status (macOS) ==="
+  echo ""
+
+  if [ -f "$MCP_DAEMON_PLIST_FILE" ]; then
+    echo "MCP daemon plist: $MCP_DAEMON_PLIST_FILE (exists)"
+  else
+    echo "MCP daemon plist: $MCP_DAEMON_PLIST_FILE (NOT FOUND)"
+  fi
+
+  echo "MCP daemon launchd:"
+  launchctl list | grep "gentyr-mcp-daemon" || echo "  MCP daemon not loaded"
+
+  echo ""
+  echo "MCP daemon health:"
+  curl -sf http://localhost:18090/health 2>/dev/null || echo "  MCP daemon not responding"
+
+  echo ""
+  if [ -f "$PROJECT_DIR/.claude/mcp-daemon.log" ]; then
+    echo "Last 5 MCP daemon log lines:"
+    tail -5 "$PROJECT_DIR/.claude/mcp-daemon.log"
+  else
+    echo "No MCP daemon log file found yet."
+  fi
+
   echo ""
   echo "=== Rotation Proxy Status (macOS) ==="
   echo ""

@@ -458,6 +458,31 @@ The chrome-bridge MCP server provides 18 tools for browser automation via Claude
 
 > Full details: [Chrome Browser Automation](docs/CLAUDE-REFERENCE.md#chrome-browser-automation)
 
+## Shared MCP Daemon
+
+Tier 1 (stateless/read-only) MCP servers can be hosted in a single shared daemon process using HTTP transport instead of per-session stdio processes. A single daemon replaces up to 15 per-session stdio processes, saving ~750MB RAM per concurrent agent.
+
+**Tier 1 servers** (hosted in daemon): `github`, `cloudflare`, `supabase`, `vercel`, `render`, `codecov`, `resend`, `elastic-logs`, `onepassword`, `secret-sync`, `feedback-explorer`, `cto-report`, `specs-browser`, `setup-helper`, `show`.
+
+**Key files:**
+- `scripts/mcp-server-daemon.js` — Daemon entry point; resolves 1Password credentials at startup, hosts all Tier 1 servers via `lib/shared-mcp-config.js`
+- `lib/shared-mcp-config.js` — Single source of truth for `TIER1_SERVERS` list and default port (`18090`)
+- `packages/mcp-servers/src/shared/http-transport.ts` — HTTP transport adapter with path-based routing (`/mcp/<server-name>`)
+
+**Activation:** `setup-automation-service.sh` installs a KeepAlive launchd service (`com.local.gentyr-mcp-daemon`, macOS) or systemd user service (`gentyr-mcp-daemon`, Linux) on port `18090`. Once the service is installed, `config-gen.js` auto-detects it (via plist/service/state-file presence) and converts Tier 1 stdio entries in `.mcp.json` to HTTP entries pointing at `http://127.0.0.1:18090/mcp/<server-name>`.
+
+**Conditional stdio start:** Each Tier 1 server only calls `server.start()` if `MCP_SHARED_DAEMON` is not set. When running inside the daemon, `MCP_SHARED_DAEMON=1` suppresses stdio startup — the same compiled `dist/` is shared between both execution modes.
+
+**Transport details:** Binds to `127.0.0.1` only (no network exposure). Uses MCP Streamable HTTP with JSON-RPC 2.0 over HTTP POST. Body size capped at 1MB. Session management via `Mcp-Session-Id` header.
+
+**Logs:** `.claude/mcp-daemon.log` in the project directory.
+
+**Status check:**
+```bash
+scripts/setup-automation-service.sh status --path /project   # includes MCP daemon health
+curl -sf http://localhost:18090/health                        # direct health check
+```
+
 ## MCP Server Startup Behavior
 
 ### Infrastructure Servers — Lazy Credential Validation

@@ -7,8 +7,12 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+
+// Single source of truth for shared MCP daemon config
+import { TIER1_SERVERS as TIER1_SHARED_SERVERS, MCP_DAEMON_PORT as DEFAULT_MCP_DAEMON_PORT } from '../../lib/shared-mcp-config.js';
 
 /**
  * Generate .mcp.json from template, substituting the framework path.
@@ -115,6 +119,44 @@ export function generateMcpJson(projectDir, frameworkDir, frameworkRel, opts = {
       fs.writeFileSync(outputPath, JSON.stringify(config, null, 2) + '\n');
       console.log('  Injected OP_SERVICE_ACCOUNT_TOKEN into launcher-based MCP servers');
     } catch {}
+  }
+
+  // --- Shared MCP Daemon (Tier 1 HTTP entries) ---
+  // When the daemon plist exists (indicating it has been installed via
+  // setup-automation-service.sh), replace Tier 1 stdio entries with HTTP
+  // entries pointing at the shared daemon.
+  const daemonPlistFile = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.local.gentyr-mcp-daemon.plist');
+  const daemonSystemdFile = path.join(os.homedir(), '.config', 'systemd', 'user', 'gentyr-mcp-daemon.service');
+  const daemonStateFile = path.join(projectDir, '.claude', 'state', 'shared-mcp-daemon.json');
+  const daemonInstalled = fs.existsSync(daemonPlistFile) || fs.existsSync(daemonSystemdFile) || fs.existsSync(daemonStateFile);
+
+  if (daemonInstalled) {
+    try {
+      const config = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+      let daemonPort = DEFAULT_MCP_DAEMON_PORT;
+      try {
+        const state = JSON.parse(fs.readFileSync(daemonStateFile, 'utf8'));
+        if (typeof state.port === 'number') { daemonPort = state.port; }
+      } catch { /* use default port */ }
+
+      let converted = 0;
+      for (const serverName of TIER1_SHARED_SERVERS) {
+        if (config.mcpServers && config.mcpServers[serverName]) {
+          config.mcpServers[serverName] = {
+            type: 'http',
+            url: `http://127.0.0.1:${daemonPort}/mcp/${serverName}`,
+          };
+          converted++;
+        }
+      }
+
+      if (converted > 0) {
+        fs.writeFileSync(outputPath, JSON.stringify(config, null, 2) + '\n');
+        console.log(`  Converted ${converted} Tier 1 servers to shared HTTP transport (port ${daemonPort})`);
+      }
+    } catch (err) {
+      console.log(`  Warning: could not convert Tier 1 servers to HTTP transport: ${err.message}`);
+    }
   }
 }
 

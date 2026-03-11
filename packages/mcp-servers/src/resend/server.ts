@@ -428,11 +428,13 @@ const tools = [
   },
 ] satisfies AnyToolHandler[];
 
+export { tools };
+
 // Create and start server
-const server = new McpServer({
+export const server = new McpServer({
   name: 'resend-mcp',
   version: '1.0.0',
   tools,
 });
 
-server.start();
+if (!process.env.MCP_SHARED_DAEMON) { server.start(); }

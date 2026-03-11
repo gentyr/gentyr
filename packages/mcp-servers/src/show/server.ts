@@ -96,7 +96,7 @@ function makeToolName(section: SectionId): string {
   return `show_${section.replace(/-/g, '_')}`;
 }
 
-const tools: AnyToolHandler[] = SECTION_IDS.map((section) => ({
+export const tools: AnyToolHandler[] = SECTION_IDS.map((section) => ({
   name: makeToolName(section),
   description: SECTION_DESCRIPTIONS[section],
   schema: ShowSectionArgsSchema,
@@ -110,10 +110,10 @@ const tools: AnyToolHandler[] = SECTION_IDS.map((section) => ({
 // Server
 // ============================================================================
 
-const server = new McpServer({
+export const server = new McpServer({
   name: 'show',
   version: '1.0.0',
   tools,
 });
 
-server.start();
+if (!process.env.MCP_SHARED_DAEMON) { server.start(); }

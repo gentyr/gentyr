@@ -269,7 +269,7 @@ async function getLogStats(args: GetLogStatsArgs): Promise<GetLogStatsResult | E
 // Server Setup
 // ============================================================================
 
-const tools: AnyToolHandler[] = [
+export const tools: AnyToolHandler[] = [
   {
     name: 'query_logs',
     description: `Query logs from Elasticsearch using Lucene query syntax.
@@ -310,10 +310,10 @@ Example: Find which service has the most errors in the last 24 hours.`,
   },
 ];
 
-const server = new McpServer({
+export const server = new McpServer({
   name: 'elastic-logs',
   version: '1.0.0',
   tools,
 });
 
-server.start();
+if (!process.env.MCP_SHARED_DAEMON) { server.start(); }

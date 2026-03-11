@@ -1,8 +1,16 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+/**
+ * 1Password MCP Server
+ *
+ * Tools for reading secrets, listing vault items, managing service accounts,
+ * and reviewing audit logs via the 1Password CLI.
+ *
+ * Protocol: JSON-RPC 2.0 over stdin/stdout (stdio MCP)
+ *
+ * @version 2.0.0
+ */
+
 import { execFileSync } from 'child_process';
-import { zodToJsonSchema } from '../shared/server.js';
+import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
   readSecretSchema,
   listItemsSchema,
@@ -43,9 +51,9 @@ async function listItems(args: ListItemsArgs) {
   const parsed = listItemsSchema.parse(args);
 
   const cmdArgs = ['item', 'list', '--format', 'json'];
-  if (parsed.vault) {cmdArgs.push('--vault', parsed.vault);}
-  if (parsed.categories?.length) {cmdArgs.push('--categories', parsed.categories.join(','));}
-  if (parsed.tags?.length) {cmdArgs.push('--tags', parsed.tags.join(','));}
+  if (parsed.vault) { cmdArgs.push('--vault', parsed.vault); }
+  if (parsed.categories?.length) { cmdArgs.push('--categories', parsed.categories.join(',')); }
+  if (parsed.tags?.length) { cmdArgs.push('--tags', parsed.tags.join(',')); }
 
   const json = opCommand(cmdArgs);
   const items = JSON.parse(json) as Array<{
@@ -109,7 +117,7 @@ async function getAuditLog(args: GetAuditLogArgs) {
     '--end', to,
     '--format', 'json',
   ];
-  if (parsed.action) {cmdArgs.push('--action', parsed.action);}
+  if (parsed.action) { cmdArgs.push('--action', parsed.action); }
 
   const json = opCommand(cmdArgs);
   const events = JSON.parse(json) as Array<{
@@ -133,62 +141,41 @@ async function getAuditLog(args: GetAuditLogArgs) {
   };
 }
 
-// MCP Server
-const server = new Server(
-  { name: 'onepassword', version: '1.0.0' },
-  { capabilities: { tools: {} } }
-);
+// ============================================================================
+// Server Setup
+// ============================================================================
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: 'read_secret',
-      description: 'Read a secret from 1Password vault using op:// reference',
-      inputSchema: zodToJsonSchema(readSecretSchema),
-    },
-    {
-      name: 'list_items',
-      description: 'List items in a 1Password vault with optional filtering',
-      inputSchema: zodToJsonSchema(listItemsSchema),
-    },
-    {
-      name: 'create_service_account',
-      description: 'Create a service account for CI/CD (admin only, requires CTO approval)',
-      inputSchema: zodToJsonSchema(createServiceAccountSchema),
-    },
-    {
-      name: 'get_audit_log',
-      description: 'Get audit log of vault access (for security review)',
-      inputSchema: zodToJsonSchema(getAuditLogSchema),
-    },
-  ],
-}));
+export const tools: AnyToolHandler[] = [
+  {
+    name: 'read_secret',
+    description: 'Read a secret from 1Password vault using op:// reference',
+    schema: readSecretSchema,
+    handler: readSecret as (args: unknown) => unknown,
+  },
+  {
+    name: 'list_items',
+    description: 'List items in a 1Password vault with optional filtering',
+    schema: listItemsSchema,
+    handler: listItems as (args: unknown) => unknown,
+  },
+  {
+    name: 'create_service_account',
+    description: 'Create a service account for CI/CD (admin only, requires CTO approval)',
+    schema: createServiceAccountSchema,
+    handler: createServiceAccount as (args: unknown) => unknown,
+  },
+  {
+    name: 'get_audit_log',
+    description: 'Get audit log of vault access (for security review)',
+    schema: getAuditLogSchema,
+    handler: getAuditLog as (args: unknown) => unknown,
+  },
+];
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args = {} } = request.params;
-
-  try {
-    switch (name) {
-      case 'read_secret':
-        return { content: [{ type: 'text', text: JSON.stringify(await readSecret(args as ReadSecretArgs), null, 2) }] };
-      case 'list_items':
-        return { content: [{ type: 'text', text: JSON.stringify(await listItems(args as ListItemsArgs), null, 2) }] };
-      case 'create_service_account':
-        return { content: [{ type: 'text', text: JSON.stringify(await createServiceAccount(args as CreateServiceAccountArgs), null, 2) }] };
-      case 'get_audit_log':
-        return { content: [{ type: 'text', text: JSON.stringify(await getAuditLog(args as GetAuditLogArgs), null, 2) }] };
-      default:
-        throw new Error(`Unknown tool: ${name}`);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
-  }
+export const server = new McpServer({
+  name: 'onepassword',
+  version: '2.0.0',
+  tools,
 });
 
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-}
-
-main().catch(console.error);
+if (!process.env.MCP_SHARED_DAEMON) { server.start(); }

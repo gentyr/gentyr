@@ -739,7 +739,7 @@ function getSpecsForFile(args: GetSpecsForFileArgs): GetSpecsForFileResult {
 // Server Setup
 // ============================================================================
 
-const tools: AnyToolHandler[] = [
+export const tools: AnyToolHandler[] = [
   // Existing tools
   {
     name: 'list_specs',
@@ -812,10 +812,10 @@ const tools: AnyToolHandler[] = [
   },
 ];
 
-const server = new McpServer({
+export const server = new McpServer({
   name: 'specs-browser',
   version: '2.0.0',
   tools,
 });
 
-server.start();
+if (!process.env.MCP_SHARED_DAEMON) { server.start(); }
