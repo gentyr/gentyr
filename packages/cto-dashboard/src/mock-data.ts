@@ -41,6 +41,7 @@ import type { WorktreeData } from './utils/worktree-reader.js';
 import type { ProductManagerData } from './utils/product-manager-reader.js';
 import type { WorklogData } from './utils/worklog-reader.js';
 import type { PlanData, PlanProgressData, PlanTimelineData, PlanAuditData } from './utils/plan-reader.js';
+import type { PlanSessionData } from './utils/plan-session-reader.js';
 
 // ============================================================================
 // Deterministic PRNG (LCG — no Math.random())
@@ -2028,5 +2029,126 @@ export function getMockPlanAuditData(): PlanAuditData {
         ],
       },
     ],
+  };
+}
+
+export function getMockPlanSessionData(): PlanSessionData {
+  const now = Date.now();
+
+  // Session 1: completed, full lifecycle (47 minutes)
+  const s1Start = now - 50 * 60 * 1000;
+  const s1End = s1Start + 47 * 60 * 1000;
+
+  // Session 2: running (22 minutes in)
+  const s2Start = now - 22 * 60 * 1000;
+
+  return {
+    hasData: true,
+    sessions: [
+      {
+        agentId: 'code-writer-a3f',
+        agentType: 'code-writer',
+        pid: 12345,
+        planTaskTitle: 'Query executor service',
+        planTaskId: 't-p4',
+        todoTaskId: 'todo-task-a3f',
+        status: 'completed',
+        durationMs: 47 * 60 * 1000,
+        tokensTotal: 890000,
+        events: [
+          {
+            timestamp: new Date(s1Start).toISOString(),
+            type: 'session_spawned',
+            label: 'Session Spawned',
+            detail: 'code-writer, PID 12345',
+          },
+          {
+            timestamp: new Date(s1Start + 8 * 60 * 1000).toISOString(),
+            type: 'proxy_rotated',
+            label: 'Proxy Rotated',
+            detail: 'key-b7c4e92f',
+          },
+          {
+            timestamp: new Date(s1Start + 15 * 60 * 1000).toISOString(),
+            type: 'quota_interrupt',
+            label: 'Quota Interrupt',
+            detail: 'quota exhausted',
+          },
+          {
+            timestamp: new Date(s1Start + 15 * 60 * 1000).toISOString(),
+            type: 'session_interrupted',
+            label: 'Session Interrupted',
+          },
+          {
+            timestamp: new Date(s1Start + 17 * 60 * 1000).toISOString(),
+            type: 'session_revived',
+            label: 'Session Revived',
+            detail: 'by session-reviver',
+          },
+          {
+            timestamp: new Date(s1Start + 35 * 60 * 1000).toISOString(),
+            type: 'worklog_entry',
+            label: 'Worklog Entry',
+            detail: '890K tokens',
+          },
+          {
+            timestamp: new Date(s1Start + 40 * 60 * 1000).toISOString(),
+            type: 'pr_created',
+            label: 'PR #45 Created',
+            detail: '45',
+          },
+          {
+            timestamp: new Date(s1Start + 44 * 60 * 1000).toISOString(),
+            type: 'pr_merged',
+            label: 'PR #45 Merged',
+            detail: '45',
+          },
+          {
+            timestamp: new Date(s1End).toISOString(),
+            type: 'plan_task_completed',
+            label: 'Plan Task Completed',
+          },
+        ],
+      },
+      {
+        agentId: 'code-writer-b7e',
+        agentType: 'code-writer',
+        pid: 12346,
+        planTaskTitle: 'Mapping applicator',
+        planTaskId: 't-p5',
+        todoTaskId: 'todo-task-b7e',
+        status: 'running',
+        durationMs: 22 * 60 * 1000,
+        tokensTotal: 0,
+        events: [
+          {
+            timestamp: new Date(s2Start).toISOString(),
+            type: 'session_spawned',
+            label: 'Session Spawned',
+            detail: 'code-writer, PID 12346',
+          },
+          {
+            timestamp: new Date(s2Start + 10 * 60 * 1000).toISOString(),
+            type: 'substep_completed',
+            label: 'Substep Completed',
+            detail: 'Override loading',
+          },
+          {
+            timestamp: new Date(s2Start + 18 * 60 * 1000).toISOString(),
+            type: 'substep_completed',
+            label: 'Substep Completed',
+            detail: 'Expression evaluation',
+          },
+        ],
+      },
+    ],
+    summary: {
+      totalSessions: 2,
+      running: 1,
+      completed: 1,
+      interrupted: 0,
+      revived: 1,
+      totalTokens: 890000,
+    },
   };
 }
