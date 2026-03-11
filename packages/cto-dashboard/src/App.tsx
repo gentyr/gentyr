@@ -30,6 +30,7 @@ import {
   WorktreeSection,
   ProductManagerSection,
   WorklogSection,
+  PlanSection,
   type MetricBoxData,
 } from './components/index.js';
 import type { DashboardData } from './utils/data-reader.js';
@@ -45,6 +46,7 @@ import type { AccountOverviewData } from './utils/account-overview-reader.js';
 import type { WorktreeData } from './utils/worktree-reader.js';
 import type { ProductManagerData } from './utils/product-manager-reader.js';
 import type { WorklogData } from './utils/worklog-reader.js';
+import type { PlanData } from './utils/plan-reader.js';
 import { formatNumber, formatDateTime, formatTime12h, formatDelta, calculateCacheRate } from './utils/formatters.js';
 
 interface AppProps {
@@ -61,6 +63,7 @@ interface AppProps {
   worktrees: WorktreeData;
   productManager: ProductManagerData;
   worklog: WorklogData;
+  planData: PlanData;
   page?: 1 | 2 | 3;
 }
 
@@ -247,7 +250,7 @@ function MetricsSummary({ data, tip }: { data: DashboardData; tip?: string }): R
   );
 }
 
-export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager, worklog, page }: AppProps): React.ReactElement {
+export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager, worklog, planData, page }: AppProps): React.ReactElement {
   // Compute explicit widths for side-by-side sections
   const termCols = process.stdout.columns || 80;
   const leftWidth = Math.floor((termCols - 1) / 2);  // -1 for gap
@@ -283,6 +286,13 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       {showPage1 && deputyCto.hasData && (
         <Box marginTop={1}>
           <DeputyCtoSection data={deputyCto} tip="/show deputy-cto" />
+        </Box>
+      )}
+
+      {/* Active Plans */}
+      {showPage1 && planData.hasData && (
+        <Box marginTop={1}>
+          <PlanSection data={planData} tip="/show plans" />
         </Box>
       )}
 

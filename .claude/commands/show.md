@@ -21,6 +21,10 @@ View individual dashboard sections using `mcp__show__*` tools.
 | `mcp__show__show_tasks()` | Task metrics (pending, active, completed) and token usage summary |
 | `mcp__show__show_product_market_fit()` | Product-market-fit analysis with full section content and compliance |
 | `mcp__show__show_worklog()` | Agent worklog entries with durations, tokens, and 30-day metrics |
+| `mcp__show__show_plans()` | Active plans with phase progress bars |
+| `mcp__show__show_plan_progress()` | Detailed plan progress with agent assignments |
+| `mcp__show__show_plan_timeline()` | Plan state changes timeline |
+| `mcp__show__show_plan_audit()` | Agent work metrics per plan |
 
 ## Usage
 
@@ -38,6 +42,8 @@ mcp__show__show_timeline({ limit: 50 })    // more timeline events
 - **Before heavy work** — check `show_quota` and `show_usage`
 - **Before writing tests** — check `show_testing`
 - **Before spawning agents** — check `show_automations` and `show_tasks`
+- **Before spawning plan agents** — check `show_plans` and `show_plan_progress`
+- **After agent completion** — check `show_plan_audit` for efficiency metrics
 - **Before provisioning worktrees** — check `show_worktrees`
 
 For the full dashboard, use `/cto-report` instead.

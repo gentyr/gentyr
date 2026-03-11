@@ -66,6 +66,7 @@ function getGitContext() {
 const DEPUTY_CTO_DB = path.join(PROJECT_DIR, '.claude', 'deputy-cto.db');
 const CTO_REPORTS_DB = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
 const TODO_DB = path.join(PROJECT_DIR, '.claude', 'todo.db');
+const PLANS_DB = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
 const AGENT_TRACKER_HISTORY = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
 const AUTONOMOUS_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
@@ -365,6 +366,63 @@ function getSessionMetricsCached() {
 }
 
 /**
+ * Get plan summary for active plans
+ * Returns compact string or null if no active plans
+ */
+function getPlanSummary() {
+  if (!Database || !fs.existsSync(PLANS_DB)) {
+    return null;
+  }
+
+  try {
+    const db = new Database(PLANS_DB, { readonly: true });
+
+    const activePlans = db.prepare(
+      "SELECT COUNT(*) as count FROM plans WHERE status = 'active'"
+    ).get();
+
+    if (activePlans.count === 0) {
+      db.close();
+      return null;
+    }
+
+    // Get progress per active plan
+    const plans = db.prepare(
+      "SELECT id FROM plans WHERE status = 'active'"
+    ).all();
+
+    let totalPct = 0;
+    let readyCount = 0;
+    let activeAgents = 0;
+
+    for (const plan of plans) {
+      const taskTotal = db.prepare(
+        "SELECT COUNT(*) as count FROM plan_tasks WHERE plan_id = ?"
+      ).get(plan.id);
+      const taskComplete = db.prepare(
+        "SELECT COUNT(*) as count FROM plan_tasks WHERE plan_id = ? AND status IN ('completed', 'skipped')"
+      ).get(plan.id);
+      const ready = db.prepare(
+        "SELECT COUNT(*) as count FROM plan_tasks WHERE plan_id = ? AND status = 'ready'"
+      ).get(plan.id);
+      const active = db.prepare(
+        "SELECT COUNT(*) as count FROM plan_tasks WHERE plan_id = ? AND status = 'in_progress'"
+      ).get(plan.id);
+
+      totalPct += taskTotal.count > 0 ? Math.round((taskComplete.count / taskTotal.count) * 100) : 0;
+      readyCount += ready.count;
+      activeAgents += active.count;
+    }
+
+    db.close();
+
+    return `PLANS: ${activePlans.count} active | ${Math.round(totalPct / plans.length)}% overall | ${readyCount} ready to spawn | ${activeAgents} agents running`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Get TODO counts by status
  * Returns both queued (pending) and active (in_progress) counts
  */
@@ -586,6 +644,7 @@ async function main() {
   const gitContext = getGitContext();
   const sessionMetricsCached = getSessionMetricsCached();
   const aggregateQuota = getAggregateQuota();
+  const planSummary = getPlanSummary();
   const [quota, deputyCto, unreadReports, autonomousMode, todoCounts] = await Promise.all([
     getQuotaStatus(),
     Promise.resolve(getDeputyCtoCounts()),
@@ -684,7 +743,12 @@ async function main() {
       : `TODOs: ${todoCounts.queued} queued`;
     lines.push(`Usage (30d): ${formatTokens(tokenUsage)} tokens | ${sessionMetrics.task} task / ${sessionMetrics.user} user sessions | ${todosPart} | ${autonomousPart}`);
 
-    // Line 3: Pending items (if any)
+    // Line 3: Plans (if any active)
+    if (planSummary) {
+      lines.push(planSummary);
+    }
+
+    // Line 4: Pending items (if any)
     const ctoPending = [];
     if (deputyCto.pending > 0) {
       ctoPending.push(`${deputyCto.pending} CTO decision(s)`);

@@ -40,7 +40,7 @@ Thirty-five automation hooks triggered by session events, commits, timers, and f
 
 ### servers
 
-Thirty-two protocol servers connecting agents to external systems. Deployment platforms, secret vaults, task databases, log aggregators, feedback pipelines, coverage reporters. Agents never touch raw APIs. Every external interaction goes through a typed MCP server with a schema and a handler.
+Thirty-three protocol servers connecting agents to external systems. Deployment platforms, secret vaults, task databases, plan orchestrators, log aggregators, feedback pipelines, coverage reporters. Agents never touch raw APIs. Every external interaction goes through a typed MCP server with a schema and a handler.
 
 Fifteen stateless API-proxy servers (GitHub, Cloudflare, Supabase, Vercel, Render, and others) run as a single shared HTTP daemon instead of one process per agent session. A single daemon process on port 18090 replaces up to 15 per-session stdio processes, saving ~750MB RAM per concurrent agent. Installed via `setup-automation-service.sh`; auto-detected by `config-gen.js` which rewrites `.mcp.json` with HTTP entries when the daemon is running.
 
@@ -239,6 +239,8 @@ Three modes. Quota-interrupted sessions resume automatically via `--resume`. Dea
 
 A background timer spawns agents for pending tasks every cycle. Urgent tasks dispatch immediately. Normal tasks wait one hour. Concurrency capped at five simultaneous agents. The usage optimizer targets 90% API quota utilization by scaling all nineteen automation cooldowns through a single factor. When projected usage is low, agents spawn faster. When quota is tight, everything slows down.
 
+Structured multi-phase work is managed by the plan orchestrator (`plan-orchestrator` MCP server). Plans contain phases, tasks, substeps, and dependency graphs with cycle detection. Progress rolls up automatically from substep to plan. PR merges auto-advance linked plan tasks via the plan-merge-tracker hook. Four dashboard views (`/plan`, `/plan-progress`, `/plan-timeline`, `/plan-audit`) show live execution state.
+
 ### code quality
 
 The compliance checker validates against framework specifications on every file change. The antipattern hunter scans for silent catches, hardcoded secrets, and disabled tests. Test failures auto-spawn the test-writer agent. Lint runs on every cycle. Every PR is reviewed by the deputy CTO before it merges. Feature branch commits pass through lint and security gates only, keeping commit latency low.
@@ -269,7 +271,7 @@ The Notion plugin (`plugins/notion/`) syncs four GENTYR data sources to Notion d
 
 ## components
 
-32 MCP servers. 11 agents. 35 hooks. 19 commands. CLI dashboard. Plugin system with extensible local MCP servers.
+33 MCP servers. 11 agents. 38 hooks. 23 commands. CLI dashboard. Plugin system with extensible local MCP servers.
 
 ## documentation
 
