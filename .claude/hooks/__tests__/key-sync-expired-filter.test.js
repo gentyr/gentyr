@@ -490,4 +490,52 @@ describe('key-sync.js - Expired Token Refresh Filter (line ~409)', () => {
       );
     });
   });
+
+  describe('Code Structure: readCredentialSources() Keychain expiry filter', () => {
+    it('should NOT filter Keychain entries by expiresAt in readCredentialSources', () => {
+      const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+      // Extract the readCredentialSources function body
+      const fnMatch = code.match(/function readCredentialSources\(\)\s*\{[\s\S]*?\n\}/);
+      assert.ok(fnMatch, 'readCredentialSources must be defined');
+      const fnBody = fnMatch[0];
+
+      // The Keychain section should NOT have an expiresAt > now guard
+      // that would filter out expired tokens before they reach syncKeys
+      assert.doesNotMatch(
+        fnBody,
+        /expiresAt > now[\s\S]*?source:\s*['"]keychain['"]/,
+        'Keychain section must NOT filter by expiresAt > now (expired tokens should be included for refresh token sync)'
+      );
+    });
+
+    it('should still push Keychain entries with accessToken to sources', () => {
+      const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+      const fnMatch = code.match(/function readCredentialSources\(\)\s*\{[\s\S]*?\n\}/);
+      assert.ok(fnMatch, 'readCredentialSources must be defined');
+      const fnBody = fnMatch[0];
+
+      // The Keychain source should still push entries
+      assert.match(
+        fnBody,
+        /source:\s*['"]keychain['"]/,
+        'Must include keychain entries in credential sources'
+      );
+    });
+
+    it('should include refreshToken from Keychain entries', () => {
+      const code = fs.readFileSync(KEY_SYNC_PATH, 'utf8');
+
+      const fnMatch = code.match(/function readCredentialSources\(\)\s*\{[\s\S]*?\n\}/);
+      assert.ok(fnMatch, 'readCredentialSources must be defined');
+      const fnBody = fnMatch[0];
+
+      assert.match(
+        fnBody,
+        /refreshToken:\s*oauth\.refreshToken/,
+        'Keychain entries must include refreshToken for sync'
+      );
+    });
+  });
 });
