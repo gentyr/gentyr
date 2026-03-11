@@ -146,7 +146,7 @@ function evaluateQuotaGating(priority) {
     // Calculate best (lowest) max usage across all valid keys
     let bestMaxUsage = 100;
     for (const [, keyData] of Object.entries(state.keys)) {
-      if (keyData.status === 'invalid' || keyData.status === 'tombstone') continue;
+      if (keyData.status === 'invalid' || keyData.status === 'tombstone' || keyData.status === 'merged') continue;
       const usage = keyData.last_usage;
       if (!usage) continue;
       const maxUsage = Math.max(usage.five_hour || 0, usage.seven_day || 0, usage.seven_day_sonnet || 0);

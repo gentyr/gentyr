@@ -44,6 +44,7 @@ const MITM_DOMAINS = ['api.anthropic.com', 'mcp-proxy.anthropic.com'];
 
 /** Max retries on 429 before giving up */
 const MAX_429_RETRIES = 2;
+const MAX_401_RETRIES = 2;
 
 // ---------------------------------------------------------------------------
 // State
@@ -61,6 +62,7 @@ let logRotationEvent;
 let appendRotationAudit;
 let generateKeyId;
 let syncKeys;
+let refreshExpiredToken;
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -211,6 +213,70 @@ function rotateOnExhaustion(exhaustedKeyId) {
   return { token: state.keys[nextKeyId].accessToken, keyId: nextKeyId };
 }
 
+/**
+ * Handle 401 auth failure: mark failed key as expired, rotate to next, fire background refresh.
+ */
+function rotateOnAuth401Sync(failedKeyId) {
+  const state = readRotationState();
+
+  if (state.keys[failedKeyId]) {
+    state.keys[failedKeyId].status = 'expired';
+    logRotationEvent(state, {
+      timestamp: Date.now(),
+      event: 'key_expired',
+      key_id: failedKeyId,
+      reason: 'proxy_401_auth_failure',
+    });
+  }
+
+  const nextKeyId = selectActiveKey(state);
+  if (!nextKeyId || !state.keys[nextKeyId] || nextKeyId === failedKeyId) {
+    writeRotationState(state);
+    return null;
+  }
+
+  state.active_key_id = nextKeyId;
+  state.keys[nextKeyId].last_used_at = Date.now();
+  logRotationEvent(state, {
+    timestamp: Date.now(),
+    event: 'key_switched',
+    key_id: nextKeyId,
+    reason: 'proxy_401_rotation',
+    previous_key: failedKeyId,
+  });
+  writeRotationState(state);
+
+  try { updateActiveCredentials(state.keys[nextKeyId]); }
+  catch (err) { proxyLog('credential_update_failed', { error: err.message }); }
+
+  if (appendRotationAudit) {
+    appendRotationAudit('proxy_401_rotation', {
+      from: failedKeyId.slice(0, 8),
+      to: nextKeyId.slice(0, 8),
+      reason: 'auth_401',
+    });
+  }
+
+  // Fire-and-forget: attempt refresh of the failed key in background
+  if (refreshExpiredToken && state.keys[failedKeyId]?.refreshToken) {
+    refreshExpiredToken(state.keys[failedKeyId]).then(refreshed => {
+      if (refreshed && refreshed !== 'invalid_grant') {
+        const freshState = readRotationState();
+        if (freshState.keys[failedKeyId]) {
+          freshState.keys[failedKeyId].accessToken = refreshed.accessToken;
+          freshState.keys[failedKeyId].refreshToken = refreshed.refreshToken;
+          freshState.keys[failedKeyId].expiresAt = refreshed.expiresAt;
+          freshState.keys[failedKeyId].status = 'active';
+          writeRotationState(freshState);
+          proxyLog('background_refresh_success', { key_id: failedKeyId.slice(0, 8) });
+        }
+      }
+    }).catch(() => {});
+  }
+
+  return { token: state.keys[nextKeyId].accessToken, keyId: nextKeyId };
+}
+
 // ---------------------------------------------------------------------------
 // HTTP request forwarding (used after MITM TLS termination)
 // ---------------------------------------------------------------------------
@@ -336,6 +402,17 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
           active_key_id: activeKeyId.slice(0, 8),
         });
         // usePassthrough stays false — request gets active key's token
+      } else if (keyEntry && keyEntry.status === 'merged') {
+        // Deduplicated token — swap with active key (same as tombstone)
+        proxyLog('merged_token_swap', {
+          host,
+          method: parsed.method,
+          path: parsed.path.slice(0, 100),
+          incoming_key_id: incomingKeyId.slice(0, 8),
+          merged_into: (keyEntry.merged_into || '').slice(0, 8),
+          active_key_id: activeKeyId.slice(0, 8),
+        });
+        // usePassthrough stays false — request gets active key's token
       } else if (!keyEntry) {
         // Unknown token — likely fresh login, pass through unchanged (Bug A fix)
         usePassthrough = true;
@@ -457,16 +534,24 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
       return;
     }
 
-    // 401: retry once with fresh state read (auth error, not quota — don't call rotateOnExhaustion)
-    if (responseStatusCode === 401 && retryCount === 0 && !usePassthrough) {
+    // 401: rotate key and retry (auth error — expired token or server-side revocation)
+    if (responseStatusCode === 401 && retryCount < MAX_401_RETRIES && !usePassthrough) {
       upstream.destroy();
-      proxyLog('auth_retry_on_401', {
+      proxyLog('rotating_on_401', {
         host,
         method: parsed.method,
         path: parsed.path.slice(0, 100),
-        active_key_id: activeKeyId.slice(0, 8),
+        failed_key_id: activeKeyId.slice(0, 8),
         retry: retryCount,
       });
+      const next = rotateOnAuth401Sync(activeKeyId);
+      if (!next) {
+        proxyLog('all_keys_failed_auth', { host });
+        if (!clientSocket.destroyed) {
+          clientSocket.write(responseHeaderBuf);
+        }
+        return;
+      }
       forwardRequest(host, rawRequest, clientSocket, {
         retryCount: retryCount + 1,
         fromKeyId: activeKeyId,
@@ -676,6 +761,7 @@ async function main() {
   appendRotationAudit = keySync.appendRotationAudit;
   generateKeyId = keySync.generateKeyId;
   syncKeys = keySync.syncKeys;
+  refreshExpiredToken = keySync.refreshExpiredToken;
 
   // Load TLS certs
   const certs = loadCerts();

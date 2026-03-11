@@ -308,7 +308,7 @@ async function main() {
   // Safe: refreshing Account B's token does NOT revoke Account A's in-memory token.
   const now4b = Date.now();
   for (const [keyId, keyData] of Object.entries(state.keys)) {
-    if (keyData.status === 'invalid' || keyData.status === 'tombstone') continue;
+    if (keyData.status === 'invalid' || keyData.status === 'tombstone' || keyData.status === 'merged') continue;
     const isExpired = keyData.status === 'expired' && keyData.expiresAt && keyData.expiresAt < now4b;
     const isApproachingExpiry = keyId !== state.active_key_id && keyData.expiresAt && keyData.expiresAt > now4b && keyData.expiresAt < now4b + EXPIRY_BUFFER_MS;
     if (isExpired || isApproachingExpiry) {

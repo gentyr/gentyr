@@ -353,7 +353,7 @@ const KeyRotationKeyDataSchema = z.object({
     five_hour: z.number(),
     seven_day: z.number(),
   }).nullable().optional(),
-  status: z.enum(['active', 'exhausted', 'invalid', 'expired', 'tombstone']),
+  status: z.enum(['active', 'exhausted', 'invalid', 'expired', 'tombstone', 'merged']),
   account_uuid: z.string().nullable().optional(),
   account_email: z.string().nullable().optional(),
   tombstoned_at: z.number().optional(),
@@ -366,7 +366,7 @@ const KeyRotationStateSchema = z.object({
   rotation_log: z.array(z.object({
     timestamp: z.number(),
     event: z.string(),
-  })),
+  }).passthrough()),
 });
 
 type KeyRotationState = z.infer<typeof KeyRotationStateSchema>;
@@ -605,7 +605,7 @@ function collectAllKeys(): { keys: CollectedKey[]; rotationState: KeyRotationSta
       if (state?.version === 1 && typeof state.keys === 'object') {
         rotationState = state;
         for (const [keyId, keyData] of Object.entries(state.keys)) {
-          if (keyData.status === 'invalid' || keyData.status === 'expired' || keyData.status === 'tombstone') continue;
+          if (keyData.status === 'invalid' || keyData.status === 'expired' || keyData.status === 'tombstone' || keyData.status === 'merged') continue;
           if (!keyData.accessToken) continue;
           keyMap.set(keyId, {
             key_id: keyId,
@@ -682,9 +682,10 @@ export async function getVerifiedQuota(hours: number): Promise<VerifiedQuotaResu
     const storedAccounts: Array<{ fiveHour: number; sevenDay: number }> = [];
     const seen = new Set<string>();
     for (const [, keyData] of Object.entries(rotationState.keys)) {
-      if (keyData.status === 'invalid' || keyData.status === 'tombstone') continue;
+      if (keyData.status === 'invalid' || keyData.status === 'tombstone' || keyData.status === 'merged') continue;
       if (!keyData.last_usage) continue;
-      const dedupeKey = keyData.account_uuid || keyData.account_email || 'unknown';
+      const dedupeKey = keyData.account_uuid || keyData.account_email
+        || `fp:${keyData.last_usage.five_hour}:${keyData.last_usage.seven_day}`;
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
       storedAccounts.push({
