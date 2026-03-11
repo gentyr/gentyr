@@ -490,7 +490,8 @@ export async function syncKeys(log) {
   // Must run before pre-expiry swap to prevent swapping to a key that gets merged away.
   const dedup = deduplicateKeys(state);
   if (dedup.merged > 0) {
-    logFn(`[key-sync] Deduplicated ${dedup.merged} key(s) by account_uuid`);
+    const detailStr = dedup.details.map(d => `${d.removed}\u2192${d.survivor} (${d.email || 'unknown'})`).join(', ');
+    logFn(`[key-sync] Deduplicated ${dedup.merged} key(s): ${detailStr}`);
   }
 
   // Pre-expiry restartless swap: if the active key is near expiry, write a valid standby
@@ -833,7 +834,7 @@ export function selectActiveKey(state) {
  * @returns {{merged: number}} Number of keys removed by deduplication
  */
 export function deduplicateKeys(state) {
-  const result = { merged: 0 };
+  const result = { merged: 0, details: [] };
 
   // Group keys by account_uuid. Skip keys without one.
   const accountGroups = new Map();
@@ -870,6 +871,7 @@ export function deduplicateKeys(state) {
     // Remove all non-survivor entries
     for (let i = 1; i < entries.length; i++) {
       const removedId = entries[i].id;
+      const email = entries[i].data.account_email || survivor.data.account_email || null;
 
       // If active_key_id pointed to a removed key, redirect to survivor
       if (state.active_key_id === removedId) {
@@ -878,6 +880,11 @@ export function deduplicateKeys(state) {
 
       delete state.keys[removedId];
       result.merged++;
+      result.details.push({
+        removed: removedId.slice(0, 8),
+        survivor: survivor.id.slice(0, 8),
+        email,
+      });
     }
   }
 

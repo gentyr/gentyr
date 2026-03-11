@@ -623,9 +623,11 @@ async function main() {
 
   // Build quota status part (compact for critical mode)
   let quotaPart = '';
-  if (aggregateQuota && aggregateQuota.activeCount > 1) {
+  if (aggregateQuota && aggregateQuota.activeCount >= 1) {
     // Compact aggregate display for critical mode (% of total capacity)
-    quotaPart = `Quota (${aggregateQuota.activeCount} accounts): 5h ${aggregateQuota.fiveHourPct}% 7d ${aggregateQuota.sevenDayPct}%`;
+    const activeAccount = aggregateQuota.accounts?.find(a => a.isActive);
+    const activeLabel = activeAccount?.email || 'unknown';
+    quotaPart = `Quota (${aggregateQuota.activeCount} account${aggregateQuota.activeCount > 1 ? 's' : ''}): 5h ${aggregateQuota.fiveHourPct}% 7d ${aggregateQuota.sevenDayPct}% [${activeLabel}]`;
   } else if (!quota.error && quota.five_hour && quota.seven_day) {
     // Single key display
     const fiveHour = `5h: ${Math.round(quota.five_hour.utilization)}%`;
@@ -654,11 +656,11 @@ async function main() {
     }
 
     // Line 1: Quota status - use aggregate if available, otherwise single-key
-    if (aggregateQuota && aggregateQuota.activeCount > 1) {
-      // Multi-account aggregate display (% of total capacity)
+    if (aggregateQuota && aggregateQuota.activeCount >= 1) {
+      // Aggregate display (% of total capacity) — works for 1 or more accounts
       const fhBar = progressBar(aggregateQuota.fiveHourPct, 8);
       const sdBar = progressBar(aggregateQuota.sevenDayPct, 8);
-      lines.push(`Quota (${aggregateQuota.activeCount} accounts): 5h ${fhBar} ${aggregateQuota.fiveHourPct}% | 7d ${sdBar} ${aggregateQuota.sevenDayPct}%`);
+      lines.push(`Quota (${aggregateQuota.activeCount} account${aggregateQuota.activeCount > 1 ? 's' : ''}): 5h ${fhBar} ${aggregateQuota.fiveHourPct}% | 7d ${sdBar} ${aggregateQuota.sevenDayPct}%`);
 
       // Accounts line with emails and per-account 5h usage
       if (aggregateQuota.accounts) {

@@ -232,6 +232,60 @@ describe('quota-monitor.js - Code Structure', () => {
         'Must import appendRotationAudit from key-sync.js for rotation telemetry'
       );
     });
+
+    it('should use account_email for rotation systemMessage instead of raw key ID prefix', () => {
+      const code = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // The rotation message must use account_email (with key ID as fallback).
+      // This means the code must read account_email from state.keys for both
+      // the from-account and to-account labels.
+      assert.match(
+        code,
+        /account_email.*selectedKeyId|account_email.*previousKeyId|toEmail.*account_email|fromEmail.*account_email/,
+        'Rotation message must use account_email for from/to labels'
+      );
+    });
+
+    it('should use email variables in the rotation systemMessage', () => {
+      const code = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // Variables named toEmail and fromEmail (or similar) must be constructed
+      // from account_email with key ID slice as fallback, then interpolated into
+      // the systemMessage string.
+      assert.match(
+        code,
+        /toEmail|fromEmail/,
+        'Must define email variables for from/to accounts in rotation message'
+      );
+    });
+
+    it('should emit different exhaustion messages for automated vs interactive sessions', () => {
+      const code = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // Must branch on isAutomated for the exhaustion (all accounts exhausted) message
+      assert.match(
+        code,
+        /isAutomated[\s\S]{0,300}paused|paused[\s\S]{0,300}isAutomated/,
+        'Automated exhaustion message must mention session will be paused'
+      );
+
+      assert.match(
+        code,
+        /\/login|add a fresh account/,
+        'Interactive exhaustion message must guide user to add an account or use /login'
+      );
+    });
+
+    it('should include active account email in exhaustion message', () => {
+      const code = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // The exhaustion message must identify the current active account by email
+      assert.match(
+        code,
+        /activeEmail.*account_email|account_email.*activeEmail/,
+        'Must resolve activeEmail from account_email for exhaustion message'
+      );
+    });
   });
 
   describe('main() structure integrity', () => {
