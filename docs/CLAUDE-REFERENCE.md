@@ -241,8 +241,9 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 - `refreshExpiredToken` returns the sentinel string `'invalid_grant'` (not `null`) when the OAuth server responds HTTP 400 + `{ error: 'invalid_grant' }`; callers mark the key `invalid` and skip it permanently
 - **Step 4c pre-expiry restartless swap**: When the active key is within 10 min of expiry and a valid standby exists, writes standby to Keychain via `updateActiveCredentials()`; Claude Code's built-in `SRA()` (proactive refresh at 5 min before expiry) or `r6T()` (401 recovery) picks up the new token seamlessly — no restart needed
 - Safe: refreshing Account B does not revoke Account A's in-memory token
-- **Seamless rotation** (quota-based): writes new credentials to Keychain, continues with `continue: true` for all sessions, credentials adopted at token expiry (SRA) or 401 (r6T)
+- **Seamless rotation** (quota-based): writes new credentials to Keychain, continues with `continue: true` for all sessions, credentials adopted at token expiry (SRA) or 401 (r6T); rotation message shows `fromEmail (usage%) → toEmail` for human-readable account identification
   - No disruptive kill/restart paths; no orphaned processes
+  - All-exhausted message differentiates interactive vs automated sessions and includes active account email; interactive prompt suggests `/login`, automated prompt notes session will resume when quota resets
 - Post-rotation health audit: logs rotation verification to `rotation-audit.log`
 - Fires `account_nearly_depleted` rotation log event when active key reaches 95% usage (5-hour per-key cooldown to avoid re-firing every check cycle)
 - Fires `account_quota_refreshed` rotation log event when a previously exhausted key's usage drops back below 100% (also fires in `api-key-watcher.js` during SessionStart health checks)
@@ -258,6 +259,7 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 - `selectActiveKey()` freshness gate: nulls out usage data older than 15 minutes to prevent uninformed switches based on stale health checks; stale keys pass "usable" filter but are excluded from comparison logic, causing system to stay put rather than make blind decisions
 - `pruneDeadKeys` converts keys with `status: 'invalid'` to `status: 'tombstone'` (with `tombstoned_at` timestamp and 24h TTL) rather than deleting them; tombstoned keys are distinguishable from genuinely unknown tokens so the rotation proxy can swap rather than passthrough; fires `account_auth_failed` rotation log event only when an account loses its last viable key; email resolution order: key-level `account_email` → sibling key with same `account_uuid` → rotation_log history for same `key_id`; fires `account_auth_failed` only once per account (checks remaining non-pruned keys with same email to avoid duplicates); tombstoned entries removed from rotation_log only after their 24h TTL expires; `hasOtherViableKey` filter excludes `tombstone` status; never prunes the active key; called automatically at the end of every `syncKeys()` run
 - `refreshExpiredToken` skips keys with `status: 'tombstone'` (in addition to `'invalid'`)
+- `deduplicateKeys()` returns `{ merged: number, details: Array<{ removed: string, survivor: string, email: string|null }> }` — `details` contains truncated key ID pairs and account email for each merge; used by `syncKeys()` to log human-readable dedup output (e.g., `a1b2c3d4→e5f6g7h8 (user@example.com)`)
 
 ### Rotation Monitoring
 
@@ -300,10 +302,10 @@ Research artifact from investigating Claude Code's credential memoization cache.
 - Checks deputy-cto database (pending decisions, rejections), agent-reports database (unread reports), todo.db (queued/active task counts), and autonomous mode status
 - Reads aggregate quota from `~/.claude/api-key-rotation.json`; deduplicates same-account keys by `account_uuid`; falls back to fingerprint cross-match for null-UUID keys
 - Displays a multi-line status block each prompt (quota bar, 30-day token usage, session counts, TODO counts, pending CTO items)
-- Critical mode: when `rejections > 0`, collapses to a compact one-liner with `COMMITS BLOCKED` prefix
+- Critical mode: when `rejections > 0`, collapses to a compact one-liner with `COMMITS BLOCKED` prefix; compact quota display appends `[activeEmail]` and uses `activeCount >= 1` guard (works for single-account setups too) with singular/plural grammar
 - Uses an incremental session-file cache (`~/.claude/cto-metrics-cache-*.json`) with a 3-second time budget to compute token usage without blocking
 - Output uses both `systemMessage` (terminal display) and `hookSpecificOutput.additionalContext` (AI model context) so the AI can act on quota/deadline data
-- Tests at `.claude/hooks/__tests__/cto-notification-hook.test.js` (36 tests, runs via `node --test`)
+- Tests at `.claude/hooks/__tests__/cto-notification-hook.test.js` (38 tests, runs via `node --test`)
 
 ### Branch Drift Check Hook
 
