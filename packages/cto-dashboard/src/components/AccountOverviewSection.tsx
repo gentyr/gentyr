@@ -90,16 +90,6 @@ export function deduplicateAccounts(accounts: AccountKeyDetail[]): DeduplicatedA
   return result;
 }
 
-function statusColor(status: AccountKeyDetail['status']): string {
-  switch (status) {
-    case 'active': return 'green';
-    case 'exhausted': return 'red';
-    case 'expired': return 'yellow';
-    case 'invalid': return 'gray';
-    case 'tombstone': return 'gray';
-  }
-}
-
 function eventColor(event: string): string {
   switch (event) {
     case 'key_switched': return 'cyan';
@@ -113,9 +103,45 @@ function eventColor(event: string): string {
   }
 }
 
+function authLabel(status: AccountKeyDetail['status']): { text: string; color: string } {
+  switch (status) {
+    case 'active':
+    case 'exhausted':
+      return { text: 'OK', color: 'green' };
+    case 'expired':
+      return { text: 'expired', color: 'yellow' };
+    case 'invalid':
+      return { text: 'failed', color: 'red' };
+    case 'tombstone':
+      return { text: 'removed', color: 'gray' };
+  }
+}
+
+function quotaLabel(account: DeduplicatedAccount): { text: string; color: string } {
+  if (account.bestStatus === 'invalid' || account.bestStatus === 'expired' || account.bestStatus === 'tombstone') {
+    return { text: '-', color: 'gray' };
+  }
+  if (account.hasUsage) {
+    return { text: 'available', color: 'green' };
+  }
+  return { text: 'depleted', color: 'red' };
+}
+
+function AccountHeader(): React.ReactElement {
+  return (
+    <Box>
+      <Text color="gray">{'  '}</Text>
+      <Text color="gray" bold>{'Account'.padEnd(26)}</Text>
+      <Text color="gray" bold>{'Auth'.padEnd(10)}</Text>
+      <Text color="gray" bold>{'Quota'.padEnd(11)}</Text>
+      <Text color="gray" bold>{'Usage'}</Text>
+    </Box>
+  );
+}
+
 function AccountRow({ account }: { account: DeduplicatedAccount }): React.ReactElement {
-  const isTombstone = account.bestStatus === 'tombstone';
   const marker = account.isCurrent ? '* ' : '  ';
+  const isTombstone = account.bestStatus === 'tombstone';
   const prefix = isTombstone ? '[x] ' : '';
   const maxEmailLen = 26 - prefix.length;
   const emailDisplay = account.email.length > maxEmailLen
@@ -123,15 +149,8 @@ function AccountRow({ account }: { account: DeduplicatedAccount }): React.ReactE
     : account.email;
   const emailPad = (prefix + emailDisplay).padEnd(26);
 
-  const tokenStr = isTombstone ? 'removed' : account.hasValidToken ? 'valid' : 'invalid';
-  const tokenColor = isTombstone ? 'gray' : account.hasValidToken ? 'green' : 'red';
-
-  const usageStr = isTombstone
-    ? 're-auth'
-    : account.bestStatus === 'invalid'
-      ? '-'
-      : account.hasUsage ? 'available' : 'exhausted';
-  const usageColor = isTombstone ? 'yellow' : account.hasUsage ? 'green' : account.bestStatus === 'invalid' ? 'gray' : 'red';
+  const auth = authLabel(account.bestStatus);
+  const quota = quotaLabel(account);
 
   const fiveH = account.fiveHourPct != null ? `${account.fiveHourPct}%` : '-';
   const sevenD = account.sevenDayPct != null ? `${account.sevenDayPct}%` : '-';
@@ -140,9 +159,8 @@ function AccountRow({ account }: { account: DeduplicatedAccount }): React.ReactE
     <Box>
       <Text color={account.isCurrent ? 'cyan' : 'gray'}>{marker}</Text>
       <Text color="white">{emailPad}</Text>
-      <Text color={statusColor(account.bestStatus)}>{account.bestStatus.padEnd(10)}</Text>
-      <Text color={tokenColor}>{tokenStr.padEnd(9)}</Text>
-      <Text color={usageColor}>{usageStr.padEnd(11)}</Text>
+      <Text color={auth.color}>{auth.text.padEnd(10)}</Text>
+      <Text color={quota.color}>{quota.text.padEnd(11)}</Text>
       <Text color="gray">{`5h:${fiveH.padStart(4)}  7d:${sevenD.padStart(4)}`}</Text>
     </Box>
   );
@@ -165,6 +183,7 @@ export function AccountOverviewSection({ data, tip }: AccountOverviewSectionProp
   return (
     <Section title={title} tip={tip}>
       <Box flexDirection="column">
+        <AccountHeader />
         {deduplicated.map((account, idx) => (
           <AccountRow key={`${account.email}-${idx}`} account={account} />
         ))}
