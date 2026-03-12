@@ -435,6 +435,7 @@ Curated product walkthroughs mapped to personas. Managed by product-manager agen
 | "Are all demos passing?" | `/demo-validate` (headless, fast, pass/fail only) |
 | "Show me this one scenario" | `/demo-autonomous` (headed, single scenario) |
 | "Browse tests interactively" | `/demo` (Playwright UI mode) |
+| "Register demo setup commands" | `register_prerequisite` MCP tool |
 
 **Bulk defaults** (`/demo-bulk` or `run_demo_batch`):
 headless=true, batch_size=5, slow_mo=0
@@ -445,6 +446,45 @@ headless=false, slow_mo=800
 Video recording is always enabled. Scenario videos: `.claude/recordings/demos/{scenarioId}.webm`
 
 Dev server is auto-started if not running — no manual setup needed.
+
+### Demo Prerequisites
+
+Register setup commands that must run before demos. Prerequisites are idempotent: if a health check passes, the setup command is skipped.
+
+**3 scopes:**
+- `global` — runs before all demos
+- `persona` — runs before demos for a specific persona
+- `scenario` — runs before a specific scenario
+
+**Execution order:** global → persona → scenario, sorted by `sort_order` within each scope.
+
+**Health checks:** Optional verification command. If exit 0, setup command is skipped entirely. For `run_as_background` prerequisites (e.g., dev servers), the health check is polled every 2s until ready or timeout.
+
+**CRUD tools** (on `user-feedback` server): `register_prerequisite`, `update_prerequisite`, `delete_prerequisite`, `list_prerequisites`.
+
+**Execution tool** (on `playwright` server): `run_prerequisites` — automatically called by `run_demo`, `run_demo_batch`, and `preflight_check`.
+
+### Automated Demo Validation
+
+6-hour automated cycle that runs all enabled demo scenarios headless and spawns repair agents for failures.
+
+**Opt-in:** Set `demoValidationEnabled: true` in `.claude/state/automation-config.json`.
+
+**Flow:**
+1. Query enabled scenarios from `user-feedback.db`
+2. Run global prerequisites
+3. Execute each scenario headless (`DEMO_HEADLESS=1, DEMO_SLOW_MO=0`)
+4. Persist results to `.claude/state/demo-validation-history.json` (last 100 runs)
+5. Spawn `demo-manager` repair agents (max 3) for failures in isolated worktrees
+6. Report failures to deputy-CTO via `agent-reports`
+
+ADK-category scenarios are skipped (require replay data). Cooldown: `demo_validation` (default 360 minutes / 6 hours).
+
+### Demo-Manager Agent
+
+Sole authority for demo lifecycle work. Handles prerequisite registration, scenario creation, `.demo.ts` implementation, preflight, execution, video recording, debugging, and repair.
+
+**Rules:** Only modifies `.demo.ts` files and demo configuration. Does NOT commit (project-manager handles git). Other agents (`code-writer`, `test-writer`, `feedback-agent`) are explicitly forbidden from modifying `.demo.ts` files.
 
 ## Rotation Proxy
 

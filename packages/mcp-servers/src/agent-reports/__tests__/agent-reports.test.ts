@@ -612,9 +612,9 @@ describe('Agent Reports Server', () => {
 
     it('should return counts', () => {
       const reports = [
-        createReport({}),
-        createReadReport({}),
-        createTriagedReport('escalated', {}),
+        createReport({ title: 'Unread pending report' }),
+        createReadReport({ title: 'Read pending report' }),
+        createTriagedReport('escalated', { title: 'Escalated report' }),
       ];
       insertReports(db, reports);
 
@@ -746,10 +746,10 @@ describe('Agent Reports Server', () => {
 
     it('should count untriaged reports', () => {
       const reports = [
-        createReport({ priority: 'critical' }),
-        createReport({ priority: 'high' }),
-        createReport({ priority: 'normal' }),
-        createReport({ priority: 'normal' }),
+        createReport({ priority: 'critical', title: 'Critical priority report' }),
+        createReport({ priority: 'high', title: 'High priority report' }),
+        createReport({ priority: 'normal', title: 'Normal priority report 1' }),
+        createReport({ priority: 'normal', title: 'Normal priority report 2' }),
       ];
       insertReports(db, reports);
 
@@ -948,9 +948,9 @@ describe('Agent Reports Server', () => {
 
     it('should count pending and in_progress', () => {
       const reports = [
-        createReport({}),
-        createReport({ triage_status: 'in_progress', triage_started_at: new Date().toISOString() }),
-        createReport({}),
+        createReport({ title: 'Pending report 1' }),
+        createReport({ title: 'In progress report', triage_status: 'in_progress', triage_started_at: new Date().toISOString() }),
+        createReport({ title: 'Pending report 2' }),
       ];
       insertReports(db, reports);
 
