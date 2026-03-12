@@ -76,6 +76,10 @@ import {
   type StopDemoBatchResult,
   type DemoBatchState,
   type BatchScenarioResult,
+  RunPrerequisitesArgsSchema,
+  type RunPrerequisitesArgs,
+  type PrerequisiteExecEntry,
+  type RunPrerequisitesResult,
 } from './types.js';
 import { parseTestOutput, truncateOutput, validateExtraEnv } from './helpers.js';
 import { discoverPlaywrightConfig } from './config-discovery.js';
@@ -466,12 +470,266 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
 }
 
 /**
+ * Execute demo prerequisites from user-feedback.db.
+ * Runs health checks first — if a prerequisite's health check passes (exit 0),
+ * its setup command is skipped (idempotent).
+ * Background prerequisites are spawned detached and polled via health check.
+ *
+ * Scope resolution: global prerequisites always run first, then persona-specific,
+ * then scenario-specific. Within each scope, ordered by sort_order ASC.
+ */
+async function executePrerequisites(opts: {
+  scenario_id?: string;
+  persona_id?: string;
+  dry_run?: boolean;
+}): Promise<RunPrerequisitesResult> {
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+  const entries: PrerequisiteExecEntry[] = [];
+
+  if (!fs.existsSync(dbPath)) {
+    return { success: true, total: 0, passed: 0, failed: 0, skipped: 0, entries, message: 'No user-feedback.db found — no prerequisites configured' };
+  }
+
+  let db: InstanceType<typeof Database>;
+  try {
+    db = new Database(dbPath, { readonly: true });
+  } catch {
+    return { success: true, total: 0, passed: 0, failed: 0, skipped: 0, entries, message: 'Could not open user-feedback.db — skipping prerequisites' };
+  }
+
+  try {
+    // Check table exists
+    const tableCheck = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='demo_prerequisites'"
+    ).get() as { name: string } | undefined;
+    if (!tableCheck) {
+      return { success: true, total: 0, passed: 0, failed: 0, skipped: 0, entries, message: 'No demo_prerequisites table — no prerequisites configured' };
+    }
+
+    // Resolve persona_id from scenario_id if needed
+    let personaId = opts.persona_id;
+    if (opts.scenario_id && !personaId) {
+      const scenario = db.prepare('SELECT persona_id FROM demo_scenarios WHERE id = ?').get(opts.scenario_id) as { persona_id: string } | undefined;
+      if (scenario) personaId = scenario.persona_id;
+    }
+
+    // Build query: always include global, optionally persona and scenario
+    const scopeConditions: string[] = ["scope = 'global'"];
+    const params: string[] = [];
+
+    if (personaId) {
+      scopeConditions.push("(scope = 'persona' AND persona_id = ?)");
+      params.push(personaId);
+    }
+    if (opts.scenario_id) {
+      scopeConditions.push("(scope = 'scenario' AND scenario_id = ?)");
+      params.push(opts.scenario_id);
+    }
+
+    const query = `SELECT * FROM demo_prerequisites WHERE enabled = 1 AND (${scopeConditions.join(' OR ')}) ORDER BY CASE scope WHEN 'global' THEN 0 WHEN 'persona' THEN 1 WHEN 'scenario' THEN 2 END, sort_order ASC`;
+
+    const prerequisites = db.prepare(query).all(...params) as Array<{
+      id: string;
+      command: string;
+      description: string;
+      timeout_ms: number;
+      health_check: string | null;
+      health_check_timeout_ms: number;
+      scope: string;
+      run_as_background: number;
+    }>;
+
+    if (prerequisites.length === 0) {
+      return { success: true, total: 0, passed: 0, failed: 0, skipped: 0, entries, message: 'No matching prerequisites found' };
+    }
+
+    if (opts.dry_run) {
+      for (const prereq of prerequisites) {
+        entries.push({
+          id: prereq.id,
+          description: prereq.description,
+          scope: prereq.scope,
+          health_check_result: prereq.health_check ? 'skipped' : 'not_configured',
+          command_result: 'skipped',
+          duration_ms: 0,
+        });
+      }
+      return { success: true, total: prerequisites.length, passed: 0, failed: 0, skipped: prerequisites.length, entries, message: `Dry run: ${prerequisites.length} prerequisite(s) would execute` };
+    }
+
+    // Execute each prerequisite
+    let passed = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    for (const prereq of prerequisites) {
+      const startTime = Date.now();
+      const entry: PrerequisiteExecEntry = {
+        id: prereq.id,
+        description: prereq.description,
+        scope: prereq.scope,
+        health_check_result: 'not_configured',
+        command_result: 'skipped',
+        duration_ms: 0,
+      };
+
+      try {
+        // Step 1: Check health_check first (if configured)
+        if (prereq.health_check) {
+          try {
+            execFileSync('sh', ['-c', prereq.health_check], {
+              cwd: PROJECT_DIR,
+              timeout: prereq.health_check_timeout_ms,
+              stdio: 'pipe',
+              encoding: 'utf8',
+            });
+            // Health check passed — prerequisite already satisfied
+            entry.health_check_result = 'passed';
+            entry.command_result = 'skipped';
+            entry.duration_ms = Date.now() - startTime;
+            entries.push(entry);
+            skipped++;
+            continue;
+          } catch {
+            // Health check failed — need to run setup command
+            entry.health_check_result = 'failed';
+          }
+        }
+
+        // Step 2: Run the setup command
+        if (prereq.run_as_background) {
+          // Background command: spawn detached, poll health_check
+          const child = spawn('sh', ['-c', prereq.command], {
+            cwd: PROJECT_DIR,
+            detached: true,
+            stdio: 'ignore',
+            env: { ...process.env },
+          });
+          child.unref();
+
+          // Poll health check if available
+          if (prereq.health_check) {
+            const pollStart = Date.now();
+            const pollInterval = 2000; // 2 seconds
+            let ready = false;
+
+            while (Date.now() - pollStart < prereq.timeout_ms) {
+              await new Promise(resolve => setTimeout(resolve, pollInterval));
+              try {
+                execFileSync('sh', ['-c', prereq.health_check], {
+                  cwd: PROJECT_DIR,
+                  timeout: prereq.health_check_timeout_ms,
+                  stdio: 'pipe',
+                  encoding: 'utf8',
+                });
+                ready = true;
+                break;
+              } catch {
+                // Not ready yet, keep polling
+              }
+            }
+
+            if (!ready) {
+              entry.command_result = 'failed';
+              entry.error = `Background command started but health check did not pass within ${prereq.timeout_ms}ms`;
+              entry.duration_ms = Date.now() - startTime;
+              entries.push(entry);
+              failed++;
+              return { success: false, total: prerequisites.length, passed, failed, skipped, entries, message: `Prerequisite failed: ${prereq.description} — ${entry.error}` };
+            }
+          } else {
+            // No health check for background command — wait a brief moment
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+
+          entry.command_result = 'passed';
+        } else {
+          // Foreground command: run synchronously
+          try {
+            execFileSync('sh', ['-c', prereq.command], {
+              cwd: PROJECT_DIR,
+              timeout: prereq.timeout_ms,
+              stdio: 'pipe',
+              encoding: 'utf8',
+            });
+            entry.command_result = 'passed';
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            entry.command_result = 'failed';
+            entry.error = message.length > 500 ? message.slice(0, 500) + '...' : message;
+            entry.duration_ms = Date.now() - startTime;
+            entries.push(entry);
+            failed++;
+            return { success: false, total: prerequisites.length, passed, failed, skipped, entries, message: `Prerequisite failed: ${prereq.description} — ${entry.error}` };
+          }
+
+          // Step 3: Verify via health check if available
+          if (prereq.health_check) {
+            try {
+              execFileSync('sh', ['-c', prereq.health_check], {
+                cwd: PROJECT_DIR,
+                timeout: prereq.health_check_timeout_ms,
+                stdio: 'pipe',
+                encoding: 'utf8',
+              });
+            } catch {
+              entry.command_result = 'failed';
+              entry.error = 'Command succeeded but health check verification failed after execution';
+              entry.duration_ms = Date.now() - startTime;
+              entries.push(entry);
+              failed++;
+              return { success: false, total: prerequisites.length, passed, failed, skipped, entries, message: `Prerequisite failed: ${prereq.description} — ${entry.error}` };
+            }
+          }
+        }
+
+        entry.duration_ms = Date.now() - startTime;
+        entries.push(entry);
+        passed++;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        entry.command_result = 'failed';
+        entry.error = message.length > 500 ? message.slice(0, 500) + '...' : message;
+        entry.duration_ms = Date.now() - startTime;
+        entries.push(entry);
+        failed++;
+        return { success: false, total: prerequisites.length, passed, failed, skipped, entries, message: `Prerequisite failed: ${prereq.description}` };
+      }
+    }
+
+    return {
+      success: true,
+      total: prerequisites.length,
+      passed,
+      failed,
+      skipped,
+      entries,
+      message: `All ${prerequisites.length} prerequisite(s) satisfied (${passed} executed, ${skipped} skipped via health check)`,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+/**
  * Launch Playwright tests in headed auto-play mode.
  * Runs tests in a visible browser at configurable speed via DEMO_SLOW_MO env var.
  * Validates prerequisites, spawns a detached process, and monitors for early crashes.
  */
 async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const { project, slow_mo, base_url, test_file } = args;
+
+  // Execute registered prerequisites
+  const prereqResult = await executePrerequisites({
+    scenario_id: args.scenario_id,
+  });
+  if (!prereqResult.success) {
+    return {
+      success: false,
+      project,
+      message: `Demo prerequisites failed: ${prereqResult.message}`,
+    };
+  }
 
   // Pre-flight validation
   const preflight = validatePrerequisites();
@@ -2073,6 +2331,28 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   const warnings: string[] = [];
   const recoverySteps: string[] = [];
 
+  // 0. Prerequisites
+  const prereqStart = Date.now();
+  try {
+    const prereqResult = await executePrerequisites({ dry_run: false });
+    if (prereqResult.success) {
+      const msg = prereqResult.total === 0
+        ? 'No prerequisites configured'
+        : `${prereqResult.passed} executed, ${prereqResult.skipped} skipped (health check passed)`;
+      checks.push({ name: 'prerequisites', status: prereqResult.total === 0 ? 'skip' : 'pass', message: msg, duration_ms: Date.now() - prereqStart });
+    } else {
+      checks.push({ name: 'prerequisites', status: 'fail', message: prereqResult.message, duration_ms: Date.now() - prereqStart });
+      failures.push(`Prerequisites: ${prereqResult.message}`);
+      const failedEntries = prereqResult.entries.filter(e => e.command_result === 'failed');
+      for (const entry of failedEntries) {
+        recoverySteps.push(`Fix prerequisite "${entry.description}": ${entry.error || 'unknown error'}`);
+      }
+    }
+  } catch (err) {
+    checks.push({ name: 'prerequisites', status: 'warn', message: `Could not run prerequisites: ${err instanceof Error ? err.message : String(err)}`, duration_ms: Date.now() - prereqStart });
+    warnings.push(`Prerequisites check failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   // 1. Config exists
   checks.push(runCheck('config_exists', () => {
     const tsConfig = path.join(PROJECT_DIR, 'playwright.config.ts');
@@ -3242,6 +3522,12 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs): 
  * Discovers scenarios, partitions into batches, and runs them sequentially in the background.
  */
 async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
+  // Execute global prerequisites before batch
+  const prereqResult = await executePrerequisites({});
+  if (!prereqResult.success) {
+    return JSON.stringify({ error: `Prerequisites failed: ${prereqResult.message}` });
+  }
+
   // Ensure dev server is running
   const devServer = await ensureDevServer(args.base_url || 'http://localhost:3000');
   if (!devServer.ready) {
@@ -3475,6 +3761,18 @@ const tools: AnyToolHandler[] = [
       'want to abort the remaining tests.',
     schema: StopDemoArgsSchema,
     handler: stopDemo,
+  },
+  {
+    name: 'run_prerequisites',
+    description:
+      'Execute registered demo prerequisites. Runs health checks first — if a prerequisite\'s ' +
+      'health check passes (exit 0), its setup command is skipped (idempotent). ' +
+      'Background prerequisites (dev servers) are spawned detached and polled via health check. ' +
+      'Returns per-prerequisite pass/fail/skip status. ' +
+      'Automatically called by run_demo, run_demo_batch, and preflight_check. ' +
+      'Use this tool for explicit manual prerequisite execution.',
+    schema: RunPrerequisitesArgsSchema,
+    handler: async (args: RunPrerequisitesArgs) => executePrerequisites(args),
   },
   {
     name: 'run_tests',

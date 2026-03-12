@@ -550,3 +550,94 @@ export interface LatestFeatureFeedbackResult {
   entries: LatestFeatureFeedbackEntry[];
   total: number;
 }
+
+// ============================================================================
+// Demo Prerequisite Schemas
+// ============================================================================
+
+export const PREREQUISITE_SCOPE = ['global', 'persona', 'scenario'] as const;
+export type PrerequisiteScope = (typeof PREREQUISITE_SCOPE)[number];
+
+export const RegisterPrerequisiteArgsSchema = z.object({
+  command: z.string().min(1).max(2000).describe('Shell command to execute (e.g., "pnpm dev", "npm run build:extension")'),
+  description: z.string().min(1).max(500).describe('Human-readable description of what this prerequisite does'),
+  timeout_ms: z.coerce.number().int().min(1000).max(300000).optional().default(30000)
+    .describe('Max execution time in milliseconds (1s-300s, default: 30s)'),
+  health_check: z.string().max(2000).optional()
+    .describe('Optional command to verify the prerequisite is satisfied. If exit 0, setup command is skipped.'),
+  health_check_timeout_ms: z.coerce.number().int().min(1000).max(30000).optional().default(5000)
+    .describe('Timeout for health check command (1s-30s, default: 5s)'),
+  scope: z.enum(PREREQUISITE_SCOPE).optional().default('global')
+    .describe('Scope: "global" (all demos), "persona" (all demos for a persona), "scenario" (single scenario)'),
+  persona_id: z.string().optional().describe('Required when scope is "persona"'),
+  scenario_id: z.string().optional().describe('Required when scope is "scenario"'),
+  sort_order: z.coerce.number().int().min(0).max(999).optional().default(0)
+    .describe('Execution order within scope (lower runs first)'),
+  run_as_background: z.coerce.boolean().optional().default(false)
+    .describe('If true, command is spawned detached (for long-running processes like dev servers). Health check polls until ready.'),
+});
+
+export const UpdatePrerequisiteArgsSchema = z.object({
+  id: z.string().describe('Prerequisite UUID'),
+  command: z.string().min(1).max(2000).optional(),
+  description: z.string().min(1).max(500).optional(),
+  timeout_ms: z.coerce.number().int().min(1000).max(300000).optional(),
+  health_check: z.string().max(2000).optional(),
+  health_check_timeout_ms: z.coerce.number().int().min(1000).max(30000).optional(),
+  sort_order: z.coerce.number().int().min(0).max(999).optional(),
+  enabled: z.coerce.boolean().optional(),
+  run_as_background: z.coerce.boolean().optional(),
+});
+
+export const DeletePrerequisiteArgsSchema = z.object({
+  id: z.string().describe('Prerequisite UUID'),
+});
+
+export const ListPrerequisitesArgsSchema = z.object({
+  scope: z.enum(PREREQUISITE_SCOPE).optional(),
+  persona_id: z.string().optional(),
+  scenario_id: z.string().optional(),
+  enabled_only: z.coerce.boolean().optional().default(true),
+});
+
+export type RegisterPrerequisiteArgs = z.infer<typeof RegisterPrerequisiteArgsSchema>;
+export type UpdatePrerequisiteArgs = z.infer<typeof UpdatePrerequisiteArgsSchema>;
+export type DeletePrerequisiteArgs = z.infer<typeof DeletePrerequisiteArgsSchema>;
+export type ListPrerequisitesArgs = z.infer<typeof ListPrerequisitesArgsSchema>;
+
+export interface PrerequisiteRecord {
+  id: string;
+  command: string;
+  description: string;
+  timeout_ms: number;
+  health_check: string | null;
+  health_check_timeout_ms: number;
+  scope: string;
+  persona_id: string | null;
+  scenario_id: string | null;
+  sort_order: number;
+  enabled: number;
+  run_as_background: number;
+  created_at: string;
+  created_timestamp: string;
+  updated_at: string;
+}
+
+export interface PrerequisiteResult {
+  id: string;
+  command: string;
+  description: string;
+  timeout_ms: number;
+  health_check: string | null;
+  health_check_timeout_ms: number;
+  scope: string;
+  persona_id: string | null;
+  scenario_id: string | null;
+  sort_order: number;
+  enabled: boolean;
+  run_as_background: boolean;
+  created_at: string;
+  updated_at: string;
+  persona_name?: string;
+  scenario_title?: string;
+}

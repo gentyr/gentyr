@@ -103,6 +103,10 @@ mcp__agent-reports__report_to_deputy_cto({
 
 **DO NOT** use `mcp__deputy-cto__*` tools - those are reserved for the deputy-cto agent only.
 
+## Demo Scenarios
+
+Do NOT write or modify `*.demo.ts` files or manage demo scenarios. Demo work is handled exclusively by the `demo-manager` agent. If asked to create or fix a demo, create a task for the project-manager to route to demo-manager.
+
 ## Git Operations
 
 You do NOT commit, push, merge, or create PRs. The project-manager handles all git operations.
