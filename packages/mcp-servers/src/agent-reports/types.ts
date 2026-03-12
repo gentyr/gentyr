@@ -34,6 +34,7 @@ export const SubmitReportArgsSchema = z.object({
   summary: z.string().min(1).max(2000).describe('Detailed summary (max 2000 chars)'),
   category: z.enum(REPORT_CATEGORIES).optional().default('other').describe('Report category'),
   priority: z.enum(['low', 'normal', 'high', 'critical']).optional().default('normal').describe('Priority level'),
+  idempotency_key: z.string().optional().describe('Optional idempotency key. If a pending report with the same key exists, the existing report ID is returned without creating a duplicate.'),
 });
 // Backward compatibility alias
 export const ReportToCtoArgsSchema = SubmitReportArgsSchema;
@@ -131,6 +132,8 @@ export interface ReportRecord {
   created_timestamp: string;
   read_at: string | null;
   acknowledged_at: string | null;
+  // Idempotency
+  idempotency_key: string | null;
   // Triage lifecycle fields
   triage_status: TriageStatus;
   triage_started_at: string | null;
