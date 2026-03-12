@@ -62,6 +62,8 @@ export const AGENT_TYPES = {
   PR_REVIEWER: 'pr-reviewer',
   SESSION_REVIVED: 'session-revived',
   TASK_GATE: 'task-gate',
+  DEMO_VALIDATOR: 'demo-validator',
+  DEMO_REPAIR: 'demo-repair',
 };
 
 /**

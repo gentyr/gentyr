@@ -52,6 +52,10 @@ import {
   PlayRecordingArgsSchema,
   GetLatestFeatureFeedbackArgsSchema,
   PlayFeatureFeedbackArgsSchema,
+  RegisterPrerequisiteArgsSchema,
+  UpdatePrerequisiteArgsSchema,
+  DeletePrerequisiteArgsSchema,
+  ListPrerequisitesArgsSchema,
   type CreatePersonaArgs,
   type UpdatePersonaArgs,
   type DeletePersonaArgs,
@@ -81,16 +85,22 @@ import {
   type PlayFeatureFeedbackArgs,
   type LatestFeatureFeedbackEntry,
   type LatestFeatureFeedbackResult,
+  type RegisterPrerequisiteArgs,
+  type UpdatePrerequisiteArgs,
+  type DeletePrerequisiteArgs,
+  type ListPrerequisitesArgs,
   type PersonaRecord,
   type FeatureRecord,
   type PersonaFeatureRecord,
   type FeedbackRunRecord,
   type FeedbackSessionRecord,
   type ScenarioRecord,
+  type PrerequisiteRecord,
   type ErrorResult,
   type PersonaResult,
   type FeatureResult,
   type ScenarioResult,
+  type PrerequisiteResult,
   type PersonaForChangeResult,
   type FeedbackRunResult,
   type FeedbackRunSummaryResult,
@@ -213,6 +223,34 @@ CREATE TABLE IF NOT EXISTS demo_scenarios (
 
 CREATE INDEX IF NOT EXISTS idx_scenarios_persona ON demo_scenarios(persona_id);
 CREATE INDEX IF NOT EXISTS idx_scenarios_enabled ON demo_scenarios(enabled);
+
+CREATE TABLE IF NOT EXISTS demo_prerequisites (
+    id TEXT PRIMARY KEY,
+    command TEXT NOT NULL,
+    description TEXT NOT NULL,
+    timeout_ms INTEGER NOT NULL DEFAULT 30000,
+    health_check TEXT,
+    health_check_timeout_ms INTEGER NOT NULL DEFAULT 5000,
+    scope TEXT NOT NULL DEFAULT 'global',
+    persona_id TEXT,
+    scenario_id TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    run_as_background INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    created_timestamp TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CONSTRAINT valid_scope CHECK (scope IN ('global', 'persona', 'scenario')),
+    CONSTRAINT scope_persona_check CHECK (scope != 'persona' OR persona_id IS NOT NULL),
+    CONSTRAINT scope_scenario_check CHECK (scope != 'scenario' OR scenario_id IS NOT NULL),
+    FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
+    FOREIGN KEY (scenario_id) REFERENCES demo_scenarios(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_prerequisites_scope ON demo_prerequisites(scope);
+CREATE INDEX IF NOT EXISTS idx_prerequisites_enabled ON demo_prerequisites(enabled);
+CREATE INDEX IF NOT EXISTS idx_prerequisites_persona ON demo_prerequisites(persona_id);
+CREATE INDEX IF NOT EXISTS idx_prerequisites_scenario ON demo_prerequisites(scenario_id);
 `;
 
 // ============================================================================
@@ -350,6 +388,40 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       db.exec("ALTER TABLE demo_scenarios ADD COLUMN recording_path TEXT");
     }
 
+    // Auto-migration: create demo_prerequisites table if missing
+    try {
+      db.prepare("SELECT id FROM demo_prerequisites LIMIT 0").run();
+    } catch {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS demo_prerequisites (
+            id TEXT PRIMARY KEY,
+            command TEXT NOT NULL,
+            description TEXT NOT NULL,
+            timeout_ms INTEGER NOT NULL DEFAULT 30000,
+            health_check TEXT,
+            health_check_timeout_ms INTEGER NOT NULL DEFAULT 5000,
+            scope TEXT NOT NULL DEFAULT 'global',
+            persona_id TEXT,
+            scenario_id TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            run_as_background INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            created_timestamp TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CONSTRAINT valid_scope CHECK (scope IN ('global', 'persona', 'scenario')),
+            CONSTRAINT scope_persona_check CHECK (scope != 'persona' OR persona_id IS NOT NULL),
+            CONSTRAINT scope_scenario_check CHECK (scope != 'scenario' OR scenario_id IS NOT NULL),
+            FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
+            FOREIGN KEY (scenario_id) REFERENCES demo_scenarios(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_prerequisites_scope ON demo_prerequisites(scope);
+        CREATE INDEX IF NOT EXISTS idx_prerequisites_enabled ON demo_prerequisites(enabled);
+        CREATE INDEX IF NOT EXISTS idx_prerequisites_persona ON demo_prerequisites(persona_id);
+        CREATE INDEX IF NOT EXISTS idx_prerequisites_scenario ON demo_prerequisites(scenario_id);
+      `);
+    }
+
     // Migration: Convert any existing INTEGER timestamps to ISO 8601 TEXT (G005)
     db.exec(`UPDATE personas SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
     db.exec(`UPDATE features SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
@@ -416,6 +488,27 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       persona_name: personaName,
       last_recorded_at: record.last_recorded_at ?? null,
       recording_path: record.recording_path ?? null,
+    };
+  }
+
+  function prerequisiteToResult(record: PrerequisiteRecord, personaName?: string, scenarioTitle?: string): PrerequisiteResult {
+    return {
+      id: record.id,
+      command: record.command,
+      description: record.description,
+      timeout_ms: record.timeout_ms,
+      health_check: record.health_check,
+      health_check_timeout_ms: record.health_check_timeout_ms,
+      scope: record.scope,
+      persona_id: record.persona_id,
+      scenario_id: record.scenario_id,
+      sort_order: record.sort_order,
+      enabled: record.enabled === 1,
+      run_as_background: record.run_as_background === 1,
+      created_at: record.created_at,
+      updated_at: record.updated_at,
+      persona_name: personaName,
+      scenario_title: scenarioTitle,
     };
   }
 
@@ -1331,6 +1424,186 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   }
 
   // ============================================================================
+  // Demo Prerequisite CRUD
+  // ============================================================================
+
+  function registerPrerequisite(args: RegisterPrerequisiteArgs): PrerequisiteResult | ErrorResult {
+    // Validate scope constraints
+    if (args.scope === 'persona') {
+      if (!args.persona_id) {
+        return { error: 'persona_id is required when scope is "persona"' };
+      }
+      const persona = db.prepare('SELECT id, name FROM personas WHERE id = ?').get(args.persona_id) as { id: string; name: string } | undefined;
+      if (!persona) {
+        return { error: `Persona not found: ${args.persona_id}` };
+      }
+    } else if (args.scope === 'scenario') {
+      if (!args.scenario_id) {
+        return { error: 'scenario_id is required when scope is "scenario"' };
+      }
+      const scenario = db.prepare('SELECT id, title FROM demo_scenarios WHERE id = ?').get(args.scenario_id) as { id: string; title: string } | undefined;
+      if (!scenario) {
+        return { error: `Scenario not found: ${args.scenario_id}` };
+      }
+    } else {
+      // scope === 'global' — persona_id and scenario_id must not be set
+      if (args.persona_id) {
+        return { error: 'persona_id must not be set when scope is "global"' };
+      }
+      if (args.scenario_id) {
+        return { error: 'scenario_id must not be set when scope is "global"' };
+      }
+    }
+
+    const id = randomUUID();
+    const now = new Date();
+    const created_at = now.toISOString();
+    const created_timestamp = now.toISOString();
+
+    try {
+      db.prepare(`
+        INSERT INTO demo_prerequisites (id, command, description, timeout_ms, health_check, health_check_timeout_ms, scope, persona_id, scenario_id, sort_order, enabled, run_as_background, created_at, created_timestamp, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+      `).run(
+        id,
+        args.command,
+        args.description,
+        args.timeout_ms ?? 30000,
+        args.health_check ?? null,
+        args.health_check_timeout_ms ?? 5000,
+        args.scope ?? 'global',
+        args.persona_id ?? null,
+        args.scenario_id ?? null,
+        args.sort_order ?? 0,
+        args.run_as_background ? 1 : 0,
+        created_at,
+        created_timestamp,
+        created_at,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { error: `Failed to register prerequisite: ${message}` };
+    }
+
+    const record = db.prepare('SELECT * FROM demo_prerequisites WHERE id = ?').get(id) as PrerequisiteRecord;
+
+    let personaName: string | undefined;
+    if (record.persona_id) {
+      const p = db.prepare('SELECT name FROM personas WHERE id = ?').get(record.persona_id) as { name: string } | undefined;
+      personaName = p?.name;
+    }
+    let scenarioTitle: string | undefined;
+    if (record.scenario_id) {
+      const s = db.prepare('SELECT title FROM demo_scenarios WHERE id = ?').get(record.scenario_id) as { title: string } | undefined;
+      scenarioTitle = s?.title;
+    }
+
+    return prerequisiteToResult(record, personaName, scenarioTitle);
+  }
+
+  function updatePrerequisite(args: UpdatePrerequisiteArgs): PrerequisiteResult | ErrorResult {
+    const record = db.prepare('SELECT * FROM demo_prerequisites WHERE id = ?').get(args.id) as PrerequisiteRecord | undefined;
+    if (!record) {
+      return { error: `Prerequisite not found: ${args.id}` };
+    }
+
+    const updates: string[] = [];
+    const params: unknown[] = [];
+
+    if (args.command !== undefined) { updates.push('command = ?'); params.push(args.command); }
+    if (args.description !== undefined) { updates.push('description = ?'); params.push(args.description); }
+    if (args.timeout_ms !== undefined) { updates.push('timeout_ms = ?'); params.push(args.timeout_ms); }
+    if (args.health_check !== undefined) { updates.push('health_check = ?'); params.push(args.health_check); }
+    if (args.health_check_timeout_ms !== undefined) { updates.push('health_check_timeout_ms = ?'); params.push(args.health_check_timeout_ms); }
+    if (args.sort_order !== undefined) { updates.push('sort_order = ?'); params.push(args.sort_order); }
+    if (args.enabled !== undefined) { updates.push('enabled = ?'); params.push(args.enabled ? 1 : 0); }
+    if (args.run_as_background !== undefined) { updates.push('run_as_background = ?'); params.push(args.run_as_background ? 1 : 0); }
+
+    if (updates.length === 0) {
+      return { error: 'No fields to update' };
+    }
+
+    updates.push('updated_at = ?');
+    params.push(new Date().toISOString());
+    params.push(args.id);
+
+    try {
+      db.prepare(`UPDATE demo_prerequisites SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { error: `Failed to update prerequisite: ${message}` };
+    }
+
+    const updated = db.prepare('SELECT * FROM demo_prerequisites WHERE id = ?').get(args.id) as PrerequisiteRecord;
+
+    let personaName: string | undefined;
+    if (updated.persona_id) {
+      const p = db.prepare('SELECT name FROM personas WHERE id = ?').get(updated.persona_id) as { name: string } | undefined;
+      personaName = p?.name;
+    }
+    let scenarioTitle: string | undefined;
+    if (updated.scenario_id) {
+      const s = db.prepare('SELECT title FROM demo_scenarios WHERE id = ?').get(updated.scenario_id) as { title: string } | undefined;
+      scenarioTitle = s?.title;
+    }
+
+    return prerequisiteToResult(updated, personaName, scenarioTitle);
+  }
+
+  function deletePrerequisite(args: DeletePrerequisiteArgs): { deleted: boolean; message: string } | ErrorResult {
+    const record = db.prepare('SELECT * FROM demo_prerequisites WHERE id = ?').get(args.id) as PrerequisiteRecord | undefined;
+    if (!record) {
+      return { error: `Prerequisite not found: ${args.id}` };
+    }
+
+    db.prepare('DELETE FROM demo_prerequisites WHERE id = ?').run(args.id);
+    return { deleted: true, message: `Prerequisite "${record.description}" deleted` };
+  }
+
+  function listPrerequisites(args: ListPrerequisitesArgs): { prerequisites: PrerequisiteResult[]; total: number } {
+    let sql = `
+      SELECT dp.*,
+             p.name as persona_name,
+             ds.title as scenario_title
+      FROM demo_prerequisites dp
+      LEFT JOIN personas p ON p.id = dp.persona_id
+      LEFT JOIN demo_scenarios ds ON ds.id = dp.scenario_id
+    `;
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (args.scope) {
+      conditions.push('dp.scope = ?');
+      params.push(args.scope);
+    }
+    if (args.persona_id) {
+      conditions.push('dp.persona_id = ?');
+      params.push(args.persona_id);
+    }
+    if (args.scenario_id) {
+      conditions.push('dp.scenario_id = ?');
+      params.push(args.scenario_id);
+    }
+    if (args.enabled_only) {
+      conditions.push('dp.enabled = 1');
+    }
+
+    if (conditions.length > 0) {
+      sql += ` WHERE ${conditions.join(' AND ')}`;
+    }
+
+    // global first (scope DESC: 's' > 'p' > 'g' — use CASE for explicit ordering), then sort_order ASC
+    sql += ` ORDER BY CASE dp.scope WHEN 'global' THEN 1 WHEN 'persona' THEN 2 WHEN 'scenario' THEN 3 END, dp.sort_order ASC`;
+
+    const records = db.prepare(sql).all(...params) as (PrerequisiteRecord & { persona_name: string | null; scenario_title: string | null })[];
+
+    return {
+      prerequisites: records.map(r => prerequisiteToResult(r, r.persona_name ?? undefined, r.scenario_title ?? undefined)),
+      total: records.length,
+    };
+  }
+
+  // ============================================================================
   // Recording Tools
   // ============================================================================
 
@@ -1852,6 +2125,31 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       description: 'Get full details of a demo scenario including its persona name.',
       schema: GetScenarioArgsSchema,
       handler: getScenario,
+    },
+    // Demo Prerequisites CRUD
+    {
+      name: 'register_prerequisite',
+      description: 'Register a setup command that must run before demos. Commands are idempotent: if a health_check is provided and passes, the setup command is skipped. Scopes: "global" (all demos), "persona" (demos for a persona), "scenario" (single scenario).',
+      schema: RegisterPrerequisiteArgsSchema,
+      handler: registerPrerequisite,
+    },
+    {
+      name: 'update_prerequisite',
+      description: 'Update an existing demo prerequisite. Only specified fields are changed.',
+      schema: UpdatePrerequisiteArgsSchema,
+      handler: updatePrerequisite,
+    },
+    {
+      name: 'delete_prerequisite',
+      description: 'Delete a demo prerequisite.',
+      schema: DeletePrerequisiteArgsSchema,
+      handler: deletePrerequisite,
+    },
+    {
+      name: 'list_prerequisites',
+      description: 'List demo prerequisites with optional filters (scope, persona_id, scenario_id, enabled_only). Includes enrichment with persona name and scenario title.',
+      schema: ListPrerequisitesArgsSchema,
+      handler: listPrerequisites,
     },
     // Recording Tools
     {

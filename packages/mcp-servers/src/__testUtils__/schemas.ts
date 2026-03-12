@@ -155,6 +155,8 @@ CREATE TABLE IF NOT EXISTS reports (
     created_timestamp TEXT NOT NULL,
     read_at TEXT,
     acknowledged_at TEXT,
+    -- Idempotency
+    idempotency_key TEXT,
     -- Triage lifecycle fields
     triage_status TEXT NOT NULL DEFAULT 'pending',
     triage_started_at TEXT,
@@ -174,6 +176,8 @@ CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_timestamp DESC
 CREATE INDEX IF NOT EXISTS idx_reports_acknowledged ON reports(acknowledged_at);
 CREATE INDEX IF NOT EXISTS idx_reports_triage_status ON reports(triage_status);
 CREATE INDEX IF NOT EXISTS idx_reports_triage_completed ON reports(triage_completed_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_agent_title_dedup ON reports(reporting_agent, title) WHERE triage_status = 'pending';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_idempotency_key ON reports(idempotency_key) WHERE idempotency_key IS NOT NULL AND triage_status = 'pending';
 `;
 
 // ============================================================================
@@ -357,6 +361,34 @@ CREATE TABLE IF NOT EXISTS demo_scenarios (
 
 CREATE INDEX IF NOT EXISTS idx_scenarios_persona ON demo_scenarios(persona_id);
 CREATE INDEX IF NOT EXISTS idx_scenarios_enabled ON demo_scenarios(enabled);
+
+CREATE TABLE IF NOT EXISTS demo_prerequisites (
+    id TEXT PRIMARY KEY,
+    command TEXT NOT NULL,
+    description TEXT NOT NULL,
+    timeout_ms INTEGER NOT NULL DEFAULT 30000,
+    health_check TEXT,
+    health_check_timeout_ms INTEGER NOT NULL DEFAULT 5000,
+    scope TEXT NOT NULL DEFAULT 'global',
+    persona_id TEXT,
+    scenario_id TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    run_as_background INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    created_timestamp TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CONSTRAINT valid_scope CHECK (scope IN ('global', 'persona', 'scenario')),
+    CONSTRAINT scope_persona_check CHECK (scope != 'persona' OR persona_id IS NOT NULL),
+    CONSTRAINT scope_scenario_check CHECK (scope != 'scenario' OR scenario_id IS NOT NULL),
+    FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
+    FOREIGN KEY (scenario_id) REFERENCES demo_scenarios(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_prerequisites_scope ON demo_prerequisites(scope);
+CREATE INDEX IF NOT EXISTS idx_prerequisites_enabled ON demo_prerequisites(enabled);
+CREATE INDEX IF NOT EXISTS idx_prerequisites_persona ON demo_prerequisites(persona_id);
+CREATE INDEX IF NOT EXISTS idx_prerequisites_scenario ON demo_prerequisites(scenario_id);
 `;
 
 /**
