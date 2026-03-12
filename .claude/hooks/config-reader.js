@@ -48,6 +48,7 @@ const DEFAULTS = {
   worktree_cleanup: 30,                 // 30 minutes
   abandoned_worktree_rescue: 30,        // 30 minutes
   stale_work_detector: 1440,            // 24 hours
+  demo_validation: 360,                // 6 hours
 };
 
 /**

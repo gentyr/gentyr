@@ -345,15 +345,20 @@ export async function runFeedbackPipeline(log, state, saveState, cooldownMs) {
   function buildScenarioPrompt(persona, sessionId, scenario) {
     let prompt = buildPrompt(persona, sessionId, scenario);
 
-    // Prepend the demo pre-step instruction
+    // Prepend the demo pre-step instruction (prerequisites run automatically inside run_demo)
     const preStep = `
 ## CRITICAL: Demo Pre-Step (execute FIRST)
 
-Before doing anything else, run the demo scenario to scaffold the app state:
+Before doing anything else, run prerequisites then the demo scenario to scaffold the app state:
 
+Step 1 — Run prerequisites:
+Call: mcp__playwright__run_prerequisites({ persona_id: "${persona.id}" })
+
+Step 2 — Run the demo scenario:
 Call: mcp__playwright__run_demo({
   project: "${scenario.playwright_project}",
   test_file: "${scenario.test_file}",
+  scenario_id: "${scenario.id}",
   slow_mo: 0,
   trace: true
 })

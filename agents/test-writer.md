@@ -46,12 +46,9 @@ All test files MUST end with `.test.ts` or `.spec.ts` to be picked up by Jest.
 
 ## Testing Philosophy
 
-## Demo Files — Do NOT Touch
+## Demo Files
 
-**NEVER create, modify, or delete `*.demo.ts` files.** Demo scenario files are
-managed by the product-manager agent and implemented by code-writer agents.
-Your responsibility is `*.spec.ts` and `*.test.ts` files only. Demo scenarios
-and test suites are intentionally separate and must not overlap.
+Do NOT write or modify `*.demo.ts` files. Demo tests are handled by the `demo-manager` agent.
 
 ### 1. Validate Structure, Not Performance
 

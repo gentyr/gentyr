@@ -545,3 +545,38 @@ export interface ScreenshotExtensionTabResult {
   message: string;
   image?: string;  // base64 PNG
 }
+
+// ============================================================================
+// Prerequisite Execution
+// ============================================================================
+
+export const RunPrerequisitesArgsSchema = z.object({
+  scenario_id: z.string().optional()
+    .describe('Run prerequisites for this scenario (resolves persona, runs global + persona + scenario prerequisites)'),
+  persona_id: z.string().optional()
+    .describe('Run prerequisites for this persona (runs global + persona prerequisites)'),
+  dry_run: z.coerce.boolean().optional().default(false)
+    .describe('If true, only list what would run without executing'),
+});
+
+export type RunPrerequisitesArgs = z.infer<typeof RunPrerequisitesArgsSchema>;
+
+export interface PrerequisiteExecEntry {
+  id: string;
+  description: string;
+  scope: string;
+  health_check_result: 'passed' | 'failed' | 'skipped' | 'not_configured';
+  command_result: 'passed' | 'failed' | 'skipped';
+  duration_ms: number;
+  error?: string;
+}
+
+export interface RunPrerequisitesResult {
+  success: boolean;
+  total: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  entries: PrerequisiteExecEntry[];
+  message: string;
+}

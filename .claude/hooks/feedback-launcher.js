@@ -337,7 +337,8 @@ Do NOT try to debug or fix issues. Just report what you experience.`;
 
   // Mode-specific guidance
   if (persona.consumption_mode === 'gui') {
-    prompt += `\n\n## GUI Testing Notes\n\nYour browser starts on a blank page. Your FIRST action must be to navigate to the application:\n`;
+    prompt += `\n\n## Prerequisites (run FIRST)\n\nBefore testing, run prerequisites to ensure the environment is ready:\nCall: mcp__playwright__run_prerequisites({ persona_id: "${persona.id}" })\n\nIf prerequisites fail, report the failure and stop.\n`;
+    prompt += `\n## GUI Testing Notes\n\nYour browser starts on a blank page. Your FIRST action (after prerequisites) must be to navigate to the application:\n`;
     prompt += `- Use the \`navigate\` tool with URL: ${persona.endpoints[0] || 'http://localhost:3000'}\n`;
     prompt += `- After navigating, use \`read_visible_text\` or \`screenshot\` to see what's on the page\n`;
     prompt += `- Interact with elements using their visible text or ARIA roles — you cannot use CSS selectors`;
