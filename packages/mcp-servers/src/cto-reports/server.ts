@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS reports (
     created_timestamp TEXT NOT NULL,
     read_at TEXT,
     acknowledged_at TEXT,
+    -- Idempotency
+    idempotency_key TEXT,
     -- Triage lifecycle fields
     triage_status TEXT NOT NULL DEFAULT 'pending',
     triage_started_at TEXT,
@@ -105,6 +107,8 @@ CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_timestamp DESC
 CREATE INDEX IF NOT EXISTS idx_reports_acknowledged ON reports(acknowledged_at);
 CREATE INDEX IF NOT EXISTS idx_reports_triage_status ON reports(triage_status);
 CREATE INDEX IF NOT EXISTS idx_reports_triage_completed ON reports(triage_completed_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_agent_title_dedup ON reports(reporting_agent, title) WHERE triage_status = 'pending';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_idempotency_key ON reports(idempotency_key) WHERE idempotency_key IS NOT NULL AND triage_status = 'pending';
 `;
 
 // ============================================================================
@@ -123,7 +127,10 @@ function initializeDatabase(): Database.Database {
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA);
 
-  // Migration: Add columns if they don't exist
+  // Migration: Convert any existing INTEGER timestamps to ISO 8601 TEXT (G005)
+  db.exec(`UPDATE reports SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
+
+  // Migration: Add columns if they don't exist (for existing databases)
   interface ColumnInfo { name: string }
   const columns = db.pragma('table_info(reports)') as ColumnInfo[];
   const columnNames = columns.map(c => c.name);
@@ -153,16 +160,20 @@ function initializeDatabase(): Database.Database {
     db.exec('ALTER TABLE reports ADD COLUMN triage_outcome TEXT');
   }
 
-  // Create new indexes if needed
+  // G011 idempotency column
+  if (!columnNames.includes('idempotency_key')) {
+    db.exec('ALTER TABLE reports ADD COLUMN idempotency_key TEXT');
+  }
+
+  // Create new indexes if needed (use try/catch since partial indexes may not be idempotent on all SQLite builds)
   try {
     db.exec('CREATE INDEX IF NOT EXISTS idx_reports_triage_status ON reports(triage_status)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_reports_triage_completed ON reports(triage_completed_at)');
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_agent_title_dedup ON reports(reporting_agent, title) WHERE triage_status = 'pending'");
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_idempotency_key ON reports(idempotency_key) WHERE idempotency_key IS NOT NULL AND triage_status = 'pending'");
   } catch {
     // Indexes may already exist
   }
-
-  // Migration: Convert any existing INTEGER timestamps to ISO 8601 TEXT (G005)
-  db.exec(`UPDATE reports SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
 
   return db;
 }
@@ -227,15 +238,76 @@ function reportToCto(args: ReportToCtoArgs): ReportToCtoResult {
   // Run cleanup first
   runCleanup();
 
+  // G011: SELECT-first dedup to ensure idempotency
+  // If an idempotency_key is provided, check for an existing pending report with that key.
+  // Otherwise fall back to natural dedup on (reporting_agent, title) for pending reports.
+  if (args.idempotency_key) {
+    const existing = db.prepare(
+      `SELECT id, title FROM reports WHERE idempotency_key = ? AND triage_status = 'pending'`
+    ).get(args.idempotency_key) as Pick<ReportRecord, 'id' | 'title'> | undefined;
+    if (existing) {
+      return {
+        id: existing.id,
+        message: `Report already exists (idempotency key match). ID: ${existing.id}`,
+      };
+    }
+  } else {
+    const existing = db.prepare(
+      `SELECT id, title FROM reports WHERE reporting_agent = ? AND title = ? AND triage_status = 'pending'`
+    ).get(args.reporting_agent, args.title) as Pick<ReportRecord, 'id' | 'title'> | undefined;
+    if (existing) {
+      return {
+        id: existing.id,
+        message: `Report already exists (same agent + title, pending). ID: ${existing.id}`,
+      };
+    }
+  }
+
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
   const created_timestamp = now.toISOString();
 
-  db.prepare(`
-    INSERT INTO reports (id, reporting_agent, title, summary, category, priority, created_at, created_timestamp)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, args.reporting_agent, args.title, args.summary, args.category ?? 'other', args.priority ?? 'normal', created_at, created_timestamp);
+  try {
+    db.prepare(`
+      INSERT INTO reports (id, reporting_agent, title, summary, category, priority, created_at, created_timestamp, idempotency_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      args.reporting_agent,
+      args.title,
+      args.summary,
+      args.category ?? 'other',
+      args.priority ?? 'normal',
+      created_at,
+      created_timestamp,
+      args.idempotency_key ?? null,
+    );
+  } catch (err: unknown) {
+    if (
+      err instanceof Error &&
+      (err as Error & { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE'
+    ) {
+      // Fallback: return the record that won the race — check both possible constraints
+      if (args.idempotency_key) {
+        const fallback = db.prepare(
+          `SELECT id, title FROM reports WHERE idempotency_key = ? AND triage_status = 'pending'`
+        ).get(args.idempotency_key) as { id: string; title: string } | undefined;
+        if (fallback) {return {
+          id: fallback.id,
+          message: `Report already exists (idempotency key match). ID: ${fallback.id}`,
+        };}
+      }
+      const fallback = db.prepare(
+        `SELECT id, title FROM reports WHERE reporting_agent = ? AND title = ? AND triage_status = 'pending'`
+      ).get(args.reporting_agent, args.title) as { id: string; title: string } | undefined;
+      if (fallback) {return {
+        id: fallback.id,
+        message: `Report already exists (same agent + title, pending). ID: ${fallback.id}`,
+      };}
+    }
+    throw err; // Re-throw unexpected errors
+  }
 
   return {
     id,
@@ -606,7 +678,7 @@ function getReportsForTriage(args: GetReportsForTriageArgs): GetReportsForTriage
 const tools: AnyToolHandler[] = [
   {
     name: 'report_to_cto',
-    description: 'Submit a report to the CTO. Use for major tasks, plans, problems, breaking changes, or important decisions. All agents should use this to keep the CTO informed.',
+    description: 'Submit a report to the CTO. Use for major tasks, plans, problems, breaking changes, or important decisions. All agents should use this to keep the CTO informed. Idempotent: if a pending report with the same idempotency_key (or same reporting_agent + title when no key is provided) already exists, the existing report ID is returned without creating a duplicate.',
     schema: ReportToCtoArgsSchema,
     handler: reportToCto,
   },

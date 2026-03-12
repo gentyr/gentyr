@@ -352,6 +352,7 @@ function getConfig() {
     standaloneAntipatternHunterEnabled: true,
     standaloneComplianceCheckerEnabled: true,
     productManagerEnabled: false,
+    demoValidationEnabled: false,
     dailyFeedbackEnabled: false,
     lastModified: null,
     intervals: {},
@@ -3696,6 +3697,279 @@ Then exit.`;
         });
       } else {
         log(`User feedback: skipped - ${feedbackResult.reason}`);
+      }
+    },
+  });
+
+  // =========================================================================
+  // DEMO VALIDATION (6h cooldown, fire-and-forget repair agents)
+  // Validates all enabled demo scenarios headless, spawns repair agents for failures
+  // =========================================================================
+  await runIfDue('demo_validation', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastDemoValidationRun',
+    configToggle: 'demoValidationEnabled',
+    config,
+    label: 'Demo validation',
+    fn: async () => {
+      // Query enabled demo scenarios from user-feedback.db
+      const feedbackDbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+      if (!fs.existsSync(feedbackDbPath) || !Database) {
+        log('Demo validation: user-feedback.db not found or Database unavailable.');
+        return;
+      }
+      let scenarios;
+      try {
+        const db = new Database(feedbackDbPath, { readonly: true });
+        scenarios = db.prepare(`
+          SELECT ds.id, ds.title, ds.test_file, ds.persona_id, ds.playwright_project, ds.category
+          FROM demo_scenarios ds
+          WHERE ds.enabled = 1
+        `).all();
+        db.close();
+      } catch (err) {
+        log(`Demo validation: failed to query scenarios: ${err.message}`);
+        return;
+      }
+      if (!scenarios.length) {
+        log('Demo validation: no enabled scenarios found.');
+        return;
+      }
+
+      // Query and run global prerequisites before validation
+      let prerequisites;
+      try {
+        const db = new Database(feedbackDbPath, { readonly: true });
+        prerequisites = db.prepare(`
+          SELECT * FROM demo_prerequisites
+          WHERE scope = 'global' AND enabled = 1
+          ORDER BY sort_order ASC
+        `).all();
+        db.close();
+      } catch (err) {
+        log(`Demo validation: failed to query prerequisites: ${err.message}`);
+        prerequisites = [];
+      }
+
+      for (const prereq of prerequisites) {
+        // Health check first
+        if (prereq.health_check) {
+          try {
+            execSync(prereq.health_check, {
+              timeout: prereq.health_check_timeout_ms || 5000,
+              stdio: 'pipe',
+              cwd: PROJECT_DIR,
+            });
+            log(`Demo validation: prerequisite "${prereq.description}" health check passed, skipping.`);
+            continue;
+          } catch {
+            // Health check failed, run the command
+          }
+        }
+
+        if (prereq.run_as_background) {
+          // Spawn detached, poll health check
+          const child = spawn('sh', ['-c', prereq.command], {
+            detached: true, stdio: 'ignore', cwd: PROJECT_DIR,
+          });
+          child.unref();
+
+          if (prereq.health_check) {
+            const deadline = Date.now() + (prereq.timeout_ms || 30000);
+            let ready = false;
+            while (Date.now() < deadline) {
+              try {
+                execSync(prereq.health_check, { timeout: prereq.health_check_timeout_ms || 5000, stdio: 'pipe', cwd: PROJECT_DIR });
+                ready = true;
+                break;
+              } catch { /* not ready yet */ }
+              await new Promise(r => setTimeout(r, 2000));
+            }
+            if (!ready) {
+              log(`Demo validation: prerequisite "${prereq.description}" timed out waiting for health check.`);
+            }
+          }
+        } else {
+          try {
+            execSync(prereq.command, {
+              timeout: prereq.timeout_ms || 30000,
+              stdio: 'pipe',
+              cwd: PROJECT_DIR,
+            });
+            log(`Demo validation: prerequisite "${prereq.description}" completed.`);
+          } catch (err) {
+            log(`Demo validation: prerequisite "${prereq.description}" failed: ${err.message}`);
+          }
+        }
+      }
+
+      // Skip ADK category scenarios (require replay data)
+      const runnableScenarios = scenarios.filter(s => s.category !== 'adk');
+      log(`Demo validation: running ${runnableScenarios.length} scenario(s) headless...`);
+
+      const results = [];
+      for (const scenario of runnableScenarios) {
+        const startTime = Date.now();
+        try {
+          execFileSync('npx', [
+            'playwright', 'test',
+            '--project', scenario.playwright_project,
+            scenario.test_file,
+            '--reporter', 'json',
+          ], {
+            timeout: 120_000,
+            cwd: PROJECT_DIR,
+            env: { ...buildSpawnEnv('demo-validation'), DEMO_HEADLESS: '1', DEMO_SLOW_MO: '0' },
+            encoding: 'utf8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+          results.push({
+            id: scenario.id,
+            title: scenario.title,
+            success: true,
+            duration_ms: Date.now() - startTime,
+          });
+        } catch (err) {
+          results.push({
+            id: scenario.id,
+            title: scenario.title,
+            success: false,
+            duration_ms: Date.now() - startTime,
+            error: err.stderr ? err.stderr.toString().slice(0, 500) : (err.message || 'Unknown error'),
+          });
+        }
+      }
+
+      // Persist validation results to demo-validation-history.json
+      const historyPath = path.join(PROJECT_DIR, '.claude', 'state', 'demo-validation-history.json');
+      let history = [];
+      try {
+        if (fs.existsSync(historyPath)) {
+          history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+        }
+      } catch { history = []; }
+
+      const passed = results.filter(r => r.success).length;
+      const failed = results.filter(r => !r.success).length;
+      history.push({
+        timestamp: new Date().toISOString(),
+        total: results.length,
+        passed,
+        failed,
+        skipped: scenarios.length - runnableScenarios.length,
+        scenarios: results,
+      });
+
+      // Keep last 100 runs
+      if (history.length > 100) history = history.slice(-100);
+
+      // Ensure state directory exists
+      const stateDir = path.join(PROJECT_DIR, '.claude', 'state');
+      if (!fs.existsSync(stateDir)) fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(historyPath, JSON.stringify(history, null, 2));
+
+      // Spawn repair agents for failed scenarios (max 3)
+      const failedScenarios = results.filter(r => !r.success);
+      if (failedScenarios.length > 0) {
+        log(`Demo validation: ${failed}/${results.length} scenarios failed.`);
+
+        const toRepair = failedScenarios.slice(0, 3);
+        for (const failedScenario of toRepair) {
+          const memCheck = shouldAllowSpawn({ priority: 'normal', context: 'demo-repair' });
+          if (!memCheck.allowed) {
+            log(`Demo validation: skipping repair for "${failedScenario.title}" — ${memCheck.reason}`);
+            continue;
+          }
+
+          let worktreePath;
+          try {
+            const branchName = getFeatureBranchName('demo-repair', failedScenario.id.slice(0, 8));
+            const worktree = createWorktree(branchName);
+            worktreePath = worktree.path;
+          } catch (err) {
+            log(`Demo validation: failed to create worktree for repair: ${err.message}`);
+            continue;
+          }
+
+          const agentId = registerSpawn({
+            type: AGENT_TYPES.DEMO_REPAIR,
+            hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+            description: `Repair failed demo: ${failedScenario.title}`,
+            prompt: `Repair demo scenario`,
+            metadata: {
+              scenario_id: failedScenario.id,
+              scenario_title: failedScenario.title,
+              error: failedScenario.error,
+            },
+          });
+
+          const agentMcpConfig = path.join(worktreePath, '.mcp.json');
+          const prompt = [
+            `You are a demo repair agent. A demo scenario failed during automated validation.`,
+            ``,
+            `**Failed Scenario:**`,
+            `- ID: ${failedScenario.id}`,
+            `- Title: ${failedScenario.title}`,
+            `- Error: ${failedScenario.error || 'Unknown error'}`,
+            ``,
+            `Follow the repair protocol in your agent definition:`,
+            `1. Run preflight_check to verify environment`,
+            `2. Read the failed .demo.ts file`,
+            `3. Diagnose from the error output`,
+            `4. Fix the .demo.ts file`,
+            `5. Re-run the scenario headless to verify`,
+            `6. If you cannot fix it (app code issue), report via report_to_deputy_cto`,
+          ].join('\n');
+
+          const claude = spawn('claude', [
+            '--dangerously-skip-permissions',
+            '--agent-name', 'demo-manager',
+            ...(fs.existsSync(agentMcpConfig) ? ['--mcp-config', agentMcpConfig] : []),
+            '-p', prompt,
+          ], {
+            detached: true,
+            stdio: 'ignore',
+            cwd: worktreePath,
+            env: buildSpawnEnv(agentId),
+          });
+          claude.unref();
+          updateAgent(agentId, { pid: claude.pid });
+          log(`Demo validation: spawned repair agent ${agentId} for "${failedScenario.title}" (pid ${claude.pid})`);
+        }
+
+        // Report failures to deputy-CTO
+        const reportAgentId = registerSpawn({
+          type: AGENT_TYPES.DEMO_VALIDATOR,
+          hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+          description: `Demo validation report: ${failed} failures`,
+          prompt: '',
+        });
+
+        const reportPrompt = [
+          `Report the following demo validation failures to the deputy-CTO using mcp__agent-reports__report_to_deputy_cto.`,
+          ``,
+          `Category: "other"`,
+          `Priority: "${failed >= 3 ? 'high' : 'normal'}"`,
+          `Title: "Demo validation: ${failed}/${results.length} scenarios failed"`,
+          `Summary:`,
+          `${failedScenarios.map(s => `- ${s.title}: ${s.error || 'Unknown error'}`).join('\n')}`,
+          ``,
+          `Repair agents have been spawned for ${toRepair.length} scenario(s).`,
+        ].join('\n');
+
+        const reportClaude = spawn('claude', [
+          '--dangerously-skip-permissions',
+          '-p', reportPrompt,
+        ], {
+          detached: true,
+          stdio: 'ignore',
+          cwd: PROJECT_DIR,
+          env: buildSpawnEnv(reportAgentId),
+        });
+        reportClaude.unref();
+        updateAgent(reportAgentId, { pid: reportClaude.pid });
+      } else {
+        log(`Demo validation: all ${results.length} scenarios passed.`);
       }
     },
   });
