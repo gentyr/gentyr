@@ -445,6 +445,8 @@ headless=false, slow_mo=800
 
 Video recording is always enabled. Scenario videos: `.claude/recordings/demos/{scenarioId}.webm`
 
+**Screen recording via ffmpeg** (headed demos only): When `ffmpeg` is available on the system, `run_demo` starts an ffmpeg screen-capture process alongside the Playwright child. On macOS uses AVFoundation (`avfoundation`), on Linux uses X11 (`x11grab`). The screen recording captures all browser tabs in a single video — Playwright's per-page recording only captures one page at a time. Screen recording PID and output path are tracked in `DemoRunState` (`screen_recorder_pid`, `screen_recording_path`). On demo completion, the screen recording is preferred over the Playwright per-page recording for `persistScenarioRecording()`; temp files are cleaned up automatically. `stop_demo` and `check_demo_result` also handle screen recorder teardown gracefully. If `ffmpeg` is absent, falls back silently to per-page Playwright recording.
+
 Dev server is auto-started if not running — no manual setup needed.
 
 ### Demo Prerequisites
