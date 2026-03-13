@@ -335,6 +335,8 @@ export interface DemoRunState {
   stdout_tail?: string;
   artifacts?: string[];
   scenario_id?: string;
+  screen_recorder_pid?: number;
+  screen_recording_path?: string;
 }
 
 export interface StopDemoResult {
