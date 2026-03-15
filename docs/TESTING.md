@@ -343,20 +343,19 @@ Expected flow:
 
 ---
 
-### Phase 6: Installation Tests (Parallel, Isolated Directories)
+### Phase 6: Installation Tests (Automated — `npm run test:install`)
 
-#### Test 6.1: Fresh Installation
-**Steps:**
+Phase 6 is now fully automated as a Vitest E2E suite at `tests/e2e/install/gentyr-install.test.ts`. Run it with:
+
 ```bash
-mkdir /tmp/test-install && cd /tmp/test-install
-git init
-pnpm link ~/git/gentyr
-npx gentyr init
-npx gentyr protect
+npm run test:install
 ```
-**Verify:** Symlinks created, .mcp.json generated, husky hooks installed, MCP servers built, protection active
 
-#### Test 6.2: Protection Toggle
+127 tests across 14 describe groups verify the complete `npx gentyr init` lifecycle in a temp directory. Covers: symlink creation, state files, MCP config, husky hooks, sync idempotency, double-init idempotency, status command, and a pre-commit hook smoke test.
+
+The following manual tests from the original plan are still applicable when testing protection or the automation service setup — they are not covered by the automated suite:
+
+#### Test 6.2: Protection Toggle (manual)
 **Steps:**
 ```bash
 npx gentyr unprotect
@@ -366,7 +365,7 @@ ls -la .claude/hooks/pre-commit-review.js  # Should be root-owned
 ```
 **Verify:** Protection toggles correctly
 
-#### Test 6.3: Hourly Service Setup
+#### Test 6.3: Hourly Service Setup (manual)
 **Steps:**
 ```bash
 ./scripts/setup-automation-service.sh

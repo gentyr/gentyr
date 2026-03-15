@@ -30,6 +30,7 @@
     "build:window-recorder": "[ \"$(uname)\" = \"Darwin\" ] && cd tools/window-recorder && swift build -c release || echo 'Window recorder build skipped (non-macOS)'",
     "prepare": "npm run build:mcp && npm run build:playwright-helpers && npm run build:window-recorder",
     "test:feedback-agents": "vitest run --config tests/e2e/vitest.config.ts",
+    "test:install": "vitest run --config tests/e2e/vitest.install.config.ts",
     "generate:readme": "node scripts/generate-readme.js"
   },
   "dependencies": {
