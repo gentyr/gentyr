@@ -922,7 +922,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     const recorderBinary = getWindowRecorderBinary();
     if (recorderBinary) {
       windowRecordingPath = path.join(PROJECT_DIR, '.claude', 'state', `demo-window-${progressId}.mp4`);
-      windowRecorder = startWindowRecorder(windowRecordingPath, 'Chrome');
+      windowRecorder = startWindowRecorder(windowRecordingPath, 'Google Chrome for Testing');
     }
   }
 
