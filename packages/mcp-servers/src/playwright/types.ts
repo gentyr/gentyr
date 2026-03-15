@@ -253,7 +253,7 @@ export const RunDemoArgsSchema = z.object({
     .describe('Enable Playwright trace recording (--trace on). Default: false.'),
   scenario_id: z.string()
     .optional()
-    .describe('Demo scenario ID from user-feedback DB. Video is automatically persisted to `.claude/recordings/demos/{scenarioId}.webm` after the run completes.'),
+    .describe('Demo scenario ID from user-feedback DB. Video is automatically persisted to `.claude/recordings/demos/{scenarioId}.mp4` after the run completes.'),
   extra_env: z.record(z.string(), z.string())
     .optional()
     .describe(
@@ -335,8 +335,8 @@ export interface DemoRunState {
   stdout_tail?: string;
   artifacts?: string[];
   scenario_id?: string;
-  screen_recorder_pid?: number;
-  screen_recording_path?: string;
+  window_recorder_pid?: number;
+  window_recording_path?: string;
 }
 
 export interface StopDemoResult {
@@ -411,7 +411,7 @@ export const OpenVideoArgsSchema = z.object({
     .max(1000)
     .refine(v => !v.includes('..'), 'video_path must not contain ".." traversal')
     .describe(
-      'Relative path to a video file (e.g., test-results/demo/video.webm or .claude/recordings/demos/scenario.webm). ' +
+      'Relative path to a video file (e.g., test-results/demo/video.webm or .claude/recordings/demos/scenario.mp4). ' +
       'Resolved from the project directory. Must not contain ".." segments.'
     ),
 });

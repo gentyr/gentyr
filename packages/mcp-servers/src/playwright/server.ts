@@ -148,12 +148,12 @@ function autoKillDemo(pid: number): void {
   const entry = demoRuns.get(pid);
   if (!entry || entry.status !== 'running') return;
 
-  // Stop screen recorder if running (no-wait: just force-kill and clean up)
-  if (entry.screen_recorder_pid && entry.screen_recording_path) {
-    try { process.kill(entry.screen_recorder_pid, 'SIGKILL'); } catch { /* already dead */ }
-    try { fs.unlinkSync(entry.screen_recording_path); } catch { /* Non-fatal */ }
-    entry.screen_recorder_pid = undefined;
-    entry.screen_recording_path = undefined;
+  // Stop window recorder if running (no-wait: just force-kill and clean up)
+  if (entry.window_recorder_pid && entry.window_recording_path) {
+    try { process.kill(entry.window_recorder_pid, 'SIGKILL'); } catch { /* already dead */ }
+    try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
+    entry.window_recorder_pid = undefined;
+    entry.window_recording_path = undefined;
   }
 
   // Kill the process group
@@ -320,7 +320,6 @@ function buildDemoEnv(opts: {
   if (opts.progress_file) env.DEMO_PROGRESS_FILE = opts.progress_file;
   if (opts.slow_mo !== undefined) env.DEMO_SLOW_MO = String(opts.slow_mo);
   if (opts.headless) env.DEMO_HEADLESS = '1';
-  env.DEMO_RECORD_VIDEO = '1';
   if (opts.base_url) env.PLAYWRIGHT_BASE_URL = opts.base_url;
 
   // Always show cursor dot in headed demos
@@ -343,7 +342,7 @@ function persistScenarioRecording(scenarioId: string, videoPath: string): void {
     if (!fs.existsSync(videoPath)) return;
     const recordingsDir = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos');
     fs.mkdirSync(recordingsDir, { recursive: true });
-    const destPath = path.join(recordingsDir, `${scenarioId}.webm`);
+    const destPath = path.join(recordingsDir, `${scenarioId}.mp4`);
     fs.copyFileSync(videoPath, destPath);
 
     const userFeedbackDbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
@@ -361,128 +360,83 @@ function persistScenarioRecording(scenarioId: string, videoPath: string): void {
 }
 
 // ============================================================================
-// Screen Recording Helpers (ffmpeg-based, headed demos only)
+// Window Recording Helpers (ScreenCaptureKit-based, macOS only)
 // ============================================================================
 
 /**
- * Check if ffmpeg is available on the system.
- * Result is cached for the process lifetime.
+ * Resolve the WindowRecorder binary path relative to the framework root.
+ * From dist/playwright/ we walk up to the framework root, then into tools/.
+ * Returns null on non-Darwin platforms or if the binary doesn't exist.
  */
-let _ffmpegAvailable: boolean | null = null;
-function isFFmpegAvailable(): boolean {
-  if (_ffmpegAvailable !== null) return _ffmpegAvailable;
-  try {
-    execFileSync('ffmpeg', ['-version'], { stdio: 'pipe', timeout: 5000 });
-    _ffmpegAvailable = true;
-  } catch {
-    _ffmpegAvailable = false;
+let _windowRecorderBinary: string | null | undefined;
+function getWindowRecorderBinary(): string | null {
+  if (_windowRecorderBinary !== undefined) return _windowRecorderBinary;
+  if (os.platform() !== 'darwin') {
+    _windowRecorderBinary = null;
+    return null;
   }
-  return _ffmpegAvailable;
+  // __dirname is dist/playwright/ — walk up to framework root
+  let dir = path.dirname(new URL(import.meta.url).pathname);
+  for (let i = 0; i < 5; i++) {
+    const candidate = path.join(dir, 'tools', 'window-recorder', '.build', 'release', 'WindowRecorder');
+    if (fs.existsSync(candidate)) {
+      _windowRecorderBinary = candidate;
+      return candidate;
+    }
+    dir = path.dirname(dir);
+  }
+  _windowRecorderBinary = null;
+  return null;
 }
 
 /**
- * Start an ffmpeg screen recorder for headed demos.
- * Returns the child process (for PID tracking) and output path.
- * On macOS uses avfoundation, on Linux uses x11grab.
- * Returns null if screen recording cannot be started.
+ * Start the WindowRecorder process for a demo.
+ * The recorder polls for up to 30s internally, so it's safe to start before Chromium opens.
+ * Returns process info or null if the binary isn't available.
  */
-function startScreenRecorder(outputPath: string): { pid: number; process: ReturnType<typeof spawn> } | null {
-  const platform = os.platform();
-  let ffmpegArgs: string[];
+function startWindowRecorder(outputPath: string, appName?: string): { pid: number; process: ReturnType<typeof spawn> } | null {
+  const binary = getWindowRecorderBinary();
+  if (!binary) return null;
 
-  if (platform === 'darwin') {
-    // macOS: capture main display via AVFoundation
-    // Screen index 1 is the typical non-retina capture of the main display.
-    // No audio captured (":none" suffix).
-    ffmpegArgs = [
-      '-f', 'avfoundation',
-      '-capture_cursor', '1',
-      '-framerate', '25',
-      '-i', '1:none',
-      '-c:v', 'libvpx',
-      '-b:v', '2M',
-      '-pix_fmt', 'yuv420p',
-      '-y',
-      outputPath,
-    ];
-  } else if (platform === 'linux') {
-    // Linux: capture X11 display
-    const display = process.env.DISPLAY || ':0';
-    ffmpegArgs = [
-      '-f', 'x11grab',
-      '-framerate', '25',
-      '-i', display,
-      '-c:v', 'libvpx',
-      '-b:v', '2M',
-      '-pix_fmt', 'yuv420p',
-      '-y',
-      outputPath,
-    ];
-  } else {
-    // Windows or other — not supported yet
-    return null;
-  }
+  const args = ['--output', outputPath];
+  if (appName) args.push('--app', appName);
 
   try {
-    const ffmpeg = spawn('ffmpeg', ffmpegArgs, {
+    const child = spawn(binary, args, {
       detached: true,
-      stdio: ['pipe', 'ignore', 'pipe'],
+      stdio: ['ignore', 'ignore', 'pipe'],
       cwd: PROJECT_DIR,
     });
+    child.unref();
+    child.stderr?.on('data', () => { /* drain */ });
 
-    // Don't let ffmpeg prevent Node from exiting
-    ffmpeg.unref();
-
-    // Consume stderr to prevent backpressure
-    ffmpeg.stderr?.on('data', () => { /* drain */ });
-
-    if (!ffmpeg.pid) {
-      return null;
-    }
-
-    return { pid: ffmpeg.pid, process: ffmpeg };
+    if (!child.pid) return null;
+    return { pid: child.pid, process: child };
   } catch {
     return null;
   }
 }
 
 /**
- * Stop a running ffmpeg screen recorder gracefully.
- * Sends 'q' to stdin (ffmpeg's clean exit signal), waits up to 10s.
- * Returns true if the recording file exists and is non-empty after stopping.
+ * Stop a running WindowRecorder gracefully (async).
+ * SIGINT triggers AVAssetWriter finalization for a valid MP4 container.
+ * Waits up to 10s, then SIGKILL as fallback.
  */
-async function stopScreenRecorder(
-  pid: number,
-  outputPath: string,
-  ffmpegProcess?: ReturnType<typeof spawn>,
-): Promise<boolean> {
+async function stopWindowRecorder(pid: number, outputPath: string): Promise<boolean> {
   try {
-    // Send 'q' to ffmpeg's stdin for clean exit (writes final frames + trailer)
-    if (ffmpegProcess?.stdin?.writable) {
-      ffmpegProcess.stdin.write('q');
-      ffmpegProcess.stdin.end();
-    } else {
-      // Fallback: send SIGINT
-      try { process.kill(pid, 'SIGINT'); } catch { /* already dead */ }
-    }
+    try { process.kill(pid, 'SIGINT'); } catch { /* already dead */ }
 
-    // Wait for ffmpeg to finish writing (up to 10s)
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
       try {
-        process.kill(pid, 0); // Check if still running
+        process.kill(pid, 0);
         await new Promise<void>(r => setTimeout(r, 500));
       } catch {
-        // Process exited
         break;
       }
     }
 
-    // Force kill if still running
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch { /* already dead */ }
-
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
     return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0;
   } catch {
     return false;
@@ -490,23 +444,20 @@ async function stopScreenRecorder(
 }
 
 /**
- * Stop a running ffmpeg screen recorder synchronously.
- * Uses SIGINT + non-blocking poll. For use in sync contexts like event handlers.
- * Returns true if the recording file exists and is non-empty after stopping.
+ * Stop a running WindowRecorder synchronously.
+ * For use in sync contexts like event handlers.
  */
-function stopScreenRecorderSync(pid: number, outputPath: string): boolean {
+function stopWindowRecorderSync(pid: number, outputPath: string): boolean {
   try {
     try { process.kill(pid, 'SIGINT'); } catch { /* already dead */ }
 
-    // Poll for up to 5s (non-blocking via Date.now check)
     const deadline = Date.now() + 5_000;
     while (Date.now() < deadline) {
       try {
         process.kill(pid, 0);
       } catch {
-        break; // exited
+        break;
       }
-      // Busy-wait in small increments (no execFileSync('sleep'))
       const spinEnd = Date.now() + 200;
       while (Date.now() < spinEnd) { /* spin */ }
     }
@@ -956,15 +907,14 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   // Per-test timeout (default 120s for demos)
   cmdArgs.push('--timeout', String(args.timeout ?? 120000));
 
-  // Start screen recorder for headed demos (captures all tabs in one video)
-  let screenRecorder: { pid: number; process: ReturnType<typeof spawn> } | null = null;
-  let screenRecordingPath: string | null = null;
-  if (!args.headless && isFFmpegAvailable()) {
-    screenRecordingPath = path.join(PROJECT_DIR, '.claude', 'state', `demo-screen-${progressId}.webm`);
-    screenRecorder = startScreenRecorder(screenRecordingPath);
-    if (screenRecorder) {
-      // Give ffmpeg a moment to initialize before launching Playwright
-      await new Promise<void>(r => setTimeout(r, 1000));
+  // Start window recorder for headed demos (captures specific Chromium window, even when occluded)
+  let windowRecorder: { pid: number; process: ReturnType<typeof spawn> } | null = null;
+  let windowRecordingPath: string | null = null;
+  if (!args.headless) {
+    const recorderBinary = getWindowRecorderBinary();
+    if (recorderBinary) {
+      windowRecordingPath = path.join(PROJECT_DIR, '.claude', 'state', `demo-window-${progressId}.mp4`);
+      windowRecorder = startWindowRecorder(windowRecordingPath);
     }
   }
 
@@ -1209,25 +1159,19 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           try {
             let videoToUse: string | undefined;
 
-            // Prefer screen recording (captures all tabs in one video)
-            if (screenRecorder && screenRecordingPath) {
-              const recordingOk = await stopScreenRecorder(screenRecorder.pid, screenRecordingPath, screenRecorder.process);
+            // Stop window recorder and use its output
+            if (windowRecorder && windowRecordingPath) {
+              const recordingOk = await stopWindowRecorder(windowRecorder.pid, windowRecordingPath);
               if (recordingOk) {
-                videoToUse = screenRecordingPath;
+                videoToUse = windowRecordingPath;
               }
-              screenRecorder = null; // Prevent double-stop
-            }
-
-            // Fall back to per-page recording
-            if (!videoToUse) {
-              const allArtifacts = demoState.artifacts?.length ? demoState.artifacts : scanArtifacts();
-              videoToUse = allArtifacts.find(p => p.endsWith('.webm'));
+              windowRecorder = null; // Prevent double-stop
             }
 
             if (videoToUse && fs.existsSync(videoToUse)) {
               const recordingsDir = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos');
               fs.mkdirSync(recordingsDir, { recursive: true });
-              const destPath = path.join(recordingsDir, `${demoState.scenario_id}.webm`);
+              const destPath = path.join(recordingsDir, `${demoState.scenario_id}.mp4`);
               fs.copyFileSync(videoToUse, destPath);
               const userFeedbackDbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
               const db = new Database(userFeedbackDbPath);
@@ -1240,21 +1184,21 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
               }
             }
 
-            // Clean up temp screen recording
-            if (screenRecordingPath) {
-              try { fs.unlinkSync(screenRecordingPath); } catch { /* Non-fatal */ }
-              screenRecordingPath = null;
+            // Clean up temp window recording
+            if (windowRecordingPath) {
+              try { fs.unlinkSync(windowRecordingPath); } catch { /* Non-fatal */ }
+              windowRecordingPath = null;
             }
           } catch { /* Non-fatal */ }
         } else {
-          // No scenario_id — still stop screen recorder if running
-          if (screenRecorder && screenRecordingPath) {
+          // No scenario_id — still stop window recorder if running
+          if (windowRecorder && windowRecordingPath) {
             try {
-              await stopScreenRecorder(screenRecorder.pid, screenRecordingPath, screenRecorder.process);
+              await stopWindowRecorder(windowRecorder.pid, windowRecordingPath);
             } catch { /* Non-fatal */ }
-            screenRecorder = null;
-            try { fs.unlinkSync(screenRecordingPath); } catch { /* Non-fatal */ }
-            screenRecordingPath = null;
+            windowRecorder = null;
+            try { fs.unlinkSync(windowRecordingPath); } catch { /* Non-fatal */ }
+            windowRecordingPath = null;
           }
         }
 
@@ -1277,14 +1221,14 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       }
 
       // Non-zero exit code — actual crash
-      // Stop screen recorder if running, then clean up
-      if (screenRecorder && screenRecordingPath) {
+      // Stop window recorder if running, then clean up
+      if (windowRecorder && windowRecordingPath) {
         try {
-          await stopScreenRecorder(screenRecorder.pid, screenRecordingPath, screenRecorder.process);
+          await stopWindowRecorder(windowRecorder.pid, windowRecordingPath);
         } catch { /* Non-fatal */ }
-        screenRecorder = null;
-        try { fs.unlinkSync(screenRecordingPath); } catch { /* Non-fatal */ }
-        screenRecordingPath = null;
+        windowRecorder = null;
+        try { fs.unlinkSync(windowRecordingPath); } catch { /* Non-fatal */ }
+        windowRecordingPath = null;
       }
 
       // Write crash event to progress file so check_demo_result can surface the error
@@ -1313,14 +1257,14 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       const snippet = stderr.length > 2000 ? stderr.slice(0, 2000) + '...' : stderr;
       const lastContext = lastOutputLine ? `\nLast output: ${lastOutputLine}` : '';
 
-      // Stop screen recorder on stall, then clean up
-      if (screenRecorder && screenRecordingPath) {
+      // Stop window recorder on stall, then clean up
+      if (windowRecorder && windowRecordingPath) {
         try {
-          await stopScreenRecorder(screenRecorder.pid, screenRecordingPath, screenRecorder.process);
+          await stopWindowRecorder(windowRecorder.pid, windowRecordingPath);
         } catch { /* Non-fatal */ }
-        screenRecorder = null;
-        try { fs.unlinkSync(screenRecordingPath); } catch { /* Non-fatal */ }
-        screenRecordingPath = null;
+        windowRecorder = null;
+        try { fs.unlinkSync(windowRecordingPath); } catch { /* Non-fatal */ }
+        windowRecordingPath = null;
       }
 
       return {
@@ -1359,10 +1303,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       demoState.stdout_tail = stdoutLines.join('\n').slice(0, 5000);
       suiteEndAutoKilledPids.add(demoPid);
     }
-    // Store screen recorder info so check_demo_result and the exit handler can stop it
-    if (screenRecorder) {
-      demoState.screen_recorder_pid = screenRecorder.pid;
-      demoState.screen_recording_path = screenRecordingPath ?? undefined;
+    // Store window recorder info so check_demo_result and the exit handler can stop it
+    if (windowRecorder) {
+      demoState.window_recorder_pid = windowRecorder.pid;
+      demoState.window_recording_path = windowRecordingPath ?? undefined;
     }
     demoRuns.set(demoPid, demoState);
     persistDemoRuns();
@@ -1450,37 +1394,30 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         try {
           let videoToUse: string | undefined;
 
-          // Prefer screen recording (captures all tabs in one video)
-          if (entry.screen_recorder_pid && entry.screen_recording_path) {
-            if (stopScreenRecorderSync(entry.screen_recorder_pid, entry.screen_recording_path)) {
-              videoToUse = entry.screen_recording_path;
+          if (entry.window_recorder_pid && entry.window_recording_path) {
+            if (stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path)) {
+              videoToUse = entry.window_recording_path;
             }
-            entry.screen_recorder_pid = undefined;
-          }
-
-          // Fall back to per-page recording
-          if (!videoToUse) {
-            const allArtifacts = entry.artifacts?.length ? entry.artifacts : scanArtifacts();
-            videoToUse = allArtifacts.find(p => p.endsWith('.webm'));
+            entry.window_recorder_pid = undefined;
           }
 
           if (videoToUse) {
             persistScenarioRecording(entry.scenario_id, videoToUse);
           }
 
-          // Clean up temp screen recording file
-          if (entry.screen_recording_path) {
-            try { fs.unlinkSync(entry.screen_recording_path); } catch { /* Non-fatal */ }
-            entry.screen_recording_path = undefined;
+          // Clean up temp window recording file
+          if (entry.window_recording_path) {
+            try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
+            entry.window_recording_path = undefined;
           }
         } catch { /* Non-fatal */ }
       } else {
-        // No scenario_id — still stop and clean up screen recorder if running
-        if (entry.screen_recorder_pid && entry.screen_recording_path) {
-          try { process.kill(entry.screen_recorder_pid, 'SIGKILL'); } catch { /* already dead */ }
-          try { fs.unlinkSync(entry.screen_recording_path); } catch { /* Non-fatal */ }
-          entry.screen_recorder_pid = undefined;
-          entry.screen_recording_path = undefined;
+        // No scenario_id — still stop and clean up window recorder if running
+        if (entry.window_recorder_pid && entry.window_recording_path) {
+          try { process.kill(entry.window_recorder_pid, 'SIGKILL'); } catch { /* already dead */ }
+          try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
+          entry.window_recorder_pid = undefined;
+          entry.window_recording_path = undefined;
         }
       }
 
@@ -1665,10 +1602,10 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
       // Process alive — but check if suite already completed (stops unnecessary video recording)
       const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
       if (progress?.suite_completed) {
-        // Suite done — stop screen recorder first (sync), then kill playwright process
-        if (entry.screen_recorder_pid && entry.screen_recording_path) {
-          stopScreenRecorderSync(entry.screen_recorder_pid, entry.screen_recording_path || '');
-          entry.screen_recorder_pid = undefined;
+        // Suite done — stop window recorder first (sync), then kill playwright process
+        if (entry.window_recorder_pid && entry.window_recording_path) {
+          stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path || '');
+          entry.window_recorder_pid = undefined;
         }
 
         clearAutoKillTimer(pid);
@@ -1693,37 +1630,31 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
           try {
             let videoToUse: string | undefined;
 
-            // Prefer screen recording
+            // Prefer window recording
             if (
-              entry.screen_recording_path &&
-              fs.existsSync(entry.screen_recording_path) &&
-              fs.statSync(entry.screen_recording_path).size > 0
+              entry.window_recording_path &&
+              fs.existsSync(entry.window_recording_path) &&
+              fs.statSync(entry.window_recording_path).size > 0
             ) {
-              videoToUse = entry.screen_recording_path;
-            }
-
-            // Fall back to per-page recording
-            if (!videoToUse) {
-              const allArtifacts = entry.artifacts?.length ? entry.artifacts : scanArtifacts();
-              videoToUse = allArtifacts.find(p => p.endsWith('.webm'));
+              videoToUse = entry.window_recording_path;
             }
 
             if (videoToUse) {
               persistScenarioRecording(entry.scenario_id, videoToUse);
             }
 
-            // Clean up temp screen recording file
-            if (entry.screen_recording_path) {
-              try { fs.unlinkSync(entry.screen_recording_path); } catch { /* Non-fatal */ }
-              entry.screen_recording_path = undefined;
+            // Clean up temp window recording file
+            if (entry.window_recording_path) {
+              try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
+              entry.window_recording_path = undefined;
             }
           } catch { /* Non-fatal */ }
-        } else if (entry.screen_recording_path) {
-          try { fs.unlinkSync(entry.screen_recording_path); } catch { /* Non-fatal */ }
-          entry.screen_recording_path = undefined;
+        } else if (entry.window_recording_path) {
+          try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
+          entry.window_recording_path = undefined;
         }
 
-        entry.screen_recorder_pid = undefined;
+        entry.window_recorder_pid = undefined;
 
         // Parse trace if available
         try {
@@ -1766,12 +1697,12 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
       clearAutoKillTimer(pid);
       entry.ended_at = new Date().toISOString();
 
-      // Stop screen recorder if still running (process died unexpectedly)
-      if (entry.screen_recorder_pid && entry.screen_recording_path) {
-        stopScreenRecorderSync(entry.screen_recorder_pid, entry.screen_recording_path);
-        try { fs.unlinkSync(entry.screen_recording_path); } catch { /* Non-fatal */ }
-        entry.screen_recorder_pid = undefined;
-        entry.screen_recording_path = undefined;
+      // Stop window recorder if still running (process died unexpectedly)
+      if (entry.window_recorder_pid && entry.window_recording_path) {
+        stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
+        try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
+        entry.window_recorder_pid = undefined;
+        entry.window_recording_path = undefined;
       }
 
       // Read progress file to determine final status instead of returning 'unknown'
@@ -1933,13 +1864,13 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
   // Read final progress snapshot before killing
   const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
 
-  // Stop screen recorder if running (sync: send SIGINT, brief poll)
-  if (entry.screen_recorder_pid && entry.screen_recording_path) {
-    stopScreenRecorderSync(entry.screen_recorder_pid, entry.screen_recording_path);
-    // Clean up temp screen recording
-    try { fs.unlinkSync(entry.screen_recording_path); } catch { /* Non-fatal */ }
-    entry.screen_recorder_pid = undefined;
-    entry.screen_recording_path = undefined;
+  // Stop window recorder if running (sync: send SIGINT, brief poll)
+  if (entry.window_recorder_pid && entry.window_recording_path) {
+    stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
+    // Clean up temp window recording
+    try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
+    entry.window_recorder_pid = undefined;
+    entry.window_recording_path = undefined;
   }
 
   // Kill the process group
@@ -2378,7 +2309,7 @@ function scanArtifacts(maxEntries = 20): string[] {
     path.join(PROJECT_DIR, 'test-results'),
     path.join(PROJECT_DIR, 'playwright-report'),
   ];
-  const extensions = new Set(['.png', '.webm', '.zip']);
+  const extensions = new Set(['.png', '.webm', '.mp4', '.zip']);
 
   const walk = (dir: string, depth: number) => {
     if (depth > 4 || artifacts.length >= maxEntries) return;
@@ -3757,7 +3688,7 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs): 
           for (const e of entries) {
             const full = path.join(dir, e.name);
             if (e.isDirectory()) videos.push(...walkForVideos(full));
-            else if (e.name.endsWith('.webm')) videos.push(full);
+            else if (e.name.endsWith('.webm') || e.name.endsWith('.mp4')) videos.push(full);
           }
           return videos;
         };
@@ -4057,7 +3988,7 @@ const tools: AnyToolHandler[] = [
     description:
       'Launch Playwright tests in a visible headed browser that runs automatically at human-watchable speed. ' +
       'No clicking required — tests play through on their own with configurable pace. ' +
-      'Video is always recorded. Scenario videos are persisted to `.claude/recordings/demos/{scenarioId}.webm`. ' +
+      'Video is recorded automatically in headed mode on macOS. Scenario videos are persisted to `.claude/recordings/demos/{scenarioId}.mp4`. ' +
       'Best for presentations and demos. Supports headless mode (headless: true) for CI or screenshot capture. ' +
       'Cursor dot is always visible in headed mode. The target project\'s playwright.config.ts must read ' +
       'parseInt(process.env.DEMO_SLOW_MO || "0") in use.launchOptions.slowMo for pace control to work.',

@@ -453,9 +453,9 @@ headless=true, batch_size=5, slow_mo=0
 **Session defaults** (`/demo-session` or `run_demo_batch` with headed):
 headless=false, slow_mo=800
 
-Video recording is always enabled. Scenario videos: `.claude/recordings/demos/{scenarioId}.webm`
+Video recording is automatic in headed mode on macOS. Scenario videos: `.claude/recordings/demos/{scenarioId}.mp4`
 
-**Screen recording via ffmpeg** (headed demos only): When `ffmpeg` is available on the system, `run_demo` starts an ffmpeg screen-capture process alongside the Playwright child. On macOS uses AVFoundation (`avfoundation`), on Linux uses X11 (`x11grab`). The screen recording captures all browser tabs in a single video — Playwright's per-page recording only captures one page at a time. Screen recording PID and output path are tracked in `DemoRunState` (`screen_recorder_pid`, `screen_recording_path`). On demo completion, the screen recording is preferred over the Playwright per-page recording for `persistScenarioRecording()`; temp files are cleaned up automatically. `stop_demo` and `check_demo_result` also handle screen recorder teardown gracefully. If `ffmpeg` is absent, falls back silently to per-page Playwright recording.
+**Window recording via ScreenCaptureKit** (headed demos, macOS only): `run_demo` starts a `WindowRecorder` Swift CLI (`tools/window-recorder/`) alongside the Playwright child. Uses `SCContentFilter(desktopIndependentWindow:)` to capture the specific Chromium window even when occluded or in another Space. The recorder polls for up to 30s for the window to appear, then streams H.264 frames to an MP4 via AVAssetWriter. Window recorder PID and output path are tracked in `DemoRunState` (`window_recorder_pid`, `window_recording_path`). On demo completion, the recording is persisted via `persistScenarioRecording()`; temp files are cleaned up automatically. `stop_demo` and `check_demo_result` also handle window recorder teardown gracefully (SIGINT for clean finalization, SIGKILL fallback).
 
 Dev server is auto-started if not running — no manual setup needed.
 

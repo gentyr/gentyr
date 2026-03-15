@@ -147,6 +147,20 @@ export default async function sync(args) {
     console.log(`  ${YELLOW}Warning: MCP server build failed: ${err.message}${NC}`);
   }
 
+  // 7b. Build window recorder (macOS only)
+  if (process.platform === 'darwin') {
+    const windowRecorderDir = path.join(frameworkDir, 'tools', 'window-recorder');
+    if (fs.existsSync(path.join(windowRecorderDir, 'Package.swift'))) {
+      console.log(`\n${YELLOW}Building window recorder...${NC}`);
+      try {
+        execFileSync('swift', ['build', '-c', 'release'], { cwd: windowRecorderDir, stdio: 'pipe', timeout: 120000 });
+        console.log('  Swift binary built');
+      } catch (err) {
+        console.log(`  ${YELLOW}Warning: Window recorder build failed: ${err.message}${NC}`);
+      }
+    }
+  }
+
   // 8. Regenerate launchd plists (macOS only)
   if (process.platform === 'darwin') {
     const script = path.join(frameworkDir, 'scripts', 'setup-automation-service.sh');

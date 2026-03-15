@@ -27,7 +27,8 @@
   "scripts": {
     "build:mcp": "cd packages/mcp-servers && npm install --no-fund --no-audit && npm run build",
     "build:playwright-helpers": "cd packages/playwright-helpers && npm install --no-fund --no-audit && npm run build",
-    "prepare": "npm run build:mcp && npm run build:playwright-helpers",
+    "build:window-recorder": "[ \"$(uname)\" = \"Darwin\" ] && cd tools/window-recorder && swift build -c release || echo 'Window recorder build skipped (non-macOS)'",
+    "prepare": "npm run build:mcp && npm run build:playwright-helpers && npm run build:window-recorder",
     "test:feedback-agents": "vitest run --config tests/e2e/vitest.config.ts",
     "generate:readme": "node scripts/generate-readme.js"
   },
