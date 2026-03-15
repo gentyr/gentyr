@@ -11,6 +11,7 @@ import { resolveFrameworkDir, resolveFrameworkRelative, detectInstallModel } fro
 import { generateMcpJson, mergeSettings, updateClaudeMd, updateGitignore } from '../lib/config-gen.js';
 import { createDirectorySymlinks, createAgentSymlinks, createReporterSymlinks } from '../lib/symlinks.js';
 import { buildState, writeState, getFrameworkAgents } from '../lib/state.js';
+import { restoreVaultMappings } from '../../lib/vault-mappings.js';
 
 const RED = '\x1b[0;31m';
 const GREEN = '\x1b[0;32m';
@@ -98,12 +99,17 @@ export default async function sync(args) {
     // Non-fatal — may not be a git repo or no tracked files match
   }
 
-  // 5d. Recreate vault-mappings.json if missing
+  // 5d. Recreate vault-mappings.json if missing (try backup restore first)
   const vaultMappingsPath = path.join(claudeDir, 'vault-mappings.json');
   if (!fs.existsSync(vaultMappingsPath)) {
     console.log(`\n${YELLOW}Recreating vault-mappings.json...${NC}`);
-    fs.writeFileSync(vaultMappingsPath, JSON.stringify({ provider: '1password', mappings: {} }, null, 2), 'utf8');
-    console.log('  Created empty vault-mappings.json scaffold');
+    const restored = restoreVaultMappings(projectDir);
+    if (restored) {
+      console.log('  Restored vault-mappings.json from backup');
+    } else {
+      fs.writeFileSync(vaultMappingsPath, JSON.stringify({ provider: '1password', mappings: {} }, null, 2), 'utf8');
+      console.log('  Created empty vault-mappings.json scaffold');
+    }
   }
 
   // 6. Sync husky hooks

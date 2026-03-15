@@ -20,6 +20,7 @@ function isValidOpToken(token) {
 import { createDirectorySymlinks, createAgentSymlinks, createReporterSymlinks } from '../lib/symlinks.js';
 import { generateMcpJson, mergeSettings, updateClaudeMd, updateGitignore } from '../lib/config-gen.js';
 import { buildState, writeState, getFrameworkAgents } from '../lib/state.js';
+import { restoreVaultMappings } from '../../lib/vault-mappings.js';
 
 const RED = '\x1b[0;31m';
 const GREEN = '\x1b[0;32m';
@@ -89,11 +90,16 @@ function preCreateStateFiles(projectDir) {
     }, null, 2) + '\n');
   }
 
-  // Vault mappings
+  // Vault mappings (try backup restore first to avoid losing existing credentials)
   const vaultMappings = path.join(claudeDir, 'vault-mappings.json');
   if (!fs.existsSync(vaultMappings)) {
-    fs.writeFileSync(vaultMappings, '{"provider": "1password", "mappings": {}}');
-    console.log('  Created vault-mappings.json (configure via /setup-gentyr)');
+    const restored = restoreVaultMappings(projectDir);
+    if (restored) {
+      console.log('  Restored vault-mappings.json from backup');
+    } else {
+      fs.writeFileSync(vaultMappings, '{"provider": "1password", "mappings": {}}');
+      console.log('  Created vault-mappings.json (configure via /setup-gentyr)');
+    }
   }
 
   // SQLite database files (must exist before protection)

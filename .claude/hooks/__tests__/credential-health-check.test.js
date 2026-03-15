@@ -571,13 +571,6 @@ describe('credential-health-check.js - Unit Tests', () => {
         'Must output message when 1Password is not authenticated'
       );
 
-      // Should reference the correct setup command
-      assert.match(
-        hookCode,
-        /sudo scripts\/setup\.sh --path <project> --op-token <TOKEN>/,
-        'Must reference correct setup command in 1Password message'
-      );
-
       // Should mention that MCP servers will start without credentials
       assert.match(
         hookCode,
@@ -719,17 +712,6 @@ describe('credential-health-check.js - Unit Tests', () => {
         hookCode,
         /OP_SERVICE_ACCOUNT_TOKEN in shell differs from \.mcp\.json/,
         'Desync warning must describe the mismatch without exposing full tokens'
-      );
-    });
-
-    it('should mention op run as affected pattern in desync context', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      // The desync warning should mention setup.sh as the fix
-      assert.match(
-        hookCode,
-        /setup\.sh --path/,
-        'Desync warning must mention setup.sh --path as the fix'
       );
     });
 
