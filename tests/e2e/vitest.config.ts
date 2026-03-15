@@ -7,5 +7,6 @@ export default defineConfig({
     testTimeout: 600000,     // 10 min per test (real Claude agent sessions)
     hookTimeout: 60000,      // 1 min for setup/teardown
     include: ['tests/e2e/**/*.test.ts'],
+    exclude: ['tests/e2e/install/**'],
   },
 });

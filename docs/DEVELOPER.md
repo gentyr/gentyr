@@ -104,6 +104,31 @@ cd ~/git/my-project && npx gentyr status
 cd ~/git/my-project && claude mcp list   # verify all MCP servers start
 ```
 
+## Running tests
+
+### Installation E2E tests
+
+Exercises the full `npx gentyr init` lifecycle against a temporary directory. Creates a fresh git repo, links the local GENTYR source via `pnpm link`, runs `init`, then runs `sync` and `init` a second time to verify idempotency. Verifies all artifacts: symlinks, state files, MCP config, husky hooks, sync state, and git hook smoke test.
+
+```bash
+npm run test:install
+# or: npx vitest run --config tests/e2e/vitest.install.config.ts
+```
+
+127 tests across 14 describe groups. Runs in approximately 30-60 seconds. HOME is redirected to the temp dir — real shell profiles are never modified. CI=1 prevents launchd service installation.
+
+Test files live at `tests/e2e/install/`:
+- `gentyr-install.test.ts` — main test suite
+- `helpers/project-scaffold.ts` — creates the scaffolded temp project
+
+### Feedback agent E2E tests
+
+```bash
+npm run test:feedback-agents
+```
+
+Requires a running application and real Claude sessions. Not suitable for CI.
+
 ## For published package users
 
 Non-developers install from npm:
