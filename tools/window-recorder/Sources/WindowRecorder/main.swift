@@ -40,7 +40,7 @@ func parseArgs() -> (output: String, app: String, title: String?, fps: Int) {
 // MARK: - Window Discovery
 
 func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
-    let deadline = Date().addingTimeInterval(30)
+    let deadline = Date().addingTimeInterval(120)
     while Date() < deadline {
         do {
             let content = try await SCShareableContent.current
@@ -120,6 +120,10 @@ class RecorderDelegate: NSObject, SCStreamOutput {
 let _ = CGMainDisplayID()
 
 let config = parseArgs()
+
+// Write diagnostic file so the caller can tell if the binary even started
+let diagPath = config.output + ".diag"
+try? "started at \(Date()), app=\(config.app), pid=\(ProcessInfo.processInfo.processIdentifier)\n".write(toFile: diagPath, atomically: true, encoding: .utf8)
 
 // Shared state for signal handling — must outlive the Task closure
 let semaphore = DispatchSemaphore(value: 0)

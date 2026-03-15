@@ -394,6 +394,9 @@ function getWindowRecorderBinary(): string | null {
  * The recorder polls for up to 30s internally, so it's safe to start before Chromium opens.
  * Returns process info or null if the binary isn't available.
  */
+// Track recorder diagnostics per-PID so runDemo can report failures
+const recorderDiagnostics = new Map<number, { exitCode: number | null; stderr: string; startedAt: number }>();
+
 function startWindowRecorder(outputPath: string, appName?: string): { pid: number; process: ReturnType<typeof spawn> } | null {
   const binary = getWindowRecorderBinary();
   if (!binary) return null;
@@ -409,16 +412,18 @@ function startWindowRecorder(outputPath: string, appName?: string): { pid: numbe
     });
     child.unref();
 
-    // Log stderr for diagnostics (window not found, permission denied, etc.)
-    let stderrBuf = '';
-    child.stderr?.on('data', (chunk: Buffer) => { stderrBuf += chunk.toString('utf8'); });
+    const diag = { exitCode: null as number | null, stderr: '', startedAt: Date.now() };
+
+    child.stderr?.on('data', (chunk: Buffer) => { diag.stderr += chunk.toString('utf8'); });
     child.on('exit', (code) => {
+      diag.exitCode = code;
       if (code !== 0 && code !== null) {
-        process.stderr.write(`[playwright] WindowRecorder exited with code ${code}: ${stderrBuf.trim().slice(0, 500)}\n`);
+        process.stderr.write(`[playwright] WindowRecorder exited with code ${code}: ${diag.stderr.trim().slice(0, 500)}\n`);
       }
     });
 
     if (!child.pid) return null;
+    recorderDiagnostics.set(child.pid, diag);
     return { pid: child.pid, process: child };
   } catch {
     return null;
@@ -1446,9 +1451,24 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       ? `\nWarnings:\n${preflight.warnings.map(w => `  - ${w}`).join('\n')}`
       : '';
 
+    // Include window recorder diagnostics in launch message
+    let recorderInfo = '';
+    if (windowRecorder) {
+      const diag = recorderDiagnostics.get(windowRecorder.pid);
+      if (diag) {
+        const elapsed = Date.now() - diag.startedAt;
+        const diagFile = windowRecordingPath ? windowRecordingPath + '.diag' : null;
+        const diagExists = diagFile && fs.existsSync(diagFile);
+        const recFile = windowRecordingPath && fs.existsSync(windowRecordingPath);
+        recorderInfo = `\nWindowRecorder: pid=${windowRecorder.pid}, elapsed=${elapsed}ms, exit=${diag.exitCode}, diagFile=${diagExists}, outputFile=${recFile}, stderr=${diag.stderr.trim().slice(0, 300) || '(empty)'}`;
+      }
+    } else if (!args.headless) {
+      recorderInfo = `\nWindowRecorder: not started (binary=${getWindowRecorderBinary() ? 'found' : 'not found'})`;
+    }
+
     const launchMessage = result.type === 'suite_end_killed'
-      ? `Demo completed and process auto-killed after suite_end for project "${project}".${test_file ? ` File: ${test_file}.` : ''} Use check_demo_result to see the final status.${warningText}`
-      : `Headed auto-play demo launched for project "${project}" with ${slow_mo}ms slow motion.${test_file ? ` Running file: ${test_file}.` : ''} The browser window should open shortly.${warningText}`;
+      ? `Demo completed and process auto-killed after suite_end for project "${project}".${test_file ? ` File: ${test_file}.` : ''} Use check_demo_result to see the final status.${warningText}${recorderInfo}`
+      : `Headed auto-play demo launched for project "${project}" with ${slow_mo}ms slow motion.${test_file ? ` Running file: ${test_file}.` : ''} The browser window should open shortly.${warningText}${recorderInfo}`;
 
     return {
       success: true,
