@@ -8,7 +8,7 @@ import CoreMedia
 func parseArgs() -> (output: String, app: String, title: String?, fps: Int) {
     let args = CommandLine.arguments
     var output: String?
-    var app = "Chromium"
+    var app = "Chrome"
     var title: String?
     var fps = 25
 
