@@ -38,7 +38,8 @@ const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CERT_DIR = path.join(os.homedir(), '.claude', 'proxy-certs');
 const PROXY_LOG_PATH = path.join(os.homedir(), '.claude', 'rotation-proxy.log');
-const MAX_LOG_BYTES = 1_048_576; // 1 MB
+const MAX_LOG_BYTES = 10_485_760; // 10 MB safety cap
+const LOG_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /** Domains we MITM to swap Authorization headers */
 const MITM_DOMAINS = ['api.anthropic.com'];
@@ -99,6 +100,27 @@ function proxyLog(event, fields = {}) {
     // Must not throw — log to stderr as fallback
     process.stderr.write(`[rotation-proxy] log write failed: ${err.message}\n`);
   }
+}
+
+/**
+ * Remove log entries older than LOG_RETENTION_MS.
+ * Called at startup and hourly. Non-fatal on any error.
+ */
+function cleanupOldLogEntries() {
+  try {
+    if (!fs.existsSync(PROXY_LOG_PATH)) return;
+    const content = fs.readFileSync(PROXY_LOG_PATH, 'utf8');
+    const lines = content.split('\n').filter(Boolean);
+    const cutoff = Date.now() - LOG_RETENTION_MS;
+    const recent = lines.filter(line => {
+      try {
+        return new Date(JSON.parse(line).ts).getTime() >= cutoff;
+      } catch { return false; }
+    });
+    if (recent.length < lines.length) {
+      fs.writeFileSync(PROXY_LOG_PATH, recent.join('\n') + '\n', 'utf8');
+    }
+  } catch { /* non-fatal */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -506,6 +528,15 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
 
     headersParsed = true;
 
+    proxyLog('response_received', {
+      host,
+      method: parsed.method,
+      path: parsed.path.slice(0, 100),
+      status: responseStatusCode,
+      is_sse: isSSE,
+      active_key_id: activeKeyId.slice(0, 8),
+    });
+
     if (responseStatusCode === 429 && retryCount < MAX_429_RETRIES && !usePassthrough) {
       // Rotate key and retry (skip for passthrough — proxy didn't inject that token)
       upstream.destroy();
@@ -663,7 +694,9 @@ function createProxyServer(certs) {
       // Transparent CONNECT tunnel — pass through
       proxyLog('tunnel_passthrough', { host: hostname, port });
 
+      const tunnelStart = Date.now();
       const upstreamSocket = net.connect(port, hostname, () => {
+        proxyLog('tunnel_established', { host: hostname, port, head_bytes: head?.length || 0 });
         clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         if (head && head.length > 0) upstreamSocket.write(head);
         upstreamSocket.pipe(clientSocket);
@@ -671,12 +704,36 @@ function createProxyServer(certs) {
       });
 
       upstreamSocket.on('error', (err) => {
-        proxyLog('tunnel_error', { host: hostname, port, error: err.message });
+        proxyLog('tunnel_error', { host: hostname, port, error: err.message,
+          duration_ms: Date.now() - tunnelStart });
         clientSocket.destroy();
       });
 
-      clientSocket.on('error', () => {
+      upstreamSocket.on('close', () => {
+        if (!clientSocket.destroyed) {
+          proxyLog('tunnel_closed', { host: hostname, port,
+            duration_ms: Date.now() - tunnelStart,
+            bytes_from_server: upstreamSocket.bytesRead,
+            bytes_from_client: upstreamSocket.bytesWritten,
+            closed_by: 'upstream' });
+        }
+      });
+
+      clientSocket.on('error', (err) => {
+        proxyLog('tunnel_client_error', { host: hostname, port, error: err.message,
+          duration_ms: Date.now() - tunnelStart });
         upstreamSocket.destroy();
+      });
+
+      clientSocket.on('close', () => {
+        if (!upstreamSocket.destroyed) {
+          proxyLog('tunnel_closed', { host: hostname, port,
+            duration_ms: Date.now() - tunnelStart,
+            bytes_from_server: upstreamSocket.bytesRead,
+            bytes_from_client: upstreamSocket.bytesWritten,
+            closed_by: 'client' });
+          upstreamSocket.destroy();
+        }
       });
 
       return;
@@ -788,6 +845,10 @@ async function main() {
     key_count: Object.keys(initialState.keys).length,
     mitm_domains: MITM_DOMAINS,
   });
+
+  // Clean old log entries at startup and hourly
+  cleanupOldLogEntries();
+  setInterval(cleanupOldLogEntries, 60 * 60 * 1000).unref();
 
   const server = createProxyServer(certs);
 

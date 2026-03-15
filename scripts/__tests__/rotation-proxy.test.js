@@ -1401,3 +1401,130 @@ describe('forwardRequest() - 401 retry handling', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// 13. Proxy audit trail — tunnel lifecycle and response logging
+// ---------------------------------------------------------------------------
+
+describe('rotation-proxy.js - Proxy audit trail', () => {
+  it('should define LOG_RETENTION_MS constant (24 hours)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(code, /const LOG_RETENTION_MS\s*=/, 'Must define LOG_RETENTION_MS');
+    assert.match(code, /24\s*\*\s*60\s*\*\s*60\s*\*\s*1000/, 'LOG_RETENTION_MS must be 24 hours in milliseconds');
+  });
+
+  it('should define cleanupOldLogEntries function', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(code, /function cleanupOldLogEntries\(\)/, 'Must define cleanupOldLogEntries function');
+  });
+
+  it('should set MAX_LOG_BYTES to 10MB safety cap', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(code, /const MAX_LOG_BYTES\s*=\s*10_485_760/, 'MAX_LOG_BYTES must be 10MB (10_485_760)');
+  });
+
+  it('should log tunnel_established event with host, port, head_bytes', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    const passthroughStart = code.indexOf('// Transparent CONNECT tunnel');
+    const passthroughEnd = code.indexOf('return;', passthroughStart);
+    const section = code.slice(passthroughStart, passthroughEnd);
+
+    assert.match(section, /proxyLog\('tunnel_established'/, 'Must log tunnel_established event');
+    assert.match(section, /head_bytes/, 'tunnel_established must include head_bytes field');
+  });
+
+  it('should log tunnel_closed event with duration_ms, bytes_from_server, bytes_from_client, closed_by', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    const passthroughStart = code.indexOf('// Transparent CONNECT tunnel');
+    const passthroughEnd = code.indexOf('// MITM: respond 200');
+    const section = code.slice(passthroughStart, passthroughEnd);
+
+    assert.match(section, /proxyLog\('tunnel_closed'/, 'Must log tunnel_closed event');
+    assert.match(section, /duration_ms/, 'tunnel_closed must include duration_ms');
+    assert.match(section, /bytes_from_server/, 'tunnel_closed must include bytes_from_server');
+    assert.match(section, /bytes_from_client/, 'tunnel_closed must include bytes_from_client');
+    assert.match(section, /closed_by/, 'tunnel_closed must include closed_by field');
+  });
+
+  it('should log tunnel_client_error event (previously silent error path)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    const passthroughStart = code.indexOf('// Transparent CONNECT tunnel');
+    const passthroughEnd = code.indexOf('// MITM: respond 200');
+    const section = code.slice(passthroughStart, passthroughEnd);
+
+    assert.match(section, /proxyLog\('tunnel_client_error'/, 'Must log tunnel_client_error event');
+  });
+
+  it('should avoid double-logging tunnel_closed by checking destroyed state', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    const passthroughStart = code.indexOf('// Transparent CONNECT tunnel');
+    const passthroughEnd = code.indexOf('// MITM: respond 200');
+    const section = code.slice(passthroughStart, passthroughEnd);
+
+    // Both close handlers must guard with destroyed check
+    assert.match(section, /!clientSocket\.destroyed/, 'upstream close handler must check !clientSocket.destroyed');
+    assert.match(section, /!upstreamSocket\.destroyed/, 'client close handler must check !upstreamSocket.destroyed');
+  });
+
+  it('should log response_received event in forwardRequest with status field', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(fnStart, /proxyLog\('response_received'/, 'Must log response_received event');
+    assert.match(fnStart, /status:\s*responseStatusCode/, 'response_received must include status field');
+  });
+
+  it('should call cleanupOldLogEntries at startup', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const mainFn = extractFunctionBody(code, 'main');
+
+    assert.match(mainFn, /cleanupOldLogEntries\(\)/, 'Must call cleanupOldLogEntries() in main()');
+  });
+
+  it('should schedule hourly cleanup via setInterval', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const mainFn = extractFunctionBody(code, 'main');
+
+    assert.match(mainFn, /setInterval\(cleanupOldLogEntries/, 'Must schedule cleanupOldLogEntries on interval');
+    assert.match(mainFn, /\.unref\(\)/, 'Interval must be unref()d to not prevent process exit');
+  });
+
+  it('should include duration_ms in tunnel_error event', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+    const passthroughStart = code.indexOf('// Transparent CONNECT tunnel');
+    const passthroughEnd = code.indexOf('// MITM: respond 200');
+    const section = code.slice(passthroughStart, passthroughEnd);
+
+    const errorIdx = section.indexOf("proxyLog('tunnel_error'");
+    assert.ok(errorIdx !== -1, 'Must have tunnel_error log');
+    const errorSection = section.slice(errorIdx, errorIdx + 200);
+    assert.match(errorSection, /duration_ms/, 'tunnel_error must include duration_ms');
+  });
+
+  it('time-based cleanup should filter entries by LOG_RETENTION_MS cutoff', () => {
+    // Behavioral test: simulate the cleanup logic inline
+    const LOG_RETENTION_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const cutoff = now - LOG_RETENTION_MS;
+
+    const lines = [
+      JSON.stringify({ ts: new Date(now - 25 * 60 * 60 * 1000).toISOString(), event: 'old' }),
+      JSON.stringify({ ts: new Date(now - 1 * 60 * 60 * 1000).toISOString(), event: 'recent' }),
+      JSON.stringify({ ts: new Date(now).toISOString(), event: 'current' }),
+    ];
+
+    const recent = lines.filter(line => {
+      try {
+        return new Date(JSON.parse(line).ts).getTime() >= cutoff;
+      } catch { return false; }
+    });
+
+    assert.strictEqual(recent.length, 2, 'Should keep 2 recent entries and discard 1 old entry');
+    assert.ok(recent.every(l => JSON.parse(l).event !== 'old'), 'Old entry must be filtered out');
+  });
+});
