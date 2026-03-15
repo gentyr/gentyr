@@ -9,7 +9,7 @@ import CoreGraphics
 func parseArgs() -> (output: String, app: String, title: String?, fps: Int) {
     let args = CommandLine.arguments
     var output: String?
-    var app = "Chrome"
+    var app = "Google Chrome for Testing"
     var title: String?
     var fps = 25
 
@@ -44,6 +44,9 @@ func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
     while Date() < deadline {
         do {
             let content = try await SCShareableContent.current
+            // Find the largest matching window (main browser, not popups/dialogs)
+            var bestWindow: SCWindow? = nil
+            var bestArea: CGFloat = 0
             for window in content.windows {
                 guard let ownerName = window.owningApplication?.applicationName else { continue }
                 guard ownerName.localizedCaseInsensitiveContains(appName) else { continue }
@@ -51,8 +54,13 @@ func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
                 if let sub = titleSubstring {
                     guard let t = window.title, t.localizedCaseInsensitiveContains(sub) else { continue }
                 }
-                return window
+                let area = window.frame.width * window.frame.height
+                if area > bestArea {
+                    bestArea = area
+                    bestWindow = window
+                }
             }
+            if let w = bestWindow { return w }
         } catch {
             FileHandle.standardError.write(Data("Window discovery error: \(error.localizedDescription)\n".utf8))
         }
