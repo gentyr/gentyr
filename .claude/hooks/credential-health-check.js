@@ -17,8 +17,13 @@
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { backupVaultMappings, restoreVaultMappings } from '../../../lib/vault-mappings.js';
 
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+// Attempt restore from backup if primary is missing or empty (e.g. wiped by lint-staged stash)
+restoreVaultMappings(projectDir);
+
 const mappingsPath = path.join(projectDir, '.claude', 'vault-mappings.json');
 const actionsPath = path.join(projectDir, '.claude', 'hooks', 'protected-actions.json');
 
@@ -93,6 +98,8 @@ try {
         missingKeys.push(key);
       }
     }
+    // Backup known-good state so restore can recover after lint-staged stash cycles
+    backupVaultMappings(projectDir);
   } catch {
     // No vault-mappings.json — all keys are missing
     missingKeys.push(...requiredKeys);
