@@ -72,7 +72,17 @@ describe('rotation-proxy.js - File structure', () => {
       'Must define MITM_DOMAINS as a const array'
     );
     assert.match(code, /api\.anthropic\.com/, 'MITM_DOMAINS must include api.anthropic.com');
-    assert.match(code, /mcp-proxy\.anthropic\.com/, 'MITM_DOMAINS must include mcp-proxy.anthropic.com');
+  });
+
+  it('should NOT include mcp-proxy.anthropic.com in MITM_DOMAINS', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    // Extract only the MITM_DOMAINS array line to avoid matching comments
+    const mitmLine = code.match(/const MITM_DOMAINS\s*=\s*\[([^\]]*)\]/)?.[0] || '';
+    assert.doesNotMatch(
+      mitmLine,
+      /mcp-proxy\.anthropic\.com/,
+      'mcp-proxy.anthropic.com must NOT be in MITM_DOMAINS — it uses session-bound OAuth tokens that must not be swapped'
+    );
   });
 
   it('should define MAX_429_RETRIES constant', () => {
@@ -481,14 +491,17 @@ describe('rebuildRequest() - behavioral logic', () => {
 // ---------------------------------------------------------------------------
 
 describe('MITM domain routing logic - behavioral', () => {
-  const MITM_DOMAINS = ['api.anthropic.com', 'mcp-proxy.anthropic.com'];
+  const MITM_DOMAINS = ['api.anthropic.com'];
 
   it('should classify api.anthropic.com as a MITM target', () => {
     assert.ok(MITM_DOMAINS.includes('api.anthropic.com'));
   });
 
-  it('should classify mcp-proxy.anthropic.com as a MITM target', () => {
-    assert.ok(MITM_DOMAINS.includes('mcp-proxy.anthropic.com'));
+  it('should NOT classify mcp-proxy.anthropic.com as a MITM target (transparent tunnel)', () => {
+    assert.ok(
+      !MITM_DOMAINS.includes('mcp-proxy.anthropic.com'),
+      'mcp-proxy.anthropic.com uses session-bound OAuth tokens — MITMing it causes 401 revocation cascade'
+    );
   });
 
   it('should NOT classify platform.claude.com as a MITM target (OAuth passthrough)', () => {
@@ -945,9 +958,11 @@ describe('forwardRequest() - unknown token passthrough', () => {
     const code = fs.readFileSync(PROXY_PATH, 'utf8');
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
-    // The passthrough check must be gated by retryCount === 0
+    // The passthrough check must be gated by retryCount === 0.
+    // Use 1500-char lookback to cover the full distance from the outer
+    // retryCount === 0 guard to the !keyEntry branch inside it.
     const passthroughCheckIdx = fnStart.indexOf('!keyEntry');
-    const passthroughSection = fnStart.slice(Math.max(0, passthroughCheckIdx - 800), passthroughCheckIdx + 100);
+    const passthroughSection = fnStart.slice(Math.max(0, passthroughCheckIdx - 1500), passthroughCheckIdx + 100);
 
     assert.match(
       passthroughSection,
@@ -1293,29 +1308,29 @@ describe('forwardRequest() - 401 retry handling', () => {
     );
   });
 
-  it('should log auth_retry_on_401 event', () => {
+  it('should log rotating_on_401 event', () => {
     const code = fs.readFileSync(PROXY_PATH, 'utf8');
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
     assert.match(
       fnStart,
-      /proxyLog\(['"]auth_retry_on_401['"]/,
-      'Must log auth_retry_on_401 event for observability'
+      /proxyLog\(['"]rotating_on_401['"]/,
+      'Must log rotating_on_401 event for observability'
     );
   });
 
-  it('should only retry 401 on first attempt (retryCount === 0)', () => {
+  it('should only retry 401 up to MAX_401_RETRIES', () => {
     const code = fs.readFileSync(PROXY_PATH, 'utf8');
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
-    // Find the 401 check — it must include retryCount === 0
-    const authRetryIdx = fnStart.indexOf('auth_retry_on_401');
-    const authRetrySection = fnStart.slice(Math.max(0, authRetryIdx - 300), authRetryIdx);
+    // Find the 401 check — it must include retryCount < MAX_401_RETRIES
+    const rotatingOn401Idx = fnStart.indexOf('rotating_on_401');
+    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 300), rotatingOn401Idx);
 
     assert.match(
       authRetrySection,
-      /retryCount\s*===\s*0/,
-      '401 retry must only happen on first attempt (retryCount === 0)'
+      /retryCount\s*<\s*MAX_401_RETRIES/,
+      '401 retry must be gated by retryCount < MAX_401_RETRIES'
     );
   });
 
@@ -1324,8 +1339,8 @@ describe('forwardRequest() - 401 retry handling', () => {
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
     // Find the 401 check — it must include !usePassthrough
-    const authRetryIdx = fnStart.indexOf('auth_retry_on_401');
-    const authRetrySection = fnStart.slice(Math.max(0, authRetryIdx - 300), authRetryIdx);
+    const rotatingOn401Idx = fnStart.indexOf('rotating_on_401');
+    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 300), rotatingOn401Idx);
 
     assert.match(
       authRetrySection,
@@ -1334,12 +1349,32 @@ describe('forwardRequest() - 401 retry handling', () => {
     );
   });
 
+  it('should NOT retry 401 for mcp-proxy.anthropic.com (defense-in-depth guard)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // The 401 guard must include isMcpProxy check
+    const rotatingOn401Idx = fnStart.indexOf('rotating_on_401');
+    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 400), rotatingOn401Idx);
+
+    assert.match(
+      authRetrySection,
+      /isMcpProxy/,
+      '401 retry must be skipped for mcp-proxy.anthropic.com to prevent OAuth revocation cascade'
+    );
+    assert.match(
+      authRetrySection,
+      /!isMcpProxy/,
+      '401 condition must negate isMcpProxy to skip retry for that host'
+    );
+  });
+
   it('should NOT call rotateOnExhaustion on 401 (auth error, not quota)', () => {
     const code = fs.readFileSync(PROXY_PATH, 'utf8');
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
     // Find the 401 section — between 401 check and the next status code check
-    const auth401Idx = fnStart.indexOf('auth_retry_on_401');
+    const auth401Idx = fnStart.indexOf('rotating_on_401');
     const auth401Section = fnStart.slice(auth401Idx, auth401Idx + 500);
 
     assert.doesNotMatch(
@@ -1357,7 +1392,7 @@ describe('forwardRequest() - 401 retry handling', () => {
     const auth401Idx = fnStart.indexOf('responseStatusCode === 401');
     assert.ok(auth401Idx !== -1, 'Must have 401 check');
 
-    const auth401Section = fnStart.slice(auth401Idx, auth401Idx + 500);
+    const auth401Section = fnStart.slice(auth401Idx, auth401Idx + 600);
 
     assert.match(
       auth401Section,

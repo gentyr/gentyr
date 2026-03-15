@@ -9,9 +9,10 @@
  *
  * Intercepts (TLS MITM + header swap):
  *   - api.anthropic.com
- *   - mcp-proxy.anthropic.com
  *
  * Passes through (transparent CONNECT tunnel):
+ *   - mcp-proxy.anthropic.com (MCP proxy validates session-bound OAuth tokens;
+ *     swapping them causes 401 → revocation cascade. Must not be MITMed.)
  *   - platform.claude.com (OAuth refresh)
  *   - Everything else
  *
@@ -40,7 +41,7 @@ const PROXY_LOG_PATH = path.join(os.homedir(), '.claude', 'rotation-proxy.log');
 const MAX_LOG_BYTES = 1_048_576; // 1 MB
 
 /** Domains we MITM to swap Authorization headers */
-const MITM_DOMAINS = ['api.anthropic.com', 'mcp-proxy.anthropic.com'];
+const MITM_DOMAINS = ['api.anthropic.com'];
 
 /** Max retries on 429 before giving up */
 const MAX_429_RETRIES = 2;
@@ -535,7 +536,11 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
     }
 
     // 401: rotate key and retry (auth error — expired token or server-side revocation)
-    if (responseStatusCode === 401 && retryCount < MAX_401_RETRIES && !usePassthrough) {
+    // Defense-in-depth: never rotate on 401 from mcp-proxy.anthropic.com — that host
+    // validates session-bound OAuth tokens and a 401 there indicates token mismatch
+    // (not key expiration). Rotating would trigger a destructive cascade.
+    const isMcpProxy = host === 'mcp-proxy.anthropic.com';
+    if (responseStatusCode === 401 && retryCount < MAX_401_RETRIES && !usePassthrough && !isMcpProxy) {
       upstream.destroy();
       proxyLog('rotating_on_401', {
         host,
