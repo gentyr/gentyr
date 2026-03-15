@@ -391,6 +391,7 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 - Validates vault mappings against required keys in `protected-actions.json`
 - Checks `.mcp.json` env blocks for keys injected directly (e.g. `OP_SERVICE_ACCOUNT_TOKEN`), which count as configured even if absent from vault-mappings
 - **OP token desync detection**: Compares shell `OP_SERVICE_ACCOUNT_TOKEN` against `.mcp.json` value; if they differ, emits a warning and overwrites `process.env` with the `.mcp.json` value (source of truth); `.mcp.json` is always authoritative because it is updated by reinstall
+- **Vault-mappings backup/restore** (`lib/vault-mappings.js`): When vault-mappings.json has non-empty mappings, a backup is written to `.claude/state/vault-mappings.backup.json`. If vault-mappings.json is missing at `SessionStart`, the hook attempts to restore from backup before treating all keys as missing. `init` and `sync` also restore from backup when the primary file is absent or empty.
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink
 - Shell sync validation also available via `scripts/setup-validate.js` `validateShellSync()` function, which checks the `# BEGIN GENTYR OP` / `# END GENTYR OP` block in `~/.zshrc` or `~/.bashrc`
 
@@ -404,7 +405,7 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 - `ALWAYS_BLOCKED_SUFFIXES` and `ALWAYS_BLOCKED_BASENAMES` are hard-blocked with no approval escape hatch; other protected paths can be approved via `protected-action-approvals.json`
 - Blocks credential environment variable references (`$TOKEN`, etc.) sourced from `protected-actions.json` `credentialKeys` arrays; also blocks environment dump commands (`env`, `printenv`, `export -p`)
 - Root-ownership of credential files at the OS level is the primary defense; this hook is defense-in-depth
-- Tests at `.claude/hooks/__tests__/credential-file-guard.test.js` (142 tests, runs via `node --test`)
+- Tests at `.claude/hooks/__tests__/credential-file-guard.test.js` (165 tests, 24 skipped pending G027 B2 integration, runs via `node --test`)
 
 ### Playwright CLI Guard Hook
 
