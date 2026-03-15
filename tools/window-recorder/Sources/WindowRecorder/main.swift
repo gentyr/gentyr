@@ -47,7 +47,7 @@ func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
             for window in content.windows {
                 guard let ownerName = window.owningApplication?.applicationName else { continue }
                 guard ownerName.localizedCaseInsensitiveContains(appName) else { continue }
-                guard window.isOnScreen || window.frame.width > 0 else { continue }
+                guard window.frame.width >= 100 && window.frame.height >= 100 else { continue }
                 if let sub = titleSubstring {
                     guard let t = window.title, t.localizedCaseInsensitiveContains(sub) else { continue }
                 }
@@ -113,9 +113,27 @@ let _ = CGMainDisplayID()
 
 let config = parseArgs()
 
-// Run async main
+// Shared state for signal handling — must outlive the Task closure
 let semaphore = DispatchSemaphore(value: 0)
 var exitCode: Int32 = 0
+var activeStream: SCStream?
+var activeDelegate: RecorderDelegate?
+
+// Set up SIGINT handler at module level so it stays alive
+let signalQueue = DispatchQueue(label: "signal")
+let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: signalQueue)
+signal(SIGINT, SIG_IGN)
+sigintSource.setEventHandler {
+    FileHandle.standardError.write(Data("\nStopping recording...\n".utf8))
+    Task {
+        if let stream = activeStream { try? await stream.stopCapture() }
+        activeDelegate?.finalizeRecording()
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: config.output)[.size] as? Int) ?? 0
+        FileHandle.standardError.write(Data("Saved: \(config.output) (\(fileSize / 1024)KB)\n".utf8))
+        semaphore.signal()
+    }
+}
+sigintSource.resume()
 
 Task {
     // Find the target window
@@ -143,7 +161,6 @@ Task {
 
     // Set up AVAssetWriter for H.264 MP4 output
     let outputURL = URL(fileURLWithPath: config.output)
-    // Remove existing file if present
     try? FileManager.default.removeItem(at: outputURL)
 
     guard let assetWriter = try? AVAssetWriter(outputURL: outputURL, fileType: .mp4) else {
@@ -168,26 +185,26 @@ Task {
     assetWriter.add(videoInput)
 
     let delegate = RecorderDelegate(assetWriter: assetWriter, videoInput: videoInput)
+    activeDelegate = delegate
 
-    // Create and start the stream (with timeout — startCapture hangs if Screen Recording permission is missing)
-    let stream: SCStream
+    // Create and start the stream (with timeout — startCapture hangs if permission is missing)
     do {
-        stream = SCStream(filter: filter, configuration: streamConfig, delegate: nil)
+        let stream = SCStream(filter: filter, configuration: streamConfig, delegate: nil)
         try stream.addStreamOutput(delegate, type: .screen, sampleHandlerQueue: DispatchQueue(label: "recorder"))
 
-        // Race startCapture against a 10s timeout — permission prompts can hang indefinitely
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask { try await stream.startCapture() }
             group.addTask {
-                try await Task.sleep(nanoseconds: 10_000_000_000) // 10s
+                try await Task.sleep(nanoseconds: 10_000_000_000)
                 throw NSError(domain: "WindowRecorder", code: 1, userInfo: [
                     NSLocalizedDescriptionKey: "startCapture timed out — Screen Recording permission likely not granted"
                 ])
             }
-            // Wait for whichever finishes first, cancel the other
             try await group.next()
             group.cancelAll()
         }
+
+        activeStream = stream
     } catch {
         FileHandle.standardError.write(Data("Error: Failed to start capture — \(error.localizedDescription)\n".utf8))
         FileHandle.standardError.write(Data("Grant Screen Recording permission in System Settings > Privacy & Security > Screen Recording\n".utf8))
@@ -197,23 +214,6 @@ Task {
     }
 
     FileHandle.standardError.write(Data("Recording started. Send SIGINT (Ctrl+C) to stop.\n".utf8))
-
-    // Handle SIGINT for graceful shutdown
-    // Use a dedicated queue — .main is blocked by semaphore.wait() and can't deliver events
-    let signalQueue = DispatchQueue(label: "signal")
-    let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: signalQueue)
-    signal(SIGINT, SIG_IGN) // Let DispatchSource handle it
-    sigintSource.setEventHandler {
-        FileHandle.standardError.write(Data("\nStopping recording...\n".utf8))
-        Task {
-            try? await stream.stopCapture()
-            delegate.finalizeRecording()
-            let fileSize = (try? FileManager.default.attributesOfItem(atPath: config.output)[.size] as? Int) ?? 0
-            FileHandle.standardError.write(Data("Saved: \(config.output) (\(fileSize / 1024)KB)\n".utf8))
-            semaphore.signal()
-        }
-    }
-    sigintSource.resume()
 }
 
 semaphore.wait()
