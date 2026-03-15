@@ -11,7 +11,10 @@ import fs from 'fs';
 import path from 'path';
 
 // Skip spawned task sessions
-if (process.env.CLAUDE_SPAWNED_SESSION === 'true') process.exit(0);
+if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
+  console.log(JSON.stringify({ continue: true }));
+  process.exit(0);
+}
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const HEALTH_FILE = path.join(PROJECT_DIR, '.claude', 'playwright-health.json');
@@ -20,7 +23,10 @@ function run() {
   // Only run if this project has Playwright
   const hasPwConfig = fs.existsSync(path.join(PROJECT_DIR, 'playwright.config.ts'))
     || fs.existsSync(path.join(PROJECT_DIR, 'playwright.config.js'));
-  if (!hasPwConfig) process.exit(0);
+  if (!hasPwConfig) {
+    console.log(JSON.stringify({ continue: true }));
+    process.exit(0);
+  }
 
   const authDir = path.join(PROJECT_DIR, '.auth');
 
@@ -89,7 +95,14 @@ function run() {
     process.stderr.write(`[playwright-health-check] Auth state is stale (${reason}). Run /demo to auto-repair.\n`);
   }
 
+  console.log(JSON.stringify({ continue: true }));
   process.exit(0);
 }
 
-run();
+try {
+  run();
+} catch (err) {
+  console.error(`[playwright-health-check] Unexpected error: ${err.message || err}`);
+  console.log(JSON.stringify({ continue: true }));
+  process.exit(0);
+}

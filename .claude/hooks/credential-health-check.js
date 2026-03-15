@@ -17,7 +17,7 @@
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { backupVaultMappings, restoreVaultMappings } from '../../../lib/vault-mappings.js';
+import { backupVaultMappings, restoreVaultMappings } from '../../lib/vault-mappings.js';
 
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
