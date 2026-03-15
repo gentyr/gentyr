@@ -650,15 +650,15 @@ Claude Code ──HTTPS_PROXY──> localhost:18080 ──TLS──> api.anthro
 
 **What it intercepts** (TLS MITM + header swap):
 - `api.anthropic.com` — main API
-- `mcp-proxy.anthropic.com` — MCP proxy endpoint
 
 **What passes through** (transparent CONNECT tunnel):
+- `mcp-proxy.anthropic.com` — MCP proxy endpoint (uses session-bound OAuth tokens; swapping them causes 401 → revocation cascade)
 - `platform.claude.com` — OAuth refresh
 - Everything else
 
 **429 retry**: On quota exhaustion response, marks the current key as exhausted, calls `selectActiveKey()` to pick the next available key, and retries the request (max 2 retries). If no keys are available, returns the original 429 to the client.
 
-**401 retry**: On auth failure response (not a quota issue), retries once with a fresh state read — allows picking up a key that was rotated between the proxy's token resolution and the upstream response. Does not call `rotateOnExhaustion`; fires `auth_retry_on_401` log event.
+**401 retry**: On auth failure response (not a quota issue), retries up to `MAX_401_RETRIES` times with a fresh key selection — allows picking up a key that was rotated between the proxy's token resolution and the upstream response. Does not call `rotateOnExhaustion`; fires `rotating_on_401` log event. Defense-in-depth: 401s from `mcp-proxy.anthropic.com` are never retried (the host validates session-bound OAuth tokens; a 401 there is a token mismatch, not key expiration).
 
 **Tombstone-aware routing** (`forwardRequest`): When the incoming request carries a token known to rotation state, the proxy inspects its entry:
 - `status: 'tombstone'` — pruned dead token; swap with the active key and forward (prevents "OAuth token revoked" errors from stale sessions sending tombstoned credentials)
@@ -691,8 +691,9 @@ npx gentyr proxy           # Same as status
 Emergency kill switch for the rotation proxy. When the Anthropic usage API is degraded and the proxy's key-selection logic causes issues, `disable` takes the proxy completely out of the equation:
 
 1. Unloads the launchd/systemd service (stops the process, prevents auto-restart)
-2. Strips the `# BEGIN GENTYR PROXY` / `# END GENTYR PROXY` block from `~/.zshrc`/`~/.bashrc`
-3. Writes `~/.claude/proxy-disabled.json` with `{ disabled: true }` — read by all spawn helpers
+2. Kill-by-port fallback: uses `lsof -ti :18080` + `process.kill(SIGTERM)` to terminate any lingering proxy process that `launchctl unload` may have left running
+3. Strips the `# BEGIN GENTYR PROXY` / `# END GENTYR PROXY` block from `~/.zshrc`/`~/.bashrc`
+4. Writes `~/.claude/proxy-disabled.json` with `{ disabled: true }` — read by all spawn helpers
 
 **State file**: `~/.claude/proxy-disabled.json` (global, not per-project — one proxy serves all projects).
 

@@ -203,10 +203,33 @@ async function doDisable() {
   // 1. Stop service
   stopProxyService();
 
-  // 2. Remove shell integration
+  // 2. Kill-by-port fallback: launchctl unload does not always kill a running process
+  //    (e.g. if the plist was manually loaded or the service is in a bad state).
+  //    Use lsof to find and kill any process still bound to PROXY_PORT.
+  try {
+    const pids = execFileSync('lsof', ['-ti', `:${PROXY_PORT}`], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: 5000,
+    }).trim();
+    if (pids) {
+      for (const pid of pids.split('\n').filter(Boolean)) {
+        try {
+          process.kill(parseInt(pid, 10), 'SIGTERM');
+          console.log(`  Killed lingering proxy process ${DIM}(pid ${pid})${NC}`);
+        } catch {
+          // Process already gone
+        }
+      }
+    }
+  } catch {
+    // lsof returns exit 1 when no matches — normal when proxy is already stopped
+  }
+
+  // 3. Remove shell integration
   removeShellIntegration();
 
-  // 3. Persist state
+  // 4. Persist state
   writeState(true);
   console.log('  Wrote disabled flag to ~/.claude/proxy-disabled.json');
 

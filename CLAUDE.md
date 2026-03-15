@@ -500,7 +500,7 @@ Sole authority for demo lifecycle work. Handles prerequisite registration, scena
 
 ## Rotation Proxy
 
-Local MITM proxy on `localhost:18080` for transparent credential rotation. Intercepts `api.anthropic.com` and `mcp-proxy.anthropic.com` (TLS MITM + header swap); everything else passes through. Handles 429 retry with automatic key rotation. Runs as a launchd KeepAlive service. Enable/disable via `npx gentyr proxy enable|disable`.
+Local MITM proxy on `localhost:18080` for transparent credential rotation. Intercepts `api.anthropic.com` (TLS MITM + header swap); `mcp-proxy.anthropic.com` and everything else passes through as a transparent CONNECT tunnel (MCP proxy uses session-bound OAuth tokens that must not be swapped). Handles 429 retry with automatic key rotation. Runs as a launchd KeepAlive service. Enable/disable via `npx gentyr proxy enable|disable`.
 
 > Full details: [Rotation Proxy](docs/CLAUDE-REFERENCE.md#rotation-proxy)
 
