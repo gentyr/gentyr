@@ -408,7 +408,15 @@ function startWindowRecorder(outputPath: string, appName?: string): { pid: numbe
       cwd: PROJECT_DIR,
     });
     child.unref();
-    child.stderr?.on('data', () => { /* drain */ });
+
+    // Log stderr for diagnostics (window not found, permission denied, etc.)
+    let stderrBuf = '';
+    child.stderr?.on('data', (chunk: Buffer) => { stderrBuf += chunk.toString('utf8'); });
+    child.on('exit', (code) => {
+      if (code !== 0 && code !== null) {
+        process.stderr.write(`[playwright] WindowRecorder exited with code ${code}: ${stderrBuf.trim().slice(0, 500)}\n`);
+      }
+    });
 
     if (!child.pid) return null;
     return { pid: child.pid, process: child };
@@ -914,7 +922,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     const recorderBinary = getWindowRecorderBinary();
     if (recorderBinary) {
       windowRecordingPath = path.join(PROJECT_DIR, '.claude', 'state', `demo-window-${progressId}.mp4`);
-      windowRecorder = startWindowRecorder(windowRecordingPath);
+      windowRecorder = startWindowRecorder(windowRecordingPath, 'Chrome');
     }
   }
 
