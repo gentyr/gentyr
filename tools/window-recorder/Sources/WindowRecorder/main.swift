@@ -51,27 +51,42 @@ func appendDiag(_ line: String) {
 func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
     let deadline = Date().addingTimeInterval(120)
     var pollCount = 0
+    var existingWindowIDs: Set<UInt32>? = nil
+
     while Date() < deadline {
         do {
             let content = try await SCShareableContent.current
             pollCount += 1
 
+            // On first poll, capture existing Chrome window IDs to exclude
+            if existingWindowIDs == nil {
+                existingWindowIDs = Set(
+                    content.windows.compactMap { w -> UInt32? in
+                        guard let name = w.owningApplication?.applicationName else { return nil }
+                        guard name.localizedCaseInsensitiveContains(appName) else { return nil }
+                        return w.windowID
+                    }
+                )
+                appendDiag("Excluding \(existingWindowIDs!.count) existing \(appName) window(s)\n")
+            }
+
             // Log all window app names on first few polls for diagnostics
             if pollCount <= 3 {
                 let appNames = content.windows.compactMap { w -> String? in
                     guard let name = w.owningApplication?.applicationName else { return nil }
-                    return "\(name) (\(Int(w.frame.width))x\(Int(w.frame.height)))"
+                    return "\(name) (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]"
                 }
                 appendDiag("poll \(pollCount): \(appNames.joined(separator: ", "))\n")
             }
 
-            // Find the largest matching window (main browser, not popups/dialogs)
+            // Find the largest NEW matching window (skip pre-existing ones)
             var bestWindow: SCWindow? = nil
             var bestArea: CGFloat = 0
             for window in content.windows {
                 guard let ownerName = window.owningApplication?.applicationName else { continue }
                 guard ownerName.localizedCaseInsensitiveContains(appName) else { continue }
                 guard window.frame.width >= 100 && window.frame.height >= 100 else { continue }
+                if existingWindowIDs?.contains(window.windowID) == true { continue }
                 if let sub = titleSubstring {
                     guard let t = window.title, t.localizedCaseInsensitiveContains(sub) else { continue }
                 }
@@ -82,7 +97,7 @@ func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
                 }
             }
             if let w = bestWindow {
-                appendDiag("MATCHED: \(w.owningApplication?.applicationName ?? "?") - \(w.title ?? "(untitled)") (\(Int(w.frame.width))x\(Int(w.frame.height)))\n")
+                appendDiag("MATCHED: \(w.owningApplication?.applicationName ?? "?") - \(w.title ?? "(untitled)") (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]\n")
                 return w
             }
         } catch {
@@ -90,7 +105,7 @@ func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
         }
         try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
     }
-    appendDiag("FAILED: No window matching app=\(appName) found after \(pollCount) polls\n")
+    appendDiag("FAILED: No NEW window matching app=\(appName) found after \(pollCount) polls\n")
     return nil
 }
 
