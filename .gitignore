@@ -6,6 +6,7 @@ packages/mcp-servers/dist/
 packages/cto-dashboard/dist/
 packages/playwright-helpers/dist/
 packages/vscode-extension/dist/
+tools/window-recorder/.build/
 packages/vscode-extension/*.vsix
 *.tsbuildinfo
 
@@ -30,6 +31,13 @@ TEST_COVERAGE_REPORT.md
 .claude/state/
 .claude/worktrees/
 .claude/playwright-health.json
+
+# Claude session data (plan mode files, demo recordings)
+.claude/plans/
+.claude/recordings/
+
+# User-local Claude instructions
+CLAUDE.local.md
 
 # MCP configuration (user-specific, use template)
 .mcp.json
