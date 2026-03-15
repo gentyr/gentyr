@@ -2,6 +2,7 @@ import Foundation
 import ScreenCaptureKit
 import AVFoundation
 import CoreMedia
+import CoreGraphics
 
 // MARK: - CLI Argument Parsing
 
@@ -106,6 +107,10 @@ class RecorderDelegate: NSObject, SCStreamOutput {
 
 // MARK: - Main
 
+// Initialize CoreGraphics session — required for ScreenCaptureKit in CLI tools
+// (GUI apps get this from NSApplication; CLI tools must call CGMainDisplayID explicitly)
+let _ = CGMainDisplayID()
+
 let config = parseArgs()
 
 // Run async main
@@ -164,17 +169,28 @@ Task {
 
     let delegate = RecorderDelegate(assetWriter: assetWriter, videoInput: videoInput)
 
-    // Create and start the stream
+    // Create and start the stream (with timeout — startCapture hangs if Screen Recording permission is missing)
     let stream: SCStream
     do {
         stream = SCStream(filter: filter, configuration: streamConfig, delegate: nil)
         try stream.addStreamOutput(delegate, type: .screen, sampleHandlerQueue: DispatchQueue(label: "recorder"))
-        try await stream.startCapture()
+
+        // Race startCapture against a 10s timeout — permission prompts can hang indefinitely
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try await stream.startCapture() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 10_000_000_000) // 10s
+                throw NSError(domain: "WindowRecorder", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "startCapture timed out — Screen Recording permission likely not granted"
+                ])
+            }
+            // Wait for whichever finishes first, cancel the other
+            try await group.next()
+            group.cancelAll()
+        }
     } catch {
         FileHandle.standardError.write(Data("Error: Failed to start capture — \(error.localizedDescription)\n".utf8))
-        if "\(error)".contains("permission") || "\(error)".contains("TCCDeny") {
-            FileHandle.standardError.write(Data("Grant Screen Recording permission in System Settings > Privacy & Security > Screen Recording\n".utf8))
-        }
+        FileHandle.standardError.write(Data("Grant Screen Recording permission in System Settings > Privacy & Security > Screen Recording\n".utf8))
         exitCode = 1
         semaphore.signal()
         return
@@ -183,7 +199,9 @@ Task {
     FileHandle.standardError.write(Data("Recording started. Send SIGINT (Ctrl+C) to stop.\n".utf8))
 
     // Handle SIGINT for graceful shutdown
-    let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+    // Use a dedicated queue — .main is blocked by semaphore.wait() and can't deliver events
+    let signalQueue = DispatchQueue(label: "signal")
+    let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: signalQueue)
     signal(SIGINT, SIG_IGN) // Let DispatchSource handle it
     sigintSource.setEventHandler {
         FileHandle.standardError.write(Data("\nStopping recording...\n".utf8))
