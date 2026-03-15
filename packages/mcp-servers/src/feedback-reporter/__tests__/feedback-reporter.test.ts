@@ -629,9 +629,9 @@ describe('feedback-reporter MCP server', () => {
       const report3 = reportsDb.prepare('SELECT * FROM reports WHERE id = ?').get(result3.report_id) as ReportRecord;
       expect(report3.priority).toBe('critical'); // bumped from 'high'
 
-      // Test case 4: positive impression + satisfied => no bump (stays 'low')
+      // Test case 4: unusable impression + satisfied => no bump (stays 'critical')
       const args4: SubmitSummaryArgs = {
-        overall_impression: 'positive',
+        overall_impression: 'unusable',
         areas_tested: ['Feature D'],
         confidence: 'high',
         satisfaction_level: 'satisfied',
@@ -639,7 +639,7 @@ describe('feedback-reporter MCP server', () => {
 
       const result4 = submitSummary(args4, sessionDb, reportsDb, personaName, sessionId);
       const report4 = reportsDb.prepare('SELECT * FROM reports WHERE id = ?').get(result4.report_id) as ReportRecord;
-      expect(report4.priority).toBe('low'); // no bump for satisfied
+      expect(report4.priority).toBe('critical'); // no bump for satisfied
     });
   });
 

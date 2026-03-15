@@ -510,7 +510,7 @@ Some content here.`;
       expect(fs.existsSync(targetDir)).toBe(true);
     });
 
-    it('should reject duplicate spec IDs (G001 - fail hard)', () => {
+    it('should return idempotently on duplicate spec IDs (G011)', () => {
       createSpecFile('global', 'G001-existing.md', '# Existing Spec');
 
       const specsDir = path.join(getProjectDir(), path.basename(tempSpecsDir));
@@ -518,10 +518,10 @@ Some content here.`;
 
       expect(fs.existsSync(filePath)).toBe(true);
 
-      // Attempting to create same file should be caught
+      // Attempting to create same file returns success with deduplicated: true
+      // Real implementation returns: { success: true, file: '...', deduplicated: true }
       const duplicateCheck = fs.existsSync(filePath);
       expect(duplicateCheck).toBe(true);
-      // Real implementation would throw: "Spec already exists: G001-existing"
     });
 
     it('should validate spec_id is not empty', () => {
@@ -808,7 +808,7 @@ Some content here.`;
         expect(loaded.suites['another-suite']).toBeDefined();
       });
 
-      it('should reject duplicate suite IDs (G001)', () => {
+      it('should return idempotently on duplicate suite IDs (G011)', () => {
         const config = {
           version: 1,
           suites: {
@@ -826,7 +826,7 @@ Some content here.`;
         const exists = loaded.suites['duplicate-suite'] !== undefined;
 
         expect(exists).toBe(true);
-        // Real implementation would throw: "Suite already exists: duplicate-suite"
+        // Real implementation returns: { success: true, suite_id: 'duplicate-suite', deduplicated: true }
       });
 
       it('should validate suite_id matches regex pattern [a-z0-9-]+', () => {

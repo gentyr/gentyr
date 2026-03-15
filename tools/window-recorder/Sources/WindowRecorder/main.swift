@@ -39,11 +39,32 @@ func parseArgs() -> (output: String, app: String, title: String?, fps: Int) {
 
 // MARK: - Window Discovery
 
+func appendDiag(_ line: String) {
+    let diagPath = config.output + ".diag"
+    if let fh = FileHandle(forWritingAtPath: diagPath) {
+        fh.seekToEndOfFile()
+        fh.write(Data(line.utf8))
+        fh.closeFile()
+    }
+}
+
 func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
     let deadline = Date().addingTimeInterval(120)
+    var pollCount = 0
     while Date() < deadline {
         do {
             let content = try await SCShareableContent.current
+            pollCount += 1
+
+            // Log all window app names on first few polls for diagnostics
+            if pollCount <= 3 {
+                let appNames = content.windows.compactMap { w -> String? in
+                    guard let name = w.owningApplication?.applicationName else { return nil }
+                    return "\(name) (\(Int(w.frame.width))x\(Int(w.frame.height)))"
+                }
+                appendDiag("poll \(pollCount): \(appNames.joined(separator: ", "))\n")
+            }
+
             // Find the largest matching window (main browser, not popups/dialogs)
             var bestWindow: SCWindow? = nil
             var bestArea: CGFloat = 0
@@ -60,12 +81,16 @@ func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
                     bestWindow = window
                 }
             }
-            if let w = bestWindow { return w }
+            if let w = bestWindow {
+                appendDiag("MATCHED: \(w.owningApplication?.applicationName ?? "?") - \(w.title ?? "(untitled)") (\(Int(w.frame.width))x\(Int(w.frame.height)))\n")
+                return w
+            }
         } catch {
             FileHandle.standardError.write(Data("Window discovery error: \(error.localizedDescription)\n".utf8))
         }
         try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
     }
+    appendDiag("FAILED: No window matching app=\(appName) found after \(pollCount) polls\n")
     return nil
 }
 
@@ -150,7 +175,7 @@ sigintSource.resume()
 Task {
     // Find the target window
     guard let window = await findWindow(appName: config.app, titleSubstring: config.title) else {
-        FileHandle.standardError.write(Data("Error: No window found matching app=\"\(config.app)\"\(config.title.map { " title=\"\($0)\"" } ?? "") after 30s\n".utf8))
+        FileHandle.standardError.write(Data("Error: No window found matching app=\"\(config.app)\"\(config.title.map { " title=\"\($0)\"" } ?? "") after 120s\n".utf8))
         exitCode = 1
         semaphore.signal()
         return

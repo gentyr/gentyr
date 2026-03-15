@@ -317,6 +317,7 @@ export interface ForceTriageReportsResult {
   pendingReports: number;
   message?: string;
   error?: string;
+  deduplicated?: boolean;  // G011: true when returning existing agent instead of spawning
 }
 
 export interface MonitorAgentsResult {

@@ -45,7 +45,7 @@ function parseArgs() {
 // AGENT TRACKER IMPORT
 // ---------------------------------------------------------------------------
 
-let registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES;
+let registerSpawn, updateAgent, findRecentSpawn, AGENT_TYPES, HOOK_TYPES;
 
 async function loadAgentTracker(projectDir) {
   const trackerPath = path.join(projectDir, '.claude', 'hooks', 'agent-tracker.js');
@@ -55,6 +55,7 @@ async function loadAgentTracker(projectDir) {
       const mod = await import(frameworkTracker);
       registerSpawn = mod.registerSpawn;
       updateAgent = mod.updateAgent;
+      findRecentSpawn = mod.findRecentSpawn;
       AGENT_TYPES = mod.AGENT_TYPES;
       HOOK_TYPES = mod.HOOK_TYPES;
       return;
@@ -64,6 +65,7 @@ async function loadAgentTracker(projectDir) {
   const mod = await import(trackerPath);
   registerSpawn = mod.registerSpawn;
   updateAgent = mod.updateAgent;
+  findRecentSpawn = mod.findRecentSpawn;
   AGENT_TYPES = mod.AGENT_TYPES;
   HOOK_TYPES = mod.HOOK_TYPES;
 }
@@ -466,6 +468,56 @@ After processing all reports, output a summary:
 }
 
 // ---------------------------------------------------------------------------
+// DEDUP HELPERS (G011)
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a process is still alive (G011 dedup - PID liveness validation).
+ */
+function isPidAlive(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0); // signal 0 = test existence without killing
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Find a currently-running triage agent (G011 idempotency check).
+ * Validates PID liveness to handle stale entries where agent crashed but wasn't reaped.
+ */
+function findRunningTriageAgent(history) {
+  const agents = history?.agents || [];
+  return agents.find(
+    a => a.type === AGENT_TYPES.DEPUTY_CTO_REVIEW
+      && a.status === 'running'
+      && isPidAlive(a.pid)
+  ) || null;
+}
+
+/**
+ * Read the agent tracker history file directly (readHistory is not exported from agent-tracker.js).
+ */
+function readTrackerHistory(projectDir) {
+  const historyFile = path.join(projectDir, '.claude', 'state', 'agent-tracker-history.json');
+  if (!fs.existsSync(historyFile)) {
+    return { agents: [] };
+  }
+  try {
+    const content = fs.readFileSync(historyFile, 'utf8');
+    const parsed = JSON.parse(content);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.agents)) {
+      return { agents: [] };
+    }
+    return parsed;
+  } catch {
+    return { agents: [] };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // MAIN
 // ---------------------------------------------------------------------------
 
@@ -487,6 +539,23 @@ async function main() {
       pendingReports: 0,
       message: 'No pending reports to triage',
     }));
+    process.exit(0);
+  }
+
+  // G011: Check for already-running triage agent (idempotency)
+  const triageHistory = readTrackerHistory(config.projectDir);
+  const existingTriage = findRunningTriageAgent(triageHistory);
+
+  if (existingTriage) {
+    const result = {
+      agentId: existingTriage.id,
+      pid: existingTriage.pid || null,
+      sessionId: null,
+      pendingReports,
+      message: `Triage agent already running (${existingTriage.id}). Skipping duplicate spawn.`,
+      deduplicated: true,
+    };
+    console.log(JSON.stringify(result));
     process.exit(0);
   }
 

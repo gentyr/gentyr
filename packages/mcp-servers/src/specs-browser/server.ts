@@ -414,7 +414,7 @@ function createSpec(args: CreateSpecArgs): CreateSpecResult {
   const filepath = path.join(targetDir, filename);
 
   if (fs.existsSync(filepath)) {
-    throw new Error(`Spec already exists: ${spec_id}`);
+    return { success: true, file: `${basePath}/${filename}`, deduplicated: true };
   }
 
   // Build content with title as header
@@ -519,7 +519,7 @@ function createSuite(args: CreateSuiteArgs): CreateSuiteResult {
   let config = loadSuitesConfig() || { version: 1, suites: {} };
 
   if (config.suites[args.suite_id]) {
-    throw new Error(`Suite already exists: ${args.suite_id}`);
+    return { success: true, suite_id: args.suite_id, deduplicated: true };
   }
 
   config.suites[args.suite_id] = {

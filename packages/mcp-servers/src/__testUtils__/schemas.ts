@@ -127,10 +127,36 @@ CREATE TABLE IF NOT EXISTS cleared_questions (
     CONSTRAINT valid_decided_by CHECK (decided_by IS NULL OR decided_by IN ('cto', 'deputy-cto'))
 );
 
+CREATE TABLE IF NOT EXISTS hotfix_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL,
+    commits_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    CONSTRAINT valid_hotfix_status CHECK (status IN ('pending', 'approved', 'executed', 'expired'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status);
 CREATE INDEX IF NOT EXISTS idx_cleared_questions_cleared ON cleared_questions(cleared_timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_questions_type ON questions(type);
 CREATE INDEX IF NOT EXISTS idx_commit_decisions_created ON commit_decisions(created_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_hotfix_requests_code ON hotfix_requests(code);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_questions_type_title_dedup
+  ON questions(type, title) WHERE status != 'answered';
+
+CREATE TABLE IF NOT EXISTS spawned_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  description TEXT NOT NULL,
+  prompt_hash TEXT NOT NULL,
+  pid INTEGER,
+  status TEXT NOT NULL DEFAULT 'spawned',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spawned_tasks_description_active
+  ON spawned_tasks(description) WHERE status = 'spawned';
 `;
 
 // ============================================================================

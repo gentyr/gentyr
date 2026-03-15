@@ -20,6 +20,7 @@ interface TrackedAgent {
   prompt: string;
   sessionId?: string;
   status?: string;
+  pid?: number;
 }
 
 interface AgentHistory {
@@ -739,6 +740,271 @@ describe('Agent Tracker Server', () => {
       const maxIndex = capturedArgs.indexOf('--max-concurrent');
       expect(maxIndex).toBeGreaterThanOrEqual(0);
       expect(capturedArgs[maxIndex + 1]).toBe('7');
+    });
+  });
+
+  // ==========================================================================
+  // forceTriageReports dedup logic (G011)
+  // ==========================================================================
+
+  describe('forceTriageReports', () => {
+    // The dedup gate in forceTriageReports() reads the history file and looks for
+    // an existing DEPUTY_CTO_REVIEW agent with status === 'running'.  We test that
+    // logic in isolation: write a controlled history file and run the exact
+    // predicate used by the server, then assert on the outcome without actually
+    // spawning a real agent process.
+
+    const DEPUTY_CTO_REVIEW_TYPE = 'deputy-cto-review'; // AGENT_TYPES.DEPUTY_CTO_REVIEW
+
+    // Mirror the dedup predicate from server.ts forceTriageReports()
+    const findRunningTriageAgent = (trackerFilePath: string) => {
+      if (!fs.existsSync(trackerFilePath)) {
+        return undefined;
+      }
+      let parsed: AgentHistory;
+      try {
+        parsed = JSON.parse(fs.readFileSync(trackerFilePath, 'utf8')) as AgentHistory;
+      } catch {
+        throw new Error(`History file corrupted at ${trackerFilePath}`);
+      }
+      return (parsed.agents ?? []).find(
+        (a) => a.type === DEPUTY_CTO_REVIEW_TYPE && a.status === 'running'
+      );
+    };
+
+    // Mirror the early-return result shape from server.ts so we can validate structure
+    const buildDedupResult = (agent: TrackedAgent & { id: string; pid?: number }) => ({
+      agentId: agent.id,
+      pid: agent.pid ?? null,
+      sessionId: null,
+      pendingReports: 0,
+      message: `Triage agent already running (${agent.id}). Skipping duplicate spawn.`,
+      deduplicated: true,
+    });
+
+    it('should return deduplicated result when triage agent is already running', () => {
+      const agentId = randomUUID();
+      const agentPid = 99999;
+
+      writeHistory({
+        agents: [{
+          id: agentId,
+          type: DEPUTY_CTO_REVIEW_TYPE,
+          hookType: 'triage-reports',
+          description: 'Triage pending reports',
+          timestamp: new Date().toISOString(),
+          prompt: 'Triage all pending reports',
+          status: 'running',
+          pid: agentPid,
+        }],
+        stats: {},
+      });
+
+      const existingAgent = findRunningTriageAgent(tempTrackerFile);
+      expect(existingAgent).toBeDefined();
+
+      // Simulate the early-return path from forceTriageReports()
+      const result = buildDedupResult(existingAgent as TrackedAgent & { id: string; pid?: number });
+
+      expect(result.deduplicated).toBe(true);
+      expect(result.agentId).toBe(agentId);
+      expect(result.pid).toBe(agentPid);
+      expect(result.sessionId).toBeNull();
+      expect(result.pendingReports).toBe(0);
+      expect(result.message).toMatch(agentId);
+      expect(result.message).toMatch(/Skipping duplicate spawn/);
+    });
+
+    it('should validate the deduplicated result shape matches ForceTriageReportsResult', () => {
+      const agentId = randomUUID();
+
+      writeHistory({
+        agents: [{
+          id: agentId,
+          type: DEPUTY_CTO_REVIEW_TYPE,
+          hookType: 'triage-reports',
+          description: 'Triage pending reports',
+          timestamp: new Date().toISOString(),
+          prompt: 'Triage all pending reports',
+          status: 'running',
+        }],
+        stats: {},
+      });
+
+      const existingAgent = findRunningTriageAgent(tempTrackerFile);
+      expect(existingAgent).toBeDefined();
+
+      const result = buildDedupResult(existingAgent as TrackedAgent & { id: string; pid?: number });
+
+      // Validate each field of the ForceTriageReportsResult interface
+      expect(typeof result.agentId === 'string' || result.agentId === null).toBe(true);
+      expect(result.agentId).toBe(agentId);
+      expect(typeof result.pid === 'number' || result.pid === null).toBe(true);
+      expect(result.sessionId).toBeNull();
+      expect(typeof result.pendingReports).toBe('number');
+      expect(result.pendingReports).toBeGreaterThanOrEqual(0);
+      expect(typeof result.message).toBe('string');
+      expect(typeof result.deduplicated).toBe('boolean');
+      expect(result.deduplicated).toBe(true);
+    });
+
+    it('should allow spawn when no triage agent is running (empty history)', () => {
+      writeHistory({ agents: [], stats: {} });
+
+      const existingAgent = findRunningTriageAgent(tempTrackerFile);
+
+      expect(existingAgent).toBeUndefined();
+    });
+
+    it('should allow spawn when history file does not exist', () => {
+      // tempTrackerFile does not exist at the start of each test
+      const existingAgent = findRunningTriageAgent(tempTrackerFile);
+
+      expect(existingAgent).toBeUndefined();
+    });
+
+    it('should allow spawn when existing triage agent has completed status', () => {
+      const agentId = randomUUID();
+
+      writeHistory({
+        agents: [{
+          id: agentId,
+          type: DEPUTY_CTO_REVIEW_TYPE,
+          hookType: 'triage-reports',
+          description: 'Triage pending reports',
+          timestamp: new Date().toISOString(),
+          prompt: 'Triage all pending reports',
+          status: 'completed',
+        }],
+        stats: {},
+      });
+
+      const existingAgent = findRunningTriageAgent(tempTrackerFile);
+
+      // A completed agent must not trigger the dedup gate
+      expect(existingAgent).toBeUndefined();
+    });
+
+    it('should allow spawn when existing triage agent has failed status', () => {
+      const agentId = randomUUID();
+
+      writeHistory({
+        agents: [{
+          id: agentId,
+          type: DEPUTY_CTO_REVIEW_TYPE,
+          hookType: 'triage-reports',
+          description: 'Triage pending reports',
+          timestamp: new Date().toISOString(),
+          prompt: 'Triage all pending reports',
+          status: 'reaped',
+        }],
+        stats: {},
+      });
+
+      const existingAgent = findRunningTriageAgent(tempTrackerFile);
+
+      // A reaped/failed agent must not trigger the dedup gate
+      expect(existingAgent).toBeUndefined();
+    });
+
+    it('should allow spawn when only non-triage agents are running', () => {
+      writeHistory({
+        agents: [
+          {
+            id: randomUUID(),
+            type: 'todo-processing',
+            hookType: 'todo-maintenance',
+            description: 'Process todos',
+            timestamp: new Date().toISOString(),
+            prompt: 'Process pending todos',
+            status: 'running',
+          },
+          {
+            id: randomUUID(),
+            type: 'antipattern-hunter',
+            hookType: 'antipattern-hook',
+            description: 'Hunt antipatterns',
+            timestamp: new Date().toISOString(),
+            prompt: 'Hunt for antipatterns',
+            status: 'running',
+          },
+        ],
+        stats: {},
+      });
+
+      const existingAgent = findRunningTriageAgent(tempTrackerFile);
+
+      // Running non-triage agents must not block triage spawn
+      expect(existingAgent).toBeUndefined();
+    });
+
+    it('should deduplicate when multiple triage agents exist but only one is running', () => {
+      const runningId = randomUUID();
+
+      writeHistory({
+        agents: [
+          {
+            id: randomUUID(),
+            type: DEPUTY_CTO_REVIEW_TYPE,
+            hookType: 'triage-reports',
+            description: 'Old triage',
+            timestamp: new Date(Date.now() - 3600000).toISOString(),
+            prompt: 'Old triage run',
+            status: 'completed',
+          },
+          {
+            id: runningId,
+            type: DEPUTY_CTO_REVIEW_TYPE,
+            hookType: 'triage-reports',
+            description: 'Active triage',
+            timestamp: new Date().toISOString(),
+            prompt: 'Active triage run',
+            status: 'running',
+          },
+        ],
+        stats: {},
+      });
+
+      const existingAgent = findRunningTriageAgent(tempTrackerFile);
+
+      expect(existingAgent).toBeDefined();
+      expect(existingAgent!.id).toBe(runningId);
+      expect(existingAgent!.status).toBe('running');
+    });
+
+    it('should fail loudly on corrupted history file rather than silently proceeding', () => {
+      fs.writeFileSync(tempTrackerFile, 'not valid json { corrupted');
+
+      expect(() => {
+        findRunningTriageAgent(tempTrackerFile);
+      }).toThrow(/corrupted/i);
+    });
+
+    it('should return pid as null when running triage agent has no pid recorded', () => {
+      const agentId = randomUUID();
+
+      writeHistory({
+        agents: [{
+          id: agentId,
+          type: DEPUTY_CTO_REVIEW_TYPE,
+          hookType: 'triage-reports',
+          description: 'Triage pending reports',
+          timestamp: new Date().toISOString(),
+          prompt: 'Triage all pending reports',
+          status: 'running',
+          // pid intentionally omitted
+        }],
+        stats: {},
+      });
+
+      const existingAgent = findRunningTriageAgent(tempTrackerFile);
+      expect(existingAgent).toBeDefined();
+
+      const result = buildDedupResult(existingAgent as TrackedAgent & { id: string; pid?: number });
+
+      expect(result.pid).toBeNull();
+      expect(result.deduplicated).toBe(true);
+      expect(result.agentId).toBe(agentId);
     });
   });
 });

@@ -952,6 +952,22 @@ function forceSpawnTasks(args: ForceSpawnTasksArgs): ForceSpawnTasksResult | Err
 }
 
 function forceTriageReports(): ForceTriageReportsResult | ErrorResult {
+  // G011: Check for already-running triage agent before spawning (defense-in-depth dedup)
+  const triageHistory = readHistory();
+  const existingTriage = (triageHistory.agents ?? []).find(
+    (a) => a.type === AGENT_TYPES.DEPUTY_CTO_REVIEW && a.status === 'running'
+  );
+  if (existingTriage) {
+    return {
+      agentId: existingTriage.id,
+      pid: existingTriage.pid ?? null,
+      sessionId: null,
+      pendingReports: 0,
+      message: `Triage agent already running (${existingTriage.id}). Skipping duplicate spawn.`,
+      deduplicated: true,
+    };
+  }
+
   const thisFile = fileURLToPath(import.meta.url);
   const frameworkRoot = path.resolve(path.dirname(thisFile), '..', '..', '..', '..');
   const scriptPath = path.join(frameworkRoot, 'scripts', 'force-triage-reports.js');

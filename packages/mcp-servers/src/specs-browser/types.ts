@@ -229,6 +229,7 @@ export type DeleteSpecArgs = z.infer<typeof DeleteSpecSchema>;
 export interface CreateSpecResult {
   success: boolean;
   file: string;
+  deduplicated?: boolean;
 }
 
 export interface EditSpecResult {
@@ -272,6 +273,7 @@ export interface SuitesConfig {
 export interface CreateSuiteResult {
   success: boolean;
   suite_id: string;
+  deduplicated?: boolean;
 }
 
 export interface GetSuiteResult {
