@@ -195,6 +195,16 @@ cd packages/mcp-servers && npm run build
 
 The SessionStart hook also attempts auto-rebuild if `src/` is newer than `dist/`; before running `tsc` it checks for `@types/node` in `packages/mcp-servers/node_modules/` and runs `npm install` first if missing (covers `git clean` or fresh npm installs that omit `packages/mcp-servers/node_modules/`). Always build explicitly after TS changes to ensure correctness.
 
+### After editing window recorder Swift source
+
+The `tools/window-recorder/` directory contains a Swift CLI (`WindowRecorder`) that uses ScreenCaptureKit to capture specific browser windows during headed demos. The binary is gitignored (`tools/window-recorder/.build/`) and must be compiled locally on macOS:
+
+```bash
+cd tools/window-recorder && swift build -c release
+```
+
+`npx gentyr sync` automatically builds the window recorder on macOS (step 7b). The binary is discovered at runtime by the Playwright MCP server's `getWindowRecorderBinary()` function, which walks up from `dist/playwright/` to find `tools/window-recorder/.build/release/WindowRecorder`. Not available on non-macOS platforms; falls back silently.
+
 ### Slash Command Path Resolution
 
 Slash commands in `.claude/commands/` must not hardcode `node_modules/gentyr` because they run in three different install contexts:
