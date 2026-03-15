@@ -504,6 +504,30 @@ Local MITM proxy on `localhost:18080` for transparent credential rotation. Inter
 
 > Full details: [Rotation Proxy](docs/CLAUDE-REFERENCE.md#rotation-proxy)
 
+### Proxy Audit Trail
+
+Structured JSON log at `~/.claude/rotation-proxy.log`. 24h retention (auto-cleaned hourly). 10MB safety cap.
+
+**Key events for debugging:**
+| Event | When | Key Fields |
+|-------|------|------------|
+| `tunnel_passthrough` | CONNECT for non-MITM host | `host`, `port` |
+| `tunnel_established` | Upstream TCP connected | `host`, `port`, `head_bytes` |
+| `tunnel_closed` | Tunnel ended | `host`, `duration_ms`, `bytes_from_server`, `bytes_from_client`, `closed_by` |
+| `tunnel_error` | Upstream connect failed | `host`, `error`, `duration_ms` |
+| `tunnel_client_error` | Client socket error | `host`, `error`, `duration_ms` |
+| `mitm_intercept` | CONNECT for MITM host | `host`, `port` |
+| `request_intercepted` | MITM request forwarded | `host`, `method`, `path`, `active_key_id` |
+| `response_received` | MITM response status | `host`, `status`, `is_sse`, `active_key_id` |
+| `rotating_on_429` | Key exhausted | `host`, `exhausted_key_id`, `retry` |
+| `rotating_on_401` | Auth failure rotation | `host`, `failed_key_id`, `retry` |
+
+**Debug workflow:**
+1. `grep 'tunnel_error\|tunnel_client_error' ~/.claude/rotation-proxy.log` — find broken tunnels
+2. `grep 'mcp-proxy' ~/.claude/rotation-proxy.log | tail -20` — check MCP proxy connections
+3. `grep 'rotating_on_' ~/.claude/rotation-proxy.log` — find rotation cascades
+4. `grep 'tunnel_closed.*mcp-proxy' ~/.claude/rotation-proxy.log` — check tunnel lifecycle (duration, bytes)
+
 ## Chrome Browser Automation
 
 The chrome-bridge MCP server provides 18 tools for browser automation via Claude for Chrome extension. Communicates via local Unix domain socket — no credentials required.
