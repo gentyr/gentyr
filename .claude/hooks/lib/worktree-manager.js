@@ -178,13 +178,60 @@ export function provisionWorktree(worktreePath) {
   const worktreeClaudeDir = path.join(worktreePath, '.claude');
   fs.mkdirSync(worktreeClaudeDir, { recursive: true });
 
-  const sharedLinks = ['settings.json', 'agents', 'hooks', 'commands', 'mcp'];
+  const sharedLinks = ['settings.json', 'hooks', 'commands', 'mcp'];
   for (const name of sharedLinks) {
     const target = path.join(PROJECT_DIR, '.claude', name);
     if (fs.existsSync(target)) {
       safeSymlink(target, path.join(worktreeClaudeDir, name));
     }
   }
+
+  // --- .claude/agents: individual file symlinks (not directory symlink) ---
+  // Mirrors createAgentSymlinks() from cli/lib/symlinks.js.
+  // Framework agents get symlinks; project-specific agents are copied for isolation.
+  const worktreeAgentsDir = path.join(worktreeClaudeDir, 'agents');
+
+  // If agents dir is a symlink (legacy or prior provision), replace with real dir
+  try {
+    const stat = fs.lstatSync(worktreeAgentsDir);
+    if (stat.isSymbolicLink()) {
+      fs.unlinkSync(worktreeAgentsDir);
+    }
+  } catch {} // ENOENT is fine
+
+  fs.mkdirSync(worktreeAgentsDir, { recursive: true });
+
+  // Provision agents from the main project's .claude/agents directory
+  const mainAgentsDir = path.join(PROJECT_DIR, '.claude', 'agents');
+  try {
+    const mainAgents = fs.readdirSync(mainAgentsDir).filter(f => f.endsWith('.md'));
+    for (const agent of mainAgents) {
+      const mainAgentPath = path.join(mainAgentsDir, agent);
+      const worktreeAgentPath = path.join(worktreeAgentsDir, agent);
+
+      // Skip if already exists in worktree (idempotency)
+      try {
+        fs.lstatSync(worktreeAgentPath);
+        continue;
+      } catch {} // ENOENT -- proceed to create
+
+      try {
+        const mainStat = fs.lstatSync(mainAgentPath);
+        if (mainStat.isSymbolicLink()) {
+          // Framework agent: symlink to same absolute target
+          const target = fs.readlinkSync(mainAgentPath);
+          // Resolve relative targets to absolute
+          const absoluteTarget = path.isAbsolute(target)
+            ? target
+            : path.resolve(path.dirname(mainAgentPath), target);
+          fs.symlinkSync(absoluteTarget, worktreeAgentPath);
+        } else {
+          // Project-specific agent: copy for worktree isolation
+          fs.copyFileSync(mainAgentPath, worktreeAgentPath);
+        }
+      } catch {} // Skip individual agent errors
+    }
+  } catch {} // Main agents dir doesn't exist -- skip
 
   // --- .husky symlink ---
   const huskyDir = path.join(PROJECT_DIR, '.husky');
