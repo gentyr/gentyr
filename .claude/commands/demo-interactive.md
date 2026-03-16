@@ -77,7 +77,7 @@ Call `mcp__playwright__run_demo({
 
 Show scenario title, persona, auth project, PID, and tips:
 - The scenario runs at near-full speed with video recording
-- Video is saved to `.claude/recordings/demos/{scenarioId}.webm`
+- Video is saved to `.claude/recordings/demos/{scenarioId}.mp4` (macOS only, via window recorder)
 - The browser closes when the demo completes
 - To try another scenario, run `/demo-interactive` again
 - To browse all tests: `/demo`
