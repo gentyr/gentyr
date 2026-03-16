@@ -417,6 +417,7 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
   // a fresh account that hasn't been registered yet.
   const existingAuth = parsed.headers['authorization'];
   let usePassthrough = false;
+  let forceSwap = false;
   let incomingKeyId = null;
 
   if (retryCount === 0 && existingAuth) {
@@ -436,6 +437,7 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
           active_key_id: activeKeyId.slice(0, 8),
         });
         // usePassthrough stays false — request gets active key's token
+        forceSwap = true;
       } else if (keyEntry && keyEntry.status === 'merged') {
         // Deduplicated token — swap with active key (same as tombstone)
         proxyLog('merged_token_swap', {
@@ -447,6 +449,7 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
           active_key_id: activeKeyId.slice(0, 8),
         });
         // usePassthrough stays false — request gets active key's token
+        forceSwap = true;
       } else if (!keyEntry) {
         // Unknown token — likely fresh login, pass through unchanged (Bug A fix)
         usePassthrough = true;
@@ -469,7 +472,7 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
 
   // Path-level passthrough: OAuth and session-bound endpoints must keep the
   // session's own token. Only explicitly listed API paths get rotation swap.
-  if (!usePassthrough && retryCount === 0) {
+  if (!usePassthrough && !forceSwap && retryCount === 0) {
     const isSwapPath = SWAP_PATH_PREFIXES.some(prefix => parsed.path.startsWith(prefix));
     if (!isSwapPath) {
       usePassthrough = true;
@@ -479,6 +482,18 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
         path: parsed.path.slice(0, 100),
         incoming_key_id: incomingKeyId ? incomingKeyId.slice(0, 8) : null,
         active_key_id: activeKeyId.slice(0, 8),
+      });
+    }
+  } else if (forceSwap && retryCount === 0) {
+    const isSwapPath = SWAP_PATH_PREFIXES.some(prefix => parsed.path.startsWith(prefix));
+    if (!isSwapPath) {
+      proxyLog('force_swap_override', {
+        host,
+        method: parsed.method,
+        path: parsed.path.slice(0, 100),
+        incoming_key_id: incomingKeyId ? incomingKeyId.slice(0, 8) : null,
+        active_key_id: activeKeyId.slice(0, 8),
+        reason: 'merged_or_tombstone_token_on_non_swap_path',
       });
     }
   }
