@@ -500,7 +500,7 @@ Sole authority for demo lifecycle work. Handles prerequisite registration, scena
 
 ## Rotation Proxy
 
-Local MITM proxy on `localhost:18080` for transparent credential rotation. Intercepts `api.anthropic.com` (TLS MITM + header swap); `mcp-proxy.anthropic.com` and everything else passes through as a transparent CONNECT tunnel (MCP proxy uses session-bound OAuth tokens that must not be swapped). Handles 429 retry with automatic key rotation. Runs as a launchd KeepAlive service. Enable/disable via `npx gentyr proxy enable|disable`.
+Local MITM proxy on `localhost:18080` for transparent credential rotation. Intercepts `api.anthropic.com` (TLS MITM + header swap); `mcp-proxy.anthropic.com` and everything else passes through as a transparent CONNECT tunnel (MCP proxy uses session-bound OAuth tokens that must not be swapped). Within MITM'd requests, only paths in `SWAP_PATH_PREFIXES` (`/v1/messages`, `/v1/organizations`, `/api/event_logging/`, `/api/eval/`, `/api/web/`) get the Authorization header swapped — OAuth and session-health paths pass through unchanged to prevent token revocation. Handles 429 retry with automatic key rotation. Runs as a launchd KeepAlive service. Enable/disable via `npx gentyr proxy enable|disable`.
 
 > Full details: [Rotation Proxy](docs/CLAUDE-REFERENCE.md#rotation-proxy)
 
@@ -521,6 +521,7 @@ Structured JSON log at `~/.claude/rotation-proxy.log`. 24h retention (auto-clean
 | `response_received` | MITM response status | `host`, `status`, `is_sse`, `active_key_id` |
 | `rotating_on_429` | Key exhausted | `host`, `exhausted_key_id`, `retry` |
 | `rotating_on_401` | Auth failure rotation | `host`, `failed_key_id`, `retry` |
+| `session_path_passthrough` | Path not in swap allowlist (OAuth, session-health, etc.) | `host`, `method`, `path`, `incoming_key_id`, `active_key_id` |
 
 **Debug workflow:**
 1. `grep 'tunnel_error\|tunnel_client_error' ~/.claude/rotation-proxy.log` — find broken tunnels

@@ -665,6 +665,8 @@ Claude Code ──HTTPS_PROXY──> localhost:18080 ──TLS──> api.anthro
 - No entry at all — genuinely unknown token (fresh login not yet registered); pass through unchanged and trigger async `syncKeys()` to register it (preserves fresh login flow)
 - Any other status — normal swap path (inject active key's token)
 
+**Path-level swap allowlist** (`SWAP_PATH_PREFIXES`): Even within a MITM'd TLS connection to `api.anthropic.com`, only paths matching `SWAP_PATH_PREFIXES` get the Authorization header swapped with the active rotation key. Paths not in the allowlist (OAuth endpoints, session-health checks, MCP server registration, etc.) receive a `session_path_passthrough` log event and are forwarded with the session's original token. The allowlist approach is intentionally conservative — new endpoints default to passthrough rather than accidental swap. Current entries: `/v1/messages`, `/v1/organizations`, `/api/event_logging/`, `/api/eval/`, `/api/web/`.
+
 **Conditional auth header injection** (`rebuildRequest`): Authorization header is only added back to the rebuilt request if the original request had one. Requests without auth headers (e.g., health checks, OAuth flows that pass through to a MITM host) are forwarded without injecting a token.
 
 **Logging**: Structured JSON lines to `~/.claude/rotation-proxy.log` (max 1MB with rotation). Logs token swaps (key ID only, never token values), 429 retries, 401 retries, tombstone swaps, unknown-token passthroughs, and errors for debugging.
