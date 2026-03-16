@@ -884,7 +884,7 @@ describe('CheckDemoResultResult — artifacts field', () => {
       screenshot_paths: ['/tmp/test-results/fail-1.png'],
       trace_summary: '=== DEMO PLAY-BY-PLAY TRACE ===\nTotal events: 5\n=== END TRACE ===',
       recording_path: '/project/.claude/recordings/demos/scenario-abc.mp4',
-      recording_source: 'playwright',
+      recording_source: 'window',
       message: 'Demo failed.',
     };
 
@@ -897,11 +897,11 @@ describe('CheckDemoResultResult — artifacts field', () => {
     expect(deserialized.screenshot_paths).toHaveLength(1);
     expect(deserialized.trace_summary).toContain('DEMO PLAY-BY-PLAY TRACE');
     expect(deserialized.recording_path).toBe('/project/.claude/recordings/demos/scenario-abc.mp4');
-    expect(deserialized.recording_source).toBe('playwright');
+    expect(deserialized.recording_source).toBe('window');
   });
 
-  it('should accept recording_source values window, playwright, and none', () => {
-    const sources: Array<CheckDemoResultResult['recording_source']> = ['window', 'playwright', 'none'];
+  it('should accept recording_source values window and none', () => {
+    const sources: Array<CheckDemoResultResult['recording_source']> = ['window', 'none'];
     for (const source of sources) {
       const result: CheckDemoResultResult = {
         status: 'passed',
