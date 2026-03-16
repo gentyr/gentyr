@@ -325,6 +325,9 @@ function buildDemoEnv(opts: {
   // Always show cursor dot in headed demos
   env.DEMO_SHOW_CURSOR = '1';
 
+  // Maximize browser window in headed demos for cleaner recordings
+  if (!opts.headless) env.DEMO_MAXIMIZE = '1';
+
   // Apply extra_env last — may override explicit demo vars (same as original inline behavior)
   if (opts.extra_env) {
     Object.assign(env, opts.extra_env);
