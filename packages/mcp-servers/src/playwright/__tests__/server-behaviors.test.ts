@@ -842,10 +842,11 @@ describe('CheckDemoResultResult — artifacts field', () => {
       message: 'Demo completed successfully.',
     };
 
-    // artifacts field not in types.ts yet — test documents expected shape
-    // when the field is added to the interface.
     expect(result.status).toBe('passed');
     expect(result.pid).toBe(12345);
+    // recording_path and recording_source are optional — confirm they are absent when not set
+    expect(result.recording_path).toBeUndefined();
+    expect(result.recording_source).toBeUndefined();
   });
 
   it('should accept CheckDemoResultResult with all mandatory fields', () => {
@@ -882,6 +883,8 @@ describe('CheckDemoResultResult — artifacts field', () => {
       failure_summary: 'Assertion error on billing page',
       screenshot_paths: ['/tmp/test-results/fail-1.png'],
       trace_summary: '=== DEMO PLAY-BY-PLAY TRACE ===\nTotal events: 5\n=== END TRACE ===',
+      recording_path: '/project/.claude/recordings/demos/scenario-abc.mp4',
+      recording_source: 'playwright',
       message: 'Demo failed.',
     };
 
@@ -893,6 +896,36 @@ describe('CheckDemoResultResult — artifacts field', () => {
     expect(deserialized.exit_code).toBe(1);
     expect(deserialized.screenshot_paths).toHaveLength(1);
     expect(deserialized.trace_summary).toContain('DEMO PLAY-BY-PLAY TRACE');
+    expect(deserialized.recording_path).toBe('/project/.claude/recordings/demos/scenario-abc.mp4');
+    expect(deserialized.recording_source).toBe('playwright');
+  });
+
+  it('should accept recording_source values window, playwright, and none', () => {
+    const sources: Array<CheckDemoResultResult['recording_source']> = ['window', 'playwright', 'none'];
+    for (const source of sources) {
+      const result: CheckDemoResultResult = {
+        status: 'passed',
+        pid: 100,
+        message: 'ok',
+        recording_source: source,
+      };
+      expect(result.recording_source).toBe(source);
+    }
+  });
+
+  it('should accept CheckDemoResultResult with recording_path set (window source)', () => {
+    const result: CheckDemoResultResult = {
+      status: 'passed',
+      pid: 200,
+      project: 'demo',
+      message: 'Demo completed successfully.',
+      recording_path: '/project/.claude/recordings/demos/scenario-xyz.mp4',
+      recording_source: 'window',
+    };
+
+    expect(typeof result.recording_path).toBe('string');
+    expect(result.recording_path).toContain('.mp4');
+    expect(result.recording_source).toBe('window');
   });
 });
 

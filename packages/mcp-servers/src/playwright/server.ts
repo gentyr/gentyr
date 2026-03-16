@@ -328,6 +328,9 @@ function buildDemoEnv(opts: {
   // Maximize browser window in headed demos for cleaner recordings
   if (!opts.headless) env.DEMO_MAXIMIZE = '1';
 
+  // Always enable Playwright video recording as fallback for window recorder
+  env.DEMO_RECORD_VIDEO = '1';
+
   // Apply extra_env last — may override explicit demo vars (same as original inline behavior)
   if (opts.extra_env) {
     Object.assign(env, opts.extra_env);
@@ -1184,6 +1187,25 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
               windowRecorder = null; // Prevent double-stop
             }
 
+            // Fallback: find Playwright's recorded video
+            if (!videoToUse) {
+              const videosDir = path.join(PROJECT_DIR, 'playwright-results', 'videos');
+              if (fs.existsSync(videosDir)) {
+                const demoStartMs = new Date(demoState.started_at).getTime();
+                const videos = fs.readdirSync(videosDir)
+                  .filter(f => f.endsWith('.webm'))
+                  .map(f => {
+                    const fullPath = path.join(videosDir, f);
+                    return { name: f, path: fullPath, mtime: fs.statSync(fullPath).mtimeMs };
+                  })
+                  .filter(v => v.mtime > demoStartMs)
+                  .sort((a, b) => b.mtime - a.mtime);
+                if (videos.length > 0) {
+                  videoToUse = videos[0].path;
+                }
+              }
+            }
+
             if (videoToUse && fs.existsSync(videoToUse)) {
               const recordingsDir = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos');
               fs.mkdirSync(recordingsDir, { recursive: true });
@@ -1657,6 +1679,8 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
         entry.artifacts = scanArtifacts();
 
         // Persist video recording for the scenario
+        let suiteRecordingPath: string | undefined;
+        let suiteRecordingSource: 'window' | 'playwright' | 'none' = 'none';
         if (entry.scenario_id) {
           try {
             let videoToUse: string | undefined;
@@ -1668,10 +1692,32 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
               fs.statSync(entry.window_recording_path).size > 0
             ) {
               videoToUse = entry.window_recording_path;
+              suiteRecordingSource = 'window';
+            }
+
+            // Fallback: find Playwright's recorded video
+            if (!videoToUse) {
+              const videosDir = path.join(PROJECT_DIR, 'playwright-results', 'videos');
+              if (fs.existsSync(videosDir)) {
+                const demoStartMs = new Date(entry.started_at).getTime();
+                const videos = fs.readdirSync(videosDir)
+                  .filter(f => f.endsWith('.webm'))
+                  .map(f => {
+                    const fullPath = path.join(videosDir, f);
+                    return { name: f, path: fullPath, mtime: fs.statSync(fullPath).mtimeMs };
+                  })
+                  .filter(v => v.mtime > demoStartMs)
+                  .sort((a, b) => b.mtime - a.mtime);
+                if (videos.length > 0) {
+                  videoToUse = videos[0].path;
+                  suiteRecordingSource = 'playwright';
+                }
+              }
             }
 
             if (videoToUse) {
               persistScenarioRecording(entry.scenario_id, videoToUse);
+              suiteRecordingPath = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', `${entry.scenario_id}.mp4`);
             }
 
             // Clean up temp window recording file
@@ -1715,6 +1761,8 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
           progress,
           artifacts: entry.artifacts,
           degraded_features: degraded,
+          recording_path: suiteRecordingPath,
+          recording_source: suiteRecordingSource,
           message: entry.status === 'passed'
             ? `Demo completed successfully in ${durationSec}s (auto-killed after suite completion).${degradedSuffix}`
             : `Demo failed in ${durationSec}s — ${entry.failure_summary}. Auto-killed after suite completion.`,
@@ -1825,6 +1873,36 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     message += ` (${degraded_features.length} degraded feature(s))`;
   }
 
+  // Check if a recording was persisted for this scenario
+  let finalRecordingPath: string | undefined;
+  let finalRecordingSource: 'window' | 'playwright' | 'none' = 'none';
+  if (entry.scenario_id) {
+    const scenarioRecordingPath = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', `${entry.scenario_id}.mp4`);
+    if (fs.existsSync(scenarioRecordingPath)) {
+      finalRecordingPath = scenarioRecordingPath;
+      finalRecordingSource = 'window'; // Assume window if persisted (best effort)
+    }
+    if (!finalRecordingPath) {
+      // Check for Playwright video as fallback
+      const videosDir = path.join(PROJECT_DIR, 'playwright-results', 'videos');
+      if (fs.existsSync(videosDir)) {
+        const demoStartMs = new Date(entry.started_at).getTime();
+        const videos = fs.readdirSync(videosDir)
+          .filter(f => f.endsWith('.webm'))
+          .map(f => {
+            const fullPath = path.join(videosDir, f);
+            return { name: f, path: fullPath, mtime: fs.statSync(fullPath).mtimeMs };
+          })
+          .filter(v => v.mtime > demoStartMs)
+          .sort((a, b) => b.mtime - a.mtime);
+        if (videos.length > 0) {
+          finalRecordingPath = videos[0].path;
+          finalRecordingSource = 'playwright';
+        }
+      }
+    }
+  }
+
   return {
     status: entry.status,
     pid,
@@ -1839,6 +1917,8 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     progress: progress ?? undefined,
     artifacts: entry.artifacts || (entry.status === 'failed' || entry.status === 'unknown' ? scanArtifacts() : undefined),
     degraded_features,
+    recording_path: finalRecordingPath,
+    recording_source: finalRecordingSource,
     message,
   };
 }
