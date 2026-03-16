@@ -77,8 +77,8 @@ Demo Session Results
   Duration: Xs
 
 Per-Scenario:
-  [PASS] Billing Overview (video: .claude/recordings/demos/<id>.webm)
-  [PASS] Webhook Config   (video: .claude/recordings/demos/<id>.webm)
+  [PASS] Billing Overview (video: .claude/recordings/demos/<id>.mp4)
+  [PASS] Webhook Config   (video: .claude/recordings/demos/<id>.mp4)
   [FAIL] API Dashboard    — <failure summary>
 ```
 

@@ -133,7 +133,7 @@ Progress: 3/8 tests (3 passed, 0 failed) - Current: Login Flow
 
 - The demo runs automatically at human-watchable speed — just watch
 - Default pace is 800ms between actions
-- Video is always recorded to `.claude/recordings/demos/{scenarioId}.webm`
+- Video is recorded to `.claude/recordings/demos/{scenarioId}.mp4` (macOS only, via window recorder)
 - The browser closes when the demo completes
 - To try another scenario, run `/demo-autonomous` again
 - To interact with the app: `/demo-interactive`

@@ -453,13 +453,9 @@ headless=true, batch_size=5, slow_mo=0
 **Session defaults** (`/demo-session` or `run_demo_batch` with headed):
 headless=false, slow_mo=800
 
-Video recording is automatic in all demo modes. Scenario videos: `.claude/recordings/demos/{scenarioId}.mp4`
+Video recording is automatic in headed demo modes on macOS. Scenario videos: `.claude/recordings/demos/{scenarioId}.mp4`
 
-**Always-on video recording**: `buildDemoEnv()` sets `DEMO_RECORD_VIDEO=1` automatically so Playwright video recording is always active as a fallback. `check_demo_result` returns `recording_path` and `recording_source` ('window' | 'playwright' | 'none') indicating which recording was persisted. Window recorder output is preferred when available; otherwise the best `.webm` from `playwright-results/videos/` is used.
-
-**Window recording via ScreenCaptureKit** (headed demos, macOS only): `run_demo` starts a `WindowRecorder` Swift CLI (`tools/window-recorder/`) alongside the Playwright child. Uses `SCContentFilter(desktopIndependentWindow:)` to capture the specific Chromium window even when occluded or in another Space. The recorder polls for up to 120s for the window to appear, then streams H.264 frames to an MP4 via AVAssetWriter. Window recorder PID and output path are tracked in `DemoRunState` (`window_recorder_pid`, `window_recording_path`). On demo completion, the recording is persisted via `persistScenarioRecording()`; temp files are cleaned up automatically. `stop_demo` and `check_demo_result` also handle window recorder teardown gracefully (SIGINT for clean finalization, SIGKILL fallback).
-
-**Playwright video fallback**: When the window recorder is unavailable (non-macOS, headless mode, or window recorder failure), `check_demo_result` scans `playwright-results/videos/*.webm` and persists the largest file as the scenario recording.
+**Window recording via ScreenCaptureKit** (headed demos, macOS only): `run_demo` starts a `WindowRecorder` Swift CLI (`tools/window-recorder/`) alongside the Playwright child. Uses `SCContentFilter(desktopIndependentWindow:)` to capture the specific Chromium window even when occluded or in another Space. The recorder polls for up to 120s for the window to appear, then streams H.264 frames to an MP4 via AVAssetWriter. Window recorder PID and output path are tracked in `DemoRunState` (`window_recorder_pid`, `window_recording_path`). On demo completion, the recording is persisted via `persistScenarioRecording()`; temp files are cleaned up automatically. `stop_demo` and `check_demo_result` also handle window recorder teardown gracefully (SIGINT for clean finalization, SIGKILL fallback). `check_demo_result` returns `recording_path` and `recording_source` (`'window' | 'none'`) indicating whether a recording was persisted.
 
 Dev server is auto-started if not running — no manual setup needed.
 
