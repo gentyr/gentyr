@@ -1403,6 +1403,339 @@ describe('forwardRequest() - 401 retry handling', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Path-level passthrough (OAuth token swap fix)
+// ---------------------------------------------------------------------------
+
+describe('rotation-proxy.js - Path-level swap allowlist', () => {
+  it('should define SWAP_PATH_PREFIXES as a module-level constant array', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(
+      code,
+      /const SWAP_PATH_PREFIXES\s*=\s*\[/,
+      'Must define SWAP_PATH_PREFIXES as a const array'
+    );
+  });
+
+  it('should include /v1/messages in SWAP_PATH_PREFIXES (primary LLM API path)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const arrayMatch = code.match(/const SWAP_PATH_PREFIXES\s*=\s*\[([\s\S]*?)\]/);
+    assert.ok(arrayMatch, 'Must define SWAP_PATH_PREFIXES array');
+    assert.match(arrayMatch[1], /\/v1\/messages/, 'SWAP_PATH_PREFIXES must include /v1/messages');
+  });
+
+  it('should NOT include OAuth paths in SWAP_PATH_PREFIXES', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const arrayMatch = code.match(/const SWAP_PATH_PREFIXES\s*=\s*\[([\s\S]*?)\]/);
+    assert.ok(arrayMatch, 'Must define SWAP_PATH_PREFIXES array');
+    assert.doesNotMatch(arrayMatch[1], /\/api\/oauth\//, 'SWAP_PATH_PREFIXES must NOT include /api/oauth/');
+  });
+
+  it('should NOT include /api/claude_code_grove or /api/claude_code_penguin_mode in SWAP_PATH_PREFIXES', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const arrayMatch = code.match(/const SWAP_PATH_PREFIXES\s*=\s*\[([\s\S]*?)\]/);
+    assert.ok(arrayMatch, 'Must define SWAP_PATH_PREFIXES array');
+    assert.doesNotMatch(arrayMatch[1], /claude_code_grove/, 'Must NOT include claude_code_grove');
+    assert.doesNotMatch(arrayMatch[1], /claude_code_penguin_mode/, 'Must NOT include claude_code_penguin_mode');
+  });
+
+  it('should NOT include /v1/mcp_servers in SWAP_PATH_PREFIXES', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const arrayMatch = code.match(/const SWAP_PATH_PREFIXES\s*=\s*\[([\s\S]*?)\]/);
+    assert.ok(arrayMatch, 'Must define SWAP_PATH_PREFIXES array');
+    assert.doesNotMatch(arrayMatch[1], /\/v1\/mcp_servers/, 'Must NOT include /v1/mcp_servers');
+  });
+
+  it('should log session_path_passthrough event in forwardRequest source', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+    assert.ok(fnStart !== null, 'forwardRequest must be defined');
+
+    assert.match(
+      fnStart,
+      /proxyLog\(['"]session_path_passthrough['"]/,
+      'Must log session_path_passthrough event when path is not in allowlist'
+    );
+  });
+
+  it('should check SWAP_PATH_PREFIXES in forwardRequest with .some() + .startsWith()', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /SWAP_PATH_PREFIXES\.some\(/,
+      'Must use SWAP_PATH_PREFIXES.some() for path matching'
+    );
+    assert.match(
+      fnStart,
+      /parsed\.path\.startsWith\(prefix\)/,
+      'Must use parsed.path.startsWith(prefix) for prefix matching'
+    );
+  });
+
+  it('behavioral: /v1/messages should match SWAP_PATH_PREFIXES', () => {
+    const SWAP_PATH_PREFIXES = [
+      '/v1/messages',
+      '/v1/organizations',
+      '/api/event_logging/',
+      '/api/eval/',
+      '/api/web/',
+    ];
+
+    const testPath = '/v1/messages';
+    const isSwap = SWAP_PATH_PREFIXES.some(prefix => testPath.startsWith(prefix));
+    assert.ok(isSwap, '/v1/messages must match the allowlist');
+  });
+
+  it('behavioral: /api/oauth/claude_cli/client_data should NOT match SWAP_PATH_PREFIXES', () => {
+    const SWAP_PATH_PREFIXES = [
+      '/v1/messages',
+      '/v1/organizations',
+      '/api/event_logging/',
+      '/api/eval/',
+      '/api/web/',
+    ];
+
+    const testPath = '/api/oauth/claude_cli/client_data';
+    const isSwap = SWAP_PATH_PREFIXES.some(prefix => testPath.startsWith(prefix));
+    assert.ok(!isSwap, '/api/oauth/claude_cli/client_data must NOT match the allowlist (passthrough)');
+  });
+
+  it('behavioral: /api/oauth/account/settings should NOT match SWAP_PATH_PREFIXES', () => {
+    const SWAP_PATH_PREFIXES = [
+      '/v1/messages',
+      '/v1/organizations',
+      '/api/event_logging/',
+      '/api/eval/',
+      '/api/web/',
+    ];
+
+    const testPath = '/api/oauth/account/settings';
+    const isSwap = SWAP_PATH_PREFIXES.some(prefix => testPath.startsWith(prefix));
+    assert.ok(!isSwap, '/api/oauth/account/settings must NOT match the allowlist (passthrough)');
+  });
+
+  it('should only apply path check on first attempt (retryCount === 0)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // Find the path passthrough section
+    const pathPassthroughIdx = fnStart.indexOf('session_path_passthrough');
+    assert.ok(pathPassthroughIdx !== -1, 'Must have session_path_passthrough');
+
+    const pathSection = fnStart.slice(Math.max(0, pathPassthroughIdx - 500), pathPassthroughIdx);
+    assert.match(
+      pathSection,
+      /retryCount\s*===\s*0/,
+      'Path-level passthrough must only apply on first attempt (retryCount === 0)'
+    );
+  });
+
+  it('should only apply path check when not already in passthrough mode', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // Find the path passthrough section
+    const pathPassthroughIdx = fnStart.indexOf('session_path_passthrough');
+    assert.ok(pathPassthroughIdx !== -1, 'Must have session_path_passthrough');
+
+    const pathSection = fnStart.slice(Math.max(0, pathPassthroughIdx - 500), pathPassthroughIdx);
+    assert.match(
+      pathSection,
+      /!usePassthrough/,
+      'Path-level passthrough must only apply when not already in passthrough mode'
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Behavioral: all five allowlisted paths individually
+  // A test for /v1/messages alone is not enough — each entry in SWAP_PATH_PREFIXES
+  // needs its own regression guard so removing any single entry is caught.
+  // ---------------------------------------------------------------------------
+
+  const SWAP_PATH_PREFIXES_FIXTURE = [
+    '/v1/messages',
+    '/v1/organizations',
+    '/api/event_logging/',
+    '/api/eval/',
+    '/api/web/',
+  ];
+
+  it('behavioral: /v1/organizations should match SWAP_PATH_PREFIXES', () => {
+    const testPath = '/v1/organizations/org-abc123/settings';
+    const isSwap = SWAP_PATH_PREFIXES_FIXTURE.some(prefix => testPath.startsWith(prefix));
+    assert.ok(isSwap, '/v1/organizations sub-path must match the allowlist');
+  });
+
+  it('behavioral: /api/event_logging/ should match SWAP_PATH_PREFIXES', () => {
+    const testPath = '/api/event_logging/batch';
+    const isSwap = SWAP_PATH_PREFIXES_FIXTURE.some(prefix => testPath.startsWith(prefix));
+    assert.ok(isSwap, '/api/event_logging/ sub-path must match the allowlist');
+  });
+
+  it('behavioral: /api/eval/ should match SWAP_PATH_PREFIXES', () => {
+    const testPath = '/api/eval/run';
+    const isSwap = SWAP_PATH_PREFIXES_FIXTURE.some(prefix => testPath.startsWith(prefix));
+    assert.ok(isSwap, '/api/eval/ sub-path must match the allowlist');
+  });
+
+  it('behavioral: /api/web/ should match SWAP_PATH_PREFIXES', () => {
+    const testPath = '/api/web/info';
+    const isSwap = SWAP_PATH_PREFIXES_FIXTURE.some(prefix => testPath.startsWith(prefix));
+    assert.ok(isSwap, '/api/web/ sub-path must match the allowlist');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Prefix semantics: sub-paths and query strings must also match
+  // ---------------------------------------------------------------------------
+
+  it('behavioral: /v1/messages/count (sub-path) should match SWAP_PATH_PREFIXES', () => {
+    const testPath = '/v1/messages/count';
+    const isSwap = SWAP_PATH_PREFIXES_FIXTURE.some(prefix => testPath.startsWith(prefix));
+    assert.ok(isSwap, 'Sub-paths of /v1/messages must match because startsWith is a prefix check');
+  });
+
+  it('behavioral: /v1/messages?stream=true (query string) should match SWAP_PATH_PREFIXES', () => {
+    const testPath = '/v1/messages?stream=true';
+    const isSwap = SWAP_PATH_PREFIXES_FIXTURE.some(prefix => testPath.startsWith(prefix));
+    assert.ok(isSwap, 'Paths with query strings must match when the path portion starts with the prefix');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Trailing-slash sensitivity: /api/web (no trailing slash) must NOT match
+  // the /api/web/ prefix entry. This prevents a path like /api/webauthn from
+  // being incorrectly included in the swap allowlist.
+  // ---------------------------------------------------------------------------
+
+  it('behavioral: /api/web (no trailing slash) should NOT match /api/web/ prefix', () => {
+    const testPath = '/api/web';
+    const isSwap = SWAP_PATH_PREFIXES_FIXTURE.some(prefix => testPath.startsWith(prefix));
+    assert.ok(!isSwap, '/api/web without trailing slash must NOT match /api/web/ — prevents /api/webauthn false-positives');
+  });
+
+  it('behavioral: /api/eval (no trailing slash) should NOT match /api/eval/ prefix', () => {
+    const testPath = '/api/eval';
+    const isSwap = SWAP_PATH_PREFIXES_FIXTURE.some(prefix => testPath.startsWith(prefix));
+    assert.ok(!isSwap, '/api/eval without trailing slash must NOT match /api/eval/ prefix entry');
+  });
+
+  it('behavioral: /api/event_logging (no trailing slash) should NOT match /api/event_logging/ prefix', () => {
+    const testPath = '/api/event_logging';
+    const isSwap = SWAP_PATH_PREFIXES_FIXTURE.some(prefix => testPath.startsWith(prefix));
+    assert.ok(!isSwap, '/api/event_logging without trailing slash must NOT match /api/event_logging/ prefix entry');
+  });
+
+  // ---------------------------------------------------------------------------
+  // session_path_passthrough log must include expected observability fields
+  // ---------------------------------------------------------------------------
+
+  it('should include incoming_key_id field in session_path_passthrough log', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    const logIdx = fnStart.indexOf('session_path_passthrough');
+    assert.ok(logIdx !== -1, 'Must log session_path_passthrough');
+
+    const logSection = fnStart.slice(logIdx, logIdx + 400);
+    assert.match(
+      logSection,
+      /incoming_key_id/,
+      'session_path_passthrough log must include incoming_key_id for observability'
+    );
+  });
+
+  it('should include active_key_id field in session_path_passthrough log', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    const logIdx = fnStart.indexOf('session_path_passthrough');
+    assert.ok(logIdx !== -1, 'Must log session_path_passthrough');
+
+    const logSection = fnStart.slice(logIdx, logIdx + 400);
+    assert.match(
+      logSection,
+      /active_key_id/,
+      'session_path_passthrough log must include active_key_id for correlation with request_intercepted events'
+    );
+  });
+
+  it('should include method and path fields in session_path_passthrough log', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    const logIdx = fnStart.indexOf('session_path_passthrough');
+    assert.ok(logIdx !== -1, 'Must log session_path_passthrough');
+
+    const logSection = fnStart.slice(logIdx, logIdx + 400);
+    assert.match(logSection, /method/, 'session_path_passthrough log must include method');
+    assert.match(logSection, /path/, 'session_path_passthrough log must include path');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Path check runs AFTER token-identity check: tombstone/merged tokens on
+  // non-allowlisted paths get path passthrough (not active-key swap).
+  // This is the correct behavior — the path takes precedence over token identity
+  // for non-swap paths because swapping the token on an OAuth endpoint would
+  // cause auth failures regardless of whether the token is tombstoned.
+  // ---------------------------------------------------------------------------
+
+  it('path check runs after token-identity check in source (order of guards matters)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    const tombstoneIdx = fnStart.indexOf("keyEntry.status === 'tombstone'");
+    const pathCheckIdx = fnStart.indexOf('SWAP_PATH_PREFIXES.some');
+
+    assert.ok(tombstoneIdx !== -1, 'Must have tombstone check');
+    assert.ok(pathCheckIdx !== -1, 'Must have SWAP_PATH_PREFIXES.some() path check');
+    assert.ok(
+      tombstoneIdx < pathCheckIdx,
+      'Token-identity check (tombstone/merged/unknown) must run before path-level passthrough check'
+    );
+  });
+
+  it('path check guard (!usePassthrough) prevents double-passthrough log when token-identity already set passthrough', () => {
+    // When unknown_token_passthrough sets usePassthrough = true, the path check
+    // condition is `if (!usePassthrough && retryCount === 0)` — which is false.
+    // This prevents a second session_path_passthrough log event for unknown tokens.
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    const pathCheckIdx = fnStart.indexOf('SWAP_PATH_PREFIXES.some');
+    assert.ok(pathCheckIdx !== -1, 'Must have SWAP_PATH_PREFIXES.some()');
+
+    const guardSection = fnStart.slice(Math.max(0, pathCheckIdx - 200), pathCheckIdx);
+    assert.match(
+      guardSection,
+      /!usePassthrough/,
+      'Path check must be guarded by !usePassthrough to avoid double-logging when token-identity passthrough already fired'
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // 429 retry is suppressed for path-passthrough requests
+  // The 429 handler has `!usePassthrough` guard, which catches both
+  // token-identity passthrough AND path-level passthrough.
+  // ---------------------------------------------------------------------------
+
+  it('429 retry guard (!usePassthrough) covers path-induced passthrough, not just token-identity passthrough', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // The 429 condition: retryCount < MAX_429_RETRIES && !usePassthrough
+    const retryOn429Idx = fnStart.indexOf('rotating_on_429');
+    assert.ok(retryOn429Idx !== -1, 'Must have rotating_on_429 log event');
+
+    const retryGuardSection = fnStart.slice(Math.max(0, retryOn429Idx - 300), retryOn429Idx);
+    assert.match(
+      retryGuardSection,
+      /!usePassthrough/,
+      '429 retry must be guarded by !usePassthrough — path-passthrough requests must never trigger key rotation'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 13. Proxy audit trail — tunnel lifecycle and response logging
 // ---------------------------------------------------------------------------
 

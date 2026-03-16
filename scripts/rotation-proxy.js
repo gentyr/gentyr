@@ -48,6 +48,17 @@ const MITM_DOMAINS = ['api.anthropic.com'];
 const MAX_429_RETRIES = 2;
 const MAX_401_RETRIES = 2;
 
+/** API path prefixes eligible for token swap. All other paths pass through
+ *  with the session's original token (e.g., OAuth endpoints). Allowlist is
+ *  safer than denylist — new Claude Code endpoints default to passthrough. */
+const SWAP_PATH_PREFIXES = [
+  '/v1/messages',          // LLM API calls (primary use case)
+  '/v1/organizations',     // Org-level API
+  '/api/event_logging/',   // Telemetry batching
+  '/api/eval/',            // SDK evaluation
+  '/api/web/',             // Domain info lookups
+];
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -453,6 +464,22 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
         }
       }
       // If keyEntry exists with other status (active, exhausted, etc.) — normal swap path
+    }
+  }
+
+  // Path-level passthrough: OAuth and session-bound endpoints must keep the
+  // session's own token. Only explicitly listed API paths get rotation swap.
+  if (!usePassthrough && retryCount === 0) {
+    const isSwapPath = SWAP_PATH_PREFIXES.some(prefix => parsed.path.startsWith(prefix));
+    if (!isSwapPath) {
+      usePassthrough = true;
+      proxyLog('session_path_passthrough', {
+        host,
+        method: parsed.method,
+        path: parsed.path.slice(0, 100),
+        incoming_key_id: incomingKeyId ? incomingKeyId.slice(0, 8) : null,
+        active_key_id: activeKeyId.slice(0, 8),
+      });
     }
   }
 
