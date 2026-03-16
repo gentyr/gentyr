@@ -318,7 +318,7 @@ export interface CheckDemoResultResult {
   artifacts?: string[];
   degraded_features?: string[];
   recording_path?: string;
-  recording_source?: 'window' | 'playwright' | 'none';
+  recording_source?: 'window' | 'none';
   message: string;
 }
 
