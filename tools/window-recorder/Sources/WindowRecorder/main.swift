@@ -41,10 +41,10 @@ func parseArgs() -> (output: String, app: String, title: String?, fps: Int) {
 
 func appendDiag(_ line: String) {
     let diagPath = config.output + ".diag"
-    if let fh = FileHandle(forWritingAtPath: diagPath) {
-        fh.seekToEndOfFile()
-        fh.write(Data(line.utf8))
-        fh.closeFile()
+    // Use String read+append+write instead of FileHandle (which silently returns nil in some contexts)
+    if var existing = try? String(contentsOfFile: diagPath, encoding: .utf8) {
+        existing += line
+        try? existing.write(toFile: diagPath, atomically: false, encoding: .utf8)
     }
 }
 
@@ -58,23 +58,36 @@ func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
             let content = try await SCShareableContent.current
             pollCount += 1
 
-            // On first poll, capture existing Chrome window IDs to exclude
+            // On first poll, snapshot ALL window IDs (not just Chrome)
             if existingWindowIDs == nil {
-                existingWindowIDs = Set(
-                    content.windows.compactMap { w -> UInt32? in
-                        guard let name = w.owningApplication?.applicationName else { return nil }
-                        guard name.localizedCaseInsensitiveContains(appName) else { return nil }
-                        return w.windowID
-                    }
-                )
-                appendDiag("Excluding \(existingWindowIDs!.count) existing \(appName) window(s)\n")
+                existingWindowIDs = Set(content.windows.map { $0.windowID })
+                let chromeCount = content.windows.filter {
+                    $0.owningApplication?.applicationName.localizedCaseInsensitiveContains(appName) == true
+                }.count
+                appendDiag("Snapshot: \(existingWindowIDs!.count) total windows (\(chromeCount) matching '\(appName)')\n")
             }
 
-            // Log all window app names on first few polls for diagnostics
+            // Detect genuinely NEW windows (any app) that appeared after snapshot
+            let allCurrentIDs = Set(content.windows.map { $0.windowID })
+            let newIDs = allCurrentIDs.subtracting(existingWindowIDs!)
+
+            // Log new windows with bundleIdentifier to identify Playwright's browser
+            if !newIDs.isEmpty {
+                let newWindows = content.windows.filter { newIDs.contains($0.windowID) }
+                let descriptions = newWindows.compactMap { w -> String? in
+                    let name = w.owningApplication?.applicationName ?? "(nil)"
+                    let bundleID = w.owningApplication?.bundleIdentifier ?? "(nil)"
+                    return "\(name) [bundle:\(bundleID)] (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]"
+                }
+                appendDiag("NEW windows at poll \(pollCount): \(descriptions.joined(separator: ", "))\n")
+            }
+
+            // Log all windows on first few polls for full diagnostics
             if pollCount <= 3 {
                 let appNames = content.windows.compactMap { w -> String? in
                     guard let name = w.owningApplication?.applicationName else { return nil }
-                    return "\(name) (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]"
+                    let bundleID = w.owningApplication?.bundleIdentifier ?? "?"
+                    return "\(name) [bundle:\(bundleID)] (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]"
                 }
                 appendDiag("poll \(pollCount): \(appNames.joined(separator: ", "))\n")
             }
@@ -97,8 +110,14 @@ func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
                 }
             }
             if let w = bestWindow {
-                appendDiag("MATCHED: \(w.owningApplication?.applicationName ?? "?") - \(w.title ?? "(untitled)") (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]\n")
+                let bundleID = w.owningApplication?.bundleIdentifier ?? "?"
+                appendDiag("MATCHED: \(w.owningApplication?.applicationName ?? "?") [bundle:\(bundleID)] - \(w.title ?? "(untitled)") (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]\n")
                 return w
+            }
+
+            // Add new IDs to known set AFTER matching (so new windows aren't excluded on the same poll)
+            if !newIDs.isEmpty {
+                existingWindowIDs = existingWindowIDs!.union(newIDs)
             }
         } catch {
             FileHandle.standardError.write(Data("Window discovery error: \(error.localizedDescription)\n".utf8))
@@ -164,6 +183,7 @@ let config = parseArgs()
 // Write diagnostic file so the caller can tell if the binary even started
 let diagPath = config.output + ".diag"
 try? "started at \(Date()), app=\(config.app), pid=\(ProcessInfo.processInfo.processIdentifier)\n".write(toFile: diagPath, atomically: true, encoding: .utf8)
+appendDiag("appendDiag OK, output=\(config.output)\n")
 
 // Shared state for signal handling — must outlive the Task closure
 let semaphore = DispatchSemaphore(value: 0)
