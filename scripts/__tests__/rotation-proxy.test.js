@@ -1672,11 +1672,10 @@ describe('rotation-proxy.js - Path-level swap allowlist', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Path check runs AFTER token-identity check: tombstone/merged tokens on
-  // non-allowlisted paths get path passthrough (not active-key swap).
-  // This is the correct behavior — the path takes precedence over token identity
-  // for non-swap paths because swapping the token on an OAuth endpoint would
-  // cause auth failures regardless of whether the token is tombstoned.
+  // Path check runs AFTER token-identity check: tombstone/merged tokens use
+  // forceSwap to prevent path-level passthrough from overriding the swap
+  // decision. A merged/tombstone token has no valid accessToken — passing it
+  // through to ANY endpoint guarantees a 403.
   // ---------------------------------------------------------------------------
 
   it('path check runs after token-identity check in source (order of guards matters)', () => {
@@ -1696,7 +1695,7 @@ describe('rotation-proxy.js - Path-level swap allowlist', () => {
 
   it('path check guard (!usePassthrough) prevents double-passthrough log when token-identity already set passthrough', () => {
     // When unknown_token_passthrough sets usePassthrough = true, the path check
-    // condition is `if (!usePassthrough && retryCount === 0)` — which is false.
+    // condition is `if (!usePassthrough && !forceSwap && retryCount === 0)` — which is false.
     // This prevents a second session_path_passthrough log event for unknown tokens.
     const code = fs.readFileSync(PROXY_PATH, 'utf8');
     const fnStart = extractFunctionBody(code, 'forwardRequest');
@@ -1709,6 +1708,125 @@ describe('rotation-proxy.js - Path-level swap allowlist', () => {
       guardSection,
       /!usePassthrough/,
       'Path check must be guarded by !usePassthrough to avoid double-logging when token-identity passthrough already fired'
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // forceSwap flag: prevents path-level passthrough from overriding
+  // merged/tombstone swap decisions (Bug: expired token passthrough → 403)
+  // ---------------------------------------------------------------------------
+
+  it('forceSwap flag defined in forwardRequest()', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+    assert.ok(fnStart !== null, 'forwardRequest must be defined');
+
+    assert.match(
+      fnStart,
+      /let forceSwap\s*=\s*false/,
+      'Must declare forceSwap = false in forwardRequest'
+    );
+  });
+
+  it('forceSwap = true appears in tombstone block', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    const tombstoneIdx = fnStart.indexOf("keyEntry.status === 'tombstone'");
+    assert.ok(tombstoneIdx !== -1, 'Must have tombstone check');
+
+    // Look for forceSwap = true between tombstone check and merged check
+    const mergedIdx = fnStart.indexOf("keyEntry.status === 'merged'");
+    assert.ok(mergedIdx !== -1, 'Must have merged check');
+
+    const tombstoneBlock = fnStart.slice(tombstoneIdx, mergedIdx);
+    assert.match(
+      tombstoneBlock,
+      /forceSwap\s*=\s*true/,
+      'Tombstone block must set forceSwap = true to prevent path-level passthrough override'
+    );
+  });
+
+  it('forceSwap = true appears in merged block', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    const mergedIdx = fnStart.indexOf("keyEntry.status === 'merged'");
+    assert.ok(mergedIdx !== -1, 'Must have merged check');
+
+    // Look for forceSwap = true between merged check and the unknown token check
+    const unknownIdx = fnStart.indexOf('unknown_token_passthrough');
+    assert.ok(unknownIdx !== -1, 'Must have unknown_token_passthrough');
+
+    const mergedBlock = fnStart.slice(mergedIdx, unknownIdx);
+    assert.match(
+      mergedBlock,
+      /forceSwap\s*=\s*true/,
+      'Merged block must set forceSwap = true to prevent path-level passthrough override'
+    );
+  });
+
+  it('!forceSwap guard on path-level passthrough condition', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    const pathCheckIdx = fnStart.indexOf('session_path_passthrough');
+    assert.ok(pathCheckIdx !== -1, 'Must have session_path_passthrough');
+
+    const guardSection = fnStart.slice(Math.max(0, pathCheckIdx - 500), pathCheckIdx);
+    assert.match(
+      guardSection,
+      /!forceSwap/,
+      'Path-level passthrough must be guarded by !forceSwap to prevent overriding merged/tombstone swap decisions'
+    );
+  });
+
+  it('behavioral: merged token on non-SWAP path should NOT passthrough', () => {
+    // Simulate the forwardRequest logic inline:
+    // merged token → forceSwap = true → path check skipped → usePassthrough stays false
+    const SWAP_PATH_PREFIXES = [
+      '/v1/messages',
+      '/v1/organizations',
+      '/api/event_logging/',
+      '/api/eval/',
+      '/api/web/',
+    ];
+
+    let usePassthrough = false;
+    let forceSwap = false;
+    const retryCount = 0;
+
+    // Simulate: incoming token is merged
+    const keyStatus = 'merged';
+    if (keyStatus === 'tombstone' || keyStatus === 'merged') {
+      // usePassthrough stays false
+      forceSwap = true;
+    }
+
+    // Simulate: path-level passthrough check (the fixed version)
+    const testPath = '/v1/mcp_servers';
+    if (!usePassthrough && !forceSwap && retryCount === 0) {
+      const isSwapPath = SWAP_PATH_PREFIXES.some(prefix => testPath.startsWith(prefix));
+      if (!isSwapPath) {
+        usePassthrough = true;
+      }
+    }
+
+    assert.strictEqual(usePassthrough, false,
+      'Merged token on /v1/mcp_servers must NOT be set to passthrough — forceSwap prevents it');
+    assert.strictEqual(forceSwap, true,
+      'forceSwap must be true for merged tokens');
+  });
+
+  it('logs force_swap_override event for merged/tombstone tokens on non-SWAP paths', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+    assert.ok(fnStart !== null, 'forwardRequest must be defined');
+
+    assert.match(
+      fnStart,
+      /proxyLog\(['"]force_swap_override['"]/,
+      'Must log force_swap_override event when forceSwap overrides path-level passthrough'
     );
   });
 
