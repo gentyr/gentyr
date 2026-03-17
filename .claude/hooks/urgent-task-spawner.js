@@ -411,6 +411,7 @@ function spawnTaskAgent(task) {
     hookType: HOOK_TYPES.TASK_RUNNER,
     description: `Urgent task: ${mapping.agent} - ${task.title}`,
     prompt: '',
+    projectDir: worktreePath || PROJECT_DIR,
     metadata: { taskId: task.id, section: task.section, worktreePath, urgent: true },
   });
 
