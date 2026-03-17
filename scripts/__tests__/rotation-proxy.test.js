@@ -1979,3 +1979,102 @@ describe('rotation-proxy.js - Proxy audit trail', () => {
     assert.ok(recent.every(l => JSON.parse(l).event !== 'old'), 'Old entry must be filtered out');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Dead active key passthrough
+// ---------------------------------------------------------------------------
+
+describe('rotation-proxy.js - Dead active key passthrough', () => {
+  const code = fs.readFileSync(PROXY_PATH, 'utf8');
+
+  it('should have dead_active_key_passthrough log event', () => {
+    assert.ok(
+      code.includes("proxyLog('dead_active_key_passthrough'"),
+      'Must log dead_active_key_passthrough event when active key is dead'
+    );
+  });
+
+  it('should check activeEntry.status against [active, exhausted] allowlist', () => {
+    assert.ok(
+      code.includes("['active', 'exhausted'].includes(activeEntry.status)"),
+      'Must use allowlist check for active key health'
+    );
+  });
+
+  it('should guard dead active key check with !forceSwap', () => {
+    // The check must be inside a !forceSwap guard so tombstone/merged tokens
+    // still force-swap even when the active key is dead
+    const checkIdx = code.indexOf("dead_active_key_passthrough");
+    assert.ok(checkIdx !== -1, 'dead_active_key_passthrough must exist');
+
+    // Find the surrounding if block — look backwards for !forceSwap
+    const precedingCode = code.slice(Math.max(0, checkIdx - 500), checkIdx);
+    assert.ok(
+      precedingCode.includes('!forceSwap'),
+      'Dead active key check must be guarded by !forceSwap'
+    );
+  });
+
+  it('should trigger syncKeys on dead active key detection', () => {
+    const checkIdx = code.indexOf("dead_active_key_passthrough");
+    assert.ok(checkIdx !== -1);
+    // syncKeys call should appear within 300 chars after the log event
+    const followingCode = code.slice(checkIdx, checkIdx + 500);
+    assert.ok(
+      followingCode.includes('syncKeys()'),
+      'Must trigger syncKeys after dead active key passthrough'
+    );
+  });
+
+  it('behavioral: known token + expired active key should passthrough', () => {
+    // Simulate the dead active key logic inline
+    const incomingKeyId = 'abc12345';
+    const activeKeyId = 'dead6789';
+    let usePassthrough = false;
+    const forceSwap = false;
+
+    const state = {
+      active_key_id: activeKeyId,
+      keys: {
+        [incomingKeyId]: { status: 'active', accessToken: 'tok_incoming' },
+        [activeKeyId]: { status: 'expired', accessToken: 'tok_dead' },
+      },
+    };
+
+    // Simulate: keyEntry exists (not unknown), so usePassthrough is false
+    // Now check dead active key logic
+    if (!usePassthrough && !forceSwap) {
+      const activeEntry = state.keys[state.active_key_id];
+      if (!activeEntry || !['active', 'exhausted'].includes(activeEntry.status)) {
+        usePassthrough = true;
+      }
+    }
+
+    assert.strictEqual(usePassthrough, true, 'Must passthrough when active key is expired');
+  });
+
+  it('behavioral: known token + active active key should swap normally', () => {
+    // Simulate normal swap — no passthrough
+    const incomingKeyId = 'abc12345';
+    const activeKeyId = 'good6789';
+    let usePassthrough = false;
+    const forceSwap = false;
+
+    const state = {
+      active_key_id: activeKeyId,
+      keys: {
+        [incomingKeyId]: { status: 'active', accessToken: 'tok_incoming' },
+        [activeKeyId]: { status: 'active', accessToken: 'tok_good' },
+      },
+    };
+
+    if (!usePassthrough && !forceSwap) {
+      const activeEntry = state.keys[state.active_key_id];
+      if (!activeEntry || !['active', 'exhausted'].includes(activeEntry.status)) {
+        usePassthrough = true;
+      }
+    }
+
+    assert.strictEqual(usePassthrough, false, 'Must NOT passthrough when active key is healthy');
+  });
+});

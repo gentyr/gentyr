@@ -669,6 +669,8 @@ Claude Code ──HTTPS_PROXY──> localhost:18080 ──TLS──> api.anthro
 
 **`forceSwap` override**: Merged and tombstone tokens have no valid `accessToken` — passing them through unchanged guarantees a 403. When the token-identity check detects a tombstone or merged token, it sets `forceSwap = true`, which prevents the path-level passthrough from overriding the swap decision. This ensures dead tokens are always replaced with the active key on ALL paths, not just SWAP paths. Fires a `force_swap_override` audit event for observability.
 
+**Dead active key passthrough**: When the active key's status is not usable (`expired`, `invalid`, `tombstone`, `merged`, or missing from state), `forwardRequest()` falls back to passthrough instead of swapping. This prevents a fresh token from `/login` being replaced with a dead active key. Only `active` and `exhausted` statuses are considered usable (`exhausted` is still valid for 429 retry + rotation). The `!forceSwap` guard ensures tombstone/merged tokens still get force-swapped even with a dead active key (they have no valid original token). Fires a `dead_active_key_passthrough` audit event and triggers async `syncKeys()` to register the fresh credential.
+
 **Conditional auth header injection** (`rebuildRequest`): Authorization header is only added back to the rebuilt request if the original request had one. Requests without auth headers (e.g., health checks, OAuth flows that pass through to a MITM host) are forwarded without injecting a token.
 
 **Logging**: Structured JSON lines to `~/.claude/rotation-proxy.log` (max 1MB with rotation). Logs token swaps (key ID only, never token values), 429 retries, 401 retries, tombstone swaps, unknown-token passthroughs, and errors for debugging.
