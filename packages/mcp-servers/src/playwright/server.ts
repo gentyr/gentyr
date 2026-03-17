@@ -148,9 +148,12 @@ function autoKillDemo(pid: number): void {
   const entry = demoRuns.get(pid);
   if (!entry || entry.status !== 'running') return;
 
-  // Stop window recorder if running (no-wait: just force-kill and clean up)
+  // Stop window recorder and persist video before destroying
   if (entry.window_recorder_pid && entry.window_recording_path) {
-    try { process.kill(entry.window_recorder_pid, 'SIGKILL'); } catch { /* already dead */ }
+    const recOk = stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
+    if (recOk && entry.scenario_id) {
+      try { persistScenarioRecording(entry.scenario_id, entry.window_recording_path); } catch { /* Non-fatal */ }
+    }
     try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
     entry.window_recorder_pid = undefined;
     entry.window_recording_path = undefined;
@@ -442,17 +445,24 @@ async function stopWindowRecorder(pid: number, outputPath: string): Promise<bool
   try {
     try { process.kill(pid, 'SIGINT'); } catch { /* already dead */ }
 
+    let exited = false;
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
       try {
         process.kill(pid, 0);
         await new Promise<void>(r => setTimeout(r, 500));
       } catch {
+        exited = true;
         break;
       }
     }
 
-    try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
+    if (!exited) {
+      // Process still alive at deadline — SIGKILL corrupts the MP4 (no moov atom)
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
+      return false;
+    }
+
     return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0;
   } catch {
     return false;
@@ -467,18 +477,25 @@ function stopWindowRecorderSync(pid: number, outputPath: string): boolean {
   try {
     try { process.kill(pid, 'SIGINT'); } catch { /* already dead */ }
 
-    const deadline = Date.now() + 5_000;
+    let exited = false;
+    const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
       try {
         process.kill(pid, 0);
       } catch {
+        exited = true;
         break;
       }
       const spinEnd = Date.now() + 200;
       while (Date.now() < spinEnd) { /* spin */ }
     }
 
-    try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
+    if (!exited) {
+      // Process still alive at deadline — SIGKILL corrupts the MP4 (no moov atom)
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
+      return false;
+    }
+
     return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0;
   } catch {
     return false;
@@ -930,7 +947,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     const recorderBinary = getWindowRecorderBinary();
     if (recorderBinary) {
       windowRecordingPath = path.join(PROJECT_DIR, '.claude', 'state', `demo-window-${progressId}.mp4`);
-      windowRecorder = startWindowRecorder(windowRecordingPath, 'Google Chrome');
+      windowRecorder = startWindowRecorder(windowRecordingPath, 'Chrom');
     }
   }
 
@@ -1318,6 +1335,19 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       demoState.ended_at = new Date().toISOString();
       demoState.stdout_tail = stdoutLines.join('\n').slice(0, 5000);
       suiteEndAutoKilledPids.add(demoPid);
+
+      // Persist video recording before clearing recorder state
+      if (args.scenario_id && windowRecorder && windowRecordingPath) {
+        try {
+          const recordingOk = await stopWindowRecorder(windowRecorder.pid, windowRecordingPath);
+          if (recordingOk) {
+            persistScenarioRecording(args.scenario_id, windowRecordingPath);
+          }
+        } catch { /* Non-fatal */ }
+        try { fs.unlinkSync(windowRecordingPath); } catch { /* Non-fatal */ }
+        windowRecorder = null;
+        windowRecordingPath = null;
+      }
     }
     // Store window recorder info so check_demo_result and the exit handler can stop it
     if (windowRecorder) {
@@ -1469,9 +1499,35 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       recorderInfo = `\nWindowRecorder: not started (binary=${getWindowRecorderBinary() ? 'found' : 'not found'})`;
     }
 
+    // Build recording status for launch message
+    let recordingStatus = '';
+    if (result.type === 'suite_end_killed') {
+      // suite_end_killed: recording was already persisted (or not) above
+      if (args.scenario_id && !windowRecorder) {
+        // windowRecorder was consumed — recording was persisted
+        const recPath = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', `${args.scenario_id}.mp4`);
+        if (fs.existsSync(recPath)) {
+          recordingStatus = ` Video recorded: ${recPath}`;
+        } else {
+          recordingStatus = ' No video recorded (window recorder failed to produce valid MP4).';
+        }
+      } else if (!windowRecorder && !args.headless) {
+        recordingStatus = ' No video recorded (window recorder unavailable).';
+      }
+    } else {
+      // Still running
+      if (windowRecorder) {
+        recordingStatus = ' Video recording active.';
+      } else if (args.headless) {
+        recordingStatus = ' No video recording (headless mode).';
+      } else {
+        recordingStatus = ' No video recording (window recorder unavailable).';
+      }
+    }
+
     const launchMessage = result.type === 'suite_end_killed'
-      ? `Demo completed and process auto-killed after suite_end for project "${project}".${test_file ? ` File: ${test_file}.` : ''} Use check_demo_result to see the final status.${warningText}${recorderInfo}`
-      : `Headed auto-play demo launched for project "${project}" with ${slow_mo}ms slow motion.${test_file ? ` Running file: ${test_file}.` : ''} The browser window should open shortly.${warningText}${recorderInfo}`;
+      ? `Demo completed and process auto-killed after suite_end for project "${project}".${test_file ? ` File: ${test_file}.` : ''} Use check_demo_result to see the final status.${recordingStatus}${warningText}${recorderInfo}`
+      : `Headed auto-play demo launched for project "${project}" with ${slow_mo}ms slow motion.${test_file ? ` Running file: ${test_file}.` : ''} The browser window should open shortly.${recordingStatus}${warningText}${recorderInfo}`;
 
     return {
       success: true,
@@ -1634,8 +1690,9 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
       const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
       if (progress?.suite_completed) {
         // Suite done — stop window recorder first (sync), then kill playwright process
+        let recorderClean = false;
         if (entry.window_recorder_pid && entry.window_recording_path) {
-          stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path || '');
+          recorderClean = stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
           entry.window_recorder_pid = undefined;
         }
 
@@ -1663,8 +1720,9 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
           try {
             let videoToUse: string | undefined;
 
-            // Prefer window recording
+            // Prefer window recording (only if recorder exited cleanly)
             if (
+              recorderClean &&
               entry.window_recording_path &&
               fs.existsSync(entry.window_recording_path) &&
               fs.statSync(entry.window_recording_path).size > 0
@@ -1734,9 +1792,12 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
       clearAutoKillTimer(pid);
       entry.ended_at = new Date().toISOString();
 
-      // Stop window recorder if still running (process died unexpectedly)
+      // Stop window recorder and persist video before destroying
       if (entry.window_recorder_pid && entry.window_recording_path) {
-        stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
+        const recOk = stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
+        if (recOk && entry.scenario_id) {
+          try { persistScenarioRecording(entry.scenario_id, entry.window_recording_path); } catch { /* Non-fatal */ }
+        }
         try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
         entry.window_recorder_pid = undefined;
         entry.window_recording_path = undefined;
@@ -1897,6 +1958,17 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
   try {
     process.kill(pid, 0);
   } catch {
+    // Stop window recorder and persist video before returning
+    if (entry.window_recorder_pid && entry.window_recording_path) {
+      const recOk = stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
+      if (recOk && entry.scenario_id) {
+        try { persistScenarioRecording(entry.scenario_id, entry.window_recording_path); } catch { /* Non-fatal */ }
+      }
+      try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
+      entry.window_recorder_pid = undefined;
+      entry.window_recording_path = undefined;
+    }
+
     entry.status = 'unknown';
     entry.ended_at = new Date().toISOString();
     persistDemoRuns();
@@ -1914,10 +1986,12 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
   // Read final progress snapshot before killing
   const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
 
-  // Stop window recorder if running (sync: send SIGINT, brief poll)
+  // Stop window recorder and persist video before destroying
   if (entry.window_recorder_pid && entry.window_recording_path) {
-    stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
-    // Clean up temp window recording
+    const recOk = stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
+    if (recOk && entry.scenario_id) {
+      try { persistScenarioRecording(entry.scenario_id, entry.window_recording_path); } catch { /* Non-fatal */ }
+    }
     try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
     entry.window_recorder_pid = undefined;
     entry.window_recording_path = undefined;
@@ -4038,7 +4112,8 @@ const tools: AnyToolHandler[] = [
     description:
       'Launch Playwright tests in a visible headed browser that runs automatically at human-watchable speed. ' +
       'No clicking required — tests play through on their own with configurable pace. ' +
-      'Video is recorded automatically in headed mode on macOS. Scenario videos are persisted to `.claude/recordings/demos/{scenarioId}.mp4`. ' +
+      'VIDEO RECORDING: Headed mode always records video automatically (macOS, no extra args). ' +
+      'Headless mode never records video. Scenario videos: `.claude/recordings/demos/{scenarioId}.mp4`. ' +
       'Best for presentations and demos. Supports headless mode (headless: true) for CI or screenshot capture. ' +
       'Cursor dot is always visible in headed mode. The target project\'s playwright.config.ts must read ' +
       'parseInt(process.env.DEMO_SLOW_MO || "0") in use.launchOptions.slowMo for pace control to work.',
@@ -4051,6 +4126,7 @@ const tools: AnyToolHandler[] = [
       'Check the result of a previously launched demo run by PID. ' +
       'Call after run_demo to determine if the demo passed or failed. ' +
       'Returns status (running/passed/failed/unknown), exit code, failure summary, screenshot paths, ' +
+      'recording_path, recording_source (window/none), ' +
       'and a progress object with real-time test counts, current test name, and error detection. ' +
       'Auto-kill: demo processes are automatically killed if this tool is not called within 60 seconds. ' +
       'Each poll resets the countdown. Prevents orphaned browser processes when the polling agent stops. ' +
