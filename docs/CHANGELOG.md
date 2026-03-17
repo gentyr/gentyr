@@ -1,5 +1,28 @@
 # GENTYR Framework Changelog
 
+## 2026-03-17 - Window Recorder Video Persistence Bulletproofing
+
+### Summary
+
+Fixed multiple paths in the Playwright MCP server where headed demo videos were silently lost. The primary bug was the `suite_end_killed` path (most common auto-kill case) not persisting the recording before clearing recorder state. Additionally hardened SIGKILL semantics: sending SIGKILL prevents AVAssetWriter from finalizing the moov atom, producing a corrupted MP4 — `stopWindowRecorder` (both sync and async) now returns `false` when SIGKILL was required, and all teardown paths gate `persistScenarioRecording()` on that return value.
+
+### Changed
+
+**`packages/mcp-servers/src/playwright/server.ts`**:
+- Fix `startWindowRecorder` app name filter: `'Google Chrome'` → `'Chrom'` (matches both Chromium and Google Chrome via `localizedCaseInsensitiveContains`)
+- `stopWindowRecorder` (async): track clean exit via `exited` flag; return `false` immediately after SIGKILL instead of checking file existence (corrupted MP4)
+- `stopWindowRecorderSync`: same fix; increase poll timeout from 5s to 10s
+- `suite_end_killed` path in `runDemo`: persist video and clean up before clearing `windowRecorder`/`windowRecordingPath` state (primary bug fix)
+- `autoKillDemo`: replaced immediate SIGKILL + delete with graceful stop → conditional persist → cleanup
+- `stopDemo` (already-dead early-return path): stop recorder and persist before setting status to `unknown`
+- `stopDemo` (normal path): already called `stopWindowRecorder` — now also persists when recorder exits cleanly
+- `checkDemoResult` (crash-recovery path): persist video on unexpected process death
+- `checkDemoResult` (suite_completed path): gate window recording persistence on `recorderClean` return value
+- `run_demo` tool description: clarify headed=recording, headless=no-recording
+- Launch message and `check_demo_result` response: include recording status in return messages
+
+---
+
 ## 2026-03-01 - Playwright CLI Guard: Hard Block Upgrade (v2.1.0)
 
 ### Summary
