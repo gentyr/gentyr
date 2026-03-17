@@ -89,20 +89,24 @@ function run() {
     fs.writeFileSync(HEALTH_FILE, JSON.stringify(health, null, 2));
   } catch { /* ignore — .claude/ may not exist yet */ }
 
-  // Log stale auth as a visible warning (shows in Claude Code output)
   if (authState.isStale) {
     const reason = !authState.exists ? 'missing' : authState.cookiesExpired ? 'cookies expired' : `${authState.ageHours}h old`;
-    process.stderr.write(`[playwright-health-check] Auth state is stale (${reason}). Run /demo to auto-repair.\n`);
+    console.log(JSON.stringify({
+      continue: true,
+      systemMessage: `Playwright auth stale (${reason}). Run /demo to auto-repair.`,
+    }));
+  } else {
+    console.log(JSON.stringify({ continue: true }));
   }
-
-  console.log(JSON.stringify({ continue: true }));
   process.exit(0);
 }
 
 try {
   run();
 } catch (err) {
-  console.error(`[playwright-health-check] Unexpected error: ${err.message || err}`);
-  console.log(JSON.stringify({ continue: true }));
+  console.log(JSON.stringify({
+    continue: true,
+    systemMessage: `[playwright-health-check] Unexpected error: ${err.message || err}`,
+  }));
   process.exit(0);
 }
