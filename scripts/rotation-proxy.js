@@ -466,7 +466,29 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
           });
         }
       }
-      // If keyEntry exists with other status (active, exhausted, etc.) — normal swap path
+      // Dead active key check: if the incoming token is known but the active key
+      // is dead (expired/invalid/missing), don't swap — the incoming token might
+      // be fresher. Let it through and trigger sync to discover new credentials.
+      if (!usePassthrough && !forceSwap) {
+        const activeEntry = state.keys[state.active_key_id];
+        if (!activeEntry || !['active', 'exhausted'].includes(activeEntry.status)) {
+          usePassthrough = true;
+          proxyLog('dead_active_key_passthrough', {
+            host,
+            method: parsed.method,
+            path: parsed.path.slice(0, 100),
+            incoming_key_id: incomingKeyId ? incomingKeyId.slice(0, 8) : null,
+            active_key_id: activeKeyId.slice(0, 8),
+            active_status: activeEntry ? activeEntry.status : 'missing',
+          });
+          // Trigger sync to discover fresh credentials from /login
+          if (syncKeys) {
+            syncKeys().catch(err => {
+              proxyLog('async_sync_failed', { error: err.message });
+            });
+          }
+        }
+      }
     }
   }
 

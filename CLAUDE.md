@@ -525,6 +525,7 @@ Structured JSON log at `~/.claude/rotation-proxy.log`. 24h retention (auto-clean
 | `tombstone_token_swap` | Incoming token is tombstoned — swapping to active key | `host`, `method`, `path`, `incoming_key_id`, `active_key_id` |
 | `merged_token_swap` | Incoming token is merged/deduped — swapping to active key | `host`, `method`, `path`, `incoming_key_id`, `merged_into`, `active_key_id` |
 | `force_swap_override` | forceSwap prevented passthrough on non-SWAP path (merged/tombstone token) | `host`, `method`, `path`, `incoming_key_id`, `active_key_id`, `reason` |
+| `dead_active_key_passthrough` | Active key is dead — incoming token passed through unchanged | `host`, `method`, `path`, `incoming_key_id`, `active_key_id`, `active_status` |
 
 **Debug workflow:**
 1. `grep 'tunnel_error\|tunnel_client_error' ~/.claude/rotation-proxy.log` — find broken tunnels
