@@ -94,47 +94,87 @@ function readHistory(): AgentHistory {
 }
 
 /**
- * Find Claude session transcript for a given spawn
+ * Resolve a project path to its ~/.claude/projects/ session directory.
+ * Ported from revival-utils.js:getSessionDir().
+ */
+function getSessionDir(projectDir: string): string | null {
+  const projectPath = projectDir.replace(/[^a-zA-Z0-9]/g, '-');
+  const sessionDir = path.join(CLAUDE_PROJECTS_DIR, projectPath);
+  if (fs.existsSync(sessionDir)) return sessionDir;
+
+  const altPath = path.join(CLAUDE_PROJECTS_DIR, projectPath.replace(/^-/, ''));
+  if (fs.existsSync(altPath)) return altPath;
+
+  return null;
+}
+
+/**
+ * Find a session JSONL file by scanning for [AGENT:id] marker in the first 2KB.
+ * Ported from revival-utils.js:findSessionFileByAgentId().
+ */
+function findSessionFileByAgentId(sessionDir: string, agentId: string): string | null {
+  const marker = `[AGENT:${agentId}]`;
+  let files: string[];
+  try {
+    files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
+  } catch {
+    return null;
+  }
+
+  for (const file of files) {
+    const filePath = path.join(sessionDir, file);
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(filePath, 'r');
+      const buf = Buffer.alloc(2000);
+      const bytesRead = fs.readSync(fd, buf, 0, 2000, 0);
+      const head = buf.toString('utf8', 0, bytesRead);
+      if (head.includes(marker)) return filePath;
+    } catch {
+      // skip unreadable files
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Find Claude session transcript for a given spawn.
+ * 3-step pattern ported from reap-completed-agents.js:
+ *   1. Return cached sessionFile if it exists on disk
+ *   2. Search main project dir, then worktree dir by agent ID marker
+ *   3. Return null (not a random file) when nothing matches
  */
 function findSessionFile(agent: AgentRecord): string | null {
-  if (!agent.projectDir) {return null;}
+  // Step 1: Return cached sessionFile if still on disk (Bug 1 fix)
+  if (agent.sessionFile && fs.existsSync(agent.sessionFile)) {
+    return agent.sessionFile;
+  }
+
+  if (!agent.projectDir) return null;
 
   try {
-    // Claude stores sessions in ~/.claude/projects/-path-to-project/
-    // Normalize path: replace / with - to get leading-dash format (e.g., "-home-user-project")
-    const projectPath = agent.projectDir.replace(/[^a-zA-Z0-9]/g, '-');
-    const sessionDir = path.join(CLAUDE_PROJECTS_DIR, projectPath);
-
-    if (!fs.existsSync(sessionDir)) {
-      // Try alternative path format (without leading dash, for backwards compatibility)
-      const altPath = path.join(CLAUDE_PROJECTS_DIR, projectPath.replace(/^-/, ''));
-      if (!fs.existsSync(altPath)) {return null;}
+    // Step 2a: Search main project session dir by agent ID marker
+    const mainSessionDir = getSessionDir(agent.projectDir);
+    if (mainSessionDir) {
+      const found = findSessionFileByAgentId(mainSessionDir, agent.id);
+      if (found) return found;
     }
 
-    const actualDir = fs.existsSync(sessionDir)
-      ? sessionDir
-      : path.join(CLAUDE_PROJECTS_DIR, projectPath.replace(/^-/, ''));
+    // Step 2b: Search worktree session dir if agent ran in a worktree (Bug 2 fix)
+    const worktreePath = agent.metadata?.worktreePath as string | undefined;
+    if (worktreePath) {
+      const wtSessionDir = getSessionDir(worktreePath);
+      if (wtSessionDir) {
+        const found = findSessionFileByAgentId(wtSessionDir, agent.id);
+        if (found) return found;
+      }
+    }
 
-    // List all JSONL files and find one close to spawn time
-    const files = fs.readdirSync(actualDir)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => ({
-        name: f,
-        path: path.join(actualDir, f),
-        mtime: fs.statSync(path.join(actualDir, f)).mtime.getTime(),
-      }))
-      .sort((a, b) => b.mtime - a.mtime);
-
-    if (files.length === 0) {return null;}
-
-    // Find session file created around spawn time (within 5 minutes)
-    const spawnTime = new Date(agent.timestamp).getTime();
-    const matchingFile = files.find(f => {
-      const diff = Math.abs(f.mtime - spawnTime);
-      return diff < 5 * 60 * 1000; // Within 5 minutes
-    });
-
-    return matchingFile ? matchingFile.path : files[0].path;
+    // Step 3: Return null — not a random file (Bug 3 fix)
+    return null;
   } catch (err) {
     // G001: Log session search errors (non-critical, return null)
     const message = err instanceof Error ? err.message : String(err);
