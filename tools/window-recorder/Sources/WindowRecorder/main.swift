@@ -9,7 +9,7 @@ import CoreGraphics
 func parseArgs() -> (output: String, app: String, title: String?, fps: Int) {
     let args = CommandLine.arguments
     var output: String?
-    var app = "Google Chrome"
+    var app = "Chrome for Testing"
     var title: String?
     var fps = 25
 
@@ -50,6 +50,7 @@ func appendDiag(_ line: String) {
 
 func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
     let deadline = Date().addingTimeInterval(120)
+    let targetBundleID = "com.google.chrome.for.testing"
     var pollCount = 0
     var existingWindowIDs: Set<UInt32>? = nil
 
@@ -93,8 +94,10 @@ func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
             }
 
             // Find the largest NEW matching window (skip pre-existing ones)
+            // Prefer windows with the exact Chrome for Testing bundle ID
             var bestWindow: SCWindow? = nil
             var bestArea: CGFloat = 0
+            var bestHasBundleMatch = false
             for window in content.windows {
                 guard let ownerName = window.owningApplication?.applicationName else { continue }
                 guard ownerName.localizedCaseInsensitiveContains(appName) else { continue }
@@ -103,10 +106,17 @@ func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
                 if let sub = titleSubstring {
                     guard let t = window.title, t.localizedCaseInsensitiveContains(sub) else { continue }
                 }
+                let hasBundleMatch = window.owningApplication?.bundleIdentifier == targetBundleID
                 let area = window.frame.width * window.frame.height
-                if area > bestArea {
+                // Bundle-matched windows always win over non-bundle-matched
+                if hasBundleMatch && !bestHasBundleMatch {
                     bestArea = area
                     bestWindow = window
+                    bestHasBundleMatch = true
+                } else if hasBundleMatch == bestHasBundleMatch && area > bestArea {
+                    bestArea = area
+                    bestWindow = window
+                    bestHasBundleMatch = hasBundleMatch
                 }
             }
             if let w = bestWindow {
@@ -115,14 +125,22 @@ func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
                 return w
             }
 
-            // Add new IDs to known set AFTER matching (so new windows aren't excluded on the same poll)
+            // Only exclude non-matching-app new windows; keep target-app windows
+            // eligible for re-evaluation (they may be too small now but resize later)
             if !newIDs.isEmpty {
-                existingWindowIDs = existingWindowIDs!.union(newIDs)
+                let nonTargetNewIDs = newIDs.filter { id in
+                    guard let window = content.windows.first(where: { $0.windowID == id }) else { return true }
+                    guard let ownerName = window.owningApplication?.applicationName else { return true }
+                    return !ownerName.localizedCaseInsensitiveContains(appName)
+                }
+                if !nonTargetNewIDs.isEmpty {
+                    existingWindowIDs = existingWindowIDs!.union(Set(nonTargetNewIDs))
+                }
             }
         } catch {
             FileHandle.standardError.write(Data("Window discovery error: \(error.localizedDescription)\n".utf8))
         }
-        try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
+        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms — fast discovery phase
     }
     appendDiag("FAILED: No NEW window matching app=\(appName) found after \(pollCount) polls\n")
     return nil
