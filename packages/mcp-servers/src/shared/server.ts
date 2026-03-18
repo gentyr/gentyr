@@ -61,6 +61,11 @@ function zodTypeToJsonSchema(schema: ZodSchema): Record<string, unknown> {
     return zodTypeToJsonSchema(schema.unwrap());
   }
 
+  // Handle nullable wrapper
+  if (schema instanceof z.ZodNullable) {
+    return zodTypeToJsonSchema(schema.unwrap());
+  }
+
   // Handle common types
   if (schema instanceof z.ZodString) {
     const result: Record<string, unknown> = { type: 'string' };
@@ -102,13 +107,74 @@ function zodTypeToJsonSchema(schema: ZodSchema): Record<string, unknown> {
     };
   }
 
+  // Handle record types (z.record())
+  if (schema instanceof z.ZodRecord) {
+    const valueSchema = zodTypeToJsonSchema(schema._def.valueType);
+    const result: Record<string, unknown> = { type: 'object' };
+    // Only add additionalProperties if value type has constraints (not z.unknown())
+    if (Object.keys(valueSchema).length > 0) {
+      result.additionalProperties = valueSchema;
+    }
+    if (schema.description) {
+      result.description = schema.description;
+    }
+    return result;
+  }
+
+  // Handle nested object types (z.object() inside arrays, records, unions, etc.)
+  if (schema instanceof z.ZodObject) {
+    const shape = schema.shape as Record<string, ZodSchema>;
+    const properties: Record<string, unknown> = {};
+    const required: string[] = [];
+
+    for (const [key, value] of Object.entries(shape)) {
+      properties[key] = zodTypeToJsonSchema(value);
+      if (!(value instanceof z.ZodOptional)) {
+        required.push(key);
+      }
+    }
+
+    const result: Record<string, unknown> = { type: 'object', properties };
+    if (required.length > 0) {
+      result.required = required;
+    }
+    if (schema.description) {
+      result.description = schema.description;
+    }
+    return result;
+  }
+
+  // Handle union types (z.union())
+  if (schema instanceof z.ZodUnion) {
+    return {
+      oneOf: (schema._def.options as ZodSchema[]).map(opt => zodTypeToJsonSchema(opt)),
+      ...(schema.description ? { description: schema.description } : {}),
+    };
+  }
+
+  // Handle literal types (z.literal())
+  if (schema instanceof z.ZodLiteral) {
+    const value = schema._def.value;
+    const result: Record<string, unknown> = { const: value };
+    if (typeof value === 'string') result.type = 'string';
+    else if (typeof value === 'number') result.type = 'number';
+    else if (typeof value === 'boolean') result.type = 'boolean';
+    if (schema.description) result.description = schema.description;
+    return result;
+  }
+
+  // Handle unknown type (z.unknown()) — no constraints
+  if (schema instanceof z.ZodUnknown) {
+    return {};
+  }
+
   if (schema instanceof z.ZodDefault) {
     const inner = zodTypeToJsonSchema(schema._def.innerType);
     return { ...inner, default: schema._def.defaultValue() };
   }
 
-  // Fallback
-  return { type: 'string', description: schema.description };
+  // Fallback — safe empty schema instead of misleading { type: 'string' }
+  return schema.description ? { description: schema.description } : {};
 }
 
 /**

@@ -1092,4 +1092,216 @@ describe('McpServer', () => {
       expect(response!.error!.code).toBe(JSON_RPC_ERRORS.PARSE_ERROR);
     });
   });
+
+  describe('zodTypeToJsonSchema — extended type handlers', () => {
+    // Helper to get the JSON schema for a single field's Zod type
+    const getFieldSchema = async (fieldSchema: z.ZodTypeAny) => {
+      const tool: AnyToolHandler = {
+        name: 'test_tool',
+        description: 'Test',
+        schema: z.object({ field: fieldSchema }),
+        handler: async () => ({}),
+      };
+      const server = createTestServer([tool]);
+      const response = await server.processRequest({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/list',
+      });
+      return (response!.result as any).tools[0].inputSchema.properties.field;
+    };
+
+    it('z.record(z.string()) → object with additionalProperties', async () => {
+      const schema = await getFieldSchema(z.record(z.string()));
+      expect(schema).toEqual({ type: 'object', additionalProperties: { type: 'string' } });
+    });
+
+    it('z.record(z.unknown()) → object without additionalProperties', async () => {
+      const schema = await getFieldSchema(z.record(z.unknown()));
+      expect(schema).toEqual({ type: 'object' });
+    });
+
+    it('z.record(z.string(), z.object({...})) → nested object in additionalProperties', async () => {
+      const schema = await getFieldSchema(z.record(z.string(), z.object({ name: z.string(), count: z.number().optional() })));
+      expect(schema.type).toBe('object');
+      expect(schema.additionalProperties).toEqual({
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          count: { type: 'number' },
+        },
+        required: ['name'],
+      });
+    });
+
+    it('z.record(...).nullable().optional() → unwraps correctly to object', async () => {
+      const schema = await getFieldSchema(z.record(z.string(), z.string()).nullable().optional());
+      expect(schema).toEqual({ type: 'object', additionalProperties: { type: 'string' } });
+    });
+
+    it('z.union([z.string(), z.array(z.string())]) → oneOf', async () => {
+      const schema = await getFieldSchema(z.union([z.string(), z.array(z.string())]));
+      expect(schema).toEqual({
+        oneOf: [
+          { type: 'string' },
+          { type: 'array', items: { type: 'string' } },
+        ],
+      });
+    });
+
+    it('z.literal("2.0") → string const', async () => {
+      const schema = await getFieldSchema(z.literal('2.0'));
+      expect(schema).toEqual({ type: 'string', const: '2.0' });
+    });
+
+    it('z.literal(42) → number const', async () => {
+      const schema = await getFieldSchema(z.literal(42));
+      expect(schema).toEqual({ type: 'number', const: 42 });
+    });
+
+    it('z.literal(true) → boolean const', async () => {
+      const schema = await getFieldSchema(z.literal(true));
+      expect(schema).toEqual({ type: 'boolean', const: true });
+    });
+
+    it('z.unknown() → empty schema', async () => {
+      const schema = await getFieldSchema(z.unknown());
+      expect(schema).toEqual({});
+    });
+
+    it('nested z.object() inside z.array() → full object schema in items', async () => {
+      const schema = await getFieldSchema(z.array(z.object({ id: z.string(), value: z.number() })));
+      expect(schema.type).toBe('array');
+      expect(schema.items).toEqual({
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          value: { type: 'number' },
+        },
+        required: ['id', 'value'],
+      });
+    });
+
+    it('z.preprocess(..., z.record(z.unknown()).optional()) → unwrap chain works', async () => {
+      const schema = await getFieldSchema(
+        z.preprocess(
+          (val) => (typeof val === 'string' ? JSON.parse(val) : val),
+          z.record(z.unknown()).optional()
+        )
+      );
+      expect(schema).toEqual({ type: 'object' });
+    });
+
+    it('fallback returns {} not { type: "string" }', async () => {
+      // z.any() is not handled by any specific branch
+      const schema = await getFieldSchema(z.any());
+      expect(schema).toEqual({});
+      expect(schema.type).toBeUndefined();
+    });
+
+    // --- description propagation on primitive types ---
+
+    it('z.string().describe() → includes description', async () => {
+      const schema = await getFieldSchema(z.string().describe('The user name'));
+      expect(schema).toEqual({ type: 'string', description: 'The user name' });
+    });
+
+    it('z.number().describe() → includes description', async () => {
+      const schema = await getFieldSchema(z.number().describe('Page count'));
+      expect(schema).toEqual({ type: 'number', description: 'Page count' });
+    });
+
+    it('z.boolean().describe() → includes description', async () => {
+      const schema = await getFieldSchema(z.boolean().describe('Is active flag'));
+      expect(schema).toEqual({ type: 'boolean', description: 'Is active flag' });
+    });
+
+    // --- description propagation on compound types ---
+
+    it('z.record(z.string()).describe() → includes description', async () => {
+      const schema = await getFieldSchema(z.record(z.string()).describe('Key-value map'));
+      expect(schema).toEqual({
+        type: 'object',
+        additionalProperties: { type: 'string' },
+        description: 'Key-value map',
+      });
+    });
+
+    it('nested z.object().describe() → includes description', async () => {
+      const schema = await getFieldSchema(
+        z.object({ id: z.string() }).describe('An entity')
+      );
+      expect(schema).toEqual({
+        type: 'object',
+        properties: { id: { type: 'string' } },
+        required: ['id'],
+        description: 'An entity',
+      });
+    });
+
+    it('z.union([...]).describe() → includes description', async () => {
+      const schema = await getFieldSchema(
+        z.union([z.string(), z.number()]).describe('String or number')
+      );
+      expect(schema).toEqual({
+        oneOf: [{ type: 'string' }, { type: 'number' }],
+        description: 'String or number',
+      });
+    });
+
+    it('z.literal("x").describe() → includes description', async () => {
+      const schema = await getFieldSchema(z.literal('x').describe('Fixed value'));
+      expect(schema).toEqual({ type: 'string', const: 'x', description: 'Fixed value' });
+    });
+
+    // --- ZodObject with all-optional fields (required array omitted) ---
+
+    it('z.object() with all optional fields → no required array', async () => {
+      const schema = await getFieldSchema(
+        z.object({ a: z.string().optional(), b: z.number().optional() })
+      );
+      expect(schema.type).toBe('object');
+      expect(schema.properties).toEqual({
+        a: { type: 'string' },
+        b: { type: 'number' },
+      });
+      expect(schema.required).toBeUndefined();
+    });
+
+    // --- ZodLiteral with null value (no type assigned) ---
+
+    it('z.literal(null) → const null without type', async () => {
+      const schema = await getFieldSchema(z.literal(null));
+      expect(schema.const).toBeNull();
+      expect(schema.type).toBeUndefined();
+    });
+
+    // --- Fallback with description ---
+
+    it('fallback with description returns { description } only', async () => {
+      // z.any().describe() triggers the fallback branch — z.any() is not an instance
+      // of any handled class, so it falls through to the final return with description.
+      const schema = await getFieldSchema((z.any() as z.ZodTypeAny).describe('Anything goes'));
+      expect(schema).toEqual({ description: 'Anything goes' });
+      expect(schema.type).toBeUndefined();
+    });
+
+    // --- Standalone ZodNullable (not combined with optional) ---
+
+    it('z.nullable(z.string()) → string type (unwraps nullable)', async () => {
+      const schema = await getFieldSchema(z.nullable(z.string()));
+      expect(schema).toEqual({ type: 'string' });
+    });
+
+    it('z.nullable(z.object({...})) → nested object schema (unwraps nullable)', async () => {
+      const schema = await getFieldSchema(
+        z.nullable(z.object({ id: z.string(), count: z.number().optional() }))
+      );
+      expect(schema).toEqual({
+        type: 'object',
+        properties: { id: { type: 'string' }, count: { type: 'number' } },
+        required: ['id'],
+      });
+    });
+  });
 });
