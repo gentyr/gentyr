@@ -47,7 +47,8 @@ function getUnpushedBranches() {
         const commitCount = logOutput.split('\n').length;
         unpushed.push({ branch, commitCount });
       }
-    } catch {
+    } catch (err) {
+      console.error('[stale-work-detector] Warning:', err.message);
       // Branch may not have a remote tracking branch - skip it
     }
   }
@@ -76,7 +77,8 @@ function checkPRStatus(branchName, staleDays) {
     const prUpdatedAt = new Date(prs[0].updatedAt);
     const prAgeDays = (Date.now() - prUpdatedAt.getTime()) / (1000 * 86400);
     return { hasPR: true, prStale: prAgeDays > staleDays };
-  } catch {
+  } catch (err) {
+    console.error('[stale-work-detector] Warning:', err.message);
     // gh CLI may not be available or authenticated
     return { hasPR: false, prStale: false };
   }
@@ -91,7 +93,8 @@ function getStaleBranches(staleDays) {
   let branchOutput;
   try {
     branchOutput = execSync("git branch -r --list 'origin/feature/*'", GIT_EXEC_OPTIONS).trim();
-  } catch {
+  } catch (err) {
+    console.error('[stale-work-detector] Warning:', err.message);
     return [];
   }
 
@@ -124,7 +127,8 @@ function getStaleBranches(staleDays) {
           });
         }
       }
-    } catch {
+    } catch (err) {
+      console.error('[stale-work-detector] Warning:', err.message);
       // Skip branches we can't inspect
     }
   }

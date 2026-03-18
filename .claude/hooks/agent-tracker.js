@@ -140,7 +140,8 @@ function readHistory() {
       parsed.hookExecutions = [];
     }
     return parsed;
-  } catch {
+  } catch (err) {
+    console.error('[agent-tracker] Warning:', err.message);
     return defaultHistory;
   }
 }
@@ -161,7 +162,7 @@ function writeHistory(history) {
     try {
       fs.renameSync(tmpFile, CONFIG.HISTORY_FILE);
     } catch (renameErr) {
-      try { fs.unlinkSync(tmpFile); } catch {}
+      try { fs.unlinkSync(tmpFile); } catch (_) { /* cleanup - failure expected */}
       throw renameErr;
     }
   } catch (err) {
@@ -191,10 +192,10 @@ function acquireLock() {
         try {
           const stat = fs.statSync(LOCK_FILE);
           if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-            try { fs.unlinkSync(LOCK_FILE); } catch {}
+            try { fs.unlinkSync(LOCK_FILE); } catch (_) { /* cleanup - failure expected */}
             continue; // Retry immediately after cleaning stale lock
           }
-        } catch {
+        } catch (_) { /* cleanup - failure expected */
           // Lock file disappeared between open and stat — retry
           continue;
         }
@@ -219,7 +220,7 @@ function acquireLock() {
 function releaseLock() {
   try {
     fs.unlinkSync(LOCK_FILE);
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     // Already released or never acquired
   }
 }

@@ -57,7 +57,8 @@ const NORMAL_STALE_WINDOW_MS = 12 * 60 * 60 * 1000;
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch {
+} catch (err) {
+  console.error('[session-reviver] Warning:', err.message);
   // Non-fatal
 }
 
@@ -117,7 +118,10 @@ function resolveTaskIdForAgent(agentId) {
     if (!Array.isArray(history.agents)) return null;
     const agent = history.agents.find(a => a.id === agentId);
     return agent?.metadata?.taskId || null;
-  } catch { return null; }
+  } catch (err) {
+    console.error('[session-reviver] Warning:', err.message);
+    return null;
+  }
 }
 
 /**
@@ -130,7 +134,8 @@ function countRunningAgents() {
       { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
     ).trim();
     return parseInt(result, 10) || 0;
-  } catch {
+  } catch (err) {
+    console.error('[session-reviver] Warning:', err.message);
     return 0;
   }
 }
@@ -167,7 +172,8 @@ function findSessionFileByAgentId(sessionDir, agentId) {
   let files;
   try {
     files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
-  } catch {
+  } catch (err) {
+    console.error('[session-reviver] Warning:', err.message);
     return null;
   }
 
@@ -180,7 +186,8 @@ function findSessionFileByAgentId(sessionDir, agentId) {
       const bytesRead = fs.readSync(fd, buf, 0, 2000, 0);
       const head = buf.toString('utf8', 0, bytesRead);
       if (head.includes(marker)) return filePath;
-    } catch {
+    } catch (err) {
+      console.error('[session-reviver] Warning:', err.message);
       // skip
     } finally {
       if (fd !== undefined) fs.closeSync(fd);
@@ -249,7 +256,8 @@ function reviveQuotaInterruptedSessions(log, maxRevivals, staleWindowMs = NORMAL
   try {
     data = JSON.parse(fs.readFileSync(QUOTA_INTERRUPTED_PATH, 'utf8'));
     if (!Array.isArray(data.sessions)) return revived;
-  } catch {
+  } catch (err) {
+    console.error('[session-reviver] Warning:', err.message);
     return revived;
   }
 
@@ -294,7 +302,9 @@ function reviveQuotaInterruptedSessions(log, maxRevivals, staleWindowMs = NORMAL
     })) {
       revived++;
       session.status = 'revived';
-      try { auditEvent('session_revival_triggered', { source: 'session-reviver', reason: 'quota_interrupted', original_agent_id: session.agentId }); } catch {}
+      try { auditEvent('session_revival_triggered', { source: 'session-reviver', reason: 'quota_interrupted', original_agent_id: session.agentId }); } catch (err) {
+        console.error('[session-reviver] Warning:', err.message);
+      }
     } else {
       remaining.push(session);
     }
@@ -303,7 +313,10 @@ function reviveQuotaInterruptedSessions(log, maxRevivals, staleWindowMs = NORMAL
   // Write back remaining sessions
   try {
     fs.writeFileSync(QUOTA_INTERRUPTED_PATH, JSON.stringify({ sessions: remaining }, null, 2), 'utf8');
-  } catch { /* non-fatal */ }
+  } catch (err) {
+    console.error('[session-reviver] Warning:', err.message);
+    /* non-fatal */
+  }
 
   return revived;
 }
@@ -338,7 +351,8 @@ function reviveDeadSessions(log, maxRevivals) {
       if (locked) releaseLock();
       return revived;
     }
-  } catch {
+  } catch (err) {
+    console.error('[session-reviver] Warning:', err.message);
     if (locked) releaseLock();
     return revived;
   }
@@ -352,7 +366,8 @@ function reviveDeadSessions(log, maxRevivals) {
   let db;
   try {
     db = new Database(todoDbPath, { readonly: true });
-  } catch {
+  } catch (err) {
+    console.error('[session-reviver] Warning:', err.message);
     if (locked) releaseLock();
     return revived;
   }
@@ -406,7 +421,7 @@ function reviveDeadSessions(log, maxRevivals) {
             resetDb.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ?").run(taskId);
           }
           resetDb.close();
-        } catch { /* non-fatal */ }
+        } catch (_) { /* cleanup - failure expected */ /* non-fatal */ }
       }
 
       // Check if TODO is pending or in_progress (reaper may have reset it, or it may still be in_progress
@@ -450,7 +465,9 @@ function reviveDeadSessions(log, maxRevivals) {
         revivalReason: 'process_already_dead',
       })) {
         revived++;
-        try { auditEvent('session_revival_triggered', { source: 'session-reviver', reason: 'process_already_dead', original_agent_id: agent.id }); } catch {}
+        try { auditEvent('session_revival_triggered', { source: 'session-reviver', reason: 'process_already_dead', original_agent_id: agent.id }); } catch (err) {
+          console.error('[session-reviver] Warning:', err.message);
+        }
         // Mark task back to in_progress
         try {
           const writeDb = new Database(todoDbPath);
@@ -458,14 +475,14 @@ function reviveDeadSessions(log, maxRevivals) {
           writeDb.prepare("UPDATE tasks SET status = 'in_progress', started_at = ?, started_timestamp = ? WHERE id = ?")
             .run(now.toISOString(), Math.floor(now.getTime() / 1000), taskId);
           writeDb.close();
-        } catch { /* non-fatal */ }
+        } catch (_) { /* cleanup - failure expected */ /* non-fatal */ }
       }
     }
   } finally {
     if (historyDirty) {
       try {
         fs.writeFileSync(HISTORY_PATH, JSON.stringify(history, null, 2), 'utf8');
-      } catch { /* non-fatal */ }
+      } catch (_) { /* cleanup - failure expected */ /* non-fatal */ }
     }
     if (locked) releaseLock();
     db.close();
@@ -487,7 +504,7 @@ async function resumePausedSessions(log, maxRevivals) {
   try {
     data = JSON.parse(fs.readFileSync(PAUSED_SESSIONS_PATH, 'utf8'));
     if (!Array.isArray(data.sessions)) return revived;
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return revived;
   }
 
@@ -584,7 +601,9 @@ async function resumePausedSessions(log, maxRevivals) {
       revivalReason: 'account_recovered',
     })) {
       revived++;
-      try { auditEvent('session_revival_triggered', { source: 'session-reviver', reason: 'account_recovered', original_agent_id: session.agentId }); } catch {}
+      try { auditEvent('session_revival_triggered', { source: 'session-reviver', reason: 'account_recovered', original_agent_id: session.agentId }); } catch (err) {
+        console.error('[session-reviver] Warning:', err.message);
+      }
     } else {
       remaining.push(session);
     }
@@ -596,7 +615,10 @@ async function resumePausedSessions(log, maxRevivals) {
 
   try {
     fs.writeFileSync(PAUSED_SESSIONS_PATH, JSON.stringify({ sessions: filtered }, null, 2), 'utf8');
-  } catch { /* non-fatal */ }
+  } catch (err) {
+    console.error('[session-reviver] Warning:', err.message);
+    /* non-fatal */
+  }
 
   return revived;
 }

@@ -34,7 +34,8 @@ export function isProxyDisabled() {
   try {
     const data = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
     _cached = data.disabled === true;
-  } catch {
+  } catch (err) {
+    console.error('[proxy-state] Warning:', err.message);
     _cached = false; // missing or corrupt file = enabled (default)
   }
   _cachedAt = now;
@@ -66,7 +67,8 @@ export function writeProxyState(disabled) {
 export function readProxyState() {
   try {
     return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
-  } catch {
+  } catch (err) {
+    console.error('[proxy-state] Warning:', err.message);
     return { disabled: false };
   }
 }

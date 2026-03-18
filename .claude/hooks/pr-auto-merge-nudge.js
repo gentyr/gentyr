@@ -19,7 +19,8 @@ async function main() {
   let event;
   try {
     event = JSON.parse(input);
-  } catch {
+  } catch (err) {
+    console.error('[pr-auto-merge-nudge] Warning:', err.message);
     process.stdout.write(NOOP);
     return;
   }

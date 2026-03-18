@@ -53,7 +53,10 @@ function getFreeMem() {
       try {
         const ps = execSync('pagesize', { encoding: 'utf8', timeout: 2000, stdio: 'pipe' }).trim();
         actualPageSize = parseInt(ps, 10) || pageSize;
-      } catch { /* use default */ }
+      } catch (err) {
+        console.error('[memory-pressure] Warning:', err.message);
+        /* use default */
+      }
 
       let freePages = 0;
       const freeMatch = vmstat.match(/Pages free:\s+(\d+)/);
@@ -82,7 +85,8 @@ function getFreeMem() {
       if (cachedMatch) freeMB += parseInt(cachedMatch[1], 10);
       return Math.round(freeMB / 1024);
     }
-  } catch {
+  } catch (err) {
+    console.error('[memory-pressure] Warning:', err.message);
     // Fallback to Node.js os.freemem() (less accurate on macOS)
     return Math.round(os.freemem() / (1024 * 1024));
   }
@@ -103,7 +107,8 @@ function getNodeProcessStats() {
       totalRssMB: Math.round(parseFloat(parts[0]) || 0),
       processCount: parseInt(parts[1], 10) || 0,
     };
-  } catch {
+  } catch (err) {
+    console.error('[memory-pressure] Warning:', err.message);
     return { totalRssMB: 0, processCount: 0 };
   }
 }

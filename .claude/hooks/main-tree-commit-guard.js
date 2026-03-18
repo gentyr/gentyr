@@ -164,7 +164,8 @@ function isWorktree() {
     const gitPath = path.join(PROJECT_DIR, '.git');
     const stat = fs.lstatSync(gitPath);
     return stat.isFile(); // .git file = worktree
-  } catch {
+  } catch (err) {
+    console.error('[main-tree-commit-guard] Warning:', err.message);
     return false; // No .git at all = not a repo
   }
 }
@@ -178,7 +179,8 @@ function isMainTree() {
     const gitPath = path.join(PROJECT_DIR, '.git');
     const stat = fs.lstatSync(gitPath);
     return stat.isDirectory(); // .git directory = main tree
-  } catch {
+  } catch (err) {
+    console.error('[main-tree-commit-guard] Warning:', err.message);
     return false;
   }
 }
@@ -341,7 +343,8 @@ async function main() {
   let event;
   try {
     event = JSON.parse(input);
-  } catch {
+  } catch (err) {
+    console.error('[main-tree-commit-guard] Warning:', err.message);
     // Invalid JSON — allow (fail-open)
     process.stdout.write(JSON.stringify({ allow: true }));
     return;

@@ -60,7 +60,7 @@ try {
         }
       }
     }
-  } catch {
+  } catch (_) {
     // No protected-actions.json — nothing to check
     output(null);
     process.exit(0);
@@ -100,7 +100,7 @@ try {
     }
     // Backup known-good state so restore can recover after lint-staged stash cycles
     backupVaultMappings(projectDir);
-  } catch {
+  } catch (_) {
     // No vault-mappings.json — all keys are missing
     missingKeys.push(...requiredKeys);
   }
@@ -131,7 +131,7 @@ try {
         }
       }
       missingKeys = missingKeys.filter(k => !mcpEnvKeys.has(k));
-    } catch {
+    } catch (_) {
       // .mcp.json not readable — skip this check
     }
   }
@@ -161,7 +161,7 @@ try {
       });
       // Connected — emit desync warning if present, otherwise silent
       output(desyncPrefix || null);
-    } catch {
+    } catch (_) {
       output(`${desyncPrefix}GENTYR: 1Password is not authenticated. MCP servers will start without credentials.`);
     }
   } else {

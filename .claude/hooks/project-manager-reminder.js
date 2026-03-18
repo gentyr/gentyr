@@ -30,7 +30,8 @@ async function main() {
   try {
     const stat = fs.lstatSync(gitPath);
     inWorktree = stat.isFile(); // Worktrees have .git as a file pointing to main repo
-  } catch {
+  } catch (err) {
+    console.error('[project-manager-reminder] Warning:', err.message);
     // No .git at all — not in a worktree
   }
 
@@ -49,7 +50,8 @@ async function main() {
       stdio: 'pipe',
     }).trim();
     hasUncommitted = status.length > 0;
-  } catch {
+  } catch (err) {
+    console.error('[project-manager-reminder] Warning:', err.message);
     // If git status fails, assume no changes
   }
 

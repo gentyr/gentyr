@@ -21,7 +21,8 @@ const __dirname = path.dirname(__filename);
 let Database;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch {
+} catch (err) {
+  console.error('[bypass-deny.test] Warning:', err.message);
   console.error('better-sqlite3 not available, skipping tests');
   process.exit(0);
 }

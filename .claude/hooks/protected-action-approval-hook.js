@@ -65,7 +65,7 @@ function acquireLock() {
           fs.unlinkSync(LOCK_PATH);
           continue; // Retry immediately after removing stale lock
         }
-      } catch { /* lock file gone, retry */ }
+      } catch (_) { /* cleanup - failure expected */ /* lock file gone, retry */ }
 
       // Exponential backoff
       const delay = baseDelay * Math.pow(2, i);
@@ -81,7 +81,7 @@ function acquireLock() {
 function releaseLock() {
   try {
     fs.unlinkSync(LOCK_PATH);
-  } catch { /* already released */ }
+  } catch (_) { /* cleanup - failure expected */ /* already released */ }
 }
 
 // ============================================================================
@@ -226,7 +226,7 @@ function saveApprovals(approvals) {
     fs.writeFileSync(tmpPath, JSON.stringify(approvals, null, 2));
     fs.renameSync(tmpPath, APPROVALS_PATH);
   } catch (err) {
-    try { fs.unlinkSync(tmpPath); } catch {}
+    try { fs.unlinkSync(tmpPath); } catch (_) { /* cleanup - failure expected */}
     throw err;
   }
 }

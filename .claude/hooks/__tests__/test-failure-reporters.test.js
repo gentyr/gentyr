@@ -134,14 +134,14 @@ for (const reporter of REPORTERS) {
       // Should wrap import in try-catch
       assert.match(
         functionBody,
-        /try \{[\s\S]*?await import[\s\S]*?\} catch \{/s,
+        /try \{[\s\S]*?await import[\s\S]*?\} catch [^{]*\{/s,
         'Must wrap import in try-catch'
       );
 
       // Should return default on error
       assert.match(
         functionBody,
-        new RegExp(`catch \\{[\\s\\S]*?return ${reporter.defaultCooldown}`),
+        new RegExp(`catch [^{]*\\{[\\s\\S]*?return ${reporter.defaultCooldown}`),
         `Must return ${reporter.defaultCooldown} on error`
       );
     });
@@ -294,7 +294,7 @@ for (const reporter of REPORTERS) {
       // Should catch import errors
       assert.match(
         functionBody,
-        /\} catch \{/,
+        /\} catch [^{]*\{/,
         'Must catch import errors'
       );
 
@@ -455,7 +455,7 @@ describe('Test Failure Reporters - Consistency Check', () => {
         `${REPORTERS[i].name} must call getCooldown`
       );
       assert.ok(
-        implementations[i].includes('catch {'),
+        implementations[i].includes('catch ('),
         `${REPORTERS[i].name} must have error handling`
       );
     }

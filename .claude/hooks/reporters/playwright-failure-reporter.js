@@ -84,7 +84,8 @@ async function getConfiguredCooldown() {
     const configReaderPath = path.join(getFrameworkDir(), '.claude', 'hooks', 'config-reader.js');
     const { getCooldown } = await import(configReaderPath);
     return getCooldown('test_failure_reporter', 120);
-  } catch {
+  } catch (err) {
+    console.error('[playwright-failure-reporter] Warning:', err.message);
     return 120;
   }
 }
@@ -127,7 +128,8 @@ function readState() {
       suites: state.suites || {},
       failureHashes: state.failureHashes || {}
     };
-  } catch {
+  } catch (err) {
+    console.error('[playwright-failure-reporter] Warning:', err.message);
     return { suites: {}, failureHashes: {} };
   }
 }

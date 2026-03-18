@@ -94,7 +94,8 @@ function computeHmac(key, ...fields) {
 function hasValidBypassToken(projectDir) {
   try {
     const tokenPath = path.join(projectDir, '.claude', 'bypass-approval-token.json');
-    const clearToken = () => { try { fs.writeFileSync(tokenPath, '{}'); } catch { /* ignore */ } };
+    const clearToken = () => { try { fs.writeFileSync(tokenPath, '{}'); } catch (err) { /* ignore */ } };
+      console.error('[block-no-verify] Warning:', err.message);
 
     if (!fs.existsSync(tokenPath)) {
       return false;
@@ -150,7 +151,8 @@ function hasValidBypassToken(projectDir) {
     clearToken();
 
     return true;
-  } catch {
+  } catch (err) {
+    console.error('[block-no-verify] Warning:', err.message);
     return false;
   }
 }

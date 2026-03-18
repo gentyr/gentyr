@@ -109,7 +109,8 @@ async function runHook(hookInput, opts = {}) {
 function parseOutput(stdout) {
   try {
     return JSON.parse(stdout);
-  } catch {
+  } catch (err) {
+    console.error('[branch-checkout-guard.test] Warning:', err.message);
     return null;
   }
 }

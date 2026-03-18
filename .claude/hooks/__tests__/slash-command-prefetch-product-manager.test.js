@@ -316,7 +316,7 @@ describe('Slash Command Prefetch - /product-manager Command', () => {
       const functionBody = handleProductManagerMatch[0];
 
       // The catch block for demoScenarios must be empty (non-fatal)
-      assert.match(functionBody, /catch \{ \/\* non-fatal \*\/ \}|catch \{[^}]*\}/);
+      assert.match(functionBody, /catch [^{]*\{ \/\* non-fatal \*\/ \}|catch [^{]*\{[^}]*\}/);
     });
   });
 

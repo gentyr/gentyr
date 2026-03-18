@@ -20,7 +20,8 @@ const PLANS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch {
+} catch (err) {
+  console.error('[plan-merge-tracker] Warning:', err.message);
   // Non-fatal
 }
 
@@ -40,7 +41,8 @@ async function main() {
   let event;
   try {
     event = JSON.parse(input);
-  } catch {
+  } catch (err) {
+    console.error('[plan-merge-tracker] Warning:', err.message);
     process.stdout.write(NOOP);
     return;
   }

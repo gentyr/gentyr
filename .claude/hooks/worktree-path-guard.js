@@ -64,7 +64,8 @@ function detectWorktree(dir) {
       worktreeRoot: dir,
       mainRepoRoot,
     };
-  } catch {
+  } catch (err) {
+    console.error('[worktree-path-guard] Warning:', err.message);
     return { isWorktree: false, worktreeRoot: null, mainRepoRoot: null };
   }
 }
@@ -82,7 +83,8 @@ async function main() {
   let event;
   try {
     event = JSON.parse(input);
-  } catch {
+  } catch (err) {
+    console.error('[worktree-path-guard] Warning:', err.message);
     // Invalid JSON — allow (fail-open)
     process.stdout.write(JSON.stringify({ allow: true }));
     return;

@@ -25,7 +25,8 @@ import { enqueueSession } from './lib/session-queue.js';
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch {
+} catch (err) {
+  console.error('[demo-failure-spawner] Warning:', err.message);
   // Non-fatal
 }
 
@@ -39,7 +40,8 @@ function log(message) {
   process.stderr.write(line);
   try {
     fs.appendFileSync(LOG_FILE, line);
-  } catch {
+  } catch (err) {
+    console.error('[demo-failure-spawner] Warning:', err.message);
     // Non-fatal
   }
 }
@@ -74,7 +76,7 @@ function isRepairInFlight(scenarioId) {
       ).get(`%${scenarioId}%`, `%${scenarioId}%`);
       db.close();
       if (row) return true;
-    } catch {
+    } catch (_) { /* cleanup - failure expected */
       // Non-fatal: proceed without dedup
     }
   }
@@ -170,7 +172,10 @@ function spawnRepairAgent(scenario) {
         detached: true,
       });
       fetchProc.unref();
-    } catch { /* non-fatal */ }
+    } catch (err) {
+      console.error('[demo-failure-spawner] Warning:', err.message);
+      /* non-fatal */
+    }
 
     return true;
   } catch (err) {
@@ -197,13 +202,19 @@ process.stdin.on('end', () => {
     // Parse tool response
     let response = hookInput.tool_response;
     if (typeof response === 'string') {
-      try { response = JSON.parse(response); } catch { /* leave as string */ }
+      try { response = JSON.parse(response); } catch (err) {
+        console.error('[demo-failure-spawner] Warning:', err.message);
+        /* leave as string */
+      }
     }
     // Handle MCP content array format
     if (response && response.content && Array.isArray(response.content)) {
       for (const block of response.content) {
         if (block.type === 'text' && block.text) {
-          try { response = JSON.parse(block.text); break; } catch { /* continue */ }
+          try { response = JSON.parse(block.text); break; } catch (err) {
+            console.error('[demo-failure-spawner] Warning:', err.message);
+            /* continue */
+          }
         }
       }
     }

@@ -45,7 +45,8 @@ const WARNING_COOLDOWN_MS = 3 * 60 * 1000; // 3 minutes
 function readState() {
   try {
     return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-  } catch {
+  } catch (err) {
+    console.error('[uncommitted-change-monitor] Warning:', err.message);
     return {
       changesSinceLastCommit: 0,
       lastCommitHash: '',
@@ -58,7 +59,8 @@ function writeState(state) {
   try {
     fs.mkdirSync(STATE_DIR, { recursive: true });
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2) + '\n');
-  } catch {
+  } catch (err) {
+    console.error('[uncommitted-change-monitor] Warning:', err.message);
     // Non-fatal — state loss just means we may warn again sooner
   }
 }
@@ -75,7 +77,8 @@ function getCurrentCommitHash() {
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
-  } catch {
+  } catch (err) {
+    console.error('[uncommitted-change-monitor] Warning:', err.message);
     return '';
   }
 }
@@ -87,7 +90,8 @@ function isWorktree() {
   try {
     const gitPath = path.join(PROJECT_DIR, '.git');
     return fs.lstatSync(gitPath).isFile();
-  } catch {
+  } catch (err) {
+    console.error('[uncommitted-change-monitor] Warning:', err.message);
     return false;
   }
 }
@@ -112,7 +116,8 @@ async function main() {
   let event;
   try {
     event = JSON.parse(input);
-  } catch {
+  } catch (err) {
+    console.error('[uncommitted-change-monitor] Warning:', err.message);
     process.stdout.write(JSON.stringify({ continue: true }));
     return;
   }

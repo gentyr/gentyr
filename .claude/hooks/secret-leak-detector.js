@@ -153,7 +153,8 @@ try {
   let userMessage = '';
   try {
     userMessage = readFileSync('/dev/stdin', 'utf-8');
-  } catch {
+  } catch (err) {
+    console.error('[secret-leak-detector] Warning:', err.message);
     // No stdin available
     output(null);
     process.exit(0);
@@ -210,7 +211,8 @@ try {
   warning += '\nThe message was NOT blocked — Claude will process it normally.';
 
   output(warning);
-} catch {
+} catch (err) {
+  console.error('[secret-leak-detector] Warning:', err.message);
   // Never block on errors — fail open
   output(null);
 }

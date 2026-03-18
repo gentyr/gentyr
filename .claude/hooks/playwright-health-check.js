@@ -41,14 +41,20 @@ function run() {
       const content = fs.readFileSync(cfgPath, 'utf8');
       const m = content.match(/storageState:\s*['"]([^'"]+)['"]/);
       if (m) primaryAuthBasename = path.basename(m[1]);
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.error('[playwright-health-check] Warning:', err.message);
+      /* ignore */
+    }
   }
   // Fallback: scan .auth/ for any .json file
   if (!primaryAuthBasename && fs.existsSync(authDir)) {
     try {
       const files = fs.readdirSync(authDir).filter(f => f.endsWith('.json'));
       if (files.length) primaryAuthBasename = files[0];
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.error('[playwright-health-check] Warning:', err.message);
+      /* ignore */
+    }
   }
   const primaryAuth = primaryAuthBasename ? path.join(authDir, primaryAuthBasename) : null;
 
@@ -62,14 +68,20 @@ function run() {
         const state = JSON.parse(fs.readFileSync(primaryAuth, 'utf-8'));
         const now = Date.now() / 1000;
         cookiesExpired = (state.cookies || []).some(c => c.expires && c.expires > 0 && c.expires < now);
-      } catch { /* ignore */ }
+      } catch (err) {
+        console.error('[playwright-health-check] Warning:', err.message);
+        /* ignore */
+      }
       authState = {
         exists: true,
         ageHours: Math.round(ageHours * 10) / 10,
         cookiesExpired,
         isStale: cookiesExpired || ageHours > 24,
       };
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.error('[playwright-health-check] Warning:', err.message);
+      /* ignore */
+    }
   }
 
   // Extension dist path is project-specific; read from env to maintain F005 portability
@@ -87,7 +99,10 @@ function run() {
 
   try {
     fs.writeFileSync(HEALTH_FILE, JSON.stringify(health, null, 2));
-  } catch { /* ignore — .claude/ may not exist yet */ }
+  } catch (err) {
+    console.error('[playwright-health-check] Warning:', err.message);
+    /* ignore — .claude/ may not exist yet */
+  }
 
   if (authState.isStale) {
     const reason = !authState.exists ? 'missing' : authState.cookiesExpired ? 'cookies expired' : `${authState.ageHours}h old`;

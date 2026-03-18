@@ -72,7 +72,8 @@ class PlaywrightProgressReporter {
       if (this._bytesWritten >= MAX_FILE_SIZE) {
         this._limitReached = true;
       }
-    } catch {
+    } catch (err) {
+      console.error('[playwright-progress-reporter] Warning:', err.message);
       // Non-fatal — progress tracking is best-effort
     }
   }
@@ -92,7 +93,8 @@ class PlaywrightProgressReporter {
         fs.mkdirSync(dir, { recursive: true });
       }
       fs.writeFileSync(this._progressFile, '');
-    } catch {
+    } catch (err) {
+      console.error('[playwright-progress-reporter] Warning:', err.message);
       this._progressFile = null;
       return;
     }

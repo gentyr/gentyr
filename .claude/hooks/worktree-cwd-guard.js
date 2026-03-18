@@ -48,7 +48,8 @@ async function main() {
   let event;
   try {
     event = JSON.parse(input);
-  } catch {
+  } catch (err) {
+    console.error('[worktree-cwd-guard] Warning:', err.message);
     // Invalid JSON — allow (fail-open)
     process.stdout.write(JSON.stringify({ allow: true }));
     return;

@@ -23,7 +23,8 @@ async function getDatabase() {
   try {
     Database = (await import('better-sqlite3')).default;
     return Database;
-  } catch {
+  } catch (err) {
+    console.error('[slash-command-prefetch] Warning:', err.message);
     Database = undefined; // Mark as unavailable
     return null;
   }
@@ -80,7 +81,8 @@ function extractPrompt(raw) {
   try {
     const parsed = JSON.parse(raw);
     if (typeof parsed.prompt === 'string') return parsed.prompt;
-  } catch {
+  } catch (err) {
+    console.error('[slash-command-prefetch] Warning:', err.message);
     // Not JSON — use raw string as-is
   }
   return raw;
@@ -106,7 +108,8 @@ function openDb(dbPath) {
   if (!fs.existsSync(dbPath)) return null;
   try {
     return new Database(dbPath, { readonly: true });
-  } catch {
+  } catch (err) {
+    console.error('[slash-command-prefetch] Warning:', err.message);
     return null;
   }
 }
@@ -123,7 +126,8 @@ function queryDb(dbPath, queries) {
         } else {
           results[key] = db.prepare(sql).all(...(params || []));
         }
-      } catch {
+      } catch (err) {
+        console.error('[slash-command-prefetch] Warning:', err.message);
         results[key] = null;
       }
     }
@@ -136,7 +140,7 @@ function queryDb(dbPath, queries) {
 function readJson(filePath) {
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return null;
   }
 }
@@ -177,7 +181,8 @@ function discoverSessionIdViaLsof(sessionDir, claudePid) {
         if (fs.existsSync(candidate)) return match[1];
       }
     }
-  } catch {
+  } catch (err) {
+    console.error('[slash-command-prefetch] Warning:', err.message);
     // lsof unavailable or failed
   }
   return null;
@@ -189,7 +194,8 @@ function discoverSessionIdViaContent(sessionDir) {
   let fileNames;
   try {
     fileNames = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
-  } catch {
+  } catch (err) {
+    console.error('[slash-command-prefetch] Warning:', err.message);
     return null;
   }
   for (const f of fileNames) {
@@ -207,7 +213,8 @@ function discoverSessionIdViaContent(sessionDir) {
       if (buffer.toString('utf8').includes('session_restart')) {
         candidates.push({ id, mtime: stat.mtimeMs });
       }
-    } catch {
+    } catch (err) {
+      console.error('[slash-command-prefetch] Warning:', err.message);
       // Skip unreadable files
     }
   }
@@ -301,7 +308,8 @@ function getTriageStats(dbPath) {
       stats[row.triage_status] = row.count;
     }
     return stats;
-  } catch {
+  } catch (err) {
+    console.error('[slash-command-prefetch] Warning:', err.message);
     return null;
   } finally {
     db.close();
@@ -321,7 +329,7 @@ function handleCtoReport() {
         pendingQuestions: pendingCount?.count ?? 0,
         pendingRejections: rejectionCount?.count ?? 0,
       };
-    } catch {
+    } catch (_) { /* cleanup - failure expected */
       output.gathered.deputyCto = { error: 'query failed' };
     } finally {
       deputyDb.close();
@@ -338,7 +346,7 @@ function handleCtoReport() {
         "SELECT section, status, COUNT(*) as count FROM tasks GROUP BY section, status"
       ).all();
       output.gathered.todos = rows;
-    } catch {
+    } catch (_) { /* cleanup - failure expected */
       output.gathered.todos = { error: 'query failed' };
     } finally {
       todoDb.close();
@@ -396,7 +404,8 @@ function handleDeputyCto() {
     // Strip YAML frontmatter (between --- markers)
     const stripped = raw.replace(/^---[\s\S]*?---\n*/, '');
     output.gathered.agentInstructions = stripped.trim();
-  } catch {
+  } catch (err) {
+    console.error('[slash-command-prefetch] Warning:', err.message);
     // Agent file not found — non-fatal
     output.gathered.agentInstructions = null;
   }
@@ -432,7 +441,8 @@ function handleDeputyCto() {
       output.gathered.pendingQuestions = questions;
       output.gathered.pendingRejections = rejectionCount?.count ?? 0;
       output.gathered.commitsBlocked = questions.length > 0;
-    } catch {
+    } catch (err) {
+      console.error('[slash-command-prefetch] Warning:', err.message);
       output.gathered.pendingQuestions = [];
       output.gathered.error = 'deputy-cto query failed';
     } finally {
@@ -551,7 +561,8 @@ function getAccountInventory() {
       expiredKeys,
       invalidKeys,
     };
-  } catch {
+  } catch (err) {
+    console.error('[slash-command-prefetch] Warning:', err.message);
     return null;
   }
 }
@@ -568,7 +579,8 @@ function handleSetupGentyr() {
       // hooks -> <framework>/.claude/hooks, so framework is 2 levels up
       frameworkDir = path.resolve(resolved, '..', '..');
     }
-  } catch {
+  } catch (err) {
+    console.error('[slash-command-prefetch] Warning:', err.message);
     // hooks dir is not a symlink or doesn't exist
   }
 
@@ -580,7 +592,8 @@ function handleSetupGentyr() {
     if (fs.existsSync(frameworkLink)) {
       try {
         frameworkDir = fs.realpathSync(frameworkLink);
-      } catch {
+      } catch (err) {
+        console.error('[slash-command-prefetch] Warning:', err.message);
         frameworkDir = frameworkLink;
       }
     }
@@ -595,7 +608,8 @@ function handleSetupGentyr() {
           encoding: 'utf8',
           timeout: 15000,
         });
-      } catch {
+      } catch (err) {
+        console.error('[slash-command-prefetch] Warning:', err.message);
         setupCheckOutput = null;
       }
     }
@@ -605,7 +619,8 @@ function handleSetupGentyr() {
   if (setupCheckOutput) {
     try {
       parsedSetupCheck = JSON.parse(setupCheckOutput);
-    } catch {
+    } catch (err) {
+      console.error('[slash-command-prefetch] Warning:', err.message);
       // Raw output if not JSON
       parsedSetupCheck = { raw: setupCheckOutput };
     }
@@ -650,7 +665,8 @@ function handlePushMigrations() {
           .filter(f => f.endsWith('.sql'))
           .sort();
         output.gathered.migrationFiles = files;
-      } catch {
+      } catch (err) {
+        console.error('[slash-command-prefetch] Warning:', err.message);
         output.gathered.migrationFiles = { error: 'failed to read migrations directory' };
       }
     } else {
@@ -707,7 +723,8 @@ function detectProjectFeatures() {
     try {
       return fs.readdirSync(dirPath, { withFileTypes: true })
         .filter(d => d.isDirectory() && !d.name.startsWith('_') && !d.name.startsWith('.') && !EXCLUDE.has(d.name));
-    } catch {
+    } catch (err) {
+      console.error('[slash-command-prefetch] Warning:', err.message);
       return [];
     }
   }
@@ -809,7 +826,8 @@ function handleConfigurePersonas() {
       output.gathered.personas = personas;
       output.gathered.features = features;
       output.gathered.mappings = mappings;
-    } catch {
+    } catch (err) {
+      console.error('[slash-command-prefetch] Warning:', err.message);
       output.gathered.error = 'query failed';
     } finally {
       feedbackDb.close();
@@ -845,7 +863,8 @@ function handleSpawnTasks() {
       output.gathered.pendingBySection = rows;
       const total = rows.reduce((sum, r) => sum + r.count, 0);
       output.gathered.totalPending = total;
-    } catch {
+    } catch (err) {
+      console.error('[slash-command-prefetch] Warning:', err.message);
       output.gathered.pendingBySection = [];
       output.gathered.totalPending = 0;
       output.gathered.error = 'query failed';
@@ -866,7 +885,7 @@ function handleSpawnTasks() {
       { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
     ).trim();
     runningAgents = parseInt(result, 10) || 0;
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     // pgrep returns exit code 1 when no processes match
   }
   output.gathered.runningAgents = runningAgents;
@@ -923,7 +942,8 @@ function handleProductManager() {
         totalPainPoints: totalPainPoints?.c ?? 0,
         mapped: mappedCount?.c ?? 0,
       };
-    } catch {
+    } catch (err) {
+      console.error('[slash-command-prefetch] Warning:', err.message);
       output.gathered.error = 'query failed';
     } finally {
       pmDb.close();
@@ -955,7 +975,7 @@ function handleProductManager() {
         })),
         uncoveredPersonas: guiPersonas.filter(p => !scenarioMap[p.id]).map(p => p.name),
       };
-    } catch { /* non-fatal */ }
+    } catch (_) { /* cleanup - failure expected */ /* non-fatal */ }
     finally { feedbackDb.close(); }
   }
 
@@ -1002,7 +1022,8 @@ function handleTriage() {
       { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
     ).trim();
     runningAgents = parseInt(result, 10) || 0;
-  } catch {
+  } catch (err) {
+    console.error('[slash-command-prefetch] Warning:', err.message);
     // pgrep returns exit code 1 when no processes match
   }
   output.gathered.runningAgents = runningAgents;
@@ -1034,7 +1055,8 @@ function handleShow() {
       const dashboardPath = path.join(frameworkDir, 'packages', 'cto-dashboard', 'dist', 'index.js');
       dashboardExists = fs.existsSync(dashboardPath);
     }
-  } catch {
+  } catch (err) {
+    console.error('[slash-command-prefetch] Warning:', err.message);
     // ignore
   }
 
@@ -1081,7 +1103,8 @@ function handlePersonaFeedback() {
           "SELECT id, trigger_type, status, started_at FROM feedback_runs ORDER BY started_at DESC LIMIT 5"
         ).all();
         output.gathered.recentRuns = runs;
-      } catch {
+      } catch (err) {
+        console.error('[slash-command-prefetch] Warning:', err.message);
         output.gathered.recentRuns = [];
       }
 
@@ -1099,7 +1122,8 @@ function handlePersonaFeedback() {
           ORDER BY p.name
         `).all();
         output.gathered.perPersonaStats = perPersona;
-      } catch {
+      } catch (err) {
+        console.error('[slash-command-prefetch] Warning:', err.message);
         output.gathered.perPersonaStats = [];
       }
 
@@ -1107,17 +1131,20 @@ function handlePersonaFeedback() {
       try {
         const totalSessions = feedbackDb.prepare("SELECT COUNT(*) as count FROM feedback_sessions").get();
         output.gathered.totalSessions = totalSessions?.count ?? 0;
-      } catch {
+      } catch (err) {
+        console.error('[slash-command-prefetch] Warning:', err.message);
         output.gathered.totalSessions = 0;
       }
 
       try {
         const totalFindings = feedbackDb.prepare("SELECT COALESCE(SUM(findings_count), 0) as count FROM feedback_sessions").get();
         output.gathered.totalFindings = totalFindings?.count ?? 0;
-      } catch {
+      } catch (err) {
+        console.error('[slash-command-prefetch] Warning:', err.message);
         output.gathered.totalFindings = 0;
       }
-    } catch {
+    } catch (err) {
+      console.error('[slash-command-prefetch] Warning:', err.message);
       output.gathered.error = 'query failed';
     } finally {
       feedbackDb.close();
@@ -1169,7 +1196,8 @@ function handleDemo() {
         browsersFound = true;
         break;
       }
-    } catch {
+    } catch (err) {
+      console.error('[slash-command-prefetch] Warning:', err.message);
       // ignore
     }
   }
@@ -1206,7 +1234,10 @@ function handleDemo() {
           activeDirs[nameM[1]] = tdM ? tdM[1].replace(/^\.\//, '') : defaultTestDir;
         }
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.error('[slash-command-prefetch] Warning:', err.message);
+      /* ignore */
+    }
   }
   const testCounts = {};
   for (const [project, testDir] of Object.entries(activeDirs)) {
@@ -1221,7 +1252,8 @@ function handleDemo() {
         const filename = String(f);
         return filename.endsWith('.spec.ts') || filename.endsWith('.manual.ts') || filename.endsWith('.demo.ts');
       }).length;
-    } catch {
+    } catch (err) {
+      console.error('[slash-command-prefetch] Warning:', err.message);
       testCounts[project] = 0;
     }
   }
@@ -1239,7 +1271,10 @@ function handleDemo() {
         output.gathered.extensionBuilt = cached.extensionBuilt;
         authCheckedFromCache = true;
       }
-    } catch { /* ignore — fall through to manual checks */ }
+    } catch (err) {
+      console.error('[slash-command-prefetch] Warning:', err.message);
+      /* ignore — fall through to manual checks */
+    }
   }
 
   // Auth state freshness (manual check if cache miss)
@@ -1253,13 +1288,19 @@ function handleDemo() {
         const cfgContent = fs.readFileSync(configFile, 'utf8');
         const ssMatch = cfgContent.match(/storageState:\s*['"]([^'"]+)['"]/);
         if (ssMatch) primaryAuthBasename = path.basename(ssMatch[1]);
-      } catch { /* ignore */ }
+      } catch (err) {
+        console.error('[slash-command-prefetch] Warning:', err.message);
+        /* ignore */
+      }
     }
     if (!primaryAuthBasename && fs.existsSync(authDir)) {
       try {
         const authFiles = fs.readdirSync(authDir).filter(f => f.endsWith('.json'));
         if (authFiles.length) primaryAuthBasename = authFiles[0];
-      } catch { /* ignore */ }
+      } catch (err) {
+        console.error('[slash-command-prefetch] Warning:', err.message);
+        /* ignore */
+      }
     }
     const primaryAuth = primaryAuthBasename ? path.join(authDir, primaryAuthBasename) : null;
     let authState = { exists: false, ageHours: null, cookiesExpired: false, isStale: true };
@@ -1276,7 +1317,10 @@ function handleDemo() {
           const now = Date.now() / 1000;
           const cookies = state.cookies || [];
           cookiesExpired = cookies.some(c => c.expires && c.expires > 0 && c.expires < now);
-        } catch { /* ignore */ }
+        } catch (err) {
+          console.error('[slash-command-prefetch] Warning:', err.message);
+          /* ignore */
+        }
 
         authState = {
           exists: true,
@@ -1284,7 +1328,10 @@ function handleDemo() {
           cookiesExpired,
           isStale: cookiesExpired || ageHours > 24,
         };
-      } catch { /* ignore */ }
+      } catch (err) {
+        console.error('[slash-command-prefetch] Warning:', err.message);
+        /* ignore */
+      }
     }
     output.gathered.authState = authState;
   }
@@ -1302,7 +1349,8 @@ function handleDemo() {
         projectNames.push(match[1]);
       }
       output.gathered.discoveredProjects = projectNames;
-    } catch {
+    } catch (err) {
+      console.error('[slash-command-prefetch] Warning:', err.message);
       output.gathered.discoveredProjects = [];
     }
   } else {
@@ -1348,7 +1396,8 @@ function handleDemo() {
           });
         }
         output.gathered.personaGroups = [...personaMap.values()];
-      } catch {
+      } catch (err) {
+        console.error('[slash-command-prefetch] Warning:', err.message);
         output.gathered.scenarios = [];
         output.gathered.scenarioCount = 0;
         output.gathered.personaGroups = [];

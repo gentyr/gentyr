@@ -78,11 +78,11 @@ function createNonRepoDir() {
 
 afterEach(() => {
   for (const dir of tmpDirs) {
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* cleanup - failure expected */}
   }
   tmpDirs.length = 0;
   // Clean up fixture base if empty
-  try { fs.rmdirSync(TEST_FIXTURE_BASE); } catch {}
+  try { fs.rmdirSync(TEST_FIXTURE_BASE); } catch (_) { /* cleanup - failure expected */}
 });
 
 /**
@@ -103,7 +103,7 @@ async function runHook(hookInput, env = {}) {
 
     child.on('close', (exitCode) => {
       let parsed = null;
-      try { parsed = JSON.parse(stdout); } catch {}
+      try { parsed = JSON.parse(stdout); } catch (_) { /* cleanup - failure expected */}
       resolve({ exitCode, stdout, stderr, parsed });
     });
 
@@ -293,7 +293,9 @@ describe('worktree-path-guard', () => {
         child.stdout.on('data', (d) => { stdout += d; });
         child.on('close', (exitCode) => {
           let parsed = null;
-          try { parsed = JSON.parse(stdout); } catch {}
+          try { parsed = JSON.parse(stdout); } catch (err) {
+            console.error('[worktree-path-guard.test] Warning:', err.message);
+          }
           resolve({ exitCode, parsed });
         });
         child.stdin.write('not valid json');

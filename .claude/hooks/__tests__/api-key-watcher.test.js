@@ -353,7 +353,7 @@ describe('api-key-watcher.js - Unit Tests', () => {
 
       assert.match(
         functionBody,
-        /catch \{/,
+        /catch [^{]*\{/,
         'Must have catch block for error handling'
       );
 
@@ -547,7 +547,8 @@ describe('api-key-watcher.js - Unit Tests', () => {
       const functionBody = functionMatch[0];
 
       // Should wrap append in try-catch or check with catch/empty block
-      // The implementation uses bare catch { } to ignore log file errors
+      // The implementation uses bare catch (err) { } to ignore log file errors
+        console.error('[api-key-watcher.test] Warning:', err.message);
       const hasTryCatch = functionBody.includes('try {') && functionBody.includes('} catch');
 
       assert.ok(hasTryCatch, 'Must handle log file errors gracefully');

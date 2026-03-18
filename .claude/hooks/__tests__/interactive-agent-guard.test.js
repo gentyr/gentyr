@@ -58,7 +58,8 @@ async function runHook(hookInput, opts = {}) {
 function parseOutput(stdout) {
   try {
     return JSON.parse(stdout.trim());
-  } catch {
+  } catch (err) {
+    console.error('[interactive-agent-guard.test] Warning:', err.message);
     return null;
   }
 }

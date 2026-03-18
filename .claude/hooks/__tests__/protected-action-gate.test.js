@@ -691,7 +691,10 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
         try {
           const now = new Date();
           fs.utimesSync(lockPath, now, now);
-        } catch { /* lock may have been removed after hook exits */ }
+        } catch (err) {
+          console.error('[protected-action-gate.test] Warning:', err.message);
+          /* lock may have been removed after hook exits */
+        }
       }, 50);
 
       let result;
@@ -701,7 +704,7 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
       } finally {
         clearInterval(touchInterval);
         // Clean up lock file so subsequent tests are not affected
-        try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+        try { fs.unlinkSync(lockPath); } catch (_) { /* cleanup - failure expected */ /* already gone */ }
       }
 
       // G001: createRequest() returns null when lock cannot be acquired.
@@ -1127,7 +1130,10 @@ describe('protected-action-gate.js (PreToolUse Hook)', () => {
         if (parsed.type === 'blocked_actions_audit') {
           return parsed;
         }
-      } catch { /* not JSON, skip */ }
+      } catch (err) {
+        console.error('[protected-action-gate.test] Warning:', err.message);
+        /* not JSON, skip */
+      }
     }
     return null;
   }

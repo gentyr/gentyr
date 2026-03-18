@@ -43,7 +43,8 @@ function extractTaskId(toolResponse) {
       const parsed = JSON.parse(response);
       taskId = parsed.id;
     }
-  } catch {
+  } catch (err) {
+    console.error('[urgent-task-spawner.test] Warning:', err.message);
     // Try extracting from content array (MCP tool response format)
     // This branch is reached only when JSON.parse on a string throws.
     try {
@@ -59,7 +60,8 @@ function extractTaskId(toolResponse) {
           }
         }
       }
-    } catch {
+    } catch (err) {
+      console.error('[urgent-task-spawner.test] Warning:', err.message);
       // Give up on parsing
     }
   }
@@ -87,7 +89,8 @@ function resolveTaskIdFromDb(db, section, title) {
     if (row && row.id) {
       return row.id;
     }
-  } catch {
+  } catch (err) {
+    console.error('[urgent-task-spawner.test] Warning:', err.message);
     // Swallow — caller decides how to handle
   }
   return null;
