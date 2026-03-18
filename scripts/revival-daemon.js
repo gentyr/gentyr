@@ -45,6 +45,7 @@ let registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES, acquireLock, releaseLoc
 let buildRevivalPrompt, spawnResumedSession, getSessionDir, findSessionFileByAgentId, extractSessionIdFromPath, resolveTaskIdForAgent;
 let readRotationState;
 let shouldAllowSpawn;
+let drainQueue;
 let Database = null;
 
 async function loadDependencies() {
@@ -69,6 +70,9 @@ async function loadDependencies() {
 
   const memPressure = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'memory-pressure.js'));
   shouldAllowSpawn = memPressure.shouldAllowSpawn;
+
+  const sessionQueue = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js'));
+  drainQueue = sessionQueue.drainQueue;
 
   try {
     Database = (await import('better-sqlite3')).default;
@@ -299,6 +303,12 @@ function scanAndRevive() {
           writeDb.prepare("UPDATE tasks SET status = 'in_progress', started_at = ?, started_timestamp = ? WHERE id = ?")
             .run(nowDate.toISOString(), Math.floor(nowDate.getTime() / 1000), taskId);
           writeDb.close();
+        } catch { /* non-fatal */ }
+      }
+      // Drain the session queue: other queued sessions may now fit under the concurrency limit
+      if (drainQueue) {
+        try {
+          drainQueue();
         } catch { /* non-fatal */ }
       }
     }

@@ -14,12 +14,12 @@
  * @version 1.0.0
  */
 
-import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { registerSpawn, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { getCooldown } from './config-reader.js';
+import { enqueueSession } from './lib/session-queue.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -238,110 +238,34 @@ BEFORE implementing any plan:
 }
 
 /**
- * Spawn Claude with deputy-cto for plan execution
+ * Enqueue Claude with deputy-cto for plan execution
  */
-function spawnPlanExecutor(prompt) {
-  // Register spawn with agent tracker
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.PLAN_EXECUTOR,
-    hookType: HOOK_TYPES.PLAN_EXECUTOR,
-    description: 'Executing pending plans from PLAN.md',
-    prompt: prompt,
+function enqueuePlanExecutor(prompt) {
+  log(`Enqueueing plan executor agent`);
+  log(`Working directory: ${PROJECT_DIR}`);
+
+  const { queueId } = enqueueSession({
+    title: 'Executing pending plans from PLAN.md',
+    agentType: AGENT_TYPES.TASK_RUNNER_DEPUTY_CTO,
+    hookType: HOOK_TYPES.TASK_RUNNER,
+    tagContext: 'plan-executor',
+    source: 'plan-executor',
+    prompt,
+    priority: 'normal',
+    cwd: PROJECT_DIR,
+    projectDir: PROJECT_DIR,
     metadata: {},
+    ttlMs: 35 * 60 * 1000, // 35 minutes — slightly longer than previous 30m timeout
   });
 
-  return new Promise((resolve, reject) => {
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
-    const spawnArgs = [
-      '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
-      '-p',
-      prompt,
-    ];
-
-    log(`Spawning claude with agent ID: ${agentId}`);
-    log(`MCP config path: ${mcpConfig}`);
-    log(`Working directory: ${PROJECT_DIR}`);
-    log(`Spawn args: claude ${spawnArgs.slice(0, 4).join(' ')} [prompt truncated]`);
-
-    // Use --output-format json to get structured output via pipes
-    log(`Spawning with --output-format json`);
-
-    const claude = spawn('claude', [...spawnArgs, '--output-format', 'json'], {
-      cwd: PROJECT_DIR,
-      stdio: 'pipe',
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        CLAUDE_SPAWNED_SESSION: 'true',
-        CLAUDE_AGENT_ID: agentId,
-      },
-    });
-
-    // Log PID immediately
-    log(`Spawned process PID: ${claude.pid || 'undefined'}`);
-
-    if (!claude.pid) {
-      log('WARNING: spawn returned process without PID');
-    }
-
-    let output = '';
-    let errorOutput = '';
-    let lastLogTime = Date.now();
-
-    claude.stdout.on('data', (data) => {
-      const chunk = data.toString();
-      output += chunk;
-      // Log progress every 30 seconds
-      const now = Date.now();
-      if (now - lastLogTime > 30000) {
-        log(`Progress: ${output.length} chars output so far...`);
-        lastLogTime = now;
-      }
-    });
-
-    claude.stderr.on('data', (data) => {
-      const chunk = data.toString();
-      errorOutput += chunk;
-      log(`stderr: ${chunk.substring(0, 500)}`);
-    });
-
-    claude.on('close', (code, signal) => {
-      log(`Process closed with code: ${code}, signal: ${signal}`);
-      log(`Total stdout length: ${output.length} chars`);
-      log(`Total stderr length: ${errorOutput.length} chars`);
-      resolve({ code, output, errorOutput });
-    });
-
-    claude.on('error', (err) => {
-      log(`Spawn error: ${err.message}`);
-      reject(err);
-    });
-
-    claude.on('spawn', () => {
-      log('Claude process successfully spawned');
-    });
-
-    // 30 minute timeout for plan execution
-    const TIMEOUT_MS = 30 * 60 * 1000;
-    setTimeout(() => {
-      log(`Timeout reached (${TIMEOUT_MS}ms), killing process`);
-      claude.kill('SIGTERM');
-      setTimeout(() => {
-        if (!claude.killed) {
-          log('Process not killed, sending SIGKILL');
-          claude.kill('SIGKILL');
-        }
-      }, 5000);
-      reject(new Error('Plan execution timed out after 30 minutes'));
-    }, TIMEOUT_MS);
-  });
+  log(`Enqueued plan executor as queue item ${queueId}`);
+  return queueId;
 }
 
 /**
  * Main entry point
  */
-async function main() {
+function main() {
   log('Plan executor starting...');
 
   // Check cooldown
@@ -374,21 +298,10 @@ async function main() {
   saveState(state);
 
   try {
-    log('Spawning Claude for plan execution...');
-    const result = await spawnPlanExecutor(prompt);
-
-    if (result.code === 0) {
-      log('Plan execution completed successfully.');
-    } else {
-      log(`Plan execution finished with code ${result.code}`);
-    }
-
-    if (result.output) {
-      log(`Output: ${result.output.substring(0, 500)}...`);
-    }
-
+    log('Enqueueing Claude for plan execution...');
+    enqueuePlanExecutor(prompt);
   } catch (err) {
-    log(`Plan execution error: ${err.message}`);
+    log(`Plan execution enqueue error: ${err.message}`);
     process.exit(1);
   }
 

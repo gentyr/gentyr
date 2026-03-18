@@ -23,6 +23,8 @@ import * as path from 'path';
 import * as os from 'os';
 import { spawn, execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { enqueueSession } from './lib/session-queue.js';
+import { AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -444,7 +446,7 @@ async function getScenariosForPersona(personaId, projectDir = PROJECT_DIR) {
 
 /**
  * Spawn an isolated feedback agent session.
- * Fire-and-forget: the process is detached and unreferenced.
+ * Fire-and-forget: enqueues into the session queue for controlled concurrency.
  */
 function spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, options = {}) {
   const projectDir = options.projectDir || PROJECT_DIR;
@@ -452,36 +454,33 @@ function spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, optio
   const tools = options.tools !== undefined ? options.tools : '';
   const cwd = options.cwd || projectDir;
 
-  const spawnArgs = [
-    '--dangerously-skip-permissions',
-    '--tools', tools,
-    '--strict-mcp-config',
-    '--mcp-config', mcpConfigPath,
-    '--model', model,
-    '--output-format', 'json',
-    '-p',
-    prompt,
-  ];
+  // Build a valid tagContext: lowercase hyphenated identifier
+  const safePersonaName = personaName.replace(/[^a-z0-9]/gi, '-').toLowerCase().replace(/^-+|-+$/g, '') || 'unknown';
 
-  const claude = spawn('claude', spawnArgs, {
-    detached: true,
-    stdio: 'ignore',
+  const { queueId } = enqueueSession({
+    title: `Feedback agent: ${personaName} (session ${sessionId})`,
+    agentType: AGENT_TYPES.FEEDBACK_ORCHESTRATOR,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    tagContext: `feedback-persona-${safePersonaName}`,
+    source: 'hooks-feedback-launcher',
+    prompt,
+    mcpConfig: mcpConfigPath,
+    model,
     cwd,
-    env: {
-      ...process.env,
-      CLAUDE_PROJECT_DIR: projectDir,
-      CLAUDE_SPAWNED_SESSION: 'true',
+    projectDir,
+    extraArgs: ['--tools', tools, '--strict-mcp-config'],
+    extraEnv: {
       FEEDBACK_SESSION_ID: sessionId,
       FEEDBACK_PERSONA_NAME: personaName,
       FEEDBACK_FEATURE_ID: options.featureId || '',
       FEEDBACK_FEATURE_NAME: options.featureName || '',
     },
+    priority: 'normal',
+    ttlMs: 60 * 60 * 1000, // 1 hour TTL for feedback sessions
   });
 
-  claude.unref();
-
   return {
-    pid: claude.pid,
+    queueId,
     mcpConfigPath,
   };
 }
@@ -625,20 +624,20 @@ async function main() {
   // Build persona-specific prompt
   const prompt = buildPrompt(persona, sessionId);
 
-  // Spawn isolated session
+  // Enqueue isolated session
   const result = spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, persona.name, {
     ...spawnOptions,
     featureId,
     featureName,
   });
-  console.log(`Spawned feedback agent PID: ${result.pid}`);
+  console.log(`Enqueued feedback agent: ${result.queueId}`);
 
   // Output JSON for orchestrator consumption
   console.log(JSON.stringify({
     success: true,
     persona_name: persona.name,
     session_id: sessionId,
-    pid: result.pid,
+    queue_id: result.queueId,
     mcp_config: mcpConfigPath,
   }));
 }

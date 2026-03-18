@@ -19,6 +19,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn, execSync, execFileSync } from 'child_process';
 import { registerSpawn, updateAgent, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { enqueueSession, drainQueue } from './lib/session-queue.js';
 import { getCooldown } from './config-reader.js';
 import { runUsageOptimizer } from './usage-optimizer.js';
 import { syncKeys } from './key-sync.js';
@@ -245,47 +246,8 @@ function extractRenderServiceId(entry) {
   return null;
 }
 
-/**
- * Build the env object for spawning claude processes.
- * Lazily resolves credentials on first call, then includes them so
- * MCP servers skip `op read`.
- */
-function buildSpawnEnv(agentId) {
-  ensureCredentials();
-  const infraKeys = ['RENDER_API_KEY', 'VERCEL_TOKEN', 'ELASTIC_API_KEY', 'ELASTIC_CLOUD_ID', 'ELASTIC_ENDPOINT'];
-  const missing = infraKeys.filter(k => !resolvedCredentials[k] && !process.env[k]);
-  if (missing.length > 0) {
-    log(`buildSpawnEnv(${agentId}): MISSING infrastructure credentials: ${missing.join(', ')}`);
-  }
-  // Resolve git-wrappers directory (follows symlinks for npm link model)
-  const hooksDir = path.join(PROJECT_DIR, '.claude', 'hooks');
-  let guardedPath = process.env.PATH || '/usr/bin:/bin';
-  try {
-    const realHooks = fs.realpathSync(hooksDir);
-    const wrappersDir = path.join(realHooks, 'git-wrappers');
-    if (fs.existsSync(path.join(wrappersDir, 'git'))) {
-      guardedPath = `${wrappersDir}:${guardedPath}`;
-    }
-  } catch {}
-
-  const env = {
-    ...process.env,
-    ...resolvedCredentials,
-    CLAUDE_PROJECT_DIR: PROJECT_DIR,
-    CLAUDE_SPAWNED_SESSION: 'true',
-    CLAUDE_AGENT_ID: agentId,
-    PATH: guardedPath,
-  };
-
-  if (!isProxyDisabled()) {
-    env.HTTPS_PROXY = 'http://localhost:18080';
-    env.HTTP_PROXY = 'http://localhost:18080';
-    env.NO_PROXY = 'localhost,127.0.0.1';
-    env.NODE_EXTRA_CA_CERTS = path.join(process.env.HOME || '/tmp', '.claude', 'proxy-certs', 'ca.pem');
-  }
-
-  return env;
-}
+// buildSpawnEnv() is provided by lib/spawn-env.js (used by enqueueSession internally).
+// Credentials are passed via extraEnv after ensureCredentials() is called by each spawner.
 
 /**
  * Check if the rotation proxy is running and healthy.
@@ -310,22 +272,6 @@ async function checkProxyHealth() {
     req.on('timeout', () => { req.destroy(); resolve({ running: false }); });
     req.end();
   });
-}
-
-/**
- * Count running automation agents to prevent process accumulation
- */
-function countRunningAgents() {
-  try {
-    const result = execSync(
-      "pgrep -f 'claude.*--dangerously-skip-permissions' 2>/dev/null | wc -l",
-      { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
-    ).trim();
-    return parseInt(result, 10) || 0;
-  } catch {
-    // pgrep returns exit code 1 when no processes match
-    return 0;
-  }
 }
 
 /**
@@ -550,18 +496,17 @@ function spawnAlertEscalation(alert) {
   const safeDetectionCount = Number(alert.detection_count) || 0;
   const safeEscalationCount = Number(alert.escalation_count) || 0;
 
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.PRODUCTION_HEALTH_MONITOR,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: `Alert re-escalation: ${safeKey}`,
-    prompt: '',
-    metadata: { alertKey: safeKey, escalationCount: safeEscalationCount },
-  });
-
   const firstDetectedTs = new Date(alert.first_detected_at).getTime();
   const ageHours = Number.isFinite(firstDetectedTs) ? Math.round((Date.now() - firstDetectedTs) / 3600000) : 0;
 
-  const prompt = `[Task][alert-escalation][AGENT:${agentId}] ALERT RE-ESCALATION
+  ensureCredentials();
+  enqueueSession({
+    title: `Alert re-escalation: ${safeKey}`,
+    agentType: AGENT_TYPES.PRODUCTION_HEALTH_MONITOR,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    tagContext: 'alert-escalation',
+    source: 'hourly-automation',
+    buildPrompt: (agentId) => `[Task][alert-escalation][AGENT:${agentId}] ALERT RE-ESCALATION
 
 A persistent issue has NOT been resolved and requires CTO attention.
 
@@ -578,28 +523,12 @@ Call \`mcp__deputy-cto__add_question\` with:
 - description: "This issue was first detected ${ageHours}h ago and has been detected ${safeDetectionCount} times. It has been escalated ${safeEscalationCount} time(s) previously but remains unresolved. Source: ${safeSource}."
 - recommendation: "Investigate and resolve the ${safeKey} issue. Previous escalations were cleared but the underlying problem persists."
 
-Then exit immediately.`;
-
-  try {
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
-      '--output-format', 'json',
-      '-p', prompt,
-    ], {
-      detached: true,
-      stdio: 'ignore',
-      cwd: PROJECT_DIR,
-      env: buildSpawnEnv(agentId),
-    });
-    claude.unref();
-    updateAgent(agentId, { pid: claude.pid, status: 'running', prompt });
-    return true;
-  } catch (err) {
-    log(`Alert escalation spawn error: ${err.message}`);
-    return false;
-  }
+Then exit immediately.`,
+    extraEnv: { ...resolvedCredentials },
+    metadata: { alertKey: safeKey, escalationCount: safeEscalationCount },
+    projectDir: PROJECT_DIR,
+  });
+  return true;
 }
 
 /**
@@ -882,20 +811,11 @@ function hasReportsReadyForTriage() {
 }
 
 /**
- * Spawn deputy-cto to triage pending reports
- * The agent will discover reports via MCP tools (which handle cooldown filtering)
+ * Spawn deputy-cto to triage pending reports (fire-and-forget via queue).
+ * The agent will discover reports via MCP tools (which handle cooldown filtering).
  */
 function spawnReportTriage() {
-  // Register spawn first to get agentId for prompt embedding
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.DEPUTY_CTO_REVIEW,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Triaging pending CTO reports',
-    prompt: '',
-    metadata: {},
-  });
-
-  const prompt = `[Task][report-triage][AGENT:${agentId}] You are an orchestrator performing REPORT TRIAGE.
+  const promptBody = `You are an orchestrator performing REPORT TRIAGE.
 
 ## IMMEDIATE ACTION
 
@@ -1061,56 +981,25 @@ After processing all reports, output a summary:
 - How many self-handled vs escalated vs dismissed
 - Brief description of each action taken`;
 
-  // Store prompt now that it's built
-  updateAgent(agentId, { prompt });
-
-  return new Promise((resolve, reject) => {
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
-    const spawnArgs = [
-      '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
-      '-p',
-      prompt,
-    ];
-
-    // Use stdio: 'inherit' - Claude CLI requires TTY-like environment
-    // Output goes directly to parent process stdout/stderr
-    const claude = spawn('claude', [...spawnArgs, '--output-format', 'json'], {
-      cwd: PROJECT_DIR,
-      stdio: 'inherit',
-      env: buildSpawnEnv(agentId),
-    });
-
-    claude.on('close', (code) => {
-      resolve({ code, output: '(output sent to inherit stdio)' });
-    });
-
-    claude.on('error', (err) => {
-      reject(err);
-    });
-
-    // 15 minute timeout for triage
-    setTimeout(() => {
-      claude.kill();
-      reject(new Error('Report triage timed out after 15 minutes'));
-    }, 15 * 60 * 1000);
+  ensureCredentials();
+  return enqueueSession({
+    title: 'Triaging pending CTO reports',
+    agentType: AGENT_TYPES.DEPUTY_CTO_REVIEW,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    tagContext: 'report-triage',
+    source: 'hourly-automation',
+    buildPrompt: (agentId) => `[Task][report-triage][AGENT:${agentId}] ${promptBody}`,
+    extraEnv: { ...resolvedCredentials },
+    metadata: {},
+    projectDir: PROJECT_DIR,
   });
 }
 
 /**
- * Spawn Claude for CLAUDE.md refactoring
+ * Spawn Claude for CLAUDE.md refactoring (fire-and-forget via queue).
  */
 function spawnClaudeMdRefactor() {
-  // Register spawn first to get agentId for prompt embedding
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.CLAUDEMD_REFACTOR,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Refactoring oversized CLAUDE.md',
-    prompt: '',
-    metadata: {},
-  });
-
-  const prompt = `[Task][claudemd-refactor][AGENT:${agentId}] You are an orchestrator performing CLAUDE.md REFACTORING.
+  const promptBody = `You are an orchestrator performing CLAUDE.md REFACTORING.
 
 ## IMMEDIATE ACTION
 
@@ -1184,39 +1073,17 @@ Key tools: \`page_get_snapshot\`, \`page_click\`, \`mcp__todo-db__*\`, \`mcp__sp
 3. Create sub-files and update CLAUDE.md
 4. Report what you refactored via mcp__agent-reports__report_to_deputy_cto`;
 
-  // Store prompt now that it's built
-  updateAgent(agentId, { prompt });
-
-  return new Promise((resolve, reject) => {
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
-    const spawnArgs = [
-      '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
-      '-p',
-      prompt,
-    ];
-
-    // Use stdio: 'inherit' - Claude CLI requires TTY-like environment
-    // Output goes directly to parent process stdout/stderr
-    const claude = spawn('claude', [...spawnArgs, '--output-format', 'json'], {
-      cwd: PROJECT_DIR,
-      stdio: 'inherit',
-      env: buildSpawnEnv(agentId),
-    });
-
-    claude.on('close', (code) => {
-      resolve({ code, output: '(output sent to inherit stdio)' });
-    });
-
-    claude.on('error', (err) => {
-      reject(err);
-    });
-
-    // 30 minute timeout
-    setTimeout(() => {
-      claude.kill();
-      reject(new Error('CLAUDE.md refactor timed out after 30 minutes'));
-    }, 30 * 60 * 1000);
+  ensureCredentials();
+  return enqueueSession({
+    title: 'Refactoring oversized CLAUDE.md',
+    agentType: AGENT_TYPES.CLAUDEMD_REFACTOR,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    tagContext: 'claudemd-refactor',
+    source: 'hourly-automation',
+    buildPrompt: (agentId) => `[Task][claudemd-refactor][AGENT:${agentId}] ${promptBody}`,
+    extraEnv: { ...resolvedCredentials },
+    metadata: {},
+    projectDir: PROJECT_DIR,
   });
 }
 
@@ -1252,7 +1119,8 @@ function runLintCheck() {
 }
 
 /**
- * Spawn Claude to fix lint errors
+ * Spawn Claude to fix lint errors (fire-and-forget via queue).
+ * Worktree is created synchronously before enqueueing.
  */
 function spawnLintFixer(lintOutput) {
   // Extract just the errors, not warnings
@@ -1261,16 +1129,28 @@ function spawnLintFixer(lintOutput) {
     .slice(0, 50) // Limit to first 50 error lines
     .join('\n');
 
-  // Register spawn first to get agentId for prompt embedding
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.LINT_FIXER,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Fixing lint errors',
-    prompt: '',
-    metadata: { errorCount: errorLines.split('\n').length },
-  });
+  // --- Worktree setup (lint fixer must not run in main tree) ---
+  let worktreePath = null;
+  try {
+    const branchName = getFeatureBranchName('lint-fix', `lint-${Date.now()}`);
+    const worktree = createWorktree(branchName);
+    worktreePath = worktree.path;
+    log(`Lint fixer: worktree ready at ${worktree.path} (branch ${branchName})`);
+  } catch (err) {
+    log(`Lint fixer: worktree creation failed, aborting spawn (main tree must stay on main): ${err.message}`);
+    throw new Error(`Worktree creation failed: ${err.message}`);
+  }
 
-  const prompt = `[Task][lint-fixer][AGENT:${agentId}] You are an orchestrator fixing LINT ERRORS.
+  const agentMcpConfig = path.join(worktreePath, '.mcp.json');
+
+  ensureCredentials();
+  return enqueueSession({
+    title: 'Fixing lint errors',
+    agentType: AGENT_TYPES.LINT_FIXER,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    tagContext: 'lint-fixer',
+    source: 'hourly-automation',
+    buildPrompt: (agentId) => `[Task][lint-fixer][AGENT:${agentId}] You are an orchestrator fixing LINT ERRORS.
 
 ## IMMEDIATE ACTION
 
@@ -1309,60 +1189,13 @@ ${errorLines}
 
 ## When Done
 
-Report completion via mcp__agent-reports__report_to_deputy_cto with a summary of what was fixed.`;
-
-  // Store prompt now that it's built
-  updateAgent(agentId, { prompt });
-
-  // --- Worktree setup (lint fixer must not run in main tree) ---
-  let agentCwd = PROJECT_DIR;
-  let agentMcpConfig = path.join(PROJECT_DIR, '.mcp.json');
-  let worktreePath = null;
-
-  try {
-    const branchName = getFeatureBranchName('lint-fix', `lint-${Date.now()}`);
-    const worktree = createWorktree(branchName);
-    worktreePath = worktree.path;
-    agentCwd = worktree.path;
-    agentMcpConfig = path.join(worktree.path, '.mcp.json');
-    log(`Lint fixer: worktree ready at ${worktree.path} (branch ${branchName})`);
-    updateAgent(agentId, { metadata: { errorCount: errorLines.split('\n').length, worktreePath } });
-  } catch (err) {
-    log(`Lint fixer: worktree creation failed, aborting spawn (main tree must stay on main): ${err.message}`);
-    return Promise.reject(new Error(`Worktree creation failed: ${err.message}`));
-  }
-
-  return new Promise((resolve, reject) => {
-    const spawnArgs = [
-      '--dangerously-skip-permissions',
-      '--mcp-config', agentMcpConfig,
-      '-p',
-      prompt,
-    ];
-
-    // Use stdio: 'inherit' - Claude CLI requires TTY-like environment
-    const claude = spawn('claude', [...spawnArgs, '--output-format', 'json'], {
-      cwd: agentCwd,
-      stdio: 'inherit',
-      env: {
-        ...buildSpawnEnv(agentId),
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,  // State files always in main project
-      },
-    });
-
-    claude.on('close', (code) => {
-      resolve({ code, output: '(output sent to inherit stdio)' });
-    });
-
-    claude.on('error', (err) => {
-      reject(err);
-    });
-
-    // 20 minute timeout for lint fixing
-    setTimeout(() => {
-      claude.kill();
-      reject(new Error('Lint fixer timed out after 20 minutes'));
-    }, 20 * 60 * 1000);
+Report completion via mcp__agent-reports__report_to_deputy_cto with a summary of what was fixed.`,
+    extraEnv: { ...resolvedCredentials, CLAUDE_PROJECT_DIR: PROJECT_DIR },
+    metadata: { errorCount: errorLines.split('\n').length, worktreePath },
+    cwd: worktreePath,
+    mcpConfig: agentMcpConfig,
+    worktreePath,
+    projectDir: PROJECT_DIR,
   });
 }
 
@@ -1722,84 +1555,51 @@ ${completionBlock}`;
 }
 
 /**
- * Spawn a fire-and-forget Claude agent for a task.
+ * Spawn a fire-and-forget Claude agent for a task via the session queue.
  * When worktrees are available, each agent gets its own isolated worktree
- * on a feature branch (base auto-detected: preview or main).  Falls back to PROJECT_DIR if
+ * on a feature branch (base auto-detected: preview or main). Falls back (aborts) if
  * worktree creation fails.
  */
 function spawnTaskAgent(task) {
   const mapping = SECTION_AGENT_MAP[task.section];
   if (!mapping) return false;
 
-  // Memory pressure check — defer spawning if system is under pressure
-  const memCheck = shouldAllowSpawn({ priority: task.priority || 'normal', context: 'hourly-task-spawner' });
-  if (!memCheck.allowed) {
-    log(memCheck.reason);
-    return false;
-  }
-  if (memCheck.reason) log(memCheck.reason);
+  // NOTE: Memory pressure check is handled by the session queue. Do NOT check here.
 
-  // --- Worktree setup (best-effort) ---
-  let agentCwd = PROJECT_DIR;
-  let agentMcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+  // --- Worktree setup (aborts if it fails — main tree must not be used) ---
   let worktreePath = null;
 
   try {
     const branchName = getFeatureBranchName(task.title, task.id);
     const worktree = createWorktree(branchName);
     worktreePath = worktree.path;
-    agentCwd = worktree.path;
-    agentMcpConfig = path.join(worktree.path, '.mcp.json');
     log(`Task runner: worktree ready at ${worktree.path} (branch ${branchName}, created=${worktree.created})`);
   } catch (err) {
     log(`Task runner: worktree creation failed, aborting spawn (main tree must stay on main): ${err.message}`);
     return false;
   }
 
-  // Register first to get agentId for prompt embedding
-  const agentId = registerSpawn({
-    type: mapping.agentType,
+  const agentMcpConfig = path.join(worktreePath, '.mcp.json');
+
+  ensureCredentials();
+  enqueueSession({
+    title: `Task runner: ${mapping.agent} - ${task.title}`,
+    agentType: mapping.agentType,
     hookType: HOOK_TYPES.TASK_RUNNER,
-    description: `Task runner: ${mapping.agent} - ${task.title}`,
-    prompt: '',
-    projectDir: worktreePath || PROJECT_DIR,
+    tagContext: `task-runner-${mapping.agent}`,
+    source: 'hourly-automation',
+    buildPrompt: (agentId) => mapping.agent === 'deputy-cto'
+      ? buildDeputyCtoTaskPrompt(task, agentId)
+      : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath),
+    extraEnv: { ...resolvedCredentials, CLAUDE_PROJECT_DIR: PROJECT_DIR },
     metadata: { taskId: task.id, section: task.section, worktreePath },
+    cwd: worktreePath,
+    mcpConfig: agentMcpConfig,
+    worktreePath,
+    projectDir: PROJECT_DIR,
   });
 
-  const prompt = mapping.agent === 'deputy-cto'
-    ? buildDeputyCtoTaskPrompt(task, agentId)
-    : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath);
-
-  // Store prompt now that it's built
-  updateAgent(agentId, { prompt });
-
-  try {
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--mcp-config', agentMcpConfig,
-      '--output-format', 'json',
-      '-p',
-      prompt,
-    ], {
-      detached: true,
-      stdio: 'ignore',
-      cwd: agentCwd,
-      env: {
-        ...buildSpawnEnv(agentId),
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,  // State files always in main project
-      },
-    });
-
-    claude.unref();
-
-    // Store PID for reaper tracking
-    updateAgent(agentId, { pid: claude.pid, status: 'running' });
-
-    return true;
-  } catch (err) {
-    log(`Task runner: Failed to spawn ${mapping.agent} for task ${task.id}: ${err.message}`);
-    return false;
-  }
+  return true;
 }
 
 // =========================================================================
@@ -1856,20 +1656,24 @@ function rescueAbandonedWorktrees() {
     // Spawn project-manager to rescue this worktree
     log(`Rescue: spawning project-manager for abandoned worktree ${wt.path} (branch: ${wt.branch})`);
 
-    const agentId = registerSpawn({
-      type: AGENT_TYPES.TASK_RUNNER_PROJECT_MANAGER,
-      hookType: HOOK_TYPES.TASK_RUNNER,
-      description: `Rescue abandoned worktree: ${wt.branch}`,
-      prompt: '',
-      metadata: { worktreePath: wt.path, branch: wt.branch, source: 'rescue-abandoned-worktree' },
-    });
+    const wtPath = wt.path;
+    const wtBranch = wt.branch;
+    const mcpConfig = path.join(wtPath, '.mcp.json');
+    const actualMcp = fs.existsSync(mcpConfig) ? mcpConfig : path.join(PROJECT_DIR, '.mcp.json');
 
-    const prompt = `[Task][rescue-project-manager][AGENT:${agentId}] You are a project-manager rescuing abandoned work in a worktree.
+    ensureCredentials();
+    enqueueSession({
+      title: `Rescue abandoned worktree: ${wtBranch}`,
+      agentType: AGENT_TYPES.TASK_RUNNER_PROJECT_MANAGER,
+      hookType: HOOK_TYPES.TASK_RUNNER,
+      tagContext: 'rescue-project-manager',
+      source: 'hourly-automation',
+      buildPrompt: (agentId) => `[Task][rescue-project-manager][AGENT:${agentId}] You are a project-manager rescuing abandoned work in a worktree.
 
 ## Context
 
-A previous agent left uncommitted changes in this worktree at: ${wt.path}
-Branch: ${wt.branch}
+A previous agent left uncommitted changes in this worktree at: ${wtPath}
+Branch: ${wtBranch}
 
 ## Your Mission
 
@@ -1881,37 +1685,19 @@ Branch: ${wt.branch}
 \`\`\`
 git push -u origin HEAD
 BASE=$(git rev-parse --verify origin/preview 2>/dev/null && echo preview || echo main)
-gh pr create --base "$BASE" --head "$(git branch --show-current)" --title "Rescue: ${wt.branch}" --body "Automated rescue of abandoned worktree changes" 2>/dev/null || true
+gh pr create --base "$BASE" --head "$(git branch --show-current)" --title "Rescue: ${wtBranch}" --body "Automated rescue of abandoned worktree changes" 2>/dev/null || true
 \`\`\`
 6. Self-merge: \`gh pr merge --squash --delete-branch\`
 
-Then summarize and exit.`;
-
-    updateAgent(agentId, { prompt });
-
-    try {
-      const mcpConfig = path.join(wt.path, '.mcp.json');
-      const actualMcp = fs.existsSync(mcpConfig) ? mcpConfig : path.join(PROJECT_DIR, '.mcp.json');
-
-      const claude = spawn('claude', [
-        '--dangerously-skip-permissions',
-        '--mcp-config', actualMcp,
-        '--output-format', 'json',
-        '-p',
-        prompt,
-      ], {
-        detached: true,
-        stdio: 'ignore',
-        cwd: wt.path,
-        env: buildSpawnEnv(agentId),
-      });
-
-      claude.unref();
-      updateAgent(agentId, { pid: claude.pid, status: 'running' });
-      rescued++;
-    } catch (err) {
-      log(`Rescue: failed to spawn for ${wt.path}: ${err.message}`);
-    }
+Then summarize and exit.`,
+      extraEnv: { ...resolvedCredentials },
+      metadata: { worktreePath: wtPath, branch: wtBranch, source: 'rescue-abandoned-worktree' },
+      cwd: wtPath,
+      mcpConfig: actualMcp,
+      worktreePath: wtPath,
+      projectDir: PROJECT_DIR,
+    });
+    rescued++;
   }
 
   return rescued;
@@ -2004,20 +1790,20 @@ function getPromotionWorktree(promotionType) {
 }
 
 /**
- * Spawn Preview -> Staging promotion orchestrator
+ * Spawn Preview -> Staging promotion orchestrator (fire-and-forget via queue).
  */
 function spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix) {
   const commitList = newCommits.join('\n');
+  const wt = getPromotionWorktree('preview-promotion');
 
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.PREVIEW_PROMOTION,
+  ensureCredentials();
+  return enqueueSession({
+    title: 'Preview -> Staging promotion pipeline',
+    agentType: AGENT_TYPES.PREVIEW_PROMOTION,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Preview -> Staging promotion pipeline',
-    prompt: '',
-    metadata: { commitCount: newCommits.length, hoursSinceLastStagingMerge, hasBugFix },
-  });
-
-  const prompt = `[Task][preview-promotion][AGENT:${agentId}] You are the PREVIEW -> STAGING Promotion Pipeline orchestrator.
+    tagContext: 'preview-promotion',
+    source: 'hourly-automation',
+    buildPrompt: (agentId) => `[Task][preview-promotion][AGENT:${agentId}] You are the PREVIEW -> STAGING Promotion Pipeline orchestrator.
 
 ## Mission
 
@@ -2081,60 +1867,34 @@ Complete within 25 minutes. If blocked, report and exit.
 
 ## Output
 
-Summarize the promotion decision and actions taken.`;
-
-  // Store prompt now that it's built
-  updateAgent(agentId, { prompt });
-
-  try {
-    const wt = getPromotionWorktree('preview-promotion');
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--mcp-config', wt.mcpConfig,
-      '--output-format', 'json',
-      '-p',
-      prompt,
-    ], {
-      cwd: wt.cwd,
-      stdio: 'inherit',
-      env: {
-        ...buildSpawnEnv(agentId),
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        GENTYR_PROMOTION_PIPELINE: 'true',
-      },
-    });
-
-    return new Promise((resolve, reject) => {
-      claude.on('close', (code) => {
-        resolve({ code, output: '(output sent to inherit stdio)' });
-      });
-      claude.on('error', (err) => reject(err));
-      setTimeout(() => {
-        claude.kill();
-        reject(new Error('Preview promotion timed out after 30 minutes'));
-      }, 30 * 60 * 1000);
-    });
-  } catch (err) {
-    log(`Preview promotion spawn error: ${err.message}`);
-    return Promise.resolve({ code: 1, output: err.message });
-  }
+Summarize the promotion decision and actions taken.`,
+    extraEnv: {
+      ...resolvedCredentials,
+      CLAUDE_PROJECT_DIR: PROJECT_DIR,
+      GENTYR_PROMOTION_PIPELINE: 'true',
+    },
+    metadata: { commitCount: newCommits.length, hoursSinceLastStagingMerge, hasBugFix },
+    cwd: wt.cwd,
+    mcpConfig: wt.mcpConfig,
+    projectDir: PROJECT_DIR,
+  });
 }
 
 /**
- * Spawn Staging -> Production promotion orchestrator
+ * Spawn Staging -> Production promotion orchestrator (fire-and-forget via queue).
  */
 function spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit) {
   const commitList = newCommits.join('\n');
+  const wt = getPromotionWorktree('staging-promotion');
 
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.STAGING_PROMOTION,
+  ensureCredentials();
+  return enqueueSession({
+    title: 'Staging -> Production promotion pipeline',
+    agentType: AGENT_TYPES.STAGING_PROMOTION,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Staging -> Production promotion pipeline',
-    prompt: '',
-    metadata: { commitCount: newCommits.length, hoursSinceLastStagingCommit },
-  });
-
-  const prompt = `[Task][staging-promotion][AGENT:${agentId}] You are the STAGING -> PRODUCTION Promotion Pipeline orchestrator.
+    tagContext: 'staging-promotion',
+    source: 'hourly-automation',
+    buildPrompt: (agentId) => `[Task][staging-promotion][AGENT:${agentId}] You are the STAGING -> PRODUCTION Promotion Pipeline orchestrator.
 
 ## Mission
 
@@ -2211,66 +1971,41 @@ Complete within 25 minutes. If blocked, report and exit.
 
 ## Output
 
-Summarize the promotion decision and actions taken.`;
-
-  // Store prompt now that it's built
-  updateAgent(agentId, { prompt });
-
-  try {
-    const wt = getPromotionWorktree('staging-promotion');
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--mcp-config', wt.mcpConfig,
-      '--output-format', 'json',
-      '-p',
-      prompt,
-    ], {
-      cwd: wt.cwd,
-      stdio: 'inherit',
-      env: {
-        ...buildSpawnEnv(agentId),
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        GENTYR_PROMOTION_PIPELINE: 'true',
-      },
-    });
-
-    return new Promise((resolve, reject) => {
-      claude.on('close', (code) => {
-        resolve({ code, output: '(output sent to inherit stdio)' });
-      });
-      claude.on('error', (err) => reject(err));
-      setTimeout(() => {
-        claude.kill();
-        reject(new Error('Staging promotion timed out after 30 minutes'));
-      }, 30 * 60 * 1000);
-    });
-  } catch (err) {
-    log(`Staging promotion spawn error: ${err.message}`);
-    return Promise.resolve({ code: 1, output: err.message });
-  }
+Summarize the promotion decision and actions taken.`,
+    extraEnv: {
+      ...resolvedCredentials,
+      CLAUDE_PROJECT_DIR: PROJECT_DIR,
+      GENTYR_PROMOTION_PIPELINE: 'true',
+    },
+    metadata: { commitCount: newCommits.length, hoursSinceLastStagingCommit },
+    cwd: wt.cwd,
+    mcpConfig: wt.mcpConfig,
+    projectDir: PROJECT_DIR,
+  });
 }
 
 /**
- * Spawn Emergency Hotfix Promotion (staging -> main, bypasses 24h + midnight)
+ * Spawn Emergency Hotfix Promotion (staging -> main, bypasses 24h + midnight).
+ * Fire-and-forget via the session queue.
  *
  * Called by the deputy-cto MCP server's execute_hotfix_promotion tool.
  * Uses the staging-promotion worktree for isolation, sets GENTYR_PROMOTION_PIPELINE=true.
  *
  * @param {string[]} commits - Commit oneline summaries being promoted
- * @returns {Promise<{code: number, output: string}>}
+ * @returns {{ queueId: string, position: number, drained: object }}
  */
 export function spawnHotfixPromotion(commits) {
   const commitList = commits.join('\n');
+  const wt = getPromotionWorktree('staging-promotion');
 
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.HOTFIX_PROMOTION,
+  ensureCredentials();
+  return enqueueSession({
+    title: 'Emergency hotfix: staging -> main promotion',
+    agentType: AGENT_TYPES.HOTFIX_PROMOTION,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Emergency hotfix: staging -> main promotion',
-    prompt: '',
-    metadata: { commitCount: commits.length, isHotfix: true },
-  });
-
-  const prompt = `[Task][hotfix-promotion][AGENT:${agentId}] You are the EMERGENCY HOTFIX Promotion Pipeline.
+    tagContext: 'hotfix-promotion',
+    source: 'hourly-automation',
+    buildPrompt: (agentId) => `[Task][hotfix-promotion][AGENT:${agentId}] You are the EMERGENCY HOTFIX Promotion Pipeline.
 
 ## Mission
 
@@ -2309,42 +2044,17 @@ If code review fails:
 
 ## Timeout
 
-Complete within 25 minutes. If blocked, report and exit.`;
-
-  updateAgent(agentId, { prompt });
-
-  try {
-    const wt = getPromotionWorktree('staging-promotion');
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--mcp-config', wt.mcpConfig,
-      '--output-format', 'json',
-      '-p',
-      prompt,
-    ], {
-      cwd: wt.cwd,
-      stdio: 'inherit',
-      env: {
-        ...buildSpawnEnv(agentId),
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        GENTYR_PROMOTION_PIPELINE: 'true',
-      },
-    });
-
-    return new Promise((resolve, reject) => {
-      claude.on('close', (code) => {
-        resolve({ code, output: '(output sent to inherit stdio)' });
-      });
-      claude.on('error', (err) => reject(err));
-      setTimeout(() => {
-        claude.kill();
-        reject(new Error('Hotfix promotion timed out after 30 minutes'));
-      }, 30 * 60 * 1000);
-    });
-  } catch (err) {
-    log(`Hotfix promotion spawn error: ${err.message}`);
-    return Promise.resolve({ code: 1, output: err.message });
-  }
+Complete within 25 minutes. If blocked, report and exit.`,
+    extraEnv: {
+      ...resolvedCredentials,
+      CLAUDE_PROJECT_DIR: PROJECT_DIR,
+      GENTYR_PROMOTION_PIPELINE: 'true',
+    },
+    metadata: { commitCount: commits.length, isHotfix: true },
+    cwd: wt.cwd,
+    mcpConfig: wt.mcpConfig,
+    projectDir: PROJECT_DIR,
+  });
 }
 
 /**
@@ -2368,18 +2078,10 @@ async function verifySpawnAlive(pid, label) {
 }
 
 /**
- * Spawn Staging Health Monitor (fire-and-forget)
- * GAP 4: Returns { success, pid } instead of boolean for deferred cooldown stamps.
+ * Spawn Staging Health Monitor (fire-and-forget via queue).
+ * Returns the enqueueSession result: { queueId, position, drained }.
  */
 function spawnStagingHealthMonitor() {
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.STAGING_HEALTH_MONITOR,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Staging health monitor check',
-    prompt: '',
-    metadata: {},
-  });
-
   // Read service config directly (Node process is not subject to credential-file-guard).
   // Fall back to known hardcoded values from CLAUDE.md memory if the file is unavailable.
   const serviceConfig = readServiceConfig();
@@ -2395,7 +2097,7 @@ function spawnStagingHealthMonitor() {
     ? `Use Vercel project ID \`${vercelProjectId}\` in your MCP calls.`
     : 'No Vercel project ID configured — skip Vercel checks or use mcp__vercel__vercel_list_projects to discover it.';
 
-  const prompt = `[Task][staging-health-monitor][AGENT:${agentId}] You are the STAGING Health Monitor.
+  const promptBody = `You are the STAGING Health Monitor.
 
 ## Mission
 
@@ -2466,45 +2168,25 @@ Read \`.claude/state/persistent_alerts.json\` (create if missing with \`{"versio
 
 Complete within 10 minutes. This is a read-only monitoring check.`;
 
-  // Store prompt now that it's built
-  updateAgent(agentId, { prompt });
-
-  try {
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
-      '--output-format', 'json',
-      '-p',
-      prompt,
-    ], {
-      detached: true,
-      stdio: 'ignore',
-      cwd: PROJECT_DIR,
-      env: buildSpawnEnv(agentId),
-    });
-
-    claude.unref();
-    updateAgent(agentId, { pid: claude.pid, status: 'running' });
-    return { success: true, pid: claude.pid };
-  } catch (err) {
-    log(`Staging health monitor spawn error: ${err.message}`);
-    return { success: false, pid: null };
-  }
+  ensureCredentials();
+  return enqueueSession({
+    title: 'Staging health monitor check',
+    agentType: AGENT_TYPES.STAGING_HEALTH_MONITOR,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    tagContext: 'staging-health-monitor',
+    source: 'hourly-automation',
+    buildPrompt: (agentId) => `[Task][staging-health-monitor][AGENT:${agentId}] ${promptBody}`,
+    extraEnv: { ...resolvedCredentials },
+    metadata: {},
+    projectDir: PROJECT_DIR,
+  });
 }
 
 /**
- * Spawn Production Health Monitor (fire-and-forget)
- * GAP 4: Returns { success, pid } instead of boolean for deferred cooldown stamps.
+ * Spawn Production Health Monitor (fire-and-forget via queue).
+ * Returns the enqueueSession result: { queueId, position, drained }.
  */
 function spawnProductionHealthMonitor() {
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.PRODUCTION_HEALTH_MONITOR,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Production health monitor check',
-    prompt: '',
-    metadata: {},
-  });
 
   // Read service config directly (Node process is not subject to credential-file-guard).
   // Fall back to known hardcoded values from CLAUDE.md memory if the file is unavailable.
@@ -2521,7 +2203,7 @@ function spawnProductionHealthMonitor() {
     ? `Use Vercel project ID \`${vercelProjectId}\` in your MCP calls.`
     : 'No Vercel project ID configured — skip Vercel checks or use mcp__vercel__vercel_list_projects to discover it.';
 
-  const prompt = `[Task][production-health-monitor][AGENT:${agentId}] You are the PRODUCTION Health Monitor.
+  const promptBody = `You are the PRODUCTION Health Monitor.
 
 ## Mission
 
@@ -2599,28 +2281,18 @@ Read \`.claude/state/persistent_alerts.json\` (create if missing with \`{"versio
 
 Complete within 10 minutes. This is a read-only monitoring check.`;
 
-  try {
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
-      '--output-format', 'json',
-      '-p',
-      prompt,
-    ], {
-      detached: true,
-      stdio: 'ignore',
-      cwd: PROJECT_DIR,
-      env: buildSpawnEnv(agentId),
-    });
-
-    claude.unref();
-    updateAgent(agentId, { pid: claude.pid, status: 'running', prompt });
-    return { success: true, pid: claude.pid };
-  } catch (err) {
-    log(`Production health monitor spawn error: ${err.message}`);
-    return { success: false, pid: null };
-  }
+  ensureCredentials();
+  return enqueueSession({
+    title: 'Production health monitor check',
+    agentType: AGENT_TYPES.PRODUCTION_HEALTH_MONITOR,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    tagContext: 'production-health-monitor',
+    source: 'hourly-automation',
+    buildPrompt: (agentId) => `[Task][production-health-monitor][AGENT:${agentId}] ${promptBody}`,
+    extraEnv: { ...resolvedCredentials },
+    metadata: {},
+    projectDir: PROJECT_DIR,
+  });
 }
 
 /**
@@ -2650,15 +2322,7 @@ function getRandomSpec() {
  * Scans entire codebase for spec violations, independent of git hooks
  */
 function spawnStandaloneAntipatternHunter() {
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.STANDALONE_ANTIPATTERN_HUNTER,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: 'Standalone antipattern hunt (3h schedule)',
-    prompt: '',
-    metadata: {},
-  });
-
-  const prompt = `[Task][standalone-antipattern-hunter][AGENT:${agentId}] STANDALONE ANTIPATTERN HUNT - Periodic repo-wide scan for spec violations.
+  const promptBody = `STANDALONE ANTIPATTERN HUNT - Periodic repo-wide scan for spec violations.
 
 You are a STANDALONE antipattern hunter running on a 3-hour schedule. Your job is to systematically scan
 the ENTIRE codebase looking for spec violations and technical debt.
@@ -2721,31 +2385,20 @@ Do NOT implement fixes yourself.
 
 Focus on finding SYSTEMIC issues across the codebase, not just isolated violations.`;
 
-  // Store prompt now that it's built
-  updateAgent(agentId, { prompt });
+  ensureCredentials();
+  enqueueSession({
+    title: 'Standalone antipattern hunt (3h schedule)',
+    agentType: AGENT_TYPES.STANDALONE_ANTIPATTERN_HUNTER,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    tagContext: 'standalone-antipattern-hunter',
+    source: 'hourly-automation',
+    prompt,
+    extraEnv: { ...resolvedCredentials },
+    metadata: {},
+    projectDir: PROJECT_DIR,
+  });
 
-  try {
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
-      '--output-format', 'json',
-      '-p',
-      prompt,
-    ], {
-      detached: true,
-      stdio: 'ignore',
-      cwd: PROJECT_DIR,
-      env: buildSpawnEnv(agentId),
-    });
-
-    claude.unref();
-    updateAgent(agentId, { pid: claude.pid, status: 'running' });
-    return true;
-  } catch (err) {
-    log(`Standalone antipattern hunter spawn error: ${err.message}`);
-    return false;
-  }
+  return true;
 }
 
 /**
@@ -2753,15 +2406,7 @@ Focus on finding SYSTEMIC issues across the codebase, not just isolated violatio
  * Picks a random spec and scans the codebase for violations of that specific spec
  */
 function spawnStandaloneComplianceChecker(spec) {
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.STANDALONE_COMPLIANCE_CHECKER,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: `Standalone compliance check: ${spec.id}`,
-    prompt: '',
-    metadata: { specId: spec.id, specPath: spec.path },
-  });
-
-  const prompt = `[Task][standalone-compliance-checker][AGENT:${agentId}] STANDALONE COMPLIANCE CHECK - Audit codebase against spec: ${spec.id}
+  const promptBody = `STANDALONE COMPLIANCE CHECK - Audit codebase against spec: ${spec.id}
 
 You are a STANDALONE compliance checker running on a 1-hour schedule. You have been assigned ONE specific spec to audit the codebase against.
 
@@ -2817,31 +2462,20 @@ Provide a compliance summary:
 
 Do NOT implement fixes yourself. Only report and create TODOs.`;
 
-  // Store prompt now that it's built
-  updateAgent(agentId, { prompt });
+  ensureCredentials();
+  enqueueSession({
+    title: `Standalone compliance check: ${spec.id}`,
+    agentType: AGENT_TYPES.STANDALONE_COMPLIANCE_CHECKER,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    tagContext: 'standalone-compliance-checker',
+    source: 'hourly-automation',
+    prompt,
+    extraEnv: { ...resolvedCredentials },
+    metadata: { specId: spec.id, specPath: spec.path },
+    projectDir: PROJECT_DIR,
+  });
 
-  try {
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
-      '--output-format', 'json',
-      '-p',
-      prompt,
-    ], {
-      detached: true,
-      stdio: 'ignore',
-      cwd: PROJECT_DIR,
-      env: buildSpawnEnv(agentId),
-    });
-
-    claude.unref();
-    updateAgent(agentId, { pid: claude.pid, status: 'running' });
-    return true;
-  } catch (err) {
-    log(`Standalone compliance checker spawn error: ${err.message}`);
-    return false;
-  }
+  return true;
 }
 
 /**
@@ -3633,7 +3267,14 @@ async function main() {
         try {
           const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
           if (fs.existsSync(mcpConfig)) {
-            const reportPrompt = `[Task][stale-work-report] Report this stale work finding to the deputy-CTO.
+            ensureCredentials();
+            enqueueSession({
+              title: `Stale work report: ${report.uncommittedFiles.length} uncommitted, ${report.unpushedBranches.length} unpushed`,
+              agentType: AGENT_TYPES.DEPUTY_CTO_REVIEW,
+              hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+              tagContext: 'stale-work-report',
+              source: 'hourly-automation',
+              buildPrompt: (agentId) => `[Task][stale-work-report][AGENT:${agentId}] Report this stale work finding to the deputy-CTO.
 
 Use mcp__agent-reports__report_to_deputy_cto with:
 - reporting_agent: "stale-work-detector"
@@ -3642,20 +3283,10 @@ Use mcp__agent-reports__report_to_deputy_cto with:
 - category: "git-hygiene"
 - priority: "${report.staleBranches.length > 0 ? 'medium' : 'low'}"
 
-Then exit.`;
-
-            const reportAgent = spawn('claude', [
-              '--dangerously-skip-permissions',
-              '--mcp-config', mcpConfig,
-              '--output-format', 'json',
-              '-p', reportPrompt,
-            ], {
-              detached: true,
-              stdio: 'ignore',
-              cwd: PROJECT_DIR,
-              env: buildSpawnEnv(`stale-report-${Date.now()}`),
+Then exit.`,
+              extraEnv: { ...resolvedCredentials },
+              projectDir: PROJECT_DIR,
             });
-            reportAgent.unref();
           }
         } catch (reportErr) {
           log(`Stale work detector: failed to spawn reporter: ${reportErr.message}`);
@@ -3925,12 +3556,7 @@ Then exit.`;
 
         const toRepair = failedScenarios.slice(0, 3);
         for (const failedScenario of toRepair) {
-          const memCheck = shouldAllowSpawn({ priority: 'normal', context: 'demo-repair' });
-          if (!memCheck.allowed) {
-            log(`Demo validation: skipping repair for "${failedScenario.title}" — ${memCheck.reason}`);
-            continue;
-          }
-
+          // NOTE: Memory pressure check removed — session queue handles it internally.
           let worktreePath;
           try {
             const branchName = getFeatureBranchName('demo-repair', failedScenario.id.slice(0, 8));
@@ -3941,50 +3567,43 @@ Then exit.`;
             continue;
           }
 
-          const agentId = registerSpawn({
-            type: AGENT_TYPES.DEMO_REPAIR,
-            hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-            description: `Repair failed demo: ${failedScenario.title}`,
-            prompt: `Repair demo scenario`,
-            metadata: {
-              scenario_id: failedScenario.id,
-              scenario_title: failedScenario.title,
-              error: failedScenario.error,
-            },
-          });
-
           const agentMcpConfig = path.join(worktreePath, '.mcp.json');
-          const prompt = [
-            `You are a demo repair agent. A demo scenario failed during automated validation.`,
-            ``,
-            `**Failed Scenario:**`,
-            `- ID: ${failedScenario.id}`,
-            `- Title: ${failedScenario.title}`,
-            `- Error: ${failedScenario.error || 'Unknown error'}`,
-            ``,
-            `Follow the repair protocol in your agent definition:`,
-            `1. Run preflight_check to verify environment`,
-            `2. Read the failed .demo.ts file`,
-            `3. Diagnose from the error output`,
-            `4. Fix the .demo.ts file`,
-            `5. Re-run the scenario headless to verify`,
-            `6. If you cannot fix it (app code issue), report via report_to_deputy_cto`,
-          ].join('\n');
+          const repairScenarioId = failedScenario.id;
+          const repairScenarioTitle = failedScenario.title;
+          const repairScenarioError = failedScenario.error;
 
-          const claude = spawn('claude', [
-            '--dangerously-skip-permissions',
-            '--agent-name', 'demo-manager',
-            ...(fs.existsSync(agentMcpConfig) ? ['--mcp-config', agentMcpConfig] : []),
-            '-p', prompt,
-          ], {
-            detached: true,
-            stdio: 'ignore',
+          ensureCredentials();
+          const queueResult = enqueueSession({
+            title: `Demo repair: ${repairScenarioTitle}`,
+            agentType: AGENT_TYPES.DEMO_REPAIR,
+            hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+            tagContext: 'demo-repair',
+            source: 'hourly-automation',
+            buildPrompt: (agentId) => [
+              `[Task][demo-repair][AGENT:${agentId}] You are a demo repair agent. A demo scenario failed during automated validation.`,
+              ``,
+              `**Failed Scenario:**`,
+              `- ID: ${repairScenarioId}`,
+              `- Title: ${repairScenarioTitle}`,
+              `- Error: ${repairScenarioError || 'Unknown error'}`,
+              ``,
+              `Follow the repair protocol in your agent definition:`,
+              `1. Run preflight_check to verify environment`,
+              `2. Read the failed .demo.ts file`,
+              `3. Diagnose from the error output`,
+              `4. Fix the .demo.ts file`,
+              `5. Re-run the scenario headless to verify`,
+              `6. If you cannot fix it (app code issue), report via report_to_deputy_cto`,
+            ].join('\n'),
             cwd: worktreePath,
-            env: buildSpawnEnv(agentId),
+            mcpConfig: fs.existsSync(agentMcpConfig) ? agentMcpConfig : undefined,
+            worktreePath,
+            extraArgs: ['--agent-name', 'demo-manager'],
+            extraEnv: { ...resolvedCredentials },
+            metadata: { scenarioId: repairScenarioId, scenarioTitle: repairScenarioTitle },
+            projectDir: PROJECT_DIR,
           });
-          claude.unref();
-          updateAgent(agentId, { pid: claude.pid });
-          log(`Demo validation: spawned repair agent ${agentId} for "${failedScenario.title}" (pid ${claude.pid})`);
+          log(`Demo validation: enqueued repair agent for "${repairScenarioTitle}" (queue ${queueResult.queueId})`);
 
           // Track repair as DEMO-MANAGER task for visibility
           try {
@@ -4001,37 +3620,28 @@ Then exit.`;
           } catch { /* non-fatal */ }
         }
 
-        // Report failures to deputy-CTO
-        const reportAgentId = registerSpawn({
-          type: AGENT_TYPES.DEMO_VALIDATOR,
+        // Report failures to deputy-CTO via queue
+        ensureCredentials();
+        enqueueSession({
+          title: `Demo validation report: ${failed} failures`,
+          agentType: AGENT_TYPES.DEMO_VALIDATOR,
           hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-          description: `Demo validation report: ${failed} failures`,
-          prompt: '',
+          tagContext: 'demo-validation-report',
+          source: 'hourly-automation',
+          buildPrompt: (agentId) => [
+            `[Task][demo-validation-report][AGENT:${agentId}] Report the following demo validation failures to the deputy-CTO using mcp__agent-reports__report_to_deputy_cto.`,
+            ``,
+            `Category: "other"`,
+            `Priority: "${failed >= 3 ? 'high' : 'normal'}"`,
+            `Title: "Demo validation: ${failed}/${results.length} scenarios failed"`,
+            `Summary:`,
+            `${failedScenarios.map(s => `- ${s.title}: ${s.error || 'Unknown error'}`).join('\n')}`,
+            ``,
+            `Repair agents have been spawned for ${toRepair.length} scenario(s).`,
+          ].join('\n'),
+          extraEnv: { ...resolvedCredentials },
+          projectDir: PROJECT_DIR,
         });
-
-        const reportPrompt = [
-          `Report the following demo validation failures to the deputy-CTO using mcp__agent-reports__report_to_deputy_cto.`,
-          ``,
-          `Category: "other"`,
-          `Priority: "${failed >= 3 ? 'high' : 'normal'}"`,
-          `Title: "Demo validation: ${failed}/${results.length} scenarios failed"`,
-          `Summary:`,
-          `${failedScenarios.map(s => `- ${s.title}: ${s.error || 'Unknown error'}`).join('\n')}`,
-          ``,
-          `Repair agents have been spawned for ${toRepair.length} scenario(s).`,
-        ].join('\n');
-
-        const reportClaude = spawn('claude', [
-          '--dangerously-skip-permissions',
-          '-p', reportPrompt,
-        ], {
-          detached: true,
-          stdio: 'ignore',
-          cwd: PROJECT_DIR,
-          env: buildSpawnEnv(reportAgentId),
-        });
-        reportClaude.unref();
-        updateAgent(reportAgentId, { pid: reportClaude.pid });
       } else {
         log(`Demo validation: all ${results.length} scenarios passed.`);
       }

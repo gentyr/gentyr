@@ -21,9 +21,9 @@
 
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
-import { registerSpawn, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { getCooldown } from './config-reader.js';
+import { enqueueSession } from './lib/session-queue.js';
 
 // Try to import better-sqlite3 for database operations
 let Database = null;
@@ -328,36 +328,16 @@ function spawnClaudeForTodoProcessing(projectDir, pendingCount) {
   }
 
   try {
-    // Prefix with [Task][type] so CTO report can track task types
-    const taggedPrompt = `[Task][todo-processing] ${prompt}`;
-
-    // Register spawn with agent tracker
-    registerSpawn({
-      type: AGENT_TYPES.TODO_PROCESSING,
+    enqueueSession({
+      title: `Processing ${pendingCount} pending TODO items`,
+      agentType: AGENT_TYPES.TODO_PROCESSING,
       hookType: HOOK_TYPES.TODO_MAINTENANCE,
-      description: `Processing ${pendingCount} pending TODO items`,
-      prompt: taggedPrompt,
+      tagContext: 'todo-processing',
+      source: 'todo-maintenance',
+      prompt,
+      projectDir,
       metadata: { pendingCount },
-      projectDir
     });
-
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '-p',
-      taggedPrompt
-    ], {
-      detached: true,           // Don't tie to parent process
-      stdio: 'ignore',          // Don't capture output (fire and forget)
-      cwd: projectDir,
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: projectDir,
-        CLAUDE_SPAWNED_SESSION: 'true'  // Prevent chain reaction
-      }
-    });
-
-    // Allow parent to exit independently
-    claude.unref();
 
     return true;
   } catch (err) {

@@ -12,6 +12,7 @@ export const SECTION_IDS = [
   'testing', 'deployments', 'worktrees', 'infra', 'logging',
   'timeline', 'tasks', 'product-market-fit', 'worklog',
   'plans', 'plan-progress', 'plan-timeline', 'plan-audit', 'plan-sessions',
+  'session-queue',
 ] as const;
 
 export type SectionId = typeof SECTION_IDS[number];
@@ -43,4 +44,5 @@ export const SECTION_DESCRIPTIONS: Record<SectionId, string> = {
   'plan-timeline': 'Show plan state changes timeline (task completions, agent spawns, dependency unlocks)',
   'plan-audit': 'Show agent work metrics per plan (tasks, completions, PRs, phase efficiency)',
   'plan-sessions': 'Show per-session lifecycle timeline (spawns, rotations, interrupts, revivals, worklogs, PR merges)',
+  'session-queue': 'Show session queue status (running, queued, capacity, throughput)',
 };

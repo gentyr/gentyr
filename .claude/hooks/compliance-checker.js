@@ -40,10 +40,10 @@
 
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
 import { validateMappings, formatValidationResult } from './mapping-validator.js';
-import { registerSpawn, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { getCooldown } from './config-reader.js';
+import { enqueueSession } from './lib/session-queue.js';
 
 // Project directory
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -493,40 +493,22 @@ function updateFileVerificationTimestamp(specName, filePath) {
  * @returns {number} PID of spawned process
  */
 function spawnClaudeInstance(prompt, env = {}, trackingInfo = null) {
-  // Use type from trackingInfo for [Task][type] format, fallback to 'compliance' for untyped spawns
-  const taskType = trackingInfo?.type || 'compliance';
-  const taggedPrompt = `[Task][${taskType}] ${prompt}`;
+  const agentType = trackingInfo?.type || AGENT_TYPES.COMPLIANCE_GLOBAL;
+  const description = trackingInfo?.description || 'Compliance check';
+  // Derive a tagContext from the agent type string (lowercase, hyphens only)
+  const tagContext = agentType.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
-  // Register spawn with agent tracker if tracking info provided
-  if (trackingInfo) {
-    registerSpawn({
-      type: trackingInfo.type,
-      hookType: HOOK_TYPES.COMPLIANCE_CHECKER,
-      description: trackingInfo.description,
-      prompt: taggedPrompt,
-      metadata: trackingInfo.metadata || {},
-      projectDir
-    });
-  }
-
-  const claude = spawn('claude', [
-    '--dangerously-skip-permissions',
-    '-p',
-    taggedPrompt
-  ], {
-    detached: true,
-    stdio: 'ignore',
-    cwd: projectDir,
-    env: {
-      ...process.env,
-      CLAUDE_PROJECT_DIR: projectDir,
-      CLAUDE_SPAWNED_SESSION: 'true',
-      ...env
-    }
+  enqueueSession({
+    title: description,
+    agentType,
+    hookType: HOOK_TYPES.COMPLIANCE_CHECKER,
+    tagContext,
+    source: 'compliance-checker',
+    prompt,
+    extraEnv: Object.keys(env).length > 0 ? env : undefined,
+    projectDir,
+    metadata: trackingInfo?.metadata || {},
   });
-
-  claude.unref();
-  return claude.pid;
 }
 
 /**

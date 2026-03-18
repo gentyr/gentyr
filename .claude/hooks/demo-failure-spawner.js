@@ -15,11 +15,11 @@
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
-import { registerSpawn, updateAgent, findRecentSpawn, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { findRecentSpawn, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { createWorktree } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
-import { buildSpawnEnv } from './lib/spawn-env.js';
 import { shouldAllowSpawn } from './lib/memory-pressure.js';
+import { enqueueSession } from './lib/session-queue.js';
 
 // Try to import better-sqlite3 for DB access
 let Database = null;
@@ -117,63 +117,50 @@ function spawnRepairAgent(scenario) {
     }
   }
 
-  // Register spawn
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.TASK_RUNNER_DEMO_MANAGER,
-    hookType: HOOK_TYPES.DEMO_FAILURE,
-    description: `Demo repair: ${title} (${scenarioId})`,
-    prompt: '',
-    projectDir: worktreePath,
-    metadata: { scenarioId, scenarioTitle: title, error, taskId },
-  });
-
   const agentMcpConfig = path.join(worktreePath, '.mcp.json');
-  const prompt = [
-    `[Task][task-runner-demo-manager][AGENT:${agentId}] You are a demo repair agent. A demo scenario failed.`,
-    ``,
-    `**Failed Scenario:**`,
-    `- ID: ${scenarioId}`,
-    `- Title: ${title}`,
-    `- Error: ${error || 'Unknown error'}`,
-    taskId ? `- Tracking Task: ${taskId}` : '',
-    ``,
-    `## Instructions`,
-    ``,
-    `Follow the repair protocol in your agent definition:`,
-    `1. Run preflight_check to verify environment`,
-    `2. Read the failed .demo.ts file`,
-    `3. Diagnose from the error output`,
-    `4. Fix the .demo.ts file`,
-    `5. Re-run the scenario headless to verify`,
-    `6. If you cannot fix it (app code issue), report via report_to_deputy_cto`,
-    ``,
-    `## When Done`,
-    ``,
-    `1. Spawn project-manager to commit, push, create PR, self-merge, and clean up worktree`,
-    `2. Call mcp__todo-db__summarize_work with your results`,
-    taskId ? `3. Call mcp__todo-db__complete_task({ id: "${taskId}" })` : '',
-  ].filter(Boolean).join('\n');
-
-  // Store prompt
-  updateAgent(agentId, { prompt });
 
   try {
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--agent-name', 'demo-manager',
-      ...(fs.existsSync(agentMcpConfig) ? ['--mcp-config', agentMcpConfig] : []),
-      '--output-format', 'json',
-      '-p', prompt,
-    ], {
-      detached: true,
-      stdio: 'ignore',
+    enqueueSession({
+      title: `Demo repair: ${title} (${scenarioId})`,
+      agentType: AGENT_TYPES.TASK_RUNNER_DEMO_MANAGER,
+      hookType: HOOK_TYPES.DEMO_FAILURE,
+      tagContext: 'task-runner-demo-manager',
+      source: 'demo-failure-spawner',
+      priority: 'normal',
       cwd: worktreePath,
-      env: buildSpawnEnv(agentId, { projectDir: PROJECT_DIR }),
+      worktreePath,
+      projectDir: PROJECT_DIR,
+      mcpConfig: fs.existsSync(agentMcpConfig) ? agentMcpConfig : undefined,
+      extraArgs: ['--agent-name', 'demo-manager'],
+      metadata: { scenarioId, scenarioTitle: title, error, taskId },
+      buildPrompt: (agentId) => [
+        `[Task][task-runner-demo-manager][AGENT:${agentId}] You are a demo repair agent. A demo scenario failed.`,
+        ``,
+        `**Failed Scenario:**`,
+        `- ID: ${scenarioId}`,
+        `- Title: ${title}`,
+        `- Error: ${error || 'Unknown error'}`,
+        taskId ? `- Tracking Task: ${taskId}` : '',
+        ``,
+        `## Instructions`,
+        ``,
+        `Follow the repair protocol in your agent definition:`,
+        `1. Run preflight_check to verify environment`,
+        `2. Read the failed .demo.ts file`,
+        `3. Diagnose from the error output`,
+        `4. Fix the .demo.ts file`,
+        `5. Re-run the scenario headless to verify`,
+        `6. If you cannot fix it (app code issue), report via report_to_deputy_cto`,
+        ``,
+        `## When Done`,
+        ``,
+        `1. Spawn project-manager to commit, push, create PR, self-merge, and clean up worktree`,
+        `2. Call mcp__todo-db__summarize_work with your results`,
+        taskId ? `3. Call mcp__todo-db__complete_task({ id: "${taskId}" })` : '',
+      ].filter(Boolean).join('\n'),
     });
 
-    claude.unref();
-    updateAgent(agentId, { pid: claude.pid, status: 'running' });
-    log(`Spawned repair agent ${agentId} (PID ${claude.pid}) for scenario "${title}" (${scenarioId})`);
+    log(`Enqueued repair agent for scenario "${title}" (${scenarioId})`);
 
     // Background fetch for worktree
     try {
@@ -187,7 +174,7 @@ function spawnRepairAgent(scenario) {
 
     return true;
   } catch (err) {
-    log(`Failed to spawn repair agent for ${scenarioId}: ${err.message}`);
+    log(`Failed to enqueue repair agent for ${scenarioId}: ${err.message}`);
     return false;
   }
 }

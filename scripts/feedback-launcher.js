@@ -26,7 +26,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -35,6 +34,22 @@ const __dirname = path.dirname(__filename);
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const FRAMEWORK_PATH = path.resolve(__dirname, '..');
 const MCP_SERVERS_DIST = path.join(FRAMEWORK_PATH, 'packages', 'mcp-servers', 'dist');
+
+// Session queue and agent-tracker imports (resolved lazily to support different install models)
+let _enqueueSession = null;
+let _AGENT_TYPES = null;
+let _HOOK_TYPES = null;
+
+async function loadSpawnDependencies() {
+  if (_enqueueSession) return;
+  const queuePath = path.join(FRAMEWORK_PATH, '.claude', 'hooks', 'lib', 'session-queue.js');
+  const trackerPath = path.join(FRAMEWORK_PATH, '.claude', 'hooks', 'agent-tracker.js');
+  const queueMod = await import(queuePath);
+  const trackerMod = await import(trackerPath);
+  _enqueueSession = queueMod.enqueueSession;
+  _AGENT_TYPES = trackerMod.AGENT_TYPES;
+  _HOOK_TYPES = trackerMod.HOOK_TYPES;
+}
 
 // Parse CLI args
 function parseArgs() {
@@ -227,37 +242,33 @@ Do NOT try to debug or fix issues. Just report what you experience.`;
 
 /**
  * Spawn an isolated feedback agent session.
- * Fire-and-forget: the process is detached and unreferenced.
+ * Fire-and-forget: enqueues into the session queue for controlled concurrency.
  */
-function spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName) {
-  const spawnArgs = [
-    '--dangerously-skip-permissions',
-    '--tools', '',
-    '--strict-mcp-config',
-    '--mcp-config', mcpConfigPath,
-    '--model', 'sonnet',
-    '--output-format', 'json',
-    '-p',
-    prompt,
-  ];
+async function spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName) {
+  await loadSpawnDependencies();
 
-  const claude = spawn('claude', spawnArgs, {
-    detached: true,
-    stdio: 'ignore',
+  const { queueId } = _enqueueSession({
+    title: `Feedback agent: ${personaName} (session ${sessionId})`,
+    agentType: _AGENT_TYPES.FEEDBACK_ORCHESTRATOR,
+    hookType: _HOOK_TYPES.HOURLY_AUTOMATION,
+    tagContext: `feedback-persona-${personaName.replace(/[^a-z0-9]/gi, '-').toLowerCase()}`,
+    source: 'scripts-feedback-launcher',
+    prompt,
+    mcpConfig: mcpConfigPath,
+    model: 'sonnet',
     cwd: PROJECT_DIR,
-    env: {
-      ...process.env,
-      CLAUDE_PROJECT_DIR: PROJECT_DIR,
-      CLAUDE_SPAWNED_SESSION: 'true',
+    projectDir: PROJECT_DIR,
+    extraArgs: ['--tools', '', '--strict-mcp-config'],
+    extraEnv: {
       FEEDBACK_SESSION_ID: sessionId,
       FEEDBACK_PERSONA_NAME: personaName,
     },
+    priority: 'normal',
+    ttlMs: 60 * 60 * 1000, // 1 hour TTL for feedback sessions
   });
 
-  claude.unref();
-
   return {
-    pid: claude.pid,
+    queueId,
     mcpConfigPath,
   };
 }
@@ -312,16 +323,16 @@ async function main() {
   // Build persona-specific prompt
   const prompt = buildPrompt(persona, sessionId);
 
-  // Spawn isolated session
-  const result = spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, persona.name);
-  console.log(`Spawned feedback agent PID: ${result.pid}`);
+  // Enqueue isolated session
+  const result = await spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, persona.name);
+  console.log(`Enqueued feedback agent: ${result.queueId}`);
 
   // Output JSON for orchestrator consumption
   console.log(JSON.stringify({
     success: true,
     persona_name: persona.name,
     session_id: sessionId,
-    pid: result.pid,
+    queue_id: result.queueId,
     mcp_config: mcpConfigPath,
   }));
 }

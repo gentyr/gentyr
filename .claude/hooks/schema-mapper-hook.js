@@ -49,11 +49,11 @@
 
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { z } from 'zod';
-import { registerSpawn, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { getCooldown } from './config-reader.js';
+import { enqueueSession } from './lib/session-queue.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -318,47 +318,24 @@ function generatePrompt(params) {
 // ============================================================================
 
 function spawnFederationMapper(prompt, metadata) {
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.FEDERATION_MAPPER,
-    hookType: HOOK_TYPES.SCHEMA_MAPPER,
-    description: `Schema mapping: ${metadata.platform}/${metadata.entity} (fingerprint: ${metadata.fingerprint.substring(0, 8)})`,
-    prompt,
-    metadata,
-    projectDir: CONFIG.PROJECT_ROOT
-  });
-
-  console.log(`[schema-mapper] Spawning federation-mapper agent (${agentId})`);
+  console.log(`[schema-mapper] Enqueueing federation-mapper agent`);
   console.log(`[schema-mapper] Platform: ${metadata.platform}, Entity: ${metadata.entity}`);
   console.log(`[schema-mapper] Fingerprint: ${metadata.fingerprint}`);
 
-  // Use --output-format stream-json to get real-time structured output via pipes
-  const claude = spawn('claude', ['-p', prompt, '--output-format', 'stream-json'], {
+  const { queueId } = enqueueSession({
+    title: `Schema mapping: ${metadata.platform}/${metadata.entity} (fingerprint: ${metadata.fingerprint.substring(0, 8)})`,
+    agentType: AGENT_TYPES.FEDERATION_MAPPER,
+    hookType: HOOK_TYPES.SCHEMA_MAPPER,
+    tagContext: 'federation-mapper',
+    source: 'schema-mapper-hook',
+    prompt,
+    priority: 'normal',
     cwd: CONFIG.PROJECT_ROOT,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true
+    projectDir: CONFIG.PROJECT_ROOT,
+    metadata,
   });
 
-  claude.stdout.on('data', (data) => {
-    console.log(`[federation-mapper] ${data.toString()}`);
-  });
-
-  claude.stderr.on('data', (data) => {
-    console.error(`[federation-mapper] ${data.toString()}`);
-  });
-
-  claude.on('close', (code) => {
-    console.log(`[schema-mapper] federation-mapper agent exited with code ${code}`);
-  });
-
-  claude.on('error', (err) => {
-    console.error(`[schema-mapper] Failed to spawn claude: ${err.message}`);
-    console.error(`[schema-mapper] Ensure 'claude' CLI is installed and in PATH`);
-  });
-
-  // Detach so hook can exit
-  claude.unref();
-
-  return agentId;
+  return queueId;
 }
 
 // ============================================================================
@@ -412,8 +389,8 @@ async function triggerMapping(params) {
   setCooldown(platform, entity, fingerprint);
   incrementDailySpawns();
 
-  // Spawn agent
-  const agentId = spawnFederationMapper(prompt, {
+  // Enqueue agent
+  const queueId = spawnFederationMapper(prompt, {
     platform,
     entity,
     fingerprint,
@@ -423,7 +400,7 @@ async function triggerMapping(params) {
 
   return {
     triggered: true,
-    agentId,
+    queueId,
     fingerprint
   };
 }

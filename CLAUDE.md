@@ -389,9 +389,37 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 
 **Revival daemon** (`scripts/revival-daemon.js`): Persistent `fs.watch()` + polling daemon for sub-second crash detection. Integrated as a launchd/systemd service via `setup-automation-service.sh`.
 
-**Memory pressure rate limiting** (`lib/memory-pressure.js`): Shared module monitoring free RAM (macOS `vm_stat` / Linux `/proc/meminfo`). Blocks all spawning at critical pressure; defers non-urgent spawning at high pressure. Used by stop hook, session reviver, universal task spawner, and hourly automation.
+**Memory pressure rate limiting** (`lib/memory-pressure.js`): Shared module monitoring free RAM (macOS `vm_stat` / Linux `/proc/meminfo`). Blocks all spawning at critical pressure; defers non-urgent spawning at high pressure. Used by stop hook, session reviver, universal task spawner, hourly automation, and the session queue drain path.
 
 > Full details: [Automatic Session Recovery](docs/CLAUDE-REFERENCE.md#automatic-session-recovery)
+
+## Centralized Session Queue
+
+All agent spawning routes through a single SQLite-backed queue (`session-queue.db`). Every call site that previously called `registerSpawn() + spawn('claude', ...) + updateAgent()` now calls `enqueueSession()`. The queue enforces a global concurrency limit, priority ordering, and lane-based sub-limits.
+
+**Queue module** (`.claude/hooks/lib/session-queue.js`): Core module. DB at `.claude/state/session-queue.db` (WAL mode). Log at `.claude/session-queue.log`.
+
+**Schema**: `queue_items` table (status, priority, lane, spawn_type, agent_type, hook_type, prompt, model, cwd, pid, enqueued_at, spawned_at, completed_at, expires_at) + `queue_config` table (key/value for `max_concurrent_sessions`).
+
+**Priority ordering**: `critical` > `urgent` > `normal` > `low`.
+
+**Lane sub-limits**: The `gate` lane (Haiku gate agents) is capped at 5 concurrent regardless of the global limit.
+
+**Default TTL**: Queued items expire after 30 minutes if not drained.
+
+**Default concurrency**: 10 (configurable 1–50 via `set_max_concurrent_sessions` MCP tool or `/concurrent-sessions N` slash command).
+
+**4 MCP tools** (on `agent-tracker` server):
+- `get_session_queue_status` — running items (with PID liveness), queued items, capacity info, 24h throughput
+- `set_max_concurrent_sessions` — update global limit (1–50); takes effect on next drain cycle
+- `cancel_queued_session` — cancel a queued (not yet running) item by queue ID
+- `drain_session_queue` — trigger an immediate drain; useful after capacity becomes available
+
+**Dashboard integration**: `SessionQueueSection` React component on CTO Dashboard Page 1. Data read from `session-queue.db` via `packages/cto-dashboard/src/utils/session-queue-reader.ts`. Green/yellow/red color coding for capacity utilization.
+
+**Slash commands**: `/session-queue` (show queue status via `show_session_queue`) and `/concurrent-sessions [N]` (view or update concurrency limit).
+
+**Revival integration**: `scripts/revival-daemon.js` calls `drainQueue()` on agent death to unblock queued items when capacity frees up.
 
 ### Hook Output Format: `systemMessage` vs `additionalContext`
 

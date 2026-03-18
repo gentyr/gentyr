@@ -23,12 +23,12 @@
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
-import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { createWorktree } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
-import { buildSpawnEnv } from './lib/spawn-env.js';
 import { readRotationState } from './key-sync.js';
 import { shouldAllowSpawn } from './lib/memory-pressure.js';
+import { enqueueSession } from './lib/session-queue.js';
 
 // Try to import better-sqlite3 for DB access
 let Database = null;
@@ -414,7 +414,7 @@ Use the Task tool to spawn the appropriate sub-agent: \`Task(subagent_type='${ag
 }
 
 /**
- * Spawn a fire-and-forget Claude agent for a task.
+ * Enqueue a fire-and-forget Claude agent for a task.
  * Mirrors hourly-automation.js:1524-1587 but simplified for single-task use.
  */
 function spawnTaskAgent(task) {
@@ -422,8 +422,6 @@ function spawnTaskAgent(task) {
   if (!mapping) return false;
 
   // Worktree setup (best-effort)
-  let agentCwd = PROJECT_DIR;
-  let agentMcpConfig = path.join(PROJECT_DIR, '.mcp.json');
   let worktreePath = null;
 
   try {
@@ -431,49 +429,32 @@ function spawnTaskAgent(task) {
     // Phase 2: skipFetch for latency-critical spawning (drops 3-8s to <1s)
     const worktree = createWorktree(branchName, undefined, { skipFetch: true });
     worktreePath = worktree.path;
-    agentCwd = worktree.path;
-    agentMcpConfig = path.join(worktree.path, '.mcp.json');
     log(`Worktree ready at ${worktree.path} (branch ${branchName})`);
   } catch (err) {
     log(`Worktree creation failed, falling back to PROJECT_DIR: ${err.message}`);
   }
 
-  // Register first to get agentId for prompt embedding
-  const agentId = registerSpawn({
-    type: mapping.agentType,
-    hookType: HOOK_TYPES.TASK_RUNNER,
-    description: `Urgent task: ${mapping.agent} - ${task.title}`,
-    prompt: '',
-    projectDir: worktreePath || PROJECT_DIR,
-    metadata: { taskId: task.id, section: task.section, worktreePath, urgent: true },
-  });
-
-  const prompt = mapping.agent === 'deputy-cto'
-    ? buildDeputyCtoTaskPrompt(task, agentId)
-    : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath);
-
-  // Store prompt now that it's built
-  updateAgent(agentId, { prompt });
-
   try {
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--mcp-config', agentMcpConfig,
-      '--output-format', 'json',
-      '-p',
-      prompt,
-    ], {
-      detached: true,
-      stdio: 'ignore',
-      cwd: agentCwd,
-      env: buildSpawnEnv(agentId, { projectDir: PROJECT_DIR }),
+    enqueueSession({
+      title: `Urgent task: ${mapping.agent} - ${task.title}`,
+      agentType: mapping.agentType,
+      hookType: HOOK_TYPES.TASK_RUNNER,
+      tagContext: `task-runner-${mapping.agent}`,
+      source: 'urgent-task-spawner',
+      buildPrompt: (agentId) => mapping.agent === 'deputy-cto'
+        ? buildDeputyCtoTaskPrompt(task, agentId)
+        : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath),
+      priority: 'urgent',
+      cwd: worktreePath || PROJECT_DIR,
+      mcpConfig: path.join(worktreePath || PROJECT_DIR, '.mcp.json'),
+      projectDir: PROJECT_DIR,
+      worktreePath: worktreePath || null,
+      metadata: { taskId: task.id, section: task.section, worktreePath, urgent: true },
     });
 
-    claude.unref();
-    updateAgent(agentId, { pid: claude.pid, status: 'running' });
-    log(`Spawned ${mapping.agent} (PID ${claude.pid}) for task ${task.id}: "${task.title}"`);
+    log(`Enqueued ${mapping.agent} for task ${task.id}: "${task.title}"`);
 
-    // Phase 2: Background fetch after spawn — non-blocking, ensures worktree
+    // Phase 2: Background fetch after enqueue — non-blocking, ensures worktree
     // has fresh base branch for subsequent operations
     if (worktreePath) {
       try {
@@ -488,7 +469,7 @@ function spawnTaskAgent(task) {
 
     return true;
   } catch (err) {
-    log(`Failed to spawn ${mapping.agent} for task ${task.id}: ${err.message}`);
+    log(`Failed to enqueue ${mapping.agent} for task ${task.id}: ${err.message}`);
     return false;
   }
 }

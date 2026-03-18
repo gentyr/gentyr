@@ -14,6 +14,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execSync, execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import { openReadonlyDb } from '../shared/readonly-db.js';
 import {
@@ -28,6 +29,10 @@ import {
   ListSessionsArgsSchema,
   SearchSessionsArgsSchema,
   GetSessionSummaryArgsSchema,
+  GetSessionQueueStatusArgsSchema,
+  SetMaxConcurrentSessionsArgsSchema,
+  CancelQueuedSessionArgsSchema,
+  DrainSessionQueueArgsSchema,
   AGENT_TYPES,
   type ListSpawnedAgentsArgs,
   type GetAgentPromptArgs,
@@ -38,6 +43,10 @@ import {
   type GetConcurrencyStatusArgs,
   type ForceSpawnTasksArgs,
   type MonitorAgentsArgs,
+  type GetSessionQueueStatusArgs,
+  type SetMaxConcurrentSessionsArgs,
+  type CancelQueuedSessionArgs,
+  type DrainSessionQueueArgs,
   type ForceTriageReportsResult,
   type MonitorAgentsResult,
   type ListSpawnedAgentsResult,
@@ -1143,6 +1152,215 @@ function monitorAgents(args: MonitorAgentsArgs): MonitorAgentsResult {
 }
 
 // ============================================================================
+// Session Queue Tool Implementations
+// ============================================================================
+
+const QUEUE_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+
+interface QueueItemRow {
+  id: string;
+  status: string;
+  priority: string;
+  lane: string;
+  title: string;
+  agent_type: string;
+  source: string;
+  pid: number | null;
+  enqueued_at: string;
+  spawned_at: string | null;
+  completed_at: string | null;
+}
+
+interface QueueConfigRow {
+  value: string;
+}
+
+interface QueueCountRow {
+  cnt: number;
+}
+
+interface QueueAvgRow {
+  avg_secs: number | null;
+}
+
+interface QueueSourceRow {
+  source: string;
+  cnt: number;
+}
+
+function formatQueueElapsed(ms: number): string {
+  if (ms < 0) return '0s';
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const remainMins = mins % 60;
+  return `${hours}h${remainMins > 0 ? ` ${remainMins}m` : ''}`;
+}
+
+function isQueuePidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get full session queue status: running items, queued items, capacity, 24h stats.
+ */
+function getSessionQueueStatus(_args: GetSessionQueueStatusArgs): object | ErrorResult {
+  if (!fs.existsSync(QUEUE_DB_PATH)) {
+    return { hasData: false, message: 'Session queue database not found. Queue may not be initialized yet.' };
+  }
+
+  let db;
+  try {
+    db = openReadonlyDb(QUEUE_DB_PATH);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to open session queue database: ${message}` };
+  }
+
+  try {
+    const now = Date.now();
+
+    // Get config
+    const configRow = db.prepare('SELECT value FROM queue_config WHERE key = ?').get('max_concurrent_sessions') as QueueConfigRow | undefined;
+    const maxConcurrent = configRow ? parseInt(configRow.value, 10) : 10;
+
+    // Get running items, filter to alive PIDs
+    const runningRows = db.prepare("SELECT * FROM queue_items WHERE status = 'running' ORDER BY spawned_at ASC").all() as QueueItemRow[];
+    const aliveRunning = runningRows.filter(r => r.pid && isQueuePidAlive(r.pid));
+
+    // Get queued items
+    const queuedRows = db.prepare("SELECT * FROM queue_items WHERE status = 'queued' ORDER BY enqueued_at ASC").all() as QueueItemRow[];
+
+    // 24h stats
+    const completed24h = (db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status IN ('completed', 'failed') AND completed_at > datetime('now', '-24 hours')").get() as QueueCountRow).cnt;
+    const avgWait = db.prepare("SELECT AVG(CAST((julianday(spawned_at) - julianday(enqueued_at)) * 86400 AS INTEGER)) as avg_secs FROM queue_items WHERE spawned_at IS NOT NULL AND enqueued_at IS NOT NULL AND spawned_at > datetime('now', '-24 hours')").get() as QueueAvgRow;
+    const avgRun = db.prepare("SELECT AVG(CAST((julianday(completed_at) - julianday(spawned_at)) * 86400 AS INTEGER)) as avg_secs FROM queue_items WHERE completed_at IS NOT NULL AND spawned_at IS NOT NULL AND completed_at > datetime('now', '-24 hours')").get() as QueueAvgRow;
+    const bySourceRows = db.prepare("SELECT source, COUNT(*) as cnt FROM queue_items WHERE enqueued_at > datetime('now', '-24 hours') GROUP BY source ORDER BY cnt DESC LIMIT 10").all() as QueueSourceRow[];
+
+    return {
+      hasData: true,
+      maxConcurrent,
+      running: aliveRunning.length,
+      availableSlots: Math.max(0, maxConcurrent - aliveRunning.length),
+      queuedItems: queuedRows.map(item => ({
+        id: item.id,
+        title: item.title,
+        priority: item.priority,
+        lane: item.lane,
+        source: item.source,
+        waitTime: formatQueueElapsed(now - new Date(item.enqueued_at).getTime()),
+      })),
+      runningItems: aliveRunning.map(item => ({
+        id: item.id,
+        title: item.title,
+        source: item.source,
+        agentType: item.agent_type,
+        pid: item.pid,
+        elapsed: item.spawned_at ? formatQueueElapsed(now - new Date(item.spawned_at).getTime()) : 'unknown',
+      })),
+      stats: {
+        completedLast24h: completed24h,
+        avgWaitSeconds: Math.round(avgWait?.avg_secs ?? 0),
+        avgRunSeconds: Math.round(avgRun?.avg_secs ?? 0),
+        bySource: Object.fromEntries(bySourceRows.map(r => [r.source, r.cnt])),
+      },
+    };
+  } finally {
+    try { db.close(); } catch { /* best-effort */ }
+  }
+}
+
+/**
+ * Update the max concurrent sessions limit in the queue config.
+ */
+function setMaxConcurrentSessions(args: SetMaxConcurrentSessionsArgs): object | ErrorResult {
+  if (!fs.existsSync(QUEUE_DB_PATH)) {
+    return { error: 'Session queue database not found. Queue may not be initialized yet.' };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = new Database(QUEUE_DB_PATH);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to open session queue database: ${message}` };
+  }
+
+  try {
+    const configRow = db.prepare('SELECT value FROM queue_config WHERE key = ?').get('max_concurrent_sessions') as QueueConfigRow | undefined;
+    const oldMax = configRow ? parseInt(configRow.value, 10) : 10;
+    const newMax = args.max;
+
+    db.prepare("INSERT OR REPLACE INTO queue_config (key, value, updated_at) VALUES (?, ?, datetime('now'))").run('max_concurrent_sessions', String(newMax));
+
+    return { success: true, old: oldMax, new: newMax };
+  } finally {
+    try { db!.close(); } catch { /* best-effort */ }
+  }
+}
+
+/**
+ * Cancel a queued (not yet running) session queue item.
+ */
+function cancelQueuedSession(args: CancelQueuedSessionArgs): object | ErrorResult {
+  if (!fs.existsSync(QUEUE_DB_PATH)) {
+    return { error: 'Session queue database not found. Queue may not be initialized yet.' };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = new Database(QUEUE_DB_PATH);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to open session queue database: ${message}` };
+  }
+
+  try {
+    const item = db.prepare('SELECT id, status, title FROM queue_items WHERE id = ?').get(args.queue_id) as { id: string; status: string; title: string } | undefined;
+    if (!item) {
+      return { success: false, reason: `Queue item not found: ${args.queue_id}` };
+    }
+    if (item.status !== 'queued') {
+      return { success: false, reason: `Cannot cancel item with status '${item.status}' — only 'queued' items can be cancelled` };
+    }
+
+    db.prepare("UPDATE queue_items SET status = 'cancelled', completed_at = datetime('now'), error = 'manually cancelled' WHERE id = ?").run(args.queue_id);
+
+    return { success: true, id: args.queue_id, title: item.title };
+  } finally {
+    try { db!.close(); } catch { /* best-effort */ }
+  }
+}
+
+/**
+ * Drain the session queue: attempt to spawn queued items up to capacity.
+ * Dynamically imports the session-queue.js module to use the live drainQueue function.
+ */
+async function drainSessionQueue(_args: DrainSessionQueueArgs): Promise<object | ErrorResult> {
+  const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+
+  if (!fs.existsSync(queueModulePath)) {
+    return { error: `session-queue.js not found at ${queueModulePath}` };
+  }
+
+  try {
+    const queueModule = await import(queueModulePath);
+    const result = queueModule.drainQueue();
+    return { success: true, ...result };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to drain session queue: ${message}` };
+  }
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -1215,11 +1433,36 @@ const tools: AnyToolHandler[] = [
     schema: GetSessionSummaryArgsSchema,
     handler: getSessionSummary,
   },
+  // Session Queue Tools
+  {
+    name: 'get_session_queue_status',
+    description: 'Get the current session queue status: running items (with PID liveness), queued items, capacity info, and 24h throughput stats.',
+    schema: GetSessionQueueStatusArgsSchema,
+    handler: getSessionQueueStatus,
+  },
+  {
+    name: 'set_max_concurrent_sessions',
+    description: 'Update the maximum number of concurrent sessions the queue will spawn (1-50). Takes effect immediately on the next drain cycle.',
+    schema: SetMaxConcurrentSessionsArgsSchema,
+    handler: setMaxConcurrentSessions,
+  },
+  {
+    name: 'cancel_queued_session',
+    description: 'Cancel a queued (not yet running) session queue item by its queue ID. Returns success/failure with reason.',
+    schema: CancelQueuedSessionArgsSchema,
+    handler: cancelQueuedSession,
+  },
+  {
+    name: 'drain_session_queue',
+    description: 'Trigger an immediate drain of the session queue, spawning queued items up to the concurrency limit. Useful after capacity becomes available.',
+    schema: DrainSessionQueueArgsSchema,
+    handler: drainSessionQueue,
+  },
 ];
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '4.0.0',  // Added concurrency status + force-spawn tools
+  version: '4.1.0',  // Added session queue tools
   tools,
 });
 
