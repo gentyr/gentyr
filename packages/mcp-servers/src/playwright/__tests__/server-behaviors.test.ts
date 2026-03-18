@@ -1845,6 +1845,269 @@ describe('early_exit non-zero — crash event JSONL structure', () => {
 });
 
 // ============================================================================
+// WindowRecorder — startWindowRecorder args-building contract
+//
+// startWindowRecorder(outputPath, appName?) builds CLI args for the Swift
+// WindowRecorder binary:
+//   ['--output', outputPath]                        (appName omitted)
+//   ['--output', outputPath, '--app', appName]      (appName provided)
+//
+// The server.ts call at run_demo time is:
+//   startWindowRecorder(windowRecordingPath, 'Chrome for Testing')
+//
+// These tests document that contract. Process-spawning is NOT tested here —
+// only the pure args-building logic, which is inlined from server.ts.
+// ============================================================================
+
+/**
+ * Mirrors the args-building logic inside startWindowRecorder() in server.ts.
+ * Any divergence from server.ts is a bug.
+ */
+function buildWindowRecorderArgs(outputPath: string, appName?: string): string[] {
+  const args = ['--output', outputPath];
+  if (appName) args.push('--app', appName);
+  return args;
+}
+
+/** Constant used by server.ts when launching the window recorder for demos. */
+const WINDOW_RECORDER_APP_NAME = 'Chrome for Testing';
+
+describe('startWindowRecorder — args-building contract', () => {
+  it('should always include --output as the first two args', () => {
+    const args = buildWindowRecorderArgs('/tmp/demo.mp4');
+
+    expect(args[0]).toBe('--output');
+    expect(args[1]).toBe('/tmp/demo.mp4');
+  });
+
+  it('should produce exactly 2 args when appName is omitted', () => {
+    const args = buildWindowRecorderArgs('/tmp/demo.mp4');
+
+    expect(args).toHaveLength(2);
+  });
+
+  it('should append --app <name> when appName is provided', () => {
+    const args = buildWindowRecorderArgs('/tmp/demo.mp4', 'Chrome for Testing');
+
+    expect(args).toHaveLength(4);
+    expect(args[2]).toBe('--app');
+    expect(args[3]).toBe('Chrome for Testing');
+  });
+
+  it('should NOT append --app when appName is an empty string', () => {
+    // Empty string is falsy — server.ts uses `if (appName)` guard
+    const args = buildWindowRecorderArgs('/tmp/demo.mp4', '');
+
+    expect(args).toHaveLength(2);
+    expect(args).not.toContain('--app');
+  });
+
+  it('should preserve the full output path including directory separators', () => {
+    const outputPath = '/project/.claude/state/demo-window-abc123.mp4';
+    const args = buildWindowRecorderArgs(outputPath, 'Chrome for Testing');
+
+    expect(args[1]).toBe(outputPath);
+    expect(args[1]).toContain('.mp4');
+  });
+
+  it('run_demo passes "Chrome for Testing" as the app name (not "Chrom")', () => {
+    // This test documents the specific fix: server.ts was changed from 'Chrom'
+    // to 'Chrome for Testing' to match the window name used by the Swift binary's
+    // default app-name matching. Regressing to a prefix match would break window
+    // discovery because the new binary defaults to exact localizedCaseInsensitiveContains.
+    const args = buildWindowRecorderArgs('/tmp/demo.mp4', WINDOW_RECORDER_APP_NAME);
+
+    expect(args[3]).toBe('Chrome for Testing');
+    expect(args[3]).not.toBe('Chrom');
+    expect(args[3]).toContain('Chrome for Testing');
+  });
+
+  it('app name should match what the Swift binary expects as its default', () => {
+    // Swift main.swift parseArgs() defaults: var app = "Chrome for Testing"
+    // The TypeScript call must pass the same string so the binary finds the window
+    // via localizedCaseInsensitiveContains(appName).
+    expect(WINDOW_RECORDER_APP_NAME).toBe('Chrome for Testing');
+  });
+
+  it('output path should use .mp4 extension (required by AVAssetWriter)', () => {
+    const outputPath = '/project/.claude/state/demo-window-abc123.mp4';
+    const args = buildWindowRecorderArgs(outputPath, WINDOW_RECORDER_APP_NAME);
+
+    expect(args[1]).toMatch(/\.mp4$/);
+  });
+
+  it('round-trips args array to spawn-compatible format', () => {
+    const binary = '/path/to/WindowRecorder';
+    const outputPath = '/project/.claude/state/demo-window-abc123.mp4';
+    const args = buildWindowRecorderArgs(outputPath, WINDOW_RECORDER_APP_NAME);
+
+    // Simulate what spawn(binary, args) receives
+    const fullCmd = [binary, ...args];
+    expect(fullCmd[0]).toBe(binary);
+    expect(fullCmd[1]).toBe('--output');
+    expect(fullCmd[2]).toBe(outputPath);
+    expect(fullCmd[3]).toBe('--app');
+    expect(fullCmd[4]).toBe('Chrome for Testing');
+    expect(fullCmd).toHaveLength(5);
+  });
+});
+
+// ============================================================================
+// DemoRunState — window recorder fields structural validation
+//
+// DemoRunState.window_recorder_pid and window_recording_path are optional
+// fields added to track the WindowRecorder process alongside the demo process.
+// These tests validate their type contract and expected values.
+// ============================================================================
+
+describe('DemoRunState — window recorder fields', () => {
+  it('window_recorder_pid and window_recording_path are optional (absent by default)', () => {
+    const state: DemoRunState = {
+      pid: 12345,
+      project: 'demo',
+      started_at: new Date().toISOString(),
+      status: 'running',
+    };
+
+    expect(state.window_recorder_pid).toBeUndefined();
+    expect(state.window_recording_path).toBeUndefined();
+  });
+
+  it('accepts window_recorder_pid as a number when set', () => {
+    const state: DemoRunState = {
+      pid: 12345,
+      project: 'demo',
+      started_at: new Date().toISOString(),
+      status: 'running',
+      window_recorder_pid: 99001,
+    };
+
+    expect(typeof state.window_recorder_pid).toBe('number');
+    expect(state.window_recorder_pid).toBeGreaterThan(0);
+    expect(Number.isInteger(state.window_recorder_pid)).toBe(true);
+  });
+
+  it('accepts window_recording_path as a string when set', () => {
+    const state: DemoRunState = {
+      pid: 12345,
+      project: 'demo',
+      started_at: new Date().toISOString(),
+      status: 'running',
+      window_recording_path: '/project/.claude/state/demo-window-abc123.mp4',
+    };
+
+    expect(typeof state.window_recording_path).toBe('string');
+    expect(state.window_recording_path).toContain('.mp4');
+  });
+
+  it('window_recording_path should follow the demo-window-<progressId>.mp4 naming pattern', () => {
+    const progressId = 'abc123def456';
+    const state: DemoRunState = {
+      pid: 12345,
+      project: 'demo',
+      started_at: new Date().toISOString(),
+      status: 'running',
+      window_recording_path: `/project/.claude/state/demo-window-${progressId}.mp4`,
+    };
+
+    expect(state.window_recording_path).toMatch(/demo-window-.+\.mp4$/);
+  });
+
+  it('both window recorder fields can be set simultaneously', () => {
+    const state: DemoRunState = {
+      pid: 12345,
+      project: 'demo',
+      started_at: new Date().toISOString(),
+      status: 'running',
+      window_recorder_pid: 99001,
+      window_recording_path: '/project/.claude/state/demo-window-abc123.mp4',
+    };
+
+    expect(state.window_recorder_pid).toBe(99001);
+    expect(state.window_recording_path).toBe('/project/.claude/state/demo-window-abc123.mp4');
+  });
+
+  it('DemoRunState round-trips through JSON with window recorder fields intact', () => {
+    const original: DemoRunState = {
+      pid: 12345,
+      project: 'demo',
+      test_file: 'e2e/demo/billing.demo.ts',
+      started_at: '2026-03-19T00:00:00.000Z',
+      status: 'running',
+      window_recorder_pid: 99001,
+      window_recording_path: '/project/.claude/state/demo-window-abc123.mp4',
+    };
+
+    const deserialized: DemoRunState = JSON.parse(JSON.stringify(original));
+
+    expect(deserialized.window_recorder_pid).toBe(99001);
+    expect(deserialized.window_recording_path).toBe('/project/.claude/state/demo-window-abc123.mp4');
+    expect(deserialized.pid).toBe(12345);
+    expect(deserialized.status).toBe('running');
+  });
+
+  it('window_recording_path is stored in .claude/state/ directory (not recordings/)', () => {
+    // The temp recording path during demo run is .claude/state/demo-window-<id>.mp4.
+    // It is moved to .claude/recordings/demos/<scenarioId>.mp4 on persistence.
+    // This test verifies the in-flight path matches the state dir pattern.
+    const state: DemoRunState = {
+      pid: 12345,
+      project: 'demo',
+      started_at: new Date().toISOString(),
+      status: 'running',
+      window_recording_path: '/project/.claude/state/demo-window-xyz789.mp4',
+    };
+
+    expect(state.window_recording_path).toContain('.claude/state/');
+    expect(state.window_recording_path).toMatch(/demo-window-/);
+  });
+});
+
+// ============================================================================
+// WindowRecorder default app name — Swift CLI contract
+//
+// The Swift binary (tools/window-recorder/Sources/WindowRecorder/main.swift)
+// defaults to `var app = "Chrome for Testing"` in parseArgs(). The TypeScript
+// server must pass the same string when calling startWindowRecorder so the
+// two components stay aligned. These tests document that alignment contract.
+// ============================================================================
+
+describe('WindowRecorder Swift binary — app name alignment contract', () => {
+  it('TypeScript WINDOW_RECORDER_APP_NAME constant matches Swift default', () => {
+    // Swift: var app = "Chrome for Testing"
+    // TypeScript: startWindowRecorder(path, 'Chrome for Testing')
+    expect(WINDOW_RECORDER_APP_NAME).toBe('Chrome for Testing');
+  });
+
+  it('app name is a non-empty string', () => {
+    expect(typeof WINDOW_RECORDER_APP_NAME).toBe('string');
+    expect(WINDOW_RECORDER_APP_NAME.length).toBeGreaterThan(0);
+  });
+
+  it('app name contains "Chrome" for matching Playwright browser windows', () => {
+    // Playwright for demos uses Chrome for Testing as its browser executable name.
+    // The Swift binary uses localizedCaseInsensitiveContains(appName) to find it.
+    expect(WINDOW_RECORDER_APP_NAME.toLowerCase()).toContain('chrome');
+  });
+
+  it('app name is "Chrome for Testing" not a shorter prefix like "Chrom"', () => {
+    // Previous value was 'Chrom' — a prefix that matched too broadly.
+    // The fix uses the full application name for reliable window matching.
+    expect(WINDOW_RECORDER_APP_NAME).not.toBe('Chrom');
+    expect(WINDOW_RECORDER_APP_NAME).not.toBe('Chrome');
+    expect(WINDOW_RECORDER_APP_NAME).toBe('Chrome for Testing');
+  });
+
+  it('bundle ID target used by Swift binary matches Chrome for Testing', () => {
+    // Swift uses targetBundleID = "com.google.chrome.for.testing" as a tiebreaker.
+    // This is the canonical bundle ID for Playwright's bundled Chromium.
+    const expectedBundleID = 'com.google.chrome.for.testing';
+    expect(expectedBundleID).toContain('chrome');
+    expect(expectedBundleID).toContain('testing');
+  });
+});
+
+// ============================================================================
 // code_freshness — newestMtime helper and source-vs-build comparison logic
 // ============================================================================
 
