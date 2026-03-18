@@ -1564,19 +1564,31 @@ ${task.description ? `- **Description**: ${task.description}` : ''}`;
 ## Working Directory
 
 You are in a git worktree at: ${worktreePath}
-All git operations (commit, push, PR, merge) are handled by the project-manager sub-agent.
+All git operations (commit, push, PR, merge, worktree cleanup) are handled by the project-manager sub-agent.
 You MUST NOT run git add, git commit, git push, or gh pr create yourself.
+CRITICAL: You MUST spawn the project-manager before completing your task. The project-manager
+is responsible for merging your work AND removing this worktree. If you skip it, the worktree
+will be orphaned and your changes will not be merged.
 ` : '';
 
   const completionBlock = `## When Done
 
-### Step 1: Summarize Your Work (MANDATORY)
+### Step 1: Run project-manager (MANDATORY for code/test changes)
+If you made ANY file changes (code, tests, config), you MUST spawn the project-manager sub-agent
+BEFORE completing the task. The project-manager commits, pushes, creates a PR, self-merges,
+and removes the worktree. Skipping this step leaves orphaned worktrees and unmerged code.
+\`\`\`
+Task(subagent_type='project-manager', prompt='Commit all changes, push, create PR, self-merge, and clean up the worktree.')
+\`\`\`
+If no file changes were made (investigation/research only), skip to Step 2.
+
+### Step 2: Summarize Your Work (MANDATORY)
 \`\`\`
 mcp__todo-db__summarize_work({ summary: "<concise description of what you did and the outcome>", success: true/false })
 \`\`\`
 task_id is auto-resolved from your CLAUDE_AGENT_ID — do not pass it manually.
 
-### Step 2: Mark Task Complete
+### Step 3: Mark Task Complete
 \`\`\`
 mcp__todo-db__complete_task({ id: "${task.id}" })
 \`\`\`
@@ -3722,8 +3734,14 @@ Then exit.`;
       let scenarios;
       try {
         const db = new Database(feedbackDbPath, { readonly: true });
+        // Check if env_vars column exists
+        let hasEnvVars = false;
+        try { db.prepare('SELECT env_vars FROM demo_scenarios LIMIT 0').run(); hasEnvVars = true; } catch { /* column not yet migrated */ }
+        const cols = hasEnvVars
+          ? 'ds.id, ds.title, ds.test_file, ds.persona_id, ds.playwright_project, ds.category, ds.env_vars'
+          : 'ds.id, ds.title, ds.test_file, ds.persona_id, ds.playwright_project, ds.category';
         scenarios = db.prepare(`
-          SELECT ds.id, ds.title, ds.test_file, ds.persona_id, ds.playwright_project, ds.category
+          SELECT ${cols}
           FROM demo_scenarios ds
           WHERE ds.enabled = 1
         `).all();
@@ -3811,6 +3829,11 @@ Then exit.`;
       const results = [];
       for (const scenario of runnableScenarios) {
         const startTime = Date.now();
+        // Parse scenario env_vars if present
+        let scenarioEnv = {};
+        if (scenario.env_vars) {
+          try { scenarioEnv = JSON.parse(scenario.env_vars); } catch { /* invalid JSON */ }
+        }
         try {
           execFileSync('npx', [
             'playwright', 'test',
@@ -3820,7 +3843,7 @@ Then exit.`;
           ], {
             timeout: 120_000,
             cwd: PROJECT_DIR,
-            env: { ...buildSpawnEnv('demo-validation'), DEMO_HEADLESS: '1', DEMO_SLOW_MO: '0' },
+            env: { ...buildSpawnEnv('demo-validation'), DEMO_HEADLESS: '1', DEMO_SLOW_MO: '0', ...scenarioEnv },
             encoding: 'utf8',
             stdio: ['pipe', 'pipe', 'pipe'],
           });

@@ -382,6 +382,9 @@ CREATE TABLE IF NOT EXISTS demo_scenarios (
     created_at TEXT NOT NULL,
     created_timestamp TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    last_recorded_at TEXT,
+    recording_path TEXT,
+    env_vars TEXT,
     FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE
 );
 

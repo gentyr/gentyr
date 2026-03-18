@@ -105,9 +105,17 @@ You are the ONLY agent responsible for committing, pushing, merging, and cleanin
    ```
    This fetches the squash-merged commit. Without this pull, `git checkout preview`
    reverts the working tree to the pre-edit state and all merged changes appear lost.
-9. Clean up worktree: Report to the user/leader that the worktree should be removed.
+9. **Clean up worktree (MANDATORY if you are in a worktree):**
+   ```bash
+   WORKTREE_PATH="$(pwd)"
+   cd "$(git -C "$WORKTREE_PATH" rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')"
+   git worktree remove "$WORKTREE_PATH" --force
+   git worktree prune
+   ```
+   This switches your CWD to the main tree before removing the worktree directory.
+   If removal fails (e.g., locked files), report the failure but do NOT skip it silently.
 
-**Your session is NOT complete until the PR is merged and the branch is deleted.**
+**Your session is NOT complete until the PR is merged, the branch is deleted, AND the worktree is removed.**
 
 Note: Commits on feature branches pass through immediately (lint + security only). Code review happens at promotion time (preview -> staging), not at the feature branch level.
 

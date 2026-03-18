@@ -374,6 +374,8 @@ export const CreateScenarioArgsSchema = z.object({
     .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
     .describe('Relative path to the .demo.ts file (e.g., e2e/demo/vendor-onboarding.demo.ts)'),
   sort_order: z.coerce.number().int().min(0).max(999).optional().default(0).describe('Display order within persona'),
+  env_vars: z.record(z.string(), z.string()).optional()
+    .describe('Environment variables to inject when running this scenario (e.g., {"AZURE_DEMO": "1"}). Max 10 keys.'),
 });
 
 export const UpdateScenarioArgsSchema = z.object({
@@ -387,6 +389,8 @@ export const UpdateScenarioArgsSchema = z.object({
     .optional(),
   sort_order: z.coerce.number().int().min(0).max(999).optional(),
   enabled: z.coerce.boolean().optional(),
+  env_vars: z.record(z.string(), z.string()).nullable().optional()
+    .describe('Environment variables for this scenario. Set to null to clear. Max 10 keys.'),
 });
 
 export const DeleteScenarioArgsSchema = z.object({
@@ -425,6 +429,7 @@ export interface ScenarioRecord {
   updated_at: string;
   last_recorded_at: string | null;
   recording_path: string | null;
+  env_vars: string | null; // JSON object string
 }
 
 export interface ScenarioResult {
@@ -442,6 +447,7 @@ export interface ScenarioResult {
   persona_name?: string;
   last_recorded_at: string | null;
   recording_path: string | null;
+  env_vars: Record<string, string> | null;
 }
 
 // ============================================================================

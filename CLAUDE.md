@@ -120,7 +120,7 @@ After committing, the project-manager agent:
 1. Pushes the branch: `git push -u origin HEAD`
 2. Creates a PR to the appropriate base branch (`preview` in target projects, `main` in the gentyr repo): `gh pr create --base <base> --head <branch> --title "..."`
 3. **Self-merges immediately**: `gh pr merge <number> --squash --delete-branch`
-4. Cleans up the worktree and local branch
+4. Syncs the base branch, deletes the local feature branch, and runs `git worktree remove --force` + `git worktree prune` to remove the worktree. Session is NOT complete until worktree is removed.
 
 Code review happens at promotion time (preview -> staging), not at the feature branch level.
 
@@ -175,6 +175,8 @@ Task(subagent_type: "code-writer", ...)
 **Agent separation**: The gentyr repo uses repo-specific agents from `.claude/agents/` (e.g., project-manager merges to `main`). Target projects use shared agents from the `agents/` directory (e.g., project-manager merges to `preview`). Shared agents are symlinked into `.claude/agents/` in the gentyr repo for local use.
 
 **Commit ownership**: Only the project-manager agent and interactive (CTO) sessions commit. Code-reviewer, code-writer, and test-writer agents do NOT commit — they write/review code and leave git operations to the project-manager. The `uncommitted-change-monitor.js` hook warns after 5 uncommitted file edits; interactive sessions should treat these warnings as mandatory and commit immediately.
+
+**Mandatory project-manager spawn**: Agents running in worktrees (spawned by `hourly-automation.js` or `urgent-task-spawner.js`) are required to spawn the project-manager sub-agent BEFORE calling `summarize_work` or `complete_task`, if they made any file changes. This hard gate is injected into every spawned agent's task prompt. Skipping it leaves orphaned worktrees and unmerged code. Investigation/research-only agents that made no file changes are exempt.
 
 ## Propagation to Linked Projects
 
@@ -485,7 +487,7 @@ Register setup commands that must run before demos. Prerequisites are idempotent
 **Flow:**
 1. Query enabled scenarios from `user-feedback.db`
 2. Run global prerequisites
-3. Execute each scenario headless (`DEMO_HEADLESS=1, DEMO_SLOW_MO=0`)
+3. Execute each scenario headless (`DEMO_HEADLESS=1, DEMO_SLOW_MO=0`); scenario `env_vars` are merged into the execution environment
 4. Persist results to `.claude/state/demo-validation-history.json` (last 100 runs)
 5. Spawn `demo-manager` repair agents (max 3) for failures in isolated worktrees
 6. Report failures to deputy-CTO via `agent-reports`

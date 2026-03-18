@@ -707,6 +707,16 @@ async function executePrerequisites(opts: {
       return { success: true, total: prerequisites.length, passed: 0, failed: 0, skipped: prerequisites.length, entries, message: `Dry run: ${prerequisites.length} prerequisite(s) would execute` };
     }
 
+    // Resolve 1Password secrets for prerequisite commands (non-fatal)
+    let resolvedEnv: Record<string, string> = {};
+    try {
+      const config = loadServicesConfig(PROJECT_DIR);
+      const result = resolveLocalSecrets(config);
+      resolvedEnv = result.resolvedEnv;
+    } catch {
+      // Secret resolution unavailable — prerequisites run with process.env only
+    }
+
     // Execute each prerequisite
     let passed = 0;
     let failed = 0;
@@ -753,7 +763,7 @@ async function executePrerequisites(opts: {
             cwd: PROJECT_DIR,
             detached: true,
             stdio: 'ignore',
-            env: { ...process.env },
+            env: { ...process.env, ...resolvedEnv },
           });
           child.unref();
 
@@ -801,6 +811,7 @@ async function executePrerequisites(opts: {
               timeout: prereq.timeout_ms,
               stdio: 'pipe',
               encoding: 'utf8',
+              env: { ...process.env, ...resolvedEnv },
             });
             entry.command_result = 'passed';
           } catch (err) {
@@ -901,9 +912,30 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     };
   }
 
+  // Look up scenario env_vars if scenario_id is provided
+  let scenarioEnvVars: Record<string, string> | undefined;
+  if (args.scenario_id) {
+    try {
+      const feedbackDbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+      if (fs.existsSync(feedbackDbPath)) {
+        const feedbackDb = new Database(feedbackDbPath, { readonly: true });
+        try {
+          const row = feedbackDb.prepare('SELECT env_vars FROM demo_scenarios WHERE id = ?').get(args.scenario_id) as { env_vars: string | null } | undefined;
+          if (row?.env_vars) {
+            try { scenarioEnvVars = JSON.parse(row.env_vars); } catch { /* invalid JSON */ }
+          }
+        } catch { /* env_vars column may not exist yet */ }
+        feedbackDb.close();
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  // Merge env_vars: scenario env_vars as base, explicit extra_env overrides
+  const mergedExtraEnv = { ...scenarioEnvVars, ...args.extra_env };
+
   // Validate extra_env before building the environment
-  if (args.extra_env) {
-    const validationError = validateExtraEnv(args.extra_env);
+  if (Object.keys(mergedExtraEnv).length > 0) {
+    const validationError = validateExtraEnv(mergedExtraEnv);
     if (validationError) {
       return { success: false, project, message: validationError };
     }
@@ -918,7 +950,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     headless: args.headless,
     base_url,
     trace: args.trace,
-    extra_env: args.extra_env,
+    extra_env: Object.keys(mergedExtraEnv).length > 0 ? mergedExtraEnv : undefined,
     progress_file: progressFilePath,
   });
 
@@ -3630,7 +3662,7 @@ function discoverScenarios(opts: {
   scenario_ids?: string[];
   persona_ids?: string[];
   category_filter?: string;
-}): Array<{ id: string; title: string; test_file: string; persona_id?: string }> {
+}): Array<{ id: string; title: string; test_file: string; persona_id?: string; env_vars?: Record<string, string> }> {
   const dbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
   if (!fs.existsSync(dbPath)) return [];
 
@@ -3642,7 +3674,13 @@ function discoverScenarios(opts: {
     ).get() as { name: string } | undefined;
     if (!tableCheck) return [];
 
-    let query = 'SELECT id, title, test_file, persona_id FROM demo_scenarios WHERE enabled = 1';
+    // Check if env_vars column exists
+    let hasEnvVars = false;
+    try { db.prepare('SELECT env_vars FROM demo_scenarios LIMIT 0').run(); hasEnvVars = true; } catch { /* column not yet migrated */ }
+
+    let query = hasEnvVars
+      ? 'SELECT id, title, test_file, persona_id, env_vars FROM demo_scenarios WHERE enabled = 1'
+      : 'SELECT id, title, test_file, persona_id FROM demo_scenarios WHERE enabled = 1';
     const params: string[] = [];
 
     if (opts.scenario_ids?.length) {
@@ -3665,14 +3703,21 @@ function discoverScenarios(opts: {
     query += ' ORDER BY sort_order ASC, title ASC';
 
     const rows = db.prepare(query).all(...params) as Array<{
-      id: string; title: string; test_file: string; persona_id: string | null;
+      id: string; title: string; test_file: string; persona_id: string | null; env_vars?: string | null;
     }>;
-    return rows.map(r => ({
-      id: r.id,
-      title: r.title,
-      test_file: r.test_file,
-      persona_id: r.persona_id ?? undefined,
-    }));
+    return rows.map(r => {
+      let envVars: Record<string, string> | undefined;
+      if (r.env_vars) {
+        try { envVars = JSON.parse(r.env_vars); } catch { /* invalid JSON */ }
+      }
+      return {
+        id: r.id,
+        title: r.title,
+        test_file: r.test_file,
+        persona_id: r.persona_id ?? undefined,
+        env_vars: envVars,
+      };
+    });
   } finally {
     db.close();
   }
@@ -3682,7 +3727,7 @@ function discoverScenarios(opts: {
  * Run a batch of demo scenarios sequentially.
  * Each batch gets its own output directory to prevent Playwright's cleanup from destroying previous recordings.
  */
-async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs): Promise<void> {
+async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, scenarioEnvMap?: Map<string, Record<string, string>>): Promise<void> {
   const batchSize = args.batch_size ?? 5;
   const scenarios = state.scenarios;
   const totalBatches = Math.ceil(scenarios.length / batchSize);
@@ -3710,6 +3755,18 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs): 
     const progressFile = path.join(PROJECT_DIR, '.claude', 'state', `demo-batch-progress-${progressId}.jsonl`);
     state.current_progress_file = progressFile;
 
+    // Union env_vars from all scenarios in this batch
+    let batchEnvVars: Record<string, string> | undefined;
+    if (scenarioEnvMap?.size) {
+      for (const s of batchScenarios) {
+        const ev = scenarioEnvMap.get(s.scenario_id);
+        if (ev) {
+          if (!batchEnvVars) batchEnvVars = {};
+          Object.assign(batchEnvVars, ev);
+        }
+      }
+    }
+
     // Build environment
     const env = buildDemoEnv({
       slow_mo: args.slow_mo,
@@ -3717,6 +3774,7 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs): 
       base_url: args.base_url,
       trace: args.trace,
       progress_file: progressFile,
+      extra_env: batchEnvVars,
     });
 
     // Build command args — include all test files in this batch
@@ -3928,6 +3986,14 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
   const batchSize = args.batch_size ?? 5;
   const totalBatches = Math.ceil(scenarios.length / batchSize);
 
+  // Build scenario env_vars map for batch execution
+  const scenarioEnvMap = new Map<string, Record<string, string>>();
+  for (const s of scenarios) {
+    if (s.env_vars && Object.keys(s.env_vars).length > 0) {
+      scenarioEnvMap.set(s.id, s.env_vars);
+    }
+  }
+
   const batchScenarios: BatchScenarioResult[] = scenarios.map(s => ({
     scenario_id: s.id,
     scenario_title: s.title,
@@ -3958,7 +4024,7 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
   resetBatchAutoKillTimer(batchId);
 
   // Start background execution (non-blocking)
-  runBatchSequence(state, args).catch((err) => {
+  runBatchSequence(state, args, scenarioEnvMap).catch((err) => {
     state.status = 'failed';
     state.ended_at = new Date().toISOString();
     process.stderr.write(`[playwright] Batch ${batchId} crashed: ${err instanceof Error ? err.message : err}\n`);

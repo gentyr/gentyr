@@ -387,6 +387,11 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     } catch {
       db.exec("ALTER TABLE demo_scenarios ADD COLUMN recording_path TEXT");
     }
+    try {
+      db.prepare("SELECT env_vars FROM demo_scenarios LIMIT 0").run();
+    } catch {
+      db.exec("ALTER TABLE demo_scenarios ADD COLUMN env_vars TEXT");
+    }
 
     // Auto-migration: create demo_prerequisites table if missing
     try {
@@ -441,6 +446,33 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   }
 
   // ============================================================================
+  // Helper: env_vars validation (must match playwright/helpers.ts EXTRA_ENV_BLOCKED_PREFIXES)
+  // ============================================================================
+
+  const ENV_VARS_BLOCKED_PREFIXES = [
+    'PATH', 'HOME', 'USER', 'SHELL',
+    'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS',
+    'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_',
+    'SUPABASE_', 'DATABASE_', 'NEXT_PUBLIC_SUPABASE_',
+    'GITHUB_TOKEN', 'CLOUDFLARE_', 'CODECOV_', 'RESEND_',
+    'OP_SERVICE_ACCOUNT_TOKEN', 'GENTYR_',
+    'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY',
+    'DEMO_SLOW_MO', 'DEMO_PAUSE_AT_END', 'DEMO_HEADLESS',
+    'DEMO_SHOW_CURSOR', 'DEMO_PROGRESS_FILE', 'DEMO_RECORD_VIDEO', 'DEMO_MAXIMIZE',
+    'PLAYWRIGHT_BASE_URL', 'CLAUDE_',
+  ];
+
+  function validateScenarioEnvVars(envVars: Record<string, string>): string | null {
+    const keys = Object.keys(envVars);
+    if (keys.length > 10) return 'env_vars: max 10 keys allowed';
+    const blocked = keys.filter(k =>
+      ENV_VARS_BLOCKED_PREFIXES.some(prefix => k === prefix || k.startsWith(prefix)),
+    );
+    if (blocked.length > 0) return `env_vars: blocked keys: ${blocked.join(', ')}`;
+    return null;
+  }
+
+  // ============================================================================
   // Helper: Record to Result Conversion
   // ============================================================================
 
@@ -473,6 +505,10 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   }
 
   function scenarioToResult(record: ScenarioRecord, personaName?: string): ScenarioResult {
+    let envVars: Record<string, string> | null = null;
+    if (record.env_vars) {
+      try { envVars = JSON.parse(record.env_vars); } catch { /* invalid JSON, treat as null */ }
+    }
     return {
       id: record.id,
       persona_id: record.persona_id,
@@ -488,6 +524,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       persona_name: personaName,
       last_recorded_at: record.last_recorded_at ?? null,
       recording_path: record.recording_path ?? null,
+      env_vars: envVars,
     };
   }
 
@@ -1288,10 +1325,16 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     const created_at = now.toISOString();
     const created_timestamp = now.toISOString();
 
+    // Validate env_vars if provided
+    if (args.env_vars) {
+      const envError = validateScenarioEnvVars(args.env_vars);
+      if (envError) return { error: envError };
+    }
+
     try {
       db.prepare(`
-        INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, created_at, created_timestamp, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, created_at, created_timestamp, updated_at, env_vars)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
       `).run(
         id,
         args.persona_id,
@@ -1304,6 +1347,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
         created_at,
         created_timestamp,
         created_at,
+        args.env_vars ? JSON.stringify(args.env_vars) : null,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1338,6 +1382,15 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     if (args.test_file !== undefined) { updates.push('test_file = ?'); params.push(args.test_file); }
     if (args.sort_order !== undefined) { updates.push('sort_order = ?'); params.push(args.sort_order); }
     if (args.enabled !== undefined) { updates.push('enabled = ?'); params.push(args.enabled ? 1 : 0); }
+    if (args.env_vars !== undefined) {
+      if (args.env_vars === null) {
+        updates.push('env_vars = ?'); params.push(null);
+      } else {
+        const envError = validateScenarioEnvVars(args.env_vars);
+        if (envError) return { error: envError };
+        updates.push('env_vars = ?'); params.push(JSON.stringify(args.env_vars));
+      }
+    }
 
     if (updates.length === 0) {
       return { error: 'No fields to update' };
