@@ -13,7 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { spawn, execSync } from 'child_process';
+import { spawn } from 'child_process';
 import Database from 'better-sqlite3';
 import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from '../agent-tracker.js';
 import { buildSpawnEnv } from './spawn-env.js';
@@ -25,9 +25,6 @@ const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'session-queue.log');
 
 // Lane sub-limits
 const GATE_LANE_LIMIT = 5;
-
-// Priority ordering (lower = higher priority)
-const PRIORITY_ORDER = { critical: 0, urgent: 1, normal: 2, low: 3 };
 
 // Default TTL for queued items (30 minutes)
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
@@ -216,6 +213,15 @@ export function enqueueSession(spec) {
   const ttlMs = spec.ttlMs || DEFAULT_TTL_MS;
   const expiresAt = new Date(Date.now() + ttlMs).toISOString();
 
+  // Eagerly build the prompt at enqueue time using {AGENT_ID} as a placeholder.
+  // This ensures the prompt survives cross-process drains where the in-memory
+  // buildPrompt callback would be lost. The placeholder is substituted with the
+  // real agentId at spawn time in spawnQueueItem().
+  let prompt = spec.prompt || null;
+  if (spec.buildPrompt) {
+    prompt = spec.buildPrompt('{AGENT_ID}');
+  }
+
   db.prepare(`
     INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
       tag_context, prompt, model, cwd, mcp_config, resume_session_id, extra_args, extra_env,
@@ -230,7 +236,7 @@ export function enqueueSession(spec) {
     spec.agentType,
     spec.hookType,
     spec.tagContext,
-    spec.prompt || null,
+    prompt,
     spec.model || null,
     spec.cwd || null,
     spec.mcpConfig || null,
@@ -244,11 +250,6 @@ export function enqueueSession(spec) {
     expiresAt,
   );
 
-  // Store the buildPrompt function in a module-level map (can't serialize functions to SQLite)
-  if (spec.buildPrompt) {
-    _promptBuilders.set(id, spec.buildPrompt);
-  }
-
   const position = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'queued'").get().cnt;
   log(`Enqueued ${id}: "${spec.title}" (priority=${spec.priority || 'normal'}, lane=${spec.lane || 'standard'}, source=${spec.source}, position=${position})`);
 
@@ -257,9 +258,6 @@ export function enqueueSession(spec) {
 
   return { queueId: id, position, drained };
 }
-
-// In-memory map of deferred prompt builders (keyed by queue item ID)
-const _promptBuilders = new Map();
 
 // ============================================================================
 // Drain Queue
@@ -303,15 +301,19 @@ export function drainQueue() {
 
   result.queued = queued.length;
 
+  // Track spawns per lane this drain cycle to avoid stale counter bugs
+  let standardSpawnedThisDrain = 0;
+  let gateSpawnedThisDrain = 0;
+
   for (const item of queued) {
-    // Gate lane has its own sub-limit
+    // Gate lane has its own sub-limit (tracked separately from main capacity)
     if (item.lane === 'gate') {
-      if (gateRunning >= GATE_LANE_LIMIT) {
+      if (gateRunning + gateSpawnedThisDrain >= GATE_LANE_LIMIT) {
         continue; // Skip, gate full
       }
     } else {
-      // Standard + revival lanes share the main limit
-      if (standardRunning + result.spawned >= maxConcurrent) {
+      // Standard + revival lanes share the main limit (gate spawns don't consume it)
+      if (standardRunning + standardSpawnedThisDrain >= maxConcurrent) {
         result.atCapacity = true;
         break;
       }
@@ -331,6 +333,11 @@ export function drainQueue() {
     try {
       spawnQueueItem(db, item);
       result.spawned++;
+      if (item.lane === 'gate') {
+        gateSpawnedThisDrain++;
+      } else {
+        standardSpawnedThisDrain++;
+      }
     } catch (err) {
       db.prepare("UPDATE queue_items SET status = 'failed', error = ?, completed_at = datetime('now') WHERE id = ?")
         .run(err.message, item.id);
@@ -352,8 +359,12 @@ export function drainQueue() {
  * @param {object} item - Queue item row
  */
 function spawnQueueItem(db, item) {
-  // Mark as spawning (prevents double-spawn on concurrent drain)
-  db.prepare("UPDATE queue_items SET status = 'spawning' WHERE id = ? AND status = 'queued'").run(item.id);
+  // Atomic claim: mark as spawning only if still queued.
+  // If another concurrent drain already claimed this item, changes === 0.
+  const claimResult = db.prepare("UPDATE queue_items SET status = 'spawning' WHERE id = ? AND status = 'queued'").run(item.id);
+  if (claimResult.changes === 0) {
+    throw new Error(`Item ${item.id} already claimed by concurrent drain`);
+  }
 
   // Register with agent-tracker
   const agentId = registerSpawn({
@@ -365,13 +376,9 @@ function spawnQueueItem(db, item) {
     metadata: item.metadata ? JSON.parse(item.metadata) : {},
   });
 
-  // Build prompt — either from stored prompt or deferred builder
+  // Replace {AGENT_ID} placeholder in the stored prompt (eagerly built at enqueue time)
   let prompt;
-  if (_promptBuilders.has(item.id)) {
-    prompt = _promptBuilders.get(item.id)(agentId);
-    _promptBuilders.delete(item.id);
-  } else if (item.prompt) {
-    // Replace any {AGENT_ID} placeholder in stored prompts
+  if (item.prompt) {
     prompt = item.prompt.replace(/\{AGENT_ID\}/g, agentId);
   } else {
     prompt = `[Task][${item.tag_context}][AGENT:${agentId}] ${item.title}`;
