@@ -35,6 +35,7 @@ import {
 } from './key-sync.js';
 import { shouldAllowSpawn } from './lib/memory-pressure.js';
 import { enqueueSession } from './lib/session-queue.js';
+import { auditEvent } from './lib/session-audit.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
@@ -293,6 +294,7 @@ function reviveQuotaInterruptedSessions(log, maxRevivals, staleWindowMs = NORMAL
     })) {
       revived++;
       session.status = 'revived';
+      try { auditEvent('session_revival_triggered', { source: 'session-reviver', reason: 'quota_interrupted', original_agent_id: session.agentId }); } catch {}
     } else {
       remaining.push(session);
     }
@@ -448,6 +450,7 @@ function reviveDeadSessions(log, maxRevivals) {
         revivalReason: 'process_already_dead',
       })) {
         revived++;
+        try { auditEvent('session_revival_triggered', { source: 'session-reviver', reason: 'process_already_dead', original_agent_id: agent.id }); } catch {}
         // Mark task back to in_progress
         try {
           const writeDb = new Database(todoDbPath);
@@ -581,6 +584,7 @@ async function resumePausedSessions(log, maxRevivals) {
       revivalReason: 'account_recovered',
     })) {
       revived++;
+      try { auditEvent('session_revival_triggered', { source: 'session-reviver', reason: 'account_recovered', original_agent_id: session.agentId }); } catch {}
     } else {
       remaining.push(session);
     }

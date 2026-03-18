@@ -38,6 +38,7 @@ import {
 } from './lib/revival-utils.js';
 import { shouldAllowSpawn } from './lib/memory-pressure.js';
 import { enqueueSession } from './lib/session-queue.js';
+import { auditEvent } from './lib/session-audit.js';
 
 // Debug logging - writes to file since stdout is used for hook response
 const DEBUG = true;
@@ -421,6 +422,7 @@ async function main() {
             // Mark as revived so session-reviver doesn't double-spawn
             record.status = 'revived';
             writeQuotaInterruptedSession(record);
+            try { auditEvent('session_revival_triggered', { source: 'stop-continue-hook', reason: 'inline_revival', session_id: record.sessionId, agent_id: agentId }); } catch {}
           }
         } else if (!rotated) {
           // Phase 4f: All keys exhausted — proxy returned raw 429.
