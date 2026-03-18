@@ -306,8 +306,6 @@ async function main() {
 }
 
 main().catch(err => {
-  console.error(`[api-key-watcher] Error: ${err.message}`);
-
   registerHookExecution({
     hookType: HOOK_TYPES.API_KEY_WATCHER,
     status: 'failure',
@@ -315,9 +313,9 @@ main().catch(err => {
     metadata: { error: err.message }
   });
 
-  // Don't block on errors
+  // Don't block on errors — route error to systemMessage (never stderr)
   console.log(JSON.stringify({
     continue: true,
-    suppressOutput: true,
+    systemMessage: `[api-key-watcher] Error: ${err.message}`,
   }));
 });

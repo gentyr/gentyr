@@ -411,6 +411,16 @@ Hooks that need the AI to act on their output must include both:
 }
 ```
 
+### SessionStart Hooks — No stderr
+
+`SessionStart` hooks must **never** write to `stderr` under any conditions. Claude Code treats any stderr output from a `SessionStart` hook as an error, displaying "SessionStart:startup hook error" in the UI even when the hook exits cleanly with valid JSON on stdout. This applies to all 8 `SessionStart` hooks: `gentyr-sync.js`, `gentyr-splash.js`, `todo-maintenance.js`, `credential-health-check.js`, `api-key-watcher.js`, `plan-briefing.js`, `playwright-health-check.js`, and `dead-agent-recovery.js`.
+
+Rules:
+- **Never** call `process.stderr.write()` or `console.error()` in a `SessionStart` hook or any library it imports.
+- Route all non-fatal errors to `systemMessage` in the JSON stdout response.
+- Fatal/unexpected errors should exit with `{ continue: true, systemMessage: "..." }` — never with `process.exit(1)` or a raw stderr write.
+- The cross-hook guard test at `.claude/hooks/__tests__/session-start-no-stderr.test.js` enforces this with static analysis + runtime subprocess checks (28 tests).
+
 ## Hooks Reference
 
 Individual hook specifications for all GENTYR hooks (auto-sync, CTO notification, branch drift, branch checkout guard, main tree commit guard, uncommitted change monitor, PR auto-merge nudge, project-manager reminder, credential health check, credential file guard, playwright CLI guard, playwright health check, worktree path guard, worktree CWD guard, interactive agent guard).

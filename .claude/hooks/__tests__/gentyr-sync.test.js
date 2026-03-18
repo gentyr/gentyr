@@ -505,10 +505,11 @@ describe('statBasedSync fast-path existence check (Bug Fix #1)', () => {
 });
 
 // ===========================================================================
-// Tests: error logging to stderr (Bug Fixes #2 and #3)
+// Tests: merge error handling — no stderr (Bug Fixes #2 and #3)
 //
-// Previously, merge failures were silently swallowed by bare `catch {}`.
-// After the fix, errors are written to stderr via process.stderr.write().
+// Non-fatal merge failures are silently swallowed (bare `catch {}`).
+// Claude Code treats any stderr from hooks as an error, so these catches
+// must NEVER write to stderr. The outer catch routes errors to systemMessage.
 //
 // We trigger a settings.json merge failure by using a stale configHash in
 // gentyr-state.json (so the re-merge branch runs) with a merge-settings.cjs
@@ -518,7 +519,7 @@ describe('statBasedSync fast-path existence check (Bug Fix #1)', () => {
 // fs.accessSync(outputPath, W_OK) throws before writeFileSync is called.
 // ===========================================================================
 
-describe('statBasedSync merge error logging (Bug Fixes #2 and #3)', () => {
+describe('statBasedSync merge error handling — no stderr (Bug Fixes #2 and #3)', () => {
   let tmpDir;
 
   beforeEach(() => {
@@ -537,25 +538,27 @@ describe('statBasedSync merge error logging (Bug Fixes #2 and #3)', () => {
     tmpDir = null;
   });
 
-  it('should log settings.json re-merge failure to stderr (not silently swallow)', () => {
+  it('should NOT write settings.json re-merge failure to stderr', () => {
     // Use a stale configHash so the re-merge branch (step a) runs.
     // The mock framework has no scripts/merge-settings.cjs, so execFileSync throws.
+    // Error must be swallowed silently — never written to stderr.
     writeMatchingState(tmpDir, { configHash: 'stale-hash-does-not-match' });
     fs.writeFileSync(path.join(tmpDir, '.claude', 'settings.json'), '{}');
     fs.writeFileSync(path.join(tmpDir, '.mcp.json'), '{}');
 
     const { stderr } = runHookWithStreams(tmpDir);
 
-    assert.match(
-      stderr,
-      /\[gentyr-sync\] settings\.json re-merge failed:/,
-      'Must write settings.json merge failure to stderr',
+    assert.strictEqual(
+      stderr.includes('[gentyr-sync]'),
+      false,
+      'Must NOT write any [gentyr-sync] messages to stderr',
     );
   });
 
-  it('should log .mcp.json re-merge failure to stderr (not silently swallow)', () => {
+  it('should NOT write .mcp.json re-merge failure to stderr', () => {
     // Use a stale configHash so the re-merge branch (step b) runs.
     // Make .mcp.json read-only so fs.accessSync(outputPath, W_OK) throws.
+    // Error must be swallowed silently — never written to stderr.
     writeMatchingState(tmpDir, { configHash: 'stale-hash-does-not-match' });
     fs.writeFileSync(path.join(tmpDir, '.claude', 'settings.json'), '{}');
 
@@ -566,10 +569,10 @@ describe('statBasedSync merge error logging (Bug Fixes #2 and #3)', () => {
 
     const { stderr } = runHookWithStreams(tmpDir);
 
-    assert.match(
-      stderr,
-      /\[gentyr-sync\] \.mcp\.json re-merge failed:/,
-      'Must write .mcp.json merge failure to stderr',
+    assert.strictEqual(
+      stderr.includes('[gentyr-sync]'),
+      false,
+      'Must NOT write any [gentyr-sync] messages to stderr',
     );
   });
 
@@ -621,56 +624,21 @@ describe('statBasedSync bug fixes — code structure (gentyr-sync.js)', () => {
     );
   });
 
-  it('should log settings.json merge failure to stderr via process.stderr.write', () => {
+  it('should NOT contain any process.stderr.write calls', () => {
     const code = fs.readFileSync(HOOK_PATH, 'utf8');
-    assert.match(
-      code,
-      /process\.stderr\.write\(.*settings\.json re-merge failed/,
-      'settings.json merge catch must write to stderr',
+    assert.strictEqual(
+      code.includes('process.stderr.write'),
+      false,
+      'gentyr-sync.js must not contain any process.stderr.write calls',
     );
   });
 
-  it('should log .mcp.json merge failure to stderr via process.stderr.write', () => {
+  it('should NOT contain any console.error calls', () => {
     const code = fs.readFileSync(HOOK_PATH, 'utf8');
-    assert.match(
-      code,
-      /process\.stderr\.write\(.*\.mcp\.json re-merge failed/,
-      '.mcp.json merge catch must write to stderr',
-    );
-  });
-
-  it('should not have a bare catch immediately after the settings.json execFileSync call', () => {
-    const code = fs.readFileSync(HOOK_PATH, 'utf8');
-
-    // Locate the settings.json merge block and verify its catch is not bare.
-    // A bare catch would look like: } catch {} or } catch {\n  }
-    // The fix makes it: } catch (err) { process.stderr.write(...) }
-    const mergeScriptPattern = /execFileSync\('node', \[mergeScript[\s\S]{0,300}?\} catch (\{|\(err\))/;
-    const match = code.match(mergeScriptPattern);
-
-    assert.ok(match, 'The settings.json merge execFileSync block and its catch must exist');
-    assert.match(
-      match[1],
-      /\(err\)/,
-      'settings.json merge catch must capture the error (not be bare)',
-    );
-  });
-
-  it('should not have a bare catch immediately after the .mcp.json sync block', () => {
-    const code = fs.readFileSync(HOOK_PATH, 'utf8');
-
-    // The .mcp.json sync block (step b) ends with:
-    //   changes.push('.mcp.json');
-    // followed by the outer catch. Locate the catch that immediately follows
-    // "changes.push('.mcp.json')" to verify it is NOT bare.
-    const mcpSyncPattern = /changes\.push\('\.mcp\.json'\);\s*\} catch (\{|\(err\))/;
-    const match = code.match(mcpSyncPattern);
-
-    assert.ok(match, "The .mcp.json push+catch block must exist in statBasedSync");
-    assert.match(
-      match[1],
-      /\(err\)/,
-      '.mcp.json sync outer catch must capture the error (not be bare)',
+    assert.strictEqual(
+      code.includes('console.error'),
+      false,
+      'gentyr-sync.js must not contain any console.error calls',
     );
   });
 });

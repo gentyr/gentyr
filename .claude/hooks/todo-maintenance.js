@@ -29,9 +29,8 @@ import { getCooldown } from './config-reader.js';
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch (err) {
-  // G001: Log warning when database module is unavailable
-  console.error(`Warning: better-sqlite3 not available: ${err.message}`);
+} catch {
+  // G001: better-sqlite3 unavailable — expected in some environments
 }
 
 // Debug logging - writes to file since stdout is used for hook response
@@ -256,9 +255,8 @@ function readCooldownState(statePath) {
 function writeCooldownState(statePath, state) {
   try {
     fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8');
-  } catch (err) {
-    // Non-fatal - just log and continue
-    console.error(`Warning: Could not write cooldown state: ${err.message}`);
+  } catch {
+    // Non-fatal — cooldown state write failure handled by continuing execution
   }
 }
 
@@ -309,8 +307,7 @@ function getPromptPath(projectDir) {
 function readPrompt(promptPath) {
   try {
     return fs.readFileSync(promptPath, 'utf8').trim();
-  } catch (err) {
-    console.error(`Warning: Could not read prompt file: ${err.message}`);
+  } catch {
     return null;
   }
 }
@@ -326,7 +323,7 @@ function spawnClaudeForTodoProcessing(projectDir, pendingCount) {
   const prompt = readPrompt(promptPath);
 
   if (!prompt) {
-    console.error('Warning: No prompt file found, skipping Claude spawn');
+    // No prompt file — skip spawn silently
     return false;
   }
 
@@ -364,7 +361,6 @@ function spawnClaudeForTodoProcessing(projectDir, pendingCount) {
 
     return true;
   } catch (err) {
-    console.error(`Warning: Failed to spawn Claude for TODO processing: ${err.message}`);
     return false;
   }
 }
@@ -517,6 +513,9 @@ main().catch(err => {
     durationMs: 0,
     metadata: { error: err.message }
   });
-  console.error(`Script error: ${err.message}`);
-  process.exit(1);
+  console.log(JSON.stringify({
+    continue: true,
+    systemMessage: `[todo-maintenance] Error: ${err.message}`,
+  }));
+  process.exit(0);
 });

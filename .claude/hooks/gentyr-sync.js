@@ -182,8 +182,8 @@ function statBasedSync(frameworkDir) {
         stdio: 'pipe', timeout: 10000,
       });
       changes.push('settings.json');
-    } catch (err) {
-      process.stderr.write(`[gentyr-sync] settings.json re-merge failed: ${err.message || err}\n`);
+    } catch {
+      // Non-fatal — settings.json re-merge failure handled by continuing execution
     }
   }
 
@@ -222,8 +222,8 @@ function statBasedSync(frameworkDir) {
       }
 
       changes.push('.mcp.json');
-    } catch (err) {
-      process.stderr.write(`[gentyr-sync] .mcp.json re-merge failed: ${err.message || err}\n`);
+    } catch {
+      // Non-fatal — .mcp.json re-merge failure handled by continuing execution
     }
   }
 
@@ -291,9 +291,8 @@ function statBasedSync(frameworkDir) {
       }
       execFileSync('npm', ['run', 'build'], { cwd: mcpDir, stdio: 'pipe', timeout: 30000 });
       changes.push('MCP servers rebuilt');
-    } catch (err) {
-      // Log to stderr only — target project agent must never see gentyr internal commands
-      process.stderr.write(`[gentyr-sync] MCP build failed: ${err.message || err}\n`);
+    } catch {
+      // Non-fatal — MCP build failure is handled by continuing execution
     }
   }
 
@@ -582,7 +581,6 @@ try {
   // No sync was needed.
   silent();
 } catch (err) {
-  // Never block the session
-  process.stderr.write(`[gentyr-sync] Unexpected error: ${err.message || err}\n`);
-  silent();
+  // Never block the session — route error to systemMessage (never stderr)
+  warn(`[gentyr-sync] Unexpected error: ${err.message || err}`);
 }

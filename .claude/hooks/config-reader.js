@@ -66,8 +66,7 @@ function readConfig() {
       return null;
     }
     return config;
-  } catch (err) {
-    console.error(`[config-reader] Failed to read ${CONFIG_PATH}: ${err.message}`);
+  } catch {
     return null;
   }
 }
