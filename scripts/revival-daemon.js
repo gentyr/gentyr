@@ -46,6 +46,7 @@ let buildRevivalPrompt, spawnResumedSession, getSessionDir, findSessionFileByAge
 let readRotationState;
 let shouldAllowSpawn;
 let drainQueue;
+let auditEvent;
 let Database = null;
 
 async function loadDependencies() {
@@ -73,6 +74,11 @@ async function loadDependencies() {
 
   const sessionQueue = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js'));
   drainQueue = sessionQueue.drainQueue;
+
+  try {
+    const sessionAudit = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-audit.js'));
+    auditEvent = sessionAudit.auditEvent;
+  } catch { /* non-fatal */ }
 
   try {
     Database = (await import('better-sqlite3')).default;
@@ -185,6 +191,9 @@ function scanAndRevive() {
 
     // Dead agent found
     log(`Dead agent detected: ${agent.id} (PID ${agent.pid}, type: ${agent.type})`);
+    if (auditEvent) {
+      try { auditEvent('session_reaped_dead', { agent_id: agent.id, pid: agent.pid, source: 'revival-daemon' }); } catch {}
+    }
 
     // Check memory pressure first — if blocked, DON'T mark revivalAttempted so we retry
     if (shouldAllowSpawn) {
@@ -294,6 +303,9 @@ function scanAndRevive() {
 
     if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt, agent.metadata?.worktreePath || null, { projectDir: PROJECT_DIR })) {
       revived++;
+      if (auditEvent) {
+        try { auditEvent('session_revival_triggered', { source: 'revival-daemon', agent_id: agent.id, new_agent_id: newAgentId, reason: 'daemon_crash_detection' }); } catch {}
+      }
       // Mark task back to in_progress
       if (Database) {
         try {

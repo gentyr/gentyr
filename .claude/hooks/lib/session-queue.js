@@ -18,6 +18,8 @@ import Database from 'better-sqlite3';
 import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from '../agent-tracker.js';
 import { buildSpawnEnv } from './spawn-env.js';
 import { shouldAllowSpawn } from './memory-pressure.js';
+import { reapSyncPass } from './session-reaper.js';
+import { auditEvent } from './session-audit.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
@@ -253,6 +255,15 @@ export function enqueueSession(spec) {
   const position = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'queued'").get().cnt;
   log(`Enqueued ${id}: "${spec.title}" (priority=${spec.priority || 'normal'}, lane=${spec.lane || 'standard'}, source=${spec.source}, position=${position})`);
 
+  auditEvent('session_enqueued', {
+    queue_id: id,
+    source: spec.source,
+    agent_type: spec.agentType,
+    priority: spec.priority || 'normal',
+    lane: spec.lane || 'standard',
+    title: spec.title,
+  });
+
   // Inline drain — try to spawn immediately if slots available
   const drained = drainQueue();
 
@@ -270,19 +281,28 @@ export function enqueueSession(spec) {
  */
 export function drainQueue() {
   const db = getDb();
-  const result = { spawned: 0, queued: 0, atCapacity: false, failed: 0 };
+  const result = { spawned: 0, queued: 0, atCapacity: false, failed: 0, revivalCandidates: [] };
 
-  // Step 1: Clean stale running items (PID dead → mark completed)
-  const running = db.prepare("SELECT id, pid, agent_id FROM queue_items WHERE status = 'running'").all();
-  for (const item of running) {
-    if (item.pid && !isPidAlive(item.pid)) {
-      db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?").run(item.id);
-      log(`Reaped stale running item ${item.id} (PID ${item.pid} dead)`);
+  // Step 1: Reap stale running items (dead PIDs, stuck sessions)
+  try {
+    const reaperResult = reapSyncPass(db);
+    result.revivalCandidates = reaperResult.reaped.filter(r => r.revivalCandidate);
+  } catch {
+    // Fallback: existing simple PID check
+    const running = db.prepare("SELECT id, pid, agent_id FROM queue_items WHERE status = 'running'").all();
+    for (const item of running) {
+      if (item.pid && !isPidAlive(item.pid)) {
+        db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?").run(item.id);
+        log(`Reaped stale running item ${item.id} (PID ${item.pid} dead)`);
+      }
     }
   }
 
   // Step 2: Expire old queued items past TTL
-  db.prepare("UPDATE queue_items SET status = 'cancelled', error = 'TTL expired' WHERE status = 'queued' AND expires_at < datetime('now')").run();
+  const ttlResult = db.prepare("UPDATE queue_items SET status = 'cancelled', error = 'TTL expired', completed_at = datetime('now') WHERE status = 'queued' AND expires_at < datetime('now')").run();
+  if (ttlResult.changes > 0) {
+    auditEvent('session_ttl_expired', { count: ttlResult.changes });
+  }
 
   // Step 3: Count running items by lane
   const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane != 'gate'").get().cnt;
@@ -441,6 +461,15 @@ function spawnQueueItem(db, item) {
   updateAgent(agentId, { pid: claude.pid, status: 'running' });
 
   log(`Spawned ${item.id} as agent ${agentId} (PID ${claude.pid}): "${item.title}"`);
+
+  auditEvent('session_spawned', {
+    queue_id: item.id,
+    agent_id: agentId,
+    pid: claude.pid,
+    source: item.source,
+    agent_type: item.agent_type,
+    title: item.title,
+  });
 }
 
 // ============================================================================
@@ -460,6 +489,7 @@ export function cancelQueueItem(queueId) {
 
   db.prepare("UPDATE queue_items SET status = 'cancelled', completed_at = datetime('now'), error = 'manually cancelled' WHERE id = ?").run(queueId);
   log(`Cancelled ${queueId}`);
+  auditEvent('session_cancelled', { queue_id: queueId });
   return { success: true };
 }
 
@@ -477,6 +507,28 @@ export function markCompleted(agentId) {
   const result = db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE agent_id = ? AND status = 'running'").run(agentId);
   if (result.changes > 0) {
     log(`Marked completed: agent ${agentId}`);
+    auditEvent('session_completed', { agent_id: agentId });
+    return true;
+  }
+  return false;
+}
+
+// ============================================================================
+// Mark Failed
+// ============================================================================
+
+/**
+ * Mark a running item as failed by agent ID.
+ * @param {string} agentId
+ * @param {string} error - Error description
+ * @returns {boolean}
+ */
+export function markFailed(agentId, error) {
+  const db = getDb();
+  const result = db.prepare("UPDATE queue_items SET status = 'failed', error = ?, completed_at = datetime('now') WHERE agent_id = ? AND status = 'running'").run(error, agentId);
+  if (result.changes > 0) {
+    log(`Marked failed: agent ${agentId} (${error})`);
+    auditEvent('session_failed', { agent_id: agentId, error });
     return true;
   }
   return false;
@@ -495,10 +547,15 @@ export function getQueueStatus() {
   const maxConcurrent = getMaxConcurrentSessions();
 
   // Reap stale running items first
-  const runningItems = db.prepare("SELECT * FROM queue_items WHERE status = 'running' ORDER BY spawned_at ASC").all();
-  for (const item of runningItems) {
-    if (item.pid && !isPidAlive(item.pid)) {
-      db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?").run(item.id);
+  try {
+    reapSyncPass(db);
+  } catch {
+    // Fallback: simple PID check
+    const runningItems = db.prepare("SELECT * FROM queue_items WHERE status = 'running' ORDER BY spawned_at ASC").all();
+    for (const item of runningItems) {
+      if (item.pid && !isPidAlive(item.pid)) {
+        db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?").run(item.id);
+      }
     }
   }
 

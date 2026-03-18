@@ -28,6 +28,8 @@ import { createWorktree, cleanupMergedWorktrees, listWorktrees } from './lib/wor
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
 import { detectStaleWork, formatReport } from './stale-work-detector.js';
 import { reviveInterruptedSessions } from './session-reviver.js';
+import { reapAsyncPass, getStuckAliveSessions } from './lib/session-reaper.js';
+import { cleanupAuditLog } from './lib/session-audit.js';
 import { isProxyDisabled } from './lib/proxy-state.js';
 import { buildSpawnEnv } from './lib/spawn-env.js';
 // shouldAllowSpawn import removed — session queue handles memory pressure internally
@@ -660,6 +662,7 @@ function getState() {
       stagingFreezeActive: false,
       stagingFreezeActivatedAt: 0,
       lastSessionReviverCheck: 0,
+      lastSessionReaperRun: 0,
       lastUsageOptimizerRun: 0,
       lastKeySyncRun: 0,
       lastVersionWatchRun: 0,
@@ -687,6 +690,7 @@ function getState() {
     if (state.stagingFreezeActive === undefined) state.stagingFreezeActive = false;
     if (state.stagingFreezeActivatedAt === undefined) state.stagingFreezeActivatedAt = 0;
     if (state.lastSessionReviverCheck === undefined) state.lastSessionReviverCheck = 0;
+    if (state.lastSessionReaperRun === undefined) state.lastSessionReaperRun = 0;
     if (state.lastUsageOptimizerRun === undefined) state.lastUsageOptimizerRun = 0;
     if (state.lastKeySyncRun === undefined) state.lastKeySyncRun = 0;
     if (state.lastVersionWatchRun === undefined) state.lastVersionWatchRun = 0;
@@ -2574,6 +2578,24 @@ async function main() {
 
   // Concurrency is now managed by the session queue (drainQueue called at top of main).
   // No per-cycle guard needed — the queue enforces MAX_CONCURRENT_AGENTS on every enqueue.
+
+  // =========================================================================
+  // SESSION REAPER (after session reviver — complements revival with cleanup)
+  // Gate-exempt: recovery/cleanup operation. Runs even with config.enabled=false.
+  // =========================================================================
+  await runIfDue('session_reaper', {
+    state, now,
+    stateKey: 'lastSessionReaperRun',
+    label: 'Session reaper',
+    fn: async () => {
+      const stuckAlive = getStuckAliveSessions();
+      if (stuckAlive.length > 0) {
+        const reaperResult = await reapAsyncPass(PROJECT_DIR, stuckAlive, { log });
+        log(`Session reaper: ${reaperResult.hardKilled} hard-killed, ${reaperResult.completedReaped} reaped`);
+      }
+      cleanupAuditLog();
+    },
+  });
 
   // =========================================================================
   // ENABLED CHECK — session revival still ran above even if disabled

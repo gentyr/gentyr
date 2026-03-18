@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// DEPRECATED: This file operates on agent-tracker-history.json.
+// The new session-reaper (.claude/hooks/lib/session-reaper.js) handles queue-tracked sessions.
+// Both coexist: this handles agent-tracker, session-reaper handles session-queue.db.
 /**
  * Agent Reaper — Precision process cleanup for completed spawned Claude sessions.
  *
