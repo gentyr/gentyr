@@ -29,7 +29,8 @@ import { getFeatureBranchName } from './lib/feature-branch-helper.js';
 import { detectStaleWork, formatReport } from './stale-work-detector.js';
 import { reviveInterruptedSessions } from './session-reviver.js';
 import { isProxyDisabled } from './lib/proxy-state.js';
-import { shouldAllowSpawn } from './lib/memory-pressure.js';
+import { buildSpawnEnv } from './lib/spawn-env.js';
+// shouldAllowSpawn import removed — session queue handles memory pressure internally
 
 // Try to import better-sqlite3 for task runner
 let Database = null;
@@ -246,7 +247,9 @@ function extractRenderServiceId(entry) {
   return null;
 }
 
-// buildSpawnEnv() is provided by lib/spawn-env.js (used by enqueueSession internally).
+// buildSpawnEnv() is imported from lib/spawn-env.js above.
+// It's used directly for non-Claude process spawns (e.g., demo validation playwright runs).
+// For Claude agent spawns, buildSpawnEnv is called internally by enqueueSession.
 // Credentials are passed via extraEnv after ensureCredentials() is called by each spawner.
 
 /**
@@ -2057,25 +2060,7 @@ Complete within 25 minutes. If blocked, report and exit.`,
   });
 }
 
-/**
- * GAP 4: Verify a spawned process is still alive after a short delay.
- * Returns true if the PID responds to signal 0, false otherwise.
- * Prevents cooldown consumption when spawn() succeeds but the process dies immediately.
- */
-async function verifySpawnAlive(pid, label) {
-  if (!pid) return false;
-  return new Promise(resolve => {
-    setTimeout(() => {
-      try {
-        process.kill(pid, 0);
-        resolve(true);
-      } catch {
-        log(`${label}: PID ${pid} not alive after 2s. Cooldown NOT consumed.`);
-        resolve(false);
-      }
-    }, 2000);
-  });
-}
+
 
 /**
  * Spawn Staging Health Monitor (fire-and-forget via queue).
@@ -2485,6 +2470,9 @@ async function main() {
   const startTime = Date.now();
   log('=== Hourly Automation Starting ===');
 
+  // Drain any items that were queued but not yet spawned in a previous cycle.
+  await drainQueue();
+
   // Check config
   const config = getConfig();
 
@@ -2515,34 +2503,7 @@ async function main() {
     log('Rotation proxy: DOWN — agents will run without proxy-based rotation.');
   }
 
-  // Check for overdrive concurrency override
-  let effectiveMaxConcurrent = MAX_CONCURRENT_AGENTS;
-  try {
-    const autoConfigPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
-    if (fs.existsSync(autoConfigPath)) {
-      const autoConfig = JSON.parse(fs.readFileSync(autoConfigPath, 'utf8'));
-      if (autoConfig.overdrive?.active && new Date() < new Date(autoConfig.overdrive.expires_at)) {
-        const override = autoConfig.overdrive.max_concurrent_override;
-        effectiveMaxConcurrent = (typeof override === 'number' && override >= 1 && override <= 20)
-          ? override : MAX_CONCURRENT_AGENTS;
-        log(`Overdrive active: concurrency limit raised to ${effectiveMaxConcurrent}`);
-      }
-    }
-  } catch {
-    // Fail safe - use default
-  }
-
-  // Reap completed agents before counting to free concurrency slots
-  try {
-    const { reapCompletedAgents } = await import(path.resolve(__dirname, '..', '..', 'scripts', 'reap-completed-agents.js'));
-    const reapResult = reapCompletedAgents(PROJECT_DIR);
-    if (reapResult.reaped.length > 0) {
-      log(`Reaper: cleaned up ${reapResult.reaped.length} completed agent(s).`);
-    }
-  } catch (err) {
-    // Non-fatal — count will be conservative
-    log(`Reaper: skipped (${err.message})`);
-  }
+  // Overdrive and reaper removed — session queue manages concurrency and stale PID cleanup.
 
   const state = getState();
   const now = Date.now();
@@ -2594,7 +2555,7 @@ async function main() {
   if (timeSinceLastSessionReviver >= SESSION_REVIVER_COOLDOWN_MS) {
     try {
       const isFirstRun = !state.lastSessionReviverCheck;
-      const reviverResult = await reviveInterruptedSessions(log, effectiveMaxConcurrent, {
+      const reviverResult = await reviveInterruptedSessions(log, MAX_CONCURRENT_AGENTS, {
         retroactive: isFirstRun,
       });
       const total = reviverResult.revivedQuota + reviverResult.revivedDead + reviverResult.revivedPaused;
@@ -2611,20 +2572,8 @@ async function main() {
     log(`Session reviver cooldown active. ${minutesLeft}m until next check.`);
   }
 
-  // Concurrency guard: skip cycle if too many agents are already running
-  // Phase 4a: Placed AFTER session reviver so recovery is never blocked
-  const runningAgents = countRunningAgents();
-  if (runningAgents >= effectiveMaxConcurrent) {
-    log(`Concurrency limit reached (${runningAgents}/${effectiveMaxConcurrent} agents running). Skipping this cycle.`);
-    registerHookExecution({
-      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-      status: 'skipped',
-      durationMs: Date.now() - startTime,
-      metadata: { reason: 'concurrency_limit', runningAgents }
-    });
-    process.exit(0);
-  }
-  log(`Running agents: ${runningAgents}/${effectiveMaxConcurrent}`);
+  // Concurrency is now managed by the session queue (drainQueue called at top of main).
+  // No per-cycle guard needed — the queue enforces MAX_CONCURRENT_AGENTS on every enqueue.
 
   // =========================================================================
   // ENABLED CHECK — session revival still ran above even if disabled
@@ -2675,12 +2624,8 @@ async function main() {
       if (hasReportsReadyForTriage()) {
         log('Pending reports found, spawning triage agent...');
         // The agent will call get_reports_for_triage which handles cooldown filtering
-        const result = await spawnReportTriage();
-        if (result.code === 0) {
-          log('Report triage completed successfully.');
-        } else {
-          log(`Report triage exited with code ${result.code}`);
-        }
+        spawnReportTriage();
+        log('Report triage enqueued.');
       } else {
         log('No pending reports found.');
       }
@@ -2715,16 +2660,8 @@ async function main() {
         return;
       }
       log('Staging health monitor: spawning health check...');
-      const result = spawnStagingHealthMonitor();
-      if (result.success) {
-        const alive = await verifySpawnAlive(result.pid, 'Staging health monitor');
-        if (!alive) {
-          throw new Error('spawn died');
-        }
-        log('Staging health monitor: spawned (fire-and-forget).');
-      } else {
-        log('Staging health monitor: spawn failed.');
-      }
+      spawnStagingHealthMonitor();
+      log('Staging health monitor: enqueued (fire-and-forget).');
     },
   });
 
@@ -2744,16 +2681,8 @@ async function main() {
         return;
       }
       log('Production health monitor: spawning health check...');
-      const result = spawnProductionHealthMonitor();
-      if (result.success) {
-        const alive = await verifySpawnAlive(result.pid, 'Production health monitor');
-        if (!alive) {
-          throw new Error('spawn died');
-        }
-        log('Production health monitor: spawned (fire-and-forget).');
-      } else {
-        log('Production health monitor: spawn failed.');
-      }
+      spawnProductionHealthMonitor();
+      log('Production health monitor: enqueued (fire-and-forget).');
     },
   });
 
@@ -2821,18 +2750,10 @@ async function main() {
     const urgentTasks = getUrgentPendingTasks();
     if (urgentTasks.length > 0) {
       log(`Urgent dispatcher: found ${urgentTasks.length} urgent task(s).`);
-      const currentRunning = countRunningAgents();
-      const availableSlots = Math.max(0, effectiveMaxConcurrent - currentRunning);
-      if (availableSlots === 0) {
-        log(`Urgent dispatcher: no available slots (${currentRunning}/${effectiveMaxConcurrent}). Deferring urgent tasks.`);
-      } else {
-        log(`Urgent dispatcher: ${availableSlots} slot(s) available (${currentRunning}/${effectiveMaxConcurrent}).`);
+      // Concurrency is managed by the session queue — enqueue all urgent tasks.
+      {
         let dispatched = 0;
         for (const task of urgentTasks) {
-          if (dispatched >= availableSlots) {
-            log(`Urgent dispatcher: concurrency limit reached, deferring remaining urgent tasks.`);
-            break;
-          }
           const mapping = SECTION_AGENT_MAP[task.section];
           if (!mapping) continue;
           if (!markTaskInProgress(task.id)) {
@@ -2938,11 +2859,12 @@ async function main() {
       if (lintResult.hasErrors) {
         const errorCount = (lintResult.output.match(/\berror\b/gi) || []).length;
         log(`Lint check found ${errorCount} error(s), spawning fixer...`);
-        const result = await spawnLintFixer(lintResult.output);
-        if (result.code === 0) {
-          log('Lint fixer completed successfully.');
-        } else {
-          log(`Lint fixer exited with code ${result.code}`);
+        try {
+          spawnLintFixer(lintResult.output);
+          log('Lint fixer enqueued.');
+        } catch (err) {
+          log(`Lint fixer: failed to enqueue: ${err.message}`);
+          throw err;
         }
       } else {
         log('Lint check passed - no errors found.');
@@ -3061,12 +2983,8 @@ async function main() {
                 } else {
                   log(`Staging promotion: ${newCommits.length} commits ready. Staging stable for ${hoursSinceLastStagingCommit}h.`);
 
-                  const result = await spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit);
-                  if (result.code === 0) {
-                    log('Staging promotion pipeline completed successfully.');
-                  } else {
-                    log(`Staging promotion pipeline exited with code ${result.code}`);
-                  }
+                  spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit);
+                  log('Staging promotion pipeline enqueued.');
                 }
               } else {
                 log(`Staging promotion: staging only ${hoursSinceLastStagingCommit}h old (need 24h stability).`);
@@ -3161,14 +3079,10 @@ async function main() {
             if (hoursSinceLastStagingMerge >= 24 || hasBugFix) {
               log(`Preview promotion: ${newCommits.length} commits ready. Staging age: ${hoursSinceLastStagingMerge}h. Bug fix: ${hasBugFix}.`);
 
-              const result = await spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix);
-              if (result.code === 0) {
-                log('Preview promotion pipeline completed successfully.');
-                state.lastPreviewToStagingMergeAt = now;
-                saveState(state);
-              } else {
-                log(`Preview promotion pipeline exited with code ${result.code}`);
-              }
+              spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix);
+              log('Preview promotion pipeline enqueued.');
+              state.lastPreviewToStagingMergeAt = now;
+              saveState(state);
             } else {
               log(`Preview promotion: ${newCommits.length} commits pending but staging only ${hoursSinceLastStagingMerge}h old (need 24h or bug fix).`);
             }
@@ -3719,14 +3633,10 @@ Then exit.`,
         log(`CLAUDE.md size: ${claudeMdSize} characters (threshold: ${CLAUDE_MD_SIZE_THRESHOLD})`);
         if (claudeMdSize > CLAUDE_MD_SIZE_THRESHOLD) {
           log('CLAUDE.md exceeds threshold, spawning refactor...');
-          const result = await spawnClaudeMdRefactor();
-          if (result.code === 0) {
-            log('CLAUDE.md refactor completed.');
-            state.lastClaudeMdRefactor = now;
-            saveState(state);
-          } else {
-            log(`CLAUDE.md refactor exited with code ${result.code}`);
-          }
+          spawnClaudeMdRefactor();
+          log('CLAUDE.md refactor enqueued.');
+          state.lastClaudeMdRefactor = now;
+          saveState(state);
         } else {
           log('CLAUDE.md size is within threshold.');
         }
