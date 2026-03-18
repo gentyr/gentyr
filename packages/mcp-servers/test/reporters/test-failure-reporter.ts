@@ -19,7 +19,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { spawn } from 'child_process';
 import type { Reporter, File, Task } from 'vitest';
 
 // Configuration
@@ -234,9 +233,9 @@ function extractFailures(tasks: Task[], ancestorNames: string[] = []): Array<{ n
 }
 
 /**
- * Spawn Claude to fix test failures
+ * Enqueue a Claude session to fix test failures via the centralized session queue.
  */
-function spawnClaude(suiteNames: string[], failureDetails: string): boolean {
+async function spawnClaude(suiteNames: string[], failureDetails: string): Promise<boolean> {
   const promptTemplate = readPrompt();
 
   if (!promptTemplate) {
@@ -247,8 +246,9 @@ function spawnClaude(suiteNames: string[], failureDetails: string): boolean {
   const projectRoot = getProjectRoot();
   const suitesFormatted = suiteNames.slice(0, CONFIG.MAX_SUITES_PER_SPAWN).join('\n- ');
 
-  // Add [Task][test-failure-vitest] prefix for CTO report tracking
-  const prompt = `[Task][test-failure-vitest] ${promptTemplate}
+  // Prompt body without the [Task][...] prefix — the queue adds the standard prefix automatically.
+  // We include our desired context tag inline so the queue's prefix uses it.
+  const promptBody = `${promptTemplate}
 
 FAILING TEST SUITES (processing up to ${CONFIG.MAX_SUITES_PER_SPAWN}):
 - ${suitesFormatted}
@@ -259,38 +259,40 @@ ${failureDetails.slice(0, 8000)}
 \`\`\``;
 
   try {
-    // Try to register spawn with agent tracker (fire-and-forget, don't fail if unavailable)
-    try {
-      // Dynamic import to avoid hard dependency
-      const agentTrackerPath = path.join(projectRoot, '.claude/hooks/agent-tracker.js');
-      if (fs.existsSync(agentTrackerPath)) {
-        // We can't use dynamic import in this context, so we'll skip registration
-        // The agent will still be tracked by the session itself
-      }
-    } catch {
-      // Agent tracker not available, continue without registration
+    // Load session-queue via dynamic import (avoids hard TS dependency on a JS module)
+    const queuePath = path.join(projectRoot, '.claude', 'hooks', 'lib', 'session-queue.js');
+    const trackerPath = path.join(projectRoot, '.claude', 'hooks', 'agent-tracker.js');
+
+    if (!fs.existsSync(queuePath) || !fs.existsSync(trackerPath)) {
+      console.error('Warning: session-queue.js or agent-tracker.js not found, skipping enqueue');
+      return false;
     }
 
-    const claude = spawn(
-      'claude',
-      ['--dangerously-skip-permissions', '-p', prompt],
-      {
-        detached: true,
-        stdio: 'ignore',
-        cwd: projectRoot,
-        env: {
-          ...process.env,
-          CLAUDE_PROJECT_DIR: projectRoot,
-          CLAUDE_SPAWNED_SESSION: 'true', // Prevent chain reaction from hooks
-        },
-      }
-    );
+    const { enqueueSession } = await import(queuePath) as {
+      enqueueSession: (spec: Record<string, unknown>) => { queueId: string };
+    };
+    const { AGENT_TYPES, HOOK_TYPES } = await import(trackerPath) as {
+      AGENT_TYPES: Record<string, string>;
+      HOOK_TYPES: Record<string, string>;
+    };
 
-    claude.unref();
+    enqueueSession({
+      title: `Test failures: ${suiteNames.slice(0, CONFIG.MAX_SUITES_PER_SPAWN).join(', ')}`,
+      agentType: AGENT_TYPES['TEST_FAILURE_VITEST'],
+      hookType: HOOK_TYPES['VITEST_REPORTER'],
+      tagContext: 'test-failure-vitest',
+      source: 'test-failure-reporter',
+      prompt: `[Task][test-failure-vitest] ${promptBody}`,
+      projectDir: projectRoot,
+      cwd: projectRoot,
+      priority: 'normal',
+      ttlMs: 2 * 60 * 60 * 1000, // 2-hour TTL
+    });
+
     return true;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`Warning: Failed to spawn Claude: ${message}`);
+    console.error(`Warning: Failed to enqueue Claude session: ${message}`);
     return false;
   }
 }
@@ -299,7 +301,7 @@ ${failureDetails.slice(0, 8000)}
  * Vitest Custom Reporter Class
  */
 export default class TestFailureReporter implements Reporter {
-  onFinished(files?: File[]): void {
+  async onFinished(files?: File[]): Promise<void> {
     if (!files || files.length === 0) {
       return;
     }
@@ -354,15 +356,15 @@ export default class TestFailureReporter implements Reporter {
       return;
     }
 
-    // Spawn Claude
-    const spawned = spawnClaude(suitesToSpawn, failureDetails);
+    // Enqueue Claude session to fix failures
+    const enqueued = await spawnClaude(suitesToSpawn, failureDetails);
 
-    if (spawned) {
+    if (enqueued) {
       recordSpawn(suitesToSpawn, now);
       recordFailureHash(failureHash, now);
       // Use console.warn since console.log is not allowed by lint rules
       console.warn(
-        `\n[TestFailureReporter] Spawned Claude to fix ${suitesToSpawn.length} failing test suite(s) (hash: ${failureHash}):`
+        `\n[TestFailureReporter] Enqueued Claude to fix ${suitesToSpawn.length} failing test suite(s) (hash: ${failureHash}):`
       );
       for (const suite of suitesToSpawn) {
         console.warn(`  - ${suite}`);

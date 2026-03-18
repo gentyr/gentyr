@@ -231,6 +231,47 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 - Watches `agent-tracker-history.json` for status changes to `completed`/`process_already_dead`; triggers revival pipeline on detection
 - Registered as a launchd service (`com.local.gentyr-revival-daemon`) and systemd unit via `setup-automation-service.sh`
 - Complements — does not replace — the 10-minute session-reviver cooldown in hourly automation; the daemon catches crashes within seconds while the reviver handles retroactive recovery after restarts
+- **Queue drain on death**: calls `drainQueue()` when an agent is detected dead, so queued sessions fill the freed capacity immediately
+
+## Centralized Session Queue
+
+All agent spawning routes through `enqueueSession()` in `.claude/hooks/lib/session-queue.js`. Every previous `registerSpawn() + spawn('claude', ...) + updateAgent()` call site has been migrated.
+
+**DB**: `.claude/state/session-queue.db` (SQLite, WAL mode). **Log**: `.claude/session-queue.log`.
+
+**Schema**:
+- `queue_items` — id, status (`queued`/`running`/`completed`/`failed`/`cancelled`/`expired`), priority, lane, spawn_type (`fresh`/`resume`), title, agent_type, hook_type, tag_context, prompt, model, cwd, mcp_config, resume_session_id, extra_args, extra_env, project_dir, worktree_path, metadata, source, agent_id, pid, enqueued_at, spawned_at, completed_at, error, expires_at
+- `queue_config` — key/value pairs; seeded with `max_concurrent_sessions = 10`
+
+**Indexes**: `idx_queue_status` (status), `idx_queue_priority` (priority, lane, enqueued_at)
+
+**Priority ordering** (lower = higher): `critical:0` > `urgent:1` > `normal:2` > `low:3`
+
+**Lane sub-limits**: `gate` lane capped at 5 concurrent (Haiku gate agents)
+
+**Default TTL**: 30 minutes; expired items are marked `expired` on next drain
+
+**Default concurrency**: 10 (configurable 1–50)
+
+**`enqueueSession(opts)`**: Inserts a queue item, then calls `drainQueue()` immediately. Returns `{ queued: true, queueId, position }` or `{ queued: false, spawned: true, queueId, agentId, pid }` if spawned inline.
+
+**`drainQueue()`**: Counts live running items (PID liveness check via `kill(pid, 0)`), spawns queued items up to capacity in priority order. Skips gate-lane items beyond 5. Dead running items are marked `failed` to free capacity. Returns `{ drained, skipped, errors }`.
+
+**`getQueueStatus()`**: Returns `{ running, queued, config: { max_concurrent_sessions }, stats_24h: { avg_wait_ms, total_completed, top_sources } }`. Used by `get_session_queue_status` MCP tool and the dashboard reader.
+
+**4 MCP tools** (on `agent-tracker` server):
+- `get_session_queue_status` — running items (with PID liveness), queued items, capacity, 24h throughput
+- `set_max_concurrent_sessions` — update global limit (1–50); persisted to `queue_config` table
+- `cancel_queued_session` — mark a `queued` item `cancelled` by queue ID
+- `drain_session_queue` — trigger immediate drain; useful after manual capacity adjustment
+
+**Dashboard**: `SessionQueueSection` (Page 1) reads from `session-queue-reader.ts`. Capacity bar: green (<70%), yellow (70–89%), red (90%+). Columns: title, source, wait/elapsed.
+
+**Slash commands**:
+- `/session-queue` — calls `mcp__show__show_session_queue()`; shows running/queued tables + 24h stats
+- `/concurrent-sessions [N]` — with no arg: show status; with number: calls `set_max_concurrent_sessions` then shows updated status
+
+**Migrated spawn sites** (21 files): `task-gate-spawner.js`, `urgent-task-spawner.js`, `demo-failure-spawner.js`, `stop-continue-hook.js`, `session-reviver.js`, `compliance-checker.js`, `antipattern-hunter-hook.js`, `plan-executor.js`, `schema-mapper-hook.js`, `reporters/jest-failure-reporter.js`, `reporters/vitest-failure-reporter.js`, `reporters/playwright-failure-reporter.js`, `lib/revival-utils.js`, `todo-maintenance.js`, `hourly-automation.js`, `scripts/force-spawn-tasks.js`, `scripts/force-triage-reports.js`, `scripts/feedback-launcher.js`, `.claude/hooks/feedback-launcher.js`, `scripts/revival-daemon.js`, `packages/mcp-servers/test/reporters/test-failure-reporter.ts`
 
 ### Quota Monitor Hook
 
@@ -850,7 +891,7 @@ The agent uses `model: opus` and has all 12 `mcp__icon-processor__*` tools in it
 The CTO dashboard (`packages/cto-dashboard/`) supports a `--mock` flag for development and README generation. The `packages/cto-dashboard/src/mock-data.ts` module provides deterministic fixture data (waypoint-interpolated usage curves, realistic triage reports, deployment history) that renders without requiring live MCP connections.
 
 **`--page` flag** splits rendering to avoid Bash tool output truncation on large deployments (e.g., 68 worktrees):
-- `--page 1` (Intelligence): Header, Quota + Status, Accounts, Deputy-CTO, Usage Trends, Usage Trajectory, Automations
+- `--page 1` (Intelligence): Header, Quota + Status, Accounts, Deputy-CTO, Usage Trends, Usage Trajectory, Automations, Session Queue
 - `--page 2` (Operations): Testing, Deployments, Worktrees, Infra, Logging
 - `--page 3` (Analytics): Feedback Personas, PM, Worklog, Timeline, Metrics Summary
 - No `--page` argument renders all sections (backwards compatible; used by `generate-readme.js`)

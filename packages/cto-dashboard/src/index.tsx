@@ -30,13 +30,14 @@ import { getProductManagerData } from './utils/product-manager-reader.js';
 import { getWorklogData } from './utils/worklog-reader.js';
 import { getPlanData, getPlanProgressData, getPlanTimelineData, getPlanAuditData } from './utils/plan-reader.js';
 import { getPlanSessionData } from './utils/plan-session-reader.js';
+import { getSessionQueueData } from './utils/session-queue-reader.js';
 import {
   getMockDashboardData, getMockTimelineEvents, getMockTrajectory,
   getMockAutomatedInstances, getMockDeputyCto, getMockTesting,
   getMockDeployments, getMockInfra, getMockLogging, getMockAccountOverview,
   getMockWorktrees, getMockProductManager, getMockWorklog,
   getMockPlanData, getMockPlanProgressData, getMockPlanTimelineData, getMockPlanAuditData,
-  getMockPlanSessionData,
+  getMockPlanSessionData, getMockSessionQueueData,
 } from './mock-data.js';
 import {
   Section,
@@ -60,6 +61,7 @@ import {
   PlanTimelineSection,
   PlanAuditSection,
   PlanSessionSection,
+  SessionQueueSection,
   type MetricBoxData,
 } from './components/index.js';
 import { formatNumber, calculateCacheRate } from './utils/formatters.js';
@@ -74,6 +76,7 @@ const SECTION_IDS = [
   'testing', 'deployments', 'worktrees', 'infra', 'logging',
   'timeline', 'tasks', 'product-market-fit', 'worklog',
   'plans', 'plan-progress', 'plan-timeline', 'plan-audit', 'plan-sessions',
+  'session-queue',
 ] as const;
 
 type SectionId = typeof SECTION_IDS[number];
@@ -327,6 +330,11 @@ async function renderSection(sectionId: SectionId, mock: boolean, hours: number,
       return <PlanSessionSection data={planSessions} />;
     }
 
+    case 'session-queue': {
+      const sessionQueue = mock ? getMockSessionQueueData() : getSessionQueueData();
+      return <SessionQueueSection data={sessionQueue} />;
+    }
+
     default: {
       const _exhaustive: never = sectionId;
       throw new Error(`Unhandled section: ${_exhaustive}`);
@@ -360,7 +368,7 @@ async function main(): Promise<void> {
     const needPage2 = !page || page === 2;
     const needPage3 = !page || page === 3;
 
-    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager, worklog, planData;
+    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager, worklog, planData, sessionQueueData;
 
     // Empty defaults for sections not needed on the current page
     const emptyDeployments = { hasData: false, render: { services: [], recentDeploys: [] }, vercel: { projects: [], recentDeploys: [] }, pipeline: { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null, localDevCount: 0, stagingFreezeActive: false }, combined: [], byEnvironment: { preview: [], staging: [], production: [] }, stats: { totalDeploys24h: 0, successCount24h: 0, failedCount24h: 0 } } as const;
@@ -383,6 +391,7 @@ async function main(): Promise<void> {
       productManager = needPage3 ? getMockProductManager() : { hasData: false } as any;
       worklog = needPage3 ? getMockWorklog() : { hasData: false } as any;
       planData = needPage1 ? getMockPlanData() : { hasData: false } as any;
+      sessionQueueData = needPage1 ? getMockSessionQueueData() : { hasData: false } as any;
     } else {
       // Always fetch core data (used by Header, Quota, Status, FeedbackPersonas, and MetricsSummary)
       data = await getDashboardData(hours);
@@ -393,6 +402,7 @@ async function main(): Promise<void> {
       deputyCto = needPage1 ? getDeputyCtoData() : { hasData: false } as any;
       accountOverview = needPage1 ? getAccountOverviewData() : { hasData: false } as any;
       planData = needPage1 ? getPlanData() : { hasData: false } as any;
+      sessionQueueData = needPage1 ? getSessionQueueData() : { hasData: false } as any;
 
       // Page 2 sync fetches
       testing = needPage2 ? getTestingData() : { hasData: false } as any;
@@ -458,6 +468,7 @@ async function main(): Promise<void> {
         productManager={productManager}
         worklog={worklog}
         planData={planData}
+        sessionQueueData={sessionQueueData}
         page={page ?? undefined}
       />,
       { exitOnCtrlC: true }

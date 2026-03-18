@@ -17,7 +17,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { spawn, execSync, execFileSync } from 'child_process';
+import { execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,11 +52,12 @@ function parseArgs() {
 }
 
 // ---------------------------------------------------------------------------
-// AGENT TRACKER IMPORT
+// AGENT TRACKER + SESSION QUEUE IMPORT
 // ---------------------------------------------------------------------------
 
-// Resolve the agent-tracker relative to the project's .claude/hooks/
-let registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES;
+// Resolve the agent-tracker and session-queue relative to the project's .claude/hooks/
+let AGENT_TYPES, HOOK_TYPES;
+let enqueueSession;
 
 async function loadAgentTracker(projectDir) {
   const trackerPath = path.join(projectDir, '.claude', 'hooks', 'agent-tracker.js');
@@ -65,8 +66,6 @@ async function loadAgentTracker(projectDir) {
     const frameworkTracker = path.resolve(__dirname, '..', '.claude', 'hooks', 'agent-tracker.js');
     if (fs.existsSync(frameworkTracker)) {
       const mod = await import(frameworkTracker);
-      registerSpawn = mod.registerSpawn;
-      updateAgent = mod.updateAgent;
       AGENT_TYPES = mod.AGENT_TYPES;
       HOOK_TYPES = mod.HOOK_TYPES;
       return;
@@ -74,10 +73,23 @@ async function loadAgentTracker(projectDir) {
     throw new Error(`agent-tracker.js not found at ${trackerPath}`);
   }
   const mod = await import(trackerPath);
-  registerSpawn = mod.registerSpawn;
-  updateAgent = mod.updateAgent;
   AGENT_TYPES = mod.AGENT_TYPES;
   HOOK_TYPES = mod.HOOK_TYPES;
+}
+
+async function loadSessionQueue(projectDir) {
+  const queuePath = path.join(projectDir, '.claude', 'hooks', 'lib', 'session-queue.js');
+  if (!fs.existsSync(queuePath)) {
+    const frameworkQueue = path.resolve(__dirname, '..', '.claude', 'hooks', 'lib', 'session-queue.js');
+    if (fs.existsSync(frameworkQueue)) {
+      const mod = await import(frameworkQueue);
+      enqueueSession = mod.enqueueSession;
+      return;
+    }
+    throw new Error(`session-queue.js not found at ${queuePath}`);
+  }
+  const mod = await import(queuePath);
+  enqueueSession = mod.enqueueSession;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,106 +164,6 @@ function countRunningAgents() {
     // pgrep returns exit code 1 when no processes match
     return 0;
   }
-}
-
-// ---------------------------------------------------------------------------
-// CREDENTIAL CACHE (duplicated from hourly-automation.js)
-// ---------------------------------------------------------------------------
-
-let resolvedCredentials = {};
-let credentialsResolved = false;
-
-function ensureCredentials(projectDir) {
-  if (credentialsResolved) return;
-  credentialsResolved = true;
-  preResolveCredentials(projectDir);
-}
-
-function preResolveCredentials(projectDir) {
-  const hasServiceAccount = !!process.env.OP_SERVICE_ACCOUNT_TOKEN;
-  const isLaunchdService = process.env.GENTYR_LAUNCHD_SERVICE === 'true';
-
-  if (isLaunchdService && !hasServiceAccount) {
-    return;
-  }
-
-  const mappingsPath = path.join(projectDir, '.claude', 'vault-mappings.json');
-  const actionsPath = path.join(projectDir, '.claude', 'hooks', 'protected-actions.json');
-
-  let mappings = {};
-  let servers = {};
-
-  try {
-    const data = JSON.parse(fs.readFileSync(mappingsPath, 'utf8'));
-    mappings = data.mappings || {};
-  } catch {
-    return;
-  }
-
-  try {
-    const actions = JSON.parse(fs.readFileSync(actionsPath, 'utf8'));
-    servers = actions.servers || {};
-  } catch {
-    return;
-  }
-
-  const allKeys = new Set();
-  for (const server of Object.values(servers)) {
-    if (server.credentialKeys) {
-      for (const key of server.credentialKeys) {
-        allKeys.add(key);
-      }
-    }
-  }
-
-  for (const key of allKeys) {
-    if (process.env[key]) continue;
-
-    const ref = mappings[key];
-    if (!ref) continue;
-
-    if (ref.startsWith('op://')) {
-      try {
-        const value = execFileSync('op', ['read', ref], {
-          encoding: 'utf-8',
-          timeout: 15000,
-          stdio: 'pipe',
-        }).trim();
-
-        if (value) {
-          resolvedCredentials[key] = value;
-        }
-      } catch {
-        // Skip failed credential resolution
-      }
-    } else {
-      resolvedCredentials[key] = ref;
-    }
-  }
-}
-
-function buildSpawnEnv(agentId, projectDir) {
-  ensureCredentials(projectDir);
-
-  // Resolve git-wrappers directory (follows symlinks for npm link model)
-  const hooksDir = path.join(projectDir, '.claude', 'hooks');
-  let guardedPath = process.env.PATH || '/usr/bin:/bin';
-  try {
-    const realHooks = fs.realpathSync(hooksDir);
-    const wrappersDir = path.join(realHooks, 'git-wrappers');
-    if (fs.existsSync(path.join(wrappersDir, 'git'))) {
-      guardedPath = `${wrappersDir}:${guardedPath}`;
-    }
-  } catch {}
-
-  return {
-    ...process.env,
-    ...resolvedCredentials,
-    CLAUDE_PROJECT_DIR: projectDir,
-    CLAUDE_SPAWNED_SESSION: 'true',
-    CLAUDE_AGENT_ID: agentId,
-    PATH: guardedPath,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +486,7 @@ async function main() {
   // Load dependencies
   await loadDatabase();
   await loadAgentTracker(config.projectDir);
+  await loadSessionQueue(config.projectDir);
   await loadWorktreeHelpers(config.projectDir);
 
   // Resolve SECTION_AGENT_MAP now that AGENT_TYPES is available
@@ -719,54 +632,33 @@ async function main() {
       }
     }
 
-    // Register with agent tracker first (to get agentId for prompt embedding)
-    const agentId = registerSpawn({
-      type: mapping.agentType,
-      hookType: HOOK_TYPES.TASK_RUNNER,
-      description: `Force-spawn: ${mapping.agent} - ${task.title}`,
-      prompt: '',  // Will be set after prompt is built
-      metadata: { taskId: task.id, section: task.section, worktreePath, source: 'force-spawn-tasks' },
-    });
-
-    // Build prompt with embedded agent ID for reaper tracking
-    const prompt = mapping.agent === 'deputy-cto'
-      ? buildDeputyCtoTaskPrompt(task, agentId)
-      : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath);
-
-    // Store the prompt now that it's built
-    if (updateAgent) {
-      updateAgent(agentId, { prompt });
-    }
-
-    // Spawn detached claude process
+    // Enqueue the session — the queue handles registerSpawn, buildSpawnEnv, and spawn internally.
+    // Use buildPrompt as a deferred builder so the agentId is available when the prompt is constructed.
     try {
-      const claude = spawn('claude', [
-        '--dangerously-skip-permissions',
-        '--mcp-config', agentMcpConfig,
-        '--output-format', 'json',
-        '-p',
-        prompt,
-      ], {
-        detached: true,
-        stdio: 'ignore',
+      const { queueId } = enqueueSession({
+        title: `Force-spawn: ${mapping.agent} - ${task.title}`,
+        agentType: mapping.agentType,
+        hookType: HOOK_TYPES.TASK_RUNNER,
+        tagContext: `task-runner-${mapping.agent}`,
+        source: 'force-spawn-tasks',
+        buildPrompt: (agentId) => mapping.agent === 'deputy-cto'
+          ? buildDeputyCtoTaskPrompt(task, agentId)
+          : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath),
         cwd: agentCwd,
-        env: buildSpawnEnv(agentId, config.projectDir),
+        mcpConfig: agentMcpConfig,
+        worktreePath: worktreePath || null,
+        projectDir: config.projectDir,
+        priority: task.priority === 'urgent' ? 'urgent' : 'normal',
+        metadata: { taskId: task.id, section: task.section, worktreePath, source: 'force-spawn-tasks' },
+        ttlMs: 30 * 60 * 1000,
       });
-
-      claude.unref();
-
-      // Store PID for reaper tracking
-      if (updateAgent) {
-        updateAgent(agentId, { pid: claude.pid, status: 'running' });
-      }
 
       spawned.push({
         taskId: task.id,
         title: task.title,
         section: task.section,
         agent: mapping.agent,
-        agentId: agentId,
-        pid: claude.pid,
+        queueId,
         worktreePath,
       });
     } catch (err) {
@@ -774,7 +666,7 @@ async function main() {
       errors.push({
         taskId: task.id,
         title: task.title,
-        message: `Spawn failed: ${err.message}`,
+        message: `Enqueue failed: ${err.message}`,
       });
     }
   }

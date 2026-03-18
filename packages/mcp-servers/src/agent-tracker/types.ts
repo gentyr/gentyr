@@ -88,6 +88,19 @@ export const MonitorAgentsArgsSchema = z.object({
     .describe('Agent IDs to monitor (from force_spawn_tasks response)'),
 });
 
+export const GetSessionQueueStatusArgsSchema = z.object({});
+
+export const SetMaxConcurrentSessionsArgsSchema = z.object({
+  max: z.coerce.number().min(1).max(50)
+    .describe('Maximum concurrent sessions allowed (1-50)'),
+});
+
+export const CancelQueuedSessionArgsSchema = z.object({
+  queue_id: z.string().describe('Queue item ID to cancel'),
+});
+
+export const DrainSessionQueueArgsSchema = z.object({});
+
 // ============================================================================
 // Session Browser Schemas (Unified Session Browser)
 // ============================================================================
@@ -176,6 +189,12 @@ export type MonitorAgentsArgs = z.infer<typeof MonitorAgentsArgsSchema>;
 export type ListSessionsArgs = z.infer<typeof ListSessionsArgsSchema>;
 export type SearchSessionsArgs = z.infer<typeof SearchSessionsArgsSchema>;
 export type GetSessionSummaryArgs = z.infer<typeof GetSessionSummaryArgsSchema>;
+
+// Session Queue Types
+export type GetSessionQueueStatusArgs = z.infer<typeof GetSessionQueueStatusArgsSchema>;
+export type SetMaxConcurrentSessionsArgs = z.infer<typeof SetMaxConcurrentSessionsArgsSchema>;
+export type CancelQueuedSessionArgs = z.infer<typeof CancelQueuedSessionArgsSchema>;
+export type DrainSessionQueueArgs = z.infer<typeof DrainSessionQueueArgsSchema>;
 
 export interface AgentRecord {
   id: string;
@@ -315,6 +334,7 @@ export interface ForceTriageReportsResult {
   pid: number | null;
   sessionId: string | null;
   pendingReports: number;
+  queueId?: string | null;  // Session queue ID (set when enqueued via session-queue)
   message?: string;
   error?: string;
   deduplicated?: boolean;  // G011: true when returning existing agent instead of spawning

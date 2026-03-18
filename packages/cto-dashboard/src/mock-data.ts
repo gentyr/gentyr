@@ -42,6 +42,7 @@ import type { ProductManagerData } from './utils/product-manager-reader.js';
 import type { WorklogData } from './utils/worklog-reader.js';
 import type { PlanData, PlanProgressData, PlanTimelineData, PlanAuditData } from './utils/plan-reader.js';
 import type { PlanSessionData } from './utils/plan-session-reader.js';
+import type { SessionQueueData } from './utils/session-queue-reader.js';
 
 // ============================================================================
 // Deterministic PRNG (LCG — no Math.random())
@@ -2149,6 +2150,78 @@ export function getMockPlanSessionData(): PlanSessionData {
       interrupted: 0,
       revived: 1,
       totalTokens: 890000,
+    },
+  };
+}
+
+// ============================================================================
+// Session Queue data
+// ============================================================================
+
+export function getMockSessionQueueData(): SessionQueueData {
+  const now = Date.now();
+
+  return {
+    hasData: true,
+    maxConcurrent: 10,
+    running: 3,
+    availableSlots: 7,
+    runningItems: [
+      {
+        id: 'sq-abc001',
+        title: 'code-writer: Add Zod validation to webhook handler',
+        source: 'force-spawn-tasks',
+        agentType: 'code-writer',
+        pid: 45210,
+        elapsed: '12m',
+      },
+      {
+        id: 'sq-abc002',
+        title: 'test-writer: Unit tests for auth service',
+        source: 'hourly-automation',
+        agentType: 'test-writer',
+        pid: 45318,
+        elapsed: '7m',
+      },
+      {
+        id: 'sq-abc003',
+        title: 'task-gate-spawner: Review task pending_review-0fa3',
+        source: 'task-gate-spawner',
+        agentType: 'gate-agent',
+        pid: 45422,
+        elapsed: '2m',
+      },
+    ],
+    queuedItems: [
+      {
+        id: 'sq-abc004',
+        title: 'lint-fixer: Fix ESLint errors in packages/api/src/',
+        priority: 'normal',
+        lane: 'standard',
+        source: 'hourly-automation',
+        waitTime: new Date(now - 3 * 60 * 1000).toISOString().length > 0
+          ? '3m'
+          : '0s',
+      },
+      {
+        id: 'sq-abc005',
+        title: 'deputy-cto-review: Triage pending reports',
+        priority: 'urgent',
+        lane: 'standard',
+        source: 'force-triage-reports',
+        waitTime: '1m',
+      },
+    ],
+    stats: {
+      completedLast24h: 47,
+      avgWaitSeconds: 18,
+      avgRunSeconds: 420,
+      bySource: {
+        'hourly-automation': 22,
+        'force-spawn-tasks': 14,
+        'task-gate-spawner': 8,
+        'force-triage-reports': 3,
+      },
     },
   };
 }

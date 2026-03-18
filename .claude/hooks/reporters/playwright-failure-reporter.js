@@ -25,7 +25,6 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -92,7 +91,7 @@ async function getConfiguredCooldown() {
 
 /**
  * Dynamically import agent-tracker
- * @returns {Promise<{registerSpawn: Function, AGENT_TYPES: object, HOOK_TYPES: object}>}
+ * @returns {Promise<{AGENT_TYPES: object, HOOK_TYPES: object}>}
  */
 async function getAgentTracker() {
   try {
@@ -101,11 +100,19 @@ async function getAgentTracker() {
   } catch (err) {
     console.error(`Warning: Could not load agent-tracker: ${err.message}`);
     return {
-      registerSpawn: () => {},
       AGENT_TYPES: { TEST_FAILURE_PLAYWRIGHT: 'test-failure-playwright' },
       HOOK_TYPES: { PLAYWRIGHT_REPORTER: 'playwright-reporter' }
     };
   }
+}
+
+/**
+ * Dynamically import session-queue enqueueSession
+ * @returns {Promise<{enqueueSession: Function}>}
+ */
+async function getSessionQueue() {
+  const queuePath = path.join(getFrameworkDir(), '.claude', 'hooks', 'lib', 'session-queue.js');
+  return await import(queuePath);
 }
 
 /**
@@ -272,7 +279,7 @@ function formatFailureDetails(failedTests) {
 }
 
 /**
- * Spawn Claude to fix test failures
+ * Enqueue Claude to fix test failures
  * @param {string[]} suiteNames
  * @param {string} failureDetails
  * @returns {Promise<boolean>}
@@ -300,40 +307,29 @@ ${failureDetails.slice(0, 8000)}
 \`\`\``;
 
   try {
-    const { registerSpawn, AGENT_TYPES, HOOK_TYPES } = await getAgentTracker();
+    const { AGENT_TYPES, HOOK_TYPES } = await getAgentTracker();
+    const { enqueueSession } = await getSessionQueue();
 
-    registerSpawn({
-      type: AGENT_TYPES.TEST_FAILURE_PLAYWRIGHT,
+    enqueueSession({
+      title: `Fixing ${suiteNames.length} failing Playwright test suite(s): ${suiteNames.slice(0, 3).join(', ')}`,
+      agentType: AGENT_TYPES.TEST_FAILURE_PLAYWRIGHT,
       hookType: HOOK_TYPES.PLAYWRIGHT_REPORTER || 'playwright-reporter',
-      description: `Fixing ${suiteNames.length} failing Playwright test suite(s): ${suiteNames.slice(0, 3).join(', ')}`,
+      tagContext: 'test-failure-playwright',
+      source: 'playwright-failure-reporter',
       prompt,
+      priority: 'normal',
+      cwd: projectRoot,
+      projectDir: projectRoot,
       metadata: {
         suiteNames,
         suiteCount: suiteNames.length,
-        failureDetailsLength: failureDetails.length
+        failureDetailsLength: failureDetails.length,
       },
-      projectDir: projectRoot
     });
 
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '-p',
-      prompt
-    ], {
-      detached: true,
-      stdio: 'ignore',
-      cwd: projectRoot,
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: projectRoot,
-        CLAUDE_SPAWNED_SESSION: 'true'
-      }
-    });
-
-    claude.unref();
     return true;
   } catch (err) {
-    console.error(`Warning: Failed to spawn Claude: ${err.message}`);
+    console.error(`Warning: Failed to enqueue Claude: ${err.message}`);
     return false;
   }
 }

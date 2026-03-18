@@ -23,7 +23,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { spawn, execSync } from 'child_process';
+import { execSync } from 'child_process';
 
 const { randomUUID } = crypto;
 import Database from 'better-sqlite3';
@@ -2280,7 +2280,7 @@ function requestHotfixPromotion(_args: RequestHotfixPromotionArgs): RequestHotfi
   };
 }
 
-function executeHotfixPromotion(_args: ExecuteHotfixPromotionArgs): ExecuteHotfixPromotionResult | ErrorResult {
+async function executeHotfixPromotion(_args: ExecuteHotfixPromotionArgs): Promise<ExecuteHotfixPromotionResult | ErrorResult> {
   // Read approval token
   if (!fs.existsSync(HOTFIX_APPROVAL_TOKEN_PATH)) {
     return { error: 'No hotfix approval token found. The CTO must type "APPROVE HOTFIX <code>" first.' };
@@ -2335,9 +2335,20 @@ function executeHotfixPromotion(_args: ExecuteHotfixPromotionArgs): ExecuteHotfi
   const row = db.prepare('SELECT commits_json FROM hotfix_requests WHERE id = ?').get(token.request_id) as { commits_json: string } | undefined;
   const commits: string[] = row ? JSON.parse(row.commits_json) : [];
 
-  // Spawn the hotfix promotion agent
+  // Spawn the hotfix promotion agent via session queue
   const commitList = commits.join('\n');
-  const hotfixPrompt = `[Task][hotfix-promotion] You are the EMERGENCY HOTFIX Promotion Pipeline.
+
+  try {
+    const { enqueueSession } = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js'));
+
+    const result = enqueueSession({
+      title: 'Emergency hotfix: staging -> main promotion',
+      agentType: 'hotfix-promotion',
+      hookType: 'hourly-automation',
+      tagContext: 'hotfix-promotion',
+      source: 'deputy-cto-server',
+      priority: 'critical',
+      buildPrompt: (agentId: string) => `[Task][hotfix-promotion][AGENT:${agentId}] You are the EMERGENCY HOTFIX Promotion Pipeline.
 
 ## Mission
 
@@ -2376,37 +2387,19 @@ If code review fails:
 
 ## Timeout
 
-Complete within 25 minutes. If blocked, report and exit.`;
-
-  try {
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
-      '--output-format', 'json',
-      '-p',
-      hotfixPrompt,
-    ], {
-      detached: true,
-      stdio: 'ignore',
-      cwd: PROJECT_DIR,
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-        CLAUDE_SPAWNED_SESSION: 'true',
-        GENTYR_PROMOTION_PIPELINE: 'true',
-      },
+Complete within 25 minutes. If blocked, report and exit.`,
+      extraEnv: { GENTYR_PROMOTION_PIPELINE: 'true' },
+      projectDir: PROJECT_DIR,
+      metadata: { commitCount: commits.length, isHotfix: true },
     });
-
-    claude.unref();
 
     return {
       success: true,
-      message: `Hotfix promotion agent spawned (PID: ${claude.pid}). Staging -> main promotion is in progress with code review. The 24h stability gate and midnight window are bypassed.`,
+      message: `Hotfix promotion agent enqueued (queue ID: ${result.queueId}, position: ${result.position}). Staging -> main promotion will start when a slot is available. The 24h stability gate and midnight window are bypassed.`,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { error: `Failed to spawn hotfix promotion agent: ${message}` };
+    return { error: `Failed to enqueue hotfix promotion agent: ${message}` };
   }
 }
 

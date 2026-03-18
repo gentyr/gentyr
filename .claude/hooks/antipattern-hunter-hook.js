@@ -17,10 +17,11 @@
 
 import fs from 'fs';
 import path from 'path';
-import { spawn, execSync } from 'child_process';
+import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { registerSpawn, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { getCooldown } from './config-reader.js';
+import { enqueueSession } from './lib/session-queue.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -202,36 +203,19 @@ Do NOT implement fixes yourself.
 
 Focus on finding SYSTEMIC issues across the codebase, not just isolated violations.`;
 
-  // Register spawn
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.ANTIPATTERN_HUNTER_REPO,
+  const result = enqueueSession({
+    title: 'Repo-wide antipattern hunt after commit',
+    agentType: AGENT_TYPES.ANTIPATTERN_HUNTER_REPO,
     hookType: HOOK_TYPES.ANTIPATTERN_HUNTER,
-    description: 'Repo-wide antipattern hunt after commit',
+    tagContext: 'antipattern-hunter-repo',
+    source: 'antipattern-hunter-hook',
     prompt,
+    projectDir,
     metadata: { trigger: 'post-commit', scope: 'repo-wide', cooldownHours: CONFIG.cooldownHours },
-    projectDir
   });
 
-  // Spawn Claude session (fire-and-forget, detached)
-  const claude = spawn('claude', [
-    '--dangerously-skip-permissions',
-    '-p',
-    prompt
-  ], {
-    detached: true,
-    stdio: 'ignore',
-    cwd: projectDir,
-    env: {
-      ...process.env,
-      CLAUDE_PROJECT_DIR: projectDir,
-      CLAUDE_SPAWNED_SESSION: 'true'
-    }
-  });
-
-  claude.unref();
-
-  console.log(`[antipattern-hunter] Spawned REPO-WIDE hunter ${agentId} (PID: ${claude.pid})`);
-  return agentId;
+  console.log(`[antipattern-hunter] Enqueued REPO-WIDE hunter (queueId: ${result.queueId})`);
+  return result.queueId;
 }
 
 /**
@@ -317,42 +301,25 @@ Do NOT implement fixes yourself.
 
 Be THOROUGH with the commit files - this is a deep review, not a surface scan.`;
 
-  // Register spawn
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.ANTIPATTERN_HUNTER_COMMIT,
+  const result = enqueueSession({
+    title: `Commit-focused antipattern hunt: ${commitMessage.split('\n')[0].substring(0, 50)}`,
+    agentType: AGENT_TYPES.ANTIPATTERN_HUNTER_COMMIT,
     hookType: HOOK_TYPES.ANTIPATTERN_HUNTER,
-    description: `Commit-focused antipattern hunt: ${commitMessage.split('\n')[0].substring(0, 50)}`,
+    tagContext: 'antipattern-hunter-commit',
+    source: 'antipattern-hunter-hook',
     prompt,
+    projectDir,
     metadata: {
       trigger: 'post-commit',
       scope: 'commit-focused',
       filesChanged: files.length,
       files: files.slice(0, 20), // Store first 20 files
-      cooldownHours: CONFIG.cooldownHours
+      cooldownHours: CONFIG.cooldownHours,
     },
-    projectDir
   });
 
-  // Spawn Claude session (fire-and-forget, detached)
-  const claude = spawn('claude', [
-    '--dangerously-skip-permissions',
-    '-p',
-    prompt
-  ], {
-    detached: true,
-    stdio: 'ignore',
-    cwd: projectDir,
-    env: {
-      ...process.env,
-      CLAUDE_PROJECT_DIR: projectDir,
-      CLAUDE_SPAWNED_SESSION: 'true'
-    }
-  });
-
-  claude.unref();
-
-  console.log(`[antipattern-hunter] Spawned COMMIT-FOCUSED hunter ${agentId} (PID: ${claude.pid})`);
-  return agentId;
+  console.log(`[antipattern-hunter] Enqueued COMMIT-FOCUSED hunter (queueId: ${result.queueId})`);
+  return result.queueId;
 }
 
 /**

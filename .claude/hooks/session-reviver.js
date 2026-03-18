@@ -23,8 +23,8 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { execSync, spawn } from 'child_process';
-import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES, registerHookExecution, acquireLock, releaseLock } from './agent-tracker.js';
+import { execSync } from 'child_process';
+import { AGENT_TYPES, HOOK_TYPES, registerHookExecution, acquireLock, releaseLock } from './agent-tracker.js';
 import {
   readRotationState,
   writeRotationState,
@@ -33,8 +33,8 @@ import {
   checkKeyHealth,
   selectActiveKey,
 } from './key-sync.js';
-import { isProxyDisabled } from './lib/proxy-state.js';
 import { shouldAllowSpawn } from './lib/memory-pressure.js';
+import { enqueueSession } from './lib/session-queue.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
@@ -190,81 +190,47 @@ function findSessionFileByAgentId(sessionDir, agentId) {
 }
 
 /**
- * Build env for spawned claude processes.
- * Re-uses the same pattern as hourly-automation.js buildSpawnEnv().
+ * Enqueue a resumed claude session via session-queue.
+ * Returns true if the item was spawned immediately (drained), false otherwise.
  */
-function buildSpawnEnv(agentId) {
-  // Resolve git-wrappers directory (follows symlinks for npm link model)
-  const hooksDir = path.join(PROJECT_DIR, '.claude', 'hooks');
-  let guardedPath = process.env.PATH || '/usr/bin:/bin';
-  try {
-    const realHooks = fs.realpathSync(hooksDir);
-    const wrappersDir = path.join(realHooks, 'git-wrappers');
-    if (fs.existsSync(path.join(wrappersDir, 'git'))) {
-      guardedPath = `${wrappersDir}:${guardedPath}`;
-    }
-  } catch {}
-
-  const env = {
-    ...process.env,
-    CLAUDE_PROJECT_DIR: PROJECT_DIR,
-    CLAUDE_SPAWNED_SESSION: 'true',
-    CLAUDE_AGENT_ID: agentId,
-    PATH: guardedPath,
-  };
-
-  if (!isProxyDisabled()) {
-    env.HTTPS_PROXY = 'http://localhost:18080';
-    env.HTTP_PROXY = 'http://localhost:18080';
-    env.NO_PROXY = 'localhost,127.0.0.1';
-    env.NODE_EXTRA_CA_CERTS = path.join(os.homedir(), '.claude', 'proxy-certs', 'ca.pem');
-  }
-
-  return env;
-}
-
-/**
- * Spawn a resumed claude session.
- * Returns true if spawn succeeded.
- */
-function spawnResumedSession(sessionId, agentId, log, revivalPrompt, resumeCwd = null) {
+function spawnResumedSession(sessionId, agentId, log, revivalPrompt, resumeCwd = null, agentType = AGENT_TYPES.SESSION_REVIVED, metadata = {}) {
   // Use original worktree CWD if it still exists, otherwise fall back to main project
   const effectiveCwd = (resumeCwd && fs.existsSync(resumeCwd)) ? resumeCwd : PROJECT_DIR;
-  // Use worktree .mcp.json if resuming in a worktree, otherwise main project
-  const mcpConfig = path.join(effectiveCwd, '.mcp.json');
 
   // If worktree was cleaned up, warn the agent
+  let prompt = revivalPrompt;
   if (resumeCwd && !fs.existsSync(resumeCwd)) {
-    revivalPrompt += '\n\nNOTE: Your original worktree has been cleaned up. You are running from the main project directory. Create a new worktree if you need to make changes.';
+    prompt += '\n\nNOTE: Your original worktree has been cleaned up. You are running from the main project directory. Create a new worktree if you need to make changes.';
   }
 
-  const spawnArgs = [
-    '--resume', sessionId,
-    '--dangerously-skip-permissions',
-    '--mcp-config', mcpConfig,
-    '--output-format', 'json',
-    '-p', revivalPrompt,
-  ];
-
   try {
-    const claude = spawn('claude', spawnArgs, {
+    const result = enqueueSession({
+      title: `Revival: ${sessionId.slice(0, 8)}`,
+      agentType,
+      hookType: HOOK_TYPES.SESSION_REVIVER,
+      tagContext: 'session-revived',
+      source: 'session-reviver',
+      spawnType: 'resume',
+      resumeSessionId: sessionId,
+      lane: 'revival',
+      priority: 'urgent',
+      prompt,
       cwd: effectiveCwd,
-      stdio: 'ignore',
-      detached: true,
-      env: buildSpawnEnv(agentId),
+      mcpConfig: path.join(effectiveCwd, '.mcp.json'),
+      projectDir: PROJECT_DIR,
+      worktreePath: (resumeCwd && fs.existsSync(resumeCwd)) ? resumeCwd : null,
+      metadata,
     });
 
-    claude.unref();
-
-    if (claude.pid) {
-      updateAgent(agentId, { pid: claude.pid, status: 'running' });
-      log(`  Resumed session ${sessionId.slice(0, 8)}... (PID ${claude.pid})`);
-      return true;
+    const spawned = result.drained.spawned > 0;
+    if (spawned) {
+      log(`  Enqueued and spawned revival of session ${sessionId.slice(0, 8)}... (queueId: ${result.queueId})`);
+    } else {
+      log(`  Enqueued revival of session ${sessionId.slice(0, 8)}... (queueId: ${result.queueId}, at capacity)`);
     }
-
-    return false;
+    return spawned;
   } catch (err) {
-    log(`  Failed to resume session ${sessionId.slice(0, 8)}...: ${err.message}`);
+    log(`  Failed to enqueue revival of session ${sessionId.slice(0, 8)}...: ${err.message}`);
     return false;
   }
 }
@@ -313,19 +279,6 @@ function reviveQuotaInterruptedSessions(log, maxRevivals, staleWindowMs = NORMAL
       continue;
     }
 
-    // Register revival in agent tracker
-    const newAgentId = registerSpawn({
-      type: AGENT_TYPES.SESSION_REVIVED,
-      hookType: HOOK_TYPES.SESSION_REVIVER,
-      description: `Reviving quota-interrupted session ${sessionId.slice(0, 8)}`,
-      prompt: `[resumed from quota interruption, original agent: ${session.agentId || 'unknown'}]`,
-      metadata: {
-        originalAgentId: session.agentId,
-        originalSessionId: sessionId,
-        revivalReason: 'quota_interrupted',
-      },
-    });
-
     const taskId = resolveTaskIdForAgent(session.agentId);
     const revivalPrompt = buildRevivalPrompt({
       reason: 'quota_interrupted',
@@ -333,7 +286,11 @@ function reviveQuotaInterruptedSessions(log, maxRevivals, staleWindowMs = NORMAL
       taskId,
     });
 
-    if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt, session.worktreePath || null)) {
+    if (spawnResumedSession(sessionId, session.agentId || 'unknown', log, revivalPrompt, session.worktreePath || null, AGENT_TYPES.SESSION_REVIVED, {
+      originalAgentId: session.agentId,
+      originalSessionId: sessionId,
+      revivalReason: 'quota_interrupted',
+    })) {
       revived++;
       session.status = 'revived';
     } else {
@@ -474,20 +431,6 @@ function reviveDeadSessions(log, maxRevivals) {
 
       log(`  Found dead session for task ${taskId}: ${sessionId.slice(0, 8)}...`);
 
-      // Register revival
-      const newAgentId = registerSpawn({
-        type: AGENT_TYPES.SESSION_REVIVED,
-        hookType: HOOK_TYPES.SESSION_REVIVER,
-        description: `Reviving dead session for task ${taskId}`,
-        prompt: `[resumed from dead session, original agent: ${agent.id}]`,
-        metadata: {
-          originalAgentId: agent.id,
-          originalSessionId: sessionId,
-          taskId,
-          revivalReason: 'process_already_dead',
-        },
-      });
-
       const revivalPrompt = buildRevivalPrompt({
         reason: 'process_already_dead',
         interruptedAt: agent.timestamp,
@@ -498,7 +441,12 @@ function reviveDeadSessions(log, maxRevivals) {
       agent.revivalAttempted = true;
       historyDirty = true;
 
-      if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt, agent.metadata?.worktreePath || null)) {
+      if (spawnResumedSession(sessionId, agent.id, log, revivalPrompt, agent.metadata?.worktreePath || null, AGENT_TYPES.SESSION_REVIVED, {
+        originalAgentId: agent.id,
+        originalSessionId: sessionId,
+        taskId,
+        revivalReason: 'process_already_dead',
+      })) {
         revived++;
         // Mark task back to in_progress
         try {
@@ -619,18 +567,6 @@ async function resumePausedSessions(log, maxRevivals) {
       continue;
     }
 
-    const newAgentId = registerSpawn({
-      type: AGENT_TYPES.SESSION_REVIVED,
-      hookType: HOOK_TYPES.SESSION_REVIVER,
-      description: `Resuming paused session ${sessionId.slice(0, 8)}`,
-      prompt: `[resumed after account recovery, original agent: ${session.agentId || 'unknown'}]`,
-      metadata: {
-        originalAgentId: session.agentId,
-        originalSessionId: sessionId,
-        revivalReason: 'account_recovered',
-      },
-    });
-
     const taskId = resolveTaskIdForAgent(session.agentId);
     const revivalPrompt = buildRevivalPrompt({
       reason: 'account_recovered',
@@ -639,7 +575,11 @@ async function resumePausedSessions(log, maxRevivals) {
     });
 
     // Phase 4c: Pass worktreePath so resumed session runs in correct CWD
-    if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt, session.worktreePath || null)) {
+    if (spawnResumedSession(sessionId, session.agentId || 'unknown', log, revivalPrompt, session.worktreePath || null, AGENT_TYPES.SESSION_REVIVED, {
+      originalAgentId: session.agentId,
+      originalSessionId: sessionId,
+      revivalReason: 'account_recovered',
+    })) {
       revived++;
     } else {
       remaining.push(session);

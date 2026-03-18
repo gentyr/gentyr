@@ -15,9 +15,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { fileURLToPath } from 'url';
-import { spawn, execSync, execFileSync } from 'child_process';
+import { execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,10 +41,11 @@ function parseArgs() {
 }
 
 // ---------------------------------------------------------------------------
-// AGENT TRACKER IMPORT
+// AGENT TRACKER + SESSION QUEUE IMPORT
 // ---------------------------------------------------------------------------
 
-let registerSpawn, updateAgent, findRecentSpawn, AGENT_TYPES, HOOK_TYPES;
+let AGENT_TYPES, HOOK_TYPES;
+let enqueueSession;
 
 async function loadAgentTracker(projectDir) {
   const trackerPath = path.join(projectDir, '.claude', 'hooks', 'agent-tracker.js');
@@ -53,9 +53,6 @@ async function loadAgentTracker(projectDir) {
     const frameworkTracker = path.resolve(__dirname, '..', '.claude', 'hooks', 'agent-tracker.js');
     if (fs.existsSync(frameworkTracker)) {
       const mod = await import(frameworkTracker);
-      registerSpawn = mod.registerSpawn;
-      updateAgent = mod.updateAgent;
-      findRecentSpawn = mod.findRecentSpawn;
       AGENT_TYPES = mod.AGENT_TYPES;
       HOOK_TYPES = mod.HOOK_TYPES;
       return;
@@ -63,111 +60,23 @@ async function loadAgentTracker(projectDir) {
     throw new Error(`agent-tracker.js not found at ${trackerPath}`);
   }
   const mod = await import(trackerPath);
-  registerSpawn = mod.registerSpawn;
-  updateAgent = mod.updateAgent;
-  findRecentSpawn = mod.findRecentSpawn;
   AGENT_TYPES = mod.AGENT_TYPES;
   HOOK_TYPES = mod.HOOK_TYPES;
 }
 
-// ---------------------------------------------------------------------------
-// CREDENTIAL CACHE (duplicated from force-spawn-tasks.js)
-// ---------------------------------------------------------------------------
-
-let resolvedCredentials = {};
-let credentialsResolved = false;
-
-function ensureCredentials(projectDir) {
-  if (credentialsResolved) return;
-  credentialsResolved = true;
-  preResolveCredentials(projectDir);
-}
-
-function preResolveCredentials(projectDir) {
-  const hasServiceAccount = !!process.env.OP_SERVICE_ACCOUNT_TOKEN;
-  const isLaunchdService = process.env.GENTYR_LAUNCHD_SERVICE === 'true';
-
-  if (isLaunchdService && !hasServiceAccount) {
-    return;
-  }
-
-  const mappingsPath = path.join(projectDir, '.claude', 'vault-mappings.json');
-  const actionsPath = path.join(projectDir, '.claude', 'hooks', 'protected-actions.json');
-
-  let mappings = {};
-  let servers = {};
-
-  try {
-    const data = JSON.parse(fs.readFileSync(mappingsPath, 'utf8'));
-    mappings = data.mappings || {};
-  } catch {
-    return;
-  }
-
-  try {
-    const actions = JSON.parse(fs.readFileSync(actionsPath, 'utf8'));
-    servers = actions.servers || {};
-  } catch {
-    return;
-  }
-
-  const allKeys = new Set();
-  for (const server of Object.values(servers)) {
-    if (server.credentialKeys) {
-      for (const key of server.credentialKeys) {
-        allKeys.add(key);
-      }
+async function loadSessionQueue(projectDir) {
+  const queuePath = path.join(projectDir, '.claude', 'hooks', 'lib', 'session-queue.js');
+  if (!fs.existsSync(queuePath)) {
+    const frameworkQueue = path.resolve(__dirname, '..', '.claude', 'hooks', 'lib', 'session-queue.js');
+    if (fs.existsSync(frameworkQueue)) {
+      const mod = await import(frameworkQueue);
+      enqueueSession = mod.enqueueSession;
+      return;
     }
+    throw new Error(`session-queue.js not found at ${queuePath}`);
   }
-
-  for (const key of allKeys) {
-    if (process.env[key]) continue;
-
-    const ref = mappings[key];
-    if (!ref) continue;
-
-    if (ref.startsWith('op://')) {
-      try {
-        const value = execFileSync('op', ['read', ref], {
-          encoding: 'utf-8',
-          timeout: 15000,
-          stdio: 'pipe',
-        }).trim();
-
-        if (value) {
-          resolvedCredentials[key] = value;
-        }
-      } catch {
-        // Skip failed credential resolution
-      }
-    } else {
-      resolvedCredentials[key] = ref;
-    }
-  }
-}
-
-function buildSpawnEnv(agentId, projectDir) {
-  ensureCredentials(projectDir);
-
-  // Resolve git-wrappers directory (follows symlinks for npm link model)
-  const hooksDir = path.join(projectDir, '.claude', 'hooks');
-  let guardedPath = process.env.PATH || '/usr/bin:/bin';
-  try {
-    const realHooks = fs.realpathSync(hooksDir);
-    const wrappersDir = path.join(realHooks, 'git-wrappers');
-    if (fs.existsSync(path.join(wrappersDir, 'git'))) {
-      guardedPath = `${wrappersDir}:${guardedPath}`;
-    }
-  } catch {}
-
-  return {
-    ...process.env,
-    ...resolvedCredentials,
-    CLAUDE_PROJECT_DIR: projectDir,
-    CLAUDE_SPAWNED_SESSION: 'true',
-    CLAUDE_AGENT_ID: agentId,
-    PATH: guardedPath,
-  };
+  const mod = await import(queuePath);
+  enqueueSession = mod.enqueueSession;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,65 +120,6 @@ function countRunningAgents() {
   } catch {
     return 0;
   }
-}
-
-// ---------------------------------------------------------------------------
-// SESSION ID DISCOVERY
-// ---------------------------------------------------------------------------
-
-function getSessionDir(projectDir) {
-  const projectPath = projectDir.replace(/[^a-zA-Z0-9]/g, '-').replace(/^-/, '');
-  return path.join(os.homedir(), '.claude', 'projects', `-${projectPath}`);
-}
-
-function discoverSessionId(projectDir, spawnTimeMs) {
-  const sessionDir = getSessionDir(projectDir);
-  if (!fs.existsSync(sessionDir)) return null;
-
-  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-  try {
-    const files = fs.readdirSync(sessionDir)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => {
-        const filePath = path.join(sessionDir, f);
-        const stat = fs.statSync(filePath);
-        return { name: f, mtime: stat.mtimeMs, size: stat.size };
-      })
-      .filter(f => {
-        const id = f.name.replace('.jsonl', '');
-        return UUID_REGEX.test(id) && f.mtime >= spawnTimeMs;
-      })
-      .sort((a, b) => b.mtime - a.mtime);
-
-    if (files.length === 0) return null;
-    return files[0].name.replace('.jsonl', '');
-  } catch {
-    return null;
-  }
-}
-
-function pollForSessionId(projectDir, spawnTimeMs, maxWaitMs = 3000, intervalMs = 500) {
-  const deadline = Date.now() + maxWaitMs;
-
-  while (Date.now() < deadline) {
-    const sessionId = discoverSessionId(projectDir, spawnTimeMs);
-    if (sessionId) return sessionId;
-
-    // Synchronous sleep via busy-wait with Atomics for minimal CPU
-    const waitMs = Math.min(intervalMs, deadline - Date.now());
-    if (waitMs > 0) {
-      try {
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
-      } catch {
-        // Fallback: busy-wait
-        const end = Date.now() + waitMs;
-        while (Date.now() < end) { /* spin */ }
-      }
-    }
-  }
-
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -527,6 +377,7 @@ async function main() {
   // Load dependencies
   await loadDatabase();
   await loadAgentTracker(config.projectDir);
+  await loadSessionQueue(config.projectDir);
 
   const ctoReportsDbPath = path.join(config.projectDir, '.claude', 'cto-reports.db');
   const pendingReports = countPendingReports(ctoReportsDbPath);
@@ -589,65 +440,36 @@ async function main() {
     process.exit(0);
   }
 
-  // Register spawn
-  const agentId = registerSpawn({
-    type: AGENT_TYPES.DEPUTY_CTO_REVIEW,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    description: `Force-triage: deputy-cto - ${pendingReports} pending reports`,
-    prompt: '',
-    metadata: { source: 'force-triage-reports', pendingReports },
-  });
-
-  // Build prompt with embedded agent ID
-  const prompt = buildTriagePrompt(agentId);
-
-  // Store the prompt
-  if (updateAgent) {
-    updateAgent(agentId, { prompt });
-  }
-
-  // Record spawn time for session discovery
-  const spawnTimeMs = Date.now();
-
-  // Spawn detached claude process
+  // Enqueue the triage session — the queue handles registerSpawn, buildSpawnEnv, and spawn internally.
   try {
-    const mcpConfig = path.join(config.projectDir, '.mcp.json');
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
-      '--output-format', 'json',
-      '-p',
-      prompt,
-    ], {
-      detached: true,
-      stdio: 'ignore',
+    const { queueId } = enqueueSession({
+      title: `Force-triage: deputy-cto - ${pendingReports} pending reports`,
+      agentType: AGENT_TYPES.DEPUTY_CTO_REVIEW,
+      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+      tagContext: 'report-triage',
+      source: 'force-triage-reports',
+      buildPrompt: (agentId) => buildTriagePrompt(agentId),
       cwd: config.projectDir,
-      env: buildSpawnEnv(agentId, config.projectDir),
+      projectDir: config.projectDir,
+      priority: 'urgent',
+      metadata: { source: 'force-triage-reports', pendingReports },
+      ttlMs: 30 * 60 * 1000,
     });
 
-    claude.unref();
-
-    // Store PID
-    if (updateAgent) {
-      updateAgent(agentId, { pid: claude.pid, status: 'running' });
-    }
-
-    // Poll for session ID
-    const sessionId = pollForSessionId(config.projectDir, spawnTimeMs);
-
     console.log(JSON.stringify({
-      agentId,
-      pid: claude.pid,
-      sessionId,
-      pendingReports,
-    }));
-  } catch (err) {
-    console.log(JSON.stringify({
-      agentId,
+      agentId: null,
       pid: null,
       sessionId: null,
       pendingReports,
-      error: `Spawn failed: ${err.message}`,
+      queueId,
+    }));
+  } catch (err) {
+    console.log(JSON.stringify({
+      agentId: null,
+      pid: null,
+      sessionId: null,
+      pendingReports,
+      error: `Enqueue failed: ${err.message}`,
     }));
     process.exit(1);
   }

@@ -18,7 +18,7 @@
  */
 
 import { createInterface } from 'readline';
-import { execFileSync, spawn } from 'child_process';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -30,14 +30,14 @@ import {
   selectActiveKey,
   refreshExpiredToken,
 } from './key-sync.js';
-import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
-import { buildSpawnEnv } from './lib/spawn-env.js';
+import { AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import {
   buildRevivalPrompt,
   resolveTaskIdForAgent,
   extractSessionIdFromPath,
 } from './lib/revival-utils.js';
 import { shouldAllowSpawn } from './lib/memory-pressure.js';
+import { enqueueSession } from './lib/session-queue.js';
 
 // Debug logging - writes to file since stdout is used for hook response
 const DEBUG = true;
@@ -298,20 +298,6 @@ function inlineRevive({ sessionId, agentId, worktreePath, quotaMessage }) {
   try {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
-    // Register the revival in agent tracker
-    const newAgentId = registerSpawn({
-      type: AGENT_TYPES.SESSION_REVIVED,
-      hookType: HOOK_TYPES.SESSION_REVIVER,
-      description: `Inline revival of quota-interrupted session ${sessionId.slice(0, 8)}`,
-      prompt: `[inline revival from stop hook, original agent: ${agentId || 'unknown'}]`,
-      metadata: {
-        originalAgentId: agentId,
-        originalSessionId: sessionId,
-        revivalReason: 'inline_revival',
-        worktreePath,
-      },
-    });
-
     const taskId = resolveTaskIdForAgent(agentId, projectDir);
     const revivalPrompt = buildRevivalPrompt({
       reason: 'inline_revival',
@@ -321,38 +307,37 @@ function inlineRevive({ sessionId, agentId, worktreePath, quotaMessage }) {
 
     // Use original worktree CWD if it still exists, otherwise fall back to main project
     const effectiveCwd = (worktreePath && fs.existsSync(worktreePath)) ? worktreePath : projectDir;
-    const mcpConfig = path.join(effectiveCwd, '.mcp.json');
 
-    const spawnArgs = [
-      '--resume', sessionId,
-      '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfig,
-      '--output-format', 'json',
-      '-p', revivalPrompt,
-    ];
-
-    const claude = spawn('claude', spawnArgs, {
+    const result = enqueueSession({
+      title: `Inline revival of quota-interrupted session ${sessionId.slice(0, 8)}`,
+      agentType: AGENT_TYPES.SESSION_REVIVED,
+      hookType: HOOK_TYPES.SESSION_REVIVER,
+      tagContext: 'session-revived',
+      source: 'stop-continue-hook',
+      spawnType: 'resume',
+      resumeSessionId: sessionId,
+      lane: 'revival',
+      priority: 'urgent',
+      prompt: revivalPrompt,
       cwd: effectiveCwd,
-      stdio: 'ignore',
-      detached: true,
-      env: buildSpawnEnv(newAgentId, { projectDir }),
+      mcpConfig: path.join(effectiveCwd, '.mcp.json'),
+      projectDir,
+      worktreePath: worktreePath || null,
+      metadata: {
+        originalAgentId: agentId,
+        originalSessionId: sessionId,
+        revivalReason: 'inline_revival',
+        worktreePath,
+      },
     });
 
-    claude.unref();
-
-    if (claude.pid) {
-      updateAgent(newAgentId, { pid: claude.pid, status: 'running' });
-      debugLog('Inline revival succeeded', {
-        sessionId: sessionId.slice(0, 8),
-        newAgentId,
-        pid: claude.pid,
-        cwd: effectiveCwd,
-      });
-      return true;
-    }
-
-    debugLog('Inline revival: spawn returned no PID');
-    return false;
+    const spawned = result.drained.spawned > 0;
+    debugLog('Inline revival enqueued', {
+      sessionId: sessionId.slice(0, 8),
+      queueId: result.queueId,
+      spawned,
+    });
+    return spawned;
   } catch (err) {
     debugLog('Inline revival failed', { error: err.message });
     return false;

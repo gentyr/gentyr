@@ -12,9 +12,8 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { spawn } from 'child_process';
-import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from '../agent-tracker.js';
-import { buildSpawnEnv } from './spawn-env.js';
+import { AGENT_TYPES, HOOK_TYPES } from '../agent-tracker.js';
+import { enqueueSession } from './session-queue.js';
 
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
@@ -57,58 +56,65 @@ export function buildRevivalPrompt({ reason, interruptedAt, taskId }) {
 }
 
 /**
- * Spawn a resumed Claude session.
+ * Enqueue a resumed Claude session via the centralized session queue.
  *
  * @param {string} sessionId - Session UUID to resume
- * @param {string} agentId - Agent tracker ID
+ * @param {string} agentId - Original agent ID (used for metadata/logging only)
  * @param {function} log - Logging function
  * @param {string} revivalPrompt - Prompt to inject on resume
  * @param {string} [resumeCwd] - CWD for the resumed session (worktree path)
  * @param {object} [options]
  * @param {string} [options.projectDir] - Project directory for env resolution
  * @param {object} [options.extraEnv] - Extra env vars for spawn
- * @returns {boolean} Whether spawn succeeded
+ * @param {string} [options.source] - Source identifier for queue logging
+ * @param {object} [options.metadata] - Additional metadata for the queue item
+ * @returns {boolean} Whether the item was spawned immediately (drained)
  */
 export function spawnResumedSession(sessionId, agentId, log, revivalPrompt, resumeCwd = null, options = {}) {
   const projectDir = options.projectDir || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
   // Use original worktree CWD if it still exists, otherwise fall back to main project
   const effectiveCwd = (resumeCwd && fs.existsSync(resumeCwd)) ? resumeCwd : projectDir;
-  // Use worktree .mcp.json if resuming in a worktree, otherwise main project
-  const mcpConfig = path.join(effectiveCwd, '.mcp.json');
 
   // If worktree was cleaned up, warn the agent
+  let prompt = revivalPrompt;
   if (resumeCwd && !fs.existsSync(resumeCwd)) {
-    revivalPrompt += '\n\nNOTE: Your original worktree has been cleaned up. You are running from the main project directory. Create a new worktree if you need to make changes.';
+    prompt += '\n\nNOTE: Your original worktree has been cleaned up. You are running from the main project directory. Create a new worktree if you need to make changes.';
   }
 
-  const spawnArgs = [
-    '--resume', sessionId,
-    '--dangerously-skip-permissions',
-    '--mcp-config', mcpConfig,
-    '--output-format', 'json',
-    '-p', revivalPrompt,
-  ];
-
   try {
-    const claude = spawn('claude', spawnArgs, {
+    const result = enqueueSession({
+      title: `Revival: ${sessionId.slice(0, 8)}`,
+      agentType: AGENT_TYPES.SESSION_REVIVED,
+      hookType: HOOK_TYPES.SESSION_REVIVER,
+      tagContext: 'session-revived',
+      source: options.source || 'revival-utils',
+      spawnType: 'resume',
+      resumeSessionId: sessionId,
+      lane: 'revival',
+      priority: 'urgent',
+      prompt,
       cwd: effectiveCwd,
-      stdio: 'ignore',
-      detached: true,
-      env: buildSpawnEnv(agentId, { projectDir, extraEnv: options.extraEnv }),
+      mcpConfig: path.join(effectiveCwd, '.mcp.json'),
+      projectDir,
+      worktreePath: (resumeCwd && fs.existsSync(resumeCwd)) ? resumeCwd : null,
+      extraEnv: options.extraEnv,
+      metadata: {
+        originalAgentId: agentId,
+        originalSessionId: sessionId,
+        ...(options.metadata || {}),
+      },
     });
 
-    claude.unref();
-
-    if (claude.pid) {
-      updateAgent(agentId, { pid: claude.pid, status: 'running' });
-      log(`  Resumed session ${sessionId.slice(0, 8)}... (PID ${claude.pid})`);
-      return true;
+    const spawned = result.drained.spawned > 0;
+    if (spawned) {
+      log(`  Enqueued and spawned revival of session ${sessionId.slice(0, 8)}... (queueId: ${result.queueId})`);
+    } else {
+      log(`  Enqueued revival of session ${sessionId.slice(0, 8)}... (queueId: ${result.queueId}, at capacity)`);
     }
-
-    return false;
+    return spawned;
   } catch (err) {
-    log(`  Failed to resume session ${sessionId.slice(0, 8)}...: ${err.message}`);
+    log(`  Failed to enqueue revival of session ${sessionId.slice(0, 8)}...: ${err.message}`);
     return false;
   }
 }

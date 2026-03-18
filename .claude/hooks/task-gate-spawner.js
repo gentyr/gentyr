@@ -19,13 +19,11 @@
 
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
-import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
-import { isProxyDisabled } from './lib/proxy-state.js';
+import { AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
+import { enqueueSession } from './lib/session-queue.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'task-gate-spawner.log');
-const PROXY_PORT = process.env.GENTYR_PROXY_PORT || 18080;
 
 function log(message) {
   const timestamp = new Date().toISOString();
@@ -36,35 +34,6 @@ function log(message) {
   } catch {
     // Non-fatal
   }
-}
-
-function buildSpawnEnv(agentId) {
-  const hooksDir = path.join(PROJECT_DIR, '.claude', 'hooks');
-  let guardedPath = process.env.PATH || '/usr/bin:/bin';
-  try {
-    const realHooks = fs.realpathSync(hooksDir);
-    const wrappersDir = path.join(realHooks, 'git-wrappers');
-    if (fs.existsSync(path.join(wrappersDir, 'git'))) {
-      guardedPath = `${wrappersDir}:${guardedPath}`;
-    }
-  } catch {}
-
-  const env = {
-    ...process.env,
-    CLAUDE_PROJECT_DIR: PROJECT_DIR,
-    CLAUDE_SPAWNED_SESSION: 'true',
-    CLAUDE_AGENT_ID: agentId,
-    PATH: guardedPath,
-  };
-
-  if (!isProxyDisabled()) {
-    env.HTTPS_PROXY = `http://localhost:${PROXY_PORT}`;
-    env.HTTP_PROXY = `http://localhost:${PROXY_PORT}`;
-    env.NO_PROXY = 'localhost,127.0.0.1';
-    env.NODE_EXTRA_CA_CERTS = path.join(process.env.HOME || '/tmp', '.claude', 'proxy-certs', 'ca.pem');
-  }
-
-  return env;
 }
 
 /**
@@ -152,18 +121,20 @@ process.stdin.on('end', () => {
 
     log(`Gate review needed for task ${taskId}: "${taskTitle}" (section: ${taskSection}, by: ${assignedBy})`);
 
-    // Register the gate agent
-    const agentId = registerSpawn({
-      type: AGENT_TYPES.TASK_GATE,
-      hookType: 'task-gate',
-      description: `Gate review: ${taskTitle}`,
-      prompt: '',
-      metadata: { taskId, section: taskSection, assignedBy },
-    });
-
     const keyword = extractKeyword(taskTitle);
 
-    const gatePrompt = `[Task][task-gate][AGENT:${agentId}] Review task ${taskId}.
+    enqueueSession({
+      title: `Gate review: ${taskTitle}`,
+      agentType: AGENT_TYPES.TASK_GATE,
+      hookType: HOOK_TYPES.TASK_GATE,
+      tagContext: 'task-gate',
+      source: 'task-gate-spawner',
+      model: 'claude-haiku-4-5-20251001',
+      lane: 'gate',
+      priority: 'normal',
+      projectDir: PROJECT_DIR,
+      metadata: { taskId, section: taskSection, assignedBy },
+      buildPrompt: (agentId) => `[Task][task-gate][AGENT:${agentId}] Review task ${taskId}.
 
 "${taskTitle}" | Section: ${taskSection} | By: ${assignedBy}
 Description: ${taskDescription || '(none)'}
@@ -178,33 +149,10 @@ Description: ${taskDescription || '(none)'}
 - KILL: mcp__todo-db__gate_kill_task({ id: "${taskId}", reason: "..." })
 - UNSURE: mcp__todo-db__gate_escalate_task({ id: "${taskId}", reason: "..." })
 
-If no stability lock and no duplicate, default to APPROVE. Err toward approval — only kill clear duplicates or stability-locked features.`;
-
-    // Store prompt
-    updateAgent(agentId, { prompt: gatePrompt });
-
-    // Spawn lightweight Haiku gate agent
-    const mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
-    const claude = spawn('claude', [
-      '--dangerously-skip-permissions',
-      '--model', 'claude-haiku-4-5-20251001',
-      '--mcp-config', mcpConfig,
-      '--output-format', 'json',
-      '-p',
-      gatePrompt,
-    ], {
-      detached: true,
-      stdio: 'ignore',
-      cwd: PROJECT_DIR,
-      env: {
-        ...buildSpawnEnv(agentId),
-        CLAUDE_PROJECT_DIR: PROJECT_DIR,
-      },
+If no stability lock and no duplicate, default to APPROVE. Err toward approval — only kill clear duplicates or stability-locked features.`,
     });
 
-    claude.unref();
-    updateAgent(agentId, { pid: claude.pid, status: 'running' });
-    log(`Spawned gate agent (PID ${claude.pid}) for task ${taskId}`);
+    log(`Enqueued gate agent for task ${taskId}`);
   } catch (err) {
     process.stderr.write(`[task-gate-spawner] Error: ${err.message}\n${err.stack}\n`);
   }
