@@ -255,7 +255,7 @@ describe('Slash Command Detection - Bug Fix Validation', () => {
       const mainBody = mainMatch[0];
 
       // Catch block should continue to metrics gathering
-      const catchBlock = mainBody.match(/\} catch \{[\s\S]*?\/\/ No stdin available/);
+      const catchBlock = mainBody.match(/\} catch [^{]*\{[\s\S]*?\/\/ No stdin available/);
       assert.ok(catchBlock, 'catch block must continue normally');
     });
 

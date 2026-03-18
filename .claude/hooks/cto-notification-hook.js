@@ -22,7 +22,8 @@ const __dirname = path.dirname(__filename);
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch {
+} catch (err) {
+  console.error('[cto-notification-hook] Warning:', err.message);
   // Database not available
 }
 
@@ -59,7 +60,8 @@ function getGitContext() {
     const branch = branchMatch ? branchMatch[1] : head.substring(0, 8); // detached HEAD
 
     return { branch, worktreeName };
-  } catch {
+  } catch (err) {
+    console.error('[cto-notification-hook] Warning:', err.message);
     return null;
   }
 }
@@ -144,7 +146,7 @@ function getUnreadReportsCount() {
     db.close();
 
     return result?.count || 0;
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return 0;
   }
 }
@@ -198,7 +200,9 @@ function loadMetricsCache() {
     if (fs.existsSync(METRICS_CACHE_PATH)) {
       return JSON.parse(fs.readFileSync(METRICS_CACHE_PATH, 'utf8'));
     }
-  } catch {}
+  } catch (err) {
+    console.error('[cto-notification-hook] Warning:', err.message);
+  }
   return { files: {}, totals: { tokens: 0, taskSessions: 0, userSessions: 0 } };
 }
 
@@ -208,7 +212,9 @@ function loadMetricsCache() {
 function saveMetricsCache(cache) {
   try {
     fs.writeFileSync(METRICS_CACHE_PATH, JSON.stringify(cache), 'utf8');
-  } catch {}
+  } catch (err) {
+    console.error('[cto-notification-hook] Warning:', err.message);
+  }
 }
 
 /**
@@ -241,7 +247,9 @@ function scanSessionFile(filePath, since) {
           }
           break;
         }
-      } catch {}
+      } catch (err) {
+        console.error('[cto-notification-hook] Warning:', err.message);
+      }
     }
 
     // Full scan for token usage
@@ -262,9 +270,13 @@ function scanSessionFile(filePath, since) {
           tokens += usage.cache_read_input_tokens || 0;
           tokens += usage.cache_creation_input_tokens || 0;
         }
-      } catch {}
+      } catch (err) {
+        console.error('[cto-notification-hook] Warning:', err.message);
+      }
     }
-  } catch {}
+  } catch (err) {
+    console.error('[cto-notification-hook] Warning:', err.message);
+  }
 
   return { tokens, isTask };
 }
@@ -304,7 +316,9 @@ function getSessionMetricsCached() {
       try {
         const stat = fs.statSync(path.join(sessionDir, file));
         fileMetas.push({ file, mtime: stat.mtime.getTime(), size: stat.size });
-      } catch {}
+      } catch (err) {
+        console.error('[cto-notification-hook] Warning:', err.message);
+      }
     }
     fileMetas.sort((a, b) => b.mtime - a.mtime);
 
@@ -343,7 +357,9 @@ function getSessionMetricsCached() {
       };
       changed = true;
     }
-  } catch {}
+  } catch (err) {
+    console.error('[cto-notification-hook] Warning:', err.message);
+  }
 
   // Recompute totals from cache
   let tokens = 0, taskSessions = 0, userSessions = 0;
@@ -417,7 +433,7 @@ function getPlanSummary() {
     db.close();
 
     return `PLANS: ${activePlans.count} active | ${Math.round(totalPct / plans.length)}% overall | ${readyCount} ready to spawn | ${activeAgents} agents running`;
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return null;
   }
 }
@@ -440,7 +456,7 @@ function getTodoCounts() {
       queued: queued?.count || 0,
       active: active?.count || 0,
     };
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return { queued: 0, active: 0 };
   }
 }
@@ -549,7 +565,8 @@ function getAggregateQuota() {
       sevenDayPct: Math.round(sevenDaySum / accounts.length),
       accounts,
     };
-  } catch {
+  } catch (err) {
+    console.error('[cto-notification-hook] Warning:', err.message);
     return null;
   }
 }
@@ -629,14 +646,16 @@ async function main() {
     try {
       const parsed = JSON.parse(stdin);
       if (typeof parsed.prompt === 'string') prompt = parsed.prompt;
-    } catch {
+    } catch (err) {
+      console.error('[cto-notification-hook] Warning:', err.message);
       // Not JSON — use raw stdin
     }
     if (prompt.includes('<!-- HOOK:GENTYR:') || /^\/[\w-]+$/.test(prompt.trim())) {
       console.log(JSON.stringify({ continue: true, suppressOutput: true }));
       return;
     }
-  } catch {
+  } catch (err) {
+    console.error('[cto-notification-hook] Warning:', err.message);
     // No stdin available — continue normally
   }
 

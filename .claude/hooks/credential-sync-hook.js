@@ -23,7 +23,8 @@ function readState() {
   try {
     if (!fs.existsSync(STATE_FILE)) return { lastCheck: 0 };
     return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-  } catch {
+  } catch (err) {
+    console.error('[credential-sync-hook] Warning:', err.message);
     return { lastCheck: 0 };
   }
 }
@@ -33,7 +34,8 @@ function writeState(state) {
     const dir = path.dirname(STATE_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
-  } catch {
+  } catch (err) {
+    console.error('[credential-sync-hook] Warning:', err.message);
     // Non-fatal
   }
 }
@@ -68,7 +70,8 @@ async function main() {
     } else {
       console.log(JSON.stringify({ continue: true, suppressOutput: true }));
     }
-  } catch {
+  } catch (err) {
+    console.error('[credential-sync-hook] Warning:', err.message);
     // Don't block on errors
     console.log(JSON.stringify({ continue: true, suppressOutput: true }));
   }

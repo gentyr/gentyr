@@ -40,7 +40,8 @@ function log(message) {
   const line = `[${timestamp}] [session-queue] ${message}\n`;
   try {
     fs.appendFileSync(LOG_FILE, line);
-  } catch {
+  } catch (err) {
+    console.error('[session-queue] Warning:', err.message);
     // Non-fatal
   }
 }
@@ -161,7 +162,7 @@ function isPidAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return false;
   }
 }
@@ -287,7 +288,8 @@ export function drainQueue() {
   try {
     const reaperResult = reapSyncPass(db);
     result.revivalCandidates = reaperResult.reaped.filter(r => r.revivalCandidate);
-  } catch {
+  } catch (err) {
+    console.error('[session-queue] Warning:', err.message);
     // Fallback: existing simple PID check
     const running = db.prepare("SELECT id, pid, agent_id FROM queue_items WHERE status = 'running'").all();
     for (const item of running) {
@@ -549,7 +551,8 @@ export function getQueueStatus() {
   // Reap stale running items first
   try {
     reapSyncPass(db);
-  } catch {
+  } catch (err) {
+    console.error('[session-queue] Warning:', err.message);
     // Fallback: simple PID check
     const runningItems = db.prepare("SELECT * FROM queue_items WHERE status = 'running' ORDER BY spawned_at ASC").all();
     for (const item of runningItems) {

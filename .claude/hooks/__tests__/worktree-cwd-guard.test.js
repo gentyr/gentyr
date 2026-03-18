@@ -25,7 +25,7 @@ const tmpDirs = [];
 
 afterEach(() => {
   for (const dir of tmpDirs) {
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* cleanup - failure expected */}
   }
   tmpDirs.length = 0;
 });
@@ -57,7 +57,9 @@ async function runHook(hookInput, env = {}) {
 
     child.on('close', (exitCode) => {
       let parsed = null;
-      try { parsed = JSON.parse(stdout); } catch {}
+      try { parsed = JSON.parse(stdout); } catch (err) {
+        console.error('[worktree-cwd-guard.test] Warning:', err.message);
+      }
       resolve({ exitCode, stdout, stderr, parsed });
     });
 
@@ -177,7 +179,9 @@ describe('worktree-cwd-guard', () => {
         child.stdout.on('data', (d) => { stdout += d; });
         child.on('close', (exitCode) => {
           let parsed = null;
-          try { parsed = JSON.parse(stdout); } catch {}
+          try { parsed = JSON.parse(stdout); } catch (err) {
+            console.error('[worktree-cwd-guard.test] Warning:', err.message);
+          }
           resolve({ exitCode, parsed });
         });
         child.stdin.write('not valid json');

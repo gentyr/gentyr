@@ -396,7 +396,7 @@ describe('cto-notification-hook.js - Bug Fixes', () => {
       const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
 
       // Catch block should continue to metrics gathering
-      const catchBlock = mainFunction.match(/\} catch \{[\s\S]*?\/\/ No stdin available/);
+      const catchBlock = mainFunction.match(/\} catch [^{]*\{[\s\S]*?\/\/ No stdin available/);
       assert.ok(catchBlock, 'Catch block must continue normally when stdin unavailable');
     });
 

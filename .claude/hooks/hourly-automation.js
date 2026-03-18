@@ -152,7 +152,8 @@ function preResolveCredentials() {
   try {
     const data = JSON.parse(fs.readFileSync(mappingsPath, 'utf8'));
     mappings = data.mappings || {};
-  } catch {
+  } catch (err) {
+    console.error('[hourly-automation] Warning:', err.message);
     log('Credential cache: no vault-mappings.json, skipping pre-resolution.');
     return;
   }
@@ -160,7 +161,8 @@ function preResolveCredentials() {
   try {
     const actions = JSON.parse(fs.readFileSync(actionsPath, 'utf8'));
     servers = actions.servers || {};
-  } catch {
+  } catch (err) {
+    console.error('[hourly-automation] Warning:', err.message);
     log('Credential cache: no protected-actions.json, skipping pre-resolution.');
     return;
   }
@@ -268,7 +270,8 @@ async function checkProxyHealth() {
         try {
           const health = JSON.parse(data);
           resolve({ running: true, ...health });
-        } catch {
+        } catch (err) {
+          console.error('[hourly-automation] Warning:', err.message);
           resolve({ running: true, raw: data });
         }
       });
@@ -598,7 +601,8 @@ function checkCiStatus() {
       return;
     }
     [, owner, repo] = match;
-  } catch {
+  } catch (err) {
+    console.error('[hourly-automation] Warning:', err.message);
     log('CI monitoring: failed to get git remote URL.');
     return;
   }
@@ -792,7 +796,8 @@ function getClaudeMdSize() {
   try {
     const stats = fs.statSync(claudeMdPath);
     return stats.size;
-  } catch {
+  } catch (err) {
+    console.error('[hourly-automation] Warning:', err.message);
     return 0;
   }
 }
@@ -1636,7 +1641,8 @@ function rescueAbandonedWorktrees() {
         stdio: 'pipe',
       }).trim();
       hasChanges = status.length > 0;
-    } catch {
+    } catch (err) {
+      console.error('[hourly-automation] Warning:', err.message);
       continue;
     }
 
@@ -1651,7 +1657,8 @@ function rescueAbandonedWorktrees() {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       inUse = result.trim().length > 0;
-    } catch {
+    } catch (err) {
+      console.error('[hourly-automation] Warning:', err.message);
       // lsof returned no results (exit 1) or failed — not in use
     }
 
@@ -1726,7 +1733,8 @@ function remoteBranchExists(branch) {
       stdio: 'pipe',
     });
     return true;
-  } catch {
+  } catch (err) {
+    console.error('[hourly-automation] Warning:', err.message);
     return false;
   }
 }
@@ -1743,7 +1751,8 @@ function getNewCommits(source, target) {
       stdio: 'pipe',
     }).trim();
     return result ? result.split('\n') : [];
-  } catch {
+  } catch (err) {
+    console.error('[hourly-automation] Warning:', err.message);
     return [];
   }
 }
@@ -1760,7 +1769,8 @@ function getLastCommitTimestamp(branch) {
       stdio: 'pipe',
     }).trim();
     return parseInt(result, 10) || 0;
-  } catch {
+  } catch (err) {
+    console.error('[hourly-automation] Warning:', err.message);
     return 0;
   }
 }
@@ -1787,7 +1797,10 @@ function getPromotionWorktree(promotionType) {
       // Worktree exists, pull latest
       try {
         execSync('git pull --ff-only', { cwd: worktree.path, encoding: 'utf8', timeout: 30000, stdio: 'pipe' });
-      } catch { /* non-fatal */ }
+      } catch (err) {
+        console.error('[hourly-automation] Warning:', err.message);
+        /* non-fatal */
+      }
     }
     return { cwd: worktree.path, mcpConfig: path.join(worktree.path, '.mcp.json') };
   } catch (err) {
@@ -2669,7 +2682,8 @@ async function main() {
         execSync('git fetch origin staging --quiet 2>/dev/null || true', {
           cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
         });
-      } catch {
+      } catch (err) {
+        console.error('[hourly-automation] Warning:', err.message);
         log('Staging health monitor: git fetch failed.');
       }
 
@@ -2728,7 +2742,8 @@ async function main() {
       execSync('git fetch origin staging main --quiet 2>/dev/null || true', {
         cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
       });
-    } catch {
+    } catch (err) {
+      console.error('[hourly-automation] Warning:', err.message);
       // Non-fatal, may already have fresh refs
     }
 
@@ -2811,7 +2826,9 @@ async function main() {
       try {
         execSync('git rev-parse --verify origin/preview', { cwd: PROJECT_DIR, encoding: 'utf8', stdio: 'pipe' });
         prBaseBranch = 'preview';
-      } catch {}
+      } catch (err) {
+        console.error('[hourly-automation] Warning:', err.message);
+      }
 
       const prListJson = execSync(
         `gh pr list --base ${prBaseBranch} --state open --json number,createdAt,headRefName --limit 20`,
@@ -2981,7 +2998,8 @@ async function main() {
             execSync('git fetch origin staging main --quiet 2>/dev/null || true', {
               cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
             });
-          } catch {
+          } catch (err) {
+            console.error('[hourly-automation] Warning:', err.message);
             log('Staging promotion: git fetch failed, skipping.');
           }
 
@@ -3032,7 +3050,10 @@ async function main() {
     execSync('git fetch origin staging --quiet 2>/dev/null || true', {
       cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
     });
-  } catch { /* non-fatal */ }
+  } catch (err) {
+    console.error('[hourly-automation] Warning:', err.message);
+    /* non-fatal */
+  }
 
   const lastStagingTs = getLastCommitTimestamp('staging');
   const stagingAgeHours = lastStagingTs > 0 ? (Date.now() / 1000 - lastStagingTs) / 3600 : 0;
@@ -3083,7 +3104,8 @@ async function main() {
           execSync('git fetch origin preview staging --quiet 2>/dev/null || true', {
             cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
           });
-        } catch {
+        } catch (err) {
+          console.error('[hourly-automation] Warning:', err.message);
           log('Preview promotion: git fetch failed, skipping.');
         }
 
@@ -3329,7 +3351,10 @@ Then exit.`,
         const db = new Database(feedbackDbPath, { readonly: true });
         // Check if env_vars column exists
         let hasEnvVars = false;
-        try { db.prepare('SELECT env_vars FROM demo_scenarios LIMIT 0').run(); hasEnvVars = true; } catch { /* column not yet migrated */ }
+        try { db.prepare('SELECT env_vars FROM demo_scenarios LIMIT 0').run(); hasEnvVars = true; } catch (err) {
+          console.error('[hourly-automation] Warning:', err.message);
+          /* column not yet migrated */
+        }
         const cols = hasEnvVars
           ? 'ds.id, ds.title, ds.test_file, ds.persona_id, ds.playwright_project, ds.category, ds.env_vars'
           : 'ds.id, ds.title, ds.test_file, ds.persona_id, ds.playwright_project, ds.category';
@@ -3374,7 +3399,7 @@ Then exit.`,
             });
             log(`Demo validation: prerequisite "${prereq.description}" health check passed, skipping.`);
             continue;
-          } catch {
+          } catch (_) { /* cleanup - failure expected */
             // Health check failed, run the command
           }
         }
@@ -3394,7 +3419,10 @@ Then exit.`,
                 execSync(prereq.health_check, { timeout: prereq.health_check_timeout_ms || 5000, stdio: 'pipe', cwd: PROJECT_DIR });
                 ready = true;
                 break;
-              } catch { /* not ready yet */ }
+              } catch (err) {
+                console.error('[hourly-automation] Warning:', err.message);
+                /* not ready yet */
+              }
               await new Promise(r => setTimeout(r, 2000));
             }
             if (!ready) {
@@ -3425,7 +3453,10 @@ Then exit.`,
         // Parse scenario env_vars if present
         let scenarioEnv = {};
         if (scenario.env_vars) {
-          try { scenarioEnv = JSON.parse(scenario.env_vars); } catch { /* invalid JSON */ }
+          try { scenarioEnv = JSON.parse(scenario.env_vars); } catch (err) {
+            console.error('[hourly-automation] Warning:', err.message);
+            /* invalid JSON */
+          }
         }
         try {
           execFileSync('npx', [
@@ -3464,7 +3495,10 @@ Then exit.`,
         if (fs.existsSync(historyPath)) {
           history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
         }
-      } catch { history = []; }
+      } catch (err) {
+        console.error('[hourly-automation] Warning:', err.message);
+        history = [];
+      }
 
       const passed = results.filter(r => r.success).length;
       const failed = results.filter(r => !r.success).length;
@@ -3553,7 +3587,7 @@ Then exit.`,
               `).run(taskId, `Repair: ${failedScenario.title}`, `Scenario: ${failedScenario.id}\nError: ${failedScenario.error}`, now.toISOString(), Math.floor(now.getTime() / 1000), Math.floor(now.getTime() / 1000));
               db.close();
             }
-          } catch { /* non-fatal */ }
+          } catch (_) { /* cleanup - failure expected */ /* non-fatal */ }
         }
 
         // Report failures to deputy-CTO via queue

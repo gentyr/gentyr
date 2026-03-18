@@ -139,7 +139,8 @@ describe('pre-commit-review.js - G001 Fail-Closed Behavior', () => {
       // Ensure we're in a clean git state with no staged files
       try {
         execSync('git reset', { cwd: PROJECT_DIR, stdio: 'pipe' });
-      } catch {
+      } catch (err) {
+        console.error('[pre-commit-review.test] Warning:', err.message);
         // Ignore errors
       }
 
@@ -189,7 +190,7 @@ describe('pre-commit-review.js - G001 Fail-Closed Behavior', () => {
 
       assert.match(hookCode, /try \{/, 'Should have try block for import');
       assert.match(hookCode, /await import\('better-sqlite3'\)/, 'Should try to import better-sqlite3');
-      assert.match(hookCode, /\} catch \{/, 'Should catch import failure');
+      assert.match(hookCode, /\} catch [^{]*\{/, 'Should catch import failure');
       assert.match(hookCode, /Warning: better-sqlite3 not available/, 'Should have warning message');
       // When Database is null, hasPendingCtoItems returns safe defaults (hasItems: false, no error)
     });

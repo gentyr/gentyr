@@ -54,7 +54,8 @@ function getFeatureBranchName(taskTitle, taskId) {
 function getCurrentBranch() {
   try {
     return execSync('git branch --show-current', { encoding: 'utf8' }).trim();
-  } catch {
+  } catch (err) {
+    console.error('[feature-branch-helper] Warning:', err.message);
     return 'unknown';
   }
 }

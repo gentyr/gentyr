@@ -233,13 +233,13 @@ describe('credential-health-check.js - Unit Tests', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
       // Should wrap in try-catch
-      const actionsBlock = hookCode.match(/try \{[\s\S]*?const actions = JSON\.parse[\s\S]*?\} catch \{/);
+      const actionsBlock = hookCode.match(/try \{[\s\S]*?const actions = JSON\.parse[\s\S]*?\} catch [^{]*\{/);
       assert.ok(actionsBlock, 'Must wrap protected-actions.json reading in try-catch');
 
       // Should output(null) if file doesn't exist
       assert.match(
         hookCode,
-        /\} catch \{[\s\S]*?output\(null\)/,
+        /\} catch [^{]*\{[\s\S]*?output\(null\)/,
         'Must call output(null) when protected-actions.json is missing'
       );
     });
@@ -343,7 +343,7 @@ describe('credential-health-check.js - Unit Tests', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
       // Should wrap in try-catch
-      const vaultBlock = hookCode.match(/try \{[\s\S]*?const data = JSON\.parse\(fs\.readFileSync\(mappingsPath[\s\S]*?\} catch \{/);
+      const vaultBlock = hookCode.match(/try \{[\s\S]*?const data = JSON\.parse\(fs\.readFileSync\(mappingsPath[\s\S]*?\} catch [^{]*\{/);
       assert.ok(vaultBlock, 'Must wrap vault-mappings.json reading in try-catch');
 
       // Should add all required keys to missingKeys if file doesn't exist
@@ -426,7 +426,7 @@ describe('credential-health-check.js - Unit Tests', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
       // Should wrap .mcp.json reading in try-catch
-      const mcpBlock = hookCode.match(/\{[\s\S]*?const mcpPath[\s\S]*?\} catch \{[\s\S]*?\}/);
+      const mcpBlock = hookCode.match(/\{[\s\S]*?const mcpPath[\s\S]*?\} catch [^{]*\{[\s\S]*?\}/);
       assert.ok(mcpBlock, 'Must wrap .mcp.json reading in try-catch');
 
       // Should have comment about skipping if not readable
@@ -561,13 +561,13 @@ describe('credential-health-check.js - Unit Tests', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
 
       // Should wrap op whoami in try-catch
-      const opBlock = hookCode.match(/try \{[\s\S]*?execFileSync\(['"]op['"][\s\S]*?\} catch \{/);
+      const opBlock = hookCode.match(/try \{[\s\S]*?execFileSync\(['"]op['"][\s\S]*?\} catch [^{]*\{/);
       assert.ok(opBlock, 'Must wrap op whoami in try-catch');
 
       // Should output message on failure
       assert.match(
         hookCode,
-        /\} catch \{[\s\S]*?output\([`'"].*1Password.*not authenticated/,
+        /\} catch [^{]*\{[\s\S]*?output\([`'"].*1Password.*not authenticated/,
         'Must output message when 1Password is not authenticated'
       );
 

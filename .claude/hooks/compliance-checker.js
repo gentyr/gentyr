@@ -287,7 +287,8 @@ function parseArgs(args) {
 function readState() {
   try {
     return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-  } catch {
+  } catch (err) {
+    console.error('[compliance-checker] Warning:', err.message);
     // Return default state if file doesn't exist
     return {
       version: 1,
@@ -312,7 +313,8 @@ function writeState(state) {
 function readLog() {
   try {
     return JSON.parse(fs.readFileSync(LOG_FILE, 'utf8'));
-  } catch {
+  } catch (err) {
+    console.error('[compliance-checker] Warning:', err.message);
     // Return default log if file doesn't exist
     return {
       version: 1,
@@ -608,7 +610,8 @@ function handleMappingValidationFailure(result) {
   let currentMappings = '{}';
   try {
     currentMappings = fs.readFileSync(MAPPING_FILE, 'utf8');
-  } catch {
+  } catch (err) {
+    console.error('[compliance-checker] Warning:', err.message);
     currentMappings = '{}';
   }
 

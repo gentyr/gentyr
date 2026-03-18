@@ -48,7 +48,9 @@ export function auditEvent(event, fields = {}) {
     }
   } catch (err) {
     // Non-fatal — audit must never crash callers. Log to stderr for diagnostics.
-    try { process.stderr.write(`[session-audit] auditEvent error: ${err.message}\n`); } catch {}
+    try { process.stderr.write(`[session-audit] auditEvent error: ${err.message}\n`); } catch (err) {
+      console.error('[session-audit] Warning:', err.message);
+    }
   }
 }
 
@@ -70,7 +72,8 @@ export function cleanupAuditLog() {
       try {
         const parsed = JSON.parse(line);
         return new Date(parsed.ts).getTime() > cutoff;
-      } catch {
+      } catch (err) {
+        console.error('[session-audit] Warning:', err.message);
         return false; // Discard unparseable lines
       }
     });
@@ -86,7 +89,9 @@ export function cleanupAuditLog() {
     fs.renameSync(tmpPath, AUDIT_LOG_PATH);
   } catch (err) {
     // Non-fatal — log to stderr for diagnostics.
-    try { process.stderr.write(`[session-audit] cleanupAuditLog error: ${err.message}\n`); } catch {}
+    try { process.stderr.write(`[session-audit] cleanupAuditLog error: ${err.message}\n`); } catch (err) {
+      console.error('[session-audit] Warning:', err.message);
+    }
   }
 }
 
@@ -100,7 +105,8 @@ function _maybeCleanup() {
     if (stat.size > MAX_FILE_SIZE) {
       cleanupAuditLog();
     }
-  } catch {
+  } catch (err) {
+    console.error('[session-audit] Warning:', err.message);
     // Non-fatal
   }
 }

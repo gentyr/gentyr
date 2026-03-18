@@ -24,7 +24,8 @@ import { getCooldown } from '../config-reader.js';
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch {
+} catch (err) {
+  console.error('[session-reaper] Warning:', err.message);
   // Non-fatal: async reaping and TODO reconciliation will be degraded
 }
 
@@ -48,7 +49,7 @@ function isPidAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return false;
   }
 }
@@ -66,7 +67,7 @@ function isProcessZombieOrStopped(pid) {
       stdio: 'pipe',
     }).trim();
     return state === 'Z' || state === 'T';
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return false; // Can't determine state — assume healthy
   }
 }
@@ -77,13 +78,13 @@ function isProcessZombieOrStopped(pid) {
  * @returns {Promise<void>}
  */
 async function killProcess(pid) {
-  try { process.kill(pid, 'SIGTERM'); } catch { return; }
+  try { process.kill(pid, 'SIGTERM'); } catch (_) { /* cleanup - failure expected */ return; }
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 200));
-    try { process.kill(pid, 0); } catch { return; } // Dead
+    try { process.kill(pid, 0); } catch (_) { /* cleanup - failure expected */ return; } // Dead
   }
-  try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
+  try { process.kill(pid, 'SIGKILL'); } catch (_) { /* cleanup - failure expected */ /* already dead */ }
 }
 
 // ============================================================================
@@ -119,7 +120,8 @@ function readHead(filePath, numBytes) {
     const buf = Buffer.alloc(numBytes);
     const bytesRead = fs.readSync(fd, buf, 0, numBytes, 0);
     return buf.toString('utf8', 0, bytesRead);
-  } catch {
+  } catch (err) {
+    console.error('[session-reaper] Warning:', err.message);
     return '';
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
@@ -141,7 +143,8 @@ function readTail(filePath, numBytes) {
     const buf = Buffer.alloc(Math.min(numBytes, stat.size));
     const bytesRead = fs.readSync(fd, buf, 0, buf.length, start);
     return buf.toString('utf8', 0, bytesRead);
-  } catch {
+  } catch (err) {
+    console.error('[session-reaper] Warning:', err.message);
     return '';
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
@@ -159,7 +162,8 @@ function findSessionFileByAgentId(sessionDir, agentId) {
   let files;
   try {
     files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
-  } catch {
+  } catch (err) {
+    console.error('[session-reaper] Warning:', err.message);
     return null;
   }
 
@@ -184,7 +188,10 @@ function isSessionComplete(sessionFile) {
   const lines = tail.split('\n').filter(l => l.trim());
   for (let i = lines.length - 1; i >= 0; i--) {
     let parsed;
-    try { parsed = JSON.parse(lines[i]); } catch { continue; }
+    try { parsed = JSON.parse(lines[i]); } catch (err) {
+      console.error('[session-reaper] Warning:', err.message);
+      continue;
+    }
 
     if (parsed.type !== 'assistant') return false;
 
@@ -246,7 +253,9 @@ export function reapSyncPass(db) {
       let metadata = {};
       try { metadata = item.metadata ? JSON.parse(item.metadata) : {}; } catch (err) {
         // Metadata parse failed — log but continue
-        try { process.stderr.write(`[session-reaper] metadata parse error for ${item.id}: ${err.message}\n`); } catch {}
+        try { process.stderr.write(`[session-reaper] metadata parse error for ${item.id}: ${err.message}\n`); } catch (err) {
+          console.error('[session-reaper] Warning:', err.message);
+        }
       }
 
       const revivalCandidate = !!(metadata.taskId && item.spawn_type === 'fresh');
@@ -390,7 +399,7 @@ export async function reapAsyncPass(projectDir, stuckAliveItems, options = {}) {
   } catch (err) {
     log(`Session reaper async pass error: ${err.message}`);
   } finally {
-    try { db.close(); } catch {}
+    try { db.close(); } catch (_) { /* cleanup - failure expected */}
   }
 
   return result;
@@ -437,10 +446,12 @@ export function getStuckAliveSessions() {
       title: item.title,
     }));
   } catch (err) {
-    try { process.stderr.write(`[session-reaper] getStuckAliveSessions error: ${err.message}\n`); } catch {}
+    try { process.stderr.write(`[session-reaper] getStuckAliveSessions error: ${err.message}\n`); } catch (err) {
+      console.error('[session-reaper] Warning:', err.message);
+    }
     return [];
   } finally {
-    if (db) try { db.close(); } catch {}
+    if (db) try { db.close(); } catch (_) { /* cleanup - failure expected */}
   }
 }
 
@@ -460,7 +471,7 @@ function reconcileTodo(item, projectDir, reason) {
 
   let metadata = item.metadata;
   if (typeof metadata === 'string') {
-    try { metadata = JSON.parse(metadata); } catch { return; }
+    try { metadata = JSON.parse(metadata); } catch (_) { /* cleanup - failure expected */ return; }
   }
   if (!metadata) return;
 
@@ -483,9 +494,11 @@ function reconcileTodo(item, projectDir, reason) {
       db.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ?").run(taskId);
     }
   } catch (err) {
-    try { process.stderr.write(`[session-reaper] reconcileTodo error: ${err.message}\n`); } catch {}
+    try { process.stderr.write(`[session-reaper] reconcileTodo error: ${err.message}\n`); } catch (err) {
+      console.error('[session-reaper] Warning:', err.message);
+    }
   } finally {
-    if (db) try { db.close(); } catch {}
+    if (db) try { db.close(); } catch (_) { /* cleanup - failure expected */}
   }
 }
 
@@ -533,8 +546,10 @@ function writeDeputyCtoReport(projectDir, item) {
       idempotencyKey,
     );
   } catch (err) {
-    try { process.stderr.write(`[session-reaper] writeDeputyCtoReport error: ${err.message}\n`); } catch {}
+    try { process.stderr.write(`[session-reaper] writeDeputyCtoReport error: ${err.message}\n`); } catch (err) {
+      console.error('[session-reaper] Warning:', err.message);
+    }
   } finally {
-    if (db) try { db.close(); } catch {}
+    if (db) try { db.close(); } catch (_) { /* cleanup - failure expected */}
   }
 }

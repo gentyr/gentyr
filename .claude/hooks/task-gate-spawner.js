@@ -31,7 +31,8 @@ function log(message) {
   process.stderr.write(line);
   try {
     fs.appendFileSync(LOG_FILE, line);
-  } catch {
+  } catch (err) {
+    console.error('[task-gate-spawner] Warning:', err.message);
     // Non-fatal
   }
 }
@@ -86,7 +87,8 @@ process.stdin.on('end', () => {
         taskDescription = parsed.description || '';
         assignedBy = parsed.assigned_by || '';
       }
-    } catch {
+    } catch (err) {
+      console.error('[task-gate-spawner] Warning:', err.message);
       // Try MCP content array format
       try {
         const response = hookInput.tool_response;
@@ -104,7 +106,8 @@ process.stdin.on('end', () => {
             }
           }
         }
-      } catch {
+      } catch (err) {
+        console.error('[task-gate-spawner] Warning:', err.message);
         // Give up
       }
     }

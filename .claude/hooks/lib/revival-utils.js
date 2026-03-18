@@ -148,7 +148,8 @@ export function findSessionFileByAgentId(sessionDir, agentId) {
   let files;
   try {
     files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
-  } catch {
+  } catch (err) {
+    console.error('[revival-utils] Warning:', err.message);
     return null;
   }
 
@@ -161,7 +162,8 @@ export function findSessionFileByAgentId(sessionDir, agentId) {
       const bytesRead = fs.readSync(fd, buf, 0, 2000, 0);
       const head = buf.toString('utf8', 0, bytesRead);
       if (head.includes(marker)) return filePath;
-    } catch {
+    } catch (err) {
+      console.error('[revival-utils] Warning:', err.message);
       // skip
     } finally {
       if (fd !== undefined) fs.closeSync(fd);
@@ -201,5 +203,8 @@ export function resolveTaskIdForAgent(agentId, projectDir) {
     if (!Array.isArray(history.agents)) return null;
     const agent = history.agents.find(a => a.id === agentId);
     return agent?.metadata?.taskId || null;
-  } catch { return null; }
+  } catch (err) {
+    console.error('[revival-utils] Warning:', err.message);
+    return null;
+  }
 }

@@ -86,7 +86,7 @@ function readTail(filePath, numBytes) {
     const buf = Buffer.alloc(Math.min(numBytes, stat.size));
     const bytesRead = fs.readSync(fd, buf, 0, buf.length, start);
     return buf.toString('utf8', 0, bytesRead);
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return '';
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
@@ -111,7 +111,8 @@ function detectQuotaDeath(transcriptPath) {
     let parsed;
     try {
       parsed = JSON.parse(lines[i]);
-    } catch {
+    } catch (err) {
+      console.error('[stop-continue-hook] Warning:', err.message);
       continue;
     }
     checked++;
@@ -143,7 +144,8 @@ function extractAgentId(transcriptPath) {
     } finally {
       if (fd !== undefined) fs.closeSync(fd);
     }
-  } catch {
+  } catch (err) {
+    console.error('[stop-continue-hook] Warning:', err.message);
     return null;
   }
 }
@@ -178,7 +180,8 @@ function writeQuotaInterruptedSession(record) {
     data.sessions = data.sessions.filter(s => new Date(s.interruptedAt).getTime() > cutoff);
 
     fs.writeFileSync(QUOTA_INTERRUPTED_PATH, JSON.stringify(data, null, 2), 'utf8');
-  } catch {
+  } catch (err) {
+    console.error('[stop-continue-hook] Warning:', err.message);
     // Non-fatal
   }
 }
@@ -219,7 +222,8 @@ async function attemptQuotaRotation() {
             });
             debugLog(`Refreshed expired token for key ${keyId.slice(0, 8)}...`);
           }
-        } catch {
+        } catch (err) {
+          console.error('[stop-continue-hook] Warning:', err.message);
           // Non-fatal: key stays expired
         }
       }
@@ -392,7 +396,10 @@ async function main() {
               const agentEntry = Array.isArray(history.agents) && history.agents.find(a => a.id === agentId);
               worktreePath = agentEntry?.metadata?.worktreePath || null;
             }
-          } catch { /* non-fatal */ }
+          } catch (err) {
+            console.error('[stop-continue-hook] Warning:', err.message);
+            /* non-fatal */
+          }
         }
 
         // Write recovery state as safety net BEFORE inline revival attempt.
@@ -422,7 +429,9 @@ async function main() {
             // Mark as revived so session-reviver doesn't double-spawn
             record.status = 'revived';
             writeQuotaInterruptedSession(record);
-            try { auditEvent('session_revival_triggered', { source: 'stop-continue-hook', reason: 'inline_revival', session_id: record.sessionId, agent_id: agentId }); } catch {}
+            try { auditEvent('session_revival_triggered', { source: 'stop-continue-hook', reason: 'inline_revival', session_id: record.sessionId, agent_id: agentId }); } catch (err) {
+              console.error('[stop-continue-hook] Warning:', err.message);
+            }
           }
         } else if (!rotated) {
           // Phase 4f: All keys exhausted — proxy returned raw 429.
@@ -471,7 +480,8 @@ async function main() {
           }).trim();
           uncommittedInWorktree = status.length > 0;
         }
-      } catch {
+      } catch (err) {
+        console.error('[stop-continue-hook] Warning:', err.message);
         // Not in a worktree or git status failed — ignore
       }
 

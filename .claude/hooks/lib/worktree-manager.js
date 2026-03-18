@@ -89,7 +89,7 @@ function resolveFrameworkDir(dir) {
     if (stat.isSymbolicLink() || stat.isDirectory()) {
       return fs.realpathSync(npmPath);
     }
-  } catch {}
+  } catch (_) { /* cleanup - failure expected */}
 
   const legacyPath = path.join(dir, '.claude-framework');
   try {
@@ -97,7 +97,9 @@ function resolveFrameworkDir(dir) {
     if (stat.isSymbolicLink() || stat.isDirectory()) {
       return fs.realpathSync(legacyPath);
     }
-  } catch {}
+  } catch (err) {
+    console.error('[worktree-manager] Warning:', err.message);
+  }
 
   const hooksPath = path.join(dir, '.claude', 'hooks');
   try {
@@ -109,7 +111,9 @@ function resolveFrameworkDir(dir) {
         return candidate;
       }
     }
-  } catch {}
+  } catch (err) {
+    console.error('[worktree-manager] Warning:', err.message);
+  }
 
   return null;
 }
@@ -171,7 +175,9 @@ export function provisionWorktree(worktreePath) {
       if (fs.lstatSync(legacyPath).isSymbolicLink() || fs.statSync(legacyPath).isDirectory()) {
         safeSymlink(frameworkDir, path.join(worktreePath, '.claude-framework'));
       }
-    } catch {}
+    } catch (err) {
+      console.error('[worktree-manager] Warning:', err.message);
+    }
   }
 
   // --- .claude directory and shared sub-resources ---
@@ -197,7 +203,7 @@ export function provisionWorktree(worktreePath) {
     if (stat.isSymbolicLink()) {
       fs.unlinkSync(worktreeAgentsDir);
     }
-  } catch {} // ENOENT is fine
+  } catch (_) { /* cleanup - failure expected */} // ENOENT is fine
 
   fs.mkdirSync(worktreeAgentsDir, { recursive: true });
 
@@ -213,7 +219,7 @@ export function provisionWorktree(worktreePath) {
       try {
         fs.lstatSync(worktreeAgentPath);
         continue;
-      } catch {} // ENOENT -- proceed to create
+      } catch (_) { /* cleanup - failure expected */} // ENOENT -- proceed to create
 
       try {
         const mainStat = fs.lstatSync(mainAgentPath);
@@ -229,9 +235,13 @@ export function provisionWorktree(worktreePath) {
           // Project-specific agent: copy for worktree isolation
           fs.copyFileSync(mainAgentPath, worktreeAgentPath);
         }
-      } catch {} // Skip individual agent errors
+      } catch (err) {
+        console.error('[worktree-manager] Warning:', err.message);
+      } // Skip individual agent errors
     }
-  } catch {} // Main agents dir doesn't exist -- skip
+  } catch (err) {
+    console.error('[worktree-manager] Warning:', err.message);
+  } // Main agents dir doesn't exist -- skip
 
   // --- .husky symlink ---
   const huskyDir = path.join(PROJECT_DIR, '.husky');
@@ -268,7 +278,8 @@ export function createWorktree(branchName, baseBranch, options = {}) {
     try {
       execSync('git rev-parse --verify origin/preview', { ...GIT_OPTS, stdio: 'pipe' });
       baseBranch = 'preview';
-    } catch {
+    } catch (err) {
+      console.error('[worktree-manager] Warning:', err.message);
       baseBranch = 'main';
     }
   }
@@ -288,7 +299,8 @@ export function createWorktree(branchName, baseBranch, options = {}) {
   if (!options.skipFetch) {
     try {
       execSync(`git fetch origin ${baseBranch} --quiet`, GIT_OPTS);
-    } catch {
+    } catch (err) {
+      console.error('[worktree-manager] Warning:', err.message);
       // Non-fatal: base branch may already be up-to-date locally
     }
   }
@@ -296,7 +308,8 @@ export function createWorktree(branchName, baseBranch, options = {}) {
   // Create the branch if it does not exist yet
   try {
     execSync(`git rev-parse --verify ${branchName}`, GIT_OPTS);
-  } catch {
+  } catch (err) {
+    console.error('[worktree-manager] Warning:', err.message);
     execSync(`git branch ${branchName} origin/${baseBranch}`, GIT_OPTS);
   }
 
@@ -324,7 +337,8 @@ export function removeWorktree(branchName) {
     if (hooksPath && path.resolve(PROJECT_DIR, hooksPath).startsWith(worktreePath)) {
       execSync('git config --local core.hooksPath .husky', GIT_OPTS);
     }
-  } catch {
+  } catch (err) {
+    console.error('[worktree-manager] Warning:', err.message);
     // No hooksPath set or git error — nothing to reset
   }
 
@@ -333,7 +347,8 @@ export function removeWorktree(branchName) {
   // Attempt to delete the branch (non-fatal: branch may have unmerged work)
   try {
     execSync(`git branch -d ${branchName}`, GIT_OPTS);
-  } catch {
+  } catch (err) {
+    console.error('[worktree-manager] Warning:', err.message);
     // Branch not fully merged or already deleted - that is fine
   }
 }
@@ -351,7 +366,8 @@ export function listWorktrees() {
   let output;
   try {
     output = execSync('git worktree list --porcelain', GIT_OPTS);
-  } catch {
+  } catch (err) {
+    console.error('[worktree-manager] Warning:', err.message);
     return [];
   }
 
@@ -426,7 +442,8 @@ function isWorktreeInUse(worktreePath) {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     return result.trim().length > 0;
-  } catch {
+  } catch (err) {
+    console.error('[worktree-manager] Warning:', err.message);
     // lsof returned no results (exit 1) or failed — safe to clean up
     return false;
   }
@@ -448,21 +465,24 @@ export function cleanupMergedWorktrees() {
   let baseBranch = 'preview';
   try {
     execSync('git rev-parse --verify origin/preview', { ...GIT_OPTS, stdio: 'pipe' });
-  } catch {
+  } catch (err) {
+    console.error('[worktree-manager] Warning:', err.message);
     baseBranch = 'main';
   }
 
   // Fetch latest base branch state (non-fatal)
   try {
     execSync(`git fetch origin ${baseBranch} --quiet`, GIT_OPTS);
-  } catch {
+  } catch (err) {
+    console.error('[worktree-manager] Warning:', err.message);
     // Offline or remote unavailable
   }
 
   let mergedOutput;
   try {
     mergedOutput = execSync(`git branch --merged origin/${baseBranch}`, GIT_OPTS);
-  } catch {
+  } catch (err) {
+    console.error('[worktree-manager] Warning:', err.message);
     return 0;
   }
 

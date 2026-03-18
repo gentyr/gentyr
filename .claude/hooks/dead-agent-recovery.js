@@ -30,7 +30,8 @@ const LOCK_MAX_ATTEMPTS = 10;
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch {
+} catch (err) {
+  console.error('[dead-agent-recovery] Warning:', err.message);
   // Non-fatal: TODO reconciliation will be skipped
 }
 
@@ -66,10 +67,10 @@ function acquireLock() {
         try {
           const stat = fs.statSync(LOCK_FILE);
           if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-            try { fs.unlinkSync(LOCK_FILE); } catch {}
+            try { fs.unlinkSync(LOCK_FILE); } catch (_) { /* cleanup - failure expected */}
             continue;
           }
-        } catch {
+        } catch (_) { /* cleanup - failure expected */
           continue;
         }
         const waitMs = 50 * Math.pow(2, attempt);
@@ -85,7 +86,7 @@ function acquireLock() {
 }
 
 function releaseLock() {
-  try { fs.unlinkSync(LOCK_FILE); } catch {}
+  try { fs.unlinkSync(LOCK_FILE); } catch (_) { /* cleanup - failure expected */}
 }
 
 async function main() {
@@ -120,7 +121,8 @@ async function main() {
         console.log(JSON.stringify({ continue: true }));
         process.exit(0);
       }
-    } catch {
+    } catch (err) {
+      console.error('[dead-agent-recovery] Warning:', err.message);
       console.log(JSON.stringify({ continue: true }));
       process.exit(0);
     }
@@ -149,7 +151,7 @@ async function main() {
               db.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ?").run(taskId);
             }
             db.close();
-          } catch { /* non-fatal */ }
+          } catch (_) { /* cleanup - failure expected */ /* non-fatal */ }
         }
       }
     }
@@ -157,7 +159,7 @@ async function main() {
     if (changed) {
       try {
         fs.writeFileSync(HISTORY_PATH, JSON.stringify(history, null, 2), 'utf8');
-      } catch { /* non-fatal */ }
+      } catch (_) { /* cleanup - failure expected */ /* non-fatal */ }
     }
   } finally {
     releaseLock();

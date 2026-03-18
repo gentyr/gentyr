@@ -75,7 +75,7 @@ function saveRealFiles() {
 
 function restoreRealFiles() {
   // Always remove lock before restoring (may be left by a failed test)
-  try { fs.unlinkSync(LOCK_PATH); } catch { /* ok */ }
+  try { fs.unlinkSync(LOCK_PATH); } catch (_) { /* cleanup - failure expected */ /* ok */ }
 
   if (savedApprovalsContent !== null) {
     fs.writeFileSync(APPROVALS_PATH, savedApprovalsContent);
@@ -112,7 +112,7 @@ function installTestKey() {
 }
 
 function removeTestKey() {
-  try { fs.unlinkSync(PROTECTION_KEY_PATH); } catch { /* ok */ }
+  try { fs.unlinkSync(PROTECTION_KEY_PATH); } catch (_) { /* cleanup - failure expected */ /* ok */ }
 }
 
 // ============================================================================

@@ -54,7 +54,8 @@ async function getPersona(personaId, projectDir = PROJECT_DIR) {
   let Database;
   try {
     Database = (await import('better-sqlite3')).default;
-  } catch {
+  } catch (err) {
+    console.error('[feedback-launcher] Warning:', err.message);
     console.error('better-sqlite3 not available');
     process.exit(1);
   }
@@ -427,7 +428,8 @@ async function getScenariosForPersona(personaId, projectDir = PROJECT_DIR) {
   let Database;
   try {
     Database = (await import('better-sqlite3')).default;
-  } catch {
+  } catch (err) {
+    console.error('[feedback-launcher] Warning:', err.message);
     return [];
   }
   const db = new Database(dbPath, { readonly: true });
@@ -437,7 +439,8 @@ async function getScenariosForPersona(personaId, projectDir = PROJECT_DIR) {
       FROM demo_scenarios WHERE persona_id = ? AND enabled = 1
       ORDER BY sort_order
     `).all(personaId);
-  } catch {
+  } catch (err) {
+    console.error('[feedback-launcher] Warning:', err.message);
     return [];
   } finally {
     db.close();
@@ -575,7 +578,7 @@ function cleanupOldConfigs() {
         }
       }
     }
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     // Non-fatal: old config/workspace cleanup failure is not critical
   }
 }

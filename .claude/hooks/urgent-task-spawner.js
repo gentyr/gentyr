@@ -34,7 +34,8 @@ import { enqueueSession } from './lib/session-queue.js';
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch {
+} catch (err) {
+  console.error('[urgent-task-spawner] Warning:', err.message);
   // Non-fatal: hook will skip if unavailable
 }
 
@@ -66,7 +67,8 @@ function log(message) {
   process.stderr.write(line);
   try {
     fs.appendFileSync(LOG_FILE, line);
-  } catch {
+  } catch (err) {
+    console.error('[urgent-task-spawner] Warning:', err.message);
     // Non-fatal
   }
 }
@@ -171,7 +173,10 @@ function evaluateQuotaGating(priority) {
             runningCount = history.agents.filter(a => a.status === 'running').length;
           }
         }
-      } catch { /* fail open */ }
+      } catch (err) {
+        console.error('[urgent-task-spawner] Warning:', err.message);
+        /* fail open */
+      }
 
       if (runningCount < 3) {
         log(`Quota gating: yellow zone (${Math.round(bestMaxUsage)}%, ${runningCount} running), spawning`);
@@ -464,7 +469,10 @@ function spawnTaskAgent(task) {
           detached: true,
         });
         fetchProc.unref();
-      } catch { /* non-fatal */ }
+      } catch (err) {
+        console.error('[urgent-task-spawner] Warning:', err.message);
+        /* non-fatal */
+      }
     }
 
     return true;
@@ -511,7 +519,8 @@ process.stdin.on('end', () => {
         const parsed = JSON.parse(response);
         taskId = parsed.id;
       }
-    } catch {
+    } catch (err) {
+      console.error('[urgent-task-spawner] Warning:', err.message);
       // Try extracting from content array (MCP tool response format)
       try {
         const response = hookInput.tool_response;
@@ -526,7 +535,8 @@ process.stdin.on('end', () => {
             }
           }
         }
-      } catch {
+      } catch (err) {
+        console.error('[urgent-task-spawner] Warning:', err.message);
         // Give up on parsing
       }
     }

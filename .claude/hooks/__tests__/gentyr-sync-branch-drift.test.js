@@ -38,11 +38,15 @@ function runHook(projectDir, extraEnv = {}) {
       },
     });
     let parsed = null;
-    try { parsed = JSON.parse(stdout.trim()); } catch {}
+    try { parsed = JSON.parse(stdout.trim()); } catch (err) {
+      console.error('[gentyr-sync-branch-drift.test] Warning:', err.message);
+    }
     return { exitCode: 0, stdout, stderr: '', parsed };
   } catch (err) {
     let parsed = null;
-    try { parsed = JSON.parse((err.stdout || '').trim()); } catch {}
+    try { parsed = JSON.parse((err.stdout || '').trim()); } catch (err) {
+      console.error('[gentyr-sync-branch-drift.test] Warning:', err.message);
+    }
     return {
       exitCode: err.status ?? 1,
       stdout: err.stdout || '',
@@ -82,7 +86,8 @@ function addRemoteBranch(dir, branchName) {
   }).trim();
   try {
     execFileSync('git', ['branch', branchName], { cwd: dir, stdio: 'pipe' });
-  } catch {
+  } catch (err) {
+    console.error('[gentyr-sync-branch-drift.test] Warning:', err.message);
     // Branch already exists — fine
   }
   execFileSync('git', ['push', 'origin', branchName], { cwd: dir, stdio: 'pipe' });
@@ -90,7 +95,8 @@ function addRemoteBranch(dir, branchName) {
   if (currentBranch !== branchName) {
     try {
       execFileSync('git', ['branch', '-D', branchName], { cwd: dir, stdio: 'pipe' });
-    } catch {
+    } catch (err) {
+      console.error('[gentyr-sync-branch-drift.test] Warning:', err.message);
       // Already deleted or is current — fine
     }
   }

@@ -59,7 +59,8 @@ function resolveFrameworkDir(dir) {
     if (stat.isSymbolicLink() || stat.isDirectory()) {
       return fs.realpathSync(npmPath);
     }
-  } catch {}
+  } catch (_) {
+  }
 
   // 2. .claude-framework (legacy symlink model)
   const legacyPath = path.join(dir, '.claude-framework');
@@ -68,7 +69,8 @@ function resolveFrameworkDir(dir) {
     if (stat.isSymbolicLink() || stat.isDirectory()) {
       return fs.realpathSync(legacyPath);
     }
-  } catch {}
+  } catch (_) {
+  }
 
   // 3. Follow .claude/hooks symlink (resilient to node_modules pruning)
   const hooksPath = path.join(dir, '.claude', 'hooks');
@@ -82,7 +84,8 @@ function resolveFrameworkDir(dir) {
         return candidate;
       }
     }
-  } catch {}
+  } catch (_) {
+  }
 
   return null;
 }
@@ -103,7 +106,9 @@ function computeConfigHash(frameworkDir) {
   ];
   const hash = crypto.createHash('sha256');
   for (const f of files) {
-    try { hash.update(fs.readFileSync(f, 'utf8')); } catch { hash.update(''); }
+    try { hash.update(fs.readFileSync(f, 'utf8')); } catch (_) {
+      hash.update('');
+    }
   }
   return hash.digest('hex');
 }
@@ -113,7 +118,9 @@ function computeClaudeMdHash(frameworkDir) {
     return crypto.createHash('sha256')
       .update(fs.readFileSync(path.join(frameworkDir, 'CLAUDE.md.gentyr-section'), 'utf8'))
       .digest('hex');
-  } catch { return ''; }
+  } catch (_) {
+    return '';
+  }
 }
 
 function getNewestMtime(dir) {
@@ -129,7 +136,8 @@ function getNewestMtime(dir) {
         newest = Math.max(newest, fs.statSync(full).mtimeMs);
       }
     }
-  } catch {}
+  } catch (_) {
+  }
   return newest;
 }
 
@@ -142,7 +150,7 @@ function statBasedSync(frameworkDir) {
   let state;
   try {
     state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-  } catch {
+  } catch (_) {
     return false; // No state file — fall through to legacy check
   }
 
@@ -150,7 +158,7 @@ function statBasedSync(frameworkDir) {
   let currentVersion;
   try {
     currentVersion = JSON.parse(fs.readFileSync(path.join(frameworkDir, 'version.json'), 'utf8')).version;
-  } catch {
+  } catch (_) {
     currentVersion = '0.0.0';
   }
 
@@ -182,7 +190,7 @@ function statBasedSync(frameworkDir) {
         stdio: 'pipe', timeout: 10000,
       });
       changes.push('settings.json');
-    } catch {
+    } catch (_) {
       // Non-fatal — settings.json re-merge failure handled by continuing execution
     }
   }
@@ -206,7 +214,8 @@ function statBasedSync(frameworkDir) {
             break;
           }
         }
-      } catch {}
+      } catch (_) {
+      }
 
       fs.writeFileSync(outputPath, content);
 
@@ -222,7 +231,7 @@ function statBasedSync(frameworkDir) {
       }
 
       changes.push('.mcp.json');
-    } catch {
+    } catch (_) {
       // Non-fatal — .mcp.json re-merge failure handled by continuing execution
     }
   }
@@ -252,7 +261,8 @@ function statBasedSync(frameworkDir) {
         fs.writeFileSync(claudeMdPath, content);
         changes.push('CLAUDE.md');
       }
-    } catch {}
+    } catch (_) {
+    }
   }
 
   // d. Symlink new agent definitions
@@ -265,17 +275,20 @@ function statBasedSync(frameworkDir) {
       if (!existingAgents.has(agent)) {
         const target = `../../${frameworkRel}/agents/${agent}`;
         const linkPath = path.join(agentsDir, agent);
-        try { fs.symlinkSync(target, linkPath); changes.push(`agent:${agent}`); } catch {}
+        try { fs.symlinkSync(target, linkPath); changes.push(`agent:${agent}`); } catch (_) {
+        }
       }
     }
-  } catch {}
+  } catch (_) {
+  }
 
   // e. Auto-rebuild MCP servers if stale
   let mcpStale = false;
   const distDir = path.join(frameworkDir, 'packages', 'mcp-servers', 'dist');
   const srcDir = path.join(frameworkDir, 'packages', 'mcp-servers', 'src');
   if (fs.existsSync(distDir) && fs.existsSync(srcDir)) {
-    try { mcpStale = getNewestMtime(srcDir) > getNewestMtime(distDir); } catch {}
+    try { mcpStale = getNewestMtime(srcDir) > getNewestMtime(distDir); } catch (_) {
+    }
   } else if (!fs.existsSync(distDir)) {
     mcpStale = true;
   }
@@ -291,7 +304,7 @@ function statBasedSync(frameworkDir) {
       }
       execFileSync('npm', ['run', 'build'], { cwd: mcpDir, stdio: 'pipe', timeout: 30000 });
       changes.push('MCP servers rebuilt');
-    } catch {
+    } catch (_) {
       // Non-fatal — MCP build failure is handled by continuing execution
     }
   }
@@ -311,7 +324,8 @@ function statBasedSync(frameworkDir) {
           fs.chmodSync(dst, 0o755);
           changes.push(`.husky/${hook}`);
         }
-      } catch {}
+      } catch (_) {
+      }
     }
   }
 
@@ -331,7 +345,7 @@ function statBasedSync(frameworkDir) {
           cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
         });
         changes.push(`untracked:.husky/${file}`);
-      } catch {
+      } catch (_) {
         // Not tracked or git error — no-op
       }
     }
@@ -347,7 +361,9 @@ function statBasedSync(frameworkDir) {
         try {
           return fs.readdirSync(path.join(frameworkDir, 'agents'))
             .filter(f => f.endsWith('.md')).sort();
-        } catch { return state.agentList || []; }
+        } catch (_) {
+          return state.agentList || [];
+        }
       })(),
       stateFilesVersion: state.stateFilesVersion || 1,
       lastSync: new Date().toISOString(),
@@ -356,17 +372,20 @@ function statBasedSync(frameworkDir) {
           const npmPath = path.join(projectDir, 'node_modules', 'gentyr');
           const stat = fs.lstatSync(npmPath);
           if (stat.isSymbolicLink() || stat.isDirectory()) return 'npm';
-        } catch {}
+        } catch (_) {
+        }
         try {
           const legacyPath = path.join(projectDir, '.claude-framework');
           const stat = fs.lstatSync(legacyPath);
           if (stat.isSymbolicLink() || stat.isDirectory()) return 'legacy';
-        } catch {}
+        } catch (_) {
+        }
         return 'npm';
       })(),
     };
     fs.writeFileSync(statePath, JSON.stringify(newState, null, 2) + '\n');
-  } catch {}
+  } catch (_) {
+  }
 
   // Emit sync message — only report successful syncs, never ask agent to run commands
   const parts = [`GENTYR synced to v${currentVersion}`];
@@ -387,12 +406,14 @@ function legacySettingsCheck(frameworkDir) {
   let template;
   try {
     template = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
-  } catch { silent(); }
+  } catch (_) {
+    silent();
+  }
 
   let settings;
   try {
     settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-  } catch {
+  } catch (_) {
     warn('GENTYR: .claude/settings.json is missing or unreadable. Framework configuration may be incomplete.');
   }
 
@@ -460,7 +481,7 @@ function tamperCheck() {
         warnings.push('.claude/hooks is a regular directory (expected symlink to framework)');
       }
     }
-  } catch {
+  } catch (_) {
     // hooks path doesn't exist — will be caught by other checks
   }
 
@@ -483,12 +504,12 @@ function tamperCheck() {
             cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
           });
           warnings.push(`core.hooksPath was pointing into a worktree (${hooksPathConfig}) — auto-repaired to .husky`);
-        } catch {
+        } catch (_) {
           warnings.push(`core.hooksPath points into a worktree (${hooksPathConfig}) — pre-commit hooks are BYPASSED. Fix: git config --local core.hooksPath .husky`);
         }
       }
     }
-  } catch {
+  } catch (_) {
     // No hooksPath set or git error — default behavior is fine
   }
 
@@ -497,7 +518,7 @@ function tamperCheck() {
   let state;
   try {
     state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-  } catch {
+  } catch (_) {
     // No state file — skip ownership check but still emit symlink warnings
     if (warnings.length > 0) {
       warn(`SECURITY WARNING: ${warnings.join('; ')}. Run "npx gentyr protect" to restore protection.`);
@@ -512,7 +533,8 @@ function tamperCheck() {
       if (fs.lstatSync(hooksDir).isSymbolicLink()) {
         hooksDir = fs.realpathSync(hooksDir);
       }
-    } catch {}
+    } catch (_) {
+    }
 
     // Use copy-on-protect directory if present (linked projects)
     if (state.hooksProtectedDir) {
@@ -533,7 +555,7 @@ function tamperCheck() {
         if (stat.uid !== 0) {
           tampered.push(hook);
         }
-      } catch {
+      } catch (_) {
         // File missing — not necessarily tampering (could be removed legitimately)
       }
     }
@@ -574,7 +596,7 @@ try {
       config.modifiedBy = 'session-start';
       fs.writeFileSync(autoConfigPath, JSON.stringify(config, null, 2));
     }
-  } catch {
+  } catch (_) {
     // Non-fatal — don't block session start
   }
 

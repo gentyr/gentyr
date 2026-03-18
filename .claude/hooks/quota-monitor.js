@@ -99,7 +99,8 @@ function readThrottleState() {
     if (fs.existsSync(THROTTLE_STATE_PATH)) {
       return JSON.parse(fs.readFileSync(THROTTLE_STATE_PATH, 'utf8'));
     }
-  } catch {
+  } catch (err) {
+    console.error('[quota-monitor] Warning:', err.message);
     // Ignore
   }
   return { lastCheck: 0, lastRotation: 0, currentIntervalMs: ADAPTIVE_INTERVALS[0].intervalMs, usageHistory: [] };
@@ -114,7 +115,8 @@ function writeThrottleState(state) {
       fs.mkdirSync(STATE_DIR, { recursive: true });
     }
     fs.writeFileSync(THROTTLE_STATE_PATH, JSON.stringify(state, null, 2), 'utf8');
-  } catch {
+  } catch (err) {
+    console.error('[quota-monitor] Warning:', err.message);
     // Non-fatal
   }
 }
@@ -134,7 +136,8 @@ function writePausedSession(agentId) {
       try {
         data = JSON.parse(fs.readFileSync(PAUSED_SESSIONS_PATH, 'utf8'));
         if (!Array.isArray(data.sessions)) data.sessions = [];
-      } catch {
+      } catch (err) {
+        console.error('[quota-monitor] Warning:', err.message);
         data = { sessions: [] };
       }
     }
@@ -150,7 +153,10 @@ function writePausedSession(agentId) {
           const agentEntry = Array.isArray(history.agents) && history.agents.find(a => a.id === agentId);
           worktreePath = agentEntry?.metadata?.worktreePath || null;
         }
-      } catch { /* non-fatal */ }
+      } catch (err) {
+        console.error('[quota-monitor] Warning:', err.message);
+        /* non-fatal */
+      }
     }
 
     // Deduplicate by agentId
@@ -167,7 +173,8 @@ function writePausedSession(agentId) {
     data.sessions = data.sessions.filter(s => s.pausedAt > cutoff);
 
     fs.writeFileSync(PAUSED_SESSIONS_PATH, JSON.stringify(data, null, 2), 'utf8');
-  } catch {
+  } catch (err) {
+    console.error('[quota-monitor] Warning:', err.message);
     // Non-fatal
   }
 }
@@ -334,7 +341,8 @@ async function main() {
             reason: isExpired ? 'token_refreshed_by_quota_monitor' : 'proactive_standby_refresh',
           });
         }
-      } catch {
+      } catch (err) {
+        console.error('[quota-monitor] Warning:', err.message);
         // Non-fatal: key stays in current status
       }
     }

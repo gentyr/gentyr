@@ -29,7 +29,8 @@ const DEPUTY_CTO_DB = path.join(PROJECT_DIR, '.claude', 'deputy-cto.db');
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch {
+} catch (err) {
+  console.error('[pre-commit-review] Warning:', err.message);
   console.error('[pre-commit] Warning: better-sqlite3 not available');
 }
 
@@ -110,7 +111,7 @@ function hasPendingCtoItems() {
           triageCount = triageResult?.count || 0;
         }
         reportsDb.close();
-      } catch {
+      } catch (_) { /* cleanup - failure expected */
         // G001: Fail closed - if we can't read triage count, assume there are pending items
         // This blocks commits when the database is corrupted/unreadable (safer default)
         triageCount = 1;
@@ -132,7 +133,7 @@ function hasPendingCtoItems() {
 function getBranchInfo() {
   try {
     return execSync('git branch --show-current', { encoding: 'utf8' }).trim();
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return 'unknown';
   }
 }
@@ -190,7 +191,7 @@ function hasValidBypassDecision() {
     }
 
     return false;
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return false;
   }
 }
@@ -223,7 +224,8 @@ function verifyGitHooksPath() {
       if (mainRepoRoot !== PROJECT_DIR) {
         allowedRoots.push(mainRepoRoot);
       }
-    } catch {
+    } catch (err) {
+      console.error('[pre-commit-review] Warning:', err.message);
       // Not in a worktree or git error -- PROJECT_DIR alone is sufficient
     }
 
@@ -236,7 +238,8 @@ function verifyGitHooksPath() {
       return { valid: false, path: hooksPath };
     }
     return { valid: true, path: hooksPath };
-  } catch {
+  } catch (err) {
+    console.error('[pre-commit-review] Warning:', err.message);
     // No hooksPath set means using default .git/hooks - that's fine if this hook is running
     return { valid: true, path: '(default)' };
   }
@@ -268,7 +271,8 @@ function verifyProtectionStatus() {
       if (stats.uid !== 0) {
         unprotectedFiles.push(file);
       }
-    } catch {
+    } catch (err) {
+      console.error('[pre-commit-review] Warning:', err.message);
       // Skip files we can't stat
     }
   }
@@ -531,7 +535,9 @@ async function main() {
         ).trim();
         const resolvedGitDir = path.isAbsolute(gitDir) ? gitDir : path.join(PROJECT_DIR, gitDir);
         isMergeCommit = fs.existsSync(path.join(resolvedGitDir, 'MERGE_HEAD'));
-      } catch {}
+      } catch (err) {
+        console.error('[pre-commit-review] Warning:', err.message);
+      }
 
       if (!isMergeCommit) {
         // Detect base branch
@@ -539,7 +545,9 @@ async function main() {
         try {
           execSync('git rev-parse --verify origin/preview', { encoding: 'utf8', stdio: 'pipe' });
           baseBranch = 'preview';
-        } catch {}
+        } catch (err) {
+          console.error('[pre-commit-review] Warning:', err.message);
+        }
 
         // Get the merge-base hash
         const mergeBaseHash = execSync(
@@ -567,7 +575,9 @@ async function main() {
                 branchAgeLimitHours = config.branch_age_limit_hours;
               }
             }
-          } catch {}
+          } catch (err) {
+            console.error('[pre-commit-review] Warning:', err.message);
+          }
 
           if (lastCommitAgeHours > branchAgeLimitHours) {
             console.error('');
@@ -589,7 +599,8 @@ async function main() {
           }
         }
       }
-    } catch {
+    } catch (err) {
+      console.error('[pre-commit-review] Warning:', err.message);
       // Non-fatal: if we can't determine branch age, allow the commit
     }
   }

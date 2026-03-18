@@ -29,7 +29,8 @@ import { enqueueSession } from './lib/session-queue.js';
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch {
+} catch (err) {
+  console.error('[todo-maintenance] Warning:', err.message);
   // G001: better-sqlite3 unavailable — expected in some environments
 }
 
@@ -81,7 +82,8 @@ function validateProjectDir(inputPath) {
     if (!stat.isDirectory()) {
       return null;
     }
-  } catch {
+  } catch (err) {
+    console.error('[todo-maintenance] Warning:', err.message);
     // Directory doesn't exist - allow for new projects
   }
 
@@ -241,7 +243,8 @@ function readCooldownState(statePath) {
     return {
       lastSpawnTime: state.lastSpawnTime || null
     };
-  } catch {
+  } catch (err) {
+    console.error('[todo-maintenance] Warning:', err.message);
     // File doesn't exist or is invalid - return empty state
     return { lastSpawnTime: null };
   }
@@ -255,7 +258,8 @@ function readCooldownState(statePath) {
 function writeCooldownState(statePath, state) {
   try {
     fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8');
-  } catch {
+  } catch (err) {
+    console.error('[todo-maintenance] Warning:', err.message);
     // Non-fatal — cooldown state write failure handled by continuing execution
   }
 }
@@ -307,7 +311,8 @@ function getPromptPath(projectDir) {
 function readPrompt(promptPath) {
   try {
     return fs.readFileSync(promptPath, 'utf8').trim();
-  } catch {
+  } catch (err) {
+    console.error('[todo-maintenance] Warning:', err.message);
     return null;
   }
 }

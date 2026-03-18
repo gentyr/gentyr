@@ -41,7 +41,9 @@ export function buildSpawnEnv(agentId, options = {}) {
     if (fs.existsSync(path.join(wrappersDir, 'git'))) {
       guardedPath = `${wrappersDir}:${guardedPath}`;
     }
-  } catch {}
+  } catch (err) {
+    console.error('[spawn-env] Warning:', err.message);
+  }
 
   const env = {
     ...process.env,

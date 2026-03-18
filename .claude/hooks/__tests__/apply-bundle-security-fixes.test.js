@@ -80,7 +80,8 @@ function findScript() {
             return candidate;
           }
         }
-      } catch {
+      } catch (err) {
+        console.error('[apply-bundle-security-fixes.test] Warning:', err.message);
         // ignore scan errors
       }
     }
@@ -102,7 +103,8 @@ let scriptExists = false;
 try {
   scriptContent = fs.readFileSync(SCRIPT_PATH, 'utf8');
   scriptExists = true;
-} catch {
+} catch (err) {
+  console.error('[apply-bundle-security-fixes.test] Warning:', err.message);
   // Script not found — tests will fail with descriptive messages
 }
 

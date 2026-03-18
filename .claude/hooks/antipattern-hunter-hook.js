@@ -44,7 +44,8 @@ function readState() {
       return { lastSpawn: null };
     }
     return JSON.parse(fs.readFileSync(CONFIG.stateFile, 'utf8'));
-  } catch {
+  } catch (err) {
+    console.error('[antipattern-hunter-hook] Warning:', err.message);
     return { lastSpawn: null };
   }
 }

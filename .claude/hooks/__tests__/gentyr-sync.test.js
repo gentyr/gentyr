@@ -43,11 +43,17 @@ function runHook(projectDir, extraEnv = {}) {
       timeout: 10000,
     });
     let parsed = null;
-    try { parsed = JSON.parse(stdout.trim()); } catch { /* ignore */ }
+    try { parsed = JSON.parse(stdout.trim()); } catch (err) {
+      console.error('[gentyr-sync.test] Warning:', err.message);
+      /* ignore */
+    }
     return { exitCode: 0, stdout, parsed };
   } catch (err) {
     let parsed = null;
-    try { parsed = JSON.parse((err.stdout || '').trim()); } catch { /* ignore */ }
+    try { parsed = JSON.parse((err.stdout || '').trim()); } catch (err) {
+      console.error('[gentyr-sync.test] Warning:', err.message);
+      /* ignore */
+    }
     return { exitCode: err.status ?? 1, stdout: err.stdout || '', parsed };
   }
 }
@@ -306,7 +312,7 @@ describe('CTO Activity Gate reset — code structure (gentyr-sync.js)', () => {
     );
     assert.match(
       gateResetBlock[0],
-      /\} catch \{[\s\S]*?\/\/ Non-fatal/,
+      /\} catch [^{]*\{[\s\S]*?\/\/ Non-fatal/,
       'Gate reset catch must suppress errors as non-fatal'
     );
   });
@@ -345,7 +351,10 @@ function runHookWithStreams(projectDir, extraEnv = {}) {
     timeout: 10000,
   });
   let parsed = null;
-  try { parsed = JSON.parse((result.stdout || '').trim()); } catch { /* ignore */ }
+  try { parsed = JSON.parse((result.stdout || '').trim()); } catch (err) {
+    console.error('[gentyr-sync.test] Warning:', err.message);
+    /* ignore */
+  }
   return {
     exitCode: result.status ?? 1,
     stdout: result.stdout || '',
@@ -532,7 +541,10 @@ describe('statBasedSync merge error handling — no stderr (Bug Fixes #2 and #3)
     if (tmpDir && fs.existsSync(tmpDir)) {
       // Restore write permissions before cleanup in case .mcp.json was chmod'd
       const mcpPath = path.join(tmpDir, '.mcp.json');
-      try { fs.chmodSync(mcpPath, 0o644); } catch { /* file may not exist */ }
+      try { fs.chmodSync(mcpPath, 0o644); } catch (err) {
+        console.error('[gentyr-sync.test] Warning:', err.message);
+        /* file may not exist */
+      }
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
     tmpDir = null;

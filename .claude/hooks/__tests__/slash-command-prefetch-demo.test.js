@@ -417,7 +417,7 @@ describe('Slash Command Prefetch - /demo, /demo-interactive, /demo-autonomous Co
       const handleDemoMatch = hookCode.match(/function handleDemo\(\) \{[\s\S]*?\n\}/);
       assert.ok(handleDemoMatch, 'handleDemo function must exist');
       // The catch block following the scenarios query must reset personaGroups to []
-      const catchBlock = handleDemoMatch[0].match(/\} catch \{[\s\S]*?\} finally \{/);
+      const catchBlock = handleDemoMatch[0].match(/\} catch \([^)]*\) \{[\s\S]*?\} finally \{/);
       assert.ok(catchBlock, 'catch block must exist before finally');
       assert.match(catchBlock[0], /output\.gathered\.personaGroups\s*=\s*\[\]/);
     });

@@ -124,7 +124,8 @@ function readApprovalsFile(approvalsPath) {
   try {
     const raw = fs.readFileSync(approvalsPath, 'utf8');
     return JSON.parse(raw);
-  } catch {
+  } catch (err) {
+    console.error('[approval-utils-concurrency.test] Warning:', err.message);
     return null;
   }
 }
@@ -194,7 +195,9 @@ const wallBefore = performance.now();
 
 try {
   checkApproval(server, tool, {});
-} catch {}
+} catch (err) {
+  console.error('[approval-utils-concurrency.test] Warning:', err.message);
+}
 
 const wallAfterMs = performance.now() - wallBefore;
 const cpuAfter = process.cpuUsage(cpuBefore);
@@ -557,7 +560,7 @@ describe('approval-utils.js – TOCTOU concurrency', () => {
 
       // Cleanup orphan tmp file left by crash worker
       const orphanTmp = approvalsPath + '.tmp.crashworker';
-      try { fs.unlinkSync(orphanTmp); } catch { /* may not exist */ }
+      try { fs.unlinkSync(orphanTmp); } catch (_) { /* cleanup - failure expected */ /* may not exist */ }
     });
 
     it('should not let an orphaned .tmp file corrupt the real approvals file', async () => {
@@ -586,7 +589,7 @@ describe('approval-utils.js – TOCTOU concurrency', () => {
       );
 
       // Cleanup
-      try { fs.unlinkSync(orphanTmpPath); } catch { /* already gone */ }
+      try { fs.unlinkSync(orphanTmpPath); } catch (_) { /* cleanup - failure expected */ /* already gone */ }
     });
 
     it('should not leave a .tmp file behind when a consumer successfully writes the file', async () => {
@@ -768,7 +771,7 @@ describe('approval-utils.js – TOCTOU concurrency', () => {
       );
 
       // Release the lock so subsequent tests are not affected
-      try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+      try { fs.unlinkSync(lockPath); } catch (_) { /* cleanup - failure expected */ /* already gone */ }
     });
 
     it('should not consume significant CPU during lock backoff (non-spinning wait)', async () => {
@@ -834,7 +837,7 @@ describe('approval-utils.js – TOCTOU concurrency', () => {
       });
 
       // Clean up the lock
-      try { fs.unlinkSync(lockPath); } catch {}
+      try { fs.unlinkSync(lockPath); } catch (_) { /* cleanup - failure expected */}
 
       // Validate we got measurements
       assert.ok(result.wallMs, `Expected wall time measurement, got: ${JSON.stringify(result)}`);

@@ -61,7 +61,8 @@ const STATE_PATH = path.join(STATE_DIR, 'branch-drift-state.json');
 function readState() {
   try {
     return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
-  } catch {
+  } catch (err) {
+    console.error('[branch-drift-check] Warning:', err.message);
     return { lastCheck: 0, lastBranch: null };
   }
 }
@@ -70,7 +71,8 @@ function writeState(state) {
   try {
     fs.mkdirSync(STATE_DIR, { recursive: true });
     fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + '\n');
-  } catch {
+  } catch (err) {
+    console.error('[branch-drift-check] Warning:', err.message);
     // Non-fatal — state dir may be root-owned
   }
 }
@@ -85,7 +87,8 @@ function detectBaseBranch() {
       cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
     });
     return 'preview';
-  } catch {
+  } catch (err) {
+    console.error('[branch-drift-check] Warning:', err.message);
     return 'main';
   }
 }
@@ -100,7 +103,10 @@ function detectDrift() {
   // Skip if .git is a file (we're inside a worktree, not the main checkout)
   try {
     if (fs.statSync(gitDir).isFile()) return null;
-  } catch { return null; }
+  } catch (err) {
+    console.error('[branch-drift-check] Warning:', err.message);
+    return null;
+  }
 
   // Get current branch
   let currentBranch;
@@ -108,7 +114,10 @@ function detectDrift() {
     currentBranch = execFileSync('git', ['branch', '--show-current'], {
       cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
     }).trim();
-  } catch { return null; }
+  } catch (err) {
+    console.error('[branch-drift-check] Warning:', err.message);
+    return null;
+  }
 
   if (!currentBranch) return null; // Detached HEAD
 
@@ -122,7 +131,9 @@ function detectDrift() {
       cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
     }).trim();
     hasChanges = status.length > 0;
-  } catch {}
+  } catch (err) {
+    console.error('[branch-drift-check] Warning:', err.message);
+  }
 
   // Build warning message
   const parts = [
@@ -154,7 +165,9 @@ try {
     currentBranch = execFileSync('git', ['branch', '--show-current'], {
       cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
     }).trim() || null;
-  } catch {}
+  } catch (err) {
+    console.error('[branch-drift-check] Warning:', err.message);
+  }
 
   // Branch changed — reset cooldown
   const branchChanged = currentBranch !== null && state.lastBranch !== null && currentBranch !== state.lastBranch;

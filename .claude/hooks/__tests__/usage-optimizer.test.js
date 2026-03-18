@@ -2625,7 +2625,7 @@ describe('usage-optimizer.js - Structure Validation', () => {
 
       assert.match(
         functionBody,
-        /try \{[\s\S]*?\} catch \{[\s\S]*?return null/s,
+        /try \{[\s\S]*?\} catch [^{]*\{[\s\S]*?return null/s,
         'Must return null on any error'
       );
     });

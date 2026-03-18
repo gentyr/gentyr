@@ -79,7 +79,8 @@ function getLastSnapshotTimestamp() {
     const data = JSON.parse(fs.readFileSync(SNAPSHOTS_PATH, 'utf8'));
     if (!data || !Array.isArray(data.snapshots) || data.snapshots.length === 0) return null;
     return data.snapshots[data.snapshots.length - 1]?.ts || null;
-  } catch {
+  } catch (err) {
+    console.error('[usage-optimizer] Warning:', err.message);
     return null;
   }
 }
@@ -287,7 +288,8 @@ function getApiKeys() {
           keys.push({ id: 'keychain', accessToken: creds.claudeAiOauth.accessToken, accountId: null });
         }
       }
-    } catch {
+    } catch (err) {
+      console.error('[usage-optimizer] Warning:', err.message);
       // Keychain not available (locked, no entry, or non-macOS)
     }
   }
@@ -352,7 +354,8 @@ function storeSnapshot(snapshot, log) {
       if (!data || !Array.isArray(data.snapshots)) {
         data = { snapshots: [] };
       }
-    } catch {
+    } catch (err) {
+      console.error('[usage-optimizer] Warning:', err.message);
       data = { snapshots: [] };
     }
   }
@@ -387,7 +390,8 @@ function calculateAndAdjust(log) {
   let data;
   try {
     data = JSON.parse(fs.readFileSync(SNAPSHOTS_PATH, 'utf8'));
-  } catch {
+  } catch (err) {
+    console.error('[usage-optimizer] Warning:', err.message);
     return false;
   }
 
@@ -459,7 +463,8 @@ function calculateAndAdjust(log) {
   let config;
   try {
     config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  } catch {
+  } catch (err) {
+    console.error('[usage-optimizer] Warning:', err.message);
     log('Usage optimizer: Config file unreadable, skipping adjustment.');
     return false;
   }

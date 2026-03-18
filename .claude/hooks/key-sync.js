@@ -96,7 +96,8 @@ export function readCredentialSources() {
             source: 'keychain',
           });
       }
-    } catch {
+    } catch (err) {
+      console.error('[key-sync] Warning:', err.message);
       // Keychain not available (locked, no entry, or non-macOS)
     }
   }
@@ -116,7 +117,8 @@ export function readCredentialSources() {
           source: 'file',
         });
       }
-    } catch {
+    } catch (err) {
+      console.error('[key-sync] Warning:', err.message);
       // File unreadable
     }
   }
@@ -165,13 +167,15 @@ export function readRotationState() {
                 writeRotationState(parsed);
               }
             }
-          } catch {
+          } catch (err) {
+            console.error('[key-sync] Warning:', err.message);
             // Ignore old state errors
           }
         }
         return parsed;
       }
-    } catch {
+    } catch (err) {
+      console.error('[key-sync] Warning:', err.message);
       // Fall through to default
     }
   }
@@ -185,7 +189,8 @@ export function readRotationState() {
         writeRotationState(parsed);
         return parsed;
       }
-    } catch {
+    } catch (err) {
+      console.error('[key-sync] Warning:', err.message);
       // Ignore migration errors
     }
   }
@@ -234,7 +239,8 @@ export function logRotationEvent(state, entry) {
     }
 
     fs.appendFileSync(ROTATION_LOG_PATH, line + '\n', 'utf8');
-  } catch {
+  } catch (err) {
+    console.error('[key-sync] Warning:', err.message);
     // Ignore log file errors
   }
 }
@@ -278,7 +284,8 @@ export function updateActiveCredentials(keyData) {
           'find-generic-password', '-s', 'Claude Code-credentials', '-a', username, '-w',
         ], { encoding: 'utf8', timeout: 3000 }).trim();
         keychainCreds = JSON.parse(raw);
-      } catch {
+      } catch (err) {
+        console.error('[key-sync] Warning:', err.message);
         // No existing keychain entry
       }
 
@@ -297,7 +304,8 @@ export function updateActiveCredentials(keyData) {
         '-a', username,
         '-w', JSON.stringify(keychainCreds),
       ], { encoding: 'utf8', timeout: 3000 });
-    } catch {
+    } catch (err) {
+      console.error('[key-sync] Warning:', err.message);
       // Keychain update failed - non-fatal, file was already updated
     }
   }
@@ -328,7 +336,10 @@ export async function refreshExpiredToken(keyData) {
         try {
           const errBody = await response.json();
           if (errBody.error === 'invalid_grant') return 'invalid_grant';
-        } catch { /* treat as transient */ }
+        } catch (err) {
+          console.error('[key-sync] Warning:', err.message);
+          /* treat as transient */
+        }
       }
       return null;
     }
@@ -341,7 +352,8 @@ export async function refreshExpiredToken(keyData) {
       refreshToken: data.refresh_token || keyData.refreshToken,
       expiresAt: data.expires_in ? (Date.now() + data.expires_in * 1000) : (Date.now() + 3600 * 1000),
     };
-  } catch {
+  } catch (err) {
+    console.error('[key-sync] Warning:', err.message);
     return null;
   }
 }
@@ -470,7 +482,8 @@ export async function syncKeys(log) {
         keyData.account_email = profile.email;
         logFn(`[key-sync] Resolved profile for key ${keyId.slice(0, 8)}...: ${profile.email}`);
       }
-    } catch {
+    } catch (err) {
+      console.error('[key-sync] Warning:', err.message);
       // Non-fatal — profile will be retried on next sync
     }
   }
@@ -923,7 +936,8 @@ export function readKeychainCredentials() {
       'find-generic-password', '-s', 'Claude Code-credentials', '-a', username, '-w',
     ], { encoding: 'utf8', timeout: 3000 }).trim();
     return JSON.parse(raw);
-  } catch {
+  } catch (err) {
+    console.error('[key-sync] Warning:', err.message);
     return null;
   }
 }
@@ -962,7 +976,8 @@ export async function fetchAccountProfile(accessToken) {
       };
     }
     return null;
-  } catch {
+  } catch (err) {
+    console.error('[key-sync] Warning:', err.message);
     return null;
   }
 }

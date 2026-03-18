@@ -106,7 +106,7 @@ async function runHook(hookInput, opts = {}) {
       let parsed = null;
       try {
         parsed = JSON.parse(stdout);
-      } catch {}
+      } catch (_) { /* cleanup - failure expected */}
       resolve({ exitCode, stdout, stderr, parsed });
     });
 
@@ -128,7 +128,8 @@ function writeState(stateFile, state) {
 function readState(stateFile) {
   try {
     return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-  } catch {
+  } catch (err) {
+    console.error('[uncommitted-change-monitor.test] Warning:', err.message);
     return null;
   }
 }
@@ -374,7 +375,9 @@ describe('uncommitted-change-monitor.js (PostToolUse hook)', () => {
         child.stdout.on('data', (d) => { stdout += d; });
         child.on('close', (exitCode) => {
           let parsed = null;
-          try { parsed = JSON.parse(stdout); } catch {}
+          try { parsed = JSON.parse(stdout); } catch (err) {
+            console.error('[uncommitted-change-monitor.test] Warning:', err.message);
+          }
           resolve({ exitCode, parsed });
         });
         child.stdin.write('not json');

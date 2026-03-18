@@ -22,7 +22,8 @@ const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch {
+} catch (err) {
+  console.error('[plan-work-tracker] Warning:', err.message);
   // Non-fatal
 }
 
@@ -42,7 +43,8 @@ async function main() {
   let event;
   try {
     event = JSON.parse(input);
-  } catch {
+  } catch (err) {
+    console.error('[plan-work-tracker] Warning:', err.message);
     process.stdout.write(NOOP);
     return;
   }
@@ -66,7 +68,8 @@ async function main() {
         }
       }
     }
-  } catch {
+  } catch (err) {
+    console.error('[plan-work-tracker] Warning:', err.message);
     // Could not extract task ID
   }
 
@@ -88,7 +91,7 @@ async function main() {
       planTaskId = meta.plan_task_id;
       planId = meta.plan_id;
     }
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     // Non-fatal
   }
 

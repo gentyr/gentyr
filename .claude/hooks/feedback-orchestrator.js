@@ -36,7 +36,7 @@ export async function isFeedbackConfigured() {
     const count = db.prepare('SELECT COUNT(*) as count FROM personas WHERE enabled = 1').get();
     db.close();
     return count.count > 0;
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return false;
   }
 }
@@ -54,7 +54,7 @@ export function getChangedFiles(sinceSha) {
       stdio: 'pipe',
     });
     return output.trim().split('\n').filter(Boolean);
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return [];
   }
 }
@@ -71,7 +71,8 @@ export function getLatestStagingSha() {
       timeout: 10000,
       stdio: 'pipe',
     }).trim();
-  } catch {
+  } catch (err) {
+    console.error('[feedback-orchestrator] Warning:', err.message);
     return null;
   }
 }
@@ -84,7 +85,8 @@ export async function getPersonasForChanges(changedFiles) {
   let Database;
   try {
     Database = (await import('better-sqlite3')).default;
-  } catch {
+  } catch (err) {
+    console.error('[feedback-orchestrator] Warning:', err.message);
     return { personas: [], features: [] };
   }
 
@@ -153,7 +155,7 @@ export async function startFeedbackRun(triggerType, triggerRef, changedFiles, pe
   let Database;
   try {
     Database = (await import('better-sqlite3')).default;
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return null;
   }
 
@@ -196,7 +198,7 @@ export async function personaRanRecently(personaId, cooldownHours) {
   let Database;
   try {
     Database = (await import('better-sqlite3')).default;
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return false;
   }
 
@@ -211,7 +213,7 @@ export async function personaRanRecently(personaId, cooldownHours) {
     `).get(personaId, cutoff);
     db.close();
     return recent.count > 0;
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     db.close();
     return false;
   }
@@ -236,7 +238,7 @@ function globMatch(pattern, filePath) {
 
   try {
     return new RegExp(regex).test(normalizedPath);
-  } catch {
+  } catch (_) { /* cleanup - failure expected */
     return false;
   }
 }
@@ -419,7 +421,7 @@ your feedback exploration.
     if (uncovered.length > 0) {
       log(`Feedback: ${uncovered.length} GUI/ADK persona(s) lack demo scenarios: ${uncovered.map(p => p.name).join(', ')}`);
     }
-  } catch { /* non-fatal */ }
+  } catch (_) { /* cleanup - failure expected */ /* non-fatal */ }
 
   // Update state
   state.lastFeedbackCheck = now;
