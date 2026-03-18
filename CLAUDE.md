@@ -421,6 +421,38 @@ All agent spawning routes through a single SQLite-backed queue (`session-queue.d
 
 **Revival integration**: `scripts/revival-daemon.js` calls `drainQueue()` on agent death to unblock queued items when capacity frees up.
 
+### Session Reaper
+
+Two-pass reaping engine that detects and cleans up dead or stuck sessions in the queue.
+
+**Sync pass** (`reapSyncPass(db)`): Called from `drainQueue()` on every drain cycle. Fast, synchronous, no process kills. Detects dead PIDs (process.kill(pid, 0) fails), marks their queue items `completed`, emits `session_reaped_dead` audit events, and returns a `stuckAlive` list for the async pass.
+
+**Async pass** (`reapAsyncPass(projectDir, stuckAliveItems)`): Called from `hourly-automation.js`. For sessions alive longer than `session_hard_kill_minutes` (default 30 min), performs multi-signal completion check — JSONL last-message analysis (no pending tool_use), terminal tool detection (`complete_task`/`summarize_work` in last 16KB), and zombie/stopped process state. If any signal is positive, the session is killed and marked `completed` (reaped). If no signal, it's hard-killed and marked `failed`. Hard kills reset the linked TODO task to `pending` and write a deputy-CTO report.
+
+**TODO reconciliation**: After reaping, `reconcileTodo()` updates the linked `todo.db` task — `completed` for reaped sessions where a terminal tool was detected, `pending` (reset) for hard-killed sessions.
+
+**Gate lane exemption**: Gate-lane agents (Haiku task gate) are exempt from both passes — they're lightweight and short-lived.
+
+**Configurable threshold**: `session_hard_kill_minutes` in `automation-config.json` (default 30).
+
+**Key files**: `.claude/hooks/lib/session-reaper.js` (core), `.claude/hooks/hourly-automation.js` (async pass trigger via `runIfDue('session_reaper', ...)`).
+
+**Legacy coexistence**: `scripts/reap-completed-agents.js` (deprecated) still operates on `agent-tracker-history.json` for any agents not routed through the queue. Both coexist.
+
+### Session Audit Log
+
+Structured JSON-lines audit trail covering the full session lifecycle.
+
+**Log file**: `.claude/state/session-audit.log`. JSON-lines format, one event per line. 24h retention, 5MB cap (halved on overflow), atomic tmp+rename cleanup.
+
+**Event types**: `session_enqueued`, `session_spawned`, `session_completed`, `session_failed`, `session_cancelled`, `session_ttl_expired`, `session_reaped_dead`, `session_reaped_complete`, `session_hard_killed`, `session_revival_triggered`.
+
+**Emission points**: `session-queue.js` (all lifecycle transitions), `session-reviver.js` (all 3 revival modes), `stop-continue-hook.js` (inline revival), `revival-daemon.js` (dead agent detection and revival).
+
+**Cleanup**: `cleanupAuditLog()` called from hourly-automation's `session_reaper` runIfDue block. Also triggered internally every 100 writes when file exceeds 5MB.
+
+**Key file**: `.claude/hooks/lib/session-audit.js`.
+
 ### Hook Output Format: `systemMessage` vs `additionalContext`
 
 For `UserPromptSubmit` hooks, two output fields serve different purposes:
