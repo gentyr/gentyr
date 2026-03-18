@@ -13,6 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync, execFileSync } from 'child_process';
+import { detectBaseBranch as detectBaseBranchShared } from './feature-branch-helper.js';
 
 // ============================================================================
 // Configuration
@@ -275,13 +276,7 @@ export function provisionWorktree(worktreePath) {
  */
 export function createWorktree(branchName, baseBranch, options = {}) {
   if (!baseBranch) {
-    try {
-      execSync('git rev-parse --verify origin/preview', { ...GIT_OPTS, stdio: 'pipe' });
-      baseBranch = 'preview';
-    } catch (err) {
-      console.error('[worktree-manager] Warning:', err.message);
-      baseBranch = 'main';
-    }
+    baseBranch = detectBaseBranchShared(PROJECT_DIR);
   }
   const sanitized = sanitizeBranchName(branchName);
   const worktreePath = path.join(WORKTREES_DIR, sanitized);
@@ -462,13 +457,7 @@ function isWorktreeInUse(worktreePath) {
  */
 export function cleanupMergedWorktrees() {
   // Detect base branch: preview for target projects, main for gentyr repo
-  let baseBranch = 'preview';
-  try {
-    execSync('git rev-parse --verify origin/preview', { ...GIT_OPTS, stdio: 'pipe' });
-  } catch (err) {
-    console.error('[worktree-manager] Warning:', err.message);
-    baseBranch = 'main';
-  }
+  const baseBranch = detectBaseBranchShared(PROJECT_DIR);
 
   // Fetch latest base branch state (non-fatal)
   try {

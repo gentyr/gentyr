@@ -600,6 +600,55 @@ try {
     // Non-fatal — don't block session start
   }
 
+  // ============================================================================
+  // Branch protection: warn/auto-fix if on wrong branch
+  // ============================================================================
+  try {
+    const gitDir = path.join(projectDir, '.git');
+    if (fs.existsSync(gitDir) && fs.statSync(gitDir).isDirectory()) {
+      let currentBranch = '';
+      try {
+        currentBranch = execFileSync('git', ['branch', '--show-current'], {
+          cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+        }).trim();
+      } catch { /* non-fatal */ }
+
+      if (currentBranch) {
+        const PROTECTED = ['main', 'preview', 'staging'];
+        let baseBranch = 'main';
+        try {
+          execFileSync('git', ['rev-parse', '--verify', 'origin/preview'], {
+            cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+          });
+          baseBranch = 'preview';
+        } catch { /* non-fatal */ }
+
+        if (PROTECTED.includes(currentBranch) && currentBranch !== baseBranch) {
+          let hasChanges = false;
+          try {
+            const status = execFileSync('git', ['status', '--porcelain'], {
+              cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+            }).trim();
+            hasChanges = status.length > 0;
+          } catch { /* non-fatal */ }
+
+          if (!hasChanges) {
+            try {
+              execFileSync('git', ['checkout', baseBranch], {
+                cwd: projectDir, encoding: 'utf8', timeout: 10000, stdio: 'pipe',
+              });
+              warn(`BRANCH AUTO-FIX: Was on '${currentBranch}' (protected). Auto-switched to '${baseBranch}'. Direct work on '${currentBranch}' is not allowed.`);
+            } catch {
+              warn(`WARNING: On '${currentBranch}' (protected). Switch to '${baseBranch}': git checkout ${baseBranch}`);
+            }
+          } else {
+            warn(`WARNING: On '${currentBranch}' (protected) with uncommitted changes. Recovery: git stash && git checkout ${baseBranch} && git stash pop`);
+          }
+        }
+      }
+    }
+  } catch { /* non-fatal — never block session start */ }
+
   // No sync was needed.
   silent();
 } catch (err) {

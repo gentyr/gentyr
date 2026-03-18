@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { getCooldown } from './config-reader.js';
+import { detectBaseBranch as detectBaseBranchShared } from './lib/feature-branch-helper.js';
 
 // ============================================================================
 // Output helpers
@@ -78,19 +79,11 @@ function writeState(state) {
 }
 
 // ============================================================================
-// Base branch detection (same pattern as worktree-manager, pre-commit-review, etc.)
+// Base branch detection (delegated to shared helper)
 // ============================================================================
 
 function detectBaseBranch() {
-  try {
-    execFileSync('git', ['rev-parse', '--verify', 'origin/preview'], {
-      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
-    });
-    return 'preview';
-  } catch (err) {
-    console.error('[branch-drift-check] Warning:', err.message);
-    return 'main';
-  }
+  return detectBaseBranchShared(PROJECT_DIR);
 }
 
 // ============================================================================
@@ -135,11 +128,30 @@ function detectDrift() {
     console.error('[branch-drift-check] Warning:', err.message);
   }
 
-  // Build warning message
-  const parts = [
+  // Build warning message with severity based on branch type
+  const PROTECTED = ['main', 'preview', 'staging'];
+  const isOnProtected = PROTECTED.includes(currentBranch);
+
+  const parts = isOnProtected ? [
+    `CRITICAL BRANCH DRIFT: Main tree is on '${currentBranch}' (PROTECTED — commits blocked here).`,
+    `Switch to '${expectedBranch}' immediately. The merge chain is: feature/* -> ${expectedBranch} -> staging -> main.`,
+  ] : [
     `BRANCH DRIFT: Main working tree is on '${currentBranch}' instead of '${expectedBranch}'.`,
     'This may cause incorrect preflight checks, stale worktree bases, and promotion failures.',
   ];
+
+  // Auto-switch when on protected branch with no uncommitted changes
+  if (isOnProtected && !hasChanges) {
+    try {
+      execFileSync('git', ['checkout', expectedBranch], {
+        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10000, stdio: 'pipe',
+      });
+      return {
+        branch: expectedBranch,
+        warning: `AUTO-FIX: Switched from '${currentBranch}' (protected) to '${expectedBranch}'. Direct work on '${currentBranch}' is not allowed.`,
+      };
+    } catch { /* fall through to warning */ }
+  }
 
   if (hasChanges) {
     parts.push(`Uncommitted changes detected. To restore: git stash && git checkout ${expectedBranch} && git stash pop (if changes belong on ${expectedBranch}) or create a worktree for in-progress work.`);

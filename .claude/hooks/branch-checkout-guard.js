@@ -25,6 +25,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { detectBaseBranch } from './lib/feature-branch-helper.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
@@ -255,8 +256,9 @@ function analyzeSubCommand(subCommand) {
   // File restore (-- present) -> allow
   if (hasDashDash) return { blocked: false };
 
-  // checkout main (recovery path) -> allow
-  if (targetBranch === 'main') return { blocked: false };
+  // Recovery path: allow checkout to base branch only (preview in target projects, main in gentyr)
+  const baseBranch = detectBaseBranch(PROJECT_DIR);
+  if (targetBranch === baseBranch) return { blocked: false };
 
   // No target and no create flag -> harmless
   if (!targetBranch && !hasCreateFlag) return { blocked: false };
@@ -308,6 +310,12 @@ async function main() {
     return;
   }
 
+  // Allow promotion pipeline agents to checkout any branch
+  if (process.env.GENTYR_PROMOTION_PIPELINE === 'true') {
+    process.stdout.write(JSON.stringify({ allow: true }));
+    return;
+  }
+
   // Extract command from tool input
   const command = event?.tool_input?.command || '';
   if (!command) {
@@ -320,7 +328,8 @@ async function main() {
   for (const sub of subCommands) {
     const result = analyzeSubCommand(sub);
     if (result.blocked) {
-      const reason = `BLOCKED: Branch Change in Main Working Tree\n\nWhy: ${result.reason}\n\nThe main tree must stay on 'main' to prevent drift, preflight failures, and stale worktree bases.\nYou are in the main working tree — use a worktree for feature work.\nWorktrees are created automatically by the task runner.\nTo recover: 'git checkout main' is always allowed.`;
+      const baseBranch = detectBaseBranch(PROJECT_DIR);
+      const reason = `BLOCKED: Branch Change in Main Working Tree\n\nWhy: ${result.reason}\n\nThe main tree must stay on '${baseBranch}' to prevent drift, preflight failures, and stale worktree bases.\nYou are in the main working tree — use a worktree for feature work.\nWorktrees are created automatically by the task runner.\nTo recover: 'git checkout ${baseBranch}' is always allowed.`;
 
       process.stdout.write(JSON.stringify({
         permissionDecision: 'deny',

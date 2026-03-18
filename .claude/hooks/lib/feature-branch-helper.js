@@ -81,6 +81,46 @@ function isOnProtectedBranch() {
 }
 
 // ============================================================================
+// Base Branch Detection
+// ============================================================================
+
+/**
+ * Detect the base branch for this project.
+ * Target projects (with origin/preview) use 'preview'.
+ * The gentyr repo (no origin/preview) uses 'main'.
+ *
+ * NOTE: Must not write to stderr — may be called from SessionStart hooks.
+ *
+ * @param {string} [cwd] - Working directory (defaults to process.cwd())
+ * @returns {string} 'preview' or 'main'
+ */
+function detectBaseBranch(cwd) {
+  try {
+    execSync('git rev-parse --verify origin/preview', {
+      cwd: cwd || process.cwd(),
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: 'pipe',
+    });
+    return 'preview';
+  } catch {
+    return 'main';
+  }
+}
+
+/**
+ * Check if a branch is protected but NOT the base branch.
+ * These are the branches that should never have direct commits.
+ *
+ * @param {string} branch - Branch name to check
+ * @param {string} [cwd] - Working directory (defaults to process.cwd())
+ * @returns {boolean}
+ */
+function isProtectedNonBase(branch, cwd) {
+  return PROTECTED_BRANCHES.includes(branch) && branch !== detectBaseBranch(cwd);
+}
+
+// ============================================================================
 // Exports
 // ============================================================================
 
@@ -91,6 +131,8 @@ export {
   getCurrentBranch,
   isOnFeatureBranch,
   isOnProtectedBranch,
+  detectBaseBranch,
+  isProtectedNonBase,
 };
 
 export default {
@@ -100,4 +142,6 @@ export default {
   getCurrentBranch,
   isOnFeatureBranch,
   isOnProtectedBranch,
+  detectBaseBranch,
+  isProtectedNonBase,
 };
