@@ -169,7 +169,6 @@ try {
     output(desyncPrefix || null);
   }
 } catch (err) {
-  // Don't block session — but log the error for debugging
-  console.error(`[credential-health-check] Unexpected error: ${err.message || err}`);
-  output(null);
+  // Don't block session — include error in systemMessage for debugging
+  output(`[credential-health-check] Unexpected error: ${err.message || err}`);
 }

@@ -134,8 +134,7 @@ function getPlanBriefing() {
 
     return briefing.join('\n');
   } catch (err) {
-    process.stderr.write(`[plan-briefing] Error: ${err.message}\n`);
-    return null;
+    return { error: err.message };
   }
 }
 
@@ -148,7 +147,8 @@ async function main() {
 
   await readStdin();
 
-  const briefing = getPlanBriefing();
+  const result = getPlanBriefing();
+  const briefing = typeof result === 'string' ? result : null;
 
   if (briefing) {
     console.log(JSON.stringify({
@@ -158,6 +158,11 @@ async function main() {
         hookEventName: 'SessionStart',
         additionalContext: briefing,
       },
+    }));
+  } else if (result && result.error) {
+    console.log(JSON.stringify({
+      continue: true,
+      systemMessage: `[plan-briefing] Error: ${result.error}`,
     }));
   } else {
     console.log(JSON.stringify({ continue: true }));

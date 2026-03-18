@@ -607,25 +607,25 @@ describe('credential-health-check.js - Unit Tests', () => {
       const mainTryCatch = hookCode.match(/try \{[\s\S]*?Skip for spawned sessions[\s\S]*?\} catch \(err\)/);
       assert.ok(mainTryCatch, 'Must wrap main logic in try-catch');
 
-      // Should log errors to console.error
+      // Should route errors to systemMessage via output() (never stderr)
       assert.match(
         hookCode,
-        /console\.error\(/,
-        'Must log errors to console.error'
+        /output\(`\[credential-health-check\]/,
+        'Must route error to systemMessage via output() (never stderr)'
       );
 
-      // Should include error message in log
+      // Should include error message in output
       assert.match(
         hookCode,
         /err\.message \|\| err/,
-        'Must include error message in error log'
+        'Must include error message in output'
       );
 
-      // Should call output(null) on error (fail-open for hook)
-      assert.match(
-        hookCode,
-        /\} catch \(err\) \{[\s\S]*?output\(null\)/,
-        'Must call output(null) on unexpected error (fail-open)'
+      // Should NOT use console.error (causes spurious "hook error" in UI)
+      assert.strictEqual(
+        hookCode.includes('console.error'),
+        false,
+        'Must NOT use console.error — route errors to systemMessage instead'
       );
 
       // IMPORTANT: Comment should explain fail-open behavior
