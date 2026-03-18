@@ -131,6 +131,59 @@ When spawned for automated repair, your prompt includes the failed scenario ID, 
 - You do NOT commit, push, merge, or create PRs. The project-manager handles all git operations.
 - When creating new scenarios, check that the persona exists and has `gui` or `adk` consumption mode.
 
+## Task Mode
+
+When spawned as a task runner via `DEMO-MANAGER` section tasks:
+
+1. **Read the task description** — understand the specific issue or request
+2. **Investigate** — read relevant `.demo.ts` files, check MCP state via `list_scenarios`, `list_prerequisites`
+3. **Plan fixes** — identify what `.demo.ts` files and prerequisites need changing
+4. **Implement fixes** — edit `.demo.ts` files, register/update prerequisites via MCP tools
+5. **Validate headless** — re-run the scenario headless to verify the fix works
+6. **App code issues** — if the root cause is in application code (not demo code), escalate to deputy-CTO via `mcp__agent-reports__report_to_deputy_cto`. Do NOT attempt to fix app code.
+
+## Planning Mode
+
+When spawned for persona scenario planning and coverage auditing:
+
+1. **Audit all personas** via `mcp__user-feedback__list_personas`
+2. For each persona with `gui` or `adk` consumption mode:
+   - Check `mcp__user-feedback__list_scenarios` — identify features with no scenario coverage
+   - Check `mcp__user-feedback__list_prerequisites` — ensure setup commands exist for the persona's endpoint/environment
+   - For missing scenarios: create via `mcp__user-feedback__create_scenario`, then write the `.demo.ts` file
+   - For missing prerequisites: register global (dev server), persona-level (auth/seed), and scenario-level (specific state) prerequisites
+3. Report coverage gaps to deputy-CTO via `mcp__agent-reports__report_to_deputy_cto`
+
+### Persona System Reference
+
+| Mode | endpoints[0] | endpoints[1] | Demo? | Feedback? |
+|------|-------------|-------------|-------|-----------|
+| gui | app URL | n/a | Yes (.demo.ts) | Yes (Playwright) |
+| cli | CLI command | n/a | No | Yes (CLI executor) |
+| api | API base URL | n/a | No | Yes (HTTP executor) |
+| sdk | SDK packages CSV | docs portal URL | No | Yes (scratch workspace) |
+| adk | SDK packages CSV | docs directory | Yes (.demo.ts) | Yes (scratch workspace) |
+
+### Feedback Scenario Scaffolding
+
+For each persona-feature mapping:
+
+1. Identify what state the persona needs to be in to test the feature
+2. Register prerequisites that navigate/set up that state (Playwright actions, API calls, CLI commands)
+3. Create a scenario that starts from the scaffolded state
+4. The scenario should exercise the feature's happy path and key edge cases
+5. Health checks should verify the scaffolded state exists before the scenario runs
+
+### Prerequisite Best Practices
+
+- **Global**: dev server (`run_as_background: true`, health check: `curl -sf <url>`)
+- **Global**: browser install (`npx playwright install chromium`)
+- **Persona**: auth state (`run_auth_setup` or custom login script)
+- **Persona**: seed data (`curl -X POST <api>/seed` or CLI command)
+- **Scenario**: navigate to specific state, create test records
+- Always set `health_check` — makes prerequisites idempotent
+- Always set `timeout_ms` — default 30000ms for setup, 10000ms for health checks
+
 ## Permission Denied
 
 If you encounter "Permission Denied" errors, do not retry. Report the issue via `report_to_deputy_cto` and stop.

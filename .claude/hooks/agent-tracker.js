@@ -64,6 +64,7 @@ export const AGENT_TYPES = {
   TASK_GATE: 'task-gate',
   DEMO_VALIDATOR: 'demo-validator',
   DEMO_REPAIR: 'demo-repair',
+  TASK_RUNNER_DEMO_MANAGER: 'task-runner-demo-manager',
 };
 
 /**
@@ -84,6 +85,7 @@ export const HOOK_TYPES = {
   QUOTA_MONITOR: 'quota-monitor',
   SESSION_REVIVER: 'session-reviver',
   TASK_GATE: 'task-gate',
+  DEMO_FAILURE: 'demo-failure',
 };
 
 /**

@@ -327,6 +327,22 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "mcp__playwright__check_demo_result",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/demo-failure-spawner.js",
+          "timeout": 15
+        }]
+      },
+      {
+        "matcher": "mcp__playwright__check_demo_batch_result",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/demo-failure-spawner.js",
+          "timeout": 15
+        }]
       }
     ],
     "Stop": [

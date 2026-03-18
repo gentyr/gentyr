@@ -63,6 +63,7 @@ const SECTION_AGENT_MAP = {
   'PROJECT-MANAGER': { agent: 'project-manager', agentType: AGENT_TYPES.TASK_RUNNER_PROJECT_MANAGER },
   'DEPUTY-CTO': { agent: 'deputy-cto', agentType: AGENT_TYPES.TASK_RUNNER_DEPUTY_CTO },
   'PRODUCT-MANAGER': { agent: 'product-manager', agentType: AGENT_TYPES.TASK_RUNNER_PRODUCT_MANAGER },
+  'DEMO-MANAGER': { agent: 'demo-manager', agentType: AGENT_TYPES.TASK_RUNNER_DEMO_MANAGER },
 };
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 
@@ -1680,6 +1681,31 @@ Task(subagent_type='project-manager', prompt='${task.title}. ${task.description 
 
 The project-manager sub-agent has specialized instructions loaded from .claude/agents/project-manager.md.
 Pass the full task context including title and description.
+
+${completionBlock}`;
+  }
+
+  if (task.section === 'DEMO-MANAGER') {
+    return `${taskDetails}
+
+## MANDATORY SUB-AGENT WORKFLOW
+
+You are an ORCHESTRATOR for demo lifecycle work. Follow this sequence using the Task tool:
+
+1. \`Task(subagent_type='investigator')\` - Investigate the issue (read .demo.ts, check selectors, review error)
+2. \`Task(subagent_type='demo-manager', isolation='worktree')\` - Plan and implement .demo.ts fixes, register prerequisites/scenarios
+3. \`Task(subagent_type='code-reviewer')\` - Review changes
+4. \`Task(subagent_type='project-manager')\` - Commit, push, merge, cleanup worktree (ALWAYS LAST)
+
+If the issue is in APPLICATION CODE (not demo code):
+- Escalate via mcp__agent-reports__report_to_deputy_cto
+- Do NOT attempt app code fixes
+
+**YOU ARE PROHIBITED FROM:**
+- Directly editing ANY files using Edit, Write, or NotebookEdit tools
+- Modifying application source code
+- Skipping project-manager at the end
+- Running git add, git commit, git push, or gh pr create yourself
 
 ${completionBlock}`;
   }
@@ -3959,6 +3985,20 @@ Then exit.`;
           claude.unref();
           updateAgent(agentId, { pid: claude.pid });
           log(`Demo validation: spawned repair agent ${agentId} for "${failedScenario.title}" (pid ${claude.pid})`);
+
+          // Track repair as DEMO-MANAGER task for visibility
+          try {
+            if (Database && fs.existsSync(TODO_DB_PATH)) {
+              const db = new Database(TODO_DB_PATH);
+              const taskId = 'dm-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+              const now = new Date();
+              db.prepare(`
+                INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, started_timestamp, priority)
+                VALUES (?, 'DEMO-MANAGER', 'in_progress', ?, ?, 'demo-validation', ?, ?, ?, 'normal')
+              `).run(taskId, `Repair: ${failedScenario.title}`, `Scenario: ${failedScenario.id}\nError: ${failedScenario.error}`, now.toISOString(), Math.floor(now.getTime() / 1000), Math.floor(now.getTime() / 1000));
+              db.close();
+            }
+          } catch { /* non-fatal */ }
         }
 
         // Report failures to deputy-CTO

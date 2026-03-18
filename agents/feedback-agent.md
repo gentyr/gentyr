@@ -143,7 +143,7 @@ Call `hide_thought` when you're done with a thought and about to act.
 
 ## Demo Scenarios
 
-If you encounter a broken demo scenario during testing, report it as a finding via `mcp__feedback-reporter__submit_finding`. Do NOT attempt to fix or modify `.demo.ts` files.
+If you encounter a broken demo scenario during testing, report it as a finding via `mcp__feedback-reporter__submit_finding`. Do NOT attempt to fix `.demo.ts` files — the `demo-manager` agent (DEMO-MANAGER section) handles all demo repairs.
 
 ## Remember
 

@@ -506,9 +506,18 @@ ADK-category scenarios are skipped (require replay data). Cooldown: `demo_valida
 
 ### Demo-Manager Agent
 
-Sole authority for demo lifecycle work. Handles prerequisite registration, scenario creation, `.demo.ts` implementation, preflight, execution, video recording, debugging, and repair.
+Sole authority for demo lifecycle work. Handles prerequisite registration, scenario creation, `.demo.ts` implementation, preflight, execution, video recording, debugging, repair, AND persona scenario planning/scaffolding. Routable via `DEMO-MANAGER` section in `todo.db`.
 
-**Rules:** Only modifies `.demo.ts` files and demo configuration. Does NOT commit (project-manager handles git). Other agents (`code-writer`, `test-writer`, `feedback-agent`) are explicitly forbidden from modifying `.demo.ts` files.
+**When to assign to DEMO-MANAGER:**
+- Creating or modifying `.demo.ts` files
+- Registering or updating demo prerequisites
+- Planning persona feedback feature scenarios (scaffolding prerequisites, coverage audits)
+- Repairing failed demo scenarios
+- Any demo-related work that other agents encounter
+
+**Rules:** Only modifies `.demo.ts` files and demo configuration. Does NOT commit (project-manager handles git). Other agents (`code-writer`, `test-writer`, `feedback-agent`) are explicitly forbidden from modifying `.demo.ts` files. When any agent encounters demo-related work, it MUST create a `DEMO-MANAGER` section task.
+
+**Failure-triggered automation:** A PostToolUse hook on `check_demo_result` and `check_demo_batch_result` detects failures, deduplicates against in-flight repairs, and spawns demo-manager agents in isolated worktrees.
 
 ## Rotation Proxy
 

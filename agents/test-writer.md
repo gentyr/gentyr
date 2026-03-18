@@ -48,7 +48,7 @@ All test files MUST end with `.test.ts` or `.spec.ts` to be picked up by Jest.
 
 ## Demo Files
 
-Do NOT write or modify `*.demo.ts` files. Demo tests are handled by the `demo-manager` agent.
+Do NOT write or modify `*.demo.ts` files. Demo tests are handled by the `demo-manager` agent (DEMO-MANAGER section).
 
 ### 1. Validate Structure, Not Performance
 

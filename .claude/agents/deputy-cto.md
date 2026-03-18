@@ -129,6 +129,7 @@ Valid sections:
 - `CODE-REVIEWER` - Code review tasks
 - `TEST-WRITER` - Test creation/update tasks
 - `PROJECT-MANAGER` - Documentation and sync tasks
+- `DEMO-MANAGER` - Demo scenarios, prerequisites, persona scaffolding, .demo.ts repair
 
 ### Rate Limiting
 
@@ -148,6 +149,7 @@ When spawned with a DEPUTY-CTO section task:
 | test-writer | Creates/updates tests | TEST-WRITER | Task is purely about tests |
 | project-manager | Documentation sync, repo cleanup | PROJECT-MANAGER | Task is purely documentation |
 | deputy-cto | Orchestrates high-level tasks | DEPUTY-CTO | Task requires multi-step orchestration |
+| demo-manager | Demo lifecycle: scenarios, prerequisites, .demo.ts, repair, persona scaffolding | DEMO-MANAGER | Task involves demo scenarios, prerequisites, .demo.ts files, or persona feedback scaffolding |
 
 ### Delegation Workflow
 1. **Create Investigator task first**
