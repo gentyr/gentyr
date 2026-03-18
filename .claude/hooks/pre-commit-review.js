@@ -18,6 +18,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { detectBaseBranch as detectBaseBranchShared } from './lib/feature-branch-helper.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -541,13 +542,7 @@ async function main() {
 
       if (!isMergeCommit) {
         // Detect base branch
-        let baseBranch = 'main';
-        try {
-          execSync('git rev-parse --verify origin/preview', { encoding: 'utf8', stdio: 'pipe' });
-          baseBranch = 'preview';
-        } catch (err) {
-          console.error('[pre-commit-review] Warning:', err.message);
-        }
+        const baseBranch = detectBaseBranchShared(PROJECT_DIR);
 
         // Get the merge-base hash
         const mergeBaseHash = execSync(

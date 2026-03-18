@@ -346,6 +346,7 @@ Research artifact from investigating Claude Code's credential memoization cache.
 - Falls back to legacy settings.json hook diff check when no `gentyr-state.json` exists (pre-migration projects)
 - Supports both npm model (`node_modules/gentyr`) and legacy symlink model (`.claude-framework`)
 - **`tamperCheck()`**: Runs before sync logic. Two checks: (1) symlink target verification — confirms `.claude/hooks` is a symlink resolving to a directory whose grandparent contains `version.json`; regular directories only allowed in the framework repo itself; (2) file ownership check — reads `protection-state.json`, if `protected: true` verifies each filename in `criticalHooks` array is still root-owned (`stat.uid === 0`). Emits a `systemMessage` warning listing all failed checks if any are detected.
+- **Branch protection auto-fix** (runs at end of every interactive SessionStart, after sync checks): if the main working tree is on a protected non-base branch (e.g. `staging` or `main` in a target project) with no uncommitted changes, auto-runs `git checkout <baseBranch>` and surfaces a `BRANCH AUTO-FIX` systemMessage; if uncommitted changes are present, emits a recovery warning instead. Non-fatal — never blocks session start.
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; version 3.0
 
 ### CTO Notification Hook
@@ -365,12 +366,14 @@ Research artifact from investigating Claude Code's credential memoization cache.
 **Branch Drift Check Hook** (`.claude/hooks/branch-drift-check.js`):
 - Runs at `UserPromptSubmit` for interactive sessions only; skipped for spawned `[Automation]`/`[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
 - Detects when the main working tree is not on the expected base branch and emits a warning via both `systemMessage` (terminal) and `additionalContext` (AI model context)
-- Auto-detects expected branch: `preview` if `origin/preview` exists (target projects with merge chain), else `main` (gentyr repo or projects without preview); same pattern as worktree-manager, pre-commit-review, etc.
+- Auto-detects expected branch via `detectBaseBranch()` (shared from `lib/feature-branch-helper.js`): `preview` if `origin/preview` exists (target projects with merge chain), else `main` (gentyr repo or projects without preview)
 - Uses `getCooldown('branch_drift_check', 30)` (30-minute default, configurable); cooldown resets immediately if the branch changes
 - State file: `.claude/state/branch-drift-state.json` with `{ lastCheck, lastBranch }`
-- Skips worktrees (`.git` file check), detached HEAD, and spawned sessions; warn-only — never auto-restores
+- Skips worktrees (`.git` file check), detached HEAD, and spawned sessions
+- **Protected branch auto-switch**: when the main tree is on a protected non-base branch (`main`, `preview`, or `staging`, but not the detected base branch) with no uncommitted changes, auto-runs `git checkout <baseBranch>` and returns an `AUTO-FIX` message; falls through to a `CRITICAL BRANCH DRIFT` warning when auto-switch fails or uncommitted changes are present
+- Non-protected branch drift (e.g. feature branch left checked out) emits a plain `BRANCH DRIFT` warning without auto-switching
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `UserPromptSubmit`
-- Tests at `.claude/hooks/__tests__/gentyr-sync-branch-drift.test.js` (22 tests, runs via `node --test`)
+- Tests at `.claude/hooks/__tests__/gentyr-sync-branch-drift.test.js` (runs via `node --test`)
 
 ### Branch Checkout Guard
 
@@ -378,22 +381,22 @@ Research artifact from investigating Claude Code's credential memoization cache.
 
 Prevents branch drift by blocking `git checkout`/`git switch` in the main working tree. Complements the warn-only Branch Drift Check with a hard enforcement layer:
 
-- **Layer 1 — Git wrapper** (`.claude/hooks/git-wrappers/git`): POSIX shell script placed in `git-wrappers/` directory; injected into spawned agent environments via `PATH` prepending in `buildSpawnEnv()` (hourly-automation, urgent-task-spawner, session-reviver, force-spawn-tasks, force-triage-reports). Intercepts `git checkout`/`git switch` invocations (all sessions) and `git add`/`git commit`/`git reset --hard`/`git stash`/`git clean`/`git pull` (spawned agents with `CLAUDE_SPAWNED_SESSION=true` only; `GENTYR_PROMOTION_PIPELINE=true` exempted). Exits 128 with a descriptive message on blocked operations. Zero-overhead fast path for all other git subcommands. Root-owned via `npx gentyr protect`.
-- **Layer 2 — PreToolUse hook** (`.claude/hooks/branch-checkout-guard.js`): Hard-blocking (`permissionDecision: "deny"`) Claude Code PreToolUse hook that catches checkout/switch at the tool-call level. Covers interactive sessions (where PATH injection is not active) and agents that invoke `/usr/bin/git` directly, bypassing the PATH wrapper. Uses the same quote-aware `tokenize()` + `splitOnShellOperators()` pattern from `credential-file-guard.js` for robust parsing of chained commands.
-- **Both layers**: Skip silently in worktrees (`.git` file check — `.git` is a file in a worktree, not a directory), non-repo directories, and skip global git flags (`-C`, `--git-dir`, etc.) when locating the subcommand. Always allow `git checkout main` (recovery path) and file restore invocations (`git checkout -- <file>`).
+- **Layer 1 — Git wrapper** (`.claude/hooks/git-wrappers/git`): POSIX shell script placed in `git-wrappers/` directory; injected into spawned agent environments via `PATH` prepending in `buildSpawnEnv()` (hourly-automation, urgent-task-spawner, session-reviver, force-spawn-tasks, force-triage-reports). Intercepts `git checkout`/`git switch` invocations (all sessions, recovery path to base branch always allowed). Also blocks `git add`/`git commit` on protected non-base branches (`main`/`preview`/`staging` but not the detected base) for ALL sessions — plus the full spawned-agent guard (`git add`/`git commit`/`git reset --hard`/`git stash`/`git clean`/`git pull` for `CLAUDE_SPAWNED_SESSION=true`). `GENTYR_PROMOTION_PIPELINE=true` exempts all guards. Exits 128 with a descriptive message on blocked operations. Zero-overhead fast path for all other git subcommands. Root-owned via `npx gentyr protect`.
+- **Layer 2 — PreToolUse hook** (`.claude/hooks/branch-checkout-guard.js`): Hard-blocking (`permissionDecision: "deny"`) Claude Code PreToolUse hook that catches checkout/switch at the tool-call level. Covers interactive sessions (where PATH injection is not active) and agents that invoke `/usr/bin/git` directly, bypassing the PATH wrapper. Uses the same quote-aware `tokenize()` + `splitOnShellOperators()` pattern from `credential-file-guard.js` for robust parsing of chained commands. Recovery path is dynamic: detects base branch via `detectBaseBranch()` (shared from `lib/feature-branch-helper.js`) so `git checkout preview` is allowed in target projects and `git checkout main` in the gentyr repo. `GENTYR_PROMOTION_PIPELINE=true` passes through.
+- **Both layers**: Skip silently in worktrees (`.git` file check — `.git` is a file in a worktree, not a directory), non-repo directories, and skip global git flags (`-C`, `--git-dir`, etc.) when locating the subcommand. Always allow checkout to the detected base branch and file restore invocations (`git checkout -- <file>`).
 - Registered in `settings.json.template` under `PreToolUse > Bash`. Root-owned and listed in `protection-state.json` `criticalHooks` array alongside `git-wrappers/git`. Included in the `husky/pre-commit` tamper-detection ownership loop.
-- Tests at `.claude/hooks/__tests__/branch-checkout-guard.test.js` (30 tests, runs via `node --test`)
+- Tests at `.claude/hooks/__tests__/branch-checkout-guard.test.js` (runs via `node --test`)
 
 ### Main Tree Commit Guard Hook
 
 **Main Tree Commit Guard Hook** (`.claude/hooks/main-tree-commit-guard.js`):
-- Runs at `PreToolUse` for Bash tool calls; hard-blocking (`permissionDecision: "deny"`) for spawned agents in the main working tree
-- Only fires when ALL three conditions are true: `CLAUDE_SPAWNED_SESSION=true`, `.git` is a directory (main tree, not a worktree), and `GENTYR_PROMOTION_PIPELINE !== 'true'`
-- Blocked subcommands: `git add` (staging triggers lint-staged chain), `git commit` (invokes pre-commit hooks including lint-staged `stash`/`reset --hard`), `git reset --hard` (directly destroys uncommitted changes), `git stash` (push/pop/drop/clear/apply — `list`/`show` are read-only and allowed), `git clean` (destroys untracked files), `git pull` (fetch+merge can clobber working tree)
+- Runs at `PreToolUse` for Bash tool calls; hard-blocking (`permissionDecision: "deny"`)
+- **Layer 1 (ALL sessions)**: Blocks `git add` and `git commit` when the main working tree is on a protected non-base branch (`main`, `preview`, or `staging`, but not the detected base branch). Fires for both interactive and spawned sessions. `GENTYR_PROMOTION_PIPELINE=true` exempted. Uses `detectBaseBranch()` and `PROTECTED_BRANCHES` from `lib/feature-branch-helper.js`. Provides a stash-then-switch recovery hint in the error message.
+- **Layer 2 (spawned agents only)**: Fires when ALL three conditions are true: `CLAUDE_SPAWNED_SESSION=true`, `.git` is a directory (main tree, not a worktree), and `GENTYR_PROMOTION_PIPELINE !== 'true'`. Blocked subcommands: `git add`, `git commit`, `git reset --hard`, `git stash` (push/pop/drop/clear/apply — `list`/`show` are read-only and allowed), `git clean`, `git pull`.
 - Uses the same quote-aware `tokenize()` + `splitOnShellOperators()` pattern from `branch-checkout-guard.js` for robust multi-command parsing
-- Complements the Layer 1 git wrapper (which covers the same subcommands via PATH injection); together they form a two-layer defense against sub-agent data loss
+- Complements the git wrapper (`git-wrappers/git`) which enforces the same rules via PATH injection; together they form a two-layer defense
 - Root-owned and listed in `protection-state.json` `criticalHooks` array; included in the `husky/pre-commit` tamper-detection ownership loop
-- Tests at `.claude/hooks/__tests__/main-tree-commit-guard.test.js` (56 tests, runs via `node --test`)
+- Tests at `.claude/hooks/__tests__/main-tree-commit-guard.test.js` (runs via `node --test`)
 
 ### Uncommitted Change Monitor Hook
 

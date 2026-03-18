@@ -40,6 +40,11 @@ if [ -z "$REAL_GIT" ]; then
   exit 127
 fi
 
+# Allow promotion pipeline agents to do anything
+if [ "$GENTYR_PROMOTION_PIPELINE" = "true" ]; then
+  exec "$REAL_GIT" "$@"
+fi
+
 # Fast path: no arguments at all
 if [ $# -eq 0 ]; then
   exec "$REAL_GIT"
@@ -79,7 +84,30 @@ done
 case "$SUBCMD" in
   checkout|switch) ;;
   add|commit|reset|stash|clean|pull)
-    # Only guard spawned agents in main tree (exempt promotion pipeline)
+    # Layer 1: Block add/commit on protected non-base branches (ALL sessions)
+    if [ -d ".git" ] && [ "$GENTYR_PROMOTION_PIPELINE" != "true" ]; then
+      _L1_BASE="main"
+      if "$REAL_GIT" rev-parse --verify origin/preview >/dev/null 2>&1; then
+        _L1_BASE="preview"
+      fi
+      _L1_CURRENT="$("$REAL_GIT" branch --show-current 2>/dev/null)"
+      if [ -n "$_L1_CURRENT" ] && [ "$_L1_CURRENT" != "$_L1_BASE" ]; then
+        case "$_L1_CURRENT" in
+          main|preview|staging)
+            if [ "$SUBCMD" = "add" ] || [ "$SUBCMD" = "commit" ]; then
+              cat >&2 <<BLOCKED_MSG
+BLOCKED: Cannot '$SUBCMD' on '$_L1_CURRENT' (protected branch).
+  The merge chain is: feature/* -> $_L1_BASE -> staging -> main.
+  Direct commits to '$_L1_CURRENT' are not allowed.
+  To work on code: git checkout -b feature/<name> $_L1_BASE
+BLOCKED_MSG
+              exit 128
+            fi
+            ;;
+        esac
+      fi
+    fi
+    # Layer 2: Existing spawned-agent guard (unchanged)
     if [ "$CLAUDE_SPAWNED_SESSION" = "true" ] && [ -d ".git" ] && [ "$GENTYR_PROMOTION_PIPELINE" != "true" ]; then
       # --- git add: always blocked for spawned agents in main tree ---
       if [ "$SUBCMD" = "add" ]; then
@@ -198,6 +226,12 @@ if [ ! -d ".git" ]; then
   exec "$REAL_GIT" "$@"
 fi
 
+# Detect base branch (preview if origin/preview exists, else main)
+BASE_BRANCH="main"
+if "$REAL_GIT" rev-parse --verify origin/preview >/dev/null 2>&1; then
+  BASE_BRANCH="preview"
+fi
+
 # We're in the main working tree with checkout/switch. Parse args.
 has_dash_dash=0
 has_create_flag=0
@@ -263,8 +297,8 @@ if [ "$has_dash_dash" = "1" ]; then
   exec "$REAL_GIT" "$@"
 fi
 
-# Rule: checkout main (recovery path) -> allow
-if [ "$target_branch" = "main" ]; then
+# Rule: checkout base branch (recovery path) -> allow
+if [ "$target_branch" = "$BASE_BRANCH" ]; then
   exec "$REAL_GIT" "$@"
 fi
 
@@ -274,11 +308,11 @@ if [ -z "$target_branch" ] && [ "$has_create_flag" = "0" ]; then
 fi
 
 # BLOCK: branch change in main working tree
-cat >&2 <<'BLOCKED_MSG'
+cat >&2 <<BLOCKED_MSG
 BLOCKED: Branch checkout in main working tree.
-  The main tree must stay on 'main' to prevent drift.
+  The main tree must stay on '$BASE_BRANCH' to prevent drift.
   You are working in the main tree — use a worktree for feature work.
   Worktrees are created automatically by the task runner.
-  To recover: 'git checkout main' is always allowed.
+  To recover: 'git checkout $BASE_BRANCH' is always allowed.
 BLOCKED_MSG
 exit 128

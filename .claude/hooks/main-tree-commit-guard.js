@@ -26,6 +26,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { detectBaseBranch, PROTECTED_BRANCHES } from './lib/feature-branch-helper.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
@@ -357,7 +359,59 @@ async function main() {
     return;
   }
 
-  // Only block for spawned sessions (sub-agents)
+  // ====================================================================
+  // Layer 1: Protected non-base branch guard (ALL sessions)
+  // Blocks git add/commit on main/staging (in target projects) or
+  // staging/preview (in gentyr repo). Catches the problem BEFORE the
+  // git pre-commit hook runs, preventing lint-staged stash corruption.
+  // ====================================================================
+  if (process.env.GENTYR_PROMOTION_PIPELINE !== 'true' && !isWorktree() && isMainTree()) {
+    let currentBranch = '';
+    try {
+      currentBranch = execFileSync('git', ['branch', '--show-current'], {
+        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+      }).trim();
+    } catch { /* fail-open: can't determine branch */ }
+
+    if (currentBranch) {
+      const baseBranch = detectBaseBranch(PROJECT_DIR);
+      if (PROTECTED_BRANCHES.includes(currentBranch) && currentBranch !== baseBranch) {
+        const command = event?.tool_input?.command || '';
+        if (command) {
+          const subCommands = splitOnShellOperators(command);
+          for (const sub of subCommands) {
+            const tokens = tokenize(sub);
+            // Find git subcommand
+            let gitIdx = -1;
+            for (let i = 0; i < tokens.length; i++) {
+              if (path.basename(tokens[i]) === 'git') { gitIdx = i; break; }
+            }
+            if (gitIdx === -1) continue;
+            let subcmd = '';
+            for (let i = gitIdx + 1; i < tokens.length; i++) {
+              const tok = tokens[i];
+              if (tok === '-C' || tok === '-c' || tok === '--git-dir' || tok === '--work-tree' || tok === '--namespace') { i++; continue; }
+              if (/^--git-dir=|^--work-tree=|^--namespace=|^-C./.test(tok)) continue;
+              if (/^--(bare|no-pager|no-replace-objects|literal-pathspecs|glob-pathspecs|noglob-pathspecs|no-optional-locks)$/.test(tok)) continue;
+              if (tok.startsWith('-')) continue;
+              subcmd = tok;
+              break;
+            }
+            if (subcmd === 'add' || subcmd === 'commit') {
+              const reason = `BLOCKED: Cannot '${subcmd}' on '${currentBranch}' (protected branch)\n\nThe merge chain is: feature/* -> ${baseBranch} -> staging -> main.\nDirect commits to '${currentBranch}' are not allowed.\n\nTo work on code, create a feature branch:\n  git checkout -b feature/<name> ${baseBranch}\n\nIf you have uncommitted changes to save:\n  git stash && git checkout ${baseBranch} && git checkout -b feature/<name> && git stash pop`;
+              process.stdout.write(JSON.stringify({
+                permissionDecision: 'deny',
+                permissionDecisionReason: reason,
+              }));
+              return;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Layer 2: Existing spawned-agent guard
   if (process.env.CLAUDE_SPAWNED_SESSION !== 'true') {
     process.stdout.write(JSON.stringify({ allow: true }));
     return;
