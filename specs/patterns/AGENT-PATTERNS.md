@@ -56,7 +56,7 @@ This agent uses the `todo-db` MCP server for task management.
 ## Example Invocation
 
 \`\`\`
-[Task] Brief description of what to do
+[Automation] Brief description of what to do
 
 Context about the situation...
 \`\`\`

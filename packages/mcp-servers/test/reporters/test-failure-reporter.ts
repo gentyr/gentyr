@@ -10,7 +10,7 @@
  * - Dynamic suite name extraction (no hardcoding)
  * - Spawns Claude with failure details attached
  * - Fire and forget (doesn't block test completion)
- * - [Task][test-failure-vitest] prefix for CTO report tracking
+ * - [Automation][test-failure-vitest] prefix for CTO report tracking
  * - CLAUDE_SPAWNED_SESSION env var to prevent hook chain reactions
  *
  * @version 1.0.0
@@ -246,7 +246,7 @@ async function spawnClaude(suiteNames: string[], failureDetails: string): Promis
   const projectRoot = getProjectRoot();
   const suitesFormatted = suiteNames.slice(0, CONFIG.MAX_SUITES_PER_SPAWN).join('\n- ');
 
-  // Prompt body without the [Task][...] prefix — the queue adds the standard prefix automatically.
+  // Prompt body without the [Automation][...] prefix — the queue adds the standard prefix automatically.
   // We include our desired context tag inline so the queue's prefix uses it.
   const promptBody = `${promptTemplate}
 
@@ -282,7 +282,7 @@ ${failureDetails.slice(0, 8000)}
       hookType: HOOK_TYPES['VITEST_REPORTER'],
       tagContext: 'test-failure-vitest',
       source: 'test-failure-reporter',
-      prompt: `[Task][test-failure-vitest] ${promptBody}`,
+      prompt: `[Automation][test-failure-vitest] ${promptBody}`,
       projectDir: projectRoot,
       cwd: projectRoot,
       priority: 'normal',

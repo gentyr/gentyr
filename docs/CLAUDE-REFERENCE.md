@@ -171,7 +171,7 @@ Force-spawns the deputy-CTO triage cycle immediately, bypassing the hourly autom
 GENTYR automatically detects and recovers sessions interrupted by API quota limits, unexpected process death, or full account exhaustion.
 
 **Dead Agent Recovery Hook** (`.claude/hooks/dead-agent-recovery.js`):
-- Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
+- Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Automation]`/`[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
 - Immediate dead-agent detection at session start — catches dead agents right away instead of waiting for the next 5-minute automation cycle
 - Scans `agent-tracker-history.json` for agents with `status: 'running'` and a `pid`, checks liveness via `process.kill(pid, 0)`, and for each dead agent: marks it `completed` with `reapReason: 'process_already_dead'` and resets the linked TODO task from `in_progress` to `pending` (clears both `started_at` and `started_timestamp`)
 - Uses the same `agent-tracker-history.json.lock` file (O_CREAT|O_EXCL advisory locking, 10-attempt exponential backoff) as `agent-tracker.js` and `reap-completed-agents.js` to coordinate with concurrent automation processes; bails early if the lock cannot be acquired
@@ -209,7 +209,7 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 - **Worktree path capture**: Resolves `worktreePath` from `agent-tracker-history.json` (keyed by `agentId` extracted from the transcript) and includes it in the quota-interrupted session record so Mode 1 revival can resume the session in the correct worktree CWD
 - Cleanup window widened from 30 min to 12 h so records survive for retroactive revival on the first automation cycle after restart
 - Tombstone consumer: filters tombstoned rotation state keys before passing to `checkKeyHealth()`
-- **First [Task] stop — uncommitted changes gate**: On the first stop event for a spawned session, checks for uncommitted changes in the worktree; if found, injects a specific `additionalContext` instruction to spawn project-manager before exiting rather than a generic continue message. Ensures git discipline even when orchestrators reach their natural stop without explicitly invoking project-manager.
+- **First [Automation]/[Task] stop — uncommitted changes gate**: On the first stop event for a spawned session, checks for uncommitted changes in the worktree; if found, injects a specific `additionalContext` instruction to spawn project-manager before exiting rather than a generic continue message. Ensures git discipline even when orchestrators reach their natural stop without explicitly invoking project-manager.
 - Uses `lib/revival-utils.js` helpers (`buildRevivalPrompt`, `resolveTaskIdForAgent`, `extractSessionIdFromPath`) and `lib/spawn-env.js` (`buildSpawnEnv`) shared modules.
 
 **Agent Reaper** (`scripts/reap-completed-agents.js`):
@@ -337,7 +337,7 @@ Research artifact from investigating Claude Code's credential memoization cache.
 ### GENTYR Auto-Sync Hook
 
 **GENTYR Auto-Sync Hook** (`.claude/hooks/gentyr-sync.js`):
-- Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
+- Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Automation]`/`[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
 - Fast path: reads `version.json` and `gentyr-state.json`, compares version + config hash — exits in <5ms when nothing has changed
 - When version or config hash mismatch detected: re-merges `settings.json`, regenerates `.mcp.json` (preserving OP token), updates the GENTYR section of `CLAUDE.md`, and symlinks new agent definitions; handles missing `settings.json` gracefully by checking directory writability instead of file writability when the file does not yet exist
 - Auto-rebuilds MCP servers when `src/` mtime > `dist/` mtime; checks for `@types/node` in `packages/mcp-servers/node_modules/` and runs `npm install` first if missing, then `npm run build` (30s timeout); build failures are silently swallowed — no stderr, no warning; session continues unblocked
@@ -351,7 +351,7 @@ Research artifact from investigating Claude Code's credential memoization cache.
 ### CTO Notification Hook
 
 **CTO Notification Hook** (`.claude/hooks/cto-notification-hook.js`):
-- Runs at `UserPromptSubmit` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`) and slash commands (sentinel markers or `/command-name` pattern)
+- Runs at `UserPromptSubmit` for interactive sessions only; skipped for spawned `[Automation]`/`[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`) and slash commands (sentinel markers or `/command-name` pattern)
 - Checks deputy-cto database (pending decisions, rejections), agent-reports database (unread reports), todo.db (queued/active task counts), and autonomous mode status
 - Reads aggregate quota from `~/.claude/api-key-rotation.json`; deduplicates same-account keys by `account_uuid`; falls back to fingerprint cross-match for null-UUID keys
 - Displays a multi-line status block each prompt (quota bar, 30-day token usage, session counts, TODO counts, pending CTO items)
@@ -363,7 +363,7 @@ Research artifact from investigating Claude Code's credential memoization cache.
 ### Branch Drift Check Hook
 
 **Branch Drift Check Hook** (`.claude/hooks/branch-drift-check.js`):
-- Runs at `UserPromptSubmit` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
+- Runs at `UserPromptSubmit` for interactive sessions only; skipped for spawned `[Automation]`/`[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
 - Detects when the main working tree is not on the expected base branch and emits a warning via both `systemMessage` (terminal) and `additionalContext` (AI model context)
 - Auto-detects expected branch: `preview` if `origin/preview` exists (target projects with merge chain), else `main` (gentyr repo or projects without preview); same pattern as worktree-manager, pre-commit-review, etc.
 - Uses `getCooldown('branch_drift_check', 30)` (30-minute default, configurable); cooldown resets immediately if the branch changes
@@ -428,7 +428,7 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 ### Credential Health Check Hook
 
 **Credential Health Check Hook** (`.claude/hooks/credential-health-check.js`):
-- Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions
+- Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Automation]`/`[Task]` sessions
 - Validates vault mappings against required keys in `protected-actions.json`
 - Checks `.mcp.json` env blocks for keys injected directly (e.g. `OP_SERVICE_ACCOUNT_TOKEN`), which count as configured even if absent from vault-mappings
 - **OP token desync detection**: Compares shell `OP_SERVICE_ACCOUNT_TOKEN` against `.mcp.json` value; if they differ, emits a warning and overwrites `process.env` with the `.mcp.json` value (source of truth); `.mcp.json` is always authoritative because it is updated by reinstall
@@ -462,7 +462,7 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 ### Playwright Health Check Hook
 
 **Playwright Health Check Hook** (`.claude/hooks/playwright-health-check.js`):
-- Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
+- Runs at `SessionStart` for interactive sessions only; skipped for spawned `[Automation]`/`[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`)
 - Fast-path exit when no `playwright.config.ts` or `playwright.config.js` exists in the project root (target projects that don't use Playwright are unaffected)
 - Writes `.claude/playwright-health.json` with auth state freshness, cookie expiry, and extension build status
 - `authState` fields: `exists`, `ageHours`, `cookiesExpired`, `isStale` (true when cookies expired or age >24h)
@@ -618,7 +618,7 @@ The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tool
 - Per-suite cooldown (120 min, configurable via `test_failure_reporter` in automation config) + content-based SHA-256 deduplication (24h expiry) prevent duplicate spawns
 - `onTestEnd()` captures screenshot attachment paths from `result.attachments` for every failed test
 - `onEnd()` writes a `lastDemoFailure` entry to `test-failure-state.json` when any `.demo.ts` file fails — includes `testFile`, `suiteNames`, `failureDetails` (4KB cap), and `screenshotPaths` (up to 5). This enriches `check_demo_result` responses for demo run failures.
-- Spawn uses `[Task][test-failure-playwright]` prefix for CTO dashboard tracking; sets `CLAUDE_SPAWNED_SESSION=true` to prevent hook chain reactions
+- Spawn uses `[Automation][test-failure-playwright]` prefix for CTO dashboard tracking; sets `CLAUDE_SPAWNED_SESSION=true` to prevent hook chain reactions
 
 **`/demo` command suite** (`.claude/commands/demo.md`, `demo-interactive.md`, `demo-autonomous.md`, `demo-all.md`):
 - `/demo` — Escape hatch: launches Playwright UI mode showing ALL tests. No scenario filtering. Developer power-tool for browsing the full test suite. Step 2 uses `personaGroups` from prefetch for persona-first selection with an "All tests" option; falls back to `discoveredProjects` when no `personaGroups` exist.

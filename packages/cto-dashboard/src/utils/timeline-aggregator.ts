@@ -236,8 +236,8 @@ function getTaskEvents(since: number): TimelineEvent[] {
 // ============================================================================
 
 function parseTaskType(messageContent: string): string | null {
-  if (!messageContent.startsWith('[Task]')) return null;
-  const typeMatch = messageContent.match(/^\[Task\]\[([^\]]+)\]/);
+  if (!messageContent.startsWith('[Automation]') && !messageContent.startsWith('[Task]')) return null;
+  const typeMatch = messageContent.match(/^\[(?:Automation|Task)\]\[([^\]]+)\]/);
   if (typeMatch && typeMatch[1]) return typeMatch[1];
   return 'unknown';
 }

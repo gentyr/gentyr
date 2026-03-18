@@ -9,9 +9,9 @@
  * (last JSONL line is assistant-only text with no tool_use) and kills them.
  *
  * Safety guarantees:
- *   - Only kills processes whose session file starts with [Task] (automated)
+ *   - Only kills processes whose session file starts with [Automation] or [Task] (automated)
  *   - Only kills processes whose last assistant message has no tool_use blocks
- *   - Never kills interactive (non-[Task]) sessions
+ *   - Never kills interactive (non-automated) sessions
  *   - Never kills processes it can't match to a known session file
  *   - Processes that are already dead are simply marked completed
  *
@@ -185,14 +185,14 @@ function isSessionComplete(sessionFile) {
 }
 
 /**
- * Verify that a session is automated (starts with [Task]) — defense-in-depth.
+ * Verify that a session is automated (starts with [Automation] or [Task]) — defense-in-depth.
  *
  * @param {string} sessionFile - Path to the JSONL session file
  * @returns {boolean}
  */
 function isAutomatedSession(sessionFile) {
   const head = readHead(sessionFile, HEAD_BYTES);
-  return head.includes('[Task]');
+  return head.includes('[Automation]') || head.includes('[Task]');
 }
 
 /**

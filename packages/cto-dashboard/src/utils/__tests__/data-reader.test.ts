@@ -346,8 +346,8 @@ describe('Data Reader - Session Metrics', () => {
   };
 
   const parseTaskType = (messageContent: string): string | null => {
-    if (!messageContent.startsWith('[Task]')) return null;
-    const typeMatch = messageContent.match(/^\[Task\]\[([^\]]+)\]/);
+    if (!messageContent.startsWith('[Automation]') && !messageContent.startsWith('[Task]')) return null;
+    const typeMatch = messageContent.match(/^\[(?:Automation|Task)\]\[([^\]]+)\]/);
     if (typeMatch && typeMatch[1]) return typeMatch[1];
     return 'unknown';
   };
@@ -417,10 +417,10 @@ describe('Data Reader - Session Metrics', () => {
 
   it('should count task-triggered sessions with types', () => {
     createSessionFile(randomUUID(), [
-      { type: 'human', content: '[Task][lint-fixer] Fix lint errors' },
+      { type: 'human', content: '[Automation][lint-fixer] Fix lint errors' },
     ]);
     createSessionFile(randomUUID(), [
-      { type: 'user', message: { content: '[Task][deputy-cto-review] Review' } },
+      { type: 'user', message: { content: '[Automation][deputy-cto-review] Review' } },
     ]);
     createSessionFile(randomUUID(), [
       { type: 'human', content: '[Task] Legacy task' },

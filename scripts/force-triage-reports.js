@@ -127,7 +127,7 @@ function countRunningAgents() {
 // ---------------------------------------------------------------------------
 
 function buildTriagePrompt(agentId) {
-  return `[Task][report-triage][AGENT:${agentId}] You are an orchestrator performing REPORT TRIAGE.
+  return `[Automation][report-triage][AGENT:${agentId}] You are an orchestrator performing REPORT TRIAGE.
 
 ## IMMEDIATE ACTION
 

@@ -215,7 +215,7 @@ function buildPrompt(persona, sessionId) {
     return `  **${f.name}**${f.description ? ` - ${f.description}` : ''}\n  Test scenarios:\n${scenarios}`;
   }).join('\n\n');
 
-  return `[Task][feedback-persona-${persona.name}] You are "${persona.name}": ${persona.description}
+  return `[Automation][feedback-persona-${persona.name}] You are "${persona.name}": ${persona.description}
 
 ## Your Behavioral Traits
 ${traits}

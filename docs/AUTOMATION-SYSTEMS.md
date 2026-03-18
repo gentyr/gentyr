@@ -168,7 +168,7 @@ Snapshots are protected against rapid-fire contamination by three layers:
 
 ```
 hourly-automation.js
-  |-- spawns: claude -p "[Task] ..." --dangerously-skip-permissions
+  |-- spawns: claude -p "[Automation] ..." --dangerously-skip-permissions
   |
   v
 Session runs task
@@ -262,7 +262,7 @@ ROTATION_COOLDOWN_MS   = 600,000 (10 min - anti-loop after rotation)
 
 ## Credential Health Check Hook (credential-health-check.js)
 
-Runs at `SessionStart` for interactive sessions (skipped for spawned `[Task]` sessions). Validates that all required credential mappings are present and that the `OP_SERVICE_ACCOUNT_TOKEN` in the shell environment is in sync with `.mcp.json`.
+Runs at `SessionStart` for interactive sessions (skipped for spawned `[Automation]`/`[Task]` sessions). Validates that all required credential mappings are present and that the `OP_SERVICE_ACCOUNT_TOKEN` in the shell environment is in sync with `.mcp.json`.
 
 ### Validation Steps
 

@@ -134,7 +134,7 @@ function spawnRepairAgent(scenario) {
       extraArgs: ['--agent-name', 'demo-manager'],
       metadata: { scenarioId, scenarioTitle: title, error, taskId },
       buildPrompt: (agentId) => [
-        `[Task][task-runner-demo-manager][AGENT:${agentId}] You are a demo repair agent. A demo scenario failed.`,
+        `[Automation][task-runner-demo-manager][AGENT:${agentId}] You are a demo repair agent. A demo scenario failed.`,
         ``,
         `**Failed Scenario:**`,
         `- ID: ${scenarioId}`,

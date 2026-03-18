@@ -195,7 +195,7 @@ function evaluateQuotaGating(priority) {
  * Build prompt for deputy-cto tasks (mirrors hourly-automation.js:1289-1369)
  */
 function buildDeputyCtoTaskPrompt(task, agentId) {
-  return `[Task][task-runner-deputy-cto][AGENT:${agentId}] You are the Deputy-CTO processing a high-level task assignment.
+  return `[Automation][task-runner-deputy-cto][AGENT:${agentId}] You are the Deputy-CTO processing a high-level task assignment.
 
 ## Task Details
 
@@ -278,7 +278,7 @@ This will automatically create a follow-up verification task.
  * Build prompt for standard task runner (simplified from hourly-automation.js:1371-1516)
  */
 function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
-  const taskDetails = `[Task][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing an URGENT TODO task.
+  const taskDetails = `[Automation][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing an URGENT TODO task.
 
 ## Task Details
 

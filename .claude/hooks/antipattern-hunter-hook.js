@@ -143,7 +143,7 @@ mcp__agent-reports__report_to_deputy_cto({
  * Spawn repo-wide antipattern hunter
  */
 function spawnRepoWideHunter() {
-  const prompt = `[Task][antipattern-hunter-repo] REPO-WIDE ANTIPATTERN HUNT - Scan the entire codebase for spec violations.
+  const prompt = `[Automation][antipattern-hunter-repo] REPO-WIDE ANTIPATTERN HUNT - Scan the entire codebase for spec violations.
 
 ## IMMEDIATE ACTION
 
@@ -231,7 +231,7 @@ function spawnCommitFocusedHunter() {
 
   const fileList = files.join('\n  - ');
 
-  const prompt = `[Task][antipattern-hunter-commit] COMMIT-FOCUSED ANTIPATTERN HUNT - Review only the changes in the current commit.
+  const prompt = `[Automation][antipattern-hunter-commit] COMMIT-FOCUSED ANTIPATTERN HUNT - Review only the changes in the current commit.
 
 ## IMMEDIATE ACTION
 

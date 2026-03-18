@@ -10,7 +10,7 @@
  * - Dynamic suite name extraction (no hardcoding)
  * - Spawns Claude with failure details attached
  * - Fire and forget (doesn't block test completion)
- * - [Task][test-failure-vitest] prefix for CTO dashboard tracking
+ * - [Automation][test-failure-vitest] prefix for CTO dashboard tracking
  * - CLAUDE_SPAWNED_SESSION env var to prevent hook chain reactions
  *
  * @author GENTYR Framework
@@ -322,8 +322,8 @@ async function spawnClaude(suiteNames, failureDetails) {
   const projectRoot = getProjectRoot();
   const suitesFormatted = suiteNames.slice(0, CONFIG.MAX_SUITES_PER_SPAWN).join('\n- ');
 
-  // Use [Task][test-failure-vitest] format for CTO dashboard tracking
-  const prompt = `[Task][test-failure-vitest] ${promptTemplate}
+  // Use [Automation][test-failure-vitest] format for CTO dashboard tracking
+  const prompt = `[Automation][test-failure-vitest] ${promptTemplate}
 
 FAILING TEST SUITES (processing up to ${CONFIG.MAX_SUITES_PER_SPAWN}):
 - ${suitesFormatted}

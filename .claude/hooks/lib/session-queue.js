@@ -177,7 +177,7 @@ function isPidAlive(pid) {
  * @param {string} spec.title - Human-readable title for CTO dashboard
  * @param {string} spec.agentType - Agent type from AGENT_TYPES
  * @param {string} spec.hookType - Hook type from HOOK_TYPES
- * @param {string} spec.tagContext - The [context] in [Task][context][AGENT:id]
+ * @param {string} spec.tagContext - The [context] in [Automation][context][AGENT:id]
  * @param {string} [spec.prompt] - Full prompt (built by caller or deferred to drain)
  * @param {string} [spec.model] - Model override (e.g., 'claude-haiku-4-5-20251001')
  * @param {string} [spec.cwd] - Working directory for the agent
@@ -401,12 +401,12 @@ function spawnQueueItem(db, item) {
   if (item.prompt) {
     prompt = item.prompt.replace(/\{AGENT_ID\}/g, agentId);
   } else {
-    prompt = `[Task][${item.tag_context}][AGENT:${agentId}] ${item.title}`;
+    prompt = `[Automation][${item.tag_context}][AGENT:${agentId}] ${item.title}`;
   }
 
   // Ensure the prompt has the standard tag prefix
-  if (!prompt.startsWith('[Task]')) {
-    prompt = `[Task][${item.tag_context}][AGENT:${agentId}] ${prompt}`;
+  if (!prompt.startsWith('[Automation]') && !prompt.startsWith('[Task]')) {
+    prompt = `[Automation][${item.tag_context}][AGENT:${agentId}] ${prompt}`;
   }
 
   // Update agent-tracker with final prompt

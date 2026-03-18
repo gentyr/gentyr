@@ -313,7 +313,7 @@ function buildPrompt(persona, sessionId, scenario = null) {
     return `  **${f.name}**${f.description ? ` - ${f.description}` : ''}\n  Test scenarios:\n${scenarios}`;
   }).join('\n\n');
 
-  let prompt = `[Task][feedback-persona-${persona.name}] You are "${persona.name}": ${persona.description}
+  let prompt = `[Automation][feedback-persona-${persona.name}] You are "${persona.name}": ${persona.description}
 
 ## Your Behavioral Traits
 ${traits}
