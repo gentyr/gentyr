@@ -597,19 +597,22 @@ The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tool
 Curated product walkthroughs (NOT tests) mapped to personas. Scenarios are managed by the product-manager agent and implemented by code-writer agents. The test-writer agent is explicitly excluded from `*.demo.ts` files.
 
 **`demo_scenarios` table** (in `user-feedback.db`):
-- `id` TEXT PK, `persona_id` TEXT FK→personas, `title`, `description`, `category` (optional), `playwright_project`, `test_file` (UNIQUE, must end with `.demo.ts`), `sort_order`, `enabled`, timestamps
+- `id` TEXT PK, `persona_id` TEXT FK→personas, `title`, `description`, `category` (optional), `playwright_project`, `test_file` (UNIQUE, must end with `.demo.ts`), `sort_order`, `enabled`, `env_vars` (JSON object, optional), timestamps
 - FK CASCADE: deleting a persona deletes its scenarios
 
 **5 MCP tools** (on `user-feedback` server):
-- `create_scenario` — validates persona exists AND `consumption_mode` includes `'gui'` or `'adk'` (rejects other modes); enforces `.demo.ts` suffix
-- `update_scenario` — partial update; enforces `.demo.ts` if `test_file` changes
+- `create_scenario` — validates persona exists AND `consumption_mode` includes `'gui'` or `'adk'` (rejects other modes); enforces `.demo.ts` suffix; accepts optional `env_vars`
+- `update_scenario` — partial update; enforces `.demo.ts` if `test_file` changes; accepts `env_vars` (set to `null` to clear)
 - `delete_scenario` — simple DELETE
 - `list_scenarios` — JOIN to personas for `persona_name`; filters by `persona_id`, `enabled`, `category`
 - `get_scenario` — enriches with `persona_name`
 
+**`env_vars` field** (on `demo_scenarios`): Optional JSON object of environment variables to inject when running a specific scenario. Useful for feature flags, mock-mode toggles, or per-scenario API endpoint overrides. Max 10 keys. Blocked prefixes include system paths (`PATH`, `HOME`, `USER`, `SHELL`), Node options, infrastructure credentials (`SUPABASE_`, `GITHUB_TOKEN`, `CLOUDFLARE_`, etc.), Playwright/GENTYR internals (`DEMO_*`, `PLAYWRIGHT_BASE_URL`, `CLAUDE_`, `GENTYR_`), and proxy vars. `op://` secret references are resolved via 1Password at runtime (Playwright MCP server's `executePrerequisites()`). Merged into demo validation execution env in `hourly-automation.js` alongside `DEMO_HEADLESS=1`. Example: `{"AZURE_DEMO": "1", "FEATURE_FLAG_CHECKOUT": "v2"}`.
+
 **Constraints:**
 - Only `gui` and `adk` consumption_mode personas can have demo scenarios — SDK/CLI/API personas cannot
 - `*.demo.ts` file naming convention enforced by `create_scenario` and `update_scenario`
+- `env_vars` blocked-prefix validation prevents scenarios from overriding infrastructure credentials or framework internals
 **Playwright MCP extensions:**
 - `run_demo` accepts `test_file` (positional arg for single-file filtering); video recording is always enabled
 - `launch_ui_mode` accepts optional `test_file` for filtered UI mode

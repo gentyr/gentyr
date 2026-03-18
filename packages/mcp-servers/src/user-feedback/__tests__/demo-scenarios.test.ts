@@ -36,6 +36,9 @@ interface ScenarioRow {
   created_at: string;
   created_timestamp: string;
   updated_at: string;
+  last_recorded_at: string | null;
+  recording_path: string | null;
+  env_vars: string | null;
 }
 
 interface ScenarioResult {
@@ -51,10 +54,40 @@ interface ScenarioResult {
   created_at: string;
   updated_at: string;
   persona_name?: string;
+  last_recorded_at: string | null;
+  recording_path: string | null;
+  env_vars: Record<string, string> | null;
 }
 
 interface ErrorResult {
   error: string;
+}
+
+// ============================================================================
+// Blocked env_vars prefix list (mirrors server implementation)
+// ============================================================================
+
+const ENV_VARS_BLOCKED_PREFIXES = [
+  'PATH', 'HOME', 'USER', 'SHELL',
+  'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS',
+  'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_',
+  'SUPABASE_', 'DATABASE_', 'NEXT_PUBLIC_SUPABASE_',
+  'GITHUB_TOKEN', 'CLOUDFLARE_', 'CODECOV_', 'RESEND_',
+  'OP_SERVICE_ACCOUNT_TOKEN', 'GENTYR_',
+  'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY',
+  'DEMO_SLOW_MO', 'DEMO_PAUSE_AT_END', 'DEMO_HEADLESS',
+  'DEMO_SHOW_CURSOR', 'DEMO_PROGRESS_FILE', 'DEMO_RECORD_VIDEO', 'DEMO_MAXIMIZE',
+  'PLAYWRIGHT_BASE_URL', 'CLAUDE_',
+];
+
+function validateScenarioEnvVars(envVars: Record<string, string>): string | null {
+  const keys = Object.keys(envVars);
+  if (keys.length > 10) return 'env_vars: max 10 keys allowed';
+  const blocked = keys.filter(k =>
+    ENV_VARS_BLOCKED_PREFIXES.some(prefix => k === prefix || k.startsWith(prefix)),
+  );
+  if (blocked.length > 0) return `env_vars: blocked keys: ${blocked.join(', ')}`;
+  return null;
 }
 
 // ============================================================================
@@ -81,6 +114,10 @@ function createPersona(db: Database.Database, args: {
 }
 
 function scenarioToResult(row: ScenarioRow & { persona_name?: string }): ScenarioResult {
+  let envVars: Record<string, string> | null = null;
+  if (row.env_vars) {
+    try { envVars = JSON.parse(row.env_vars); } catch { /* invalid JSON, treat as null */ }
+  }
   return {
     id: row.id,
     persona_id: row.persona_id,
@@ -93,6 +130,9 @@ function scenarioToResult(row: ScenarioRow & { persona_name?: string }): Scenari
     enabled: row.enabled === 1,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    last_recorded_at: row.last_recorded_at ?? null,
+    recording_path: row.recording_path ?? null,
+    env_vars: envVars,
     ...(row.persona_name ? { persona_name: row.persona_name } : {}),
   };
 }
@@ -105,8 +145,9 @@ function createScenario(db: Database.Database, args: {
   playwright_project: string;
   test_file: string;
   sort_order?: number;
+  env_vars?: Record<string, string>;
 }): ScenarioResult | ErrorResult {
-  // Validate persona exists and includes 'gui' in consumption_modes
+  // Validate persona exists and includes 'gui' or 'adk' in consumption_modes
   const persona = db.prepare('SELECT id, name, consumption_modes FROM personas WHERE id = ?')
     .get(args.persona_id) as { id: string; name: string; consumption_modes: string } | undefined;
 
@@ -114,13 +155,18 @@ function createScenario(db: Database.Database, args: {
     return { error: `Persona not found: ${args.persona_id}` };
   }
   const personaModes = JSON.parse(persona.consumption_modes) as string[];
-  if (!personaModes.includes('gui')) {
+  if (!personaModes.includes('gui') && !personaModes.includes('adk')) {
     return {
-      error: `Demo scenarios require a GUI persona. Persona "${persona.name}" has consumption_modes ${JSON.stringify(personaModes)}. Only personas that include "gui" in consumption_modes can have Playwright demo scenarios.`,
+      error: `Demo scenarios require a GUI or ADK persona. Persona "${persona.name}" has consumption_modes ${JSON.stringify(personaModes)}. Only personas that include "gui" or "adk" in consumption_modes can have demo scenarios.`,
     };
   }
   if (!args.test_file.endsWith('.demo.ts')) {
     return { error: `test_file must end with ".demo.ts" — got "${args.test_file}"` };
+  }
+
+  if (args.env_vars) {
+    const envError = validateScenarioEnvVars(args.env_vars);
+    if (envError) return { error: envError };
   }
 
   const id = randomUUID();
@@ -130,12 +176,13 @@ function createScenario(db: Database.Database, args: {
 
   try {
     db.prepare(`
-      INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, created_at, created_timestamp, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+      INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, created_at, created_timestamp, updated_at, env_vars)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
     `).run(
       id, args.persona_id, args.title, args.description,
       args.category ?? null, args.playwright_project, args.test_file,
       args.sort_order ?? 0, created_at, created_timestamp, created_at,
+      args.env_vars ? JSON.stringify(args.env_vars) : null,
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -164,6 +211,7 @@ function updateScenario(db: Database.Database, args: {
   test_file?: string;
   sort_order?: number;
   enabled?: boolean;
+  env_vars?: Record<string, string> | null;
 }): ScenarioResult | ErrorResult {
   const existing = db.prepare('SELECT id FROM demo_scenarios WHERE id = ?').get(args.id);
   if (!existing) {
@@ -184,6 +232,17 @@ function updateScenario(db: Database.Database, args: {
   if (args.test_file !== undefined) { updates.push('test_file = ?'); values.push(args.test_file); }
   if (args.sort_order !== undefined) { updates.push('sort_order = ?'); values.push(args.sort_order); }
   if (args.enabled !== undefined) { updates.push('enabled = ?'); values.push(args.enabled ? 1 : 0); }
+  if (args.env_vars !== undefined) {
+    if (args.env_vars === null) {
+      updates.push('env_vars = ?'); values.push(null);
+    } else {
+      const envError = validateScenarioEnvVars(args.env_vars);
+      if (envError) {
+        return { error: envError };
+      }
+      updates.push('env_vars = ?'); values.push(JSON.stringify(args.env_vars));
+    }
+  }
 
   if (updates.length === 0) {
     return { error: 'No fields to update' };
@@ -305,7 +364,7 @@ describe('Demo Scenario CRUD', () => {
       }
     });
 
-    it('should reject non-GUI persona', () => {
+    it('should reject persona with no gui or adk mode', () => {
       const result = createScenario(db, {
         persona_id: apiPersona.id,
         title: 'API Flow',
@@ -316,7 +375,7 @@ describe('Demo Scenario CRUD', () => {
 
       expect(isErrorResult(result)).toBe(true);
       if (isErrorResult(result)) {
-        expect(result.error).toContain('Demo scenarios require a GUI persona');
+        expect(result.error).toContain('Demo scenarios require a GUI or ADK persona');
         expect(result.error).toContain('"api"');
       }
     });
@@ -392,8 +451,9 @@ describe('Demo Scenario CRUD', () => {
       }
     });
 
-    it('should reject all non-gui consumption modes', () => {
-      const modes = ['cli', 'api', 'sdk', 'adk'];
+    it('should reject cli, api, and sdk-only consumption modes', () => {
+      // Only gui and adk are accepted; cli, api, and sdk-only personas are rejected
+      const modes = ['cli', 'api', 'sdk'];
       for (const mode of modes) {
         const persona = createPersona(db, {
           name: `rejection-test-${mode}-user`,
@@ -435,6 +495,138 @@ describe('Demo Scenario CRUD', () => {
       if (!isErrorResult(result)) {
         expect(result.title).toBe('Multi-Mode Flow');
         expect(result.persona_name).toBe('sdk-gui-user');
+      }
+    });
+
+    it('should allow scenario for an ADK persona', () => {
+      const adkPersona = createPersona(db, {
+        name: 'adk-agent-user',
+        description: 'An ADK persona',
+        consumption_mode: 'adk',
+      });
+
+      const result = createScenario(db, {
+        persona_id: adkPersona.id,
+        title: 'ADK Flow',
+        description: 'Test ADK flow',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/adk-flow.demo.ts',
+      });
+
+      expect(isErrorResult(result)).toBe(false);
+      if (!isErrorResult(result)) {
+        expect(result.title).toBe('ADK Flow');
+        expect(result.persona_name).toBe('adk-agent-user');
+      }
+    });
+
+    it('should create scenario with env_vars and return them as a parsed object', () => {
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Env Vars Flow',
+        description: 'Tests env_vars injection',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/env-vars.demo.ts',
+        env_vars: { AZURE_DEMO: '1', FEATURE_FLAG: 'enabled' },
+      });
+
+      expect(isErrorResult(result)).toBe(false);
+      if (!isErrorResult(result)) {
+        expect(result.env_vars).not.toBeNull();
+        expect(typeof result.env_vars).toBe('object');
+        expect(result.env_vars!['AZURE_DEMO']).toBe('1');
+        expect(result.env_vars!['FEATURE_FLAG']).toBe('enabled');
+      }
+    });
+
+    it('should return env_vars as null when not provided', () => {
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'No Env Vars Flow',
+        description: 'No env_vars',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/no-env-vars.demo.ts',
+      });
+
+      expect(isErrorResult(result)).toBe(false);
+      if (!isErrorResult(result)) {
+        expect(result.env_vars).toBeNull();
+      }
+    });
+
+    it('should reject env_vars with more than 10 keys', () => {
+      const tooManyVars: Record<string, string> = {};
+      for (let i = 0; i < 11; i++) {
+        tooManyVars[`KEY_${i}`] = `value_${i}`;
+      }
+
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Too Many Vars',
+        description: 'Too many env vars',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/too-many-vars.demo.ts',
+        env_vars: tooManyVars,
+      });
+
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('env_vars: max 10 keys allowed');
+      }
+    });
+
+    it('should accept env_vars with exactly 10 keys', () => {
+      const exactlyTenVars: Record<string, string> = {};
+      for (let i = 0; i < 10; i++) {
+        exactlyTenVars[`KEY_${i}`] = `value_${i}`;
+      }
+
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Exactly Ten Vars',
+        description: 'Exactly 10 env vars',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/ten-vars.demo.ts',
+        env_vars: exactlyTenVars,
+      });
+
+      expect(isErrorResult(result)).toBe(false);
+      if (!isErrorResult(result)) {
+        expect(result.env_vars).not.toBeNull();
+        expect(Object.keys(result.env_vars!)).toHaveLength(10);
+      }
+    });
+
+    it('should reject env_vars with blocked key prefixes', () => {
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Blocked Keys',
+        description: 'Has blocked env var keys',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/blocked-keys.demo.ts',
+        env_vars: { NODE_OPTIONS: '--require /tmp/evil.js' },
+      });
+
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('blocked keys');
+        expect(result.error).toContain('NODE_OPTIONS');
+      }
+    });
+
+    it('should reject env_vars with DEMO_ prefix keys', () => {
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Demo Override',
+        description: 'Tries to override demo env vars',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/demo-override.demo.ts',
+        env_vars: { DEMO_HEADLESS: '0' },
+      });
+
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('blocked keys');
       }
     });
   });
@@ -519,6 +711,105 @@ describe('Demo Scenario CRUD', () => {
       expect(isErrorResult(enabled)).toBe(false);
       if (!isErrorResult(enabled)) {
         expect(enabled.enabled).toBe(true);
+      }
+    });
+
+    it('should set env_vars on a scenario that had none', () => {
+      const created = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Env Update Test',
+        description: 'Desc',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/env-update.demo.ts',
+      });
+      expect(isErrorResult(created)).toBe(false);
+      if (isErrorResult(created)) return;
+      expect((created as ScenarioResult).env_vars).toBeNull();
+
+      const updated = updateScenario(db, {
+        id: (created as ScenarioResult).id,
+        env_vars: { MY_FLAG: 'true' },
+      });
+
+      expect(isErrorResult(updated)).toBe(false);
+      if (!isErrorResult(updated)) {
+        expect(updated.env_vars).not.toBeNull();
+        expect(updated.env_vars!['MY_FLAG']).toBe('true');
+      }
+    });
+
+    it('should clear env_vars when updated to null', () => {
+      const created = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Env Clear Test',
+        description: 'Desc',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/env-clear.demo.ts',
+        env_vars: { SOME_VAR: 'value' },
+      });
+      expect(isErrorResult(created)).toBe(false);
+      if (isErrorResult(created)) return;
+
+      const cleared = updateScenario(db, {
+        id: (created as ScenarioResult).id,
+        env_vars: null,
+      });
+
+      expect(isErrorResult(cleared)).toBe(false);
+      if (!isErrorResult(cleared)) {
+        expect(cleared.env_vars).toBeNull();
+      }
+    });
+
+    it('should reject env_vars update with more than 10 keys', () => {
+      const created = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Env Max Keys Update',
+        description: 'Desc',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/env-max-keys.demo.ts',
+      });
+      expect(isErrorResult(created)).toBe(false);
+      if (isErrorResult(created)) return;
+
+      const tooManyVars: Record<string, string> = {};
+      for (let i = 0; i < 11; i++) {
+        tooManyVars[`KEY_${i}`] = `value_${i}`;
+      }
+
+      const result = updateScenario(db, {
+        id: (created as ScenarioResult).id,
+        env_vars: tooManyVars,
+      });
+
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('env_vars: max 10 keys allowed');
+      }
+    });
+
+    it('should preserve existing env_vars when updating other fields', () => {
+      const created = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Preserve Env Test',
+        description: 'Desc',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/preserve-env.demo.ts',
+        env_vars: { KEEP_ME: 'yes' },
+      });
+      expect(isErrorResult(created)).toBe(false);
+      if (isErrorResult(created)) return;
+
+      const updated = updateScenario(db, {
+        id: (created as ScenarioResult).id,
+        title: 'Updated Title',
+      });
+
+      expect(isErrorResult(updated)).toBe(false);
+      if (!isErrorResult(updated)) {
+        expect(updated.title).toBe('Updated Title');
+        expect(updated.env_vars).not.toBeNull();
+        expect(updated.env_vars!['KEEP_ME']).toBe('yes');
       }
     });
   });
