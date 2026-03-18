@@ -122,6 +122,7 @@ const SECTION_AGENT_MAP_KEYS = {
   'PROJECT-MANAGER': { agent: 'project-manager', agentTypeKey: 'TASK_RUNNER_PROJECT_MANAGER' },
   'DEPUTY-CTO': { agent: 'deputy-cto', agentTypeKey: 'TASK_RUNNER_DEPUTY_CTO' },
   'PRODUCT-MANAGER': { agent: 'product-manager', agentTypeKey: 'TASK_RUNNER_PRODUCT_MANAGER' },
+  'DEMO-MANAGER': { agent: 'demo-manager', agentTypeKey: 'TASK_RUNNER_DEMO_MANAGER' },
 };
 
 // Resolved after AGENT_TYPES is loaded
@@ -501,6 +502,31 @@ Task(subagent_type='project-manager', prompt='${task.title}. ${task.description 
 
 The project-manager sub-agent has specialized instructions loaded from .claude/agents/project-manager.md.
 Pass the full task context including title and description.
+
+${completionBlock}`;
+  }
+
+  if (task.section === 'DEMO-MANAGER') {
+    return `${taskDetails}
+
+## MANDATORY SUB-AGENT WORKFLOW
+
+You are an ORCHESTRATOR for demo lifecycle work. Follow this sequence using the Task tool:
+
+1. \`Task(subagent_type='investigator')\` - Investigate the issue (read .demo.ts, check selectors, review error)
+2. \`Task(subagent_type='demo-manager', isolation='worktree')\` - Plan and implement .demo.ts fixes, register prerequisites/scenarios
+3. \`Task(subagent_type='code-reviewer')\` - Review changes
+4. \`Task(subagent_type='project-manager')\` - Commit, push, merge, cleanup worktree (ALWAYS LAST)
+
+If the issue is in APPLICATION CODE (not demo code):
+- Escalate via mcp__agent-reports__report_to_deputy_cto
+- Do NOT attempt app code fixes
+
+**YOU ARE PROHIBITED FROM:**
+- Directly editing ANY files using Edit, Write, or NotebookEdit tools
+- Modifying application source code
+- Skipping project-manager at the end
+- Running git add, git commit, git push, or gh pr create yourself
 
 ${completionBlock}`;
   }

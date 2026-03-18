@@ -258,7 +258,7 @@ For each GUI or ADK persona (`consumption_mode: 'gui'` or `'adk'`) that lacks de
 4. After creating the DB record, create a task for implementation:
    ```
    mcp__todo-db__create_task({
-     section: "CODE-REVIEWER",
+     section: "DEMO-MANAGER",
      title: "Implement demo scenario: <title>",
      description: "Write Playwright demo file at <test_file>.\n\nScenario: <title>\nDescription: <description>\nAuth project: <playwright_project>\n\nRequirements:\n- Import: import { maybePauseForInteraction } from './_helpers';\n- End with: await maybePauseForInteraction(page);\n- Use human-readable selectors (getByRole, getByText, getByLabel)\n- Add test.step() blocks for each logical phase\n- This is a DEMO, not a test — focus on navigation and visual flow, not assertions. Minimal expect() calls.",
      assigned_by: "product-manager",
@@ -268,10 +268,9 @@ For each GUI or ADK persona (`consumption_mode: 'gui'` or `'adk'`) that lacks de
 
 ### Constraints
 
-- You define WHAT scenarios exist (DB records). You do NOT write `*.demo.ts` files.
+- You define WHAT scenarios exist (DB records). You do NOT write `*.demo.ts` files — create a `DEMO-MANAGER` task for implementation. The `demo-manager` agent handles all .demo.ts implementation, prerequisite registration, and scenario scaffolding.
 - **Demo scenarios are for GUI and ADK personas only** (not cli/api/sdk). The `create_scenario`
   tool will reject other persona types with a clear error.
-- A code-writer agent implements each file based on your description.
 
 ## Completion Checklist
 

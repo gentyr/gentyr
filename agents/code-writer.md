@@ -105,7 +105,7 @@ mcp__agent-reports__report_to_deputy_cto({
 
 ## Demo Scenarios
 
-Do NOT write or modify `*.demo.ts` files or manage demo scenarios. Demo work is handled exclusively by the `demo-manager` agent. If asked to create or fix a demo, create a task for the project-manager to route to demo-manager.
+Do NOT write or modify `*.demo.ts` files or manage demo scenarios. Demo work is handled exclusively by the `demo-manager` agent (DEMO-MANAGER section). If asked to create or fix a demo, create a DEMO-MANAGER task instead.
 
 ## Git Operations
 
