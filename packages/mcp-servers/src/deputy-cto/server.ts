@@ -2348,7 +2348,7 @@ async function executeHotfixPromotion(_args: ExecuteHotfixPromotionArgs): Promis
       tagContext: 'hotfix-promotion',
       source: 'deputy-cto-server',
       priority: 'critical',
-      buildPrompt: (agentId: string) => `[Task][hotfix-promotion][AGENT:${agentId}] You are the EMERGENCY HOTFIX Promotion Pipeline.
+      buildPrompt: (agentId: string) => `[Automation][hotfix-promotion][AGENT:${agentId}] You are the EMERGENCY HOTFIX Promotion Pipeline.
 
 ## Mission
 

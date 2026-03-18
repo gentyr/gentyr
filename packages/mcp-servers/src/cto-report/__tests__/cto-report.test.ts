@@ -582,21 +582,23 @@ describe('CTO Report Server', () => {
     /**
      * Parse task type from message content.
      * Supports formats:
-     * - [Task][type-name] ... → extracts "type-name"
-     * - [Task] ... → returns "unknown"
+     * - [Automation][type-name] ... → extracts "type-name"
+     * - [Automation] ... → returns "unknown"
+     * - [Task][type-name] ... → extracts "type-name" (legacy, backward-compat)
+     * - [Task] ... → returns "unknown" (legacy, backward-compat)
      */
     const parseTaskType = (messageContent: string): string | null => {
-      if (!messageContent.startsWith('[Task]')) {
+      if (!messageContent.startsWith('[Automation]') && !messageContent.startsWith('[Task]')) {
         return null;
       }
 
-      // Check for [Task][type] format
-      const typeMatch = messageContent.match(/^\[Task\]\[([^\]]+)\]/);
+      // Check for [Automation][type] or [Task][type] format
+      const typeMatch = messageContent.match(/^\[(?:Automation|Task)\]\[([^\]]+)\]/);
       if (typeMatch) {
         return typeMatch[1];
       }
 
-      // Legacy [Task] format without type
+      // Legacy format without type
       return 'unknown';
     };
 
@@ -606,23 +608,23 @@ describe('CTO Report Server', () => {
       const sessionId3 = randomUUID();
       const sessionId4 = randomUUID();
 
-      // Task sessions with types
+      // Automation sessions with types (new format)
       createSessionFile(sessionId1, [
-        { type: 'human', content: '[Task][lint-fixer] Fix lint errors' },
+        { type: 'human', content: '[Automation][lint-fixer] Fix lint errors' },
         { type: 'assistant', message: { content: 'I will fix the lint errors' } },
       ]);
       createSessionFile(sessionId2, [
-        { type: 'user', message: { content: '[Task][deputy-cto-review] Review commit' } },
+        { type: 'user', message: { content: '[Automation][deputy-cto-review] Review commit' } },
         { type: 'assistant', message: { content: 'I will review' } },
       ]);
 
-      // Legacy task session without type
+      // Legacy task session without type (backward-compat: [Task] still recognized)
       createSessionFile(sessionId3, [
         { type: 'human', content: '[Task] Fix bug in authentication' },
         { type: 'assistant', message: { content: 'I will fix the bug' } },
       ]);
 
-      // User session - first message does NOT start with [Task]
+      // User session - first message does NOT start with [Automation] or [Task]
       createSessionFile(sessionId4, [
         { type: 'human', content: 'Help me debug this code' },
         { type: 'assistant', message: { content: 'Sure, I can help' } },
@@ -763,12 +765,12 @@ describe('CTO Report Server', () => {
 
       // Create first session (recent) with typed task
       createSessionFile(sessionId1, [
-        { type: 'human', content: '[Task][plan-executor] Recent task' },
+        { type: 'human', content: '[Automation][plan-executor] Recent task' },
       ]);
 
       // Create second session (old) - will be filtered by mtime
       const oldSessionPath = path.join(sessionDir, `${sessionId2}.jsonl`);
-      fs.writeFileSync(oldSessionPath, JSON.stringify({ type: 'human', content: '[Task][old-task] Old task' }));
+      fs.writeFileSync(oldSessionPath, JSON.stringify({ type: 'human', content: '[Automation][old-task] Old task' }));
 
       // Set file modification time to 25 hours ago
       const oldTime = Date.now() - (25 * 60 * 60 * 1000);

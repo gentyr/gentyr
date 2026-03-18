@@ -792,7 +792,7 @@ describe('getAutomationTokenUsage - Session JSONL parsing', () => {
    * Helpers to build JSONL session entries that match what Claude sessions produce.
    */
   const makeUserEntry = (agentType: string | null): string => {
-    const content = agentType ? `[Task][${agentType}] Please perform the task.` : 'Hello, human turn without task prefix.';
+    const content = agentType ? `[Automation][${agentType}] Please perform the task.` : 'Hello, human turn without task prefix.';
     return JSON.stringify({
       type: 'human',
       content,
@@ -914,7 +914,7 @@ describe('getAutomationTokenUsage - Session JSONL parsing', () => {
     expect(total1 + total2).toBe(3200);
   });
 
-  it('should skip non-task sessions (no [Task][...] prefix)', () => {
+  it('should skip non-automation sessions (no [Automation][...] or [Task][...] prefix)', () => {
     const lines = [
       makeUserEntry(null),
       makeAssistantEntry(5000, 2000),

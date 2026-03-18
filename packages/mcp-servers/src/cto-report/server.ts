@@ -322,21 +322,23 @@ function getAutonomousModeStatus(): AutonomousModeStatus {
 /**
  * Parse task type from message content.
  * Supports formats:
- * - [Task][type-name] ... → extracts "type-name"
- * - [Task] ... → returns "unknown"
+ * - [Automation][type-name] ... → extracts "type-name"
+ * - [Automation] ... → returns "unknown"
+ * - [Task][type-name] ... → extracts "type-name" (legacy, backward-compat)
+ * - [Task] ... → returns "unknown" (legacy, backward-compat)
  */
 function parseTaskType(messageContent: string): string | null {
-  if (!messageContent.startsWith('[Task]')) {
+  if (!messageContent.startsWith('[Automation]') && !messageContent.startsWith('[Task]')) {
     return null;
   }
 
-  // Check for [Task][type] format
-  const typeMatch = messageContent.match(/^\[Task\]\[([^\]]+)\]/);
+  // Check for [Automation][type] or [Task][type] format
+  const typeMatch = messageContent.match(/^\[(?:Automation|Task)\]\[([^\]]+)\]/);
   if (typeMatch && typeMatch[1]) {
     return typeMatch[1];
   }
 
-  // Legacy [Task] format without type
+  // Legacy format without type
   return 'unknown';
 }
 

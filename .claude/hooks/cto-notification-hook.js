@@ -236,7 +236,7 @@ function scanSessionFile(filePath, since) {
           const msg = typeof entry.message?.content === 'string'
             ? entry.message.content
             : entry.content;
-          if (msg && msg.startsWith('[Task]')) {
+          if (msg && (msg.startsWith('[Automation]') || msg.startsWith('[Task]'))) {
             isTask = true;
           }
           break;

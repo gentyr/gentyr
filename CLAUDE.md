@@ -376,7 +376,7 @@ CTO-gated mechanism to lock features and prevent endless agent nitpick chains on
 The `search_cto_sessions` tool on the `agent-tracker` MCP server filters session files to user-only (non-autonomous) sessions before searching.
 
 - Scans `~/.claude/projects/{encoded-project-path}/` for session JSONL files
-- Reads first 2KB of each file; skips sessions containing `[Task]` or `[AGENT:` markers (autonomous)
+- Reads first 2KB of each file; skips sessions containing `[Automation]`, `[Task]`, or `[AGENT:` markers (autonomous)
 - Searches remaining files for the query string (case-insensitive)
 - Returns matching excerpts with surrounding context lines
 - Used by the gate agent to check if the CTO recently discussed a topic (CTO intent check)

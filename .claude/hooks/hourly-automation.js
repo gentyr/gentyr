@@ -511,7 +511,7 @@ function spawnAlertEscalation(alert) {
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'alert-escalation',
     source: 'hourly-automation',
-    buildPrompt: (agentId) => `[Task][alert-escalation][AGENT:${agentId}] ALERT RE-ESCALATION
+    buildPrompt: (agentId) => `[Automation][alert-escalation][AGENT:${agentId}] ALERT RE-ESCALATION
 
 A persistent issue has NOT been resolved and requires CTO attention.
 
@@ -995,7 +995,7 @@ After processing all reports, output a summary:
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'report-triage',
     source: 'hourly-automation',
-    buildPrompt: (agentId) => `[Task][report-triage][AGENT:${agentId}] ${promptBody}`,
+    buildPrompt: (agentId) => `[Automation][report-triage][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials },
     metadata: {},
     projectDir: PROJECT_DIR,
@@ -1087,7 +1087,7 @@ Key tools: \`page_get_snapshot\`, \`page_click\`, \`mcp__todo-db__*\`, \`mcp__sp
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'claudemd-refactor',
     source: 'hourly-automation',
-    buildPrompt: (agentId) => `[Task][claudemd-refactor][AGENT:${agentId}] ${promptBody}`,
+    buildPrompt: (agentId) => `[Automation][claudemd-refactor][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials },
     metadata: {},
     projectDir: PROJECT_DIR,
@@ -1157,7 +1157,7 @@ function spawnLintFixer(lintOutput) {
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'lint-fixer',
     source: 'hourly-automation',
-    buildPrompt: (agentId) => `[Task][lint-fixer][AGENT:${agentId}] You are an orchestrator fixing LINT ERRORS.
+    buildPrompt: (agentId) => `[Automation][lint-fixer][AGENT:${agentId}] You are an orchestrator fixing LINT ERRORS.
 
 ## IMMEDIATE ACTION
 
@@ -1309,7 +1309,7 @@ function resetTaskToPending(taskId) {
  * Build the prompt for a deputy-cto task orchestrator agent
  */
 function buildDeputyCtoTaskPrompt(task, agentId) {
-  return `[Task][task-runner-deputy-cto][AGENT:${agentId}] You are the Deputy-CTO processing a high-level task assignment.
+  return `[Automation][task-runner-deputy-cto][AGENT:${agentId}] You are the Deputy-CTO processing a high-level task assignment.
 
 ## Task Details
 
@@ -1391,7 +1391,7 @@ This will automatically create a follow-up verification task.
  * Build the prompt for a task runner agent
  */
 function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
-  const taskDetails = `[Task][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing a TODO task.
+  const taskDetails = `[Automation][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing a TODO task.
 
 ## Task Details
 
@@ -1675,7 +1675,7 @@ function rescueAbandonedWorktrees() {
       hookType: HOOK_TYPES.TASK_RUNNER,
       tagContext: 'rescue-project-manager',
       source: 'hourly-automation',
-      buildPrompt: (agentId) => `[Task][rescue-project-manager][AGENT:${agentId}] You are a project-manager rescuing abandoned work in a worktree.
+      buildPrompt: (agentId) => `[Automation][rescue-project-manager][AGENT:${agentId}] You are a project-manager rescuing abandoned work in a worktree.
 
 ## Context
 
@@ -1810,7 +1810,7 @@ function spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'preview-promotion',
     source: 'hourly-automation',
-    buildPrompt: (agentId) => `[Task][preview-promotion][AGENT:${agentId}] You are the PREVIEW -> STAGING Promotion Pipeline orchestrator.
+    buildPrompt: (agentId) => `[Automation][preview-promotion][AGENT:${agentId}] You are the PREVIEW -> STAGING Promotion Pipeline orchestrator.
 
 ## Mission
 
@@ -1901,7 +1901,7 @@ function spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit) {
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'staging-promotion',
     source: 'hourly-automation',
-    buildPrompt: (agentId) => `[Task][staging-promotion][AGENT:${agentId}] You are the STAGING -> PRODUCTION Promotion Pipeline orchestrator.
+    buildPrompt: (agentId) => `[Automation][staging-promotion][AGENT:${agentId}] You are the STAGING -> PRODUCTION Promotion Pipeline orchestrator.
 
 ## Mission
 
@@ -2012,7 +2012,7 @@ export function spawnHotfixPromotion(commits) {
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'hotfix-promotion',
     source: 'hourly-automation',
-    buildPrompt: (agentId) => `[Task][hotfix-promotion][AGENT:${agentId}] You are the EMERGENCY HOTFIX Promotion Pipeline.
+    buildPrompt: (agentId) => `[Automation][hotfix-promotion][AGENT:${agentId}] You are the EMERGENCY HOTFIX Promotion Pipeline.
 
 ## Mission
 
@@ -2164,7 +2164,7 @@ Complete within 10 minutes. This is a read-only monitoring check.`;
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'staging-health-monitor',
     source: 'hourly-automation',
-    buildPrompt: (agentId) => `[Task][staging-health-monitor][AGENT:${agentId}] ${promptBody}`,
+    buildPrompt: (agentId) => `[Automation][staging-health-monitor][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials },
     metadata: {},
     projectDir: PROJECT_DIR,
@@ -2277,7 +2277,7 @@ Complete within 10 minutes. This is a read-only monitoring check.`;
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'production-health-monitor',
     source: 'hourly-automation',
-    buildPrompt: (agentId) => `[Task][production-health-monitor][AGENT:${agentId}] ${promptBody}`,
+    buildPrompt: (agentId) => `[Automation][production-health-monitor][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials },
     metadata: {},
     projectDir: PROJECT_DIR,
@@ -3210,7 +3210,7 @@ async function main() {
               hookType: HOOK_TYPES.HOURLY_AUTOMATION,
               tagContext: 'stale-work-report',
               source: 'hourly-automation',
-              buildPrompt: (agentId) => `[Task][stale-work-report][AGENT:${agentId}] Report this stale work finding to the deputy-CTO.
+              buildPrompt: (agentId) => `[Automation][stale-work-report][AGENT:${agentId}] Report this stale work finding to the deputy-CTO.
 
 Use mcp__agent-reports__report_to_deputy_cto with:
 - reporting_agent: "stale-work-detector"
@@ -3516,7 +3516,7 @@ Then exit.`,
             tagContext: 'demo-repair',
             source: 'hourly-automation',
             buildPrompt: (agentId) => [
-              `[Task][demo-repair][AGENT:${agentId}] You are a demo repair agent. A demo scenario failed during automated validation.`,
+              `[Automation][demo-repair][AGENT:${agentId}] You are a demo repair agent. A demo scenario failed during automated validation.`,
               ``,
               `**Failed Scenario:**`,
               `- ID: ${repairScenarioId}`,
@@ -3565,7 +3565,7 @@ Then exit.`,
           tagContext: 'demo-validation-report',
           source: 'hourly-automation',
           buildPrompt: (agentId) => [
-            `[Task][demo-validation-report][AGENT:${agentId}] Report the following demo validation failures to the deputy-CTO using mcp__agent-reports__report_to_deputy_cto.`,
+            `[Automation][demo-validation-report][AGENT:${agentId}] Report the following demo validation failures to the deputy-CTO using mcp__agent-reports__report_to_deputy_cto.`,
             ``,
             `Category: "other"`,
             `Priority: "${failed >= 3 ? 'high' : 'normal'}"`,

@@ -134,7 +134,7 @@ process.stdin.on('end', () => {
       priority: 'normal',
       projectDir: PROJECT_DIR,
       metadata: { taskId, section: taskSection, assignedBy },
-      buildPrompt: (agentId) => `[Task][task-gate][AGENT:${agentId}] Review task ${taskId}.
+      buildPrompt: (agentId) => `[Automation][task-gate][AGENT:${agentId}] Review task ${taskId}.
 
 "${taskTitle}" | Section: ${taskSection} | By: ${assignedBy}
 Description: ${taskDescription || '(none)'}

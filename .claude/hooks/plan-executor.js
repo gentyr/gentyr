@@ -108,7 +108,7 @@ function getPlanFiles() {
 function buildPrompt(planFiles) {
   const fileList = planFiles.map(f => `- ${f.path}`).join('\n');
 
-  return `[Task][plan-executor] You are an orchestrator performing HOURLY PLAN EXECUTION.
+  return `[Automation][plan-executor] You are an orchestrator performing HOURLY PLAN EXECUTION.
 
 ## IMMEDIATE ACTION
 

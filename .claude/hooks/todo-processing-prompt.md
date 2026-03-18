@@ -1,6 +1,6 @@
 You have pending TODO items in the todo-db that need attention. Process up to 3 items at a time.
 
-NOTE: This is an automated [Task] session. You will get one continuation prompt after your first response to ensure all work is complete.
+NOTE: This is an automated [Automation] session. You will get one continuation prompt after your first response to ensure all work is complete.
 
 ## MANDATORY SUB-AGENT REQUIREMENT
 

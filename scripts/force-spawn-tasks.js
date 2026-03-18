@@ -217,7 +217,7 @@ function resetTaskToPending(taskId, todoDbPath) {
 // ---------------------------------------------------------------------------
 
 function buildDeputyCtoTaskPrompt(task, agentId) {
-  return `[Task][task-runner-deputy-cto][AGENT:${agentId}] You are the Deputy-CTO processing a high-level task assignment.
+  return `[Automation][task-runner-deputy-cto][AGENT:${agentId}] You are the Deputy-CTO processing a high-level task assignment.
 
 ## Task Details
 
@@ -296,7 +296,7 @@ This will automatically create a follow-up verification task.
 }
 
 function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
-  const taskDetails = `[Task][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing a TODO task.
+  const taskDetails = `[Automation][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing a TODO task.
 
 ## Task Details
 

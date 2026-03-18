@@ -537,8 +537,8 @@ function checkIfTaskSession(input) {
             const content = entry.message?.content || entry.content || '';
             debugLog('Found user message', content.substring(0, 300));
 
-            if (content.startsWith('[Task]')) {
-              debugLog('[Task] found in transcript first user message');
+            if (content.startsWith('[Automation]') || content.startsWith('[Task]')) {
+              debugLog('[Automation]/[Task] found in transcript first user message');
               return true;
             }
             // Only check first user message

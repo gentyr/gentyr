@@ -1,5 +1,55 @@
 # GENTYR Framework Changelog
 
+## 2026-03-18 - Rename `[Task]` Session Tag to `[Automation]`
+
+### Summary
+
+Renamed the automated session prompt prefix from `[Task]` to `[Automation]` across the entire codebase. All prompt builders now inject `[Automation][context][AGENT:id]` at the start of spawned session prompts. Detection mechanisms (stop hook, CTO notification hook, reap-completed-agents, cto-report server, cto-dashboard data-reader, timeline-aggregator) are backward-compatible — they accept both `[Automation]` and `[Task]` so that in-flight sessions using the old tag continue to be recognized as automated.
+
+### Changed
+
+**`.claude/hooks/lib/session-queue.js`**:
+- Updated fallback prompt builder to use `[Automation][...]` prefix
+- Updated tag-prefix guard to accept both `[Automation]` and `[Task]` (backward-compat) before injecting the new prefix
+
+**Prompt builders (all updated `[Task][` → `[Automation][`)**:
+- `.claude/hooks/hourly-automation.js` (15 occurrences)
+- `.claude/hooks/urgent-task-spawner.js`
+- `.claude/hooks/task-gate-spawner.js`
+- `.claude/hooks/antipattern-hunter-hook.js`
+- `.claude/hooks/plan-executor.js`
+- `.claude/hooks/feedback-launcher.js`
+- `.claude/hooks/demo-failure-spawner.js`
+- `.claude/hooks/reporters/playwright-failure-reporter.js`
+- `.claude/hooks/reporters/vitest-failure-reporter.js`
+- `.claude/hooks/reporters/jest-failure-reporter.js`
+- `scripts/force-spawn-tasks.js`
+- `scripts/force-triage-reports.js`
+- `scripts/feedback-launcher.js`
+- `packages/mcp-servers/src/deputy-cto/server.ts`
+
+**Detection mechanisms (backward-compatible — accept both `[Automation]` and `[Task]`)**:
+- `.claude/hooks/stop-continue-hook.js`
+- `.claude/hooks/cto-notification-hook.js`
+- `scripts/reap-completed-agents.js`
+- `packages/mcp-servers/src/cto-report/server.ts` — updated `parseTaskType()` regex to `/^\[(?:Automation|Task)\]\[([^\]]+)\]/`
+- `packages/cto-dashboard/src/utils/data-reader.ts` — same regex update
+- `packages/cto-dashboard/src/utils/timeline-aggregator.ts` — same regex update
+
+**Tests updated**:
+- `packages/mcp-servers/src/cto-report/__tests__/cto-report.test.ts` — test data uses new `[Automation]` format; local `parseTaskType` updated; one `[Task]` case retained for backward-compat verification
+- `packages/cto-dashboard/src/utils/__tests__/data-reader.test.ts` — same pattern
+- `packages/cto-dashboard/src/utils/__tests__/automated-instances.test.ts` — `makeUserEntry` updated to emit `[Automation][...]`
+
+**Documentation**:
+- `CLAUDE.md` — updated CTO Session Search section
+- `docs/CLAUDE-REFERENCE.md` — all hook descriptions updated
+- `docs/AUTOMATION-SYSTEMS.md` — session flow diagram and hook description updated
+- `specs/patterns/AGENT-PATTERNS.md` — example invocation updated
+- `.claude/hooks/todo-processing-prompt.md` — session note updated
+
+---
+
 ## 2026-03-17 - Window Recorder Video Persistence Bulletproofing
 
 ### Summary

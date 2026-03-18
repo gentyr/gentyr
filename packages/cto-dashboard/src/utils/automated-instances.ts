@@ -513,7 +513,7 @@ function buildAgentTypeToDisplayName(): Map<string, string> {
 
 /**
  * Get token usage aggregated by automation display name (24h).
- * Reads session JSONL files, extracts [Task][agent-type] prefixes from the
+ * Reads session JSONL files, extracts [Automation][agent-type] (or legacy [Task][agent-type]) prefixes from the
  * first user message, sums all message.usage tokens per session, then
  * rolls up into INSTANCE_DEFINITIONS display names.
  */
@@ -566,11 +566,11 @@ export async function getAutomationTokenUsage(): Promise<Record<string, number>>
             ? entry.message.content
             : entry.content;
           if (msg) {
-            const match = msg.match(/^\[Task\]\[([^\]]+)\]/);
+            const match = msg.match(/^\[(?:Automation|Task)\]\[([^\]]+)\]/);
             if (match?.[1]) {
               agentType = match[1];
             } else {
-              // Not a task-triggered session — skip entirely
+              // Not an automation-triggered session — skip entirely
               break;
             }
           }
