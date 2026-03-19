@@ -1329,7 +1329,12 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     return projectDir;
   }
 
-  function discoverProjectNames(projectDir: string): string[] {
+  type DiscoverResult =
+    | { status: 'discovered'; names: string[] }
+    | { status: 'no-config' }
+    | { status: 'error'; message: string };
+
+  function discoverProjectNames(projectDir: string): DiscoverResult {
     try {
       const resolvedDir = resolveMainProjectDir(projectDir);
       const configPath = path.join(resolvedDir, 'playwright.config.ts');
@@ -1340,9 +1345,13 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       while ((match = re.exec(content)) !== null) {
         names.push(match[1]);
       }
-      return names;
-    } catch {
-      return [];
+      return { status: 'discovered', names };
+    } catch (err: unknown) {
+      if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { status: 'no-config' };
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      return { status: 'error', message: `Failed to read playwright.config.ts: ${msg}` };
     }
   }
 
@@ -1362,10 +1371,13 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       return { error: `test_file must end with ".demo.ts" — got "${args.test_file}"` };
     }
 
-    // Validate playwright_project against actual config
-    const validProjects = discoverProjectNames(config.projectDir);
-    if (validProjects.length > 0 && !validProjects.includes(args.playwright_project)) {
-      return { error: `Invalid playwright_project "${args.playwright_project}". Valid projects: ${validProjects.join(', ')}` };
+    // Validate playwright_project against actual config (G001: fail-closed)
+    const discovered = discoverProjectNames(config.projectDir);
+    if (discovered.status === 'error') {
+      return { error: discovered.message };
+    }
+    if (discovered.status === 'discovered' && !discovered.names.includes(args.playwright_project)) {
+      return { error: `Invalid playwright_project "${args.playwright_project}". Valid projects: ${discovered.names.join(', ')}` };
     }
 
     const id = randomUUID();
@@ -1420,11 +1432,14 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       return { error: `test_file must end with ".demo.ts" — got "${args.test_file}"` };
     }
 
-    // Validate playwright_project against actual config
+    // Validate playwright_project against actual config (G001: fail-closed)
     if (args.playwright_project !== undefined) {
-      const validProjects = discoverProjectNames(config.projectDir);
-      if (validProjects.length > 0 && !validProjects.includes(args.playwright_project)) {
-        return { error: `Invalid playwright_project "${args.playwright_project}". Valid projects: ${validProjects.join(', ')}` };
+      const discovered = discoverProjectNames(config.projectDir);
+      if (discovered.status === 'error') {
+        return { error: discovered.message };
+      }
+      if (discovered.status === 'discovered' && !discovered.names.includes(args.playwright_project)) {
+        return { error: `Invalid playwright_project "${args.playwright_project}". Valid projects: ${discovered.names.join(', ')}` };
       }
     }
 

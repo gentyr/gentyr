@@ -15,6 +15,7 @@ import * as path from 'path';
 
 import {
   createTestDb,
+  createTempDir,
   isErrorResult,
 } from '../../__testUtils__/index.js';
 import {
@@ -113,7 +114,12 @@ function resolveMainProjectDir(projectDir: string): string {
   return projectDir;
 }
 
-function discoverProjectNames(projectDir: string): string[] {
+type DiscoverResult =
+  | { status: 'discovered'; names: string[] }
+  | { status: 'no-config' }
+  | { status: 'error'; message: string };
+
+function discoverProjectNames(projectDir: string): DiscoverResult {
   try {
     const resolvedDir = resolveMainProjectDir(projectDir);
     const configPath = path.join(resolvedDir, 'playwright.config.ts');
@@ -124,9 +130,13 @@ function discoverProjectNames(projectDir: string): string[] {
     while ((match = re.exec(content)) !== null) {
       names.push(match[1]);
     }
-    return names;
-  } catch {
-    return [];
+    return { status: 'discovered', names };
+  } catch (err: unknown) {
+    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { status: 'no-config' };
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    return { status: 'error', message: `Failed to read playwright.config.ts: ${msg}` };
   }
 }
 
@@ -205,9 +215,12 @@ function createScenario(db: Database.Database, args: {
   }
 
   if (projectDir) {
-    const validProjects = discoverProjectNames(projectDir);
-    if (validProjects.length > 0 && !validProjects.includes(args.playwright_project)) {
-      return { error: `Invalid playwright_project "${args.playwright_project}". Valid projects: ${validProjects.join(', ')}` };
+    const discovered = discoverProjectNames(projectDir);
+    if (discovered.status === 'error') {
+      return { error: discovered.message };
+    }
+    if (discovered.status === 'discovered' && !discovered.names.includes(args.playwright_project)) {
+      return { error: `Invalid playwright_project "${args.playwright_project}". Valid projects: ${discovered.names.join(', ')}` };
     }
   }
 
@@ -270,9 +283,12 @@ function updateScenario(db: Database.Database, args: {
   }
 
   if (args.playwright_project !== undefined && projectDir) {
-    const validProjects = discoverProjectNames(projectDir);
-    if (validProjects.length > 0 && !validProjects.includes(args.playwright_project)) {
-      return { error: `Invalid playwright_project "${args.playwright_project}". Valid projects: ${validProjects.join(', ')}` };
+    const discovered = discoverProjectNames(projectDir);
+    if (discovered.status === 'error') {
+      return { error: discovered.message };
+    }
+    if (discovered.status === 'discovered' && !discovered.names.includes(args.playwright_project)) {
+      return { error: `Invalid playwright_project "${args.playwright_project}". Valid projects: ${discovered.names.join(', ')}` };
     }
   }
 
@@ -752,7 +768,7 @@ describe('Demo Scenario CRUD', () => {
           test_file: 'e2e/demo/no-config.demo.ts',
         }, '/tmp/nonexistent-dir-12345');
 
-        // Should succeed because discoverProjectNames returns [] for missing config
+        // Should succeed because discoverProjectNames returns { status: 'no-config' } for missing config
         expect(isErrorResult(result)).toBe(false);
       });
     });
@@ -1214,6 +1230,165 @@ describe('Demo Scenario CRUD', () => {
       // Scenario should be gone
       const row = db.prepare('SELECT id FROM demo_scenarios WHERE id = ?').get(created.id);
       expect(row).toBeUndefined();
+    });
+  });
+
+  // ============================================================================
+  // discoverProjectNames — discriminated union (G001 fail-closed)
+  // ============================================================================
+
+  describe('discoverProjectNames', () => {
+    it('should return { status: "no-config" } for a directory with no playwright.config.ts', () => {
+      // A dir that definitely does not contain playwright.config.ts
+      const tempDir = createTempDir('discover-no-config');
+      try {
+        const result = discoverProjectNames(tempDir.path);
+        expect(result.status).toBe('no-config');
+      } finally {
+        tempDir.cleanup();
+      }
+    });
+
+    it('should return { status: "no-config" } for a completely nonexistent directory', () => {
+      const result = discoverProjectNames('/tmp/nonexistent-playwright-dir-zzzz99999');
+      expect(result.status).toBe('no-config');
+    });
+
+    it('should return { status: "discovered", names: [...] } for a valid playwright.config.ts', () => {
+      const tempDir = createTempDir('discover-valid-config');
+      try {
+        const configContent = `
+import { defineConfig } from '@playwright/test';
+export default defineConfig({
+  projects: [
+    { name: 'vendor-owner', use: {} },
+    { name: 'vendor-admin', use: {} },
+    { name: 'demo', use: {} },
+  ],
+});
+`;
+        fs.writeFileSync(path.join(tempDir.path, 'playwright.config.ts'), configContent);
+
+        const result = discoverProjectNames(tempDir.path);
+        expect(result.status).toBe('discovered');
+        if (result.status === 'discovered') {
+          expect(Array.isArray(result.names)).toBe(true);
+          expect(result.names).toContain('vendor-owner');
+          expect(result.names).toContain('vendor-admin');
+          expect(result.names).toContain('demo');
+          expect(result.names).toHaveLength(3);
+        }
+      } finally {
+        tempDir.cleanup();
+      }
+    });
+
+    it('should return { status: "error" } for an unreadable playwright.config.ts (G001 fail-closed)', () => {
+      // chmod 000 only denies access for non-root processes
+      if (process.getuid && process.getuid() === 0) {
+        // Running as root — skip: root bypasses file permission checks
+        return;
+      }
+
+      const tempDir = createTempDir('discover-unreadable');
+      try {
+        const configPath = path.join(tempDir.path, 'playwright.config.ts');
+        fs.writeFileSync(configPath, 'export default {};');
+        fs.chmodSync(configPath, 0o000);
+
+        const result = discoverProjectNames(tempDir.path);
+        expect(result.status).toBe('error');
+        if (result.status === 'error') {
+          expect(typeof result.message).toBe('string');
+          expect(result.message.length).toBeGreaterThan(0);
+          expect(result.message).toContain('playwright.config.ts');
+        }
+      } finally {
+        // Restore permissions so cleanup() can delete the file
+        try {
+          fs.chmodSync(path.join(tempDir.path, 'playwright.config.ts'), 0o644);
+        } catch { /* best-effort */ }
+        tempDir.cleanup();
+      }
+    });
+  });
+
+  // ============================================================================
+  // createScenario / updateScenario — fail-closed on config error (G001)
+  // ============================================================================
+
+  describe('fail-closed on unreadable playwright.config.ts (G001)', () => {
+    it('createScenario should return { error } when playwright.config.ts is unreadable', () => {
+      if (process.getuid && process.getuid() === 0) {
+        return;
+      }
+
+      const tempDir = createTempDir('create-unreadable');
+      try {
+        const configPath = path.join(tempDir.path, 'playwright.config.ts');
+        fs.writeFileSync(configPath, 'export default {};');
+        fs.chmodSync(configPath, 0o000);
+
+        const result = createScenario(db, {
+          persona_id: guiPersona.id,
+          title: 'Unreadable Config Flow',
+          description: 'Should be rejected due to unreadable config',
+          playwright_project: 'vendor-owner',
+          test_file: 'e2e/demo/unreadable-config.demo.ts',
+        }, tempDir.path);
+
+        // G001: must fail-closed — return an error, never silently accept
+        expect(isErrorResult(result)).toBe(true);
+        if (isErrorResult(result)) {
+          expect(result.error).toContain('playwright.config.ts');
+        }
+      } finally {
+        try {
+          fs.chmodSync(path.join(tempDir.path, 'playwright.config.ts'), 0o644);
+        } catch { /* best-effort */ }
+        tempDir.cleanup();
+      }
+    });
+
+    it('updateScenario should return { error } when playwright.config.ts is unreadable', () => {
+      if (process.getuid && process.getuid() === 0) {
+        return;
+      }
+
+      // Create a valid scenario first (no projectDir = no config validation at creation time)
+      const created = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Update Unreadable Config Flow',
+        description: 'Will be updated with an unreadable config dir',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/update-unreadable-config.demo.ts',
+      });
+      expect(isErrorResult(created)).toBe(false);
+      if (isErrorResult(created)) return;
+
+      const tempDir = createTempDir('update-unreadable');
+      try {
+        const configPath = path.join(tempDir.path, 'playwright.config.ts');
+        fs.writeFileSync(configPath, 'export default {};');
+        fs.chmodSync(configPath, 0o000);
+
+        const result = updateScenario(db, {
+          id: created.id,
+          // Changing playwright_project triggers discoverProjectNames
+          playwright_project: 'vendor-admin',
+        }, tempDir.path);
+
+        // G001: must fail-closed — return an error, never silently accept
+        expect(isErrorResult(result)).toBe(true);
+        if (isErrorResult(result)) {
+          expect(result.error).toContain('playwright.config.ts');
+        }
+      } finally {
+        try {
+          fs.chmodSync(path.join(tempDir.path, 'playwright.config.ts'), 0o644);
+        } catch { /* best-effort */ }
+        tempDir.cleanup();
+      }
     });
   });
 });
