@@ -1323,9 +1323,11 @@ describe('forwardRequest() - 401 retry handling', () => {
     const code = fs.readFileSync(PROXY_PATH, 'utf8');
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
-    // Find the 401 check — it must include retryCount < MAX_401_RETRIES
+    // Find the 401 check — it must include retryCount < MAX_401_RETRIES.
+    // Use a larger look-behind (1000 chars) to accommodate the debounce block
+    // that now sits between the outer `if` condition and the rotating_on_401 log.
     const rotatingOn401Idx = fnStart.indexOf('rotating_on_401');
-    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 300), rotatingOn401Idx);
+    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 1000), rotatingOn401Idx);
 
     assert.match(
       authRetrySection,
@@ -1338,9 +1340,10 @@ describe('forwardRequest() - 401 retry handling', () => {
     const code = fs.readFileSync(PROXY_PATH, 'utf8');
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
-    // Find the 401 check — it must include !usePassthrough
+    // Find the 401 check — it must include !usePassthrough.
+    // Use a larger look-behind (1200 chars) to accommodate the debounce block.
     const rotatingOn401Idx = fnStart.indexOf('rotating_on_401');
-    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 300), rotatingOn401Idx);
+    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 1200), rotatingOn401Idx);
 
     assert.match(
       authRetrySection,
@@ -1353,9 +1356,10 @@ describe('forwardRequest() - 401 retry handling', () => {
     const code = fs.readFileSync(PROXY_PATH, 'utf8');
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
-    // The 401 guard must include isMcpProxy check
+    // The 401 guard must include isMcpProxy check.
+    // Use a larger look-behind (1200 chars) to accommodate the debounce block.
     const rotatingOn401Idx = fnStart.indexOf('rotating_on_401');
-    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 400), rotatingOn401Idx);
+    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 1200), rotatingOn401Idx);
 
     assert.match(
       authRetrySection,
@@ -1388,11 +1392,12 @@ describe('forwardRequest() - 401 retry handling', () => {
     const code = fs.readFileSync(PROXY_PATH, 'utf8');
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
-    // Find the 401 section
+    // Find the 401 section — use a larger window (1200 chars) to accommodate
+    // the debounce block that now sits between the outer if-guard and upstream.destroy()
     const auth401Idx = fnStart.indexOf('responseStatusCode === 401');
     assert.ok(auth401Idx !== -1, 'Must have 401 check');
 
-    const auth401Section = fnStart.slice(auth401Idx, auth401Idx + 600);
+    const auth401Section = fnStart.slice(auth401Idx, auth401Idx + 1200);
 
     assert.match(
       auth401Section,
@@ -1766,24 +1771,26 @@ describe('rotation-proxy.js - Path-level swap allowlist', () => {
     );
   });
 
-  it('!forceSwap guard on path-level passthrough condition', () => {
+  it('path-level passthrough applies regardless of forceSwap', () => {
     const code = fs.readFileSync(PROXY_PATH, 'utf8');
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
     const pathCheckIdx = fnStart.indexOf('session_path_passthrough');
     assert.ok(pathCheckIdx !== -1, 'Must have session_path_passthrough');
 
-    const guardSection = fnStart.slice(Math.max(0, pathCheckIdx - 500), pathCheckIdx);
-    assert.match(
-      guardSection,
-      /!forceSwap/,
-      'Path-level passthrough must be guarded by !forceSwap to prevent overriding merged/tombstone swap decisions'
+    // The condition guarding session_path_passthrough should NOT include !forceSwap
+    // Path-level passthrough must always apply to prevent OAuth revocation
+    const guardSection = fnStart.slice(Math.max(0, pathCheckIdx - 300), pathCheckIdx);
+    // Find the nearest if-condition: should be `if (!usePassthrough && retryCount === 0)`
+    assert.ok(
+      !guardSection.includes('!forceSwap'),
+      'Path-level passthrough must NOT be guarded by !forceSwap — OAuth paths must always passthrough'
     );
   });
 
-  it('behavioral: merged token on non-SWAP path should NOT passthrough', () => {
+  it('behavioral: merged token on non-SWAP path SHOULD passthrough (OAuth protection)', () => {
     // Simulate the forwardRequest logic inline:
-    // merged token → forceSwap = true → path check skipped → usePassthrough stays false
+    // merged token → forceSwap = true → path check still runs → usePassthrough = true
     const SWAP_PATH_PREFIXES = [
       '/v1/messages',
       '/v1/organizations',
@@ -1803,30 +1810,29 @@ describe('rotation-proxy.js - Path-level swap allowlist', () => {
       forceSwap = true;
     }
 
-    // Simulate: path-level passthrough check (the fixed version)
+    // Simulate: path-level passthrough check (the fixed version — no !forceSwap guard)
     const testPath = '/v1/mcp_servers';
-    if (!usePassthrough && !forceSwap && retryCount === 0) {
+    if (!usePassthrough && retryCount === 0) {
       const isSwapPath = SWAP_PATH_PREFIXES.some(prefix => testPath.startsWith(prefix));
       if (!isSwapPath) {
         usePassthrough = true;
       }
     }
 
-    assert.strictEqual(usePassthrough, false,
-      'Merged token on /v1/mcp_servers must NOT be set to passthrough — forceSwap prevents it');
+    assert.strictEqual(usePassthrough, true,
+      'Merged token on /v1/mcp_servers MUST passthrough — OAuth endpoints must not get swapped tokens');
     assert.strictEqual(forceSwap, true,
-      'forceSwap must be true for merged tokens');
+      'forceSwap must still be true for merged tokens (used by dead-active-key guard)');
   });
 
-  it('logs force_swap_override event for merged/tombstone tokens on non-SWAP paths', () => {
+  it('force_swap_override event is removed (no longer needed)', () => {
     const code = fs.readFileSync(PROXY_PATH, 'utf8');
     const fnStart = extractFunctionBody(code, 'forwardRequest');
     assert.ok(fnStart !== null, 'forwardRequest must be defined');
 
-    assert.match(
-      fnStart,
-      /proxyLog\(['"]force_swap_override['"]/,
-      'Must log force_swap_override event when forceSwap overrides path-level passthrough'
+    assert.ok(
+      !fnStart.includes("proxyLog('force_swap_override'"),
+      'force_swap_override must be removed — path-level passthrough now always applies'
     );
   });
 
@@ -2018,15 +2024,16 @@ describe('rotation-proxy.js - Dead active key passthrough', () => {
   it('should trigger syncKeys on dead active key detection', () => {
     const checkIdx = code.indexOf("dead_active_key_passthrough");
     assert.ok(checkIdx !== -1);
-    // syncKeys call should appear within 300 chars after the log event
-    const followingCode = code.slice(checkIdx, checkIdx + 500);
+    // syncKeys call should appear after the log event (use 1100 chars to accommodate
+    // the dead_active_key_self_hit else-branch that now sits between the two)
+    const followingCode = code.slice(checkIdx, checkIdx + 1100);
     assert.ok(
       followingCode.includes('syncKeys()'),
       'Must trigger syncKeys after dead active key passthrough'
     );
   });
 
-  it('behavioral: known token + expired active key should passthrough', () => {
+  it('behavioral: known token + expired active key should passthrough (incoming !== active)', () => {
     // Simulate the dead active key logic inline
     const incomingKeyId = 'abc12345';
     const activeKeyId = 'dead6789';
@@ -2042,15 +2049,18 @@ describe('rotation-proxy.js - Dead active key passthrough', () => {
     };
 
     // Simulate: keyEntry exists (not unknown), so usePassthrough is false
-    // Now check dead active key logic
+    // Now check dead active key logic (Bug 3 fix: only passthrough when incoming !== active)
     if (!usePassthrough && !forceSwap) {
       const activeEntry = state.keys[state.active_key_id];
       if (!activeEntry || !['active', 'exhausted'].includes(activeEntry.status)) {
-        usePassthrough = true;
+        if (incomingKeyId !== state.active_key_id) {
+          usePassthrough = true;
+        }
       }
     }
 
-    assert.strictEqual(usePassthrough, true, 'Must passthrough when active key is expired');
+    assert.strictEqual(usePassthrough, true,
+      'Must passthrough when active key is expired and incoming token is different');
   });
 
   it('behavioral: known token + active active key should swap normally', () => {
@@ -2076,5 +2086,206 @@ describe('rotation-proxy.js - Dead active key passthrough', () => {
     }
 
     assert.strictEqual(usePassthrough, false, 'Must NOT passthrough when active key is healthy');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug fixes: OAuth token revocation prevention
+// ---------------------------------------------------------------------------
+
+describe('rotation-proxy.js - OAuth token revocation fixes', () => {
+  it('merged token on SWAP path (/v1/messages) should still swap', () => {
+    const SWAP_PATH_PREFIXES = [
+      '/v1/messages',
+      '/v1/organizations',
+      '/api/event_logging/',
+      '/api/eval/',
+      '/api/web/',
+    ];
+
+    let usePassthrough = false;
+    let forceSwap = false;
+    const retryCount = 0;
+
+    // Simulate: incoming token is merged
+    forceSwap = true;
+
+    // Path-level check (fixed version — no !forceSwap guard)
+    const testPath = '/v1/messages';
+    if (!usePassthrough && retryCount === 0) {
+      const isSwapPath = SWAP_PATH_PREFIXES.some(prefix => testPath.startsWith(prefix));
+      if (!isSwapPath) {
+        usePassthrough = true;
+      }
+    }
+
+    assert.strictEqual(usePassthrough, false,
+      'Merged token on /v1/messages must NOT passthrough — SWAP paths always get swapped');
+  });
+
+  it('tombstone token on SWAP path should still swap', () => {
+    const SWAP_PATH_PREFIXES = [
+      '/v1/messages',
+      '/v1/organizations',
+      '/api/event_logging/',
+      '/api/eval/',
+      '/api/web/',
+    ];
+
+    let usePassthrough = false;
+    let forceSwap = false;
+    const retryCount = 0;
+
+    // Simulate: incoming token is tombstone
+    forceSwap = true;
+
+    // Path-level check
+    const testPath = '/v1/organizations/list';
+    if (!usePassthrough && retryCount === 0) {
+      const isSwapPath = SWAP_PATH_PREFIXES.some(prefix => testPath.startsWith(prefix));
+      if (!isSwapPath) {
+        usePassthrough = true;
+      }
+    }
+
+    assert.strictEqual(usePassthrough, false,
+      'Tombstone token on /v1/organizations must NOT passthrough');
+  });
+
+  it('401 rotation debounce: second 401 for same key within 5s is debounced', () => {
+    // Simulate the debounce logic
+    let _last401Rotation = { keyId: null, ts: 0 };
+    const ROTATION_DEBOUNCE_MS = 5000;
+    const activeKeyId = 'key12345';
+
+    // First 401 — should proceed
+    const now1 = Date.now();
+    const firstDebounced = _last401Rotation.keyId === activeKeyId &&
+      now1 - _last401Rotation.ts < ROTATION_DEBOUNCE_MS;
+    assert.strictEqual(firstDebounced, false, 'First 401 must not be debounced');
+    _last401Rotation = { keyId: activeKeyId, ts: now1 };
+
+    // Second 401 within 5s — should be debounced
+    const now2 = now1 + 2000; // 2 seconds later
+    const secondDebounced = _last401Rotation.keyId === activeKeyId &&
+      now2 - _last401Rotation.ts < ROTATION_DEBOUNCE_MS;
+    assert.strictEqual(secondDebounced, true, 'Second 401 within 5s must be debounced');
+
+    // Third 401 after 5s — should proceed
+    const now3 = now1 + 6000; // 6 seconds later
+    const thirdDebounced = _last401Rotation.keyId === activeKeyId &&
+      now3 - _last401Rotation.ts < ROTATION_DEBOUNCE_MS;
+    assert.strictEqual(thirdDebounced, false, '401 after 5s must not be debounced');
+  });
+
+  it('401 debounce: different key is not debounced', () => {
+    let _last401Rotation = { keyId: 'key_A', ts: Date.now() };
+    const ROTATION_DEBOUNCE_MS = 5000;
+    const activeKeyId = 'key_B'; // different key
+
+    const now = Date.now();
+    const debounced = _last401Rotation.keyId === activeKeyId &&
+      now - _last401Rotation.ts < ROTATION_DEBOUNCE_MS;
+    assert.strictEqual(debounced, false, 'Different key must not be debounced');
+  });
+
+  it('dead active key self-passthrough: incoming === active dead key does NOT passthrough', () => {
+    const deadKeyId = 'dead1234';
+    let usePassthrough = false;
+    const forceSwap = false;
+    const incomingKeyId = deadKeyId; // same as active key
+
+    const state = {
+      active_key_id: deadKeyId,
+      keys: {
+        [deadKeyId]: { status: 'expired', accessToken: 'tok_dead' },
+      },
+    };
+
+    if (!usePassthrough && !forceSwap) {
+      const activeEntry = state.keys[state.active_key_id];
+      if (!activeEntry || !['active', 'exhausted'].includes(activeEntry.status)) {
+        if (incomingKeyId !== state.active_key_id) {
+          usePassthrough = true;
+        }
+        // else: same dead token — don't passthrough
+      }
+    }
+
+    assert.strictEqual(usePassthrough, false,
+      'When incoming IS the dead active key, must NOT passthrough — let 401 rotation handle it');
+  });
+
+  it('dead active key different token: incoming !== active dead key DOES passthrough', () => {
+    const deadKeyId = 'dead1234';
+    const freshKeyId = 'fresh567';
+    let usePassthrough = false;
+    const forceSwap = false;
+    const incomingKeyId = freshKeyId; // different from active key
+
+    const state = {
+      active_key_id: deadKeyId,
+      keys: {
+        [freshKeyId]: { status: 'active', accessToken: 'tok_fresh' },
+        [deadKeyId]: { status: 'expired', accessToken: 'tok_dead' },
+      },
+    };
+
+    if (!usePassthrough && !forceSwap) {
+      const activeEntry = state.keys[state.active_key_id];
+      if (!activeEntry || !['active', 'exhausted'].includes(activeEntry.status)) {
+        if (incomingKeyId !== state.active_key_id) {
+          usePassthrough = true;
+        }
+      }
+    }
+
+    assert.strictEqual(usePassthrough, true,
+      'When incoming is a different (fresher) token and active key is dead, must passthrough');
+  });
+
+  it('code: rotation_debounced event exists in forwardRequest', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+    assert.ok(fnStart !== null, 'forwardRequest must be defined');
+    assert.match(
+      fnStart,
+      /proxyLog\(['"]rotation_debounced['"]/,
+      'Must log rotation_debounced event when concurrent 401 rotation is skipped'
+    );
+  });
+
+  it('code: dead_active_key_self_hit event exists in forwardRequest', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+    assert.ok(fnStart !== null, 'forwardRequest must be defined');
+    assert.match(
+      fnStart,
+      /proxyLog\(['"]dead_active_key_self_hit['"]/,
+      'Must log dead_active_key_self_hit event when incoming token IS the dead active key'
+    );
+  });
+
+  it('code: request_intercepted includes key_status field', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+    const interceptIdx = fnStart.indexOf("proxyLog('request_intercepted'");
+    assert.ok(interceptIdx !== -1, 'Must have request_intercepted log');
+    const logSection = fnStart.slice(interceptIdx, interceptIdx + 400);
+    assert.match(logSection, /key_status/, 'request_intercepted must include key_status field');
+  });
+
+  it('code: request_intercepted includes swap_reason field', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+    const interceptIdx = fnStart.indexOf("proxyLog('request_intercepted'");
+    assert.ok(interceptIdx !== -1, 'Must have request_intercepted log');
+    const logSection = fnStart.slice(interceptIdx, interceptIdx + 400);
+    assert.match(logSection, /swap_reason/, 'request_intercepted must include swap_reason field');
+  });
+
+  it('code: ROTATION_DEBOUNCE_MS constant is defined', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(code, /const ROTATION_DEBOUNCE_MS\s*=\s*5000/, 'Must define ROTATION_DEBOUNCE_MS = 5000');
   });
 });
