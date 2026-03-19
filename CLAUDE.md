@@ -581,7 +581,7 @@ Sole authority for demo lifecycle work. Handles prerequisite registration, scena
 
 ## Rotation Proxy
 
-Local MITM proxy on `localhost:18080` for transparent credential rotation. Intercepts `api.anthropic.com` (TLS MITM + header swap); `mcp-proxy.anthropic.com` and everything else passes through as a transparent CONNECT tunnel (MCP proxy uses session-bound OAuth tokens that must not be swapped). Within MITM'd requests, only paths in `SWAP_PATH_PREFIXES` (`/v1/messages`, `/v1/organizations`, `/api/event_logging/`, `/api/eval/`, `/api/web/`) get the Authorization header swapped — OAuth and session-health paths pass through unchanged to prevent token revocation. Handles 429 retry with automatic key rotation. Runs as a launchd KeepAlive service. Enable/disable via `npx gentyr proxy enable|disable`.
+Local MITM proxy on `localhost:18080` for transparent credential rotation. Intercepts `api.anthropic.com` (TLS MITM + header swap); `mcp-proxy.anthropic.com` and everything else passes through as a transparent CONNECT tunnel (MCP proxy uses session-bound OAuth tokens that must not be swapped). Within MITM'd requests, only paths in `SWAP_PATH_PREFIXES` (`/v1/messages`, `/v1/organizations`, `/api/event_logging/`, `/api/eval/`, `/api/web/`) get the Authorization header swapped — OAuth and session-health paths always pass through unchanged (regardless of token status) to prevent token revocation. Handles 429 retry with automatic key rotation. 401 rotation is debounced (5s) per key to prevent concurrent connections from triggering redundant rotations. Runs as a launchd KeepAlive service. Enable/disable via `npx gentyr proxy enable|disable`.
 
 > Full details: [Rotation Proxy](docs/CLAUDE-REFERENCE.md#rotation-proxy)
 
@@ -598,15 +598,16 @@ Structured JSON log at `~/.claude/rotation-proxy.log`. 24h retention (auto-clean
 | `tunnel_error` | Upstream connect failed | `host`, `error`, `duration_ms` |
 | `tunnel_client_error` | Client socket error | `host`, `error`, `duration_ms` |
 | `mitm_intercept` | CONNECT for MITM host | `host`, `port` |
-| `request_intercepted` | MITM request forwarded | `host`, `method`, `path`, `active_key_id` |
+| `request_intercepted` | MITM request forwarded | `host`, `method`, `path`, `active_key_id`, `key_status`, `swap_reason` |
 | `response_received` | MITM response status | `host`, `status`, `is_sse`, `active_key_id` |
 | `rotating_on_429` | Key exhausted | `host`, `exhausted_key_id`, `retry` |
 | `rotating_on_401` | Auth failure rotation | `host`, `failed_key_id`, `retry` |
+| `rotation_debounced` | Second 401 for same key within 5s — rotation skipped, 401 passed through | `host`, `method`, `path`, `key_id` |
 | `session_path_passthrough` | Path not in swap allowlist (OAuth, session-health, etc.) | `host`, `method`, `path`, `incoming_key_id`, `active_key_id` |
 | `tombstone_token_swap` | Incoming token is tombstoned — swapping to active key | `host`, `method`, `path`, `incoming_key_id`, `active_key_id` |
 | `merged_token_swap` | Incoming token is merged/deduped — swapping to active key | `host`, `method`, `path`, `incoming_key_id`, `merged_into`, `active_key_id` |
-| `force_swap_override` | forceSwap prevented passthrough on non-SWAP path (merged/tombstone token) | `host`, `method`, `path`, `incoming_key_id`, `active_key_id`, `reason` |
-| `dead_active_key_passthrough` | Active key is dead — incoming token passed through unchanged | `host`, `method`, `path`, `incoming_key_id`, `active_key_id`, `active_status` |
+| `dead_active_key_passthrough` | Active key is dead and incoming token differs — passed through unchanged | `host`, `method`, `path`, `incoming_key_id`, `active_key_id`, `active_status` |
+| `dead_active_key_self_hit` | Active key is dead and incoming token IS the active key — let 401 rotation handle | `host`, `method`, `path`, `incoming_key_id`, `active_key_id`, `active_status` |
 
 **Debug workflow:**
 1. `grep 'tunnel_error\|tunnel_client_error' ~/.claude/rotation-proxy.log` — find broken tunnels
