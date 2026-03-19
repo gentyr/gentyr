@@ -306,6 +306,7 @@ export interface DemoProgress {
 export interface CheckDemoResultResult {
   status: DemoRunStatus;
   pid: number;
+  scenario_id?: string;
   project?: string;
   test_file?: string;
   started_at?: string;

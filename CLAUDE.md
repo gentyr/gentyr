@@ -559,7 +559,7 @@ Register setup commands that must run before demos. Prerequisites are idempotent
 2. Run global prerequisites
 3. Execute each scenario headless (`DEMO_HEADLESS=1, DEMO_SLOW_MO=0`); scenario `env_vars` are merged into the execution environment
 4. Persist results to `.claude/state/demo-validation-history.json` (last 100 runs)
-5. Spawn `demo-manager` repair agents (max 3) for failures in isolated worktrees
+5. Spawn `demo-manager` repair agents (max 3) for failures in isolated worktrees; repair prompts include prerequisite context queried from `user-feedback.db`
 6. Report failures to deputy-CTO via `agent-reports`
 
 ADK-category scenarios are skipped (require replay data). Cooldown: `demo_validation` (default 360 minutes / 6 hours).
@@ -577,7 +577,7 @@ Sole authority for demo lifecycle work. Handles prerequisite registration, scena
 
 **Rules:** Only modifies `.demo.ts` files and demo configuration. Does NOT commit (project-manager handles git). Other agents (`code-writer`, `test-writer`, `feedback-agent`) are explicitly forbidden from modifying `.demo.ts` files. When any agent encounters demo-related work, it MUST create a `DEMO-MANAGER` section task.
 
-**Failure-triggered automation:** A PostToolUse hook on `check_demo_result` and `check_demo_batch_result` detects failures, deduplicates against in-flight repairs, and spawns demo-manager agents in isolated worktrees.
+**Failure-triggered automation:** A PostToolUse hook on `check_demo_result`, `check_demo_batch_result`, and `run_demo` detects failures, deduplicates against in-flight repairs, and spawns demo-manager agents in isolated worktrees. Repair prompts are enriched with prerequisite context (global, persona, and scenario-scoped prerequisites queried from `user-feedback.db`) so agents diagnose prerequisite failures before modifying `.demo.ts` files. The `run_demo` hook handles immediate failures (e.g., prerequisite failure before test execution begins), with title and test file fallback lookup from `user-feedback.db` when the tool response lacks them.
 
 ## Rotation Proxy
 

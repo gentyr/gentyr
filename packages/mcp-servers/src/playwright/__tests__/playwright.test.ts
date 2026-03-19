@@ -1751,6 +1751,7 @@ describe('Playwright MCP Server - Type Safety', () => {
       const result: CheckDemoResultResult = {
         status: 'failed',
         pid: 42,
+        scenario_id: 'scenario-abc-123',
         project: 'vendor-owner',
         test_file: 'e2e/demo/onboarding.demo.ts',
         started_at: '2026-02-28T00:00:00.000Z',
@@ -1765,6 +1766,8 @@ describe('Playwright MCP Server - Type Safety', () => {
       expect(typeof result.trace_summary).toBe('string');
       expect(result.trace_summary).not.toBeNull();
       expect(result.trace_summary!.length).toBeGreaterThan(0);
+      expect(result.scenario_id).toBe('scenario-abc-123');
+      expect(typeof result.scenario_id).toBe('string');
     });
 
     it('trace_summary when present must be a non-empty string', () => {
@@ -1944,6 +1947,80 @@ describe('Playwright MCP Server - Type Safety', () => {
       expect(result.progress!.has_failures).toBe(false);
       expect(typeof result.progress!.tests_completed).toBe('number');
       expect(Array.isArray(result.progress!.last_5_results)).toBe(true);
+    });
+  });
+
+  describe('CheckDemoResultResult - scenario_id field', () => {
+    it('should accept CheckDemoResultResult without scenario_id (field is optional)', () => {
+      const result: CheckDemoResultResult = {
+        status: 'passed',
+        pid: 12345,
+        project: 'vendor-owner',
+        message: 'Demo completed successfully.',
+      };
+
+      expect(result.scenario_id).toBeUndefined();
+      expect(result.status).toBe('passed');
+    });
+
+    it('should accept CheckDemoResultResult with scenario_id as a string', () => {
+      const result: CheckDemoResultResult = {
+        status: 'failed',
+        pid: 99999,
+        project: 'demo',
+        scenario_id: 'abc-def-123',
+        exit_code: 1,
+        message: 'Demo failed.',
+      };
+
+      expect(typeof result.scenario_id).toBe('string');
+      expect(result.scenario_id).toBe('abc-def-123');
+    });
+
+    it('scenario_id when present must be a non-empty string', () => {
+      const withScenario: CheckDemoResultResult = {
+        status: 'failed',
+        pid: 1,
+        message: 'failed',
+        scenario_id: 'my-scenario-uuid',
+      };
+
+      expect(typeof withScenario.scenario_id).toBe('string');
+      expect(withScenario.scenario_id!.length).toBeGreaterThan(0);
+    });
+
+    it('scenario_id is preserved through JSON serialization', () => {
+      const original: CheckDemoResultResult = {
+        status: 'failed',
+        pid: 7777,
+        scenario_id: 'round-trip-scenario-id',
+        project: 'vendor-owner',
+        message: 'Demo failed.',
+        exit_code: 1,
+      };
+
+      const serialized = JSON.stringify(original);
+      const deserialized: CheckDemoResultResult = JSON.parse(serialized);
+
+      expect(deserialized.scenario_id).toBe('round-trip-scenario-id');
+      expect(typeof deserialized.scenario_id).toBe('string');
+      expect(deserialized.pid).toBe(7777);
+      expect(deserialized.status).toBe('failed');
+    });
+
+    it('CheckDemoResultResult without scenario_id is absent after JSON round-trip', () => {
+      const original: CheckDemoResultResult = {
+        status: 'passed',
+        pid: 8888,
+        project: 'demo',
+        message: 'Demo passed.',
+      };
+
+      const serialized = JSON.stringify(original);
+      const deserialized: CheckDemoResultResult = JSON.parse(serialized);
+
+      expect(deserialized.scenario_id).toBeUndefined();
+      expect('scenario_id' in deserialized).toBe(false);
     });
   });
 

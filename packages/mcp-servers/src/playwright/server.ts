@@ -1709,6 +1709,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     return {
       status: 'unknown',
       pid,
+      scenario_id: undefined,
       message: `No demo run found for PID ${pid}. The process may have been launched before the MCP server started, or the PID is incorrect.`,
     };
   }
@@ -1799,6 +1800,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
         return {
           status: entry.status,
           pid,
+          scenario_id: entry.scenario_id,
           project: entry.project,
           test_file: entry.test_file,
           started_at: entry.started_at,
@@ -1872,6 +1874,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
       return {
         status: entry.status,
         pid,
+        scenario_id: entry.scenario_id,
         project: entry.project,
         test_file: entry.test_file,
         started_at: entry.started_at,
@@ -1938,6 +1941,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
   return {
     status: entry.status,
     pid,
+    scenario_id: entry.scenario_id,
     project: entry.project,
     test_file: entry.test_file,
     started_at: entry.started_at,

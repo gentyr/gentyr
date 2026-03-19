@@ -343,6 +343,14 @@
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/demo-failure-spawner.js",
           "timeout": 15
         }]
+      },
+      {
+        "matcher": "mcp__playwright__run_demo",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/demo-failure-spawner.js",
+          "timeout": 15
+        }]
       }
     ],
     "Stop": [

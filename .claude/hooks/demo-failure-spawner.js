@@ -47,6 +47,57 @@ function log(message) {
 }
 
 /**
+ * Query registered prerequisites for a given scenario from user-feedback.db.
+ */
+function queryPrerequisites(scenarioId) {
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+  if (!Database || !fs.existsSync(dbPath)) return [];
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    // Get scenario's persona_id
+    const scenario = db.prepare('SELECT persona_id FROM demo_scenarios WHERE id = ?').get(scenarioId);
+    const personaId = scenario?.persona_id;
+    // Get all applicable prerequisites (global + persona + scenario)
+    const rows = db.prepare(`
+      SELECT scope, description, command, health_check, run_as_background
+      FROM demo_prerequisites
+      WHERE scope = 'global'
+         OR (scope = 'persona' AND persona_id = ?)
+         OR (scope = 'scenario' AND scenario_id = ?)
+      ORDER BY sort_order
+    `).all(personaId || '', scenarioId);
+    db.close();
+    return rows;
+  } catch { return []; }
+}
+
+/**
+ * Format prerequisites as a text block for repair prompts.
+ */
+function formatPrerequisites(prereqs) {
+  if (!prereqs.length) return '';
+  const lines = prereqs.map(p => {
+    let line = `  - [${p.scope}] ${p.description || p.command}`;
+    if (p.command) line += `\n    Command: \`${p.command}\``;
+    if (p.health_check) line += `\n    Health check: \`${p.health_check}\``;
+    if (p.run_as_background) line += ` (background)`;
+    return line;
+  });
+  return [
+    ``,
+    `**Registered Prerequisites:**`,
+    ...lines,
+    ``,
+    `## Prerequisite Diagnosis`,
+    `Before modifying the .demo.ts file, check if the failure is caused by a prerequisite issue:`,
+    `1. Run \`list_prerequisites\` to see all registered prerequisites`,
+    `2. Run \`run_prerequisites\` to verify they pass`,
+    `3. If a prerequisite is missing or wrong, use \`register_prerequisite\` / \`update_prerequisite\` to fix it`,
+    `4. Only modify the .demo.ts file if prerequisites pass and the failure is in the test code`,
+  ].join('\n');
+}
+
+/**
  * Check if a repair is already in-flight for this scenario.
  * Checks both agent-tracker history and todo.db.
  */
@@ -88,7 +139,7 @@ function isRepairInFlight(scenarioId) {
  * Spawn a demo-manager repair agent for a failed scenario.
  */
 function spawnRepairAgent(scenario) {
-  const { id: scenarioId, title, error } = scenario;
+  const { id: scenarioId, title, error, test_file } = scenario;
 
   // Create worktree
   let worktreePath;
@@ -135,31 +186,39 @@ function spawnRepairAgent(scenario) {
       mcpConfig: fs.existsSync(agentMcpConfig) ? agentMcpConfig : undefined,
       extraArgs: ['--agent-name', 'demo-manager'],
       metadata: { scenarioId, scenarioTitle: title, error, taskId },
-      buildPrompt: (agentId) => [
-        `[Automation][task-runner-demo-manager][AGENT:${agentId}] You are a demo repair agent. A demo scenario failed.`,
-        ``,
-        `**Failed Scenario:**`,
-        `- ID: ${scenarioId}`,
-        `- Title: ${title}`,
-        `- Error: ${error || 'Unknown error'}`,
-        taskId ? `- Tracking Task: ${taskId}` : '',
-        ``,
-        `## Instructions`,
-        ``,
-        `Follow the repair protocol in your agent definition:`,
-        `1. Run preflight_check to verify environment`,
-        `2. Read the failed .demo.ts file`,
-        `3. Diagnose from the error output`,
-        `4. Fix the .demo.ts file`,
-        `5. Re-run the scenario headless to verify`,
-        `6. If you cannot fix it (app code issue), report via report_to_deputy_cto`,
-        ``,
-        `## When Done`,
-        ``,
-        `1. Spawn project-manager to commit, push, create PR, self-merge, and clean up worktree`,
-        `2. Call mcp__todo-db__summarize_work with your results`,
-        taskId ? `3. Call mcp__todo-db__complete_task({ id: "${taskId}" })` : '',
-      ].filter(Boolean).join('\n'),
+      buildPrompt: (agentId) => {
+        const prereqs = queryPrerequisites(scenarioId);
+        const prereqBlock = formatPrerequisites(prereqs);
+        return [
+          `[Automation][task-runner-demo-manager][AGENT:${agentId}] You are a demo repair agent. A demo scenario failed.`,
+          ``,
+          `**Failed Scenario:**`,
+          `- ID: ${scenarioId}`,
+          `- Title: ${title}`,
+          `- Error: ${error || 'Unknown error'}`,
+          test_file ? `- Test File: ${test_file}` : '',
+          taskId ? `- Tracking Task: ${taskId}` : '',
+          prereqBlock,
+          ``,
+          `## Instructions`,
+          ``,
+          `Follow the repair protocol in your agent definition:`,
+          `1. Check registered prerequisites via \`list_prerequisites\` — verify all pass via \`run_prerequisites\``,
+          `2. If a prerequisite is missing or broken, fix it via \`register_prerequisite\` / \`update_prerequisite\``,
+          `3. Run preflight_check to verify environment`,
+          `4. Read the failed .demo.ts file`,
+          `5. Diagnose from the error output`,
+          `6. Fix the .demo.ts file or prerequisite configuration`,
+          `7. Re-run the scenario headless to verify`,
+          `8. If you cannot fix it (app code issue), report via report_to_deputy_cto`,
+          ``,
+          `## When Done`,
+          ``,
+          `1. Spawn project-manager to commit, push, create PR, self-merge, and clean up worktree`,
+          `2. Call mcp__todo-db__summarize_work with your results`,
+          taskId ? `3. Call mcp__todo-db__complete_task({ id: "${taskId}" })` : '',
+        ].filter(Boolean).join('\n');
+      },
     });
 
     log(`Enqueued repair agent for scenario "${title}" (${scenarioId})`);
@@ -235,6 +294,7 @@ process.stdin.on('end', () => {
             id: s.scenario_id || s.id || 'unknown',
             title: s.title || s.scenario_title || 'Unknown scenario',
             error: s.failure_summary || s.error || s.message || null,
+            test_file: s.test_file || null,
           });
         }
       }
@@ -245,6 +305,38 @@ process.stdin.on('end', () => {
           id: response.scenario_id || response.id || 'unknown',
           title: response.title || response.scenario_title || 'Unknown scenario',
           error: response.failure_summary || response.error || response.message || null,
+          test_file: response.test_file || null,
+        });
+      }
+    } else if (toolName === 'mcp__playwright__run_demo') {
+      // run_demo immediate failure (e.g., prerequisite failure)
+      if (response.success === false) {
+        // Extract scenario info from response or tool input
+        const scenarioId = response.scenario_id || hookInput.tool_input?.scenario_id || 'unknown';
+        let scenarioTitle = response.title || response.scenario_title || null;
+        let testFile = response.test_file || null;
+
+        // Look up missing title/test_file from user-feedback.db
+        if ((!scenarioTitle || !testFile) && scenarioId !== 'unknown' && Database) {
+          try {
+            const dbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+            if (fs.existsSync(dbPath)) {
+              const db = new Database(dbPath, { readonly: true });
+              const row = db.prepare('SELECT title, test_file FROM demo_scenarios WHERE id = ?').get(scenarioId);
+              db.close();
+              if (row) {
+                if (!scenarioTitle) scenarioTitle = row.title;
+                if (!testFile) testFile = row.test_file;
+              }
+            }
+          } catch { /* non-fatal */ }
+        }
+
+        failedScenarios.push({
+          id: scenarioId,
+          title: scenarioTitle || 'Unknown scenario',
+          error: response.error || response.message || response.failure_summary || null,
+          test_file: testFile,
         });
       }
     }
