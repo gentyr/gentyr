@@ -369,7 +369,7 @@ export const CreateScenarioArgsSchema = z.object({
   title: z.string().min(1).max(200).describe('Human-readable scenario title shown in /demo-interactive and /demo-autonomous menus'),
   description: z.string().min(1).max(2000).describe('What the scenario demonstrates — given to code-writer for implementation and to persona agents for context'),
   category: z.string().max(50).optional().describe('Optional grouping (e.g., "onboarding", "admin", "billing")'),
-  playwright_project: z.string().min(1).max(100).describe('Playwright project name for auth state — must match a project in the target app\'s playwright.config.ts'),
+  playwright_project: z.string().min(1).max(100).describe('Playwright project name — MUST match an existing project in playwright.config.ts. Common projects: "demo" (e2e/demo/ — extension+vendor demos), "vendor-owner" (e2e/vendor/ — vendor dashboard), "extension" (e2e/extension/ — extension-only tests). Run discoverProjectNames() to see available projects.'),
   test_file: z.string().min(1).max(500)
     .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
     .describe('Relative path to the .demo.ts file (e.g., e2e/demo/vendor-onboarding.demo.ts)'),
@@ -383,7 +383,8 @@ export const UpdateScenarioArgsSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   description: z.string().min(1).max(2000).optional(),
   category: z.string().max(50).optional(),
-  playwright_project: z.string().min(1).max(100).optional(),
+  playwright_project: z.string().min(1).max(100).optional()
+    .describe('Playwright project name — MUST match an existing project in playwright.config.ts. Common projects: "demo" (e2e/demo/), "vendor-owner" (e2e/vendor/), "extension" (e2e/extension/).'),
   test_file: z.string().min(1).max(500)
     .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
     .optional(),

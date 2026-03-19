@@ -1304,6 +1304,22 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   // Demo Scenario CRUD
   // ============================================================================
 
+  function discoverProjectNames(projectDir: string): string[] {
+    try {
+      const configPath = path.join(projectDir, 'playwright.config.ts');
+      const content = fs.readFileSync(configPath, 'utf-8');
+      const names: string[] = [];
+      const re = /name:\s*['"]([^'"]+)['"]/g;
+      let match: RegExpExecArray | null;
+      while ((match = re.exec(content)) !== null) {
+        names.push(match[1]);
+      }
+      return names;
+    } catch {
+      return [];
+    }
+  }
+
   function createScenario(args: CreateScenarioArgs): ScenarioResult | ErrorResult {
     // Validate persona exists and includes 'gui' or 'adk' in consumption_modes
     const persona = db.prepare('SELECT id, name, consumption_modes FROM personas WHERE id = ?').get(args.persona_id) as { id: string; name: string; consumption_modes: string } | undefined;
@@ -1318,6 +1334,12 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     // Enforce .demo.ts suffix
     if (!args.test_file.endsWith('.demo.ts')) {
       return { error: `test_file must end with ".demo.ts" — got "${args.test_file}"` };
+    }
+
+    // Validate playwright_project against actual config
+    const validProjects = discoverProjectNames(config.projectDir);
+    if (validProjects.length > 0 && !validProjects.includes(args.playwright_project)) {
+      return { error: `Invalid playwright_project "${args.playwright_project}". Valid projects: ${validProjects.join(', ')}` };
     }
 
     const id = randomUUID();
@@ -1370,6 +1392,14 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     // Enforce .demo.ts suffix on test_file if changed
     if (args.test_file !== undefined && !args.test_file.endsWith('.demo.ts')) {
       return { error: `test_file must end with ".demo.ts" — got "${args.test_file}"` };
+    }
+
+    // Validate playwright_project against actual config
+    if (args.playwright_project !== undefined) {
+      const validProjects = discoverProjectNames(config.projectDir);
+      if (validProjects.length > 0 && !validProjects.includes(args.playwright_project)) {
+        return { error: `Invalid playwright_project "${args.playwright_project}". Valid projects: ${validProjects.join(', ')}` };
+      }
     }
 
     const updates: string[] = [];

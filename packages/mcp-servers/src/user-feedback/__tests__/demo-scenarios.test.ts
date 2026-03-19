@@ -10,6 +10,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 
 import {
   createTestDb,
@@ -90,6 +92,22 @@ function validateScenarioEnvVars(envVars: Record<string, string>): string | null
   return null;
 }
 
+function discoverProjectNames(projectDir: string): string[] {
+  try {
+    const configPath = path.join(projectDir, 'playwright.config.ts');
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const names: string[] = [];
+    const re = /name:\s*['"]([^'"]+)['"]/g;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(content)) !== null) {
+      names.push(match[1]);
+    }
+    return names;
+  } catch {
+    return [];
+  }
+}
+
 // ============================================================================
 // Helper Functions (mirror server implementation)
 // ============================================================================
@@ -146,7 +164,7 @@ function createScenario(db: Database.Database, args: {
   test_file: string;
   sort_order?: number;
   env_vars?: Record<string, string>;
-}): ScenarioResult | ErrorResult {
+}, projectDir?: string): ScenarioResult | ErrorResult {
   // Validate persona exists and includes 'gui' or 'adk' in consumption_modes
   const persona = db.prepare('SELECT id, name, consumption_modes FROM personas WHERE id = ?')
     .get(args.persona_id) as { id: string; name: string; consumption_modes: string } | undefined;
@@ -162,6 +180,13 @@ function createScenario(db: Database.Database, args: {
   }
   if (!args.test_file.endsWith('.demo.ts')) {
     return { error: `test_file must end with ".demo.ts" — got "${args.test_file}"` };
+  }
+
+  if (projectDir) {
+    const validProjects = discoverProjectNames(projectDir);
+    if (validProjects.length > 0 && !validProjects.includes(args.playwright_project)) {
+      return { error: `Invalid playwright_project "${args.playwright_project}". Valid projects: ${validProjects.join(', ')}` };
+    }
   }
 
   if (args.env_vars) {
@@ -212,7 +237,7 @@ function updateScenario(db: Database.Database, args: {
   sort_order?: number;
   enabled?: boolean;
   env_vars?: Record<string, string> | null;
-}): ScenarioResult | ErrorResult {
+}, projectDir?: string): ScenarioResult | ErrorResult {
   const existing = db.prepare('SELECT id FROM demo_scenarios WHERE id = ?').get(args.id);
   if (!existing) {
     return { error: `Scenario not found: ${args.id}` };
@@ -220,6 +245,13 @@ function updateScenario(db: Database.Database, args: {
 
   if (args.test_file && !args.test_file.endsWith('.demo.ts')) {
     return { error: `test_file must end with ".demo.ts" — got "${args.test_file}"` };
+  }
+
+  if (args.playwright_project !== undefined && projectDir) {
+    const validProjects = discoverProjectNames(projectDir);
+    if (validProjects.length > 0 && !validProjects.includes(args.playwright_project)) {
+      return { error: `Invalid playwright_project "${args.playwright_project}". Valid projects: ${validProjects.join(', ')}` };
+    }
   }
 
   const updates: string[] = [];
@@ -629,6 +661,79 @@ describe('Demo Scenario CRUD', () => {
         expect(result.error).toContain('blocked keys');
       }
     });
+
+    describe('playwright_project validation', () => {
+      // Locate the host project root via CLAUDE_PROJECT_DIR (set by MCP server) or by
+      // walking up from process.cwd() until we find playwright.config.ts.
+      // When running tests outside a host project context, this resolves to undefined
+      // and the config-dependent tests are skipped.
+      function findHostProjectDir(): string | undefined {
+        const fromEnv = process.env['CLAUDE_PROJECT_DIR'];
+        if (fromEnv && fs.existsSync(path.join(fromEnv, 'playwright.config.ts'))) {
+          return fromEnv;
+        }
+        let dir = process.cwd();
+        while (dir !== path.dirname(dir)) {
+          if (fs.existsSync(path.join(dir, 'playwright.config.ts'))) {
+            return dir;
+          }
+          dir = path.dirname(dir);
+        }
+        return undefined;
+      }
+
+      it('should reject invalid playwright_project when config exists', () => {
+        const hostProjectDir = findHostProjectDir();
+        if (!hostProjectDir) {
+          // playwright.config.ts not found in this execution context — skip
+          return;
+        }
+        const result = createScenario(db, {
+          persona_id: guiPersona.id,
+          title: 'Invalid Project',
+          description: 'Test invalid project',
+          playwright_project: 'nonexistent-project',
+          test_file: 'e2e/demo/invalid-project.demo.ts',
+        }, hostProjectDir);
+
+        expect(isErrorResult(result)).toBe(true);
+        if (isErrorResult(result)) {
+          expect(result.error).toContain('Invalid playwright_project');
+          expect(result.error).toContain('nonexistent-project');
+          expect(result.error).toContain('Valid projects');
+        }
+      });
+
+      it('should accept valid playwright_project when config exists', () => {
+        const hostProjectDir = findHostProjectDir();
+        if (!hostProjectDir) {
+          // playwright.config.ts not found in this execution context — skip
+          return;
+        }
+        const result = createScenario(db, {
+          persona_id: guiPersona.id,
+          title: 'Valid Project',
+          description: 'Test valid project',
+          playwright_project: 'demo',
+          test_file: 'e2e/demo/valid-project.demo.ts',
+        }, hostProjectDir);
+
+        expect(isErrorResult(result)).toBe(false);
+      });
+
+      it('should skip validation when playwright.config.ts is missing', () => {
+        const result = createScenario(db, {
+          persona_id: guiPersona.id,
+          title: 'No Config',
+          description: 'Test missing config',
+          playwright_project: 'anything-goes',
+          test_file: 'e2e/demo/no-config.demo.ts',
+        }, '/tmp/nonexistent-dir-12345');
+
+        // Should succeed because discoverProjectNames returns [] for missing config
+        expect(isErrorResult(result)).toBe(false);
+      });
+    });
   });
 
   // ============================================================================
@@ -810,6 +915,47 @@ describe('Demo Scenario CRUD', () => {
         expect(updated.title).toBe('Updated Title');
         expect(updated.env_vars).not.toBeNull();
         expect(updated.env_vars!['KEEP_ME']).toBe('yes');
+      }
+    });
+
+    it('should reject invalid playwright_project on update when config exists', () => {
+      // Locate the host project root via CLAUDE_PROJECT_DIR or by walking up from cwd.
+      // When running outside a host project context, this test is a no-op.
+      const fromEnv = process.env['CLAUDE_PROJECT_DIR'];
+      let hostProjectDir: string | undefined;
+      if (fromEnv && fs.existsSync(path.join(fromEnv, 'playwright.config.ts'))) {
+        hostProjectDir = fromEnv;
+      } else {
+        let dir = process.cwd();
+        while (dir !== path.dirname(dir)) {
+          if (fs.existsSync(path.join(dir, 'playwright.config.ts'))) {
+            hostProjectDir = dir;
+            break;
+          }
+          dir = path.dirname(dir);
+        }
+      }
+      if (!hostProjectDir) return;
+
+      const created = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Update Project Test',
+        description: 'Desc',
+        playwright_project: 'demo',
+        test_file: 'e2e/demo/update-project.demo.ts',
+      }, hostProjectDir);
+      expect(isErrorResult(created)).toBe(false);
+      if (isErrorResult(created)) return;
+
+      const result = updateScenario(db, {
+        id: created.id,
+        playwright_project: 'nonexistent-project',
+      }, hostProjectDir);
+
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('Invalid playwright_project');
+        expect(result.error).toContain('nonexistent-project');
       }
     });
   });
