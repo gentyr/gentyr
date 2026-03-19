@@ -79,7 +79,7 @@ function hasPendingCtoItems() {
 
     // Check ALL pending questions (any type, not just rejections)
     // Filter out expired bypass-requests (sync with BYPASS_REQUEST_TTL_S = 3600 in deputy-cto server.ts)
-    const bypassCutoff = Math.floor(Date.now() / 1000) - 3600;
+    const bypassCutoff = new Date(Date.now() - 3600 * 1000).toISOString();
     const questionsResult = db.prepare(
       `SELECT COUNT(*) as count FROM questions
        WHERE status = 'pending'
@@ -150,7 +150,7 @@ function hasValidBypassDecision() {
 
   try {
     const db = new Database(DEPUTY_CTO_DB, { readonly: true });
-    const fiveMinutesAgo = Math.floor((Date.now() - 5 * 60 * 1000) / 1000);
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
 
     // Check for recent bypass decisions (created by execute_bypass)
     const bypass = db.prepare(`
@@ -182,10 +182,10 @@ function hasValidBypassDecision() {
     if (promotionBypass) {
       const match = promotionBypass.rationale.match(/PROMOTION BYPASS \((\d+)min\)/);
       const durationMin = match ? parseInt(match[1], 10) : 30;
-      const expiresAt = promotionBypass.created_timestamp + (durationMin * 60);
-      const nowSec = Math.floor(Date.now() / 1000);
-      if (nowSec < expiresAt) {
-        const minutesLeft = Math.ceil((expiresAt - nowSec) / 60);
+      const createdMs = new Date(promotionBypass.created_timestamp).getTime();
+      const expiresMs = createdMs + (durationMin * 60 * 1000);
+      if (Date.now() < expiresMs) {
+        const minutesLeft = Math.ceil((expiresMs - Date.now()) / 60000);
         console.log(`[deputy-cto] ✓ Promotion bypass active (${minutesLeft}m remaining) - commit allowed`);
         return true;
       }

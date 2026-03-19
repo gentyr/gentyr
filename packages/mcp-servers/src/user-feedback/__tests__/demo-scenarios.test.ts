@@ -92,9 +92,31 @@ function validateScenarioEnvVars(envVars: Record<string, string>): string | null
   return null;
 }
 
+function resolveMainProjectDir(projectDir: string): string {
+  try {
+    const gitPath = path.join(projectDir, '.git');
+    const stat = fs.statSync(gitPath);
+    if (stat.isFile()) {
+      const content = fs.readFileSync(gitPath, 'utf-8');
+      const match = content.match(/gitdir:\s*(.+)/);
+      if (match) {
+        const gitDir = path.resolve(projectDir, match[1].trim());
+        return path.resolve(gitDir, '..', '..', '..');
+      }
+    }
+  } catch { /* not a worktree */ }
+  const worktreeMarker = `${path.sep}.claude${path.sep}worktrees${path.sep}`;
+  const idx = projectDir.indexOf(worktreeMarker);
+  if (idx !== -1) {
+    return projectDir.substring(0, idx);
+  }
+  return projectDir;
+}
+
 function discoverProjectNames(projectDir: string): string[] {
   try {
-    const configPath = path.join(projectDir, 'playwright.config.ts');
+    const resolvedDir = resolveMainProjectDir(projectDir);
+    const configPath = path.join(resolvedDir, 'playwright.config.ts');
     const content = fs.readFileSync(configPath, 'utf-8');
     const names: string[] = [];
     const re = /name:\s*['"]([^'"]+)['"]/g;

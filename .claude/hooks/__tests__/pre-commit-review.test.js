@@ -16,6 +16,83 @@ import assert from 'node:assert';
 import { spawn, execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { createRequire } from 'module';
+
+// Load better-sqlite3 for database-level timestamp tests.
+// Wrap in a try so the test file still loads in environments without the
+// native module, but the timestamp describe blocks will fail loudly inside
+// each individual test (the _getSqlite3() helper below throws).
+let _Database = null;
+try {
+  // ESM-compatible require for a CommonJS native module
+  const _require = createRequire(import.meta.url);
+  _Database = _require('better-sqlite3');
+} catch (_) { /* will throw inside tests if used */ }
+
+/**
+ * Returns the better-sqlite3 Database constructor or throws immediately.
+ * Used inside timestamp tests so failures are loud, not silent.
+ */
+function _getSqlite3() {
+  if (!_Database) {
+    throw new Error('CRITICAL: better-sqlite3 not available — cannot run timestamp tests');
+  }
+  return _Database;
+}
+
+/**
+ * Creates an in-memory SQLite database with the deputy-cto schema
+ * (questions + commit_decisions tables) and returns it.
+ */
+function createDeputyCtoDB() {
+  const Database = _getSqlite3();
+  const db = new Database(':memory:');
+  db.pragma('journal_mode = WAL');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS questions (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      context TEXT,
+      suggested_options TEXT,
+      recommendation TEXT,
+      answer TEXT,
+      created_at TEXT NOT NULL,
+      created_timestamp TEXT NOT NULL,
+      answered_at TEXT,
+      decided_by TEXT,
+      investigation_task_id TEXT,
+      CONSTRAINT valid_type CHECK (type IN ('decision', 'approval', 'rejection', 'question', 'escalation', 'bypass-request', 'protected-action-request')),
+      CONSTRAINT valid_status CHECK (status IN ('pending', 'answered')),
+      CONSTRAINT valid_decided_by CHECK (decided_by IS NULL OR decided_by IN ('cto', 'deputy-cto'))
+    );
+
+    CREATE TABLE IF NOT EXISTS commit_decisions (
+      id TEXT PRIMARY KEY,
+      decision TEXT NOT NULL,
+      rationale TEXT NOT NULL,
+      question_id TEXT,
+      created_at TEXT NOT NULL,
+      created_timestamp TEXT NOT NULL,
+      CONSTRAINT valid_decision CHECK (decision IN ('approved', 'rejected'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status);
+    CREATE INDEX IF NOT EXISTS idx_questions_type ON questions(type);
+    CREATE INDEX IF NOT EXISTS idx_commit_decisions_created ON commit_decisions(created_timestamp DESC);
+  `);
+  return db;
+}
+
+/**
+ * Returns an ISO 8601 timestamp that is `offsetMs` milliseconds from now.
+ * A negative offset means in the past; positive means in the future.
+ */
+function isoOffsetNow(offsetMs) {
+  return new Date(Date.now() + offsetMs).toISOString();
+}
 
 describe('pre-commit-review.js - G001 Fail-Closed Behavior', () => {
   const PROJECT_DIR = process.cwd();
@@ -991,5 +1068,473 @@ describe('verifyGitHooksPath() - Worktree Support', () => {
         'SECURITY: Must use exact equality (===) after path.resolve() for secure path comparison'
       );
     });
+  });
+});
+
+// =============================================================================
+// G005: ISO 8601 Timestamp Comparison - hasPendingCtoItems() bypass-request filter
+//
+// The function filters out stale bypass-requests using an ISO 8601 cutoff:
+//   const bypassCutoff = new Date(Date.now() - 3600 * 1000).toISOString();
+//   WHERE NOT (type = 'bypass-request' AND created_timestamp < ?)
+//
+// These tests create real in-memory SQLite databases and run the exact SQL
+// query used by hasPendingCtoItems() to verify correct timestamp filtering.
+// =============================================================================
+
+describe('G005: hasPendingCtoItems() - ISO 8601 bypass-request TTL filter', () => {
+  it('should include a bypass-request created 30 minutes ago (within 1-hour TTL)', () => {
+    const db = createDeputyCtoDB();
+
+    // Insert a recent bypass-request (30 min ago — within the 1-hour TTL window)
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+      VALUES (?, 'bypass-request', 'pending', 'Recent bypass', 'desc', ?, ?)
+    `).run('q-recent', isoOffsetNow(-30 * 60 * 1000), isoOffsetNow(-30 * 60 * 1000));
+
+    // Mirror the exact SQL from hasPendingCtoItems()
+    const bypassCutoff = new Date(Date.now() - 3600 * 1000).toISOString();
+    const result = db.prepare(`
+      SELECT COUNT(*) as count FROM questions
+      WHERE status = 'pending'
+      AND NOT (type = 'bypass-request' AND created_timestamp < ?)
+    `).get(bypassCutoff);
+
+    db.close();
+
+    assert.strictEqual(typeof result.count, 'number', 'count must be a number');
+    assert.strictEqual(result.count, 1, 'Recent bypass-request (30m ago) must be counted as pending');
+  });
+
+  it('should exclude a bypass-request created 2 hours ago (exceeds 1-hour TTL)', () => {
+    const db = createDeputyCtoDB();
+
+    // Insert a stale bypass-request (2 hours ago — expired TTL)
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+      VALUES (?, 'bypass-request', 'pending', 'Stale bypass', 'desc', ?, ?)
+    `).run('q-stale', isoOffsetNow(-2 * 60 * 60 * 1000), isoOffsetNow(-2 * 60 * 60 * 1000));
+
+    const bypassCutoff = new Date(Date.now() - 3600 * 1000).toISOString();
+    const result = db.prepare(`
+      SELECT COUNT(*) as count FROM questions
+      WHERE status = 'pending'
+      AND NOT (type = 'bypass-request' AND created_timestamp < ?)
+    `).get(bypassCutoff);
+
+    db.close();
+
+    assert.strictEqual(result.count, 0, 'Stale bypass-request (2h ago) must be filtered out (expired TTL)');
+  });
+
+  it('should count non-bypass-request pending questions regardless of age', () => {
+    const db = createDeputyCtoDB();
+
+    // A bypass-request from 2 hours ago (should be filtered out)
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+      VALUES (?, 'bypass-request', 'pending', 'Old bypass', 'desc', ?, ?)
+    `).run('q-old-bypass', isoOffsetNow(-2 * 60 * 60 * 1000), isoOffsetNow(-2 * 60 * 60 * 1000));
+
+    // A regular question from 3 hours ago (should NOT be filtered — TTL only applies to bypass-request)
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+      VALUES (?, 'question', 'pending', 'Old question', 'desc', ?, ?)
+    `).run('q-old-question', isoOffsetNow(-3 * 60 * 60 * 1000), isoOffsetNow(-3 * 60 * 60 * 1000));
+
+    const bypassCutoff = new Date(Date.now() - 3600 * 1000).toISOString();
+    const result = db.prepare(`
+      SELECT COUNT(*) as count FROM questions
+      WHERE status = 'pending'
+      AND NOT (type = 'bypass-request' AND created_timestamp < ?)
+    `).get(bypassCutoff);
+
+    db.close();
+
+    // Old bypass excluded (1), old question included (1) → count = 1
+    assert.strictEqual(result.count, 1, 'TTL filter must only apply to bypass-request type, not other question types');
+  });
+
+  it('should count both a recent bypass-request and a regular question as 2', () => {
+    const db = createDeputyCtoDB();
+
+    // Recent bypass-request (30 min ago — within TTL)
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+      VALUES (?, 'bypass-request', 'pending', 'Recent bypass', 'desc', ?, ?)
+    `).run('q-bypass', isoOffsetNow(-30 * 60 * 1000), isoOffsetNow(-30 * 60 * 1000));
+
+    // Regular decision question from 2 hours ago (no TTL)
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+      VALUES (?, 'decision', 'pending', 'Architecture decision', 'desc', ?, ?)
+    `).run('q-decision', isoOffsetNow(-2 * 60 * 60 * 1000), isoOffsetNow(-2 * 60 * 60 * 1000));
+
+    const bypassCutoff = new Date(Date.now() - 3600 * 1000).toISOString();
+    const result = db.prepare(`
+      SELECT COUNT(*) as count FROM questions
+      WHERE status = 'pending'
+      AND NOT (type = 'bypass-request' AND created_timestamp < ?)
+    `).get(bypassCutoff);
+
+    db.close();
+
+    assert.strictEqual(result.count, 2, 'Both a recent bypass-request and a decision question must be counted');
+  });
+
+  it('should not count answered questions regardless of type or age', () => {
+    const db = createDeputyCtoDB();
+
+    // Answered bypass-request (recent — but answered, so excluded by status filter)
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp, answered_at)
+      VALUES (?, 'bypass-request', 'answered', 'Answered bypass', 'desc', ?, ?, ?)
+    `).run('q-answered', isoOffsetNow(-5 * 60 * 1000), isoOffsetNow(-5 * 60 * 1000), isoOffsetNow(-1 * 60 * 1000));
+
+    const bypassCutoff = new Date(Date.now() - 3600 * 1000).toISOString();
+    const result = db.prepare(`
+      SELECT COUNT(*) as count FROM questions
+      WHERE status = 'pending'
+      AND NOT (type = 'bypass-request' AND created_timestamp < ?)
+    `).get(bypassCutoff);
+
+    db.close();
+
+    assert.strictEqual(result.count, 0, 'Answered questions must never appear in pending count');
+  });
+});
+
+// =============================================================================
+// G005: ISO 8601 Timestamp Comparison - hasValidBypassDecision() emergency bypass
+//
+// The function checks for commit_decisions where:
+//   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+//   WHERE decision = 'approved'
+//   AND rationale LIKE 'EMERGENCY BYPASS%'
+//   AND question_id IS NOT NULL
+//   AND created_timestamp > ?   ← ISO 8601 comparison
+//
+// A bypass created 10 minutes ago must be rejected (outside the 5-min window).
+// A bypass created 2 minutes ago must be accepted.
+// =============================================================================
+
+describe('G005: hasValidBypassDecision() - emergency bypass 5-minute window', () => {
+  it('should accept an emergency bypass created 2 minutes ago (within 5-min window)', () => {
+    const db = createDeputyCtoDB();
+
+    // Insert a question so question_id IS NOT NULL constraint is met
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+      VALUES (?, 'bypass-request', 'answered', 'Bypass request', 'desc', ?, ?)
+    `).run('q-bypass-ref', isoOffsetNow(-3 * 60 * 1000), isoOffsetNow(-3 * 60 * 1000));
+
+    // Emergency bypass created 2 minutes ago — within the 5-minute window
+    db.prepare(`
+      INSERT INTO commit_decisions (id, decision, rationale, question_id, created_at, created_timestamp)
+      VALUES (?, 'approved', 'EMERGENCY BYPASS: CTO approved urgent fix', ?, ?, ?)
+    `).run('cd-recent', 'q-bypass-ref', isoOffsetNow(-2 * 60 * 1000), isoOffsetNow(-2 * 60 * 1000));
+
+    // Mirror the exact SQL from hasValidBypassDecision()
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const bypass = db.prepare(`
+      SELECT id, rationale FROM commit_decisions
+      WHERE decision = 'approved'
+      AND rationale LIKE 'EMERGENCY BYPASS%'
+      AND question_id IS NOT NULL
+      AND created_timestamp > ?
+      ORDER BY created_timestamp DESC
+      LIMIT 1
+    `).get(fiveMinutesAgo);
+
+    db.close();
+
+    assert.ok(bypass !== undefined, 'Emergency bypass from 2 minutes ago must be found (within 5-min window)');
+    assert.ok(bypass.rationale.startsWith('EMERGENCY BYPASS'), 'Returned row must have EMERGENCY BYPASS rationale');
+  });
+
+  it('should reject an emergency bypass created 10 minutes ago (outside 5-min window)', () => {
+    const db = createDeputyCtoDB();
+
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+      VALUES (?, 'bypass-request', 'answered', 'Bypass request', 'desc', ?, ?)
+    `).run('q-stale-ref', isoOffsetNow(-12 * 60 * 1000), isoOffsetNow(-12 * 60 * 1000));
+
+    // Emergency bypass created 10 minutes ago — expired (outside the 5-minute window)
+    db.prepare(`
+      INSERT INTO commit_decisions (id, decision, rationale, question_id, created_at, created_timestamp)
+      VALUES (?, 'approved', 'EMERGENCY BYPASS: Old approval', ?, ?, ?)
+    `).run('cd-expired', 'q-stale-ref', isoOffsetNow(-10 * 60 * 1000), isoOffsetNow(-10 * 60 * 1000));
+
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const bypass = db.prepare(`
+      SELECT id, rationale FROM commit_decisions
+      WHERE decision = 'approved'
+      AND rationale LIKE 'EMERGENCY BYPASS%'
+      AND question_id IS NOT NULL
+      AND created_timestamp > ?
+      ORDER BY created_timestamp DESC
+      LIMIT 1
+    `).get(fiveMinutesAgo);
+
+    db.close();
+
+    assert.strictEqual(bypass, undefined, 'Emergency bypass from 10 minutes ago must be rejected (expired, outside 5-min window)');
+  });
+
+  it('should return the most recent bypass when multiple exist, selecting by created_timestamp DESC', () => {
+    const db = createDeputyCtoDB();
+
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+      VALUES (?, 'bypass-request', 'answered', 'Bypass ref', 'desc', ?, ?)
+    `).run('q-multi-ref', isoOffsetNow(-10 * 60 * 1000), isoOffsetNow(-10 * 60 * 1000));
+
+    // An expired bypass (7 minutes ago — outside 5-min window)
+    db.prepare(`
+      INSERT INTO commit_decisions (id, decision, rationale, question_id, created_at, created_timestamp)
+      VALUES (?, 'approved', 'EMERGENCY BYPASS: Old', ?, ?, ?)
+    `).run('cd-old', 'q-multi-ref', isoOffsetNow(-7 * 60 * 1000), isoOffsetNow(-7 * 60 * 1000));
+
+    // A recent bypass (1 minute ago — within 5-min window)
+    db.prepare(`
+      INSERT INTO commit_decisions (id, decision, rationale, question_id, created_at, created_timestamp)
+      VALUES (?, 'approved', 'EMERGENCY BYPASS: New', ?, ?, ?)
+    `).run('cd-new', 'q-multi-ref', isoOffsetNow(-1 * 60 * 1000), isoOffsetNow(-1 * 60 * 1000));
+
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const bypass = db.prepare(`
+      SELECT id, rationale FROM commit_decisions
+      WHERE decision = 'approved'
+      AND rationale LIKE 'EMERGENCY BYPASS%'
+      AND question_id IS NOT NULL
+      AND created_timestamp > ?
+      ORDER BY created_timestamp DESC
+      LIMIT 1
+    `).get(fiveMinutesAgo);
+
+    db.close();
+
+    assert.ok(bypass !== undefined, 'Should find the recent bypass');
+    assert.strictEqual(bypass.id, 'cd-new', 'Must return the most recent (newest) bypass when ORDER BY created_timestamp DESC');
+  });
+
+  it('should not accept an approved decision without EMERGENCY BYPASS rationale prefix', () => {
+    const db = createDeputyCtoDB();
+
+    db.prepare(`
+      INSERT INTO questions (id, type, status, title, description, created_at, created_timestamp)
+      VALUES (?, 'approval', 'answered', 'Approval ref', 'desc', ?, ?)
+    `).run('q-approval-ref', isoOffsetNow(-2 * 60 * 1000), isoOffsetNow(-2 * 60 * 1000));
+
+    // Regular approval (not an emergency bypass) — must not be matched
+    db.prepare(`
+      INSERT INTO commit_decisions (id, decision, rationale, question_id, created_at, created_timestamp)
+      VALUES (?, 'approved', 'Approved via normal review', ?, ?, ?)
+    `).run('cd-normal', 'q-approval-ref', isoOffsetNow(-1 * 60 * 1000), isoOffsetNow(-1 * 60 * 1000));
+
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const bypass = db.prepare(`
+      SELECT id, rationale FROM commit_decisions
+      WHERE decision = 'approved'
+      AND rationale LIKE 'EMERGENCY BYPASS%'
+      AND question_id IS NOT NULL
+      AND created_timestamp > ?
+      ORDER BY created_timestamp DESC
+      LIMIT 1
+    `).get(fiveMinutesAgo);
+
+    db.close();
+
+    assert.strictEqual(bypass, undefined, 'Normal approvals without EMERGENCY BYPASS prefix must not trigger bypass');
+  });
+});
+
+// =============================================================================
+// G005: ISO 8601 Timestamp Comparison - hasValidBypassDecision() promotion bypass
+//
+// The function parses the duration from the rationale string:
+//   PROMOTION BYPASS (Nmin)
+// then computes expiry using:
+//   const createdMs = new Date(promotionBypass.created_timestamp).getTime();
+//   const expiresMs = createdMs + (durationMin * 60 * 1000);
+//   if (Date.now() < expiresMs) → valid
+//
+// Tests verify the ISO 8601 timestamp is correctly parsed by new Date() and
+// that expiry is computed accurately against a real duration.
+// =============================================================================
+
+describe('G005: hasValidBypassDecision() - promotion bypass duration expiry', () => {
+  /**
+   * Mirror the exact promotion bypass expiry logic from hasValidBypassDecision().
+   * Returns true if the bypass is still valid, false if expired.
+   */
+  function isPromotionBypassValid(createdTimestamp, rationaleStr) {
+    const match = rationaleStr.match(/PROMOTION BYPASS \((\d+)min\)/);
+    const durationMin = match ? parseInt(match[1], 10) : 30;
+    const createdMs = new Date(createdTimestamp).getTime();
+    const expiresMs = createdMs + (durationMin * 60 * 1000);
+    return Date.now() < expiresMs;
+  }
+
+  it('should accept a promotion bypass created within its stated duration (20-min bypass, created 10 min ago)', () => {
+    const db = createDeputyCtoDB();
+
+    // 20-minute bypass created 10 minutes ago — 10 minutes remaining
+    const createdTimestamp = isoOffsetNow(-10 * 60 * 1000);
+    db.prepare(`
+      INSERT INTO commit_decisions (id, decision, rationale, question_id, created_at, created_timestamp)
+      VALUES (?, 'approved', 'PROMOTION BYPASS (20min): preview->staging', NULL, ?, ?)
+    `).run('cd-promo-valid', createdTimestamp, createdTimestamp);
+
+    const promotionBypass = db.prepare(`
+      SELECT id, rationale, created_timestamp FROM commit_decisions
+      WHERE decision = 'approved'
+      AND rationale LIKE 'PROMOTION BYPASS%'
+      ORDER BY created_timestamp DESC LIMIT 1
+    `).get();
+
+    db.close();
+
+    assert.ok(promotionBypass !== undefined, 'Must find the promotion bypass record');
+    const valid = isPromotionBypassValid(promotionBypass.created_timestamp, promotionBypass.rationale);
+    assert.strictEqual(valid, true, '20-min promotion bypass created 10 min ago must still be valid (10 min remaining)');
+  });
+
+  it('should reject a promotion bypass that has exceeded its stated duration (20-min bypass, created 25 min ago)', () => {
+    const db = createDeputyCtoDB();
+
+    // 20-minute bypass created 25 minutes ago — expired by 5 minutes
+    const createdTimestamp = isoOffsetNow(-25 * 60 * 1000);
+    db.prepare(`
+      INSERT INTO commit_decisions (id, decision, rationale, question_id, created_at, created_timestamp)
+      VALUES (?, 'approved', 'PROMOTION BYPASS (20min): preview->staging', NULL, ?, ?)
+    `).run('cd-promo-expired', createdTimestamp, createdTimestamp);
+
+    const promotionBypass = db.prepare(`
+      SELECT id, rationale, created_timestamp FROM commit_decisions
+      WHERE decision = 'approved'
+      AND rationale LIKE 'PROMOTION BYPASS%'
+      ORDER BY created_timestamp DESC LIMIT 1
+    `).get();
+
+    db.close();
+
+    assert.ok(promotionBypass !== undefined, 'Must find the promotion bypass record');
+    const valid = isPromotionBypassValid(promotionBypass.created_timestamp, promotionBypass.rationale);
+    assert.strictEqual(valid, false, '20-min promotion bypass created 25 min ago must be expired');
+  });
+
+  it('should default to a 30-minute duration when rationale has no (Nmin) group', () => {
+    const db = createDeputyCtoDB();
+
+    // PROMOTION BYPASS without duration annotation — defaults to 30 min
+    // Created 15 minutes ago → still valid under 30-min default
+    const createdTimestamp = isoOffsetNow(-15 * 60 * 1000);
+    db.prepare(`
+      INSERT INTO commit_decisions (id, decision, rationale, question_id, created_at, created_timestamp)
+      VALUES (?, 'approved', 'PROMOTION BYPASS: no duration specified', NULL, ?, ?)
+    `).run('cd-promo-default', createdTimestamp, createdTimestamp);
+
+    const promotionBypass = db.prepare(`
+      SELECT id, rationale, created_timestamp FROM commit_decisions
+      WHERE decision = 'approved'
+      AND rationale LIKE 'PROMOTION BYPASS%'
+      ORDER BY created_timestamp DESC LIMIT 1
+    `).get();
+
+    db.close();
+
+    assert.ok(promotionBypass !== undefined, 'Must find the promotion bypass record');
+    const valid = isPromotionBypassValid(promotionBypass.created_timestamp, promotionBypass.rationale);
+    assert.strictEqual(valid, true, 'Promotion bypass without (Nmin) defaults to 30 min; created 15 min ago must still be valid');
+  });
+
+  it('should correctly parse created_timestamp as ISO 8601 (not Unix epoch)', () => {
+    // This test validates that new Date(iso8601String).getTime() produces the right
+    // millisecond value, confirming that ISO 8601 strings round-trip correctly.
+    const tenMinutesAgo = isoOffsetNow(-10 * 60 * 1000);
+    const parsedMs = new Date(tenMinutesAgo).getTime();
+    const nowMs = Date.now();
+
+    // The parsed timestamp should be approximately 10 minutes before now
+    const diffMs = nowMs - parsedMs;
+
+    assert.ok(diffMs >= 9 * 60 * 1000, `Parsed ISO 8601 timestamp must be at least 9 minutes in the past (got ${diffMs}ms)`);
+    assert.ok(diffMs <= 11 * 60 * 1000, `Parsed ISO 8601 timestamp must be no more than 11 minutes in the past (got ${diffMs}ms)`);
+    assert.ok(!Number.isNaN(parsedMs), 'new Date(isoString).getTime() must not be NaN');
+    assert.ok(Number.isFinite(parsedMs), 'new Date(isoString).getTime() must be a finite number');
+  });
+});
+
+// =============================================================================
+// G005: Regression Guard - no Unix epoch comparisons in SQL-related code
+//
+// The three functions fixed in G005 previously used Math.floor(Date.now() / 1000)
+// (Unix epoch seconds) instead of ISO 8601 strings when building SQL cutoff
+// parameters. Since SQLite stores created_timestamp as TEXT in ISO 8601 format,
+// comparing against an integer produced incorrect results (integers sort before
+// all ISO strings lexicographically, making every timestamp appear "future").
+//
+// These regression tests confirm the source code does not regress back to
+// Unix epoch comparisons near SQL query boundaries.
+// =============================================================================
+
+describe('G005: Regression Guard - no Unix epoch comparisons in SQL context', () => {
+  const HOOK_PATH = path.join(process.cwd(), '.claude/hooks/pre-commit-review.js');
+
+  it('should not contain Math.floor(Date.now() / 1000) anywhere in the source', () => {
+    // This was the original buggy pattern. It must never appear in the file again.
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    assert.doesNotMatch(
+      hookCode,
+      /Math\.floor\(Date\.now\(\)\s*\/\s*1000\)/,
+      'REGRESSION: Math.floor(Date.now() / 1000) (Unix epoch) must not appear in source — use new Date(...).toISOString() instead'
+    );
+  });
+
+  it('should use new Date(...).toISOString() for building SQL timestamp cutoff values', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    // All three timestamp cutoff computations must use ISO 8601
+    assert.match(
+      hookCode,
+      /new Date\(Date\.now\(\)\s*-\s*\d+.*\)\.toISOString\(\)/,
+      'Must use new Date(Date.now() - offset).toISOString() for SQL timestamp comparisons (G005)'
+    );
+  });
+
+  it('should use bypassCutoff ISO 8601 string as parameter to hasPendingCtoItems() SQL query', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    // The bypassCutoff variable must be declared as an ISO 8601 string
+    assert.match(
+      hookCode,
+      /const bypassCutoff = new Date\(Date\.now\(\)\s*-\s*3600\s*\*\s*1000\)\.toISOString\(\)/,
+      'hasPendingCtoItems(): bypassCutoff must be computed as ISO 8601 string, not Unix epoch'
+    );
+  });
+
+  it('should use fiveMinutesAgo ISO 8601 string as parameter to hasValidBypassDecision() emergency bypass query', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    // The fiveMinutesAgo variable must be declared as an ISO 8601 string
+    assert.match(
+      hookCode,
+      /const fiveMinutesAgo = new Date\(Date\.now\(\)\s*-\s*5\s*\*\s*60\s*\*\s*1000\)\.toISOString\(\)/,
+      'hasValidBypassDecision(): fiveMinutesAgo must be computed as ISO 8601 string, not Unix epoch'
+    );
+  });
+
+  it('should use new Date(promotionBypass.created_timestamp).getTime() for promotion bypass expiry calculation', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    // The promotion bypass expiry must parse the ISO 8601 created_timestamp via new Date()
+    assert.match(
+      hookCode,
+      /new Date\(promotionBypass\.created_timestamp\)\.getTime\(\)/,
+      'hasValidBypassDecision(): promotion bypass expiry must parse created_timestamp as ISO 8601 via new Date().getTime()'
+    );
   });
 });

@@ -1304,9 +1304,35 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   // Demo Scenario CRUD
   // ============================================================================
 
+  function resolveMainProjectDir(projectDir: string): string {
+    // If projectDir is inside a git worktree, resolve the main repo root.
+    // Worktrees have a .git *file* (not dir) containing: gitdir: /path/to/main/.git/worktrees/<name>
+    try {
+      const gitPath = path.join(projectDir, '.git');
+      const stat = fs.statSync(gitPath);
+      if (stat.isFile()) {
+        const content = fs.readFileSync(gitPath, 'utf-8');
+        const match = content.match(/gitdir:\s*(.+)/);
+        if (match) {
+          const gitDir = path.resolve(projectDir, match[1].trim());
+          // gitDir is like /repo/.git/worktrees/<name>, main repo is 3 levels up
+          return path.resolve(gitDir, '..', '..', '..');
+        }
+      }
+    } catch { /* not a worktree or unreadable */ }
+    // Also detect GENTYR-style .claude/worktrees/ path pattern
+    const worktreeMarker = `${path.sep}.claude${path.sep}worktrees${path.sep}`;
+    const idx = projectDir.indexOf(worktreeMarker);
+    if (idx !== -1) {
+      return projectDir.substring(0, idx);
+    }
+    return projectDir;
+  }
+
   function discoverProjectNames(projectDir: string): string[] {
     try {
-      const configPath = path.join(projectDir, 'playwright.config.ts');
+      const resolvedDir = resolveMainProjectDir(projectDir);
+      const configPath = path.join(resolvedDir, 'playwright.config.ts');
       const content = fs.readFileSync(configPath, 'utf-8');
       const names: string[] = [];
       const re = /name:\s*['"]([^'"]+)['"]/g;
