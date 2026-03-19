@@ -66,6 +66,11 @@ const SWAP_PATH_PREFIXES = [
 let requestCount = 0;
 const startTime = Date.now();
 
+// 401 rotation debounce: track the last key rotated on 401 to avoid concurrent
+// connections triggering multiple rotations for the same exhausted key.
+let _last401Rotation = { keyId: null, ts: 0 };
+const ROTATION_DEBOUNCE_MS = 5000;
+
 // key-sync functions — loaded at startup
 let readRotationState;
 let writeRotationState;
@@ -472,16 +477,29 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
       if (!usePassthrough && !forceSwap) {
         const activeEntry = state.keys[state.active_key_id];
         if (!activeEntry || !['active', 'exhausted'].includes(activeEntry.status)) {
-          usePassthrough = true;
-          proxyLog('dead_active_key_passthrough', {
-            host,
-            method: parsed.method,
-            path: parsed.path.slice(0, 100),
-            incoming_key_id: incomingKeyId ? incomingKeyId.slice(0, 8) : null,
-            active_key_id: activeKeyId.slice(0, 8),
-            active_status: activeEntry ? activeEntry.status : 'missing',
-          });
-          // Trigger sync to discover fresh credentials from /login
+          if (incomingKeyId !== state.active_key_id) {
+            // Different token is likely fresher — let it through
+            usePassthrough = true;
+            proxyLog('dead_active_key_passthrough', {
+              host,
+              method: parsed.method,
+              path: parsed.path.slice(0, 100),
+              incoming_key_id: incomingKeyId ? incomingKeyId.slice(0, 8) : null,
+              active_key_id: activeKeyId.slice(0, 8),
+              active_status: activeEntry ? activeEntry.status : 'missing',
+            });
+          } else {
+            // Same dead token — don't passthrough, let 401 rotation handle it
+            proxyLog('dead_active_key_self_hit', {
+              host,
+              method: parsed.method,
+              path: parsed.path.slice(0, 100),
+              incoming_key_id: incomingKeyId ? incomingKeyId.slice(0, 8) : null,
+              active_key_id: activeKeyId.slice(0, 8),
+              active_status: activeEntry ? activeEntry.status : 'missing',
+            });
+          }
+          // Trigger sync either way to discover fresh credentials from /login
           if (syncKeys) {
             syncKeys().catch(err => {
               proxyLog('async_sync_failed', { error: err.message });
@@ -494,7 +512,9 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
 
   // Path-level passthrough: OAuth and session-bound endpoints must keep the
   // session's own token. Only explicitly listed API paths get rotation swap.
-  if (!usePassthrough && !forceSwap && retryCount === 0) {
+  // This check ALWAYS applies regardless of forceSwap — merged/tombstone tokens
+  // on non-SWAP paths must still passthrough to prevent OAuth revocation.
+  if (!usePassthrough && retryCount === 0) {
     const isSwapPath = SWAP_PATH_PREFIXES.some(prefix => parsed.path.startsWith(prefix));
     if (!isSwapPath) {
       usePassthrough = true;
@@ -506,29 +526,30 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
         active_key_id: activeKeyId.slice(0, 8),
       });
     }
-  } else if (forceSwap && retryCount === 0) {
-    const isSwapPath = SWAP_PATH_PREFIXES.some(prefix => parsed.path.startsWith(prefix));
-    if (!isSwapPath) {
-      proxyLog('force_swap_override', {
-        host,
-        method: parsed.method,
-        path: parsed.path.slice(0, 100),
-        incoming_key_id: incomingKeyId ? incomingKeyId.slice(0, 8) : null,
-        active_key_id: activeKeyId.slice(0, 8),
-        reason: 'merged_or_tombstone_token_on_non_swap_path',
-      });
-    }
   }
 
   // Log the swap (key IDs only, never tokens)
   if (retryCount === 0 && !usePassthrough) {
     const hadAuth = Boolean(existingAuth);
+    // Determine incoming token status and swap reason for audit trail
+    let keyStatus = 'unknown';
+    let swapReason = 'normal';
+    if (incomingKeyId) {
+      const state = readRotationState();
+      const keyEntry = state.keys[incomingKeyId];
+      keyStatus = keyEntry ? keyEntry.status : 'unknown';
+      if (forceSwap) {
+        swapReason = keyStatus === 'tombstone' ? 'tombstone_recovery' : 'merged_recovery';
+      }
+    }
     proxyLog('request_intercepted', {
       host,
       method: parsed.method,
       path: parsed.path.slice(0, 100),
       had_auth: hadAuth,
       active_key_id: activeKeyId.slice(0, 8),
+      key_status: keyStatus,
+      swap_reason: swapReason,
     });
   } else if (retryCount > 0) {
     proxyLog('retry_attempt', {
@@ -636,6 +657,24 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
     // (not key expiration). Rotating would trigger a destructive cascade.
     const isMcpProxy = host === 'mcp-proxy.anthropic.com';
     if (responseStatusCode === 401 && retryCount < MAX_401_RETRIES && !usePassthrough && !isMcpProxy) {
+      // Debounce: if another connection already rotated this key within 5s, skip
+      const now401 = Date.now();
+      if (_last401Rotation.keyId === activeKeyId && now401 - _last401Rotation.ts < ROTATION_DEBOUNCE_MS) {
+        proxyLog('rotation_debounced', {
+          host,
+          method: parsed.method,
+          path: parsed.path.slice(0, 100),
+          key_id: activeKeyId.slice(0, 8),
+        });
+        // Forward the 401 response to client as-is
+        upstream.removeListener('data', onData);
+        if (!clientSocket.destroyed) {
+          clientSocket.write(responseHeaderBuf);
+        }
+        upstream.pipe(clientSocket, { end: true });
+        return;
+      }
+      _last401Rotation = { keyId: activeKeyId, ts: now401 };
       upstream.destroy();
       proxyLog('rotating_on_401', {
         host,
