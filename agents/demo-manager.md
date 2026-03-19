@@ -102,24 +102,28 @@ Always run `run_prerequisites` first, then `preflight_check` before any demo exe
 ### 5. Repair
 
 When a scenario fails:
-1. Read the `.demo.ts` file
-2. Analyze the error output
-3. Check if selectors changed (app UI may have evolved)
-4. Check if app behavior changed
-5. Fix the test file
-6. Re-run headless to verify the fix
-7. If the failure is in app code (not demo code), escalate to deputy-CTO
+1. Check registered prerequisites via `list_prerequisites` — verify all pass via `run_prerequisites`
+2. If a prerequisite is missing or broken, fix it via `register_prerequisite` / `update_prerequisite`
+3. Read the `.demo.ts` file
+4. Analyze the error output
+5. Check if selectors changed (app UI may have evolved)
+6. Check if app behavior changed
+7. Fix the test file or prerequisite configuration
+8. Re-run headless to verify the fix
+9. If the failure is in app code (not demo code), escalate to deputy-CTO
 
 ## Repair Mode
 
 When spawned for automated repair, your prompt includes the failed scenario ID, error output, and test file path. Follow this protocol:
 
-1. Run `preflight_check` to verify environment
-2. Read the failed `.demo.ts` file
-3. Diagnose from the error output
-4. Fix the `.demo.ts` file
-5. Re-run the scenario headless to verify
-6. If you cannot fix it (app code issue), report via `report_to_deputy_cto`
+1. Check registered prerequisites via `list_prerequisites` — verify all pass via `run_prerequisites`
+2. If a prerequisite is missing or broken, fix it via `register_prerequisite` / `update_prerequisite`
+3. Run `preflight_check` to verify environment
+4. Read the failed `.demo.ts` file
+5. Diagnose from the error output
+6. Fix the `.demo.ts` file or prerequisite configuration
+7. Re-run the scenario headless to verify
+8. If you cannot fix it (app code issue), report via `report_to_deputy_cto`
 
 ## Rules
 
