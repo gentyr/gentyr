@@ -548,6 +548,10 @@ Register setup commands that must run before demos. Prerequisites are idempotent
 
 **Execution tool** (on `playwright` server): `run_prerequisites` — automatically called by `run_demo`, `run_demo_batch`, and `preflight_check`.
 
+**Foreground prerequisite stall detection**: Foreground prerequisites (non-`run_as_background`) are executed with `runWithStallDetection()` — a spawn-based async helper that kills the child process if it produces no stdout/stderr output for 60 seconds. Prevents blocking the MCP server indefinitely when a prerequisite command hangs silently. Total timeout (`timeout_ms`) is enforced separately; both timers are `.unref()`'d so they cannot block MCP server shutdown.
+
+**`demoDevModeEnv`** (`services.json` top-level field): Optional `Record<string, string>` of env vars injected into the Playwright child process only when the dev server is confirmed healthy before demo execution. Applied after 1Password secret injection and before demo-specific vars and `extra_env`, so it can be overridden per-scenario. Useful for project-level dev-mode flags that should be active for all demos when the app is live (e.g., disabling extension rebuilds: `"E2E_REBUILD_EXTENSION": "false"`). Declared in `ServicesConfigSchema` in `packages/mcp-servers/src/secret-sync/types.ts`.
+
 ### Automated Demo Validation
 
 6-hour automated cycle that runs all enabled demo scenarios headless and spawns repair agents for failures.
