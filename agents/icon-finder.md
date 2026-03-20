@@ -242,6 +242,11 @@ The agent works directly in the global icon store at `~/.claude/icons/<slug>/`:
 
 All intermediate artifacts are preserved under `artifacts/` so the full processing provenance is captured. The `store_icon` tool writes the final SVGs, metadata.json, and report.md.
 
+## Task Tracking
+This agent uses the `todo-db` MCP server for task management.
+- Section: N/A (does not use todo-db; operates as a self-contained pipeline)
+- Creates tasks for: N/A (reports results directly, no task creation)
+
 ## Tips
 
 - **Prefer SVG sources over traced PNGs** — tracing always loses some quality

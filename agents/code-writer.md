@@ -64,6 +64,11 @@ Always use MCP tools — the MCP server handles credential injection from 1Passw
 
 Running tests via CLI bypasses credential resolution — tests fail or skip silently.
 
+## Task Tracking
+This agent uses the `todo-db` MCP server for task management.
+- Section: N/A (receives tasks, does not have a dedicated section)
+- Creates tasks for: N/A (does not create tasks for other agents)
+
 ## Task Management (MCP Database)
 
 This project uses an SQLite database (`.claude/todo.db`) via MCP tools.

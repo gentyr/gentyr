@@ -99,12 +99,21 @@ Context about the situation...
 
 ## Task Section Assignment
 
-| Agent | Section |
-|-------|---------|
-| test-writer | TEST-WRITER |
-| investigator | INVESTIGATOR & PLANNER |
-| code-reviewer | CODE-REVIEWER |
-| project-manager | PROJECT-MANAGER |
+| Agent | Section | Creates Tasks For |
+|-------|---------|-------------------|
+| test-writer | TEST-WRITER | CODE-REVIEWER |
+| investigator | INVESTIGATOR & PLANNER | CODE-REVIEWER, TEST-WRITER, PROJECT-MANAGER |
+| code-reviewer | CODE-REVIEWER | INVESTIGATOR & PLANNER |
+| project-manager | PROJECT-MANAGER | CODE-REVIEWER, INVESTIGATOR & PLANNER, TEST-WRITER |
+| deputy-cto | DEPUTY-CTO | All sections |
+| product-manager | PRODUCT-MANAGER | DEMO-MANAGER, INVESTIGATOR & PLANNER |
+| demo-manager | DEMO-MANAGER | N/A (escalates via reports) |
+| antipattern-hunter | N/A | CODE-REVIEWER, INVESTIGATOR & PLANNER |
+| repo-hygiene-expert | N/A | PROJECT-MANAGER, CODE-REVIEWER, TEST-WRITER, INVESTIGATOR & PLANNER |
+| secret-manager | N/A | CODE-REVIEWER |
+| code-writer | N/A | N/A |
+| feedback-agent | N/A | N/A (uses feedback-reporter) |
+| icon-finder | N/A | N/A |
 
 ## Agent Communication Pattern
 

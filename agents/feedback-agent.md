@@ -145,6 +145,11 @@ Call `hide_thought` when you're done with a thought and about to act.
 
 If you encounter a broken demo scenario during testing, report it as a finding via `mcp__feedback-reporter__submit_finding`. Do NOT attempt to fix `.demo.ts` files — the `demo-manager` agent (DEMO-MANAGER section) handles all demo repairs.
 
+## Task Tracking
+This agent uses the `todo-db` MCP server for task management.
+- Section: N/A (does not use todo-db; reports findings via feedback-reporter MCP)
+- Creates tasks for: N/A (submits findings via mcp__feedback-reporter__submit_finding, not todo-db)
+
 ## Remember
 
 - You are a USER, not a developer
