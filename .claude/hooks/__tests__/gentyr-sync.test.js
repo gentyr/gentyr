@@ -516,7 +516,7 @@ describe('statBasedSync fast-path existence check (Bug Fix #1)', () => {
 // ===========================================================================
 // Tests: merge error handling — no stderr (Bug Fixes #2 and #3)
 //
-// Non-fatal merge failures are silently swallowed (bare `catch {}`).
+// Non-fatal merge failures are caught and logged via debugLog (F004 compliant).
 // Claude Code treats any stderr from hooks as an error, so these catches
 // must NEVER write to stderr. The outer catch routes errors to systemMessage.
 //

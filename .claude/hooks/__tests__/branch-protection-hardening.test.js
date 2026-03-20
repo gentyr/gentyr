@@ -70,13 +70,13 @@ function addRemotePreview(dir) {
   if (currentBranch !== 'preview') {
     try {
       execFileSync('git', ['branch', 'preview'], { cwd: dir, stdio: 'pipe' });
-    } catch { /* already exists */ }
+    } catch (_) { /* already exists — expected */ }
   }
   execFileSync('git', ['push', 'origin', 'preview'], { cwd: dir, stdio: 'pipe' });
   if (currentBranch !== 'preview') {
     try {
       execFileSync('git', ['branch', '-D', 'preview'], { cwd: dir, stdio: 'pipe' });
-    } catch { /* fine */ }
+    } catch (_) { /* branch delete failed — non-fatal in test setup */ }
   }
   return bareDir;
 }
@@ -99,7 +99,7 @@ async function runCheckoutGuardHook(hookInput, opts = {}) {
     child.stderr.on('data', (d) => { stderr += d; });
     child.on('close', (exitCode) => {
       let parsed = null;
-      try { parsed = JSON.parse(stdout); } catch { /* ignore */ }
+      try { parsed = JSON.parse(stdout); } catch (_) { /* non-JSON stdout — parse error expected in some cases */ }
       resolve({ exitCode, stdout, stderr, parsed });
     });
     child.stdin.write(JSON.stringify(hookInput));
@@ -125,7 +125,7 @@ async function runCommitGuardHook(hookInput, opts = {}) {
     child.stderr.on('data', (d) => { stderr += d; });
     child.on('close', (exitCode) => {
       let parsed = null;
-      try { parsed = JSON.parse(stdout); } catch { /* ignore */ }
+      try { parsed = JSON.parse(stdout); } catch (_) { /* non-JSON stdout — parse error expected in some cases */ }
       resolve({ exitCode, stdout, stderr, parsed });
     });
     child.stdin.write(JSON.stringify(hookInput));
@@ -175,11 +175,11 @@ function runGentySync(projectDir, extraEnv = {}) {
       },
     });
     let parsed = null;
-    try { parsed = JSON.parse(stdout.trim()); } catch { /* ignore */ }
+    try { parsed = JSON.parse(stdout.trim()); } catch (_) { /* non-JSON stdout — parse error expected in some cases */ }
     return { exitCode: 0, stdout, stderr: '', parsed };
   } catch (err) {
     let parsed = null;
-    try { parsed = JSON.parse((err.stdout || '').trim()); } catch { /* ignore */ }
+    try { parsed = JSON.parse((err.stdout || '').trim()); } catch (_) { /* non-JSON stdout — parse error expected in some cases */ }
     return {
       exitCode: err.status ?? 1,
       stdout: err.stdout || '',

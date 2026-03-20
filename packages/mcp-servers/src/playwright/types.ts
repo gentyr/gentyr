@@ -252,8 +252,9 @@ export const RunDemoArgsSchema = z.object({
   trace: z.coerce.boolean().optional().default(false)
     .describe('Enable Playwright trace recording (--trace on). Default: false.'),
   scenario_id: z.string()
-    .optional()
-    .describe('Demo scenario ID from user-feedback DB. Video is automatically persisted to `.claude/recordings/demos/{scenarioId}.mp4` after the run completes.'),
+    .describe('Demo scenario ID from user-feedback DB. Required — used for video recording persistence, prerequisite resolution, and env_vars lookup.'),
+  skip_recording: z.coerce.boolean().optional().default(false)
+    .describe('Skip window recording even in headed mode. Useful for automated validation runs.'),
   extra_env: z.record(z.string(), z.string())
     .optional()
     .describe(

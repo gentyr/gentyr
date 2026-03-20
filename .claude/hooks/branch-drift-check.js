@@ -150,7 +150,7 @@ function detectDrift() {
         branch: expectedBranch,
         warning: `AUTO-FIX: Switched from '${currentBranch}' (protected) to '${expectedBranch}'. Direct work on '${currentBranch}' is not allowed.`,
       };
-    } catch { /* fall through to warning */ }
+    } catch (err) { console.error('[branch-drift-check] Warning: failed to auto-checkout branch:', err.message); }
   }
 
   if (hasChanges) {
