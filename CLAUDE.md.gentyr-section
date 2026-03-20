@@ -105,6 +105,8 @@ See `node_modules/gentyr/docs/DEPLOYMENT-FLOW.md` for the full deployment refere
 - Poll `check_demo_result` every 10 seconds (not 30) for faster failure detection
 - The progress reporter writes JSONL events to a temp file consumed by `check_demo_result`
 
+**Dev server auto-detection:** `run_demo` and `run_demo_batch` auto-set `PLAYWRIGHT_BASE_URL` when the dev server is healthy, skipping Playwright's `webServer` startup. No `base_url` arg needed. Project-level env overrides (e.g., skip rebuilds) can be declared in `.claude/config/services.json` under `demoDevModeEnv`. Foreground prerequisites are killed if no output for 60s.
+
 **Use `/demo` for interactive demos** — runs preflight automatically.
 
 ### GENTYR-Controlled Files — Do Not Modify
