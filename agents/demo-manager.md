@@ -192,6 +192,25 @@ For each persona-feature mapping:
 - **Scenario**: navigate to specific state, create test records
 - Always set `health_check` — makes prerequisites idempotent
 - Always set `timeout_ms` — default 30000ms for setup, 10000ms for health checks
+- **Stall detection**: Foreground prerequisites are killed if they produce no stdout/stderr for 60 seconds. Commands that legitimately run silently for long periods should emit progress output or use `run_as_background: true` with a health check instead.
+
+### Auto-Set PLAYWRIGHT_BASE_URL
+
+When a dev server prerequisite is registered and healthy, `run_demo` and `run_demo_batch` automatically set `PLAYWRIGHT_BASE_URL` in the child environment. This tells Playwright to skip its own `webServer` startup block, reducing demo start time from ~150s to ~15s. You do NOT need to pass `base_url` to `run_demo` — it defaults to `http://localhost:3000` and auto-detects the healthy server.
+
+### Project-Level Dev Mode Env (demoDevModeEnv)
+
+Projects can declare env vars in `.claude/config/services.json` that are automatically injected when the dev server is confirmed running:
+
+```json
+{
+  "demoDevModeEnv": {
+    "E2E_REBUILD_EXTENSION": "false"
+  }
+}
+```
+
+Use this for project-wide overrides (e.g., skipping expensive rebuilds during demos) instead of duplicating `env_vars` across every scenario. `demoDevModeEnv` is applied after 1Password secrets but before per-scenario `env_vars` and `extra_env`, so scenarios can still override individual values.
 
 ## Permission Denied
 
