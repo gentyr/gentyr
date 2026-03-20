@@ -53,6 +53,11 @@ Once you've finished all code review:
 - Create tasks for other agents as needed (INVESTIGATOR & PLANNER for fixes)
 - **Do NOT commit, push, or create PRs** -- the project-manager agent handles all git operations
 
+## Task Tracking
+This agent uses the `todo-db` MCP server for task management.
+- Section: CODE-REVIEWER
+- Creates tasks for: fix planning (INVESTIGATOR & PLANNER), security violations, architecture issues
+
 ## Task Management (MCP Database)
 
 This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your section is `CODE-REVIEWER`.

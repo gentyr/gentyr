@@ -294,6 +294,11 @@ When available, use Codecov MCP tools to check coverage:
 | `mcp__codecov__codecov_list_flags` | List coverage flags configured for a repository |
 | `mcp__codecov__codecov_compare` | Compare coverage between two commits or branches |
 
+## Task Tracking
+This agent uses the `todo-db` MCP server for task management.
+- Section: TEST-WRITER
+- Creates tasks for: code review of new tests (CODE-REVIEWER), critical coverage gaps (INVESTIGATOR & PLANNER)
+
 ## Task Management (MCP Database)
 
 This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your section is `TEST-WRITER`.

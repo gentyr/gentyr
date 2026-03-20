@@ -278,6 +278,11 @@ mcp__specs-browser__get_spec({ spec_id: "G004" })  // No hardcoded creds
 mcp__specs-browser__get_spec({ spec_id: "G017" })  // Credential encryption
 ```
 
+## Task Tracking
+This agent uses the `todo-db` MCP server for task management.
+- Section: N/A (does not have a dedicated section)
+- Creates tasks for: config file changes (CODE-REVIEWER), security fixes (CODE-REVIEWER)
+
 ## Task Management
 
 When file changes are needed, create TODOs for the appropriate agent:

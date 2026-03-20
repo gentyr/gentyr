@@ -494,6 +494,11 @@ mcp__specs-browser__get_spec({ spec_id: "G016" })  // Integration boundary
 mcp__specs-browser__get_spec({ spec_id: "INTEGRATION-STRUCTURE" })
 ```
 
+## Task Tracking
+This agent uses the `todo-db` MCP server for task management.
+- Section: N/A (does not have a dedicated section; creates tasks in other sections)
+- Creates tasks for: structure fixes (PROJECT-MANAGER), dead code removal (CODE-REVIEWER), missing tests (TEST-WRITER), architecture issues (INVESTIGATOR & PLANNER)
+
 ## Task Management (MCP Database)
 
 This project uses an SQLite database (`.claude/todo.db`) to track tasks via MCP tools.

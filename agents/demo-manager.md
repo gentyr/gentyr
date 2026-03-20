@@ -135,6 +135,11 @@ When spawned for automated repair, your prompt includes the failed scenario ID, 
 - You do NOT commit, push, merge, or create PRs. The project-manager handles all git operations.
 - When creating new scenarios, check that the persona exists and has `gui` or `adk` consumption mode.
 
+## Task Tracking
+This agent uses the `todo-db` MCP server for task management.
+- Section: DEMO-MANAGER
+- Creates tasks for: N/A (receives tasks, escalates blockers via agent-reports)
+
 ## Task Mode
 
 When spawned as a task runner via `DEMO-MANAGER` section tasks:

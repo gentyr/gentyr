@@ -985,3 +985,93 @@ describe('Git Hook Smoke Test', () => {
     expect(content.length).toBeGreaterThan(10);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GROUP: Agent F003 Compliance — Task Tracking section
+// Every agent .md file must contain a "## Task Tracking" section per
+// F003 (Agent Task Tracking) in specs/framework/CORE-INVARIANTS.md and
+// the AGENT-PATTERNS required-sections table.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Agent F003 Compliance — Task Tracking Section', () => {
+  it('all agent .md files contain a "## Task Tracking" section', () => {
+    const agentsDir = inProject('.claude', 'agents');
+    const entries = fs.readdirSync(agentsDir).filter(f => f.endsWith('.md'));
+
+    expect(
+      entries.length,
+      'Expected at least one agent .md file in .claude/agents'
+    ).toBeGreaterThan(0);
+
+    const violations: string[] = [];
+
+    for (const agent of entries) {
+      const agentPath = path.join(agentsDir, agent);
+      // Follow symlinks so we read the real file content
+      let realAgentPath: string;
+      try {
+        realAgentPath = fs.realpathSync(agentPath);
+      } catch (err) {
+        violations.push(`${agent}: cannot resolve symlink — ${(err as Error).message}`);
+        continue;
+      }
+
+      const content = fs.readFileSync(realAgentPath, 'utf8');
+      // F003 requires the exact heading "## Task Tracking"
+      if (!content.includes('## Task Tracking')) {
+        violations.push(`${agent}: missing "## Task Tracking" section (F003 violation)`);
+      }
+    }
+
+    if (violations.length > 0) {
+      throw new Error(
+        `F003 violations found in agent files:\n${violations.map(v => `  - ${v}`).join('\n')}\n\n` +
+        'Each agent .md must include:\n' +
+        '  ## Task Tracking\n' +
+        '  This agent uses the `todo-db` MCP server for task management.\n' +
+        '  - Section: YOUR-SECTION-NAME\n' +
+        '  - Creates tasks for: [list of task types]'
+      );
+    }
+  });
+
+  it('all agent .md files reference todo-db in the Task Tracking section', () => {
+    const agentsDir = inProject('.claude', 'agents');
+    const entries = fs.readdirSync(agentsDir).filter(f => f.endsWith('.md'));
+
+    const violations: string[] = [];
+
+    for (const agent of entries) {
+      const agentPath = path.join(agentsDir, agent);
+      let realAgentPath: string;
+      try {
+        realAgentPath = fs.realpathSync(agentPath);
+      } catch {
+        // Symlink resolution failures are caught by the previous test
+        continue;
+      }
+
+      const content = fs.readFileSync(realAgentPath, 'utf8');
+
+      // Only check agents that have the Task Tracking section
+      if (!content.includes('## Task Tracking')) continue;
+
+      // Extract the Task Tracking section (up to the next ## heading or end of file)
+      const sectionMatch = content.match(/## Task Tracking([\s\S]*?)(?=\n## |\n---|\s*$)/);
+      const section = sectionMatch ? sectionMatch[1] : '';
+
+      if (!section.includes('todo-db')) {
+        violations.push(
+          `${agent}: "## Task Tracking" section does not reference "todo-db" (F003 requires MCP todo-db usage)`
+        );
+      }
+    }
+
+    if (violations.length > 0) {
+      throw new Error(
+        `F003 compliance gaps in agent Task Tracking sections:\n` +
+        `${violations.map(v => `  - ${v}`).join('\n')}`
+      );
+    }
+  });
+});

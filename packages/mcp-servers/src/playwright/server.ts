@@ -305,6 +305,7 @@ function buildDemoEnv(opts: {
   trace?: boolean;
   extra_env?: Record<string, string>;
   progress_file?: string;
+  dev_server_ready?: boolean;
 }): Record<string, string> {
   const env: Record<string, string> = { ...process.env as Record<string, string> };
 
@@ -316,6 +317,11 @@ function buildDemoEnv(opts: {
     const config = loadServicesConfig(PROJECT_DIR);
     const { resolvedEnv } = resolveLocalSecrets(config);
     Object.assign(env, resolvedEnv);
+
+    // Apply project-specific dev-mode env when dev server is running
+    if (opts.dev_server_ready && config.demoDevModeEnv) {
+      Object.assign(env, config.demoDevModeEnv);
+    }
   } catch (err) {
     process.stderr.write(`[playwright] Secret resolution skipped: ${err instanceof Error ? err.message : err}\n`);
   }
@@ -620,6 +626,69 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
 }
 
 /**
+ * Run a shell command with stall detection.
+ * Kills the child if no stdout/stderr output for `stallMs` (default 60s).
+ * Also enforces a hard total timeout.
+ */
+function runWithStallDetection(
+  command: string,
+  opts: { cwd: string; timeoutMs: number; stallMs?: number; env?: Record<string, string> },
+): Promise<{ success: boolean; output: string; error?: string }> {
+  const stallMs = opts.stallMs ?? 60_000;
+  return new Promise((resolve) => {
+    let resolved = false;
+    const finish = (result: { success: boolean; output: string; error?: string }) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(totalTimer);
+      clearInterval(stallChecker);
+      resolve(result);
+    };
+
+    const child = spawn('sh', ['-c', command], {
+      cwd: opts.cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: opts.env,
+    });
+
+    let output = '';
+    let lastOutputAt = Date.now();
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      lastOutputAt = Date.now();
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      lastOutputAt = Date.now();
+    });
+
+    const totalTimer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish({ success: false, output, error: `Command timed out after ${opts.timeoutMs}ms` });
+    }, opts.timeoutMs);
+    totalTimer.unref();
+
+    const stallChecker = setInterval(() => {
+      if (Date.now() - lastOutputAt > stallMs) {
+        child.kill('SIGKILL');
+        finish({ success: false, output, error: `Command stalled (no output for ${stallMs / 1000}s)` });
+      }
+    }, 5_000);
+    stallChecker.unref();
+
+    child.on('close', (code) => {
+      finish(code === 0
+        ? { success: true, output }
+        : { success: false, output, error: `Exit code ${code}` });
+    });
+    child.on('error', (err) => {
+      finish({ success: false, output, error: err.message });
+    });
+  });
+}
+
+/**
  * Execute demo prerequisites from user-feedback.db.
  * Runs health checks first — if a prerequisite's health check passes (exit 0),
  * its setup command is skipped (idempotent).
@@ -804,25 +873,24 @@ async function executePrerequisites(opts: {
 
           entry.command_result = 'passed';
         } else {
-          // Foreground command: run synchronously
-          try {
-            execFileSync('sh', ['-c', prereq.command], {
-              cwd: PROJECT_DIR,
-              timeout: prereq.timeout_ms,
-              stdio: 'pipe',
-              encoding: 'utf8',
-              env: { ...process.env, ...resolvedEnv },
-            });
-            entry.command_result = 'passed';
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
+          // Foreground command: run with stall detection (kills if no output for 60s)
+          const result = await runWithStallDetection(prereq.command, {
+            cwd: PROJECT_DIR,
+            timeoutMs: prereq.timeout_ms,
+            env: { ...process.env as Record<string, string>, ...resolvedEnv },
+          });
+
+          if (!result.success) {
+            const errorMsg = result.error ?? 'Unknown error';
             entry.command_result = 'failed';
-            entry.error = message.length > 500 ? message.slice(0, 500) + '...' : message;
+            entry.error = errorMsg.length > 500 ? errorMsg.slice(0, 500) + '...' : errorMsg;
             entry.duration_ms = Date.now() - startTime;
             entries.push(entry);
             failed++;
             return { success: false, total: prerequisites.length, passed, failed, skipped, entries, message: `Prerequisite failed: ${prereq.description} — ${entry.error}` };
           }
+
+          entry.command_result = 'passed';
 
           // Step 3: Verify via health check if available
           if (prereq.health_check) {
@@ -903,7 +971,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   }
 
   // Ensure dev server is running before launching demo
-  const devServer = await ensureDevServer(base_url || 'http://localhost:3000');
+  const devServerUrl = base_url || 'http://localhost:3000';
+  const devServer = await ensureDevServer(devServerUrl);
   if (!devServer.ready) {
     return {
       success: false,
@@ -911,6 +980,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       message: `Dev server not ready: ${devServer.message}`,
     };
   }
+  const effectiveBaseUrl = devServerUrl;
 
   // Look up scenario env_vars if scenario_id is provided
   let scenarioEnvVars: Record<string, string> | undefined;
@@ -948,10 +1018,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const env = buildDemoEnv({
     slow_mo,
     headless: args.headless,
-    base_url,
+    base_url: effectiveBaseUrl,
     trace: args.trace,
     extra_env: Object.keys(mergedExtraEnv).length > 0 ? mergedExtraEnv : undefined,
     progress_file: progressFilePath,
+    dev_server_ready: devServer.ready,
   });
 
   const cmdArgs = ['playwright', 'test', '--project', project];
@@ -1019,7 +1090,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     }
 
     // Progress-based crash/stall detection:
-    // - 60s startup grace period (no stall checks — browser + webServer boot is slow)
+    // - 90s startup grace period (no stall checks — browser + webServer boot is slow)
     // - After grace, check every 5s — if 90s silence (based on JSONL progress events, not
     //   raw stdout noise), kill and report stall
     // - Early exit during grace period is reported immediately
@@ -1027,7 +1098,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     // - suite_end detection: when a suite_end JSONL event is detected, wait 5s then auto-kill
     //   the process group (gives user a moment to see the final state). Only applies in
     //   run_demo mode (not launch_ui_mode — which never uses a progress file).
-    const GRACE_MS = 60_000;
+    const GRACE_MS = 90_000;
     const STALL_MS = Math.max(90_000, (args.timeout ?? 120000) > 120000 ? (args.timeout ?? 120000) / 2 : 90_000);
     const SUITE_END_KILL_DELAY_MS = 5_000;
     const CHECK_INTERVAL_MS = 5_000;
@@ -3731,7 +3802,7 @@ function discoverScenarios(opts: {
  * Run a batch of demo scenarios sequentially.
  * Each batch gets its own output directory to prevent Playwright's cleanup from destroying previous recordings.
  */
-async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, scenarioEnvMap?: Map<string, Record<string, string>>): Promise<void> {
+async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, scenarioEnvMap?: Map<string, Record<string, string>>, devServerReady?: boolean, effectiveBaseUrl?: string): Promise<void> {
   const batchSize = args.batch_size ?? 5;
   const scenarios = state.scenarios;
   const totalBatches = Math.ceil(scenarios.length / batchSize);
@@ -3775,10 +3846,11 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
     const env = buildDemoEnv({
       slow_mo: args.slow_mo,
       headless: args.headless,
-      base_url: args.base_url,
+      base_url: effectiveBaseUrl ?? args.base_url,
       trace: args.trace,
       progress_file: progressFile,
       extra_env: batchEnvVars,
+      dev_server_ready: devServerReady,
     });
 
     // Build command args — include all test files in this batch
@@ -3970,10 +4042,12 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
   }
 
   // Ensure dev server is running
-  const devServer = await ensureDevServer(args.base_url || 'http://localhost:3000');
+  const devServerUrl = args.base_url || 'http://localhost:3000';
+  const devServer = await ensureDevServer(devServerUrl);
   if (!devServer.ready) {
     return JSON.stringify({ error: `Dev server not ready: ${devServer.message}` });
   }
+  const effectiveBatchBaseUrl = args.base_url || devServerUrl;
 
   // Discover scenarios
   const scenarios = discoverScenarios({
@@ -4028,7 +4102,7 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
   resetBatchAutoKillTimer(batchId);
 
   // Start background execution (non-blocking)
-  runBatchSequence(state, args, scenarioEnvMap).catch((err) => {
+  runBatchSequence(state, args, scenarioEnvMap, devServer.ready, effectiveBatchBaseUrl).catch((err) => {
     state.status = 'failed';
     state.ended_at = new Date().toISOString();
     process.stderr.write(`[playwright] Batch ${batchId} crashed: ${err instanceof Error ? err.message : err}\n`);

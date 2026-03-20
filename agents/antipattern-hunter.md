@@ -122,6 +122,11 @@ Do NOT spawn code-writer. Do NOT implement fixes yourself.
 - Use `mcp__specs-browser__list_specs({ category: "local" })` to discover all local specs
 - Each local spec defines component-specific requirements and anti-patterns to check
 
+## Task Tracking
+This agent uses the `todo-db` MCP server for task management.
+- Section: N/A (does not have a dedicated section; creates tasks in other sections)
+- Creates tasks for: spec violation fixes (CODE-REVIEWER), investigation requests (INVESTIGATOR & PLANNER)
+
 ## Task Management (MCP Database)
 
 This project uses an SQLite database (`.claude/todo.db`) to track tasks.

@@ -86,6 +86,11 @@ mcp__claude-sessions__search_sessions({ query: "todo.db migration" })
 7. **Document Findings**: Create clear, specific plans for fixes
 8. **Create TODO Items**: Assign tasks to appropriate agents
 
+## Task Tracking
+This agent uses the `todo-db` MCP server for task management.
+- Section: INVESTIGATOR & PLANNER
+- Creates tasks for: code fixes (CODE-REVIEWER), test coverage (TEST-WRITER), documentation (PROJECT-MANAGER)
+
 ## Task Management (MCP Database)
 
 This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your section is `INVESTIGATOR & PLANNER`.

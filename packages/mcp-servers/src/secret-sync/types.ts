@@ -121,6 +121,7 @@ export const ServicesConfigSchema = z.object({
       .default('op-secrets.conf'),
   }).optional(),
   devServices: z.record(z.string(), DevServiceSchema).optional(),
+  demoDevModeEnv: z.record(z.string(), z.string()).optional(),
   runCommandConfig: z.object({
     allowedExecutables: z.array(z.string()).optional()
       .describe('Additional executables to allow beyond defaults'),

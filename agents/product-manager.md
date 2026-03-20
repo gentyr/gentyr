@@ -112,6 +112,11 @@ mcp__agent-reports__report_to_deputy_cto({
 
 ---
 
+## Task Tracking
+This agent uses the `todo-db` MCP server for task management.
+- Section: PRODUCT-MANAGER
+- Creates tasks for: demo scenario implementation (DEMO-MANAGER), investigation requests (INVESTIGATOR & PLANNER)
+
 ## Workflow
 
 ### When spawned for a task:
