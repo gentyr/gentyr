@@ -3589,7 +3589,7 @@ Then exit.`,
                     ].join('\n');
                   }
                 }
-              } catch { /* non-fatal */ }
+              } catch (err) { console.error('[hourly-automation] Warning: failed to load prerequisite block for demo repair:', err.message); }
 
               return [
                 `[Automation][demo-repair][AGENT:${agentId}] You are a demo repair agent. A demo scenario failed during automated validation.`,

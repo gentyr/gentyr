@@ -68,7 +68,7 @@ function queryPrerequisites(scenarioId) {
     `).all(personaId || '', scenarioId);
     db.close();
     return rows;
-  } catch { return []; }
+  } catch (err) { console.error('[demo-failure-spawner] Warning: failed to load prerequisites:', err.message); return []; }
 }
 
 /**
@@ -329,7 +329,7 @@ process.stdin.on('end', () => {
                 if (!testFile) testFile = row.test_file;
               }
             }
-          } catch { /* non-fatal */ }
+          } catch (err) { console.error('[demo-failure-spawner] Warning: failed to load scenario metadata:', err.message); }
         }
 
         failedScenarios.push({

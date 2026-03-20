@@ -947,6 +947,7 @@ async function executePrerequisites(opts: {
  */
 async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const { project, slow_mo, base_url, test_file } = args;
+  let effectiveTestFile = test_file;
 
   // Execute registered prerequisites
   const prereqResult = await executePrerequisites({
@@ -982,7 +983,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   }
   const effectiveBaseUrl = devServerUrl;
 
-  // Look up scenario env_vars if scenario_id is provided
+  // Look up scenario env_vars and test_file if scenario_id is provided
   let scenarioEnvVars: Record<string, string> | undefined;
   if (args.scenario_id) {
     try {
@@ -990,11 +991,18 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       if (fs.existsSync(feedbackDbPath)) {
         const feedbackDb = new Database(feedbackDbPath, { readonly: true });
         try {
-          const row = feedbackDb.prepare('SELECT env_vars FROM demo_scenarios WHERE id = ?').get(args.scenario_id) as { env_vars: string | null } | undefined;
+          const row = feedbackDb.prepare('SELECT env_vars, test_file FROM demo_scenarios WHERE id = ?').get(args.scenario_id) as { env_vars: string | null; test_file: string | null } | undefined;
           if (row?.env_vars) {
             try { scenarioEnvVars = JSON.parse(row.env_vars); } catch { /* invalid JSON */ }
           }
-        } catch { /* env_vars column may not exist yet */ }
+          // Auto-resolve test_file from scenario when not explicitly provided
+          if (!effectiveTestFile && row?.test_file) {
+            const dbTestFile = row.test_file;
+            if (!dbTestFile.startsWith('/') && !dbTestFile.includes('..')) {
+              effectiveTestFile = dbTestFile;
+            }
+          }
+        } catch { /* env_vars/test_file column may not exist yet */ }
         feedbackDb.close();
       }
     } catch { /* non-fatal */ }
@@ -1031,8 +1039,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   }
 
   // Insert test_file as positional arg (after 'test', before '--project')
-  if (test_file) {
-    cmdArgs.splice(2, 0, test_file);
+  if (effectiveTestFile) {
+    cmdArgs.splice(2, 0, effectiveTestFile);
   }
 
   // Headed mode is the default for demos; headless opt-in disables it
@@ -1046,7 +1054,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   // Start window recorder for headed demos (captures specific Chromium window, even when occluded)
   let windowRecorder: { pid: number; process: ReturnType<typeof spawn> } | null = null;
   let windowRecordingPath: string | null = null;
-  if (!args.headless) {
+  if (!args.headless && !args.skip_recording) {
     const recorderBinary = getWindowRecorderBinary();
     if (recorderBinary) {
       windowRecordingPath = path.join(PROJECT_DIR, '.claude', 'state', `demo-window-${progressId}.mp4`);
@@ -1263,7 +1271,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         const demoState: DemoRunState = {
           pid: demoPid,
           project,
-          test_file,
+          test_file: effectiveTestFile,
           started_at: new Date().toISOString(),
           status: hasFailures ? 'failed' : 'passed',
           ended_at: new Date().toISOString(),
@@ -1349,10 +1357,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           project,
           message: hasFailures
             ? `Demo completed with failures (exit code 0).${stdout ? `\nstdout: ${stdout.slice(0, 2000)}` : ''}`
-            : `Demo completed successfully.${test_file ? ` File: ${test_file}.` : ''} Use check_demo_result with PID ${demoPid} to see details.`,
+            : `Demo completed successfully.${effectiveTestFile ? ` File: ${effectiveTestFile}.` : ''} Use check_demo_result with PID ${demoPid} to see details.`,
           pid: demoPid,
           slow_mo,
-          test_file,
+          test_file: effectiveTestFile,
         };
       }
 
@@ -1426,7 +1434,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     const demoState: DemoRunState = {
       pid: demoPid,
       project,
-      test_file,
+      test_file: effectiveTestFile,
       started_at: new Date().toISOString(),
       // suite_end_killed: process was already sent SIGTERM — mark 'passed' directly
       // to avoid a race where the exit handler never fires (process already dead)
@@ -1615,7 +1623,9 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           recordingStatus = ' No video recorded (window recorder failed to produce valid MP4).';
         }
       } else if (!windowRecorder && !args.headless) {
-        recordingStatus = ' No video recorded (window recorder unavailable).';
+        recordingStatus = args.skip_recording
+          ? ' No video recorded (recording skipped).'
+          : ' No video recorded (window recorder unavailable).';
       }
     } else {
       // Still running
@@ -1624,13 +1634,15 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       } else if (args.headless) {
         recordingStatus = ' No video recording (headless mode).';
       } else {
-        recordingStatus = ' No video recording (window recorder unavailable).';
+        recordingStatus = args.skip_recording
+          ? ' No video recording (recording skipped).'
+          : ' No video recording (window recorder unavailable).';
       }
     }
 
     const launchMessage = result.type === 'suite_end_killed'
-      ? `Demo completed and process auto-killed after suite_end for project "${project}".${test_file ? ` File: ${test_file}.` : ''} Use check_demo_result to see the final status.${recordingStatus}${warningText}${recorderInfo}`
-      : `Headed auto-play demo launched for project "${project}" with ${slow_mo}ms slow motion.${test_file ? ` Running file: ${test_file}.` : ''} The browser window should open shortly.${recordingStatus}${warningText}${recorderInfo}`;
+      ? `Demo completed and process auto-killed after suite_end for project "${project}".${effectiveTestFile ? ` File: ${effectiveTestFile}.` : ''} Use check_demo_result to see the final status.${recordingStatus}${warningText}${recorderInfo}`
+      : `Headed auto-play demo launched for project "${project}" with ${slow_mo}ms slow motion.${effectiveTestFile ? ` Running file: ${effectiveTestFile}.` : ''} The browser window should open shortly.${recordingStatus}${warningText}${recorderInfo}`;
 
     return {
       success: true,
@@ -1638,7 +1650,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       message: launchMessage,
       pid: child.pid,
       slow_mo,
-      test_file,
+      test_file: effectiveTestFile,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

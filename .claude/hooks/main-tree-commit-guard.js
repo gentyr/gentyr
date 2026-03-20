@@ -371,7 +371,7 @@ async function main() {
       currentBranch = execFileSync('git', ['branch', '--show-current'], {
         cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
       }).trim();
-    } catch { /* fail-open: can't determine branch */ }
+    } catch (err) { console.error('[main-tree-commit-guard] Warning: failed to get current branch:', err.message); }
 
     if (currentBranch) {
       const baseBranch = detectBaseBranch(PROJECT_DIR);

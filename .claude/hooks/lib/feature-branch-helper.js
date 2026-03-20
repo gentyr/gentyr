@@ -103,7 +103,8 @@ function detectBaseBranch(cwd) {
       stdio: 'pipe',
     });
     return 'preview';
-  } catch {
+  } catch (_) {
+    /* F004: err captured but not logged — shared with SessionStart hooks that must not write to stderr */
     return 'main';
   }
 }

@@ -523,7 +523,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should accept a valid project name', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc' });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.project).toBe('demo');
@@ -533,7 +533,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should accept any non-empty project name up to 100 chars', () => {
       const projects = ['vendor-owner', 'extension', 'cross-persona', 'my-custom-project'];
       for (const project of projects) {
-        const result = RunDemoArgsSchema.safeParse({ project });
+        const result = RunDemoArgsSchema.safeParse({ project, scenario_id: 'scenario-abc' });
         expect(result.success).toBe(true);
       }
     });
@@ -549,7 +549,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should default slow_mo to 800 when omitted', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc' });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.slow_mo).toBe(800);
@@ -557,7 +557,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should accept slow_mo of 0 (no delay)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: 0 });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', slow_mo: 0 });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.slow_mo).toBe(0);
@@ -565,7 +565,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should accept slow_mo of 5000 (maximum)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: 5000 });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', slow_mo: 5000 });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.slow_mo).toBe(5000);
@@ -573,22 +573,22 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should reject slow_mo below 0 (G003)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: -1 });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', slow_mo: -1 });
       expect(result.success).toBe(false);
     });
 
     it('should reject slow_mo above 5000 (G003)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: 5001 });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', slow_mo: 5001 });
       expect(result.success).toBe(false);
     });
 
     it('should reject non-integer slow_mo (G003)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: 1.5 });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', slow_mo: 1.5 });
       expect(result.success).toBe(false);
     });
 
     it('should coerce slow_mo from string to number via z.coerce', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', slow_mo: '500' });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', slow_mo: '500' });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.slow_mo).toBe(500);
@@ -599,6 +599,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should accept optional base_url', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'demo',
+        scenario_id: 'scenario-abc',
         base_url: 'http://localhost:4000',
       });
       expect(result.success).toBe(true);
@@ -608,7 +609,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should allow base_url to be omitted', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc' });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.base_url).toBeUndefined();
@@ -618,6 +619,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should reject invalid base_url (G003 URL validation)', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'demo',
+        scenario_id: 'scenario-abc',
         base_url: 'not-a-url',
       });
       expect(result.success).toBe(false);
@@ -626,6 +628,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should accept all parameters together', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'vendor-owner',
+        scenario_id: 'scenario-abc',
         slow_mo: 1200,
         base_url: 'http://localhost:3000',
       });
@@ -638,7 +641,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should infer correct RunDemoArgs type', () => {
-      const args = RunDemoArgsSchema.parse({ project: 'demo', slow_mo: 800 });
+      const args = RunDemoArgsSchema.parse({ project: 'demo', scenario_id: 'scenario-abc', slow_mo: 800 });
       expect(typeof args.project).toBe('string');
       expect(typeof args.slow_mo).toBe('number');
     });
@@ -646,6 +649,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should accept optional test_file', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'vendor-owner',
+        scenario_id: 'scenario-abc',
         test_file: 'e2e/demo/onboarding.demo.ts',
       });
       expect(result.success).toBe(true);
@@ -655,7 +659,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should allow test_file to be omitted (backward compat)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc' });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.test_file).toBeUndefined();
@@ -665,13 +669,14 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should reject test_file exceeding 500 characters', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'demo',
+        scenario_id: 'scenario-abc',
         test_file: 'a'.repeat(501),
       });
       expect(result.success).toBe(false);
     });
 
     it('should default timeout to 120000 when omitted', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc' });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.timeout).toBe(120000);
@@ -679,7 +684,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should accept timeout at lower bound (30000)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', timeout: 30000 });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', timeout: 30000 });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.timeout).toBe(30000);
@@ -687,7 +692,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should accept timeout at upper bound (600000)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', timeout: 600000 });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', timeout: 600000 });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.timeout).toBe(600000);
@@ -695,22 +700,22 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should reject timeout below 30000 (G003)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', timeout: 29999 });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', timeout: 29999 });
       expect(result.success).toBe(false);
     });
 
     it('should reject timeout above 600000 (G003)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', timeout: 600001 });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', timeout: 600001 });
       expect(result.success).toBe(false);
     });
 
     it('should reject non-integer timeout (G003)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', timeout: 60000.5 });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', timeout: 60000.5 });
       expect(result.success).toBe(false);
     });
 
     it('should coerce timeout from string via z.coerce', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', timeout: '60000' });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', timeout: '60000' });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.timeout).toBe(60000);
@@ -719,7 +724,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should default headless to false when omitted', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc' });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.headless).toBe(false);
@@ -727,7 +732,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should accept headless: true', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', headless: true });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', headless: true });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.headless).toBe(true);
@@ -735,7 +740,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should coerce headless from string via z.coerce', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', headless: 'true' });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', headless: 'true' });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.headless).toBe(true);
@@ -745,6 +750,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should accept all parameters including new fields', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'vendor-owner',
+        scenario_id: 'scenario-abc',
         slow_mo: 500,
         base_url: 'http://localhost:3000',
         test_file: 'e2e/demo/billing.demo.ts',
@@ -761,6 +767,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should accept optional extra_env with valid key-value pairs', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'demo',
+        scenario_id: 'scenario-abc',
         extra_env: { REPLAY_SESSION_ID: 'abc-123', REPLAY_AUDIT_DATA: '[]' },
       });
       expect(result.success).toBe(true);
@@ -773,7 +780,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should allow extra_env to be omitted (backward compat)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc' });
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.extra_env).toBeUndefined();
@@ -783,6 +790,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should accept extra_env with empty object', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'demo',
+        scenario_id: 'scenario-abc',
         extra_env: {},
       });
       expect(result.success).toBe(true);
@@ -794,6 +802,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should reject extra_env with non-string values', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'demo',
+        scenario_id: 'scenario-abc',
         extra_env: { KEY: 123 },
       });
       expect(result.success).toBe(false);
@@ -802,6 +811,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should reject extra_env with non-string keys mapped to objects', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'demo',
+        scenario_id: 'scenario-abc',
         extra_env: { KEY: { nested: 'value' } },
       });
       expect(result.success).toBe(false);
@@ -810,6 +820,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should accept extra_env alongside all other parameters', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'vendor-owner',
+        scenario_id: 'scenario-abc',
         slow_mo: 500,
         base_url: 'http://localhost:3000',
         test_file: 'e2e/demo/replay.demo.ts',
@@ -834,6 +845,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     it('should accept extra_env with security-sensitive keys at schema level (blocked at runtime)', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'demo',
+        scenario_id: 'scenario-abc',
         extra_env: { PATH: '/usr/bin', SUPABASE_URL: 'http://evil.com' },
       });
       // Schema accepts — runtime rejects
@@ -841,10 +853,15 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     // -------------------------------------------------------------------------
-    // scenario_id field (added with opportunistic video-recording support)
+    // scenario_id field — required for video recording persistence and env_vars lookup
     // -------------------------------------------------------------------------
 
-    it('should accept optional scenario_id as a string', () => {
+    it('should require scenario_id (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept scenario_id as a string', () => {
       const result = RunDemoArgsSchema.safeParse({
         project: 'demo',
         scenario_id: 'abc-123-scenario',
@@ -852,14 +869,6 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.scenario_id).toBe('abc-123-scenario');
-      }
-    });
-
-    it('should allow scenario_id to be omitted (backward compat)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.scenario_id).toBeUndefined();
       }
     });
 
@@ -871,6 +880,60 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.scenario_id).toBe('scenario-456');
+      }
+    });
+
+    // -------------------------------------------------------------------------
+    // skip_recording field (added alongside scenario_id requirement)
+    // -------------------------------------------------------------------------
+
+    it('should default skip_recording to false when omitted', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.skip_recording).toBe(false);
+      }
+    });
+
+    it('should accept skip_recording: true', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        scenario_id: 'scenario-abc',
+        skip_recording: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.skip_recording).toBe(true);
+      }
+    });
+
+    it('should coerce skip_recording from string via z.coerce', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        scenario_id: 'scenario-abc',
+        skip_recording: 'true',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.skip_recording).toBe(true);
+      }
+    });
+
+    it('should accept all parameters including scenario_id and skip_recording', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'vendor-owner',
+        scenario_id: 'scenario-full-run',
+        slow_mo: 500,
+        base_url: 'http://localhost:3000',
+        test_file: 'e2e/demo/billing.demo.ts',
+        timeout: 60000,
+        headless: true,
+        skip_recording: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.scenario_id).toBe('scenario-full-run');
+        expect(result.data.skip_recording).toBe(true);
       }
     });
   });

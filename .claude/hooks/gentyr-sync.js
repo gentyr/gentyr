@@ -37,6 +37,20 @@ function warn(message) {
   process.exit(0);
 }
 
+// Debug logging — writes to file since stdout is used for hook response and
+// stderr must never be written to from SessionStart hooks.
+const DEBUG_LOG_PATH = path.join(process.cwd(), '.claude', 'hooks', 'gentyr-sync-debug.log');
+
+function debugLog(message) {
+  const timestamp = new Date().toISOString();
+  const logLine = `[${timestamp}] ${message}\n---\n`;
+  try {
+    fs.appendFileSync(DEBUG_LOG_PATH, logLine);
+  } catch (_) {
+    // Ignore write errors — never block session start
+  }
+}
+
 // ============================================================================
 // Fast-path: skip spawned sessions
 // ============================================================================
@@ -611,7 +625,7 @@ try {
         currentBranch = execFileSync('git', ['branch', '--show-current'], {
           cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
         }).trim();
-      } catch { /* non-fatal */ }
+      } catch (err) { debugLog('[gentyr-sync] Warning: failed to get current branch: ' + err.message); }
 
       if (currentBranch) {
         const PROTECTED = ['main', 'preview', 'staging'];
@@ -621,7 +635,7 @@ try {
             cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
           });
           baseBranch = 'preview';
-        } catch { /* non-fatal */ }
+        } catch (err) { debugLog('[gentyr-sync] Warning: failed to detect base branch: ' + err.message); }
 
         if (PROTECTED.includes(currentBranch) && currentBranch !== baseBranch) {
           let hasChanges = false;
@@ -630,7 +644,7 @@ try {
               cwd: projectDir, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
             }).trim();
             hasChanges = status.length > 0;
-          } catch { /* non-fatal */ }
+          } catch (err) { debugLog('[gentyr-sync] Warning: failed to check working tree status: ' + err.message); }
 
           if (!hasChanges) {
             try {
@@ -638,7 +652,8 @@ try {
                 cwd: projectDir, encoding: 'utf8', timeout: 10000, stdio: 'pipe',
               });
               warn(`BRANCH AUTO-FIX: Was on '${currentBranch}' (protected). Auto-switched to '${baseBranch}'. Direct work on '${currentBranch}' is not allowed.`);
-            } catch {
+            } catch (err) {
+              debugLog('[gentyr-sync] Warning: failed to auto-checkout base branch: ' + err.message);
               warn(`WARNING: On '${currentBranch}' (protected). Switch to '${baseBranch}': git checkout ${baseBranch}`);
             }
           } else {
@@ -647,7 +662,7 @@ try {
         }
       }
     }
-  } catch { /* non-fatal — never block session start */ }
+  } catch (err) { debugLog('[gentyr-sync] Warning: branch protection check failed: ' + err.message); }
 
   // No sync was needed.
   silent();
