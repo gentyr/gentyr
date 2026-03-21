@@ -32,7 +32,7 @@ See [docs/STACK.md](docs/STACK.md) for technical details and MCP server mappings
 
 ### agents
 
-Eleven specialized roles. Fixed sequence: investigate, plan, write, test, review, analyze. Each agent has restricted tool access and a single responsibility. The investigator cannot edit files. The code writer cannot deploy. The test writer cannot approve commits. The product manager cannot modify code. No general-purpose fallback exists.
+Fourteen specialized roles. Fixed sequence: investigate, plan, write, test, review, align, analyze. Each agent has restricted tool access and a single responsibility. The investigator cannot edit files. The code writer cannot deploy. The test writer cannot approve commits. The user-alignment agent cannot modify files. The product manager cannot modify code. No general-purpose fallback exists.
 
 ### hooks
 

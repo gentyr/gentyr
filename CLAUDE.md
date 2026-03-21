@@ -381,6 +381,25 @@ The `search_cto_sessions` tool on the `agent-tracker` MCP server filters session
 - Returns matching excerpts with surrounding context lines
 - Used by the gate agent to check if the CTO recently discussed a topic (CTO intent check)
 
+## User Prompt References System
+
+Traceability chain from user prompts through tasks, specs, and implementations. Every task and spec can carry references to the original user prompts that motivated them, allowing the `user-alignment` agent to verify delivered code matches user intent before it ships.
+
+**Prompt index** (in `agent-tracker` DB, `user_prompts` table): SQLite FTS5 virtual table indexes user/human messages from session JSONL files. UUIDs are deterministic: `up-{sessionId[0:8]}-{hash}-{lineNumber}`. Auto-indexed on SessionStart.
+
+**3 MCP tools** (on `agent-tracker` server):
+- `get_user_prompt` — look up a prompt by UUID; `nearby: N` returns N surrounding messages for context
+- `search_user_prompts` — FTS5 ranked search (falls back to LIKE); returns UUID, timestamp, content preview, relevance rank
+- `list_user_prompts` — list recent prompts; optional `session_id` filter
+
+**Schema extensions**:
+- `todo-db` tasks: `user_prompt_uuids TEXT` column (JSON array of UUIDs); auto-migrated on DB open. `ListTasksInput` gains `prompt_uuid` filter.
+- `specs-browser` specs: `user_prompt_refs` field (UUID array) in spec frontmatter.
+
+**Prompt injection** (`.claude/hooks/lib/user-prompt-resolver.js`): Shared module that resolves UUIDs to content by scanning session JSONL files directly (no DB dependency). Called by `urgent-task-spawner.js` and `hourly-automation.js` to prepend a `## Referenced User Prompts` block into agent prompts when `user_prompt_uuids` is set on the task. Caps at 5 UUIDs per task, 2000 chars per prompt.
+
+**`user-alignment` agent** (`agents/user-alignment.md`): Read-only auditor that runs after the code-reviewer in the standard development workflow. Looks up `user_prompt_uuids` on the task (falls back to keyword search), checks `userPromptRefs` in related specs, reviews `git diff`, and verifies the implementation addresses user intent. Creates `CODE-REVIEWER` fix tasks for misalignments; escalates significant drift to the deputy-CTO. Does NOT edit files or commit.
+
 ## Automatic Session Recovery
 
 GENTYR automatically detects and recovers sessions interrupted by API quota limits, unexpected process death, or full account exhaustion. Three revival modes: (1) quota-interrupted sessions, (2) dead session recovery, (3) paused sessions. Dead Agent Recovery Hook runs at SessionStart; Session Reviver runs every 10 minutes from hourly automation.
