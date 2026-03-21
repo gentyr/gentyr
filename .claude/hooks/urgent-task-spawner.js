@@ -28,6 +28,7 @@ import { createWorktree } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
 import { readRotationState } from './key-sync.js';
 import { shouldAllowSpawn } from './lib/memory-pressure.js';
+import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { enqueueSession } from './lib/session-queue.js';
 
 // Try to import better-sqlite3 for DB access
@@ -343,7 +344,8 @@ You are an ORCHESTRATOR. Do NOT edit files directly. Follow this sequence using 
 2. \`Task(subagent_type='code-writer')\` - Implement the changes
 3. \`Task(subagent_type='test-writer')\` - Add/update tests
 4. \`Task(subagent_type='code-reviewer')\` - Review changes, commit
-5. \`Task(subagent_type='project-manager')\` - Commit, push, and merge (ALWAYS LAST)
+5. \`Task(subagent_type='user-alignment')\` - Verify implementation honors user intent
+6. \`Task(subagent_type='project-manager')\` - Commit, push, and merge (ALWAYS LAST)
 
 **YOU ARE PROHIBITED FROM:**
 - Directly editing ANY files using Edit, Write, or NotebookEdit tools
@@ -351,6 +353,7 @@ You are an ORCHESTRATOR. Do NOT edit files directly. Follow this sequence using 
 - Making test changes without the test-writer sub-agent
 - Skipping investigation before implementation
 - Skipping code-reviewer after any code/test changes
+- Skipping user-alignment after code-reviewer
 - Skipping project-manager at the end
 - Running git add, git commit, git push, or gh pr create yourself`,
 
@@ -415,7 +418,23 @@ If the issue is in APPLICATION CODE (not demo code):
 You are the \`${agentName}\` agent. Complete the task described above using your expertise.
 Use the Task tool to spawn the appropriate sub-agent: \`Task(subagent_type='${agentName}')\``;
 
-  return `${taskDetails}\n${action}\n\n${completionBlock}`;
+  // Resolve user prompt references if available
+  let userPromptBlock = '';
+  if (task.user_prompt_uuids) {
+    try {
+      const uuids = typeof task.user_prompt_uuids === 'string'
+        ? JSON.parse(task.user_prompt_uuids)
+        : task.user_prompt_uuids;
+      if (Array.isArray(uuids) && uuids.length > 0) {
+        const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+        userPromptBlock = resolveUserPrompts(uuids, PROJECT_DIR);
+      }
+    } catch {
+      // Non-critical: skip user prompt resolution
+    }
+  }
+
+  return `${taskDetails}\n${userPromptBlock}\n${action}\n\n${completionBlock}`;
 }
 
 /**

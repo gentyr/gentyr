@@ -102,6 +102,48 @@ export const CancelQueuedSessionArgsSchema = z.object({
 export const DrainSessionQueueArgsSchema = z.object({});
 
 // ============================================================================
+// User Prompt Index Schemas
+// ============================================================================
+
+export const GetUserPromptArgsSchema = z.object({
+  uuid: z.string().describe('UUID of the user prompt to retrieve'),
+  nearby: z.coerce.number()
+    .optional()
+    .describe('Number of surrounding messages (all types) to include for context'),
+});
+
+export const SearchUserPromptsArgsSchema = z.object({
+  query: z.string().min(1).describe('Search query text'),
+  limit: z.coerce.number()
+    .optional()
+    .default(20)
+    .describe('Maximum number of results (default: 20)'),
+  maxAgeDays: z.coerce.number()
+    .optional()
+    .describe('Only search prompts from the last N days'),
+  since: z.string()
+    .optional()
+    .describe('Filter prompts after this ISO timestamp (overrides maxAgeDays)'),
+  use_fts: z.boolean()
+    .optional()
+    .default(true)
+    .describe('Use FTS5 ranked search (default: true). Set false for LIKE fallback.'),
+});
+
+export const ListUserPromptsArgsSchema = z.object({
+  session_id: z.string()
+    .optional()
+    .describe('Filter by session ID'),
+  limit: z.coerce.number()
+    .optional()
+    .default(50)
+    .describe('Maximum number of prompts to return (default: 50)'),
+  maxAgeDays: z.coerce.number()
+    .optional()
+    .describe('Only include prompts from the last N days'),
+});
+
+// ============================================================================
 // Session Browser Schemas (Unified Session Browser)
 // ============================================================================
 
@@ -195,6 +237,47 @@ export type GetSessionQueueStatusArgs = z.infer<typeof GetSessionQueueStatusArgs
 export type SetMaxConcurrentSessionsArgs = z.infer<typeof SetMaxConcurrentSessionsArgsSchema>;
 export type CancelQueuedSessionArgs = z.infer<typeof CancelQueuedSessionArgsSchema>;
 export type DrainSessionQueueArgs = z.infer<typeof DrainSessionQueueArgsSchema>;
+
+// User Prompt Index Types
+export type GetUserPromptArgs = z.infer<typeof GetUserPromptArgsSchema>;
+export type SearchUserPromptsArgs = z.infer<typeof SearchUserPromptsArgsSchema>;
+export type ListUserPromptsArgs = z.infer<typeof ListUserPromptsArgsSchema>;
+
+export interface UserPromptResult {
+  uuid: string;
+  session_id: string;
+  timestamp: string;
+  content: string;
+  nearby_messages?: Array<{
+    type: string;
+    content: string;
+    timestamp: string | null;
+  }>;
+}
+
+export interface SearchUserPromptsResultItem {
+  uuid: string;
+  session_id: string;
+  timestamp: string;
+  content_preview: string;
+  rank?: number;
+}
+
+export interface SearchUserPromptsResult {
+  query: string;
+  total: number;
+  results: SearchUserPromptsResultItem[];
+}
+
+export interface ListUserPromptsResult {
+  total: number;
+  prompts: Array<{
+    uuid: string;
+    session_id: string;
+    timestamp: string;
+    content_preview: string;
+  }>;
+}
 
 export interface AgentRecord {
   id: string;

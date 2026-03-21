@@ -246,6 +246,20 @@ function initializeDatabase(): Database.Database {
     db.exec("ALTER TABLE tasks ADD COLUMN started_timestamp INTEGER");
   }
 
+  // Auto-migration: add user_prompt_uuids column if missing
+  try {
+    db.prepare("SELECT user_prompt_uuids FROM tasks LIMIT 0").get();
+  } catch {
+    db.exec("ALTER TABLE tasks ADD COLUMN user_prompt_uuids TEXT");
+  }
+
+  // Auto-migration: add user_prompt_uuids to archived_tasks if missing
+  try {
+    db.prepare("SELECT user_prompt_uuids FROM archived_tasks LIMIT 0").get();
+  } catch {
+    db.exec("ALTER TABLE archived_tasks ADD COLUMN user_prompt_uuids TEXT");
+  }
+
   return db;
 }
 
@@ -296,6 +310,15 @@ function closeWorklogDb(): void {
 // ============================================================================
 
 function taskToResponse(task: TaskRecord): TaskResponse {
+  let userPromptUuids: string[] | null = null;
+  if (task.user_prompt_uuids) {
+    try {
+      userPromptUuids = JSON.parse(task.user_prompt_uuids);
+    } catch {
+      // Corrupt JSON — treat as null
+    }
+  }
+
   return {
     id: task.id,
     section: task.section,
@@ -308,6 +331,7 @@ function taskToResponse(task: TaskRecord): TaskResponse {
     assigned_by: task.assigned_by,
     followup_enabled: task.followup_enabled === 1,
     priority: (task.priority ?? 'normal') as TaskPriority,
+    user_prompt_uuids: userPromptUuids,
   };
 }
 
@@ -478,18 +502,28 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     }
   }
 
+  // Auto-enable followup when user_prompt_uuids is non-empty
+  const userPromptUuids = args.user_prompt_uuids?.length ? args.user_prompt_uuids : null;
+  if (userPromptUuids && !followup_enabled) {
+    followup_enabled = true;
+    if (!followup_prompt) {
+      followup_prompt = buildDefaultFollowupPrompt(args.title, args.description ?? null);
+    }
+  }
+
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
   const created_timestamp = Math.floor(now.getTime() / 1000);
 
   const priority = args.priority ?? 'normal';
+  const userPromptUuidsJson = userPromptUuids ? JSON.stringify(userPromptUuids) : null;
 
   try {
     db.prepare(`
-      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority)
-      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, args.section, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority);
+      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority, user_prompt_uuids)
+      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, args.section, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority, userPromptUuidsJson);
   } catch (err: unknown) {
     if (
       err instanceof Error &&
@@ -516,6 +550,7 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     assigned_by: args.assigned_by ?? null,
     followup_enabled,
     priority: priority as TaskPriority,
+    user_prompt_uuids: userPromptUuids,
     warning,
   };
 }

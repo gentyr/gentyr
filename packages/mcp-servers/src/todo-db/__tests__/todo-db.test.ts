@@ -34,6 +34,7 @@ interface TaskRow {
   followup_section: string | null;
   followup_prompt: string | null;
   priority: string;
+  user_prompt_uuids: string | null;
 }
 
 interface SectionStatusCount {
@@ -149,6 +150,7 @@ ${originalTask}`;
     followup_section?: string;
     followup_prompt?: string;
     priority?: string;
+    user_prompt_uuids?: string[];
   }): TaskRow & { warning?: string } | ErrorResult => {
     // Soft access control
     const restrictions = SECTION_CREATOR_RESTRICTIONS[args.section as keyof typeof SECTION_CREATOR_RESTRICTIONS];
@@ -185,15 +187,25 @@ ${originalTask}`;
       }
     }
 
+    // Auto-enable followup when user_prompt_uuids is non-empty
+    const userPromptUuids = args.user_prompt_uuids?.length ? args.user_prompt_uuids : null;
+    if (userPromptUuids && !followup_enabled) {
+      followup_enabled = true;
+      if (!followup_prompt) {
+        followup_prompt = buildDefaultFollowupPrompt(args.title, args.description ?? null);
+      }
+    }
+
     const id = randomUUID();
     const now = new Date();
     const created_at = now.toISOString();
     const created_timestamp = now.toISOString();
     const priority = args.priority ?? 'normal';
+    const userPromptUuidsJson = userPromptUuids ? JSON.stringify(userPromptUuids) : null;
 
     db.prepare(`
-      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority)
-      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority, user_prompt_uuids)
+      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       args.section,
@@ -205,7 +217,8 @@ ${originalTask}`;
       followup_enabled ? 1 : 0,
       followup_section,
       followup_prompt,
-      priority
+      priority,
+      userPromptUuidsJson
     );
 
     return {
@@ -225,6 +238,7 @@ ${originalTask}`;
       followup_section,
       followup_prompt,
       priority,
+      user_prompt_uuids: userPromptUuidsJson,
       warning,
     };
   };

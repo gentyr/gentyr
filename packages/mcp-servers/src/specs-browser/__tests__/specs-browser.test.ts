@@ -31,6 +31,7 @@ interface GetSpecResult {
   category: string;
   file: string;
   content: string;
+  user_prompt_refs: string[] | null;
 }
 
 // Helper to get project dir with fallback

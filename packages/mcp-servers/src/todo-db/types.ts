@@ -44,6 +44,8 @@ export const CreateTaskArgsSchema = z.object({
   followup_prompt: z.string().optional().describe('Custom follow-up prompt. For deputy-cto tasks, leave empty — auto-generated.'),
   priority: z.enum(TASK_PRIORITY).optional().default('normal')
     .describe('Task priority. "urgent" tasks bypass the 1-hour age filter and dispatch immediately.'),
+  user_prompt_uuids: z.array(z.string()).optional()
+    .describe('UUIDs of user prompts this task derives from. Auto-enables followup_enabled when non-empty.'),
 });
 
 export const StartTaskArgsSchema = z.object({
@@ -146,6 +148,7 @@ export interface TaskRecord {
   followup_section: string | null;
   followup_prompt: string | null;
   priority: string;                // 'normal' | 'urgent'
+  user_prompt_uuids: string | null; // JSON string of UUID array
 }
 
 export interface TaskResponse {
@@ -160,6 +163,7 @@ export interface TaskResponse {
   assigned_by: string | null;
   followup_enabled: boolean;
   priority: TaskPriority;
+  user_prompt_uuids: string[] | null;
 }
 
 export interface ListTasksResult {

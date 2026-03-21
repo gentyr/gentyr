@@ -122,6 +122,7 @@ export interface SpecMetadata {
   severity: string | null;
   category: string | null;
   lastUpdated: string | null;
+  userPromptRefs: string[] | null;
 }
 
 export interface SpecListItem {
@@ -150,6 +151,7 @@ export interface GetSpecResult {
   severity: string | null;
   rule_id: string | null;
   last_updated: string | null;
+  user_prompt_refs: string[] | null;
   content: string;
 }
 
@@ -168,6 +170,7 @@ export const CreateSpecSchema = z.object({
   suite: z.string().optional().describe('Suite ID if creating a subspec (optional)'),
   title: z.string().min(1).describe('Spec title'),
   content: z.string().describe('Full markdown content'),
+  user_prompt_refs: z.array(z.string()).optional().describe('UUIDs of user prompts this spec derives from'),
 });
 
 export const EditSpecSchema = z.object({
