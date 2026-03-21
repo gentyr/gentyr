@@ -3949,45 +3949,6 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
         state.progress.completed++;
       }
 
-      // Walk batch output dir for video files and persist recordings
-      try {
-        const walkForVideos = (dir: string): string[] => {
-          const videos: string[] = [];
-          if (!fs.existsSync(dir)) return videos;
-          const entries = fs.readdirSync(dir, { withFileTypes: true });
-          for (const e of entries) {
-            const full = path.join(dir, e.name);
-            if (e.isDirectory()) videos.push(...walkForVideos(full));
-            else if (e.name.endsWith('.webm') || e.name.endsWith('.mp4')) videos.push(full);
-          }
-          return videos;
-        };
-
-        const videos = walkForVideos(batchOutputDir);
-        // First pass: match videos to scenarios by encoded path
-        for (const videoPath of videos) {
-          const parentDir = path.basename(path.dirname(videoPath));
-          for (const s of batchScenarios) {
-            if (s.video_path) continue; // already matched
-            const encoded = s.test_file.replace(/\//g, '-').replace(/\.ts$/, '');
-            if (parentDir.includes(encoded)) {
-              s.video_path = videoPath;
-              persistScenarioRecording(s.scenario_id, videoPath);
-              break;
-            }
-          }
-        }
-        // Second pass: assign unmatched videos to unmatched scenarios (1:1 only)
-        const unmatchedVideos = videos.filter(v => !batchScenarios.some(s => s.video_path === v));
-        const unmatchedScenarios = batchScenarios.filter(s => !s.video_path);
-        if (unmatchedVideos.length === 1 && unmatchedScenarios.length === 1) {
-          unmatchedScenarios[0].video_path = unmatchedVideos[0];
-          persistScenarioRecording(unmatchedScenarios[0].scenario_id, unmatchedVideos[0]);
-        }
-      } catch {
-        // Non-fatal — video matching is best-effort
-      }
-
       // Clean up progress file
       try { fs.unlinkSync(progressFile); } catch { /* Non-fatal */ }
 
@@ -4028,7 +3989,7 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
   state.current_progress_file = undefined;
   state.progress.current_scenario = undefined;
 
-  // Clean up batch output directories (videos already persisted)
+  // Clean up batch output directories
   try {
     const batchDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-batch-${state.batch_id}`);
     if (fs.existsSync(batchDir)) {
@@ -4409,9 +4370,8 @@ const tools: AnyToolHandler[] = [
     name: 'run_demo_batch',
     description:
       'Run multiple demo scenarios in sequential batches. ' +
-      'Video is always recorded. Defaults: headless=true, batch_size=5. ' +
+      'Defaults: headless=true, batch_size=5. No video recording in batch mode. ' +
       'Discovers scenarios from user-feedback.db — filter by scenario_ids, persona_ids, or category. ' +
-      'Each batch gets isolated output directories to prevent Playwright from cleaning previous recordings. ' +
       'Returns a batch_id for polling via check_demo_batch_result. ' +
       'Dev server is auto-started if not running.',
     schema: RunDemoBatchArgsSchema,
@@ -4421,7 +4381,7 @@ const tools: AnyToolHandler[] = [
     name: 'check_demo_batch_result',
     description:
       'Check progress or final result of a batch demo run. ' +
-      'Returns per-scenario status, video paths, failure summaries, and aggregate progress. ' +
+      'Returns per-scenario status, failure summaries, and aggregate progress. ' +
       'Auto-kill: batch runs are stopped if not polled within 2 minutes. Each poll resets the countdown.',
     schema: CheckDemoBatchResultArgsSchema,
     handler: checkDemoBatchResult,

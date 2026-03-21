@@ -40,7 +40,7 @@ All defaults are correct:
 - `headless: true` — no browser window
 - `batch_size: 5` — balanced throughput
 - `slow_mo: 0` — full speed
-- Video recording is always enabled
+- No video recording (batch mode is headless)
 
 Report the batch_id and scenario count.
 
@@ -71,7 +71,6 @@ Demo Batch Results
   Failed:   0
   Skipped:  N
   Duration: Xs
-  Videos:   .claude/recordings/demos/
 ```
 
 ### Step 6: Report and Escalate Failures
