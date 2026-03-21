@@ -33,6 +33,9 @@ import {
   SetMaxConcurrentSessionsArgsSchema,
   CancelQueuedSessionArgsSchema,
   DrainSessionQueueArgsSchema,
+  GetUserPromptArgsSchema,
+  SearchUserPromptsArgsSchema,
+  ListUserPromptsArgsSchema,
   AGENT_TYPES,
   type ListSpawnedAgentsArgs,
   type GetAgentPromptArgs,
@@ -909,6 +912,377 @@ function getSessionSummary(args: GetSessionSummaryArgs): SessionSummaryResult | 
 }
 
 // ============================================================================
+// User Prompt Index
+// ============================================================================
+
+const USER_PROMPT_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'user-prompts.db');
+let _userPromptDb: Database.Database | null = null;
+let _lastIndexCheck = 0;
+const INDEX_CACHE_MS = 30_000; // 30-second in-process cache
+
+function initUserPromptDb(): Database.Database {
+  if (_userPromptDb) return _userPromptDb;
+
+  const dbDir = path.dirname(USER_PROMPT_DB_PATH);
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
+
+  const db = new Database(USER_PROMPT_DB_PATH);
+  db.pragma('journal_mode = WAL');
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_prompts (
+      uuid TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      timestamp TEXT NOT NULL,
+      content TEXT NOT NULL,
+      line_number INTEGER NOT NULL,
+      indexed_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_up_session ON user_prompts(session_id);
+    CREATE INDEX IF NOT EXISTS idx_up_timestamp ON user_prompts(timestamp);
+
+    CREATE TABLE IF NOT EXISTS indexed_sessions (
+      session_id TEXT PRIMARY KEY,
+      file_path TEXT NOT NULL,
+      mtime_ms INTEGER NOT NULL,
+      indexed_at TEXT NOT NULL
+    );
+  `);
+
+  // Create FTS5 virtual table if not exists
+  try {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS user_prompts_fts USING fts5(
+        uuid UNINDEXED,
+        content,
+        content=user_prompts,
+        content_rowid=rowid
+      );
+    `);
+  } catch {
+    // FTS5 may not be available on all SQLite builds
+  }
+
+  // Create triggers for FTS sync (idempotent via IF NOT EXISTS on table, triggers may already exist)
+  try {
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS user_prompts_ai AFTER INSERT ON user_prompts BEGIN
+        INSERT INTO user_prompts_fts(rowid, uuid, content) VALUES (new.rowid, new.uuid, new.content);
+      END;
+      CREATE TRIGGER IF NOT EXISTS user_prompts_ad AFTER DELETE ON user_prompts BEGIN
+        INSERT INTO user_prompts_fts(user_prompts_fts, rowid, uuid, content) VALUES ('delete', old.rowid, old.uuid, old.content);
+      END;
+    `);
+  } catch {
+    // Triggers may already exist or FTS not available
+  }
+
+  _userPromptDb = db;
+  return db;
+}
+
+/**
+ * Extract user prompt content from a parsed JSONL message entry
+ */
+function extractUserContent(entry: RawSessionMessage): string | null {
+  if (entry.type !== 'human' && entry.type !== 'user') return null;
+
+  const msg = entry.message;
+  if (!msg) return null;
+
+  if (typeof msg.content === 'string') return msg.content;
+  if (Array.isArray(msg.content)) {
+    const texts = msg.content
+      .filter((block: { type: string; text?: string }) => block.type === 'text' && block.text)
+      .map((block: { type: string; text?: string }) => block.text!);
+    return texts.length > 0 ? texts.join('\n') : null;
+  }
+  return null;
+}
+
+/**
+ * Generate a deterministic UUID from session_id + line_number
+ */
+function promptUuid(sessionId: string, lineNumber: number): string {
+  // Use a simple hash-based approach for deterministic UUIDs
+  const input = `${sessionId}:${lineNumber}`;
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    const char = input.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  const hex = Math.abs(hash).toString(16).padStart(8, '0');
+  return `up-${sessionId.substring(0, 8)}-${hex}-${lineNumber}`;
+}
+
+/**
+ * Ensure the user prompt index is up to date.
+ * Discovers sessions, diffs mtime against indexed_sessions, re-indexes new/changed only.
+ */
+function ensureIndex(): void {
+  const now = Date.now();
+  if (now - _lastIndexCheck < INDEX_CACHE_MS) return;
+  _lastIndexCheck = now;
+
+  const db = initUserPromptDb();
+  const sessionDir = getSessionDir(PROJECT_DIR);
+  if (!sessionDir) return;
+
+  let files: string[];
+  try {
+    files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
+  } catch {
+    return;
+  }
+
+  const getIndexed = db.prepare('SELECT mtime_ms FROM indexed_sessions WHERE session_id = ?');
+  const upsertSession = db.prepare(
+    'INSERT OR REPLACE INTO indexed_sessions (session_id, file_path, mtime_ms, indexed_at) VALUES (?, ?, ?, ?)'
+  );
+  const insertPrompt = db.prepare(
+    'INSERT OR IGNORE INTO user_prompts (uuid, session_id, timestamp, content, line_number, indexed_at) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  const deleteSessionPrompts = db.prepare('DELETE FROM user_prompts WHERE session_id = ?');
+
+  const indexTransaction = db.transaction(() => {
+    for (const file of files) {
+      const filePath = path.join(sessionDir, file);
+      const sessionId = file.replace('.jsonl', '');
+
+      let mtimeMs: number;
+      try {
+        mtimeMs = fs.statSync(filePath).mtimeMs;
+      } catch {
+        continue;
+      }
+
+      const indexed = getIndexed.get(sessionId) as { mtime_ms: number } | undefined;
+      if (indexed && indexed.mtime_ms >= mtimeMs) continue;
+
+      // Re-index this session
+      deleteSessionPrompts.run(sessionId);
+
+      let content: string;
+      try {
+        content = fs.readFileSync(filePath, 'utf8');
+      } catch {
+        continue;
+      }
+
+      const lines = content.split('\n');
+      const indexedAt = new Date().toISOString();
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line.trim()) continue;
+
+        let parsed: RawSessionMessage;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        const userContent = extractUserContent(parsed);
+        if (!userContent) continue;
+
+        const lineNumber = i + 1;
+        const uuid = promptUuid(sessionId, lineNumber);
+        const timestamp = parsed.timestamp || indexedAt;
+
+        insertPrompt.run(uuid, sessionId, timestamp, userContent, lineNumber, indexedAt);
+      }
+
+      upsertSession.run(sessionId, filePath, mtimeMs, indexedAt);
+    }
+  });
+
+  try {
+    indexTransaction();
+  } catch (err) {
+    process.stderr.write(`[agent-tracker] User prompt indexing error: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+}
+
+/**
+ * Get a user prompt by UUID, optionally with nearby messages for context
+ */
+function getUserPrompt(args: import('./types.js').GetUserPromptArgs): import('./types.js').UserPromptResult | import('./types.js').ErrorResult {
+  ensureIndex();
+  const db = initUserPromptDb();
+
+  const prompt = db.prepare('SELECT * FROM user_prompts WHERE uuid = ?').get(args.uuid) as {
+    uuid: string; session_id: string; timestamp: string; content: string; line_number: number;
+  } | undefined;
+
+  if (!prompt) {
+    return { error: `User prompt not found: ${args.uuid}` };
+  }
+
+  const result: import('./types.js').UserPromptResult = {
+    uuid: prompt.uuid,
+    session_id: prompt.session_id,
+    timestamp: prompt.timestamp,
+    content: prompt.content,
+  };
+
+  // Fetch nearby messages from raw JSONL if requested
+  if (args.nearby && args.nearby > 0) {
+    const indexed = db.prepare('SELECT file_path FROM indexed_sessions WHERE session_id = ?')
+      .get(prompt.session_id) as { file_path: string } | undefined;
+
+    if (indexed && fs.existsSync(indexed.file_path)) {
+      try {
+        const content = fs.readFileSync(indexed.file_path, 'utf8');
+        const lines = content.split('\n');
+        const lineIdx = prompt.line_number - 1;
+        const start = Math.max(0, lineIdx - args.nearby);
+        const end = Math.min(lines.length - 1, lineIdx + args.nearby);
+        const nearby: Array<{ type: string; content: string; timestamp: string | null }> = [];
+
+        for (let i = start; i <= end; i++) {
+          if (i === lineIdx) continue; // Skip the prompt itself
+          const line = lines[i];
+          if (!line.trim()) continue;
+          try {
+            const parsed = JSON.parse(line) as RawSessionMessage;
+            const msgType = getMessageType(parsed);
+            let msgContent = '';
+            if (typeof parsed.message?.content === 'string') {
+              msgContent = parsed.message.content.substring(0, 500);
+            } else if (Array.isArray(parsed.message?.content)) {
+              const texts = parsed.message!.content
+                .filter((b: { type: string; text?: string }) => b.type === 'text' && b.text)
+                .map((b: { type: string; text?: string }) => b.text!);
+              msgContent = texts.join('\n').substring(0, 500);
+            }
+            nearby.push({ type: msgType, content: msgContent, timestamp: parsed.timestamp ?? null });
+          } catch {
+            // skip unparseable
+          }
+        }
+
+        result.nearby_messages = nearby;
+      } catch {
+        // Non-critical: skip nearby messages
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Search user prompts using FTS5 or LIKE fallback
+ */
+function searchUserPrompts(args: import('./types.js').SearchUserPromptsArgs): import('./types.js').SearchUserPromptsResult {
+  ensureIndex();
+  const db = initUserPromptDb();
+
+  let timeFilter = '';
+  const params: unknown[] = [];
+
+  if (args.since) {
+    timeFilter = ' AND up.timestamp >= ?';
+    params.push(args.since);
+  } else if (args.maxAgeDays) {
+    const cutoff = new Date(Date.now() - args.maxAgeDays * 86400000).toISOString();
+    timeFilter = ' AND up.timestamp >= ?';
+    params.push(cutoff);
+  }
+
+  const limit = args.limit ?? 20;
+  let results: Array<{ uuid: string; session_id: string; timestamp: string; content: string; rank?: number }>;
+
+  if (args.use_fts !== false) {
+    // FTS5 ranked search
+    try {
+      // Wrap in double quotes to force FTS5 literal phrase search, neutralizing operators
+      const ftsQuery = '"' + args.query.replace(/"/g, '') + '"';
+      results = db.prepare(`
+        SELECT up.uuid, up.session_id, up.timestamp, up.content, rank
+        FROM user_prompts_fts fts
+        JOIN user_prompts up ON up.rowid = fts.rowid
+        WHERE user_prompts_fts MATCH ?${timeFilter}
+        ORDER BY rank
+        LIMIT ?
+      `).all(ftsQuery, ...params, limit) as typeof results;
+    } catch {
+      // FTS5 not available or query error, fall back to LIKE
+      results = db.prepare(`
+        SELECT uuid, session_id, timestamp, content
+        FROM user_prompts up
+        WHERE content LIKE ?${timeFilter}
+        ORDER BY timestamp DESC
+        LIMIT ?
+      `).all(`%${args.query}%`, ...params, limit) as typeof results;
+    }
+  } else {
+    // LIKE fallback
+    results = db.prepare(`
+      SELECT uuid, session_id, timestamp, content
+      FROM user_prompts up
+      WHERE content LIKE ?${timeFilter}
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `).all(`%${args.query}%`, ...params, limit) as typeof results;
+  }
+
+  return {
+    query: args.query,
+    total: results.length,
+    results: results.map(r => ({
+      uuid: r.uuid,
+      session_id: r.session_id,
+      timestamp: r.timestamp,
+      content_preview: r.content.substring(0, 200),
+      rank: r.rank,
+    })),
+  };
+}
+
+/**
+ * List recent user prompts, optionally filtered by session
+ */
+function listUserPrompts(args: import('./types.js').ListUserPromptsArgs): import('./types.js').ListUserPromptsResult {
+  ensureIndex();
+  const db = initUserPromptDb();
+
+  let whereClause = '';
+  const params: unknown[] = [];
+
+  if (args.session_id) {
+    whereClause = ' WHERE session_id = ?';
+    params.push(args.session_id);
+  } else if (args.maxAgeDays) {
+    const cutoff = new Date(Date.now() - args.maxAgeDays * 86400000).toISOString();
+    whereClause = ' WHERE timestamp >= ?';
+    params.push(cutoff);
+  }
+
+  const limit = args.limit ?? 50;
+  const rows = db.prepare(`
+    SELECT uuid, session_id, timestamp, content
+    FROM user_prompts${whereClause}
+    ORDER BY timestamp DESC
+    LIMIT ?
+  `).all(...params, limit) as Array<{ uuid: string; session_id: string; timestamp: string; content: string }>;
+
+  return {
+    total: rows.length,
+    prompts: rows.map(r => ({
+      uuid: r.uuid,
+      session_id: r.session_id,
+      timestamp: r.timestamp,
+      content_preview: r.content.substring(0, 200),
+    })),
+  };
+}
+
+// ============================================================================
 // Concurrency & Force-Spawn Tool Implementations
 // ============================================================================
 
@@ -1458,11 +1832,30 @@ const tools: AnyToolHandler[] = [
     schema: DrainSessionQueueArgsSchema,
     handler: drainSessionQueue,
   },
+  // User Prompt Index Tools
+  {
+    name: 'get_user_prompt',
+    description: 'Look up a user prompt by UUID. Returns content, timestamp, session_id. Use "nearby" param to get N surrounding messages for context.',
+    schema: GetUserPromptArgsSchema,
+    handler: getUserPrompt,
+  },
+  {
+    name: 'search_user_prompts',
+    description: 'Search user prompts with FTS5 ranked search (default) or LIKE fallback. Returns UUID, timestamp, content_preview, relevance rank. Only indexes user/human messages.',
+    schema: SearchUserPromptsArgsSchema,
+    handler: searchUserPrompts,
+  },
+  {
+    name: 'list_user_prompts',
+    description: 'List recent user prompts. Optional session_id filter. Returns UUID, timestamp, content_preview. Only user/human messages are indexed.',
+    schema: ListUserPromptsArgsSchema,
+    handler: listUserPrompts,
+  },
 ];
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '4.1.0',  // Added session queue tools
+  version: '5.0.0',  // Added user prompt index tools
   tools,
 });
 

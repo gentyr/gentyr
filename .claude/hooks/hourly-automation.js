@@ -32,6 +32,7 @@ import { reapAsyncPass, getStuckAliveSessions } from './lib/session-reaper.js';
 import { cleanupAuditLog } from './lib/session-audit.js';
 import { isProxyDisabled } from './lib/proxy-state.js';
 import { buildSpawnEnv } from './lib/spawn-env.js';
+import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 // shouldAllowSpawn import removed — session queue handles memory pressure internally
 
 // Try to import better-sqlite3 for task runner
@@ -1396,6 +1397,22 @@ This will automatically create a follow-up verification task.
  * Build the prompt for a task runner agent
  */
 function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
+  // Resolve user prompt references if available
+  let userPromptBlock = '';
+  if (task.user_prompt_uuids) {
+    try {
+      const uuids = typeof task.user_prompt_uuids === 'string'
+        ? JSON.parse(task.user_prompt_uuids)
+        : task.user_prompt_uuids;
+      if (Array.isArray(uuids) && uuids.length > 0) {
+        const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+        userPromptBlock = resolveUserPrompts(uuids, PROJECT_DIR);
+      }
+    } catch {
+      // Non-critical: skip user prompt resolution
+    }
+  }
+
   const taskDetails = `[Automation][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing a TODO task.
 
 ## Task Details
@@ -1403,7 +1420,8 @@ function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
 - **Task ID**: ${task.id}
 - **Section**: ${task.section}
 - **Title**: ${task.title}
-${task.description ? `- **Description**: ${task.description}` : ''}`;
+${task.description ? `- **Description**: ${task.description}` : ''}
+${userPromptBlock}`;
 
   // Working directory note for worktree-based agents
   const worktreeNote = worktreePath ? `
@@ -1457,7 +1475,8 @@ You are an ORCHESTRATOR. Do NOT edit files directly. Follow this sequence using 
 2. \`Task(subagent_type='code-writer')\` - Implement the changes
 3. \`Task(subagent_type='test-writer')\` - Add/update tests
 4. \`Task(subagent_type='code-reviewer')\` - Review changes, commit
-5. \`Task(subagent_type='project-manager')\` - Commit, push, and merge (ALWAYS LAST)
+5. \`Task(subagent_type='user-alignment')\` - Verify implementation honors user intent
+6. \`Task(subagent_type='project-manager')\` - Commit, push, and merge (ALWAYS LAST)
 
 Pass the full task context to each sub-agent. Each sub-agent has specialized
 instructions loaded from .claude/agents/ configs.
@@ -1468,6 +1487,7 @@ instructions loaded from .claude/agents/ configs.
 - Making test changes without the test-writer sub-agent
 - Skipping investigation before implementation
 - Skipping code-reviewer after any code/test changes
+- Skipping user-alignment after code-reviewer
 - Skipping project-manager at the end
 - Running git add, git commit, git push, or gh pr create yourself
 

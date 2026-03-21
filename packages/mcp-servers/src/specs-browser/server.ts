@@ -139,6 +139,7 @@ function parseSpecMetadata(content: string, filename: string): SpecMetadata {
     severity: null,
     category: null,
     lastUpdated: null,
+    userPromptRefs: null,
   };
 
   // Extract first heading as title
@@ -159,6 +160,11 @@ function parseSpecMetadata(content: string, filename: string): SpecMetadata {
       metadata.category = line.replace('**Category**:', '').trim();
     } else if (line.startsWith('**Last Updated**:')) {
       metadata.lastUpdated = line.replace('**Last Updated**:', '').trim();
+    } else if (line.startsWith('**User Prompt References**:')) {
+      const refs = line.replace('**User Prompt References**:', '').trim();
+      if (refs) {
+        metadata.userPromptRefs = refs.split(',').map(r => r.trim()).filter(Boolean);
+      }
     }
   }
 
@@ -356,6 +362,7 @@ function getSpec(args: GetSpecArgs): GetSpecResult | GetSpecErrorResult {
             severity: metadata.severity,
             rule_id: metadata.ruleId,
             last_updated: metadata.lastUpdated,
+            user_prompt_refs: metadata.userPromptRefs,
             content,
           };
         }
@@ -418,7 +425,11 @@ function createSpec(args: CreateSpecArgs): CreateSpecResult {
   }
 
   // Build content with title as header
-  const fullContent = `# ${title}\n\n${content}`;
+  let fullContent = `# ${title}\n\n`;
+  if (args.user_prompt_refs?.length) {
+    fullContent += `**User Prompt References**: ${args.user_prompt_refs.join(', ')}\n\n`;
+  }
+  fullContent += content;
   fs.writeFileSync(filepath, fullContent, 'utf8');
 
   return { success: true, file: `${basePath}/${filename}` };

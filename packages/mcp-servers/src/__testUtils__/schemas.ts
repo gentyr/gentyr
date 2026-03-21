@@ -36,8 +36,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     followup_section TEXT,
     followup_prompt TEXT,
     priority TEXT NOT NULL DEFAULT 'normal',
+    user_prompt_uuids TEXT,
     CONSTRAINT valid_status CHECK (status IN ('pending', 'in_progress', 'completed')),
-    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER')),
+    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER', 'DEMO-MANAGER')),
     CONSTRAINT valid_priority CHECK (priority IN ('normal', 'urgent'))
 );
 
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS archived_tasks (
     followup_enabled INTEGER NOT NULL DEFAULT 0,
     followup_section TEXT,
     followup_prompt TEXT,
+    user_prompt_uuids TEXT,
     archived_at TEXT NOT NULL,
     archived_timestamp TEXT NOT NULL
 );
@@ -221,6 +223,7 @@ export const VALID_SECTIONS = [
   'PROJECT-MANAGER',
   'DEPUTY-CTO',
   'PRODUCT-MANAGER',
+  'DEMO-MANAGER',
 ] as const;
 
 export type ValidSection = (typeof VALID_SECTIONS)[number];

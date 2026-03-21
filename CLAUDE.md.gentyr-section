@@ -25,8 +25,9 @@ Default behaviors:
 2. **CODE-WRITER** - writes code, follows specs
 3. **TEST-WRITER** (after implementation) - writes tests, achieves coverage
 4. **CODE-REVIEWER** - reviews, commits, may create fix TODOs
-5. **PROJECT-MANAGER** (cleanup, mandatory) - syncs docs, cleans TODOs
-6. **SUMMARY** (always) - provide user with detailed summary
+5. **USER-ALIGNMENT** - verifies implementation honors user intent
+6. **PROJECT-MANAGER** (cleanup, mandatory) - syncs docs, cleans TODOs
+7. **SUMMARY** (always) - provide user with detailed summary
 
 ### CTO Reporting
 
