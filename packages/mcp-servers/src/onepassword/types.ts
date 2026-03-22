@@ -3,6 +3,8 @@ import { z } from 'zod';
 // Input schemas
 export const readSecretSchema = z.object({
   reference: z.string().describe('op://vault/item/field reference'),
+  include_value: z.boolean().optional().default(false)
+    .describe('Return the raw secret value. WARNING: value enters conversation context. Default false — use secret_run_command instead.'),
 });
 
 export const listItemsSchema = z.object({

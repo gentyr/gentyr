@@ -168,6 +168,7 @@ function blockCommand(matchedLabel) {
     '  - mcp__playwright__get_report      -- View last test report',
     '',
     'The MCP server handles credential resolution automatically.',
+    'If run_demo fails on prerequisites, run preflight_check to diagnose.',
     '',
     '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
     'BYPASS (if you genuinely need CLI access for this command):',

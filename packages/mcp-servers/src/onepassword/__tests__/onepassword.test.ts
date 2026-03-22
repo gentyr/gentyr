@@ -52,6 +52,18 @@ describe('1Password MCP Server', () => {
       };
       expect(() => getAuditLogSchema.parse(valid)).not.toThrow();
     });
+
+    it('validates read_secret with include_value false (default)', () => {
+      const valid = { reference: 'op://Production/Supabase/service-role-key' };
+      const parsed = readSecretSchema.parse(valid);
+      expect(parsed.include_value).toBe(false);
+    });
+
+    it('validates read_secret with include_value true', () => {
+      const valid = { reference: 'op://Production/Supabase/service-role-key', include_value: true };
+      const parsed = readSecretSchema.parse(valid);
+      expect(parsed.include_value).toBe(true);
+    });
   });
 
   describe('Command Injection Prevention (execFileSync)', () => {
