@@ -1256,7 +1256,7 @@ export const tools = [
   },
   {
     name: 'secret_run_command',
-    description: 'Run an arbitrary command with 1Password secrets injected into env vars. Secrets are resolved in MCP server memory and never returned to the agent. Output is sanitized to redact any leaked secret values. Executable must be in the allowlist (pnpm, npx, node, tsx, playwright, prisma, drizzle-kit, vitest). No shell interpretation — command is an argv array.',
+    description: 'Run an arbitrary command with 1Password secrets injected into env vars. Secrets are resolved in MCP server memory and never returned to the agent. Output is sanitized to redact any leaked secret values. Executable must be in the allowlist (pnpm, npx, node, tsx, playwright, prisma, drizzle-kit, vitest). No shell interpretation — command is an argv array. Do NOT use this to run Playwright tests or demos — use run_demo or run_demo_batch MCP tools which handle prerequisites, secrets, and video recording automatically.',
     schema: RunCommandArgsSchema,
     handler: runCommand as (args: unknown) => unknown,
   },

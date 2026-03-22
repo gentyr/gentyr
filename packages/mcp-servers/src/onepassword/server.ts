@@ -43,7 +43,20 @@ function opCommand(args: string[]): string {
 async function readSecret(args: ReadSecretArgs) {
   const parsed = readSecretSchema.parse(args);
   const value = opCommand(['read', parsed.reference]);
-  return { value };
+
+  if (parsed.include_value) {
+    return {
+      value,
+      reference: parsed.reference,
+      warning: 'Raw secret is now in conversation context. Do NOT write to files or logs.',
+    };
+  }
+
+  return {
+    reference: parsed.reference,
+    exists: true,
+    message: 'Secret exists and is readable. Use secret_run_command to inject into processes — do not request the raw value.',
+  };
 }
 
 // Tool: List items in vault
@@ -148,7 +161,7 @@ async function getAuditLog(args: GetAuditLogArgs) {
 export const tools: AnyToolHandler[] = [
   {
     name: 'read_secret',
-    description: 'Read a secret from 1Password vault using op:// reference',
+    description: 'Read a secret from 1Password vault using op:// reference. By default returns confirmation only (no raw value). Use secret_run_command to inject secrets into processes. Pass include_value: true only for vault audits — the raw value enters conversation context and must NEVER be written to files or hardcoded.',
     schema: readSecretSchema,
     handler: readSecret as (args: unknown) => unknown,
   },

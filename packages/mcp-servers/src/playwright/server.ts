@@ -701,6 +701,7 @@ async function executePrerequisites(opts: {
   scenario_id?: string;
   persona_id?: string;
   dry_run?: boolean;
+  base_url?: string;
 }): Promise<RunPrerequisitesResult> {
   const dbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
   const entries: PrerequisiteExecEntry[] = [];
@@ -786,6 +787,11 @@ async function executePrerequisites(opts: {
       // Secret resolution unavailable — prerequisites run with process.env only
     }
 
+    // Inject base URL for prerequisites that invoke Playwright
+    if (opts.base_url) {
+      resolvedEnv['PLAYWRIGHT_BASE_URL'] = opts.base_url;
+    }
+
     // Execute each prerequisite
     let passed = 0;
     let failed = 0;
@@ -811,6 +817,7 @@ async function executePrerequisites(opts: {
               timeout: prereq.health_check_timeout_ms,
               stdio: 'pipe',
               encoding: 'utf8',
+              env: { ...process.env as Record<string, string>, ...resolvedEnv },
             });
             // Health check passed — prerequisite already satisfied
             entry.health_check_result = 'passed';
@@ -850,6 +857,7 @@ async function executePrerequisites(opts: {
                   timeout: prereq.health_check_timeout_ms,
                   stdio: 'pipe',
                   encoding: 'utf8',
+                  env: { ...process.env as Record<string, string>, ...resolvedEnv },
                 });
                 ready = true;
                 break;
@@ -873,10 +881,11 @@ async function executePrerequisites(opts: {
 
           entry.command_result = 'passed';
         } else {
-          // Foreground command: run with stall detection (kills if no output for 60s)
+          // Foreground command: run with stall detection (kills if no output for 120s)
           const result = await runWithStallDetection(prereq.command, {
             cwd: PROJECT_DIR,
             timeoutMs: prereq.timeout_ms,
+            stallMs: 120_000,
             env: { ...process.env as Record<string, string>, ...resolvedEnv },
           });
 
@@ -900,6 +909,7 @@ async function executePrerequisites(opts: {
                 timeout: prereq.health_check_timeout_ms,
                 stdio: 'pipe',
                 encoding: 'utf8',
+                env: { ...process.env as Record<string, string>, ...resolvedEnv },
               });
             } catch {
               entry.command_result = 'failed';
@@ -949,19 +959,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const { project, slow_mo, base_url, test_file } = args;
   let effectiveTestFile = test_file;
 
-  // Execute registered prerequisites
-  const prereqResult = await executePrerequisites({
-    scenario_id: args.scenario_id,
-  });
-  if (!prereqResult.success) {
-    return {
-      success: false,
-      project,
-      message: `Demo prerequisites failed: ${prereqResult.message}`,
-    };
-  }
-
-  // Pre-flight validation
+  // Pre-flight validation (fast credential check, no I/O)
   const preflight = validatePrerequisites();
   if (!preflight.ok) {
     return {
@@ -982,6 +980,19 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     };
   }
   const effectiveBaseUrl = devServerUrl;
+
+  // Execute registered prerequisites (now has URL for PLAYWRIGHT_BASE_URL injection)
+  const prereqResult = await executePrerequisites({
+    scenario_id: args.scenario_id,
+    base_url: effectiveBaseUrl,
+  });
+  if (!prereqResult.success) {
+    return {
+      success: false,
+      project,
+      message: `Demo prerequisites failed: ${prereqResult.message}. Run preflight_check to diagnose. Do NOT bypass by running Playwright directly.`,
+    };
+  }
 
   // Look up scenario env_vars and test_file if scenario_id is provided
   let scenarioEnvVars: Record<string, string> | undefined;
@@ -2829,10 +2840,19 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   const warnings: string[] = [];
   const recoverySteps: string[] = [];
 
+  // Cache dev server result early — prerequisites need PLAYWRIGHT_BASE_URL
+  const preflightBaseUrl = args.base_url || 'http://localhost:3000';
+  let cachedDevServer: { ready: boolean; message: string } | null = null;
+  try {
+    cachedDevServer = await ensureDevServer(preflightBaseUrl);
+  } catch {
+    // Will be reported at its natural position (step 7)
+  }
+
   // 0. Prerequisites
   const prereqStart = Date.now();
   try {
-    const prereqResult = await executePrerequisites({ dry_run: false });
+    const prereqResult = await executePrerequisites({ dry_run: false, base_url: cachedDevServer?.ready ? preflightBaseUrl : undefined });
     if (prereqResult.success) {
       const msg = prereqResult.total === 0
         ? 'No prerequisites configured'
@@ -2960,16 +2980,26 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
 
   // 7. Dev server reachable (fail, not warn — if it's not up, demo will fail)
   const baseUrl = args.base_url || 'http://localhost:3000';
-  let devServerCheck = await checkDevServer(baseUrl);
-
-  // Auto-start: only attempt on connection refused (not on HTTP 500 / error patterns)
-  if (devServerCheck.status === 'fail' && devServerCheck.message.includes('is not reachable')) {
-    const autoStartResult = await attemptDevServerAutoStart(baseUrl);
-    if (autoStartResult) {
-      // Re-check after auto-start
-      devServerCheck = await checkDevServer(baseUrl);
-      if (devServerCheck.status === 'pass') {
-        devServerCheck.message = `${devServerCheck.message} (auto-started)`;
+  let devServerCheck: PreflightCheckEntry;
+  if (cachedDevServer !== null) {
+    // Use cached result from early call (avoids redundant HTTP hit)
+    devServerCheck = {
+      name: 'dev_server',
+      status: cachedDevServer.ready ? 'pass' : 'fail',
+      message: cachedDevServer.ready ? `${baseUrl} is reachable` : cachedDevServer.message,
+      duration_ms: 0,
+    };
+  } else {
+    devServerCheck = await checkDevServer(baseUrl);
+    // Auto-start: only attempt on connection refused (not on HTTP 500 / error patterns)
+    if (devServerCheck.status === 'fail' && devServerCheck.message.includes('is not reachable')) {
+      const autoStartResult = await attemptDevServerAutoStart(baseUrl);
+      if (autoStartResult) {
+        // Re-check after auto-start
+        devServerCheck = await checkDevServer(baseUrl);
+        if (devServerCheck.status === 'pass') {
+          devServerCheck.message = `${devServerCheck.message} (auto-started)`;
+        }
       }
     }
   }
@@ -3288,7 +3318,8 @@ async function runAuthSetup(args: RunAuthSetupArgs): Promise<RunAuthSetupResult>
   }
 
   // Ensure dev server is running before auth setup
-  const devServer = await ensureDevServer();
+  const authBaseUrl = 'http://localhost:3000';
+  const devServer = await ensureDevServer(authBaseUrl);
   if (!devServer.ready) {
     return {
       success: false,
@@ -3300,6 +3331,15 @@ async function runAuthSetup(args: RunAuthSetupArgs): Promise<RunAuthSetupResult>
     };
   }
 
+  // Build env with secrets + PLAYWRIGHT_BASE_URL for seed/auth-setup
+  let authEnv: Record<string, string> = { ...process.env as Record<string, string> };
+  try {
+    const config = loadServicesConfig(PROJECT_DIR);
+    const { resolvedEnv } = resolveLocalSecrets(config);
+    Object.assign(authEnv, resolvedEnv);
+  } catch { /* non-fatal */ }
+  authEnv['PLAYWRIGHT_BASE_URL'] = authBaseUrl;
+
   const phases: RunAuthSetupResult['phases'] = [];
 
   // Phase 1: Seed
@@ -3310,7 +3350,7 @@ async function runAuthSetup(args: RunAuthSetupArgs): Promise<RunAuthSetupResult>
       timeout: 60_000,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env as Record<string, string>,
+      env: authEnv,
     });
     phases.push({ name: 'seed', success: true, message: 'Seed completed', duration_ms: Date.now() - seedStart });
   } catch (err) {
@@ -3345,7 +3385,7 @@ async function runAuthSetup(args: RunAuthSetupArgs): Promise<RunAuthSetupResult>
       timeout: 240_000, // 4 min: web server startup + 4 persona sign-ins
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env as Record<string, string>,
+      env: authEnv,
     });
     phases.push({ name: 'auth-setup', success: true, message: 'Auth setup completed', duration_ms: Date.now() - authStart });
 
@@ -4008,19 +4048,19 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
  * Discovers scenarios, partitions into batches, and runs them sequentially in the background.
  */
 async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
-  // Execute global prerequisites before batch
-  const prereqResult = await executePrerequisites({});
-  if (!prereqResult.success) {
-    return JSON.stringify({ error: `Prerequisites failed: ${prereqResult.message}` });
-  }
-
-  // Ensure dev server is running
+  // Ensure dev server is running before executing prerequisites
   const devServerUrl = args.base_url || 'http://localhost:3000';
   const devServer = await ensureDevServer(devServerUrl);
   if (!devServer.ready) {
     return JSON.stringify({ error: `Dev server not ready: ${devServer.message}` });
   }
   const effectiveBatchBaseUrl = args.base_url || devServerUrl;
+
+  // Execute global prerequisites (now has URL for PLAYWRIGHT_BASE_URL injection)
+  const prereqResult = await executePrerequisites({ base_url: effectiveBatchBaseUrl });
+  if (!prereqResult.success) {
+    return JSON.stringify({ error: `Prerequisites failed: ${prereqResult.message}. Run preflight_check to diagnose. Do NOT bypass by running Playwright directly.` });
+  }
 
   // Discover scenarios
   const scenarios = discoverScenarios({
@@ -4233,7 +4273,9 @@ const tools: AnyToolHandler[] = [
       'Headless mode never records video. Scenario videos: `.claude/recordings/demos/{scenarioId}.mp4`. ' +
       'Best for presentations and demos. Supports headless mode (headless: true) for CI or screenshot capture. ' +
       'Cursor dot is always visible in headed mode. The target project\'s playwright.config.ts must read ' +
-      'parseInt(process.env.DEMO_SLOW_MO || "0") in use.launchOptions.slowMo for pace control to work.',
+      'parseInt(process.env.DEMO_SLOW_MO || "0") in use.launchOptions.slowMo for pace control to work. ' +
+      'Video uses ScreenCaptureKit window recorder — do NOT set DEMO_RECORD_VIDEO. ' +
+      'If this tool fails on prerequisites, run preflight_check to diagnose — do NOT bypass by running Playwright directly via Bash or secret_run_command.',
     schema: RunDemoArgsSchema,
     handler: runDemo,
   },
