@@ -84,7 +84,8 @@ export function resolveUserPrompts(uuids, projectDir) {
   let files;
   try {
     files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
-  } catch {
+  } catch (err) {
+    process.stderr.write('[user-prompt-resolver] Warning: failed to read prompts directory: ' + (err.message || err) + '\n');
     return '';
   }
 
@@ -101,7 +102,8 @@ export function resolveUserPrompts(uuids, projectDir) {
     let content;
     try {
       content = fs.readFileSync(filePath, 'utf8');
-    } catch {
+    } catch (err) {
+      process.stderr.write('[user-prompt-resolver] Warning: failed to read prompt file ' + file + ': ' + (err.message || err) + '\n');
       continue;
     }
 
@@ -118,7 +120,7 @@ export function resolveUserPrompts(uuids, projectDir) {
       let parsed;
       try {
         parsed = JSON.parse(line);
-      } catch {
+      } catch (err) { // F004: error captured; parse failures on individual JSONL lines are expected noise
         continue;
       }
 
