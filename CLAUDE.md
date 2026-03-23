@@ -508,7 +508,7 @@ Individual hook specifications for all GENTYR hooks (auto-sync, CTO notification
 
 ## Playwright MCP Server
 
-The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tools for running E2E tests, managing auth state, and launching demos. Uses project-agnostic config discovery from `playwright.config.ts`. Key tools: `launch_ui_mode`, `run_tests`, `run_demo`, `check_demo_result`, `preflight_check`, `run_auth_setup`, `open_video`.
+The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tools for running E2E tests, managing auth state, and launching demos. Uses project-agnostic config discovery from `playwright.config.ts`. Key tools: `launch_ui_mode`, `run_tests`, `run_demo`, `check_demo_result`, `preflight_check`, `run_auth_setup`, `open_video`, `get_demo_screenshot`, `extract_video_frames`.
 
 > Full details: [Playwright MCP Server](docs/CLAUDE-REFERENCE.md#playwright-mcp-server)
 
@@ -547,6 +547,8 @@ headless=false, slow_mo=800
 Video recording is automatic in headed demo modes on macOS. Scenario videos: `.claude/recordings/demos/{scenarioId}.mp4`
 
 **Window recording via ScreenCaptureKit** (headed demos, macOS only): `run_demo` starts a `WindowRecorder` Swift CLI (`tools/window-recorder/`) alongside the Playwright child. Uses `SCContentFilter(desktopIndependentWindow:)` to capture the specific Chromium window even when occluded or in another Space. The recorder polls for up to 120s for the window to appear, then streams H.264 frames to an MP4 via AVAssetWriter. Window recorder PID and output path are tracked in `DemoRunState` (`window_recorder_pid`, `window_recording_path`). On demo completion, the recording is persisted via `persistScenarioRecording()`; temp files are cleaned up automatically. `stop_demo` and `check_demo_result` also handle window recorder teardown gracefully: SIGINT is sent first; if the process exits cleanly within 10s, the MP4 is persisted; if SIGKILL is required (process did not exit in time), persistence is skipped because SIGKILL prevents AVAssetWriter from writing the moov atom (corrupted MP4). All teardown paths — suite completion, `stop_demo`, crash recovery, and `autoKillDemo` — gate persistence on the recorder's clean exit. `check_demo_result` returns `recording_path` and `recording_source` (`'window' | 'none'`) indicating whether a recording was persisted.
+
+**Periodic screenshot capture** (headed demos, macOS only): `run_demo` also starts `startScreenshotCapture()` which uses macOS `screencapture -x` every 3 seconds to capture screenshots throughout the demo. Screenshots are stored in `DemoRunState` as `screenshot_dir`, `screenshot_start_time`, and `screenshot_interval`. `check_demo_result` returns `screenshot_hint` (path pattern for retrieving screenshots) and `analysis_guidance` (REQUIRED instructions for agents to analyze captured screenshots and verify UI state matches user requirements). When a demo fails with video recording, failure frames are auto-extracted from 3 seconds before the failure end using `extract_video_frames` (ffprobe+ffmpeg at 0.5s intervals) and returned as `failure_frames` in the result. `check_demo_result` also returns `duration_seconds` for the total demo run time. The `get_demo_screenshot` MCP tool retrieves screenshots by timestamp; `extract_video_frames` extracts frames from any recording around a given timestamp.
 
 Dev server is auto-started if not running — no manual setup needed.
 

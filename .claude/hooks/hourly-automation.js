@@ -1408,8 +1408,8 @@ function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
         const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
         userPromptBlock = resolveUserPrompts(uuids, PROJECT_DIR);
       }
-    } catch {
-      // Non-critical: skip user prompt resolution
+    } catch (err) {
+      console.error('[hourly-automation] Warning: user prompt resolution failed:', err.message);
     }
   }
 
