@@ -321,6 +321,10 @@ export interface CheckDemoResultResult {
   degraded_features?: string[];
   recording_path?: string;
   recording_source?: 'window' | 'none';
+  duration_seconds?: number;
+  screenshot_hint?: string;
+  failure_frames?: Array<{ file_path: string; timestamp_seconds: number }>;
+  analysis_guidance?: string;
   message: string;
 }
 
@@ -341,6 +345,10 @@ export interface DemoRunState {
   scenario_id?: string;
   window_recorder_pid?: number;
   window_recording_path?: string;
+  screenshot_dir?: string;
+  screenshot_start_time?: number;
+  // Runtime-only — NOT persisted (NodeJS.Timeout is not serializable)
+  screenshot_interval?: ReturnType<typeof setInterval>;
 }
 
 export interface StopDemoResult {
@@ -584,5 +592,42 @@ export interface RunPrerequisitesResult {
   failed: number;
   skipped: number;
   entries: PrerequisiteExecEntry[];
+  message: string;
+}
+
+// ============================================================================
+// Demo Screenshot Retrieval
+// ============================================================================
+
+export const GetDemoScreenshotArgsSchema = z.object({
+  scenario_id: z.string().describe('The scenario_id from the demo run'),
+  timestamp_seconds: z.number().min(0).describe('Seconds from demo start. The closest available screenshot is returned.'),
+});
+
+export type GetDemoScreenshotArgs = z.infer<typeof GetDemoScreenshotArgsSchema>;
+
+export interface GetDemoScreenshotResult {
+  file_path: string;
+  actual_timestamp_seconds: number;
+  total_screenshots: number;
+  message: string;
+}
+
+// ============================================================================
+// Video Frame Extraction
+// ============================================================================
+
+export const ExtractVideoFramesArgsSchema = z.object({
+  scenario_id: z.string().describe('The scenario_id from the demo run'),
+  timestamp_seconds: z.number().min(0).describe('Center timestamp in seconds. Frames are extracted from 3s before to 3s after this point.'),
+});
+
+export type ExtractVideoFramesArgs = z.infer<typeof ExtractVideoFramesArgsSchema>;
+
+export interface ExtractVideoFramesResult {
+  frames: Array<{ file_path: string; timestamp_seconds: number }>;
+  video_path: string;
+  range: { start_seconds: number; end_seconds: number };
+  total_frames: number;
   message: string;
 }
