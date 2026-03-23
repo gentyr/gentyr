@@ -1131,22 +1131,12 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     };
   }
 
-  // Ensure dev server is running before launching demo
   const devServerUrl = base_url || 'http://localhost:3000';
-  const devServer = await ensureDevServer(devServerUrl);
-  if (!devServer.ready) {
-    return {
-      success: false,
-      project,
-      message: `Dev server not ready: ${devServer.message}`,
-    };
-  }
-  const effectiveBaseUrl = devServerUrl;
 
-  // Execute registered prerequisites (now has URL for PLAYWRIGHT_BASE_URL injection)
+  // Execute registered prerequisites FIRST — this starts the dev server if registered as a background prereq
   const prereqResult = await executePrerequisites({
     scenario_id: args.scenario_id,
-    base_url: effectiveBaseUrl,
+    base_url: devServerUrl,
   });
   if (!prereqResult.success) {
     return {
@@ -1155,6 +1145,17 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       message: `Demo prerequisites failed: ${prereqResult.message}. Run preflight_check to diagnose. Do NOT bypass by running Playwright directly.`,
     };
   }
+
+  // Verify dev server is healthy (fallback auto-start if no prerequisite handled it)
+  const devServer = await ensureDevServer(devServerUrl);
+  if (!devServer.ready) {
+    return {
+      success: false,
+      project,
+      message: `Dev server not ready after prerequisites: ${devServer.message}. Register a dev server prerequisite with register_prerequisite (scope: "global", run_as_background: true, with a health_check) so run_demo starts it automatically.`,
+    };
+  }
+  const effectiveBaseUrl = devServerUrl;
 
   // Look up scenario env_vars and test_file if scenario_id is provided
   let scenarioEnvVars: Record<string, string> | undefined;
@@ -3137,7 +3138,7 @@ async function ensureDevServer(baseUrl: string = 'http://localhost:3000'): Promi
   if (health.message.includes('not reachable') || health.message.includes('did not respond')) {
     const result = await attemptDevServerAutoStart(baseUrl);
     if (result) return { ready: true, message: result };
-    return { ready: false, message: `Dev server auto-start failed for ${baseUrl}` };
+    return { ready: false, message: `Dev server auto-start failed for ${baseUrl}. If not already registered, use register_prerequisite to add a dev server start command (scope: "global", run_as_background: true) with a health_check.` };
   }
 
   // HTTP error or app-level error
@@ -3199,19 +3200,11 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   const warnings: string[] = [];
   const recoverySteps: string[] = [];
 
-  // Cache dev server result early — prerequisites need PLAYWRIGHT_BASE_URL
+  // 0. Prerequisites (run FIRST — may start the dev server)
   const preflightBaseUrl = args.base_url || 'http://localhost:3000';
-  let cachedDevServer: { ready: boolean; message: string } | null = null;
-  try {
-    cachedDevServer = await ensureDevServer(preflightBaseUrl);
-  } catch {
-    // Will be reported at its natural position (step 7)
-  }
-
-  // 0. Prerequisites
   const prereqStart = Date.now();
   try {
-    const prereqResult = await executePrerequisites({ dry_run: false, base_url: cachedDevServer?.ready ? preflightBaseUrl : undefined });
+    const prereqResult = await executePrerequisites({ dry_run: false, base_url: preflightBaseUrl });
     if (prereqResult.success) {
       const msg = prereqResult.total === 0
         ? 'No prerequisites configured'
@@ -3338,27 +3331,17 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   }
 
   // 7. Dev server reachable (fail, not warn — if it's not up, demo will fail)
+  // Prerequisites already ran above (step 0) so the dev server should be up if a prereq started it.
   const baseUrl = args.base_url || 'http://localhost:3000';
-  let devServerCheck: PreflightCheckEntry;
-  if (cachedDevServer !== null) {
-    // Use cached result from early call (avoids redundant HTTP hit)
-    devServerCheck = {
-      name: 'dev_server',
-      status: cachedDevServer.ready ? 'pass' : 'fail',
-      message: cachedDevServer.ready ? `${baseUrl} is reachable` : cachedDevServer.message,
-      duration_ms: 0,
-    };
-  } else {
-    devServerCheck = await checkDevServer(baseUrl);
-    // Auto-start: only attempt on connection refused (not on HTTP 500 / error patterns)
-    if (devServerCheck.status === 'fail' && devServerCheck.message.includes('is not reachable')) {
-      const autoStartResult = await attemptDevServerAutoStart(baseUrl);
-      if (autoStartResult) {
-        // Re-check after auto-start
-        devServerCheck = await checkDevServer(baseUrl);
-        if (devServerCheck.status === 'pass') {
-          devServerCheck.message = `${devServerCheck.message} (auto-started)`;
-        }
+  let devServerCheck = await checkDevServer(baseUrl);
+  // Auto-start: only attempt on connection refused (not on HTTP 500 / error patterns)
+  if (devServerCheck.status === 'fail' && devServerCheck.message.includes('is not reachable')) {
+    const autoStartResult = await attemptDevServerAutoStart(baseUrl);
+    if (autoStartResult) {
+      // Re-check after auto-start
+      devServerCheck = await checkDevServer(baseUrl);
+      if (devServerCheck.status === 'pass') {
+        devServerCheck.message = `${devServerCheck.message} (auto-started)`;
       }
     }
   }
@@ -3629,7 +3612,7 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
         recoverySteps.push('Run: mcp__playwright__run_auth_setup() to refresh auth cookies');
         break;
       case 'dev_server':
-        recoverySteps.push('Start the dev server (e.g., pnpm dev) or verify playwright.config.ts webServer configuration');
+        recoverySteps.push('Register the dev server as a prerequisite: register_prerequisite({ command: "pnpm dev", scope: "global", run_as_background: true, health_check: "curl -sf http://localhost:3000" }). If already registered, check the health_check command.');
         break;
       case 'web_server':
         recoverySteps.push(`Start the backend server — check the webServer entries in playwright.config.ts (${check.message})`);
@@ -4407,19 +4390,20 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
  * Discovers scenarios, partitions into batches, and runs them sequentially in the background.
  */
 async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
-  // Ensure dev server is running before executing prerequisites
   const devServerUrl = args.base_url || 'http://localhost:3000';
-  const devServer = await ensureDevServer(devServerUrl);
-  if (!devServer.ready) {
-    return JSON.stringify({ error: `Dev server not ready: ${devServer.message}` });
-  }
-  const effectiveBatchBaseUrl = args.base_url || devServerUrl;
 
-  // Execute global prerequisites (now has URL for PLAYWRIGHT_BASE_URL injection)
-  const prereqResult = await executePrerequisites({ base_url: effectiveBatchBaseUrl });
+  // Execute prerequisites FIRST — starts dev server if registered as background prereq
+  const prereqResult = await executePrerequisites({ base_url: devServerUrl });
   if (!prereqResult.success) {
     return JSON.stringify({ error: `Prerequisites failed: ${prereqResult.message}. Run preflight_check to diagnose. Do NOT bypass by running Playwright directly.` });
   }
+
+  // Verify dev server is healthy (fallback if no prerequisite started it)
+  const devServer = await ensureDevServer(devServerUrl);
+  if (!devServer.ready) {
+    return JSON.stringify({ error: `Dev server not ready after prerequisites: ${devServer.message}. Register a dev server prerequisite with register_prerequisite (scope: "global", run_as_background: true, with a health_check).` });
+  }
+  const effectiveBatchBaseUrl = args.base_url || devServerUrl;
 
   // Discover scenarios
   const scenarios = discoverScenarios({
@@ -4726,6 +4710,7 @@ const tools: AnyToolHandler[] = [
       'Cursor dot is always visible in headed mode. The target project\'s playwright.config.ts must read ' +
       'parseInt(process.env.DEMO_SLOW_MO || "0") in use.launchOptions.slowMo for pace control to work. ' +
       'Video uses ScreenCaptureKit window recorder — do NOT set DEMO_RECORD_VIDEO. ' +
+      'Prerequisites (including dev server start) execute automatically if registered via register_prerequisite. ' +
       'If this tool fails on prerequisites, run preflight_check to diagnose — do NOT bypass by running Playwright directly via Bash or secret_run_command.',
     schema: RunDemoArgsSchema,
     handler: runDemo,
@@ -4837,6 +4822,8 @@ const tools: AnyToolHandler[] = [
       'Checks config file, dependencies, browsers, test files, credentials, ' +
       'compilation, dev server, and auth state freshness. ALWAYS run before launch_ui_mode or run_tests. ' +
       'Also detects stale dev server builds by comparing source file timestamps against .next/ build artifacts (Next.js). ' +
+      'Runs registered prerequisites first (step 0) — including dev server start if registered via register_prerequisite. ' +
+      'To register a dev server: register_prerequisite({ command: "pnpm dev", scope: "global", run_as_background: true, health_check: "curl -sf http://localhost:3000" }). ' +
       'Returns structured result with pass/fail per check and recovery steps.',
     schema: PreflightCheckArgsSchema,
     handler: preflightCheck,
