@@ -80,6 +80,12 @@ import {
   type RunPrerequisitesArgs,
   type PrerequisiteExecEntry,
   type RunPrerequisitesResult,
+  GetDemoScreenshotArgsSchema,
+  type GetDemoScreenshotArgs,
+  type GetDemoScreenshotResult,
+  ExtractVideoFramesArgsSchema,
+  type ExtractVideoFramesArgs,
+  type ExtractVideoFramesResult,
 } from './types.js';
 import { parseTestOutput, truncateOutput, validateExtraEnv } from './helpers.js';
 import { discoverPlaywrightConfig } from './config-discovery.js';
@@ -129,10 +135,11 @@ function persistDemoRuns(): void {
     }
     // Keep only last 20 entries to avoid unbounded growth
     // Exclude trace_summary from persistence — it can be 50KB per entry
+    // Exclude runtime-only fields (screenshot_interval — NodeJS.Timeout is not serializable)
     const entries = [...demoRuns.values()]
       .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
       .slice(0, 20)
-      .map(({ trace_summary, progress_file, stdout_tail, ...rest }) => rest);
+      .map(({ trace_summary, progress_file, stdout_tail, screenshot_interval, ...rest }) => rest);
     fs.writeFileSync(DEMO_RUNS_PATH, JSON.stringify(entries, null, 2));
   } catch {
     // Non-fatal — state will be lost on MCP restart
@@ -157,6 +164,12 @@ function autoKillDemo(pid: number): void {
     try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
     entry.window_recorder_pid = undefined;
     entry.window_recording_path = undefined;
+  }
+
+  // Stop screenshot capture
+  if (entry.screenshot_interval) {
+    stopScreenshotCapture(entry.screenshot_interval);
+    entry.screenshot_interval = undefined;
   }
 
   // Kill the process group
@@ -506,6 +519,155 @@ function stopWindowRecorderSync(pid: number, outputPath: string): boolean {
   } catch {
     return false;
   }
+}
+
+// ============================================================================
+// Screenshot Capture Helpers (macOS only)
+// ============================================================================
+
+const SCREENSHOT_INTERVAL_MS = 3000;
+
+/**
+ * Start periodic screenshot capture using macOS screencapture.
+ * Returns null on non-macOS platforms.
+ */
+function startScreenshotCapture(
+  scenarioId: string,
+): { interval: ReturnType<typeof setInterval>; dir: string; startTime: number } | null {
+  if (os.platform() !== 'darwin') return null;
+
+  const dir = path.join(
+    PROJECT_DIR,
+    '.claude',
+    'recordings',
+    'demos',
+    scenarioId,
+    'screenshots',
+  );
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    return null;
+  }
+
+  const startTime = Date.now();
+
+  const captureOne = () => {
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    const filename = `screenshot-${String(elapsed).padStart(4, '0')}.png`;
+    const filepath = path.join(dir, filename);
+    try {
+      execFileSync('screencapture', ['-x', '-t', 'png', filepath], {
+        timeout: 5000,
+        stdio: 'pipe',
+      });
+    } catch {
+      // Non-fatal — screencapture may fail if no display
+    }
+  };
+
+  captureOne();
+  const interval = setInterval(captureOne, SCREENSHOT_INTERVAL_MS);
+  interval.unref(); // Don't prevent MCP process exit
+
+  return { interval, dir, startTime };
+}
+
+/**
+ * Stop periodic screenshot capture.
+ */
+function stopScreenshotCapture(interval: ReturnType<typeof setInterval>): void {
+  clearInterval(interval);
+}
+
+/**
+ * Extract frames from a video file using ffmpeg.
+ * Returns frames at 0.5s intervals within the given time range.
+ * Clamps range to [0, video_duration].
+ */
+function extractFramesFromVideo(
+  videoPath: string,
+  centerSeconds: number,
+  radiusSeconds: number = 3,
+): { frames: Array<{ file_path: string; timestamp_seconds: number }>; range: { start_seconds: number; end_seconds: number } } | { error: string } {
+  if (!fs.existsSync(videoPath)) {
+    return { error: `Video file not found: ${videoPath}` };
+  }
+
+  // Get video duration via ffprobe
+  let videoDuration: number;
+  try {
+    const probe = execFileSync('ffprobe', [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      videoPath,
+    ], { encoding: 'utf8', timeout: 10_000, stdio: ['pipe', 'pipe', 'pipe'] });
+    videoDuration = parseFloat(probe.trim());
+    if (isNaN(videoDuration) || videoDuration <= 0) {
+      return { error: 'Could not determine video duration.' };
+    }
+  } catch {
+    return { error: 'ffprobe failed — is ffmpeg installed? (brew install ffmpeg)' };
+  }
+
+  // Clamp range to video bounds
+  const startSec = Math.max(0, centerSeconds - radiusSeconds);
+  const endSec = Math.min(videoDuration, centerSeconds + radiusSeconds);
+
+  // Create output directory
+  const videoDir = path.dirname(videoPath);
+  const videoBase = path.basename(videoPath, '.mp4');
+  const framesDir = path.join(videoDir, `${videoBase}-frames`);
+
+  // Clean up old frames from previous extraction for same video
+  try {
+    if (fs.existsSync(framesDir)) {
+      fs.rmSync(framesDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(framesDir, { recursive: true });
+  } catch {
+    return { error: `Failed to create frames directory: ${framesDir}` };
+  }
+
+  // Extract frames at 0.5s intervals using ffmpeg
+  // -ss before -i = input seeking; -t = duration from seek point (NOT -to which is absolute)
+  try {
+    execFileSync('ffmpeg', [
+      '-y',
+      '-ss', String(startSec),
+      '-t', String(endSec - startSec),
+      '-i', videoPath,
+      '-vf', 'fps=2',
+      '-frame_pts', '1',
+      path.join(framesDir, 'frame-%04d.png'),
+    ], { timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (err) {
+    // ffmpeg may fail but still produce some frames
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (!fs.existsSync(framesDir) || fs.readdirSync(framesDir).filter(f => f.endsWith('.png')).length === 0) {
+      return { error: `ffmpeg frame extraction failed: ${errMsg.slice(0, 200)}` };
+    }
+  }
+
+  // Collect extracted frames and assign timestamps
+  const frameFiles = fs.readdirSync(framesDir)
+    .filter(f => f.endsWith('.png'))
+    .sort();
+
+  const frames: Array<{ file_path: string; timestamp_seconds: number }> = [];
+  for (let i = 0; i < frameFiles.length; i++) {
+    const timestamp = Math.round((startSec + i * 0.5) * 10) / 10; // Round to 1 decimal
+    frames.push({
+      file_path: path.join(framesDir, frameFiles[i]),
+      timestamp_seconds: timestamp,
+    });
+  }
+
+  return {
+    frames,
+    range: { start_seconds: Math.round(startSec * 10) / 10, end_seconds: Math.round(endSec * 10) / 10 },
+  };
 }
 
 // ============================================================================
@@ -1073,6 +1235,12 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     }
   }
 
+  // Start periodic screenshot capture for headed demos (macOS only)
+  let screenshotCapture: { interval: ReturnType<typeof setInterval>; dir: string; startTime: number } | null = null;
+  if (!args.headless && args.scenario_id) {
+    screenshotCapture = startScreenshotCapture(args.scenario_id);
+  }
+
   try {
     const child = spawn('npx', cmdArgs, {
       detached: true,
@@ -1357,6 +1525,14 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           }
         }
 
+        // Stop screenshot capture — demo completed synchronously
+        if (screenshotCapture) {
+          stopScreenshotCapture(screenshotCapture.interval);
+          demoState.screenshot_dir = screenshotCapture.dir;
+          demoState.screenshot_start_time = screenshotCapture.startTime;
+          screenshotCapture = null;
+        }
+
         // Clean up progress file
         try { fs.unlinkSync(progressFilePath); } catch { /* Non-fatal */ }
 
@@ -1384,6 +1560,12 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         windowRecorder = null;
         try { fs.unlinkSync(windowRecordingPath); } catch { /* Non-fatal */ }
         windowRecordingPath = null;
+      }
+
+      // Stop screenshot capture on crash
+      if (screenshotCapture) {
+        stopScreenshotCapture(screenshotCapture.interval);
+        screenshotCapture = null;
       }
 
       // Write crash event to progress file so check_demo_result can surface the error
@@ -1420,6 +1602,12 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         windowRecorder = null;
         try { fs.unlinkSync(windowRecordingPath); } catch { /* Non-fatal */ }
         windowRecordingPath = null;
+      }
+
+      // Stop screenshot capture on stall
+      if (screenshotCapture) {
+        stopScreenshotCapture(screenshotCapture.interval);
+        screenshotCapture = null;
       }
 
       return {
@@ -1470,11 +1658,25 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         windowRecorder = null;
         windowRecordingPath = null;
       }
+
+      // suite_end_killed: stop screenshot capture since demo is already done
+      if (screenshotCapture) {
+        stopScreenshotCapture(screenshotCapture.interval);
+        demoState.screenshot_dir = screenshotCapture.dir;
+        demoState.screenshot_start_time = screenshotCapture.startTime;
+        screenshotCapture = null;
+      }
     }
     // Store window recorder info so check_demo_result and the exit handler can stop it
     if (windowRecorder) {
       demoState.window_recorder_pid = windowRecorder.pid;
       demoState.window_recording_path = windowRecordingPath ?? undefined;
+    }
+    // Store screenshot capture so it continues running and can be stopped later
+    if (screenshotCapture) {
+      demoState.screenshot_interval = screenshotCapture.interval;
+      demoState.screenshot_dir = screenshotCapture.dir;
+      demoState.screenshot_start_time = screenshotCapture.startTime;
     }
     demoRuns.set(demoPid, demoState);
     persistDemoRuns();
@@ -1555,6 +1757,12 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         }
       } catch {
         // Non-fatal — trace parsing is best-effort
+      }
+
+      // Stop screenshot capture on process exit
+      if (entry.screenshot_interval) {
+        stopScreenshotCapture(entry.screenshot_interval);
+        entry.screenshot_interval = undefined;
       }
 
       // Persist video recording for the scenario (runs for both passed and failed)
@@ -1876,6 +2084,12 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
 
         entry.window_recorder_pid = undefined;
 
+        // Stop screenshot capture — suite completed
+        if (entry.screenshot_interval) {
+          stopScreenshotCapture(entry.screenshot_interval);
+          entry.screenshot_interval = undefined;
+        }
+
         // Parse trace if available
         try {
           const testResultsDir = path.join(PROJECT_DIR, 'test-results');
@@ -1891,6 +2105,42 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
         const durationSec = Math.round((Date.now() - new Date(entry.started_at).getTime()) / 1000);
         const degraded = extractDegradedFeatures(progress);
         const degradedSuffix = degraded?.length ? ` (${degraded.length} degraded feature(s))` : '';
+
+        // Build screenshot hint
+        const screenshotDir1 = entry.scenario_id
+          ? path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', entry.scenario_id, 'screenshots')
+          : undefined;
+        const screenshotFiles1 = screenshotDir1 && fs.existsSync(screenshotDir1)
+          ? fs.readdirSync(screenshotDir1).filter(f => f.endsWith('.png'))
+          : [];
+        const isPassedPath1 = entry.status === 'passed';
+        const screenshotHint1 = screenshotFiles1.length > 0
+          ? isPassedPath1
+            ? `${screenshotFiles1.length} screenshots captured (every 3s). Demo duration: ${durationSec}s. Use get_demo_screenshot({ scenario_id: "${entry.scenario_id}", timestamp_seconds: N }) to view any moment. IMPORTANT: You MUST analyze key screenshots to verify the demo visually matches user requirements — screenshots are your second layer of verification beyond pass/fail test results.`
+            : `${screenshotFiles1.length} screenshots captured (every 3s). Demo duration: ${durationSec}s. Use get_demo_screenshot({ scenario_id: "${entry.scenario_id}", timestamp_seconds: N }) to view any moment. IMPORTANT: Analyze screenshots near the failure point to understand what the UI looked like when the test failed.`
+          : undefined;
+
+        // Auto-extract failure frames from video recording
+        let failureFrames1: Array<{ file_path: string; timestamp_seconds: number }> | undefined;
+        if (entry.status === 'failed' && suiteRecordingPath) {
+          try {
+            const extraction1 = extractFramesFromVideo(suiteRecordingPath, durationSec, 3);
+            if (!('error' in extraction1)) {
+              failureFrames1 = extraction1.frames;
+            }
+          } catch { /* Non-fatal */ }
+        }
+
+        // Build analysis guidance
+        const hasMediaPath1 = screenshotFiles1.length > 0 || !!suiteRecordingPath;
+        const analysisGuidance1: string | undefined = !hasMediaPath1
+          ? undefined
+          : entry.status === 'passed'
+            ? 'REQUIRED: Before reporting this demo as successful, use get_demo_screenshot to view screenshots at key moments (start, middle, end) and verify the UI matches user requirements. If a video recording is available, use extract_video_frames at critical steps for detailed frame-by-frame verification. Screenshots and video frames are available via the Read tool.'
+            : suiteRecordingPath
+              ? `REQUIRED: This demo failed. ${failureFrames1 ? `${failureFrames1.length} frames have been auto-extracted from the 3 seconds before failure — analyze them with the Read tool to understand what went wrong visually.` : 'Use extract_video_frames at the failure timestamp to see what the UI looked like when it broke.'} Also check screenshots via get_demo_screenshot for earlier moments that may reveal when things started going wrong.`
+              : 'REQUIRED: This demo failed. Use get_demo_screenshot to view screenshots near the failure point and understand what the UI looked like. Check screenshots at multiple timestamps to identify when the failure pattern first appeared.';
+
         return {
           status: entry.status,
           pid,
@@ -1907,6 +2157,10 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
           degraded_features: degraded,
           recording_path: suiteRecordingPath,
           recording_source: suiteRecordingSource,
+          duration_seconds: durationSec,
+          screenshot_hint: screenshotHint1,
+          failure_frames: failureFrames1,
+          analysis_guidance: analysisGuidance1,
           message: entry.status === 'passed'
             ? `Demo completed successfully in ${durationSec}s (auto-killed after suite completion).${degradedSuffix}`
             : `Demo failed in ${durationSec}s — ${entry.failure_summary}. Auto-killed after suite completion.`,
@@ -1929,6 +2183,12 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
         try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
         entry.window_recorder_pid = undefined;
         entry.window_recording_path = undefined;
+      }
+
+      // Stop screenshot capture — process no longer running
+      if (entry.screenshot_interval) {
+        stopScreenshotCapture(entry.screenshot_interval);
+        entry.screenshot_interval = undefined;
       }
 
       // Read progress file to determine final status instead of returning 'unknown'
@@ -1965,6 +2225,47 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
           ? `Demo failed in ${durationSec}s — ${entry.failure_summary}. Status recovered from progress file.`
           : `Demo process (PID ${pid}) is no longer running but no test results were captured. Check test-results/ for output.`;
 
+      // Build screenshot hint for process-dead path
+      const screenshotDir2 = entry.scenario_id
+        ? path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', entry.scenario_id, 'screenshots')
+        : undefined;
+      const screenshotFiles2 = screenshotDir2 && fs.existsSync(screenshotDir2)
+        ? fs.readdirSync(screenshotDir2).filter(f => f.endsWith('.png'))
+        : [];
+      const isPassedPath2 = entry.status === 'passed';
+      const screenshotHint2 = screenshotFiles2.length > 0
+        ? isPassedPath2
+          ? `${screenshotFiles2.length} screenshots captured (every 3s). Demo duration: ${durationSec}s. Use get_demo_screenshot({ scenario_id: "${entry.scenario_id}", timestamp_seconds: N }) to view any moment. IMPORTANT: You MUST analyze key screenshots to verify the demo visually matches user requirements — screenshots are your second layer of verification beyond pass/fail test results.`
+          : `${screenshotFiles2.length} screenshots captured (every 3s). Demo duration: ${durationSec}s. Use get_demo_screenshot({ scenario_id: "${entry.scenario_id}", timestamp_seconds: N }) to view any moment. IMPORTANT: Analyze screenshots near the failure point to understand what the UI looked like when the test failed.`
+        : undefined;
+
+      // Check for persisted recording in process-dead path
+      const processDeadRecordingPath = entry.scenario_id
+        ? path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', `${entry.scenario_id}.mp4`)
+        : undefined;
+      const hasProcessDeadRecording = processDeadRecordingPath && fs.existsSync(processDeadRecordingPath);
+
+      // Auto-extract failure frames from video recording
+      let failureFrames2: Array<{ file_path: string; timestamp_seconds: number }> | undefined;
+      if (entry.status === 'failed' && hasProcessDeadRecording && processDeadRecordingPath) {
+        try {
+          const extraction2 = extractFramesFromVideo(processDeadRecordingPath, durationSec, 3);
+          if (!('error' in extraction2)) {
+            failureFrames2 = extraction2.frames;
+          }
+        } catch { /* Non-fatal */ }
+      }
+
+      // Build analysis guidance
+      const hasMediaPath2 = screenshotFiles2.length > 0 || hasProcessDeadRecording;
+      const analysisGuidance2: string | undefined = !hasMediaPath2
+        ? undefined
+        : entry.status === 'passed'
+          ? 'REQUIRED: Before reporting this demo as successful, use get_demo_screenshot to view screenshots at key moments (start, middle, end) and verify the UI matches user requirements. If a video recording is available, use extract_video_frames at critical steps for detailed frame-by-frame verification. Screenshots and video frames are available via the Read tool.'
+          : hasProcessDeadRecording
+            ? `REQUIRED: This demo failed. ${failureFrames2 ? `${failureFrames2.length} frames have been auto-extracted from the 3 seconds before failure — analyze them with the Read tool to understand what went wrong visually.` : 'Use extract_video_frames at the failure timestamp to see what the UI looked like when it broke.'} Also check screenshots via get_demo_screenshot for earlier moments that may reveal when things started going wrong.`
+            : 'REQUIRED: This demo failed. Use get_demo_screenshot to view screenshots near the failure point and understand what the UI looked like. Check screenshots at multiple timestamps to identify when the failure pattern first appeared.';
+
       return {
         status: entry.status,
         pid,
@@ -1979,6 +2280,12 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
         progress: finalProgress ?? undefined,
         artifacts: entry.artifacts,
         degraded_features: extractDegradedFeatures(finalProgress),
+        recording_path: hasProcessDeadRecording ? processDeadRecordingPath : undefined,
+        recording_source: hasProcessDeadRecording ? 'window' as const : 'none' as const,
+        duration_seconds: durationSec,
+        screenshot_hint: screenshotHint2,
+        failure_frames: failureFrames2,
+        analysis_guidance: analysisGuidance2,
         message: statusMsg,
       };
     }
@@ -2032,6 +2339,42 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     }
   }
 
+  // Build screenshot hint for catch-all return (completed or running)
+  const screenshotDirFinal = entry.scenario_id
+    ? path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', entry.scenario_id, 'screenshots')
+    : undefined;
+  const screenshotFilesFinal = screenshotDirFinal && fs.existsSync(screenshotDirFinal)
+    ? fs.readdirSync(screenshotDirFinal).filter(f => f.endsWith('.png'))
+    : [];
+  const isPassedFinal = entry.status === 'passed';
+  // Only include screenshot_hint when demo is completed (not still running)
+  const screenshotHintFinal = screenshotFilesFinal.length > 0 && entry.status !== 'running'
+    ? isPassedFinal
+      ? `${screenshotFilesFinal.length} screenshots captured (every 3s). Demo duration: ${durationSec}s. Use get_demo_screenshot({ scenario_id: "${entry.scenario_id}", timestamp_seconds: N }) to view any moment. IMPORTANT: You MUST analyze key screenshots to verify the demo visually matches user requirements — screenshots are your second layer of verification beyond pass/fail test results.`
+      : `${screenshotFilesFinal.length} screenshots captured (every 3s). Demo duration: ${durationSec}s. Use get_demo_screenshot({ scenario_id: "${entry.scenario_id}", timestamp_seconds: N }) to view any moment. IMPORTANT: Analyze screenshots near the failure point to understand what the UI looked like when the test failed.`
+    : undefined;
+
+  // Auto-extract failure frames from video recording
+  let failureFramesFinal: Array<{ file_path: string; timestamp_seconds: number }> | undefined;
+  if (entry.status === 'failed' && finalRecordingPath) {
+    try {
+      const extractionFinal = extractFramesFromVideo(finalRecordingPath, durationSec, 3);
+      if (!('error' in extractionFinal)) {
+        failureFramesFinal = extractionFinal.frames;
+      }
+    } catch { /* Non-fatal */ }
+  }
+
+  // Build analysis guidance for catch-all path (only for completed demos, not running)
+  const hasMediaFinal = screenshotFilesFinal.length > 0 || !!finalRecordingPath;
+  const analysisGuidanceFinal: string | undefined = entry.status === 'running' || !hasMediaFinal
+    ? undefined
+    : entry.status === 'passed'
+      ? 'REQUIRED: Before reporting this demo as successful, use get_demo_screenshot to view screenshots at key moments (start, middle, end) and verify the UI matches user requirements. If a video recording is available, use extract_video_frames at critical steps for detailed frame-by-frame verification. Screenshots and video frames are available via the Read tool.'
+      : finalRecordingPath
+        ? `REQUIRED: This demo failed. ${failureFramesFinal ? `${failureFramesFinal.length} frames have been auto-extracted from the 3 seconds before failure — analyze them with the Read tool to understand what went wrong visually.` : 'Use extract_video_frames at the failure timestamp to see what the UI looked like when it broke.'} Also check screenshots via get_demo_screenshot for earlier moments that may reveal when things started going wrong.`
+        : 'REQUIRED: This demo failed. Use get_demo_screenshot to view screenshots near the failure point and understand what the UI looked like. Check screenshots at multiple timestamps to identify when the failure pattern first appeared.';
+
   return {
     status: entry.status,
     pid,
@@ -2049,6 +2392,10 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     degraded_features,
     recording_path: finalRecordingPath,
     recording_source: finalRecordingSource,
+    duration_seconds: durationSec,
+    screenshot_hint: screenshotHintFinal,
+    failure_frames: failureFramesFinal,
+    analysis_guidance: analysisGuidanceFinal,
     message,
   };
 }
@@ -2099,6 +2446,12 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
       entry.window_recording_path = undefined;
     }
 
+    // Stop screenshot capture
+    if (entry.screenshot_interval) {
+      stopScreenshotCapture(entry.screenshot_interval);
+      entry.screenshot_interval = undefined;
+    }
+
     entry.status = 'unknown';
     entry.ended_at = new Date().toISOString();
     persistDemoRuns();
@@ -2125,6 +2478,12 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
     try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
     entry.window_recorder_pid = undefined;
     entry.window_recording_path = undefined;
+  }
+
+  // Stop screenshot capture
+  if (entry.screenshot_interval) {
+    stopScreenshotCapture(entry.screenshot_interval);
+    entry.screenshot_interval = undefined;
   }
 
   // Kill the process group
@@ -4251,6 +4610,98 @@ function stopDemoBatch(args: StopDemoBatchArgs): StopDemoBatchResult {
 }
 
 // ============================================================================
+// Demo Screenshot Retrieval
+// ============================================================================
+
+/**
+ * Retrieve the closest screenshot to a requested timestamp from a demo run.
+ */
+function getDemoScreenshot(args: GetDemoScreenshotArgs): GetDemoScreenshotResult | { error: string } {
+  const screenshotDir = path.join(
+    PROJECT_DIR,
+    '.claude',
+    'recordings',
+    'demos',
+    args.scenario_id,
+    'screenshots',
+  );
+
+  if (!fs.existsSync(screenshotDir)) {
+    return {
+      error: `No screenshots found for scenario "${args.scenario_id}". Screenshots are captured during headed demo runs on macOS.`,
+    };
+  }
+
+  let files: string[];
+  try {
+    files = fs.readdirSync(screenshotDir).filter(f => f.endsWith('.png')).sort();
+  } catch {
+    return { error: `Failed to read screenshot directory for scenario "${args.scenario_id}".` };
+  }
+
+  if (files.length === 0) {
+    return {
+      error: `Screenshot directory exists but contains no images for scenario "${args.scenario_id}".`,
+    };
+  }
+
+  // Parse timestamps from filenames: screenshot-0003.png -> 3
+  const timestamps = files
+    .map(f => {
+      const match = f.match(/screenshot-(\d+)\.png$/);
+      return match ? { file: f, seconds: parseInt(match[1], 10) } : null;
+    })
+    .filter((t): t is { file: string; seconds: number } => t !== null);
+
+  if (timestamps.length === 0) {
+    return { error: 'Could not parse screenshot timestamps from filenames.' };
+  }
+
+  // Find closest screenshot to requested timestamp
+  let closest = timestamps[0];
+  let minDiff = Math.abs(args.timestamp_seconds - closest.seconds);
+  for (const t of timestamps) {
+    const diff = Math.abs(args.timestamp_seconds - t.seconds);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = t;
+    }
+  }
+
+  return {
+    file_path: path.join(screenshotDir, closest.file),
+    actual_timestamp_seconds: closest.seconds,
+    total_screenshots: timestamps.length,
+    message:
+      `Screenshot at ${closest.seconds}s (requested ${args.timestamp_seconds}s, delta ${minDiff}s). ` +
+      `Use the Read tool to view this image. ` +
+      `${timestamps.length} total screenshots available (0s to ${timestamps[timestamps.length - 1].seconds}s).`,
+  };
+}
+
+/**
+ * Extract high-resolution video frames around a given timestamp.
+ * Uses ffmpeg to extract frames at 0.5s intervals, 3s before and after the timestamp.
+ */
+function extractVideoFrames(args: ExtractVideoFramesArgs): ExtractVideoFramesResult | { error: string } {
+  const videoPath = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', `${args.scenario_id}.mp4`);
+
+  const result = extractFramesFromVideo(videoPath, args.timestamp_seconds);
+  if ('error' in result) return result;
+
+  return {
+    frames: result.frames,
+    video_path: videoPath,
+    range: result.range,
+    total_frames: result.frames.length,
+    message:
+      `Extracted ${result.frames.length} frames from ${result.range.start_seconds}s to ${result.range.end_seconds}s (0.5s intervals). ` +
+      `Use the Read tool to view any frame image. ` +
+      'IMPORTANT: Analyze these frames to verify the UI state matches user requirements and expected behavior.',
+  };
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -4289,7 +4740,8 @@ const tools: AnyToolHandler[] = [
       'and a progress object with real-time test counts, current test name, and error detection. ' +
       'Auto-kill: demo processes are automatically killed if this tool is not called within 60 seconds. ' +
       'Each poll resets the countdown. Prevents orphaned browser processes when the polling agent stops. ' +
-      'Includes degraded_features array when tests report warning annotations on soft-guarded features.',
+      'Includes degraded_features array when tests report warning annotations on soft-guarded features. ' +
+      'When the demo completes, screenshot_hint and analysis_guidance fields tell you exactly which screenshots and video frames to review. Always follow the analysis_guidance instructions.',
     schema: CheckDemoResultArgsSchema,
     handler: checkDemoResult,
   },
@@ -4301,6 +4753,26 @@ const tools: AnyToolHandler[] = [
       'want to abort the remaining tests.',
     schema: StopDemoArgsSchema,
     handler: stopDemo,
+  },
+  {
+    name: 'get_demo_screenshot',
+    description:
+      'Retrieve a screenshot from a completed (or running) demo run. Screenshots are captured every 3 seconds ' +
+      'during headed demos on macOS. Provide scenario_id and timestamp_seconds — returns the closest screenshot ' +
+      'file path. Use the Read tool to view the image. ' +
+      'After viewing, analyze the screenshot to verify the UI state matches the expected user experience and requirements.',
+    schema: GetDemoScreenshotArgsSchema,
+    handler: getDemoScreenshot,
+  },
+  {
+    name: 'extract_video_frames',
+    description:
+      'Extract high-resolution frames from a demo scenario\'s video recording. ' +
+      'Extracts frames at 0.5s intervals, 3 seconds before and after the given timestamp (13 frames total). ' +
+      'Requires ffmpeg. Use the Read tool to view extracted frame images. ' +
+      'Use this to inspect specific moments in detail — e.g., verify UI state at a critical step or diagnose a failure.',
+    schema: ExtractVideoFramesArgsSchema,
+    handler: extractVideoFrames,
   },
   {
     name: 'run_prerequisites',
