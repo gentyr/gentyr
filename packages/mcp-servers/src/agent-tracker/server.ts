@@ -72,6 +72,8 @@ import {
   type ReorderQueueArgs,
   type ForceTriageReportsResult,
   type MonitorAgentsResult,
+  type AgentProgress,
+  type WorktreeGitState,
   type ListSpawnedAgentsResult,
   type GetAgentPromptResult,
   type GetAgentSessionResult,
@@ -1498,6 +1500,8 @@ function monitorAgents(args: MonitorAgentsArgs): MonitorAgentsResult {
         taskTitle: null,
         elapsedSeconds: 0,
         section: null,
+        progress: null,
+        worktreeGit: null,
       });
       completedCount++; // Unknown agents count as complete for polling purposes
       continue;
@@ -1547,6 +1551,79 @@ function monitorAgents(args: MonitorAgentsArgs): MonitorAgentsResult {
     const elapsedMs = Date.now() - new Date(agent.timestamp).getTime();
     const elapsedSeconds = Math.floor(elapsedMs / 1000);
 
+    // Read agent progress file
+    let progress: AgentProgress | null = null;
+    const progressFile = path.join(PROJECT_DIR, '.claude', 'state', 'agent-progress', `${agentId}.json`);
+    try {
+      if (fs.existsSync(progressFile)) {
+        const raw = fs.readFileSync(progressFile, 'utf8');
+        const pf = JSON.parse(raw);
+        const completedStages = ((pf.pipeline?.stages ?? []) as Array<{ name: string; status: string }>)
+          .filter(s => s.status === 'completed')
+          .map(s => s.name);
+        const staleSince = pf.lastToolCall?.at
+          ? Math.floor((Date.now() - new Date(pf.lastToolCall.at).getTime()) / 60000)
+          : null;
+        progress = {
+          currentStage: pf.pipeline?.currentStage ?? null,
+          stageIndex: pf.pipeline?.currentStageIndex ?? -1,
+          totalStages: pf.pipeline?.totalStages ?? 0,
+          progressPercent: pf.pipeline?.progressPercent ?? 0,
+          stagesCompleted: completedStages,
+          lastToolCall: pf.lastToolCall?.name ?? null,
+          lastToolAt: pf.lastToolCall?.at ?? null,
+          staleSinceMinutes: staleSince,
+        };
+      }
+    } catch { /* non-critical — progress file may not exist */ }
+
+    // Query worktree git state
+    let worktreeGit: WorktreeGitState | null = null;
+    const worktreePath = (agent.metadata as Record<string, unknown>)?.worktreePath as string | undefined;
+    if (worktreePath && fs.existsSync(worktreePath)) {
+      try {
+        const execOpts = { cwd: worktreePath, encoding: 'utf8' as const, timeout: 5000, stdio: 'pipe' as const };
+
+        // Branch name
+        const branch = execSync('git rev-parse --abbrev-ref HEAD', execOpts).trim();
+
+        // Commits since branch point
+        let commitCount = 0;
+        let lastCommitMessage: string | null = null;
+        try {
+          const baseRef = execSync(
+            'git merge-base HEAD origin/preview 2>/dev/null || git merge-base HEAD origin/main 2>/dev/null || echo HEAD~1',
+            execOpts
+          ).trim();
+          const commitLog = execSync(`git log --oneline ${baseRef}..HEAD`, execOpts).trim();
+          const commits = commitLog ? commitLog.split('\n').filter(Boolean) : [];
+          commitCount = commits.length;
+          if (commitCount > 0) {
+            lastCommitMessage = execSync('git log -1 --format=%s', execOpts).trim();
+          }
+        } catch { /* no commits or git error */ }
+
+        // PR status (non-fatal, 10s timeout)
+        let prUrl: string | null = null;
+        let prStatus: string | null = null;
+        let merged = false;
+        try {
+          const prJson = execSync(
+            `gh pr view ${branch} --json url,state,mergedAt 2>/dev/null || true`,
+            { ...execOpts, timeout: 10000 }
+          ).trim();
+          if (prJson && prJson.startsWith('{')) {
+            const pr = JSON.parse(prJson) as { url?: string; state?: string; mergedAt?: string | null };
+            prUrl = pr.url ?? null;
+            prStatus = (pr.state ?? '').toLowerCase() || null;
+            merged = !!pr.mergedAt;
+          }
+        } catch { /* no PR or gh not available */ }
+
+        worktreeGit = { branch, commitCount, lastCommitMessage, prUrl, prStatus, merged };
+      } catch { /* worktree git query failed — non-critical */ }
+    }
+
     if (status !== 'running') {
       completedCount++;
     }
@@ -1561,15 +1638,34 @@ function monitorAgents(args: MonitorAgentsArgs): MonitorAgentsResult {
       taskTitle: taskTitle || agent.description || null,
       elapsedSeconds,
       section,
+      progress,
+      worktreeGit,
     });
   }
 
   const total = args.agentIds.length;
   const allComplete = completedCount >= total;
   const runningCount = total - completedCount;
-  const summary = allComplete
+
+  // Build per-agent detail lines for summary
+  const agentDetailLines: string[] = [];
+  for (const r of results) {
+    const parts: string[] = [`${r.agentId.slice(0, 8)}: ${r.status}`];
+    if (r.progress) {
+      parts.push(`stage: ${r.progress.currentStage ?? 'done'} (${r.progress.progressPercent}%)`);
+    }
+    if (r.worktreeGit && r.worktreeGit.commitCount > 0) {
+      parts.push(`${r.worktreeGit.commitCount} commit(s)${r.worktreeGit.merged ? ', PR merged' : ''}`);
+    }
+    agentDetailLines.push(parts.join(', '));
+  }
+
+  const statusLine = allComplete
     ? `All ${total} agent(s) complete`
     : `${completedCount}/${total} complete (${runningCount} still running)`;
+  const summary = agentDetailLines.length > 0
+    ? `${statusLine} | ${agentDetailLines.join(' | ')}`
+    : statusLine;
 
   return { agents: results, allComplete, summary };
 }
@@ -2182,6 +2278,22 @@ async function getSessionActivitySummary(_args: GetSessionActivitySummaryArgs): 
       worktreePath = (agentRecord?.metadata?.worktreePath as string) ?? null;
     }
 
+    // Read progress file for pipeline stage
+    let pipelineStage: string | null = null;
+    if (agentId) {
+      const progressFile = path.join(PROJECT_DIR, '.claude', 'state', 'agent-progress', `${agentId}.json`);
+      try {
+        if (fs.existsSync(progressFile)) {
+          const pf = JSON.parse(fs.readFileSync(progressFile, 'utf8')) as {
+            pipeline?: { currentStage?: string; progressPercent?: number };
+          };
+          if (pf.pipeline?.currentStage) {
+            pipelineStage = `${pf.pipeline.currentStage} (${pf.pipeline.progressPercent ?? 0}%)`;
+          }
+        }
+      } catch { /* non-critical */ }
+    }
+
     return {
       queue_id: row.id,
       agent_id: agentId,
@@ -2192,6 +2304,7 @@ async function getSessionActivitySummary(_args: GetSessionActivitySummaryArgs): 
       last_tool: lastTool,
       last_activity: lastActivity,
       worktree_path: worktreePath,
+      pipeline_stage: pipelineStage,
       pid: row.pid,
       pid_alive: row.pid ? (() => { try { process.kill(row.pid!, 0); return true; } catch { return false; } })() : false,
     };

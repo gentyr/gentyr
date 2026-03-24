@@ -281,6 +281,13 @@ export function reapSyncPass(db) {
         revivalCandidate,
         metadata,
       });
+
+      // Clean up progress file for dead agent
+      try {
+        const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+        const progressFile = path.join(projectDir, '.claude', 'state', 'agent-progress', `${item.agent_id}.json`);
+        fs.unlinkSync(progressFile);
+      } catch (_) { /* non-fatal — file may not exist */ }
     } else if (item.spawned_at) {
       // PID alive — check if stuck (elapsed > hard kill threshold)
       const elapsed = now - new Date(item.spawned_at).getTime();
