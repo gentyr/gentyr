@@ -512,6 +512,26 @@ export interface ForceTriageReportsResult {
   deduplicated?: boolean;  // G011: true when returning existing agent instead of spawning
 }
 
+export interface AgentProgress {
+  currentStage: string | null;
+  stageIndex: number;
+  totalStages: number;
+  progressPercent: number;
+  stagesCompleted: string[];
+  lastToolCall: string | null;
+  lastToolAt: string | null;
+  staleSinceMinutes: number | null;
+}
+
+export interface WorktreeGitState {
+  branch: string | null;
+  commitCount: number;
+  lastCommitMessage: string | null;
+  prUrl: string | null;
+  prStatus: string | null;
+  merged: boolean;
+}
+
 export interface MonitorAgentsResult {
   agents: Array<{
     agentId: string;
@@ -523,6 +543,8 @@ export interface MonitorAgentsResult {
     taskTitle: string | null;
     elapsedSeconds: number;
     section: string | null;
+    progress: AgentProgress | null;
+    worktreeGit: WorktreeGitState | null;
   }>;
   allComplete: boolean;
   summary: string;

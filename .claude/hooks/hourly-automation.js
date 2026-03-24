@@ -2629,6 +2629,26 @@ async function main() {
       }
       cleanupAuditLog();
       cleanupDebugLog();
+
+      // Clean up orphaned progress files (agent no longer running)
+      const agentProgressDir = path.join(PROJECT_DIR, '.claude', 'state', 'agent-progress');
+      if (fs.existsSync(agentProgressDir)) {
+        try {
+          for (const file of fs.readdirSync(agentProgressDir)) {
+            if (!file.endsWith('.json')) continue;
+            const agentId = file.replace('.json', '');
+            // Check if this agent is still running in the queue
+            try {
+              const queueDb = new Database(path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db'), { readonly: true });
+              const running = queueDb.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE agent_id = ? AND status = 'running'").get(agentId);
+              queueDb.close();
+              if (!running || running.cnt === 0) {
+                fs.unlinkSync(path.join(agentProgressDir, file));
+              }
+            } catch (_) { /* non-fatal */ }
+          }
+        } catch (_) { /* non-fatal */ }
+      }
     },
   });
 
