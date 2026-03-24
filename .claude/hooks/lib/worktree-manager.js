@@ -15,6 +15,15 @@ import path from 'path';
 import { execSync, execFileSync } from 'child_process';
 import { detectBaseBranch as detectBaseBranchShared } from './feature-branch-helper.js';
 
+// Lazy-loaded Database for suspended worktree check
+let _Database = null;
+try {
+  _Database = (await import('better-sqlite3')).default;
+} catch (err) {
+  console.error('[worktree-manager] Warning: better-sqlite3 not available for suspended worktree check:', err.message);
+  // Non-fatal: suspended worktree skip is best-effort
+}
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -482,11 +491,61 @@ export function cleanupMergedWorktrees() {
       .filter(Boolean),
   );
 
+  // Get worktree paths of suspended queue items to avoid cleaning them up
+  const suspendedWorktreePaths = new Set();
+  if (_Database) {
+    const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+    if (fs.existsSync(queueDbPath)) {
+      let queueDb;
+      try {
+        queueDb = new _Database(queueDbPath, { readonly: true });
+        const suspendedRows = queueDb.prepare(
+          "SELECT metadata, worktree_path FROM queue_items WHERE status = 'suspended'"
+        ).all();
+        for (const row of suspendedRows) {
+          // Check explicit worktree_path column first
+          if (row.worktree_path) {
+            suspendedWorktreePaths.add(row.worktree_path);
+          }
+          // Also check metadata for worktreePath
+          if (row.metadata) {
+            try {
+              const meta = JSON.parse(row.metadata);
+              if (meta.worktreePath) {
+                suspendedWorktreePaths.add(meta.worktreePath);
+              }
+            } catch (err) {
+              console.error('[worktree-manager] Warning: could not parse suspended item metadata:', err.message);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[worktree-manager] Warning: could not read suspended worktrees from queue DB:', err.message);
+        // Non-fatal: continue without the suspended worktree check
+      } finally {
+        if (queueDb) {
+          try { queueDb.close(); } catch (_) { /* cleanup - failure expected */}
+        }
+      }
+    }
+  }
+
   const managed = listWorktrees();
   let cleaned = 0;
 
   for (const wt of managed) {
     if (wt.branch && mergedBranches.has(wt.branch)) {
+      // Skip worktrees that have suspended (preempted) sessions — they will resume
+      if (wt.path && suspendedWorktreePaths.size > 0) {
+        const isSuspended = [...suspendedWorktreePaths].some(
+          sw => wt.path === sw || wt.path.startsWith(sw) || sw.startsWith(wt.path)
+        );
+        if (isSuspended) {
+          console.log(`[worktree-manager] Skipping ${wt.branch} — linked to a suspended (preempted) session`);
+          continue;
+        }
+      }
+
       // Safety check: skip worktrees with active processes to prevent CWD corruption
       if (wt.path && isWorktreeInUse(wt.path)) {
         console.log(`[worktree-manager] Skipping ${wt.branch} — active session(s) detected in ${wt.path}`);

@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { openReadonlyDb } from './readonly-db.js';
+import { getSessionActivity } from './session-activity-reader.js';
 
 // ============================================================================
 // Public Interfaces
@@ -36,6 +37,9 @@ export interface RunningItem {
   agentType: string;
   pid: number;
   elapsed: string;
+  lastTool: string | null;
+  lastActivity: string | null;
+  sessionId: string | null;
 }
 
 export interface QueueStats {
@@ -122,6 +126,31 @@ function isPidAlive(pid: number): boolean {
 // Main Reader
 // ============================================================================
 
+// ============================================================================
+// Agent History Reader (for resolving agent_id from spawn timestamps)
+// ============================================================================
+
+interface AgentHistoryRecord {
+  id: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+}
+
+function readAgentHistory(projectDir: string): AgentHistoryRecord[] {
+  const historyPath = path.join(projectDir, '.claude', 'state', 'agent-tracker-history.json');
+  if (!fs.existsSync(historyPath)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+    return Array.isArray(parsed?.agents) ? parsed.agents : [];
+  } catch {
+    return [];
+  }
+}
+
+// ============================================================================
+// Main Reader
+// ============================================================================
+
 export function getSessionQueueData(): SessionQueueData {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const dbPath = path.join(projectDir, '.claude', 'state', 'session-queue.db');
@@ -155,6 +184,9 @@ export function getSessionQueueData(): SessionQueueData {
     const avgRun = db.prepare("SELECT AVG(CAST((julianday(completed_at) - julianday(spawned_at)) * 86400 AS INTEGER)) as avg_secs FROM queue_items WHERE completed_at IS NOT NULL AND spawned_at IS NOT NULL AND completed_at > datetime('now', '-24 hours')").get() as QueueAvgRow;
     const bySourceRows = db.prepare("SELECT source, COUNT(*) as cnt FROM queue_items WHERE enqueued_at > datetime('now', '-24 hours') GROUP BY source ORDER BY cnt DESC LIMIT 10").all() as QueueSourceRow[];
 
+    // Load agent history for agent_id resolution
+    const agentHistory = readAgentHistory(projectDir);
+
     return {
       hasData: true,
       maxConcurrent,
@@ -168,14 +200,52 @@ export function getSessionQueueData(): SessionQueueData {
         source: item.source,
         waitTime: formatElapsed(now - new Date(item.enqueued_at).getTime()),
       })),
-      runningItems: aliveRunning.map(item => ({
-        id: item.id,
-        title: item.title,
-        source: item.source,
-        agentType: item.agent_type,
-        pid: item.pid!,
-        elapsed: item.spawned_at ? formatElapsed(now - new Date(item.spawned_at).getTime()) : 'unknown',
-      })),
+      runningItems: aliveRunning.map(item => {
+        const elapsed = item.spawned_at ? formatElapsed(now - new Date(item.spawned_at).getTime()) : 'unknown';
+
+        // Attempt to resolve agent_id by matching spawn time from agent tracker history
+        let agentId: string | null = null;
+        if (item.spawned_at) {
+          const spawnTime = new Date(item.spawned_at).getTime();
+          const candidate = agentHistory.find(a => {
+            const aTime = new Date(a.timestamp).getTime();
+            return Math.abs(spawnTime - aTime) < 60_000;
+          });
+          if (candidate) agentId = candidate.id;
+        }
+
+        // Attempt to get live activity from the session JSONL
+        let lastTool: string | null = null;
+        let lastActivity: string | null = null;
+        let sessionId: string | null = null;
+        if (agentId) {
+          try {
+            const worktreePath = (() => {
+              const record = agentHistory.find(a => a.id === agentId);
+              return (record?.metadata?.worktreePath as string) ?? undefined;
+            })();
+            const activity = getSessionActivity(agentId, projectDir, worktreePath);
+            if (activity) {
+              lastTool = activity.lastTool;
+              lastActivity = activity.lastTimestamp;
+            }
+          } catch {
+            // Non-critical: session file may not yet exist or be readable
+          }
+        }
+
+        return {
+          id: item.id,
+          title: item.title,
+          source: item.source,
+          agentType: item.agent_type,
+          pid: item.pid!,
+          elapsed,
+          lastTool,
+          lastActivity,
+          sessionId,
+        };
+      }),
       stats: {
         completedLast24h: completed24h,
         avgWaitSeconds: Math.round(avgWait?.avg_secs ?? 0),

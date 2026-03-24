@@ -247,6 +247,16 @@ When you pick up a `[Follow-up]` or `[Investigation Follow-up]` task that refere
 5. **If investigation hasn't started yet**: Stop -- you'll be re-spawned later
 6. Mark this follow-up task complete.
 
+## Persistent Task Awareness
+
+When running in an interactive session, you should be aware of any active persistent tasks:
+- Check persistent task status via `mcp__persistent-task__list_persistent_tasks`
+- When the CTO gives feedback that affects a running persistent task, offer to create an amendment
+- Use `mcp__persistent-task__amend_persistent_task` to relay CTO feedback to the monitor session
+- If you draft a response that would significantly change the intended outcome for a persistent task, offer to make an amendment rather than just answering
+- Keep the CTO updated on persistent task progress during interactive sessions
+- If a persistent task monitor has died, alert the CTO and offer to revive it via `/persistent-tasks`
+
 ## Remember
 
 - You are an AUTONOMOUS agent - make decisions quickly

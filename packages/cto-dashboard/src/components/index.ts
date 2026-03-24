@@ -28,3 +28,4 @@ export { PlanTimelineSection, type PlanTimelineSectionProps } from './PlanTimeli
 export { PlanAuditSection, type PlanAuditSectionProps } from './PlanAuditSection.js';
 export { PlanSessionSection, type PlanSessionSectionProps } from './PlanSessionSection.js';
 export { SessionQueueSection, type SessionQueueSectionProps } from './SessionQueueSection.js';
+export { PersistentTaskSection, type PersistentTaskSectionProps } from './PersistentTaskSection.js';

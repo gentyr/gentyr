@@ -462,6 +462,33 @@ function getTodoCounts() {
 }
 
 /**
+ * Get persistent task counts for status line
+ */
+function getPersistentTaskCounts() {
+  const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+  if (!Database || !fs.existsSync(ptDbPath)) {
+    return null;
+  }
+  try {
+    const db = new Database(ptDbPath, { readonly: true });
+    const active = db.prepare("SELECT COUNT(*) as count FROM persistent_tasks WHERE status = 'active'").get();
+    const count = active?.count || 0;
+    if (count === 0) { db.close(); return null; }
+
+    // Check for dead monitors
+    const monitors = db.prepare("SELECT monitor_pid FROM persistent_tasks WHERE status = 'active' AND monitor_pid IS NOT NULL").all();
+    let dead = 0;
+    for (const m of monitors) {
+      try { process.kill(m.monitor_pid, 0); } catch (_) { dead++; }
+    }
+    db.close();
+    return { active: count, dead };
+  } catch (_) { /* cleanup - failure expected */
+    return null;
+  }
+}
+
+/**
  * Format token count for display (e.g., 1.2M, 500K)
  */
 function formatTokens(tokens) {
@@ -765,6 +792,13 @@ async function main() {
     // Line 3: Plans (if any active)
     if (planSummary) {
       lines.push(planSummary);
+    }
+
+    // Line 3b: Persistent tasks (if any active)
+    const ptCounts = getPersistentTaskCounts();
+    if (ptCounts) {
+      const deadStr = ptCounts.dead > 0 ? ` (${ptCounts.dead} dead monitor${ptCounts.dead > 1 ? 's' : ''})` : '';
+      lines.push(`Persistent: ${ptCounts.active} active${deadStr}`);
     }
 
     // Line 4: Pending items (if any)

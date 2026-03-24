@@ -6,12 +6,16 @@
  *
  * DB: .claude/state/session-queue.db (WAL mode)
  *
+ * Priority levels (highest to lowest): cto > critical > urgent > normal > low
+ * Status values: queued, spawning, running, suspended, completed, failed, cancelled
+ *
  * @module lib/session-queue
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import crypto from 'crypto';
 import { spawn } from 'child_process';
 import Database from 'better-sqlite3';
@@ -20,6 +24,9 @@ import { buildSpawnEnv } from './spawn-env.js';
 import { shouldAllowSpawn } from './memory-pressure.js';
 import { reapSyncPass } from './session-reaper.js';
 import { auditEvent } from './session-audit.js';
+// NOTE: revival-utils.js imports from session-queue.js (circular dep), so we
+// inline these three utilities here instead of importing from revival-utils.js.
+// Mirrors the same pattern used in session-reaper.js.
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
@@ -27,6 +34,7 @@ const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'session-queue.log');
 
 // Lane sub-limits
 const GATE_LANE_LIMIT = 5;
+const PERSISTENT_LANE_LIMIT = 3;
 
 // Default TTL for queued items (30 minutes)
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
@@ -44,6 +52,75 @@ function log(message) {
     console.error('[session-queue] Warning:', err.message);
     // Non-fatal
   }
+}
+
+// ============================================================================
+// Session File Utilities (inline — avoids circular dep via revival-utils.js)
+// ============================================================================
+
+const CLAUDE_PROJECTS_DIR_SQ = path.join(os.homedir(), '.claude', 'projects');
+
+/**
+ * Discover the session directory for a project.
+ * @param {string} projectDir
+ * @returns {string|null}
+ */
+function getSessionDir(projectDir) {
+  const projectPath = projectDir.replace(/[^a-zA-Z0-9]/g, '-');
+  const sessionDir = path.join(CLAUDE_PROJECTS_DIR_SQ, projectPath);
+  if (fs.existsSync(sessionDir)) return sessionDir;
+
+  const altPath = path.join(CLAUDE_PROJECTS_DIR_SQ, projectPath.replace(/^-/, ''));
+  if (fs.existsSync(altPath)) return altPath;
+
+  return null;
+}
+
+/**
+ * Find a session JSONL file by agent ID in the session directory.
+ * @param {string} sessionDir
+ * @param {string} agentId
+ * @returns {string|null}
+ */
+function findSessionFileByAgentId(sessionDir, agentId) {
+  const marker = `[AGENT:${agentId}]`;
+  let files;
+  try {
+    files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
+  } catch (err) {
+    console.error('[session-queue] Warning:', err.message);
+    return null;
+  }
+
+  for (const file of files) {
+    const filePath = path.join(sessionDir, file);
+    let fd;
+    try {
+      fd = fs.openSync(filePath, 'r');
+      const buf = Buffer.alloc(2000);
+      const bytesRead = fs.readSync(fd, buf, 0, 2000, 0);
+      const head = buf.toString('utf8', 0, bytesRead);
+      if (head.includes(marker)) return filePath;
+    } catch (err) {
+      console.error('[session-queue] Warning:', err.message);
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Extract session ID from a JSONL transcript path.
+ * @param {string} transcriptPath
+ * @returns {string|null}
+ */
+function extractSessionIdFromPath(transcriptPath) {
+  if (!transcriptPath) return null;
+  const basename = path.basename(transcriptPath, '.jsonl');
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  return uuidRegex.test(basename) ? basename : null;
 }
 
 // ============================================================================
@@ -185,7 +262,7 @@ function isPidAlive(pid) {
  * @param {string} [spec.mcpConfig] - Path to .mcp.json
  * @param {string} [spec.resumeSessionId] - For --resume spawns
  * @param {string} [spec.spawnType='fresh'] - 'fresh' or 'resume'
- * @param {string} [spec.priority='normal'] - 'critical'|'urgent'|'normal'|'low'
+ * @param {string} [spec.priority='normal'] - 'cto'|'critical'|'urgent'|'normal'|'low'
  * @param {string} [spec.lane='standard'] - 'revival'|'gate'|'standard'
  * @param {string[]} [spec.extraArgs] - Additional CLI args
  * @param {object} [spec.extraEnv] - Additional env vars
@@ -306,18 +383,19 @@ export function drainQueue() {
     auditEvent('session_ttl_expired', { count: ttlResult.changes });
   }
 
-  // Step 3: Count running items by lane
-  const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane != 'gate'").get().cnt;
+  // Step 3: Count running items by lane (suspended items do NOT count toward capacity)
+  const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent')").get().cnt;
   const gateRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane = 'gate'").get().cnt;
   const maxConcurrent = getMaxConcurrentSessions();
 
   // Step 4: Get queued items ordered by priority then enqueue time
   // Revival lane items first, then gate, then standard
+  // cto is the highest priority level (0), followed by critical (1), urgent (2), normal (3), low (4)
   const queued = db.prepare(`
     SELECT * FROM queue_items WHERE status = 'queued'
     ORDER BY
-      CASE lane WHEN 'revival' THEN 0 WHEN 'gate' THEN 1 ELSE 2 END,
-      CASE priority WHEN 'critical' THEN 0 WHEN 'urgent' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+      CASE lane WHEN 'revival' THEN 0 WHEN 'persistent' THEN 1 WHEN 'gate' THEN 2 ELSE 3 END,
+      CASE priority WHEN 'cto' THEN 0 WHEN 'critical' THEN 1 WHEN 'urgent' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
       enqueued_at ASC
   `).all();
 
@@ -326,15 +404,21 @@ export function drainQueue() {
   // Track spawns per lane this drain cycle to avoid stale counter bugs
   let standardSpawnedThisDrain = 0;
   let gateSpawnedThisDrain = 0;
+  let persistentSpawnedThisDrain = 0;
 
   for (const item of queued) {
-    // Gate lane has its own sub-limit (tracked separately from main capacity)
-    if (item.lane === 'gate') {
+    if (item.lane === 'persistent') {
+      const persistentRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane = 'persistent'").get().cnt;
+      if (persistentRunning + persistentSpawnedThisDrain >= PERSISTENT_LANE_LIMIT) {
+        continue; // Skip, persistent lane full
+      }
+    } else if (item.lane === 'gate') {
+      // Gate lane has its own sub-limit (tracked separately from main capacity)
       if (gateRunning + gateSpawnedThisDrain >= GATE_LANE_LIMIT) {
         continue; // Skip, gate full
       }
     } else {
-      // Standard + revival lanes share the main limit (gate spawns don't consume it)
+      // Standard + revival lanes share the main limit (gate and persistent spawns don't consume it)
       if (standardRunning + standardSpawnedThisDrain >= maxConcurrent) {
         result.atCapacity = true;
         break;
@@ -351,12 +435,50 @@ export function drainQueue() {
       continue; // Skip this item, try next (might be higher priority)
     }
 
+    // Workstream dependency check — skip items whose blocker tasks are not yet completed
+    const taskId = item.metadata ? (() => { try { return JSON.parse(item.metadata).taskId; } catch (e) { return null; } })() : null;
+    if (taskId) {
+      try {
+        const wsDbPath = path.join(item.project_dir || PROJECT_DIR, '.claude', 'state', 'workstream.db');
+        if (fs.existsSync(wsDbPath)) {
+          const wsDb = new Database(wsDbPath, { readonly: true });
+          const activeDeps = wsDb.prepare(
+            "SELECT blocker_task_id FROM queue_dependencies WHERE blocked_task_id = ? AND status = 'active'"
+          ).all(taskId);
+          wsDb.close();
+
+          if (activeDeps.length > 0) {
+            // Check if all blockers are completed in todo.db
+            const todoDbPath = path.join(item.project_dir || PROJECT_DIR, '.claude', 'todo.db');
+            if (fs.existsSync(todoDbPath)) {
+              const todoDb = new Database(todoDbPath, { readonly: true });
+              const allMet = activeDeps.every(dep => {
+                const task = todoDb.prepare("SELECT status FROM tasks WHERE id = ?").get(dep.blocker_task_id);
+                return task && task.status === 'completed';
+              });
+              todoDb.close();
+
+              if (!allMet) {
+                log(`Workstream dep check: skipping ${item.id} (task ${taskId}) — active dependencies not yet satisfied`);
+                continue; // Skip, try next item
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // Fail open — if workstream DB doesn't exist or error occurs, allow spawning
+        log(`Workstream dep check: ignoring error for ${item.id}: ${e.message}`);
+      }
+    }
+
     // Attempt to spawn
     try {
       spawnQueueItem(db, item);
       result.spawned++;
       if (item.lane === 'gate') {
         gateSpawnedThisDrain++;
+      } else if (item.lane === 'persistent') {
+        persistentSpawnedThisDrain++;
       } else {
         standardSpawnedThisDrain++;
       }
@@ -475,6 +597,258 @@ function spawnQueueItem(db, item) {
 }
 
 // ============================================================================
+// CTO Priority Preemption
+// ============================================================================
+
+/**
+ * Preempt the lowest-priority running session to make room for a CTO task.
+ *
+ * Called after enqueuing a CTO-priority task when the queue is at capacity.
+ * If there's already capacity available, returns immediately (drain handles it).
+ * If at capacity, kills the lowest-priority non-CTO running session, suspends
+ * it, writes its session info to suspended-sessions.json, and re-enqueues it
+ * as a resume item. Then drains the queue to spawn the CTO task.
+ *
+ * @param {string} ctoQueueId - Queue ID of the CTO task to make room for
+ * @param {string} projectDir - Project directory
+ * @returns {Promise<{ preempted: boolean, preemptedQueueId?: string, preemptedAgentId?: string }>}
+ */
+export async function preemptForCtoTask(ctoQueueId, projectDir) {
+  const db = getDb();
+  const resolvedProjectDir = projectDir || PROJECT_DIR;
+
+  // Check current capacity
+  const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent')").get().cnt;
+  const maxConcurrent = getMaxConcurrentSessions();
+
+  if (standardRunning < maxConcurrent) {
+    // There's room — drain will handle spawning the CTO task
+    log(`preemptForCtoTask: capacity available (${standardRunning}/${maxConcurrent}), no preemption needed`);
+    drainQueue();
+    return { preempted: false };
+  }
+
+  // At capacity — find the lowest-priority running session to preempt
+  // Prefer lowest priority, then longest-running (most work is saved if we keep it)
+  // Exclude gate lane and CTO-priority items
+  const victim = db.prepare(`
+    SELECT id, pid, agent_id, title, agent_type, hook_type, cwd, project_dir,
+           worktree_path, metadata, spawned_at, priority, lane
+    FROM queue_items
+    WHERE status = 'running' AND lane NOT IN ('gate', 'persistent') AND priority != 'cto'
+    ORDER BY
+      CASE priority WHEN 'low' THEN 0 WHEN 'normal' THEN 1
+                    WHEN 'urgent' THEN 2 WHEN 'critical' THEN 3 ELSE 4 END,
+      spawned_at ASC
+    LIMIT 1
+  `).get();
+
+  if (!victim) {
+    // All running sessions are CTO-priority or gate — cannot preempt
+    log(`preemptForCtoTask: no preemptable sessions found (all are CTO-priority, gate, or persistent)`);
+    drainQueue();
+    return { preempted: false };
+  }
+
+  const pid = victim.pid;
+  const agentId = victim.agent_id;
+
+  log(`preemptForCtoTask: preempting ${victim.id} (agent: ${agentId}, PID: ${pid}, priority: ${victim.priority}, title: "${victim.title}")`);
+
+  // Calculate elapsed time for the prompt
+  const spawnedAt = victim.spawned_at ? new Date(victim.spawned_at) : new Date();
+  const elapsedMs = Date.now() - spawnedAt.getTime();
+  const elapsedMins = Math.floor(elapsedMs / 60000);
+  const elapsedHours = Math.floor(elapsedMins / 60);
+  const elapsed = elapsedHours > 0
+    ? `${elapsedHours}h ${elapsedMins % 60}m`
+    : `${elapsedMins}m`;
+
+  // Write suspended session info BEFORE killing the process
+  const suspendedPath = path.join(resolvedProjectDir, '.claude', 'state', 'suspended-sessions.json');
+  try {
+    const stateDir = path.dirname(suspendedPath);
+    if (!fs.existsSync(stateDir)) {
+      fs.mkdirSync(stateDir, { recursive: true });
+    }
+
+    let existing = [];
+    if (fs.existsSync(suspendedPath)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(suspendedPath, 'utf8'));
+        existing = Array.isArray(raw) ? raw : [raw];
+      } catch (err) {
+        console.error('[session-queue] Warning: could not parse suspended-sessions.json:', err.message);
+      }
+    }
+
+    existing.push({
+      sessionId: null, // will be resolved from JSONL file below
+      agentId,
+      queueId: victim.id,
+      pid,
+      suspendedAt: new Date().toISOString(),
+    });
+
+    fs.writeFileSync(suspendedPath, JSON.stringify(existing, null, 2));
+  } catch (err) {
+    // Non-fatal — log and continue, the stop hook fallback will still handle it
+    log(`preemptForCtoTask: failed to write suspended-sessions.json: ${err.message}`);
+  }
+
+  // Send SIGTERM to the victim process
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (err) {
+    // Already dead — continue
+    log(`preemptForCtoTask: SIGTERM failed for PID ${pid} (already dead?): ${err.message}`);
+  }
+
+  // Wait up to 5s for the process to die (poll every 500ms)
+  let died = false;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    await new Promise(r => setTimeout(r, 500));
+    try {
+      process.kill(pid, 0);
+      // Still alive — keep waiting
+    } catch (_) {
+      died = true;
+      break;
+    }
+  }
+
+  if (!died) {
+    log(`preemptForCtoTask: PID ${pid} did not die within 5s after SIGTERM`);
+  } else {
+    log(`preemptForCtoTask: PID ${pid} died after SIGTERM`);
+  }
+
+  // Find the session JSONL file to get the session ID for resumption
+  let sessionId = null;
+  try {
+    const sessionDir = getSessionDir(resolvedProjectDir);
+    if (sessionDir && agentId) {
+      const sessionFile = findSessionFileByAgentId(sessionDir, agentId);
+      if (sessionFile) {
+        sessionId = extractSessionIdFromPath(sessionFile);
+        log(`preemptForCtoTask: found session file for agent ${agentId}: ${sessionId}`);
+      }
+    }
+  } catch (err) {
+    log(`preemptForCtoTask: failed to find session file for agent ${agentId}: ${err.message}`);
+  }
+
+  // Update the suspended-sessions.json with the resolved sessionId
+  if (sessionId) {
+    try {
+      let existing = [];
+      if (fs.existsSync(suspendedPath)) {
+        try {
+          const raw = JSON.parse(fs.readFileSync(suspendedPath, 'utf8'));
+          existing = Array.isArray(raw) ? raw : [raw];
+        } catch (err) {
+          console.error('[session-queue] Warning:', err.message);
+        }
+      }
+      const entry = existing.find(e => e.agentId === agentId && e.queueId === victim.id);
+      if (entry) {
+        entry.sessionId = sessionId;
+        fs.writeFileSync(suspendedPath, JSON.stringify(existing, null, 2));
+      }
+    } catch (err) {
+      log(`preemptForCtoTask: failed to update suspended-sessions.json with sessionId: ${err.message}`);
+    }
+  }
+
+  // Mark the preempted queue item as suspended
+  db.prepare("UPDATE queue_items SET status = 'suspended', completed_at = NULL WHERE id = ?").run(victim.id);
+
+  // Reset the linked TODO task to pending (if any) so it can be re-claimed
+  let victimMetadata = {};
+  try {
+    victimMetadata = victim.metadata ? JSON.parse(victim.metadata) : {};
+  } catch (err) {
+    console.error('[session-queue] Warning: could not parse victim metadata:', err.message);
+  }
+
+  if (victimMetadata.taskId) {
+    const todoDbPath = path.join(resolvedProjectDir, '.claude', 'todo.db');
+    if (fs.existsSync(todoDbPath)) {
+      try {
+        const todoDB = new Database(todoDbPath);
+        todoDB.prepare(
+          "UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ? AND status = 'in_progress'"
+        ).run(victimMetadata.taskId);
+        todoDB.close();
+        log(`preemptForCtoTask: reset task ${victimMetadata.taskId} to pending`);
+      } catch (err) {
+        log(`preemptForCtoTask: failed to reset task ${victimMetadata.taskId}: ${err.message}`);
+      }
+    }
+  }
+
+  // Re-enqueue the suspended session as a resume item (if we have a session ID)
+  if (sessionId) {
+    try {
+      const resumePrompt = `[SESSION SUSPENDED] This session was preempted by a CTO-directed task.\nYou were working on: "${victim.title}". ${elapsed} has passed.\nBefore continuing, verify your task status via mcp__todo-db__get_task.\nCheck for any CTO directives via mcp__agent-tracker__get_session_signals.`;
+
+      enqueueSession({
+        spawnType: 'resume',
+        resumeSessionId: sessionId,
+        priority: 'urgent',
+        lane: 'standard',
+        title: `[RESUMED] ${victim.title}`,
+        agentType: victim.agent_type,
+        hookType: victim.hook_type,
+        tagContext: 'preemption-resume',
+        source: 'preemption',
+        prompt: resumePrompt,
+        cwd: victim.cwd || victim.worktree_path || victim.project_dir,
+        projectDir: resolvedProjectDir,
+        worktreePath: victim.worktree_path || null,
+        metadata: victimMetadata,
+      });
+      log(`preemptForCtoTask: re-enqueued suspended session ${sessionId.slice(0, 8)} as resume item`);
+    } catch (err) {
+      log(`preemptForCtoTask: failed to re-enqueue suspended session: ${err.message}`);
+    }
+  } else {
+    log(`preemptForCtoTask: no session ID found for preempted agent ${agentId} — cannot re-enqueue for resume`);
+  }
+
+  // Emit audit events
+  try {
+    auditEvent('session_suspended', {
+      queue_id: victim.id,
+      agent_id: agentId,
+      pid,
+      title: victim.title,
+      priority: victim.priority,
+      elapsed,
+      cto_queue_id: ctoQueueId,
+      session_id: sessionId,
+    });
+    auditEvent('session_preempted', {
+      cto_queue_id: ctoQueueId,
+      preempted_queue_id: victim.id,
+      preempted_agent_id: agentId,
+      preempted_title: victim.title,
+    });
+  } catch (err) {
+    console.error('[session-queue] Warning: failed to emit audit events:', err.message);
+  }
+
+  // The drainQueue() calls inside enqueueSession (for the resume item, if applicable)
+  // will spawn the CTO task because 'cto' priority outranks 'urgent'.
+  // If no session ID was found (re-enqueue skipped), drain explicitly to spawn the CTO task.
+  if (!sessionId) {
+    drainQueue();
+  }
+
+  return { preempted: true, preemptedQueueId: victim.id, preemptedAgentId: agentId };
+}
+
+// ============================================================================
 // Cancel
 // ============================================================================
 
@@ -510,6 +884,8 @@ export function markCompleted(agentId) {
   if (result.changes > 0) {
     log(`Marked completed: agent ${agentId}`);
     auditEvent('session_completed', { agent_id: agentId });
+    // Immediately drain queue — a slot just freed up
+    try { drainQueue(); } catch (e) { log(`drainQueue after completion failed: ${e.message}`); }
     return true;
   }
   return false;
@@ -531,6 +907,8 @@ export function markFailed(agentId, error) {
   if (result.changes > 0) {
     log(`Marked failed: agent ${agentId} (${error})`);
     auditEvent('session_failed', { agent_id: agentId, error });
+    // Immediately drain queue — a slot just freed up
+    try { drainQueue(); } catch (e) { log(`drainQueue after failure failed: ${e.message}`); }
     return true;
   }
   return false;
@@ -565,6 +943,7 @@ export function getQueueStatus() {
   // Re-query after reaping
   const activeRunning = db.prepare("SELECT * FROM queue_items WHERE status = 'running' ORDER BY spawned_at ASC").all();
   const queuedItems = db.prepare("SELECT * FROM queue_items WHERE status = 'queued' ORDER BY enqueued_at ASC").all();
+  const suspendedItems = db.prepare("SELECT * FROM queue_items WHERE status = 'suspended' ORDER BY spawned_at ASC").all();
 
   // 24h stats
   const completed24h = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status IN ('completed', 'failed') AND completed_at > datetime('now', '-24 hours')").get().cnt;
@@ -578,6 +957,7 @@ export function getQueueStatus() {
     hasData: true,
     maxConcurrent,
     running: activeRunning.length,
+    suspended: suspendedItems.length,
     availableSlots: Math.max(0, maxConcurrent - activeRunning.length),
     queuedItems: queuedItems.map(item => ({
       id: item.id,
@@ -594,6 +974,14 @@ export function getQueueStatus() {
       agentType: item.agent_type,
       agentId: item.agent_id,
       pid: item.pid,
+      elapsed: item.spawned_at ? formatElapsed(now - new Date(item.spawned_at).getTime()) : 'unknown',
+    })),
+    suspendedItems: suspendedItems.map(item => ({
+      id: item.id,
+      title: item.title,
+      source: item.source,
+      agentType: item.agent_type,
+      agentId: item.agent_id,
       elapsed: item.spawned_at ? formatElapsed(now - new Date(item.spawned_at).getTime()) : 'unknown',
     })),
     stats: {

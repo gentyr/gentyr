@@ -38,6 +38,38 @@ const POLL_INTERVAL_MS = 10000;
 // Track which agents we've already attempted revival for
 const revivalAttempted = new Map(); // agentId -> timestamp
 
+// ============================================================================
+// Suspended Session Check
+// ============================================================================
+
+/**
+ * Check if an agent is currently suspended in the session queue (preempted by CTO task).
+ * Suspended agents will be re-enqueued automatically via the preemption system.
+ *
+ * @param {string} agentId - Agent ID to check
+ * @returns {boolean} true if this agent is suspended
+ */
+function isAgentSuspended(agentId) {
+  if (!Database || !agentId) return false;
+
+  const queueDbPath = path.join(STATE_DIR, 'session-queue.db');
+  try {
+    if (!fs.existsSync(queueDbPath)) return false;
+    const db = new Database(queueDbPath, { readonly: true });
+    try {
+      const row = db.prepare(
+        "SELECT id FROM queue_items WHERE status = 'suspended' AND agent_id = ?"
+      ).get(agentId);
+      return !!row;
+    } finally {
+      try { db.close(); } catch (_) { /* cleanup - failure expected */}
+    }
+  } catch (err) {
+    // Fail open — do not block revival on DB errors
+    return false;
+  }
+}
+
 let debounceTimer = null;
 
 // Lazy imports — loaded after PROJECT_DIR is set
@@ -189,6 +221,12 @@ function scanAndRevive() {
     // Check if process is actually dead (skip for memory retries — already confirmed dead)
     if (!isMemoryRetry && isProcessAlive(agent.pid)) continue;
 
+    // Skip if this agent is suspended (preempted by a CTO task) — it will be re-enqueued automatically
+    if (isAgentSuspended(agent.id)) {
+      log(`Dead agent ${agent.id} is suspended in queue (preempted by CTO task), skipping revival`);
+      continue;
+    }
+
     // Dead agent found
     log(`Dead agent detected: ${agent.id} (PID ${agent.pid}, type: ${agent.type})`);
     if (auditEvent) {
@@ -335,6 +373,13 @@ function scanAndRevive() {
 
   if (revived > 0) {
     log(`Revived ${revived} dead agent(s)`);
+  }
+
+  // Always drain after scanning — even if no revival happened, dead PIDs freed slots.
+  // reapSyncPass inside drainQueue() will mark dead queue items as completed,
+  // then drain will spawn the next queued item immediately.
+  if (drainQueue) {
+    try { drainQueue(); } catch { /* non-fatal */ }
   }
 }
 

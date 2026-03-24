@@ -216,6 +216,20 @@
       "env": {
         "CLAUDE_PROJECT_DIR": "."
       }
+    },
+    "workstream": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/workstream/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "persistent-task": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/persistent-task/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
     }
   }
 }

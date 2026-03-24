@@ -40,6 +40,14 @@ import { shouldAllowSpawn } from './lib/memory-pressure.js';
 import { enqueueSession } from './lib/session-queue.js';
 import { auditEvent } from './lib/session-audit.js';
 
+// Lazy-loaded SQLite (needed for persistent-tasks.db check)
+let Database = null;
+try {
+  Database = (await import('better-sqlite3')).default;
+} catch (_) {
+  // Non-fatal: persistent monitor check will fail open
+}
+
 // Debug logging - writes to file since stdout is used for hook response
 const DEBUG = true;
 const DEBUG_LOG_PATH = path.join(process.cwd(), '.claude', 'hooks', 'stop-hook-debug.log');
@@ -313,6 +321,13 @@ function inlineRevive({ sessionId, agentId, worktreePath, quotaMessage }) {
     // Use original worktree CWD if it still exists, otherwise fall back to main project
     const effectiveCwd = (worktreePath && fs.existsSync(worktreePath)) ? worktreePath : projectDir;
 
+    // Forward persistent monitor env vars for revival
+    let extraEnvObj = {};
+    if (process.env.GENTYR_PERSISTENT_TASK_ID) {
+      extraEnvObj.GENTYR_PERSISTENT_TASK_ID = process.env.GENTYR_PERSISTENT_TASK_ID;
+      extraEnvObj.GENTYR_PERSISTENT_MONITOR = 'true';
+    }
+
     const result = enqueueSession({
       title: `Inline revival of quota-interrupted session ${sessionId.slice(0, 8)}`,
       agentType: AGENT_TYPES.SESSION_REVIVED,
@@ -328,6 +343,7 @@ function inlineRevive({ sessionId, agentId, worktreePath, quotaMessage }) {
       mcpConfig: path.join(effectiveCwd, '.mcp.json'),
       projectDir,
       worktreePath: worktreePath || null,
+      extraEnv: Object.keys(extraEnvObj).length > 0 ? JSON.stringify(extraEnvObj) : undefined,
       metadata: {
         originalAgentId: agentId,
         originalSessionId: sessionId,
@@ -368,6 +384,75 @@ async function main() {
 
     debugLog('Parsed input keys', Object.keys(input));
     debugLog('Full input structure', input);
+
+    // Check if this session was preempted (suspended by CTO priority preemption).
+    // Must run BEFORE quota-death detection — a suspended session should exit
+    // cleanly without attempting revival, as it will be re-enqueued automatically.
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const suspendedPath = path.join(projectDir, '.claude', 'state', 'suspended-sessions.json');
+    try {
+      const data = JSON.parse(fs.readFileSync(suspendedPath, 'utf8'));
+      const entries = Array.isArray(data) ? data : [data];
+      const sessionId = input.session_id;
+      const isSuspended = entries.some(
+        e => (sessionId && e.sessionId === sessionId) ||
+             (process.env.CLAUDE_AGENT_ID && e.agentId === process.env.CLAUDE_AGENT_ID)
+      );
+      if (isSuspended) {
+        debugLog('Session is suspended (preempted) — exiting cleanly without revival');
+        // Remove this entry from the file
+        const remaining = entries.filter(
+          e => !(sessionId && e.sessionId === sessionId) &&
+               !(process.env.CLAUDE_AGENT_ID && e.agentId === process.env.CLAUDE_AGENT_ID)
+        );
+        if (remaining.length === 0) {
+          fs.unlinkSync(suspendedPath);
+        } else {
+          fs.writeFileSync(suspendedPath, JSON.stringify(remaining, null, 2));
+        }
+        // Exit cleanly — don't attempt revival, don't write to quota-interrupted-sessions
+        console.log(JSON.stringify({ decision: 'approve' }));
+        process.exit(0);
+      }
+    } catch (e) {
+      // File doesn't exist (ENOENT) or JSON parse error — not suspended, continue normally
+      if (e.code !== 'ENOENT') {
+        debugLog('suspended-sessions.json read error (non-fatal)', { error: e.message });
+      }
+    }
+
+    // Persistent monitor sessions: check if task is still active
+    if (process.env.GENTYR_PERSISTENT_MONITOR === 'true') {
+      const ptTaskId = process.env.GENTYR_PERSISTENT_TASK_ID;
+      debugLog('Persistent monitor session detected', { taskId: ptTaskId });
+
+      let taskStillActive = true;
+      try {
+        const ptDbPath = path.join(projectDir, '.claude', 'state', 'persistent-tasks.db');
+        if (Database && fs.existsSync(ptDbPath)) {
+          const ptDb = new Database(ptDbPath, { readonly: true });
+          const row = ptDb.prepare("SELECT status FROM persistent_tasks WHERE id = ?").get(ptTaskId);
+          ptDb.close();
+          taskStillActive = row && row.status === 'active';
+        }
+      } catch (e) {
+        debugLog('persistent-tasks.db read error (non-fatal)', { error: e.message });
+        // Fail open — assume active
+      }
+
+      if (taskStillActive) {
+        debugLog('Decision: BLOCK (persistent task monitor — task still active)');
+        console.log(JSON.stringify({
+          decision: 'block',
+          reason: '[PERSISTENT MONITOR] Your persistent task is still active. Continue monitoring sub-tasks. Call mcp__persistent-task__complete_persistent_task when the outcome criteria are met, or mcp__persistent-task__pause_persistent_task if you need to pause.',
+        }));
+        process.exit(0);
+      }
+
+      debugLog('Decision: APPROVE (persistent task no longer active)');
+      console.log(JSON.stringify({ decision: 'approve' }));
+      process.exit(0);
+    }
 
     // Check if this is an automated [Task] session
     // The initial prompt should be in the conversation history
@@ -463,6 +548,58 @@ async function main() {
     });
 
     if (isTaskSession && !alreadyContinuing) {
+      // Session completion gate for worktree agents:
+      // Block if the worktree still exists (project-manager hasn't cleaned it up yet).
+      if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
+        const cwd = process.cwd();
+        const worktreeActive = cwd.includes('.claude/worktrees/') ||
+          cwd.includes('.claude\\worktrees\\');
+
+        if (worktreeActive && fs.existsSync(cwd)) {
+          // Worktree still exists — verify the agent ran the required sub-agents
+          // by scanning the transcript tail for agent spawn markers.
+          let alignmentFound = false;
+          let projectManagerFound = false;
+          const transcriptPath = input.transcript_path || null;
+
+          if (transcriptPath) {
+            const tail = readTail(transcriptPath, TAIL_BYTES);
+            if (tail) {
+              alignmentFound = tail.includes('"user-alignment"') ||
+                tail.includes('[AGENT:user-alignment');
+              projectManagerFound = tail.includes('"project-manager"') ||
+                tail.includes('[AGENT:project-manager');
+            }
+          }
+
+          if (!alignmentFound || !projectManagerFound) {
+            const missingAgents = [];
+            if (!alignmentFound) missingAgents.push('user-alignment');
+            if (!projectManagerFound) missingAgents.push('project-manager');
+
+            debugLog('Decision: BLOCK (session completion gate — missing sub-agents)', {
+              missingAgents,
+              worktree: cwd,
+            });
+            console.log(JSON.stringify({
+              decision: 'block',
+              reason: `[SESSION COMPLETION GATE] Your worktree still exists and the following required sub-agents have NOT been run: ${missingAgents.join(', ')}. You MUST: (1) Spawn the user-alignment agent to verify your work aligns with CTO intent. (2) Spawn the project-manager agent to commit, push, create PR, merge, and clean up the worktree. Do NOT call summarize_work or complete_task until both agents have completed and the worktree has been removed.`,
+            }));
+            process.exit(0);
+          }
+
+          // Both agents found but worktree still exists — project-manager may still be running.
+          debugLog('Decision: BLOCK (session completion gate — worktree exists after sub-agents)', {
+            worktree: cwd,
+          });
+          console.log(JSON.stringify({
+            decision: 'block',
+            reason: '[SESSION COMPLETION GATE] Your worktree still exists. The project-manager must have completed its PR merge and worktree cleanup before your session can end. Verify the project-manager finished successfully, then call summarize_work and complete_task.',
+          }));
+          process.exit(0);
+        }
+      }
+
       // First stop of a [Task] session - force one continuation
       // Check if in a worktree with uncommitted changes
       let uncommittedInWorktree = false;

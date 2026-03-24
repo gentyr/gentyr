@@ -31,13 +31,14 @@ import { getWorklogData } from './utils/worklog-reader.js';
 import { getPlanData, getPlanProgressData, getPlanTimelineData, getPlanAuditData } from './utils/plan-reader.js';
 import { getPlanSessionData } from './utils/plan-session-reader.js';
 import { getSessionQueueData } from './utils/session-queue-reader.js';
+import { getPersistentTaskData } from './utils/persistent-task-reader.js';
 import {
   getMockDashboardData, getMockTimelineEvents, getMockTrajectory,
   getMockAutomatedInstances, getMockDeputyCto, getMockTesting,
   getMockDeployments, getMockInfra, getMockLogging, getMockAccountOverview,
   getMockWorktrees, getMockProductManager, getMockWorklog,
   getMockPlanData, getMockPlanProgressData, getMockPlanTimelineData, getMockPlanAuditData,
-  getMockPlanSessionData, getMockSessionQueueData,
+  getMockPlanSessionData, getMockSessionQueueData, getMockPersistentTaskData,
 } from './mock-data.js';
 import {
   Section,
@@ -62,6 +63,7 @@ import {
   PlanAuditSection,
   PlanSessionSection,
   SessionQueueSection,
+  PersistentTaskSection,
   type MetricBoxData,
 } from './components/index.js';
 import { formatNumber, calculateCacheRate } from './utils/formatters.js';
@@ -76,7 +78,7 @@ const SECTION_IDS = [
   'testing', 'deployments', 'worktrees', 'infra', 'logging',
   'timeline', 'tasks', 'product-market-fit', 'worklog',
   'plans', 'plan-progress', 'plan-timeline', 'plan-audit', 'plan-sessions',
-  'session-queue',
+  'session-queue', 'persistent-tasks',
 ] as const;
 
 type SectionId = typeof SECTION_IDS[number];
@@ -333,6 +335,11 @@ async function renderSection(sectionId: SectionId, mock: boolean, hours: number,
     case 'session-queue': {
       const sessionQueue = mock ? getMockSessionQueueData() : getSessionQueueData();
       return <SessionQueueSection data={sessionQueue} />;
+    }
+
+    case 'persistent-tasks': {
+      const data = mock ? getMockPersistentTaskData() : getPersistentTaskData();
+      return <PersistentTaskSection data={data} />;
     }
 
     default: {

@@ -36,6 +36,16 @@ import {
   GetUserPromptArgsSchema,
   SearchUserPromptsArgsSchema,
   ListUserPromptsArgsSchema,
+  SendSessionSignalArgsSchema,
+  BroadcastSignalArgsSchema,
+  GetSessionSignalsArgsSchema,
+  GetCommsLogArgsSchema,
+  AcknowledgeSignalArgsSchema,
+  PeekSessionArgsSchema,
+  GetSessionActivitySummaryArgsSchema,
+  SearchCtoSessionsArgsSchema,
+  SuspendSessionArgsSchema,
+  ReorderQueueArgsSchema,
   AGENT_TYPES,
   type ListSpawnedAgentsArgs,
   type GetAgentPromptArgs,
@@ -50,6 +60,16 @@ import {
   type SetMaxConcurrentSessionsArgs,
   type CancelQueuedSessionArgs,
   type DrainSessionQueueArgs,
+  type SendSessionSignalArgs,
+  type BroadcastSignalArgs,
+  type GetSessionSignalsArgs,
+  type GetCommsLogArgs,
+  type AcknowledgeSignalArgs,
+  type PeekSessionArgs,
+  type GetSessionActivitySummaryArgs,
+  type SearchCtoSessionsArgs,
+  type SuspendSessionArgs,
+  type ReorderQueueArgs,
   type ForceTriageReportsResult,
   type MonitorAgentsResult,
   type ListSpawnedAgentsResult,
@@ -423,6 +443,35 @@ function getMessageType(entry: RawSessionMessage): string {
   if (entry.type === 'assistant') {return 'assistant';}
   if (entry.type === 'tool_result') {return 'tool_result';}
   return 'unknown';
+}
+
+// ============================================================================
+// WS5 Helper Functions
+// ============================================================================
+
+/**
+ * Read the last N bytes from a file, returning the content as UTF-8 string.
+ */
+function readTailBytes(filePath: string, bytes: number = 8192): string {
+  const fd = fs.openSync(filePath, 'r');
+  const stat = fs.fstatSync(fd);
+  const start = Math.max(0, stat.size - bytes);
+  const buf = Buffer.alloc(Math.min(bytes, stat.size));
+  fs.readSync(fd, buf, 0, buf.length, start);
+  fs.closeSync(fd);
+  return buf.toString('utf8');
+}
+
+/**
+ * Parse JSONL tail content into array of objects, skipping unparseable lines.
+ */
+function parseTailEntries(tail: string): any[] {
+  const lines = tail.split('\n').filter(l => l.trim());
+  const entries: any[] = [];
+  for (const line of lines) {
+    try { entries.push(JSON.parse(line)); } catch { /* partial line */ }
+  }
+  return entries;
 }
 
 // ============================================================================
@@ -1735,6 +1784,617 @@ async function drainSessionQueue(_args: DrainSessionQueueArgs): Promise<object |
 }
 
 // ============================================================================
+// Session Signal Tool Implementations
+// ============================================================================
+
+const SIGNAL_MODULE_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-signals.js');
+
+/**
+ * Dynamically import the session-signals module from the project's hooks directory.
+ * Uses dynamic import so the module resolves CLAUDE_PROJECT_DIR at call time.
+ */
+async function getSignalsModule(): Promise<{
+  sendSignal: (opts: Record<string, unknown>) => object;
+  broadcastSignal: (opts: Record<string, unknown>) => object[];
+  readPendingSignals: (agentId: string, projectDir: string) => object[];
+  getSignalLog: (opts: Record<string, unknown>) => object[];
+  acknowledgeSignal: (signalId: string, projectDir: string) => boolean;
+}> {
+  if (!fs.existsSync(SIGNAL_MODULE_PATH)) {
+    throw new Error(`session-signals.js not found at ${SIGNAL_MODULE_PATH}`);
+  }
+  return import(SIGNAL_MODULE_PATH) as ReturnType<typeof getSignalsModule>;
+}
+
+/**
+ * Read all signal files for a given agent by status filter.
+ * Used by get_session_signals to support 'pending', 'read', and 'all'.
+ */
+function readSignalFiles(agentId: string, status: 'pending' | 'read' | 'all'): object[] {
+  const signalDir = path.join(PROJECT_DIR, '.claude', 'state', 'session-signals');
+  if (!fs.existsSync(signalDir)) {
+    return [];
+  }
+
+  let files: string[];
+  try {
+    files = fs.readdirSync(signalDir);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to read signal directory: ${message}`);
+  }
+
+  const agentFiles = files.filter(f => f.startsWith(`${agentId}-`) && f.endsWith('.json'));
+  const results: object[] = [];
+
+  for (const filename of agentFiles) {
+    const filePath = path.join(signalDir, filename);
+    let signal: Record<string, unknown>;
+    try {
+      signal = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    if (status === 'pending' && signal.read_at !== null) continue;
+    if (status === 'read' && signal.read_at === null) continue;
+
+    results.push(signal);
+  }
+
+  // Sort by created_at ascending
+  (results as Array<{ created_at: string }>).sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  );
+
+  return results;
+}
+
+/**
+ * Send a signal to a specific running session.
+ */
+async function sendSessionSignal(args: SendSessionSignalArgs): Promise<object | ErrorResult> {
+  try {
+    const mod = await getSignalsModule();
+
+    // Resolve caller identity from environment (will be set if CTO or an agent)
+    const fromAgentId = process.env.CLAUDE_AGENT_ID || 'cto-session';
+    const fromAgentType = process.env.CLAUDE_AGENT_ID ? 'agent' : 'cto';
+
+    const signal = mod.sendSignal({
+      fromAgentId,
+      fromAgentType,
+      fromTaskTitle: 'MCP Tool Call',
+      toAgentId: args.target,
+      toAgentType: 'unknown',
+      tier: args.tier,
+      message: args.message,
+      projectDir: PROJECT_DIR,
+    });
+
+    return { success: true, signal };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to send signal: ${message}` };
+  }
+}
+
+/**
+ * Broadcast a signal to all running sessions.
+ */
+async function broadcastSessionSignal(args: BroadcastSignalArgs): Promise<object | ErrorResult> {
+  try {
+    const mod = await getSignalsModule();
+
+    const fromAgentId = process.env.CLAUDE_AGENT_ID || 'cto-session';
+    const fromAgentType = process.env.CLAUDE_AGENT_ID ? 'agent' : 'cto';
+
+    const signals = mod.broadcastSignal({
+      fromAgentId,
+      fromAgentType,
+      fromTaskTitle: 'MCP Broadcast',
+      tier: args.tier,
+      message: args.message,
+      excludeAgentIds: args.exclude_agent_ids || [],
+      projectDir: PROJECT_DIR,
+    });
+
+    return { success: true, sent_count: (signals as object[]).length, signals };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to broadcast signal: ${message}` };
+  }
+}
+
+/**
+ * Get signals for a specific agent.
+ */
+function getSessionSignals(args: GetSessionSignalsArgs): object | ErrorResult {
+  try {
+    const signals = readSignalFiles(args.agent_id, args.status ?? 'all');
+    return {
+      agent_id: args.agent_id,
+      status_filter: args.status ?? 'all',
+      count: signals.length,
+      signals,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to get session signals: ${message}` };
+  }
+}
+
+/**
+ * Get the inter-agent communication log.
+ */
+async function getCommsLog(args: GetCommsLogArgs): Promise<object | ErrorResult> {
+  try {
+    const mod = await getSignalsModule();
+    const entries = mod.getSignalLog({
+      since: args.since,
+      tier: args.tier,
+      limit: args.limit ?? 50,
+      projectDir: PROJECT_DIR,
+    } as Record<string, unknown>);
+
+    return {
+      count: (entries as object[]).length,
+      entries,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to get comms log: ${message}` };
+  }
+}
+
+/**
+ * Acknowledge a signal.
+ */
+async function acknowledgeSessionSignal(args: AcknowledgeSignalArgs): Promise<object | ErrorResult> {
+  try {
+    const mod = await getSignalsModule();
+    const found = mod.acknowledgeSignal(args.signal_id, PROJECT_DIR);
+    if (!found) {
+      return { success: false, reason: `Signal not found: ${args.signal_id}` };
+    }
+    return { success: true, signal_id: args.signal_id };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to acknowledge signal: ${message}` };
+  }
+}
+
+// ============================================================================
+// WS5 Tool Implementations
+// ============================================================================
+
+/**
+ * Peek at the live JSONL tail of a running agent session.
+ * Extracts last tool calls, last assistant text, sub-agent spawns, and git commits.
+ */
+async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult> {
+  // Resolve agent_id from either agent_id or queue_id
+  let agentId = args.agent_id;
+
+  if (!agentId && args.queue_id) {
+    // Look up agent_id from the queue DB via the queue item's associated session
+    if (fs.existsSync(QUEUE_DB_PATH)) {
+      let db;
+      try {
+        db = openReadonlyDb(QUEUE_DB_PATH);
+        // The queue item doesn't directly store agent_id, but we can search
+        // agent tracker history by correlating the queue item's spawn time
+        const row = db.prepare('SELECT id, title, agent_type, spawned_at FROM queue_items WHERE id = ?').get(args.queue_id) as { id: string; title: string; agent_type: string; spawned_at: string | null } | undefined;
+        if (!row) {
+          return { error: `Queue item not found: ${args.queue_id}` };
+        }
+        // Attempt to find agent by matching agent type and recent spawn time
+        const history = readHistory();
+        const candidates = (history.agents ?? []).filter(a => {
+          if (row.spawned_at) {
+            const queueTime = new Date(row.spawned_at).getTime();
+            const agentTime = new Date(a.timestamp).getTime();
+            return Math.abs(queueTime - agentTime) < 60_000;
+          }
+          return false;
+        });
+        if (candidates.length > 0) agentId = candidates[0].id;
+      } finally {
+        try { db?.close(); } catch { /* best-effort */ }
+      }
+    }
+  }
+
+  if (!agentId) {
+    return { error: 'Must provide agent_id or a resolvable queue_id' };
+  }
+
+  // Find the session JSONL file
+  const sessionDir = getSessionDir(PROJECT_DIR);
+  if (!sessionDir) {
+    return { error: 'Session directory not found for this project' };
+  }
+
+  const sessionFile = findSessionFileByAgentId(sessionDir, agentId);
+  if (!sessionFile) {
+    return { error: `Session file not found for agent: ${agentId}` };
+  }
+
+  const depthBytes = (args.depth ?? 8) * 1024;
+  let tailContent: string;
+  try {
+    tailContent = readTailBytes(sessionFile, depthBytes);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to read session file: ${message}` };
+  }
+
+  const entries = parseTailEntries(tailContent);
+
+  // Extract activity signals
+  const lastTools: Array<{ name: string; inputPreview: string }> = [];
+  let lastText: string | null = null;
+  let lastTimestamp: string | null = null;
+  const spawnedAgents: string[] = [];
+  const gitCommits: string[] = [];
+  let alignmentFindings: string | null = null;
+  let messageCount = 0;
+
+  for (const entry of entries) {
+    if (entry.timestamp) lastTimestamp = entry.timestamp;
+
+    if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+      messageCount++;
+      const content = entry.message.content as Array<{ type: string; text?: string; name?: string; input?: unknown; id?: string }>;
+
+      const texts = content.filter((b: any) => b.type === 'text' && b.text).map((b: any) => b.text as string);
+      if (texts.length > 0) {
+        lastText = texts.join('\n').substring(0, 300);
+        // Check for alignment findings
+        const joined = texts.join('\n');
+        if (joined.toLowerCase().includes('alignment') || joined.toLowerCase().includes('user intent')) {
+          alignmentFindings = joined.substring(0, 200);
+        }
+      }
+
+      for (const block of content) {
+        if ((block as any).type !== 'tool_use') continue;
+        const toolName = (block as any).name ?? 'unknown';
+        const input = (block as any).input;
+        let inputStr = '';
+        try {
+          inputStr = (typeof input === 'string' ? input : JSON.stringify(input) ?? '').substring(0, 80);
+        } catch { /* skip */ }
+
+        lastTools.push({ name: toolName, inputPreview: inputStr });
+        if (lastTools.length > 5) lastTools.shift();
+
+        if (toolName === 'Agent' || toolName === 'Task') {
+          const desc = (input as Record<string, unknown>)?.description;
+          if (typeof desc === 'string') spawnedAgents.push(desc.substring(0, 60));
+        }
+        if (toolName === 'Bash') {
+          const cmd = (input as Record<string, unknown>)?.command;
+          if (typeof cmd === 'string' && cmd.includes('git commit')) {
+            const m = cmd.match(/-m\s+"([^"]+)"/);
+            gitCommits.push(m ? m[1] : 'git commit');
+          }
+        }
+      }
+    } else if (entry.type === 'human' || entry.type === 'user') {
+      messageCount++;
+    }
+  }
+
+  return {
+    agentId,
+    sessionFile,
+    messageCount,
+    lastTools,
+    lastText,
+    lastTimestamp,
+    spawnedAgents,
+    gitCommits,
+    alignmentFindings,
+  };
+}
+
+/**
+ * Get a summary of all currently running agent sessions, including last tool and elapsed time.
+ */
+async function getSessionActivitySummary(_args: GetSessionActivitySummaryArgs): Promise<object | ErrorResult> {
+  if (!fs.existsSync(QUEUE_DB_PATH)) {
+    return { hasData: false, message: 'Session queue database not found' };
+  }
+
+  let db;
+  try {
+    db = openReadonlyDb(QUEUE_DB_PATH);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to open session queue database: ${message}` };
+  }
+
+  interface RunningQueueRow {
+    id: string;
+    title: string;
+    agent_type: string;
+    pid: number | null;
+    spawned_at: string | null;
+    lane: string;
+  }
+
+  let runningRows: RunningQueueRow[];
+  try {
+    runningRows = db.prepare("SELECT id, title, agent_type, pid, spawned_at, lane FROM queue_items WHERE status = 'running' ORDER BY spawned_at ASC").all() as RunningQueueRow[];
+  } finally {
+    try { db.close(); } catch { /* best-effort */ }
+  }
+
+  const now = Date.now();
+  const sessionDir = getSessionDir(PROJECT_DIR);
+  const history = readHistory();
+
+  const summary = runningRows.map(row => {
+    const elapsedMs = row.spawned_at ? now - new Date(row.spawned_at).getTime() : 0;
+    const elapsedMinutes = Math.floor(elapsedMs / 60000);
+
+    // Attempt to resolve agent_id from tracker history by timestamp proximity
+    let agentId: string | null = null;
+    if (row.spawned_at) {
+      const spawnTime = new Date(row.spawned_at).getTime();
+      const candidate = (history.agents ?? []).find(a => {
+        const aTime = new Date(a.timestamp).getTime();
+        return Math.abs(spawnTime - aTime) < 60_000;
+      });
+      if (candidate) agentId = candidate.id;
+    }
+
+    let lastTool: string | null = null;
+    let lastActivity: string | null = null;
+    let sessionId: string | null = null;
+
+    if (agentId && sessionDir) {
+      const sessionFile = findSessionFileByAgentId(sessionDir, agentId);
+      if (sessionFile) {
+        sessionId = path.basename(sessionFile, '.jsonl');
+        try {
+          const tail = readTailBytes(sessionFile, 4096);
+          const entries = parseTailEntries(tail);
+          for (const entry of entries) {
+            if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+              for (const block of entry.message.content) {
+                if (block.type === 'tool_use' && block.name) {
+                  lastTool = block.name;
+                  lastActivity = entry.timestamp ?? null;
+                }
+              }
+            }
+          }
+        } catch { /* non-critical */ }
+      }
+    }
+
+    // Determine worktree path (if any)
+    let worktreePath: string | null = null;
+    if (agentId) {
+      const agentRecord = (history.agents ?? []).find(a => a.id === agentId);
+      worktreePath = (agentRecord?.metadata?.worktreePath as string) ?? null;
+    }
+
+    return {
+      queue_id: row.id,
+      agent_id: agentId,
+      session_id: sessionId,
+      title: row.title,
+      agent_type: row.agent_type,
+      elapsed_minutes: elapsedMinutes,
+      last_tool: lastTool,
+      last_activity: lastActivity,
+      worktree_path: worktreePath,
+      pid: row.pid,
+      pid_alive: row.pid ? (() => { try { process.kill(row.pid!, 0); return true; } catch { return false; } })() : false,
+    };
+  });
+
+  return { running_count: summary.length, sessions: summary };
+}
+
+/**
+ * Search CTO (non-autonomous) sessions for a query string.
+ * Filters out sessions with [Automation], [Task], or [AGENT:] markers in the first 2KB.
+ */
+function searchCtoSessions(args: SearchCtoSessionsArgs): object | ErrorResult {
+  const sessionDir = getSessionDir(PROJECT_DIR);
+  if (!sessionDir) {
+    return { error: 'Session directory not found for this project' };
+  }
+
+  let files: string[];
+  try {
+    files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to read session directory: ${message}` };
+  }
+
+  const query = args.query.toLowerCase();
+  const limit = args.limit ?? 10;
+  const results: Array<{ session_id: string; excerpt: string; context_lines: string[] }> = [];
+
+  for (const file of files) {
+    if (results.length >= limit) break;
+    const filePath = path.join(sessionDir, file);
+
+    // Read first 2KB to check for automation markers
+    let head: string;
+    try {
+      let fd: number | undefined;
+      try {
+        fd = fs.openSync(filePath, 'r');
+        const buf = Buffer.alloc(2048);
+        const bytesRead = fs.readSync(fd, buf, 0, 2048, 0);
+        head = buf.toString('utf8', 0, bytesRead);
+      } finally {
+        if (fd !== undefined) fs.closeSync(fd);
+      }
+    } catch {
+      continue;
+    }
+
+    // Skip automated sessions
+    if (head.includes('[Automation]') || head.includes('[Task]') || head.includes('[AGENT:')) {
+      continue;
+    }
+
+    // Search the full file for the query
+    let content: string;
+    try {
+      content = fs.readFileSync(filePath, 'utf8');
+    } catch {
+      continue;
+    }
+
+    const lowerContent = content.toLowerCase();
+    const matchIdx = lowerContent.indexOf(query);
+    if (matchIdx === -1) continue;
+
+    // Extract context around the match
+    const start = Math.max(0, matchIdx - 100);
+    const end = Math.min(content.length, matchIdx + query.length + 100);
+    const excerpt = (start > 0 ? '...' : '') + content.substring(start, end) + (end < content.length ? '...' : '');
+
+    // Also get surrounding lines for context
+    const lines = content.split('\n');
+    const contextLines: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].toLowerCase().includes(query)) {
+        const ctxStart = Math.max(0, i - 1);
+        const ctxEnd = Math.min(lines.length - 1, i + 2);
+        for (let j = ctxStart; j <= ctxEnd; j++) {
+          contextLines.push(lines[j].substring(0, 200));
+        }
+        break;
+      }
+    }
+
+    results.push({
+      session_id: file.replace('.jsonl', ''),
+      excerpt: excerpt.substring(0, 400),
+      context_lines: contextLines,
+    });
+  }
+
+  return {
+    query: args.query,
+    total: results.length,
+    results,
+  };
+}
+
+/**
+ * Suspend a running session by calling preemptForCtoTask from session-queue.js.
+ */
+async function suspendSession(args: SuspendSessionArgs): Promise<object | ErrorResult> {
+  const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+
+  if (!fs.existsSync(queueModulePath)) {
+    return { error: `session-queue.js not found at ${queueModulePath}` };
+  }
+
+  if (!args.agent_id && !args.queue_id) {
+    return { error: 'Must provide agent_id or queue_id to suspend' };
+  }
+
+  try {
+    const queueModule = await import(queueModulePath);
+
+    // Resolve queue_id from agent_id if needed
+    let queueId = args.queue_id;
+    if (!queueId && args.agent_id) {
+      // Find the running queue item by matching agent tracker spawn time proximity
+      if (fs.existsSync(QUEUE_DB_PATH)) {
+        let db;
+        try {
+          db = openReadonlyDb(QUEUE_DB_PATH);
+          const history = readHistory();
+          const agentRecord = (history.agents ?? []).find(a => a.id === args.agent_id);
+          if (agentRecord) {
+            const agentTime = new Date(agentRecord.timestamp).getTime();
+            interface RunningRow { id: string; spawned_at: string | null; }
+            const runningRows = db.prepare("SELECT id, spawned_at FROM queue_items WHERE status = 'running'").all() as RunningRow[];
+            const match = runningRows.find(r => {
+              if (!r.spawned_at) return false;
+              return Math.abs(new Date(r.spawned_at).getTime() - agentTime) < 60_000;
+            });
+            if (match) queueId = match.id;
+          }
+        } finally {
+          try { db?.close(); } catch { /* best-effort */ }
+        }
+      }
+    }
+
+    if (!queueId) {
+      return { error: `Could not resolve queue_id for agent: ${args.agent_id}` };
+    }
+
+    if (typeof queueModule.preemptForCtoTask !== 'function') {
+      return { error: 'preemptForCtoTask function not found in session-queue.js' };
+    }
+
+    const result = queueModule.preemptForCtoTask({
+      queueId,
+      requeuePriority: args.requeue_priority ?? 'urgent',
+    });
+
+    return { success: true, queue_id: queueId, result };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to suspend session: ${message}` };
+  }
+}
+
+/**
+ * Reorder a queued item by changing its priority.
+ */
+function reorderQueue(args: ReorderQueueArgs): object | ErrorResult {
+  const validPriorities = ['cto', 'critical', 'urgent', 'normal', 'low'];
+  if (!validPriorities.includes(args.new_priority)) {
+    return { error: `Invalid priority '${args.new_priority}'. Must be one of: ${validPriorities.join(', ')}` };
+  }
+
+  if (!fs.existsSync(QUEUE_DB_PATH)) {
+    return { error: 'Session queue database not found. Queue may not be initialized yet.' };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = new Database(QUEUE_DB_PATH);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to open session queue database: ${message}` };
+  }
+
+  try {
+    const item = db.prepare('SELECT id, status, priority, title FROM queue_items WHERE id = ?').get(args.queue_id) as { id: string; status: string; priority: string; title: string } | undefined;
+    if (!item) {
+      return { success: false, reason: `Queue item not found: ${args.queue_id}` };
+    }
+    if (item.status !== 'queued') {
+      return { success: false, reason: `Cannot reorder item with status '${item.status}' — only 'queued' items can be reordered` };
+    }
+
+    const oldPriority = item.priority;
+    db.prepare('UPDATE queue_items SET priority = ? WHERE id = ? AND status = ?').run(args.new_priority, args.queue_id, 'queued');
+
+    return { success: true, id: args.queue_id, title: item.title, old_priority: oldPriority, new_priority: args.new_priority };
+  } finally {
+    try { db!.close(); } catch { /* best-effort */ }
+  }
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -1851,11 +2511,73 @@ const tools: AnyToolHandler[] = [
     schema: ListUserPromptsArgsSchema,
     handler: listUserPrompts,
   },
+  // Inter-Agent Communication Tools
+  {
+    name: 'send_session_signal',
+    description: 'Send a signal to a specific running agent session. Use tier "note" for FYI, "instruction" for Deputy-CTO urgent directives, "directive" for CTO mandatory overrides.',
+    schema: SendSessionSignalArgsSchema,
+    handler: sendSessionSignal,
+  },
+  {
+    name: 'broadcast_signal',
+    description: 'Send a signal to ALL currently running agent sessions (excluding gate-lane agents). Useful for coordination announcements or urgent instructions.',
+    schema: BroadcastSignalArgsSchema,
+    handler: broadcastSessionSignal,
+  },
+  {
+    name: 'get_session_signals',
+    description: 'Get signals for a specific agent session. Filter by status: pending (unread), read, or all.',
+    schema: GetSessionSignalsArgsSchema,
+    handler: getSessionSignals,
+  },
+  {
+    name: 'get_comms_log',
+    description: 'Get the inter-agent communication log. Optionally filter by since timestamp, tier, and limit results.',
+    schema: GetCommsLogArgsSchema,
+    handler: getCommsLog,
+  },
+  {
+    name: 'acknowledge_signal',
+    description: 'Mark a signal as acknowledged. Required after receiving an instruction or directive tier signal.',
+    schema: AcknowledgeSignalArgsSchema,
+    handler: acknowledgeSessionSignal,
+  },
+  // WS5 Session Introspection Tools
+  {
+    name: 'peek_session',
+    description: 'Peek at the live JSONL tail of a running agent session. Returns last tool calls, last assistant text, spawned sub-agents, git commits, and alignment findings. Provide agent_id or queue_id.',
+    schema: PeekSessionArgsSchema,
+    handler: peekSession,
+  },
+  {
+    name: 'get_session_activity_summary',
+    description: 'Get a summary of all currently running agent sessions: elapsed time, last tool called, worktree path, and PID liveness.',
+    schema: GetSessionActivitySummaryArgsSchema,
+    handler: getSessionActivitySummary,
+  },
+  {
+    name: 'search_cto_sessions',
+    description: 'Search CTO (non-automated) session transcripts for a query string. Filters out sessions containing [Automation], [Task], or [AGENT:] markers. Returns matching excerpts with context.',
+    schema: SearchCtoSessionsArgsSchema,
+    handler: searchCtoSessions,
+  },
+  {
+    name: 'suspend_session',
+    description: 'Suspend a running agent session by preempting it for a CTO-priority task. The session is requeued at the specified priority. Provide agent_id or queue_id.',
+    schema: SuspendSessionArgsSchema,
+    handler: suspendSession,
+  },
+  {
+    name: 'reorder_queue',
+    description: 'Change the priority of a queued (not yet running) session queue item. Valid priorities: cto, critical, urgent, normal, low.',
+    schema: ReorderQueueArgsSchema,
+    handler: reorderQueue,
+  },
 ];
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '5.0.0',  // Added user prompt index tools
+  version: '7.0.0',  // Added WS5 session introspection tools
   tools,
 });
 

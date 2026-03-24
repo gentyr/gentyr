@@ -102,6 +102,53 @@ export const CancelQueuedSessionArgsSchema = z.object({
 export const DrainSessionQueueArgsSchema = z.object({});
 
 // ============================================================================
+// Session Signal Schemas
+// ============================================================================
+
+const SIGNAL_TIER_VALUES = ['note', 'instruction', 'directive'] as const;
+
+export const SendSessionSignalArgsSchema = z.object({
+  target: z.string().describe('Target agent ID to send the signal to'),
+  message: z.string().min(1).describe('The message to send to the target agent'),
+  tier: z.enum(SIGNAL_TIER_VALUES)
+    .describe('Signal tier: note (FYI), instruction (Deputy-CTO urgent), directive (CTO mandatory)'),
+});
+
+export const BroadcastSignalArgsSchema = z.object({
+  message: z.string().min(1).describe('The message to broadcast to all running agents'),
+  tier: z.enum(SIGNAL_TIER_VALUES)
+    .describe('Signal tier: note (FYI), instruction (Deputy-CTO urgent), directive (CTO mandatory)'),
+  exclude_agent_ids: z.array(z.string())
+    .optional()
+    .describe('Agent IDs to exclude from the broadcast'),
+});
+
+export const GetSessionSignalsArgsSchema = z.object({
+  agent_id: z.string().describe('The agent ID to get signals for'),
+  status: z.enum(['pending', 'read', 'all'])
+    .optional()
+    .default('all')
+    .describe('Filter by signal status: pending (unread), read, or all (default: all)'),
+});
+
+export const GetCommsLogArgsSchema = z.object({
+  since: z.string()
+    .optional()
+    .describe('ISO timestamp — only return entries after this time'),
+  tier: z.enum(SIGNAL_TIER_VALUES)
+    .optional()
+    .describe('Filter by signal tier'),
+  limit: z.coerce.number()
+    .optional()
+    .default(50)
+    .describe('Maximum number of log entries to return (default: 50)'),
+});
+
+export const AcknowledgeSignalArgsSchema = z.object({
+  signal_id: z.string().describe('The signal ID to acknowledge (from the signal object)'),
+});
+
+// ============================================================================
 // User Prompt Index Schemas
 // ============================================================================
 
@@ -215,6 +262,39 @@ export const GetSessionSummaryArgsSchema = z.object({
 });
 
 // ============================================================================
+// WS5 Tool Schemas
+// ============================================================================
+
+export const PeekSessionArgsSchema = z.object({
+  agent_id: z.string().optional().describe('Agent ID to peek'),
+  queue_id: z.string().optional().describe('Queue ID to peek'),
+  depth: z.number().optional().default(8).describe('KB of JSONL tail to read'),
+});
+export type PeekSessionArgs = z.infer<typeof PeekSessionArgsSchema>;
+
+export const GetSessionActivitySummaryArgsSchema = z.object({});
+export type GetSessionActivitySummaryArgs = z.infer<typeof GetSessionActivitySummaryArgsSchema>;
+
+export const SearchCtoSessionsArgsSchema = z.object({
+  query: z.string().describe('Search query'),
+  limit: z.number().optional().default(10).describe('Max results'),
+});
+export type SearchCtoSessionsArgs = z.infer<typeof SearchCtoSessionsArgsSchema>;
+
+export const SuspendSessionArgsSchema = z.object({
+  agent_id: z.string().optional().describe('Agent ID to suspend'),
+  queue_id: z.string().optional().describe('Queue ID to suspend'),
+  requeue_priority: z.string().optional().default('urgent').describe('Priority for resumed session'),
+});
+export type SuspendSessionArgs = z.infer<typeof SuspendSessionArgsSchema>;
+
+export const ReorderQueueArgsSchema = z.object({
+  queue_id: z.string().describe('Queue item ID'),
+  new_priority: z.string().describe('New priority: cto, critical, urgent, normal, low'),
+});
+export type ReorderQueueArgs = z.infer<typeof ReorderQueueArgsSchema>;
+
+// ============================================================================
 // Type Definitions
 // ============================================================================
 
@@ -238,10 +318,19 @@ export type SetMaxConcurrentSessionsArgs = z.infer<typeof SetMaxConcurrentSessio
 export type CancelQueuedSessionArgs = z.infer<typeof CancelQueuedSessionArgsSchema>;
 export type DrainSessionQueueArgs = z.infer<typeof DrainSessionQueueArgsSchema>;
 
+// Session Signal Types
+export type SendSessionSignalArgs = z.infer<typeof SendSessionSignalArgsSchema>;
+export type BroadcastSignalArgs = z.infer<typeof BroadcastSignalArgsSchema>;
+export type GetSessionSignalsArgs = z.infer<typeof GetSessionSignalsArgsSchema>;
+export type GetCommsLogArgs = z.infer<typeof GetCommsLogArgsSchema>;
+export type AcknowledgeSignalArgs = z.infer<typeof AcknowledgeSignalArgsSchema>;
+
 // User Prompt Index Types
 export type GetUserPromptArgs = z.infer<typeof GetUserPromptArgsSchema>;
 export type SearchUserPromptsArgs = z.infer<typeof SearchUserPromptsArgsSchema>;
 export type ListUserPromptsArgs = z.infer<typeof ListUserPromptsArgsSchema>;
+
+// WS5 Types (already declared inline above with the schemas)
 
 export interface UserPromptResult {
   uuid: string;

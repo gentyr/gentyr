@@ -29,7 +29,7 @@ import { getFeatureBranchName } from './lib/feature-branch-helper.js';
 import { readRotationState } from './key-sync.js';
 import { shouldAllowSpawn } from './lib/memory-pressure.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
-import { enqueueSession } from './lib/session-queue.js';
+import { enqueueSession, preemptForCtoTask } from './lib/session-queue.js';
 
 // Try to import better-sqlite3 for DB access
 let Database = null;
@@ -440,10 +440,21 @@ Use the Task tool to spawn the appropriate sub-agent: \`Task(subagent_type='${ag
 /**
  * Enqueue a fire-and-forget Claude agent for a task.
  * Mirrors hourly-automation.js:1524-1587 but simplified for single-task use.
+ *
+ * @param {object} task - Task object with id, section, title, description, assigned_by
+ * @returns {Promise<boolean>} Whether the task was successfully enqueued
  */
-function spawnTaskAgent(task) {
+async function spawnTaskAgent(task) {
   const mapping = SECTION_AGENT_MAP[task.section];
   if (!mapping) return false;
+
+  // Determine if this is a CTO-directed task — use highest priority
+  const isCtoTask = task.assigned_by === 'cto' || task.assigned_by === 'human';
+  const queuePriority = isCtoTask ? 'cto' : 'urgent';
+
+  if (isCtoTask) {
+    log(`CTO task detected (assigned_by: ${task.assigned_by}) — using cto priority for task ${task.id}`);
+  }
 
   // Worktree setup (best-effort)
   let worktreePath = null;
@@ -459,8 +470,8 @@ function spawnTaskAgent(task) {
   }
 
   try {
-    enqueueSession({
-      title: `Urgent task: ${mapping.agent} - ${task.title}`,
+    const result = enqueueSession({
+      title: `${isCtoTask ? 'CTO task' : 'Urgent task'}: ${mapping.agent} - ${task.title}`,
       agentType: mapping.agentType,
       hookType: HOOK_TYPES.TASK_RUNNER,
       tagContext: `task-runner-${mapping.agent}`,
@@ -468,15 +479,32 @@ function spawnTaskAgent(task) {
       buildPrompt: (agentId) => mapping.agent === 'deputy-cto'
         ? buildDeputyCtoTaskPrompt(task, agentId)
         : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath),
-      priority: 'urgent',
+      priority: queuePriority,
       cwd: worktreePath || PROJECT_DIR,
       mcpConfig: path.join(worktreePath || PROJECT_DIR, '.mcp.json'),
       projectDir: PROJECT_DIR,
       worktreePath: worktreePath || null,
-      metadata: { taskId: task.id, section: task.section, worktreePath, urgent: true },
+      metadata: { taskId: task.id, section: task.section, worktreePath, urgent: true, assignedBy: task.assigned_by },
     });
 
-    log(`Enqueued ${mapping.agent} for task ${task.id}: "${task.title}"`);
+    log(`Enqueued ${mapping.agent} for task ${task.id}: "${task.title}" (priority: ${queuePriority}, queueId: ${result.queueId})`);
+
+    // For CTO tasks: if the queue was at capacity (nothing was spawned immediately),
+    // trigger preemption of the lowest-priority running session to make room.
+    if (isCtoTask && result.drained.spawned === 0 && result.drained.atCapacity) {
+      log(`CTO task ${task.id} is at capacity — triggering preemption`);
+      try {
+        const preemptResult = await preemptForCtoTask(result.queueId, PROJECT_DIR);
+        if (preemptResult.preempted) {
+          log(`Preempted session ${preemptResult.preemptedQueueId} (agent: ${preemptResult.preemptedAgentId}) for CTO task ${task.id}`);
+        } else {
+          log(`Preemption not needed for CTO task ${task.id} (capacity available after drain)`);
+        }
+      } catch (err) {
+        log(`Preemption failed for CTO task ${task.id}: ${err.message}`);
+        // Non-fatal — CTO task is still queued and will be picked up at next opportunity
+      }
+    }
 
     // Phase 2: Background fetch after enqueue — non-blocking, ensures worktree
     // has fresh base branch for subsequent operations
@@ -511,14 +539,16 @@ process.stdin.on('data', (chunk) => {
   input += chunk.toString();
 });
 
-process.stdin.on('end', () => {
+process.stdin.on('end', async () => {
   try {
     const hookInput = JSON.parse(input);
     const toolInput = hookInput.tool_input || {};
 
     // Phase 2: Quota-based gating replaces the old urgent-only guard.
-    // All priorities can trigger immediate spawning based on quota headroom.
-    const shouldSpawn = evaluateQuotaGating(toolInput.priority);
+    // CTO/human tasks bypass quota gating entirely — they always spawn.
+    const assignedBy = toolInput.assigned_by || null;
+    const isCtoOrHuman = assignedBy === 'cto' || assignedBy === 'human';
+    const shouldSpawn = isCtoOrHuman || evaluateQuotaGating(toolInput.priority);
     if (!shouldSpawn) {
       process.exit(0);
     }
@@ -599,10 +629,10 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    // Build task object for spawn
-    const task = { id: taskId, section, title, description };
+    // Build task object for spawn (include assigned_by for CTO priority detection)
+    const task = { id: taskId, section, title, description, assigned_by: assignedBy };
 
-    const success = spawnTaskAgent(task);
+    const success = await spawnTaskAgent(task);
     if (success) {
       log(`Successfully spawned agent for urgent task ${taskId}: "${title}" (section: ${section})`);
     } else {
