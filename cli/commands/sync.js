@@ -18,6 +18,45 @@ const GREEN = '\x1b[0;32m';
 const YELLOW = '\x1b[1;33m';
 const NC = '\x1b[0m';
 
+/**
+ * Check if the project is currently protected.
+ * @param {string} projectDir
+ * @returns {boolean}
+ */
+function isProtected(projectDir) {
+  try {
+    const stateFile = path.join(projectDir, '.claude', 'protection-state.json');
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    return state.protected === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run `npx gentyr unprotect` as a subprocess (reuses the full unprotect logic).
+ * @param {string} projectDir
+ */
+function runUnprotect(projectDir) {
+  console.log(`\n${YELLOW}Temporarily disabling protection for sync...${NC}`);
+  const cliEntry = path.resolve(import.meta.dirname, '..', 'index.js');
+  execFileSync(process.execPath, [cliEntry, 'unprotect'], {
+    cwd: projectDir, stdio: 'inherit', timeout: 60000,
+  });
+}
+
+/**
+ * Run `npx gentyr protect` as a subprocess (reuses the full protect logic).
+ * @param {string} projectDir
+ */
+function runProtect(projectDir) {
+  console.log(`\n${YELLOW}Re-enabling protection...${NC}`);
+  const cliEntry = path.resolve(import.meta.dirname, '..', 'index.js');
+  execFileSync(process.execPath, [cliEntry, 'protect'], {
+    cwd: projectDir, stdio: 'inherit', timeout: 60000,
+  });
+}
+
 export default async function sync(args) {
   const projectDir = process.cwd();
 
@@ -31,6 +70,15 @@ export default async function sync(args) {
   const frameworkDir = resolveFrameworkDir(projectDir);
   const frameworkRel = resolveFrameworkRelative(projectDir);
   const agents = getFrameworkAgents(frameworkDir);
+
+  // Auto-unprotect if needed so sync can write to root-owned files
+  const wasProtected = isProtected(projectDir);
+  if (wasProtected) {
+    runUnprotect(projectDir);
+  }
+
+  // Wrap sync body in try/finally to guarantee re-protect on any failure
+  try {
 
   console.log(`${GREEN}Syncing GENTYR...${NC}`);
 
@@ -180,4 +228,11 @@ export default async function sync(args) {
 
   console.log('');
   console.log(`${GREEN}Sync complete (v${state.version})${NC}`);
+
+  } finally {
+    // Re-protect if it was protected before sync (even if sync threw)
+    if (wasProtected) {
+      runProtect(projectDir);
+    }
+  }
 }

@@ -187,6 +187,7 @@ function statBasedSync(frameworkDir) {
   // Sync needed
   const changes = [];
   const frameworkRel = resolveFrameworkRel(projectDir);
+  let settingsMergeFailed = false;
 
   // a. Re-merge settings.json
   if (state.configHash !== currentConfigHash) {
@@ -205,7 +206,9 @@ function statBasedSync(frameworkDir) {
       });
       changes.push('settings.json');
     } catch (_) {
-      // Non-fatal — settings.json re-merge failure handled by continuing execution
+      // settings.json not writable (likely root-owned from protection).
+      // Mark as failed so we do NOT update configHash — next sync will retry.
+      settingsMergeFailed = true;
     }
   }
 
@@ -366,10 +369,11 @@ function statBasedSync(frameworkDir) {
   }
 
   // g. Write updated state
+  // If settings.json merge failed (root-owned), preserve old configHash so next sync retries.
   try {
     const newState = {
       version: currentVersion,
-      configHash: currentConfigHash,
+      configHash: settingsMergeFailed ? state.configHash : currentConfigHash,
       claudeMdHash: currentMdHash,
       agentList: (() => {
         try {
@@ -404,6 +408,7 @@ function statBasedSync(frameworkDir) {
   // Emit sync message — only report successful syncs, never ask agent to run commands
   const parts = [`GENTYR synced to v${currentVersion}`];
   if (changes.length > 0) parts.push(`(updated: ${changes.join(', ')})`);
+  if (settingsMergeFailed) parts.push('(settings.json not writable — run `npx gentyr sync` to fix)');
   warn(parts.join(' '));
 
   return true; // Handled
