@@ -374,6 +374,13 @@ function scanAndRevive() {
   if (revived > 0) {
     log(`Revived ${revived} dead agent(s)`);
   }
+
+  // Always drain after scanning — even if no revival happened, dead PIDs freed slots.
+  // reapSyncPass inside drainQueue() will mark dead queue items as completed,
+  // then drain will spawn the next queued item immediately.
+  if (drainQueue) {
+    try { drainQueue(); } catch { /* non-fatal */ }
+  }
 }
 
 /**

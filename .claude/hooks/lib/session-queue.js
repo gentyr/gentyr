@@ -875,6 +875,8 @@ export function markCompleted(agentId) {
   if (result.changes > 0) {
     log(`Marked completed: agent ${agentId}`);
     auditEvent('session_completed', { agent_id: agentId });
+    // Immediately drain queue — a slot just freed up
+    try { drainQueue(); } catch (e) { log(`drainQueue after completion failed: ${e.message}`); }
     return true;
   }
   return false;
@@ -896,6 +898,8 @@ export function markFailed(agentId, error) {
   if (result.changes > 0) {
     log(`Marked failed: agent ${agentId} (${error})`);
     auditEvent('session_failed', { agent_id: agentId, error });
+    // Immediately drain queue — a slot just freed up
+    try { drainQueue(); } catch (e) { log(`drainQueue after failure failed: ${e.message}`); }
     return true;
   }
   return false;
