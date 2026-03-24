@@ -15,6 +15,7 @@
 import { createInterface } from 'readline';
 import fs from 'fs';
 import path from 'path';
+import { debugLog } from './lib/debug-log.js';
 
 // Fast exit: if not a persistent monitor session, exit immediately
 const PERSISTENT_TASK_ID = process.env.GENTYR_PERSISTENT_TASK_ID;
@@ -107,6 +108,7 @@ async function main() {
     .run(new Date().toISOString(), PERSISTENT_TASK_ID);
 
   const isFull = counter % FULL_INTERVAL === 0;
+  debugLog('persistent-task-briefing', 'cycle', { taskId: PERSISTENT_TASK_ID, cycle: task.cycle_count + 1, isFull });
 
   if (!isFull) {
     // Compact briefing

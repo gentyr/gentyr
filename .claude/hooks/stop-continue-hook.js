@@ -39,6 +39,7 @@ import {
 import { shouldAllowSpawn } from './lib/memory-pressure.js';
 import { enqueueSession } from './lib/session-queue.js';
 import { auditEvent } from './lib/session-audit.js';
+import { debugLog as gentyrDebugLog } from './lib/debug-log.js';
 
 // Lazy-loaded SQLite (needed for persistent-tasks.db check)
 let Database = null;
@@ -411,6 +412,7 @@ async function main() {
           fs.writeFileSync(suspendedPath, JSON.stringify(remaining, null, 2));
         }
         // Exit cleanly — don't attempt revival, don't write to quota-interrupted-sessions
+        gentyrDebugLog('stop-hook', 'decision', { decision: 'approve', reason: 'suspended_session', isTask: false, isPersistent: !!process.env.GENTYR_PERSISTENT_MONITOR });
         console.log(JSON.stringify({ decision: 'approve' }));
         process.exit(0);
       }
@@ -442,6 +444,7 @@ async function main() {
 
       if (taskStillActive) {
         debugLog('Decision: BLOCK (persistent task monitor — task still active)');
+        gentyrDebugLog('stop-hook', 'decision', { decision: 'block', reason: 'persistent_monitor_active', isTask: true, isPersistent: true });
         console.log(JSON.stringify({
           decision: 'block',
           reason: '[PERSISTENT MONITOR] Your persistent task is still active. Continue monitoring sub-tasks. Call mcp__persistent-task__complete_persistent_task when the outcome criteria are met, or mcp__persistent-task__pause_persistent_task if you need to pause.',
@@ -450,6 +453,7 @@ async function main() {
       }
 
       debugLog('Decision: APPROVE (persistent task no longer active)');
+      gentyrDebugLog('stop-hook', 'decision', { decision: 'approve', reason: 'persistent_task_inactive', isTask: true, isPersistent: true });
       console.log(JSON.stringify({ decision: 'approve' }));
       process.exit(0);
     }
@@ -532,6 +536,7 @@ async function main() {
           quotaMessage: quotaCheck.quotaMessage,
         });
 
+        gentyrDebugLog('stop-hook', 'decision', { decision: 'approve', reason: 'quota_death', isTask: true, isPersistent: !!process.env.GENTYR_PERSISTENT_MONITOR });
         console.log(JSON.stringify({ decision: 'approve' }));
         process.exit(0);
       }
@@ -629,6 +634,7 @@ async function main() {
         reason = 'If there is more work to investigate or resolve related to the initial [Task] request, continue working. Otherwise, you may stop.';
       }
       debugLog('Decision: BLOCK (first stop of [Task] session)', { uncommittedInWorktree });
+      gentyrDebugLog('stop-hook', 'decision', { decision: 'block', reason: uncommittedInWorktree ? 'uncommitted_changes' : 'first_task_stop', isTask: true, isPersistent: !!process.env.GENTYR_PERSISTENT_MONITOR });
       console.log(JSON.stringify({
         decision: 'block',
         reason,
@@ -636,6 +642,7 @@ async function main() {
     } else {
       // Either not a [Task] session, or already continued once - allow stop
       debugLog('Decision: APPROVE', { reason: isTaskSession ? 'already continued once' : 'not a [Task] session' });
+      gentyrDebugLog('stop-hook', 'decision', { decision: 'approve', reason: isTaskSession ? 'already_continued' : 'not_task_session', isTask: isTaskSession, isPersistent: !!process.env.GENTYR_PERSISTENT_MONITOR });
       console.log(JSON.stringify({ decision: 'approve' }));
     }
 

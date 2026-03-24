@@ -30,6 +30,7 @@ import { detectStaleWork, formatReport } from './stale-work-detector.js';
 import { reviveInterruptedSessions } from './session-reviver.js';
 import { reapAsyncPass, getStuckAliveSessions } from './lib/session-reaper.js';
 import { cleanupAuditLog } from './lib/session-audit.js';
+import { debugLog, cleanupDebugLog } from './lib/debug-log.js';
 import { isProxyDisabled } from './lib/proxy-state.js';
 import { buildSpawnEnv } from './lib/spawn-env.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
@@ -2627,6 +2628,7 @@ async function main() {
         log(`Session reaper: ${reaperResult.hardKilled} hard-killed, ${reaperResult.completedReaped} reaped`);
       }
       cleanupAuditLog();
+      cleanupDebugLog();
     },
   });
 
@@ -2728,6 +2730,7 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
       if (revived > 0) {
         log(`Persistent monitor health: revived ${revived} monitor(s)`);
       }
+      debugLog('hourly-automation', 'persistent_monitor_health', { activeCount: activeTasks.length, revived });
     },
   });
 
@@ -3870,6 +3873,8 @@ Then exit.`,
   });
 
   log('=== Hourly Automation Complete ===');
+
+  debugLog('hourly-automation', 'cycle_complete', { durationMs: Date.now() - startTime });
 
   registerHookExecution({
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,

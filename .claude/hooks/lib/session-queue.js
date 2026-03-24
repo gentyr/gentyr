@@ -24,6 +24,7 @@ import { buildSpawnEnv } from './spawn-env.js';
 import { shouldAllowSpawn } from './memory-pressure.js';
 import { reapSyncPass } from './session-reaper.js';
 import { auditEvent } from './session-audit.js';
+import { debugLog } from './debug-log.js';
 // NOTE: revival-utils.js imports from session-queue.js (circular dep), so we
 // inline these three utilities here instead of importing from revival-utils.js.
 // Mirrors the same pattern used in session-reaper.js.
@@ -342,6 +343,8 @@ export function enqueueSession(spec) {
     title: spec.title,
   });
 
+  debugLog('session-queue', 'enqueue', { queueId: id, title: spec.title, priority: spec.priority || 'normal', lane: spec.lane || 'standard', source: spec.source });
+
   // Inline drain — try to spawn immediately if slots available
   const drained = drainQueue();
 
@@ -401,6 +404,8 @@ export function drainQueue() {
 
   result.queued = queued.length;
 
+  debugLog('session-queue', 'drain_start', { queuedCount: queued.length });
+
   // Track spawns per lane this drain cycle to avoid stale counter bugs
   let standardSpawnedThisDrain = 0;
   let gateSpawnedThisDrain = 0;
@@ -432,6 +437,7 @@ export function drainQueue() {
     });
     if (!memCheck.allowed) {
       log(`Memory pressure blocked ${item.id}: ${memCheck.reason}`);
+      debugLog('session-queue', 'drain_memory_blocked', { queueId: item.id, priority: item.priority, pressure: memCheck.pressure });
       continue; // Skip this item, try next (might be higher priority)
     }
 
@@ -474,6 +480,7 @@ export function drainQueue() {
     // Attempt to spawn
     try {
       spawnQueueItem(db, item);
+      debugLog('session-queue', 'drain_spawn', { queueId: item.id, title: item.title, lane: item.lane });
       result.spawned++;
       if (item.lane === 'gate') {
         gateSpawnedThisDrain++;
@@ -493,6 +500,8 @@ export function drainQueue() {
   if (result.spawned > 0) {
     log(`Drain complete: spawned=${result.spawned}, remaining=${result.queued - result.spawned}, atCapacity=${result.atCapacity}`);
   }
+
+  debugLog('session-queue', 'drain_complete', { spawned: result.spawned, queued: result.queued, atCapacity: result.atCapacity, failed: result.failed });
 
   return result;
 }

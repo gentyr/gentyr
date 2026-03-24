@@ -30,6 +30,7 @@ import { readRotationState } from './key-sync.js';
 import { shouldAllowSpawn } from './lib/memory-pressure.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { enqueueSession, preemptForCtoTask } from './lib/session-queue.js';
+import { debugLog } from './lib/debug-log.js';
 
 // Try to import better-sqlite3 for DB access
 let Database = null;
@@ -552,6 +553,7 @@ process.stdin.on('end', async () => {
     const assignedBy = toolInput.assigned_by || null;
     const isCtoOrHuman = assignedBy === 'cto' || assignedBy === 'human';
     const shouldSpawn = isCtoOrHuman || evaluateQuotaGating(toolInput.priority);
+    debugLog('urgent-task-spawner', 'spawn_decision', { taskId: toolInput.title?.substring(0, 40), decision: shouldSpawn ? 'spawn' : 'defer', reason: isCtoOrHuman ? 'cto_or_human' : 'quota_gating', priority: toolInput.priority });
     if (!shouldSpawn) {
       process.exit(0);
     }
@@ -616,6 +618,8 @@ process.stdin.on('end', async () => {
       process.exit(0);
     }
 
+    debugLog('urgent-task-spawner', 'task_detected', { taskId, section, priority: toolInput.priority, title: title?.substring(0, 80) });
+
     if (!section || !SECTION_AGENT_MAP[section]) {
       log(`Urgent task ${taskId} has no agent mapping for section "${section}". Deferring to hourly.`);
       process.exit(0);
@@ -632,10 +636,13 @@ process.stdin.on('end', async () => {
       process.exit(0);
     }
 
+    debugLog('urgent-task-spawner', 'task_marked_in_progress', { taskId });
+
     // Build task object for spawn (include assigned_by for CTO priority detection)
     const task = { id: taskId, section, title, description, assigned_by: assignedBy };
 
     const spawnResult = await spawnTaskAgent(task);
+    debugLog('urgent-task-spawner', 'spawn_result', { taskId, result: spawnResult === true ? 'spawned' : spawnResult === 'queued' ? 'queued' : 'failed' });
     if (spawnResult === true) {
       log(`Successfully spawned agent for urgent task ${taskId}: "${title}" (section: ${section})`);
     } else if (spawnResult === 'queued') {
