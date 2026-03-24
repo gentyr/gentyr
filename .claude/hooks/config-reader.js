@@ -66,8 +66,7 @@ function readConfig() {
       return null;
     }
     return config;
-  } catch (err) {
-    console.error('[config-reader] Warning:', err.message);
+  } catch {
     return null;
   }
 }

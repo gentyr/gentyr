@@ -20,6 +20,7 @@
  */
 
 import { fileURLToPath } from 'url';
+import { suppressStderr } from './lib/suppress-stderr.js';
 import { registerHookExecution, HOOK_TYPES } from './agent-tracker.js';
 import {
   syncKeys,
@@ -41,6 +42,9 @@ const __filename = fileURLToPath(import.meta.url);
  * Main entry point
  */
 async function main() {
+  // Suppress stderr from transitive deps (agent-tracker, key-sync)
+  suppressStderr();
+
   const startTime = Date.now();
 
   // Skip for spawned sessions

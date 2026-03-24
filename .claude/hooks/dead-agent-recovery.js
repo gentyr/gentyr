@@ -30,8 +30,7 @@ const LOCK_MAX_ATTEMPTS = 10;
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch (err) {
-  console.error('[dead-agent-recovery] Warning:', err.message);
+} catch {
   // Non-fatal: TODO reconciliation will be skipped
 }
 
@@ -121,8 +120,7 @@ async function main() {
         console.log(JSON.stringify({ continue: true }));
         process.exit(0);
       }
-    } catch (err) {
-      console.error('[dead-agent-recovery] Warning:', err.message);
+    } catch {
       console.log(JSON.stringify({ continue: true }));
       process.exit(0);
     }

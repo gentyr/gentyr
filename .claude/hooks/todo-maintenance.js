@@ -21,6 +21,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { suppressStderr } from './lib/suppress-stderr.js';
 import { registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { getCooldown } from './config-reader.js';
 import { enqueueSession } from './lib/session-queue.js';
@@ -29,8 +30,7 @@ import { enqueueSession } from './lib/session-queue.js';
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch (err) {
-  console.error('[todo-maintenance] Warning:', err.message);
+} catch {
   // G001: better-sqlite3 unavailable — expected in some environments
 }
 
@@ -82,8 +82,7 @@ function validateProjectDir(inputPath) {
     if (!stat.isDirectory()) {
       return null;
     }
-  } catch (err) {
-    console.error('[todo-maintenance] Warning:', err.message);
+  } catch {
     // Directory doesn't exist - allow for new projects
   }
 
@@ -243,8 +242,7 @@ function readCooldownState(statePath) {
     return {
       lastSpawnTime: state.lastSpawnTime || null
     };
-  } catch (err) {
-    console.error('[todo-maintenance] Warning:', err.message);
+  } catch {
     // File doesn't exist or is invalid - return empty state
     return { lastSpawnTime: null };
   }
@@ -258,8 +256,7 @@ function readCooldownState(statePath) {
 function writeCooldownState(statePath, state) {
   try {
     fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8');
-  } catch (err) {
-    console.error('[todo-maintenance] Warning:', err.message);
+  } catch {
     // Non-fatal — cooldown state write failure handled by continuing execution
   }
 }
@@ -311,8 +308,7 @@ function getPromptPath(projectDir) {
 function readPrompt(promptPath) {
   try {
     return fs.readFileSync(promptPath, 'utf8').trim();
-  } catch (err) {
-    console.error('[todo-maintenance] Warning:', err.message);
+  } catch {
     return null;
   }
 }
@@ -386,6 +382,9 @@ function maybeSpawnClaude(projectDir, pendingCount, now = new Date()) {
  * Main entry point
  */
 async function main() {
+  // Suppress stderr from transitive deps (agent-tracker, config-reader, session-queue)
+  suppressStderr();
+
   const startTime = Date.now();
   const args = process.argv.slice(2);
   const mode = args[0] || 'cleanup';
