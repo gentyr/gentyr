@@ -247,6 +247,33 @@ When you pick up a `[Follow-up]` or `[Investigation Follow-up]` task that refere
 5. **If investigation hasn't started yet**: Stop -- you'll be re-spawned later
 6. Mark this follow-up task complete.
 
+## Monitoring Spawned Tasks
+
+After creating and spawning a task, use `monitor_agents` to track progress — NEVER use `sleep` + Bash polling.
+
+**Workflow:**
+1. Spawn: `mcp__agent-tracker__force_spawn_tasks({ taskIds: ['...'] })`
+2. Get the `agentId` from the spawn response
+3. Poll: `mcp__agent-tracker__monitor_agents({ agentIds: ['<agentId>'] })`
+
+**`monitor_agents` returns structured progress data:**
+- `progress.currentStage` — which pipeline step (investigator, code-writer, test-writer, code-reviewer, project-manager)
+- `progress.progressPercent` — 0-100% completion
+- `progress.stagesCompleted` — list of completed stages
+- `progress.staleSinceMinutes` — minutes since last tool call (stale = stuck)
+- `worktreeGit.commitCount` — commits on the branch (0 = no code committed yet)
+- `worktreeGit.lastCommitMessage` — what was committed
+- `worktreeGit.prUrl` / `worktreeGit.merged` — PR status
+
+**NEVER do this:**
+- `sleep 60 && git diff` in worktrees — misses committed work
+- `sleep 120 && curl health` — that's infrastructure work, not monitoring
+- Sending directives to "skip sub-agent workflow" — sub-agents don't consume slots
+
+**Report to CTO like this:**
+> Task "Fix URL check": agent at code-writer stage (42%), 0 commits yet. Running for 5 min.
+> Task "Fix URL check": agent at project-manager stage (92%), 1 commit ("fix: replace..."), PR #1460 merged.
+
 ## Persistent Task Awareness
 
 When running in an interactive session, you should be aware of any active persistent tasks:
