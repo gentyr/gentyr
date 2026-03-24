@@ -2631,6 +2631,107 @@ async function main() {
   });
 
   // =========================================================================
+  // PERSISTENT MONITOR HEALTH CHECK (gate-exempt, 15-minute cooldown)
+  // Detects dead persistent task monitors and re-spawns them.
+  // =========================================================================
+  await runIfDue('persistent_monitor_health', {
+    state, now,
+    stateKey: 'lastPersistentMonitorHealthRun',
+    label: 'Persistent monitor health',
+    fn: async () => {
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (!Database || !fs.existsSync(ptDbPath)) return;
+
+      let ptDb;
+      try {
+        ptDb = new Database(ptDbPath);
+        ptDb.pragma('busy_timeout = 3000');
+      } catch (err) {
+        log(`Persistent monitor health: DB open failed: ${err.message}`);
+        return;
+      }
+
+      const activeTasks = ptDb.prepare(
+        "SELECT id, title, monitor_pid, monitor_agent_id, last_heartbeat FROM persistent_tasks WHERE status = 'active'"
+      ).all();
+
+      let revived = 0;
+      for (const task of activeTasks) {
+        // Check if monitor PID is alive
+        let alive = false;
+        if (task.monitor_pid) {
+          try { process.kill(task.monitor_pid, 0); alive = true; } catch (_) { /* dead */ }
+        }
+
+        if (!alive) {
+          log(`Persistent monitor health: monitor for "${task.title}" (${task.id}) is dead — re-enqueuing`);
+
+          // Read amendments for the re-spawn prompt
+          const amendments = ptDb.prepare(
+            "SELECT content, amendment_type, created_at FROM amendments WHERE persistent_task_id = ? ORDER BY created_at ASC"
+          ).all(task.id);
+
+          const amendmentSection = amendments.length > 0
+            ? '\n\n## Amendments\n' + amendments.map((a, i) => `${i + 1}. [${a.amendment_type}] ${a.content}`).join('\n')
+            : '';
+
+          const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
+
+## Persistent Task: ${task.title}
+
+You are a persistent task monitor being revived after your previous session died.
+Read your full task details first: mcp__persistent-task__get_persistent_task({ id: "${task.id}", include_amendments: true, include_subtasks: true })
+
+Then continue monitoring sub-tasks and working toward the outcome.${amendmentSection}`;
+
+          try {
+            const result = enqueueSession({
+              title: `[Persistent] Monitor revival: ${task.title}`,
+              agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
+              hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
+              tagContext: 'persistent-monitor',
+              source: 'hourly-automation',
+              priority: 'critical',
+              lane: 'persistent',
+              ttlMs: 0,
+              prompt,
+              projectDir: PROJECT_DIR,
+              extraEnv: JSON.stringify({
+                GENTYR_PERSISTENT_TASK_ID: task.id,
+                GENTYR_PERSISTENT_MONITOR: 'true',
+              }),
+              metadata: JSON.stringify({
+                persistentTaskId: task.id,
+                revivalReason: 'monitor_dead',
+              }),
+            });
+
+            // Update monitor info (agent_id will be set after spawn via {AGENT_ID} substitution)
+            ptDb.prepare("UPDATE persistent_tasks SET monitor_pid = NULL, monitor_agent_id = NULL WHERE id = ?")
+              .run(task.id);
+
+            log(`Persistent monitor health: re-enqueued for "${task.title}" (queueId: ${result.queueId})`);
+            revived++;
+          } catch (err) {
+            log(`Persistent monitor health: failed to re-enqueue for "${task.title}": ${err.message}`);
+          }
+        } else if (task.last_heartbeat) {
+          // PID alive but check for stale heartbeat (> 30 minutes)
+          const heartbeatAge = Date.now() - new Date(task.last_heartbeat).getTime();
+          if (heartbeatAge > 30 * 60 * 1000) {
+            log(`Persistent monitor health: "${task.title}" has stale heartbeat (${Math.round(heartbeatAge / 60000)}min) — monitor may be stuck`);
+          }
+        }
+      }
+
+      ptDb.close();
+      if (revived > 0) {
+        log(`Persistent monitor health: revived ${revived} monitor(s)`);
+      }
+    },
+  });
+
+  // =========================================================================
   // ENABLED CHECK — session revival still ran above even if disabled
   // =========================================================================
   if (!config.enabled) {

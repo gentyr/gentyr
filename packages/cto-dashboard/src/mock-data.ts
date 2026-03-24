@@ -43,6 +43,7 @@ import type { WorklogData } from './utils/worklog-reader.js';
 import type { PlanData, PlanProgressData, PlanTimelineData, PlanAuditData } from './utils/plan-reader.js';
 import type { PlanSessionData } from './utils/plan-session-reader.js';
 import type { SessionQueueData } from './utils/session-queue-reader.js';
+import type { PersistentTaskData } from './utils/persistent-task-reader.js';
 
 // ============================================================================
 // Deterministic PRNG (LCG — no Math.random())
@@ -2223,5 +2224,57 @@ export function getMockSessionQueueData(): SessionQueueData {
         'force-triage-reports': 3,
       },
     },
+  };
+}
+
+export function getMockPersistentTaskData(): PersistentTaskData {
+  return {
+    hasData: true,
+    tasks: [
+      {
+        id: 'pt-mock-1',
+        title: 'Migrate auth module to OAuth2',
+        status: 'active',
+        subTaskCount: 7,
+        subTasksCompleted: 3,
+        subTasksInProgress: 2,
+        subTasksPending: 2,
+        progressPct: 43,
+        monitorPid: 12345,
+        monitorAlive: true,
+        monitorStatus: 'running',
+        amendmentCount: 2,
+        pendingAmendments: 1,
+        age: '4h',
+        stalled: false,
+        activatedAt: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date().toISOString(),
+        cycleCount: 45,
+      },
+      {
+        id: 'pt-mock-2',
+        title: 'Refactor database layer',
+        status: 'active',
+        subTaskCount: 4,
+        subTasksCompleted: 1,
+        subTasksInProgress: 0,
+        subTasksPending: 3,
+        progressPct: 25,
+        monitorPid: null,
+        monitorAlive: false,
+        monitorStatus: 'dead',
+        amendmentCount: 0,
+        pendingAmendments: 0,
+        age: '2d',
+        stalled: true,
+        activatedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+        cycleCount: 12,
+      },
+    ],
+    totalActive: 2,
+    monitorsAlive: 1,
+    monitorsDead: 1,
+    pendingAmendments: 1,
   };
 }

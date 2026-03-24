@@ -260,6 +260,13 @@ function initializeDatabase(): Database.Database {
     db.exec("ALTER TABLE archived_tasks ADD COLUMN user_prompt_uuids TEXT");
   }
 
+  // Auto-migration: add persistent_task_id column if missing
+  try {
+    db.prepare("SELECT persistent_task_id FROM tasks LIMIT 0").get();
+  } catch {
+    db.exec("ALTER TABLE tasks ADD COLUMN persistent_task_id TEXT");
+  }
+
   return db;
 }
 
@@ -332,6 +339,7 @@ function taskToResponse(task: TaskRecord): TaskResponse {
     followup_enabled: task.followup_enabled === 1,
     priority: (task.priority ?? 'normal') as TaskPriority,
     user_prompt_uuids: userPromptUuids,
+    persistent_task_id: task.persistent_task_id ?? null,
   };
 }
 
@@ -518,12 +526,13 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
 
   const priority = args.priority ?? 'normal';
   const userPromptUuidsJson = userPromptUuids ? JSON.stringify(userPromptUuids) : null;
+  const persistentTaskId = args.persistent_task_id ?? null;
 
   try {
     db.prepare(`
-      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority, user_prompt_uuids)
-      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, args.section, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority, userPromptUuidsJson);
+      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority, user_prompt_uuids, persistent_task_id)
+      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, args.section, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority, userPromptUuidsJson, persistentTaskId);
   } catch (err: unknown) {
     if (
       err instanceof Error &&
@@ -551,6 +560,7 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     followup_enabled,
     priority: priority as TaskPriority,
     user_prompt_uuids: userPromptUuids,
+    persistent_task_id: persistentTaskId,
     warning,
   };
 }

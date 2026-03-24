@@ -246,6 +246,9 @@ export function reapSyncPass(db) {
     // Gate lane exemption — gate agents are lightweight, handled separately
     if (item.lane === 'gate') continue;
 
+    // Persistent lane exemption — long-running by design
+    if (item.lane === 'persistent') continue;
+
     if (!item.pid) continue;
 
     if (!isPidAlive(item.pid)) {
@@ -342,9 +345,16 @@ export async function reapAsyncPass(projectDir, stuckAliveItems, options = {}) {
     for (const item of stuckAliveItems) {
       // Explicit safety guard: never reap suspended items (preempted by CTO tasks).
       // getStuckAliveSessions already filters for status='running', but double-check here.
-      const currentStatus = db.prepare("SELECT status FROM queue_items WHERE id = ?").get(item.queueId);
+      const currentStatus = db.prepare("SELECT status, lane FROM queue_items WHERE id = ?").get(item.queueId);
       if (currentStatus && currentStatus.status === 'suspended') {
         log(`Session reaper: skipping suspended item ${item.queueId} (preempted by CTO task)`);
+        continue;
+      }
+
+      // Persistent lane exemption — long-running by design
+      const effectiveLane = item.lane || (currentStatus && currentStatus.lane) || null;
+      if (effectiveLane === 'persistent') {
+        log(`Session reaper: skipping persistent item ${item.queueId} (long-running by design)`);
         continue;
       }
 
@@ -444,7 +454,7 @@ export function getStuckAliveSessions() {
     // Only query 'running' items — 'suspended' items must never be hard-killed
     // (they are intentionally preempted by CTO tasks and have a re-enqueue path)
     const items = db.prepare(
-      "SELECT id, pid, agent_id, spawned_at, agent_type, title, lane, metadata FROM queue_items WHERE status = 'running' AND lane != 'gate' AND spawned_at < ?"
+      "SELECT id, pid, agent_id, spawned_at, agent_type, title, lane, metadata FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent') AND spawned_at < ?"
     ).all(cutoffTime);
 
     const now = Date.now();
@@ -456,6 +466,7 @@ export function getStuckAliveSessions() {
       runDurationMs: now - new Date(item.spawned_at).getTime(),
       agentType: item.agent_type,
       title: item.title,
+      lane: item.lane,
     }));
   } catch (err) {
     try { process.stderr.write(`[session-reaper] getStuckAliveSessions error: ${err.message}\n`); } catch (err) {

@@ -305,6 +305,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/alignment-reminder.js",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/persistent-task-briefing.js",
+            "timeout": 5
           }
         ]
       },
@@ -360,6 +365,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/workstream-spawner.js",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/persistent-task-linker.js",
+            "timeout": 5
           }
         ]
       },
@@ -419,6 +429,22 @@
         "hooks": [{
           "type": "command",
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/demo-failure-spawner.js",
+          "timeout": 15
+        }]
+      },
+      {
+        "matcher": "mcp__persistent-task__activate_persistent_task",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/persistent-task-spawner.js",
+          "timeout": 15
+        }]
+      },
+      {
+        "matcher": "mcp__persistent-task__resume_persistent_task",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/persistent-task-spawner.js",
           "timeout": 15
         }]
       }

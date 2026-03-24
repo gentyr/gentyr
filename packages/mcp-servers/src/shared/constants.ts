@@ -31,13 +31,13 @@ export type ValidSection = (typeof VALID_SECTIONS)[number];
  * Agents self-report identity via assigned_by. Not in list = no restriction.
  */
 export const SECTION_CREATOR_RESTRICTIONS: Partial<Record<ValidSection, readonly string[]>> = {
-  'DEPUTY-CTO': ['deputy-cto', 'cto', 'human', 'demo', 'pr-reviewer', 'system-followup'],
+  'DEPUTY-CTO': ['deputy-cto', 'cto', 'human', 'demo', 'pr-reviewer', 'system-followup', 'persistent-monitor'],
 } as const;
 
 /**
  * Creators whose tasks always have follow-up hooks enabled, regardless of section.
  */
-export const FORCED_FOLLOWUP_CREATORS: readonly string[] = ['deputy-cto', 'product-manager'] as const;
+export const FORCED_FOLLOWUP_CREATORS: readonly string[] = ['deputy-cto', 'product-manager', 'persistent-monitor'] as const;
 
 // ============================================================================
 // Task Status

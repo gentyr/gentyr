@@ -40,6 +40,14 @@ import { shouldAllowSpawn } from './lib/memory-pressure.js';
 import { enqueueSession } from './lib/session-queue.js';
 import { auditEvent } from './lib/session-audit.js';
 
+// Lazy-loaded SQLite (needed for persistent-tasks.db check)
+let Database = null;
+try {
+  Database = (await import('better-sqlite3')).default;
+} catch (_) {
+  // Non-fatal: persistent monitor check will fail open
+}
+
 // Debug logging - writes to file since stdout is used for hook response
 const DEBUG = true;
 const DEBUG_LOG_PATH = path.join(process.cwd(), '.claude', 'hooks', 'stop-hook-debug.log');
@@ -313,6 +321,13 @@ function inlineRevive({ sessionId, agentId, worktreePath, quotaMessage }) {
     // Use original worktree CWD if it still exists, otherwise fall back to main project
     const effectiveCwd = (worktreePath && fs.existsSync(worktreePath)) ? worktreePath : projectDir;
 
+    // Forward persistent monitor env vars for revival
+    let extraEnvObj = {};
+    if (process.env.GENTYR_PERSISTENT_TASK_ID) {
+      extraEnvObj.GENTYR_PERSISTENT_TASK_ID = process.env.GENTYR_PERSISTENT_TASK_ID;
+      extraEnvObj.GENTYR_PERSISTENT_MONITOR = 'true';
+    }
+
     const result = enqueueSession({
       title: `Inline revival of quota-interrupted session ${sessionId.slice(0, 8)}`,
       agentType: AGENT_TYPES.SESSION_REVIVED,
@@ -328,6 +343,7 @@ function inlineRevive({ sessionId, agentId, worktreePath, quotaMessage }) {
       mcpConfig: path.join(effectiveCwd, '.mcp.json'),
       projectDir,
       worktreePath: worktreePath || null,
+      extraEnv: Object.keys(extraEnvObj).length > 0 ? JSON.stringify(extraEnvObj) : undefined,
       metadata: {
         originalAgentId: agentId,
         originalSessionId: sessionId,
@@ -403,6 +419,39 @@ async function main() {
       if (e.code !== 'ENOENT') {
         debugLog('suspended-sessions.json read error (non-fatal)', { error: e.message });
       }
+    }
+
+    // Persistent monitor sessions: check if task is still active
+    if (process.env.GENTYR_PERSISTENT_MONITOR === 'true') {
+      const ptTaskId = process.env.GENTYR_PERSISTENT_TASK_ID;
+      debugLog('Persistent monitor session detected', { taskId: ptTaskId });
+
+      let taskStillActive = true;
+      try {
+        const ptDbPath = path.join(projectDir, '.claude', 'state', 'persistent-tasks.db');
+        if (Database && fs.existsSync(ptDbPath)) {
+          const ptDb = new Database(ptDbPath, { readonly: true });
+          const row = ptDb.prepare("SELECT status FROM persistent_tasks WHERE id = ?").get(ptTaskId);
+          ptDb.close();
+          taskStillActive = row && row.status === 'active';
+        }
+      } catch (e) {
+        debugLog('persistent-tasks.db read error (non-fatal)', { error: e.message });
+        // Fail open — assume active
+      }
+
+      if (taskStillActive) {
+        debugLog('Decision: BLOCK (persistent task monitor — task still active)');
+        console.log(JSON.stringify({
+          decision: 'block',
+          reason: '[PERSISTENT MONITOR] Your persistent task is still active. Continue monitoring sub-tasks. Call mcp__persistent-task__complete_persistent_task when the outcome criteria are met, or mcp__persistent-task__pause_persistent_task if you need to pause.',
+        }));
+        process.exit(0);
+      }
+
+      debugLog('Decision: APPROVE (persistent task no longer active)');
+      console.log(JSON.stringify({ decision: 'approve' }));
+      process.exit(0);
     }
 
     // Check if this is an automated [Task] session

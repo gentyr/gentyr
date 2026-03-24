@@ -66,6 +66,7 @@ export const AGENT_TYPES = {
   DEMO_REPAIR: 'demo-repair',
   TASK_RUNNER_DEMO_MANAGER: 'task-runner-demo-manager',
   TASK_RUNNER_WORKSTREAM_MANAGER: 'task-runner-workstream-manager',
+  PERSISTENT_TASK_MONITOR: 'persistent-task-monitor',
 };
 
 /**
@@ -88,6 +89,7 @@ export const HOOK_TYPES = {
   TASK_GATE: 'task-gate',
   DEMO_FAILURE: 'demo-failure',
   WORKSTREAM_SPAWNER: 'workstream-spawner',
+  PERSISTENT_TASK_MONITOR: 'persistent-task-monitor',
 };
 
 /**
