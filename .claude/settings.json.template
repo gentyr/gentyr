@@ -271,6 +271,11 @@
           },
           {
             "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/workstream-notifier.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/cto-prompt-detector.js",
             "timeout": 5
           }
@@ -350,6 +355,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/task-gate-spawner.js",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/workstream-spawner.js",
+            "timeout": 15
           }
         ]
       },
@@ -379,6 +389,11 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/session-completion-gate.js",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/workstream-dep-satisfier.js",
             "timeout": 10
           }
         ]

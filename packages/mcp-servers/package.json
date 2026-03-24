@@ -36,7 +36,8 @@
     "mcp-product-manager": "./dist/product-manager/server.js",
     "mcp-plugin-manager": "./dist/plugin-manager/server.js",
     "mcp-icon-processor": "./dist/icon-processor/server.js",
-    "mcp-plan-orchestrator": "./dist/plan-orchestrator/server.js"
+    "mcp-plan-orchestrator": "./dist/plan-orchestrator/server.js",
+    "mcp-workstream": "./dist/workstream/server.js"
   },
   "scripts": {
     "build": "tsc",

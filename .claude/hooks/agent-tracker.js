@@ -65,6 +65,7 @@ export const AGENT_TYPES = {
   DEMO_VALIDATOR: 'demo-validator',
   DEMO_REPAIR: 'demo-repair',
   TASK_RUNNER_DEMO_MANAGER: 'task-runner-demo-manager',
+  TASK_RUNNER_WORKSTREAM_MANAGER: 'task-runner-workstream-manager',
 };
 
 /**
@@ -86,6 +87,7 @@ export const HOOK_TYPES = {
   SESSION_REVIVER: 'session-reviver',
   TASK_GATE: 'task-gate',
   DEMO_FAILURE: 'demo-failure',
+  WORKSTREAM_SPAWNER: 'workstream-spawner',
 };
 
 /**

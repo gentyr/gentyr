@@ -428,6 +428,42 @@ export function drainQueue() {
       continue; // Skip this item, try next (might be higher priority)
     }
 
+    // Workstream dependency check — skip items whose blocker tasks are not yet completed
+    const taskId = item.metadata ? (() => { try { return JSON.parse(item.metadata).taskId; } catch (e) { return null; } })() : null;
+    if (taskId) {
+      try {
+        const wsDbPath = path.join(item.project_dir || PROJECT_DIR, '.claude', 'state', 'workstream.db');
+        if (fs.existsSync(wsDbPath)) {
+          const wsDb = new Database(wsDbPath, { readonly: true });
+          const activeDeps = wsDb.prepare(
+            "SELECT blocker_task_id FROM queue_dependencies WHERE blocked_task_id = ? AND status = 'active'"
+          ).all(taskId);
+          wsDb.close();
+
+          if (activeDeps.length > 0) {
+            // Check if all blockers are completed in todo.db
+            const todoDbPath = path.join(item.project_dir || PROJECT_DIR, '.claude', 'todo.db');
+            if (fs.existsSync(todoDbPath)) {
+              const todoDb = new Database(todoDbPath, { readonly: true });
+              const allMet = activeDeps.every(dep => {
+                const task = todoDb.prepare("SELECT status FROM tasks WHERE id = ?").get(dep.blocker_task_id);
+                return task && task.status === 'completed';
+              });
+              todoDb.close();
+
+              if (!allMet) {
+                log(`Workstream dep check: skipping ${item.id} (task ${taskId}) — active dependencies not yet satisfied`);
+                continue; // Skip, try next item
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // Fail open — if workstream DB doesn't exist or error occurs, allow spawning
+        log(`Workstream dep check: ignoring error for ${item.id}: ${e.message}`);
+      }
+    }
+
     // Attempt to spawn
     try {
       spawnQueueItem(db, item);
