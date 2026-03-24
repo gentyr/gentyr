@@ -13,6 +13,7 @@ export const SECTION_IDS = [
   'timeline', 'tasks', 'product-market-fit', 'worklog',
   'plans', 'plan-progress', 'plan-timeline', 'plan-audit', 'plan-sessions',
   'session-queue',
+  'persistent-tasks',
 ] as const;
 
 export type SectionId = typeof SECTION_IDS[number];
@@ -45,4 +46,5 @@ export const SECTION_DESCRIPTIONS: Record<SectionId, string> = {
   'plan-audit': 'Show agent work metrics per plan (tasks, completions, PRs, phase efficiency)',
   'plan-sessions': 'Show per-session lifecycle timeline (spawns, rotations, interrupts, revivals, worklogs, PR merges)',
   'session-queue': 'Show session queue status (running, queued, capacity, throughput)',
+  'persistent-tasks': 'Show active persistent tasks with progress, monitor health, and amendments',
 };

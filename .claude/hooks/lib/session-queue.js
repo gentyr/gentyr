@@ -34,6 +34,7 @@ const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'session-queue.log');
 
 // Lane sub-limits
 const GATE_LANE_LIMIT = 5;
+const PERSISTENT_LANE_LIMIT = 3;
 
 // Default TTL for queued items (30 minutes)
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
@@ -383,7 +384,7 @@ export function drainQueue() {
   }
 
   // Step 3: Count running items by lane (suspended items do NOT count toward capacity)
-  const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane != 'gate'").get().cnt;
+  const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent')").get().cnt;
   const gateRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane = 'gate'").get().cnt;
   const maxConcurrent = getMaxConcurrentSessions();
 
@@ -393,7 +394,7 @@ export function drainQueue() {
   const queued = db.prepare(`
     SELECT * FROM queue_items WHERE status = 'queued'
     ORDER BY
-      CASE lane WHEN 'revival' THEN 0 WHEN 'gate' THEN 1 ELSE 2 END,
+      CASE lane WHEN 'revival' THEN 0 WHEN 'persistent' THEN 1 WHEN 'gate' THEN 2 ELSE 3 END,
       CASE priority WHEN 'cto' THEN 0 WHEN 'critical' THEN 1 WHEN 'urgent' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
       enqueued_at ASC
   `).all();
@@ -403,15 +404,21 @@ export function drainQueue() {
   // Track spawns per lane this drain cycle to avoid stale counter bugs
   let standardSpawnedThisDrain = 0;
   let gateSpawnedThisDrain = 0;
+  let persistentSpawnedThisDrain = 0;
 
   for (const item of queued) {
-    // Gate lane has its own sub-limit (tracked separately from main capacity)
-    if (item.lane === 'gate') {
+    if (item.lane === 'persistent') {
+      const persistentRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane = 'persistent'").get().cnt;
+      if (persistentRunning + persistentSpawnedThisDrain >= PERSISTENT_LANE_LIMIT) {
+        continue; // Skip, persistent lane full
+      }
+    } else if (item.lane === 'gate') {
+      // Gate lane has its own sub-limit (tracked separately from main capacity)
       if (gateRunning + gateSpawnedThisDrain >= GATE_LANE_LIMIT) {
         continue; // Skip, gate full
       }
     } else {
-      // Standard + revival lanes share the main limit (gate spawns don't consume it)
+      // Standard + revival lanes share the main limit (gate and persistent spawns don't consume it)
       if (standardRunning + standardSpawnedThisDrain >= maxConcurrent) {
         result.atCapacity = true;
         break;
@@ -470,6 +477,8 @@ export function drainQueue() {
       result.spawned++;
       if (item.lane === 'gate') {
         gateSpawnedThisDrain++;
+      } else if (item.lane === 'persistent') {
+        persistentSpawnedThisDrain++;
       } else {
         standardSpawnedThisDrain++;
       }
@@ -609,7 +618,7 @@ export async function preemptForCtoTask(ctoQueueId, projectDir) {
   const resolvedProjectDir = projectDir || PROJECT_DIR;
 
   // Check current capacity
-  const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane != 'gate'").get().cnt;
+  const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent')").get().cnt;
   const maxConcurrent = getMaxConcurrentSessions();
 
   if (standardRunning < maxConcurrent) {
@@ -626,7 +635,7 @@ export async function preemptForCtoTask(ctoQueueId, projectDir) {
     SELECT id, pid, agent_id, title, agent_type, hook_type, cwd, project_dir,
            worktree_path, metadata, spawned_at, priority, lane
     FROM queue_items
-    WHERE status = 'running' AND lane != 'gate' AND priority != 'cto'
+    WHERE status = 'running' AND lane NOT IN ('gate', 'persistent') AND priority != 'cto'
     ORDER BY
       CASE priority WHEN 'low' THEN 0 WHEN 'normal' THEN 1
                     WHEN 'urgent' THEN 2 WHEN 'critical' THEN 3 ELSE 4 END,
@@ -636,7 +645,7 @@ export async function preemptForCtoTask(ctoQueueId, projectDir) {
 
   if (!victim) {
     // All running sessions are CTO-priority or gate — cannot preempt
-    log(`preemptForCtoTask: no preemptable sessions found (all are CTO-priority or gate)`);
+    log(`preemptForCtoTask: no preemptable sessions found (all are CTO-priority, gate, or persistent)`);
     drainQueue();
     return { preempted: false };
   }

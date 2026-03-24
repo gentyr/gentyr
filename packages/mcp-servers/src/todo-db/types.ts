@@ -46,6 +46,8 @@ export const CreateTaskArgsSchema = z.object({
     .describe('Task priority. "urgent" tasks bypass the 1-hour age filter and dispatch immediately.'),
   user_prompt_uuids: z.array(z.string()).optional()
     .describe('UUIDs of user prompts this task derives from. Auto-enables followup_enabled when non-empty.'),
+  persistent_task_id: z.string().optional()
+    .describe('UUID of the persistent task this sub-task belongs to. Set by persistent monitor sessions.'),
 });
 
 export const StartTaskArgsSchema = z.object({
@@ -149,6 +151,7 @@ export interface TaskRecord {
   followup_prompt: string | null;
   priority: string;                // 'normal' | 'urgent'
   user_prompt_uuids: string | null; // JSON string of UUID array
+  persistent_task_id: string | null;
 }
 
 export interface TaskResponse {
@@ -164,6 +167,7 @@ export interface TaskResponse {
   followup_enabled: boolean;
   priority: TaskPriority;
   user_prompt_uuids: string[] | null;
+  persistent_task_id: string | null;
 }
 
 export interface ListTasksResult {

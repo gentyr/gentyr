@@ -287,6 +287,58 @@ function getTaskCounts() {
 }
 
 // ---------------------------------------------------------------------------
+// Data gathering: persistent task state
+// ---------------------------------------------------------------------------
+
+function getPersistentTaskState() {
+  const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+  if (!Database || !fs.existsSync(ptDbPath)) {
+    return null;
+  }
+  try {
+    const db = new Database(ptDbPath, { readonly: true });
+    const active = db.prepare(
+      "SELECT id, title, status, monitor_pid, last_heartbeat, cycle_count FROM persistent_tasks WHERE status = 'active'"
+    ).all();
+
+    if (active.length === 0) {
+      db.close();
+      return null;
+    }
+
+    const result = [];
+    let monitorsAlive = 0;
+    let monitorsDead = 0;
+
+    for (const task of active) {
+      let alive = false;
+      if (task.monitor_pid) {
+        try { process.kill(task.monitor_pid, 0); alive = true; } catch (_) { /* dead */ }
+      }
+      if (alive) monitorsAlive++;
+      else monitorsDead++;
+
+      // Count pending amendments
+      const amendments = db.prepare(
+        "SELECT COUNT(*) as cnt FROM amendments WHERE persistent_task_id = ? AND acknowledged_at IS NULL"
+      ).get(task.id);
+
+      result.push({
+        title: task.title,
+        monitorAlive: alive,
+        pendingAmendments: amendments?.cnt || 0,
+        cycle: task.cycle_count || 0,
+      });
+    }
+
+    db.close();
+    return { tasks: result, monitorsAlive, monitorsDead };
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Data gathering: current task details (for spawned sessions)
 // ---------------------------------------------------------------------------
 
@@ -434,6 +486,17 @@ function buildInteractiveBriefing() {
   const tasks = getTaskCounts();
   if (tasks) {
     lines.push(`Tasks: ${tasks.pending} pending, ${tasks.active} active, ${tasks.completed24h} completed (24h)`);
+  }
+
+  // Persistent tasks
+  const ptState = getPersistentTaskState();
+  if (ptState) {
+    lines.push(`PERSISTENT TASKS: ${ptState.tasks.length} active | ${ptState.monitorsAlive} monitor(s) alive${ptState.monitorsDead > 0 ? `, ${ptState.monitorsDead} DEAD` : ''}`);
+    for (const t of ptState.tasks) {
+      const monStatus = t.monitorAlive ? 'running' : 'DEAD';
+      const amendStr = t.pendingAmendments > 0 ? `, ${t.pendingAmendments} pending amendment(s)` : '';
+      lines.push(`  "${truncate(t.title, 50)}" — monitor ${monStatus}${amendStr}`);
+    }
   }
 
   lines.push('');
