@@ -371,6 +371,37 @@ CTO-gated mechanism to lock features and prevent endless agent nitpick chains on
 
 **CTO workflow**: Lock/unlock features in interactive sessions. Product-manager can request locks via deputy-CTO escalation.
 
+## Persistent Task System
+
+Lets the CTO delegate complex multi-step objectives to a dedicated monitor session that orchestrates sub-agents to completion.
+
+**State machine**: `draft` → `active` → `paused` / `completed` / `cancelled` / `failed`. Activation spawns the persistent monitor agent.
+
+**`persistent-task` MCP server** (`packages/mcp-servers/src/persistent-task/`): State in `.claude/state/persistent-tasks.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
+
+**12 tools**: `create_persistent_task`, `activate_persistent_task`, `get_persistent_task`, `list_persistent_tasks`, `amend_persistent_task`, `acknowledge_amendment`, `pause_persistent_task`, `resume_persistent_task`, `cancel_persistent_task`, `complete_persistent_task`, `link_subtask`, `get_persistent_task_summary`.
+
+**Amendment system**: After activation the CTO can amend a task (`amend_persistent_task`) with `addendum`, `correction`, `scope_change`, or `priority_shift` types. The monitor polls for unacknowledged amendments on each cycle and must call `acknowledge_amendment` before proceeding.
+
+**`persistent-monitor` agent** (`agents/persistent-monitor.md`): Opus-tier. Read-only for files — orchestrates sub-agents via `todo-db` task creation, not direct edits. Runs a polling loop: check sub-task progress → spawn new tasks as needed → check for amendments → heartbeat → sleep. Completes when outcome criteria are satisfied or the task is cancelled.
+
+**Session queue `persistent` lane**: Independent of the global concurrency cap. Persistent monitor sessions are never blocked by normal queue capacity. Exempt from the session reaper.
+
+**3 PostToolUse hooks**:
+- `persistent-task-briefing.js` — injects the current task state into the monitor's context on each tool call (prompt reinforcement)
+- `persistent-task-linker.js` — auto-links newly created todo-db tasks that carry a `persistent_task_id` to their parent persistent task
+- `persistent-task-spawner.js` — fires on `activate_persistent_task` success and enqueues the monitor session in the `persistent` lane
+
+**Hourly automation**: 15-minute health check detects monitors with stale heartbeats and reports dead monitors to the deputy-CTO.
+
+**Cross-system wiring**: `todo-db` `create_task` accepts `persistent_task_id`; `stop-continue-hook.js` blocks the normal stop flow for active monitor sessions and forwards `GENTYR_PERSISTENT_TASK_ID` env var; `session-briefing.js` includes a persistent task summary in interactive session briefings; `cto-notification-hook.js` shows active monitor count in the status line.
+
+**CTO Dashboard**: `PersistentTaskSection` component reads from `persistent-tasks.db` via `packages/cto-dashboard/src/utils/persistent-task-reader.ts`. Rendered on `/cto-report`.
+
+**2 slash commands**:
+- `/persistent-task` — create flow: researches context, refines the CTO's input into a high-specificity prompt, previews the draft, creates and activates on approval
+- `/persistent-tasks` — management view: lists all tasks, shows monitor health, and provides amend/pause/resume/cancel/revive actions
+
 ## CTO Session Search
 
 The `search_cto_sessions` tool on the `agent-tracker` MCP server filters session files to user-only (non-autonomous) sessions before searching.

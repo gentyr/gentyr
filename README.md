@@ -32,15 +32,17 @@ See [docs/STACK.md](docs/STACK.md) for technical details and MCP server mappings
 
 ### agents
 
-Fourteen specialized roles. Fixed sequence: investigate, plan, write, test, review, align, analyze. Each agent has restricted tool access and a single responsibility. The investigator cannot edit files. The code writer cannot deploy. The test writer cannot approve commits. The user-alignment agent cannot modify files. The product manager cannot modify code. No general-purpose fallback exists.
+Sixteen specialized roles. Fixed sequence: investigate, plan, write, test, review, align, analyze. Each agent has restricted tool access and a single responsibility. The investigator cannot edit files. The code writer cannot deploy. The test writer cannot approve commits. The user-alignment agent cannot modify files. The product manager cannot modify code. No general-purpose fallback exists.
+
+The persistent monitor is a long-running Opus session that the CTO delegates complex multi-step objectives to. It oversees sub-agents and drives work to completion without supervision. Create one with `/persistent-task`, manage all active monitors with `/persistent-tasks`.
 
 ### hooks
 
-Thirty-five automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Quota rotation, credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection. Hooks govern what agents can and cannot do.
+Sixty-four automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Quota rotation, credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection. Hooks govern what agents can and cannot do.
 
 ### servers
 
-Thirty-three protocol servers connecting agents to external systems. Deployment platforms, secret vaults, task databases, plan orchestrators, log aggregators, feedback pipelines, coverage reporters. Agents never touch raw APIs. Every external interaction goes through a typed MCP server with a schema and a handler.
+Thirty-six protocol servers connecting agents to external systems. Deployment platforms, secret vaults, task databases, plan orchestrators, log aggregators, feedback pipelines, coverage reporters. Agents never touch raw APIs. Every external interaction goes through a typed MCP server with a schema and a handler.
 
 Fifteen stateless API-proxy servers (GitHub, Cloudflare, Supabase, Vercel, Render, and others) run as a single shared HTTP daemon instead of one process per agent session. A single daemon process on port 18090 replaces up to 15 per-session stdio processes, saving ~750MB RAM per concurrent agent. Installed via `setup-automation-service.sh`; auto-detected by `config-gen.js` which rewrites `.mcp.json` with HTTP entries when the daemon is running.
 
@@ -241,6 +243,8 @@ A background timer spawns agents for pending tasks every cycle. Urgent tasks dis
 
 Structured multi-phase work is managed by the plan orchestrator (`plan-orchestrator` MCP server). Plans contain phases, tasks, substeps, and dependency graphs with cycle detection. Progress rolls up automatically from substep to plan. PR merges auto-advance linked plan tasks via the plan-merge-tracker hook. Four dashboard views (`/plan`, `/plan-progress`, `/plan-timeline`, `/plan-audit`) show live execution state.
 
+Complex delegated objectives run through the persistent task system. The CTO creates a persistent task via `/persistent-task`, which refines the intent into a high-specificity prompt and spawns a dedicated Opus monitor session. The monitor runs in its own session queue lane (not counted against the global concurrency cap), creates and tracks sub-tasks, acknowledges amendments as the CTO steers the objective, and drives work to completion without interruption. Manage all active monitors with `/persistent-tasks`.
+
 ### code quality
 
 The compliance checker validates against framework specifications on every file change. The antipattern hunter scans for silent catches, hardcoded secrets, and disabled tests. Test failures auto-spawn the test-writer agent. Lint runs on every cycle. Every PR is reviewed by the deputy CTO before it merges. Feature branch commits pass through lint and security gates only, keeping commit latency low.
@@ -271,7 +275,7 @@ The Notion plugin (`plugins/notion/`) syncs four GENTYR data sources to Notion d
 
 ## components
 
-35 MCP servers. 13 agents. 49 hooks. 31 commands. CLI dashboard. Plugin system with extensible local MCP servers.
+36 MCP servers. 16 agents. 64 hooks. 37 commands. CLI dashboard. Plugin system with extensible local MCP servers.
 
 ## documentation
 
