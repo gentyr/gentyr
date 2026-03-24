@@ -492,6 +492,12 @@ async function main() {
   // Resolve SECTION_AGENT_MAP now that AGENT_TYPES is available
   resolveSectionAgentMap();
 
+  let debugLogFn = () => {};
+  try {
+    const mod = await import(path.join(config.projectDir, '.claude', 'hooks', 'lib', 'debug-log.js'));
+    debugLogFn = mod.debugLog;
+  } catch (_) { /* debug-log not available */ }
+
   if (!Database) {
     console.log(JSON.stringify({
       spawned: [],
@@ -552,6 +558,8 @@ async function main() {
     process.exit(1);
   }
 
+  debugLogFn('force-spawn', 'query', { candidateCount: candidates.length });
+
   if (candidates.length === 0) {
     console.log(JSON.stringify({
       spawned: [],
@@ -610,6 +618,7 @@ async function main() {
         const resetDb = new Database(todoDbPath);
         resetDb.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ?").run(task.id);
         resetDb.close();
+        debugLogFn('force-spawn', 'orphan_reset', { taskId: task.id });
       } catch {
         // Non-fatal — markTaskInProgress will fail and we'll skip
       }
@@ -665,6 +674,8 @@ async function main() {
         ttlMs: 30 * 60 * 1000,
       });
 
+      debugLogFn('force-spawn', 'spawned', { taskId: task.id, queueId });
+
       spawned.push({
         taskId: task.id,
         title: task.title,
@@ -682,6 +693,8 @@ async function main() {
       });
     }
   }
+
+  debugLogFn('force-spawn', 'complete', { spawned: spawned.length, skipped: skipped.length, errors: errors.length });
 
   console.log(JSON.stringify({ spawned, skipped, errors }));
 }

@@ -19,6 +19,7 @@ import os from 'os';
 import { execSync } from 'child_process';
 import { auditEvent } from './session-audit.js';
 import { getCooldown } from '../config-reader.js';
+import { debugLog } from './debug-log.js';
 
 // Lazy-loaded SQLite
 let Database = null;
@@ -297,6 +298,8 @@ export function reapSyncPass(db) {
     }
   }
 
+  debugLog('session-reaper', 'sync_pass', { reapedCount: result.reaped.length, stuckAliveCount: result.stuckAlive.length });
+
   return result;
 }
 
@@ -421,6 +424,8 @@ export async function reapAsyncPass(projectDir, stuckAliveItems, options = {}) {
   } finally {
     try { db.close(); } catch (_) { /* cleanup - failure expected */}
   }
+
+  debugLog('session-reaper', 'async_pass', { completedReaped: result.completedReaped, hardKilled: result.hardKilled });
 
   return result;
 }

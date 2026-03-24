@@ -13,6 +13,7 @@
 import { createInterface } from 'readline';
 import fs from 'fs';
 import path from 'path';
+import { debugLog } from './lib/debug-log.js';
 
 let Database = null;
 try {
@@ -163,6 +164,8 @@ Parent TODO Task ID: ${task.parent_todo_task_id || 'none'}`;
       }),
     });
 
+    debugLog('persistent-task-spawner', 'monitor_spawn', { taskId, queueId: result.queueId, title: task.title });
+
     // Update the persistent task with queue info
     try {
       const ptDbWrite = new Database(PT_DB_PATH);
@@ -179,6 +182,7 @@ Parent TODO Task ID: ${task.parent_todo_task_id || 'none'}`;
       },
     }));
   } catch (err) {
+    debugLog('persistent-task-spawner', 'monitor_spawn_failed', { taskId, error: err.message }, 'error');
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',

@@ -18,6 +18,7 @@
 
 import { execSync } from 'child_process';
 import os from 'os';
+import { debugLog } from './debug-log.js';
 
 /**
  * Pressure levels:
@@ -173,6 +174,10 @@ export function shouldAllowSpawn(options = {}) {
     case 'critical':
       // CTO-priority tasks are always allowed — the user explicitly requested this work
       if (priority === 'cto') {
+        debugLog('memory-pressure', 'pressure_check', {
+          pressure: mem.pressure, freeMB: mem.freeMB, nodeRssMB: mem.nodeRssMB,
+          nodeProcessCount: mem.nodeProcessCount, priority, context, allowed: true,
+        }, 'info');
         return {
           allowed: true,
           reason: `[MEMORY CRITICAL] Allowing CTO-priority ${context} spawn despite critical memory pressure: ${mem.details}`,
@@ -180,6 +185,10 @@ export function shouldAllowSpawn(options = {}) {
         };
       }
       // Block all other spawning — system will freeze
+      debugLog('memory-pressure', 'pressure_check', {
+        pressure: mem.pressure, freeMB: mem.freeMB, nodeRssMB: mem.nodeRssMB,
+        nodeProcessCount: mem.nodeProcessCount, priority, context, allowed: false,
+      }, 'info');
       return {
         allowed: false,
         reason: `[MEMORY CRITICAL] Blocked ${context} spawn: ${mem.details}. ` +
@@ -191,6 +200,10 @@ export function shouldAllowSpawn(options = {}) {
 
     case 'high':
       if (priority !== 'urgent' && priority !== 'cto' && priority !== 'critical') {
+        debugLog('memory-pressure', 'pressure_check', {
+          pressure: mem.pressure, freeMB: mem.freeMB, nodeRssMB: mem.nodeRssMB,
+          nodeProcessCount: mem.nodeProcessCount, priority, context, allowed: false,
+        }, 'info');
         return {
           allowed: false,
           reason: `[MEMORY HIGH] Deferred ${context} normal-priority spawn: ${mem.details}. ` +
@@ -200,6 +213,10 @@ export function shouldAllowSpawn(options = {}) {
         };
       }
       // Urgent, CTO, and critical tasks still allowed in high pressure
+      debugLog('memory-pressure', 'pressure_check', {
+        pressure: mem.pressure, freeMB: mem.freeMB, nodeRssMB: mem.nodeRssMB,
+        nodeProcessCount: mem.nodeProcessCount, priority, context, allowed: true,
+      }, 'debug');
       return {
         allowed: true,
         reason: `[MEMORY HIGH] Allowing ${priority} ${context} spawn despite high memory pressure: ${mem.details}`,
@@ -208,6 +225,10 @@ export function shouldAllowSpawn(options = {}) {
 
     case 'moderate':
       // Allow but warn — the quota gating agent-count check will further limit
+      debugLog('memory-pressure', 'pressure_check', {
+        pressure: mem.pressure, freeMB: mem.freeMB, nodeRssMB: mem.nodeRssMB,
+        nodeProcessCount: mem.nodeProcessCount, priority, context, allowed: true,
+      }, 'debug');
       return {
         allowed: true,
         reason: `[MEMORY MODERATE] Allowing ${context} spawn with caution: ${mem.details}`,
@@ -215,6 +236,10 @@ export function shouldAllowSpawn(options = {}) {
       };
 
     default:
+      debugLog('memory-pressure', 'pressure_check', {
+        pressure: mem.pressure, freeMB: mem.freeMB, nodeRssMB: mem.nodeRssMB,
+        nodeProcessCount: mem.nodeProcessCount, priority, context, allowed: true,
+      }, 'debug');
       return {
         allowed: true,
         reason: null,
