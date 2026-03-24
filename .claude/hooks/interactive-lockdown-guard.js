@@ -44,8 +44,7 @@ const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
  * - Invoke slash commands and search tool schemas (Skill, ToolSearch)
  *
  * Everything NOT in this set is blocked for interactive sessions.
- * MCP tools (mcp__*) are handled separately — they are always allowed
- * since they have their own access controls (protected-action-gate.js).
+ * MCP tools (mcp__*) are whitelisted by server prefix below.
  */
 const ALLOWED_TOOLS = new Set([
   'Read',
@@ -58,6 +57,55 @@ const ALLOWED_TOOLS = new Set([
   'Skill',
   'ToolSearch',
 ]);
+
+/**
+ * MCP tool prefixes allowed in interactive mode.
+ * Only monitoring, reading, and task-management tools — no write/mutate operations
+ * on infrastructure (secret-sync, cloudflare, supabase, render, vercel, etc.).
+ */
+const ALLOWED_MCP_PREFIXES = [
+  'mcp__deputy-cto__',         // Triage, questions, approvals
+  'mcp__todo-db__',            // Task management (create, list, complete)
+  'mcp__agent-tracker__',      // Agent monitoring, signals, session queue
+  'mcp__agent-reports__',      // Read agent reports
+  'mcp__cto-report__',         // CTO dashboard data
+  'mcp__show__',               // Show dashboard sections
+  'mcp__persistent-task__',    // Persistent task management
+  'mcp__plan-orchestrator__',  // Plan management
+  'mcp__user-feedback__',      // Feedback/persona data (read)
+  'mcp__product-manager__',    // PMF analysis (approve, status)
+  'mcp__playwright__',         // Demo/test launching
+  'mcp__specs-browser__',      // Read specs
+  'mcp__feedback-explorer__',  // Browse feedback
+  'mcp__setup-helper__',       // Setup guidance
+  'mcp__workstream__',         // Workstream management
+  'mcp__chrome-bridge__',      // Chrome automation
+];
+
+/**
+ * Bash commands blocked in interactive mode.
+ * These are write/mutate operations the deputy-CTO should delegate to agents.
+ */
+const BLOCKED_BASH_PATTERNS = [
+  // Git write operations
+  /\bgit\s+(checkout|switch|clean|reset|stash|add|commit|push|merge|rebase|cherry-pick|pull)\b/,
+  // Build/install commands
+  /\b(pnpm|npm|yarn|npx)\s+(run\s+build|build|install|link|publish)\b/,
+  /\bswift\s+build\b/,
+  /\btsc\b/,
+  // File mutation
+  /\brm\s+-[rf]/,
+  /\bmkdir\b/,
+  /\bcp\s/,
+  /\bmv\s/,
+  /\bchmod\b/,
+  /\bchown\b/,
+  // Process management
+  /\bkill\b/,
+  // Dangerous operations
+  /\bsudo\b/,
+  /\beval\s/,
+];
 
 /**
  * Read automation-config.json to check if lockdown is disabled.
@@ -119,10 +167,39 @@ async function main() {
     return;
   }
 
-  // MCP tools are always allowed — they have their own access controls
+  // MCP tools: whitelist by server prefix
   if (toolName.startsWith('mcp__')) {
-    process.stdout.write(JSON.stringify({ decision: 'allow' }));
+    const allowed = ALLOWED_MCP_PREFIXES.some(prefix => toolName.startsWith(prefix));
+    if (allowed) {
+      process.stdout.write(JSON.stringify({ decision: 'allow' }));
+      return;
+    }
+    // Block non-whitelisted MCP tools
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: `Deputy-CTO console: \`${toolName}\` is not available in interactive mode.\n\nThis MCP tool is for infrastructure management. Create a task to delegate this work to an agent.`,
+      },
+    }));
     return;
+  }
+
+  // Bash: check for blocked command patterns
+  if (toolName === 'Bash') {
+    const command = event?.tool_input?.command || '';
+    for (const pattern of BLOCKED_BASH_PATTERNS) {
+      if (pattern.test(command)) {
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: `Deputy-CTO console: This Bash command is not available in interactive mode.\n\nBlocked: \`${command.substring(0, 80)}\`\n\nWrite operations (git checkout, builds, file mutations) must be delegated to agents via tasks. Use read-only commands (git log, git status, git diff, gh pr list, ls, cat, grep) for investigation.`,
+          },
+        }));
+        return;
+      }
+    }
   }
 
   // Allowed tools pass through
