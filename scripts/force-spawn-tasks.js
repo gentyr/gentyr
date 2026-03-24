@@ -517,22 +517,23 @@ async function main() {
     const db = new Database(todoDbPath, { readonly: true });
 
     if (config.taskIds.length > 0) {
-      // Task ID mode: query specific tasks by ID
+      // Task ID mode: query specific tasks by ID.
+      // Include in_progress tasks that may be orphaned (no running agent).
       const placeholders = config.taskIds.map(() => '?').join(',');
       candidates = db.prepare(`
-        SELECT id, section, title, description, priority
+        SELECT id, section, title, description, priority, status
         FROM tasks
-        WHERE status = 'pending'
+        WHERE status IN ('pending', 'in_progress')
           AND id IN (${placeholders})
         ORDER BY
           CASE WHEN priority = 'urgent' THEN 0 ELSE 1 END,
           created_timestamp ASC
       `).all(...config.taskIds);
     } else {
-      // Section mode: existing behavior
+      // Section mode: only pending tasks (in_progress are assumed to have agents)
       const placeholders = config.sections.map(() => '?').join(',');
       candidates = db.prepare(`
-        SELECT id, section, title, description, priority
+        SELECT id, section, title, description, priority, status
         FROM tasks
         WHERE status = 'pending'
           AND section IN (${placeholders})
@@ -601,6 +602,17 @@ async function main() {
         reason: `Concurrency limit reached (${runningAgents + availableSlots}/${config.maxConcurrent})`,
       });
       continue;
+    }
+
+    // For in_progress orphans, reset to pending first so markTaskInProgress succeeds
+    if (task.status === 'in_progress') {
+      try {
+        const resetDb = new Database(todoDbPath);
+        resetDb.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ?").run(task.id);
+        resetDb.close();
+      } catch {
+        // Non-fatal — markTaskInProgress will fail and we'll skip
+      }
     }
 
     // Mark in_progress before spawning

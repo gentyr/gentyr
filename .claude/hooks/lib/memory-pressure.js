@@ -171,7 +171,15 @@ export function shouldAllowSpawn(options = {}) {
 
   switch (mem.pressure) {
     case 'critical':
-      // Block ALL spawning — system will freeze
+      // CTO-priority tasks are always allowed — the user explicitly requested this work
+      if (priority === 'cto') {
+        return {
+          allowed: true,
+          reason: `[MEMORY CRITICAL] Allowing CTO-priority ${context} spawn despite critical memory pressure: ${mem.details}`,
+          pressure: mem.pressure,
+        };
+      }
+      // Block all other spawning — system will freeze
       return {
         allowed: false,
         reason: `[MEMORY CRITICAL] Blocked ${context} spawn: ${mem.details}. ` +
@@ -182,19 +190,19 @@ export function shouldAllowSpawn(options = {}) {
       };
 
     case 'high':
-      if (priority !== 'urgent') {
+      if (priority !== 'urgent' && priority !== 'cto' && priority !== 'critical') {
         return {
           allowed: false,
           reason: `[MEMORY HIGH] Deferred ${context} normal-priority spawn: ${mem.details}. ` +
-            `Only urgent tasks are allowed when memory pressure is high. ` +
+            `Only urgent/cto/critical tasks are allowed when memory pressure is high. ` +
             `${mem.freeMB}MB free, ${mem.nodeRssMB}MB node RSS across ${mem.nodeProcessCount} processes.`,
           pressure: mem.pressure,
         };
       }
-      // Urgent tasks still allowed in high pressure (but not critical)
+      // Urgent, CTO, and critical tasks still allowed in high pressure
       return {
         allowed: true,
-        reason: `[MEMORY HIGH] Allowing urgent ${context} spawn despite high memory pressure: ${mem.details}`,
+        reason: `[MEMORY HIGH] Allowing ${priority} ${context} spawn despite high memory pressure: ${mem.details}`,
         pressure: mem.pressure,
       };
 

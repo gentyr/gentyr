@@ -487,7 +487,8 @@ async function spawnTaskAgent(task) {
       metadata: { taskId: task.id, section: task.section, worktreePath, urgent: true, assignedBy: task.assigned_by },
     });
 
-    log(`Enqueued ${mapping.agent} for task ${task.id}: "${task.title}" (priority: ${queuePriority}, queueId: ${result.queueId})`);
+    const spawnedImmediately = result.drained && result.drained.spawned > 0;
+    log(`Enqueued ${mapping.agent} for task ${task.id}: "${task.title}" (priority: ${queuePriority}, queueId: ${result.queueId}, spawned: ${spawnedImmediately})`);
 
     // For CTO tasks: if the queue was at capacity (nothing was spawned immediately),
     // trigger preemption of the lowest-priority running session to make room.
@@ -522,7 +523,9 @@ async function spawnTaskAgent(task) {
       }
     }
 
-    return true;
+    // Return 'queued' if enqueued but not spawned (memory pressure / capacity),
+    // so the caller can reset the task to pending for retry.
+    return spawnedImmediately ? true : 'queued';
   } catch (err) {
     log(`Failed to enqueue ${mapping.agent} for task ${task.id}: ${err.message}`);
     return false;
@@ -632,9 +635,14 @@ process.stdin.on('end', async () => {
     // Build task object for spawn (include assigned_by for CTO priority detection)
     const task = { id: taskId, section, title, description, assigned_by: assignedBy };
 
-    const success = await spawnTaskAgent(task);
-    if (success) {
+    const spawnResult = await spawnTaskAgent(task);
+    if (spawnResult === true) {
       log(`Successfully spawned agent for urgent task ${taskId}: "${title}" (section: ${section})`);
+    } else if (spawnResult === 'queued') {
+      // Enqueued but not spawned (memory pressure or capacity). Reset to pending
+      // so force_spawn_tasks and hourly automation can retry when pressure clears.
+      resetTaskToPending(taskId);
+      log(`Task ${taskId} enqueued but not spawned (memory/capacity). Reset to pending for retry.`);
     } else {
       resetTaskToPending(taskId);
       log(`Spawn failed for urgent task ${taskId}, reset to pending. Hourly will retry.`);
