@@ -333,37 +333,9 @@ ${worktreeNote}
 - Do NOT create new tasks. Report findings in your summarize_work summary instead
 - Report any issues via mcp__agent-reports__report_to_deputy_cto`;
 
-  // Check available slots for sub-agent spawning feasibility
-  let slotsAvailable = 999;
-  try {
-    const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
-    if (Database && fs.existsSync(queueDbPath)) {
-      const qDb = new Database(queueDbPath, { readonly: true });
-      const running = qDb.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent')").get().cnt;
-      const maxRow = qDb.prepare("SELECT value FROM queue_config WHERE key = 'max_concurrent_sessions'").get();
-      const max = maxRow ? parseInt(maxRow.value, 10) : 10;
-      qDb.close();
-      slotsAvailable = Math.max(0, max - running);
-    }
-  } catch (_) { /* non-fatal */ }
-
   // Section-specific immediate actions
   const sectionActions = {
-    'CODE-REVIEWER': slotsAvailable < 3 ? `
-## DIRECT EXECUTION MODE (low slot availability: ${slotsAvailable} slots free)
-
-Sub-agent slots are scarce. You MUST make changes directly instead of spawning sub-agents.
-
-**Workflow:**
-1. Read and understand the relevant code
-2. Use Edit/Write tools to implement the fix directly
-3. Run any relevant tests via Bash
-4. Review your own changes (git diff)
-5. Commit, push, create PR, and self-merge
-
-You have full Edit/Write/Bash permissions. Act as a senior engineer — research, implement, test, commit.
-Do NOT attempt to spawn sub-agents via Task — they will queue indefinitely.
-After committing, call mcp__todo-db__summarize_work and mcp__todo-db__complete_task.` : `
+    'CODE-REVIEWER': `
 ## MANDATORY SUB-AGENT WORKFLOW
 
 You are an ORCHESTRATOR. Do NOT edit files directly. Follow this sequence using the Task tool:
@@ -393,20 +365,7 @@ Your first action MUST be:
 Task(subagent_type='investigator', prompt='${task.title}. ${task.description || ''}')
 \`\`\``,
 
-    'TEST-WRITER': slotsAvailable < 3 ? `
-## DIRECT EXECUTION MODE (low slot availability: ${slotsAvailable} slots free)
-
-Sub-agent slots are scarce. Make changes directly.
-
-**Workflow:**
-1. Read and understand the test requirements
-2. Use Edit/Write tools to write/update tests directly
-3. Run tests via Bash to verify
-4. Commit, push, create PR, and self-merge
-
-You have full Edit/Write/Bash permissions.
-Do NOT attempt to spawn sub-agents via Task — they will queue indefinitely.
-After committing, call mcp__todo-db__summarize_work and mcp__todo-db__complete_task.` : `
+    'TEST-WRITER': `
 ## MANDATORY SUB-AGENT WORKFLOW
 
 You are an ORCHESTRATOR. Do NOT edit files directly. Follow this sequence using the Task tool:
@@ -432,20 +391,7 @@ Your first action MUST be:
 Task(subagent_type='project-manager', prompt='${task.title}. ${task.description || ''}')
 \`\`\``,
 
-    'DEMO-MANAGER': slotsAvailable < 3 ? `
-## DIRECT EXECUTION MODE (low slot availability: ${slotsAvailable} slots free)
-
-Sub-agent slots are scarce. Make changes directly.
-
-**Workflow:**
-1. Investigate the demo issue (read .demo.ts files, check selectors)
-2. Use Edit/Write tools to fix .demo.ts files directly
-3. Run tests/preflight via Bash
-4. Commit, push, create PR, and self-merge
-
-Only modify .demo.ts files and demo configuration — do NOT change application code.
-If the issue is in application code, escalate via mcp__agent-reports__report_to_deputy_cto.
-After committing, call mcp__todo-db__summarize_work and mcp__todo-db__complete_task.` : `
+    'DEMO-MANAGER': `
 ## MANDATORY SUB-AGENT WORKFLOW
 
 You are an ORCHESTRATOR for demo lifecycle work. Follow this sequence using the Task tool:
