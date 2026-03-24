@@ -236,6 +236,8 @@ export function reapSyncPass(db) {
   const hardKillMs = getCooldown('session_hard_kill_minutes', 30) * 60 * 1000;
   const now = Date.now();
 
+  // Only operate on 'running' items — 'suspended' items are intentionally paused
+  // (preempted by CTO tasks) and must NOT be reaped. They have their own re-enqueue path.
   const running = db.prepare(
     "SELECT id, pid, agent_id, lane, spawn_type, spawned_at, agent_type, title, metadata FROM queue_items WHERE status = 'running'"
   ).all();
@@ -338,6 +340,14 @@ export async function reapAsyncPass(projectDir, stuckAliveItems, options = {}) {
 
   try {
     for (const item of stuckAliveItems) {
+      // Explicit safety guard: never reap suspended items (preempted by CTO tasks).
+      // getStuckAliveSessions already filters for status='running', but double-check here.
+      const currentStatus = db.prepare("SELECT status FROM queue_items WHERE id = ?").get(item.queueId);
+      if (currentStatus && currentStatus.status === 'suspended') {
+        log(`Session reaper: skipping suspended item ${item.queueId} (preempted by CTO task)`);
+        continue;
+      }
+
       // Find session file for JSONL analysis
       let sessionFile = null;
       if (sessionDir && item.agentId) {
@@ -431,6 +441,8 @@ export function getStuckAliveSessions() {
     const hardKillMs = getCooldown('session_hard_kill_minutes', 30) * 60 * 1000;
     const cutoffTime = new Date(Date.now() - hardKillMs).toISOString();
 
+    // Only query 'running' items — 'suspended' items must never be hard-killed
+    // (they are intentionally preempted by CTO tasks and have a re-enqueue path)
     const items = db.prepare(
       "SELECT id, pid, agent_id, spawned_at, agent_type, title, lane, metadata FROM queue_items WHERE status = 'running' AND lane != 'gate' AND spawned_at < ?"
     ).all(cutoffTime);

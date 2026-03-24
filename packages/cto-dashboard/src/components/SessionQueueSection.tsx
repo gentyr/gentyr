@@ -16,9 +16,10 @@ export interface SessionQueueSectionProps {
 }
 
 function priorityIndicator(priority: string): string {
-  if (priority === 'critical') return '!!';
-  if (priority === 'urgent') return '! ';
-  return '  ';
+  if (priority === 'cto') return '>>>';
+  if (priority === 'critical') return '!! ';
+  if (priority === 'urgent') return '!  ';
+  return '   ';
 }
 
 function truncate(s: string, max: number): string {
@@ -27,15 +28,17 @@ function truncate(s: string, max: number): string {
 
 function QueuedRow({ item }: { item: QueuedItem }): React.ReactElement {
   const indicator = priorityIndicator(item.priority);
-  const indicatorColor = item.priority === 'critical' ? 'red'
+  const isCto = item.priority === 'cto';
+  const indicatorColor = isCto ? 'magenta'
+    : item.priority === 'critical' ? 'red'
     : item.priority === 'urgent' ? 'yellow'
     : 'gray';
   const title = truncate(item.title, 40);
 
   return (
     <Box>
-      <Text color={indicatorColor}>{indicator} </Text>
-      <Text color="white">{title.padEnd(41)}</Text>
+      <Text color={indicatorColor} bold={isCto}>{indicator} </Text>
+      <Text color={isCto ? 'magenta' : 'white'} bold={isCto}>{title.padEnd(41)}</Text>
       <Text color="gray"> {item.source.substring(0, 20).padEnd(21)}</Text>
       <Text color="gray">{item.waitTime.padStart(6)}</Text>
     </Box>
@@ -43,15 +46,21 @@ function QueuedRow({ item }: { item: QueuedItem }): React.ReactElement {
 }
 
 function RunningRow({ item }: { item: RunningItem }): React.ReactElement {
-  const title = truncate(item.title, 40);
+  const title = truncate(item.title, 38);
 
   return (
     <Box>
       <Text color="cyan">  </Text>
-      <Text color="white">{title.padEnd(41)}</Text>
-      <Text color="gray"> {item.source.substring(0, 20).padEnd(21)}</Text>
+      <Text color="white">{title.padEnd(39)}</Text>
+      <Text color="gray"> {item.source.substring(0, 18).padEnd(19)}</Text>
       <Text color="gray">PID {item.pid} </Text>
-      <Text color="gray">{item.elapsed.padStart(6)}</Text>
+      <Text color="gray">{item.elapsed.padStart(5)}</Text>
+      {item.lastTool && (
+        <>
+          <Text color="gray"> </Text>
+          <Text color="cyan">[{truncate(item.lastTool, 20)}]</Text>
+        </>
+      )}
     </Box>
   );
 }
@@ -67,22 +76,30 @@ export function SessionQueueSection({ data, tip }: SessionQueueSectionProps): Re
 
   const { maxConcurrent, running, availableSlots, queuedItems, runningItems, stats } = data;
 
+  // Separate suspended items from regular queued items (suspended items have 'suspended' in source or lane)
+  const suspendedItems = queuedItems.filter(item => item.source === 'suspended' || item.lane === 'suspended');
+  const activeQueuedItems = queuedItems.filter(item => item.source !== 'suspended' && item.lane !== 'suspended');
+  const ctoPriorityQueued = activeQueuedItems.filter(item => item.priority === 'cto');
+  const regularQueued = activeQueuedItems.filter(item => item.priority !== 'cto');
+
   // Color coding: green if >25% slots available, yellow if >75% full, red if at capacity or items queued
   const utilizationPct = running / maxConcurrent;
-  const titleColor = queuedItems.length > 0 || utilizationPct >= 1
+  const hasCtoItems = ctoPriorityQueued.length > 0;
+  const titleColor = hasCtoItems ? 'magenta'
+    : activeQueuedItems.length > 0 || utilizationPct >= 1
     ? 'red'
     : utilizationPct >= 0.75
     ? 'yellow'
     : 'green';
 
-  const title = `SESSION QUEUE (${running}/${maxConcurrent} running, ${queuedItems.length} queued)`;
+  const title = `SESSION QUEUE (${running}/${maxConcurrent} running, ${activeQueuedItems.length} queued${suspendedItems.length > 0 ? `, ${suspendedItems.length} suspended` : ''})`;
   const topSources = Object.entries(stats.bySource).slice(0, 3).map(([src, cnt]) => `${src}:${cnt}`).join(', ');
 
   return (
     <Section title={title} borderColor={titleColor} titleColor={titleColor} tip={tip}>
       <Box flexDirection="column">
         {/* Capacity bar */}
-        <Box marginBottom={queuedItems.length > 0 || runningItems.length > 0 ? 1 : 0}>
+        <Box marginBottom={activeQueuedItems.length > 0 || runningItems.length > 0 ? 1 : 0}>
           <Text color="gray">Capacity: </Text>
           <Text color={titleColor} bold>{running}/{maxConcurrent}</Text>
           <Text color="gray"> ({availableSlots} slot{availableSlots !== 1 ? 's' : ''} available)</Text>
@@ -102,7 +119,7 @@ export function SessionQueueSection({ data, tip }: SessionQueueSectionProps): Re
 
         {/* Running items */}
         {runningItems.length > 0 && (
-          <Box flexDirection="column" marginBottom={queuedItems.length > 0 ? 1 : 0}>
+          <Box flexDirection="column" marginBottom={activeQueuedItems.length > 0 || suspendedItems.length > 0 ? 1 : 0}>
             <Box>
               <Text color="cyan" bold>RUNNING</Text>
             </Box>
@@ -112,13 +129,37 @@ export function SessionQueueSection({ data, tip }: SessionQueueSectionProps): Re
           </Box>
         )}
 
-        {/* Queued items */}
-        {queuedItems.length > 0 && (
-          <Box flexDirection="column">
+        {/* CTO-priority queued items (shown separately with magenta) */}
+        {ctoPriorityQueued.length > 0 && (
+          <Box flexDirection="column" marginBottom={regularQueued.length > 0 || suspendedItems.length > 0 ? 1 : 0}>
+            <Box>
+              <Text color="magenta" bold>CTO PRIORITY</Text>
+            </Box>
+            {ctoPriorityQueued.map(item => (
+              <QueuedRow key={item.id} item={item} />
+            ))}
+          </Box>
+        )}
+
+        {/* Regular queued items */}
+        {regularQueued.length > 0 && (
+          <Box flexDirection="column" marginBottom={suspendedItems.length > 0 ? 1 : 0}>
             <Box>
               <Text color="yellow" bold>QUEUED</Text>
             </Box>
-            {queuedItems.map(item => (
+            {regularQueued.map(item => (
+              <QueuedRow key={item.id} item={item} />
+            ))}
+          </Box>
+        )}
+
+        {/* Suspended items */}
+        {suspendedItems.length > 0 && (
+          <Box flexDirection="column">
+            <Box>
+              <Text color="gray" bold>SUSPENDED</Text>
+            </Box>
+            {suspendedItems.map(item => (
               <QueuedRow key={item.id} item={item} />
             ))}
           </Box>
@@ -126,14 +167,14 @@ export function SessionQueueSection({ data, tip }: SessionQueueSectionProps): Re
 
         {/* Stats row */}
         {topSources && (
-          <Box marginTop={runningItems.length > 0 || queuedItems.length > 0 ? 1 : 0}>
+          <Box marginTop={runningItems.length > 0 || activeQueuedItems.length > 0 ? 1 : 0}>
             <Text color="gray">Sources (24h): </Text>
             <Text color="white">{topSources}</Text>
           </Box>
         )}
 
         {/* All-clear message */}
-        {runningItems.length === 0 && queuedItems.length === 0 && (
+        {runningItems.length === 0 && activeQueuedItems.length === 0 && suspendedItems.length === 0 && (
           <Text color="gray">Queue empty — {availableSlots} slot{availableSlots !== 1 ? 's' : ''} available</Text>
         )}
       </Box>

@@ -6,7 +6,14 @@
  * Event types:
  *   session_enqueued, session_spawned, session_completed, session_failed,
  *   session_cancelled, session_ttl_expired, session_reaped_dead,
- *   session_reaped_complete, session_hard_killed, session_revival_triggered
+ *   session_reaped_complete, session_hard_killed, session_revival_triggered,
+ *   session_suspended, session_preempted
+ *
+ * CTO Preemption Events:
+ *   session_suspended — emitted when a running session is preempted by a CTO task.
+ *     Fields: queue_id, agent_id, pid, title, priority, elapsed, cto_queue_id, session_id
+ *   session_preempted — emitted for the CTO task that triggered a preemption.
+ *     Fields: cto_queue_id, preempted_queue_id, preempted_agent_id, preempted_title
  *
  * @module lib/session-audit
  * @version 1.0.0

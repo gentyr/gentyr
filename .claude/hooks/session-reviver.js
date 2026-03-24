@@ -62,6 +62,63 @@ try {
   // Non-fatal
 }
 
+// ============================================================================
+// Suspended Session Check
+// ============================================================================
+
+/**
+ * Check if a session or agent is currently suspended in the queue (preempted by CTO task).
+ * Suspended sessions will be re-enqueued automatically and should not be revived separately.
+ *
+ * @param {string} [sessionId] - Session UUID to check
+ * @param {string} [agentId] - Agent ID to check
+ * @returns {boolean} true if this session/agent is suspended
+ */
+function isSessionSuspended(sessionId, agentId) {
+  if (!Database) return false;
+
+  const queueDbPath = path.join(STATE_DIR, 'session-queue.db');
+  if (!fs.existsSync(queueDbPath)) return false;
+
+  let db;
+  try {
+    db = new Database(queueDbPath, { readonly: true });
+
+    if (agentId) {
+      const row = db.prepare(
+        "SELECT id FROM queue_items WHERE status = 'suspended' AND agent_id = ?"
+      ).get(agentId);
+      if (row) return true;
+    }
+
+    if (sessionId) {
+      // Check resume_session_id — suspended items have their original session referenced in
+      // the re-enqueued resume item, but the suspended item itself is identified by agent_id.
+      // Also check metadata for originalSessionId.
+      const rows = db.prepare(
+        "SELECT metadata FROM queue_items WHERE status = 'suspended'"
+      ).all();
+      for (const row of rows) {
+        try {
+          const meta = JSON.parse(row.metadata || '{}');
+          if (meta.originalSessionId === sessionId) return true;
+        } catch (err) {
+          console.error('[session-reviver] Warning: metadata parse error in suspended check:', err.message);
+        }
+      }
+    }
+
+    return false;
+  } catch (err) {
+    console.error('[session-reviver] Warning: isSessionSuspended error:', err.message);
+    return false; // Fail open — don't block revival on error
+  } finally {
+    if (db) {
+      try { db.close(); } catch (_) { /* cleanup - failure expected */}
+    }
+  }
+}
+
 /**
  * Check if a process is alive.
  * @param {number} pid
@@ -274,6 +331,13 @@ function reviveQuotaInterruptedSessions(log, maxRevivals, staleWindowMs = NORMAL
       continue;
     }
 
+    // Skip sessions that are suspended (preempted by CTO task) — they will resume via the queue
+    if (isSessionSuspended(session.sessionId || extractSessionIdFromPath(session.transcriptPath), session.agentId)) {
+      log(`  Quota-interrupted session ${session.agentId || 'unknown'} is suspended in queue (preempted), skipping revival.`);
+      remaining.push(session);
+      continue;
+    }
+
     // Check if older than the stale window
     const age = Date.now() - new Date(session.interruptedAt).getTime();
     if (age > staleWindowMs) {
@@ -402,6 +466,12 @@ function reviveDeadSessions(log, maxRevivals) {
         (agent.status === 'completed' && agent.reapReason === 'process_already_dead') ||
         (agent.status === 'reaped' && agent.reapReason === 'process_already_dead');
       if (!isDead) continue;
+
+      // Skip agents that are suspended (preempted by CTO task) — they will resume via the queue
+      if (isSessionSuspended(null, agent.id)) {
+        log(`  Dead agent ${agent.id} is suspended in queue (preempted), skipping revival.`);
+        continue;
+      }
 
       // Must have a task ID
       const taskId = agent.metadata?.taskId;
@@ -569,6 +639,13 @@ async function resumePausedSessions(log, maxRevivals) {
       if (session.type === 'interactive') {
         log(`  Interactive session can be resumed: run /restart-session`);
       }
+      remaining.push(session);
+      continue;
+    }
+
+    // Skip sessions that are suspended (preempted by CTO task) — they will resume via the queue
+    if (isSessionSuspended(session.sessionId, session.agentId)) {
+      log(`  Paused session ${session.agentId || 'unknown'} is suspended in queue (preempted), skipping revival.`);
       remaining.push(session);
       continue;
     }
