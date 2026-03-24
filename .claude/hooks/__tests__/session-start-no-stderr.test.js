@@ -13,7 +13,7 @@
  *
  * Run with: node --test .claude/hooks/__tests__/session-start-no-stderr.test.js
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -35,6 +35,7 @@ const SESSION_START_HOOKS = [
   'plan-briefing.js',
   'playwright-health-check.js',
   'dead-agent-recovery.js',
+  'session-briefing.js',
 ];
 
 // Shared library imported by hooks (must also be clean)
@@ -162,6 +163,57 @@ describe('SessionStart hooks — config-reader error path (no stderr on corrupte
       (result.stderr || '').trim(),
       '',
       'todo-maintenance.js must not write to stderr even with corrupted automation-config.json',
+    );
+  });
+
+  it('api-key-watcher.js produces empty stderr with corrupted automation-config.json', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.claude', 'state', 'automation-config.json'),
+      '{ invalid json }',
+    );
+
+    const hookPath = path.join(HOOKS_DIR, 'api-key-watcher.js');
+    const result = spawnSync('node', [hookPath], {
+      encoding: 'utf8',
+      timeout: 10000,
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: tmpDir,
+        CLAUDE_SPAWNED_SESSION: 'true',
+      },
+      input: '{}',
+    });
+
+    assert.strictEqual(
+      (result.stderr || '').trim(),
+      '',
+      'api-key-watcher.js must not write to stderr even with corrupted automation-config.json',
+    );
+  });
+
+  it('dead-agent-recovery.js produces empty stderr with corrupted history file', () => {
+    // Write corrupted agent-tracker-history.json
+    fs.writeFileSync(
+      path.join(tmpDir, '.claude', 'state', 'agent-tracker-history.json'),
+      '{ not valid json !!!',
+    );
+
+    const hookPath = path.join(HOOKS_DIR, 'dead-agent-recovery.js');
+    const result = spawnSync('node', [hookPath], {
+      encoding: 'utf8',
+      timeout: 10000,
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: tmpDir,
+        CLAUDE_SPAWNED_SESSION: 'false',
+      },
+      input: '{}',
+    });
+
+    assert.strictEqual(
+      (result.stderr || '').trim(),
+      '',
+      'dead-agent-recovery.js must not write to stderr even with corrupted history file',
     );
   });
 });

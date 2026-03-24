@@ -41,8 +41,7 @@ function run() {
       const content = fs.readFileSync(cfgPath, 'utf8');
       const m = content.match(/storageState:\s*['"]([^'"]+)['"]/);
       if (m) primaryAuthBasename = path.basename(m[1]);
-    } catch (err) {
-      console.error('[playwright-health-check] Warning:', err.message);
+    } catch {
       /* ignore */
     }
   }
@@ -51,8 +50,7 @@ function run() {
     try {
       const files = fs.readdirSync(authDir).filter(f => f.endsWith('.json'));
       if (files.length) primaryAuthBasename = files[0];
-    } catch (err) {
-      console.error('[playwright-health-check] Warning:', err.message);
+    } catch {
       /* ignore */
     }
   }
@@ -68,8 +66,7 @@ function run() {
         const state = JSON.parse(fs.readFileSync(primaryAuth, 'utf-8'));
         const now = Date.now() / 1000;
         cookiesExpired = (state.cookies || []).some(c => c.expires && c.expires > 0 && c.expires < now);
-      } catch (err) {
-        console.error('[playwright-health-check] Warning:', err.message);
+      } catch {
         /* ignore */
       }
       authState = {
@@ -78,8 +75,7 @@ function run() {
         cookiesExpired,
         isStale: cookiesExpired || ageHours > 24,
       };
-    } catch (err) {
-      console.error('[playwright-health-check] Warning:', err.message);
+    } catch {
       /* ignore */
     }
   }
@@ -99,8 +95,7 @@ function run() {
 
   try {
     fs.writeFileSync(HEALTH_FILE, JSON.stringify(health, null, 2));
-  } catch (err) {
-    console.error('[playwright-health-check] Warning:', err.message);
+  } catch {
     /* ignore — .claude/ may not exist yet */
   }
 

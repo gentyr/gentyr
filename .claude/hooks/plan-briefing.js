@@ -22,8 +22,7 @@ const PLANS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
 let Database = null;
 try {
   Database = (await import('better-sqlite3')).default;
-} catch (err) {
-  console.error('[plan-briefing] Warning:', err.message);
+} catch {
   // Non-fatal
 }
 
