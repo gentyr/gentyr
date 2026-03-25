@@ -56,6 +56,27 @@ const ALLOWED_TOOLS = new Set([
   'AskUserQuestion',
   'Skill',
   'ToolSearch',
+  'Agent',   // Allowed but filtered — only read-only sub-agent types pass (see below)
+  'Task',    // Same filtering as Agent
+]);
+
+/**
+ * Read-only sub-agent types allowed in interactive mode.
+ * These agents only read code — they never edit files or run git write ops.
+ */
+const READONLY_SUBAGENT_TYPES = new Set([
+  'Explore',
+  'Plan',
+  'investigator',
+  'general-purpose',
+  'product-manager',
+  'claude-code-guide',
+  'statusline-setup',
+  'deputy-cto',
+  'antipattern-hunter',
+  'repo-hygiene-expert',
+  'secret-manager',
+  'icon-finder',
 ]);
 
 /**
@@ -227,6 +248,23 @@ async function main() {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason: `Deputy-CTO console: \`${toolName}\` is not available in interactive mode.\n\nThis MCP tool is for infrastructure management. Create a task to delegate this work to an agent.`,
+      },
+    }));
+    return;
+  }
+
+  // Agent/Task: only allow read-only sub-agent types
+  if (toolName === 'Agent' || toolName === 'Task') {
+    const subagentType = event?.tool_input?.subagent_type || event?.tool_input?.subagentType || '';
+    if (READONLY_SUBAGENT_TYPES.has(subagentType)) {
+      process.stdout.write(JSON.stringify({ decision: 'allow' }));
+      return;
+    }
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: `Deputy-CTO console: \`${toolName}(subagent_type='${subagentType}')\` is not available in interactive mode.\n\nOnly read-only sub-agents are allowed: ${[...READONLY_SUBAGENT_TYPES].join(', ')}.\n\nTo spawn code-modifying agents, create a task via mcp__todo-db__create_task.`,
       },
     }));
     return;

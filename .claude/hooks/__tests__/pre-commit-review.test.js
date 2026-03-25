@@ -337,6 +337,67 @@ describe('Helper Functions - Code Structure Tests', () => {
 
 });
 
+describe('worktree directory resolution', () => {
+  const HOOK_PATH = path.join(process.cwd(), '.claude/hooks/pre-commit-review.js');
+
+  it('verifyLintConfigIntegrity uses working tree path for file checks', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    // Extract verifyLintConfigIntegrity function body
+    const fnMatch = hookCode.match(/function verifyLintConfigIntegrity\(\)\s*\{[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'Should define verifyLintConfigIntegrity function');
+    const fnBody = fnMatch[0];
+
+    // Should use a working-tree-relative path (GIT_WORK_TREE or PROJECT_DIR), not MAIN_REPO_DIR
+    assert.match(fnBody, /path\.join\((GIT_WORK_TREE|PROJECT_DIR),\s*file\)/,
+      'Should join working tree path with file name for forbidden file checks');
+  });
+
+  it('runStrictLint uses working tree path for eslint binary and cwd', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    // Extract runStrictLint function body
+    const fnMatch = hookCode.match(/function runStrictLint[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'Should define runStrictLint function');
+    const fnBody = fnMatch[0];
+
+    // eslint binary should come from working tree node_modules
+    assert.match(fnBody, /path\.join\((GIT_WORK_TREE|PROJECT_DIR),\s*'node_modules'/,
+      'Should resolve eslint binary from working tree node_modules');
+
+    // cwd should be working tree
+    assert.match(fnBody, /cwd:\s*(GIT_WORK_TREE|PROJECT_DIR)/,
+      'Should use working tree as cwd for eslint execution');
+  });
+
+  it('verifyProtectionStatus checks working tree for eslint.config.js and package.json', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    // Extract verifyProtectionStatus function body
+    const fnMatch = hookCode.match(/function verifyProtectionStatus\(\)\s*\{[\s\S]*?\n\}/);
+    assert.ok(fnMatch, 'Should define verifyProtectionStatus function');
+    const fnBody = fnMatch[0];
+
+    // Should check eslint.config.js and package.json in working tree
+    assert.match(fnBody, /path\.join\((GIT_WORK_TREE|PROJECT_DIR),\s*'eslint\.config\.js'\)/,
+      'Should check eslint.config.js in working tree');
+    assert.match(fnBody, /path\.join\((GIT_WORK_TREE|PROJECT_DIR),\s*'package\.json'\)/,
+      'Should check package.json in working tree');
+  });
+
+  it('database paths use main repo directory', () => {
+    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    // DEPUTY_CTO_DB should use MAIN_REPO_DIR (or PROJECT_DIR before rename)
+    assert.match(hookCode, /DEPUTY_CTO_DB\s*=\s*path\.join\((MAIN_REPO_DIR|PROJECT_DIR)/,
+      'DEPUTY_CTO_DB should use main repo directory');
+
+    // CTO_REPORTS_DB should also use MAIN_REPO_DIR (or PROJECT_DIR)
+    assert.match(hookCode, /CTO_REPORTS_DB\s*=\s*path\.join\((MAIN_REPO_DIR|PROJECT_DIR)/,
+      'CTO_REPORTS_DB should use main repo directory');
+  });
+});
+
 describe('G001 Compliance Summary', () => {
   const HOOK_PATH = path.join(process.cwd(), '.claude/hooks/pre-commit-review.js');
 
