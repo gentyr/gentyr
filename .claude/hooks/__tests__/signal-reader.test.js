@@ -115,7 +115,7 @@ describe('signal-reader.js (PostToolUse hook)', () => {
         },
       );
 
-      assert.strictEqual(result.parsed.decision, 'allow');
+      assert.strictEqual(result.parsed.decision, 'approve');
       assert.strictEqual(result.parsed.hookSpecificOutput, undefined);
     });
 
@@ -142,7 +142,7 @@ describe('signal-reader.js (PostToolUse hook)', () => {
         },
       );
 
-      assert.strictEqual(result.parsed.decision, 'allow');
+      assert.strictEqual(result.parsed.decision, 'approve');
       assert.strictEqual(result.parsed.hookSpecificOutput, undefined);
     });
   });
@@ -163,7 +163,7 @@ describe('signal-reader.js (PostToolUse hook)', () => {
         },
       );
 
-      assert.strictEqual(result.parsed.decision, 'allow');
+      assert.strictEqual(result.parsed.decision, 'approve');
       assert.strictEqual(result.parsed.hookSpecificOutput, undefined);
     });
   });
@@ -195,7 +195,7 @@ describe('signal-reader.js (PostToolUse hook)', () => {
         },
       );
 
-      assert.strictEqual(result.parsed.decision, 'allow');
+      assert.strictEqual(result.parsed.decision, 'approve');
       assert.ok(result.parsed.hookSpecificOutput, 'Should have hookSpecificOutput');
       assert.strictEqual(result.parsed.hookSpecificOutput.hookEventName, 'PostToolUse');
 
@@ -236,7 +236,7 @@ describe('signal-reader.js (PostToolUse hook)', () => {
         },
       );
 
-      assert.strictEqual(result.parsed.decision, 'allow');
+      assert.strictEqual(result.parsed.decision, 'approve');
       const ctx = result.parsed.hookSpecificOutput.additionalContext;
       assert.ok(ctx.includes('[DEPUTY-CTO INSTRUCTION — URGENT]'), 'Should include instruction header');
       assert.ok(ctx.includes('MUST acknowledge'), 'Should indicate must acknowledge');
@@ -272,7 +272,7 @@ describe('signal-reader.js (PostToolUse hook)', () => {
         },
       );
 
-      assert.strictEqual(result.parsed.decision, 'allow');
+      assert.strictEqual(result.parsed.decision, 'approve');
       const ctx = result.parsed.hookSpecificOutput.additionalContext;
       assert.ok(ctx.includes('[CTO DIRECTIVE — MANDATORY OVERRIDE]'), 'Should include directive header');
       assert.ok(ctx.includes('OVERRIDES'), 'Should indicate override');
@@ -320,7 +320,7 @@ describe('signal-reader.js (PostToolUse hook)', () => {
         },
       );
 
-      assert.strictEqual(result.parsed.decision, 'allow');
+      assert.strictEqual(result.parsed.decision, 'approve');
       const ctx = result.parsed.hookSpecificOutput.additionalContext;
       assert.ok(ctx.includes('[AGENT COMMUNICATION — HELPFUL NOTE]'));
       assert.ok(ctx.includes('[DEPUTY-CTO INSTRUCTION — URGENT]'));
@@ -356,7 +356,7 @@ describe('signal-reader.js (PostToolUse hook)', () => {
       });
 
       // Should still exit with allow (no signals in dir)
-      assert.strictEqual(result.parsed.decision, 'allow');
+      assert.strictEqual(result.parsed.decision, 'approve');
     });
   });
 });

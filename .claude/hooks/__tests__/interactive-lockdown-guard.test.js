@@ -112,31 +112,31 @@ describe('interactive-lockdown-guard.js', () => {
     it('allows Edit in spawned session', async () => {
       const result = await runHook({ tool_name: 'Edit', tool_input: {} }, { env });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow', 'Edit should be allowed in spawned sessions');
+      assert.strictEqual(output?.decision, 'approve', 'Edit should be allowed in spawned sessions');
     });
 
     it('allows Write in spawned session', async () => {
       const result = await runHook({ tool_name: 'Write', tool_input: {} }, { env });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows Agent in spawned session', async () => {
       const result = await runHook({ tool_name: 'Agent', tool_input: {} }, { env });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows Task in spawned session', async () => {
       const result = await runHook({ tool_name: 'Task', tool_input: {} }, { env });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows NotebookEdit in spawned session', async () => {
       const result = await runHook({ tool_name: 'NotebookEdit', tool_input: {} }, { env });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
   });
 
@@ -144,55 +144,55 @@ describe('interactive-lockdown-guard.js', () => {
     it('allows Read', async () => {
       const result = await runHook({ tool_name: 'Read', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows Glob', async () => {
       const result = await runHook({ tool_name: 'Glob', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows Grep', async () => {
       const result = await runHook({ tool_name: 'Grep', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows Bash', async () => {
       const result = await runHook({ tool_name: 'Bash', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows WebFetch', async () => {
       const result = await runHook({ tool_name: 'WebFetch', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows WebSearch', async () => {
       const result = await runHook({ tool_name: 'WebSearch', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows AskUserQuestion', async () => {
       const result = await runHook({ tool_name: 'AskUserQuestion', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows Skill', async () => {
       const result = await runHook({ tool_name: 'Skill', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows ToolSearch', async () => {
       const result = await runHook({ tool_name: 'ToolSearch', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
   });
 
@@ -200,31 +200,31 @@ describe('interactive-lockdown-guard.js', () => {
     it('allows mcp__todo-db__create_task', async () => {
       const result = await runHook({ tool_name: 'mcp__todo-db__create_task', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows mcp__agent-tracker__force_spawn_tasks', async () => {
       const result = await runHook({ tool_name: 'mcp__agent-tracker__force_spawn_tasks', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows mcp__agent-tracker__monitor_agents', async () => {
       const result = await runHook({ tool_name: 'mcp__agent-tracker__monitor_agents', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows mcp__specs-browser__get_spec', async () => {
       const result = await runHook({ tool_name: 'mcp__specs-browser__get_spec', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows mcp__show__show_plans (arbitrary mcp__ prefix)', async () => {
       const result = await runHook({ tool_name: 'mcp__show__show_plans', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
   });
 
@@ -333,7 +333,7 @@ describe('interactive-lockdown-guard.js', () => {
         { env: { CLAUDE_PROJECT_DIR: tmpDir } }
       );
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows Write when lockdown is disabled', async () => {
@@ -342,7 +342,7 @@ describe('interactive-lockdown-guard.js', () => {
         { env: { CLAUDE_PROJECT_DIR: tmpDir } }
       );
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('allows Agent when lockdown is disabled', async () => {
@@ -351,7 +351,7 @@ describe('interactive-lockdown-guard.js', () => {
         { env: { CLAUDE_PROJECT_DIR: tmpDir } }
       );
       const output = parseOutput(result.stdout);
-      assert.strictEqual(output?.decision, 'allow');
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('injects LOCKDOWN DISABLED warning into additionalContext', async () => {

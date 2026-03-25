@@ -202,7 +202,7 @@ async function main() {
 
   // Happy path: spawned sessions bypass the lockdown immediately (< 1ms)
   if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
-    process.stdout.write(JSON.stringify({ decision: 'allow' }));
+    process.stdout.write(JSON.stringify({ decision: 'approve' }));
     return;
   }
 
@@ -210,7 +210,7 @@ async function main() {
   if (isLockdownDisabled()) {
     const warning = '[LOCKDOWN DISABLED] The deputy-CTO lockdown is currently disabled. You have full tool access. Remember to re-enable via /lockdown on for proper GENTYR workflow.';
     process.stdout.write(JSON.stringify({
-      decision: 'allow',
+      decision: 'approve',
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         additionalContext: warning,
@@ -225,7 +225,7 @@ async function main() {
     if (BLOCKED_MCP_TOOLS.has(toolName)) {
       if (consumeBypassToken()) {
         // CTO approved — allow this one call
-        process.stdout.write(JSON.stringify({ decision: 'allow' }));
+        process.stdout.write(JSON.stringify({ decision: 'approve' }));
         return;
       }
       process.stdout.write(JSON.stringify({
@@ -239,7 +239,7 @@ async function main() {
     }
     const allowed = ALLOWED_MCP_PREFIXES.some(prefix => toolName.startsWith(prefix));
     if (allowed) {
-      process.stdout.write(JSON.stringify({ decision: 'allow' }));
+      process.stdout.write(JSON.stringify({ decision: 'approve' }));
       return;
     }
     // Block non-whitelisted MCP tools
@@ -257,14 +257,14 @@ async function main() {
   if (toolName === 'Agent' || toolName === 'Task') {
     const subagentType = event?.tool_input?.subagent_type || event?.tool_input?.subagentType || '';
     if (READONLY_SUBAGENT_TYPES.has(subagentType)) {
-      process.stdout.write(JSON.stringify({ decision: 'allow' }));
+      process.stdout.write(JSON.stringify({ decision: 'approve' }));
       return;
     }
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: `Deputy-CTO console: \`${toolName}(subagent_type='${subagentType}')\` is not available in interactive mode.\n\nOnly read-only sub-agents are allowed: ${[...READONLY_SUBAGENT_TYPES].join(', ')}.\n\nTo spawn code-modifying agents, create a task via mcp__todo-db__create_task.`,
+        permissionDecisionReason: `Deputy-CTO console: \`${toolName}(subagent_type='${subagentType}')\` is not available in interactive mode.\n\nOnly read-only sub-agents are allowed: ${[...READONLY_SUBAGENT_TYPES].join(', ')}.\n\nTo spawn code-modifying agents, create a task via mcp__todo-db__create_task.\nOr use /spawn-tasks for interactive task creation and spawning.`,
       },
     }));
     return;
@@ -289,7 +289,7 @@ async function main() {
 
   // Allowed tools pass through
   if (ALLOWED_TOOLS.has(toolName)) {
-    process.stdout.write(JSON.stringify({ decision: 'allow' }));
+    process.stdout.write(JSON.stringify({ decision: 'approve' }));
     return;
   }
 

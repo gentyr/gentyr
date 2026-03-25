@@ -42,14 +42,14 @@ async function main() {
   // Only fires for spawned sessions — interactive CTO sessions skip
   const agentId = process.env.CLAUDE_AGENT_ID;
   if (!agentId) {
-    process.stdout.write(JSON.stringify({ decision: 'allow' }));
+    process.stdout.write(JSON.stringify({ decision: 'approve' }));
     return;
   }
 
   // Dynamically import session-signals to get the current PROJECT_DIR
   const signalsModulePath = path.join(__dirname, 'lib', 'session-signals.js');
   if (!fs.existsSync(signalsModulePath)) {
-    process.stdout.write(JSON.stringify({ decision: 'allow' }));
+    process.stdout.write(JSON.stringify({ decision: 'approve' }));
     return;
   }
 
@@ -60,7 +60,7 @@ async function main() {
     readPendingSignals = signals.readPendingSignals;
   } catch (err) {
     console.error('[signal-reader] Failed to import session-signals:', err.message);
-    process.stdout.write(JSON.stringify({ decision: 'allow' }));
+    process.stdout.write(JSON.stringify({ decision: 'approve' }));
     return;
   }
 
@@ -70,12 +70,12 @@ async function main() {
     unreadCount = getUnreadCount(agentId, PROJECT_DIR);
   } catch (err) {
     console.error('[signal-reader] getUnreadCount error:', err.message);
-    process.stdout.write(JSON.stringify({ decision: 'allow' }));
+    process.stdout.write(JSON.stringify({ decision: 'approve' }));
     return;
   }
 
   if (unreadCount === 0) {
-    process.stdout.write(JSON.stringify({ decision: 'allow' }));
+    process.stdout.write(JSON.stringify({ decision: 'approve' }));
     return;
   }
 
@@ -85,12 +85,12 @@ async function main() {
     signals = readPendingSignals(agentId, PROJECT_DIR);
   } catch (err) {
     console.error('[signal-reader] readPendingSignals error:', err.message);
-    process.stdout.write(JSON.stringify({ decision: 'allow' }));
+    process.stdout.write(JSON.stringify({ decision: 'approve' }));
     return;
   }
 
   if (!signals || signals.length === 0) {
-    process.stdout.write(JSON.stringify({ decision: 'allow' }));
+    process.stdout.write(JSON.stringify({ decision: 'approve' }));
     return;
   }
 
@@ -99,7 +99,7 @@ async function main() {
   const additionalContext = formattedParts.join('\n\n---\n\n');
 
   process.stdout.write(JSON.stringify({
-    decision: 'allow',
+    decision: 'approve',
     hookSpecificOutput: {
       hookEventName: 'PostToolUse',
       additionalContext,
@@ -160,5 +160,5 @@ function formatSignal(sig, agentId) {
 
 main().catch((err) => {
   console.error('[signal-reader] Unhandled error:', err.message);
-  process.stdout.write(JSON.stringify({ decision: 'allow' }));
+  process.stdout.write(JSON.stringify({ decision: 'approve' }));
 });

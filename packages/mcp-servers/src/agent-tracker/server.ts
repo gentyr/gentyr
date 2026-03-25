@@ -2073,30 +2073,22 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
   let agentId = args.agent_id;
 
   if (!agentId && args.queue_id) {
-    // Look up agent_id from the queue DB via the queue item's associated session
+    // Look up agent_id directly from the queue DB's agent_id column (set by spawnQueueItem)
     if (fs.existsSync(QUEUE_DB_PATH)) {
-      let db;
+      let queueDb;
       try {
-        db = openReadonlyDb(QUEUE_DB_PATH);
-        // The queue item doesn't directly store agent_id, but we can search
-        // agent tracker history by correlating the queue item's spawn time
-        const row = db.prepare('SELECT id, title, agent_type, spawned_at FROM queue_items WHERE id = ?').get(args.queue_id) as { id: string; title: string; agent_type: string; spawned_at: string | null } | undefined;
+        queueDb = openReadonlyDb(QUEUE_DB_PATH);
+        const row = queueDb.prepare('SELECT agent_id FROM queue_items WHERE id = ?').get(args.queue_id) as { agent_id: string | null } | undefined;
         if (!row) {
           return { error: `Queue item not found: ${args.queue_id}` };
         }
-        // Attempt to find agent by matching agent type and recent spawn time
-        const history = readHistory();
-        const candidates = (history.agents ?? []).filter(a => {
-          if (row.spawned_at) {
-            const queueTime = new Date(row.spawned_at).getTime();
-            const agentTime = new Date(a.timestamp).getTime();
-            return Math.abs(queueTime - agentTime) < 60_000;
-          }
-          return false;
-        });
-        if (candidates.length > 0) agentId = candidates[0].id;
+        if (row.agent_id) {
+          agentId = row.agent_id;
+        } else {
+          return { error: `Queue item ${args.queue_id} has not been spawned yet (no agent_id)` };
+        }
       } finally {
-        try { db?.close(); } catch { /* best-effort */ }
+        try { queueDb?.close(); } catch { /* best-effort */ }
       }
     }
   }
@@ -2105,13 +2097,19 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
     return { error: 'Must provide agent_id or a resolvable queue_id' };
   }
 
-  // Find the session JSONL file
-  const sessionDir = getSessionDir(PROJECT_DIR);
-  if (!sessionDir) {
-    return { error: 'Session directory not found for this project' };
+  // Find the session JSONL file — use findSessionFile(agentRecord) which handles
+  // worktree session dirs; fall back to direct search when no tracker record exists
+  const history = readHistory();
+  const agentRecord = (history.agents ?? []).find((a: AgentRecord) => a.id === agentId);
+  let sessionFile: string | null = null;
+  if (agentRecord) {
+    sessionFile = findSessionFile(agentRecord);
+  } else {
+    const sessionDir = getSessionDir(PROJECT_DIR);
+    if (sessionDir) {
+      sessionFile = findSessionFileByAgentId(sessionDir, agentId);
+    }
   }
-
-  const sessionFile = findSessionFileByAgentId(sessionDir, agentId);
   if (!sessionFile) {
     return { error: `Session file not found for agent: ${agentId}` };
   }
@@ -2218,40 +2216,43 @@ async function getSessionActivitySummary(_args: GetSessionActivitySummaryArgs): 
     pid: number | null;
     spawned_at: string | null;
     lane: string;
+    agent_id: string | null;
   }
 
   let runningRows: RunningQueueRow[];
   try {
-    runningRows = db.prepare("SELECT id, title, agent_type, pid, spawned_at, lane FROM queue_items WHERE status = 'running' ORDER BY spawned_at ASC").all() as RunningQueueRow[];
+    runningRows = db.prepare("SELECT id, title, agent_type, pid, spawned_at, lane, agent_id FROM queue_items WHERE status = 'running' ORDER BY spawned_at ASC").all() as RunningQueueRow[];
   } finally {
     try { db.close(); } catch { /* best-effort */ }
   }
 
   const now = Date.now();
-  const sessionDir = getSessionDir(PROJECT_DIR);
   const history = readHistory();
 
   const summary = runningRows.map(row => {
     const elapsedMs = row.spawned_at ? now - new Date(row.spawned_at).getTime() : 0;
     const elapsedMinutes = Math.floor(elapsedMs / 60000);
 
-    // Attempt to resolve agent_id from tracker history by timestamp proximity
-    let agentId: string | null = null;
-    if (row.spawned_at) {
-      const spawnTime = new Date(row.spawned_at).getTime();
-      const candidate = (history.agents ?? []).find(a => {
-        const aTime = new Date(a.timestamp).getTime();
-        return Math.abs(spawnTime - aTime) < 60_000;
-      });
-      if (candidate) agentId = candidate.id;
-    }
+    // Use agent_id directly from the queue row (set by spawnQueueItem)
+    const agentId: string | null = row.agent_id ?? null;
 
     let lastTool: string | null = null;
     let lastActivity: string | null = null;
     let sessionId: string | null = null;
 
-    if (agentId && sessionDir) {
-      const sessionFile = findSessionFileByAgentId(sessionDir, agentId);
+    if (agentId) {
+      // Use findSessionFile(agentRecord) which handles worktree session dirs;
+      // fall back to direct search when no tracker record exists
+      const agentRecord = (history.agents ?? []).find((a: AgentRecord) => a.id === agentId);
+      let sessionFile: string | null = null;
+      if (agentRecord) {
+        sessionFile = findSessionFile(agentRecord);
+      } else {
+        const sessionDir = getSessionDir(PROJECT_DIR);
+        if (sessionDir) {
+          sessionFile = findSessionFileByAgentId(sessionDir, agentId);
+        }
+      }
       if (sessionFile) {
         sessionId = path.basename(sessionFile, '.jsonl');
         try {
@@ -2274,7 +2275,7 @@ async function getSessionActivitySummary(_args: GetSessionActivitySummaryArgs): 
     // Determine worktree path (if any)
     let worktreePath: string | null = null;
     if (agentId) {
-      const agentRecord = (history.agents ?? []).find(a => a.id === agentId);
+      const agentRecord = (history.agents ?? []).find((a: AgentRecord) => a.id === agentId);
       worktreePath = (agentRecord?.metadata?.worktreePath as string) ?? null;
     }
 
