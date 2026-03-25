@@ -516,6 +516,7 @@ function spawnAlertEscalation(alert) {
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'alert-escalation',
     source: 'hourly-automation',
+    priority: 'low',
     buildPrompt: (agentId) => `[Automation][alert-escalation][AGENT:${agentId}] ALERT RE-ESCALATION
 
 A persistent issue has NOT been resolved and requires CTO attention.
@@ -899,38 +900,42 @@ If the report matches ANY auto-escalation rule, skip to "If ESCALATING" - do not
 
 | ESCALATE to CTO | SELF-HANDLE | DISMISS |
 |-----------------|-------------|---------|
-| Breaking change to users | Issue already in todos | Already resolved |
-| Architectural decision needed | Similar issue recently fixed | Not a real problem |
-| Resource/budget implications | Clear fix, low risk | False positive |
-| Cross-team coordination | Obvious code quality fix | Duplicate report |
-| Uncertain about approach | Documentation/test gap | Informational only |
-| High priority + ambiguity | Performance fix clear path | Outdated concern |
-| Policy/process change | Routine maintenance | |
-| | Isolated bug fix | |
+| Active security breach | Breaking change (fix path clear) | Already resolved |
+| Resource/budget implications | Architecture (precedent exists) | Not a real problem |
+| Cross-team coordination | Issue already in todos | False positive |
+| Policy/process change | Similar issue recently fixed | Duplicate report |
+|  | Clear fix, low risk | Informational only |
+|  | Obvious code quality fix | Outdated concern |
+|  | Documentation/test gap | Style suggestions |
+|  | Performance fix clear path | Minor improvements |
+|  | Isolated bug fix | Low-severity patterns |
+|  | Uncertain but low-impact | Tangential observations |
 
 **Decision Rules:**
-- **>80% confident** you know the right action → self-handle
-- **<80% confident** OR sensitive → escalate
-- **Not actionable** (already fixed, false positive, duplicate) → dismiss
+- **>70% confident** you know the right action AND issue is not high-severity → self-handle
+- **<70% confident** AND high-severity → escalate
+- **Not actionable** (already fixed, false positive, duplicate, low-impact) → dismiss
+- **Default to dismiss** for informational-only reports, minor suggestions, and low-severity patterns
+- Target distribution: dismiss ~40%, self-handle ~40%, escalate ~20%
 
 ### 2f: Take Action
 
 **If SELF-HANDLING:**
 \`\`\`
-// Create an urgent task — dispatched immediately by the urgent dispatcher
+// Create a task — processed by the task runner on next cycle
 mcp__todo-db__create_task({
   section: "CODE-REVIEWER",  // Choose based on task type (see section mapping below)
   title: "Brief actionable title",
   description: "Full context: what to fix, where, why, and acceptance criteria",
   assigned_by: "deputy-cto",
-  priority: "urgent"
+  priority: "normal"
 })
 
 // Complete the triage
 mcp__agent-reports__complete_triage({
   id: "<report-id>",
   status: "self_handled",
-  outcome: "Created urgent task to [brief description of fix]"
+  outcome: "Created task to [brief description of fix]"
 })
 \`\`\`
 
@@ -988,6 +993,9 @@ Use the appropriate type when calling \`add_question\`:
 - Always call \`complete_triage\` when done
 - Be thorough in investigation but efficient in execution
 - When self-handling, the spawned task prompt should be detailed enough to succeed independently
+- PREFER dismissing or self-handling over escalating — only escalate when CTO input is truly required
+- When self-handling, create tasks with priority "normal" (not "urgent") unless it is a security or production issue
+- After self-handling code changes, also create a user-alignment check task in INVESTIGATOR & PLANNER section
 
 ## Output
 
@@ -1002,6 +1010,7 @@ After processing all reports, output a summary:
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'report-triage',
     source: 'hourly-automation',
+    priority: 'low',
     buildPrompt: (agentId) => `[Automation][report-triage][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials },
     metadata: {},
@@ -1094,6 +1103,7 @@ Key tools: \`page_get_snapshot\`, \`page_click\`, \`mcp__todo-db__*\`, \`mcp__sp
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'claudemd-refactor',
     source: 'hourly-automation',
+    priority: 'low',
     buildPrompt: (agentId) => `[Automation][claudemd-refactor][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials },
     metadata: {},
@@ -1164,6 +1174,7 @@ function spawnLintFixer(lintOutput) {
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'lint-fixer',
     source: 'hourly-automation',
+    priority: 'low',
     buildPrompt: (agentId) => `[Automation][lint-fixer][AGENT:${agentId}] You are an orchestrator fixing LINT ERRORS.
 
 ## IMMEDIATE ACTION
@@ -1343,14 +1354,14 @@ If the task does NOT align with specs, plans, or CTO requests:
 - Explain in the completion why you declined
 
 ### Step 2: Create Investigator Task FIRST
-Always start by creating an urgent investigator task:
+Always start by creating an investigator task:
 \`\`\`
 mcp__todo-db__create_task({
   section: "INVESTIGATOR & PLANNER",
   title: "Investigate: ${task.title}",
   description: "You are the INVESTIGATOR. Analyze the following task and create a detailed implementation plan with specific sub-tasks:\\n\\nTask: ${task.title}\\n${task.description || ''}\\n\\nInvestigate the codebase, read relevant specs, and create TODO items in the appropriate sections via mcp__todo-db__create_task for each sub-task you identify.",
   assigned_by: "deputy-cto",
-  priority: "urgent"
+  priority: "normal"
 })
 \`\`\`
 
@@ -1621,6 +1632,7 @@ function spawnTaskAgent(task) {
     hookType: HOOK_TYPES.TASK_RUNNER,
     tagContext: `task-runner-${mapping.agent}`,
     source: 'hourly-automation',
+    priority: 'low',
     buildPrompt: (agentId) => mapping.agent === 'deputy-cto'
       ? buildDeputyCtoTaskPrompt(task, agentId)
       : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath),
@@ -1703,6 +1715,7 @@ function rescueAbandonedWorktrees() {
       hookType: HOOK_TYPES.TASK_RUNNER,
       tagContext: 'rescue-project-manager',
       source: 'hourly-automation',
+      priority: 'low',
       buildPrompt: (agentId) => `[Automation][rescue-project-manager][AGENT:${agentId}] You are a project-manager rescuing abandoned work in a worktree.
 
 ## Context
@@ -1844,6 +1857,7 @@ function spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'preview-promotion',
     source: 'hourly-automation',
+    priority: 'low',
     buildPrompt: (agentId) => `[Automation][preview-promotion][AGENT:${agentId}] You are the PREVIEW -> STAGING Promotion Pipeline orchestrator.
 
 ## Mission
@@ -1935,6 +1949,7 @@ function spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit) {
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'staging-promotion',
     source: 'hourly-automation',
+    priority: 'low',
     buildPrompt: (agentId) => `[Automation][staging-promotion][AGENT:${agentId}] You are the STAGING -> PRODUCTION Promotion Pipeline orchestrator.
 
 ## Mission
@@ -2160,14 +2175,14 @@ Check all deployment infrastructure for staging environment health. Query servic
    - category: "performance" or "blocker" based on severity
    - priority: "normal" or "high" based on severity
 
-2. For actionable issues, create an urgent fix task:
+2. For actionable issues, create a fix task:
    \`\`\`
    mcp__todo-db__create_task({
      section: "CODE-REVIEWER",
      title: "Fix staging health issue: [summary]",
      description: "[Detailed description of the issue and how to fix it. Include all relevant context: error messages, service IDs, etc.]",
      assigned_by: "staging-health-monitor",
-     priority: "urgent"
+     priority: "normal"
    })
    \`\`\`
 
@@ -2198,6 +2213,7 @@ Complete within 10 minutes. This is a read-only monitoring check.`;
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'staging-health-monitor',
     source: 'hourly-automation',
+    priority: 'low',
     buildPrompt: (agentId) => `[Automation][staging-health-monitor][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials },
     metadata: {},
@@ -2273,14 +2289,14 @@ Check all deployment infrastructure for production environment health. This is C
    - recommendation: Your recommended fix or action based on the health findings
    - This creates a CTO decision task visible in /deputy-cto
 
-3. For actionable issues, create an urgent fix task:
+3. For actionable issues, create a fix task:
    \`\`\`
    mcp__todo-db__create_task({
      section: "CODE-REVIEWER",
      title: "Fix production health issue: [summary]",
      description: "[Detailed description of the issue and how to fix it. Include all relevant context: error messages, service IDs, etc.]",
      assigned_by: "production-health-monitor",
-     priority: "urgent"
+     priority: "normal"
    })
    \`\`\`
 
@@ -2311,6 +2327,7 @@ Complete within 10 minutes. This is a read-only monitoring check.`;
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'production-health-monitor',
     source: 'hourly-automation',
+    priority: 'low',
     buildPrompt: (agentId) => `[Automation][production-health-monitor][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials },
     metadata: {},
@@ -2406,7 +2423,10 @@ mcp__cto-reports__report_to_cto({
 After creating TODO items and CTO reports, provide a summary and END YOUR SESSION.
 Do NOT implement fixes yourself.
 
-Focus on finding SYSTEMIC issues across the codebase, not just isolated violations.`;
+Focus on finding SYSTEMIC issues across the codebase, not just isolated violations.
+
+**RESTRAINT**: Only create TODO items for CRITICAL violations (security, data exposure, spec G001/G004 violations). Do NOT create tasks for code style, minor improvements, or low-severity patterns. Document minor findings in your summary report instead. Maximum 3 tasks per scan.
+`;
 
   ensureCredentials();
   enqueueSession({
@@ -2415,7 +2435,8 @@ Focus on finding SYSTEMIC issues across the codebase, not just isolated violatio
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'standalone-antipattern-hunter',
     source: 'hourly-automation',
-    prompt,
+    priority: 'low',
+    buildPrompt: () => promptBody,
     extraEnv: { ...resolvedCredentials },
     metadata: {},
     projectDir: PROJECT_DIR,
@@ -2483,7 +2504,10 @@ Provide a compliance summary:
 - Violations found (count and severity)
 - Overall compliance status for ${spec.id}
 
-Do NOT implement fixes yourself. Only report and create TODOs.`;
+Do NOT implement fixes yourself. Only report and create TODOs.
+
+**RESTRAINT**: Only create TODO items for violations that could cause data loss, security exposure, or architectural degradation. Document minor findings in your summary report only. Maximum 2 tasks per scan.
+`;
 
   ensureCredentials();
   enqueueSession({
@@ -2492,7 +2516,8 @@ Do NOT implement fixes yourself. Only report and create TODOs.`;
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'standalone-compliance-checker',
     source: 'hourly-automation',
-    prompt,
+    priority: 'low',
+    buildPrompt: () => promptBody,
     extraEnv: { ...resolvedCredentials },
     metadata: { specId: spec.id, specPath: spec.path },
     projectDir: PROJECT_DIR,
@@ -3435,6 +3460,7 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
               hookType: HOOK_TYPES.HOURLY_AUTOMATION,
               tagContext: 'stale-work-report',
               source: 'hourly-automation',
+              priority: 'low',
               buildPrompt: (agentId) => `[Automation][stale-work-report][AGENT:${agentId}] Report this stale work finding to the deputy-CTO.
 
 Use mcp__agent-reports__report_to_deputy_cto with:
@@ -3752,6 +3778,7 @@ Then exit.`,
             hookType: HOOK_TYPES.HOURLY_AUTOMATION,
             tagContext: 'demo-repair',
             source: 'hourly-automation',
+            priority: 'low',
             buildPrompt: (agentId) => {
               // Query prerequisites for the failed scenario
               let prereqBlock = '';
@@ -3847,6 +3874,7 @@ Then exit.`,
           hookType: HOOK_TYPES.HOURLY_AUTOMATION,
           tagContext: 'demo-validation-report',
           source: 'hourly-automation',
+          priority: 'low',
           buildPrompt: (agentId) => [
             `[Automation][demo-validation-report][AGENT:${agentId}] Report the following demo validation failures to the deputy-CTO using mcp__agent-reports__report_to_deputy_cto.`,
             ``,

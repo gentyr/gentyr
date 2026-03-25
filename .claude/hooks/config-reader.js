@@ -19,36 +19,36 @@ const CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-confi
 
 // Hardcoded defaults (minutes) - used when config file is missing or corrupted
 const DEFAULTS = {
-  hourly_tasks: 55,
-  triage_check: 5,
-  antipattern_hunter: 360,
+  hourly_tasks: 180,                   // 3h cycle
+  triage_check: 30,                    // 30min
+  antipattern_hunter: 1440,            // daily
   schema_mapper: 1440,
-  lint_checker: 30,
-  todo_maintenance: 15,
-  task_runner: 60,
-  triage_per_item: 60,
-  preview_promotion: 360,
-  staging_promotion: 1200,
-  staging_health_monitor: 180,
-  production_health_monitor: 60,
-  standalone_antipattern_hunter: 180,  // 3 hours
-  standalone_compliance_checker: 60,   // 1 hour
-  user_feedback: 120,                  // 2 hours
-  test_failure_reporter: 120,          // 2h per-suite spawn cooldown
+  lint_checker: 180,                   // 3h
+  todo_maintenance: 60,                // 1h
+  task_runner: 240,                    // 4h
+  triage_per_item: 180,                // 3h per-item
+  preview_promotion: 720,              // 12h
+  staging_promotion: 1440,             // 24h
+  staging_health_monitor: 480,         // 8h
+  production_health_monitor: 240,      // 4h
+  standalone_antipattern_hunter: 1440, // daily
+  standalone_compliance_checker: 720,  // 12h
+  user_feedback: 720,                  // 12h
+  test_failure_reporter: 480,          // 8h per-suite spawn cooldown
   pre_commit_review: 5,                // 5min approval token expiry
   compliance_checker_file: 10080,      // 7 days in minutes (per-file cooldown)
   compliance_checker_spec: 10080,      // 7 days in minutes (per-spec cooldown)
-  branch_drift_check: 30,              // 30 minutes
-  session_reviver: 10,                  // 10 minutes
-  daily_feedback: 1440,                 // 24 hours
-  usage_optimizer: 5,                   // 5 minutes
-  key_sync: 5,                          // 5 minutes
-  version_watch: 5,                     // 5 minutes
-  pr_sweep: 10,                         // 10 minutes
-  worktree_cleanup: 30,                 // 30 minutes
-  abandoned_worktree_rescue: 30,        // 30 minutes
-  stale_work_detector: 1440,            // 24 hours
-  demo_validation: 360,                // 6 hours
+  branch_drift_check: 120,             // 2h
+  session_reviver: 10,                 // 10 minutes
+  daily_feedback: 2880,                // 48 hours
+  usage_optimizer: 5,                  // 5 minutes
+  key_sync: 5,                         // 5 minutes
+  version_watch: 5,                    // 5 minutes
+  pr_sweep: 60,                        // 1h
+  worktree_cleanup: 30,                // 30 minutes
+  abandoned_worktree_rescue: 120,      // 2h
+  stale_work_detector: 2880,           // 48 hours
+  demo_validation: 1440,               // daily
 };
 
 /**

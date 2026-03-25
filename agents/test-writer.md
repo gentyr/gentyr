@@ -319,9 +319,10 @@ This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your sec
 2. **Before starting work**: `mcp__todo-db__start_task({ id: "task-uuid" })`
 3. **After completing work**: `mcp__todo-db__complete_task({ id: "task-uuid" })`
 4. **Creating tasks for others** (ONLY for critical gaps):
-   - Critical paths lacking test coverage (security, auth, data integrity)
-   - Disabled or weakened tests (violations)
-   - Document non-critical suggestions in your summary instead
+   - Critical security paths completely lacking test coverage
+   - Tests that were actively disabled (testing policy violations)
+   - Maximum 1 task per session
+   - Document all non-critical coverage suggestions in your summary instead
 ```javascript
 mcp__todo-db__create_task({
   section: "CODE-REVIEWER",

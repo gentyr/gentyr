@@ -85,7 +85,7 @@ mcp__todo-db__create_task({
   title: 'Specific task description',
   description: 'Detailed context: what to do, acceptance criteria, relevant files',
   assigned_by: 'persistent-monitor',
-  priority: 'urgent',
+  priority: 'normal',
   persistent_task_id: '<your persistent task ID>'
 })
 ```
