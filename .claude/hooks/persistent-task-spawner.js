@@ -154,26 +154,17 @@ Parent TODO Task ID: ${task.parent_todo_task_id || 'none'}`;
       ttlMs: 0, // No TTL expiration
       prompt,
       projectDir: PROJECT_DIR,
-      extraEnv: JSON.stringify({
+      extraEnv: {
         GENTYR_PERSISTENT_TASK_ID: taskId,
         GENTYR_PERSISTENT_MONITOR: 'true',
-      }),
-      metadata: JSON.stringify({
+      },
+      metadata: {
         persistentTaskId: taskId,
         parentTodoTaskId: task.parent_todo_task_id || null,
-      }),
+      },
     });
 
     debugLog('persistent-task-spawner', 'monitor_spawn', { taskId, queueId: result.queueId, title: task.title });
-
-    // Update the persistent task with queue info
-    try {
-      const ptDbWrite = new Database(PT_DB_PATH);
-      ptDbWrite.pragma('busy_timeout = 3000');
-      ptDbWrite.prepare("UPDATE persistent_tasks SET monitor_pid = NULL, monitor_agent_id = NULL WHERE id = ?")
-        .run(taskId);
-      ptDbWrite.close();
-    } catch (_) { /* non-fatal */ }
 
     console.log(JSON.stringify({
       hookSpecificOutput: {

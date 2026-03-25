@@ -247,9 +247,6 @@ export function reapSyncPass(db) {
     // Gate lane exemption — gate agents are lightweight, handled separately
     if (item.lane === 'gate') continue;
 
-    // Persistent lane exemption — long-running by design
-    if (item.lane === 'persistent') continue;
-
     if (!item.pid) continue;
 
     if (!isPidAlive(item.pid)) {
@@ -288,6 +285,9 @@ export function reapSyncPass(db) {
         const progressFile = path.join(projectDir, '.claude', 'state', 'agent-progress', `${item.agent_id}.json`);
         fs.unlinkSync(progressFile);
       } catch (_) { /* non-fatal — file may not exist */ }
+    } else if (item.lane === 'persistent') {
+      // Persistent lane exemption — long-running by design, skip stuck-alive detection
+      continue;
     } else if (item.spawned_at) {
       // PID alive — check if stuck (elapsed > hard kill threshold)
       const elapsed = now - new Date(item.spawned_at).getTime();

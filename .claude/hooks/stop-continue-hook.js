@@ -344,7 +344,7 @@ function inlineRevive({ sessionId, agentId, worktreePath, quotaMessage }) {
       mcpConfig: path.join(effectiveCwd, '.mcp.json'),
       projectDir,
       worktreePath: worktreePath || null,
-      extraEnv: Object.keys(extraEnvObj).length > 0 ? JSON.stringify(extraEnvObj) : undefined,
+      extraEnv: Object.keys(extraEnvObj).length > 0 ? extraEnvObj : undefined,
       metadata: {
         originalAgentId: agentId,
         originalSessionId: sessionId,

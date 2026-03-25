@@ -97,9 +97,21 @@ async function main() {
 
   // Read persistent task
   const task = db.prepare("SELECT * FROM persistent_tasks WHERE id = ?").get(PERSISTENT_TASK_ID);
-  if (!task || task.status !== 'active') {
+  if (!task) {
     db.close();
     console.log(JSON.stringify({ }));
+    process.exit(0);
+  }
+
+  // If task is no longer active, tell the monitor to exit immediately
+  if (task.status !== 'active') {
+    db.close();
+    console.log(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: `[PERSISTENT MONITOR — EXIT NOW] Your persistent task "${task.title}" (${PERSISTENT_TASK_ID}) has status "${task.status}". You MUST stop all work and exit immediately. Do NOT create new sub-tasks or continue monitoring. Call summarize_work and exit.`,
+      },
+    }));
     process.exit(0);
   }
 

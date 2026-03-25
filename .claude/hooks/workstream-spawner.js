@@ -250,7 +250,7 @@ process.stdin.on('end', () => {
       lane: 'gate',
       priority: 'normal',
       projectDir: PROJECT_DIR,
-      metadata: JSON.stringify({ taskId, section: taskSection, assessmentFor: taskTitle }),
+      metadata: { taskId, section: taskSection, assessmentFor: taskTitle },
       buildPrompt: (agentId) => buildAssessmentPrompt(
         agentId,
         { id: taskId, title: taskTitle, section: taskSection, description: taskDescription },
