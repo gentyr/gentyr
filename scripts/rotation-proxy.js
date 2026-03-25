@@ -901,6 +901,74 @@ function createProxyServer(certs) {
 }
 
 // ---------------------------------------------------------------------------
+// Credential file watcher — detect /login in any session
+// ---------------------------------------------------------------------------
+
+let _credWatchTimer = null;
+const CRED_WATCH_DEBOUNCE_MS = 1000;
+
+/**
+ * Watch ~/.claude/.credentials.json for changes.
+ * When a user runs /login in any session, Claude Code writes fresh tokens here.
+ * We trigger an immediate syncKeys() so the proxy starts using the new token
+ * for ALL sessions — other sessions don't need to re-auth.
+ *
+ * syncKeys() also calls updateActiveCredentials() during pre-expiry swap,
+ * which writes the new token back to Keychain. Claude Code's internal
+ * credential re-read (SRA/r6T) picks it up from Keychain, so existing
+ * sessions resume without /login.
+ */
+function watchCredentials() {
+  const credPath = path.join(os.homedir(), '.claude', '.credentials.json');
+  if (!fs.existsSync(credPath)) {
+    proxyLog('credential_watch_skipped', { reason: 'file_not_found', path: credPath });
+    return;
+  }
+
+  try {
+    const watcher = fs.watch(credPath, { persistent: false }, (eventType) => {
+      // On macOS (kqueue), 'rename' means the inode changed — the watcher is now
+      // dead and will never fire again. Close it and re-create after sync completes.
+      const needsRewatch = eventType === 'rename';
+
+      if (_credWatchTimer) return; // debounce
+      _credWatchTimer = setTimeout(async () => {
+        _credWatchTimer = null;
+        try {
+          proxyLog('credential_file_changed', { event_type: eventType });
+          const result = await syncKeys();
+          if (result.keysAdded > 0 || result.keysUpdated > 0 || result.tokensRefreshed > 0) {
+            proxyLog('credential_watch_synced', {
+              keys_added: result.keysAdded,
+              keys_updated: result.keysUpdated,
+              tokens_refreshed: result.tokensRefreshed,
+            });
+          }
+        } catch (err) {
+          proxyLog('credential_watch_sync_failed', { error: err.message });
+        }
+        // Re-establish watcher after atomic rename (old inode is gone)
+        if (needsRewatch) {
+          try { watcher.close(); } catch {}
+          proxyLog('credential_watch_restarting', { reason: 'rename_rewatch' });
+          setTimeout(() => watchCredentials(), 1000);
+        }
+      }, CRED_WATCH_DEBOUNCE_MS);
+    });
+
+    watcher.on('error', () => {
+      try { watcher.close(); } catch {}
+      proxyLog('credential_watch_restarting', { reason: 'watcher_error' });
+      setTimeout(() => watchCredentials(), 2000);
+    });
+
+    proxyLog('credential_watch_started', { path: credPath });
+  } catch (err) {
+    proxyLog('credential_watch_failed', { error: err.message });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
 
@@ -952,6 +1020,9 @@ async function main() {
   // Clean old log entries at startup and hourly
   cleanupOldLogEntries();
   setInterval(cleanupOldLogEntries, 60 * 60 * 1000).unref();
+
+  // Watch credential file for /login events — enables cross-session token sharing
+  watchCredentials();
 
   const server = createProxyServer(certs);
 
