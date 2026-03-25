@@ -83,6 +83,14 @@ const ALLOWED_MCP_PREFIXES = [
 ];
 
 /**
+ * Specific MCP tools blocked even within allowed prefixes.
+ * These require CTO bypass approval — they change system-level settings.
+ */
+const BLOCKED_MCP_TOOLS = new Set([
+  'mcp__agent-tracker__set_max_concurrent_sessions',  // Changing concurrency limits
+]);
+
+/**
  * Bash commands blocked in interactive mode.
  * These are write/mutate operations the deputy-CTO should delegate to agents.
  */
@@ -167,8 +175,19 @@ async function main() {
     return;
   }
 
-  // MCP tools: whitelist by server prefix
+  // MCP tools: whitelist by server prefix, with individual blocklist
   if (toolName.startsWith('mcp__')) {
+    // Check individual blocklist first (requires CTO bypass)
+    if (BLOCKED_MCP_TOOLS.has(toolName)) {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: `Deputy-CTO console: \`${toolName}\` requires CTO bypass approval.\n\nThis tool changes system-level settings. Request a bypass via mcp__deputy-cto__request_bypass.`,
+        },
+      }));
+      return;
+    }
     const allowed = ALLOWED_MCP_PREFIXES.some(prefix => toolName.startsWith(prefix));
     if (allowed) {
       process.stdout.write(JSON.stringify({ decision: 'allow' }));
