@@ -84,6 +84,9 @@ async function runHook(hookInput, opts = {}) {
     if (opts.env) {
       spawnOpts.env = { ...process.env, ...opts.env };
     }
+    if (opts.cwd) {
+      spawnOpts.cwd = opts.cwd;
+    }
 
     const child = spawn('node', [hookPath], spawnOpts);
 
@@ -584,6 +587,67 @@ describe('main-tree-commit-guard.js (PreToolUse hook)', () => {
       assert.strictEqual(output.allow, true);
     });
   });
+
+  describe('worktree detection with CLAUDE_PROJECT_DIR pointing to main repo', () => {
+    // These tests verify the fix for the PROJECT_DIR worktree resolution bug.
+    // When CLAUDE_PROJECT_DIR points to the main repo root but the agent's
+    // actual cwd is a worktree, the hook should detect the worktree from cwd
+    // and allow operations.
+
+    it('allows git add in worktree when CLAUDE_PROJECT_DIR is main repo', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'git add .' },
+      }, {
+        env: {
+          CLAUDE_PROJECT_DIR: mainTree.path,
+          CLAUDE_SPAWNED_SESSION: 'true',
+        },
+        cwd: worktree.path,
+      });
+
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output.allow, true,
+        'Should allow git add when cwd is a worktree, even if CLAUDE_PROJECT_DIR points to main repo');
+      assert.strictEqual(output.permissionDecision, undefined,
+        'Should not have deny decision');
+    });
+
+    it('allows git commit in worktree when CLAUDE_PROJECT_DIR is main repo', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'git commit -m "worktree commit"' },
+      }, {
+        env: {
+          CLAUDE_PROJECT_DIR: mainTree.path,
+          CLAUDE_SPAWNED_SESSION: 'true',
+        },
+        cwd: worktree.path,
+      });
+
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output.allow, true,
+        'Should allow git commit when cwd is a worktree');
+    });
+
+    it('still blocks git add in main tree when CLAUDE_PROJECT_DIR matches cwd', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'git add .' },
+      }, {
+        env: {
+          CLAUDE_PROJECT_DIR: mainTree.path,
+          CLAUDE_SPAWNED_SESSION: 'true',
+        },
+        cwd: mainTree.path,
+      });
+
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output.permissionDecision, 'deny',
+        'Should block git add when both CLAUDE_PROJECT_DIR and cwd are main tree');
+    });
+  });
+
 });
 
 // ============================================================================
