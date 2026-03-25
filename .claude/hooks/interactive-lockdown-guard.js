@@ -116,6 +116,29 @@ const BLOCKED_BASH_PATTERNS = [
 ];
 
 /**
+ * Check if a valid CTO bypass token exists (consumed on use).
+ * Mirrors the check in block-no-verify.js but without HMAC (workflow guard, not security).
+ * @returns {boolean}
+ */
+function consumeBypassToken() {
+  try {
+    const tokenPath = path.join(PROJECT_DIR, '.claude', 'bypass-approval-token.json');
+    if (!fs.existsSync(tokenPath)) return false;
+    const token = JSON.parse(fs.readFileSync(tokenPath, 'utf8'));
+    if (!token.code || !token.expires_timestamp) return false;
+    if (Date.now() > token.expires_timestamp) {
+      fs.writeFileSync(tokenPath, '{}');
+      return false;
+    }
+    // Valid — consume (one-time use)
+    fs.writeFileSync(tokenPath, '{}');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Read automation-config.json to check if lockdown is disabled.
  * Returns false (lockdown enabled) if the file cannot be read.
  * @returns {boolean}
@@ -177,8 +200,13 @@ async function main() {
 
   // MCP tools: whitelist by server prefix, with individual blocklist
   if (toolName.startsWith('mcp__')) {
-    // Check individual blocklist first (requires CTO bypass)
+    // Check individual blocklist (requires CTO bypass token)
     if (BLOCKED_MCP_TOOLS.has(toolName)) {
+      if (consumeBypassToken()) {
+        // CTO approved — allow this one call
+        process.stdout.write(JSON.stringify({ decision: 'allow' }));
+        return;
+      }
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',

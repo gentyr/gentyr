@@ -533,6 +533,34 @@ export async function syncKeys(log) {
     }
   }
 
+  // Token TTL heartbeat — log expiration countdown for all live keys
+  try {
+    const ttlParts = [];
+    for (const [keyId, keyData] of Object.entries(state.keys)) {
+      if (keyData.status === 'tombstone' || keyData.status === 'merged' || keyData.status === 'invalid') continue;
+      let ttlStr;
+      if (!keyData.expiresAt) {
+        ttlStr = 'no-expiry';
+      } else {
+        const remainingMs = keyData.expiresAt - now;
+        if (remainingMs <= 0) {
+          ttlStr = 'expired';
+        } else {
+          const mins = Math.floor(remainingMs / 60000);
+          ttlStr = mins >= 60 ? `${Math.floor(mins / 60)}h${mins % 60}m` : `${mins}m`;
+        }
+      }
+      const marker = keyId === state.active_key_id ? '*' : '';
+      ttlParts.push(`${keyId.slice(0, 8)}${marker}(${ttlStr})`);
+    }
+    if (ttlParts.length > 0) {
+      const heartbeatLine = `[${new Date(now).toISOString()}] token_ttl_heartbeat: ${ttlParts.join(' ')}\n`;
+      fs.appendFileSync(ROTATION_LOG_PATH, heartbeatLine, 'utf8');
+    }
+  } catch {
+    // Non-fatal — heartbeat is informational only
+  }
+
   // Garbage-collect dead keys
   pruneDeadKeys(state, logFn);
 
