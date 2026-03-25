@@ -478,7 +478,7 @@ function spawnFeedbackAgent(mcpConfigPath, prompt, sessionId, personaName, optio
       FEEDBACK_FEATURE_ID: options.featureId || '',
       FEEDBACK_FEATURE_NAME: options.featureName || '',
     },
-    priority: 'normal',
+    priority: 'low',
     ttlMs: 60 * 60 * 1000, // 1 hour TTL for feedback sessions
   });
 

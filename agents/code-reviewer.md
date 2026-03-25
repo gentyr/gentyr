@@ -76,10 +76,12 @@ This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your sec
 
 1. **Before starting work**: `mcp__todo-db__start_task({ id: "task-uuid" })`
 2. **After completing work**: `mcp__todo-db__complete_task({ id: "task-uuid" })`
-3. **Creating tasks for others** (ONLY for critical issues):
-   - Security vulnerabilities or architecture spec violations
-   - Do NOT create tasks for style, refactoring, or nice-to-have improvements
-   - Document suggestions in your review summary instead
+3. **Creating tasks for others** (ONLY for critical blocking issues):
+   - Security vulnerabilities requiring immediate fix
+   - Spec violations that break architectural invariants (G001-G011)
+   - Maximum 1 task per review session
+   - Do NOT create tasks for: style issues, refactoring suggestions, test coverage gaps, or improvements
+   - Document all non-critical suggestions in your review summary instead
 ```javascript
 mcp__todo-db__create_task({
   section: "INVESTIGATOR & PLANNER",

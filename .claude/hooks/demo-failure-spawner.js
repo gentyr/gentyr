@@ -179,7 +179,7 @@ function spawnRepairAgent(scenario) {
       hookType: HOOK_TYPES.DEMO_FAILURE,
       tagContext: 'task-runner-demo-manager',
       source: 'demo-failure-spawner',
-      priority: 'normal',
+      priority: 'low',
       cwd: worktreePath,
       worktreePath,
       projectDir: PROJECT_DIR,

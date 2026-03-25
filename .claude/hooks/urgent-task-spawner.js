@@ -202,6 +202,7 @@ function evaluateQuotaGating(priority) {
  * Build prompt for deputy-cto tasks (mirrors hourly-automation.js:1289-1369)
  */
 function buildDeputyCtoTaskPrompt(task, agentId) {
+  const isCtoTask = task.assigned_by === 'cto' || task.assigned_by === 'human';
   return `[Automation][task-runner-deputy-cto][AGENT:${agentId}] You are the Deputy-CTO processing a high-level task assignment.
 
 ## Task Details
@@ -209,7 +210,7 @@ function buildDeputyCtoTaskPrompt(task, agentId) {
 - **Task ID**: ${task.id}
 - **Section**: ${task.section}
 - **Title**: ${task.title}
-- **Priority**: URGENT (spawned immediately by urgent-task-spawner hook)
+- **Priority**: ${isCtoTask ? 'CTO (immediate)' : 'Normal'} (spawned by urgent-task-spawner hook)
 ${task.description ? `- **Description**: ${task.description}` : ''}
 
 ## Your Mission
@@ -230,14 +231,14 @@ If the task does NOT align with specs, plans, or CTO requests:
 - Explain in the completion why you declined
 
 ### Step 2: Create Investigator Task FIRST
-Always start by creating an urgent investigator task:
+Always start by creating an investigator task:
 \`\`\`
 mcp__todo-db__create_task({
   section: "INVESTIGATOR & PLANNER",
   title: "Investigate: ${task.title}",
   description: "You are the INVESTIGATOR. Analyze the following task and create a detailed implementation plan with specific sub-tasks:\\n\\nTask: ${task.title}\\n${task.description || ''}\\n\\nInvestigate the codebase, read relevant specs, and create TODO items in the appropriate sections via mcp__todo-db__create_task for each sub-task you identify.",
   assigned_by: "deputy-cto",
-  priority: "urgent"
+  priority: "normal"
 })
 \`\`\`
 
@@ -285,14 +286,15 @@ This will automatically create a follow-up verification task.
  * Build prompt for standard task runner (simplified from hourly-automation.js:1371-1516)
  */
 function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
-  const taskDetails = `[Automation][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing an URGENT TODO task.
+  const isCtoTask = task.assigned_by === 'cto' || task.assigned_by === 'human';
+  const taskDetails = `[Automation][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing a TODO task.
 
 ## Task Details
 
 - **Task ID**: ${task.id}
 - **Section**: ${task.section}
 - **Title**: ${task.title}
-- **Priority**: URGENT (spawned immediately by urgent-task-spawner hook)
+- **Priority**: ${isCtoTask ? 'CTO (immediate)' : 'Normal'} (spawned by urgent-task-spawner hook)
 ${task.description ? `- **Description**: ${task.description}` : ''}`;
 
   const worktreeNote = worktreePath ? `
@@ -451,7 +453,7 @@ async function spawnTaskAgent(task) {
 
   // Determine if this is a CTO-directed task — use highest priority
   const isCtoTask = task.assigned_by === 'cto' || task.assigned_by === 'human';
-  const queuePriority = isCtoTask ? 'cto' : 'urgent';
+  const queuePriority = isCtoTask ? 'cto' : 'normal';
 
   if (isCtoTask) {
     log(`CTO task detected (assigned_by: ${task.assigned_by}) — using cto priority for task ${task.id}`);
@@ -472,7 +474,7 @@ async function spawnTaskAgent(task) {
 
   try {
     const result = enqueueSession({
-      title: `${isCtoTask ? 'CTO task' : 'Urgent task'}: ${mapping.agent} - ${task.title}`,
+      title: `${isCtoTask ? 'CTO task' : 'Task'}: ${mapping.agent} - ${task.title}`,
       agentType: mapping.agentType,
       hookType: HOOK_TYPES.TASK_RUNNER,
       tagContext: `task-runner-${mapping.agent}`,
