@@ -2747,10 +2747,60 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
             log(`Persistent monitor health: failed to re-enqueue for "${task.title}": ${err.message}`);
           }
         } else if (task.last_heartbeat) {
-          // PID alive but check for stale heartbeat (> 30 minutes)
+          // PID alive but check for stale heartbeat
           const heartbeatAge = Date.now() - new Date(task.last_heartbeat).getTime();
-          if (heartbeatAge > 30 * 60 * 1000) {
-            log(`Persistent monitor health: "${task.title}" has stale heartbeat (${Math.round(heartbeatAge / 60000)}min) — monitor may be stuck`);
+          const staleKillMinutes = (config.persistent_monitor_stale_kill_minutes != null)
+            ? config.persistent_monitor_stale_kill_minutes
+            : 30;
+          const staleKillMs = staleKillMinutes * 60 * 1000;
+          if (heartbeatAge > staleKillMs) {
+            log(`Persistent monitor health: "${task.title}" has stale heartbeat (${Math.round(heartbeatAge / 60000)}min, threshold=${staleKillMinutes}min) — killing stuck monitor PID ${task.monitor_pid}`);
+
+            // Send SIGTERM first
+            try {
+              process.kill(task.monitor_pid, 'SIGTERM');
+              log(`Persistent monitor health: sent SIGTERM to PID ${task.monitor_pid} for "${task.title}"`);
+            } catch (killErr) {
+              log(`Persistent monitor health: SIGTERM failed for PID ${task.monitor_pid}: ${killErr.message} (may already be dead)`);
+            }
+
+            // Wait briefly for graceful shutdown
+            try {
+              execSync('sleep 2');
+            } catch (_) { /* non-fatal */ }
+
+            // Check if still alive and SIGKILL if needed
+            let stillAlive = false;
+            try {
+              process.kill(task.monitor_pid, 0);
+              stillAlive = true;
+            } catch (_) { /* process is dead — good */ }
+
+            if (stillAlive) {
+              try {
+                process.kill(task.monitor_pid, 'SIGKILL');
+                log(`Persistent monitor health: sent SIGKILL to PID ${task.monitor_pid} for "${task.title}" (did not exit after SIGTERM)`);
+              } catch (killErr) {
+                log(`Persistent monitor health: SIGKILL failed for PID ${task.monitor_pid}: ${killErr.message}`);
+              }
+            }
+
+            // Mark the queue item as failed so revival code can re-enqueue on next cycle
+            try {
+              const queueDb = new Database(path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db'));
+              queueDb.pragma('busy_timeout = 3000');
+              const updateResult = queueDb.prepare(
+                "UPDATE queue_items SET status = 'failed', error = 'stale_heartbeat_killed', completed_at = datetime('now') WHERE pid = ? AND lane = 'persistent' AND status = 'running'"
+              ).run(task.monitor_pid);
+              queueDb.close();
+              if (updateResult.changes > 0) {
+                log(`Persistent monitor health: marked queue item failed for PID ${task.monitor_pid} (stale heartbeat kill)`);
+              } else {
+                log(`Persistent monitor health: no running queue item found for PID ${task.monitor_pid} — may have already completed`);
+              }
+            } catch (dbErr) {
+              log(`Persistent monitor health: failed to update session-queue.db for PID ${task.monitor_pid}: ${dbErr.message}`);
+            }
           }
         }
       }
