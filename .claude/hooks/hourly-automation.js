@@ -2686,6 +2686,19 @@ async function main() {
         }
 
         if (!alive) {
+          // Dedup: check if a monitor is already queued or running in session-queue for this task
+          try {
+            const queueDb = new Database(path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db'), { readonly: true });
+            const existing = queueDb.prepare(
+              "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running') AND metadata LIKE ?"
+            ).get(`%"persistentTaskId":"${task.id}"%`);
+            queueDb.close();
+            if (existing && existing.cnt > 0) {
+              log(`Persistent monitor health: monitor for "${task.title}" already queued/running in session-queue — skipping`);
+              continue;
+            }
+          } catch (_) { /* non-fatal — proceed with enqueue */ }
+
           log(`Persistent monitor health: monitor for "${task.title}" (${task.id}) is dead — re-enqueuing`);
 
           // Read amendments for the re-spawn prompt
@@ -2718,19 +2731,15 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
               ttlMs: 0,
               prompt,
               projectDir: PROJECT_DIR,
-              extraEnv: JSON.stringify({
+              extraEnv: {
                 GENTYR_PERSISTENT_TASK_ID: task.id,
                 GENTYR_PERSISTENT_MONITOR: 'true',
-              }),
-              metadata: JSON.stringify({
+              },
+              metadata: {
                 persistentTaskId: task.id,
                 revivalReason: 'monitor_dead',
-              }),
+              },
             });
-
-            // Update monitor info (agent_id will be set after spawn via {AGENT_ID} substitution)
-            ptDb.prepare("UPDATE persistent_tasks SET monitor_pid = NULL, monitor_agent_id = NULL WHERE id = ?")
-              .run(task.id);
 
             log(`Persistent monitor health: re-enqueued for "${task.title}" (queueId: ${result.queueId})`);
             revived++;

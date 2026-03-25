@@ -291,8 +291,8 @@ export function enqueueSession(spec) {
   const db = getDb();
   const id = generateQueueId();
   const projectDir = spec.projectDir || PROJECT_DIR;
-  const ttlMs = spec.ttlMs || DEFAULT_TTL_MS;
-  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+  const ttlMs = spec.ttlMs ?? DEFAULT_TTL_MS;
+  const expiresAt = ttlMs === 0 ? null : new Date(Date.now() + ttlMs).toISOString();
 
   // Eagerly build the prompt at enqueue time using {AGENT_ID} as a placeholder.
   // This ensures the prompt survives cross-process drains where the in-memory
@@ -381,7 +381,7 @@ export function drainQueue() {
   }
 
   // Step 2: Expire old queued items past TTL
-  const ttlResult = db.prepare("UPDATE queue_items SET status = 'cancelled', error = 'TTL expired', completed_at = datetime('now') WHERE status = 'queued' AND expires_at < datetime('now')").run();
+  const ttlResult = db.prepare("UPDATE queue_items SET status = 'cancelled', error = 'TTL expired', completed_at = datetime('now') WHERE status = 'queued' AND expires_at IS NOT NULL AND expires_at < datetime('now')").run();
   if (ttlResult.changes > 0) {
     auditEvent('session_ttl_expired', { count: ttlResult.changes });
   }
@@ -594,6 +594,21 @@ function spawnQueueItem(db, item) {
   updateAgent(agentId, { pid: claude.pid, status: 'running' });
 
   log(`Spawned ${item.id} as agent ${agentId} (PID ${claude.pid}): "${item.title}"`);
+
+  // Write monitor_pid/monitor_agent_id to persistent_tasks if this is a persistent monitor
+  try {
+    const metadata = item.metadata ? (typeof item.metadata === 'string' ? JSON.parse(item.metadata) : item.metadata) : {};
+    if (metadata.persistentTaskId) {
+      const ptDbPath = path.join(item.project_dir || PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (fs.existsSync(ptDbPath)) {
+        const ptDb = new Database(ptDbPath);
+        ptDb.pragma('busy_timeout = 3000');
+        ptDb.prepare("UPDATE persistent_tasks SET monitor_pid = ?, monitor_agent_id = ? WHERE id = ?")
+          .run(claude.pid, agentId, metadata.persistentTaskId);
+        ptDb.close();
+      }
+    }
+  } catch (_) { /* non-fatal */ }
 
   auditEvent('session_spawned', {
     queue_id: item.id,
