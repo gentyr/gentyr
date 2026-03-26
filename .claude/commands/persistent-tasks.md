@@ -42,6 +42,7 @@ If no tasks exist, display: "No persistent tasks found. Use /persistent-task to 
 
 Use `AskUserQuestion` with `multiSelect: false` and these options:
 
+- **Inspect** — Deep-dive into a task: monitor decisions, child activity, blockers (calls inspect_persistent_task)
 - **View details** — See the full task info, sub-tasks, and amendment history
 - **Amend a task** — Add an amendment to a running persistent task
 - **Pause a task** — Pause a running persistent task
@@ -51,6 +52,64 @@ Use `AskUserQuestion` with `multiSelect: false` and these options:
 - **Done** — Exit
 
 ## Step 3: Execute the Action
+
+### Inspect
+
+1. Ask the CTO which task number to inspect (any status, but most useful for `active`)
+2. Call:
+   ```
+   mcp__agent-tracker__inspect_persistent_task({ id: "<id>" })
+   ```
+3. Display the results in this structured format:
+
+   **Task State**
+   ```
+   Title: <title>
+   Status: <status> | Cycles: <cycleCount> | Last heartbeat: <relative time>
+   Outcome criteria: <outcomeCriteria>
+   ```
+
+   **Monitor** (if present)
+   ```
+   Agent: <agentId> | PID: <pid> (<alive/dead>) | Stage: <progress.currentStage> (<progress.progressPercent>%)
+   ```
+   Then show the monitor's last 5 assistant_text and tool_call activity entries as a timeline:
+   ```
+   [14:30:02] 🤖 "Checking sub-task progress for test-writer..."
+   [14:30:05] 🔧 mcp__todo-db__list_tasks({ section: "TEST-WRITER", status: "in_progress" })
+   [14:30:06] 📋 Result: Found 2 tasks in progress...
+   [14:30:08] 🤖 "Both test-writer tasks are progressing well. Creating next batch..."
+   [14:30:10] 🔧 mcp__todo-db__create_task({ title: "Write API integration tests", ... })
+   ```
+
+   **Amendments** (if any)
+   ```
+   1. [addendum, 2h ago] "Also add retry logic" — ✅ acknowledged
+   2. [scope_change, 10m ago] "Skip the auth tests for now" — ⏳ pending
+   ```
+
+   **Children** (<running>/<total> running)
+   For each running child, show:
+   ```
+   [in_progress] "Write payment tests" — TEST-WRITER
+     Agent: abc123 | PID: 12345 (alive) | Stage: code-writer (60%)
+     Last: 🔧 Edit({ file_path: "tests/payment.test.ts", ... })
+     Git: feature/payment-tests — 2 commits
+   ```
+   For non-running children, show a compact one-liner:
+   ```
+   [completed] "Implement auth flow" — CODE-REVIEWER ✅
+   [pending] "API endpoint refactor" — CODE-REVIEWER ⏳
+   ```
+
+   **Recent Events** (last 5)
+   ```
+   [14:25] heartbeat
+   [14:20] sub_task_completed — "Auth flow tests passing"
+   [14:15] amendment_acknowledged — correction #2
+   ```
+
+4. Return to Step 2.
 
 ### View details
 
@@ -187,3 +246,4 @@ Active tasks: N  |  Completed: N  |  Dead monitors: N
 | `mcp__persistent-task__pause_persistent_task` | Pause a running task |
 | `mcp__persistent-task__resume_persistent_task` | Resume a paused task or revive a dead monitor |
 | `mcp__persistent-task__cancel_persistent_task` | Cancel and stop monitoring |
+| `mcp__agent-tracker__inspect_persistent_task` | Deep inspection: monitor JSONL, child activity, amendments, git state |
