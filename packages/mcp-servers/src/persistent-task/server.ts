@@ -274,12 +274,15 @@ function createPersistentTask(args: CreatePersistentTaskArgs): object | ErrorRes
     process.stderr.write(`[persistent-task] Warning: failed to create parent todo task: ${message}\n`);
   }
 
+  // Build metadata JSON (stores demo_involved and future extensible config)
+  const metadata = args.demo_involved ? JSON.stringify({ demo_involved: true }) : null;
+
   // Insert persistent task row
   db.prepare(
     `INSERT INTO persistent_tasks
        (id, title, prompt, original_input, outcome_criteria, status,
-        parent_todo_task_id, created_at, created_by, user_prompt_uuids)
-     VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, 'cto', ?)`
+        parent_todo_task_id, created_at, created_by, user_prompt_uuids, metadata)
+     VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, 'cto', ?, ?)`
   ).run(
     taskId,
     args.title,
@@ -289,6 +292,7 @@ function createPersistentTask(args: CreatePersistentTaskArgs): object | ErrorRes
     parentTodoTaskId,
     ts,
     args.user_prompt_uuids ? JSON.stringify(args.user_prompt_uuids) : null,
+    metadata,
   );
 
   recordEvent(db, taskId, 'created', {
@@ -543,8 +547,18 @@ async function amendPersistentTask(args: AmendPersistentTaskArgs): Promise<objec
     amendment_type: amendmentType,
   });
 
-  // If task is active and has a monitor agent, send signal
-  if (task.status === 'active' && task.monitor_agent_id) {
+  // Auto-resume paused tasks when amended — the CTO adding an amendment
+  // implies the monitor should wake up and process it.
+  let autoResumed = false;
+  if (task.status === 'paused') {
+    db.prepare("UPDATE persistent_tasks SET status = 'active' WHERE id = ?").run(args.id);
+    recordEvent(db, args.id, 'resumed', { reason: 'auto_resumed_by_amendment', amendment_id: amendmentId });
+    autoResumed = true;
+  }
+
+  // If task is (or was just resumed to) active and has a monitor agent, send signal
+  const effectiveStatus = autoResumed ? 'active' : task.status;
+  if (effectiveStatus === 'active' && task.monitor_agent_id) {
     await sendAmendmentSignal(task.monitor_agent_id, amendmentId, args.content, amendmentType);
 
     // Mark as delivered
@@ -558,8 +572,10 @@ async function amendPersistentTask(args: AmendPersistentTaskArgs): Promise<objec
     amendment_type: amendmentType,
     created_at: ts,
     created_by: 'cto',
-    delivered_at: (task.status === 'active' && task.monitor_agent_id) ? ts : null,
-    signal_sent: task.status === 'active' && !!task.monitor_agent_id,
+    delivered_at: (effectiveStatus === 'active' && task.monitor_agent_id) ? ts : null,
+    signal_sent: effectiveStatus === 'active' && !!task.monitor_agent_id,
+    auto_resumed: autoResumed,
+    ...(autoResumed ? { status: 'active' as const } : {}),
   };
 }
 
