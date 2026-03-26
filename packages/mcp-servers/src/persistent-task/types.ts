@@ -27,6 +27,7 @@ export const CreatePersistentTaskArgsSchema = z.object({
   original_input: z.string().optional().describe("CTO's raw input before refinement"),
   outcome_criteria: z.string().optional().describe("What 'done' looks like — measurable success criteria"),
   user_prompt_uuids: z.array(z.string()).optional().describe('UUIDs of user prompts this task derives from'),
+  demo_involved: z.boolean().optional().default(false).describe('Whether this task involves demo scenarios. When true, the monitor receives specialized demo validation instructions.'),
 });
 
 export const ActivatePersistentTaskArgsSchema = z.object({

@@ -28,6 +28,7 @@ import { createWorktree, cleanupMergedWorktrees, listWorktrees } from './lib/wor
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
 import { detectStaleWork, formatReport } from './stale-work-detector.js';
 import { reviveInterruptedSessions } from './session-reviver.js';
+import { buildPersistentMonitorDemoInstructions } from './lib/persistent-monitor-demo-instructions.js';
 import { reapAsyncPass, getStuckAliveSessions } from './lib/session-reaper.js';
 import { cleanupAuditLog } from './lib/session-audit.js';
 import { debugLog, cleanupDebugLog } from './lib/debug-log.js';
@@ -2699,7 +2700,7 @@ async function main() {
       }
 
       const activeTasks = ptDb.prepare(
-        "SELECT id, title, monitor_pid, monitor_agent_id, last_heartbeat FROM persistent_tasks WHERE status = 'active'"
+        "SELECT id, title, monitor_pid, monitor_agent_id, last_heartbeat, metadata FROM persistent_tasks WHERE status = 'active'"
       ).all();
 
       let revived = 0;
@@ -2735,6 +2736,15 @@ async function main() {
             ? '\n\n## Amendments\n' + amendments.map((a, i) => `${i + 1}. [${a.amendment_type}] ${a.content}`).join('\n')
             : '';
 
+          // Check if demo is involved
+          let demoInstructions = '';
+          try {
+            const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
+            if (taskMeta.demo_involved) {
+              demoInstructions = buildPersistentMonitorDemoInstructions();
+            }
+          } catch (_) { /* non-fatal */ }
+
           const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
 
 ## Persistent Task: ${task.title}
@@ -2742,7 +2752,7 @@ async function main() {
 You are a persistent task monitor being revived after your previous session died.
 Read your full task details first: mcp__persistent-task__get_persistent_task({ id: "${task.id}", include_amendments: true, include_subtasks: true })
 
-Then continue monitoring sub-tasks and working toward the outcome.${amendmentSection}`;
+Then continue monitoring sub-tasks and working toward the outcome.${amendmentSection}${demoInstructions}`;
 
           try {
             const result = enqueueSession({

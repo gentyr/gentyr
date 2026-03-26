@@ -26,6 +26,8 @@ try {
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const PT_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
 
+import { buildPersistentMonitorDemoInstructions } from './lib/persistent-monitor-demo-instructions.js';
+
 async function readStdin() {
   return new Promise((resolve) => {
     let data = '';
@@ -72,7 +74,7 @@ async function main() {
     process.exit(0);
   }
 
-  const taskId = responseData.id;
+  const taskId = responseData.persistent_task_id || responseData.id;
   if (!taskId) {
     console.log(JSON.stringify({ }));
     process.exit(0);
@@ -114,6 +116,15 @@ async function main() {
     ? `\n\n## Outcome Criteria\n${task.outcome_criteria}`
     : '';
 
+  // Check if demo is involved via task metadata
+  let demoInstructions = '';
+  try {
+    const meta = task.metadata ? JSON.parse(task.metadata) : {};
+    if (meta.demo_involved) {
+      demoInstructions = buildPersistentMonitorDemoInstructions();
+    }
+  } catch (_) { /* non-fatal */ }
+
   const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
 
 ## Persistent Task: ${task.title}
@@ -130,7 +141,7 @@ ${task.prompt}${outcomeCriteria}${amendmentSection}
 3. Spawn sub-agents for implementation work (use isolation: "worktree" for code changes)
 4. Monitor progress, check signals, run alignment checks
 5. Complete when outcome criteria are met
-
+${demoInstructions}
 Persistent Task ID: ${taskId}
 Parent TODO Task ID: ${task.parent_todo_task_id || 'none'}`;
 

@@ -41,12 +41,13 @@ Based on the research findings and the initial description, ask the CTO clarifyi
 
 - **Scope boundaries**: What is explicitly in scope vs. out of scope?
 - **Success criteria**: How will we know when this objective is fully complete?
+- **Demo involvement**: Does this task involve demo scenarios? If the objective mentions demos, E2E validation, or visual verification, ask explicitly: "Does this involve running demo scenarios? If so, the monitor will use headed video recording and visual frame review to verify success criteria." Set `demo_involved: true` when creating the task if demos are part of the success criteria.
 - **Constraints**: Any approaches to avoid? Technology or library preferences?
 - **Priority areas**: What should be tackled first if there are dependencies between parts?
 - **Quality bar**: Testing expectations, performance requirements, backwards compatibility?
 - **Timeline**: Any urgency or hard deadlines?
 
-Continue the clarification loop until you are confident you can write a prompt with high specificity. At minimum, you must have clear answers for scope and success criteria before proceeding.
+Continue the clarification loop until you are confident you can write a prompt with high specificity. At minimum, you must have clear answers for scope, success criteria, and demo involvement before proceeding.
 
 ## Step 4: Draft Finalized Prompt
 
@@ -102,7 +103,8 @@ mcp__persistent-task__create_persistent_task({
   title: "<short title — under 80 characters>",
   prompt: "<full finalized prompt from Step 4>",
   original_input: "<CTO's original description from Step 1>",
-  outcome_criteria: "<the success criteria section, as a single string>"
+  outcome_criteria: "<the success criteria section, as a single string>",
+  demo_involved: <true if demos are part of the success criteria, false otherwise>
 })
 ```
 

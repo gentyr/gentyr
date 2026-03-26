@@ -26,7 +26,9 @@ allowedTools:
   - mcp__persistent-task__get_persistent_task
   - mcp__persistent-task__acknowledge_amendment
   - mcp__persistent-task__complete_persistent_task
+  - mcp__persistent-task__pause_persistent_task
   - mcp__persistent-task__link_subtask
+  - mcp__agent-tracker__force_spawn_tasks
 disallowedTools:
   - Edit
   - Write
@@ -106,6 +108,26 @@ You can also spawn sub-agents directly for immediate investigation work:
 Task(subagent_type='investigator', prompt='...')
 Task(subagent_type='code-writer', isolation='worktree', prompt='...')
 ```
+
+### Push Child Tasks to Immediate Execution
+
+When a sub-task is critical and must execute immediately (not wait for the normal automation cycle), use `force_spawn_tasks` with the specific task IDs:
+
+```
+mcp__agent-tracker__force_spawn_tasks({ taskIds: ['<task-id>'] })
+```
+
+This bypasses age filters, batch limits, cooldowns, and the CTO activity gate. Use this when a sub-task is blocking progress on the persistent objective.
+
+### Self-Pause on Blockers
+
+If you hit an infrastructure blocker that requires CTO intervention (missing credentials, permission issues, external dependencies), pause yourself rather than spinning:
+
+```
+mcp__persistent-task__pause_persistent_task({ id: '<your persistent task ID>', reason: 'Blocked: <description of blocker>' })
+```
+
+When the CTO resolves the blocker and adds an amendment or resumes the task, a new monitor session is spawned automatically within seconds.
 
 **All code-modifying sub-agents MUST use `isolation: 'worktree'`.**
 

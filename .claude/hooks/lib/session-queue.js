@@ -25,6 +25,7 @@ import { shouldAllowSpawn } from './memory-pressure.js';
 import { reapSyncPass } from './session-reaper.js';
 import { auditEvent } from './session-audit.js';
 import { debugLog } from './debug-log.js';
+import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
 // NOTE: revival-utils.js imports from session-queue.js (circular dep), so we
 // inline these three utilities here instead of importing from revival-utils.js.
 // Mirrors the same pattern used in session-reaper.js.
@@ -35,7 +36,7 @@ const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'session-queue.log');
 
 // Lane sub-limits
 const GATE_LANE_LIMIT = 5;
-const PERSISTENT_LANE_LIMIT = 3;
+// Persistent lane has no limit — monitors always spawn immediately and are auto-revived on death.
 
 // Default TTL for queued items (30 minutes)
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
@@ -352,6 +353,94 @@ export function enqueueSession(spec) {
 }
 
 // ============================================================================
+// Persistent Monitor Immediate Revival
+// ============================================================================
+
+/**
+ * Re-enqueue a dead persistent monitor directly into the queue DB.
+ * Called from drainQueue after reapSyncPass detects a dead persistent PID.
+ * Uses direct INSERT (not enqueueSession) to avoid recursive drain.
+ *
+ * @param {object} db - session-queue.db instance (already open)
+ * @param {string} taskId - persistent task ID
+ */
+function requeueDeadPersistentMonitor(db, taskId) {
+  // Dedup: already queued or running?
+  const existing = db.prepare(
+    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running') AND json_extract(metadata, '$.persistentTaskId') = ?"
+  ).get(taskId);
+  if (existing && existing.cnt > 0) return;
+
+  // Crash-loop circuit breaker: cap at 5 revivals per task in the last hour
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const recentRevivals = db.prepare(
+    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND source = 'session-queue-reaper' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > ?"
+  ).get(taskId, oneHourAgo);
+  if (recentRevivals && recentRevivals.cnt >= 5) {
+    log(`Persistent monitor crash-loop detected for ${taskId} (${recentRevivals.cnt} revivals in last hour) — skipping re-enqueue`);
+    return;
+  }
+
+  // Check if task is still active
+  const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+  if (!fs.existsSync(ptDbPath)) return;
+
+  const ptDb = new Database(ptDbPath, { readonly: true });
+  const task = ptDb.prepare("SELECT id, title, status, metadata FROM persistent_tasks WHERE id = ?").get(taskId);
+  ptDb.close();
+
+  if (!task || task.status !== 'active') return;
+
+  // Check if demo is involved
+  let demoInstructions = '';
+  try {
+    const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
+    if (taskMeta.demo_involved) {
+      demoInstructions = buildPersistentMonitorDemoInstructions();
+    }
+  } catch (_) { /* non-fatal */ }
+
+  // Build minimal revival prompt — monitor reads full details on startup
+  const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
+
+## Persistent Task: ${task.title}
+
+Your previous monitor session died. Read your task details and continue:
+mcp__persistent-task__get_persistent_task({ id: "${taskId}", include_amendments: true, include_subtasks: true })
+${demoInstructions}
+Persistent Task ID: ${taskId}`;
+
+  const id = generateQueueId();
+  db.prepare(`
+    INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
+      tag_context, prompt, model, cwd, mcp_config, resume_session_id, extra_args, extra_env,
+      project_dir, worktree_path, metadata, source, expires_at)
+    VALUES (?, 'queued', 'critical', 'persistent', 'fresh', ?, ?, ?, 'persistent-monitor', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL, ?, ?, NULL)
+  `).run(
+    id,
+    `[Persistent] Monitor revival: ${task.title}`,
+    AGENT_TYPES.PERSISTENT_TASK_MONITOR,
+    HOOK_TYPES.PERSISTENT_TASK_MONITOR,
+    prompt,
+    JSON.stringify({ GENTYR_PERSISTENT_TASK_ID: taskId, GENTYR_PERSISTENT_MONITOR: 'true' }),
+    PROJECT_DIR,
+    JSON.stringify({ persistentTaskId: taskId, revivalReason: 'immediate_reaper_revival' }),
+    'session-queue-reaper',
+  );
+
+  auditEvent('session_enqueued', {
+    queue_id: id,
+    source: 'session-queue-reaper',
+    agent_type: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
+    priority: 'critical',
+    lane: 'persistent',
+    title: `[Persistent] Monitor revival: ${task.title}`,
+  });
+
+  log(`Immediate persistent monitor revival enqueued for "${task.title}" (${taskId}, queueId: ${id})`);
+}
+
+// ============================================================================
 // Drain Queue
 // ============================================================================
 
@@ -365,8 +454,9 @@ export function drainQueue() {
   const result = { spawned: 0, queued: 0, atCapacity: false, failed: 0, revivalCandidates: [] };
 
   // Step 1: Reap stale running items (dead PIDs, stuck sessions)
+  let reaperResult = null;
   try {
-    const reaperResult = reapSyncPass(db);
+    reaperResult = reapSyncPass(db);
     result.revivalCandidates = reaperResult.reaped.filter(r => r.revivalCandidate);
   } catch (err) {
     console.error('[session-queue] Warning:', err.message);
@@ -376,6 +466,19 @@ export function drainQueue() {
       if (item.pid && !isPidAlive(item.pid)) {
         db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?").run(item.id);
         log(`Reaped stale running item ${item.id} (PID ${item.pid} dead)`);
+      }
+    }
+  }
+
+  // Step 1b: Immediately re-enqueue dead persistent monitors (no 15-min wait)
+  if (reaperResult) {
+    for (const item of reaperResult.reaped) {
+      if (item.metadata?.persistentTaskId) {
+        try {
+          requeueDeadPersistentMonitor(db, item.metadata.persistentTaskId);
+        } catch (err) {
+          log(`Persistent monitor re-enqueue error (non-fatal): ${err.message}`);
+        }
       }
     }
   }
@@ -413,10 +516,7 @@ export function drainQueue() {
 
   for (const item of queued) {
     if (item.lane === 'persistent') {
-      const persistentRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane = 'persistent'").get().cnt;
-      if (persistentRunning + persistentSpawnedThisDrain >= PERSISTENT_LANE_LIMIT) {
-        continue; // Skip, persistent lane full
-      }
+      // Persistent lane has no capacity limit — monitors always spawn immediately
     } else if (item.lane === 'gate') {
       // Gate lane has its own sub-limit (tracked separately from main capacity)
       if (gateRunning + gateSpawnedThisDrain >= GATE_LANE_LIMIT) {
