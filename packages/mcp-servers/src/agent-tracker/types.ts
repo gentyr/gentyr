@@ -295,6 +295,21 @@ export const ReorderQueueArgsSchema = z.object({
 export type ReorderQueueArgs = z.infer<typeof ReorderQueueArgsSchema>;
 
 // ============================================================================
+// Persistent Task Inspection Schemas
+// ============================================================================
+
+export const InspectPersistentTaskArgsSchema = z.object({
+  id: z.string().describe('Persistent task UUID (or prefix)'),
+  depth_kb: z.coerce.number().min(1).max(256).optional().default(32)
+    .describe('KB of JSONL tail to read for monitor session (children get half). Default: 32'),
+  running_only: z.coerce.boolean().optional().default(false)
+    .describe('If true, only include running child sessions in the response'),
+  max_children: z.coerce.number().optional().default(10)
+    .describe('Maximum number of child sessions to include JSONL excerpts for (default: 10)'),
+});
+export type InspectPersistentTaskArgs = z.infer<typeof InspectPersistentTaskArgsSchema>;
+
+// ============================================================================
 // Type Definitions
 // ============================================================================
 

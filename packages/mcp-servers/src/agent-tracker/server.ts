@@ -46,6 +46,7 @@ import {
   SearchCtoSessionsArgsSchema,
   SuspendSessionArgsSchema,
   ReorderQueueArgsSchema,
+  InspectPersistentTaskArgsSchema,
   AGENT_TYPES,
   type ListSpawnedAgentsArgs,
   type GetAgentPromptArgs,
@@ -70,6 +71,7 @@ import {
   type SearchCtoSessionsArgs,
   type SuspendSessionArgs,
   type ReorderQueueArgs,
+  type InspectPersistentTaskArgs,
   type ForceTriageReportsResult,
   type MonitorAgentsResult,
   type AgentProgress,
@@ -474,6 +476,399 @@ function parseTailEntries(tail: string): any[] {
     try { entries.push(JSON.parse(line)); } catch { /* partial line */ }
   }
   return entries;
+}
+
+interface ActivityEntry {
+  type: 'assistant_text' | 'tool_call' | 'tool_result';
+  timestamp?: string;
+  text?: string;
+  toolName?: string;
+  toolInput?: string;
+  toolId?: string;
+  resultPreview?: string;
+  resultToolId?: string;
+}
+
+function extractActivity(entries: any[]): ActivityEntry[] {
+  const activity: ActivityEntry[] = [];
+
+  for (const entry of entries) {
+    if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+      const content = entry.message.content as Array<{ type: string; text?: string; name?: string; input?: unknown; id?: string }>;
+
+      const texts = content.filter((b: any) => b.type === 'text' && b.text).map((b: any) => b.text as string);
+      if (texts.length > 0) {
+        const joined = texts.join('\n');
+        activity.push({
+          type: 'assistant_text',
+          timestamp: entry.timestamp ?? undefined,
+          text: joined.length > 1000 ? joined.substring(0, 1000) + '...' : joined,
+        });
+      }
+
+      for (const block of content) {
+        if ((block as any).type !== 'tool_use') continue;
+        let inputStr = '';
+        try {
+          const input = (block as any).input;
+          inputStr = (typeof input === 'string' ? input : JSON.stringify(input) ?? '');
+          if (inputStr.length > 500) inputStr = inputStr.substring(0, 500) + '...';
+        } catch { /* skip */ }
+
+        activity.push({
+          type: 'tool_call',
+          timestamp: entry.timestamp ?? undefined,
+          toolName: (block as any).name ?? 'unknown',
+          toolInput: inputStr,
+          toolId: (block as any).id ?? undefined,
+        });
+      }
+    } else if (entry.type === 'tool_result') {
+      let preview = '';
+      if (typeof entry.content === 'string') {
+        preview = entry.content.length > 300 ? entry.content.substring(0, 300) + '...' : entry.content;
+      } else if (Array.isArray(entry.content)) {
+        const textParts = entry.content
+          .filter((c: any) => c.type === 'text' && c.text)
+          .map((c: any) => c.text);
+        const joined = textParts.join('\n');
+        preview = joined.length > 300 ? joined.substring(0, 300) + '...' : joined;
+      }
+
+      activity.push({
+        type: 'tool_result',
+        timestamp: entry.timestamp ?? undefined,
+        resultPreview: preview || undefined,
+        resultToolId: entry.tool_use_id ?? undefined,
+      });
+    }
+  }
+
+  return activity;
+}
+
+function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
+  const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+  if (!fs.existsSync(ptDbPath)) {
+    return { error: 'persistent-tasks.db not found' };
+  }
+
+  // ── Phase 1: Read persistent-tasks.db ─────────────────────────────────
+  let ptDb;
+  try {
+    ptDb = openReadonlyDb(ptDbPath);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to open persistent-tasks.db: ${message}` };
+  }
+
+  let task: any;
+  let amendments: any[] = [];
+  let subTaskLinks: Array<{ todo_task_id: string; linked_at: string }> = [];
+  let recentEvents: any[] = [];
+
+  try {
+    task = ptDb.prepare('SELECT * FROM persistent_tasks WHERE id = ? OR id LIKE ?').get(args.id, `${args.id}%`);
+    if (!task) {
+      ptDb.close();
+      return { error: `Persistent task not found: ${args.id}` };
+    }
+
+    amendments = ptDb.prepare(
+      'SELECT id, amendment_type, content, created_at, created_by, acknowledged_at FROM amendments WHERE persistent_task_id = ? ORDER BY created_at ASC'
+    ).all(task.id) as any[];
+
+    subTaskLinks = ptDb.prepare(
+      'SELECT todo_task_id, linked_at FROM sub_tasks WHERE persistent_task_id = ? ORDER BY linked_at ASC'
+    ).all(task.id) as any[];
+
+    recentEvents = ptDb.prepare(
+      'SELECT event_type, details, created_at FROM events WHERE persistent_task_id = ? ORDER BY created_at DESC LIMIT 10'
+    ).all(task.id) as any[];
+  } finally {
+    try { ptDb.close(); } catch { /* best-effort */ }
+  }
+
+  // ── Phase 2: Enrich sub-tasks from todo.db ────────────────────────────
+  const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
+  interface TodoTaskRow { id: string; title: string; status: string; section: string }
+  const todoMap = new Map<string, TodoTaskRow>();
+
+  if (subTaskLinks.length > 0 && fs.existsSync(todoDbPath)) {
+    let todoDb;
+    try {
+      todoDb = openReadonlyDb(todoDbPath);
+      const placeholders = subTaskLinks.map(() => '?').join(',');
+      const ids = subTaskLinks.map(s => s.todo_task_id);
+      const rows = todoDb.prepare(
+        `SELECT id, title, status, section FROM tasks WHERE id IN (${placeholders})`
+      ).all(...ids) as TodoTaskRow[];
+      for (const row of rows) {
+        todoMap.set(row.id, row);
+      }
+    } catch { /* non-critical */ }
+    finally {
+      try { todoDb?.close(); } catch { /* best-effort */ }
+    }
+  }
+
+  // Shared across Phase 3 and Phase 4
+  const history = readHistory();
+
+  // ── Phase 3: Monitor session ──────────────────────────────────────────
+  const monitorAgentId = task.monitor_agent_id;
+  let monitor: any = null;
+
+  if (monitorAgentId) {
+    const agentRecord = (history.agents ?? []).find((a: AgentRecord) => a.id === monitorAgentId);
+
+    let sessionFile: string | null = null;
+    if (agentRecord) {
+      sessionFile = findSessionFile(agentRecord);
+    } else {
+      const sessionDir = getSessionDir(PROJECT_DIR);
+      if (sessionDir) {
+        sessionFile = findSessionFileByAgentId(sessionDir, monitorAgentId);
+      }
+    }
+
+    let pidAlive = false;
+    const monitorPid = task.monitor_pid;
+    if (monitorPid) {
+      try { process.kill(monitorPid, 0); pidAlive = true; } catch { pidAlive = false; }
+    }
+
+    let recentActivity: ActivityEntry[] | null = null;
+    if (sessionFile) {
+      try {
+        const depthBytes = (args.depth_kb ?? 32) * 1024;
+        const tail = readTailBytes(sessionFile, depthBytes);
+        const entries = parseTailEntries(tail);
+        recentActivity = extractActivity(entries);
+      } catch { /* non-critical */ }
+    }
+
+    let progress: any = null;
+    const progressFile = path.join(PROJECT_DIR, '.claude', 'state', 'agent-progress', `${monitorAgentId}.json`);
+    try {
+      if (fs.existsSync(progressFile)) {
+        const raw = fs.readFileSync(progressFile, 'utf8');
+        const pf = JSON.parse(raw);
+        const completedStages = ((pf.pipeline?.stages ?? []) as Array<{ name: string; status: string }>)
+          .filter(s => s.status === 'completed')
+          .map(s => s.name);
+        const staleSince = pf.lastToolCall?.at
+          ? Math.floor((Date.now() - new Date(pf.lastToolCall.at).getTime()) / 60000)
+          : null;
+        progress = {
+          currentStage: pf.pipeline?.currentStage ?? null,
+          progressPercent: pf.pipeline?.progressPercent ?? 0,
+          stagesCompleted: completedStages,
+          lastToolCall: pf.lastToolCall?.name ?? null,
+          lastToolAt: pf.lastToolCall?.at ?? null,
+          staleSinceMinutes: staleSince,
+        };
+      }
+    } catch { /* non-critical */ }
+
+    monitor = {
+      agentId: monitorAgentId,
+      pid: monitorPid ?? null,
+      pidAlive,
+      sessionFile: sessionFile ?? null,
+      progress,
+      recentActivity,
+    };
+  }
+
+  // ── Phase 4: Child sessions ───────────────────────────────────────────
+  const allAgents = history.agents ?? [];
+  let childrenTotal = 0;
+  let childrenRunning = 0;
+  let childrenCompleted = 0;
+  let childrenPending = 0;
+  const childSessions: any[] = [];
+  let excerptCount = 0;
+
+  for (const link of subTaskLinks) {
+    const todoTask = todoMap.get(link.todo_task_id);
+    childrenTotal++;
+
+    const tStatus = todoTask?.status ?? 'unknown';
+    if (tStatus === 'in_progress') childrenRunning++;
+    else if (tStatus === 'completed') childrenCompleted++;
+    else if (tStatus === 'pending') childrenPending++;
+
+    if (args.running_only && tStatus !== 'in_progress') continue;
+
+    const childAgent = [...allAgents]
+      .reverse()
+      .find(a => (a.metadata as Record<string, unknown>)?.taskId === link.todo_task_id);
+
+    if (!childAgent) {
+      childSessions.push({
+        todoTaskId: link.todo_task_id,
+        title: todoTask?.title ?? null,
+        status: tStatus,
+        section: todoTask?.section ?? null,
+        agentId: null,
+        pid: null,
+        pidAlive: false,
+        elapsedSeconds: 0,
+        progress: null,
+        worktreeGit: null,
+        recentActivity: null,
+      });
+      continue;
+    }
+
+    let pidAlive = false;
+    if (childAgent.pid) {
+      try { process.kill(childAgent.pid, 0); pidAlive = true; } catch { pidAlive = false; }
+    }
+
+    const elapsedMs = Date.now() - new Date(childAgent.timestamp).getTime();
+    const elapsedSeconds = Math.floor(elapsedMs / 1000);
+
+    let progress: any = null;
+    const progressFile = path.join(PROJECT_DIR, '.claude', 'state', 'agent-progress', `${childAgent.id}.json`);
+    try {
+      if (fs.existsSync(progressFile)) {
+        const raw = fs.readFileSync(progressFile, 'utf8');
+        const pf = JSON.parse(raw);
+        const completedStages = ((pf.pipeline?.stages ?? []) as Array<{ name: string; status: string }>)
+          .filter(s => s.status === 'completed')
+          .map(s => s.name);
+        const staleSince = pf.lastToolCall?.at
+          ? Math.floor((Date.now() - new Date(pf.lastToolCall.at).getTime()) / 60000)
+          : null;
+        progress = {
+          currentStage: pf.pipeline?.currentStage ?? null,
+          progressPercent: pf.pipeline?.progressPercent ?? 0,
+          stagesCompleted: completedStages,
+          lastToolCall: pf.lastToolCall?.name ?? null,
+          lastToolAt: pf.lastToolCall?.at ?? null,
+          staleSinceMinutes: staleSince,
+        };
+      }
+    } catch { /* non-critical */ }
+
+    let worktreeGit: any = null;
+    const worktreePath = (childAgent.metadata as Record<string, unknown>)?.worktreePath as string | undefined;
+    if (worktreePath && fs.existsSync(worktreePath)) {
+      try {
+        const execOpts = { cwd: worktreePath, encoding: 'utf8' as const, timeout: 5000, stdio: 'pipe' as const };
+        const branch = execSync('git rev-parse --abbrev-ref HEAD', execOpts).trim();
+
+        let commitCount = 0;
+        let lastCommitMessage: string | null = null;
+        try {
+          const baseRef = execSync(
+            'git merge-base HEAD origin/preview 2>/dev/null || git merge-base HEAD origin/main 2>/dev/null || echo HEAD~1',
+            execOpts
+          ).trim();
+          const commitLog = execSync(`git log --oneline ${baseRef}..HEAD`, execOpts).trim();
+          const commits = commitLog ? commitLog.split('\n').filter(Boolean) : [];
+          commitCount = commits.length;
+          if (commitCount > 0) {
+            lastCommitMessage = execSync('git log -1 --format=%s', execOpts).trim();
+          }
+        } catch { /* no commits or git error */ }
+
+        let prUrl: string | null = null;
+        let prStatus: string | null = null;
+        let merged = false;
+        if (pidAlive) {
+          try {
+            const prJson = execSync(
+              `gh pr view ${branch} --json url,state,mergedAt 2>/dev/null || true`,
+              { ...execOpts, timeout: 10000 }
+            ).trim();
+            if (prJson && prJson.startsWith('{')) {
+              const pr = JSON.parse(prJson) as { url?: string; state?: string; mergedAt?: string | null };
+              prUrl = pr.url ?? null;
+              prStatus = (pr.state ?? '').toLowerCase() || null;
+              merged = !!pr.mergedAt;
+            }
+          } catch { /* no PR or gh not available */ }
+        }
+
+        worktreeGit = { branch, commitCount, lastCommitMessage, prUrl, prStatus, merged };
+      } catch { /* worktree git query failed — non-critical */ }
+    }
+
+    let recentActivity: ActivityEntry[] | null = null;
+    if (pidAlive && excerptCount < (args.max_children ?? 10)) {
+      let sessionFile: string | null = null;
+      sessionFile = findSessionFile(childAgent);
+      if (sessionFile) {
+        try {
+          const childDepth = Math.floor(((args.depth_kb ?? 32) / 2) * 1024);
+          const tail = readTailBytes(sessionFile, childDepth);
+          const entries = parseTailEntries(tail);
+          recentActivity = extractActivity(entries);
+          excerptCount++;
+        } catch { /* non-critical */ }
+      }
+    }
+
+    childSessions.push({
+      todoTaskId: link.todo_task_id,
+      title: todoTask?.title ?? null,
+      status: tStatus,
+      section: todoTask?.section ?? null,
+      agentId: childAgent.id,
+      pid: childAgent.pid ?? null,
+      pidAlive,
+      elapsedSeconds,
+      progress,
+      worktreeGit,
+      recentActivity,
+    });
+  }
+
+  // ── Phase 5: Assemble response ────────────────────────────────────────
+  let metadata: Record<string, unknown> = {};
+  try {
+    if (task.metadata) metadata = JSON.parse(task.metadata);
+  } catch { /* ignore */ }
+
+  return {
+    id: task.id,
+    title: task.title,
+    status: task.status,
+    outcomeCriteria: task.outcome_criteria ?? null,
+    lastHeartbeat: task.last_heartbeat ?? null,
+    cycleCount: task.cycle_count ?? 0,
+    activatedAt: task.activated_at ?? null,
+    createdAt: task.created_at,
+    demoInvolved: metadata.demo_involved ?? false,
+
+    monitor,
+
+    amendments: amendments.map(a => ({
+      id: a.id,
+      type: a.amendment_type,
+      content: a.content,
+      createdAt: a.created_at,
+      createdBy: a.created_by,
+      acknowledged: !!a.acknowledged_at,
+    })),
+
+    children: {
+      total: childrenTotal,
+      running: childrenRunning,
+      completed: childrenCompleted,
+      pending: childrenPending,
+      sessions: childSessions,
+    },
+
+    recentEvents: recentEvents.map(e => ({
+      type: e.event_type,
+      details: e.details ?? null,
+      createdAt: e.created_at,
+    })),
+  };
 }
 
 // ============================================================================
@@ -2687,11 +3082,18 @@ const tools: AnyToolHandler[] = [
     schema: ReorderQueueArgsSchema,
     handler: reorderQueue,
   },
+  // Persistent Task Deep Inspection
+  {
+    name: 'inspect_persistent_task',
+    description: 'Deep inspection of a persistent task. Returns task state, monitor JSONL excerpts (500 char tool inputs, 1000 char text — much more than peek_session), child session activity, amendments, progress files, and worktree git state. Single call replaces chaining get_persistent_task_summary + monitor_agents + peek_session.',
+    schema: InspectPersistentTaskArgsSchema,
+    handler: inspectPersistentTask,
+  },
 ];
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '7.0.0',  // Added WS5 session introspection tools
+  version: '8.0.0',  // Added inspect_persistent_task tool
   tools,
 });
 
