@@ -22,6 +22,16 @@ import { execSync } from 'child_process';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Bridge mode prompt builder
+let buildBridgeMainTreePrompt;
+try {
+  const mod = await import(path.resolve(__dirname, '..', '.claude', 'hooks', 'lib', 'bridge-main-tree-prompt.js'));
+  buildBridgeMainTreePrompt = mod.buildBridgeMainTreePrompt;
+} catch {
+  // Non-fatal: bridge mode will be unavailable
+  buildBridgeMainTreePrompt = null;
+}
+
 // ---------------------------------------------------------------------------
 // CLI ARGS
 // ---------------------------------------------------------------------------
@@ -296,6 +306,12 @@ This will automatically create a follow-up verification task.
 }
 
 function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
+  // Bridge mode: inject MCP-first infrastructure instructions when bridge_main_tree is set
+  const bridgeSection = (task.bridge_main_tree && worktreePath && buildBridgeMainTreePrompt)
+    ? buildBridgeMainTreePrompt(worktreePath, !!task.demo_involved)
+    : '';
+  const appendBridge = (prompt) => bridgeSection ? `${prompt}${bridgeSection}` : prompt;
+
   const taskDetails = `[Automation][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing a TODO task.
 
 ## Task Details
@@ -335,7 +351,7 @@ ${worktreeNote}
 
   // Section-specific workflow instructions
   if (task.section === 'CODE-REVIEWER') {
-    return `${taskDetails}
+    return appendBridge(`${taskDetails}
 
 ## MANDATORY SUB-AGENT WORKFLOW
 
@@ -359,11 +375,11 @@ instructions loaded from .claude/agents/ configs.
 - Skipping project-manager at the end
 - Running git add, git commit, git push, or gh pr create yourself
 
-${completionBlock}`;
+${completionBlock}`);
   }
 
   if (task.section === 'INVESTIGATOR & PLANNER') {
-    return `${taskDetails}
+    return appendBridge(`${taskDetails}
 
 ## IMMEDIATE ACTION
 
@@ -375,11 +391,11 @@ Task(subagent_type='investigator', prompt='${task.title}. ${task.description || 
 The investigator sub-agent has specialized instructions loaded from .claude/agents/investigator.md.
 Pass the full task context including title and description.
 
-${completionBlock}`;
+${completionBlock}`);
   }
 
   if (task.section === 'TEST-WRITER') {
-    return `${taskDetails}
+    return appendBridge(`${taskDetails}
 
 ## MANDATORY SUB-AGENT WORKFLOW
 
@@ -399,11 +415,11 @@ instructions loaded from .claude/agents/ configs.
 - Skipping project-manager at the end
 - Running git add, git commit, git push, or gh pr create yourself
 
-${completionBlock}`;
+${completionBlock}`);
   }
 
   if (task.section === 'PROJECT-MANAGER') {
-    return `${taskDetails}
+    return appendBridge(`${taskDetails}
 
 ## IMMEDIATE ACTION
 
@@ -415,11 +431,11 @@ Task(subagent_type='project-manager', prompt='${task.title}. ${task.description 
 The project-manager sub-agent has specialized instructions loaded from .claude/agents/project-manager.md.
 Pass the full task context including title and description.
 
-${completionBlock}`;
+${completionBlock}`);
   }
 
   if (task.section === 'DEMO-MANAGER') {
-    return `${taskDetails}
+    return appendBridge(`${taskDetails}
 
 ## MANDATORY SUB-AGENT WORKFLOW
 
@@ -440,18 +456,18 @@ If the issue is in APPLICATION CODE (not demo code):
 - Skipping project-manager at the end
 - Running git add, git commit, git push, or gh pr create yourself
 
-${completionBlock}`;
+${completionBlock}`);
   }
 
   // Fallback for any other section
-  return `${taskDetails}
+  return appendBridge(`${taskDetails}
 
 ## Your Role
 
 You are the \`${agentName}\` agent. Complete the task described above using your expertise.
 Use the Task tool to spawn the appropriate sub-agent: \`Task(subagent_type='${agentName}')\`
 
-${completionBlock}`;
+${completionBlock}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -527,7 +543,7 @@ async function main() {
       // Include in_progress tasks that may be orphaned (no running agent).
       const placeholders = config.taskIds.map(() => '?').join(',');
       candidates = db.prepare(`
-        SELECT id, section, title, description, priority, status
+        SELECT id, section, title, description, priority, status, bridge_main_tree
         FROM tasks
         WHERE status IN ('pending', 'in_progress')
           AND id IN (${placeholders})
@@ -539,7 +555,7 @@ async function main() {
       // Section mode: only pending tasks (in_progress are assumed to have agents)
       const placeholders = config.sections.map(() => '?').join(',');
       candidates = db.prepare(`
-        SELECT id, section, title, description, priority, status
+        SELECT id, section, title, description, priority, status, bridge_main_tree
         FROM tasks
         WHERE status = 'pending'
           AND section IN (${placeholders})
@@ -670,6 +686,9 @@ async function main() {
         worktreePath: worktreePath || null,
         projectDir: config.projectDir,
         priority: task.priority === 'urgent' ? 'urgent' : 'normal',
+        extraEnv: {
+          ...(task.bridge_main_tree ? { GENTYR_BRIDGE_MAIN_TREE: 'true' } : {}),
+        },
         metadata: { taskId: task.id, section: task.section, worktreePath, source: 'force-spawn-tasks' },
         ttlMs: 30 * 60 * 1000,
       });

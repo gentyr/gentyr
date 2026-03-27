@@ -35,6 +35,7 @@ import { debugLog, cleanupDebugLog } from './lib/debug-log.js';
 import { isProxyDisabled } from './lib/proxy-state.js';
 import { buildSpawnEnv } from './lib/spawn-env.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
+import { buildBridgeMainTreePrompt } from './lib/bridge-main-tree-prompt.js';
 // shouldAllowSpawn import removed — session queue handles memory pressure internally
 
 // Try to import better-sqlite3 for task runner
@@ -1244,7 +1245,7 @@ function getPendingTasksForRunner() {
     const oneHourAgo = nowTimestamp - 3600;
 
     const candidates = db.prepare(`
-      SELECT id, section, title, description
+      SELECT id, section, title, description, bridge_main_tree, persistent_task_id
       FROM tasks
       WHERE status = 'pending'
         AND section IN (${Object.keys(SECTION_AGENT_MAP).map(() => '?').join(',')})
@@ -1270,7 +1271,7 @@ function getUrgentPendingTasks() {
   try {
     const db = new Database(TODO_DB_PATH, { readonly: true });
     const candidates = db.prepare(`
-      SELECT id, section, title, description
+      SELECT id, section, title, description, bridge_main_tree, persistent_task_id
       FROM tasks
       WHERE status = 'pending'
         AND priority = 'urgent'
@@ -1410,6 +1411,12 @@ This will automatically create a follow-up verification task.
  * Build the prompt for a task runner agent
  */
 function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
+  // Bridge mode: inject MCP-first infrastructure instructions when bridge_main_tree is set
+  const bridgeSection = (task.bridge_main_tree && worktreePath)
+    ? buildBridgeMainTreePrompt(worktreePath, !!task.demo_involved)
+    : '';
+  const appendBridgeSection = (prompt) => bridgeSection ? `${prompt}${bridgeSection}` : prompt;
+
   // Resolve user prompt references if available
   let userPromptBlock = '';
   if (task.user_prompt_uuids) {
@@ -1478,7 +1485,7 @@ ${worktreeNote}
 
   // Section-specific workflow instructions
   if (task.section === 'CODE-REVIEWER') {
-    return `${taskDetails}
+    return appendBridgeSection(`${taskDetails}
 
 ## MANDATORY SUB-AGENT WORKFLOW
 
@@ -1504,11 +1511,11 @@ instructions loaded from .claude/agents/ configs.
 - Skipping project-manager at the end
 - Running git add, git commit, git push, or gh pr create yourself
 
-${completionBlock}`;
+${completionBlock}`);
   }
 
   if (task.section === 'INVESTIGATOR & PLANNER') {
-    return `${taskDetails}
+    return appendBridgeSection(`${taskDetails}
 
 ## IMMEDIATE ACTION
 
@@ -1520,11 +1527,11 @@ Task(subagent_type='investigator', prompt='${task.title}. ${task.description || 
 The investigator sub-agent has specialized instructions loaded from .claude/agents/investigator.md.
 Pass the full task context including title and description.
 
-${completionBlock}`;
+${completionBlock}`);
   }
 
   if (task.section === 'TEST-WRITER') {
-    return `${taskDetails}
+    return appendBridgeSection(`${taskDetails}
 
 ## MANDATORY SUB-AGENT WORKFLOW
 
@@ -1544,11 +1551,11 @@ instructions loaded from .claude/agents/ configs.
 - Skipping project-manager at the end
 - Running git add, git commit, git push, or gh pr create yourself
 
-${completionBlock}`;
+${completionBlock}`);
   }
 
   if (task.section === 'PROJECT-MANAGER') {
-    return `${taskDetails}
+    return appendBridgeSection(`${taskDetails}
 
 ## IMMEDIATE ACTION
 
@@ -1560,11 +1567,11 @@ Task(subagent_type='project-manager', prompt='${task.title}. ${task.description 
 The project-manager sub-agent has specialized instructions loaded from .claude/agents/project-manager.md.
 Pass the full task context including title and description.
 
-${completionBlock}`;
+${completionBlock}`);
   }
 
   if (task.section === 'DEMO-MANAGER') {
-    return `${taskDetails}
+    return appendBridgeSection(`${taskDetails}
 
 ## MANDATORY SUB-AGENT WORKFLOW
 
@@ -1585,18 +1592,18 @@ If the issue is in APPLICATION CODE (not demo code):
 - Skipping project-manager at the end
 - Running git add, git commit, git push, or gh pr create yourself
 
-${completionBlock}`;
+${completionBlock}`);
   }
 
   // Fallback for any other section
-  return `${taskDetails}
+  return appendBridgeSection(`${taskDetails}
 
 ## Your Role
 
 You are the \`${agentName}\` agent. Complete the task described above using your expertise.
 Use the Task tool to spawn the appropriate sub-agent: \`Task(subagent_type='${agentName}')\`
 
-${completionBlock}`;
+${completionBlock}`);
 }
 
 /**
@@ -1637,7 +1644,11 @@ function spawnTaskAgent(task) {
     buildPrompt: (agentId) => mapping.agent === 'deputy-cto'
       ? buildDeputyCtoTaskPrompt(task, agentId)
       : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath),
-    extraEnv: { ...resolvedCredentials, CLAUDE_PROJECT_DIR: PROJECT_DIR },
+    extraEnv: {
+      ...resolvedCredentials,
+      CLAUDE_PROJECT_DIR: PROJECT_DIR,
+      ...(task.bridge_main_tree ? { GENTYR_BRIDGE_MAIN_TREE: 'true' } : {}),
+    },
     metadata: { taskId: task.id, section: task.section, worktreePath },
     cwd: worktreePath,
     mcpConfig: agentMcpConfig,
@@ -2736,12 +2747,17 @@ async function main() {
             ? '\n\n## Amendments\n' + amendments.map((a, i) => `${i + 1}. [${a.amendment_type}] ${a.content}`).join('\n')
             : '';
 
-          // Check if demo is involved
+          // Check if demo/bridge is involved
           let demoInstructions = '';
+          let bridgeInstructions = '';
           try {
             const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
             if (taskMeta.demo_involved) {
               demoInstructions = buildPersistentMonitorDemoInstructions();
+            }
+            if (taskMeta.bridge_main_tree) {
+              const { buildPersistentMonitorBridgeInstructions: buildBridge } = await import('./lib/persistent-monitor-bridge-instructions.js');
+              bridgeInstructions = buildBridge();
             }
           } catch (_) { /* non-fatal */ }
 
@@ -2752,7 +2768,7 @@ async function main() {
 You are a persistent task monitor being revived after your previous session died.
 Read your full task details first: mcp__persistent-task__get_persistent_task({ id: "${task.id}", include_amendments: true, include_subtasks: true })
 
-Then continue monitoring sub-tasks and working toward the outcome.${amendmentSection}${demoInstructions}`;
+Then continue monitoring sub-tasks and working toward the outcome.${amendmentSection}${demoInstructions}${bridgeInstructions}`;
 
           try {
             const result = enqueueSession({

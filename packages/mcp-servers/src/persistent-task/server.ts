@@ -274,8 +274,11 @@ function createPersistentTask(args: CreatePersistentTaskArgs): object | ErrorRes
     process.stderr.write(`[persistent-task] Warning: failed to create parent todo task: ${message}\n`);
   }
 
-  // Build metadata JSON (stores demo_involved and future extensible config)
-  const metadata = args.demo_involved ? JSON.stringify({ demo_involved: true }) : null;
+  // Build metadata JSON (stores demo_involved, bridge_main_tree, and future extensible config)
+  const metadataObj: Record<string, unknown> = {};
+  if (args.demo_involved) metadataObj.demo_involved = true;
+  if (args.bridge_main_tree) metadataObj.bridge_main_tree = true;
+  const metadata = Object.keys(metadataObj).length > 0 ? JSON.stringify(metadataObj) : null;
 
   // Insert persistent task row
   db.prepare(
@@ -373,6 +376,17 @@ function getPersistentTask(args: GetPersistentTaskArgs): object | ErrorResult {
     created_by: task.created_by,
     user_prompt_uuids: task.user_prompt_uuids ? JSON.parse(task.user_prompt_uuids) : null,
   };
+
+  // Parse metadata for bridge_main_tree and demo_involved
+  let bridge_main_tree = false;
+  let demo_involved = false;
+  try {
+    const meta = task.metadata ? JSON.parse(task.metadata) : {};
+    bridge_main_tree = meta.bridge_main_tree === true;
+    demo_involved = meta.demo_involved === true;
+  } catch { /* non-fatal */ }
+  result.bridge_main_tree = bridge_main_tree;
+  result.demo_involved = demo_involved;
 
   if (args.include_amendments) {
     const amendments = db.prepare(
@@ -491,6 +505,15 @@ function listPersistentTasks(args: ListPersistentTasksArgs): object {
       }
     }
 
+    // Parse metadata for bridge_main_tree and demo_involved
+    let bridge_main_tree = false;
+    let demo_involved = false;
+    try {
+      const meta = task.metadata ? JSON.parse(task.metadata) : {};
+      bridge_main_tree = meta.bridge_main_tree === true;
+      demo_involved = meta.demo_involved === true;
+    } catch { /* non-fatal */ }
+
     return {
       id: task.id,
       title: task.title,
@@ -505,6 +528,8 @@ function listPersistentTasks(args: ListPersistentTasksArgs): object {
       last_heartbeat: task.last_heartbeat,
       cycle_count: task.cycle_count,
       amendment_count: amendmentCount,
+      bridge_main_tree,
+      demo_involved,
       sub_task_counts: {
         total: subtaskLinks.length,
         pending: subtaskPending,

@@ -48,6 +48,8 @@ export const CreateTaskArgsSchema = z.object({
     .describe('UUIDs of user prompts this task derives from. Auto-enables followup_enabled when non-empty.'),
   persistent_task_id: z.string().optional()
     .describe('UUID of the persistent task this sub-task belongs to. Set by persistent monitor sessions.'),
+  bridge_main_tree: z.boolean().optional().default(false)
+    .describe('When true, the spawned agent receives MCP-first infrastructure instructions (use secret_run_command for builds, MCP tools for demos, merge before integration testing).'),
 });
 
 export const StartTaskArgsSchema = z.object({
@@ -152,6 +154,7 @@ export interface TaskRecord {
   priority: string;                // 'normal' | 'urgent'
   user_prompt_uuids: string | null; // JSON string of UUID array
   persistent_task_id: string | null;
+  bridge_main_tree: number;         // 0 or 1 (SQLite boolean)
 }
 
 export interface TaskResponse {
@@ -168,6 +171,7 @@ export interface TaskResponse {
   priority: TaskPriority;
   user_prompt_uuids: string[] | null;
   persistent_task_id: string | null;
+  bridge_main_tree: boolean;
 }
 
 export interface ListTasksResult {

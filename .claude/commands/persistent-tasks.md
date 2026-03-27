@@ -22,12 +22,12 @@ mcp__persistent-task__list_persistent_tasks({})
 Display a table of all tasks:
 
 ```
-| # | Title                       | Status    | Progress    | Monitor   | Amendments | Age  |
-|---|-----------------------------|-----------|-------------|-----------|------------|------|
-| 1 | Migrate auth to OAuth2      | active    | 3/7 (43%)   | running   | 2          | 4h   |
-| 2 | Refactor database layer     | active    | 1/4 (25%)   | DEAD      | 0          | 2d   |
-| 3 | Add payment integration     | draft     | 0/0 (0%)    | pending   | 1          | 10m  |
-| 4 | Improve API test coverage   | completed | 8/8 (100%)  | finished  | 0          | 1d   |
+| # | Title                       | Status    | Progress    | Monitor   | Amendments | Bridge | Age  |
+|---|-----------------------------|-----------|-------------|-----------|------------|--------|------|
+| 1 | Migrate auth to OAuth2      | active    | 3/7 (43%)   | running   | 2          | MCP    | 4h   |
+| 2 | Refactor database layer     | active    | 1/4 (25%)   | DEAD      | 0          |        | 2d   |
+| 3 | Add payment integration     | draft     | 0/0 (0%)    | pending   | 1          | MCP    | 10m  |
+| 4 | Improve API test coverage   | completed | 8/8 (100%)  | finished  | 0          |        | 1d   |
 ```
 
 **Status color indicators:**

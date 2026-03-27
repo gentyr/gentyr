@@ -119,6 +119,16 @@ mcp__agent-tracker__force_spawn_tasks({ taskIds: ['<task-id>'] })
 
 This bypasses age filters, batch limits, cooldowns, and the CTO activity gate. Use this when a sub-task is blocking progress on the persistent objective.
 
+### Infrastructure Bridge Mode
+
+If your persistent task has `bridge_main_tree` in its metadata, child agents that need
+infrastructure access (builds, demos, dev servers) should be created with `bridge_main_tree: true`.
+This gives them MCP-first instructions for using `secret_run_command`, `secret_dev_server_*`,
+and `run_demo` tools instead of running Bash infrastructure commands.
+
+**Merge-first rule**: Code changes must be merged before demo verification. Pipeline:
+code-writer → project-manager (merge) → demo-manager (verify merged code).
+
 ### Self-Pause on Blockers
 
 If you hit an infrastructure blocker that requires CTO intervention (missing credentials, permission issues, external dependencies), pause yourself rather than spinning:

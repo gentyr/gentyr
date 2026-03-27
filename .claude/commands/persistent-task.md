@@ -42,6 +42,7 @@ Based on the research findings and the initial description, ask the CTO clarifyi
 - **Scope boundaries**: What is explicitly in scope vs. out of scope?
 - **Success criteria**: How will we know when this objective is fully complete?
 - **Demo involvement**: Does this task involve demo scenarios? If the objective mentions demos, E2E validation, or visual verification, ask explicitly: "Does this involve running demo scenarios? If so, the monitor will use headed video recording and visual frame review to verify success criteria." Set `demo_involved: true` when creating the task if demos are part of the success criteria.
+- **Infrastructure access**: Will child agents need to run builds, demos, or access dev servers and secrets? If yes, enable bridge mode (`bridge_main_tree: true`) — agents will receive MCP-first infrastructure instructions instead of trying to use Bash for infrastructure operations.
 - **Constraints**: Any approaches to avoid? Technology or library preferences?
 - **Priority areas**: What should be tackled first if there are dependencies between parts?
 - **Quality bar**: Testing expectations, performance requirements, backwards compatibility?
@@ -104,7 +105,8 @@ mcp__persistent-task__create_persistent_task({
   prompt: "<full finalized prompt from Step 4>",
   original_input: "<CTO's original description from Step 1>",
   outcome_criteria: "<the success criteria section, as a single string>",
-  demo_involved: <true if demos are part of the success criteria, false otherwise>
+  demo_involved: <true if demos are part of the success criteria, false otherwise>,
+  bridge_main_tree: <true if child agents need infrastructure access (builds, demos, dev servers, secrets), false otherwise>
 })
 ```
 
