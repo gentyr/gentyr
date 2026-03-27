@@ -31,6 +31,7 @@ import { shouldAllowSpawn } from './lib/memory-pressure.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { enqueueSession, preemptForCtoTask } from './lib/session-queue.js';
 import { debugLog } from './lib/debug-log.js';
+import { buildBridgeMainTreePrompt } from './lib/bridge-main-tree-prompt.js';
 
 // Try to import better-sqlite3 for DB access
 let Database = null;
@@ -437,7 +438,12 @@ Use the Task tool to spawn the appropriate sub-agent: \`Task(subagent_type='${ag
     }
   }
 
-  return `${taskDetails}\n${userPromptBlock}\n${action}\n\n${completionBlock}`;
+  // Bridge mode: inject MCP-first infrastructure instructions when bridge_main_tree is set
+  const bridgeSection = (task.bridge_main_tree && worktreePath)
+    ? buildBridgeMainTreePrompt(worktreePath, !!task.demo_involved)
+    : '';
+
+  return `${taskDetails}\n${userPromptBlock}\n${action}\n\n${completionBlock}${bridgeSection}`;
 }
 
 /**
@@ -487,6 +493,9 @@ async function spawnTaskAgent(task) {
       mcpConfig: path.join(worktreePath || PROJECT_DIR, '.mcp.json'),
       projectDir: PROJECT_DIR,
       worktreePath: worktreePath || null,
+      extraEnv: {
+        ...(task.bridge_main_tree ? { GENTYR_BRIDGE_MAIN_TREE: 'true' } : {}),
+      },
       metadata: { taskId: task.id, section: task.section, worktreePath, urgent: true, assignedBy: task.assigned_by },
     });
 
@@ -641,7 +650,8 @@ process.stdin.on('end', async () => {
     debugLog('urgent-task-spawner', 'task_marked_in_progress', { taskId });
 
     // Build task object for spawn (include assigned_by for CTO priority detection)
-    const task = { id: taskId, section, title, description, assigned_by: assignedBy };
+    const bridgeMainTree = toolInput.bridge_main_tree === true;
+    const task = { id: taskId, section, title, description, assigned_by: assignedBy, bridge_main_tree: bridgeMainTree };
 
     const spawnResult = await spawnTaskAgent(task);
     debugLog('urgent-task-spawner', 'spawn_result', { taskId, result: spawnResult === true ? 'spawned' : spawnResult === 'queued' ? 'queued' : 'failed' });

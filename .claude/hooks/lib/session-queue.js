@@ -26,6 +26,7 @@ import { reapSyncPass } from './session-reaper.js';
 import { auditEvent } from './session-audit.js';
 import { debugLog } from './debug-log.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
+import { buildPersistentMonitorBridgeInstructions } from './persistent-monitor-bridge-instructions.js';
 // NOTE: revival-utils.js imports from session-queue.js (circular dep), so we
 // inline these three utilities here instead of importing from revival-utils.js.
 // Mirrors the same pattern used in session-reaper.js.
@@ -391,12 +392,16 @@ function requeueDeadPersistentMonitor(db, taskId) {
 
   if (!task || task.status !== 'active') return;
 
-  // Check if demo is involved
+  // Check if demo/bridge is involved
   let demoInstructions = '';
+  let bridgeInstructions = '';
   try {
     const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
     if (taskMeta.demo_involved) {
       demoInstructions = buildPersistentMonitorDemoInstructions();
+    }
+    if (taskMeta.bridge_main_tree) {
+      bridgeInstructions = buildPersistentMonitorBridgeInstructions();
     }
   } catch (_) { /* non-fatal */ }
 
@@ -407,7 +412,7 @@ function requeueDeadPersistentMonitor(db, taskId) {
 
 Your previous monitor session died. Read your task details and continue:
 mcp__persistent-task__get_persistent_task({ id: "${taskId}", include_amendments: true, include_subtasks: true })
-${demoInstructions}
+${demoInstructions}${bridgeInstructions}
 Persistent Task ID: ${taskId}`;
 
   const id = generateQueueId();
