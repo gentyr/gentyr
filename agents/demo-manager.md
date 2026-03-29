@@ -74,7 +74,7 @@ Register setup commands via `register_prerequisite` before creating scenarios. E
 - Dev server (global):
   ```
   command: "pnpm dev"
-  health_check: "curl -sf http://localhost:3000"
+  health_check: "curl -sf http://localhost:${PORT:-3000}"
   run_as_background: true
   ```
 - Browser install (global):
@@ -82,6 +82,10 @@ Register setup commands via `register_prerequisite` before creating scenarios. E
   command: "npx playwright install chromium"
   health_check: "npx playwright install --dry-run chromium 2>&1 | grep -q 'already installed'"
   ```
+
+**Port-aware health checks are MANDATORY.** Use `${PORT:-3000}` instead of hardcoded `localhost:3000`. GENTYR injects `PORT` from the worktree-allocated port so the same prerequisite works in main tree (port 3000) and worktrees (port 3100+). Never hardcode port numbers in health checks.
+
+**Anti-pattern: Manual dev server management.** Never instruct agents to call `secret_dev_server_start` before `run_demo`. The `run_demo` tool handles dev server startup automatically via prerequisites and auto-start from `services.json`. If it fails, register or fix a prerequisite — do not add manual steps.
 
 ### 2. Scenario Creation
 
