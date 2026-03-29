@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { readOpTokenFromPlist } from '../../lib/op-token-resolver.js';
 
 // ============================================================================
 // Output helpers
@@ -232,6 +233,14 @@ function statBasedSync(frameworkDir) {
           }
         }
       } catch (_) {
+      }
+
+      // Fallback: read from launchd plist if not in .mcp.json
+      if (!opToken) {
+        opToken = readOpTokenFromPlist();
+        if (opToken) {
+          debugLog('[gentyr-sync] Recovered OP_SERVICE_ACCOUNT_TOKEN from launchd plist');
+        }
       }
 
       fs.writeFileSync(outputPath, content);
