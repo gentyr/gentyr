@@ -23,6 +23,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { readOpTokenFromPlist } from '../lib/op-token-resolver.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,6 +36,21 @@ if (!serverName || !serverScript) {
 }
 
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+// ---------------------------------------------------------------------------
+// 0. Self-heal: ensure OP_SERVICE_ACCOUNT_TOKEN is available
+// ---------------------------------------------------------------------------
+// The MCP SDK only inherits 6 env vars to stdio server processes.
+// OP_SERVICE_ACCOUNT_TOKEN must be in .mcp.json env, but if it was lost
+// (e.g., .mcp.json regenerated without it), fall back to the launchd plist
+// or MCP daemon plist where setup-automation-service.sh stores it.
+if (!process.env.OP_SERVICE_ACCOUNT_TOKEN) {
+  const fallbackToken = readOpTokenFromPlist();
+  if (fallbackToken) {
+    process.env.OP_SERVICE_ACCOUNT_TOKEN = fallbackToken;
+    console.error(`[mcp-launcher:${serverName}] Self-healed: OP_SERVICE_ACCOUNT_TOKEN from launchd plist`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 1. Load vault mappings (op:// references, NOT secrets)

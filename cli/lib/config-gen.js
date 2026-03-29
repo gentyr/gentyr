@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process';
 
 // Single source of truth for shared MCP daemon config
 import { TIER1_SERVERS as TIER1_SHARED_SERVERS, MCP_DAEMON_PORT as DEFAULT_MCP_DAEMON_PORT } from '../../lib/shared-mcp-config.js';
+import { readOpTokenFromPlist } from '../../lib/op-token-resolver.js';
 
 /**
  * Generate .mcp.json from template, substituting the framework path.
@@ -105,8 +106,8 @@ export function generateMcpJson(projectDir, frameworkDir, frameworkRel, opts = {
     }
   }
 
-  // Inject OP token
-  const token = opts.opToken || existingOpToken;
+  // Inject OP token — prefer explicit arg, then preserve existing, then read from launchd plist
+  const token = opts.opToken || existingOpToken || readOpTokenFromPlist();
   if (token) {
     try {
       const config = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
