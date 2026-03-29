@@ -295,8 +295,8 @@ export function releaseDisplayLock(agentId) {
     const lock = db.prepare("SELECT * FROM display_lock WHERE id = 'global'").get();
 
     if (!lock || !lock.holder_agent_id) {
-      // Lock was not held — idempotent success
-      log(`Release called but lock not held: agent_id=${agentId}`);
+      // Lock was not held — idempotent no-op (suppress log — this fires on every
+      // dead agent reap, most of which never held the display lock)
       return { released: false };
     }
 

@@ -423,10 +423,12 @@ function requeueDeadPersistentMonitor(db, taskId) {
   if (existing && existing.cnt > 0) return;
 
   // Crash-loop circuit breaker: cap at 5 revivals per task in the last hour
-  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  // NOTE: Use datetime('now', '-1 hour') in SQL — NOT JS toISOString(). SQLite's datetime()
+  // produces '2026-03-29 14:53:59' (space separator) while toISOString() produces
+  // '2026-03-29T14:53:59.000Z' (T separator). String comparison breaks across formats.
   const recentRevivals = db.prepare(
-    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND source = 'session-queue-reaper' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > ?"
-  ).get(taskId, oneHourAgo);
+    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND source = 'session-queue-reaper' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-1 hour')"
+  ).get(taskId);
   if (recentRevivals && recentRevivals.cnt >= 5) {
     log(`Persistent monitor crash-loop detected for ${taskId} (${recentRevivals.cnt} revivals in last hour) — skipping re-enqueue`);
     return;
