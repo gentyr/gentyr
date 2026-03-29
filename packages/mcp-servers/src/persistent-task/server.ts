@@ -341,7 +341,7 @@ function activatePersistentTask(args: ActivatePersistentTaskArgs): object | Erro
     status: 'active',
     activated_at: ts,
     parent_todo_task_id: task.parent_todo_task_id,
-    message: 'Task activated. Spawn the monitor session via the /persistent-task command.',
+    message: 'Task activated. Monitor session auto-enqueued by PostToolUse hook — do NOT manually spawn.',
   };
 }
 
@@ -910,7 +910,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'activate_persistent_task',
-    description: 'Activate a persistent task (draft → active). Sets activated_at. The monitor session is spawned by the /persistent-task slash command after activation.',
+    description: 'Activate a persistent task (draft → active). Sets activated_at. A PostToolUse hook automatically enqueues the monitor session — do NOT manually spawn or create tasks for the monitor.',
     schema: ActivatePersistentTaskArgsSchema,
     handler: activatePersistentTask,
   },
@@ -928,7 +928,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'amend_persistent_task',
-    description: 'Add an amendment to a persistent task. If the task is active and has a monitor agent, sends a directive-tier signal to the monitor immediately.',
+    description: 'Add an amendment to a persistent task. If the task is active, sends a directive-tier signal to the monitor. If paused, auto-resumes and a PostToolUse hook enqueues the monitor — do NOT manually spawn.',
     schema: AmendPersistentTaskArgsSchema,
     handler: amendPersistentTask,
   },
@@ -946,7 +946,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'resume_persistent_task',
-    description: 'Resume a paused persistent task (paused → active). A new monitor session must be spawned by the caller.',
+    description: 'Resume a paused persistent task (paused → active). A PostToolUse hook automatically enqueues a new monitor session — do NOT manually spawn or create tasks for the monitor.',
     schema: ResumePersistentTaskArgsSchema,
     handler: resumePersistentTask,
   },

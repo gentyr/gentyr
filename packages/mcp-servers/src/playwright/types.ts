@@ -624,6 +624,28 @@ export const ExtractVideoFramesArgsSchema = z.object({
 
 export type ExtractVideoFramesArgs = z.infer<typeof ExtractVideoFramesArgsSchema>;
 
+// ============================================================================
+// Display Queue Schemas
+// ============================================================================
+
+export const AcquireDisplayLockArgsSchema = z.object({
+  title: z.string().min(1).max(200)
+    .describe('Description of what you need headed mode for (e.g., "Demo: checkout flow", "Chrome inspection: login page")'),
+  ttl_minutes: z.coerce.number().int().min(1).max(60).optional().default(15)
+    .describe('Lock TTL in minutes (auto-expires if not renewed). Default: 15.'),
+});
+
+export const ReleaseDisplayLockArgsSchema = z.object({});
+
+export const RenewDisplayLockArgsSchema = z.object({});
+
+export const GetDisplayQueueStatusArgsSchema = z.object({});
+
+export type AcquireDisplayLockArgs = z.infer<typeof AcquireDisplayLockArgsSchema>;
+export type ReleaseDisplayLockArgs = z.infer<typeof ReleaseDisplayLockArgsSchema>;
+export type RenewDisplayLockArgs = z.infer<typeof RenewDisplayLockArgsSchema>;
+export type GetDisplayQueueStatusArgs = z.infer<typeof GetDisplayQueueStatusArgsSchema>;
+
 export interface ExtractVideoFramesResult {
   frames: Array<{ file_path: string; timestamp_seconds: number }>;
   video_path: string;

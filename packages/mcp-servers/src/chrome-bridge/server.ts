@@ -1020,7 +1020,41 @@ async function handleRequest(request: JsonRpcRequest): Promise<JsonRpcResponse |
         return createError(id, JSON_RPC_ERRORS.METHOD_NOT_FOUND, `Unknown tool: ${name}`);
       }
 
+      // Soft warning: check if another agent holds the display lock.
+      // Chrome-bridge tools often require exclusive display access for demo recordings.
+      // This is a best-effort check — failure to load the module is silently ignored.
+      let displayLockWarning: string | undefined;
+      try {
+        const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+        const displayLockPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'display-lock.js');
+        if (fs.existsSync(displayLockPath)) {
+          const displayLockMod = await import(displayLockPath) as {
+            getDisplayLockStatus: () => { locked: boolean; holder: Record<string, unknown> | null };
+          };
+          const lockStatus = displayLockMod.getDisplayLockStatus();
+          if (lockStatus.locked && lockStatus.holder) {
+            const holderAgentId = lockStatus.holder['agent_id'] as string | undefined;
+            const callerAgentId = process.env.CLAUDE_AGENT_ID || 'unknown';
+            if (holderAgentId && holderAgentId !== callerAgentId) {
+              displayLockWarning = `Warning: Display lock held by agent "${holderAgentId}". Consider calling acquire_display_lock first for exclusive access. Proceeding may cause recording conflicts.`;
+            }
+          }
+        }
+      } catch {
+        // Best-effort — display lock check is non-fatal
+      }
+
       const result = await client.executeTool(name, args ?? {});
+
+      // Prepend warning to result content if present
+      if (displayLockWarning) {
+        const warningContent: McpContent = { type: 'text', text: displayLockWarning };
+        return createResponse(id, {
+          content: [warningContent, ...result.content],
+          isError: result.isError,
+        });
+      }
+
       return createResponse(id, result);
     }
 

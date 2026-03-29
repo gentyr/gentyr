@@ -86,6 +86,11 @@ import {
   ExtractVideoFramesArgsSchema,
   type ExtractVideoFramesArgs,
   type ExtractVideoFramesResult,
+  AcquireDisplayLockArgsSchema,
+  ReleaseDisplayLockArgsSchema,
+  RenewDisplayLockArgsSchema,
+  GetDisplayQueueStatusArgsSchema,
+  type AcquireDisplayLockArgs,
 } from './types.js';
 import { parseTestOutput, truncateOutput, validateExtraEnv } from './helpers.js';
 import { discoverPlaywrightConfig } from './config-discovery.js';
@@ -96,8 +101,14 @@ import { findTraceZip, parseTraceZip } from './trace-parser.js';
 // ============================================================================
 
 const PROJECT_DIR = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd());
-const pwConfig = discoverPlaywrightConfig(PROJECT_DIR);
+const WORKTREE_DIR = process.env.CLAUDE_WORKTREE_DIR || null;
+/** Where source code + builds live: worktree if set, otherwise main tree */
+const EFFECTIVE_CWD = WORKTREE_DIR ? path.resolve(WORKTREE_DIR) : PROJECT_DIR;
+const pwConfig = discoverPlaywrightConfig(EFFECTIVE_CWD);
 const REPORT_DIR = path.join(PROJECT_DIR, 'playwright-report');
+
+/** Path to the display-lock shared module (hooks/lib/display-lock.js). */
+const DISPLAY_LOCK_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'display-lock.js');
 const RUN_TIMEOUT = 300_000; // 5 minutes for test runs
 
 // ============================================================================
@@ -110,6 +121,8 @@ const demoAutoKillTimers = new Map<number, ReturnType<typeof setTimeout>>();
 const DEMO_AUTO_KILL_MS = 60_000;
 // PIDs that were auto-killed after a suite_end event — treated as 'passed' by the exit handler.
 const suiteEndAutoKilledPids = new Set<number>();
+// PIDs for which run_demo auto-acquired the display lock — release on demo completion.
+const displayLockAutoAcquiredPids = new Set<number>();
 
 function loadPersistedDemoRuns(): void {
   try {
@@ -189,6 +202,9 @@ function autoKillDemo(pid: number): void {
   }
 
   persistDemoRuns();
+
+  // Release display lock if this demo auto-acquired it
+  autoReleaseDisplayLockForPid(pid);
 }
 
 /**
@@ -350,6 +366,11 @@ function buildDemoEnv(opts: {
   // Maximize browser window in headed demos for cleaner recordings
   if (!opts.headless) env.DEMO_MAXIMIZE = '1';
 
+  // Pass through port env vars from worktree allocation
+  if (process.env.PLAYWRIGHT_WEB_PORT) env.PLAYWRIGHT_WEB_PORT = process.env.PLAYWRIGHT_WEB_PORT;
+  if (process.env.PLAYWRIGHT_BACKEND_PORT) env.PLAYWRIGHT_BACKEND_PORT = process.env.PLAYWRIGHT_BACKEND_PORT;
+  if (process.env.PLAYWRIGHT_BRIDGE_PORT) env.PLAYWRIGHT_BRIDGE_PORT = process.env.PLAYWRIGHT_BRIDGE_PORT;
+
   // Apply extra_env last — may override explicit demo vars (same as original inline behavior)
   if (opts.extra_env) {
     Object.assign(env, opts.extra_env);
@@ -433,7 +454,7 @@ function startWindowRecorder(outputPath: string, appName?: string): { pid: numbe
     const child = spawn(binary, args, {
       detached: true,
       stdio: ['ignore', 'ignore', 'pipe'],
-      cwd: PROJECT_DIR,
+      cwd: EFFECTIVE_CWD,
     });
     child.unref();
 
@@ -719,7 +740,7 @@ async function launchUiMode(args: LaunchUiModeArgs): Promise<LaunchUiModeResult>
     const child = spawn('npx', cmdArgs, {
       detached: true,
       stdio: ['ignore', 'ignore', 'pipe'],
-      cwd: PROJECT_DIR,
+      cwd: EFFECTIVE_CWD,
       env,
     });
 
@@ -975,7 +996,7 @@ async function executePrerequisites(opts: {
         if (prereq.health_check) {
           try {
             execFileSync('sh', ['-c', prereq.health_check], {
-              cwd: PROJECT_DIR,
+              cwd: EFFECTIVE_CWD,
               timeout: prereq.health_check_timeout_ms,
               stdio: 'pipe',
               encoding: 'utf8',
@@ -998,7 +1019,7 @@ async function executePrerequisites(opts: {
         if (prereq.run_as_background) {
           // Background command: spawn detached, poll health_check
           const child = spawn('sh', ['-c', prereq.command], {
-            cwd: PROJECT_DIR,
+            cwd: EFFECTIVE_CWD,
             detached: true,
             stdio: 'ignore',
             env: { ...process.env, ...resolvedEnv },
@@ -1015,7 +1036,7 @@ async function executePrerequisites(opts: {
               await new Promise(resolve => setTimeout(resolve, pollInterval));
               try {
                 execFileSync('sh', ['-c', prereq.health_check], {
-                  cwd: PROJECT_DIR,
+                  cwd: EFFECTIVE_CWD,
                   timeout: prereq.health_check_timeout_ms,
                   stdio: 'pipe',
                   encoding: 'utf8',
@@ -1045,7 +1066,7 @@ async function executePrerequisites(opts: {
         } else {
           // Foreground command: run with stall detection (kills if no output for 120s)
           const result = await runWithStallDetection(prereq.command, {
-            cwd: PROJECT_DIR,
+            cwd: EFFECTIVE_CWD,
             timeoutMs: prereq.timeout_ms,
             stallMs: 120_000,
             env: { ...process.env as Record<string, string>, ...resolvedEnv },
@@ -1067,7 +1088,7 @@ async function executePrerequisites(opts: {
           if (prereq.health_check) {
             try {
               execFileSync('sh', ['-c', prereq.health_check], {
-                cwd: PROJECT_DIR,
+                cwd: EFFECTIVE_CWD,
                 timeout: prereq.health_check_timeout_ms,
                 stdio: 'pipe',
                 encoding: 'utf8',
@@ -1131,7 +1152,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     };
   }
 
-  const devServerUrl = base_url || 'http://localhost:3000';
+  const webPort = process.env.PLAYWRIGHT_WEB_PORT || '3000';
+  const devServerUrl = base_url || `http://localhost:${webPort}`;
 
   // Execute registered prerequisites FIRST — this starts the dev server if registered as a background prereq
   const prereqResult = await executePrerequisites({
@@ -1156,6 +1178,43 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     };
   }
   const effectiveBaseUrl = devServerUrl;
+
+  // Display lock guard for headed demos — serialize to prevent window capture conflicts.
+  // When headless=false, require the caller to hold the display lock.
+  // If they don't hold it, attempt to auto-acquire; if another agent holds it, reject.
+  let displayLockAutoAcquired = false;
+  if (!args.headless) {
+    try {
+      const displayLockMod = await loadDisplayLock();
+      if (displayLockMod) {
+        const callerAgentId = getCallerAgentId();
+        const callerQueueId = getCallerQueueId();
+        const lockStatus = displayLockMod.getDisplayLockStatus();
+        const holderAgentId = lockStatus.holder ? (lockStatus.holder as Record<string, unknown>)['agent_id'] as string : null;
+        const callerIsHolder = lockStatus.locked && holderAgentId === callerAgentId;
+
+        if (!callerIsHolder) {
+          // Attempt to acquire
+          const acquireResult = displayLockMod.acquireDisplayLock(
+            callerAgentId,
+            callerQueueId,
+            `run_demo: ${args.scenario_id ?? project}`,
+            { ttlMinutes: 15 },
+          );
+          if (!acquireResult.acquired) {
+            return {
+              success: false,
+              project,
+              message: `Display lock held by agent "${holderAgentId ?? 'unknown'}". Call acquire_display_lock first and wait for your turn before running a headed demo.`,
+            };
+          }
+          displayLockAutoAcquired = true;
+        }
+      }
+    } catch {
+      // Non-fatal — if display-lock module errors, allow demo to proceed
+    }
+  }
 
   // Look up scenario env_vars and test_file if scenario_id is provided
   let scenarioEnvVars: Record<string, string> | undefined;
@@ -1246,7 +1305,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     const child = spawn('npx', cmdArgs, {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: PROJECT_DIR,
+      cwd: EFFECTIVE_CWD,
       env,
     });
 
@@ -1569,6 +1628,14 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         screenshotCapture = null;
       }
 
+      // Auto-release display lock if we acquired it — crash means demo is done
+      if (displayLockAutoAcquired) {
+        try {
+          const dlMod = await loadDisplayLock();
+          if (dlMod) dlMod.releaseDisplayLock(getCallerAgentId());
+        } catch { /* Non-fatal */ }
+      }
+
       // Write crash event to progress file so check_demo_result can surface the error
       try {
         fs.mkdirSync(path.dirname(progressFilePath), { recursive: true });
@@ -1609,6 +1676,14 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       if (screenshotCapture) {
         stopScreenshotCapture(screenshotCapture.interval);
         screenshotCapture = null;
+      }
+
+      // Auto-release display lock if we acquired it — stall means demo is done
+      if (displayLockAutoAcquired) {
+        try {
+          const dlMod = await loadDisplayLock();
+          if (dlMod) dlMod.releaseDisplayLock(getCallerAgentId());
+        } catch { /* Non-fatal */ }
       }
 
       return {
@@ -1681,6 +1756,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     }
     demoRuns.set(demoPid, demoState);
     persistDemoRuns();
+
+    // Track display lock auto-acquisition so release can happen on demo completion.
+    if (displayLockAutoAcquired) {
+      displayLockAutoAcquiredPids.add(demoPid);
+    }
 
     // Track exit for post-hoc status checks (fires even after unref since MCP server stays alive)
     child.on('exit', (code) => {
@@ -1804,6 +1884,9 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       }
 
       persistDemoRuns();
+
+      // Release display lock on process exit (covers all paths: normal, failed, killed)
+      autoReleaseDisplayLockForPid(demoPid);
     });
 
     child.unref();
@@ -2142,6 +2225,9 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
               ? `REQUIRED: This demo failed. ${failureFrames1 ? `${failureFrames1.length} frames have been auto-extracted from the 3 seconds before failure — analyze them with the Read tool to understand what went wrong visually.` : 'Use extract_video_frames at the failure timestamp to see what the UI looked like when it broke.'} Also check screenshots via get_demo_screenshot for earlier moments that may reveal when things started going wrong.`
               : 'REQUIRED: This demo failed. Use get_demo_screenshot to view screenshots near the failure point and understand what the UI looked like. Check screenshots at multiple timestamps to identify when the failure pattern first appeared.';
 
+        // Auto-release display lock if this demo auto-acquired it
+        autoReleaseDisplayLockForPid(pid);
+
         return {
           status: entry.status,
           pid,
@@ -2267,6 +2353,9 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
             ? `REQUIRED: This demo failed. ${failureFrames2 ? `${failureFrames2.length} frames have been auto-extracted from the 3 seconds before failure — analyze them with the Read tool to understand what went wrong visually.` : 'Use extract_video_frames at the failure timestamp to see what the UI looked like when it broke.'} Also check screenshots via get_demo_screenshot for earlier moments that may reveal when things started going wrong.`
             : 'REQUIRED: This demo failed. Use get_demo_screenshot to view screenshots near the failure point and understand what the UI looked like. Check screenshots at multiple timestamps to identify when the failure pattern first appeared.';
 
+      // Auto-release display lock if this demo auto-acquired it — process is dead
+      autoReleaseDisplayLockForPid(pid);
+
       return {
         status: entry.status,
         pid,
@@ -2375,6 +2464,11 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
       : finalRecordingPath
         ? `REQUIRED: This demo failed. ${failureFramesFinal ? `${failureFramesFinal.length} frames have been auto-extracted from the 3 seconds before failure — analyze them with the Read tool to understand what went wrong visually.` : 'Use extract_video_frames at the failure timestamp to see what the UI looked like when it broke.'} Also check screenshots via get_demo_screenshot for earlier moments that may reveal when things started going wrong.`
         : 'REQUIRED: This demo failed. Use get_demo_screenshot to view screenshots near the failure point and understand what the UI looked like. Check screenshots at multiple timestamps to identify when the failure pattern first appeared.';
+
+  // Auto-release display lock when demo reaches terminal state
+  if (entry.status !== 'running') {
+    autoReleaseDisplayLockForPid(pid);
+  }
 
   return {
     status: entry.status,
@@ -2506,6 +2600,9 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
 
   persistDemoRuns();
 
+  // Auto-release display lock if this demo auto-acquired it — demo has been stopped
+  autoReleaseDisplayLockForPid(pid);
+
   return {
     success: true,
     pid,
@@ -2563,7 +2660,7 @@ function runTests(args: RunTestsArgs): RunTestsResult {
 
   try {
     const output = execFileSync('npx', cmdArgs, {
-      cwd: PROJECT_DIR,
+      cwd: EFFECTIVE_CWD,
       timeout: RUN_TIMEOUT,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -2632,7 +2729,7 @@ function seedData(): SeedDataResult {
 
   try {
     const output = execFileSync('npx', ['playwright', 'test', '--project=seed'], {
-      cwd: PROJECT_DIR,
+      cwd: EFFECTIVE_CWD,
       timeout: RUN_TIMEOUT,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -2675,7 +2772,7 @@ function cleanupData(): CleanupDataResult {
 
   try {
     const output = execFileSync('npx', ['playwright', 'test', '--project=seed'], {
-      cwd: PROJECT_DIR,
+      cwd: EFFECTIVE_CWD,
       timeout: RUN_TIMEOUT,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -2726,7 +2823,7 @@ function getReport(args: GetReportArgs): GetReportResult {
       spawn('npx', ['playwright', 'show-report'], {
         detached: true,
         stdio: 'ignore',
-        cwd: PROJECT_DIR,
+        cwd: EFFECTIVE_CWD,
       }).unref();
       browserOpened = true;
     } catch (err) {
@@ -3089,7 +3186,7 @@ async function attemptDevServerAutoStart(baseUrl: string): Promise<string | null
     const child = spawn('pnpm', ['run', 'dev'], {
       detached: true,
       stdio: 'ignore',
-      cwd: PROJECT_DIR,
+      cwd: EFFECTIVE_CWD,
       env: childEnv,
     });
     child.unref();
@@ -3130,7 +3227,8 @@ async function attemptDevServerAutoStart(baseUrl: string): Promise<string | null
  * Ensure the dev server is healthy before demo execution.
  * Checks health first; if not reachable, auto-starts.
  */
-async function ensureDevServer(baseUrl: string = 'http://localhost:3000'): Promise<{ ready: boolean; message: string }> {
+async function ensureDevServer(baseUrl?: string): Promise<{ ready: boolean; message: string }> {
+  if (!baseUrl) baseUrl = `http://localhost:${process.env.PLAYWRIGHT_WEB_PORT || '3000'}`;
   const health = await checkDevServer(baseUrl);
   if (health.status === 'pass') return { ready: true, message: 'Dev server healthy' };
 
@@ -3201,7 +3299,7 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   const recoverySteps: string[] = [];
 
   // 0. Prerequisites (run FIRST — may start the dev server)
-  const preflightBaseUrl = args.base_url || 'http://localhost:3000';
+  const preflightBaseUrl = args.base_url || `http://localhost:${process.env.PLAYWRIGHT_WEB_PORT || '3000'}`;
   const prereqStart = Date.now();
   try {
     const prereqResult = await executePrerequisites({ dry_run: false, base_url: preflightBaseUrl });
@@ -3225,8 +3323,8 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
 
   // 1. Config exists
   checks.push(runCheck('config_exists', () => {
-    const tsConfig = path.join(PROJECT_DIR, 'playwright.config.ts');
-    const jsConfig = path.join(PROJECT_DIR, 'playwright.config.js');
+    const tsConfig = path.join(EFFECTIVE_CWD, 'playwright.config.ts');
+    const jsConfig = path.join(EFFECTIVE_CWD, 'playwright.config.js');
     if (fs.existsSync(tsConfig)) {
       return { status: 'pass', message: `Found playwright.config.ts` };
     }
@@ -3238,7 +3336,7 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
 
   // 2. Dependencies installed
   checks.push(runCheck('dependencies_installed', () => {
-    const pwTestDir = path.join(PROJECT_DIR, 'node_modules', '@playwright', 'test');
+    const pwTestDir = path.join(EFFECTIVE_CWD, 'node_modules', '@playwright', 'test');
     if (fs.existsSync(pwTestDir)) {
       return { status: 'pass', message: '@playwright/test is installed' };
     }
@@ -3276,7 +3374,7 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
         return { status: 'skip', message: `No known test directory mapping for project "${args.project}" — compilation check (#6) will validate it` };
       }
 
-      const fullDir = path.join(PROJECT_DIR, testDir);
+      const fullDir = path.join(EFFECTIVE_CWD, testDir);
       const count = countTestFiles(fullDir, args.project);
       if (count > 0) {
         return { status: 'pass', message: `${count} test file(s) found in ${testDir}` };
@@ -3305,7 +3403,7 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
       try {
         const listArgs = ['playwright', 'test', '--list', '--project', args.project!];
         const output = execFileSync('npx', listArgs, {
-          cwd: PROJECT_DIR,
+          cwd: EFFECTIVE_CWD,
           timeout: 30_000,
           encoding: 'utf8',
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -3332,7 +3430,8 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
 
   // 7. Dev server reachable (fail, not warn — if it's not up, demo will fail)
   // Prerequisites already ran above (step 0) so the dev server should be up if a prereq started it.
-  const baseUrl = args.base_url || 'http://localhost:3000';
+  const pfWebPort = process.env.PLAYWRIGHT_WEB_PORT || '3000';
+  const baseUrl = args.base_url || `http://localhost:${pfWebPort}`;
   let devServerCheck = await checkDevServer(baseUrl);
   // Auto-start: only attempt on connection refused (not on HTTP 500 / error patterns)
   if (devServerCheck.status === 'fail' && devServerCheck.message.includes('is not reachable')) {
@@ -3433,7 +3532,7 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   // 8. Auth state freshness (only when a project is specified)
   if (args.project) {
     checks.push(runCheck('auth_state', () => {
-      const authDir = path.join(PROJECT_DIR, '.auth');
+      const authDir = path.join(EFFECTIVE_CWD, '.auth');
 
       // Find primary auth file: from config discovery, or scan .auth/
       let primaryFilePath: string | null = null;
@@ -3660,7 +3759,7 @@ async function runAuthSetup(args: RunAuthSetupArgs): Promise<RunAuthSetupResult>
   }
 
   // Ensure dev server is running before auth setup
-  const authBaseUrl = 'http://localhost:3000';
+  const authBaseUrl = `http://localhost:${process.env.PLAYWRIGHT_WEB_PORT || '3000'}`;
   const devServer = await ensureDevServer(authBaseUrl);
   if (!devServer.ready) {
     return {
@@ -3688,7 +3787,7 @@ async function runAuthSetup(args: RunAuthSetupArgs): Promise<RunAuthSetupResult>
   const seedStart = Date.now();
   try {
     execFileSync('npx', ['playwright', 'test', '--project=seed'], {
-      cwd: PROJECT_DIR,
+      cwd: EFFECTIVE_CWD,
       timeout: 60_000,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -3723,7 +3822,7 @@ async function runAuthSetup(args: RunAuthSetupArgs): Promise<RunAuthSetupResult>
   const authStart = Date.now();
   try {
     const output = execFileSync('npx', ['playwright', 'test', '--project=auth-setup'], {
-      cwd: PROJECT_DIR,
+      cwd: EFFECTIVE_CWD,
       timeout: 240_000, // 4 min: web server startup + 4 persona sign-ins
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -3731,7 +3830,7 @@ async function runAuthSetup(args: RunAuthSetupArgs): Promise<RunAuthSetupResult>
     });
     phases.push({ name: 'auth-setup', success: true, message: 'Auth setup completed', duration_ms: Date.now() - authStart });
 
-    const authDir = path.join(PROJECT_DIR, '.auth');
+    const authDir = path.join(EFFECTIVE_CWD, '.auth');
     const expected = pwConfig.authFiles.length > 0
       ? pwConfig.authFiles.map(f => path.basename(f))
       : (fs.existsSync(authDir) ? fs.readdirSync(authDir).filter(f => f.endsWith('.json')) : []);
@@ -4263,7 +4362,7 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
         const child = spawn('npx', cmdArgs, {
           detached: true,
           stdio: ['ignore', 'pipe', 'pipe'],
-          cwd: PROJECT_DIR,
+          cwd: EFFECTIVE_CWD,
           env,
         });
 
@@ -4390,7 +4489,8 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
  * Discovers scenarios, partitions into batches, and runs them sequentially in the background.
  */
 async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
-  const devServerUrl = args.base_url || 'http://localhost:3000';
+  const batchWebPort = process.env.PLAYWRIGHT_WEB_PORT || '3000';
+  const devServerUrl = args.base_url || `http://localhost:${batchWebPort}`;
 
   // Execute prerequisites FIRST — starts dev server if registered as background prereq
   const prereqResult = await executePrerequisites({ base_url: devServerUrl });
@@ -4686,6 +4786,178 @@ function extractVideoFrames(args: ExtractVideoFramesArgs): ExtractVideoFramesRes
 }
 
 // ============================================================================
+// Display Queue Tools
+// ============================================================================
+
+/**
+ * Load the display-lock module dynamically.
+ * Returns null if the module cannot be loaded (non-fatal — display-lock.js
+ * is a hook-lib file and may not exist in all environments).
+ */
+async function loadDisplayLock(): Promise<{
+  acquireDisplayLock: (agentId: string, queueId: string | null, title: string, opts?: { ttlMinutes?: number }) => { acquired: boolean; position?: number; holder?: Record<string, unknown>; queue_entry_id?: string };
+  releaseDisplayLock: (agentId: string) => { released: boolean; next_holder?: Record<string, unknown> | null };
+  renewDisplayLock: (agentId: string, ttlMinutes?: number) => { renewed: boolean; expires_at?: string };
+  getDisplayLockStatus: () => { locked: boolean; holder: Record<string, unknown> | null; expires_at: string | null; queue: Array<Record<string, unknown>> };
+} | null> {
+  try {
+    if (!fs.existsSync(DISPLAY_LOCK_PATH)) return null;
+    const mod = await import(DISPLAY_LOCK_PATH) as {
+      acquireDisplayLock: (agentId: string, queueId: string | null, title: string, opts?: { ttlMinutes?: number }) => { acquired: boolean; position?: number; holder?: Record<string, unknown>; queue_entry_id?: string };
+      releaseDisplayLock: (agentId: string) => { released: boolean; next_holder?: Record<string, unknown> | null };
+      renewDisplayLock: (agentId: string, ttlMinutes?: number) => { renewed: boolean; expires_at?: string };
+      getDisplayLockStatus: () => { locked: boolean; holder: Record<string, unknown> | null; expires_at: string | null; queue: Array<Record<string, unknown>> };
+    };
+    return mod;
+  } catch {
+    return null;
+  }
+}
+
+/** Get caller agent ID from env — falls back to 'unknown'. */
+function getCallerAgentId(): string {
+  return process.env.CLAUDE_AGENT_ID || 'unknown';
+}
+
+/** Get caller queue ID from env — falls back to null. */
+function getCallerQueueId(): string | null {
+  return process.env.CLAUDE_SESSION_ID || null;
+}
+
+/**
+ * Fire-and-forget display lock release for a PID that was auto-acquired by run_demo.
+ * Only releases if the PID is in displayLockAutoAcquiredPids.
+ * Non-fatal — errors are swallowed.
+ */
+function autoReleaseDisplayLockForPid(pid: number): void {
+  if (!displayLockAutoAcquiredPids.has(pid)) return;
+  displayLockAutoAcquiredPids.delete(pid);
+  const agentId = getCallerAgentId();
+  loadDisplayLock().then((mod) => {
+    if (mod) mod.releaseDisplayLock(agentId);
+  }).catch(() => { /* Non-fatal */ });
+}
+
+async function acquireDisplayLockTool(args: AcquireDisplayLockArgs): Promise<string> {
+  const displayLock = await loadDisplayLock();
+  if (!displayLock) {
+    return JSON.stringify({ error: 'Display lock module not available — display-lock.js not found in hooks/lib' });
+  }
+
+  const agentId = getCallerAgentId();
+  const queueId = getCallerQueueId();
+  const result = displayLock.acquireDisplayLock(agentId, queueId, args.title, { ttlMinutes: args.ttl_minutes });
+
+  if (result.acquired) {
+    return JSON.stringify({
+      acquired: true,
+      agent_id: agentId,
+      title: args.title,
+      ttl_minutes: args.ttl_minutes,
+      message: `Display lock acquired. You have exclusive headed-mode access for up to ${args.ttl_minutes} minutes. Call release_display_lock when done.`,
+    });
+  } else {
+    const holder = result.holder as Record<string, unknown> | undefined;
+    return JSON.stringify({
+      acquired: false,
+      position: result.position,
+      holder: holder ? {
+        agent_id: holder['agent_id'],
+        title: holder['title'],
+        acquired_at: holder['acquired_at'],
+        expires_at: holder['expires_at'],
+      } : null,
+      queue_entry_id: result.queue_entry_id,
+      message: `Display lock held by agent "${holder?.['agent_id'] ?? 'unknown'}". You are at position ${result.position} in the queue. Call get_display_queue_status to check when it is your turn, then try acquire_display_lock again.`,
+    });
+  }
+}
+
+async function releaseDisplayLockTool(_args: Record<string, never>): Promise<string> {
+  const displayLock = await loadDisplayLock();
+  if (!displayLock) {
+    return JSON.stringify({ error: 'Display lock module not available — display-lock.js not found in hooks/lib' });
+  }
+
+  const agentId = getCallerAgentId();
+  const result = displayLock.releaseDisplayLock(agentId);
+
+  if (!result.released) {
+    return JSON.stringify({
+      released: false,
+      message: `Display lock was not held by this agent (${agentId}). Either it was already released or never acquired.`,
+    });
+  }
+
+  const next = result.next_holder as Record<string, unknown> | null | undefined;
+  return JSON.stringify({
+    released: true,
+    next_holder: next ? {
+      agent_id: next['agent_id'],
+      queue_id: next['queue_id'],
+      title: next['title'],
+    } : null,
+    message: next
+      ? `Display lock released. Next agent in queue ("${next['agent_id'] ?? 'unknown'}") has been promoted.`
+      : 'Display lock released. Queue is now empty.',
+  });
+}
+
+async function renewDisplayLockTool(_args: Record<string, never>): Promise<string> {
+  const displayLock = await loadDisplayLock();
+  if (!displayLock) {
+    return JSON.stringify({ error: 'Display lock module not available — display-lock.js not found in hooks/lib' });
+  }
+
+  const agentId = getCallerAgentId();
+  const result = displayLock.renewDisplayLock(agentId);
+
+  if (!result.renewed) {
+    return JSON.stringify({
+      renewed: false,
+      message: `Display lock renewal failed — this agent (${agentId}) does not hold the lock. Acquire it first with acquire_display_lock.`,
+    });
+  }
+
+  return JSON.stringify({
+    renewed: true,
+    expires_at: result.expires_at,
+    message: `Display lock TTL extended. New expiry: ${result.expires_at}. Call renew_display_lock again before expiry to maintain access.`,
+  });
+}
+
+async function getDisplayQueueStatusTool(_args: Record<string, never>): Promise<string> {
+  const displayLock = await loadDisplayLock();
+  if (!displayLock) {
+    return JSON.stringify({
+      available: false,
+      message: 'Display lock module not available — display-lock.js not found in hooks/lib. Display queue is not active.',
+    });
+  }
+
+  const status = displayLock.getDisplayLockStatus();
+  const callerAgentId = getCallerAgentId();
+
+  const isHolder = !!(status.holder && (status.holder as Record<string, unknown>)['agent_id'] === callerAgentId);
+  const callerInQueue = status.queue.find((e) => (e as Record<string, unknown>)['agent_id'] === callerAgentId);
+
+  return JSON.stringify({
+    locked: status.locked,
+    holder: status.holder,
+    expires_at: status.expires_at,
+    queue_length: status.queue.length,
+    queue: status.queue,
+    caller_is_holder: isHolder,
+    caller_queue_position: callerInQueue ? (callerInQueue as Record<string, unknown>)['position'] : null,
+    message: !status.locked
+      ? 'Display is free. Call acquire_display_lock to get exclusive access before running headed demos.'
+      : isHolder
+        ? `You hold the display lock (expires ${status.expires_at}). ${status.queue.length} agent(s) waiting.`
+        : `Display lock held by agent "${(status.holder as Record<string, unknown>)?.['agent_id'] ?? 'unknown'}". Queue length: ${status.queue.length}.`,
+  });
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -4894,6 +5166,46 @@ const tools: AnyToolHandler[] = [
       'Returns the final progress snapshot.',
     schema: StopDemoBatchArgsSchema,
     handler: stopDemoBatch,
+  },
+  {
+    name: 'acquire_display_lock',
+    description:
+      'Acquire exclusive display access for headed demos or real Chrome (chrome-bridge) usage. ' +
+      'If another agent holds the lock, you are placed in a queue and must wait — check position with get_display_queue_status, then retry. ' +
+      'Call this BEFORE run_demo with headless=false or any chrome-bridge tool usage that requires exclusive display access. ' +
+      'run_demo auto-acquires the lock when headless=false, but explicit acquisition is recommended for sequential headed demos. ' +
+      'Headed demos are serialized through this queue to prevent window capture conflicts and corrupted recordings.',
+    schema: AcquireDisplayLockArgsSchema,
+    handler: acquireDisplayLockTool,
+  },
+  {
+    name: 'release_display_lock',
+    description:
+      'Release exclusive display access after headed demos or Chrome usage completes. ' +
+      'ALWAYS call this when done with headed mode, even if the demo failed. ' +
+      'Failure to release blocks other agents waiting in queue. ' +
+      'run_demo auto-releases the lock when the demo completes (via check_demo_result or stop_demo), ' +
+      'but you must release manually if you acquired the lock explicitly.',
+    schema: ReleaseDisplayLockArgsSchema,
+    handler: releaseDisplayLockTool,
+  },
+  {
+    name: 'renew_display_lock',
+    description:
+      'Extend your display lock TTL (heartbeat). ' +
+      'Call every 5 minutes during long headed demo sessions to prevent auto-expiry. ' +
+      'The lock auto-expires after its TTL (default 15 minutes) if not renewed or released.',
+    schema: RenewDisplayLockArgsSchema,
+    handler: renewDisplayLockTool,
+  },
+  {
+    name: 'get_display_queue_status',
+    description:
+      'Check the current display lock holder and waiting queue. ' +
+      'Use before deciding whether to run headed or headless, or to check your queue position after a failed acquire attempt. ' +
+      'Returns locked state, current holder details, queue entries, and whether you are the current holder.',
+    schema: GetDisplayQueueStatusArgsSchema,
+    handler: getDisplayQueueStatusTool,
   },
 ];
 

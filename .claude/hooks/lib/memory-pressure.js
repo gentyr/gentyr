@@ -63,10 +63,17 @@ function getFreeMem() {
       const freeMatch = vmstat.match(/Pages free:\s+(\d+)/);
       const inactiveMatch = vmstat.match(/Pages inactive:\s+(\d+)/);
       const specMatch = vmstat.match(/Pages speculative:\s+(\d+)/);
+      const purgeableMatch = vmstat.match(/Pages purgeable:\s+(\d+)/);
       if (freeMatch) freePages += parseInt(freeMatch[1], 10);
       // Include speculative pages (macOS treats them as effectively free)
       if (specMatch) freePages += parseInt(specMatch[1], 10);
-      // Don't count inactive — macOS will reclaim but it's not "free"
+      // Include inactive pages — macOS aggressively caches file data here,
+      // but these pages are instantly reclaimable under memory pressure.
+      // Without this, a 24 GB machine with 8 GB inactive reads as "critical"
+      // at 182 MB free. Linux's MemAvailable includes the equivalent.
+      if (inactiveMatch) freePages += parseInt(inactiveMatch[1], 10);
+      // Include purgeable pages (part of active but can be discarded instantly)
+      if (purgeableMatch) freePages += parseInt(purgeableMatch[1], 10);
 
       return Math.round((freePages * actualPageSize) / (1024 * 1024));
     } else {
@@ -172,15 +179,15 @@ export function shouldAllowSpawn(options = {}) {
 
   switch (mem.pressure) {
     case 'critical':
-      // CTO-priority tasks are always allowed — the user explicitly requested this work
-      if (priority === 'cto') {
+      // CTO and critical-priority tasks are always allowed — persistent monitor revival uses critical priority
+      if (priority === 'cto' || priority === 'critical') {
         debugLog('memory-pressure', 'pressure_check', {
           pressure: mem.pressure, freeMB: mem.freeMB, nodeRssMB: mem.nodeRssMB,
           nodeProcessCount: mem.nodeProcessCount, priority, context, allowed: true,
         }, 'info');
         return {
           allowed: true,
-          reason: `[MEMORY CRITICAL] Allowing CTO-priority ${context} spawn despite critical memory pressure: ${mem.details}`,
+          reason: `[MEMORY CRITICAL] Allowing ${priority}-priority ${context} spawn despite critical memory pressure: ${mem.details}`,
           pressure: mem.pressure,
         };
       }

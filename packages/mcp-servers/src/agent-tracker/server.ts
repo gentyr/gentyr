@@ -33,6 +33,9 @@ import {
   SetMaxConcurrentSessionsArgsSchema,
   CancelQueuedSessionArgsSchema,
   DrainSessionQueueArgsSchema,
+  ActivateQueuedSessionArgsSchema,
+  SetReservedSlotsArgsSchema,
+  GetReservedSlotsArgsSchema,
   GetUserPromptArgsSchema,
   SearchUserPromptsArgsSchema,
   ListUserPromptsArgsSchema,
@@ -61,6 +64,9 @@ import {
   type SetMaxConcurrentSessionsArgs,
   type CancelQueuedSessionArgs,
   type DrainSessionQueueArgs,
+  type ActivateQueuedSessionArgs,
+  type SetReservedSlotsArgs,
+  type GetReservedSlotsArgs,
   type SendSessionSignalArgs,
   type BroadcastSignalArgs,
   type GetSessionSignalsArgs,
@@ -2125,7 +2131,7 @@ function isQueuePidAlive(pid: number): boolean {
 /**
  * Get full session queue status: running items, queued items, capacity, 24h stats.
  */
-function getSessionQueueStatus(_args: GetSessionQueueStatusArgs): object | ErrorResult {
+async function getSessionQueueStatus(_args: GetSessionQueueStatusArgs): Promise<object | ErrorResult> {
   if (!fs.existsSync(QUEUE_DB_PATH)) {
     return { hasData: false, message: 'Session queue database not found. Queue may not be initialized yet.' };
   }
@@ -2145,6 +2151,15 @@ function getSessionQueueStatus(_args: GetSessionQueueStatusArgs): object | Error
     const configRow = db.prepare('SELECT value FROM queue_config WHERE key = ?').get('max_concurrent_sessions') as QueueConfigRow | undefined;
     const maxConcurrent = configRow ? parseInt(configRow.value, 10) : 10;
 
+    const reservedRow = db.prepare('SELECT value FROM queue_config WHERE key = ?').get('reserved_slots') as QueueConfigRow | undefined;
+    const reservedSlots = reservedRow ? parseInt(reservedRow.value, 10) : 0;
+
+    const reservedRestoreRow = db.prepare('SELECT value FROM queue_config WHERE key = ?').get('reserved_slots_restore') as QueueConfigRow | undefined;
+    let reservedSlotsRestore: { restoreAt: string; defaultValue: number } | null = null;
+    if (reservedRestoreRow) {
+      try { reservedSlotsRestore = JSON.parse(reservedRestoreRow.value); } catch { /* non-fatal */ }
+    }
+
     // Get running items, filter to alive PIDs
     const runningRows = db.prepare("SELECT * FROM queue_items WHERE status = 'running' ORDER BY spawned_at ASC").all() as QueueItemRow[];
     const aliveRunning = runningRows.filter(r => r.pid && isQueuePidAlive(r.pid));
@@ -2158,11 +2173,22 @@ function getSessionQueueStatus(_args: GetSessionQueueStatusArgs): object | Error
     const avgRun = db.prepare("SELECT AVG(CAST((julianday(completed_at) - julianday(spawned_at)) * 86400 AS INTEGER)) as avg_secs FROM queue_items WHERE completed_at IS NOT NULL AND spawned_at IS NOT NULL AND completed_at > datetime('now', '-24 hours')").get() as QueueAvgRow;
     const bySourceRows = db.prepare("SELECT source, COUNT(*) as cnt FROM queue_items WHERE enqueued_at > datetime('now', '-24 hours') GROUP BY source ORDER BY cnt DESC LIMIT 10").all() as QueueSourceRow[];
 
+    // Check memory pressure (best-effort — module may not be available)
+    let memoryPressure: { pressure: string; freeMB: number } | null = null;
+    try {
+      const memModule = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'memory-pressure.js'));
+      const mem = memModule.getMemoryPressure();
+      memoryPressure = { pressure: mem.pressure, freeMB: mem.freeMB };
+    } catch { /* non-fatal — module may not exist */ }
+
     return {
       hasData: true,
       maxConcurrent,
+      reservedSlots,
+      reservedSlotsRestore,
       running: aliveRunning.length,
       availableSlots: Math.max(0, maxConcurrent - aliveRunning.length),
+      memoryPressure,
       queuedItems: queuedRows.map(item => ({
         id: item.id,
         title: item.title,
@@ -2271,6 +2297,111 @@ async function drainSessionQueue(_args: DrainSessionQueueArgs): Promise<object |
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { error: `Failed to drain session queue: ${message}` };
+  }
+}
+
+/**
+ * Instantly activate a queued session by promoting it to CTO priority.
+ * Uses the inline preemption in drainQueue() to suspend a lower-priority
+ * running session if at capacity.
+ */
+async function activateQueuedSession(args: ActivateQueuedSessionArgs): Promise<object | ErrorResult> {
+  const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+
+  if (!fs.existsSync(queueModulePath)) {
+    return { error: `session-queue.js not found at ${queueModulePath}` };
+  }
+
+  try {
+    const queueModule = await import(queueModulePath);
+    if (typeof queueModule.activateQueuedItem !== 'function') {
+      return { error: 'activateQueuedItem function not found in session-queue.js' };
+    }
+    const result = queueModule.activateQueuedItem(args.queue_id);
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to activate queued session: ${message}` };
+  }
+}
+
+/**
+ * Set the number of reserved slots for priority-eligible tasks (persistent/CTO/critical).
+ * Dynamically imports session-queue.js so the live module is used.
+ */
+async function setReservedSlots(args: SetReservedSlotsArgs): Promise<object | ErrorResult> {
+  const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+
+  if (!fs.existsSync(queueModulePath)) {
+    return { error: `session-queue.js not found at ${queueModulePath}` };
+  }
+
+  try {
+    const queueModule = await import(queueModulePath);
+    if (typeof queueModule.setReservedSlots !== 'function') {
+      return { error: 'setReservedSlots function not found in session-queue.js' };
+    }
+    const opts: { autoRestoreMinutes?: number; defaultValue?: number } = {};
+    if (args.auto_restore_minutes && args.auto_restore_minutes > 0) {
+      opts.autoRestoreMinutes = args.auto_restore_minutes;
+      opts.defaultValue = args.default_value ?? 0;
+    }
+    const result = queueModule.setReservedSlots(args.count, opts);
+    return {
+      success: true,
+      old: result.old,
+      new: result.new,
+      autoRestore: opts.autoRestoreMinutes
+        ? { restoreAt: new Date(Date.now() + opts.autoRestoreMinutes * 60000).toISOString(), defaultValue: opts.defaultValue }
+        : null,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to set reserved slots: ${message}` };
+  }
+}
+
+/**
+ * Get the current reserved slots configuration.
+ * Dynamically imports session-queue.js so the live module is used.
+ */
+async function getReservedSlots(_args: GetReservedSlotsArgs): Promise<object | ErrorResult> {
+  const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+
+  if (!fs.existsSync(queueModulePath)) {
+    return { error: `session-queue.js not found at ${queueModulePath}` };
+  }
+
+  try {
+    const queueModule = await import(queueModulePath);
+    if (typeof queueModule.getReservedSlots !== 'function') {
+      return { error: 'getReservedSlots function not found in session-queue.js' };
+    }
+    const count = queueModule.getReservedSlots();
+
+    // Also read the restore schedule if present
+    let restoreSchedule = null;
+    if (fs.existsSync(QUEUE_DB_PATH)) {
+      try {
+        const db = openReadonlyDb(QUEUE_DB_PATH);
+        const row = db.prepare('SELECT value FROM queue_config WHERE key = ?').get('reserved_slots_restore') as QueueConfigRow | undefined;
+        db.close();
+        if (row) {
+          try { restoreSchedule = JSON.parse(row.value); } catch { /* non-fatal */ }
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    return {
+      count,
+      restoreSchedule,
+      description: count === 0
+        ? 'No slots reserved — all concurrency slots available to any task'
+        : `${count} slot(s) reserved for priority-eligible tasks (cto/critical priority, persistent lane, or persistentTaskId children)`,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to get reserved slots: ${message}` };
   }
 }
 
@@ -2941,7 +3072,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'force_spawn_tasks',
-    description: 'Force-spawn all pending TODO tasks for the specified sections immediately, bypassing age filters, batch limits, cooldowns, and CTO activity gate. Preserves concurrency guard and task tracking.',
+    description: 'Force-spawn all pending TODO tasks for the specified sections immediately, bypassing age filters, batch limits, cooldowns, and CTO activity gate. Bypasses the session queue — spawns immediately regardless of queue capacity or memory pressure. Use when CTO-priority work is blocked by queue congestion.',
     schema: ForceSpawnTasksArgsSchema,
     handler: forceSpawnTasks,
   },
@@ -2979,27 +3110,45 @@ const tools: AnyToolHandler[] = [
   // Session Queue Tools
   {
     name: 'get_session_queue_status',
-    description: 'Get the current session queue status: running items (with PID liveness), queued items, capacity info, and 24h throughput stats.',
+    description: 'Get the current session queue status: running items (with PID liveness), queued items, capacity info, memory pressure level, and 24h throughput stats. Check memoryPressure field when items are queued but not spawning.',
     schema: GetSessionQueueStatusArgsSchema,
     handler: getSessionQueueStatus,
   },
   {
     name: 'set_max_concurrent_sessions',
-    description: 'Update the maximum number of concurrent sessions the queue will spawn (1-50). Takes effect immediately on the next drain cycle.',
+    description: 'Update the maximum number of concurrent sessions the queue will spawn (1-50). CTO-only: do NOT call this tool unless the CTO explicitly requests a concurrency change. Takes effect on the next drain cycle.',
     schema: SetMaxConcurrentSessionsArgsSchema,
     handler: setMaxConcurrentSessions,
   },
   {
     name: 'cancel_queued_session',
-    description: 'Cancel a queued (not yet running) session queue item by its queue ID. Returns success/failure with reason.',
+    description: 'Cancel a queued (not yet running) session queue item by its queue ID. Only works on items with status "queued" — cannot cancel running or suspended items. Use suspend_session for running items.',
     schema: CancelQueuedSessionArgsSchema,
     handler: cancelQueuedSession,
   },
   {
     name: 'drain_session_queue',
-    description: 'Trigger an immediate drain of the session queue, spawning queued items up to the concurrency limit. Useful after capacity becomes available.',
+    description: 'Trigger an immediate drain of the session queue, spawning queued items up to the concurrency limit. Returns memoryBlocked count if memory pressure prevented spawning. Useful after capacity becomes available.',
     schema: DrainSessionQueueArgsSchema,
     handler: drainSessionQueue,
+  },
+  {
+    name: 'activate_queued_session',
+    description: 'Instantly activate a queued session by promoting it to CTO priority and spawning it. If the queue is at capacity, the lowest-priority running session is suspended (SIGTSTP) to make room and automatically resumed when a slot frees up.',
+    schema: ActivateQueuedSessionArgsSchema,
+    handler: activateQueuedSession,
+  },
+  {
+    name: 'set_reserved_slots',
+    description: 'Reserve N concurrency slots exclusively for priority-eligible tasks (cto/critical priority, persistent lane, or children of persistent tasks). Non-priority tasks see maxConcurrent - reservedSlots as their effective cap. Use auto_restore_minutes to automatically reset to default_value after a specified duration. Set count=0 to disable reservation.',
+    schema: SetReservedSlotsArgsSchema,
+    handler: setReservedSlots,
+  },
+  {
+    name: 'get_reserved_slots',
+    description: 'Get the current reserved slots count and auto-restore schedule. Reserved slots are dedicated to priority-eligible tasks (cto/critical priority, persistent lane, or persistentTaskId children).',
+    schema: GetReservedSlotsArgsSchema,
+    handler: getReservedSlots,
   },
   // User Prompt Index Tools
   {
@@ -3054,7 +3203,7 @@ const tools: AnyToolHandler[] = [
   // WS5 Session Introspection Tools
   {
     name: 'peek_session',
-    description: 'Peek at the live JSONL tail of a running agent session. Returns last tool calls, last assistant text, spawned sub-agents, git commits, and alignment findings. Provide agent_id or queue_id.',
+    description: 'Peek at the live JSONL tail of a running agent session. Returns last tool calls, last assistant text, spawned sub-agents, git commits, and alignment findings. Provide agent_id or queue_id. The lastText field contains the agent\'s most recent reasoning — quote directly in reports. Use depth: 12-16 for detailed monitoring.',
     schema: PeekSessionArgsSchema,
     handler: peekSession,
   },
@@ -3085,7 +3234,7 @@ const tools: AnyToolHandler[] = [
   // Persistent Task Deep Inspection
   {
     name: 'inspect_persistent_task',
-    description: 'Deep inspection of a persistent task. Returns task state, monitor JSONL excerpts (500 char tool inputs, 1000 char text — much more than peek_session), child session activity, amendments, progress files, and worktree git state. Single call replaces chaining get_persistent_task_summary + monitor_agents + peek_session.',
+    description: 'Deep inspection of a persistent task. Returns task state, monitor JSONL excerpts (500 char tool inputs, 1000 char text — much more than peek_session), child session activity, amendments, progress files, and worktree git state. Single call replaces chaining get_persistent_task_summary + monitor_agents + peek_session. Returns verbatim assistant text excerpts suitable for direct quoting in monitoring reports. Use depth_kb: 32 for comprehensive analysis.',
     schema: InspectPersistentTaskArgsSchema,
     handler: inspectPersistentTask,
   },
@@ -3093,7 +3242,7 @@ const tools: AnyToolHandler[] = [
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '8.0.0',  // Added inspect_persistent_task tool
+  version: '9.1.0',  // Added set_reserved_slots + get_reserved_slots for reserved pool capacity
   tools,
 });
 

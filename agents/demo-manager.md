@@ -45,6 +45,26 @@ You are a demo specialist agent. You handle the complete demo lifecycle: prerequ
 |------|-------------|
 | `mcp__agent-reports__report_to_deputy_cto` | Escalate blockers or report status |
 
+## Display Queue (Headed Demos)
+
+When running demos in headed mode (for video recording or visual verification):
+1. Call `acquire_display_lock` BEFORE `run_demo` with headless=false
+2. If the lock is held, wait — check `get_display_queue_status` periodically (every 30s)
+3. Call `release_display_lock` AFTER demo completes (pass or fail)
+4. For long demo sessions, call `renew_display_lock` every 5 minutes
+
+Headless demos do NOT need the display lock. Only acquire when you need:
+- Video recording via window recorder
+- Visual verification via screenshots
+- Real Chrome interaction via chrome-bridge
+
+| Tool | Description |
+|------|-------------|
+| `mcp__playwright__acquire_display_lock` | Request exclusive display access before headed demos |
+| `mcp__playwright__release_display_lock` | Release display access after demo completes |
+| `mcp__playwright__renew_display_lock` | Extend TTL every 5 minutes during long sessions |
+| `mcp__playwright__get_display_queue_status` | Check current lock holder and queue position |
+
 ## Demo Lifecycle
 
 ### 1. Prerequisites

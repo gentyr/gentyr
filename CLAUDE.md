@@ -147,6 +147,8 @@ Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/
 
 **Deferred fetch** (`skipFetch` option): `createWorktree()` accepts `{ skipFetch: true }` to skip the `git fetch origin` step, reducing worktree creation latency from 3-8s to under 1 second. Used by `force-spawn-tasks.js` when the caller has already ensured remote refs are up to date. Not recommended for cold-start provisioning where the base branch ref may be stale.
 
+**Port isolation** (`lib/port-allocator.js`): Each worktree is assigned a dedicated port block (base 3100, increments of 100 per worktree, max 50). `provisionWorktree()` calls `allocatePortBlock()` and injects `CLAUDE_WORKTREE_DIR`, `PLAYWRIGHT_WEB_PORT`, `PLAYWRIGHT_BACKEND_PORT`, and `PLAYWRIGHT_BRIDGE_PORT` into `.mcp.json` env for the `playwright` and `secret-sync` servers. This enables worktree-local demo testing — `run_demo`, `run_tests`, and `secret_dev_server_start` all operate from the worktree at its allocated ports without merging first. State at `.claude/state/port-allocations.json` (O_EXCL lockfile for TOCTOU safety). `removeWorktree()` releases the block; `cleanupMergedWorktrees()` calls `cleanupStaleAllocations()` as a safety net for worktrees removed via paths that bypassed `removeWorktree()`.
+
 `core.hooksPath` poisoning is defended by 4 layers (removeWorktree, tamperCheck, husky pre-commit, safeSymlink EINVAL fix).
 
 > Full details: [Worktrees core.hooksPath Poisoning Defense](docs/CLAUDE-REFERENCE.md#worktrees-corehookspath-poisoning-defense)
@@ -314,7 +316,7 @@ scripts/setup-automation-service.sh run --path /project                     # Ma
 scripts/setup-automation-service.sh setup --path /project --op-token TOKEN  # Install with 1Password service account
 ```
 
-By default, the automation service runs without 1Password credentials in background mode to avoid macOS permission prompts. Provide `--op-token` with a 1Password service account token to enable headless credential resolution for infrastructure MCP servers.
+By default, the automation service runs without 1Password credentials in background mode to avoid macOS permission prompts. Provide `--op-token` with a 1Password service account token to enable headless credential resolution for infrastructure MCP servers. **OP token preservation**: When regenerating an existing plist (macOS) or systemd unit (Linux) without explicitly passing `--op-token`, the setup script reads the token from the existing service file and carries it forward automatically. This prevents token loss during sync/update cycles.
 
 ### On-Demand Task Spawning
 
@@ -387,24 +389,31 @@ Lets the CTO delegate complex multi-step objectives to a dedicated monitor sessi
 
 **`persistent-monitor` agent** (`agents/persistent-monitor.md`): Opus-tier. Read-only for files — orchestrates sub-agents via `todo-db` task creation, not direct edits. Runs a polling loop: check sub-task progress → spawn new tasks as needed → check for amendments → heartbeat → sleep. Completes when outcome criteria are satisfied or the task is cancelled.
 
-**Session queue `persistent` lane**: Independent of the global concurrency cap. No sub-limit — persistent monitors always spawn immediately (the former `PERSISTENT_LANE_LIMIT = 3` cap was removed). Exempt from the session reaper. **Immediate revival on death**: `drainQueue()` calls `requeueDeadPersistentMonitor()` in Step 1b after the sync reap pass — if a persistent monitor's PID is found dead, a new monitor is re-enqueued at `critical` priority in the same drain cycle, reducing revival latency to seconds instead of the 15-minute automation cycle. A crash-loop circuit breaker caps this at 5 automatic revivals per task per hour.
+**Session queue `persistent` lane**: Independent of the global concurrency cap. No sub-limit — persistent monitors always spawn immediately (the former `PERSISTENT_LANE_LIMIT = 3` cap was removed). Exempt from the session reaper. **Immediate revival on death**: `drainQueue()` calls `requeueDeadPersistentMonitor()` in Step 1b after the sync reap pass — if a persistent monitor's PID is found dead, a new monitor is re-enqueued at `critical` priority in the same drain cycle, reducing revival latency to seconds instead of the 15-minute automation cycle. A crash-loop circuit breaker caps this at 5 automatic revivals per task per hour. **Step 1c orphan catch-all**: After the dead-PID check, `drainQueue()` also queries `persistent-tasks.db` for `active` tasks that have no corresponding `queued`, `running`, or `spawning` queue item in any lane — a scenario that can arise if the hook fired but the enqueue silently failed. Each orphan is passed to `requeueDeadPersistentMonitor()` for immediate revival. This is a belt-and-suspenders guard that runs on every drain cycle.
 
 **3 PostToolUse hooks**:
 - `persistent-task-briefing.js` — injects the current task state into the monitor's context on each tool call (prompt reinforcement)
 - `persistent-task-linker.js` — auto-links newly created todo-db tasks that carry a `persistent_task_id` to their parent persistent task
-- `persistent-task-spawner.js` — fires on `activate_persistent_task` and `amend_persistent_task` success; enqueues the monitor session in the `persistent` lane (amendment responses use `persistent_task_id || id` for task ID extraction)
+- `persistent-task-spawner.js` — fires on `activate_persistent_task`, `resume_persistent_task`, and `amend_persistent_task` success; enqueues the monitor session in the `persistent` lane (amendment responses use `persistent_task_id || id` for task ID extraction). Callers should NOT manually spawn monitors after these calls.
 
-**Hourly automation**: 15-minute health check detects monitors with stale heartbeats and reports dead monitors to the deputy-CTO. This is now a secondary safety net — primary revival happens immediately in `drainQueue()` via `requeueDeadPersistentMonitor()`.
+**Hourly automation**: 15-minute health check detects monitors with stale heartbeats and reports dead monitors to the deputy-CTO. This is now a tertiary safety net — primary revival happens immediately in `drainQueue()` via `requeueDeadPersistentMonitor()`, and the sync-pass reaper (`reapSyncPass`) now also kills stale monitors directly (using `persistent_heartbeat_stale_minutes`, default 2 min) for near-instant revival.
+
+**Stale-pause auto-resume**: `hourly-automation.js` runs a `persistent_stale_pause_resume` check every 5 minutes. If a task has been `paused` for longer than `persistent_stale_pause_threshold_minutes` (default 30 min) AND no monitor is already queued or running for it, a new monitor is automatically enqueued. This handles self-paused monitors that forgot to self-resume (e.g., after writing a deputy-CTO report and pausing). The resumed task transitions back to `active` via `resume_persistent_task`, and the spawner hook fires to launch a new monitor.
+
+**`buildPersistentMonitorRevivalPrompt()` helper**: Shared function in `hourly-automation.js` used by both the health-check dead monitor path and the stale-pause auto-resume path. Builds the full revival prompt with correct demo/bridge flags and revival metadata, keeping both revival code paths in sync.
 
 **Demo validation protocol**: When `demo_involved: true` is set on the task (stored in `metadata`), monitor prompts include specialized instructions from `lib/persistent-monitor-demo-instructions.js`: run demos headed with video recording, review video frames at key moments, keep Playwright timeouts tight, and iterate rapidly. Injected by `persistent-task-spawner.js`, `hourly-automation.js` revivals, and `requeueDeadPersistentMonitor()` in `session-queue.js`. The `/persistent-task` create command now asks about demo involvement during clarification and passes `demo_involved` to `create_persistent_task`.
+
+**Infrastructure bridge mode** (`bridge_main_tree` flag): When a persistent task has `bridge_main_tree: true` in its `metadata`, the monitor's spawn prompt is augmented with `lib/persistent-monitor-bridge-instructions.js`, which instructs the monitor to set `bridge_main_tree: true` on all child tasks that touch infrastructure. Those child tasks in turn receive `lib/bridge-main-tree-prompt.js` instructions (via `buildBridgeMainTreePrompt()`), enforcing strict MCP-only usage for builds, dev servers, secrets, and demos — with Bash for those operations prohibited. Env var `GENTYR_BRIDGE_MAIN_TREE=true` is injected into spawned sessions when the flag is set. Child agents that fail MUST diagnose and retry at least once before reporting blocked; only create a new fix task if the issue is confirmed to be in code, not infrastructure. Bridge mode enables worktree-local demo testing (no merge needed before the demo passes).
 
 **Cross-system wiring**: `todo-db` `create_task` accepts `persistent_task_id`; `stop-continue-hook.js` blocks the normal stop flow for active monitor sessions and forwards `GENTYR_PERSISTENT_TASK_ID` env var; `session-briefing.js` includes a persistent task summary in interactive session briefings; `cto-notification-hook.js` shows active monitor count in the status line.
 
 **CTO Dashboard**: `PersistentTaskSection` component reads from `persistent-tasks.db` via `packages/cto-dashboard/src/utils/persistent-task-reader.ts`. Rendered on `/cto-report`.
 
-**2 slash commands**:
+**3 slash commands**:
 - `/persistent-task` — create flow: researches context, refines the CTO's input into a high-specificity prompt, previews the draft, creates and activates on approval
 - `/persistent-tasks` — management view: lists all tasks, shows monitor health, and provides amend/pause/resume/cancel/revive actions
+- `/monitor-tasks` — continuous monitoring loop; each round spawns a short-lived investigator to gather queue + monitor health data, then displays a structured status report. Accepts optional argument: `persistent` (focus on persistent task monitors), a task-ID prefix (monitor a specific task), or bare (user selects scope). Stops automatically on intervention-needed conditions: monitor dead with no revival queued, task self-paused, task completed/cancelled, critical memory pressure for 3+ rounds, child agent stale 15+ minutes, or a systemic error pattern across 3+ child attempts.
 
 ## CTO Session Search
 
@@ -443,7 +452,7 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 
 **Revival daemon** (`scripts/revival-daemon.js`): Persistent `fs.watch()` + polling daemon for sub-second crash detection. Integrated as a launchd/systemd service via `setup-automation-service.sh`.
 
-**Memory pressure rate limiting** (`lib/memory-pressure.js`): Shared module monitoring free RAM (macOS `vm_stat` / Linux `/proc/meminfo`). Blocks all spawning at critical pressure; defers non-urgent spawning at high pressure. Used by stop hook, session reviver, universal task spawner, hourly automation, and the session queue drain path.
+**Memory pressure rate limiting** (`lib/memory-pressure.js`): Shared module monitoring free RAM (macOS `vm_stat` / Linux `/proc/meminfo`). Blocks all spawning at critical pressure; defers non-urgent spawning at high pressure. Exception: spawns with `priority: 'cto'` or `priority: 'critical'` are always allowed even at critical pressure — this ensures persistent monitor revival (which re-enqueues at `critical` priority) is never blocked by memory. Used by stop hook, session reviver, universal task spawner, hourly automation, and the session queue drain path.
 
 > Full details: [Automatic Session Recovery](docs/CLAUDE-REFERENCE.md#automatic-session-recovery)
 
@@ -455,7 +464,9 @@ All agent spawning routes through a single SQLite-backed queue (`session-queue.d
 
 **Schema**: `queue_items` table (status, priority, lane, spawn_type, agent_type, hook_type, prompt, model, cwd, pid, enqueued_at, spawned_at, completed_at, expires_at) + `queue_config` table (key/value for `max_concurrent_sessions`).
 
-**Priority ordering**: `critical` > `urgent` > `normal` > `low`.
+**Priority ordering**: `cto` > `critical` > `urgent` > `normal` > `low`.
+
+**Status values**: `queued`, `spawning`, `running`, `suspended`, `completed`, `failed`, `cancelled`.
 
 **Lane sub-limits**: The `gate` lane (Haiku gate agents) is capped at 5 concurrent regardless of the global limit.
 
@@ -463,11 +474,14 @@ All agent spawning routes through a single SQLite-backed queue (`session-queue.d
 
 **Default concurrency**: 10 (configurable 1–50 via `set_max_concurrent_sessions` MCP tool or `/concurrent-sessions N` slash command).
 
-**4 MCP tools** (on `agent-tracker` server):
-- `get_session_queue_status` — running items (with PID liveness), queued items, capacity info, 24h throughput
+**Inline preemption** (`preemptLowestPriority()`): When a `cto` or `critical` item is dequeued and the queue is at capacity, `drainQueue()` suspends the lowest-priority running session via SIGTSTP instead of waiting for a free slot. The suspended session's status is set to `suspended` (does not count toward the global concurrency limit). After the high-priority session completes and capacity frees up, Step 6 of `drainQueue()` resumes suspended sessions via SIGCONT. If a session dies while suspended, its linked TODO task is reset to `pending`. Emits `session_suspended` and `session_preempted` audit events. Unlike the legacy `preemptForCtoTask()` (which killed and re-enqueued), this is non-destructive — the session resumes from exactly where it stopped.
+
+**5 MCP tools** (on `agent-tracker` server):
+- `get_session_queue_status` — running items (with PID liveness), queued items, suspended items, capacity info, memory pressure level, and 24h throughput; check `memoryPressure` field when items are queued but not spawning
 - `set_max_concurrent_sessions` — update global limit (1–50); takes effect on next drain cycle
 - `cancel_queued_session` — cancel a queued (not yet running) item by queue ID
-- `drain_session_queue` — trigger an immediate drain; useful after capacity becomes available
+- `drain_session_queue` — trigger an immediate drain; returns `memoryBlocked` count if memory pressure prevented spawning
+- `activate_queued_session` — instantly activate a queued session by promoting it to CTO priority and spawning it; if at capacity, suspends the lowest-priority running session to make room
 
 **Dashboard integration**: `SessionQueueSection` React component on CTO Dashboard Page 1. Data read from `session-queue.db` via `packages/cto-dashboard/src/utils/session-queue-reader.ts`. Green/yellow/red color coding for capacity utilization.
 
@@ -475,11 +489,17 @@ All agent spawning routes through a single SQLite-backed queue (`session-queue.d
 
 **Revival integration**: `scripts/revival-daemon.js` calls `drainQueue()` on agent death to unblock queued items when capacity frees up.
 
+**Dedup-by-taskId**: `enqueueSession()` checks for an existing `queued`, `running`, or `spawning` item with the same `metadata.taskId` before inserting. If found, returns the existing queue item immediately (no duplicate spawn). This prevents double-enqueue from concurrent hook firings or retried tool calls.
+
+**Reserved Pool Slots** (`getReservedSlots`/`setReservedSlots`): An integer number of concurrency slots (0–10) that are held back for priority-eligible sessions (`cto`, `critical`, `urgent`). Non-priority-eligible items see `maxConcurrent - reservedSlots` as their effective cap, while priority-eligible items always see the full `maxConcurrent`. `isPriorityEligible()` determines eligibility based on item priority. **Auto-activate**: When the `persistent-task-spawner.js` hook fires on `activate_persistent_task` or `resume_persistent_task`, it sets 2 reserved slots to ensure the newly spawned monitor and any urgent follow-up agents are never blocked by low-priority queue traffic. **Auto-deactivate**: `hourly-automation.js` resets reserved slots to 0 when no persistent tasks are `active` or `paused`. **Auto-restore timer**: `setReservedSlots(n, { restoreAfterMinutes: N })` persists a restore record in `queue_config`; `drainQueue()` (Step 2.5) checks and auto-restores to the prior default after the timer elapses. **2 MCP tools** (on `agent-tracker` server): `set_reserved_slots` (set count + optional auto-restore timer) and `get_reserved_slots` (read current value and pending restore info). Reported in `get_session_queue_status` under `reservedSlots` and `reservedSlotsRestore`.
+
 ### Session Reaper
 
 Two-pass reaping engine that detects and cleans up dead or stuck sessions in the queue.
 
-**Sync pass** (`reapSyncPass(db)`): Called from `drainQueue()` on every drain cycle. Fast, synchronous, no process kills. Detects dead PIDs (process.kill(pid, 0) fails), marks their queue items `completed`, emits `session_reaped_dead` audit events, and returns a `stuckAlive` list for the async pass.
+**Sync pass** (`reapSyncPass(db)`): Called from `drainQueue()` on every drain cycle. Fast, synchronous, no process kills. Detects dead PIDs (process.kill(pid, 0) fails), marks their queue items `completed`, emits `session_reaped_dead` audit events, and returns a `stuckAlive` list for the async pass. Also kills stale persistent monitors directly in the sync pass (stale heartbeat detected via `persistent_heartbeat_stale_minutes`, default 2 min — configurable), triggering immediate revival via `requeueDeadPersistentMonitor()` in Step 1b rather than waiting for the async pass.
+
+**Auth-stall detection** (`isAuthStalled(sessionFile)`): Reads the JSONL tail of a running session's file. If the last 3+ consecutive entries are all auth errors (`"authentication_error"`, `"permission_error"`, or similar), the session is considered auth-stalled. The sync pass applies this check to ALL running sessions whose JSONL file hasn't been updated in `auth_stall_detection_minutes` (default 2 min). Auth-stalled sessions are killed immediately with `reapReason: 'auth_stall'` and linked TODO tasks are reset to `pending`.
 
 **Async pass** (`reapAsyncPass(projectDir, stuckAliveItems)`): Called from `hourly-automation.js`. For sessions alive longer than `session_hard_kill_minutes` (default 30 min), performs multi-signal completion check — JSONL last-message analysis (no pending tool_use), terminal tool detection (`complete_task`/`summarize_work` in last 16KB), and zombie/stopped process state. If any signal is positive, the session is killed and marked `completed` (reaped). If no signal, it's hard-killed and marked `failed`. Hard kills reset the linked TODO task to `pending` and write a deputy-CTO report.
 
@@ -487,11 +507,31 @@ Two-pass reaping engine that detects and cleans up dead or stuck sessions in the
 
 **Gate lane exemption**: Gate-lane agents (Haiku task gate) are exempt from both passes — they're lightweight and short-lived.
 
-**Configurable threshold**: `session_hard_kill_minutes` in `automation-config.json` (default 30).
+**Configurable thresholds**: `session_hard_kill_minutes` (default 30), `persistent_heartbeat_stale_minutes` (default 2), and `auth_stall_detection_minutes` (default 2) — all in `automation-config.json`.
 
 **Key files**: `.claude/hooks/lib/session-reaper.js` (core), `.claude/hooks/hourly-automation.js` (async pass trigger via `runIfDue('session_reaper', ...)`).
 
 **Legacy coexistence**: `scripts/reap-completed-agents.js` (deprecated) still operates on `agent-tracker-history.json` for any agents not routed through the queue. Both coexist.
+
+### Display Lock
+
+SQLite-backed exclusive display access lock that serializes headed Playwright demos, real Chrome (chrome-bridge), and any future display-requiring operation. Prevents concurrent window capture conflicts and corrupted video recordings.
+
+**Module**: `.claude/hooks/lib/display-lock.js`. DB at `.claude/state/display-lock.db` (WAL mode). Shares `session-queue.log` for log output.
+
+**Lock semantics**: Single global lock (`id = 'global'`). TTL auto-expiry (default 15 min) to prevent orphaned locks when holders die. Holder must call `renewDisplayLock()` every ~5 min to stay alive. On expiry: `checkAndExpireLock()` releases and promotes the next queue waiter. On agent death: session-reaper calls `releaseDisplayLock()` immediately. Headless demos do NOT need the display lock.
+
+**4 MCP tools** (on `playwright` server):
+- `acquire_display_lock` — request exclusive display access; returns `{ acquired: true }` if free/expired, or `{ acquired: false, position: N, holder: {...} }` if held by another agent. Auto-enqueues the caller in the display queue on contention.
+- `release_display_lock` — release after demo completes; promotes next waiter from queue
+- `renew_display_lock` — heartbeat to prevent auto-expiry (call every ~5 min during long sessions)
+- `get_display_queue_status` — check current holder, queue depth, and position
+
+**Auto-acquire in `run_demo`**: When `headless: false`, `run_demo` automatically acquires the display lock if not already held (tracked in `DemoRunState`). Released automatically on demo completion, crash, or stop. Agents may also acquire manually before calling `run_demo`.
+
+**Session reaper integration**: `reapSyncPass()` calls `releaseDisplayLock()` for any agent it marks as dead, preventing lock orphaning.
+
+**Audit events**: `display_lock_acquired`, `display_lock_released`, `display_lock_renewed`, `display_lock_expired`, `display_lock_enqueued`, `display_lock_promoted` — all emitted to `session-audit.log`.
 
 ### Session Audit Log
 
@@ -499,7 +539,7 @@ Structured JSON-lines audit trail covering the full session lifecycle.
 
 **Log file**: `.claude/state/session-audit.log`. JSON-lines format, one event per line. 24h retention, 5MB cap (halved on overflow), atomic tmp+rename cleanup.
 
-**Event types**: `session_enqueued`, `session_spawned`, `session_completed`, `session_failed`, `session_cancelled`, `session_ttl_expired`, `session_reaped_dead`, `session_reaped_complete`, `session_hard_killed`, `session_revival_triggered`.
+**Event types**: `session_enqueued`, `session_spawned`, `session_completed`, `session_failed`, `session_cancelled`, `session_ttl_expired`, `session_reaped_dead`, `session_reaped_complete`, `session_hard_killed`, `session_revival_triggered`, `session_suspended`, `session_preempted`, `display_lock_acquired`, `display_lock_released`, `display_lock_renewed`, `display_lock_expired`, `display_lock_enqueued`, `display_lock_promoted`.
 
 **Emission points**: `session-queue.js` (all lifecycle transitions), `session-reviver.js` (all 3 revival modes), `stop-continue-hook.js` (inline revival), `revival-daemon.js` (dead agent detection and revival).
 
@@ -559,6 +599,8 @@ cd packages/playwright-helpers && npm run build
 
 Curated product walkthroughs mapped to personas. Managed by product-manager agent, implemented by code-writer agents. Only `gui` and `adk` consumption_mode personas can have scenarios. `*.demo.ts` naming convention enforced.
 
+**`headed` flag on scenarios** (`demo_scenarios.headed` column in `user-feedback.db`): Boolean field (default `false`) indicating a scenario requires a headed browser (i.e., display access). When `headed: true`, `run_demo` automatically acquires the display lock before launching (if not already held), serializing access to avoid window capture conflicts. Set via `create_demo_scenario`/`update_demo_scenario` tools on the `user-feedback` server.
+
 > Full details: [Demo Scenario System](docs/CLAUDE-REFERENCE.md#demo-scenario-system)
 
 ### Demo Command Decision Tree
@@ -604,7 +646,7 @@ Register setup commands that must run before demos. Prerequisites are idempotent
 
 **Execution tool** (on `playwright` server): `run_prerequisites` — automatically called by `run_demo`, `run_demo_batch`, and `preflight_check`.
 
-**Auto-set `PLAYWRIGHT_BASE_URL`**: When `ensureDevServer()` confirms the dev server is healthy, `run_demo` and `run_demo_batch` auto-inject `PLAYWRIGHT_BASE_URL` so Playwright skips its `webServer` startup. No `base_url` arg needed — defaults to `http://localhost:3000`.
+**Auto-set `PLAYWRIGHT_BASE_URL`**: When `ensureDevServer()` confirms the dev server is healthy, `run_demo` and `run_demo_batch` auto-inject `PLAYWRIGHT_BASE_URL` so Playwright skips its `webServer` startup. No `base_url` arg needed — defaults to `http://localhost:3000` (main tree) or the worktree-allocated `PLAYWRIGHT_WEB_PORT` when running from a worktree.
 
 **Prerequisite stall detection**: Foreground prerequisites are killed if no stdout/stderr for 60s. Use `run_as_background: true` with a health check for long-silent commands.
 
@@ -644,6 +686,8 @@ Sole authority for demo lifecycle work. Handles prerequisite registration, scena
 ## Rotation Proxy
 
 Local MITM proxy on `localhost:18080` for transparent credential rotation. Intercepts `api.anthropic.com` (TLS MITM + header swap); `mcp-proxy.anthropic.com` and everything else passes through as a transparent CONNECT tunnel (MCP proxy uses session-bound OAuth tokens that must not be swapped). Within MITM'd requests, only paths in `SWAP_PATH_PREFIXES` (`/v1/messages`, `/v1/organizations`, `/api/event_logging/`, `/api/eval/`, `/api/web/`) get the Authorization header swapped — OAuth and session-health paths always pass through unchanged (regardless of token status) to prevent token revocation. Handles 429 retry with automatic key rotation. 401 rotation is debounced (5s) per key to prevent concurrent connections from triggering redundant rotations. Runs as a launchd KeepAlive service. Enable/disable via `npx gentyr proxy enable|disable`.
+
+**`/toggle-auth-proxy` slash command**: CTO-only interactive toggle for the rotation proxy. Reads current proxy state, shows the intended action (enable or disable), requires explicit `confirm` input before proceeding, then runs `npx gentyr proxy enable|disable` and confirms the final state. Prevents agents from disabling the proxy unilaterally.
 
 > Full details: [Rotation Proxy](docs/CLAUDE-REFERENCE.md#rotation-proxy)
 

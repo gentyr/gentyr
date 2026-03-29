@@ -48,14 +48,23 @@ export const DevServerStartArgsSchema = z.object({
     .describe('Service names to start (omit to start all)'),
   force: z.boolean().default(false)
     .describe('Kill existing processes on port conflict'),
+  cwd: z.string().optional()
+    .describe('Working directory for spawned processes (defaults to CLAUDE_WORKTREE_DIR or PROJECT_DIR)'),
+  port_overrides: z.record(z.string(), z.number().int().min(1).max(65535)).optional()
+    .describe('Override ports per service name (e.g. {"web": 3100, "backend": 3101})'),
 });
 
 export const DevServerStopArgsSchema = z.object({
   services: z.array(z.string()).optional()
     .describe('Service names to stop (omit to stop all)'),
+  cwd: z.string().optional()
+    .describe('Working directory to match (defaults to CLAUDE_WORKTREE_DIR or PROJECT_DIR)'),
 });
 
-export const DevServerStatusArgsSchema = z.object({});
+export const DevServerStatusArgsSchema = z.object({
+  cwd: z.string().optional()
+    .describe('Filter to processes spawned with this CWD'),
+});
 
 // ============================================================================
 // Run Command Tool Argument Schema

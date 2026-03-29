@@ -25,33 +25,52 @@ ALL demo operations MUST use MCP tools. The nudge hook will catch violations.
 mcp__playwright__preflight_check({})
 \`\`\`
 Verifies config, browsers, dependencies, dev server health, and runs prerequisites.
-Do NOT proceed if pre-flight fails — fix the issue first.
+If pre-flight fails, diagnose the error before escalating:
+- Secret resolution failure → verify dev server running via \`mcp__secret-sync__secret_dev_server_status\`, start if needed
+- Missing dependencies → run \`mcp__secret-sync__secret_run_command({ command: "pnpm install" })\`
+- Browser not found → report to monitor, this requires human setup
+Do NOT give up on the first failure — diagnose and fix before escalating.
 
-**Step 2: Run demos**
+**Step 2: Acquire display lock (headed demos only)**
+\`\`\`
+mcp__playwright__acquire_display_lock({ title: "<brief description>" })
+\`\`\`
+Required before any \`run_demo\` with \`headless: false\`. If \`acquired: false\` is returned,
+poll \`mcp__playwright__get_display_queue_status({})\` every 30s until the lock is yours.
+Headless demos (\`headless: true\`) do NOT need the display lock — skip this step for batch runs.
+
+**Step 3: Run demos**
 \`\`\`
 mcp__playwright__run_demo({ scenario_id: "<scenario>", headless: false })
 \`\`\`
 For batch: \`mcp__playwright__run_demo_batch({ scenario_ids: ["..."], headless: true })\`
 
-**Step 3: Check results**
+**Step 4: Check results**
 \`\`\`
-mcp__playwright__check_demo_result({ pid: <pid_from_step_2> })
+mcp__playwright__check_demo_result({ pid: <pid_from_step_3> })
 \`\`\`
 Returns pass/fail, recording path, screenshot hints, and analysis guidance.
 You MUST follow the \`analysis_guidance\` instructions to visually verify results.
 
-**Step 4: Visual verification (when headed)**
+**Step 5: Visual verification (when headed)**
 \`\`\`
 mcp__playwright__extract_video_frames({ scenario_id: "<id>", timestamp_seconds: <N> })
 \`\`\`
 Extract frames at critical moments. Use the Read tool to view extracted images.
 A programmatic pass with wrong UI state is a FAILURE.
 
-**Step 5: Debug failures**
+**Step 6: Debug failures**
 \`\`\`
 mcp__playwright__get_demo_screenshot({ scenario_id: "<id>", timestamp_seconds: <N> })
 \`\`\`
 Retrieve screenshots at the failure timestamp for diagnosis.
+
+**Step 7: Release display lock (headed demos only)**
+\`\`\`
+mcp__playwright__release_display_lock({})
+\`\`\`
+ALWAYS call this after the demo completes — whether it passed or failed.
+Failure to release blocks other agents waiting for display access.
 
 **PROHIBITED demo operations (will trigger nudge hook):**
 - \`npx playwright test\` via Bash
@@ -90,14 +109,14 @@ mcp__secret-sync__secret_run_command({
 \`\`\`
 Unit tests: \`command: ["pnpm", "test"], cwd: "${worktreePath}"\`
 
-### Integration Tests & Demos (MERGE FIRST — NON-NEGOTIABLE)
-Demos and integration tests run against the MAIN TREE, not your worktree.
-Your code changes are INVISIBLE to demos until merged. The pipeline is:
-1. Spawn project-manager → commit, push, PR, self-merge your changes
-2. THEN run demos/integration tests (they now test your merged code)
-3. If demos fail, create a fix task and iterate
+### Integration Tests & Demos (WORKTREE-LOCAL)
+Demos and dev servers run from your worktree automatically on isolated ports.
+MCP tools detect your worktree and use it as the project directory.
 
-**NEVER run demos before merging. You will be testing stale code.**
+- \`run_demo\`, \`run_tests\`, \`preflight_check\` all execute in your worktree
+- Dev server starts via \`secret_dev_server_start\` using your worktree as CWD
+- No need to merge first — test your changes directly
+- When done, spawn project-manager to commit, push, PR, self-merge
 
 ### Dev Server Management
 - Check health: \`mcp__secret-sync__secret_dev_server_status({})\`

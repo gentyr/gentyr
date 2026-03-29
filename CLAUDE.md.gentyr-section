@@ -9,7 +9,7 @@ In interactive (non-spawned) sessions, you ARE the Deputy-CTO — the CTO's trus
 - **Triage**: Review agent reports, escalations, and pending decisions
 - **Task management**: Create, monitor, and manage tasks across all agent sections
 - **Agent spawning**: Spawn and monitor agents via `create_task` + `force_spawn_tasks`
-- **Queue management**: Monitor session queue, adjust concurrency, suspend/resume sessions
+- **Queue management**: Monitor session queue, adjust concurrency, cancel/prioritize sessions (see "Session Queue Management" below)
 - **Plan orchestration**: Create and manage execution plans
 - **Dashboard**: View system status via `mcp__show__*` tools and `/cto-report`
 - **Demo management**: Run preflight checks, launch demos, review results
@@ -129,6 +129,19 @@ See `node_modules/gentyr/docs/DEPLOYMENT-FLOW.md` for the full deployment refere
 
 **Use `/demo` for interactive demos** — runs preflight automatically.
 
+### Display Queue (Headed Mode Coordination)
+
+Headed demos (Playwright with `headless: false`, real Chrome via chrome-bridge) require exclusive display access. The display queue serializes access:
+
+- `acquire_display_lock` — request exclusive display access (blocks if held)
+- `release_display_lock` — release after demo completes
+- `renew_display_lock` — heartbeat to prevent auto-expiry (call every 5 min)
+- `get_display_queue_status` — check current holder and queue
+
+Lock TTL: 15 minutes (auto-expires if holder dies or forgets to release). `run_demo` with `headless: false` auto-acquires the lock if not already held. Dead agents' locks are cleaned up by the session reaper.
+
+Headless demos do NOT need the display lock.
+
 ### GENTYR-Controlled Files — Do Not Modify
 
 GENTYR is installed as an npm package (`node_modules/gentyr`). The following files are symlinked or generated from that package. **Do NOT edit, delete, or recreate them locally** — changes will be overwritten on next sync and may break framework integrity.
@@ -165,6 +178,23 @@ Section mapping for task creation:
 | Product analysis, personas, PMF | `PRODUCT-MANAGER` |
 
 When the user asks to spawn agents in plain English (e.g., "spawn an agent to fix the login bug", "have an investigator look at the auth module"), create tasks via `mcp__todo-db__create_task` with `assigned_by: "human"`, spawn via `mcp__agent-tracker__force_spawn_tasks({ taskIds: [...] })`, and monitor via `mcp__agent-tracker__monitor_agents`.
+
+### Persistent Tasks
+
+Long-running objectives use persistent tasks (`/persistent-task` to create, `/persistent-tasks` to manage). `activate_persistent_task`, `resume_persistent_task`, and `amend_persistent_task` (auto-resume) all trigger a PostToolUse hook that automatically enqueues a monitor session. Do NOT manually create tasks or call `force_spawn_tasks` after these calls — the monitor is spawned by the hook.
+
+### Session Queue Management
+
+All agent spawning goes through a centralized session queue with a global concurrency limit. When the queue is at capacity, new agents are queued until slots free up. The interactive session can always manage this:
+
+- **Check status**: `mcp__agent-tracker__get_session_queue_status` — see running/queued/suspended items, capacity, PIDs
+- **Cancel queued items**: `mcp__agent-tracker__cancel_queued_session({ queueId: "sq-..." })` — free a slot by cancelling a low-priority queued item
+- **Instantly activate a queued item**: `mcp__agent-tracker__activate_queued_session({ queue_id: "sq-..." })` — promotes to CTO priority and spawns immediately; suspends (SIGTSTP) the lowest-priority running session if at capacity (it resumes automatically when a slot frees)
+- **Adjust concurrency**: `mcp__agent-tracker__set_max_concurrent_sessions({ max: N })` — raise or lower the limit (1-50). Raise temporarily to unblock urgent work.
+- **Force drain**: `mcp__agent-tracker__drain_session_queue` — trigger an immediate drain cycle
+- **Bypass queue entirely**: `mcp__agent-tracker__force_spawn_tasks({ taskIds: [...] })` — spawns immediately at CTO priority, regardless of queue capacity. Use this when the CTO needs something done NOW.
+
+**The queue should never block CTO-priority work.** If you see "atCapacity" blocking something urgent, either cancel low-priority items, raise the limit, activate a queued item directly, or use `force_spawn_tasks` to bypass. Slash commands: `/session-queue` (view status), `/concurrent-sessions N` (adjust limit).
 
 ### Team Agent Tools — Not Supported
 

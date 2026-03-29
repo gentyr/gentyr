@@ -14,6 +14,7 @@ import fs from 'fs';
 import path from 'path';
 import { execSync, execFileSync } from 'child_process';
 import { detectBaseBranch as detectBaseBranchShared } from './feature-branch-helper.js';
+import { allocatePortBlock, releasePortBlock, cleanupStaleAllocations } from './port-allocator.js';
 
 // Lazy-loaded Database for suspended worktree check
 let _Database = null;
@@ -162,6 +163,30 @@ export function provisionWorktree(worktreePath) {
             }
             return arg;
           });
+        }
+      }
+    }
+
+    // Inject CLAUDE_WORKTREE_DIR and port env vars for worktree-aware MCP servers
+    const worktreeAwareServers = ['playwright', 'secret-sync'];
+    let ports = null;
+    try {
+      ports = allocatePortBlock(worktreePath);
+    } catch (err) {
+      console.error('[worktree-manager] Warning: port allocation failed:', err.message);
+    }
+
+    for (const serverName of Object.keys(mcpConfig.mcpServers)) {
+      const server = mcpConfig.mcpServers[serverName];
+      if (!server.env) continue;
+      // Match servers by name containing the worktree-aware identifiers
+      const isWorktreeAware = worktreeAwareServers.some(s => serverName.includes(s));
+      if (isWorktreeAware) {
+        server.env.CLAUDE_WORKTREE_DIR = worktreePath;
+        if (ports) {
+          server.env.PLAYWRIGHT_WEB_PORT = String(ports.webPort);
+          server.env.PLAYWRIGHT_BACKEND_PORT = String(ports.backendPort);
+          server.env.PLAYWRIGHT_BRIDGE_PORT = String(ports.bridgePort);
         }
       }
     }
@@ -334,6 +359,13 @@ export function createWorktree(branchName, baseBranch, options = {}) {
 export function removeWorktree(branchName) {
   const sanitized = sanitizeBranchName(branchName);
   const worktreePath = path.join(WORKTREES_DIR, sanitized);
+
+  // Release allocated port block before removing worktree
+  try {
+    releasePortBlock(worktreePath);
+  } catch (err) {
+    console.error('[worktree-manager] Warning: port release failed:', err.message);
+  }
 
   // Before removing, check if core.hooksPath points into this worktree and reset
   try {
@@ -559,6 +591,17 @@ export function cleanupMergedWorktrees() {
         console.error(`[worktree-manager] Failed to remove merged worktree ${wt.branch}: ${err.message}`);
       }
     }
+  }
+
+  // Safety net: clean up port allocations for worktree paths that no longer exist.
+  // Catches cases where worktrees were removed by paths that bypassed removeWorktree().
+  try {
+    const staleRemoved = cleanupStaleAllocations();
+    if (staleRemoved > 0) {
+      console.log(`[worktree-manager] Cleaned ${staleRemoved} stale port allocation(s)`);
+    }
+  } catch (err) {
+    console.error('[worktree-manager] Warning: stale port allocation cleanup failed:', err.message);
   }
 
   return cleaned;

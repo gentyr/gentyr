@@ -101,6 +101,21 @@ export const CancelQueuedSessionArgsSchema = z.object({
 
 export const DrainSessionQueueArgsSchema = z.object({});
 
+export const ActivateQueuedSessionArgsSchema = z.object({
+  queue_id: z.string().describe('Queue ID of the queued item to activate immediately'),
+});
+
+export const SetReservedSlotsArgsSchema = z.object({
+  count: z.coerce.number().min(0).max(10)
+    .describe('Number of slots to reserve for persistent/CTO tasks (0-10). Set 0 to disable reservation.'),
+  auto_restore_minutes: z.coerce.number().min(0).max(480).optional()
+    .describe('Auto-restore to default_value after N minutes (0 = no auto-restore, max 8 hours)'),
+  default_value: z.coerce.number().min(0).max(10).optional().default(0)
+    .describe('Value to restore to when auto_restore_minutes elapses (default: 0)'),
+});
+
+export const GetReservedSlotsArgsSchema = z.object({});
+
 // ============================================================================
 // Session Signal Schemas
 // ============================================================================
@@ -332,6 +347,9 @@ export type GetSessionQueueStatusArgs = z.infer<typeof GetSessionQueueStatusArgs
 export type SetMaxConcurrentSessionsArgs = z.infer<typeof SetMaxConcurrentSessionsArgsSchema>;
 export type CancelQueuedSessionArgs = z.infer<typeof CancelQueuedSessionArgsSchema>;
 export type DrainSessionQueueArgs = z.infer<typeof DrainSessionQueueArgsSchema>;
+export type ActivateQueuedSessionArgs = z.infer<typeof ActivateQueuedSessionArgsSchema>;
+export type SetReservedSlotsArgs = z.infer<typeof SetReservedSlotsArgsSchema>;
+export type GetReservedSlotsArgs = z.infer<typeof GetReservedSlotsArgsSchema>;
 
 // Session Signal Types
 export type SendSessionSignalArgs = z.infer<typeof SendSessionSignalArgsSchema>;

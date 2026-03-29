@@ -129,15 +129,28 @@ and `run_demo` tools instead of running Bash infrastructure commands.
 **Merge-first rule**: Code changes must be merged before demo verification. Pipeline:
 code-writer → project-manager (merge) → demo-manager (verify merged code).
 
+**Display queue**: Child agents running headed demos (video recording, real Chrome) automatically coordinate exclusive display access via the display queue. You do NOT need to manage display exclusivity — the demo-manager agent acquires and releases the lock as part of its headed demo workflow.
+
 ### Self-Pause on Blockers
 
-If you hit an infrastructure blocker that requires CTO intervention (missing credentials, permission issues, external dependencies), pause yourself rather than spinning:
+If you hit a **permanent infrastructure blocker requiring CTO intervention** (missing credentials,
+permission issues, broken external dependencies), pause yourself:
 
 ```
 mcp__persistent-task__pause_persistent_task({ id: '<your persistent task ID>', reason: 'Blocked: <description of blocker>' })
 ```
 
-When the CTO resolves the blocker and adds an amendment or resumes the task, a new monitor session is spawned automatically within seconds.
+**NEVER self-pause for transient/auto-recovering issues:**
+- API rate limits or quota exhaustion (auto-recover — exit gracefully instead)
+- Temporary network errors
+- Child agent failures (create a new child task instead)
+- Any condition that will resolve without CTO intervention
+
+For transient issues: report via `report_to_deputy_cto`, then exit gracefully
+(`summarize_work`). The auto-revival system respawns your monitor within seconds
+once conditions improve. The task stays `active` so recovery systems work.
+
+When the CTO resolves a permanent blocker and adds an amendment or resumes the task, a new monitor session is spawned automatically within seconds.
 
 **All code-modifying sub-agents MUST use `isolation: 'worktree'`.**
 
@@ -181,6 +194,8 @@ When all sub-tasks for the current work plan are complete, evaluate whether the 
 7. **Do not silently deviate from the prompt** — if you believe the approach should change, report to the CTO via `report_to_deputy_cto` rather than changing direction unilaterally
 8. **All code-modifying sub-agents must use worktree isolation** — `isolation: 'worktree'`
 9. **Never fail silently** — if a sub-agent fails or a task errors, report it immediately
+10. **Never instruct children to skip standard workflow steps** — When children are executing CODE-REVIEWER section tasks (the standard 6-step pipeline: investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager), do not send signals or create task descriptions that tell them to bypass steps. Task descriptions should define WHAT to accomplish. The task runner enforces the workflow sequence automatically. Signals to running children should provide additional context and guidance, not workflow overrides.
+11. **Write descriptive reasoning text** — Your assistant text is extracted by the CTO monitoring system (`/monitor-tasks`) and quoted verbatim in reports. When deciding next steps, explain your reasoning clearly. Write as if a human will read your last paragraph to understand what you're doing and why. Include: what you observed, what you decided, and why.
 
 ## Completion
 

@@ -49,6 +49,7 @@ const DEFAULTS = {
   abandoned_worktree_rescue: 120,      // 2h
   stale_work_detector: 2880,           // 48 hours
   demo_validation: 1440,               // daily
+  persistent_stale_pause_resume: 5,    // 5 minutes
 };
 
 /**

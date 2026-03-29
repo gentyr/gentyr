@@ -42,6 +42,7 @@ async function readStdin() {
 async function main() {
   const stdinData = await readStdin();
   if (!stdinData) {
+    debugLog('persistent-task-spawner', 'exit_no_stdin', {}, 'warn');
     console.log(JSON.stringify({ }));
     process.exit(0);
   }
@@ -50,34 +51,81 @@ async function main() {
   try {
     input = JSON.parse(stdinData);
   } catch (_) {
+    debugLog('persistent-task-spawner', 'exit_parse_error', { stdinLength: stdinData.length }, 'warn');
     console.log(JSON.stringify({ }));
     process.exit(0);
   }
 
-  // Extract tool response
+  // Extract tool response — Claude Code PostToolUse hooks receive tool_response
+  // in various formats depending on the MCP transport. Log the raw shape for debugging.
   const toolResponse = input.tool_response || input.result;
   if (!toolResponse) {
+    debugLog('persistent-task-spawner', 'exit_no_tool_response', { inputKeys: Object.keys(input) }, 'warn');
     console.log(JSON.stringify({ }));
     process.exit(0);
   }
 
-  let responseData;
-  try {
-    responseData = typeof toolResponse === 'string' ? JSON.parse(toolResponse) : toolResponse;
-  } catch (_) {
+  let responseData = null;
+
+  // Format 1: MCP content wrapper — { content: [{ type: 'text', text: '...' }] }
+  if (toolResponse && typeof toolResponse === 'object' && Array.isArray(toolResponse.content)) {
+    for (const block of toolResponse.content) {
+      if (block.type === 'text' && typeof block.text === 'string') {
+        try {
+          responseData = JSON.parse(block.text);
+          break;
+        } catch (_) { /* try next block */ }
+      }
+    }
+  }
+
+  // Format 2: Bare content array — [{ type: 'text', text: '...' }]
+  if (!responseData && Array.isArray(toolResponse)) {
+    for (const block of toolResponse) {
+      if (block.type === 'text' && typeof block.text === 'string') {
+        try {
+          responseData = JSON.parse(block.text);
+          break;
+        } catch (_) { /* try next block */ }
+      }
+    }
+  }
+
+  // Format 3: Plain string (JSON-encoded)
+  if (!responseData && typeof toolResponse === 'string') {
+    try {
+      responseData = JSON.parse(toolResponse);
+    } catch (_) { /* fall through */ }
+  }
+
+  // Format 4: Plain object with status/id (already deserialized, non-MCP path)
+  if (!responseData && toolResponse && typeof toolResponse === 'object' && !Array.isArray(toolResponse) && (toolResponse.status || toolResponse.id)) {
+    responseData = toolResponse;
+  }
+
+  if (!responseData) {
+    debugLog('persistent-task-spawner', 'exit_response_parse_error', {
+      toolResponseType: typeof toolResponse,
+      isArray: Array.isArray(toolResponse),
+      hasContent: !!(toolResponse?.content),
+      sample: JSON.stringify(toolResponse).slice(0, 300),
+    }, 'warn');
     console.log(JSON.stringify({ }));
     process.exit(0);
   }
+
+  debugLog('persistent-task-spawner', 'response_parsed', { status: responseData.status, hasError: !!responseData.error, id: responseData.id || responseData.persistent_task_id });
 
   // Check for error or non-active status
   if (responseData.error || responseData.status !== 'active') {
+    debugLog('persistent-task-spawner', 'exit_not_active', { status: responseData.status, error: responseData.error });
     console.log(JSON.stringify({ }));
     process.exit(0);
   }
 
   const taskId = responseData.persistent_task_id || responseData.id;
   if (!taskId) {
-    console.log(JSON.stringify({ }));
+    debugLog('persistent-task-spawner', 'exit_no_task_id', { responseKeys: Object.keys(responseData) });
     process.exit(0);
   }
 
@@ -97,10 +145,12 @@ async function main() {
 
   const task = ptDb.prepare("SELECT * FROM persistent_tasks WHERE id = ?").get(taskId);
   if (!task || task.status !== 'active') {
+    debugLog('persistent-task-spawner', 'exit_task_not_active_in_db', { taskId, taskStatus: task?.status || 'not_found' });
     ptDb.close();
     console.log(JSON.stringify({ }));
     process.exit(0);
   }
+  debugLog('persistent-task-spawner', 'task_found_active', { taskId, title: task.title });
 
   // Read amendments
   const amendments = ptDb.prepare(
@@ -182,10 +232,23 @@ Parent TODO Task ID: ${task.parent_todo_task_id || 'none'}`;
 
     debugLog('persistent-task-spawner', 'monitor_spawn', { taskId, queueId: result.queueId, title: task.title });
 
+    // Auto-activate reserved slots if none are currently set.
+    // 2 reserved slots ensure persistent task children and CTO-directed work
+    // are not blocked when normal tasks fill all concurrency slots.
+    try {
+      const { getReservedSlots, setReservedSlots } = await import(
+        path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js')
+      );
+      if (getReservedSlots() === 0) {
+        setReservedSlots(2);
+        debugLog('persistent-task-spawner', 'reserved_slots_activated', { taskId, slots: 2 });
+      }
+    } catch (_) { /* non-fatal — reserved slots are a best-effort feature */ }
+
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: `[PERSISTENT TASK] Monitor session enqueued (queueId: ${result.queueId}, spawned: ${result.drained?.spawned > 0 ? 'yes' : 'queued'}).`,
+        additionalContext: `[PERSISTENT TASK] Monitor session automatically enqueued (queueId: ${result.queueId}, spawned: ${result.drained?.spawned > 0 ? 'yes' : 'queued'}). Do NOT manually create tasks or call force_spawn_tasks — the monitor is already handled.`,
       },
     }));
   } catch (err) {

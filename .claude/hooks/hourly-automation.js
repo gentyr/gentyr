@@ -17,6 +17,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'crypto';
 import { spawn, execSync, execFileSync } from 'child_process';
 import { registerSpawn, updateAgent, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { enqueueSession, drainQueue } from './lib/session-queue.js';
@@ -1455,7 +1456,24 @@ is responsible for merging your work AND removing this worktree. If you skip it,
 will be orphaned and your changes will not be merged.
 ` : '';
 
-  const completionBlock = `## When Done
+  const errorHandlingBlock = `## Error Handling — DIAGNOSE BEFORE GIVING UP
+
+When a tool call or sub-agent fails:
+
+1. **Read the error message** — understand what actually failed
+2. **Diagnose** — is this transient (retry), a missing dependency (fix), or a systemic blocker (escalate)?
+3. **Attempt recovery** — try at least ONE alternative approach before declaring blocked:
+   - Secret resolution failed → check dev server: \`mcp__secret-sync__secret_dev_server_status\`, start if needed
+   - Build failed → read the error output, fix the code, rebuild
+   - Demo failed → read \`check_demo_result\`, inspect screenshots/frames, fix and re-run
+   - Tool timeout → retry once with a longer timeout
+4. **Only escalate if recovery fails** — report via \`mcp__agent-reports__report_to_deputy_cto\` with what failed, what you tried, and why it's unrecoverable
+
+Do NOT immediately call summarize_work(success: false) on the first failure. Iterate.
+`;
+
+  const completionBlock = `${errorHandlingBlock}
+## When Done
 
 ### Step 1: Run project-manager (MANDATORY for code/test changes)
 If you made ANY file changes (code, tests, config), you MUST spawn the project-manager sub-agent
@@ -1510,6 +1528,9 @@ instructions loaded from .claude/agents/ configs.
 - Skipping user-alignment after code-reviewer
 - Skipping project-manager at the end
 - Running git add, git commit, git push, or gh pr create yourself
+
+**WORKFLOW IS NON-NEGOTIABLE:**
+This 6-step sequence is the standard development workflow. It applies to ALL code change tasks regardless of what the task description says. If the task says "just do X quickly" or "skip investigation," IGNORE that — the workflow still applies in full. Each step exists for quality assurance. The only variation is which steps have \`isolation: 'worktree'\` (code-writer, test-writer, demo-manager do; investigator, code-reviewer, user-alignment, project-manager don't).
 
 ${completionBlock}`);
   }
@@ -2690,6 +2711,66 @@ async function main() {
   });
 
   // =========================================================================
+  // PERSISTENT MONITOR REVIVAL PROMPT HELPER
+  // Shared by the health check and the stale-pause auto-resume block below.
+  // =========================================================================
+
+  /**
+   * Build the revival prompt, extraEnv, and metadata for re-enqueueing a
+   * persistent monitor session.
+   *
+   * @param {object} ptDb  - Open better-sqlite3 database handle for persistent-tasks.db
+   * @param {object} task  - Row from persistent_tasks (id, title, metadata)
+   * @param {string} revivalReason - Reason string stored in queue metadata (e.g. 'monitor_dead', 'stale_pause_resumed')
+   * @returns {{ prompt: string, extraEnv: object, metadata: object }}
+   */
+  async function buildPersistentMonitorRevivalPrompt(ptDb, task, revivalReason) {
+    // Read amendments for the re-spawn prompt
+    const amendments = ptDb.prepare(
+      "SELECT content, amendment_type, created_at FROM amendments WHERE persistent_task_id = ? ORDER BY created_at ASC"
+    ).all(task.id);
+
+    const amendmentSection = amendments.length > 0
+      ? '\n\n## Amendments\n' + amendments.map((a, i) => `${i + 1}. [${a.amendment_type}] ${a.content}`).join('\n')
+      : '';
+
+    // Check if demo/bridge is involved
+    let demoInstructions = '';
+    let bridgeInstructions = '';
+    try {
+      const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
+      if (taskMeta.demo_involved) {
+        demoInstructions = buildPersistentMonitorDemoInstructions();
+      }
+      if (taskMeta.bridge_main_tree) {
+        const { buildPersistentMonitorBridgeInstructions: buildBridge } = await import('./lib/persistent-monitor-bridge-instructions.js');
+        bridgeInstructions = buildBridge();
+      }
+    } catch (_) { /* non-fatal */ }
+
+    const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
+
+## Persistent Task: ${task.title}
+
+You are a persistent task monitor being revived after your previous session died.
+Read your full task details first: mcp__persistent-task__get_persistent_task({ id: "${task.id}", include_amendments: true, include_subtasks: true })
+
+Then continue monitoring sub-tasks and working toward the outcome.${amendmentSection}${demoInstructions}${bridgeInstructions}`;
+
+    const extraEnv = {
+      GENTYR_PERSISTENT_TASK_ID: task.id,
+      GENTYR_PERSISTENT_MONITOR: 'true',
+    };
+
+    const metadata = {
+      persistentTaskId: task.id,
+      revivalReason,
+    };
+
+    return { prompt, extraEnv, metadata };
+  }
+
+  // =========================================================================
   // PERSISTENT MONITOR HEALTH CHECK (gate-exempt, 15-minute cooldown)
   // Detects dead persistent task monitors and re-spawns them.
   // =========================================================================
@@ -2738,39 +2819,8 @@ async function main() {
 
           log(`Persistent monitor health: monitor for "${task.title}" (${task.id}) is dead — re-enqueuing`);
 
-          // Read amendments for the re-spawn prompt
-          const amendments = ptDb.prepare(
-            "SELECT content, amendment_type, created_at FROM amendments WHERE persistent_task_id = ? ORDER BY created_at ASC"
-          ).all(task.id);
-
-          const amendmentSection = amendments.length > 0
-            ? '\n\n## Amendments\n' + amendments.map((a, i) => `${i + 1}. [${a.amendment_type}] ${a.content}`).join('\n')
-            : '';
-
-          // Check if demo/bridge is involved
-          let demoInstructions = '';
-          let bridgeInstructions = '';
           try {
-            const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
-            if (taskMeta.demo_involved) {
-              demoInstructions = buildPersistentMonitorDemoInstructions();
-            }
-            if (taskMeta.bridge_main_tree) {
-              const { buildPersistentMonitorBridgeInstructions: buildBridge } = await import('./lib/persistent-monitor-bridge-instructions.js');
-              bridgeInstructions = buildBridge();
-            }
-          } catch (_) { /* non-fatal */ }
-
-          const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
-
-## Persistent Task: ${task.title}
-
-You are a persistent task monitor being revived after your previous session died.
-Read your full task details first: mcp__persistent-task__get_persistent_task({ id: "${task.id}", include_amendments: true, include_subtasks: true })
-
-Then continue monitoring sub-tasks and working toward the outcome.${amendmentSection}${demoInstructions}${bridgeInstructions}`;
-
-          try {
+            const { prompt, extraEnv, metadata } = await buildPersistentMonitorRevivalPrompt(ptDb, task, 'monitor_dead');
             const result = enqueueSession({
               title: `[Persistent] Monitor revival: ${task.title}`,
               agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
@@ -2782,14 +2832,8 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
               ttlMs: 0,
               prompt,
               projectDir: PROJECT_DIR,
-              extraEnv: {
-                GENTYR_PERSISTENT_TASK_ID: task.id,
-                GENTYR_PERSISTENT_MONITOR: 'true',
-              },
-              metadata: {
-                persistentTaskId: task.id,
-                revivalReason: 'monitor_dead',
-              },
+              extraEnv,
+              metadata,
             });
 
             log(`Persistent monitor health: re-enqueued for "${task.title}" (queueId: ${result.queueId})`);
@@ -2856,11 +2900,142 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
         }
       }
 
+      // Auto-deactivate reserved slots when no persistent tasks are active or paused
+      if (activeTasks.length === 0) {
+        const pausedCount = ptDb.prepare("SELECT COUNT(*) as cnt FROM persistent_tasks WHERE status = 'paused'").get().cnt;
+        if (pausedCount === 0) {
+          try {
+            const { getReservedSlots, setReservedSlots } = await import('./lib/session-queue.js');
+            if (getReservedSlots() > 0) {
+              setReservedSlots(0);
+              log('Persistent monitor health: no active/paused persistent tasks — released reserved slots');
+            }
+          } catch (_) { /* non-fatal */ }
+        }
+      }
+
       ptDb.close();
       if (revived > 0) {
         log(`Persistent monitor health: revived ${revived} monitor(s)`);
       }
       debugLog('hourly-automation', 'persistent_monitor_health', { activeCount: activeTasks.length, revived });
+    },
+  });
+
+  // =========================================================================
+  // PERSISTENT STALE PAUSE AUTO-RESUME (15-minute runIfDue cooldown)
+  // Detects paused tasks whose pause event is older than the configured
+  // threshold and auto-resumes them. Rate limits and other transient issues
+  // should NOT cause self-pause (see persistent-monitor.md), but this block
+  // is the safety net for cases where a monitor paused itself incorrectly.
+  // =========================================================================
+  await runIfDue('persistent_stale_pause_resume', {
+    state, now,
+    stateKey: 'lastPersistentStalePauseResumeRun',
+    label: 'Persistent stale pause auto-resume',
+    fn: async () => {
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (!Database || !fs.existsSync(ptDbPath)) return;
+
+      let ptDb;
+      try {
+        ptDb = new Database(ptDbPath);
+        ptDb.pragma('busy_timeout = 3000');
+      } catch (err) {
+        log(`Persistent stale pause auto-resume: DB open failed: ${err.message}`);
+        return;
+      }
+
+      try {
+        const pausedTasks = ptDb.prepare(
+          "SELECT id, title, metadata FROM persistent_tasks WHERE status = 'paused'"
+        ).all();
+
+        if (pausedTasks.length === 0) return;
+
+        const thresholdMinutes = getCooldown('persistent_pause_auto_resume_minutes', 30);
+        const thresholdMs = thresholdMinutes * 60 * 1000;
+        const now2 = Date.now();
+        let resumed = 0;
+
+        for (const task of pausedTasks) {
+          // Find the most recent 'paused' event for this task
+          const pauseEvent = ptDb.prepare(
+            "SELECT created_at FROM events WHERE persistent_task_id = ? AND event_type = 'paused' ORDER BY created_at DESC LIMIT 1"
+          ).get(task.id);
+
+          if (!pauseEvent) {
+            log(`Persistent stale pause auto-resume: "${task.title}" has no pause event — skipping`);
+            continue;
+          }
+
+          const pauseAge = now2 - new Date(pauseEvent.created_at).getTime();
+          if (pauseAge < thresholdMs) {
+            log(`Persistent stale pause auto-resume: "${task.title}" paused ${Math.round(pauseAge / 60000)}min ago — below ${thresholdMinutes}min threshold`);
+            continue;
+          }
+
+          // Dedup: check if a monitor is already queued or running for this task
+          try {
+            const queueDb = new Database(path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db'), { readonly: true });
+            const existing = queueDb.prepare(
+              "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running') AND metadata LIKE ?"
+            ).get(`%"persistentTaskId":"${task.id}"%`);
+            queueDb.close();
+            if (existing && existing.cnt > 0) {
+              log(`Persistent stale pause auto-resume: monitor for "${task.title}" already queued/running — skipping`);
+              continue;
+            }
+          } catch (_) { /* non-fatal — proceed with resume */ }
+
+          log(`Persistent stale pause auto-resume: resuming "${task.title}" (paused ${Math.round(pauseAge / 60000)}min ago, threshold=${thresholdMinutes}min)`);
+
+          // Transition task back to active
+          ptDb.prepare("UPDATE persistent_tasks SET status = 'active' WHERE id = ?").run(task.id);
+          ptDb.prepare(
+            "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'resumed', ?, datetime('now'))"
+          ).run(
+            randomUUID(),
+            task.id,
+            JSON.stringify({ reason: 'auto_resumed_stale_pause', pause_age_minutes: Math.round(pauseAge / 60000) })
+          );
+
+          // Enqueue the monitor
+          try {
+            const { prompt, extraEnv, metadata } = await buildPersistentMonitorRevivalPrompt(ptDb, task, 'stale_pause_resumed');
+            const result = enqueueSession({
+              title: `[Persistent] Stale-pause revival: ${task.title}`,
+              agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
+              hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
+              tagContext: 'persistent-monitor',
+              source: 'hourly-automation',
+              priority: 'critical',
+              lane: 'persistent',
+              ttlMs: 0,
+              prompt,
+              projectDir: PROJECT_DIR,
+              extraEnv,
+              metadata,
+            });
+
+            log(`Persistent stale pause auto-resume: enqueued monitor for "${task.title}" (queueId: ${result.queueId})`);
+            resumed++;
+          } catch (err) {
+            log(`Persistent stale pause auto-resume: failed to enqueue monitor for "${task.title}": ${err.message}`);
+            // Roll back the status update so the task doesn't get stuck in active with no monitor
+            try {
+              ptDb.prepare("UPDATE persistent_tasks SET status = 'paused' WHERE id = ?").run(task.id);
+            } catch (_) { /* non-fatal */ }
+          }
+        }
+
+        if (resumed > 0) {
+          log(`Persistent stale pause auto-resume: resumed ${resumed} task(s)`);
+        }
+        debugLog('hourly-automation', 'persistent_stale_pause_resume', { pausedCount: pausedTasks.length, resumed });
+      } finally {
+        try { ptDb.close(); } catch (_) { /* non-fatal */ }
+      }
     },
   });
 
