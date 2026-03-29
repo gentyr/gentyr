@@ -192,6 +192,22 @@ async function main() {
     amendmentSection = `\n## Amendments (in chronological order)\n${lines.join('\n')}`;
   }
 
+  // Check if task involves demos (for conditional visual verification reminder)
+  let isDemoInvolved = false;
+  try {
+    const meta = task.metadata ? JSON.parse(task.metadata) : {};
+    isDemoInvolved = !!meta.demo_involved;
+  } catch (_) { /* non-fatal */ }
+
+  const demoReminder = isDemoInvolved ? `
+
+## Demo Visual Verification Reminder
+- Have you analyzed screenshots from the latest demo run?
+- After check_demo_result, did you follow the analysis_guidance?
+- Did you use the Read tool to view failure_frames or get_demo_screenshot images?
+- Screenshot analysis is MANDATORY before code investigation or spawning fix tasks.
+- You are multimodal -- use Read on image files to see browser state directly.` : '';
+
   const fullContext = `[PERSISTENT TASK MONITOR — CYCLE REINFORCEMENT]
 
 ## Your Persistent Task
@@ -212,7 +228,7 @@ ${subtaskDetails}
 5. Run user-alignment check every 3 cycles
 6. Report progress every 5 cycles via mcp__agent-reports__report_to_deputy_cto
 7. All sub-tasks MUST include persistent_task_id: "${PERSISTENT_TASK_ID}" in create_task
-8. Acknowledge ALL amendments: mcp__persistent-task__acknowledge_amendment`;
+8. Acknowledge ALL amendments: mcp__persistent-task__acknowledge_amendment${demoReminder}`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {

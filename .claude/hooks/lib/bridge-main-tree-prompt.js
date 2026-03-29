@@ -72,6 +72,15 @@ mcp__playwright__release_display_lock({})
 ALWAYS call this after the demo completes — whether it passed or failed.
 Failure to release blocks other agents waiting for display access.
 
+**Step 8: Report Visual Findings (MANDATORY)**
+After the demo completes (pass or fail), you MUST report what you SAW:
+- Use the Read tool to view screenshots/frames from \`check_demo_result\` (you are multimodal — you can see images)
+- If \`failure_frames\` were returned, Read each frame image and describe the browser state
+- If no failure_frames, call \`get_demo_screenshot\` at the failure timestamp and view it
+- Describe: what page was showing, what elements were visible/missing, any error messages on screen
+- Include screenshot file paths in your report so the monitor can verify independently
+- "The demo failed with a timeout" is NOT an acceptable report — describe the visual state
+
 **PROHIBITED demo operations (will trigger nudge hook):**
 - \`npx playwright test\` via Bash
 - \`pnpm test:e2e\` via Bash
