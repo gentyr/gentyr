@@ -48,6 +48,23 @@ const MITM_DOMAINS = ['api.anthropic.com'];
 const MAX_429_RETRIES = 2;
 const MAX_401_RETRIES = 2;
 
+/** Same-key backoff retry before rotating on 401.
+ *  Transient server-side 401 bursts are retried with the same key first so a
+ *  brief Anthropic auth hiccup doesn't cause unnecessary key rotation or the
+ *  "Please run /login" prompt when no fallback key exists.
+ */
+const MAX_401_SAME_KEY_RETRIES = 2;
+const MAX_GATEWAY_RETRIES = 2;        // 502/503/504 retries (same key, backoff)
+const TRANSIENT_401_BACKOFF_MS = 1000; // 1s base, doubles each retry (1s, 2s)
+const GATEWAY_BACKOFF_MS = 2000;       // 2s base, doubles each retry (2s, 4s)
+
+/** How many rotation-level 401s (after same-key retries are exhausted) before
+ *  we permanently mark a key expired.  Transient server-side bursts typically
+ *  clear in < 60s; we give the key a chance to recover via auth_failing state.
+ */
+const KEY_EXPIRED_THRESHOLD = 3;     // consecutive rotation-level 401s within window
+const KEY_EXPIRED_WINDOW_MS = 60_000; // 60s window
+
 /** API path prefixes eligible for token swap. All other paths pass through
  *  with the session's original token (e.g., OAuth endpoints). Allowlist is
  *  safer than denylist — new Claude Code endpoints default to passthrough. */
@@ -70,6 +87,13 @@ const startTime = Date.now();
 // connections triggering multiple rotations for the same exhausted key.
 let _last401Rotation = { keyId: null, ts: 0 };
 const ROTATION_DEBOUNCE_MS = 5000;
+
+// Track consecutive rotation-level 401 failures per key so we can use a
+// threshold before permanently marking a key expired.  Transient server-side
+// auth errors clear on their own; we set auth_failing first and only expire
+// the key after KEY_EXPIRED_THRESHOLD failures within KEY_EXPIRED_WINDOW_MS.
+// Map<keyId, { count: number, firstFailure: number }>
+const _key401FailureCounts = new Map();
 
 // key-sync functions — loaded at startup
 let readRotationState;
@@ -253,19 +277,53 @@ function rotateOnExhaustion(exhaustedKeyId) {
 }
 
 /**
- * Handle 401 auth failure: mark failed key as expired, rotate to next, fire background refresh.
+ * Handle 401 auth failure: use a threshold before permanently marking a key
+ * expired.  Below KEY_EXPIRED_THRESHOLD consecutive rotation-level 401s within
+ * KEY_EXPIRED_WINDOW_MS we set status to 'auth_failing' (a transient state that
+ * selectActiveKey still treats as viable but with lower priority).  Only after
+ * reaching the threshold do we set 'expired' and fire background refresh.
  */
 function rotateOnAuth401Sync(failedKeyId) {
   const state = readRotationState();
 
   if (state.keys[failedKeyId]) {
-    state.keys[failedKeyId].status = 'expired';
-    logRotationEvent(state, {
-      timestamp: Date.now(),
-      event: 'key_expired',
-      key_id: failedKeyId,
-      reason: 'proxy_401_auth_failure',
-    });
+    const now = Date.now();
+    const existing = _key401FailureCounts.get(failedKeyId);
+
+    let failureCount;
+    if (existing && now - existing.firstFailure < KEY_EXPIRED_WINDOW_MS) {
+      // Still within the window — increment counter
+      failureCount = existing.count + 1;
+      _key401FailureCounts.set(failedKeyId, { count: failureCount, firstFailure: existing.firstFailure });
+    } else {
+      // First failure or window expired — start fresh
+      failureCount = 1;
+      _key401FailureCounts.set(failedKeyId, { count: 1, firstFailure: now });
+    }
+
+    if (failureCount < KEY_EXPIRED_THRESHOLD) {
+      // Transient failure: mark as auth_failing (still viable for selection)
+      state.keys[failedKeyId].status = 'auth_failing';
+      logRotationEvent(state, {
+        timestamp: now,
+        event: 'key_auth_failing',
+        key_id: failedKeyId,
+        reason: 'proxy_401_transient',
+        failure_count: failureCount,
+        threshold: KEY_EXPIRED_THRESHOLD,
+      });
+    } else {
+      // Threshold reached: permanently mark as expired
+      state.keys[failedKeyId].status = 'expired';
+      _key401FailureCounts.delete(failedKeyId); // clear counter — key is gone
+      logRotationEvent(state, {
+        timestamp: now,
+        event: 'key_expired',
+        key_id: failedKeyId,
+        reason: 'proxy_401_auth_failure',
+        failure_count: failureCount,
+      });
+    }
   }
 
   const nextKeyId = selectActiveKey(state);
@@ -392,9 +450,11 @@ function rebuildRequest(parsed, originalBuffer, newToken) {
  * @param {object} [opts]
  * @param {number} [opts.retryCount=0]
  * @param {string} [opts.fromKeyId] - Key ID that was swapped FROM (for logging)
+ * @param {number} [opts.sameKeyRetryCount=0] - How many same-key 401 backoff retries have been attempted
+ * @param {number} [opts.gatewayRetryCount=0] - How many 502/503/504 backoff retries have been attempted
  */
 function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
-  const { retryCount = 0, fromKeyId } = opts;
+  const { retryCount = 0, fromKeyId, sameKeyRetryCount = 0, gatewayRetryCount = 0 } = opts;
   requestCount++;
 
   // Get current active token
@@ -476,7 +536,7 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
       // be fresher. Let it through and trigger sync to discover new credentials.
       if (!usePassthrough && !forceSwap) {
         const activeEntry = state.keys[state.active_key_id];
-        if (!activeEntry || !['active', 'exhausted'].includes(activeEntry.status)) {
+        if (!activeEntry || !['active', 'exhausted', 'auth_failing'].includes(activeEntry.status)) {
           if (incomingKeyId !== state.active_key_id) {
             // Different token is likely fresher — let it through
             usePassthrough = true;
@@ -651,13 +711,59 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
       return;
     }
 
-    // 401: rotate key and retry (auth error — expired token or server-side revocation)
-    // Defense-in-depth: never rotate on 401 from mcp-proxy.anthropic.com — that host
-    // validates session-bound OAuth tokens and a 401 there indicates token mismatch
-    // (not key expiration). Rotating would trigger a destructive cascade.
+    // Clear transient 401 failure tracking on a successful 200 response.
+    // When Anthropic's auth hiccup clears, the key is healthy again.
+    if (responseStatusCode === 200 && _key401FailureCounts.has(activeKeyId)) {
+      _key401FailureCounts.delete(activeKeyId);
+      try {
+        const freshState = readRotationState();
+        if (freshState.keys[activeKeyId]?.status === 'auth_failing') {
+          freshState.keys[activeKeyId].status = 'active';
+          writeRotationState(freshState);
+          proxyLog('transient_401_recovered', { key_id: activeKeyId.slice(0, 8) });
+        }
+      } catch { /* non-fatal: best-effort recovery */ }
+    }
+
+    // 401: before rotating to a different key, retry with the SAME key after a
+    // short backoff.  Evidence from proxy logs shows Anthropic returns transient
+    // 401 bursts interspersed with 200s on the same token — true token expiry
+    // causes persistent 401s, not alternating ones.  Retrying with the same key
+    // first avoids "Please run /login" errors when there is no fallback key.
+    //
+    // Defense-in-depth: never rotate on 401 from mcp-proxy.anthropic.com — that
+    // host validates session-bound OAuth tokens and a 401 there indicates token
+    // mismatch (not key expiration). Rotating would trigger a destructive cascade.
     const isMcpProxy = host === 'mcp-proxy.anthropic.com';
     if (responseStatusCode === 401 && retryCount < MAX_401_RETRIES && !usePassthrough && !isMcpProxy) {
+      // Phase 1: same-key backoff retry.
+      // Both the normal path AND the debounced path use same-key retry if
+      // retries remain — only forward 401 to the client once all retries are
+      // exhausted.
+      if (sameKeyRetryCount < MAX_401_SAME_KEY_RETRIES) {
+        const backoffMs = TRANSIENT_401_BACKOFF_MS * (sameKeyRetryCount + 1);
+        upstream.destroy();
+        proxyLog('transient_401_retry', {
+          host,
+          method: parsed.method,
+          path: parsed.path.slice(0, 100),
+          key_id: activeKeyId.slice(0, 8),
+          same_key_retry: sameKeyRetryCount + 1,
+          backoff_ms: backoffMs,
+        });
+        setTimeout(() => {
+          forwardRequest(host, rawRequest, clientSocket, {
+            retryCount,
+            fromKeyId: activeKeyId,
+            sameKeyRetryCount: sameKeyRetryCount + 1,
+          });
+        }, backoffMs);
+        return;
+      }
+
+      // Phase 2: same-key retries exhausted — try to rotate to a different key.
       // Debounce: if another connection already rotated this key within 5s, skip
+      // another rotation attempt.
       const now401 = Date.now();
       if (_last401Rotation.keyId === activeKeyId && now401 - _last401Rotation.ts < ROTATION_DEBOUNCE_MS) {
         proxyLog('rotation_debounced', {
@@ -666,7 +772,8 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
           path: parsed.path.slice(0, 100),
           key_id: activeKeyId.slice(0, 8),
         });
-        // Forward the 401 response to client as-is
+        // Forward the 401 response to client as-is — same-key retries already
+        // exhausted and another connection is already handling rotation.
         upstream.removeListener('data', onData);
         if (!clientSocket.destroyed) {
           clientSocket.write(responseHeaderBuf);
@@ -682,10 +789,18 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
         path: parsed.path.slice(0, 100),
         failed_key_id: activeKeyId.slice(0, 8),
         retry: retryCount,
+        same_key_retries_exhausted: sameKeyRetryCount,
       });
       const next = rotateOnAuth401Sync(activeKeyId);
       if (!next) {
-        proxyLog('all_keys_failed_auth', { host });
+        proxyLog('all_keys_failed_auth', {
+          host,
+          method: parsed.method,
+          path: parsed.path.slice(0, 100),
+          failed_key_id: activeKeyId.slice(0, 8),
+          same_key_retries: sameKeyRetryCount,
+          rotation_retries: retryCount,
+        });
         if (!clientSocket.destroyed) {
           clientSocket.write(responseHeaderBuf);
         }
@@ -695,6 +810,43 @@ function forwardRequest(host, rawRequest, clientSocket, opts = {}) {
         retryCount: retryCount + 1,
         fromKeyId: activeKeyId,
       });
+      return;
+    }
+
+    // 502/503/504: Cloudflare or upstream gateway error — the API server is
+    // temporarily unreachable.  Token is fine, no rotation needed.  Retry with
+    // the same key after exponential backoff (2s, 4s).
+    const isGatewayError = responseStatusCode >= 502 && responseStatusCode <= 504;
+    if (isGatewayError && gatewayRetryCount >= MAX_GATEWAY_RETRIES) {
+      proxyLog('gateway_error_exhausted', {
+        host,
+        method: parsed.method,
+        path: parsed.path.slice(0, 100),
+        status: responseStatusCode,
+        key_id: activeKeyId.slice(0, 8),
+        gateway_retries: gatewayRetryCount,
+      });
+    }
+    if (isGatewayError && gatewayRetryCount < MAX_GATEWAY_RETRIES && !usePassthrough) {
+      const backoffMs = GATEWAY_BACKOFF_MS * (gatewayRetryCount + 1);
+      upstream.destroy();
+      proxyLog('gateway_error_retry', {
+        host,
+        method: parsed.method,
+        path: parsed.path.slice(0, 100),
+        status: responseStatusCode,
+        key_id: activeKeyId.slice(0, 8),
+        gateway_retry: gatewayRetryCount + 1,
+        backoff_ms: backoffMs,
+      });
+      setTimeout(() => {
+        forwardRequest(host, rawRequest, clientSocket, {
+          retryCount,
+          fromKeyId,
+          sameKeyRetryCount,
+          gatewayRetryCount: gatewayRetryCount + 1,
+        });
+      }, backoffMs);
       return;
     }
 

@@ -755,8 +755,12 @@ export async function checkKeyHealth(accessToken) {
  */
 export function selectActiveKey(state) {
   const now = Date.now();
+  // Include 'auth_failing' keys (transient server-side 401 bursts) so the proxy
+  // has a viable key to rotate to even during a brief auth hiccup.  They are
+  // treated identically to 'active' keys by usage scoring but de-prioritised
+  // below if a non-failing key exists.
   const validKeys = Object.entries(state.keys)
-    .filter(([_, key]) => key.status === 'active' || key.status === 'exhausted')
+    .filter(([_, key]) => key.status === 'active' || key.status === 'exhausted' || key.status === 'auth_failing')
     .map(([id, key]) => ({ id, key, usage: key.last_usage }));
 
   if (validKeys.length === 0) return null;
@@ -870,8 +874,21 @@ export function selectActiveKey(state) {
     }
   }
 
-  // Default: use current key or pick first usable
-  return currentKey?.id ?? usableKeys[0]?.id ?? null;
+  // Default: use current key or pick first usable.
+  // De-prioritise auth_failing keys: if any non-failing usable key exists,
+  // prefer it over an auth_failing one.  This ensures rotation always lands
+  // on a healthy key when one is available, while still returning an
+  // auth_failing key as a last resort rather than null.
+  const candidate = currentKey?.id ?? usableKeys[0]?.id ?? null;
+  if (candidate) {
+    const candidateEntry = state.keys[candidate];
+    if (candidateEntry && candidateEntry.status === 'auth_failing') {
+      // Try to find a non-failing alternative
+      const nonFailing = usableKeys.find(k => k.id !== candidate && k.key.status !== 'auth_failing');
+      if (nonFailing) return nonFailing.id;
+    }
+  }
+  return candidate;
 }
 
 /**
