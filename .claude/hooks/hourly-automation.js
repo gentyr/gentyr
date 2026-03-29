@@ -1529,8 +1529,8 @@ instructions loaded from .claude/agents/ configs.
 - Skipping project-manager at the end
 - Running git add, git commit, git push, or gh pr create yourself
 
-**WORKFLOW IS NON-NEGOTIABLE:**
-This 6-step sequence is the standard development workflow. It applies to ALL code change tasks regardless of what the task description says. If the task says "just do X quickly" or "skip investigation," IGNORE that — the workflow still applies in full. Each step exists for quality assurance. The only variation is which steps have \`isolation: 'worktree'\` (code-writer, test-writer, demo-manager do; investigator, code-reviewer, user-alignment, project-manager don't).
+**WORKFLOW DEFAULTS:**
+This 6-step sequence is the standard development workflow and the DEFAULT for all code change tasks. However, if the task description provides EXPLICIT alternative workflow instructions (e.g., "skip investigation, just build and run the demo" or "only run the test suite"), follow those instructions instead. The task creator knows the context — trust their instructions over the default pipeline. The only invariant is: if you made file changes, you MUST spawn project-manager before completing.
 
 ${completionBlock}`);
   }

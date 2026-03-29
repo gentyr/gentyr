@@ -48,6 +48,8 @@ Or use `/spawn-tasks <description>` for interactive task creation and spawning.
 6. **PROJECT-MANAGER** (cleanup, mandatory) - syncs docs, cleans TODOs
 7. **SUMMARY** (always) - provide user with detailed summary
 
+**Task-specific overrides**: The workflow above is the default. If a task's description provides explicit alternative instructions (e.g., "skip investigation, just run the demo"), follow those instructions instead. The task creator knows the context. The only invariant: project-manager must run if file changes were made.
+
 ### CTO Reporting
 
 Report to deputy-cto when you encounter:
