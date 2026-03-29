@@ -278,6 +278,17 @@ export function reapSyncPass(db) {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const sessionDir = getSessionDir(projectDir);
 
+  // Clean up 'spawning' zombies — items that failed spawn before setting a PID.
+  // Mark as failed if older than 5 minutes with no PID.
+  try {
+    const zombieResult = db.prepare(
+      "UPDATE queue_items SET status = 'failed', error = 'spawn_zombie', completed_at = datetime('now') WHERE status = 'spawning' AND pid IS NULL AND enqueued_at < datetime('now', '-5 minutes')"
+    ).run();
+    if (zombieResult.changes > 0) {
+      log(`Cleaned up ${zombieResult.changes} spawning zombie(s)`);
+    }
+  } catch (_) { /* non-fatal */ }
+
   // Only operate on 'running' items — 'suspended' items are intentionally paused
   // (preempted by CTO tasks) and must NOT be reaped. They have their own re-enqueue path.
   const running = db.prepare(
@@ -346,7 +357,15 @@ export function reapSyncPass(db) {
             if (task && task.last_heartbeat) {
               const heartbeatAge = now - new Date(task.last_heartbeat).getTime();
               const STALE_HEARTBEAT_MS = getCooldown('persistent_heartbeat_stale_minutes', 2) * 60 * 1000;
-              if (heartbeatAge > STALE_HEARTBEAT_MS) {
+
+              // Spawn grace period: skip heartbeat check if this monitor was spawned
+              // less than 60 seconds ago. New monitors inherit the previous monitor's
+              // frozen heartbeat — without this grace period, they get killed before
+              // they can make their first tool call and update the heartbeat.
+              const spawnedMs = item.spawned_at ? now - new Date(item.spawned_at).getTime() : Infinity;
+              const SPAWN_GRACE_MS = 60_000; // 60 seconds
+
+              if (heartbeatAge > STALE_HEARTBEAT_MS && spawnedMs > SPAWN_GRACE_MS) {
                 // Kill immediately in sync pass — don't defer to async pass
                 try { process.kill(item.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
                 db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?")

@@ -71,11 +71,15 @@ Before entering the loop, record:
 
 ## Step 4: Monitoring Loop
 
-**IMPORTANT:** You (the main agent) handle the sleep and display loop. Do NOT delegate the loop to a sub-agent. Each round:
+**IMPORTANT:** You (the main agent) handle the sleep and display loop. Do NOT delegate the loop to a sub-agent.
+
+**MANDATORY SUB-AGENT SPAWNING:** You MUST spawn the investigator sub-agent (Step 4a) EVERY round. You MUST NOT call inspect_persistent_task, peek_session, get_session_queue_status, or other MCP data-gathering tools DIRECTLY. The investigator sub-agent does ALL data gathering. You also MUST spawn the user-alignment sub-agent (Step 4b) every 3rd round. These sub-agents provide the deep analysis that makes the report valuable — skipping them and calling MCP tools directly produces shallow reports.
+
+Each round:
 1. Increment `roundNumber`
-2. Spawn a short-lived investigator to gather data (Step 4a)
-3. Optionally spawn a user-alignment sub-agent (Step 4b)
-4. Render the full report (Step 4c)
+2. Spawn a short-lived investigator to gather data (Step 4a) — MANDATORY EVERY ROUND
+3. Spawn a user-alignment sub-agent (Step 4b) — MANDATORY every 3rd round
+4. Render the full report (Step 4c) — using ONLY the data returned by the sub-agents
 5. Check intervention conditions (Step 4d)
 6. Sleep and repeat (Step 4e)
 
@@ -582,7 +586,9 @@ Execute `Bash("sleep 60")`, then return to Step 4 (increment `roundNumber` and r
 - Skip any report section, even if data is sparse
 - Paraphrase verbatim quotes — copy them character-for-character
 - Write "No issues" in the Assessment without citing specific data points
-- Delegate the sleep loop to a sub-agent — only the investigator is spawned as a sub-agent
+- Delegate the sleep loop to a sub-agent — only the investigator and user-alignment are spawned as sub-agents
+- Call `inspect_persistent_task`, `peek_session`, `get_session_queue_status`, or `get_comms_log` directly — ALL data gathering goes through the investigator sub-agent
+- Skip spawning the investigator sub-agent and call MCP tools yourself — this produces shallow reports
 - Use `AskUserQuestion` for the demo offering more than once per monitoring session
 
 **DO:**
