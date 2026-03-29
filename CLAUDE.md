@@ -644,11 +644,13 @@ Register setup commands that must run before demos. Prerequisites are idempotent
 
 **Execution order:** global → persona → scenario, sorted by `sort_order` within each scope.
 
-**Health checks:** Optional verification command. If exit 0, setup command is skipped entirely. For `run_as_background` prerequisites (e.g., dev servers), the health check is polled every 2s until ready or timeout.
+**Health checks:** Optional verification command. If exit 0, setup command is skipped entirely. For `run_as_background` prerequisites (e.g., dev servers), the health check is polled every 2s until ready or timeout. **Port-aware health checks are mandatory** — use `${PORT:-3000}` instead of hardcoded `localhost:3000`. GENTYR injects `PORT` from the worktree-allocated `PLAYWRIGHT_WEB_PORT` so the same prerequisite works in both main tree (port 3000) and worktrees (port 3100+).
 
 **CRUD tools** (on `user-feedback` server): `register_prerequisite`, `update_prerequisite`, `delete_prerequisite`, `list_prerequisites`.
 
-**Execution tool** (on `playwright` server): `run_prerequisites` — automatically called by `run_demo`, `run_demo_batch`, and `preflight_check`.
+**Execution tool** (on `playwright` server): `run_prerequisites` — automatically called by `run_demo`, `run_demo_batch`, `preflight_check`, and `run_auth_setup`.
+
+**Dev server lifecycle is fully automated.** `run_demo` handles dev server startup in 3 layers: (1) registered prerequisites, (2) auto-start from `services.json` `devServices` config with secrets resolved from 1Password, (3) fallback `pnpm run dev`. Agents MUST NOT manually call `secret_dev_server_start` before `run_demo` — it handles this automatically. If the auto-start fails, register a prerequisite rather than adding manual steps.
 
 **Auto-set `PLAYWRIGHT_BASE_URL`**: When `ensureDevServer()` confirms the dev server is healthy, `run_demo` and `run_demo_batch` auto-inject `PLAYWRIGHT_BASE_URL` so Playwright skips its `webServer` startup. No `base_url` arg needed — defaults to `http://localhost:3000` (main tree) or the worktree-allocated `PLAYWRIGHT_WEB_PORT` when running from a worktree.
 
@@ -711,8 +713,10 @@ Structured JSON log at `~/.claude/rotation-proxy.log`. 24h retention (auto-clean
 | `request_intercepted` | MITM request forwarded | `host`, `method`, `path`, `active_key_id`, `key_status`, `swap_reason` |
 | `response_received` | MITM response status | `host`, `status`, `is_sse`, `active_key_id` |
 | `rotating_on_429` | Key exhausted | `host`, `exhausted_key_id`, `retry` |
-| `rotating_on_401` | Auth failure rotation | `host`, `failed_key_id`, `retry` |
+| `rotating_on_401` | Auth failure rotation (after same-key retries exhausted) | `host`, `failed_key_id`, `retry`, `same_key_retries_exhausted` |
 | `rotation_debounced` | Second 401 for same key within 5s — rotation skipped, 401 passed through | `host`, `method`, `path`, `key_id` |
+| `transient_401_retry` | Same-key backoff retry before rotating — key not yet marked as failing | `host`, `method`, `path`, `key_id`, `same_key_retry`, `backoff_ms` |
+| `transient_401_recovered` | Key that was `auth_failing` got a 200 — status restored to `active` | `key_id` |
 | `session_path_passthrough` | Path not in swap allowlist (OAuth, session-health, etc.) | `host`, `method`, `path`, `incoming_key_id`, `active_key_id` |
 | `tombstone_token_swap` | Incoming token is tombstoned — swapping to active key | `host`, `method`, `path`, `incoming_key_id`, `active_key_id` |
 | `merged_token_swap` | Incoming token is merged/deduped — swapping to active key | `host`, `method`, `path`, `incoming_key_id`, `merged_into`, `active_key_id` |

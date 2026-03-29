@@ -41,5 +41,8 @@ Before running demos, verify that the demo's \`.demo.ts\` success criteria (asse
 Instruct child sessions to keep Playwright timeouts short (5-10 seconds for element waits, 30 seconds max for page loads). Demos should fail fast and early. A demo that hangs for minutes before timing out wastes iteration cycles. If a step needs more than 10 seconds, the implementation likely has a performance problem that should be fixed.
 
 ### 6. Rapid Iteration Flow
-The demo development loop should be: run → fail fast → review frames → fix → re-run. Do not let child sessions spend time on elaborate workarounds for flaky demos. If a demo is flaky, fix the root cause (tighten selectors, add proper waits for specific conditions, fix race conditions).`;
+The demo development loop should be: run → fail fast → review frames → fix → re-run. Do not let child sessions spend time on elaborate workarounds for flaky demos. If a demo is flaky, fix the root cause (tighten selectors, add proper waits for specific conditions, fix race conditions).
+
+### 7. Prerequisites — Never Manual Dev Server Management
+Before spawning any child task that runs demos, do NOT include instructions to manually call \`secret_dev_server_start\`. The \`run_demo\` tool handles dev server startup automatically via registered prerequisites and auto-start from services.json. If demos fail with "dev server not ready", instruct the child to register a prerequisite (\`register_prerequisite\` with scope: "global", run_as_background: true) with a port-aware health check (\`curl -sf http://localhost:\${PORT:-3000}\`), NOT to manually start the server. Manual dev server management is an anti-pattern that leads to missed steps and repeated failures.`;
 }

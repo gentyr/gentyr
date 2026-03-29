@@ -93,7 +93,7 @@ You MUST NOT run these via Bash. Use the MCP equivalent:
 
 | PROHIBITED Bash Command | REQUIRED MCP Tool |
 |---|---|
-| \`npm run dev\` / \`pnpm dev\` | \`mcp__secret-sync__secret_dev_server_start({})\` |
+| \`npm run dev\` / \`pnpm dev\` | Handled automatically by \`run_demo\` — do not call manually |
 | \`npm run build\` / \`pnpm build\` | \`mcp__secret-sync__secret_run_command({ command: ["pnpm", "build"], cwd: "${worktreePath}" })\` |
 | \`npx playwright test\` | \`mcp__playwright__run_demo\` or \`mcp__playwright__run_tests\` |
 | \`op read\` / \`op run\` | \`mcp__onepassword__readSecret\` or \`mcp__secret-sync__secret_run_command\` |
@@ -118,9 +118,22 @@ MCP tools detect your worktree and use it as the project directory.
 - No need to merge first — test your changes directly
 - When done, spawn project-manager to commit, push, PR, self-merge
 
-### Dev Server Management
-- Check health: \`mcp__secret-sync__secret_dev_server_status({})\`
-- Start with secrets: \`mcp__secret-sync__secret_dev_server_start({})\`
+### Dev Server Management (AUTOMATED)
+\`run_demo\` and \`preflight_check\` automatically start the dev server from services.json config.
+You do NOT need to manually call \`secret_dev_server_start\` before running demos — it handles
+this automatically. If the auto-start fails, register a prerequisite:
+\`\`\`
+mcp__user-feedback__register_prerequisite({
+  command: "pnpm dev",
+  scope: "global",
+  run_as_background: true,
+  health_check: "curl -sf http://localhost:\${PORT:-3000}"
+})
+\`\`\`
+
+For manual control (non-demo contexts only):
+- Status: \`mcp__secret-sync__secret_dev_server_status({})\`
+- Start: \`mcp__secret-sync__secret_dev_server_start({})\`
 - Stop: \`mcp__secret-sync__secret_dev_server_stop({})\`
 ${demoSection}
 ### Allowed Bash Operations

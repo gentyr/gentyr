@@ -975,6 +975,20 @@ async function executePrerequisites(opts: {
       resolvedEnv['PLAYWRIGHT_BASE_URL'] = opts.base_url;
     }
 
+    // When running in a worktree, set PORT to the allocated web port so dev servers
+    // (Next.js, Vite, etc.) listen on the correct port instead of their default (3000).
+    // Also inject backend/bridge ports for multi-service setups.
+    if (process.env.PLAYWRIGHT_WEB_PORT) {
+      resolvedEnv['PORT'] = process.env.PLAYWRIGHT_WEB_PORT;
+      resolvedEnv['PLAYWRIGHT_WEB_PORT'] = process.env.PLAYWRIGHT_WEB_PORT;
+    }
+    if (process.env.PLAYWRIGHT_BACKEND_PORT) {
+      resolvedEnv['PLAYWRIGHT_BACKEND_PORT'] = process.env.PLAYWRIGHT_BACKEND_PORT;
+    }
+    if (process.env.PLAYWRIGHT_BRIDGE_PORT) {
+      resolvedEnv['PLAYWRIGHT_BRIDGE_PORT'] = process.env.PLAYWRIGHT_BRIDGE_PORT;
+    }
+
     // Execute each prerequisite
     let passed = 0;
     let failed = 0;
@@ -1174,7 +1188,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     return {
       success: false,
       project,
-      message: `Dev server not ready after prerequisites: ${devServer.message}. Register a dev server prerequisite with register_prerequisite (scope: "global", run_as_background: true, with a health_check) so run_demo starts it automatically.`,
+      message: `Dev server not ready after prerequisites: ${devServer.message}. Register: register_prerequisite({ command: "pnpm dev", scope: "global", run_as_background: true, health_check: "curl -sf http://localhost:\${PORT:-3000}" }). Use \${PORT:-3000} for worktree compatibility. Do NOT manually call secret_dev_server_start — run_demo handles dev server lifecycle automatically.`,
     };
   }
   const effectiveBaseUrl = devServerUrl;
@@ -2631,9 +2645,9 @@ function runTests(args: RunTestsArgs): RunTestsResult {
     };
   }
 
-  // Clean up zombie dev servers from previous runs
-  cleanupDevServerPort();
-  cleanupDevServerPort(3001);
+  // Clean up zombie dev servers from previous runs (use allocated ports in worktree context)
+  cleanupDevServerPort(parseInt(process.env.PLAYWRIGHT_WEB_PORT || '3000', 10));
+  cleanupDevServerPort(parseInt(process.env.PLAYWRIGHT_BACKEND_PORT || '3001', 10));
 
   const cmdArgs = ['playwright', 'test'];
 
@@ -2723,9 +2737,9 @@ function seedData(): SeedDataResult {
     };
   }
 
-  // Clean up zombie dev servers from previous runs
-  cleanupDevServerPort();
-  cleanupDevServerPort(3001);
+  // Clean up zombie dev servers from previous runs (use allocated ports in worktree context)
+  cleanupDevServerPort(parseInt(process.env.PLAYWRIGHT_WEB_PORT || '3000', 10));
+  cleanupDevServerPort(parseInt(process.env.PLAYWRIGHT_BACKEND_PORT || '3001', 10));
 
   try {
     const output = execFileSync('npx', ['playwright', 'test', '--project=seed'], {
@@ -2766,9 +2780,9 @@ function cleanupData(): CleanupDataResult {
     };
   }
 
-  // Clean up zombie dev servers from previous runs
-  cleanupDevServerPort();
-  cleanupDevServerPort(3001);
+  // Clean up zombie dev servers from previous runs (use allocated ports in worktree context)
+  cleanupDevServerPort(parseInt(process.env.PLAYWRIGHT_WEB_PORT || '3000', 10));
+  cleanupDevServerPort(parseInt(process.env.PLAYWRIGHT_BACKEND_PORT || '3001', 10));
 
   try {
     const output = execFileSync('npx', ['playwright', 'test', '--project=seed'], {
@@ -3160,27 +3174,149 @@ async function checkDevServer(baseUrl: string): Promise<PreflightCheckEntry> {
 }
 
 /**
- * Attempt to auto-start the dev server via `pnpm run dev`.
- * Returns a descriptive message on success, null on failure.
+ * Poll a URL until it responds with a non-5xx status.
+ * @returns true if healthy within the timeout, false otherwise
+ */
+async function pollHealth(url: URL, timeoutMs: number = 30_000): Promise<boolean> {
+  const isHttps = url.protocol === 'https:';
+  const httpModule = isHttps ? https : http;
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const ok = await new Promise<boolean>((resolve) => {
+        const req = httpModule.request(
+          { hostname: url.hostname, port: url.port || (isHttps ? 443 : 80), path: '/', method: 'GET', timeout: 3000 },
+          (res) => {
+            res.resume();
+            resolve((res.statusCode ?? 0) < 500);
+          }
+        );
+        req.on('error', () => resolve(false));
+        req.on('timeout', () => { req.destroy(); resolve(false); });
+        req.end();
+      });
+      if (ok) return true;
+    } catch {
+      // continue polling
+    }
+  }
+  return false;
+}
+
+/**
+ * Start dev services from services.json devServices config.
+ * Mirrors secret_dev_server_start behavior: reads service filter/command/port,
+ * applies worktree port overrides, and spawns detached processes with secrets.
+ *
+ * @returns Descriptive message on success, null on failure
+ */
+async function startDevServicesFromConfig(
+  config: ReturnType<typeof loadServicesConfig>,
+  childEnv: Record<string, string>,
+  primaryUrl: URL,
+): Promise<string | null> {
+  const devServices = config.devServices;
+  if (!devServices || Object.keys(devServices).length === 0) return null;
+
+  const serviceEntries = Object.entries(devServices);
+  const startedPids: Array<{ name: string; pid: number; port: number }> = [];
+  const healthUrls: URL[] = [];
+
+  // Known name patterns for port override mapping
+  const webNames = new Set(['web', 'app', 'frontend', 'client', 'next', 'vite']);
+  const backendNames = new Set(['backend', 'api', 'server', 'service']);
+
+  for (const [name, svc] of serviceEntries) {
+    const svcConfig = svc as { filter?: string; command?: string; port?: number; label?: string };
+    if (!svcConfig.filter || !svcConfig.command) continue;
+
+    // Determine port: worktree override > config > 0 (no port set)
+    let port = svcConfig.port ?? 0;
+    const nameLower = name.toLowerCase();
+    if (process.env.PLAYWRIGHT_WEB_PORT && (webNames.has(nameLower) || serviceEntries.indexOf([name, svc]) === 0)) {
+      port = parseInt(process.env.PLAYWRIGHT_WEB_PORT, 10);
+    } else if (process.env.PLAYWRIGHT_BACKEND_PORT && backendNames.has(nameLower)) {
+      port = parseInt(process.env.PLAYWRIGHT_BACKEND_PORT, 10);
+    }
+
+    const svcEnv = { ...childEnv };
+    if (port > 0) svcEnv.PORT = String(port);
+
+    try {
+      const child = spawn('pnpm', ['--filter', svcConfig.filter, 'run', svcConfig.command], {
+        detached: true,
+        stdio: 'ignore',
+        cwd: EFFECTIVE_CWD,
+        env: svcEnv,
+      });
+      child.unref();
+      if (!child.pid) continue;
+
+      startedPids.push({ name, pid: child.pid, port });
+      if (port > 0) {
+        healthUrls.push(new URL(`http://localhost:${port}`));
+      }
+    } catch {
+      // Non-fatal — try other services
+    }
+  }
+
+  if (startedPids.length === 0) return null;
+
+  // Poll health on the primary URL (the one run_demo needs)
+  const healthy = await pollHealth(primaryUrl, 30_000);
+
+  if (!healthy) {
+    // Kill orphaned processes
+    for (const { pid } of startedPids) {
+      try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
+    }
+    return null;
+  }
+
+  const details = startedPids.map(s => `${s.name}:${s.port}(pid ${s.pid})`).join(', ');
+  return `Dev services auto-started from services.json: ${details}`;
+}
+
+/**
+ * Attempt to auto-start the dev server.
+ *
+ * Strategy (in order):
+ * 1. Read services.json devServices — start ALL configured services with correct
+ *    filter/command/port, matching secret_dev_server_start behavior.
+ * 2. Fallback: single-process `pnpm run dev` for projects without devServices config.
+ *
+ * Secrets are resolved from 1Password and injected into child process env.
+ * PORT is set from the baseUrl (which uses PLAYWRIGHT_WEB_PORT in worktree context).
+ *
+ * @returns Descriptive message on success, null on failure
  */
 async function attemptDevServerAutoStart(baseUrl: string): Promise<string | null> {
   const url = new URL(baseUrl);
   const port = url.port || '3000';
-  const isHttps = url.protocol === 'https:';
-  const httpModule = isHttps ? https : http;
 
   // Build env with secrets if available (non-fatal)
   let childEnv: Record<string, string>;
+  let config: ReturnType<typeof loadServicesConfig> | null = null;
   try {
-    const config = loadServicesConfig(PROJECT_DIR);
+    config = loadServicesConfig(PROJECT_DIR);
     const { resolvedEnv } = resolveLocalSecrets(config);
     childEnv = buildCleanEnv(resolvedEnv);
   } catch {
     childEnv = buildCleanEnv();
   }
-  childEnv.PORT = port;
 
-  // Spawn detached dev server, track PID for cleanup
+  // Strategy 1: Start from services.json devServices (multi-service support)
+  if (config?.devServices && Object.keys(config.devServices).length > 0) {
+    const result = await startDevServicesFromConfig(config, childEnv, url);
+    if (result) return result;
+    // Fall through to simple pnpm dev if devServices start failed
+  }
+
+  // Strategy 2: Fallback — single-process pnpm run dev
+  childEnv.PORT = port;
   let childPid: number;
   try {
     const child = spawn('pnpm', ['run', 'dev'], {
@@ -3196,27 +3332,8 @@ async function attemptDevServerAutoStart(baseUrl: string): Promise<string | null
     return null;
   }
 
-  // Poll health every 2s for max 30s
-  for (let i = 0; i < 15; i++) {
-    await new Promise(r => setTimeout(r, 2000));
-    try {
-      const ok = await new Promise<boolean>((resolve) => {
-        const req = httpModule.request(
-          { hostname: url.hostname, port: url.port || (isHttps ? 443 : 80), path: '/', method: 'GET', timeout: 3000 },
-          (res) => {
-            res.resume(); // drain
-            resolve((res.statusCode ?? 0) < 500);
-          }
-        );
-        req.on('error', () => resolve(false));
-        req.on('timeout', () => { req.destroy(); resolve(false); });
-        req.end();
-      });
-      if (ok) return `Dev server auto-started on port ${port} (pid ${childPid})`;
-    } catch {
-      // continue polling
-    }
-  }
+  const healthy = await pollHealth(url, 30_000);
+  if (healthy) return `Dev server auto-started on port ${port} (pid ${childPid})`;
 
   // Health polling exhausted — kill the orphaned process
   try { process.kill(childPid, 'SIGTERM'); } catch { /* already dead */ }
@@ -3236,7 +3353,7 @@ async function ensureDevServer(baseUrl?: string): Promise<{ ready: boolean; mess
   if (health.message.includes('not reachable') || health.message.includes('did not respond')) {
     const result = await attemptDevServerAutoStart(baseUrl);
     if (result) return { ready: true, message: result };
-    return { ready: false, message: `Dev server auto-start failed for ${baseUrl}. If not already registered, use register_prerequisite to add a dev server start command (scope: "global", run_as_background: true) with a health_check.` };
+    return { ready: false, message: `Dev server auto-start failed for ${baseUrl}. Register a dev server prerequisite: register_prerequisite({ command: "pnpm dev", scope: "global", run_as_background: true, health_check: "curl -sf http://localhost:\${PORT:-3000}" }). Use \${PORT:-3000} (not hardcoded ports) for worktree compatibility.` };
   }
 
   // HTTP error or app-level error
@@ -3711,7 +3828,7 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
         recoverySteps.push('Run: mcp__playwright__run_auth_setup() to refresh auth cookies');
         break;
       case 'dev_server':
-        recoverySteps.push('Register the dev server as a prerequisite: register_prerequisite({ command: "pnpm dev", scope: "global", run_as_background: true, health_check: "curl -sf http://localhost:3000" }). If already registered, check the health_check command.');
+        recoverySteps.push('Register the dev server as a prerequisite: register_prerequisite({ command: "pnpm dev", scope: "global", run_as_background: true, health_check: "curl -sf http://localhost:${PORT:-3000}" }). Use ${PORT:-3000} (not hardcoded ports) for worktree compatibility. If already registered, verify the health_check uses ${PORT:-3000}.');
         break;
       case 'web_server':
         recoverySteps.push(`Start the backend server — check the webServer entries in playwright.config.ts (${check.message})`);
@@ -3758,8 +3875,21 @@ async function runAuthSetup(args: RunAuthSetupArgs): Promise<RunAuthSetupResult>
     };
   }
 
-  // Ensure dev server is running before auth setup
+  // Execute registered prerequisites (starts dev server if registered as background prereq)
   const authBaseUrl = `http://localhost:${process.env.PLAYWRIGHT_WEB_PORT || '3000'}`;
+  const prereqResult = await executePrerequisites({ base_url: authBaseUrl });
+  if (!prereqResult.success) {
+    return {
+      success: false,
+      phases: [],
+      auth_files_refreshed: [],
+      total_duration_ms: Date.now() - startTime,
+      error: `Prerequisites failed: ${prereqResult.message}`,
+      output_summary: '',
+    };
+  }
+
+  // Verify dev server is healthy (fallback auto-start if no prerequisite handled it)
   const devServer = await ensureDevServer(authBaseUrl);
   if (!devServer.ready) {
     return {
