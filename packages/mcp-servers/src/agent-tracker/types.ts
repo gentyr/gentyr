@@ -116,6 +116,12 @@ export const SetReservedSlotsArgsSchema = z.object({
 
 export const GetReservedSlotsArgsSchema = z.object({});
 
+export const SetFocusModeArgsSchema = z.object({
+  enabled: z.boolean().describe('Enable (true) or disable (false) focus mode'),
+});
+
+export const GetFocusModeArgsSchema = z.object({});
+
 // ============================================================================
 // Session Signal Schemas
 // ============================================================================
@@ -350,6 +356,8 @@ export type DrainSessionQueueArgs = z.infer<typeof DrainSessionQueueArgsSchema>;
 export type ActivateQueuedSessionArgs = z.infer<typeof ActivateQueuedSessionArgsSchema>;
 export type SetReservedSlotsArgs = z.infer<typeof SetReservedSlotsArgsSchema>;
 export type GetReservedSlotsArgs = z.infer<typeof GetReservedSlotsArgsSchema>;
+export type SetFocusModeArgs = z.infer<typeof SetFocusModeArgsSchema>;
+export type GetFocusModeArgs = z.infer<typeof GetFocusModeArgsSchema>;
 
 // Session Signal Types
 export type SendSessionSignalArgs = z.infer<typeof SendSessionSignalArgsSchema>;

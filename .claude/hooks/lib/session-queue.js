@@ -35,6 +35,7 @@ import { checkAndExpireLock } from './display-lock.js';
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
 const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'session-queue.log');
+const FOCUS_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'focus-mode.json');
 
 // Lane sub-limits
 const GATE_LANE_LIMIT = 5;
@@ -238,6 +239,42 @@ export function setMaxConcurrentSessions(n) {
   return { old, new: n };
 }
 
+// ============================================================================
+// Focus Mode
+// ============================================================================
+
+/**
+ * Check whether focus mode is currently enabled.
+ * Reads from disk synchronously; returns false on any error.
+ * @returns {boolean}
+ */
+export function isFocusModeEnabled() {
+  try {
+    if (!fs.existsSync(FOCUS_MODE_PATH)) return false;
+    const state = JSON.parse(fs.readFileSync(FOCUS_MODE_PATH, 'utf8'));
+    return state.enabled === true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Enable or disable focus mode.
+ * Writes state to disk and emits an audit event.
+ * @param {boolean} enabled
+ * @param {string} [enabledBy='cto']
+ * @returns {{ enabled: boolean, enabledAt: string, enabledBy: string }}
+ */
+export function setFocusMode(enabled, enabledBy = 'cto') {
+  const state = { enabled, enabledAt: new Date().toISOString(), enabledBy };
+  const dir = path.dirname(FOCUS_MODE_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(FOCUS_MODE_PATH, JSON.stringify(state, null, 2));
+  log(`Focus mode ${enabled ? 'ENABLED' : 'DISABLED'} by ${enabledBy}`);
+  auditEvent(enabled ? 'focus_mode_enabled' : 'focus_mode_disabled', { enabledBy });
+  return state;
+}
+
 /**
  * Get the number of slots reserved for priority-eligible tasks (persistent/CTO/critical).
  * @returns {number}
@@ -341,6 +378,23 @@ export function enqueueSession(spec) {
     if (existing) {
       log(`Dedup: task ${spec.metadata.taskId} already has queue item ${existing.id} — skipping`);
       return { queueId: existing.id, position: 0, drained: { spawned: 0, atCapacity: false } };
+    }
+  }
+
+  // Focus mode gate: block non-CTO automated spawns
+  if (isFocusModeEnabled()) {
+    const allowed =
+      spec.priority === 'cto' || spec.priority === 'critical' ||
+      spec.lane === 'persistent' || spec.lane === 'gate' || spec.lane === 'revival' ||
+      spec.source === 'force-spawn-tasks' ||
+      spec.source === 'persistent-task-spawner' ||
+      spec.source === 'stop-continue-hook' ||
+      spec.source === 'session-queue-reaper' ||
+      (spec.metadata && spec.metadata.persistentTaskId);
+
+    if (!allowed) {
+      log(`Focus mode BLOCKED: "${spec.title}" (source: ${spec.source}, priority: ${spec.priority || 'normal'})`);
+      return { queueId: null, blocked: 'focus_mode', title: spec.title };
     }
   }
 
@@ -1366,6 +1420,7 @@ export function getQueueStatus() {
     maxConcurrent,
     reservedSlots,
     reservedSlotsRestore,
+    focusMode: isFocusModeEnabled(),
     running: activeRunning.length,
     suspended: suspendedItems.length,
     availableSlots: Math.max(0, maxConcurrent - activeRunning.length),

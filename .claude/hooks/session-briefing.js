@@ -27,6 +27,7 @@ const AGENT_ID = process.env.CLAUDE_AGENT_ID || null;
 
 // DB paths
 const QUEUE_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+const FOCUS_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'focus-mode.json');
 const USER_PROMPTS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'user-prompts.db');
 const PLANS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
@@ -105,6 +106,21 @@ function truncate(str, maxLen) {
   if (!str) return '';
   const s = str.replace(/\s+/g, ' ').trim();
   return s.length <= maxLen ? s : s.slice(0, maxLen - 1) + '\u2026';
+}
+
+// ---------------------------------------------------------------------------
+// Data gathering: focus mode
+// ---------------------------------------------------------------------------
+
+function getFocusModeState() {
+  try {
+    if (!fs.existsSync(FOCUS_MODE_PATH)) return null;
+    const state = JSON.parse(fs.readFileSync(FOCUS_MODE_PATH, 'utf8'));
+    if (state.enabled === true) return state;
+    return null;
+  } catch (_) {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +415,13 @@ function getGitActivity(hours = 2) {
 
 function buildInteractiveBriefing() {
   const lines = ['[DEPUTY-CTO SESSION BRIEFING]', ''];
+
+  // Focus mode notice (prominent — shown before queue state)
+  const focusMode = getFocusModeState();
+  if (focusMode) {
+    lines.push('[FOCUS MODE ACTIVE] Only CTO-directed tasks, persistent monitors, and revivals can spawn. Run /focus-mode to disable.');
+    lines.push('');
+  }
 
   // Queue state
   const queue = getQueueState();

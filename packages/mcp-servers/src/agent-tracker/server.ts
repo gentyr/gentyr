@@ -36,6 +36,8 @@ import {
   ActivateQueuedSessionArgsSchema,
   SetReservedSlotsArgsSchema,
   GetReservedSlotsArgsSchema,
+  SetFocusModeArgsSchema,
+  GetFocusModeArgsSchema,
   GetUserPromptArgsSchema,
   SearchUserPromptsArgsSchema,
   ListUserPromptsArgsSchema,
@@ -67,6 +69,8 @@ import {
   type ActivateQueuedSessionArgs,
   type SetReservedSlotsArgs,
   type GetReservedSlotsArgs,
+  type SetFocusModeArgs,
+  type GetFocusModeArgs,
   type SendSessionSignalArgs,
   type BroadcastSignalArgs,
   type GetSessionSignalsArgs,
@@ -2406,6 +2410,97 @@ async function getReservedSlots(_args: GetReservedSlotsArgs): Promise<object | E
 }
 
 // ============================================================================
+// Focus Mode Tool Implementations
+// ============================================================================
+
+/**
+ * Enable or disable focus mode.
+ * Dynamically imports session-queue.js so the live module is used.
+ */
+async function setFocusMode(args: SetFocusModeArgs): Promise<object | ErrorResult> {
+  const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+
+  if (!fs.existsSync(queueModulePath)) {
+    return { error: `session-queue.js not found at ${queueModulePath}` };
+  }
+
+  try {
+    const queueModule = await import(queueModulePath);
+    if (typeof queueModule.setFocusMode !== 'function') {
+      return { error: 'setFocusMode function not found in session-queue.js' };
+    }
+    const state = queueModule.setFocusMode(args.enabled, 'mcp-tool');
+    return {
+      success: true,
+      enabled: state.enabled,
+      enabledAt: state.enabledAt,
+      enabledBy: state.enabledBy,
+      message: state.enabled
+        ? 'Focus mode ENABLED — only CTO-directed tasks, persistent monitors, and revivals can spawn.'
+        : 'Focus mode DISABLED — all automated spawning is unrestricted.',
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to set focus mode: ${message}` };
+  }
+}
+
+/**
+ * Get the current focus mode state.
+ * Dynamically imports session-queue.js so the live module is used.
+ */
+async function getFocusMode(_args: GetFocusModeArgs): Promise<object | ErrorResult> {
+  const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+
+  if (!fs.existsSync(queueModulePath)) {
+    return { error: `session-queue.js not found at ${queueModulePath}` };
+  }
+
+  try {
+    const queueModule = await import(queueModulePath);
+    if (typeof queueModule.isFocusModeEnabled !== 'function') {
+      return { error: 'isFocusModeEnabled function not found in session-queue.js' };
+    }
+    const enabled = queueModule.isFocusModeEnabled();
+
+    // Read the full state from the file for metadata
+    const focusModePath = path.join(PROJECT_DIR, '.claude', 'state', 'focus-mode.json');
+    let enabledAt: string | null = null;
+    let enabledBy: string | null = null;
+    if (fs.existsSync(focusModePath)) {
+      try {
+        const state = JSON.parse(fs.readFileSync(focusModePath, 'utf8'));
+        enabledAt = state.enabledAt ?? null;
+        enabledBy = state.enabledBy ?? null;
+      } catch (_) {
+        // Non-fatal — enabled is already read
+      }
+    }
+
+    return {
+      enabled,
+      enabledAt,
+      enabledBy,
+      description: enabled
+        ? 'Focus mode is ACTIVE — only CTO-directed tasks, persistent monitors, and revivals can spawn.'
+        : 'Focus mode is OFF — all automated spawning is unrestricted.',
+      allowedSources: enabled ? [
+        'priority: cto or critical',
+        'lane: persistent, gate, or revival',
+        'source: force-spawn-tasks',
+        'source: persistent-task-spawner',
+        'source: stop-continue-hook',
+        'source: session-queue-reaper',
+        'metadata.persistentTaskId set',
+      ] : null,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to get focus mode: ${message}` };
+  }
+}
+
+// ============================================================================
 // Session Signal Tool Implementations
 // ============================================================================
 
@@ -3149,6 +3244,18 @@ const tools: AnyToolHandler[] = [
     description: 'Get the current reserved slots count and auto-restore schedule. Reserved slots are dedicated to priority-eligible tasks (cto/critical priority, persistent lane, or persistentTaskId children).',
     schema: GetReservedSlotsArgsSchema,
     handler: getReservedSlots,
+  },
+  {
+    name: 'set_focus_mode',
+    description: 'Enable or disable focus mode. When enabled, only CTO-directed tasks (priority: cto/critical), persistent task monitors (lane: persistent), session revivals (lane: revival/gate), manual CTO spawns (source: force-spawn-tasks), and children of persistent tasks are allowed to enqueue. All background automation is blocked. Use /focus-mode slash command for interactive toggle.',
+    schema: SetFocusModeArgsSchema,
+    handler: setFocusMode,
+  },
+  {
+    name: 'get_focus_mode',
+    description: 'Get the current focus mode state, including when it was enabled and which sources are still allowed to spawn.',
+    schema: GetFocusModeArgsSchema,
+    handler: getFocusMode,
   },
   // User Prompt Index Tools
   {
