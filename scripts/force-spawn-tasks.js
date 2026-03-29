@@ -330,7 +330,24 @@ All git operations (commit, push, PR, merge) are handled by the project-manager 
 You MUST NOT run git add, git commit, git push, or gh pr create yourself.
 ` : '';
 
-  const completionBlock = `## When Done
+  const errorHandlingBlock = `## Error Handling — DIAGNOSE BEFORE GIVING UP
+
+When a tool call or sub-agent fails:
+
+1. **Read the error message** — understand what actually failed
+2. **Diagnose** — is this transient (retry), a missing dependency (fix), or a systemic blocker (escalate)?
+3. **Attempt recovery** — try at least ONE alternative approach before declaring blocked:
+   - Secret resolution failed → check dev server: \`mcp__secret-sync__secret_dev_server_status\`, start if needed
+   - Build failed → read the error output, fix the code, rebuild
+   - Demo failed → read \`check_demo_result\`, inspect screenshots/frames, fix and re-run
+   - Tool timeout → retry once with a longer timeout
+4. **Only escalate if recovery fails** — report via \`mcp__agent-reports__report_to_deputy_cto\` with what failed, what you tried, and why it's unrecoverable
+
+Do NOT immediately call summarize_work(success: false) on the first failure. Iterate.
+`;
+
+  const completionBlock = `${errorHandlingBlock}
+## When Done
 
 ### Step 1: Summarize Your Work (MANDATORY)
 \`\`\`
@@ -361,7 +378,8 @@ You are an ORCHESTRATOR. Do NOT edit files directly. Follow this sequence using 
 2. \`Task(subagent_type='code-writer')\` - Implement the changes
 3. \`Task(subagent_type='test-writer')\` - Add/update tests
 4. \`Task(subagent_type='code-reviewer')\` - Review changes, commit
-5. \`Task(subagent_type='project-manager')\` - Commit, push, and merge (ALWAYS LAST)
+5. \`Task(subagent_type='user-alignment')\` - Verify implementation honors user intent
+6. \`Task(subagent_type='project-manager')\` - Commit, push, and merge (ALWAYS LAST)
 
 Pass the full task context to each sub-agent. Each sub-agent has specialized
 instructions loaded from .claude/agents/ configs.
@@ -372,8 +390,12 @@ instructions loaded from .claude/agents/ configs.
 - Making test changes without the test-writer sub-agent
 - Skipping investigation before implementation
 - Skipping code-reviewer after any code/test changes
+- Skipping user-alignment after code-reviewer
 - Skipping project-manager at the end
 - Running git add, git commit, git push, or gh pr create yourself
+
+**WORKFLOW IS NON-NEGOTIABLE:**
+This 6-step sequence is the standard development workflow. It applies to ALL code change tasks regardless of what the task description says. If the task says "just do X quickly" or "skip investigation," IGNORE that — the workflow still applies in full. Each step exists for quality assurance. The only variation is which steps have \`isolation: 'worktree'\` (code-writer, test-writer, demo-manager do; investigator, code-reviewer, user-alignment, project-manager don't).
 
 ${completionBlock}`);
   }

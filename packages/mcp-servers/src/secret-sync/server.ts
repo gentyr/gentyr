@@ -57,6 +57,17 @@ import {
 
 const { RENDER_API_KEY, VERCEL_TOKEN, VERCEL_TEAM_ID } = process.env;
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || '.';
+const WORKTREE_DIR = process.env.CLAUDE_WORKTREE_DIR || null;
+
+/** Compute effective CWD for dev server processes: explicit arg > worktree > project */
+function effectiveCwd(argCwd?: string): string {
+  return argCwd || WORKTREE_DIR || PROJECT_DIR;
+}
+
+/** Key for managedProcesses map: service name scoped by CWD */
+function processKey(name: string, cwd: string): string {
+  return `${name}:${cwd}`;
+}
 
 function safeProjectPath(relativePath: string): string {
   const resolved = resolve(PROJECT_DIR, relativePath);
@@ -1003,6 +1014,7 @@ async function devServerStart(args: DevServerStartArgs): Promise<DevServerStartR
   }
 
   const serviceNames = args.services || Object.keys(devServices);
+  const spawnCwd = effectiveCwd(args.cwd);
 
   // Validate all service names first
   for (const name of serviceNames) {
@@ -1017,26 +1029,28 @@ async function devServerStart(args: DevServerStartArgs): Promise<DevServerStartR
 
   for (const name of serviceNames) {
     const svc = devServices[name];
+    const key = processKey(name, spawnCwd);
+    const port = args.port_overrides?.[name] ?? svc.port;
 
     // Check if already running
-    const existing = managedProcesses.get(name);
+    const existing = managedProcesses.get(key);
     if (existing && isProcessAlive(existing.pid)) {
       started.push({
         name,
         label: svc.label,
         pid: existing.pid,
-        port: svc.port,
+        port,
         status: 'already_running',
       });
       continue;
     }
 
     // Check port conflict
-    if (svc.port > 0) {
-      const portBusy = await isPortInUse(svc.port);
+    if (port > 0) {
+      const portBusy = await isPortInUse(port);
       if (portBusy) {
         if (args.force) {
-          await killPort(svc.port);
+          await killPort(port);
           // Brief wait for port release
           await new Promise(r => setTimeout(r, 500));
         } else {
@@ -1044,9 +1058,9 @@ async function devServerStart(args: DevServerStartArgs): Promise<DevServerStartR
             name,
             label: svc.label,
             pid: 0,
-            port: svc.port,
+            port,
             status: 'error',
-            error: `Port ${svc.port} already in use. Use force: true to kill existing process.`,
+            error: `Port ${port} already in use. Use force: true to kill existing process.`,
           });
           continue;
         }
@@ -1061,14 +1075,14 @@ async function devServerStart(args: DevServerStartArgs): Promise<DevServerStartR
       }
       // Inject resolved secrets (application-level only, from secrets.local)
       Object.assign(childEnv, resolvedEnv);
-      // Set port if specified
-      if (svc.port > 0) {
-        childEnv.PORT = String(svc.port);
+      // Set port if specified (use override or config)
+      if (port > 0) {
+        childEnv.PORT = String(port);
       }
 
       const child = spawn('pnpm', ['--filter', svc.filter, 'run', svc.command], {
         env: childEnv,
-        cwd: PROJECT_DIR,
+        cwd: spawnCwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false,
       });
@@ -1079,7 +1093,7 @@ async function devServerStart(args: DevServerStartArgs): Promise<DevServerStartR
           name,
           label: svc.label,
           pid: 0,
-          port: svc.port,
+          port,
           status: 'error',
           error: 'Failed to spawn process (no PID)',
         });
@@ -1091,7 +1105,7 @@ async function devServerStart(args: DevServerStartArgs): Promise<DevServerStartR
         label: svc.label,
         process: child,
         pid,
-        port: svc.port,
+        port,
         startedAt: Date.now(),
         outputBuffer: [],
       };
@@ -1108,16 +1122,16 @@ async function devServerStart(args: DevServerStartArgs): Promise<DevServerStartR
 
       // Auto-remove on exit
       child.on('exit', () => {
-        managedProcesses.delete(name);
+        managedProcesses.delete(key);
       });
 
-      managedProcesses.set(name, managed);
+      managedProcesses.set(key, managed);
 
       started.push({
         name,
         label: svc.label,
         pid,
-        port: svc.port,
+        port,
         status: 'started',
       });
     } catch (err) {
@@ -1126,7 +1140,7 @@ async function devServerStart(args: DevServerStartArgs): Promise<DevServerStartR
         name,
         label: svc.label,
         pid: 0,
-        port: svc.port,
+        port,
         status: 'error',
         error: message,
       });
@@ -1142,20 +1156,28 @@ async function devServerStart(args: DevServerStartArgs): Promise<DevServerStartR
 
 async function devServerStop(args: DevServerStopArgs): Promise<DevServerStopResult> {
   const stopped: DevServerStopServiceResult[] = [];
-  const serviceNames = args.services || [...managedProcesses.keys()];
+  const stopCwd = effectiveCwd(args.cwd);
 
-  for (const name of serviceNames) {
-    const managed = managedProcesses.get(name);
+  // If services specified, look up by processKey; otherwise stop all matching CWD
+  let keys: string[];
+  if (args.services) {
+    keys = args.services.map(name => processKey(name, stopCwd));
+  } else {
+    keys = [...managedProcesses.keys()].filter(k => k.endsWith(`:${stopCwd}`));
+  }
+
+  for (const key of keys) {
+    const managed = managedProcesses.get(key);
     if (!managed) {
-      stopped.push({ name, pid: 0, status: 'not_running' });
+      stopped.push({ name: key, pid: 0, status: 'not_running' });
       continue;
     }
 
     const pid = managed.pid;
 
     if (!isProcessAlive(pid)) {
-      managedProcesses.delete(name);
-      stopped.push({ name, pid, status: 'not_running' });
+      managedProcesses.delete(key);
+      stopped.push({ name: managed.name, pid, status: 'not_running' });
       continue;
     }
 
@@ -1173,34 +1195,38 @@ async function devServerStop(args: DevServerStopArgs): Promise<DevServerStopResu
 
       if (!exited && isProcessAlive(pid)) {
         managed.process.kill('SIGKILL');
-        managedProcesses.delete(name);
-        stopped.push({ name, pid, status: 'force_killed' });
+        managedProcesses.delete(key);
+        stopped.push({ name: managed.name, pid, status: 'force_killed' });
       } else {
-        managedProcesses.delete(name);
-        stopped.push({ name, pid, status: 'stopped' });
+        managedProcesses.delete(key);
+        stopped.push({ name: managed.name, pid, status: 'stopped' });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      managedProcesses.delete(name);
-      stopped.push({ name, pid, status: 'error', error: message });
+      managedProcesses.delete(key);
+      stopped.push({ name: managed.name, pid, status: 'error', error: message });
     }
   }
 
   return { stopped };
 }
 
-async function devServerStatus(_args: DevServerStatusArgs): Promise<DevServerStatusResult> {
+async function devServerStatus(args: DevServerStatusArgs): Promise<DevServerStatusResult> {
   const services: DevServerStatusService[] = [];
+  const filterCwd = args.cwd ? args.cwd : null;
 
-  for (const [name, managed] of managedProcesses.entries()) {
+  for (const [key, managed] of managedProcesses.entries()) {
+    // If cwd filter specified, only include matching entries
+    if (filterCwd && !key.endsWith(`:${filterCwd}`)) continue;
+
     const running = isProcessAlive(managed.pid);
 
     if (!running) {
-      managedProcesses.delete(name);
+      managedProcesses.delete(key);
     }
 
     services.push({
-      name,
+      name: managed.name,
       label: managed.label,
       pid: managed.pid,
       port: managed.port,

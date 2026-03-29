@@ -85,7 +85,7 @@ Parse the plain English description into 1-N task specs. Use this section heuris
 | Strategic, cross-cutting orchestration | `DEPUTY-CTO` |
 | Product analysis, personas, PMF | `PRODUCT-MANAGER` |
 
-For ambiguous descriptions, prefer `CODE-REVIEWER` (triggers full agent sequence: investigator → code-writer → test-writer → code-reviewer → project-manager).
+For ambiguous descriptions, prefer `CODE-REVIEWER` (triggers full agent sequence: investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager).
 
 For complex requests, split into multiple tasks (e.g., "refactor auth and add tests" → one CODE-REVIEWER task + one TEST-WRITER task).
 

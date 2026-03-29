@@ -392,6 +392,11 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     } catch {
       db.exec("ALTER TABLE demo_scenarios ADD COLUMN env_vars TEXT");
     }
+    try {
+      db.prepare("SELECT headed FROM demo_scenarios LIMIT 0").run();
+    } catch {
+      db.exec("ALTER TABLE demo_scenarios ADD COLUMN headed INTEGER NOT NULL DEFAULT 0");
+    }
 
     // Auto-migration: create demo_prerequisites table if missing
     try {
@@ -519,6 +524,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       test_file: record.test_file,
       sort_order: record.sort_order,
       enabled: record.enabled === 1,
+      headed: record.headed === 1,
       created_at: record.created_at,
       updated_at: record.updated_at,
       persona_name: personaName,
@@ -1393,8 +1399,8 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
 
     try {
       db.prepare(`
-        INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, created_at, created_timestamp, updated_at, env_vars)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+        INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, headed, created_at, created_timestamp, updated_at, env_vars)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
       `).run(
         id,
         args.persona_id,
@@ -1404,6 +1410,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
         args.playwright_project,
         args.test_file,
         args.sort_order ?? 0,
+        args.headed ? 1 : 0,
         created_at,
         created_timestamp,
         created_at,
@@ -1453,6 +1460,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     if (args.test_file !== undefined) { updates.push('test_file = ?'); params.push(args.test_file); }
     if (args.sort_order !== undefined) { updates.push('sort_order = ?'); params.push(args.sort_order); }
     if (args.enabled !== undefined) { updates.push('enabled = ?'); params.push(args.enabled ? 1 : 0); }
+    if (args.headed !== undefined) { updates.push('headed = ?'); params.push(args.headed ? 1 : 0); }
     if (args.env_vars !== undefined) {
       if (args.env_vars === null) {
         updates.push('env_vars = ?'); params.push(null);

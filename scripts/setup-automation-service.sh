@@ -214,19 +214,37 @@ setup_linux() {
   fi
 
   # Build optional OP_SERVICE_ACCOUNT_TOKEN env line
+  # Preserve token from existing service if not explicitly provided via --op-token
+  if [ -z "$OP_TOKEN_FOR_SERVICE" ] && [ -f "$SERVICE_FILE" ]; then
+    EXISTING_OP_TOKEN=$(grep 'OP_SERVICE_ACCOUNT_TOKEN=' "$SERVICE_FILE" 2>/dev/null | sed 's/.*OP_SERVICE_ACCOUNT_TOKEN=//' || echo "")
+    if [ -n "$EXISTING_OP_TOKEN" ]; then
+      OP_TOKEN_FOR_SERVICE="$EXISTING_OP_TOKEN"
+      log_info "Preserved OP_SERVICE_ACCOUNT_TOKEN from existing systemd service."
+    fi
+  fi
   OP_TOKEN_ENV=""
   if [ -n "$OP_TOKEN_FOR_SERVICE" ]; then
     OP_TOKEN_ENV="Environment=OP_SERVICE_ACCOUNT_TOKEN=$OP_TOKEN_FOR_SERVICE"
     log_info "Including OP_SERVICE_ACCOUNT_TOKEN in systemd service (API-based credential resolution, no prompts)."
   fi
 
-  # Resolve framework dir for proxy script path
+  # Resolve framework dir for proxy script path (handles broken symlinks)
   FRAMEWORK_DIR=""
-  if [ -d "$PROJECT_DIR/node_modules/gentyr" ] || [ -L "$PROJECT_DIR/node_modules/gentyr" ]; then
+  if [ -d "$PROJECT_DIR/node_modules/gentyr" ]; then
+    # -d follows symlinks — only true if target directory exists
     FRAMEWORK_DIR="$(cd "$PROJECT_DIR/node_modules/gentyr" && pwd -P)"
-  elif [ -L "$PROJECT_DIR/.claude-framework" ]; then
-    FRAMEWORK_DIR="$(readlink -f "$PROJECT_DIR/.claude-framework")"
-  elif [ -d "$SCRIPT_DIR/.." ]; then
+  elif [ -d "$PROJECT_DIR/.claude-framework" ]; then
+    FRAMEWORK_DIR="$(cd "$PROJECT_DIR/.claude-framework" && pwd -P)"
+  elif [ -L "$PROJECT_DIR/.claude/hooks" ] && [ -d "$PROJECT_DIR/.claude/hooks" ]; then
+    # Fallback: follow hooks symlink up to framework root
+    HOOKS_REAL="$(cd "$PROJECT_DIR/.claude/hooks" && pwd -P)"
+    CANDIDATE="$(cd "$HOOKS_REAL/../.." && pwd -P 2>/dev/null)" || true
+    if [ -n "$CANDIDATE" ] && [ -f "$CANDIDATE/version.json" ]; then
+      FRAMEWORK_DIR="$CANDIDATE"
+    fi
+  fi
+  if [ -z "$FRAMEWORK_DIR" ] && [ -d "$SCRIPT_DIR/.." ]; then
+    # Last resort: script is in gentyr/scripts/, go up one level
     FRAMEWORK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
   fi
 
@@ -554,6 +572,14 @@ setup_macos() {
   log_info "Using node at: $NODE_PATH"
 
   # Build optional OP_SERVICE_ACCOUNT_TOKEN plist entry
+  # Preserve token from existing plist if not explicitly provided via --op-token
+  if [ -z "$OP_TOKEN_FOR_SERVICE" ] && [ -f "$PLIST_FILE" ]; then
+    EXISTING_OP_TOKEN=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:OP_SERVICE_ACCOUNT_TOKEN" "$PLIST_FILE" 2>/dev/null || echo "")
+    if [ -n "$EXISTING_OP_TOKEN" ]; then
+      OP_TOKEN_FOR_SERVICE="$EXISTING_OP_TOKEN"
+      log_info "Preserved OP_SERVICE_ACCOUNT_TOKEN from existing plist."
+    fi
+  fi
   OP_TOKEN_PLIST=""
   if [ -n "$OP_TOKEN_FOR_SERVICE" ]; then
     OP_TOKEN_PLIST="        <key>OP_SERVICE_ACCOUNT_TOKEN</key>
@@ -561,13 +587,23 @@ setup_macos() {
     log_info "Including OP_SERVICE_ACCOUNT_TOKEN in plist (API-based credential resolution, no prompts)."
   fi
 
-  # Resolve framework dir for proxy script path
+  # Resolve framework dir for proxy script path (handles broken symlinks)
   FRAMEWORK_DIR=""
-  if [ -d "$PROJECT_DIR/node_modules/gentyr" ] || [ -L "$PROJECT_DIR/node_modules/gentyr" ]; then
+  if [ -d "$PROJECT_DIR/node_modules/gentyr" ]; then
+    # -d follows symlinks — only true if target directory exists
     FRAMEWORK_DIR="$(cd "$PROJECT_DIR/node_modules/gentyr" && pwd -P)"
-  elif [ -L "$PROJECT_DIR/.claude-framework" ]; then
-    FRAMEWORK_DIR="$(readlink -f "$PROJECT_DIR/.claude-framework")"
-  elif [ -d "$SCRIPT_DIR/.." ]; then
+  elif [ -d "$PROJECT_DIR/.claude-framework" ]; then
+    FRAMEWORK_DIR="$(cd "$PROJECT_DIR/.claude-framework" && pwd -P)"
+  elif [ -L "$PROJECT_DIR/.claude/hooks" ] && [ -d "$PROJECT_DIR/.claude/hooks" ]; then
+    # Fallback: follow hooks symlink up to framework root
+    HOOKS_REAL="$(cd "$PROJECT_DIR/.claude/hooks" && pwd -P)"
+    CANDIDATE="$(cd "$HOOKS_REAL/../.." && pwd -P 2>/dev/null)" || true
+    if [ -n "$CANDIDATE" ] && [ -f "$CANDIDATE/version.json" ]; then
+      FRAMEWORK_DIR="$CANDIDATE"
+    fi
+  fi
+  if [ -z "$FRAMEWORK_DIR" ] && [ -d "$SCRIPT_DIR/.." ]; then
+    # Last resort: script is in gentyr/scripts/, go up one level
     FRAMEWORK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
   fi
 

@@ -298,6 +298,17 @@ When running in an interactive session, you should be aware of any active persis
 - If you draft a response that would significantly change the intended outcome for a persistent task, offer to make an amendment rather than just answering
 - Keep the CTO updated on persistent task progress during interactive sessions
 - If a persistent task monitor has died, alert the CTO and offer to revive it via `/persistent-tasks`
+- **Auto-spawn on resume/activate**: `resume_persistent_task`, `activate_persistent_task`, and `amend_persistent_task` (auto-resume) all trigger a PostToolUse hook that enqueues the monitor session automatically. Do NOT manually create tasks or call `force_spawn_tasks` after these calls.
+
+## Session Queue Management
+
+When agents are blocked by queue capacity, take action — don't just report it:
+- `get_session_queue_status` — check what's running, queued, and at capacity
+- `cancel_queued_session({ queueId })` — cancel low-priority queued items to free slots
+- `set_max_concurrent_sessions({ max: N })` — raise the limit temporarily for urgent work
+- `force_spawn_tasks({ taskIds })` — bypasses the queue entirely, spawns immediately at CTO priority
+
+**The queue must never block CTO-priority or persistent task work.** If you see capacity issues, proactively cancel stale/low-priority items or raise the limit.
 
 ## Remember
 

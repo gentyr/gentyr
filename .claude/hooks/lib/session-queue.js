@@ -27,6 +27,7 @@ import { auditEvent } from './session-audit.js';
 import { debugLog } from './debug-log.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
 import { buildPersistentMonitorBridgeInstructions } from './persistent-monitor-bridge-instructions.js';
+import { checkAndExpireLock } from './display-lock.js';
 // NOTE: revival-utils.js imports from session-queue.js (circular dep), so we
 // inline these three utilities here instead of importing from revival-utils.js.
 // Mirrors the same pattern used in session-reaper.js.
@@ -234,6 +235,43 @@ export function setMaxConcurrentSessions(n) {
   return { old, new: n };
 }
 
+/**
+ * Get the number of slots reserved for priority-eligible tasks (persistent/CTO/critical).
+ * @returns {number}
+ */
+export function getReservedSlots() {
+  const db = getDb();
+  const row = db.prepare('SELECT value FROM queue_config WHERE key = ?').get('reserved_slots');
+  return row ? parseInt(row.value, 10) : 0; // Default 0 — no reservation until activated
+}
+
+/**
+ * Set the number of reserved slots.
+ * @param {number} n - Number of slots to reserve (0-10)
+ * @param {object} [opts]
+ * @param {number} [opts.autoRestoreMinutes] - Auto-restore to defaultValue after N minutes
+ * @param {number} [opts.defaultValue=0] - Value to restore to (default: 0)
+ * @returns {{ old: number, new: number }}
+ */
+export function setReservedSlots(n, opts = {}) {
+  if (n < 0 || n > 10) throw new Error('reserved_slots must be between 0 and 10');
+  const db = getDb();
+  const old = getReservedSlots();
+  db.prepare("INSERT OR REPLACE INTO queue_config (key, value, updated_at) VALUES (?, ?, datetime('now'))")
+    .run('reserved_slots', String(n));
+
+  // Schedule auto-restore if requested
+  if (opts.autoRestoreMinutes) {
+    const restoreAt = new Date(Date.now() + opts.autoRestoreMinutes * 60000).toISOString();
+    const defaultVal = opts.defaultValue ?? 0;
+    db.prepare("INSERT OR REPLACE INTO queue_config (key, value, updated_at) VALUES (?, ?, datetime('now'))")
+      .run('reserved_slots_restore', JSON.stringify({ restoreAt, defaultValue: defaultVal }));
+  }
+
+  log(`Reserved slots changed: ${old} -> ${n}`);
+  return { old, new: n };
+}
+
 // ============================================================================
 // PID Liveness Check
 // ============================================================================
@@ -291,6 +329,18 @@ export function enqueueSession(spec) {
   }
 
   const db = getDb();
+
+  // Dedup: if this task is already queued or running, return the existing queue item
+  if (spec.metadata?.taskId) {
+    const existing = db.prepare(
+      "SELECT id FROM queue_items WHERE status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.taskId') = ?"
+    ).get(spec.metadata.taskId);
+    if (existing) {
+      log(`Dedup: task ${spec.metadata.taskId} already has queue item ${existing.id} — skipping`);
+      return { queueId: existing.id, position: 0, drained: { spawned: 0, atCapacity: false } };
+    }
+  }
+
   const id = generateQueueId();
   const projectDir = spec.projectDir || PROJECT_DIR;
   const ttlMs = spec.ttlMs ?? DEFAULT_TTL_MS;
@@ -446,6 +496,33 @@ Persistent Task ID: ${taskId}`;
 }
 
 // ============================================================================
+// Priority Eligibility (Reserved Slots)
+// ============================================================================
+
+/**
+ * Determine if a queue item is eligible to use reserved slots.
+ * Priority-eligible items bypass the reserved slots cap and see the full maxConcurrent.
+ * Non-eligible items see maxConcurrent - reservedSlots as their effective cap.
+ *
+ * An item is priority-eligible if:
+ *   - priority is 'cto' or 'critical'
+ *   - lane is 'persistent'
+ *   - metadata contains persistentTaskId (child of a persistent task)
+ *
+ * @param {object} item - Queue item row
+ * @returns {boolean}
+ */
+function isPriorityEligible(item) {
+  if (item.priority === 'cto' || item.priority === 'critical') return true;
+  if (item.lane === 'persistent') return true;
+  try {
+    const meta = item.metadata ? JSON.parse(item.metadata) : {};
+    if (meta.persistentTaskId) return true;
+  } catch (_) { /* non-fatal */ }
+  return false;
+}
+
+// ============================================================================
 // Drain Queue
 // ============================================================================
 
@@ -456,7 +533,7 @@ Persistent Task ID: ${taskId}`;
  */
 export function drainQueue() {
   const db = getDb();
-  const result = { spawned: 0, queued: 0, atCapacity: false, failed: 0, revivalCandidates: [] };
+  const result = { spawned: 0, queued: 0, atCapacity: false, failed: 0, memoryBlocked: 0, revivalCandidates: [] };
 
   // Step 1: Reap stale running items (dead PIDs, stuck sessions)
   let reaperResult = null;
@@ -488,16 +565,62 @@ export function drainQueue() {
     }
   }
 
+  // Step 1c: Catch-all — check for active persistent tasks with no running/queued monitor
+  try {
+    const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+    if (Database && fs.existsSync(ptDbPath)) {
+      const ptDb = new Database(ptDbPath, { readonly: true });
+      const activeTasks = ptDb.prepare("SELECT id FROM persistent_tasks WHERE status = 'active'").all();
+      ptDb.close();
+
+      for (const task of activeTasks) {
+        const existing = db.prepare(
+          "SELECT id FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.persistentTaskId') = ?"
+        ).get(task.id);
+
+        if (!existing) {
+          try {
+            requeueDeadPersistentMonitor(db, task.id);
+          } catch (err) {
+            log(`Step 1c persistent task orphan re-enqueue error (non-fatal): ${err.message}`);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    log(`Step 1c persistent task orphan check error (non-fatal): ${err.message}`);
+  }
+
   // Step 2: Expire old queued items past TTL
   const ttlResult = db.prepare("UPDATE queue_items SET status = 'cancelled', error = 'TTL expired', completed_at = datetime('now') WHERE status = 'queued' AND expires_at IS NOT NULL AND expires_at < datetime('now')").run();
   if (ttlResult.changes > 0) {
     auditEvent('session_ttl_expired', { count: ttlResult.changes });
   }
 
+  // Step 2.5: Check for reserved_slots auto-restore
+  try {
+    const restoreRow = db.prepare('SELECT value FROM queue_config WHERE key = ?').get('reserved_slots_restore');
+    if (restoreRow) {
+      const { restoreAt, defaultValue } = JSON.parse(restoreRow.value);
+      if (new Date(restoreAt) <= new Date()) {
+        db.prepare("INSERT OR REPLACE INTO queue_config (key, value, updated_at) VALUES (?, ?, datetime('now'))")
+          .run('reserved_slots', String(defaultValue));
+        db.prepare("DELETE FROM queue_config WHERE key = 'reserved_slots_restore'").run();
+        log(`Auto-restored reserved_slots to ${defaultValue}`);
+      }
+    }
+  } catch (_) { /* non-fatal */ }
+
+  // Step 2.6: Check for expired display locks and promote next waiter
+  try {
+    checkAndExpireLock();
+  } catch (_) { /* non-fatal — display lock module may not be initialized */ }
+
   // Step 3: Count running items by lane (suspended items do NOT count toward capacity)
   const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent')").get().cnt;
   const gateRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane = 'gate'").get().cnt;
   const maxConcurrent = getMaxConcurrentSessions();
+  const reservedSlots = getReservedSlots();
 
   // Step 4: Get queued items ordered by priority then enqueue time
   // Revival lane items first, then gate, then standard
@@ -529,9 +652,29 @@ export function drainQueue() {
       }
     } else {
       // Standard + revival lanes share the main limit (gate and persistent spawns don't consume it)
-      if (standardRunning + standardSpawnedThisDrain >= maxConcurrent) {
-        result.atCapacity = true;
-        break;
+      // Reserved slots: non-priority-eligible items see maxConcurrent - reservedSlots as their cap.
+      // Priority-eligible items (cto/critical/persistent/persistentTaskId children) see the full maxConcurrent.
+      const effectiveMax = isPriorityEligible(item) ? maxConcurrent : maxConcurrent - reservedSlots;
+      if (standardRunning + standardSpawnedThisDrain >= effectiveMax) {
+        // Inline preemption: cto/critical items suspend the lowest-priority running session
+        if (item.priority === 'cto' || item.priority === 'critical') {
+          const preempted = preemptLowestPriority(db, item);
+          if (preempted) {
+            log(`Preempted ${preempted.id} (${preempted.priority}) for ${item.id} (${item.priority})`);
+            // Net zero: freed one slot, about to fill it — don't increment standardSpawnedThisDrain extra
+          } else {
+            result.atCapacity = true;
+            break;
+          }
+        } else if (isPriorityEligible(item)) {
+          // Priority-eligible but not cto/critical — can't preempt, but don't break the loop.
+          // There may be items later that CAN preempt or fit in reserved slots.
+          continue;
+        } else {
+          // Non-eligible item hit the reduced cap — skip it but keep checking
+          // for priority-eligible items that can use reserved slots
+          continue;
+        }
       }
     }
 
@@ -541,6 +684,7 @@ export function drainQueue() {
       context: `session-queue:${item.source}`,
     });
     if (!memCheck.allowed) {
+      result.memoryBlocked++;
       log(`Memory pressure blocked ${item.id}: ${memCheck.reason}`);
       debugLog('session-queue', 'drain_memory_blocked', { queueId: item.id, priority: item.priority, pressure: memCheck.pressure });
       continue; // Skip this item, try next (might be higher priority)
@@ -600,6 +744,53 @@ export function drainQueue() {
       log(`Failed to spawn ${item.id}: ${err.message}`);
       result.failed++;
     }
+  }
+
+  // Step 6: Resume suspended sessions if capacity available
+  try {
+    const currentRunning = db.prepare(
+      "SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent')"
+    ).get().cnt;
+    if (currentRunning < maxConcurrent) {
+      const slotsAvailable = maxConcurrent - currentRunning;
+      const suspended = db.prepare(`
+        SELECT id, pid, priority, metadata, project_dir FROM queue_items WHERE status = 'suspended'
+        ORDER BY
+          CASE priority WHEN 'cto' THEN 0 WHEN 'critical' THEN 1 WHEN 'urgent' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
+          enqueued_at ASC
+        LIMIT ?
+      `).all(slotsAvailable);
+
+      for (const s of suspended) {
+        if (s.pid && isPidAlive(s.pid)) {
+          db.prepare("UPDATE queue_items SET status = 'running' WHERE id = ?").run(s.id);
+          try { process.kill(s.pid, 'SIGCONT'); } catch (_) { /* already dead */ }
+          log(`Resumed suspended session ${s.id} (PID ${s.pid})`);
+          auditEvent('session_resumed', { queue_id: s.id, pid: s.pid, priority: s.priority });
+        } else {
+          // PID died while suspended — mark completed and reset linked TODO task
+          db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?").run(s.id);
+          log(`Suspended session ${s.id} died while paused (PID ${s.pid})`);
+          // Reset linked TODO task to pending so it can be re-claimed
+          try {
+            const sMeta = s.metadata ? JSON.parse(s.metadata) : {};
+            if (sMeta.taskId) {
+              const todoDbPath = path.join(s.project_dir || PROJECT_DIR, '.claude', 'todo.db');
+              if (fs.existsSync(todoDbPath)) {
+                const todoDB = new Database(todoDbPath);
+                todoDB.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ? AND status = 'in_progress'").run(sMeta.taskId);
+                todoDB.close();
+                log(`Reset task ${sMeta.taskId} to pending (agent died while suspended)`);
+              }
+            }
+          } catch (todoErr) {
+            log(`Failed to reset TODO for suspended session ${s.id}: ${todoErr.message}`);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    log(`Step 6 resume suspended error (non-fatal): ${err.message}`);
   }
 
   if (result.spawned > 0) {
@@ -723,6 +914,54 @@ function spawnQueueItem(db, item) {
     agent_type: item.agent_type,
     title: item.title,
   });
+}
+
+// ============================================================================
+// Inline Preemption (SIGTSTP-based — suspends without killing)
+// ============================================================================
+
+/**
+ * Preempt the lowest-priority running session by suspending it with SIGTSTP.
+ * Used by drainQueue() when a cto/critical item can't spawn due to capacity.
+ *
+ * Unlike preemptForCtoTask() (which kills and re-enqueues), this uses SIGTSTP
+ * to pause the process. The session stays alive and is resumed with SIGCONT
+ * when capacity frees up.
+ *
+ * @param {Database} db - Queue database handle
+ * @param {object} incomingItem - The high-priority queue item that needs a slot
+ * @returns {object|null} The preempted item, or null if nothing could be preempted
+ */
+function preemptLowestPriority(db, incomingItem) {
+  const candidate = db.prepare(`
+    SELECT id, pid, priority, agent_type, title, spawned_at FROM queue_items
+    WHERE status = 'running' AND lane NOT IN ('gate', 'persistent')
+      AND priority IN ('low', 'normal', 'urgent')
+    ORDER BY
+      CASE priority WHEN 'low' THEN 0 WHEN 'normal' THEN 1 WHEN 'urgent' THEN 2 END ASC,
+      spawned_at ASC
+    LIMIT 1
+  `).get();
+
+  if (!candidate) return null;
+
+  const priorityRank = { low: 0, normal: 1, urgent: 2, critical: 3, cto: 4 };
+  if (priorityRank[candidate.priority] >= priorityRank[incomingItem.priority]) return null;
+
+  db.prepare("UPDATE queue_items SET status = 'suspended', completed_at = NULL WHERE id = ?")
+    .run(candidate.id);
+
+  try { process.kill(candidate.pid, 'SIGTSTP'); } catch (_) { /* already exited */ }
+
+  auditEvent('session_preempted', {
+    preempted_queue_id: candidate.id,
+    preempted_pid: candidate.pid,
+    preempted_priority: candidate.priority,
+    preempted_by_queue_id: incomingItem.id,
+    preempted_by_priority: incomingItem.priority,
+  });
+
+  return candidate;
 }
 
 // ============================================================================
@@ -1082,9 +1321,18 @@ export function getQueueStatus() {
 
   const now = Date.now();
 
+  const reservedSlots = getReservedSlots();
+  const restoreRow = db.prepare('SELECT value FROM queue_config WHERE key = ?').get('reserved_slots_restore');
+  let reservedSlotsRestore = null;
+  if (restoreRow) {
+    try { reservedSlotsRestore = JSON.parse(restoreRow.value); } catch (_) { /* non-fatal */ }
+  }
+
   return {
     hasData: true,
     maxConcurrent,
+    reservedSlots,
+    reservedSlotsRestore,
     running: activeRunning.length,
     suspended: suspendedItems.length,
     availableSlots: Math.max(0, maxConcurrent - activeRunning.length),
@@ -1136,4 +1384,50 @@ function formatElapsed(ms) {
   const hours = Math.floor(mins / 60);
   const remainMins = mins % 60;
   return `${hours}h${remainMins > 0 ? ` ${remainMins}m` : ''}`;
+}
+
+// ============================================================================
+// Activate Queued Item (for MCP tool)
+// ============================================================================
+
+/**
+ * Instantly activate a queued session by boosting its priority to CTO and draining.
+ * The inline preemption logic in drainQueue() handles suspending a lower-priority
+ * running session if the queue is at capacity.
+ *
+ * @param {string} queueId - Queue item ID to activate
+ * @returns {object} Result with success, queue_id, original_priority, drain_result
+ */
+export function activateQueuedItem(queueId) {
+  const db = getDb();
+
+  const item = db.prepare('SELECT * FROM queue_items WHERE id = ?').get(queueId);
+  if (!item) return { success: false, error: 'Queue item not found' };
+  if (item.status !== 'queued') return { success: false, error: `Item is ${item.status}, not queued` };
+
+  const originalPriority = item.priority;
+
+  // Boost priority to 'cto' so inline preemption fires if needed
+  db.prepare("UPDATE queue_items SET priority = 'cto' WHERE id = ?").run(queueId);
+
+  // Drain — preemption will kick in if at capacity
+  const drainResult = drainQueue();
+
+  // Check if it spawned
+  const updated = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(queueId);
+  const activated = updated && (updated.status === 'running' || updated.status === 'spawning');
+
+  if (!activated) {
+    // Revert priority if it didn't spawn
+    db.prepare('UPDATE queue_items SET priority = ? WHERE id = ?').run(originalPriority, queueId);
+  }
+
+  auditEvent('session_activated', {
+    queue_id: queueId,
+    original_priority: originalPriority,
+    activated,
+    drain_result: drainResult,
+  });
+
+  return { success: activated, queue_id: queueId, original_priority: originalPriority, drain_result: drainResult };
 }

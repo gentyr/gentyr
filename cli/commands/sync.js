@@ -67,7 +67,43 @@ export default async function sync(args) {
     process.exit(1);
   }
 
-  const frameworkDir = resolveFrameworkDir(projectDir);
+  let frameworkDir = resolveFrameworkDir(projectDir);
+
+  // Health check: repair broken node_modules/gentyr symlink
+  if (model === 'npm') {
+    const npmPath = path.join(projectDir, 'node_modules', 'gentyr');
+    let npmBroken = false;
+    try {
+      fs.realpathSync(npmPath);
+    } catch {
+      npmBroken = true;
+    }
+    if (npmBroken && frameworkDir) {
+      // Symlink exists (lstat passed) but target doesn't (realpath failed)
+      // Repair by pointing to the framework dir we resolved via fallback
+      console.log(`\n${YELLOW}Repairing broken node_modules/gentyr symlink...${NC}`);
+      try {
+        fs.unlinkSync(npmPath);
+        fs.symlinkSync(frameworkDir, npmPath);
+        console.log(`  Repaired: node_modules/gentyr -> ${frameworkDir}`);
+        // Re-resolve now that the symlink is fixed
+        frameworkDir = resolveFrameworkDir(projectDir);
+      } catch (err) {
+        console.log(`  ${YELLOW}Warning: could not repair symlink: ${err.message}${NC}`);
+      }
+    } else if (npmBroken && !frameworkDir) {
+      console.error(`${RED}Error: node_modules/gentyr symlink is broken and no fallback found.${NC}`);
+      console.error('Run `pnpm link ~/git/gentyr` to repair.');
+      process.exit(1);
+    }
+  }
+
+  if (!frameworkDir) {
+    console.error(`${RED}Error: Could not resolve GENTYR framework directory.${NC}`);
+    console.error('Run `npx gentyr init` or `pnpm link ~/git/gentyr`.');
+    process.exit(1);
+  }
+
   const frameworkRel = resolveFrameworkRelative(projectDir);
   const agents = getFrameworkAgents(frameworkDir);
 

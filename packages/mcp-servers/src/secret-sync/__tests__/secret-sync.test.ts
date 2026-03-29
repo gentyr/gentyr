@@ -1865,6 +1865,77 @@ describe('Dev Server MCP Tools - Schema Validation', () => {
         expect(result.data.force).toBe(false);
       }
     });
+
+    it('should accept cwd field', () => {
+      const result = DevServerStartArgsSchema.safeParse({
+        cwd: '/tmp/my-worktree',
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.cwd).toBe('/tmp/my-worktree');
+      }
+    });
+
+    it('should treat cwd as optional (omitting it results in undefined)', () => {
+      const result = DevServerStartArgsSchema.safeParse({});
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.cwd).toBeUndefined();
+      }
+    });
+
+    it('should accept port_overrides with valid port numbers', () => {
+      const result = DevServerStartArgsSchema.safeParse({
+        port_overrides: { web: 3100, backend: 3101 },
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.port_overrides).toEqual({ web: 3100, backend: 3101 });
+      }
+    });
+
+    it('should treat port_overrides as optional (omitting it results in undefined)', () => {
+      const result = DevServerStartArgsSchema.safeParse({});
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.port_overrides).toBeUndefined();
+      }
+    });
+
+    it('should reject port_overrides with port 0', () => {
+      const result = DevServerStartArgsSchema.safeParse({
+        port_overrides: { web: 0 },
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject port_overrides with port 65536', () => {
+      const result = DevServerStartArgsSchema.safeParse({
+        port_overrides: { web: 65536 },
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept all new fields combined with existing fields', () => {
+      const result = DevServerStartArgsSchema.safeParse({
+        cwd: '/tmp/wt',
+        port_overrides: { web: 3200 },
+        force: true,
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.cwd).toBe('/tmp/wt');
+        expect(result.data.port_overrides).toEqual({ web: 3200 });
+        expect(result.data.force).toBe(true);
+      }
+    });
   });
 
   describe('DevServerStopArgsSchema', () => {
@@ -1895,6 +1966,17 @@ describe('Dev Server MCP Tools - Schema Validation', () => {
 
       expect(result.success).toBe(true);
     });
+
+    it('should accept cwd field', () => {
+      const result = DevServerStopArgsSchema.safeParse({
+        cwd: '/tmp/my-worktree',
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.cwd).toBe('/tmp/my-worktree');
+      }
+    });
   });
 
   describe('DevServerStatusArgsSchema', () => {
@@ -1902,6 +1984,17 @@ describe('Dev Server MCP Tools - Schema Validation', () => {
       const result = DevServerStatusArgsSchema.safeParse({});
 
       expect(result.success).toBe(true);
+    });
+
+    it('should accept cwd field', () => {
+      const result = DevServerStatusArgsSchema.safeParse({
+        cwd: '/tmp/my-worktree',
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.cwd).toBe('/tmp/my-worktree');
+      }
     });
   });
 

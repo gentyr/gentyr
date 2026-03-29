@@ -20,6 +20,7 @@ import { execSync } from 'child_process';
 import { auditEvent } from './session-audit.js';
 import { getCooldown } from '../config-reader.js';
 import { debugLog } from './debug-log.js';
+import { releaseDisplayLock, removeFromDisplayQueue } from './display-lock.js';
 
 // Lazy-loaded SQLite
 let Database = null;
@@ -219,6 +220,42 @@ function sessionContainsTerminalTool(sessionFile) {
          tail.includes('"name":"summarize_work"');
 }
 
+/**
+ * Check if a session is stuck in an auth/quota retry loop.
+ * Reads the last 4KB of the JSONL and checks if 3+ consecutive entries
+ * are error messages (rate_limit or authentication failures).
+ * @param {string} sessionFile
+ * @returns {boolean}
+ */
+function isAuthStalled(sessionFile) {
+  const tail = readTail(sessionFile, 4096);
+  if (!tail) return false;
+
+  const lines = tail.split('\n').filter(l => l.trim());
+  let consecutiveErrors = 0;
+
+  // Check last entries from newest to oldest
+  for (let i = lines.length - 1; i >= 0 && consecutiveErrors < 5; i--) {
+    try {
+      const parsed = JSON.parse(lines[i]);
+      if (
+        (parsed.error === 'rate_limit' && parsed.isApiErrorMessage === true) ||
+        (parsed.error === 'authentication_error') ||
+        (parsed.type === 'error' && typeof parsed.message === 'string' &&
+         (parsed.message.includes('rate limit') || parsed.message.includes('401') || parsed.message.includes('authentication')))
+      ) {
+        consecutiveErrors++;
+      } else {
+        break; // Non-error entry found — not auth-stalled
+      }
+    } catch {
+      continue; // Unparseable line — skip
+    }
+  }
+
+  return consecutiveErrors >= 3;
+}
+
 // ============================================================================
 // Sync Pass — Called from drainQueue()
 // ============================================================================
@@ -227,7 +264,8 @@ function sessionContainsTerminalTool(sessionFile) {
  * Synchronous reaping pass: detect dead PIDs in running queue items.
  *
  * Called from drainQueue() — MUST be synchronous and fast.
- * Does NOT kill processes, trigger revival, or do JSONL analysis.
+ * Also kills stale persistent monitors and auth-stalled sessions directly
+ * (no deferral to the async pass for these cases).
  *
  * @param {object} db - better-sqlite3 database instance (session-queue.db)
  * @returns {{ reaped: Array<{queueId: string, agentId: string, pid: number, revivalCandidate: boolean, metadata: object}>, stuckAlive: Array<{queueId: string, agentId: string, pid: number, spawnedAt: string, runDurationMs: number, agentType: string, title: string}> }}
@@ -236,6 +274,9 @@ export function reapSyncPass(db) {
   const result = { reaped: [], stuckAlive: [] };
   const hardKillMs = getCooldown('session_hard_kill_minutes', 30) * 60 * 1000;
   const now = Date.now();
+
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const sessionDir = getSessionDir(projectDir);
 
   // Only operate on 'running' items — 'suspended' items are intentionally paused
   // (preempted by CTO tasks) and must NOT be reaped. They have their own re-enqueue path.
@@ -281,16 +322,124 @@ export function reapSyncPass(db) {
 
       // Clean up progress file for dead agent
       try {
-        const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
         const progressFile = path.join(projectDir, '.claude', 'state', 'agent-progress', `${item.agent_id}.json`);
         fs.unlinkSync(progressFile);
       } catch (_) { /* non-fatal — file may not exist */ }
+
+      // Release display lock if this dead agent held it
+      if (item.agent_id) {
+        try { releaseDisplayLock(item.agent_id); removeFromDisplayQueue(item.agent_id); } catch (_) { /* non-fatal */ }
+      }
     } else if (item.lane === 'persistent') {
-      // Persistent lane exemption — long-running by design, skip stuck-alive detection
-      continue;
+      // Persistent monitors are long-running by design — don't use elapsed time.
+      // Instead, check heartbeat staleness: if the persistent task's heartbeat
+      // hasn't updated in 2+ minutes, the monitor is stuck (e.g., auth zombie).
+      try {
+        const ptDbPath = path.join(projectDir, '.claude', 'state', 'persistent-tasks.db');
+        if (Database && fs.existsSync(ptDbPath)) {
+          let taskId = null;
+          try { taskId = item.metadata ? JSON.parse(item.metadata).persistentTaskId : null; } catch { /* ignore */ }
+          if (taskId) {
+            const ptDb = new Database(ptDbPath, { readonly: true });
+            const task = ptDb.prepare("SELECT last_heartbeat FROM persistent_tasks WHERE id = ?").get(taskId);
+            ptDb.close();
+            if (task && task.last_heartbeat) {
+              const heartbeatAge = now - new Date(task.last_heartbeat).getTime();
+              const STALE_HEARTBEAT_MS = getCooldown('persistent_heartbeat_stale_minutes', 2) * 60 * 1000;
+              if (heartbeatAge > STALE_HEARTBEAT_MS) {
+                // Kill immediately in sync pass — don't defer to async pass
+                try { process.kill(item.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
+                db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?")
+                  .run(item.id);
+
+                let metadata = {};
+                try { metadata = item.metadata ? JSON.parse(item.metadata) : {}; } catch { /* ignore */ }
+
+                result.reaped.push({
+                  queueId: item.id,
+                  agentId: item.agent_id,
+                  pid: item.pid,
+                  metadata,
+                  revivalCandidate: true,
+                  reapReason: 'stale_heartbeat',
+                });
+
+                auditEvent('session_reaped_dead', {
+                  queue_id: item.id,
+                  agent_id: item.agent_id,
+                  pid: item.pid,
+                  reason: 'stale_heartbeat',
+                  stale_ms: heartbeatAge,
+                });
+
+                // Clean up progress file
+                try {
+                  const progressFile = path.join(projectDir, '.claude', 'state', 'agent-progress', `${item.agent_id}.json`);
+                  fs.unlinkSync(progressFile);
+                } catch (_) { /* non-fatal */ }
+
+                // Release display lock if this stale monitor held it
+                if (item.agent_id) {
+                  try { releaseDisplayLock(item.agent_id); removeFromDisplayQueue(item.agent_id); } catch (_) { /* non-fatal */ }
+                }
+              }
+            }
+          }
+        }
+      } catch (_) { /* non-fatal — best effort heartbeat check */ }
     } else if (item.spawned_at) {
-      // PID alive — check if stuck (elapsed > hard kill threshold)
       const elapsed = now - new Date(item.spawned_at).getTime();
+      const AUTH_STALL_MS = getCooldown('auth_stall_detection_minutes', 2) * 60 * 1000;
+
+      // Auth-stall fast path: check JSONL mtime + tail for auth errors
+      if (elapsed > AUTH_STALL_MS && item.agent_id && sessionDir) {
+        try {
+          const sessionFile = findSessionFileByAgentId(sessionDir, item.agent_id);
+          if (sessionFile) {
+            const stat = fs.statSync(sessionFile);
+            const staleMs = now - stat.mtimeMs;
+            if (staleMs > AUTH_STALL_MS && isAuthStalled(sessionFile)) {
+              try { process.kill(item.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
+              db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?")
+                .run(item.id);
+
+              let metadata = {};
+              try { metadata = item.metadata ? JSON.parse(item.metadata) : {}; } catch { /* ignore */ }
+
+              result.reaped.push({
+                queueId: item.id,
+                agentId: item.agent_id,
+                pid: item.pid,
+                metadata,
+                revivalCandidate: true,
+                reapReason: 'auth_stall',
+              });
+
+              auditEvent('session_reaped_dead', {
+                queue_id: item.id,
+                agent_id: item.agent_id,
+                pid: item.pid,
+                reason: 'auth_stall',
+                stale_ms: staleMs,
+              });
+
+              try {
+                const progressFile = path.join(projectDir, '.claude', 'state', 'agent-progress', `${item.agent_id}.json`);
+                fs.unlinkSync(progressFile);
+              } catch (_) { /* non-fatal */ }
+
+              // Release display lock if this auth-stalled agent held it
+              if (item.agent_id) {
+                try { releaseDisplayLock(item.agent_id); removeFromDisplayQueue(item.agent_id); } catch (_) { /* non-fatal */ }
+              }
+
+              continue; // Skip the normal elapsed-time check for this item
+            }
+          }
+        } catch (_) { /* non-fatal — fall through to normal elapsed check */ }
+      }
+
+      // Existing hard-kill threshold check (30 min)
       if (elapsed > hardKillMs) {
         result.stuckAlive.push({
           queueId: item.id,
@@ -361,10 +510,26 @@ export async function reapAsyncPass(projectDir, stuckAliveItems, options = {}) {
         continue;
       }
 
-      // Persistent lane exemption — long-running by design
+      // Persistent lane: only reap if heartbeat is stale (detected by sync pass).
+      // Normal persistent monitors are never in stuckAlive — only stale-heartbeat ones.
       const effectiveLane = item.lane || (currentStatus && currentStatus.lane) || null;
-      if (effectiveLane === 'persistent') {
-        log(`Session reaper: skipping persistent item ${item.queueId} (long-running by design)`);
+      if (effectiveLane === 'persistent' && !item.staleHeartbeatMs) {
+        log(`Session reaper: skipping persistent item ${item.queueId} (long-running, heartbeat healthy)`);
+        continue;
+      }
+      if (effectiveLane === 'persistent' && item.staleHeartbeatMs) {
+        log(`Session reaper: killing stale persistent monitor ${item.queueId} (heartbeat ${Math.round(item.staleHeartbeatMs / 60000)}min stale)`);
+        await killProcess(item.pid);
+        db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?")
+          .run(item.queueId);
+        auditEvent('session_reaped_complete', {
+          queue_id: item.queueId,
+          agent_id: item.agentId,
+          pid: item.pid,
+          reason: 'stale_heartbeat',
+          stale_heartbeat_ms: item.staleHeartbeatMs,
+        });
+        result.completedReaped++;
         continue;
       }
 

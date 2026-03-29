@@ -79,7 +79,19 @@ function parseToolResponse(toolResponse) {
     return null;
   }
 
-  // Format 2: Plain string — JSON-encoded result
+  // Format 2: Bare content array — [{ type: 'text', text: '...' }]
+  // Claude Code passes tool_response as a bare array (no { content: ... } wrapper).
+  if (Array.isArray(toolResponse)) {
+    for (const block of toolResponse) {
+      if (block.type === 'text' && typeof block.text === 'string') {
+        try {
+          return JSON.parse(block.text);
+        } catch (_) { /* try next block */ }
+      }
+    }
+  }
+
+  // Format 3: Plain string — JSON-encoded result
   if (typeof toolResponse === 'string') {
     try {
       return JSON.parse(toolResponse);

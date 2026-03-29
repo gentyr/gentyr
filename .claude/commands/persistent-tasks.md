@@ -191,7 +191,8 @@ Use `AskUserQuestion` with `multiSelect: false` and these options:
    ```
 3. Display confirmation:
    ```
-   Task "<title>" resumed. A new monitor session has been spawned.
+   Task "<title>" resumed. Monitor session automatically enqueued by PostToolUse hook.
+   Do NOT manually create tasks or call force_spawn_tasks — the monitor is already handled.
    ```
 4. Return to Step 2.
 

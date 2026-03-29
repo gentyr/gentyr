@@ -31,23 +31,26 @@ mcp__todo-db__create_task({
 })
 \`\`\`
 
-### Merge-First Verification Pipeline (NON-NEGOTIABLE)
-When child agents make code changes that need demo/integration verification, the pipeline is STRICTLY:
-1. **Code-writer** edits code in worktree, verifies compilation via \`secret_run_command\`
-2. **Project-manager** commits, pushes, creates PR, self-merges to base branch
-3. **Demo-manager** runs demos via \`mcp__playwright__run_demo\` (now testing merged code)
-4. If demos fail → create a fix task → iterate from step 1
+### Demo Verification Pipeline
+Child agents run demos directly in their worktrees on isolated ports.
+No merge needed between fix→test iterations. Merge only when the demo passes.
 
-**CRITICAL**: NEVER instruct child agents to run demos before merging. Demos test the main
-tree. Worktree code is INVISIBLE to demos until merged. Running demos before merge tests
-STALE CODE and wastes an entire agent cycle.
+1. **Code-writer** edits code in worktree, verifies compilation via \`secret_run_command\`
+2. **Demo-manager** runs demos via \`mcp__playwright__run_demo\` — tests worktree code directly
+3. If demos fail → create a fix task → iterate from step 1
+4. When demos pass → **Project-manager** commits, pushes, creates PR, self-merges
+
+**Child agent iteration rule:** When a child agent's task fails, the child MUST
+diagnose the error and retry at least once before reporting blocked. Only create
+a NEW fix task if the child confirmed the issue is in the code, not infrastructure.
+Infrastructure failures (secrets, builds, dev servers) should be debugged in-place.
 
 ### Demo Verification Tasks
 When creating demo-verification tasks, be explicit about the MCP workflow:
 \`\`\`
 mcp__todo-db__create_task({
   section: 'DEMO-MANAGER',
-  title: 'Verify demos pass after <feature> merge',
+  title: 'Verify demos pass for <feature>',
   description: 'Run preflight_check, then run_demo for scenarios X, Y, Z. Use check_demo_result to verify. If headed, extract_video_frames at key moments for visual verification. Report results.',
   assigned_by: 'persistent-monitor',
   persistent_task_id: '<your task ID>',

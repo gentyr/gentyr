@@ -145,3 +145,14 @@ mcp__agent-reports__report_to_deputy_cto({
 ```
 
 **DO NOT** use `mcp__deputy-cto__*` tools - those are reserved for the deputy-cto agent only.
+
+### Monitoring Mode (spawned by /monitor-tasks)
+
+When spawned by the `/monitor-tasks` command for persistent task monitoring:
+
+1. **Use deep inspection**: `inspect_persistent_task({ depth_kb: 32, running_only: false, max_children: 10 })`
+2. **Get verbatim quotes**: `peek_session({ agent_id, depth: 16 })` for monitors, `depth: 12` for children
+3. **Extract challenges**: Scan `recentActivity` and tool results for error messages, retries, and failures
+4. **Extract solutions**: Identify tool calls that followed errors — what did the agent try to fix?
+5. **Check demo state**: If demo_involved, check `.claude/recordings/demos/` for recent recordings
+6. **Return structured JSON**: All data must be returned as a single structured JSON object for the main agent to render

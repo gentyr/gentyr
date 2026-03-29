@@ -376,6 +376,8 @@ export const CreateScenarioArgsSchema = z.object({
   sort_order: z.coerce.number().int().min(0).max(999).optional().default(0).describe('Display order within persona'),
   env_vars: z.record(z.string(), z.string()).optional()
     .describe('Environment variables to inject when running this scenario (e.g., {"AZURE_DEMO": "1"}). Max 10 keys.'),
+  headed: z.coerce.boolean().optional().default(false)
+    .describe('Whether this scenario requires exclusive display access (headed Playwright, real Chrome, etc.). Headed scenarios are serialized through the display queue to prevent window capture conflicts and corrupted recordings.'),
 });
 
 export const UpdateScenarioArgsSchema = z.object({
@@ -392,6 +394,8 @@ export const UpdateScenarioArgsSchema = z.object({
   enabled: z.coerce.boolean().optional(),
   env_vars: z.record(z.string(), z.string()).nullable().optional()
     .describe('Environment variables for this scenario. Set to null to clear. Max 10 keys.'),
+  headed: z.coerce.boolean().optional()
+    .describe('Whether this scenario requires exclusive display access. Headed scenarios are serialized through the display queue.'),
 });
 
 export const DeleteScenarioArgsSchema = z.object({
@@ -425,6 +429,7 @@ export interface ScenarioRecord {
   test_file: string;
   sort_order: number;
   enabled: number;
+  headed: number; // SQLite boolean (0/1)
   created_at: string;
   created_timestamp: string;
   updated_at: string;
@@ -443,6 +448,7 @@ export interface ScenarioResult {
   test_file: string;
   sort_order: number;
   enabled: boolean;
+  headed: boolean;
   created_at: string;
   updated_at: string;
   persona_name?: string;
