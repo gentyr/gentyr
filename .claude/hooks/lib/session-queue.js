@@ -43,6 +43,9 @@ const GATE_LANE_LIMIT = 5;
 // Default TTL for queued items (30 minutes)
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
 
+// In-memory rate limiter for persistent monitor revivals (immune to WAL visibility issues)
+const _monitorRevivalTimestamps = new Map(); // taskId -> timestamp[]
+
 // ============================================================================
 // Logging
 // ============================================================================
@@ -416,6 +419,15 @@ export function enqueueSession(spec) {
  * @param {string} taskId - persistent task ID
  */
 function requeueDeadPersistentMonitor(db, taskId) {
+  // In-memory rate limiter: max 3 revivals per task in 10 minutes
+  const revivalTimes = _monitorRevivalTimestamps.get(taskId) || [];
+  const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
+  const recentRevivals = revivalTimes.filter(t => t > tenMinutesAgo);
+  if (recentRevivals.length >= 3) {
+    log(`Persistent monitor in-memory rate limit hit for ${taskId} (${recentRevivals.length} revivals in 10 min) — skipping`);
+    return;
+  }
+
   // Dedup: already queued or running?
   const existing = db.prepare(
     "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running') AND json_extract(metadata, '$.persistentTaskId') = ?"
@@ -426,11 +438,24 @@ function requeueDeadPersistentMonitor(db, taskId) {
   // NOTE: Use datetime('now', '-1 hour') in SQL — NOT JS toISOString(). SQLite's datetime()
   // produces '2026-03-29 14:53:59' (space separator) while toISOString() produces
   // '2026-03-29T14:53:59.000Z' (T separator). String comparison breaks across formats.
-  const recentRevivals = db.prepare(
+  const dbRecentRevivals = db.prepare(
     "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND source = 'session-queue-reaper' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-1 hour')"
   ).get(taskId);
-  if (recentRevivals && recentRevivals.cnt >= 5) {
-    log(`Persistent monitor crash-loop detected for ${taskId} (${recentRevivals.cnt} revivals in last hour) — skipping re-enqueue`);
+  if (dbRecentRevivals && dbRecentRevivals.cnt >= 5) {
+    log(`Persistent monitor crash-loop detected for ${taskId} — pausing task and reporting`);
+
+    // Auto-pause the task to stop the crash loop
+    try {
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (fs.existsSync(ptDbPath)) {
+        const ptDb2 = new Database(ptDbPath);
+        ptDb2.pragma('busy_timeout = 3000');
+        ptDb2.prepare("UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status = 'active'").run(taskId);
+        ptDb2.close();
+        log(`Auto-paused persistent task ${taskId} due to crash loop`);
+      }
+    } catch (e) { log(`Failed to auto-pause: ${e.message}`); }
+
     return;
   }
 
@@ -495,6 +520,12 @@ Persistent Task ID: ${taskId}`;
   });
 
   log(`Immediate persistent monitor revival enqueued for "${task.title}" (${taskId}, queueId: ${id})`);
+
+  // Record revival timestamp for in-memory rate limiting
+  const times = _monitorRevivalTimestamps.get(taskId) || [];
+  times.push(Date.now());
+  // Keep only last hour of timestamps
+  _monitorRevivalTimestamps.set(taskId, times.filter(t => t > Date.now() - 60 * 60 * 1000));
 }
 
 // ============================================================================
