@@ -717,6 +717,8 @@ Structured JSON log at `~/.claude/rotation-proxy.log`. 24h retention (auto-clean
 | `rotation_debounced` | Second 401 for same key within 5s — rotation skipped, 401 passed through | `host`, `method`, `path`, `key_id` |
 | `transient_401_retry` | Same-key backoff retry before rotating — key not yet marked as failing | `host`, `method`, `path`, `key_id`, `same_key_retry`, `backoff_ms` |
 | `transient_401_recovered` | Key that was `auth_failing` got a 200 — status restored to `active` | `key_id` |
+| `gateway_error_retry` | 502/503/504 from Cloudflare/upstream — retrying same key with backoff | `host`, `method`, `path`, `status`, `key_id`, `gateway_retry`, `backoff_ms` |
+| `gateway_error_exhausted` | Gateway retries exhausted — forwarding error to client | `host`, `method`, `path`, `status`, `key_id`, `gateway_retries` |
 | `session_path_passthrough` | Path not in swap allowlist (OAuth, session-health, etc.) | `host`, `method`, `path`, `incoming_key_id`, `active_key_id` |
 | `tombstone_token_swap` | Incoming token is tombstoned — swapping to active key | `host`, `method`, `path`, `incoming_key_id`, `active_key_id` |
 | `merged_token_swap` | Incoming token is merged/deduped — swapping to active key | `host`, `method`, `path`, `incoming_key_id`, `merged_into`, `active_key_id` |

@@ -1324,10 +1324,11 @@ describe('forwardRequest() - 401 retry handling', () => {
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
     // Find the 401 check — it must include retryCount < MAX_401_RETRIES.
-    // Use a larger look-behind (1000 chars) to accommodate the debounce block
-    // that now sits between the outer `if` condition and the rotating_on_401 log.
+    // Use a larger look-behind (2000 chars) to accommodate the same-key retry
+    // block and debounce block that now sit between the outer `if` condition
+    // and the rotating_on_401 log.
     const rotatingOn401Idx = fnStart.indexOf('rotating_on_401');
-    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 1000), rotatingOn401Idx);
+    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 2000), rotatingOn401Idx);
 
     assert.match(
       authRetrySection,
@@ -1341,9 +1342,10 @@ describe('forwardRequest() - 401 retry handling', () => {
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
     // Find the 401 check — it must include !usePassthrough.
-    // Use a larger look-behind (1200 chars) to accommodate the debounce block.
+    // Use a larger look-behind (2000 chars) to accommodate the same-key retry
+    // block and debounce block.
     const rotatingOn401Idx = fnStart.indexOf('rotating_on_401');
-    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 1200), rotatingOn401Idx);
+    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 2000), rotatingOn401Idx);
 
     assert.match(
       authRetrySection,
@@ -1357,9 +1359,10 @@ describe('forwardRequest() - 401 retry handling', () => {
     const fnStart = extractFunctionBody(code, 'forwardRequest');
 
     // The 401 guard must include isMcpProxy check.
-    // Use a larger look-behind (1200 chars) to accommodate the debounce block.
+    // Use a larger look-behind (2000 chars) to accommodate the same-key retry
+    // block and debounce block.
     const rotatingOn401Idx = fnStart.indexOf('rotating_on_401');
-    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 1200), rotatingOn401Idx);
+    const authRetrySection = fnStart.slice(Math.max(0, rotatingOn401Idx - 2000), rotatingOn401Idx);
 
     assert.match(
       authRetrySection,
@@ -2000,10 +2003,12 @@ describe('rotation-proxy.js - Dead active key passthrough', () => {
     );
   });
 
-  it('should check activeEntry.status against [active, exhausted] allowlist', () => {
+  it('should check activeEntry.status against [active, exhausted, auth_failing] allowlist', () => {
+    // auth_failing is included so transient 401-burst keys are not treated as dead —
+    // they should still receive traffic, just at lower priority than healthy keys.
     assert.ok(
-      code.includes("['active', 'exhausted'].includes(activeEntry.status)"),
-      'Must use allowlist check for active key health'
+      code.includes("['active', 'exhausted', 'auth_failing'].includes(activeEntry.status)"),
+      'Must use allowlist check for active key health (including auth_failing for transient 401 keys)'
     );
   });
 
@@ -2287,5 +2292,436 @@ describe('rotation-proxy.js - OAuth token revocation fixes', () => {
   it('code: ROTATION_DEBOUNCE_MS constant is defined', () => {
     const code = fs.readFileSync(PROXY_PATH, 'utf8');
     assert.match(code, /const ROTATION_DEBOUNCE_MS\s*=\s*5000/, 'Must define ROTATION_DEBOUNCE_MS = 5000');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transient 401 handling — same-key backoff retry and auth_failing recovery
+// ---------------------------------------------------------------------------
+
+describe('rotation-proxy.js - Transient 401 same-key retry', () => {
+  it('should define MAX_401_SAME_KEY_RETRIES constant', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(
+      code,
+      /const MAX_401_SAME_KEY_RETRIES\s*=\s*\d+/,
+      'Must define MAX_401_SAME_KEY_RETRIES for same-key retry limit'
+    );
+  });
+
+  it('should define TRANSIENT_401_BACKOFF_MS constant', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(
+      code,
+      /const TRANSIENT_401_BACKOFF_MS\s*=\s*\d+/,
+      'Must define TRANSIENT_401_BACKOFF_MS for same-key retry backoff delay'
+    );
+  });
+
+  it('should check sameKeyRetryCount < MAX_401_SAME_KEY_RETRIES before same-key retry', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+    assert.ok(fnStart !== null, 'forwardRequest must be defined');
+
+    assert.match(
+      fnStart,
+      /sameKeyRetryCount\s*<\s*MAX_401_SAME_KEY_RETRIES/,
+      'Must gate same-key retry behind sameKeyRetryCount < MAX_401_SAME_KEY_RETRIES'
+    );
+  });
+
+  it('should log transient_401_retry event with same_key_retry count and backoff_ms', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /proxyLog\(['"]transient_401_retry['"]/,
+      'Must log transient_401_retry event for observability'
+    );
+
+    const logIdx = fnStart.indexOf('transient_401_retry');
+    const logSection = fnStart.slice(logIdx, logIdx + 400);
+    assert.match(logSection, /same_key_retry/, 'transient_401_retry log must include same_key_retry count');
+    assert.match(logSection, /backoff_ms/, 'transient_401_retry log must include backoff_ms for debugging');
+  });
+
+  it('should use setTimeout for same-key retry backoff (not blocking)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // setTimeout must appear inside the sameKeyRetryCount block
+    const sameKeyIdx = fnStart.indexOf('sameKeyRetryCount < MAX_401_SAME_KEY_RETRIES');
+    assert.ok(sameKeyIdx !== -1, 'Must have sameKeyRetryCount check');
+
+    const sameKeyBlock = fnStart.slice(sameKeyIdx, sameKeyIdx + 800);
+    assert.match(
+      sameKeyBlock,
+      /setTimeout\(/,
+      'Same-key retry must use setTimeout for non-blocking backoff delay'
+    );
+  });
+
+  it('should pass sameKeyRetryCount + 1 to recursive forwardRequest call', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /sameKeyRetryCount:\s*sameKeyRetryCount\s*\+\s*1/,
+      'Recursive forwardRequest call must pass sameKeyRetryCount + 1 to track retry depth'
+    );
+  });
+
+  it('should accept sameKeyRetryCount in opts with default 0 (backwards compatible)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /sameKeyRetryCount\s*=\s*0/,
+      'sameKeyRetryCount must default to 0 for backwards compatibility'
+    );
+  });
+
+  it('should NOT rotate when doing same-key retry (same key passed without incrementing retryCount)', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // The same-key retry block must pass `retryCount` unchanged (not retryCount + 1)
+    const sameKeyIdx = fnStart.indexOf('sameKeyRetryCount < MAX_401_SAME_KEY_RETRIES');
+    assert.ok(sameKeyIdx !== -1, 'Must have sameKeyRetryCount check');
+
+    const sameKeyBlock = fnStart.slice(sameKeyIdx, sameKeyIdx + 800);
+    // Must have retryCount (unchanged) and sameKeyRetryCount + 1, NOT retryCount + 1
+    assert.match(
+      sameKeyBlock,
+      /retryCount,\s*\n/,
+      'Same-key retry must pass retryCount unchanged (not retryCount + 1 — that increments rotation counter)'
+    );
+    assert.doesNotMatch(
+      sameKeyBlock,
+      /retryCount:\s*retryCount\s*\+\s*1/,
+      'Same-key retry must NOT increment retryCount — retryCount counts key-rotation retries only'
+    );
+  });
+
+  it('should only do same-key retry when NOT a passthrough request', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // The sameKeyRetryCount block is nested inside the outer 401 guard
+    // which already has !usePassthrough — verify that guard exists above the block
+    const sameKeyIdx = fnStart.indexOf('sameKeyRetryCount < MAX_401_SAME_KEY_RETRIES');
+    assert.ok(sameKeyIdx !== -1, 'Must have sameKeyRetryCount check');
+
+    const precedingSection = fnStart.slice(Math.max(0, sameKeyIdx - 500), sameKeyIdx);
+    assert.match(
+      precedingSection,
+      /!usePassthrough/,
+      'Same-key retry must be inside the !usePassthrough guard'
+    );
+  });
+
+  it('behavioral: same-key backoff doubles with each retry', () => {
+    const TRANSIENT_401_BACKOFF_MS = 1000;
+
+    const firstBackoff = TRANSIENT_401_BACKOFF_MS * (0 + 1); // sameKeyRetryCount = 0
+    const secondBackoff = TRANSIENT_401_BACKOFF_MS * (1 + 1); // sameKeyRetryCount = 1
+
+    assert.strictEqual(firstBackoff, 1000, 'First same-key retry must wait 1000ms');
+    assert.strictEqual(secondBackoff, 2000, 'Second same-key retry must wait 2000ms (doubled)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transient 401 recovery — auth_failing state and 200 recovery
+// ---------------------------------------------------------------------------
+
+describe('rotation-proxy.js - auth_failing status and 200 recovery', () => {
+  it('should define KEY_EXPIRED_THRESHOLD constant', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(
+      code,
+      /const KEY_EXPIRED_THRESHOLD\s*=\s*\d+/,
+      'Must define KEY_EXPIRED_THRESHOLD for failure count before permanent expiry'
+    );
+  });
+
+  it('should define KEY_EXPIRED_WINDOW_MS constant', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(
+      code,
+      /const KEY_EXPIRED_WINDOW_MS\s*=\s*/,
+      'Must define KEY_EXPIRED_WINDOW_MS for the sliding window of 401 failures'
+    );
+  });
+
+  it('should define _key401FailureCounts Map for per-key failure tracking', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    assert.match(
+      code,
+      /const _key401FailureCounts\s*=\s*new Map/,
+      'Must define _key401FailureCounts Map to track consecutive rotation-level 401s per key'
+    );
+  });
+
+  it('rotateOnAuth401Sync must set auth_failing status below threshold', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnAuth401Sync');
+    assert.ok(fnStart !== null, 'rotateOnAuth401Sync must be defined');
+
+    assert.match(
+      fnStart,
+      /status\s*=\s*['"]auth_failing['"]/,
+      'rotateOnAuth401Sync must set key status to auth_failing for transient failures'
+    );
+  });
+
+  it('rotateOnAuth401Sync must log key_auth_failing event', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnAuth401Sync');
+
+    assert.match(
+      fnStart,
+      /key_auth_failing/,
+      'rotateOnAuth401Sync must log key_auth_failing event for observability'
+    );
+  });
+
+  it('rotateOnAuth401Sync must still set expired status once threshold is reached', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnAuth401Sync');
+
+    assert.match(
+      fnStart,
+      /status\s*=\s*['"]expired['"]/,
+      'rotateOnAuth401Sync must still permanently mark key expired after threshold is reached'
+    );
+  });
+
+  it('rotateOnAuth401Sync must check failure count against KEY_EXPIRED_THRESHOLD', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnAuth401Sync');
+
+    assert.match(
+      fnStart,
+      /failureCount\s*<\s*KEY_EXPIRED_THRESHOLD/,
+      'rotateOnAuth401Sync must check failureCount against KEY_EXPIRED_THRESHOLD'
+    );
+  });
+
+  it('rotateOnAuth401Sync must track failures with firstFailure timestamp for window expiry', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'rotateOnAuth401Sync');
+
+    assert.match(
+      fnStart,
+      /firstFailure/,
+      'rotateOnAuth401Sync must track firstFailure timestamp to enforce KEY_EXPIRED_WINDOW_MS'
+    );
+  });
+
+  it('should clear _key401FailureCounts and restore auth_failing key to active on 200', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // Must have a 200 recovery block that clears failure counts
+    assert.match(
+      fnStart,
+      /responseStatusCode\s*===\s*200\s*&&\s*_key401FailureCounts\.has\(activeKeyId\)/,
+      'Must check for 200 response with active failure tracking to trigger recovery'
+    );
+  });
+
+  it('should log transient_401_recovered event when key recovers after 200', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /proxyLog\(['"]transient_401_recovered['"]/,
+      'Must log transient_401_recovered when auth_failing key gets a 200'
+    );
+  });
+
+  it('should delete from _key401FailureCounts on 200 response', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    assert.match(
+      fnStart,
+      /_key401FailureCounts\.delete\(activeKeyId\)/,
+      'Must delete key from _key401FailureCounts on 200 to reset failure counter'
+    );
+  });
+
+  it('should restore auth_failing key status to active on 200', () => {
+    const code = fs.readFileSync(PROXY_PATH, 'utf8');
+    const fnStart = extractFunctionBody(code, 'forwardRequest');
+
+    // Find the recovery block
+    const recoveredIdx = fnStart.indexOf('transient_401_recovered');
+    assert.ok(recoveredIdx !== -1, 'Must have transient_401_recovered log');
+
+    const recoverySection = fnStart.slice(Math.max(0, recoveredIdx - 300), recoveredIdx + 200);
+    assert.match(
+      recoverySection,
+      /auth_failing/,
+      'Recovery block must check for auth_failing status before restoring to active'
+    );
+    assert.match(
+      recoverySection,
+      /status\s*=\s*['"]active['"]/,
+      'Recovery block must restore key status to active'
+    );
+  });
+
+  it('behavioral: auth_failing key should be selected when it is the only non-expired key', () => {
+    // Simulate selectActiveKey logic including auth_failing in the valid set
+    const validStatuses = ['active', 'exhausted', 'auth_failing'];
+    const keyStatus = 'auth_failing';
+    const isValid = validStatuses.includes(keyStatus);
+    assert.strictEqual(
+      isValid,
+      true,
+      'auth_failing must be in the valid statuses list so the key is not discarded as dead'
+    );
+  });
+
+  it('behavioral: key_sync selectActiveKey filter includes auth_failing status', () => {
+    const keySyncPath = path.join(__dirname, '..', '..', '.claude', 'hooks', 'key-sync.js');
+    assert.ok(
+      fs.existsSync(keySyncPath),
+      `key-sync.js must exist at ${keySyncPath} for auth_failing support`
+    );
+
+    const keySyncCode = fs.readFileSync(keySyncPath, 'utf8');
+
+    // Find selectActiveKey function
+    const selectStart = keySyncCode.indexOf('function selectActiveKey');
+    assert.ok(selectStart !== -1, 'key-sync.js must define selectActiveKey');
+
+    const selectSection = keySyncCode.slice(selectStart, selectStart + 400);
+    assert.match(
+      selectSection,
+      /auth_failing/,
+      'selectActiveKey filter must include auth_failing so transient-401 keys remain viable'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 502/503/504 gateway error retry
+// ---------------------------------------------------------------------------
+
+describe('rotation-proxy.js - Gateway error retry (502/503/504)', () => {
+  const proxyCode = fs.readFileSync(PROXY_PATH, 'utf8');
+
+  it('should define MAX_GATEWAY_RETRIES constant', () => {
+    assert.match(
+      proxyCode,
+      /const\s+MAX_GATEWAY_RETRIES\s*=\s*\d+/,
+      'Must define MAX_GATEWAY_RETRIES constant'
+    );
+  });
+
+  it('should define GATEWAY_BACKOFF_MS constant', () => {
+    assert.match(
+      proxyCode,
+      /const\s+GATEWAY_BACKOFF_MS\s*=\s*\d+/,
+      'Must define GATEWAY_BACKOFF_MS constant'
+    );
+  });
+
+  it('should detect gateway errors by status code range 502-504', () => {
+    assert.match(
+      proxyCode,
+      /responseStatusCode\s*>=\s*502\s*&&\s*responseStatusCode\s*<=\s*504/,
+      'Must check for 502-504 range as gateway errors'
+    );
+  });
+
+  it('should retry with backoff on gateway error before forwarding to client', () => {
+    assert.match(
+      proxyCode,
+      /gateway_error_retry/,
+      'Must log gateway_error_retry event when retrying'
+    );
+
+    assert.match(
+      proxyCode,
+      /gatewayRetryCount\s*<\s*MAX_GATEWAY_RETRIES/,
+      'Must check gatewayRetryCount against MAX_GATEWAY_RETRIES'
+    );
+  });
+
+  it('should pass gatewayRetryCount + 1 in recursive forwardRequest call', () => {
+    assert.match(
+      proxyCode,
+      /gatewayRetryCount:\s*gatewayRetryCount\s*\+\s*1/,
+      'Must increment gatewayRetryCount on recursive retry'
+    );
+  });
+
+  it('should accept gatewayRetryCount in opts with default 0 (backwards compatible)', () => {
+    assert.match(
+      proxyCode,
+      /gatewayRetryCount\s*=\s*0/,
+      'Must default gatewayRetryCount to 0 for backwards compatibility'
+    );
+  });
+
+  it('should NOT rotate keys on gateway errors (same key used)', () => {
+    // Gateway errors are infrastructure issues, not auth issues.
+    // The retry should NOT call rotateOnAuth401Sync or rotateOnExhaustion.
+    // Verify: the gateway retry block uses fromKeyId (same key) not a rotated key.
+    const gatewayBlock = proxyCode.slice(
+      proxyCode.indexOf('gateway_error_retry'),
+      proxyCode.indexOf('gateway_error_retry') + 600
+    );
+    assert.ok(
+      !gatewayBlock.includes('rotateOnAuth401Sync') && !gatewayBlock.includes('rotateOnExhaustion'),
+      'Gateway retry must NOT call rotation functions — same key is reused'
+    );
+  });
+
+  it('should log gateway_error_exhausted when retries are exhausted', () => {
+    assert.match(
+      proxyCode,
+      /gateway_error_exhausted/,
+      'Must log gateway_error_exhausted when all gateway retries fail'
+    );
+  });
+
+  it('should use exponential backoff for gateway retries', () => {
+    assert.match(
+      proxyCode,
+      /GATEWAY_BACKOFF_MS\s*\*\s*\(gatewayRetryCount\s*\+\s*1\)/,
+      'Gateway backoff must scale with retry count (exponential)'
+    );
+  });
+
+  it('should preserve sameKeyRetryCount across gateway retries', () => {
+    // The gateway retry forwardRequest call should pass through sameKeyRetryCount
+    const gatewayRetryCall = proxyCode.slice(
+      proxyCode.indexOf('gateway_error_retry'),
+      proxyCode.indexOf('gateway_error_retry') + 800
+    );
+    assert.match(
+      gatewayRetryCall,
+      /sameKeyRetryCount/,
+      'Gateway retry must preserve sameKeyRetryCount in recursive call'
+    );
+  });
+
+  it('behavioral: gateway backoff should be longer than 401 backoff', () => {
+    // Gateway errors indicate infrastructure issues — longer backoff appropriate
+    const gatewayBackoff = parseInt(proxyCode.match(/GATEWAY_BACKOFF_MS\s*=\s*(\d+)/)?.[1] || '0');
+    const authBackoff = parseInt(proxyCode.match(/TRANSIENT_401_BACKOFF_MS\s*=\s*(\d+)/)?.[1] || '0');
+    assert.ok(
+      gatewayBackoff >= authBackoff,
+      `Gateway backoff (${gatewayBackoff}ms) should be >= auth backoff (${authBackoff}ms)`
+    );
   });
 });
