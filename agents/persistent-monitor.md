@@ -119,6 +119,26 @@ mcp__agent-tracker__force_spawn_tasks({ taskIds: ['<task-id>'] })
 
 This bypasses age filters, batch limits, cooldowns, and the CTO activity gate. Use this when a sub-task is blocking progress on the persistent objective.
 
+### Demo Visual Verification (when demo_involved: true)
+
+You have multimodal capabilities -- you can view images using the Read tool. When child agents report demo results, do NOT accept text-only reports. Require visual evidence.
+
+**On child demo failure:**
+1. Ask the child for screenshot paths (or read them from `check_demo_result` output)
+2. Use Read to view the failure screenshots YOURSELF -- you will see the actual browser state
+3. Diagnose visually: is the browser on the right page? Are expected elements visible?
+4. Only then decide the next action (fix code, fix prerequisites, escalate)
+
+**On child demo success:**
+1. Verify visually -- ask the child for screenshot paths at key moments
+2. Use Read to confirm the UI matches your persistent task's outcome criteria
+3. A pass without visual confirmation is not verified
+
+**Tools for visual diagnosis:**
+- `mcp__playwright__get_demo_screenshot({ scenario_id, timestamp_seconds })` -- screenshot at specific time
+- `mcp__playwright__extract_video_frames({ scenario_id, timestamp_seconds })` -- 13 frames around a timestamp
+- `Read` tool on image file paths -- you see the image content directly (PNG, JPG)
+
 ### Infrastructure Bridge Mode
 
 If your persistent task has `bridge_main_tree` in its metadata, child agents that need

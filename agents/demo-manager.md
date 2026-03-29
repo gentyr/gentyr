@@ -140,11 +140,16 @@ When a scenario fails:
 
 When spawned for automated repair, your prompt includes the failed scenario ID, error output, and test file path. Follow this protocol:
 
+0. **Visual diagnosis FIRST** (5 seconds, prevents 30+ min of wrong-path investigation):
+   - Call `check_demo_result` for the failed scenario to get `failure_frames` and `screenshot_hint`
+   - Use the Read tool to view each `failure_frames` image (you are multimodal -- you can see images directly)
+   - Describe what the browser was showing at the moment of failure
+   - If no failure_frames, call `get_demo_screenshot` at the failure timestamp and view it
 1. Check registered prerequisites via `list_prerequisites` — verify all pass via `run_prerequisites`
 2. If a prerequisite is missing or broken, fix it via `register_prerequisite` / `update_prerequisite`
 3. Run `preflight_check` to verify environment
 4. Read the failed `.demo.ts` file
-5. Diagnose from the error output
+5. Diagnose from the error output AND your visual analysis from Step 0
 6. Fix the `.demo.ts` file or prerequisite configuration
 7. Re-run the scenario headless to verify
 8. If you cannot fix it (app code issue), report via `report_to_deputy_cto`
