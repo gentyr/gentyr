@@ -488,8 +488,184 @@ function parseTailEntries(tail: string): any[] {
   return entries;
 }
 
+// ============================================================================
+// Compaction Context Helpers
+// ============================================================================
+
+interface CompactionContext {
+  boundaryCount: number;
+  mostRecentSummary: string | null;
+  mostRecentTimestamp: string | null;
+  preTokensTotal: number;
+}
+
+const COMPACTION_MARKER = 'compact_boundary';
+const COMPACTION_SCAN_CHUNK = 65536;  // 64KB per backward chunk
+const COMPACTION_SCAN_MAX = 1048576;  // 1MB max backward scan
+
+/**
+ * Check if parsed tail entries contain any compaction boundaries.
+ */
+function detectCompactionInEntries(entries: any[]): boolean {
+  return entries.some(e => e.type === 'system' && e.subtype === COMPACTION_MARKER);
+}
+
+/**
+ * Scan a JSONL file backward for compact_boundary entries and their summaries.
+ * Uses fast indexOf check per chunk before JSON parsing.
+ */
+function findCompactionContext(filePath: string, tailBytesAlreadyRead: number, maxSummaryChars: number = 4000): CompactionContext {
+  const result: CompactionContext = { boundaryCount: 0, mostRecentSummary: null, mostRecentTimestamp: null, preTokensTotal: 0 };
+
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+    const fileSize = stat.size;
+
+    // If tail already covered the whole file, caller has all data
+    if (tailBytesAlreadyRead >= fileSize) return result;
+
+    // Scan backward from the point where the tail started
+    const scanEnd = Math.max(0, fileSize - tailBytesAlreadyRead);
+    let scannedBytes = 0;
+    let pos = scanEnd;
+
+    // Track boundaries found: { byteOffset, timestamp, preTokens }
+    const boundaries: Array<{ byteOffset: number; timestamp: string; trigger: string; preTokens: number }> = [];
+
+    while (pos > 0 && scannedBytes < COMPACTION_SCAN_MAX) {
+      const chunkSize = Math.min(COMPACTION_SCAN_CHUNK, pos);
+      const chunkStart = pos - chunkSize;
+      const buf = Buffer.alloc(chunkSize);
+      fs.readSync(fd, buf, 0, chunkSize, chunkStart);
+      const chunkStr = buf.toString('utf8');
+
+      // Fast check: skip chunk if no boundary marker present
+      if (chunkStr.includes(COMPACTION_MARKER)) {
+        const lines = chunkStr.split('\n');
+        for (const line of lines) {
+          if (!line.includes(COMPACTION_MARKER)) continue;
+          try {
+            const entry = JSON.parse(line);
+            if (entry.type === 'system' && entry.subtype === COMPACTION_MARKER) {
+              const meta = entry.compactMetadata ?? {};
+              boundaries.push({
+                byteOffset: chunkStart,  // approximate
+                timestamp: entry.timestamp ?? '',
+                trigger: meta.trigger ?? 'unknown',
+                preTokens: meta.preTokens ?? 0,
+              });
+            }
+          } catch { /* partial or malformed line */ }
+        }
+      }
+
+      pos = chunkStart;
+      scannedBytes += chunkSize;
+    }
+
+    if (boundaries.length === 0) return result;
+
+    // Sort by timestamp descending to find most recent
+    boundaries.sort((a, b) => (b.timestamp > a.timestamp ? 1 : -1));
+    result.boundaryCount = boundaries.length;
+    result.mostRecentTimestamp = boundaries[0].timestamp || null;
+    result.preTokensTotal = boundaries.reduce((sum, b) => sum + b.preTokens, 0);
+
+    // Also scan the tail-read portion's parsed entries (caller may have boundaries there too)
+    // — handled externally by the caller who adds tail-detected boundaries
+
+    // Find the most recent boundary's summary: the user message immediately after the boundary line.
+    // Re-read from the most recent boundary's approximate region to find the summary.
+    const mostRecent = boundaries[0];
+    const summarySearchStart = mostRecent.byteOffset;
+    const summarySearchSize = Math.min(65536, fileSize - summarySearchStart);  // Read up to 64KB after boundary
+    const summaryBuf = Buffer.alloc(summarySearchSize);
+    fs.readSync(fd, summaryBuf, 0, summarySearchSize, summarySearchStart);
+    const summaryChunk = summaryBuf.toString('utf8');
+
+    // Find the compact_boundary line, then read the next line (the summary)
+    const summaryLines = summaryChunk.split('\n');
+    let foundBoundary = false;
+    for (const line of summaryLines) {
+      if (!foundBoundary) {
+        if (line.includes(COMPACTION_MARKER)) {
+          try {
+            const entry = JSON.parse(line);
+            if (entry.type === 'system' && entry.subtype === COMPACTION_MARKER
+                && entry.timestamp === mostRecent.timestamp) {
+              foundBoundary = true;
+            }
+          } catch { /* skip */ }
+        }
+        continue;
+      }
+
+      // This should be the summary message
+      if (!line.trim()) continue;
+      try {
+        const summaryEntry = JSON.parse(line);
+        const content = summaryEntry.message?.content;
+        if (typeof content === 'string' && content.includes('continued from a previous conversation')) {
+          result.mostRecentSummary = content.length > maxSummaryChars
+            ? content.substring(0, maxSummaryChars) + '...'
+            : content;
+        }
+      } catch { /* malformed line */ }
+      break;  // Only check the first non-empty line after the boundary
+    }
+
+    return result;
+  } catch {
+    return result;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* cleanup */ }
+    }
+  }
+}
+
+/**
+ * Merge tail-detected compaction boundaries into a CompactionContext from backward scan.
+ * Handles the case where the backward scan found boundaries outside the tail AND the
+ * tail itself contains boundaries (small file or deep tail read).
+ */
+function mergeCompactionCounts(compaction: CompactionContext, tailEntries: any[]): CompactionContext {
+  const tailBoundaries = tailEntries.filter(
+    (e: any) => e.type === 'system' && e.subtype === COMPACTION_MARKER
+  );
+  if (tailBoundaries.length === 0) return compaction;
+
+  const tailPreTokens = tailBoundaries.reduce(
+    (sum: number, b: any) => sum + (b.compactMetadata?.preTokens ?? 0), 0
+  );
+
+  if (compaction.boundaryCount === 0) {
+    // Backward scan found nothing; populate entirely from tail
+    const mostRecent = tailBoundaries[tailBoundaries.length - 1];
+    return {
+      boundaryCount: tailBoundaries.length,
+      mostRecentTimestamp: mostRecent.timestamp ?? null,
+      mostRecentSummary: compaction.mostRecentSummary,
+      preTokensTotal: tailPreTokens,
+    };
+  }
+
+  // Backward scan found boundaries outside tail; add tail boundaries to the count
+  return {
+    ...compaction,
+    boundaryCount: compaction.boundaryCount + tailBoundaries.length,
+    preTokensTotal: compaction.preTokensTotal + tailPreTokens,
+  };
+}
+
+// ============================================================================
+// Activity Extraction
+// ============================================================================
+
 interface ActivityEntry {
-  type: 'assistant_text' | 'tool_call' | 'tool_result';
+  type: 'assistant_text' | 'tool_call' | 'tool_result' | 'compaction_boundary';
   timestamp?: string;
   text?: string;
   toolName?: string;
@@ -503,6 +679,23 @@ function extractActivity(entries: any[]): ActivityEntry[] {
   const activity: ActivityEntry[] = [];
 
   for (const entry of entries) {
+    // Emit compaction boundary as a distinct activity entry
+    if (entry.type === 'system' && entry.subtype === COMPACTION_MARKER) {
+      const meta = entry.compactMetadata ?? {};
+      activity.push({
+        type: 'compaction_boundary',
+        timestamp: entry.timestamp ?? undefined,
+        text: `Context compacted (${meta.trigger ?? 'unknown'}, ${meta.preTokens ?? '?'} tokens before compaction)`,
+      });
+      continue;
+    }
+
+    // Skip compaction summary messages (system-injected, not real user activity)
+    if (entry.type === 'user' && typeof entry.message?.content === 'string'
+        && entry.message.content.includes('continued from a previous conversation')) {
+      continue;
+    }
+
     if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
       const content = entry.message.content as Array<{ type: string; text?: string; name?: string; input?: unknown; id?: string }>;
 
@@ -649,12 +842,21 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
     }
 
     let recentActivity: ActivityEntry[] | null = null;
+    let monitorCompaction: CompactionContext | null = null;
     if (sessionFile) {
       try {
         const depthBytes = (args.depth_kb ?? 32) * 1024;
         const tail = readTailBytes(sessionFile, depthBytes);
         const entries = parseTailEntries(tail);
         recentActivity = extractActivity(entries);
+
+        // Auto-include compaction context for monitor sessions (deep inspection tool)
+        if (detectCompactionInEntries(entries)) {
+          monitorCompaction = mergeCompactionCounts(
+            findCompactionContext(sessionFile, depthBytes, 6000),
+            entries
+          );
+        }
       } catch { /* non-critical */ }
     }
 
@@ -688,6 +890,7 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
       sessionFile: sessionFile ?? null,
       progress,
       recentActivity,
+      compaction: monitorCompaction,
     };
   }
 
@@ -808,6 +1011,7 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
     }
 
     let recentActivity: ActivityEntry[] | null = null;
+    let childCompacted = false;
     if (pidAlive && excerptCount < (args.max_children ?? 10)) {
       let sessionFile: string | null = null;
       sessionFile = findSessionFile(childAgent);
@@ -817,6 +1021,7 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
           const tail = readTailBytes(sessionFile, childDepth);
           const entries = parseTailEntries(tail);
           recentActivity = extractActivity(entries);
+          childCompacted = detectCompactionInEntries(entries);
           excerptCount++;
         } catch { /* non-critical */ }
       }
@@ -834,6 +1039,7 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
       progress,
       worktreeGit,
       recentActivity,
+      compactionDetected: childCompacted,
     });
   }
 
@@ -2801,6 +3007,18 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
     }
   }
 
+  // Compaction detection (zero-cost: checks already-parsed entries)
+  const compactionDetected = detectCompactionInEntries(entries);
+
+  // Optionally retrieve compaction context with backward scan
+  let compaction: CompactionContext | null = null;
+  if (compactionDetected && args.include_compaction_context) {
+    compaction = mergeCompactionCounts(
+      findCompactionContext(sessionFile, depthBytes, 4000),
+      entries
+    );
+  }
+
   return {
     agentId,
     sessionFile,
@@ -2811,6 +3029,8 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
     spawnedAgents,
     gitCommits,
     alignmentFindings,
+    compactionDetected,
+    ...(compaction ? { compaction } : {}),
   };
 }
 
@@ -2860,6 +3080,7 @@ async function getSessionActivitySummary(_args: GetSessionActivitySummaryArgs): 
     let lastTool: string | null = null;
     let lastActivity: string | null = null;
     let sessionId: string | null = null;
+    let compacted = false;
 
     if (agentId) {
       // Use findSessionFile(agentRecord) which handles worktree session dirs;
@@ -2879,6 +3100,7 @@ async function getSessionActivitySummary(_args: GetSessionActivitySummaryArgs): 
         try {
           const tail = readTailBytes(sessionFile, 4096);
           const entries = parseTailEntries(tail);
+          compacted = detectCompactionInEntries(entries);
           for (const entry of entries) {
             if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
               for (const block of entry.message.content) {
@@ -2929,6 +3151,7 @@ async function getSessionActivitySummary(_args: GetSessionActivitySummaryArgs): 
       pipeline_stage: pipelineStage,
       pid: row.pid,
       pid_alive: row.pid ? (() => { try { process.kill(row.pid!, 0); return true; } catch { return false; } })() : false,
+      compacted,
     };
   });
 
@@ -3310,7 +3533,7 @@ const tools: AnyToolHandler[] = [
   // WS5 Session Introspection Tools
   {
     name: 'peek_session',
-    description: 'Peek at the live JSONL tail of a running agent session. Returns last tool calls, last assistant text, spawned sub-agents, git commits, and alignment findings. Provide agent_id or queue_id. The lastText field contains the agent\'s most recent reasoning — quote directly in reports. Use depth: 12-16 for detailed monitoring.',
+    description: 'Peek at the live JSONL tail of a running agent session. Returns last tool calls, last assistant text, spawned sub-agents, git commits, and alignment findings. Provide agent_id or queue_id. The lastText field contains the agent\'s most recent reasoning — quote directly in reports. Use depth: 12-16 for detailed monitoring. Always returns compactionDetected boolean; set include_compaction_context: true to retrieve pre-compaction work summaries.',
     schema: PeekSessionArgsSchema,
     handler: peekSession,
   },
@@ -3341,7 +3564,7 @@ const tools: AnyToolHandler[] = [
   // Persistent Task Deep Inspection
   {
     name: 'inspect_persistent_task',
-    description: 'Deep inspection of a persistent task. Returns task state, monitor JSONL excerpts (500 char tool inputs, 1000 char text — much more than peek_session), child session activity, amendments, progress files, and worktree git state. Single call replaces chaining get_persistent_task_summary + monitor_agents + peek_session. Returns verbatim assistant text excerpts suitable for direct quoting in monitoring reports. Use depth_kb: 32 for comprehensive analysis.',
+    description: 'Deep inspection of a persistent task. Returns task state, monitor JSONL excerpts (500 char tool inputs, 1000 char text — much more than peek_session), child session activity, amendments, progress files, and worktree git state. Single call replaces chaining get_persistent_task_summary + monitor_agents + peek_session. Returns verbatim assistant text excerpts suitable for direct quoting in monitoring reports. Use depth_kb: 32 for comprehensive analysis. Auto-includes compaction context (pre-compaction work summary) for the monitor session when compaction is detected.',
     schema: InspectPersistentTaskArgsSchema,
     handler: inspectPersistentTask,
   },

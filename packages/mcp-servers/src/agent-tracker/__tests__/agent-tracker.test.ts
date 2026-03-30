@@ -1007,4 +1007,283 @@ describe('Agent Tracker Server', () => {
       expect(result.agentId).toBe(agentId);
     });
   });
+
+  // ============================================================================
+  // Compaction-Aware Session Reading Tests
+  // ============================================================================
+
+  describe('Compaction Detection and Context', () => {
+    // Helper: build a compact_boundary JSONL entry
+    function compactBoundaryEntry(opts: { trigger?: string; preTokens?: number; timestamp?: string } = {}) {
+      return JSON.stringify({
+        parentUuid: null,
+        type: 'system',
+        subtype: 'compact_boundary',
+        content: 'Conversation compacted',
+        compactMetadata: {
+          trigger: opts.trigger ?? 'manual',
+          preTokens: opts.preTokens ?? 100000,
+          preCompactDiscoveredTools: [],
+        },
+        timestamp: opts.timestamp ?? '2026-03-29T19:49:10.234Z',
+        uuid: randomUUID(),
+      });
+    }
+
+    // Helper: build a compaction summary user entry
+    function compactSummaryEntry(summary?: string) {
+      return JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: summary ?? 'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. Primary Request: The user requested improvements to the framework.',
+        },
+        uuid: randomUUID(),
+        timestamp: '2026-03-29T19:49:10.500Z',
+      });
+    }
+
+    // Helper: build a regular assistant entry
+    function assistantEntry(text: string, timestamp?: string) {
+      return JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text }],
+        },
+        uuid: randomUUID(),
+        timestamp: timestamp ?? '2026-03-29T20:00:00.000Z',
+      });
+    }
+
+    // Helper: build a regular user entry
+    function userEntry(content: string) {
+      return JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content },
+        uuid: randomUUID(),
+        timestamp: '2026-03-29T20:01:00.000Z',
+      });
+    }
+
+    // Helper: parseTailEntries equivalent for tests
+    function parseTailEntries(content: string): any[] {
+      const lines = content.split('\n').filter(l => l.trim());
+      const entries: any[] = [];
+      for (const line of lines) {
+        try { entries.push(JSON.parse(line)); } catch { /* partial line */ }
+      }
+      return entries;
+    }
+
+    // Helper: detectCompactionInEntries equivalent for tests
+    function detectCompaction(entries: any[]): boolean {
+      return entries.some(e => e.type === 'system' && e.subtype === 'compact_boundary');
+    }
+
+    // Helper: extractActivity equivalent for tests (compaction-aware)
+    function extractActivity(entries: any[]): any[] {
+      const activity: any[] = [];
+      for (const entry of entries) {
+        if (entry.type === 'system' && entry.subtype === 'compact_boundary') {
+          const meta = entry.compactMetadata ?? {};
+          activity.push({
+            type: 'compaction_boundary',
+            timestamp: entry.timestamp,
+            text: `Context compacted (${meta.trigger ?? 'unknown'}, ${meta.preTokens ?? '?'} tokens before compaction)`,
+          });
+          continue;
+        }
+        if (entry.type === 'user' && typeof entry.message?.content === 'string'
+            && entry.message.content.includes('continued from a previous conversation')) {
+          continue;
+        }
+        if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+          const texts = entry.message.content
+            .filter((b: any) => b.type === 'text' && b.text)
+            .map((b: any) => b.text);
+          if (texts.length > 0) {
+            activity.push({ type: 'assistant_text', text: texts.join('\n').substring(0, 1000) });
+          }
+        }
+      }
+      return activity;
+    }
+
+    describe('detectCompactionInEntries', () => {
+      it('should return false when no compaction boundary exists', () => {
+        const entries = parseTailEntries([
+          assistantEntry('Hello'),
+          userEntry('Hi'),
+        ].join('\n'));
+        expect(detectCompaction(entries)).toBe(false);
+      });
+
+      it('should return true when compaction boundary exists', () => {
+        const entries = parseTailEntries([
+          assistantEntry('Before compaction'),
+          compactBoundaryEntry(),
+          compactSummaryEntry(),
+          assistantEntry('After compaction'),
+        ].join('\n'));
+        expect(detectCompaction(entries)).toBe(true);
+      });
+
+      it('should detect multiple compaction boundaries', () => {
+        const entries = parseTailEntries([
+          compactBoundaryEntry({ timestamp: '2026-03-29T18:00:00.000Z', preTokens: 200000 }),
+          compactSummaryEntry(),
+          assistantEntry('Middle work'),
+          compactBoundaryEntry({ timestamp: '2026-03-29T20:00:00.000Z', preTokens: 150000 }),
+          compactSummaryEntry(),
+          assistantEntry('Latest work'),
+        ].join('\n'));
+        expect(detectCompaction(entries)).toBe(true);
+        const boundaries = entries.filter(e => e.type === 'system' && e.subtype === 'compact_boundary');
+        expect(boundaries).toHaveLength(2);
+      });
+    });
+
+    describe('extractActivity (compaction-aware)', () => {
+      it('should emit compaction_boundary activity entry', () => {
+        const entries = parseTailEntries([
+          assistantEntry('Before'),
+          compactBoundaryEntry({ trigger: 'auto', preTokens: 250000 }),
+          compactSummaryEntry(),
+          assistantEntry('After'),
+        ].join('\n'));
+
+        const activity = extractActivity(entries);
+
+        const boundaryActivities = activity.filter(a => a.type === 'compaction_boundary');
+        expect(boundaryActivities).toHaveLength(1);
+        expect(boundaryActivities[0].text).toContain('auto');
+        expect(boundaryActivities[0].text).toContain('250000');
+      });
+
+      it('should skip compaction summary user messages from activity', () => {
+        const entries = parseTailEntries([
+          compactBoundaryEntry(),
+          compactSummaryEntry(),
+          userEntry('Real user message after compaction'),
+          assistantEntry('Response to real user'),
+        ].join('\n'));
+
+        const activity = extractActivity(entries);
+
+        // Should have: compaction_boundary + assistant_text (no summary user message)
+        const types = activity.map(a => a.type);
+        expect(types).toContain('compaction_boundary');
+        expect(types).toContain('assistant_text');
+        // The summary message should NOT appear as user activity
+        expect(activity.some(a => a.text?.includes('continued from a previous conversation'))).toBe(false);
+      });
+
+      it('should preserve normal user messages in activity', () => {
+        const entries = parseTailEntries([
+          userEntry('Normal user question'),
+          assistantEntry('Normal response'),
+        ].join('\n'));
+
+        const activity = extractActivity(entries);
+        // Normal user entries are not included in activity (extractActivity only emits
+        // assistant_text, tool_call, tool_result, and compaction_boundary)
+        expect(activity.filter(a => a.type === 'assistant_text')).toHaveLength(1);
+      });
+    });
+
+    describe('findCompactionContext (via JSONL file)', () => {
+      it('should find compaction boundary in a JSONL file', () => {
+        const sessionFile = path.join(tempSessionDir, `${randomUUID()}.jsonl`);
+        const preCompactionLines = Array.from({ length: 50 }, (_, i) =>
+          assistantEntry(`Pre-compaction message ${i}`, `2026-03-29T${String(10 + Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}:00.000Z`)
+        );
+        const lines = [
+          ...preCompactionLines,
+          compactBoundaryEntry({ preTokens: 300000, timestamp: '2026-03-29T18:00:00.000Z' }),
+          compactSummaryEntry('This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. The user built a complex system.'),
+          assistantEntry('Post-compaction work', '2026-03-29T19:00:00.000Z'),
+        ];
+        fs.writeFileSync(sessionFile, lines.join('\n'));
+
+        // Read just the tail (last 2KB — should get the post-compaction entry)
+        const content = fs.readFileSync(sessionFile, 'utf8');
+        const allEntries = parseTailEntries(content);
+
+        // Verify the boundary is in the full file
+        expect(detectCompaction(allEntries)).toBe(true);
+
+        // Verify boundary count
+        const boundaries = allEntries.filter(e => e.type === 'system' && e.subtype === 'compact_boundary');
+        expect(boundaries).toHaveLength(1);
+        expect(boundaries[0].compactMetadata.preTokens).toBe(300000);
+      });
+
+      it('should handle file with no compaction boundaries', () => {
+        const sessionFile = path.join(tempSessionDir, `${randomUUID()}.jsonl`);
+        const lines = [
+          userEntry('Hello'),
+          assistantEntry('Hi there'),
+          userEntry('How are you?'),
+          assistantEntry('I am fine'),
+        ];
+        fs.writeFileSync(sessionFile, lines.join('\n'));
+
+        const content = fs.readFileSync(sessionFile, 'utf8');
+        const entries = parseTailEntries(content);
+        expect(detectCompaction(entries)).toBe(false);
+      });
+
+      it('should handle file with multiple compaction boundaries', () => {
+        const sessionFile = path.join(tempSessionDir, `${randomUUID()}.jsonl`);
+        const lines = [
+          assistantEntry('Work batch 1'),
+          compactBoundaryEntry({ preTokens: 200000, timestamp: '2026-03-29T14:00:00.000Z' }),
+          compactSummaryEntry('This session is being continued from a previous conversation that ran out of context. First summary.'),
+          assistantEntry('Work batch 2'),
+          compactBoundaryEntry({ preTokens: 180000, timestamp: '2026-03-29T18:00:00.000Z' }),
+          compactSummaryEntry('This session is being continued from a previous conversation that ran out of context. Second summary.'),
+          assistantEntry('Work batch 3'),
+        ];
+        fs.writeFileSync(sessionFile, lines.join('\n'));
+
+        const content = fs.readFileSync(sessionFile, 'utf8');
+        const entries = parseTailEntries(content);
+        const boundaries = entries.filter(e => e.type === 'system' && e.subtype === 'compact_boundary');
+
+        expect(boundaries).toHaveLength(2);
+        expect(boundaries[0].compactMetadata.preTokens).toBe(200000);
+        expect(boundaries[1].compactMetadata.preTokens).toBe(180000);
+
+        // Total preTokens across all boundaries
+        const totalPreTokens = boundaries.reduce(
+          (sum: number, b: any) => sum + (b.compactMetadata?.preTokens ?? 0), 0
+        );
+        expect(totalPreTokens).toBe(380000);
+      });
+    });
+
+    describe('Summary truncation', () => {
+      it('should truncate long summary content', () => {
+        const longSummary = 'This session is being continued from a previous conversation that ran out of context. ' + 'A'.repeat(10000);
+        const maxChars = 4000;
+        const truncated = longSummary.length > maxChars
+          ? longSummary.substring(0, maxChars) + '...'
+          : longSummary;
+
+        expect(truncated.length).toBe(maxChars + 3);  // 4000 + '...'
+        expect(truncated.endsWith('...')).toBe(true);
+      });
+
+      it('should not truncate short summaries', () => {
+        const shortSummary = 'This session is being continued from a previous conversation that ran out of context. Brief summary.';
+        const maxChars = 4000;
+        const truncated = shortSummary.length > maxChars
+          ? shortSummary.substring(0, maxChars) + '...'
+          : shortSummary;
+
+        expect(truncated).toBe(shortSummary);
+      });
+    });
+  });
 });

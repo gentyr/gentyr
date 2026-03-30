@@ -5,6 +5,7 @@ node_modules/
 packages/mcp-servers/dist/
 packages/cto-dashboard/dist/
 packages/playwright-helpers/dist/
+packages/chrome-actions/dist/
 packages/vscode-extension/dist/
 tools/window-recorder/.build/
 packages/vscode-extension/*.vsix
