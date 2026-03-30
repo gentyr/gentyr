@@ -385,7 +385,7 @@ Lets the CTO delegate complex multi-step objectives to a dedicated monitor sessi
 
 **`persistent-task` MCP server** (`packages/mcp-servers/src/persistent-task/`): State in `.claude/state/persistent-tasks.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
 
-**12 tools**: `create_persistent_task`, `activate_persistent_task`, `get_persistent_task`, `list_persistent_tasks`, `amend_persistent_task`, `acknowledge_amendment`, `pause_persistent_task`, `resume_persistent_task`, `cancel_persistent_task`, `complete_persistent_task`, `link_subtask`, `get_persistent_task_summary`.
+**13 tools**: `create_persistent_task`, `activate_persistent_task`, `get_persistent_task`, `list_persistent_tasks`, `amend_persistent_task`, `acknowledge_amendment`, `pause_persistent_task`, `resume_persistent_task`, `cancel_persistent_task`, `complete_persistent_task`, `link_subtask`, `get_persistent_task_summary`, `inspect_persistent_task`.
 
 **Amendment system**: After activation the CTO can amend a task (`amend_persistent_task`) with `addendum`, `correction`, `scope_change`, or `priority_shift` types. The monitor polls for unacknowledged amendments on each cycle and must call `acknowledge_amendment` before proceeding. **Auto-resume on amendment**: If the task is paused when an amendment is added, `amendPersistentTask()` automatically transitions the task back to `active` and the spawner hook fires immediately to launch a new monitor session — no manual `resume_persistent_task` call needed.
 
@@ -426,6 +426,18 @@ The `search_cto_sessions` tool on the `agent-tracker` MCP server filters session
 - Searches remaining files for the query string (case-insensitive)
 - Returns matching excerpts with surrounding context lines
 - Used by the gate agent to check if the CTO recently discussed a topic (CTO intent check)
+
+## Compaction-Aware Session Reading
+
+Agent-tracker session introspection tools detect and recover context lost when Claude Code compacts a session's context window. When compaction occurs, the `.jsonl` file contains a `compact_boundary` marker followed by a system-injected summary of pre-compaction work.
+
+**3 tools with compaction awareness** (on `agent-tracker` server):
+
+- `peek_session` — reads session tail and returns `compactionDetected: boolean` at zero cost. Pass `include_compaction_context: true` to trigger a backward file scan that retrieves the full compaction summary, boundary count, most-recent timestamp, and pre-compaction token total.
+- `inspect_persistent_task` — deep inspection tool for persistent task monitors. Auto-includes compaction context for the monitor session (full backward scan at 6000-char summary limit); returns `compactionDetected` for each child session.
+- `get_session_activity_summary` — per-session summary includes `compacted: boolean` flag. `extractActivity()` emits `compaction_boundary` activity entries and suppresses system-injected compaction summary messages to avoid polluting the activity log with noise.
+
+**`CompactionContext` shape**: `{ boundaryCount, mostRecentSummary, mostRecentTimestamp, preTokensTotal }`. The `mostRecentSummary` field contains the compaction summary text (up to `maxSummaryChars`), which persistent monitors use to reconstruct context after revival into a fresh session.
 
 ## User Prompt References System
 
@@ -734,6 +746,14 @@ Structured JSON log at `~/.claude/rotation-proxy.log`. 24h retention (auto-clean
 ## Chrome Browser Automation
 
 The chrome-bridge MCP server provides 18 tools for browser automation via Claude for Chrome extension. Communicates via local Unix domain socket — no credentials required.
+
+### @gentyr/chrome-actions Package
+
+TypeScript bindings for the Chrome Extension's Unix domain socket protocol. Located at `packages/chrome-actions/`. Published as `@gentyr/chrome-actions`. Provides typed methods for all 18 chrome-bridge MCP tools plus convenience helpers (`clickByText`, `fillInput`, `waitForUrl`, `waitForElement`). Lets target project test code (`.demo.ts` files) directly control Chrome without Claude in the loop. Built to `dist/` (gitignored).
+
+```bash
+cd packages/chrome-actions && npm run build
+```
 
 > Full details: [Chrome Browser Automation](docs/CLAUDE-REFERENCE.md#chrome-browser-automation)
 
