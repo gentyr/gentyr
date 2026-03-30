@@ -795,6 +795,28 @@ The chrome-bridge server injects site-specific browser automation tips into tool
 
 No credentials required - communicates via local Unix domain socket with length-prefixed JSON framing protocol.
 
+### @gentyr/chrome-actions Package
+
+TypeScript bindings for the Chrome Extension's Unix domain socket protocol. Located at `packages/chrome-actions/`. Published as `@gentyr/chrome-actions`.
+
+**Exports:**
+- `ChromeActions` — high-level API class wrapping all 18 chrome-bridge tools
+- `ChromeSocketClient` — low-level socket protocol client
+- Typed interfaces for all tool argument/response shapes (`NavigateArgs`, `FindArgs`, `FormInputArgs`, etc.)
+- 5 custom error classes: `ChromeConnectionError`, `ChromeTimeoutError`, `ChromeToolError`, `ChromeProtocolError`, `ChromeNotFoundError`
+
+**Convenience helpers:**
+- `clickByText(text)` — find and click an element by visible text
+- `fillInput(selector, value)` — find and fill an input field
+- `waitForUrl(pattern, timeout?)` — wait for navigation to a URL matching a pattern
+- `waitForElement(selector, timeout?)` — wait for an element to appear in the DOM
+
+**Use case:** Lets target project `.demo.ts` test code directly control Chrome without Claude in the loop, using the same Unix domain socket protocol as the chrome-bridge MCP server.
+
+```bash
+cd packages/chrome-actions && npm run build
+```
+
 ---
 
 ## Secret Management
