@@ -154,10 +154,8 @@ function isSessionComplete(sessionFile) {
   const tail = readTail(sessionFile, TAIL_BYTES);
   if (!tail) return false;
 
-  // Split into lines and find the last parseable JSON line
   const lines = tail.split('\n').filter(l => l.trim());
 
-  // Work backwards to find the last parseable line
   for (let i = lines.length - 1; i >= 0; i--) {
     let parsed;
     try {
@@ -166,17 +164,18 @@ function isSessionComplete(sessionFile) {
       continue;
     }
 
-    // Must be an assistant message
     if (parsed.type !== 'assistant') return false;
 
-    // Check content array for tool_use blocks
-    const content = parsed.message?.content;
-    if (!Array.isArray(content)) {
-      // If content isn't an array, it's text-only — session is complete
-      return true;
-    }
+    // Guard 1: If stop_reason is null/absent, model is still streaming
+    const stopReason = parsed.message?.stop_reason;
+    if (!stopReason) return false;
 
-    // If any content block is tool_use, agent is still working
+    const content = parsed.message?.content;
+    if (!Array.isArray(content)) return true;
+
+    // Guard 2: If ALL blocks are 'thinking', model hasn't produced output yet
+    if (content.length > 0 && content.every(c => c.type === 'thinking')) return false;
+
     const hasToolUse = content.some(c => c.type === 'tool_use');
     return !hasToolUse;
   }
@@ -352,6 +351,15 @@ export function reapCompletedAgents(projectDir) {
       // Cache for future runs
       agent.sessionFile = sessionFile;
       dirty = true;
+    }
+
+    // Step 2.5: Skip agents spawned less than 60 seconds ago (too young to reap)
+    if (agent.timestamp) {
+      const agentAge = Date.now() - new Date(agent.timestamp).getTime();
+      if (agentAge < 60_000) {
+        result.skipped.push({ agentId, reason: 'too_young' });
+        continue;
+      }
     }
 
     // Step 3: Check completion via JSONL

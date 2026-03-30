@@ -3592,6 +3592,29 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
   }
 
   // =========================================================================
+  // ABANDONED WORKTREE RESCUE (30min cooldown)
+  // Spawns project-manager for worktrees with uncommitted changes and no active agent
+  // NOTE: Must run BEFORE worktree_cleanup so abandoned worktrees with uncommitted
+  // changes get a project-manager spawned to commit their work before cleanup deletes them.
+  // =========================================================================
+  await runIfDue('abandoned_worktree_rescue', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastAbandonedWorktreeRescue',
+    configToggle: 'abandonedWorktreeRescueEnabled',
+    config,
+    label: 'Abandoned worktree rescue',
+    fn: async () => {
+      log('Abandoned worktree rescue: scanning for abandoned worktrees...');
+      const rescued = rescueAbandonedWorktrees();
+      if (rescued > 0) {
+        log(`Abandoned worktree rescue: spawned ${rescued} project-manager(s) for abandoned worktrees.`);
+      } else {
+        log('Abandoned worktree rescue: no abandoned worktrees found.');
+      }
+    },
+  });
+
+  // =========================================================================
   // WORKTREE CLEANUP (30min cooldown)
   // Removes worktrees whose feature branches have been merged to the base branch
   // =========================================================================
@@ -3608,27 +3631,6 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
         log(`Worktree cleanup: removed ${cleaned} merged worktree(s).`);
       } else {
         log('Worktree cleanup: no merged worktrees to remove.');
-      }
-    },
-  });
-
-  // =========================================================================
-  // ABANDONED WORKTREE RESCUE (30min cooldown)
-  // Spawns project-manager for worktrees with uncommitted changes and no active agent
-  // =========================================================================
-  await runIfDue('abandoned_worktree_rescue', {
-    state, now, intervals: config.intervals,
-    stateKey: 'lastAbandonedWorktreeRescue',
-    configToggle: 'abandonedWorktreeRescueEnabled',
-    config,
-    label: 'Abandoned worktree rescue',
-    fn: async () => {
-      log('Abandoned worktree rescue: scanning for abandoned worktrees...');
-      const rescued = rescueAbandonedWorktrees();
-      if (rescued > 0) {
-        log(`Abandoned worktree rescue: spawned ${rescued} project-manager(s) for abandoned worktrees.`);
-      } else {
-        log('Abandoned worktree rescue: no abandoned worktrees found.');
       }
     },
   });

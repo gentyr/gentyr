@@ -197,8 +197,15 @@ function isSessionComplete(sessionFile) {
 
     if (parsed.type !== 'assistant') return false;
 
+    // Guard 1: If stop_reason is null/absent, model is still streaming
+    const stopReason = parsed.message?.stop_reason;
+    if (!stopReason) return false;
+
     const content = parsed.message?.content;
     if (!Array.isArray(content)) return true;
+
+    // Guard 2: If ALL blocks are 'thinking', model hasn't produced output yet
+    if (content.length > 0 && content.every(c => c.type === 'thinking')) return false;
 
     return !content.some(c => c.type === 'tool_use');
   }
@@ -272,7 +279,7 @@ function isAuthStalled(sessionFile) {
  */
 export function reapSyncPass(db) {
   const result = { reaped: [], stuckAlive: [] };
-  const hardKillMs = getCooldown('session_hard_kill_minutes', 30) * 60 * 1000;
+  const hardKillMs = getCooldown('session_hard_kill_minutes', 15) * 60 * 1000;
   const now = Date.now();
 
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -330,6 +337,24 @@ export function reapSyncPass(db) {
         revivalCandidate,
         metadata,
       });
+
+      // Reset linked TODO task to pending so it can be re-spawned
+      if (metadata.taskId && Database) {
+        try {
+          const todoDbPath = path.join(projectDir, '.claude', 'todo.db');
+          if (fs.existsSync(todoDbPath)) {
+            const todoDb = new Database(todoDbPath);
+            todoDb.pragma('busy_timeout = 3000');
+            const resetResult = todoDb.prepare(
+              "UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ? AND status = 'in_progress'"
+            ).run(metadata.taskId);
+            todoDb.close();
+            if (resetResult.changes > 0) {
+              debugLog('session-reaper', 'todo_reset_dead_pid', { taskId: metadata.taskId });
+            }
+          }
+        } catch (_) { /* non-fatal */ }
+      }
 
       // Clean up progress file for dead agent
       try {
@@ -644,7 +669,7 @@ export function getStuckAliveSessions() {
     db = new Database(dbPath, { readonly: true });
     db.pragma('busy_timeout = 5000');
 
-    const hardKillMs = getCooldown('session_hard_kill_minutes', 30) * 60 * 1000;
+    const hardKillMs = getCooldown('session_hard_kill_minutes', 15) * 60 * 1000;
     const cutoffTime = new Date(Date.now() - hardKillMs).toISOString();
 
     // Only query 'running' items — 'suspended' items must never be hard-killed

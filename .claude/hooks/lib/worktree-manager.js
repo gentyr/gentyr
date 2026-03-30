@@ -583,6 +583,24 @@ export function cleanupMergedWorktrees() {
         console.log(`[worktree-manager] Skipping ${wt.branch} — active session(s) detected in ${wt.path}`);
         continue;
       }
+
+      // Safety check: skip worktrees with uncommitted changes
+      if (wt.path) {
+        try {
+          const dirtyStatus = execSync('git status --porcelain', {
+            cwd: wt.path, encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe']
+          }).trim();
+          if (dirtyStatus.length > 0) {
+            console.log(`[worktree-manager] Skipping ${wt.branch} — has uncommitted changes (${dirtyStatus.split('\n').length} files)`);
+            continue;
+          }
+        } catch (err) {
+          // If git status fails, skip removal (fail safe — don't destroy what we can't inspect)
+          console.log(`[worktree-manager] Skipping ${wt.branch} — git status failed: ${err.message}`);
+          continue;
+        }
+      }
+
       try {
         removeWorktree(wt.branch);
         cleaned++;
