@@ -529,25 +529,30 @@ Two-pass reaping engine that detects and cleans up dead or stuck sessions in the
 
 **Legacy coexistence**: `scripts/reap-completed-agents.js` (deprecated) still operates on `agent-tracker-history.json` for any agents not routed through the queue. Both coexist.
 
-### Display Lock
+### Shared Resource Registry
 
-SQLite-backed exclusive display access lock that serializes headed Playwright demos, real Chrome (chrome-bridge), and any future display-requiring operation. Prevents concurrent window capture conflicts and corrupted video recordings.
+SQLite-backed multi-resource coordination system. Worktree agents acquire exclusive access to shared main-tree resources via acquire/release/renew/queue semantics, preventing concurrent conflicts (e.g., overlapping headed demos, simultaneous chrome-bridge sessions, or competing dev server owners).
 
-**Module**: `.claude/hooks/lib/display-lock.js`. DB at `.claude/state/display-lock.db` (WAL mode). Shares `session-queue.log` for log output.
+**Module**: `.claude/hooks/lib/resource-lock.js` (canonical). `.claude/hooks/lib/display-lock.js` is a 19-line backward-compat re-export shim — all existing callers continue to work unchanged. DB at `.claude/state/display-lock.db` (same file, migrated schema). Logs to `session-queue.log`.
 
-**Lock semantics**: Single global lock (`id = 'global'`). TTL auto-expiry (default 15 min) to prevent orphaned locks when holders die. Holder must call `renewDisplayLock()` every ~5 min to stay alive. On expiry: `checkAndExpireLock()` releases and promotes the next queue waiter. On agent death: session-reaper calls `releaseDisplayLock()` immediately. Headless demos do NOT need the display lock.
+**Built-in resources**: `display` (headed browser / ScreenCaptureKit, TTL 15 min), `chrome-bridge` (real Chrome via Claude for Chrome extension, TTL 15 min), `main-dev-server` (port 3000 dev server, TTL 30 min). Additional resources can be registered dynamically via `register_shared_resource`.
 
-**4 MCP tools** (on `playwright` server):
-- `acquire_display_lock` — request exclusive display access; returns `{ acquired: true }` if free/expired, or `{ acquired: false, position: N, holder: {...} }` if held by another agent. Auto-enqueues the caller in the display queue on contention.
-- `release_display_lock` — release after demo completes; promotes next waiter from queue
-- `renew_display_lock` — heartbeat to prevent auto-expiry (call every ~5 min during long sessions)
-- `get_display_queue_status` — check current holder, queue depth, and position
+**Lock semantics** (per resource): TTL auto-expiry prevents orphaned locks when holders die. Holder must renew every ~5 min to stay alive. On expiry: `checkAndExpireResources()` (called from `drainQueue()`) releases and promotes the next priority-ordered waiter. On agent death: session-reaper calls `releaseAllResources()` and `removeFromAllQueues()` for all resources held or queued by the dead agent. Headless demos do NOT need the display lock.
 
-**Auto-acquire in `run_demo`**: When `headless: false`, `run_demo` automatically acquires the display lock if not already held (tracked in `DemoRunState`). Released automatically on demo completion, crash, or stop. Agents may also acquire manually before calling `run_demo`.
+**5 MCP tools** (on `agent-tracker` server):
+- `acquire_shared_resource` — request exclusive access to a named resource; returns `{ acquired: true }` or `{ acquired: false, position: N, holder: {...} }` with auto-enqueue on contention
+- `release_shared_resource` — release a resource after work completes; promotes next waiter
+- `renew_shared_resource` — heartbeat to prevent TTL expiry (call every ~5 min during long sessions)
+- `get_shared_resource_status` — status of one resource (by `resource_id`) or all registered resources (omit argument)
+- `register_shared_resource` — add a new resource type to the registry with a custom `default_ttl_minutes`
 
-**Session reaper integration**: `reapSyncPass()` calls `releaseDisplayLock()` for any agent it marks as dead, preventing lock orphaning.
+**Playwright server display lock tools** (`acquire_display_lock`, `release_display_lock`, `renew_display_lock`, `get_display_queue_status`) remain available as backward-compat aliases via the shim.
 
-**Audit events**: `display_lock_acquired`, `display_lock_released`, `display_lock_renewed`, `display_lock_expired`, `display_lock_enqueued`, `display_lock_promoted` — all emitted to `session-audit.log`.
+**Auto-acquire in `run_demo`**: When `headless: false`, `run_demo` automatically acquires the `display` resource if not already held (tracked in `DemoRunState`). Released automatically on demo completion, crash, or stop. Agents may also acquire manually before calling `run_demo`.
+
+**Session reaper integration**: `reapSyncPass()` calls `releaseAllResources(agentId)` and `removeFromAllQueues(agentId)` for any agent it marks as dead, releasing all resources at once regardless of how many the agent held.
+
+**Audit events**: `display_lock_acquired`, `display_lock_released`, `display_lock_renewed`, `display_lock_expired`, `display_lock_enqueued`, `display_lock_promoted` — all emitted to `session-audit.log` (event names preserved for backward compatibility).
 
 ### Session Audit Log
 

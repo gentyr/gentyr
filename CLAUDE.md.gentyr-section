@@ -151,16 +151,20 @@ Project-level env overrides (e.g., skip rebuilds) can be declared in `.claude/co
 
 **Use `/demo` for interactive demos** — runs preflight automatically.
 
-### Display Queue (Headed Mode Coordination)
+### Shared Resource Registry (Headed Mode and Infrastructure Coordination)
 
-Headed demos (Playwright with `headless: false`, real Chrome via chrome-bridge) require exclusive display access. The display queue serializes access:
+Headed demos (Playwright with `headless: false`, real Chrome via chrome-bridge) and shared infrastructure (main-tree dev server) require exclusive access. The shared resource registry serializes access per resource:
 
-- `acquire_display_lock` — request exclusive display access (blocks if held)
-- `release_display_lock` — release after demo completes
-- `renew_display_lock` — heartbeat to prevent auto-expiry (call every 5 min)
-- `get_display_queue_status` — check current holder and queue
+**5 MCP tools** (on `agent-tracker` server):
+- `acquire_shared_resource` — request exclusive access to a named resource (e.g., `"display"`, `"chrome-bridge"`, `"main-dev-server"`)
+- `release_shared_resource` — release after work completes; promotes next queued waiter
+- `renew_shared_resource` — heartbeat to prevent TTL expiry (call every 5 min during long sessions)
+- `get_shared_resource_status` — check current holder, queue depth, and position for one or all resources
+- `register_shared_resource` — register a new resource type with a custom TTL
 
-Lock TTL: 15 minutes (auto-expires if holder dies or forgets to release). `run_demo` with `headless: false` auto-acquires the lock if not already held. Dead agents' locks are cleaned up by the session reaper.
+**Backward-compat display lock tools** (on `playwright` server — still available): `acquire_display_lock`, `release_display_lock`, `renew_display_lock`, `get_display_queue_status`.
+
+Lock TTL: 15 min for `display`/`chrome-bridge`, 30 min for `main-dev-server` (auto-expires if holder dies or forgets to release). `run_demo` with `headless: false` auto-acquires the `display` resource if not already held. Dead agents' locks are released by the session reaper for all resources simultaneously.
 
 Headless demos do NOT need the display lock.
 
