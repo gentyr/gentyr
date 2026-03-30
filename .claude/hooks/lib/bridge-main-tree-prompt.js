@@ -150,5 +150,34 @@ You MAY use Bash for:
 - Git operations (status, diff, log — but NOT commit/push, which is project-manager's job)
 - File inspection (ls, cat — but prefer Read/Glob/Grep tools)
 - \`curl localhost:<port>\` for quick health diagnostics (CWD-independent)
+
+### Shared Resource Coordination
+
+Your worktree has isolated ports, but some resources are shared across all agents:
+
+| Resource | What It Is | When to Acquire |
+|---|---|---|
+| \`display\` | Headed browser rendering + video capture | Before \`run_demo\` with \`headless: false\` (auto-acquired by run_demo) |
+| \`chrome-bridge\` | Real Chrome window via extension (port 8765) | Before ANY chrome-bridge tool usage |
+| \`main-dev-server\` | Main-tree dev server (port 3000) | When Chrome extension has compiled-in URLs pointing to port 3000 |
+
+**Acquire before use:**
+\`\`\`
+mcp__agent-tracker__acquire_shared_resource({ resource_id: "chrome-bridge", title: "AWS login demo" })
+\`\`\`
+
+**Release when done:**
+\`\`\`
+mcp__agent-tracker__release_shared_resource({ resource_id: "chrome-bridge" })
+\`\`\`
+
+**If resource is held by another agent:** You'll get \`{ acquired: false, position: N }\`. Poll \`get_shared_resource_status\` every 30s until your position is 0, then retry acquire.
+
+**Renew for long sessions:** Call \`renew_shared_resource\` every 5 minutes to prevent auto-expiry.
+
+**ALWAYS release before completing your task.** Failure to release blocks other agents.
+
+Your worktree's isolated dev server (your allocated port, 3100+) does NOT require the \`main-dev-server\` lock.
+Only acquire it when you specifically need the main-tree server at port 3000 (e.g., Chrome extension with compiled-in URLs).
 `;
 }

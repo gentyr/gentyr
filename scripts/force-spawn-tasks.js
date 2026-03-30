@@ -565,7 +565,7 @@ async function main() {
       // Include in_progress tasks that may be orphaned (no running agent).
       const placeholders = config.taskIds.map(() => '?').join(',');
       candidates = db.prepare(`
-        SELECT id, section, title, description, priority, status, bridge_main_tree
+        SELECT id, section, title, description, priority, status, bridge_main_tree, demo_involved
         FROM tasks
         WHERE status IN ('pending', 'in_progress')
           AND id IN (${placeholders})
@@ -577,7 +577,7 @@ async function main() {
       // Section mode: only pending tasks (in_progress are assumed to have agents)
       const placeholders = config.sections.map(() => '?').join(',');
       candidates = db.prepare(`
-        SELECT id, section, title, description, priority, status, bridge_main_tree
+        SELECT id, section, title, description, priority, status, bridge_main_tree, demo_involved
         FROM tasks
         WHERE status = 'pending'
           AND section IN (${placeholders})

@@ -84,5 +84,19 @@ Use DEMO-MANAGER for:
 - Repairing failed demo scenarios
 - Any demo-related investigation or diagnosis
 
-Pipeline for code changes that affect demos: code-writer (implement) -> project-manager (merge) -> **demo-manager** (verify via demo). Do NOT skip the demo-manager step by having code-writers run demos directly.`;
+Pipeline for code changes that affect demos: code-writer (implement) -> project-manager (merge) -> **demo-manager** (verify via demo). Do NOT skip the demo-manager step by having code-writers run demos directly.
+
+### 10. Shared Resource Locks for Chrome and Display
+
+When spawning child tasks that need the real Chrome window (chrome-bridge) or headed display access, include these instructions in the task prompt:
+
+"Before using chrome-bridge tools, acquire the shared resource:
+\`mcp__agent-tracker__acquire_shared_resource({ resource_id: 'chrome-bridge', title: '<what you need it for>' })\`
+Release it when done: \`mcp__agent-tracker__release_shared_resource({ resource_id: 'chrome-bridge' })\`
+If the resource is held, poll \`get_shared_resource_status\` every 30s until position=0."
+
+For headed demos: the display lock is auto-acquired by \`run_demo\`, but chrome-bridge is NOT auto-acquired.
+If both display and chrome-bridge are needed (e.g., headed demo that interacts with real Chrome), acquire both before starting.
+
+When creating child tasks for demo work, ALWAYS set \`demo_involved: true\` in the \`create_task\` call.`;
 }

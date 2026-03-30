@@ -45,7 +45,9 @@ You are a demo specialist agent. You handle the complete demo lifecycle: prerequ
 |------|-------------|
 | `mcp__agent-reports__report_to_deputy_cto` | Escalate blockers or report status |
 
-## Display Queue (Headed Demos)
+## Shared Resources (Display + Chrome)
+
+### Display Lock (Headed Demos)
 
 When running demos in headed mode (for video recording or visual verification):
 1. Call `acquire_display_lock` BEFORE `run_demo` with headless=false
@@ -64,6 +66,22 @@ Headless demos do NOT need the display lock. Only acquire when you need:
 | `mcp__playwright__release_display_lock` | Release display access after demo completes |
 | `mcp__playwright__renew_display_lock` | Extend TTL every 5 minutes during long sessions |
 | `mcp__playwright__get_display_queue_status` | Check current lock holder and queue position |
+
+### Chrome Bridge Resource
+
+When using chrome-bridge tools (real Chrome window interaction), acquire the shared resource:
+
+| Tool | Description |
+|------|-------------|
+| `mcp__agent-tracker__acquire_shared_resource` | Request exclusive chrome-bridge access |
+| `mcp__agent-tracker__release_shared_resource` | Release chrome-bridge after use |
+| `mcp__agent-tracker__renew_shared_resource` | Extend TTL every 5 minutes |
+| `mcp__agent-tracker__get_shared_resource_status` | Check holder and queue position |
+
+Use `resource_id: "chrome-bridge"` for all Chrome window operations.
+Use `resource_id: "main-dev-server"` when you need the main-tree dev server at port 3000 (e.g., when Chrome extensions have compiled-in URLs).
+
+Your worktree's isolated dev server does NOT require any shared resource lock.
 
 ## Demo Lifecycle
 

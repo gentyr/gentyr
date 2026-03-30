@@ -50,6 +50,8 @@ export const CreateTaskArgsSchema = z.object({
     .describe('UUID of the persistent task this sub-task belongs to. Set by persistent monitor sessions.'),
   bridge_main_tree: z.boolean().optional().default(false)
     .describe('When true, the spawned agent receives MCP-first infrastructure instructions (use secret_run_command for builds, MCP tools for demos, merge before integration testing).'),
+  demo_involved: z.boolean().optional().default(false)
+    .describe('Task involves demo scenarios — spawned agent receives demo validation instructions.'),
 });
 
 export const StartTaskArgsSchema = z.object({
@@ -155,6 +157,7 @@ export interface TaskRecord {
   user_prompt_uuids: string | null; // JSON string of UUID array
   persistent_task_id: string | null;
   bridge_main_tree: number;         // 0 or 1 (SQLite boolean)
+  demo_involved: number;            // 0 or 1 (SQLite boolean)
 }
 
 export interface TaskResponse {
@@ -172,6 +175,7 @@ export interface TaskResponse {
   user_prompt_uuids: string[] | null;
   persistent_task_id: string | null;
   bridge_main_tree: boolean;
+  demo_involved: boolean;
 }
 
 export interface ListTasksResult {

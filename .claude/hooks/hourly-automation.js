@@ -1246,7 +1246,7 @@ function getPendingTasksForRunner() {
     const oneHourAgo = nowTimestamp - 3600;
 
     const candidates = db.prepare(`
-      SELECT id, section, title, description, bridge_main_tree, persistent_task_id
+      SELECT id, section, title, description, bridge_main_tree, demo_involved, persistent_task_id
       FROM tasks
       WHERE status = 'pending'
         AND section IN (${Object.keys(SECTION_AGENT_MAP).map(() => '?').join(',')})
@@ -1272,7 +1272,7 @@ function getUrgentPendingTasks() {
   try {
     const db = new Database(TODO_DB_PATH, { readonly: true });
     const candidates = db.prepare(`
-      SELECT id, section, title, description, bridge_main_tree, persistent_task_id
+      SELECT id, section, title, description, bridge_main_tree, demo_involved, persistent_task_id
       FROM tasks
       WHERE status = 'pending'
         AND priority = 'urgent'

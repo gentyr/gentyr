@@ -671,7 +671,8 @@ process.stdin.on('end', async () => {
 
     // Build task object for spawn (include assigned_by for CTO priority detection)
     const bridgeMainTree = toolInput.bridge_main_tree === true;
-    const task = { id: taskId, section, title, description, assigned_by: assignedBy, bridge_main_tree: bridgeMainTree };
+    const demoInvolved = toolInput.demo_involved === true;
+    const task = { id: taskId, section, title, description, assigned_by: assignedBy, bridge_main_tree: bridgeMainTree, demo_involved: demoInvolved ? 1 : 0 };
 
     const spawnResult = await spawnTaskAgent(task);
     debugLog('urgent-task-spawner', 'spawn_result', { taskId, result: spawnResult === true ? 'spawned' : spawnResult === 'queued' ? 'queued' : 'failed' });
