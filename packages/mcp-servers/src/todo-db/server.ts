@@ -274,6 +274,13 @@ function initializeDatabase(): Database.Database {
     db.exec("ALTER TABLE tasks ADD COLUMN bridge_main_tree INTEGER DEFAULT 0");
   }
 
+  // Auto-migration: add demo_involved column if missing
+  try {
+    db.prepare("SELECT demo_involved FROM tasks LIMIT 0").get();
+  } catch {
+    db.exec("ALTER TABLE tasks ADD COLUMN demo_involved INTEGER DEFAULT 0");
+  }
+
   return db;
 }
 
@@ -348,6 +355,7 @@ function taskToResponse(task: TaskRecord): TaskResponse {
     user_prompt_uuids: userPromptUuids,
     persistent_task_id: task.persistent_task_id ?? null,
     bridge_main_tree: task.bridge_main_tree === 1,
+    demo_involved: task.demo_involved === 1,
   };
 }
 
@@ -536,12 +544,13 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
   const userPromptUuidsJson = userPromptUuids ? JSON.stringify(userPromptUuids) : null;
   const persistentTaskId = args.persistent_task_id ?? null;
   const bridgeMainTree = args.bridge_main_tree ? 1 : 0;
+  const demoInvolved = args.demo_involved ? 1 : 0;
 
   try {
     db.prepare(`
-      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority, user_prompt_uuids, persistent_task_id, bridge_main_tree)
-      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, args.section, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority, userPromptUuidsJson, persistentTaskId, bridgeMainTree);
+      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority, user_prompt_uuids, persistent_task_id, bridge_main_tree, demo_involved)
+      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, args.section, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority, userPromptUuidsJson, persistentTaskId, bridgeMainTree, demoInvolved);
   } catch (err: unknown) {
     if (
       err instanceof Error &&
@@ -571,6 +580,7 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     user_prompt_uuids: userPromptUuids,
     persistent_task_id: persistentTaskId,
     bridge_main_tree: bridgeMainTree === 1,
+    demo_involved: demoInvolved === 1,
     warning,
   };
 }

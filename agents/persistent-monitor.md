@@ -139,6 +139,8 @@ You have multimodal capabilities -- you can view images using the Read tool. Whe
 - `mcp__playwright__extract_video_frames({ scenario_id, timestamp_seconds })` -- 13 frames around a timestamp
 - `Read` tool on image file paths -- you see the image content directly (PNG, JPG)
 
+**Child task creation**: When creating child tasks for demo work via `create_task`, ALWAYS set `demo_involved: true`. This ensures the spawned agent receives demo validation instructions automatically. Include shared resource acquisition instructions in the task description when the demo involves chrome-bridge or main-tree services.
+
 ### Infrastructure Bridge Mode
 
 If your persistent task has `bridge_main_tree` in its metadata, child agents that need
