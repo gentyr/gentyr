@@ -290,6 +290,8 @@ export const PeekSessionArgsSchema = z.object({
   agent_id: z.string().optional().describe('Agent ID to peek'),
   queue_id: z.string().optional().describe('Queue ID to peek'),
   depth: z.number().optional().default(8).describe('KB of JSONL tail to read'),
+  include_compaction_context: z.boolean().optional().default(false)
+    .describe('Scan backward for compaction summaries when session has been compacted. Adds ~50ms for compacted sessions.'),
 });
 export type PeekSessionArgs = z.infer<typeof PeekSessionArgsSchema>;
 
