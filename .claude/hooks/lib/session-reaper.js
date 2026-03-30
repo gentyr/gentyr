@@ -35,6 +35,18 @@ const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
 // Session file constants
 const HEAD_BYTES = 2000;
+
+/**
+ * Parse a SQLite datetime string as UTC.
+ * SQLite's datetime('now') produces "YYYY-MM-DD HH:MM:SS" (UTC, no Z suffix).
+ * JavaScript's new Date() parses this as local time without timezone indicator.
+ * This helper ensures correct UTC interpretation.
+ */
+function parseSqliteDatetime(str) {
+  if (!str) return new Date(NaN);
+  if (str.includes('T')) return new Date(str); // Already ISO 8601
+  return new Date(str.replace(' ', 'T') + 'Z');
+}
 const TAIL_BYTES = 4000;
 const TERMINAL_TOOL_BYTES = 16384;
 
@@ -380,14 +392,14 @@ export function reapSyncPass(db) {
             const task = ptDb.prepare("SELECT last_heartbeat FROM persistent_tasks WHERE id = ?").get(taskId);
             ptDb.close();
             if (task && task.last_heartbeat) {
-              const heartbeatAge = now - new Date(task.last_heartbeat).getTime();
+              const heartbeatAge = now - parseSqliteDatetime(task.last_heartbeat).getTime();
               const STALE_HEARTBEAT_MS = getCooldown('persistent_heartbeat_stale_minutes', 2) * 60 * 1000;
 
               // Spawn grace period: skip heartbeat check if this monitor was spawned
               // less than 60 seconds ago. New monitors inherit the previous monitor's
               // frozen heartbeat — without this grace period, they get killed before
               // they can make their first tool call and update the heartbeat.
-              const spawnedMs = item.spawned_at ? now - new Date(item.spawned_at).getTime() : Infinity;
+              const spawnedMs = item.spawned_at ? now - parseSqliteDatetime(item.spawned_at).getTime() : Infinity;
               const SPAWN_GRACE_MS = 60_000; // 60 seconds
 
               if (heartbeatAge > STALE_HEARTBEAT_MS && spawnedMs > SPAWN_GRACE_MS) {
@@ -432,7 +444,7 @@ export function reapSyncPass(db) {
         }
       } catch (_) { /* non-fatal — best effort heartbeat check */ }
     } else if (item.spawned_at) {
-      const elapsed = now - new Date(item.spawned_at).getTime();
+      const elapsed = now - parseSqliteDatetime(item.spawned_at).getTime();
       const AUTH_STALL_MS = getCooldown('auth_stall_detection_minutes', 2) * 60 * 1000;
 
       // Auth-stall fast path: check JSONL mtime + tail for auth errors
@@ -684,7 +696,7 @@ export function getStuckAliveSessions() {
       agentId: item.agent_id,
       pid: item.pid,
       spawnedAt: item.spawned_at,
-      runDurationMs: now - new Date(item.spawned_at).getTime(),
+      runDurationMs: now - parseSqliteDatetime(item.spawned_at).getTime(),
       agentType: item.agent_type,
       title: item.title,
       lane: item.lane,
