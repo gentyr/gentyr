@@ -97,6 +97,18 @@ let resolvedCredentials = {};
 let credentialsResolved = false;
 
 /**
+ * Parse a SQLite datetime string as UTC.
+ * SQLite's datetime('now') produces "YYYY-MM-DD HH:MM:SS" (UTC, no Z suffix).
+ * JavaScript's new Date() parses this as local time without timezone indicator.
+ * This helper ensures correct UTC interpretation.
+ */
+function parseSqliteDatetime(str) {
+  if (!str) return new Date(NaN);
+  if (str.includes('T')) return new Date(str); // Already ISO 8601
+  return new Date(str.replace(' ', 'T') + 'Z');
+}
+
+/**
  * Ensure credentials have been resolved (lazy, called only when spawning).
  * Wraps preResolveCredentials() with a guard flag so it runs at most once
  * per automation cycle.
@@ -2843,7 +2855,7 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
           }
         } else if (task.last_heartbeat) {
           // PID alive but check for stale heartbeat
-          const heartbeatAge = Date.now() - new Date(task.last_heartbeat).getTime();
+          const heartbeatAge = Date.now() - parseSqliteDatetime(task.last_heartbeat).getTime();
           const staleKillMinutes = (config.persistent_monitor_stale_kill_minutes != null)
             ? config.persistent_monitor_stale_kill_minutes
             : 30;
@@ -2969,7 +2981,7 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
             continue;
           }
 
-          const pauseAge = now2 - new Date(pauseEvent.created_at).getTime();
+          const pauseAge = now2 - parseSqliteDatetime(pauseEvent.created_at).getTime();
           if (pauseAge < thresholdMs) {
             log(`Persistent stale pause auto-resume: "${task.title}" paused ${Math.round(pauseAge / 60000)}min ago — below ${thresholdMinutes}min threshold`);
             continue;

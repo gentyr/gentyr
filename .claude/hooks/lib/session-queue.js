@@ -39,6 +39,18 @@ const FOCUS_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'focus-mode.j
 
 // Lane sub-limits
 const GATE_LANE_LIMIT = 5;
+
+/**
+ * Parse a SQLite datetime string as UTC.
+ * SQLite's datetime('now') produces "YYYY-MM-DD HH:MM:SS" (UTC, no Z suffix).
+ * JavaScript's new Date() parses this as local time without timezone indicator.
+ * This helper ensures correct UTC interpretation.
+ */
+function parseSqliteDatetime(str) {
+  if (!str) return new Date(NaN);
+  if (str.includes('T')) return new Date(str); // Already ISO 8601
+  return new Date(str.replace(' ', 'T') + 'Z');
+}
 // Persistent lane has no limit — monitors always spawn immediately and are auto-revived on death.
 
 // Default TTL for queued items (30 minutes)
@@ -493,7 +505,7 @@ function requeueDeadPersistentMonitor(db, taskId) {
   // produces '2026-03-29 14:53:59' (space separator) while toISOString() produces
   // '2026-03-29T14:53:59.000Z' (T separator). String comparison breaks across formats.
   const dbRecentRevivals = db.prepare(
-    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND source = 'session-queue-reaper' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-1 hour')"
+    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-1 hour')"
   ).get(taskId);
   if (dbRecentRevivals && dbRecentRevivals.cnt >= 5) {
     log(`Persistent monitor crash-loop detected for ${taskId} — pausing task and reporting`);
@@ -505,6 +517,19 @@ function requeueDeadPersistentMonitor(db, taskId) {
         const ptDb2 = new Database(ptDbPath);
         ptDb2.pragma('busy_timeout = 3000');
         ptDb2.prepare("UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status = 'active'").run(taskId);
+
+        // Record pause event so stale-pause auto-resume knows when THIS pause happened
+        try {
+          ptDb2.prepare(
+            "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'paused', ?, ?)"
+          ).run(
+            generateQueueId(),
+            taskId,
+            JSON.stringify({ reason: 'crash_loop_circuit_breaker', source: 'session-queue' }),
+            new Date().toISOString()
+          );
+        } catch (_) { /* non-fatal */ }
+
         ptDb2.close();
         log(`Auto-paused persistent task ${taskId} due to crash loop`);
       }
@@ -1111,7 +1136,7 @@ export async function preemptForCtoTask(ctoQueueId, projectDir) {
   log(`preemptForCtoTask: preempting ${victim.id} (agent: ${agentId}, PID: ${pid}, priority: ${victim.priority}, title: "${victim.title}")`);
 
   // Calculate elapsed time for the prompt
-  const spawnedAt = victim.spawned_at ? new Date(victim.spawned_at) : new Date();
+  const spawnedAt = victim.spawned_at ? parseSqliteDatetime(victim.spawned_at) : new Date();
   const elapsedMs = Date.now() - spawnedAt.getTime();
   const elapsedMins = Math.floor(elapsedMs / 60000);
   const elapsedHours = Math.floor(elapsedMins / 60);
@@ -1430,7 +1455,7 @@ export function getQueueStatus() {
       priority: item.priority,
       lane: item.lane,
       source: item.source,
-      waitTime: formatElapsed(now - new Date(item.enqueued_at).getTime()),
+      waitTime: formatElapsed(now - parseSqliteDatetime(item.enqueued_at).getTime()),
     })),
     runningItems: activeRunning.map(item => ({
       id: item.id,
@@ -1439,7 +1464,7 @@ export function getQueueStatus() {
       agentType: item.agent_type,
       agentId: item.agent_id,
       pid: item.pid,
-      elapsed: item.spawned_at ? formatElapsed(now - new Date(item.spawned_at).getTime()) : 'unknown',
+      elapsed: item.spawned_at ? formatElapsed(now - parseSqliteDatetime(item.spawned_at).getTime()) : 'unknown',
     })),
     suspendedItems: suspendedItems.map(item => ({
       id: item.id,
@@ -1447,7 +1472,7 @@ export function getQueueStatus() {
       source: item.source,
       agentType: item.agent_type,
       agentId: item.agent_id,
-      elapsed: item.spawned_at ? formatElapsed(now - new Date(item.spawned_at).getTime()) : 'unknown',
+      elapsed: item.spawned_at ? formatElapsed(now - parseSqliteDatetime(item.spawned_at).getTime()) : 'unknown',
     })),
     stats: {
       completedLast24h: completed24h,
