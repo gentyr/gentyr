@@ -27,7 +27,7 @@ import { auditEvent } from './session-audit.js';
 import { debugLog } from './debug-log.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
 import { buildPersistentMonitorBridgeInstructions } from './persistent-monitor-bridge-instructions.js';
-import { checkAndExpireLock } from './display-lock.js';
+import { checkAndExpireResources } from './resource-lock.js';
 // NOTE: revival-utils.js imports from session-queue.js (circular dep), so we
 // inline these three utilities here instead of importing from revival-utils.js.
 // Mirrors the same pattern used in session-reaper.js.
@@ -698,10 +698,10 @@ export function drainQueue() {
     }
   } catch (_) { /* non-fatal */ }
 
-  // Step 2.6: Check for expired display locks and promote next waiter
+  // Step 2.6: Check for expired resource locks and promote next waiters
   try {
-    checkAndExpireLock();
-  } catch (_) { /* non-fatal — display lock module may not be initialized */ }
+    checkAndExpireResources();
+  } catch (_) { /* non-fatal — resource lock module may not be initialized */ }
 
   // Step 3: Count running items by lane (suspended items do NOT count toward capacity)
   const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent')").get().cnt;

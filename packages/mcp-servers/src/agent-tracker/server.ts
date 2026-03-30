@@ -52,6 +52,11 @@ import {
   SuspendSessionArgsSchema,
   ReorderQueueArgsSchema,
   InspectPersistentTaskArgsSchema,
+  AcquireSharedResourceArgsSchema,
+  ReleaseSharedResourceArgsSchema,
+  RenewSharedResourceArgsSchema,
+  GetSharedResourceStatusArgsSchema,
+  RegisterSharedResourceArgsSchema,
   AGENT_TYPES,
   type ListSpawnedAgentsArgs,
   type GetAgentPromptArgs,
@@ -82,6 +87,11 @@ import {
   type SuspendSessionArgs,
   type ReorderQueueArgs,
   type InspectPersistentTaskArgs,
+  type AcquireSharedResourceArgs,
+  type ReleaseSharedResourceArgs,
+  type RenewSharedResourceArgs,
+  type GetSharedResourceStatusArgs,
+  type RegisterSharedResourceArgs,
   type ForceTriageReportsResult,
   type MonitorAgentsResult,
   type AgentProgress,
@@ -3353,6 +3363,145 @@ function reorderQueue(args: ReorderQueueArgs): object | ErrorResult {
 }
 
 // ============================================================================
+// Shared Resource Registry Tools
+// ============================================================================
+
+/**
+ * Acquire exclusive access to a shared resource.
+ * Uses dynamic import so resource-lock.js resolves CLAUDE_PROJECT_DIR at call time.
+ */
+async function acquireSharedResource(args: AcquireSharedResourceArgs): Promise<object | ErrorResult> {
+  const resourceLockPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'resource-lock.js');
+
+  if (!fs.existsSync(resourceLockPath)) {
+    return { error: `resource-lock.js not found at ${resourceLockPath}` };
+  }
+
+  try {
+    const mod = await import(resourceLockPath);
+    if (typeof mod.acquireResource !== 'function') {
+      return { error: 'acquireResource function not found in resource-lock.js' };
+    }
+    const agentId = process.env.CLAUDE_AGENT_ID || 'unknown';
+    const queueId = process.env.CLAUDE_SESSION_ID || null;
+    const result = mod.acquireResource(
+      args.resource_id,
+      agentId,
+      queueId,
+      args.title ?? null,
+      { ttlMinutes: args.ttl_minutes },
+    );
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to acquire shared resource: ${message}` };
+  }
+}
+
+/**
+ * Release exclusive access to a shared resource.
+ * Uses dynamic import so resource-lock.js resolves CLAUDE_PROJECT_DIR at call time.
+ */
+async function releaseSharedResource(args: ReleaseSharedResourceArgs): Promise<object | ErrorResult> {
+  const resourceLockPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'resource-lock.js');
+
+  if (!fs.existsSync(resourceLockPath)) {
+    return { error: `resource-lock.js not found at ${resourceLockPath}` };
+  }
+
+  try {
+    const mod = await import(resourceLockPath);
+    if (typeof mod.releaseResource !== 'function') {
+      return { error: 'releaseResource function not found in resource-lock.js' };
+    }
+    const agentId = process.env.CLAUDE_AGENT_ID || 'unknown';
+    const result = mod.releaseResource(args.resource_id, agentId);
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to release shared resource: ${message}` };
+  }
+}
+
+/**
+ * Renew the TTL (heartbeat) on a resource lock held by this agent.
+ * Uses dynamic import so resource-lock.js resolves CLAUDE_PROJECT_DIR at call time.
+ */
+async function renewSharedResource(args: RenewSharedResourceArgs): Promise<object | ErrorResult> {
+  const resourceLockPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'resource-lock.js');
+
+  if (!fs.existsSync(resourceLockPath)) {
+    return { error: `resource-lock.js not found at ${resourceLockPath}` };
+  }
+
+  try {
+    const mod = await import(resourceLockPath);
+    if (typeof mod.renewResource !== 'function') {
+      return { error: 'renewResource function not found in resource-lock.js' };
+    }
+    const agentId = process.env.CLAUDE_AGENT_ID || 'unknown';
+    const result = mod.renewResource(args.resource_id, agentId, args.ttl_minutes);
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to renew shared resource: ${message}` };
+  }
+}
+
+/**
+ * Get the lock status of one or all shared resources.
+ * Uses dynamic import so resource-lock.js resolves CLAUDE_PROJECT_DIR at call time.
+ */
+async function getSharedResourceStatus(args: GetSharedResourceStatusArgs): Promise<object | ErrorResult> {
+  const resourceLockPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'resource-lock.js');
+
+  if (!fs.existsSync(resourceLockPath)) {
+    return { error: `resource-lock.js not found at ${resourceLockPath}` };
+  }
+
+  try {
+    const mod = await import(resourceLockPath);
+    if (typeof mod.getResourceStatus !== 'function') {
+      return { error: 'getResourceStatus function not found in resource-lock.js' };
+    }
+    // Pass undefined (not null) when omitted — getResourceStatus treats null/undefined as "all"
+    const result = mod.getResourceStatus(args.resource_id ?? undefined);
+    return Array.isArray(result) ? { resources: result } : result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to get shared resource status: ${message}` };
+  }
+}
+
+/**
+ * Register a new shared resource in the resource registry.
+ * Uses dynamic import so resource-lock.js resolves CLAUDE_PROJECT_DIR at call time.
+ */
+async function registerSharedResource(args: RegisterSharedResourceArgs): Promise<object | ErrorResult> {
+  const resourceLockPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'resource-lock.js');
+
+  if (!fs.existsSync(resourceLockPath)) {
+    return { error: `resource-lock.js not found at ${resourceLockPath}` };
+  }
+
+  try {
+    const mod = await import(resourceLockPath);
+    if (typeof mod.registerResource !== 'function') {
+      return { error: 'registerResource function not found in resource-lock.js' };
+    }
+    const result = mod.registerResource(
+      args.resource_id,
+      args.description,
+      args.default_ttl_minutes,
+    );
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to register shared resource: ${message}` };
+  }
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -3568,11 +3717,42 @@ const tools: AnyToolHandler[] = [
     schema: InspectPersistentTaskArgsSchema,
     handler: inspectPersistentTask,
   },
+  // Shared Resource Registry Tools
+  {
+    name: 'acquire_shared_resource',
+    description: 'Acquire exclusive access to a shared resource (e.g., "display", "chrome-bridge", "main-dev-server"). Returns { acquired: true } if the lock was granted immediately, or { acquired: false, position, holder, queue_entry_id } if the resource is held by another agent. The caller is automatically enqueued and will be promoted when the holder releases. Renew the lock every ~5 min with renew_shared_resource to prevent auto-expiry.',
+    schema: AcquireSharedResourceArgsSchema,
+    handler: acquireSharedResource,
+  },
+  {
+    name: 'release_shared_resource',
+    description: 'Release exclusive access to a shared resource held by this agent. Verifies the caller is the current lock holder. Automatically promotes the next waiter from the queue. Returns { released: true, next_holder } on success.',
+    schema: ReleaseSharedResourceArgsSchema,
+    handler: releaseSharedResource,
+  },
+  {
+    name: 'renew_shared_resource',
+    description: 'Renew the TTL (heartbeat) on a resource lock held by this agent. The lock holder must call this every ~5 minutes during long-running operations to prevent auto-expiry. Returns { renewed: true, expires_at }.',
+    schema: RenewSharedResourceArgsSchema,
+    handler: renewSharedResource,
+  },
+  {
+    name: 'get_shared_resource_status',
+    description: 'Get the lock status and waiting queue for a specific shared resource, or all registered resources if resource_id is omitted. Returns lock holder details (agent_id, title, acquired_at, expires_at) and ordered queue contents.',
+    schema: GetSharedResourceStatusArgsSchema,
+    handler: getSharedResourceStatus,
+  },
+  {
+    name: 'register_shared_resource',
+    description: 'Register a new resource in the shared resource registry, making it available for exclusive locking by agents. Idempotent — re-registering updates description and TTL. Built-in resources (display, chrome-bridge, main-dev-server) are pre-registered automatically.',
+    schema: RegisterSharedResourceArgsSchema,
+    handler: registerSharedResource,
+  },
 ];
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '9.1.0',  // Added set_reserved_slots + get_reserved_slots for reserved pool capacity
+  version: '9.2.0',  // Added shared resource registry tools (acquire/release/renew/status/register)
   tools,
 });
 

@@ -321,6 +321,51 @@ export type ReorderQueueArgs = z.infer<typeof ReorderQueueArgsSchema>;
 // Persistent Task Inspection Schemas
 // ============================================================================
 
+// ============================================================================
+// Shared Resource Registry Schemas
+// ============================================================================
+
+export const AcquireSharedResourceArgsSchema = z.object({
+  resource_id: z.string().min(1)
+    .describe('ID of the resource to lock (e.g., "display", "chrome-bridge", "main-dev-server")'),
+  title: z.string().optional()
+    .describe('Human-readable description of why the resource is being acquired (e.g., "Demo: checkout flow")'),
+  ttl_minutes: z.coerce.number().min(1).max(480).optional()
+    .describe('Lock TTL in minutes. Defaults to the resource registry value (usually 15 min). Max 8 hours.'),
+});
+
+export const ReleaseSharedResourceArgsSchema = z.object({
+  resource_id: z.string().min(1)
+    .describe('ID of the resource to release'),
+});
+
+export const RenewSharedResourceArgsSchema = z.object({
+  resource_id: z.string().min(1)
+    .describe('ID of the resource whose lock TTL to renew'),
+  ttl_minutes: z.coerce.number().min(1).max(480).optional()
+    .describe('New TTL from now in minutes. Defaults to the resource registry value.'),
+});
+
+export const GetSharedResourceStatusArgsSchema = z.object({
+  resource_id: z.string().optional()
+    .describe('ID of a specific resource to query. Omit to get status of ALL registered resources.'),
+});
+
+export const RegisterSharedResourceArgsSchema = z.object({
+  resource_id: z.string().min(1)
+    .describe('Unique resource identifier (e.g., "gpu-0", "redis-test-db")'),
+  description: z.string().min(1)
+    .describe('Human-readable description of what this resource represents'),
+  default_ttl_minutes: z.coerce.number().min(1).max(480).optional().default(15)
+    .describe('Default lock TTL in minutes when no TTL is specified at acquire time (default: 15)'),
+});
+
+export type AcquireSharedResourceArgs = z.infer<typeof AcquireSharedResourceArgsSchema>;
+export type ReleaseSharedResourceArgs = z.infer<typeof ReleaseSharedResourceArgsSchema>;
+export type RenewSharedResourceArgs = z.infer<typeof RenewSharedResourceArgsSchema>;
+export type GetSharedResourceStatusArgs = z.infer<typeof GetSharedResourceStatusArgsSchema>;
+export type RegisterSharedResourceArgs = z.infer<typeof RegisterSharedResourceArgsSchema>;
+
 export const InspectPersistentTaskArgsSchema = z.object({
   id: z.string().describe('Persistent task UUID (or prefix)'),
   depth_kb: z.coerce.number().min(1).max(256).optional().default(32)

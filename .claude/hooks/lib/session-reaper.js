@@ -20,7 +20,7 @@ import { execSync } from 'child_process';
 import { auditEvent } from './session-audit.js';
 import { getCooldown } from '../config-reader.js';
 import { debugLog } from './debug-log.js';
-import { releaseDisplayLock, removeFromDisplayQueue } from './display-lock.js';
+import { releaseAllResources, removeFromAllQueues } from './resource-lock.js';
 
 // Lazy-loaded SQLite
 let Database = null;
@@ -364,7 +364,7 @@ export function reapSyncPass(db) {
 
       // Release display lock if this dead agent held it
       if (item.agent_id) {
-        try { releaseDisplayLock(item.agent_id); removeFromDisplayQueue(item.agent_id); } catch (_) { /* non-fatal */ }
+        try { releaseAllResources(item.agent_id); removeFromAllQueues(item.agent_id); } catch (_) { /* non-fatal */ }
       }
     } else if (item.lane === 'persistent') {
       // Persistent monitors are long-running by design — don't use elapsed time.
@@ -424,7 +424,7 @@ export function reapSyncPass(db) {
 
                 // Release display lock if this stale monitor held it
                 if (item.agent_id) {
-                  try { releaseDisplayLock(item.agent_id); removeFromDisplayQueue(item.agent_id); } catch (_) { /* non-fatal */ }
+                  try { releaseAllResources(item.agent_id); removeFromAllQueues(item.agent_id); } catch (_) { /* non-fatal */ }
                 }
               }
             }
@@ -474,7 +474,7 @@ export function reapSyncPass(db) {
 
               // Release display lock if this auth-stalled agent held it
               if (item.agent_id) {
-                try { releaseDisplayLock(item.agent_id); removeFromDisplayQueue(item.agent_id); } catch (_) { /* non-fatal */ }
+                try { releaseAllResources(item.agent_id); removeFromAllQueues(item.agent_id); } catch (_) { /* non-fatal */ }
               }
 
               continue; // Skip the normal elapsed-time check for this item
