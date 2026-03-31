@@ -126,6 +126,22 @@ export function allocatePortBlock(worktreePath) {
       return { basePort: base, webPort: base, backendPort: base + 1, bridgePort: base + 2 };
     }
 
+    // Auto-clean stale allocations before checking the limit.
+    // Worktrees removed by paths that bypass releasePortBlock() (manual cleanup,
+    // project-manager, hourly automation) leave orphaned entries. Without this,
+    // the 50-slot limit fills up with stale entries and every new worktree gets
+    // ports = null → no PLAYWRIGHT_WEB_PORT → blank page in demos.
+    let staleRemoved = 0;
+    for (const wPath of Object.keys(allocations)) {
+      if (!fs.existsSync(wPath)) {
+        delete allocations[wPath];
+        staleRemoved++;
+      }
+    }
+    if (staleRemoved > 0) {
+      saveAllocations(allocations);
+    }
+
     // Find allocated base ports
     const usedPorts = new Set(Object.values(allocations).map(a => a.basePort));
 
@@ -138,7 +154,7 @@ export function allocatePortBlock(worktreePath) {
     }
 
     if (attempts >= MAX_WORKTREES) {
-      throw new Error(`Port allocator: exceeded max ${MAX_WORKTREES} worktrees`);
+      throw new Error(`Port allocator: exceeded max ${MAX_WORKTREES} worktrees (${staleRemoved} stale cleaned, ${Object.keys(allocations).length} remain)`);
     }
 
     allocations[worktreePath] = { basePort, allocatedAt: new Date().toISOString() };
