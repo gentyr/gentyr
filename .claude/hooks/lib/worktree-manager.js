@@ -173,7 +173,7 @@ export function provisionWorktree(worktreePath) {
     try {
       ports = allocatePortBlock(worktreePath);
     } catch (err) {
-      console.error('[worktree-manager] Warning: port allocation failed:', err.message);
+      console.error(`[worktree-manager] CRITICAL: port allocation failed for ${worktreePath}: ${err.message}. Worktree will have NO isolated ports — demos will default to port 3000 and likely show blank pages.`);
     }
 
     for (const serverName of Object.keys(mcpConfig.mcpServers)) {
