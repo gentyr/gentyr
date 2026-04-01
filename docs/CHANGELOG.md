@@ -1,5 +1,25 @@
 # GENTYR Framework Changelog
 
+## 2026-04-01 - Demo Recording: --skip-snapshot Flag and Window-Specific Screenshots
+
+### Summary
+
+Fixed two bugs in the demo recording system discovered during verification of PR #170 (fullscreen Chrome before recording). The window recorder was incorrectly excluding Chrome because it was already running when the recorder launched. Screenshots were capturing the full screen instead of only the Chrome window.
+
+### Changed
+
+**`tools/window-recorder/Sources/WindowRecorder/main.swift`**:
+- Added `--skip-snapshot` CLI flag to `parseArgs()` — when set, `findWindow()` matches ANY existing window on the first poll instead of only windows that appear after a snapshot baseline, fixing Chrome exclusion when the recorder starts after the browser is already open
+- Default snapshot behavior (start recorder before Chrome) preserved for backward compatibility
+
+**`packages/mcp-servers/src/playwright/server.ts`**:
+- `startWindowRecorder()` now always passes `--skip-snapshot` since the recorder always starts after Chrome (established by PR #170 ordering)
+- Added `getChromeWindowId()` — uses `swift -e` with CoreGraphics `CGWindowListCopyWindowInfo` to find the CGWindowID of the running Chrome for Testing window
+- `startScreenshotCapture()` accepts optional `windowId` parameter; when provided, passes `-l <windowId>` to `screencapture` for window-specific capture instead of full-screen capture
+- In `run_demo` headed recording flow: calls `getChromeWindowId()` after Chrome appears and passes the result to `startScreenshotCapture()`
+
+---
+
 ## 2026-03-18 - Rename `[Task]` Session Tag to `[Automation]`
 
 ### Summary

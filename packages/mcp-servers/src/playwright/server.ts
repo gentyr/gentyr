@@ -453,7 +453,9 @@ function startWindowRecorder(outputPath: string, appName?: string): { pid: numbe
   const binary = getWindowRecorderBinary();
   if (!binary) return null;
 
-  const args = ['--output', outputPath];
+  // Always pass --skip-snapshot because we start the recorder AFTER Chrome is already running.
+  // The snapshot-based new-window filter would exclude Chrome's pre-existing window forever.
+  const args = ['--output', outputPath, '--skip-snapshot'];
   if (appName) args.push('--app', appName);
 
   try {
@@ -599,6 +601,45 @@ function unfullscreenChromeWindow(): void {
 }
 
 // ============================================================================
+// Chrome Window ID Discovery (macOS only)
+// ============================================================================
+
+/**
+ * Get the CGWindowID for Chrome for Testing's main window (macOS only).
+ * Uses swift + CoreGraphics to query CGWindowListCopyWindowInfo.
+ * Returns null on non-macOS or if no matching window is found.
+ */
+function getChromeWindowId(): number | null {
+  if (process.platform !== 'darwin') return null;
+  try {
+    const script = `
+import CoreGraphics
+let windowList = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+for w in windowList {
+    guard let name = w[kCGWindowOwnerName as String] as? String else { continue }
+    if name.contains("Chrome for Testing"), let layer = w[kCGWindowLayer as String] as? Int, layer == 0 {
+        let bounds = w[kCGWindowBounds as String] as? [String: Any] ?? [:]
+        let width = bounds["Width"] as? Int ?? 0
+        let height = bounds["Height"] as? Int ?? 0
+        if width >= 100 && height >= 100 {
+            if let windowId = w[kCGWindowNumber as String] as? Int { print(windowId) }
+            break
+        }
+    }
+}`;
+    const result = execFileSync('swift', ['-e', script], {
+      timeout: 10000,
+      stdio: 'pipe',
+      encoding: 'utf8',
+    }).trim();
+    const id = parseInt(result, 10);
+    return isNaN(id) ? null : id;
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================================
 // Screenshot Capture Helpers (macOS only)
 // ============================================================================
 
@@ -606,10 +647,13 @@ const SCREENSHOT_INTERVAL_MS = 3000;
 
 /**
  * Start periodic screenshot capture using macOS screencapture.
+ * When windowId is provided, captures only that specific window via -l <windowId>.
+ * Falls back to full-screen capture when windowId is null/undefined.
  * Returns null on non-macOS platforms.
  */
 function startScreenshotCapture(
   scenarioId: string,
+  windowId?: number | null,
 ): { interval: ReturnType<typeof setInterval>; dir: string; startTime: number } | null {
   if (os.platform() !== 'darwin') return null;
 
@@ -634,7 +678,10 @@ function startScreenshotCapture(
     const filename = `screenshot-${String(elapsed).padStart(4, '0')}.png`;
     const filepath = path.join(dir, filename);
     try {
-      execFileSync('screencapture', ['-x', '-t', 'png', filepath], {
+      const captureArgs = ['-x', '-t', 'png'];
+      if (windowId != null) captureArgs.push('-l', String(windowId));
+      captureArgs.push(filepath);
+      execFileSync('screencapture', captureArgs, {
         timeout: 5000,
         stdio: 'pipe',
       });
@@ -1414,9 +1461,14 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       }
     }
 
+    // Get Chrome window ID for targeted screenshot capture (macOS only).
+    // Must be called after Chrome is already running (waitForChromeWindow above ensures this
+    // for the recording path; for non-recording headed paths Chrome is already up at this point).
+    const chromeWindowId = !args.headless ? getChromeWindowId() : null;
+
     // Start periodic screenshot capture for headed demos (macOS only)
     if (!args.headless && args.scenario_id) {
-      screenshotCapture = startScreenshotCapture(args.scenario_id);
+      screenshotCapture = startScreenshotCapture(args.scenario_id, chromeWindowId);
     }
 
     // Progress-based crash/stall detection:

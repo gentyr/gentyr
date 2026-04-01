@@ -6,12 +6,13 @@ import CoreGraphics
 
 // MARK: - CLI Argument Parsing
 
-func parseArgs() -> (output: String, app: String, title: String?, fps: Int) {
+func parseArgs() -> (output: String, app: String, title: String?, fps: Int, skipSnapshot: Bool) {
     let args = CommandLine.arguments
     var output: String?
     var app = "Chrome for Testing"
     var title: String?
     var fps = 25
+    var skipSnapshot = false
 
     var i = 1
     while i < args.count {
@@ -24,6 +25,8 @@ func parseArgs() -> (output: String, app: String, title: String?, fps: Int) {
             i += 1; if i < args.count { title = args[i] }
         case "--fps":
             i += 1; if i < args.count { fps = Int(args[i]) ?? 25 }
+        case "--skip-snapshot":
+            skipSnapshot = true
         default:
             break
         }
@@ -31,10 +34,10 @@ func parseArgs() -> (output: String, app: String, title: String?, fps: Int) {
     }
 
     guard let outputPath = output else {
-        FileHandle.standardError.write(Data("Usage: WindowRecorder --output <path> [--app <name>] [--title <substring>] [--fps <N>]\n".utf8))
+        FileHandle.standardError.write(Data("Usage: WindowRecorder --output <path> [--app <name>] [--title <substring>] [--fps <N>] [--skip-snapshot]\n".utf8))
         exit(1)
     }
-    return (outputPath, app, title, fps)
+    return (outputPath, app, title, fps, skipSnapshot)
 }
 
 // MARK: - Window Discovery
@@ -48,93 +51,145 @@ func appendDiag(_ line: String) {
     }
 }
 
-func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
+func findWindow(appName: String, titleSubstring: String?, skipSnapshot: Bool) async -> SCWindow? {
     let deadline = Date().addingTimeInterval(120)
     let targetBundleID = "com.google.chrome.for.testing"
     var pollCount = 0
     var existingWindowIDs: Set<UInt32>? = nil
+
+    if skipSnapshot {
+        appendDiag("skip-snapshot mode: matching ANY window from first poll (recorder started after Chrome)\n")
+    }
 
     while Date() < deadline {
         do {
             let content = try await SCShareableContent.current
             pollCount += 1
 
-            // On first poll, snapshot ALL window IDs (not just Chrome)
-            if existingWindowIDs == nil {
-                existingWindowIDs = Set(content.windows.map { $0.windowID })
-                let chromeCount = content.windows.filter {
-                    $0.owningApplication?.applicationName.localizedCaseInsensitiveContains(appName) == true
-                }.count
-                appendDiag("Snapshot: \(existingWindowIDs!.count) total windows (\(chromeCount) matching '\(appName)')\n")
-            }
+            if skipSnapshot {
+                // skip-snapshot mode: recorder started after Chrome, so Chrome's window is
+                // already present. Skip the snapshot filter entirely and match any window
+                // that satisfies the app name, minimum size, and optional title criteria.
 
-            // Detect genuinely NEW windows (any app) that appeared after snapshot
-            let allCurrentIDs = Set(content.windows.map { $0.windowID })
-            let newIDs = allCurrentIDs.subtracting(existingWindowIDs!)
-
-            // Log new windows with bundleIdentifier to identify Playwright's browser
-            if !newIDs.isEmpty {
-                let newWindows = content.windows.filter { newIDs.contains($0.windowID) }
-                let descriptions = newWindows.compactMap { w -> String? in
-                    let name = w.owningApplication?.applicationName ?? "(nil)"
-                    let bundleID = w.owningApplication?.bundleIdentifier ?? "(nil)"
-                    return "\(name) [bundle:\(bundleID)] (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]"
+                // Log all windows on first few polls for full diagnostics
+                if pollCount <= 3 {
+                    let appNames = content.windows.compactMap { w -> String? in
+                        guard let name = w.owningApplication?.applicationName else { return nil }
+                        let bundleID = w.owningApplication?.bundleIdentifier ?? "?"
+                        return "\(name) [bundle:\(bundleID)] (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]"
+                    }
+                    appendDiag("poll \(pollCount) (skip-snapshot): \(appNames.joined(separator: ", "))\n")
                 }
-                appendDiag("NEW windows at poll \(pollCount): \(descriptions.joined(separator: ", "))\n")
-            }
 
-            // Log all windows on first few polls for full diagnostics
-            if pollCount <= 3 {
-                let appNames = content.windows.compactMap { w -> String? in
-                    guard let name = w.owningApplication?.applicationName else { return nil }
+                // Find the largest matching window directly (no new-window filtering)
+                var bestWindow: SCWindow? = nil
+                var bestArea: CGFloat = 0
+                var bestHasBundleMatch = false
+                for window in content.windows {
+                    guard let ownerName = window.owningApplication?.applicationName else { continue }
+                    guard ownerName.localizedCaseInsensitiveContains(appName) else { continue }
+                    guard window.frame.width >= 100 && window.frame.height >= 100 else { continue }
+                    if let sub = titleSubstring {
+                        guard let t = window.title, t.localizedCaseInsensitiveContains(sub) else { continue }
+                    }
+                    let hasBundleMatch = window.owningApplication?.bundleIdentifier == targetBundleID
+                    let area = window.frame.width * window.frame.height
+                    if hasBundleMatch && !bestHasBundleMatch {
+                        bestArea = area
+                        bestWindow = window
+                        bestHasBundleMatch = true
+                    } else if hasBundleMatch == bestHasBundleMatch && area > bestArea {
+                        bestArea = area
+                        bestWindow = window
+                        bestHasBundleMatch = hasBundleMatch
+                    }
+                }
+                if let w = bestWindow {
                     let bundleID = w.owningApplication?.bundleIdentifier ?? "?"
-                    return "\(name) [bundle:\(bundleID)] (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]"
+                    appendDiag("MATCHED (skip-snapshot): \(w.owningApplication?.applicationName ?? "?") [bundle:\(bundleID)] - \(w.title ?? "(untitled)") (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]\n")
+                    return w
                 }
-                appendDiag("poll \(pollCount): \(appNames.joined(separator: ", "))\n")
-            }
+            } else {
+                // Default mode: recorder started before Chrome. Snapshot all existing window IDs
+                // on the first poll, then only match windows that appear after the snapshot.
 
-            // Find the largest NEW matching window (skip pre-existing ones)
-            // Prefer windows with the exact Chrome for Testing bundle ID
-            var bestWindow: SCWindow? = nil
-            var bestArea: CGFloat = 0
-            var bestHasBundleMatch = false
-            for window in content.windows {
-                guard let ownerName = window.owningApplication?.applicationName else { continue }
-                guard ownerName.localizedCaseInsensitiveContains(appName) else { continue }
-                guard window.frame.width >= 100 && window.frame.height >= 100 else { continue }
-                if existingWindowIDs?.contains(window.windowID) == true { continue }
-                if let sub = titleSubstring {
-                    guard let t = window.title, t.localizedCaseInsensitiveContains(sub) else { continue }
+                // On first poll, snapshot ALL window IDs (not just Chrome)
+                if existingWindowIDs == nil {
+                    existingWindowIDs = Set(content.windows.map { $0.windowID })
+                    let chromeCount = content.windows.filter {
+                        $0.owningApplication?.applicationName.localizedCaseInsensitiveContains(appName) == true
+                    }.count
+                    appendDiag("Snapshot: \(existingWindowIDs!.count) total windows (\(chromeCount) matching '\(appName)')\n")
                 }
-                let hasBundleMatch = window.owningApplication?.bundleIdentifier == targetBundleID
-                let area = window.frame.width * window.frame.height
-                // Bundle-matched windows always win over non-bundle-matched
-                if hasBundleMatch && !bestHasBundleMatch {
-                    bestArea = area
-                    bestWindow = window
-                    bestHasBundleMatch = true
-                } else if hasBundleMatch == bestHasBundleMatch && area > bestArea {
-                    bestArea = area
-                    bestWindow = window
-                    bestHasBundleMatch = hasBundleMatch
-                }
-            }
-            if let w = bestWindow {
-                let bundleID = w.owningApplication?.bundleIdentifier ?? "?"
-                appendDiag("MATCHED: \(w.owningApplication?.applicationName ?? "?") [bundle:\(bundleID)] - \(w.title ?? "(untitled)") (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]\n")
-                return w
-            }
 
-            // Only exclude non-matching-app new windows; keep target-app windows
-            // eligible for re-evaluation (they may be too small now but resize later)
-            if !newIDs.isEmpty {
-                let nonTargetNewIDs = newIDs.filter { id in
-                    guard let window = content.windows.first(where: { $0.windowID == id }) else { return true }
-                    guard let ownerName = window.owningApplication?.applicationName else { return true }
-                    return !ownerName.localizedCaseInsensitiveContains(appName)
+                // Detect genuinely NEW windows (any app) that appeared after snapshot
+                let allCurrentIDs = Set(content.windows.map { $0.windowID })
+                let newIDs = allCurrentIDs.subtracting(existingWindowIDs!)
+
+                // Log new windows with bundleIdentifier to identify Playwright's browser
+                if !newIDs.isEmpty {
+                    let newWindows = content.windows.filter { newIDs.contains($0.windowID) }
+                    let descriptions = newWindows.compactMap { w -> String? in
+                        let name = w.owningApplication?.applicationName ?? "(nil)"
+                        let bundleID = w.owningApplication?.bundleIdentifier ?? "(nil)"
+                        return "\(name) [bundle:\(bundleID)] (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]"
+                    }
+                    appendDiag("NEW windows at poll \(pollCount): \(descriptions.joined(separator: ", "))\n")
                 }
-                if !nonTargetNewIDs.isEmpty {
-                    existingWindowIDs = existingWindowIDs!.union(Set(nonTargetNewIDs))
+
+                // Log all windows on first few polls for full diagnostics
+                if pollCount <= 3 {
+                    let appNames = content.windows.compactMap { w -> String? in
+                        guard let name = w.owningApplication?.applicationName else { return nil }
+                        let bundleID = w.owningApplication?.bundleIdentifier ?? "?"
+                        return "\(name) [bundle:\(bundleID)] (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]"
+                    }
+                    appendDiag("poll \(pollCount): \(appNames.joined(separator: ", "))\n")
+                }
+
+                // Find the largest NEW matching window (skip pre-existing ones)
+                // Prefer windows with the exact Chrome for Testing bundle ID
+                var bestWindow: SCWindow? = nil
+                var bestArea: CGFloat = 0
+                var bestHasBundleMatch = false
+                for window in content.windows {
+                    guard let ownerName = window.owningApplication?.applicationName else { continue }
+                    guard ownerName.localizedCaseInsensitiveContains(appName) else { continue }
+                    guard window.frame.width >= 100 && window.frame.height >= 100 else { continue }
+                    if existingWindowIDs?.contains(window.windowID) == true { continue }
+                    if let sub = titleSubstring {
+                        guard let t = window.title, t.localizedCaseInsensitiveContains(sub) else { continue }
+                    }
+                    let hasBundleMatch = window.owningApplication?.bundleIdentifier == targetBundleID
+                    let area = window.frame.width * window.frame.height
+                    // Bundle-matched windows always win over non-bundle-matched
+                    if hasBundleMatch && !bestHasBundleMatch {
+                        bestArea = area
+                        bestWindow = window
+                        bestHasBundleMatch = true
+                    } else if hasBundleMatch == bestHasBundleMatch && area > bestArea {
+                        bestArea = area
+                        bestWindow = window
+                        bestHasBundleMatch = hasBundleMatch
+                    }
+                }
+                if let w = bestWindow {
+                    let bundleID = w.owningApplication?.bundleIdentifier ?? "?"
+                    appendDiag("MATCHED: \(w.owningApplication?.applicationName ?? "?") [bundle:\(bundleID)] - \(w.title ?? "(untitled)") (\(Int(w.frame.width))x\(Int(w.frame.height))) [ID:\(w.windowID)]\n")
+                    return w
+                }
+
+                // Only exclude non-matching-app new windows; keep target-app windows
+                // eligible for re-evaluation (they may be too small now but resize later)
+                if !newIDs.isEmpty {
+                    let nonTargetNewIDs = newIDs.filter { id in
+                        guard let window = content.windows.first(where: { $0.windowID == id }) else { return true }
+                        guard let ownerName = window.owningApplication?.applicationName else { return true }
+                        return !ownerName.localizedCaseInsensitiveContains(appName)
+                    }
+                    if !nonTargetNewIDs.isEmpty {
+                        existingWindowIDs = existingWindowIDs!.union(Set(nonTargetNewIDs))
+                    }
                 }
             }
         } catch {
@@ -142,7 +197,7 @@ func findWindow(appName: String, titleSubstring: String?) async -> SCWindow? {
         }
         try? await Task.sleep(nanoseconds: 100_000_000) // 100ms — fast discovery phase
     }
-    appendDiag("FAILED: No NEW window matching app=\(appName) found after \(pollCount) polls\n")
+    appendDiag("FAILED: No \(skipSnapshot ? "" : "NEW ")window matching app=\(appName) found after \(pollCount) polls\n")
     return nil
 }
 
@@ -227,7 +282,7 @@ sigintSource.resume()
 
 Task {
     // Find the target window
-    guard let window = await findWindow(appName: config.app, titleSubstring: config.title) else {
+    guard let window = await findWindow(appName: config.app, titleSubstring: config.title, skipSnapshot: config.skipSnapshot) else {
         FileHandle.standardError.write(Data("Error: No window found matching app=\"\(config.app)\"\(config.title.map { " title=\"\($0)\"" } ?? "") after 120s\n".utf8))
         exitCode = 1
         semaphore.signal()
