@@ -115,10 +115,6 @@ async function main() {
     process.exit(0);
   }
 
-  // Update heartbeat every call
-  db.prepare("UPDATE persistent_tasks SET last_heartbeat = ?, cycle_count = cycle_count + 1 WHERE id = ?")
-    .run(new Date().toISOString(), PERSISTENT_TASK_ID);
-
   const isFull = counter % FULL_INTERVAL === 0;
   debugLog('persistent-task-briefing', 'cycle', { taskId: PERSISTENT_TASK_ID, cycle: task.cycle_count + 1, isFull });
 
@@ -128,19 +124,43 @@ async function main() {
     const unacknowledged = db.prepare("SELECT COUNT(*) as cnt FROM amendments WHERE persistent_task_id = ? AND acknowledged_at IS NULL").get(PERSISTENT_TASK_ID).cnt;
 
     // Get sub-task counts from todo.db
+    let completedCount = 0, inProgressCount = 0, totalCount = 0;
     let subtaskSummary = '';
     try {
       const subtaskIds = db.prepare("SELECT todo_task_id FROM sub_tasks WHERE persistent_task_id = ?").all(PERSISTENT_TASK_ID);
       if (subtaskIds.length > 0) {
+        totalCount = subtaskIds.length;
         const todoDb = new Database(TODO_DB_PATH, { readonly: true });
         const placeholders = subtaskIds.map(() => '?').join(',');
         const ids = subtaskIds.map(r => r.todo_task_id);
-        const completed = todoDb.prepare(`SELECT COUNT(*) as cnt FROM tasks WHERE id IN (${placeholders}) AND status = 'completed'`).get(...ids).cnt;
-        const inProgress = todoDb.prepare(`SELECT COUNT(*) as cnt FROM tasks WHERE id IN (${placeholders}) AND status = 'in_progress'`).get(...ids).cnt;
-        subtaskSummary = ` Sub-tasks: ${completed}/${subtaskIds.length} done, ${inProgress} active.`;
+        completedCount = todoDb.prepare(`SELECT COUNT(*) as cnt FROM tasks WHERE id IN (${placeholders}) AND status = 'completed'`).get(...ids).cnt;
+        inProgressCount = todoDb.prepare(`SELECT COUNT(*) as cnt FROM tasks WHERE id IN (${placeholders}) AND status = 'in_progress'`).get(...ids).cnt;
+        // Last 3 active task titles for summary
+        const active = todoDb.prepare(`SELECT title FROM tasks WHERE id IN (${placeholders}) AND status = 'in_progress' LIMIT 3`).all(...ids);
+        subtaskSummary = ` Sub-tasks: ${completedCount}/${totalCount} done, ${inProgressCount} active.`;
         todoDb.close();
+
+        // Build heartbeat summary from compact cycle data
+        const summaryParts = [`Sub-tasks: ${completedCount}/${totalCount} done, ${inProgressCount} active, ${totalCount - completedCount - inProgressCount} pending`];
+        if (active.length > 0) summaryParts.push(`Active: ${active.map(t => `"${t.title}"`).join(', ')}`);
+        if (unacknowledged > 0) summaryParts.push(`${unacknowledged} unacknowledged amendment(s)`);
+        const uptime = task.activated_at ? Math.round((Date.now() - new Date(task.activated_at).getTime()) / 60000) : 0;
+        summaryParts.push(`Cycle: ${(task.cycle_count || 0) + 1}, Uptime: ${Math.floor(uptime / 60)}h ${uptime % 60}m`);
+        const summary = summaryParts.join('. ').slice(0, 500);
+        db.prepare("UPDATE persistent_tasks SET last_heartbeat = ?, cycle_count = cycle_count + 1, last_summary = ? WHERE id = ?")
+          .run(new Date().toISOString(), summary, PERSISTENT_TASK_ID);
+      } else {
+        // No subtasks — still write heartbeat with minimal summary
+        const uptime = task.activated_at ? Math.round((Date.now() - new Date(task.activated_at).getTime()) / 60000) : 0;
+        const summary = `No sub-tasks yet. Cycle: ${(task.cycle_count || 0) + 1}, Uptime: ${Math.floor(uptime / 60)}h ${uptime % 60}m`;
+        db.prepare("UPDATE persistent_tasks SET last_heartbeat = ?, cycle_count = cycle_count + 1, last_summary = ? WHERE id = ?")
+          .run(new Date().toISOString(), summary, PERSISTENT_TASK_ID);
       }
-    } catch (_) { /* non-fatal */ }
+    } catch (_) {
+      // Non-fatal — write heartbeat without summary on error
+      db.prepare("UPDATE persistent_tasks SET last_heartbeat = ?, cycle_count = cycle_count + 1 WHERE id = ?")
+        .run(new Date().toISOString(), PERSISTENT_TASK_ID);
+    }
 
     db.close();
     const amendStr = unacknowledged > 0 ? ` ${unacknowledged} unacknowledged amendment(s)!` : '';
@@ -160,25 +180,47 @@ async function main() {
 
   // Get sub-task details from todo.db
   let subtaskDetails = '';
+  let fullCompletedCount = 0, fullInProgressCount = 0, fullPendingCount = 0, fullTotalCount = 0;
+  let fullActiveTitles = [];
   try {
     const subtaskIds = db.prepare("SELECT todo_task_id FROM sub_tasks WHERE persistent_task_id = ?").all(PERSISTENT_TASK_ID);
+    fullTotalCount = subtaskIds.length;
     if (subtaskIds.length > 0) {
       const todoDb = new Database(TODO_DB_PATH, { readonly: true });
       const details = [];
-      let completed = 0, inProgress = 0, pending = 0;
       for (const row of subtaskIds) {
         const t = todoDb.prepare("SELECT id, title, status, section FROM tasks WHERE id = ?").get(row.todo_task_id);
         if (t) {
           details.push(`- [${t.status}] "${t.title}" (${t.section})`);
-          if (t.status === 'completed') completed++;
-          else if (t.status === 'in_progress') inProgress++;
-          else pending++;
+          if (t.status === 'completed') fullCompletedCount++;
+          else if (t.status === 'in_progress') { fullInProgressCount++; if (fullActiveTitles.length < 3) fullActiveTitles.push(t.title); }
+          else fullPendingCount++;
         }
       }
       todoDb.close();
-      subtaskDetails = `\n## Sub-Task Status\nCompleted: ${completed} | In Progress: ${inProgress} | Pending: ${pending}\n${details.join('\n')}`;
+      subtaskDetails = `\n## Sub-Task Status\nCompleted: ${fullCompletedCount} | In Progress: ${fullInProgressCount} | Pending: ${fullPendingCount}\n${details.join('\n')}`;
     }
   } catch (_) { /* non-fatal */ }
+
+  // Build and write heartbeat summary from full cycle data
+  try {
+    const summaryParts = [];
+    if (fullTotalCount > 0) {
+      summaryParts.push(`Sub-tasks: ${fullCompletedCount}/${fullTotalCount} done, ${fullInProgressCount} active, ${fullPendingCount} pending`);
+      if (fullActiveTitles.length > 0) summaryParts.push(`Active: ${fullActiveTitles.map(t => `"${t}"`).join(', ')}`);
+    }
+    const unackCount = amendments.filter(a => !a.acknowledged_at).length;
+    if (unackCount > 0) summaryParts.push(`${unackCount} unacknowledged amendment(s)`);
+    const uptime = task.activated_at ? Math.round((Date.now() - new Date(task.activated_at).getTime()) / 60000) : 0;
+    summaryParts.push(`Cycle: ${(task.cycle_count || 0) + 1}, Uptime: ${Math.floor(uptime / 60)}h ${uptime % 60}m`);
+    const summary = summaryParts.join('. ').slice(0, 500);
+    db.prepare("UPDATE persistent_tasks SET last_heartbeat = ?, cycle_count = cycle_count + 1, last_summary = ? WHERE id = ?")
+      .run(new Date().toISOString(), summary, PERSISTENT_TASK_ID);
+  } catch (_) {
+    // Non-fatal — write heartbeat without summary on error
+    db.prepare("UPDATE persistent_tasks SET last_heartbeat = ?, cycle_count = cycle_count + 1 WHERE id = ?")
+      .run(new Date().toISOString(), PERSISTENT_TASK_ID);
+  }
 
   db.close();
 

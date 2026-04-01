@@ -125,6 +125,7 @@ export interface PersistentTaskRecord {
   created_by: string;
   user_prompt_uuids: string | null;
   metadata: string | null;
+  last_summary: string | null;
 }
 
 export interface AmendmentRecord {

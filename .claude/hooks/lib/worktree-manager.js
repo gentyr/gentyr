@@ -304,8 +304,9 @@ export function provisionWorktree(worktreePath) {
  * @param {string} [baseBranch] - Branch to base the new branch on. Auto-detected if omitted:
  *   uses 'preview' if origin/preview exists, otherwise 'main'.
  * @param {object} [options] - Options
- * @param {boolean} [options.skipFetch=false] - Skip git fetch for latency-critical paths.
- *   Callers should fire a background fetch after spawn if using this option.
+ * @param {boolean} [options.skipFetch=false] - Skip git fetch entirely. Deprecated — prefer fetchTimeout.
+ * @param {number} [options.fetchTimeout] - Timeout in ms for git fetch. If omitted, uses GIT_OPTS default.
+ *   Use fetchTimeout: 10000 for latency-critical paths instead of skipFetch.
  * @returns {{ path: string, branch: string, created: boolean }}
  */
 export function createWorktree(branchName, baseBranch, options = {}) {
@@ -322,15 +323,19 @@ export function createWorktree(branchName, baseBranch, options = {}) {
 
   fs.mkdirSync(WORKTREES_DIR, { recursive: true });
 
-  // Fetch the base branch (non-fatal if it fails, e.g. offline)
-  // skipFetch: latency-critical paths (urgent-task-spawner, force-spawn) skip this
-  // and fire a background fetch after spawn instead
+  // Fetch the base branch (non-fatal if it fails, e.g. offline or timeout)
+  // skipFetch: legacy option — skips fetch entirely (deprecated, prefer fetchTimeout)
+  // fetchTimeout: latency-critical paths can pass a short timeout (e.g. 10000ms) instead of skipping
   if (!options.skipFetch) {
     try {
-      execSync(`git fetch origin ${baseBranch} --quiet`, GIT_OPTS);
+      const fetchOpts = { ...GIT_OPTS };
+      if (options.fetchTimeout) {
+        fetchOpts.timeout = options.fetchTimeout;
+      }
+      execSync(`git fetch origin ${baseBranch} --quiet`, fetchOpts);
     } catch (err) {
       console.error('[worktree-manager] Warning:', err.message);
-      // Non-fatal: base branch may already be up-to-date locally
+      // Non-fatal: base branch may already be up-to-date locally, or fetch timed out
     }
   }
 

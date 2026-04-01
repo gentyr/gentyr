@@ -22,7 +22,6 @@
 
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
 import { AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { createWorktree } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
@@ -490,8 +489,8 @@ async function spawnTaskAgent(task) {
 
   try {
     const branchName = getFeatureBranchName(task.title, task.id);
-    // Phase 2: skipFetch for latency-critical spawning (drops 3-8s to <1s)
-    const worktree = createWorktree(branchName, undefined, { skipFetch: true });
+    // Use fetchTimeout for latency-critical spawning — bounded fetch instead of skipping entirely
+    const worktree = createWorktree(branchName, undefined, { fetchTimeout: 10000 });
     worktreePath = worktree.path;
     log(`Worktree ready at ${worktree.path} (branch ${branchName})`);
   } catch (err) {
@@ -536,22 +535,6 @@ async function spawnTaskAgent(task) {
       } catch (err) {
         log(`Preemption failed for CTO task ${task.id}: ${err.message}`);
         // Non-fatal — CTO task is still queued and will be picked up at next opportunity
-      }
-    }
-
-    // Phase 2: Background fetch after enqueue — non-blocking, ensures worktree
-    // has fresh base branch for subsequent operations
-    if (worktreePath) {
-      try {
-        const fetchProc = spawn('git', ['fetch', 'origin', '--quiet'], {
-          cwd: worktreePath,
-          stdio: 'ignore',
-          detached: true,
-        });
-        fetchProc.unref();
-      } catch (err) {
-        console.error('[urgent-task-spawner] Warning:', err.message);
-        /* non-fatal */
       }
     }
 
