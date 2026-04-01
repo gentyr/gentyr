@@ -347,6 +347,7 @@ export interface DemoRunState {
   window_recording_path?: string;
   screenshot_dir?: string;
   screenshot_start_time?: number;
+  fullscreened?: boolean;
   // Runtime-only — NOT persisted (NodeJS.Timeout is not serializable)
   screenshot_interval?: ReturnType<typeof setInterval>;
 }
