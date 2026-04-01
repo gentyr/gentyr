@@ -14,7 +14,6 @@
 
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
 import { findRecentSpawn, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { createWorktree } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
@@ -145,7 +144,7 @@ function spawnRepairAgent(scenario) {
   let worktreePath;
   try {
     const branchName = getFeatureBranchName('demo-repair', scenarioId.slice(0, 8));
-    const worktree = createWorktree(branchName, undefined, { skipFetch: true });
+    const worktree = createWorktree(branchName, undefined, { fetchTimeout: 10000 });
     worktreePath = worktree.path;
   } catch (err) {
     log(`Failed to create worktree for scenario ${scenarioId}: ${err.message}`);
@@ -222,19 +221,6 @@ function spawnRepairAgent(scenario) {
     });
 
     log(`Enqueued repair agent for scenario "${title}" (${scenarioId})`);
-
-    // Background fetch for worktree
-    try {
-      const fetchProc = spawn('git', ['fetch', 'origin', '--quiet'], {
-        cwd: worktreePath,
-        stdio: 'ignore',
-        detached: true,
-      });
-      fetchProc.unref();
-    } catch (err) {
-      console.error('[demo-failure-spawner] Warning:', err.message);
-      /* non-fatal */
-    }
 
     return true;
   } catch (err) {

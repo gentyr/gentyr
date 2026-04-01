@@ -28,6 +28,7 @@ import { debugLog } from './debug-log.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
 import { buildPersistentMonitorBridgeInstructions } from './persistent-monitor-bridge-instructions.js';
 import { checkAndExpireResources } from './resource-lock.js';
+import { buildRevivalContext } from './persistent-revival-context.js';
 // NOTE: revival-utils.js imports from session-queue.js (circular dep), so we
 // inline these three utilities here instead of importing from revival-utils.js.
 // Mirrors the same pattern used in session-reaper.js.
@@ -57,7 +58,7 @@ function parseSqliteDatetime(str) {
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
 
 // In-memory rate limiter for persistent monitor revivals (immune to WAL visibility issues)
-const _monitorRevivalTimestamps = new Map(); // taskId -> timestamp[]
+const _monitorRevivalTimestamps = new Map(); // taskId -> {ts: number, reason: string}[]
 
 // ============================================================================
 // Logging
@@ -484,13 +485,15 @@ export function enqueueSession(spec) {
  * @param {object} db - session-queue.db instance (already open)
  * @param {string} taskId - persistent task ID
  */
-function requeueDeadPersistentMonitor(db, taskId) {
-  // In-memory rate limiter: max 3 revivals per task in 10 minutes
-  const revivalTimes = _monitorRevivalTimestamps.get(taskId) || [];
+function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
+  // In-memory rate limiter: max 3 hard revivals per task in 10 minutes
+  // Heartbeat-stale revivals don't count toward this limit (they're routine recovery)
+  const revivalEntries = _monitorRevivalTimestamps.get(taskId) || [];
   const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
-  const recentRevivals = revivalTimes.filter(t => t > tenMinutesAgo);
-  if (recentRevivals.length >= 3) {
-    log(`Persistent monitor in-memory rate limit hit for ${taskId} (${recentRevivals.length} revivals in 10 min) — skipping`);
+  const recentEntries = revivalEntries.filter(e => e.ts > tenMinutesAgo);
+  const hardRevivals = recentEntries.filter(e => e.reason !== 'stale_heartbeat');
+  if (hardRevivals.length >= 3) {
+    log(`Persistent monitor in-memory rate limit hit for ${taskId} (${hardRevivals.length} hard revivals in 10 min) — skipping`);
     return;
   }
 
@@ -500,12 +503,13 @@ function requeueDeadPersistentMonitor(db, taskId) {
   ).get(taskId);
   if (existing && existing.cnt > 0) return;
 
-  // Crash-loop circuit breaker: cap at 5 revivals per task in the last hour
+  // Crash-loop circuit breaker: cap at 5 hard revivals per task in the last hour
+  // Heartbeat-stale revivals are excluded from this count — they're routine recovery, not crashes.
   // NOTE: Use datetime('now', '-1 hour') in SQL — NOT JS toISOString(). SQLite's datetime()
   // produces '2026-03-29 14:53:59' (space separator) while toISOString() produces
   // '2026-03-29T14:53:59.000Z' (T separator). String comparison breaks across formats.
   const dbRecentRevivals = db.prepare(
-    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-1 hour')"
+    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-1 hour') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') != 'heartbeat_stale_revival'"
   ).get(taskId);
   if (dbRecentRevivals && dbRecentRevivals.cnt >= 5) {
     log(`Persistent monitor crash-loop detected for ${taskId} — pausing task and reporting`);
@@ -543,10 +547,16 @@ function requeueDeadPersistentMonitor(db, taskId) {
   if (!fs.existsSync(ptDbPath)) return;
 
   const ptDb = new Database(ptDbPath, { readonly: true });
-  const task = ptDb.prepare("SELECT id, title, status, metadata FROM persistent_tasks WHERE id = ?").get(taskId);
+  const task = ptDb.prepare("SELECT id, title, status, metadata, monitor_session_id FROM persistent_tasks WHERE id = ?").get(taskId);
   ptDb.close();
 
   if (!task || task.status !== 'active') return;
+
+  // Build revival context from last known state
+  let revivalContext = '';
+  try {
+    revivalContext = buildRevivalContext(taskId, PROJECT_DIR, { monitorSessionId: task.monitor_session_id });
+  } catch (_) { /* non-fatal */ }
 
   // Check if demo/bridge is involved
   let demoInstructions = '';
@@ -561,12 +571,15 @@ function requeueDeadPersistentMonitor(db, taskId) {
     }
   } catch (_) { /* non-fatal */ }
 
-  // Build minimal revival prompt — monitor reads full details on startup
+  // Build enriched revival prompt with last known state
   const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
 
 ## Persistent Task: ${task.title}
 
-Your previous monitor session died. Read your task details and continue:
+Your previous monitor session died. Here is your last known state:
+${revivalContext || '(no prior state available — this may be the first revival)'}
+
+Read full task details to fill any gaps:
 mcp__persistent-task__get_persistent_task({ id: "${taskId}", include_amendments: true, include_subtasks: true })
 ${demoInstructions}${bridgeInstructions}
 Persistent Task ID: ${taskId}`;
@@ -585,7 +598,7 @@ Persistent Task ID: ${taskId}`;
     prompt,
     JSON.stringify({ GENTYR_PERSISTENT_TASK_ID: taskId, GENTYR_PERSISTENT_MONITOR: 'true' }),
     PROJECT_DIR,
-    JSON.stringify({ persistentTaskId: taskId, revivalReason: 'immediate_reaper_revival' }),
+    JSON.stringify({ persistentTaskId: taskId, revivalReason: reapReason === 'stale_heartbeat' ? 'heartbeat_stale_revival' : 'immediate_reaper_revival' }),
     'session-queue-reaper',
   );
 
@@ -600,11 +613,11 @@ Persistent Task ID: ${taskId}`;
 
   log(`Immediate persistent monitor revival enqueued for "${task.title}" (${taskId}, queueId: ${id})`);
 
-  // Record revival timestamp for in-memory rate limiting
-  const times = _monitorRevivalTimestamps.get(taskId) || [];
-  times.push(Date.now());
-  // Keep only last hour of timestamps
-  _monitorRevivalTimestamps.set(taskId, times.filter(t => t > Date.now() - 60 * 60 * 1000));
+  // Record revival entry for in-memory rate limiting
+  const entries = _monitorRevivalTimestamps.get(taskId) || [];
+  entries.push({ ts: Date.now(), reason: reapReason });
+  // Keep only last hour of entries
+  _monitorRevivalTimestamps.set(taskId, entries.filter(e => e.ts > Date.now() - 60 * 60 * 1000));
 }
 
 // ============================================================================
@@ -669,7 +682,7 @@ export function drainQueue() {
     for (const item of reaperResult.reaped) {
       if (item.metadata?.persistentTaskId) {
         try {
-          requeueDeadPersistentMonitor(db, item.metadata.persistentTaskId);
+          requeueDeadPersistentMonitor(db, item.metadata.persistentTaskId, item.reapReason);
         } catch (err) {
           log(`Persistent monitor re-enqueue error (non-fatal): ${err.message}`);
         }
@@ -692,7 +705,7 @@ export function drainQueue() {
 
         if (!existing) {
           try {
-            requeueDeadPersistentMonitor(db, task.id);
+            requeueDeadPersistentMonitor(db, task.id, 'orphan_catch_all');
           } catch (err) {
             log(`Step 1c persistent task orphan re-enqueue error (non-fatal): ${err.message}`);
           }

@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS persistent_tasks (
     created_by TEXT DEFAULT 'cto',
     user_prompt_uuids TEXT,
     metadata TEXT,
+    last_summary TEXT,
     CONSTRAINT valid_status CHECK (status IN ('draft','active','paused','completed','cancelled','failed'))
 );
 
@@ -140,6 +141,10 @@ function initializeDatabase(): Database.Database {
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
   db.exec(SCHEMA);
+
+  // Auto-migration: add last_summary column
+  try { db.exec("SELECT last_summary FROM persistent_tasks LIMIT 0"); } catch { db.exec("ALTER TABLE persistent_tasks ADD COLUMN last_summary TEXT"); }
+
   return db;
 }
 
@@ -375,6 +380,7 @@ function getPersistentTask(args: GetPersistentTaskArgs): object | ErrorResult {
     cycle_count: task.cycle_count,
     created_by: task.created_by,
     user_prompt_uuids: task.user_prompt_uuids ? JSON.parse(task.user_prompt_uuids) : null,
+    last_summary: task.last_summary,
   };
 
   // Parse metadata for bridge_main_tree and demo_involved
@@ -894,6 +900,7 @@ function getPersistentTaskSummary(args: GetPersistentTaskSummaryArgs): object | 
     monitor_agent_id: task.monitor_agent_id,
     monitor_pid: task.monitor_pid,
     activated_at: task.activated_at,
+    last_summary: task.last_summary,
   };
 }
 

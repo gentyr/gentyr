@@ -393,14 +393,14 @@ export function reapSyncPass(db) {
             ptDb.close();
             if (task && task.last_heartbeat) {
               const heartbeatAge = now - parseSqliteDatetime(task.last_heartbeat).getTime();
-              const STALE_HEARTBEAT_MS = getCooldown('persistent_heartbeat_stale_minutes', 2) * 60 * 1000;
+              const STALE_HEARTBEAT_MS = getCooldown('persistent_heartbeat_stale_minutes', 5) * 60 * 1000;
 
               // Spawn grace period: skip heartbeat check if this monitor was spawned
-              // less than 60 seconds ago. New monitors inherit the previous monitor's
+              // less than 120 seconds ago. New monitors inherit the previous monitor's
               // frozen heartbeat — without this grace period, they get killed before
               // they can make their first tool call and update the heartbeat.
               const spawnedMs = item.spawned_at ? now - parseSqliteDatetime(item.spawned_at).getTime() : Infinity;
-              const SPAWN_GRACE_MS = 60_000; // 60 seconds
+              const SPAWN_GRACE_MS = 120_000; // 120 seconds
 
               if (heartbeatAge > STALE_HEARTBEAT_MS && spawnedMs > SPAWN_GRACE_MS) {
                 // Kill immediately in sync pass — don't defer to async pass
@@ -505,6 +505,7 @@ export function reapSyncPass(db) {
           runDurationMs: elapsed,
           agentType: item.agent_type,
           title: item.title,
+          metadata: item.metadata,
         });
       }
     }
@@ -563,6 +564,33 @@ export async function reapAsyncPass(projectDir, stuckAliveItems, options = {}) {
       const currentStatus = db.prepare("SELECT status, lane FROM queue_items WHERE id = ?").get(item.queueId);
       if (currentStatus && currentStatus.status === 'suspended') {
         log(`Session reaper: skipping suspended item ${item.queueId} (preempted by CTO task)`);
+        continue;
+      }
+
+      // Per-task hard-kill timeout override: check if the associated persistent task
+      // has a custom hard_kill_minutes in its metadata, allowing some tasks to run longer.
+      let itemHardKillMs = getCooldown('session_hard_kill_minutes', 15) * 60 * 1000; // global default
+      try {
+        const meta = typeof item.metadata === 'string' ? JSON.parse(item.metadata) : (item.metadata || {});
+        if (meta.persistentTaskId) {
+          const ptDbPath = path.join(projectDir, '.claude', 'state', 'persistent-tasks.db');
+          if (Database && fs.existsSync(ptDbPath)) {
+            const ptDb = new Database(ptDbPath, { readonly: true });
+            const pt = ptDb.prepare("SELECT metadata FROM persistent_tasks WHERE id = ?").get(meta.persistentTaskId);
+            ptDb.close();
+            if (pt?.metadata) {
+              const ptMeta = JSON.parse(pt.metadata);
+              if (typeof ptMeta.hard_kill_minutes === 'number' && ptMeta.hard_kill_minutes > 0) {
+                itemHardKillMs = ptMeta.hard_kill_minutes * 60 * 1000;
+              }
+            }
+          }
+        }
+      } catch (_) { /* non-fatal — use global default */ }
+
+      // If per-task timeout is longer than the elapsed time, give it more time
+      if (item.runDurationMs < itemHardKillMs) {
+        log(`Session reaper: skipping ${item.agentId} — per-task timeout ${Math.round(itemHardKillMs / 60000)}min not yet reached (elapsed ${Math.round(item.runDurationMs / 60000)}min)`);
         continue;
       }
 
@@ -700,6 +728,7 @@ export function getStuckAliveSessions() {
       agentType: item.agent_type,
       title: item.title,
       lane: item.lane,
+      metadata: item.metadata,
     }));
   } catch (err) {
     try { process.stderr.write(`[session-reaper] getStuckAliveSessions error: ${err.message}\n`); } catch (err) {

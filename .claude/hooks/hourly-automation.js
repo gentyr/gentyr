@@ -31,6 +31,7 @@ import { detectStaleWork, formatReport } from './stale-work-detector.js';
 import { reviveInterruptedSessions } from './session-reviver.js';
 import { buildPersistentMonitorDemoInstructions } from './lib/persistent-monitor-demo-instructions.js';
 import { reapAsyncPass, getStuckAliveSessions } from './lib/session-reaper.js';
+import { buildRevivalContext } from './lib/persistent-revival-context.js';
 import { cleanupAuditLog } from './lib/session-audit.js';
 import { debugLog, cleanupDebugLog } from './lib/debug-log.js';
 import { isProxyDisabled } from './lib/proxy-state.js';
@@ -2731,20 +2732,16 @@ async function main() {
    * Build the revival prompt, extraEnv, and metadata for re-enqueueing a
    * persistent monitor session.
    *
-   * @param {object} ptDb  - Open better-sqlite3 database handle for persistent-tasks.db
-   * @param {object} task  - Row from persistent_tasks (id, title, metadata)
+   * @param {object} task  - Row from persistent_tasks (id, title, metadata, monitor_session_id)
    * @param {string} revivalReason - Reason string stored in queue metadata (e.g. 'monitor_dead', 'stale_pause_resumed')
    * @returns {{ prompt: string, extraEnv: object, metadata: object }}
    */
-  async function buildPersistentMonitorRevivalPrompt(ptDb, task, revivalReason) {
-    // Read amendments for the re-spawn prompt
-    const amendments = ptDb.prepare(
-      "SELECT content, amendment_type, created_at FROM amendments WHERE persistent_task_id = ? ORDER BY created_at ASC"
-    ).all(task.id);
-
-    const amendmentSection = amendments.length > 0
-      ? '\n\n## Amendments\n' + amendments.map((a, i) => `${i + 1}. [${a.amendment_type}] ${a.content}`).join('\n')
-      : '';
+  async function buildPersistentMonitorRevivalPrompt(task, revivalReason) {
+    // Build revival context from last known state (last_summary, amendments, child agent status)
+    let revivalContext = '';
+    try {
+      revivalContext = buildRevivalContext(task.id, PROJECT_DIR, { monitorSessionId: task.monitor_session_id });
+    } catch (_) { /* non-fatal */ }
 
     // Check if demo/bridge is involved
     let demoInstructions = '';
@@ -2764,10 +2761,12 @@ async function main() {
 
 ## Persistent Task: ${task.title}
 
-You are a persistent task monitor being revived after your previous session died.
-Read your full task details first: mcp__persistent-task__get_persistent_task({ id: "${task.id}", include_amendments: true, include_subtasks: true })
+Your previous monitor session died. Here is your last known state:
+${revivalContext || '(no prior state available — this may be the first revival)'}
 
-Then continue monitoring sub-tasks and working toward the outcome.${amendmentSection}${demoInstructions}${bridgeInstructions}`;
+Read full task details to fill any gaps:
+mcp__persistent-task__get_persistent_task({ id: "${task.id}", include_amendments: true, include_subtasks: true })
+${demoInstructions}${bridgeInstructions}`;
 
     const extraEnv = {
       GENTYR_PERSISTENT_TASK_ID: task.id,
@@ -2804,7 +2803,7 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
       }
 
       const activeTasks = ptDb.prepare(
-        "SELECT id, title, monitor_pid, monitor_agent_id, last_heartbeat, metadata FROM persistent_tasks WHERE status = 'active'"
+        "SELECT id, title, monitor_pid, monitor_agent_id, last_heartbeat, metadata, monitor_session_id FROM persistent_tasks WHERE status = 'active'"
       ).all();
 
       let revived = 0;
@@ -2832,7 +2831,7 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
           log(`Persistent monitor health: monitor for "${task.title}" (${task.id}) is dead — re-enqueuing`);
 
           try {
-            const { prompt, extraEnv, metadata } = await buildPersistentMonitorRevivalPrompt(ptDb, task, 'monitor_dead');
+            const { prompt, extraEnv, metadata } = await buildPersistentMonitorRevivalPrompt(task, 'monitor_dead');
             const result = enqueueSession({
               title: `[Persistent] Monitor revival: ${task.title}`,
               agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
@@ -2960,7 +2959,7 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
 
       try {
         const pausedTasks = ptDb.prepare(
-          "SELECT id, title, metadata FROM persistent_tasks WHERE status = 'paused'"
+          "SELECT id, title, metadata, monitor_session_id FROM persistent_tasks WHERE status = 'paused'"
         ).all();
 
         if (pausedTasks.length === 0) return;
@@ -3014,7 +3013,7 @@ Then continue monitoring sub-tasks and working toward the outcome.${amendmentSec
 
           // Enqueue the monitor
           try {
-            const { prompt, extraEnv, metadata } = await buildPersistentMonitorRevivalPrompt(ptDb, task, 'stale_pause_resumed');
+            const { prompt, extraEnv, metadata } = await buildPersistentMonitorRevivalPrompt(task, 'stale_pause_resumed');
             const result = enqueueSession({
               title: `[Persistent] Stale-pause revival: ${task.title}`,
               agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
