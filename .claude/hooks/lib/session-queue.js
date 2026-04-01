@@ -493,7 +493,7 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
   const recentEntries = revivalEntries.filter(e => e.ts > tenMinutesAgo);
   const hardRevivals = recentEntries.filter(e => e.reason !== 'stale_heartbeat');
   if (hardRevivals.length >= 3) {
-    log(`Persistent monitor in-memory rate limit hit for ${taskId} (${hardRevivals.length} hard revivals in 10 min) — skipping`);
+    log(`[persistent-revival] Rate-limited revival for ${taskId}: ${hardRevivals.length} revivals in last 10min (max 3)`);
     return;
   }
 
@@ -501,7 +501,13 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
   const existing = db.prepare(
     "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running') AND json_extract(metadata, '$.persistentTaskId') = ?"
   ).get(taskId);
-  if (existing && existing.cnt > 0) return;
+  if (existing && existing.cnt > 0) {
+    const existingItem = db.prepare(
+      "SELECT id, status FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.persistentTaskId') = ? LIMIT 1"
+    ).get(taskId);
+    log(`[persistent-revival] Skipped revival for ${taskId}: existing ${existingItem?.status || 'queued/running'} monitor in queue (${existingItem?.id || 'unknown'})`);
+    return;
+  }
 
   // Crash-loop circuit breaker: cap at 5 hard revivals per task in the last hour
   // Heartbeat-stale revivals are excluded from this count — they're routine recovery, not crashes.
@@ -512,7 +518,7 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
     "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-1 hour') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') != 'heartbeat_stale_revival'"
   ).get(taskId);
   if (dbRecentRevivals && dbRecentRevivals.cnt >= 5) {
-    log(`Persistent monitor crash-loop detected for ${taskId} — pausing task and reporting`);
+    log(`[persistent-revival] Circuit breaker tripped for ${taskId}: ${dbRecentRevivals.cnt} revivals in last hour (max 5). Auto-pausing task.`);
 
     // Auto-pause the task to stop the crash loop
     try {
@@ -550,7 +556,10 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
   const task = ptDb.prepare("SELECT id, title, status, metadata, monitor_session_id FROM persistent_tasks WHERE id = ?").get(taskId);
   ptDb.close();
 
-  if (!task || task.status !== 'active') return;
+  if (!task || task.status !== 'active') {
+    log(`[persistent-revival] Skipped revival for ${taskId}: task ${!task ? 'not found' : `status='${task.status}' (must be active)`}`);
+    return;
+  }
 
   // Build revival context from last known state
   let revivalContext = '';
@@ -611,7 +620,8 @@ Persistent Task ID: ${taskId}`;
     title: `[Persistent] Monitor revival: ${task.title}`,
   });
 
-  log(`Immediate persistent monitor revival enqueued for "${task.title}" (${taskId}, queueId: ${id})`);
+  const revivalReason = reapReason === 'stale_heartbeat' ? 'heartbeat_stale_revival' : 'immediate_reaper_revival';
+  log(`[persistent-revival] Enqueued revival for ${taskId} (reason: ${reapReason}, revivalReason: ${revivalReason}, queueId: ${id})`);
 
   // Record revival entry for in-memory rate limiting
   const entries = _monitorRevivalTimestamps.get(taskId) || [];
@@ -918,8 +928,10 @@ export function drainQueue() {
     log(`Step 6 resume suspended error (non-fatal): ${err.message}`);
   }
 
-  if (result.spawned > 0) {
-    log(`Drain complete: spawned=${result.spawned}, remaining=${result.queued - result.spawned}, atCapacity=${result.atCapacity}`);
+  const reaped = reaperResult?.reaped?.length || 0;
+  if (result.spawned > 0 || reaped > 0) {
+    const runningCount = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running'").get()?.cnt || 0;
+    log(`Drain complete: spawned=${result.spawned}, reaped=${reaped}, queued=${result.queued}, running=${runningCount}`);
   }
 
   debugLog('session-queue', 'drain_complete', { spawned: result.spawned, queued: result.queued, atCapacity: result.atCapacity, failed: result.failed });
