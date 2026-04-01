@@ -474,16 +474,24 @@ function getMessageType(entry: RawSessionMessage): string {
 // ============================================================================
 
 /**
- * Read the last N bytes from a file, returning the content as UTF-8 string.
+ * Read a window of bytes from a file, offset from the end.
+ * Returns content and position metadata for pagination.
  */
-function readTailBytes(filePath: string, bytes: number = 8192): string {
+function readTailBytes(filePath: string, bytes: number = 16384, offsetFromEnd: number = 0): { content: string; fileSize: number; windowStart: number; windowEnd: number } {
   const fd = fs.openSync(filePath, 'r');
   const stat = fs.fstatSync(fd);
-  const start = Math.max(0, stat.size - bytes);
-  const buf = Buffer.alloc(Math.min(bytes, stat.size));
-  fs.readSync(fd, buf, 0, buf.length, start);
+  const fileSize = stat.size;
+  const windowEnd = Math.max(0, fileSize - offsetFromEnd);
+  const windowStart = Math.max(0, windowEnd - bytes);
+  const readLen = windowEnd - windowStart;
+  if (readLen <= 0) {
+    fs.closeSync(fd);
+    return { content: '', fileSize, windowStart: 0, windowEnd: 0 };
+  }
+  const buf = Buffer.alloc(readLen);
+  fs.readSync(fd, buf, 0, readLen, windowStart);
   fs.closeSync(fd);
-  return buf.toString('utf8');
+  return { content: buf.toString('utf8'), fileSize, windowStart, windowEnd };
 }
 
 /**
@@ -856,8 +864,7 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
     if (sessionFile) {
       try {
         const depthBytes = (args.depth_kb ?? 32) * 1024;
-        const tail = readTailBytes(sessionFile, depthBytes);
-        const entries = parseTailEntries(tail);
+        const entries = parseTailEntries(readTailBytes(sessionFile, depthBytes).content);
         recentActivity = extractActivity(entries);
 
         // Auto-include compaction context for monitor sessions (deep inspection tool)
@@ -1028,8 +1035,7 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
       if (sessionFile) {
         try {
           const childDepth = Math.floor(((args.depth_kb ?? 32) / 2) * 1024);
-          const tail = readTailBytes(sessionFile, childDepth);
-          const entries = parseTailEntries(tail);
+          const entries = parseTailEntries(readTailBytes(sessionFile, childDepth).content);
           recentActivity = extractActivity(entries);
           childCompacted = detectCompactionInEntries(entries);
           excerptCount++;
@@ -2951,16 +2957,17 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
     return { error: `Session file not found for agent: ${agentId}` };
   }
 
-  const depthBytes = (args.depth ?? 8) * 1024;
-  let tailContent: string;
+  const depthBytes = (args.depth ?? 16) * 1024;
+  const offsetBytes = args.offset ?? 0;
+  let tailResult: { content: string; fileSize: number; windowStart: number; windowEnd: number };
   try {
-    tailContent = readTailBytes(sessionFile, depthBytes);
+    tailResult = readTailBytes(sessionFile, depthBytes, offsetBytes);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { error: `Failed to read session file: ${message}` };
   }
 
-  const entries = parseTailEntries(tailContent);
+  const entries = parseTailEntries(tailResult.content);
 
   // Extract activity signals
   const lastTools: Array<{ name: string; inputPreview: string }> = [];
@@ -3024,10 +3031,14 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
   let compaction: CompactionContext | null = null;
   if (compactionDetected && args.include_compaction_context) {
     compaction = mergeCompactionCounts(
-      findCompactionContext(sessionFile, depthBytes, 4000),
+      findCompactionContext(sessionFile, tailResult.fileSize - tailResult.windowStart, 4000),
       entries
     );
   }
+
+  // Pagination: how far from end the next page starts
+  const hasMore = tailResult.windowStart > 0;
+  const nextOffset = hasMore ? (tailResult.fileSize - tailResult.windowStart) : null;
 
   return {
     agentId,
@@ -3041,6 +3052,12 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
     alignmentFindings,
     compactionDetected,
     ...(compaction ? { compaction } : {}),
+    // Pagination metadata
+    fileSize: tailResult.fileSize,
+    windowStart: tailResult.windowStart,
+    windowEnd: tailResult.windowEnd,
+    hasMore,
+    ...(nextOffset !== null ? { nextOffset } : {}),
   };
 }
 
@@ -3108,8 +3125,7 @@ async function getSessionActivitySummary(_args: GetSessionActivitySummaryArgs): 
       if (sessionFile) {
         sessionId = path.basename(sessionFile, '.jsonl');
         try {
-          const tail = readTailBytes(sessionFile, 4096);
-          const entries = parseTailEntries(tail);
+          const entries = parseTailEntries(readTailBytes(sessionFile, 4096).content);
           compacted = detectCompactionInEntries(entries);
           for (const entry of entries) {
             if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
@@ -3682,7 +3698,7 @@ const tools: AnyToolHandler[] = [
   // WS5 Session Introspection Tools
   {
     name: 'peek_session',
-    description: 'Peek at the live JSONL tail of a running agent session. Returns last tool calls, last assistant text, spawned sub-agents, git commits, and alignment findings. Provide agent_id or queue_id. The lastText field contains the agent\'s most recent reasoning — quote directly in reports. Use depth: 12-16 for detailed monitoring. Always returns compactionDetected boolean; set include_compaction_context: true to retrieve pre-compaction work summaries.',
+    description: 'Peek at a running agent session\'s JSONL. Returns last tool calls, assistant text, sub-agents, git commits, alignment findings. Provide agent_id or queue_id. Pagination: use offset: 0 (default, latest) then pass nextOffset from the response to page backward through the session. depth controls KB per page (default 16). Returns hasMore and nextOffset for easy continuation. Set include_compaction_context: true for pre-compaction summaries.',
     schema: PeekSessionArgsSchema,
     handler: peekSession,
   },
