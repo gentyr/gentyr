@@ -291,7 +291,7 @@ function isAuthStalled(sessionFile) {
  */
 export function reapSyncPass(db) {
   const result = { reaped: [], stuckAlive: [] };
-  const hardKillMs = getCooldown('session_hard_kill_minutes', 15) * 60 * 1000;
+  const hardKillMs = getCooldown('session_hard_kill_minutes', 60) * 60 * 1000;
   const now = Date.now();
 
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -569,7 +569,7 @@ export async function reapAsyncPass(projectDir, stuckAliveItems, options = {}) {
 
       // Per-task hard-kill timeout override: check if the associated persistent task
       // has a custom hard_kill_minutes in its metadata, allowing some tasks to run longer.
-      let itemHardKillMs = getCooldown('session_hard_kill_minutes', 15) * 60 * 1000; // global default
+      let itemHardKillMs = getCooldown('session_hard_kill_minutes', 60) * 60 * 1000; // global default
       try {
         const meta = typeof item.metadata === 'string' ? JSON.parse(item.metadata) : (item.metadata || {});
         if (meta.persistentTaskId) {
@@ -709,7 +709,7 @@ export function getStuckAliveSessions() {
     db = new Database(dbPath, { readonly: true });
     db.pragma('busy_timeout = 5000');
 
-    const hardKillMs = getCooldown('session_hard_kill_minutes', 15) * 60 * 1000;
+    const hardKillMs = getCooldown('session_hard_kill_minutes', 60) * 60 * 1000;
     const cutoffTime = new Date(Date.now() - hardKillMs).toISOString();
 
     // Only query 'running' items — 'suspended' items must never be hard-killed
