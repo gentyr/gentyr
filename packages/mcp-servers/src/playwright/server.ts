@@ -168,6 +168,12 @@ function autoKillDemo(pid: number): void {
   const entry = demoRuns.get(pid);
   if (!entry || entry.status !== 'running') return;
 
+  // Exit fullscreen before teardown
+  if (entry.fullscreened) {
+    unfullscreenChromeWindow();
+    entry.fullscreened = false;
+  }
+
   // Stop window recorder and persist video before destroying
   if (entry.window_recorder_pid && entry.window_recording_path) {
     const recOk = stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
@@ -540,6 +546,56 @@ function stopWindowRecorderSync(pid: number, outputPath: string): boolean {
   } catch {
     return false;
   }
+}
+
+// ============================================================================
+// Fullscreen Helpers (macOS only)
+// ============================================================================
+
+/**
+ * Wait for a Chrome for Testing window to appear (macOS only).
+ */
+async function waitForChromeWindow(timeoutMs: number = 30000): Promise<boolean> {
+  if (process.platform !== 'darwin') return false;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const result = execFileSync('osascript', ['-e',
+        'tell application "System Events" to return (count of windows of process "Google Chrome for Testing") > 0'
+      ], { timeout: 3000, stdio: 'pipe', encoding: 'utf8' }).trim();
+      if (result === 'true') return true;
+    } catch { /* not yet */ }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return false;
+}
+
+/**
+ * Fullscreen a Chrome for Testing window via AppleScript AXFullScreen.
+ * Creates a new macOS Space automatically.
+ */
+async function fullscreenChromeWindow(): Promise<boolean> {
+  if (process.platform !== 'darwin') return false;
+  try {
+    execFileSync('osascript', ['-e',
+      'tell application "System Events" to tell process "Google Chrome for Testing" ' +
+      'to set value of attribute "AXFullScreen" of window 1 to true'
+    ], { timeout: 5000, stdio: 'pipe' });
+    return true;
+  } catch { return false; }
+}
+
+/**
+ * Exit fullscreen for Chrome for Testing window.
+ */
+function unfullscreenChromeWindow(): void {
+  if (process.platform !== 'darwin') return;
+  try {
+    execFileSync('osascript', ['-e',
+      'tell application "System Events" to tell process "Google Chrome for Testing" ' +
+      'to set value of attribute "AXFullScreen" of window 1 to false'
+    ], { timeout: 5000, stdio: 'pipe' });
+  } catch { /* non-fatal */ }
 }
 
 // ============================================================================
@@ -1298,22 +1354,13 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   // Per-test timeout (default 120s for demos)
   cmdArgs.push('--timeout', String(args.timeout ?? 120000));
 
-  // Start window recorder for headed demos (captures specific Chromium window, even when occluded)
+  // Window recorder and screenshot capture — set up after Playwright spawns for headed recording
+  // (fullscreen must happen after Chrome appears but before recording starts)
   let windowRecorder: { pid: number; process: ReturnType<typeof spawn> } | null = null;
   let windowRecordingPath: string | null = null;
-  if (!args.headless && !args.skip_recording) {
-    const recorderBinary = getWindowRecorderBinary();
-    if (recorderBinary) {
-      windowRecordingPath = path.join(PROJECT_DIR, '.claude', 'state', `demo-window-${progressId}.mp4`);
-      windowRecorder = startWindowRecorder(windowRecordingPath, 'Chrome for Testing');
-    }
-  }
-
-  // Start periodic screenshot capture for headed demos (macOS only)
   let screenshotCapture: { interval: ReturnType<typeof setInterval>; dir: string; startTime: number } | null = null;
-  if (!args.headless && args.scenario_id) {
-    screenshotCapture = startScreenshotCapture(args.scenario_id);
-  }
+  let fullscreened = false;
+  const shouldRecord = !args.headless && !args.skip_recording;
 
   try {
     const child = spawn('npx', cmdArgs, {
@@ -1348,6 +1395,28 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           lastOutputLine = lines[lines.length - 1].trim().slice(0, 200);
         }
       });
+    }
+
+    // For headed recording: wait for Chrome, fullscreen it, then start recording
+    if (shouldRecord) {
+      const recorderBinary = getWindowRecorderBinary();
+      if (recorderBinary) {
+        const chromeReady = await waitForChromeWindow(30000);
+        if (chromeReady) {
+          fullscreened = await fullscreenChromeWindow();
+          if (fullscreened) {
+            // Wait for fullscreen animation to complete
+            await new Promise(r => setTimeout(r, 1000));
+          }
+        }
+        windowRecordingPath = path.join(PROJECT_DIR, '.claude', 'state', `demo-window-${progressId}.mp4`);
+        windowRecorder = startWindowRecorder(windowRecordingPath, 'Chrome for Testing');
+      }
+    }
+
+    // Start periodic screenshot capture for headed demos (macOS only)
+    if (!args.headless && args.scenario_id) {
+      screenshotCapture = startScreenshotCapture(args.scenario_id);
     }
 
     // Progress-based crash/stall detection:
@@ -1551,6 +1620,12 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           }
         } catch { /* Non-fatal */ }
 
+        // Exit fullscreen before teardown
+        if (fullscreened) {
+          unfullscreenChromeWindow();
+          fullscreened = false;
+        }
+
         // Persist video recording for the scenario
         if (demoState.scenario_id) {
           try {
@@ -1626,6 +1701,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       }
 
       // Non-zero exit code — actual crash
+      // Exit fullscreen before teardown
+      if (fullscreened) {
+        unfullscreenChromeWindow();
+        fullscreened = false;
+      }
       // Stop window recorder if running, then clean up
       if (windowRecorder && windowRecordingPath) {
         try {
@@ -1676,6 +1756,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       const snippet = stderr.length > 2000 ? stderr.slice(0, 2000) + '...' : stderr;
       const lastContext = lastOutputLine ? `\nLast output: ${lastOutputLine}` : '';
 
+      // Exit fullscreen before teardown
+      if (fullscreened) {
+        unfullscreenChromeWindow();
+        fullscreened = false;
+      }
       // Stop window recorder on stall, then clean up
       if (windowRecorder && windowRecordingPath) {
         try {
@@ -1736,6 +1821,12 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       demoState.stdout_tail = stdoutLines.join('\n').slice(0, 5000);
       suiteEndAutoKilledPids.add(demoPid);
 
+      // Exit fullscreen before teardown
+      if (fullscreened) {
+        unfullscreenChromeWindow();
+        fullscreened = false;
+      }
+
       // Persist video recording before clearing recorder state
       if (args.scenario_id && windowRecorder && windowRecordingPath) {
         try {
@@ -1762,6 +1853,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       demoState.window_recorder_pid = windowRecorder.pid;
       demoState.window_recording_path = windowRecordingPath ?? undefined;
     }
+    demoState.fullscreened = fullscreened;
     // Store screenshot capture so it continues running and can be stopped later
     if (screenshotCapture) {
       demoState.screenshot_interval = screenshotCapture.interval;
@@ -1784,6 +1876,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
       // If suite_end_killed already finalized or autoKillDemo already finalized, don't overwrite
       if (entry.status !== 'running') return;
+
+      if (entry.fullscreened) {
+        unfullscreenChromeWindow();
+        entry.fullscreened = false;
+      }
 
       entry.ended_at = new Date().toISOString();
       entry.exit_code = code ?? undefined;
@@ -2122,6 +2219,11 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
       // Process alive — but check if suite already completed (stops unnecessary video recording)
       const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
       if (progress?.suite_completed) {
+        // Exit fullscreen before teardown
+        if (entry.fullscreened) {
+          unfullscreenChromeWindow();
+          entry.fullscreened = false;
+        }
         // Suite done — stop window recorder first (sync), then kill playwright process
         let recorderClean = false;
         if (entry.window_recorder_pid && entry.window_recording_path) {
@@ -2274,6 +2376,12 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
       // Process no longer exists but we didn't get the exit event (e.g., MCP restarted, user closed browser)
       clearAutoKillTimer(pid);
       entry.ended_at = new Date().toISOString();
+
+      // Exit fullscreen before teardown (may fail if process already dead — non-fatal)
+      if (entry.fullscreened) {
+        unfullscreenChromeWindow();
+        entry.fullscreened = false;
+      }
 
       // Stop window recorder and persist video before destroying
       if (entry.window_recorder_pid && entry.window_recording_path) {
@@ -2544,6 +2652,11 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
   try {
     process.kill(pid, 0);
   } catch {
+    // Exit fullscreen before teardown
+    if (entry.fullscreened) {
+      unfullscreenChromeWindow();
+      entry.fullscreened = false;
+    }
     // Stop window recorder and persist video before returning
     if (entry.window_recorder_pid && entry.window_recording_path) {
       const recOk = stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
@@ -2577,6 +2690,12 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
 
   // Read final progress snapshot before killing
   const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
+
+  // Exit fullscreen before teardown
+  if (entry.fullscreened) {
+    unfullscreenChromeWindow();
+    entry.fullscreened = false;
+  }
 
   // Stop window recorder and persist video before destroying
   if (entry.window_recorder_pid && entry.window_recording_path) {
