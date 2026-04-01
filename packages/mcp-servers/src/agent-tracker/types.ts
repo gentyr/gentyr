@@ -289,7 +289,8 @@ export const GetSessionSummaryArgsSchema = z.object({
 export const PeekSessionArgsSchema = z.object({
   agent_id: z.string().optional().describe('Agent ID to peek'),
   queue_id: z.string().optional().describe('Queue ID to peek'),
-  depth: z.number().optional().default(8).describe('KB of JSONL tail to read'),
+  depth: z.number().optional().default(16).describe('KB of JSONL to read per page'),
+  offset: z.number().min(0).optional().default(0).describe('Bytes from end of file to start reading. 0 = latest. Use next_offset from previous response to page backward.'),
   include_compaction_context: z.boolean().optional().default(false)
     .describe('Scan backward for compaction summaries when session has been compacted. Adds ~50ms for compacted sessions.'),
 });
