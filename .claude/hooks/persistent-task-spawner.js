@@ -14,6 +14,7 @@ import { createInterface } from 'readline';
 import fs from 'fs';
 import path from 'path';
 import { debugLog } from './lib/debug-log.js';
+import { auditEvent } from './lib/session-audit.js';
 
 let Database = null;
 try {
@@ -25,6 +26,14 @@ try {
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const PT_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+const AGENT_ID = process.env.CLAUDE_AGENT_ID || 'unknown';
+
+const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'session-queue.log');
+function log(message) {
+  const timestamp = new Date().toISOString();
+  const line = `[${timestamp}] [persistent-task-spawner] ${message}\n`;
+  try { fs.appendFileSync(LOG_FILE, line); } catch (_) { /* non-fatal */ }
+}
 
 import { buildPersistentMonitorDemoInstructions } from './lib/persistent-monitor-demo-instructions.js';
 import { buildPersistentMonitorBridgeInstructions } from './lib/persistent-monitor-bridge-instructions.js';
@@ -115,6 +124,31 @@ async function main() {
   }
 
   debugLog('persistent-task-spawner', 'response_parsed', { status: responseData.status, hasError: !!responseData.error, id: responseData.id || responseData.persistent_task_id });
+
+  // Handle pause_persistent_task — audit only, no spawn
+  const toolName = input.tool_name || '';
+  if (toolName === 'mcp__persistent-task__pause_persistent_task' || responseData.status === 'paused') {
+    if (!responseData.error && responseData.id) {
+      const taskId = responseData.id;
+      const reason = responseData.reason ?? null;
+      log(`[persistent-task] Task ${taskId} paused: ${reason}`);
+      auditEvent('persistent_task_paused', { taskId, reason, pausedBy: AGENT_ID });
+    }
+    console.log(JSON.stringify({ }));
+    process.exit(0);
+  }
+
+  // Handle cancel_persistent_task — audit only, no spawn
+  if (toolName === 'mcp__persistent-task__cancel_persistent_task' || responseData.status === 'cancelled') {
+    if (!responseData.error && responseData.id) {
+      const taskId = responseData.id;
+      const reason = responseData.reason ?? null;
+      log(`[persistent-task] Task ${taskId} cancelled: ${reason}`);
+      auditEvent('persistent_task_cancelled', { taskId, reason, cancelledBy: AGENT_ID });
+    }
+    console.log(JSON.stringify({ }));
+    process.exit(0);
+  }
 
   // Check for error or non-active status
   if (responseData.error || responseData.status !== 'active') {
