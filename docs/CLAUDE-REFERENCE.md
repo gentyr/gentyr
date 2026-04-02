@@ -795,6 +795,56 @@ The chrome-bridge server injects site-specific browser automation tips into tool
 
 No credentials required - communicates via local Unix domain socket with length-prefixed JSON framing protocol.
 
+### Gentyr Browser Automation Extension
+
+A stripped-down Chrome extension at `tools/chrome-extension/` for headless browser automation without the official Claude app. Forked from Claude Chrome Extension v1.0.66; removes auth, permission prompts, side panel UI, and analytics.
+
+**Extension ID**: `dojoamdbiafnflmaknagfcakgpdkmpmn`
+
+**File layout:**
+```
+tools/chrome-extension/
+  extension/
+    manifest.json                         # Chrome MV3 manifest
+    service-worker-loader.js              # 1-line ES module loader
+    assets/
+      service-worker.js                   # 155-line stripped service worker
+      mcpPermissions-qqAoJjJ8.js          # Copied verbatim from v1.0.66
+      PermissionManager-9s959502.js       # Copied verbatim from v1.0.66
+      index-BVS4T5_D.js                   # Copied verbatim from v1.0.66
+      accessibility-tree.js-D8KNCIWO.js  # Content script
+      agent-visual-indicator.js-Ct7LqXhp.js  # Content script
+    offscreen.html / offscreen.js / gif.js / gif.worker.js / icon-128.png
+  native-host/
+    host.js        # Node.js native messaging host (~230 lines)
+    install.sh     # Registers host manifest with Chrome
+```
+
+**Service worker** (`assets/service-worker.js`): Connects to `com.gentyr.chrome_browser_extension` native host via Chrome native messaging. Handles `tool_request` messages by calling the v1.0.66 `toolExecutor` with `source: 'bridge'` and `permissionMode: 'skip_all_permission_checks'` — bypassing all permission dialogs. Keeps service worker alive via offscreen document.
+
+**Native messaging host** (`native-host/host.js`): Node.js ESM script registered with Chrome. Bridges Chrome's stdin/stdout 4-byte-length-prefixed JSON protocol to a Unix domain socket server at `/tmp/claude-mcp-browser-bridge-{username}/{pid}.sock`. Key behaviors:
+- Socket directory created with mode `0o700`; ownership and permissions validated on startup
+- Stale `.sock` files from dead PIDs are cleaned on startup
+- Request queue serializes tool execution (one in-flight request at a time through Chrome)
+- Responses routed to the requesting socket client only (not broadcast)
+- Reference-counted `mcp_connected`/`mcp_disconnected`: fires `mcp_connected` on first socket client, `mcp_disconnected` when last client disconnects
+- Chrome's 1MB native message limit enforced: oversized responses replaced with an error message
+- Handles `ping`/`pong` handshake and `get_status` queries from the service worker
+
+**Protocol (socket side)**: Socket clients send bare JSON requests:
+```json
+{ "method": "execute_tool", "params": { "tool": "navigate", "args": { "url": "..." } } }
+```
+The native host wraps these in `{ "type": "tool_request", ... }` before forwarding to Chrome, then strips the `type`/`tool_response` wrapper before relaying results back to the requesting client.
+
+**Installation**: `npx gentyr sync` runs `install.sh` as step 7c. Manual install:
+```bash
+tools/chrome-extension/native-host/install.sh
+```
+Then load `tools/chrome-extension/extension/` as an unpacked extension in Chrome (`chrome://extensions` → Developer mode → Load unpacked).
+
+`scripts/grant-chrome-ext-permissions.sh` now iterates over both the official Claude extension ID and the Gentyr extension ID (`dojoamdbiafnflmaknagfcakgpdkmpmn`) to grant debugger permissions in all Chrome profiles.
+
 ### @gentyr/chrome-actions Package
 
 TypeScript bindings for the Chrome Extension's Unix domain socket protocol. Located at `packages/chrome-actions/`. Published as `@gentyr/chrome-actions`.

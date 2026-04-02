@@ -25,7 +25,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-EXTENSION_ID="fcoeoabgfenejglbffodgkkbkcdhcgfn"
+EXTENSION_IDS=(
+    "fcoeoabgfenejglbffodgkkbkcdhcgfn"   # Claude Chrome Extension (official)
+    "dojoamdbiafnflmaknagfcakgpdkmpmn"   # Gentyr Browser Automation (stripped)
+)
 
 # Resolve real user's home directory (handles sudo invocation from setup.sh --protect)
 if [ -n "${SUDO_USER:-}" ]; then
@@ -83,6 +86,7 @@ PROFILES_MODIFIED=0
 
 process_profile() {
     local profile_dir="$1"
+    local EXTENSION_ID="$2"
     local profile_name
     profile_name="$(basename "$profile_dir")"
 
@@ -215,19 +219,21 @@ PYEOF
 
 echo -e "${BLUE}Checking Chrome extension permissions...${NC}"
 
-# Process Default profile
-if [ -d "$CHROME_DIR/Default" ]; then
-    process_profile "$CHROME_DIR/Default"
-fi
+for EXTENSION_ID in "${EXTENSION_IDS[@]}"; do
+    # Process Default profile
+    if [ -d "$CHROME_DIR/Default" ]; then
+        process_profile "$CHROME_DIR/Default" "$EXTENSION_ID"
+    fi
 
-# Process numbered profiles (Profile 1, Profile 2, etc.)
-for profile_dir in "$CHROME_DIR"/Profile\ *; do
-    [ -d "$profile_dir" ] && process_profile "$profile_dir"
+    # Process numbered profiles (Profile 1, Profile 2, etc.)
+    for profile_dir in "$CHROME_DIR"/Profile\ *; do
+        [ -d "$profile_dir" ] && process_profile "$profile_dir" "$EXTENSION_ID"
+    done
 done
 
 # --- Summary ---
 if [ "$PROFILES_FOUND" -eq 0 ]; then
-    echo -e "  ${YELLOW}Extension $EXTENSION_ID not found in any Chrome profile${NC}"
+    echo -e "  ${YELLOW}No extensions found in any Chrome profile${NC}"
     exit 0
 fi
 
