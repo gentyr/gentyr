@@ -90,3 +90,4 @@ tmp/
 # OS
 .DS_Store
 Thumbs.db
+tools/chrome-extension/native-host/launch-host.sh
