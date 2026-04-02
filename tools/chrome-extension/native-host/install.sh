@@ -1,6 +1,7 @@
 #!/bin/bash
 # Install the Gentyr native messaging host for Chrome.
-# Registers the host manifest so Chrome can launch host.cjs when the extension connects.
+# Creates a launcher wrapper with the absolute node path (Chrome's PATH
+# doesn't include Homebrew/nvm/fnm directories) and registers the NMH manifest.
 
 set -euo pipefail
 
@@ -16,8 +17,20 @@ if [ ! -f "$HOST_PATH" ]; then
   exit 1
 fi
 
-# Ensure host.cjs is executable
-chmod +x "$HOST_PATH"
+# Find absolute node path — Chrome's launchd PATH won't include Homebrew/nvm/fnm
+NODE_BIN="$(which node 2>/dev/null || command -v node 2>/dev/null)"
+if [ -z "$NODE_BIN" ]; then
+  echo "Error: node not found in PATH" >&2
+  exit 1
+fi
+
+# Create a launcher wrapper that uses the absolute node path
+LAUNCHER_PATH="${SCRIPT_DIR}/launch-host.sh"
+cat > "$LAUNCHER_PATH" <<LAUNCH_EOF
+#!/bin/bash
+exec "${NODE_BIN}" "${HOST_PATH}" "\$@"
+LAUNCH_EOF
+chmod +x "$LAUNCHER_PATH"
 
 # Determine native messaging host directory
 if [ "$(uname)" = "Darwin" ]; then
@@ -30,12 +43,12 @@ mkdir -p "$NMH_DIR"
 
 MANIFEST_PATH="${NMH_DIR}/${HOST_NAME}.json"
 
-# Write native messaging host manifest
+# Write native messaging host manifest — points to launcher, not host.cjs directly
 cat > "$MANIFEST_PATH" <<EOF
 {
   "name": "${HOST_NAME}",
   "description": "Gentyr Browser Automation Native Host",
-  "path": "${HOST_PATH}",
+  "path": "${LAUNCHER_PATH}",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://${EXTENSION_ID}/"
@@ -44,6 +57,8 @@ cat > "$MANIFEST_PATH" <<EOF
 EOF
 
 echo "Native messaging host installed:"
-echo "  Manifest: $MANIFEST_PATH"
-echo "  Host:     $HOST_PATH"
-echo "  Extension ID: $EXTENSION_ID"
+echo "  Manifest:  $MANIFEST_PATH"
+echo "  Launcher:  $LAUNCHER_PATH"
+echo "  Host:      $HOST_PATH"
+echo "  Node:      $NODE_BIN"
+echo "  Extension: $EXTENSION_ID"
