@@ -3551,11 +3551,11 @@ function launchInteractiveMonitor(args: LaunchInteractiveMonitorArgs): object {
     return { error: `Failed to open persistent-tasks.db: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  let task: { id: string; title: string; status: string; prompt: string; monitor_pid: number | null; metadata: string | null } | undefined;
+  let task: { id: string; title: string; status: string; prompt: string; monitor_pid: number | null; monitor_agent_id: string | null; metadata: string | null } | undefined;
   try {
     const prefix = args.task_id.trim();
     const rows = ptDb.prepare(
-      "SELECT id, title, status, prompt, monitor_pid, metadata FROM persistent_tasks WHERE id LIKE ? || '%'"
+      "SELECT id, title, status, prompt, monitor_pid, monitor_agent_id, metadata FROM persistent_tasks WHERE id LIKE ? || '%'"
     ).all(prefix) as typeof task[];
     if (rows.length === 0) {
       return { error: `No persistent task found matching prefix '${prefix}'` };
@@ -3574,6 +3574,18 @@ function launchInteractiveMonitor(args: LaunchInteractiveMonitorArgs): object {
     return { error: `Task '${task.title}' is ${task.status}, not active. Resume it first with mcp__persistent-task__resume_persistent_task.` };
   }
 
+  // Find the monitor's session file BEFORE killing (so we can --resume it)
+  let sessionId: string | null = null;
+  if (task.monitor_agent_id) {
+    const sessionDir = getSessionDir(PROJECT_DIR);
+    if (sessionDir) {
+      const sessionFile = findSessionFileByAgentId(sessionDir, task.monitor_agent_id);
+      if (sessionFile) {
+        sessionId = path.basename(sessionFile, '.jsonl');
+      }
+    }
+  }
+
   // Kill existing headless monitor if alive
   let killedPid: number | null = null;
   if (task.monitor_pid) {
@@ -3584,7 +3596,7 @@ function launchInteractiveMonitor(args: LaunchInteractiveMonitorArgs): object {
     } catch { /* already dead, ignore */ }
   }
 
-  // Generate agent ID
+  // Generate agent ID (used for fresh sessions only)
   const agentId = `agent-${crypto.randomBytes(4).toString('hex')}-${Date.now().toString().slice(-5)}`;
 
   // Detect proxy state
@@ -3624,16 +3636,21 @@ export NODE_EXTRA_CA_CERTS="${path.join(os.homedir(), '.claude', 'proxy-certs', 
   const gitWrappersDir = path.join(PROJECT_DIR, '.claude', 'hooks', 'git-wrappers');
   const pathPrepend = fs.existsSync(gitWrappersDir) ? `\nexport PATH="${gitWrappersDir}:$PATH"` : '';
 
+  // Build the claude command: --resume if we have a session, fresh prompt otherwise
+  const claudeCmd = sessionId
+    ? `exec claude --resume ${sessionId}`
+    : `exec claude --agent persistent-monitor ${JSON.stringify(prompt)}`;
+
   const scriptContent = `#!/bin/bash
 cd ${JSON.stringify(PROJECT_DIR)}
 
 export GENTYR_PERSISTENT_TASK_ID="${task.id}"
 export GENTYR_PERSISTENT_MONITOR="true"
 export GENTYR_INTERACTIVE_MONITOR="true"
-export CLAUDE_AGENT_ID="${agentId}"
+export CLAUDE_AGENT_ID="${sessionId ? task.monitor_agent_id : agentId}"
 export CLAUDE_PROJECT_DIR=${JSON.stringify(PROJECT_DIR)}${pathPrepend}${proxyEnv}
 
-exec claude --agent persistent-monitor ${JSON.stringify(prompt)}
+${claudeCmd}
 `;
 
   fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
@@ -3651,15 +3668,20 @@ end tell`
     return { error: `AppleScript failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 
+  const resumed = sessionId !== null;
   return {
     launched: true,
+    resumed,
     taskId: task.id,
     taskTitle: task.title,
-    agentId,
+    agentId: resumed ? task.monitor_agent_id : agentId,
+    sessionId: sessionId || undefined,
     scriptPath,
     killedPid,
     proxyEnabled,
-    message: `Interactive monitor launched in Terminal.app for "${safeTitle}". Watch the Terminal window for real-time output. Type in the window to intervene.`,
+    message: resumed
+      ? `Resumed monitor session in Terminal.app for "${safeTitle}". Full conversation history is visible. Type in the window to intervene.`
+      : `Fresh monitor session launched in Terminal.app for "${safeTitle}" (no prior session found to resume).`,
   };
 }
 

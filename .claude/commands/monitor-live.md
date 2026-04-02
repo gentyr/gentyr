@@ -49,8 +49,10 @@ mcp__agent-tracker__launch_interactive_monitor({ task_id: "<task_id_or_prefix>" 
 This single tool call handles everything:
 - Resolves the task by prefix
 - Validates it is `active`
-- Kills any existing headless monitor (SIGTERM)
-- Generates a unique agent ID
+- Finds the monitor's existing session JSONL file (for `--resume`)
+- Kills the headless monitor process (SIGTERM)
+- Uses `claude --resume <session-id>` to continue the existing conversation with full history
+- Falls back to a fresh session if no prior session file is found
 - Detects and configures proxy env vars
 - Writes a launch script to `/tmp/`
 - Opens a Terminal.app window via AppleScript
@@ -61,16 +63,18 @@ This single tool call handles everything:
 
 If the tool returns `launched: true`, display:
 
+If `resumed: true`:
 ```
-Interactive monitor launched for "<taskTitle>"
+Resumed monitor session in Terminal.app for "<taskTitle>"
 
-  Task ID:  <taskId>
-  Agent ID: <agentId>
-  Killed:   <killedPid or "no existing monitor">
-  Proxy:    <proxyEnabled>
+  Task ID:    <taskId>
+  Session ID: <sessionId>
+  Agent ID:   <agentId>
+  Killed PID: <killedPid or "no existing monitor">
 
-The monitor will read its task details and begin the monitoring loop.
-You can type messages in the Terminal window to intervene at any time.
+Full conversation history is visible in the Terminal window.
+The monitor continues from exactly where it left off.
+Type in the window to intervene at any time.
 
 If the session dies, the standard revival system will spawn a headless
 replacement after ~5 minutes. Re-run /monitor-live to stay interactive.
