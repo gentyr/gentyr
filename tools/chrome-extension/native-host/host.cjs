@@ -18,10 +18,10 @@
  * being relayed back to the requesting socket client.
  */
 
-import { createServer } from 'net';
-import { mkdirSync, rmSync, readdirSync, statSync, existsSync, chmodSync } from 'fs';
-import { join } from 'path';
-import { userInfo } from 'os';
+const { createServer } = require('net');
+const { mkdirSync, rmSync, readdirSync, statSync, existsSync, chmodSync } = require('fs');
+const { join } = require('path');
+const { userInfo } = require('os');
 
 // --- Config -------------------------------------------------------------------
 

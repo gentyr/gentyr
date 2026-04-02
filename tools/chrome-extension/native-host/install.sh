@@ -1,22 +1,22 @@
 #!/bin/bash
 # Install the Gentyr native messaging host for Chrome.
-# Registers the host manifest so Chrome can launch host.js when the extension connects.
+# Registers the host manifest so Chrome can launch host.cjs when the extension connects.
 
 set -euo pipefail
 
 EXTENSION_ID="dojoamdbiafnflmaknagfcakgpdkmpmn"
 HOST_NAME="com.gentyr.chrome_browser_extension"
 
-# Resolve absolute path to host.js
+# Resolve absolute path to host.cjs
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-HOST_PATH="${SCRIPT_DIR}/host.js"
+HOST_PATH="${SCRIPT_DIR}/host.cjs"
 
 if [ ! -f "$HOST_PATH" ]; then
-  echo "Error: host.js not found at $HOST_PATH" >&2
+  echo "Error: host.cjs not found at $HOST_PATH" >&2
   exit 1
 fi
 
-# Ensure host.js is executable
+# Ensure host.cjs is executable
 chmod +x "$HOST_PATH"
 
 # Determine native messaging host directory
