@@ -3529,94 +3529,165 @@ async function registerSharedResource(args: RegisterSharedResourceArgs): Promise
 // ============================================================================
 
 /**
- * Launch a persistent task monitor in a visible Terminal.app window.
- * Kills any existing headless monitor for the same task, writes a launch
- * script to /tmp, and opens it in Terminal via AppleScript.
+ * Open any agent session interactively in a visible Terminal.app window.
+ * Supports 4 input modes: persistent task_id, session_id, queue_id, or agent_id.
+ * Kills the headless process if still running, then resumes the session with full history.
  */
 function launchInteractiveMonitor(args: LaunchInteractiveMonitorArgs): object {
   if (process.platform !== 'darwin') {
     return { error: 'launch_interactive_monitor requires macOS (Terminal.app + AppleScript)' };
   }
 
-  // Resolve task by prefix
-  const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
-  if (!fs.existsSync(ptDbPath)) {
-    return { error: 'persistent-tasks.db not found' };
+  if (!args.task_id && !args.session_id && !args.queue_id && !args.agent_id) {
+    return { error: 'Provide one of: task_id, session_id, queue_id, or agent_id' };
   }
 
-  let ptDb;
-  try {
-    ptDb = openReadonlyDb(ptDbPath);
-  } catch (err) {
-    return { error: `Failed to open persistent-tasks.db: ${err instanceof Error ? err.message : String(err)}` };
-  }
-
-  let task: { id: string; title: string; status: string; prompt: string; monitor_pid: number | null; monitor_agent_id: string | null; metadata: string | null } | undefined;
-  try {
-    const prefix = args.task_id.trim();
-    const rows = ptDb.prepare(
-      "SELECT id, title, status, prompt, monitor_pid, monitor_agent_id, metadata FROM persistent_tasks WHERE id LIKE ? || '%'"
-    ).all(prefix) as typeof task[];
-    if (rows.length === 0) {
-      return { error: `No persistent task found matching prefix '${prefix}'` };
-    }
-    if (rows.length > 1) {
-      return { error: `Multiple tasks match prefix '${prefix}': ${rows.map(r => `${r!.id.slice(0, 8)} (${r!.title})`).join(', ')}` };
-    }
-    task = rows[0];
-  } finally {
-    try { ptDb.close(); } catch { /* best-effort */ }
-  }
-
-  if (!task) return { error: 'Task not found' };
-
-  if (task.status !== 'active') {
-    return { error: `Task '${task.title}' is ${task.status}, not active. Resume it first with mcp__persistent-task__resume_persistent_task.` };
-  }
-
-  // Find the monitor's session file BEFORE killing (so we can --resume it)
   let sessionId: string | null = null;
-  if (task.monitor_agent_id) {
-    const sessionDir = getSessionDir(PROJECT_DIR);
+  let resolvedAgentId: string | null = null;
+  let killedPid: number | null = null;
+  let title = 'Agent session';
+  let persistentTaskId: string | null = null;
+
+  const sessionDir = getSessionDir(PROJECT_DIR);
+
+  // ── Mode 1: Direct session_id ──
+  if (args.session_id) {
+    sessionId = args.session_id.trim();
+    // Verify the session file exists
     if (sessionDir) {
-      const sessionFile = findSessionFileByAgentId(sessionDir, task.monitor_agent_id);
-      if (sessionFile) {
-        sessionId = path.basename(sessionFile, '.jsonl');
+      const sessionFile = path.join(sessionDir, `${sessionId}.jsonl`);
+      if (!fs.existsSync(sessionFile)) {
+        return { error: `Session file not found: ${sessionId}.jsonl` };
       }
     }
   }
 
-  // Kill existing headless monitor if alive
-  let killedPid: number | null = null;
-  if (task.monitor_pid) {
-    try {
-      process.kill(task.monitor_pid, 0); // Check if alive
-      process.kill(task.monitor_pid, 'SIGTERM');
-      killedPid = task.monitor_pid;
-    } catch { /* already dead, ignore */ }
+  // ── Mode 2: agent_id — find session file, kill process ──
+  if (args.agent_id && !sessionId) {
+    resolvedAgentId = args.agent_id.trim();
+    if (sessionDir) {
+      const sessionFile = findSessionFileByAgentId(sessionDir, resolvedAgentId);
+      if (sessionFile) {
+        sessionId = path.basename(sessionFile, '.jsonl');
+      }
+    }
+    if (!sessionId) {
+      return { error: `No session file found for agent_id '${resolvedAgentId}'` };
+    }
+    // Try to find and kill the running process from the queue
+    if (fs.existsSync(QUEUE_DB_PATH)) {
+      let qDb;
+      try {
+        qDb = openReadonlyDb(QUEUE_DB_PATH);
+        const row = qDb.prepare("SELECT pid, title FROM queue_items WHERE agent_id = ? AND status = 'running'").get(resolvedAgentId) as { pid: number | null; title: string } | undefined;
+        if (row) {
+          title = row.title || title;
+          if (row.pid) {
+            try { process.kill(row.pid, 0); process.kill(row.pid, 'SIGTERM'); killedPid = row.pid; } catch { /* dead */ }
+          }
+        }
+      } finally {
+        try { qDb?.close(); } catch { /* best-effort */ }
+      }
+    }
   }
 
-  // Generate agent ID (used for fresh sessions only)
-  const agentId = `agent-${crypto.randomBytes(4).toString('hex')}-${Date.now().toString().slice(-5)}`;
+  // ── Mode 3: queue_id — look up agent_id and session from queue DB ──
+  if (args.queue_id && !sessionId) {
+    if (!fs.existsSync(QUEUE_DB_PATH)) {
+      return { error: 'Session queue database not found' };
+    }
+    let qDb;
+    try {
+      qDb = openReadonlyDb(QUEUE_DB_PATH);
+      const row = qDb.prepare("SELECT agent_id, pid, title, metadata FROM queue_items WHERE id = ?").get(args.queue_id.trim()) as { agent_id: string | null; pid: number | null; title: string; metadata: string | null } | undefined;
+      if (!row) {
+        return { error: `Queue item not found: ${args.queue_id}` };
+      }
+      title = row.title || title;
+      resolvedAgentId = row.agent_id;
+      // Extract persistentTaskId from metadata if present
+      try {
+        const meta = row.metadata ? JSON.parse(row.metadata) : {};
+        if (meta.persistentTaskId) persistentTaskId = meta.persistentTaskId;
+      } catch { /* ignore */ }
+      // Find session file
+      if (resolvedAgentId && sessionDir) {
+        const sessionFile = findSessionFileByAgentId(sessionDir, resolvedAgentId);
+        if (sessionFile) {
+          sessionId = path.basename(sessionFile, '.jsonl');
+        }
+      }
+      if (!sessionId) {
+        return { error: `No session file found for queue item '${args.queue_id}' (agent: ${resolvedAgentId || 'not spawned'})` };
+      }
+      // Kill the process
+      if (row.pid) {
+        try { process.kill(row.pid, 0); process.kill(row.pid, 'SIGTERM'); killedPid = row.pid; } catch { /* dead */ }
+      }
+    } finally {
+      try { qDb?.close(); } catch { /* best-effort */ }
+    }
+  }
+
+  // ── Mode 4: task_id — persistent task monitor ──
+  if (args.task_id && !sessionId) {
+    const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+    if (!fs.existsSync(ptDbPath)) {
+      return { error: 'persistent-tasks.db not found' };
+    }
+    let ptDb;
+    try {
+      ptDb = openReadonlyDb(ptDbPath);
+      const prefix = args.task_id.trim();
+      const rows = ptDb.prepare(
+        "SELECT id, title, status, prompt, monitor_pid, monitor_agent_id, metadata FROM persistent_tasks WHERE id LIKE ? || '%'"
+      ).all(prefix) as Array<{ id: string; title: string; status: string; prompt: string; monitor_pid: number | null; monitor_agent_id: string | null; metadata: string | null }>;
+      if (rows.length === 0) {
+        return { error: `No persistent task found matching prefix '${prefix}'` };
+      }
+      if (rows.length > 1) {
+        return { error: `Multiple tasks match prefix '${prefix}': ${rows.map(r => `${r.id.slice(0, 8)} (${r.title})`).join(', ')}` };
+      }
+      const task = rows[0];
+      title = task.title;
+      persistentTaskId = task.id;
+
+      if (task.status !== 'active') {
+        return { error: `Task '${task.title}' is ${task.status}, not active. Resume it first with mcp__persistent-task__resume_persistent_task.` };
+      }
+
+      // Find session file
+      if (task.monitor_agent_id && sessionDir) {
+        resolvedAgentId = task.monitor_agent_id;
+        const sessionFile = findSessionFileByAgentId(sessionDir, task.monitor_agent_id);
+        if (sessionFile) {
+          sessionId = path.basename(sessionFile, '.jsonl');
+        }
+      }
+      // Kill headless monitor
+      if (task.monitor_pid) {
+        try { process.kill(task.monitor_pid, 0); process.kill(task.monitor_pid, 'SIGTERM'); killedPid = task.monitor_pid; } catch { /* dead */ }
+      }
+    } finally {
+      try { ptDb?.close(); } catch { /* best-effort */ }
+    }
+  }
+
+  // ── Build and launch ──
 
   // Detect proxy state
   const proxyPort = process.env.GENTYR_PROXY_PORT || '18080';
-  const proxyDisabledPath = path.join(os.homedir(), '.claude', 'proxy-disabled.json');
   let proxyEnabled = true;
   try {
+    const proxyDisabledPath = path.join(os.homedir(), '.claude', 'proxy-disabled.json');
     if (fs.existsSync(proxyDisabledPath)) {
       const state = JSON.parse(fs.readFileSync(proxyDisabledPath, 'utf8'));
       if (state.disabled) proxyEnabled = false;
     }
   } catch { /* default to enabled */ }
-
-  // Check proxy is actually running
   if (proxyEnabled) {
-    try {
-      execSync(`curl -sf http://localhost:${proxyPort}/health`, { timeout: 2000, stdio: 'pipe' });
-    } catch {
-      proxyEnabled = false;
-    }
+    try { execSync(`curl -sf http://localhost:${proxyPort}/health`, { timeout: 2000, stdio: 'pipe' }); } catch { proxyEnabled = false; }
   }
 
   const proxyEnv = proxyEnabled ? `
@@ -3625,38 +3696,52 @@ export HTTP_PROXY="http://localhost:${proxyPort}"
 export NO_PROXY="localhost,127.0.0.1"
 export NODE_EXTRA_CA_CERTS="${path.join(os.homedir(), '.claude', 'proxy-certs', 'ca.pem')}"` : '';
 
-  // Sanitize title for shell
-  const safeTitle = task.title.replace(/['"\\]/g, '');
-
-  // Build launch script
-  const scriptPath = `/tmp/gentyr-monitor-${task.id.slice(0, 8)}.sh`;
-  const prompt = `[Automation][persistent-monitor][AGENT:${agentId}] You are the interactive persistent task monitor for "${safeTitle}". Read your full task details: mcp__persistent-task__get_persistent_task({ id: "${task.id}", include_amendments: true, include_subtasks: true }). Then begin your monitoring loop. Persistent Task ID: ${task.id}`;
-
-  // git-wrappers PATH for Layer 1 merge chain enforcement on child agents
   const gitWrappersDir = path.join(PROJECT_DIR, '.claude', 'hooks', 'git-wrappers');
   const pathPrepend = fs.existsSync(gitWrappersDir) ? `\nexport PATH="${gitWrappersDir}:$PATH"` : '';
 
-  // Build the claude command: --resume if we have a session, fresh prompt otherwise
-  const claudeCmd = sessionId
-    ? `exec claude --resume ${sessionId}`
-    : `exec claude --agent persistent-monitor ${JSON.stringify(prompt)}`;
+  const safeTitle = title.replace(/['"\\]/g, '');
+  const scriptId = sessionId?.slice(0, 8) || crypto.randomBytes(4).toString('hex');
+  const scriptPath = `/tmp/gentyr-join-${scriptId}.sh`;
 
-  const scriptContent = `#!/bin/bash
+  // Persistent task env vars (if applicable)
+  const ptEnv = persistentTaskId ? `
+export GENTYR_PERSISTENT_TASK_ID="${persistentTaskId}"
+export GENTYR_PERSISTENT_MONITOR="true"` : '';
+
+  if (sessionId) {
+    // Resume existing session
+    const scriptContent = `#!/bin/bash
 cd ${JSON.stringify(PROJECT_DIR)}
 
-export GENTYR_PERSISTENT_TASK_ID="${task.id}"
-export GENTYR_PERSISTENT_MONITOR="true"
 export GENTYR_INTERACTIVE_MONITOR="true"
-export CLAUDE_AGENT_ID="${sessionId ? task.monitor_agent_id : agentId}"
-export CLAUDE_PROJECT_DIR=${JSON.stringify(PROJECT_DIR)}${pathPrepend}${proxyEnv}
+export CLAUDE_AGENT_ID="${resolvedAgentId || ''}"
+export CLAUDE_PROJECT_DIR=${JSON.stringify(PROJECT_DIR)}${ptEnv}${pathPrepend}${proxyEnv}
 
-${claudeCmd}
+exec claude --resume ${sessionId}
 `;
+    fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+  } else {
+    // No session to resume — launch fresh (persistent task fallback)
+    const newAgentId = `agent-${crypto.randomBytes(4).toString('hex')}-${Date.now().toString().slice(-5)}`;
+    resolvedAgentId = newAgentId;
+    const prompt = persistentTaskId
+      ? `[Automation][persistent-monitor][AGENT:${newAgentId}] You are the interactive persistent task monitor for "${safeTitle}". Read your full task details: mcp__persistent-task__get_persistent_task({ id: "${persistentTaskId}", include_amendments: true, include_subtasks: true }). Then begin your monitoring loop. Persistent Task ID: ${persistentTaskId}`
+      : `[Interactive session] ${safeTitle}`;
 
-  fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+    const agentFlag = persistentTaskId ? '--agent persistent-monitor' : '';
+    const scriptContent = `#!/bin/bash
+cd ${JSON.stringify(PROJECT_DIR)}
 
-  // Launch via AppleScript — use direct script execution (not text injection)
-  // to avoid keystroke races if the user is typing when the window opens
+export GENTYR_INTERACTIVE_MONITOR="true"
+export CLAUDE_AGENT_ID="${newAgentId}"
+export CLAUDE_PROJECT_DIR=${JSON.stringify(PROJECT_DIR)}${ptEnv}${pathPrepend}${proxyEnv}
+
+exec claude ${agentFlag} ${JSON.stringify(prompt)}
+`;
+    fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+  }
+
+  // Launch via AppleScript
   try {
     execFileSync('osascript', ['-e',
       `tell application "Terminal"
@@ -3672,16 +3757,14 @@ end tell`
   return {
     launched: true,
     resumed,
-    taskId: task.id,
-    taskTitle: task.title,
-    agentId: resumed ? task.monitor_agent_id : agentId,
     sessionId: sessionId || undefined,
-    scriptPath,
+    agentId: resolvedAgentId,
+    title,
     killedPid,
     proxyEnabled,
     message: resumed
-      ? `Resumed monitor session in Terminal.app for "${safeTitle}". Full conversation history is visible. Type in the window to intervene.`
-      : `Fresh monitor session launched in Terminal.app for "${safeTitle}" (no prior session found to resume).`,
+      ? `Resumed session in Terminal.app for "${safeTitle}". Full conversation history is visible.`
+      : `Fresh session launched in Terminal.app for "${safeTitle}".`,
   };
 }
 
@@ -3928,10 +4011,10 @@ const tools: AnyToolHandler[] = [
     schema: RegisterSharedResourceArgsSchema,
     handler: registerSharedResource,
   },
-  // Interactive Monitor
+  // Interactive Session Launcher
   {
     name: 'launch_interactive_monitor',
-    description: 'Launch a persistent task monitor in a visible Terminal.app window (macOS only). The CTO can watch the monitor work in real-time and type to intervene. Kills any existing headless monitor for the same task. Provide a task UUID or prefix.',
+    description: 'Open ANY agent session interactively in a Terminal.app window (macOS only). Kills the headless process, then resumes the session with full conversation history. The CTO can watch in real-time and type to intervene. Accepts 4 input modes: task_id (persistent task prefix — resolves to monitor session), session_id (direct Claude session UUID), queue_id (session queue item ID), or agent_id (agent tracker ID). Use get_session_queue_status to list running sessions and their IDs, or show_session_queue for a visual table.',
     schema: LaunchInteractiveMonitorArgsSchema,
     handler: launchInteractiveMonitor,
   },
