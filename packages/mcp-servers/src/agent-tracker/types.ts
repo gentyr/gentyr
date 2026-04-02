@@ -378,6 +378,11 @@ export const InspectPersistentTaskArgsSchema = z.object({
 });
 export type InspectPersistentTaskArgs = z.infer<typeof InspectPersistentTaskArgsSchema>;
 
+export const LaunchInteractiveMonitorArgsSchema = z.object({
+  task_id: z.string().min(1).describe('Persistent task UUID or prefix'),
+});
+export type LaunchInteractiveMonitorArgs = z.infer<typeof LaunchInteractiveMonitorArgsSchema>;
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
