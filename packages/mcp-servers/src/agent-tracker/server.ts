@@ -3638,12 +3638,13 @@ exec claude --agent persistent-monitor ${JSON.stringify(prompt)}
 
   fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
 
-  // Launch via AppleScript
+  // Launch via AppleScript — use direct script execution (not text injection)
+  // to avoid keystroke races if the user is typing when the window opens
   try {
     execFileSync('osascript', ['-e',
       `tell application "Terminal"
+  do script "${scriptPath}"
   activate
-  do script "bash ${scriptPath}"
 end tell`
     ], { timeout: 10000, stdio: 'pipe' });
   } catch (err) {
