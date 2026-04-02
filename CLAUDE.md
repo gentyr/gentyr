@@ -416,10 +416,11 @@ Lets the CTO delegate complex multi-step objectives to a dedicated monitor sessi
 
 **CTO Dashboard**: `PersistentTaskSection` component reads from `persistent-tasks.db` via `packages/cto-dashboard/src/utils/persistent-task-reader.ts`. Rendered on `/cto-report`.
 
-**3 slash commands**:
+**4 slash commands**:
 - `/persistent-task` — create flow: researches context, refines the CTO's input into a high-specificity prompt, previews the draft, creates and activates on approval
 - `/persistent-tasks` — management view: lists all tasks, shows monitor health, and provides amend/pause/resume/cancel/revive actions
 - `/monitor-tasks` — continuous monitoring loop; each round spawns a short-lived investigator to gather queue + monitor health data, then displays a structured status report. Accepts optional argument: `persistent` (focus on persistent task monitors), a task-ID prefix (monitor a specific task), or bare (user selects scope). Stops automatically on intervention-needed conditions: monitor dead with no revival queued, task self-paused, task completed/cancelled, critical memory pressure for 3+ rounds, child agent stale 15+ minutes, or a systemic error pattern across 3+ child attempts.
+- `/monitor-live [task-id-prefix]` — launches an interactive persistent task monitor in a new Terminal.app window (macOS only). The CTO can observe the monitor's TUI output in real-time and type messages to intervene. Kills any existing headless monitor for the same task before launching. Sets `GENTYR_INTERACTIVE_MONITOR=true` env var to bypass the interactive-agent-guard and enable progress tracking. Heartbeat, amendment detection, and sub-agent spawning work via the same hooks as headless monitors (`persistent-task-briefing.js` checks `GENTYR_PERSISTENT_TASK_ID`, not `CLAUDE_SPAWNED_SESSION`). If the interactive session dies, the standard heartbeat-stale revival spawns a headless replacement after ~5 minutes; re-run `/monitor-live` to stay interactive.
 
 ## CTO Session Search
 

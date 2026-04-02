@@ -206,6 +206,12 @@ async function main() {
     return;
   }
 
+  // Interactive monitor sessions bypass lockdown — they need full tool access for sub-agent orchestration
+  if (process.env.GENTYR_INTERACTIVE_MONITOR === 'true') {
+    process.stdout.write(JSON.stringify({ decision: 'approve' }));
+    return;
+  }
+
   // Check lockdown disabled flag (interactive sessions only)
   if (isLockdownDisabled()) {
     const warning = '[LOCKDOWN DISABLED] The deputy-CTO lockdown is currently disabled. You have full tool access. Remember to re-enable via /lockdown on for proper GENTYR workflow.';
