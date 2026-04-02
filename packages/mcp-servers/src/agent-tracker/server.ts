@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync, execFileSync } from 'child_process';
+import * as crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
@@ -52,6 +53,7 @@ import {
   SuspendSessionArgsSchema,
   ReorderQueueArgsSchema,
   InspectPersistentTaskArgsSchema,
+  LaunchInteractiveMonitorArgsSchema,
   AcquireSharedResourceArgsSchema,
   ReleaseSharedResourceArgsSchema,
   RenewSharedResourceArgsSchema,
@@ -87,6 +89,7 @@ import {
   type SuspendSessionArgs,
   type ReorderQueueArgs,
   type InspectPersistentTaskArgs,
+  type LaunchInteractiveMonitorArgs,
   type AcquireSharedResourceArgs,
   type ReleaseSharedResourceArgs,
   type RenewSharedResourceArgs,
@@ -3521,6 +3524,144 @@ async function registerSharedResource(args: RegisterSharedResourceArgs): Promise
 // Server Setup
 // ============================================================================
 
+// ============================================================================
+// Interactive Monitor Launcher
+// ============================================================================
+
+/**
+ * Launch a persistent task monitor in a visible Terminal.app window.
+ * Kills any existing headless monitor for the same task, writes a launch
+ * script to /tmp, and opens it in Terminal via AppleScript.
+ */
+function launchInteractiveMonitor(args: LaunchInteractiveMonitorArgs): object {
+  if (process.platform !== 'darwin') {
+    return { error: 'launch_interactive_monitor requires macOS (Terminal.app + AppleScript)' };
+  }
+
+  // Resolve task by prefix
+  const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+  if (!fs.existsSync(ptDbPath)) {
+    return { error: 'persistent-tasks.db not found' };
+  }
+
+  let ptDb;
+  try {
+    ptDb = openReadonlyDb(ptDbPath);
+  } catch (err) {
+    return { error: `Failed to open persistent-tasks.db: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  let task: { id: string; title: string; status: string; prompt: string; monitor_pid: number | null; metadata: string | null } | undefined;
+  try {
+    const prefix = args.task_id.trim();
+    const rows = ptDb.prepare(
+      "SELECT id, title, status, prompt, monitor_pid, metadata FROM persistent_tasks WHERE id LIKE ? || '%'"
+    ).all(prefix) as typeof task[];
+    if (rows.length === 0) {
+      return { error: `No persistent task found matching prefix '${prefix}'` };
+    }
+    if (rows.length > 1) {
+      return { error: `Multiple tasks match prefix '${prefix}': ${rows.map(r => `${r!.id.slice(0, 8)} (${r!.title})`).join(', ')}` };
+    }
+    task = rows[0];
+  } finally {
+    try { ptDb.close(); } catch { /* best-effort */ }
+  }
+
+  if (!task) return { error: 'Task not found' };
+
+  if (task.status !== 'active') {
+    return { error: `Task '${task.title}' is ${task.status}, not active. Resume it first with mcp__persistent-task__resume_persistent_task.` };
+  }
+
+  // Kill existing headless monitor if alive
+  let killedPid: number | null = null;
+  if (task.monitor_pid) {
+    try {
+      process.kill(task.monitor_pid, 0); // Check if alive
+      process.kill(task.monitor_pid, 'SIGTERM');
+      killedPid = task.monitor_pid;
+    } catch { /* already dead, ignore */ }
+  }
+
+  // Generate agent ID
+  const agentId = `agent-${crypto.randomBytes(4).toString('hex')}-${Date.now().toString().slice(-5)}`;
+
+  // Detect proxy state
+  const proxyPort = process.env.GENTYR_PROXY_PORT || '18080';
+  const proxyDisabledPath = path.join(os.homedir(), '.claude', 'proxy-disabled.json');
+  let proxyEnabled = true;
+  try {
+    if (fs.existsSync(proxyDisabledPath)) {
+      const state = JSON.parse(fs.readFileSync(proxyDisabledPath, 'utf8'));
+      if (state.disabled) proxyEnabled = false;
+    }
+  } catch { /* default to enabled */ }
+
+  // Check proxy is actually running
+  if (proxyEnabled) {
+    try {
+      execSync(`curl -sf http://localhost:${proxyPort}/health`, { timeout: 2000, stdio: 'pipe' });
+    } catch {
+      proxyEnabled = false;
+    }
+  }
+
+  const proxyEnv = proxyEnabled ? `
+export HTTPS_PROXY="http://localhost:${proxyPort}"
+export HTTP_PROXY="http://localhost:${proxyPort}"
+export NO_PROXY="localhost,127.0.0.1"
+export NODE_EXTRA_CA_CERTS="${path.join(os.homedir(), '.claude', 'proxy-certs', 'ca.pem')}"` : '';
+
+  // Sanitize title for shell
+  const safeTitle = task.title.replace(/['"\\]/g, '');
+
+  // Build launch script
+  const scriptPath = `/tmp/gentyr-monitor-${task.id.slice(0, 8)}.sh`;
+  const prompt = `[Automation][persistent-monitor][AGENT:${agentId}] You are the interactive persistent task monitor for "${safeTitle}". Read your full task details: mcp__persistent-task__get_persistent_task({ id: "${task.id}", include_amendments: true, include_subtasks: true }). Then begin your monitoring loop. Persistent Task ID: ${task.id}`;
+
+  // git-wrappers PATH for Layer 1 merge chain enforcement on child agents
+  const gitWrappersDir = path.join(PROJECT_DIR, '.claude', 'hooks', 'git-wrappers');
+  const pathPrepend = fs.existsSync(gitWrappersDir) ? `\nexport PATH="${gitWrappersDir}:$PATH"` : '';
+
+  const scriptContent = `#!/bin/bash
+cd ${JSON.stringify(PROJECT_DIR)}
+
+export GENTYR_PERSISTENT_TASK_ID="${task.id}"
+export GENTYR_PERSISTENT_MONITOR="true"
+export GENTYR_INTERACTIVE_MONITOR="true"
+export CLAUDE_AGENT_ID="${agentId}"
+export CLAUDE_PROJECT_DIR=${JSON.stringify(PROJECT_DIR)}${pathPrepend}${proxyEnv}
+
+exec claude --agent persistent-monitor ${JSON.stringify(prompt)}
+`;
+
+  fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+
+  // Launch via AppleScript
+  try {
+    execFileSync('osascript', ['-e',
+      `tell application "Terminal"
+  activate
+  do script "bash ${scriptPath}"
+end tell`
+    ], { timeout: 10000, stdio: 'pipe' });
+  } catch (err) {
+    return { error: `AppleScript failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  return {
+    launched: true,
+    taskId: task.id,
+    taskTitle: task.title,
+    agentId,
+    scriptPath,
+    killedPid,
+    proxyEnabled,
+    message: `Interactive monitor launched in Terminal.app for "${safeTitle}". Watch the Terminal window for real-time output. Type in the window to intervene.`,
+  };
+}
+
 const tools: AnyToolHandler[] = [
   {
     name: 'list_spawned_agents',
@@ -3763,6 +3904,13 @@ const tools: AnyToolHandler[] = [
     description: 'Register a new resource in the shared resource registry, making it available for exclusive locking by agents. Idempotent — re-registering updates description and TTL. Built-in resources (display, chrome-bridge, main-dev-server) are pre-registered automatically.',
     schema: RegisterSharedResourceArgsSchema,
     handler: registerSharedResource,
+  },
+  // Interactive Monitor
+  {
+    name: 'launch_interactive_monitor',
+    description: 'Launch a persistent task monitor in a visible Terminal.app window (macOS only). The CTO can watch the monitor work in real-time and type to intervene. Kills any existing headless monitor for the same task. Provide a task UUID or prefix.',
+    schema: LaunchInteractiveMonitorArgsSchema,
+    handler: launchInteractiveMonitor,
   },
 ];
 
