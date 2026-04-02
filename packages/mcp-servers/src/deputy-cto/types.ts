@@ -76,7 +76,10 @@ export const GetCommitDecisionArgsSchema = z.object({});
 export const GetPendingCountArgsSchema = z.object({});
 
 export const ToggleAutonomousModeArgsSchema = z.object({
-  enabled: z.coerce.boolean().describe('Whether to enable or disable autonomous mode'),
+  enabled: z.preprocess(
+    (val) => val === 'true' || val === true,
+    z.boolean()
+  ).describe('Whether to enable or disable autonomous mode'),
 });
 
 export const GetAutonomousModeStatusArgsSchema = z.object({});

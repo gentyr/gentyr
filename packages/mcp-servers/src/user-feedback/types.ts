@@ -58,8 +58,8 @@ export const UpdatePersonaArgsSchema = z.object({
   behavior_traits: z.array(z.string().max(200)).max(10).optional(),
   endpoints: z.array(z.string().max(500)).max(20).optional(),
   credentials_ref: z.string().max(200).optional(),
-  enabled: z.coerce.boolean().optional(),
-  cto_protected: z.coerce.boolean().optional(),
+  enabled: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional(),
+  cto_protected: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional(),
   caller: z.string().optional().describe('Agent identity for access control'),
 });
 
@@ -391,10 +391,10 @@ export const UpdateScenarioArgsSchema = z.object({
     .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
     .optional(),
   sort_order: z.coerce.number().int().min(0).max(999).optional(),
-  enabled: z.coerce.boolean().optional(),
+  enabled: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional(),
   env_vars: z.record(z.string(), z.string()).nullable().optional()
     .describe('Environment variables for this scenario. Set to null to clear. Max 10 keys.'),
-  headed: z.coerce.boolean().optional()
+  headed: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
     .describe('Whether this scenario requires exclusive display access. Headed scenarios are serialized through the display queue.'),
 });
 

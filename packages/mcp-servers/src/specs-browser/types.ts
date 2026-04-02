@@ -213,7 +213,7 @@ export const EditSuiteSchema = z.object({
   mapped_specs_pattern: z.string().optional().describe('Pattern for mapped specs'),
   exploratory_specs_dir: z.string().optional().describe('Dir for exploratory specs'),
   exploratory_specs_pattern: z.string().optional().describe('Pattern for exploratory specs'),
-  enabled: z.coerce.boolean().optional().describe('Enable or disable the suite'),
+  enabled: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional().describe('Enable or disable the suite'),
 });
 
 export const DeleteSuiteSchema = z.object({
