@@ -16,7 +16,7 @@ import fs from 'fs';
 import path from 'path';
 
 // Fast exit: only track spawned sessions
-if (process.env.CLAUDE_SPAWNED_SESSION !== 'true' || !process.env.CLAUDE_AGENT_ID) {
+if ((process.env.CLAUDE_SPAWNED_SESSION !== 'true' && process.env.GENTYR_INTERACTIVE_MONITOR !== 'true') || !process.env.CLAUDE_AGENT_ID) {
   console.log(JSON.stringify({}));
   process.exit(0);
 }

@@ -57,6 +57,12 @@ async function main() {
     return;
   }
 
+  // Interactive monitor sessions need Agent/Task for sub-agent orchestration
+  if (process.env.GENTYR_INTERACTIVE_MONITOR === 'true') {
+    process.stdout.write(JSON.stringify({ allow: true }));
+    return;
+  }
+
   // Extract subagent_type (defaults to 'general-purpose' if omitted)
   const subagentType = event?.tool_input?.subagent_type || 'general-purpose';
 
