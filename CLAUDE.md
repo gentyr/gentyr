@@ -757,6 +757,24 @@ Structured JSON log at `~/.claude/rotation-proxy.log`. 24h retention (auto-clean
 
 The chrome-bridge MCP server provides 18 tools for browser automation via Claude for Chrome extension. Communicates via local Unix domain socket — no credentials required.
 
+### Gentyr Browser Automation Extension
+
+A stripped-down Chrome extension (`tools/chrome-extension/`) for headless browser automation. Forked from Claude Chrome Extension v1.0.66 with all authentication, permission prompts, side panel UI, and analytics removed. All 18+ browser automation tools work identically via auto-approved permissions (`source:'bridge'` + `permissionMode:'skip_all_permission_checks'`).
+
+**Extension ID**: `dojoamdbiafnflmaknagfcakgpdkmpmn`
+
+**Components:**
+- `extension/` — Chrome extension (manifest.json, service worker, content scripts, assets copied from v1.0.66)
+- `native-host/host.js` — Node.js native messaging host; bridges Chrome native messaging (stdin/stdout) to Unix domain sockets at `/tmp/claude-mcp-browser-bridge-{username}/{pid}.sock`. Handles request routing, reference-counted `mcp_connected`/`mcp_disconnected`, socket directory security validation, and Chrome's 1MB message size limit.
+- `native-host/install.sh` — Registers the native messaging host with Chrome
+
+**Install**: Run `npx gentyr sync` (step 7c) or manually:
+```bash
+tools/chrome-extension/native-host/install.sh
+```
+
+The extension must be loaded in Chrome as an unpacked extension from `tools/chrome-extension/extension/`. `scripts/grant-chrome-ext-permissions.sh` grants the required debugger permissions for both the official Claude extension and this Gentyr extension.
+
 ### @gentyr/chrome-actions Package
 
 TypeScript bindings for the Chrome Extension's Unix domain socket protocol. Located at `packages/chrome-actions/`. Published as `@gentyr/chrome-actions`. Provides typed methods for all 18 chrome-bridge MCP tools plus convenience helpers (`clickByText`, `fillInput`, `waitForUrl`, `waitForElement`). Lets target project test code (`.demo.ts` files) directly control Chrome without Claude in the loop. Built to `dist/` (gitignored).

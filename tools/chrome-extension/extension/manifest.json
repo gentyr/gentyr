@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "Gentyr Browser Automation",
+  "description": "Browser automation for Gentyr — no auth, no permission prompts",
+  "version": "1.0.66",
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0wYHPYV6GWvJgFh09Y1fJfK1jLoFIOUFTdRZBEhKiAEhQsMCkop3yv1AlswBcP6OodpSbISBKERjxmFrJYzeog9uC3kgydZh/A7wswJe1KQXgfCMAheNjDw91o6LOiA2F6z7/5TgL0psw8D06Ry4xfvH3X8Di1SR6yXe6C2GNKH8ESlzV4hMCzMvwlA7vUo3T/us6vHKzPplgI4qfY1d2CynpOOHei/QLpqrbjWslFB66xwgzunZ/zW2hxlvcyjbIOR3kFgsCebHuXmi62HfchYuuhwqLZl4NPq2rVppT0RUzWQcSghc2eqFSEvlWGGjYDzg+c0LBb5GOUTA2qKnXwIDAQAB",
+  "background": {
+    "service_worker": "service-worker-loader.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage",
+    "scripting",
+    "debugger",
+    "tabGroups",
+    "tabs",
+    "notifications",
+    "system.display",
+    "webNavigation",
+    "offscreen",
+    "nativeMessaging",
+    "downloads"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "all_frames": true,
+      "js": ["assets/accessibility-tree.js-D8KNCIWO.js"],
+      "matches": ["<all_urls>"],
+      "run_at": "document_start"
+    },
+    {
+      "all_frames": false,
+      "js": ["assets/agent-visual-indicator.js-Ct7LqXhp.js"],
+      "matches": ["<all_urls>"],
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:;"
+  },
+  "icons": {
+    "128": "icon-128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "matches": ["<all_urls>"],
+      "resources": [
+        "assets/accessibility-tree.js-D8KNCIWO.js",
+        "assets/agent-visual-indicator.js-Ct7LqXhp.js"
+      ],
+      "use_dynamic_url": false
+    }
+  ]
+}

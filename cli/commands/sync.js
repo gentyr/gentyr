@@ -245,6 +245,18 @@ export default async function sync(args) {
     }
   }
 
+  // 7c. Install Chrome extension native messaging host
+  const chromeExtInstall = path.join(frameworkDir, 'tools', 'chrome-extension', 'native-host', 'install.sh');
+  if (fs.existsSync(chromeExtInstall)) {
+    console.log(`\n${YELLOW}Installing Chrome extension native host...${NC}`);
+    try {
+      execFileSync(chromeExtInstall, [], { cwd: path.dirname(chromeExtInstall), stdio: 'pipe', timeout: 30000 });
+      console.log('  Native messaging host registered');
+    } catch (err) {
+      console.log(`  ${YELLOW}Warning: Chrome extension native host install failed: ${err.message}${NC}`);
+    }
+  }
+
   // 8. Regenerate launchd plists (macOS only)
   if (process.platform === 'darwin') {
     const script = path.join(frameworkDir, 'scripts', 'setup-automation-service.sh');
