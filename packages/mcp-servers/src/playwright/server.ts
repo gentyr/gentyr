@@ -112,6 +112,89 @@ const DISPLAY_LOCK_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'dis
 const RUN_TIMEOUT = 300_000; // 5 minutes for test runs
 
 // ============================================================================
+// Worktree Freshness Gate
+// ============================================================================
+
+/**
+ * Detect the base branch (preview if it exists, otherwise main).
+ */
+function detectBaseBranch(): string {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', 'origin/preview'], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    });
+    return 'preview';
+  } catch {
+    return 'main';
+  }
+}
+
+/**
+ * Check if a worktree is behind the base branch and auto-sync if possible.
+ * Returns { fresh: true } if up to date (or successfully merged).
+ * Returns { fresh: false, message } if stale and cannot auto-merge.
+ */
+function checkAndSyncWorktree(): { fresh: boolean; message?: string } {
+  if (!WORKTREE_DIR) return { fresh: true };
+
+  const baseBranch = detectBaseBranch();
+  let behindBy = 0;
+  try {
+    // Ensure we have latest refs (fast, shared .git means this helps all worktrees)
+    execFileSync('git', ['fetch', 'origin', baseBranch, '--quiet'], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 15000, stdio: 'pipe',
+    });
+  } catch {
+    // Fetch failed (offline, timeout) — check with existing refs
+  }
+
+  try {
+    const countStr = execFileSync(
+      'git', ['rev-list', `HEAD..origin/${baseBranch}`, '--count'],
+      { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000, stdio: 'pipe' },
+    ).trim();
+    behindBy = parseInt(countStr, 10) || 0;
+  } catch {
+    // Can't determine freshness — allow through (fail-open)
+    return { fresh: true };
+  }
+
+  if (behindBy === 0) return { fresh: true };
+
+  // Worktree is behind — check if we can auto-merge
+  try {
+    const status = execFileSync('git', ['status', '--porcelain'], {
+      cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    }).trim();
+
+    if (status.length > 0) {
+      return {
+        fresh: false,
+        message: `Worktree is ${behindBy} commit(s) behind origin/${baseBranch} with uncommitted changes. Commit your changes first, then run: git merge origin/${baseBranch} --no-edit`,
+      };
+    }
+
+    // Clean working tree — auto-merge
+    execFileSync('git', ['merge', `origin/${baseBranch}`, '--no-edit'], {
+      cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+    });
+    process.stderr.write(`[playwright] Auto-synced worktree: merged ${behindBy} commit(s) from origin/${baseBranch}\n`);
+    return { fresh: true };
+  } catch (err) {
+    // Merge conflict or other failure — abort and report
+    try {
+      execFileSync('git', ['merge', '--abort'], {
+        cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+      });
+    } catch { /* abort may fail if no merge in progress */ }
+    return {
+      fresh: false,
+      message: `Worktree is ${behindBy} commit(s) behind origin/${baseBranch} and auto-merge failed (likely conflicts). Create a fresh worktree or resolve conflicts manually.`,
+    };
+  }
+}
+
+// ============================================================================
 // Demo Run Tracking
 // ============================================================================
 
@@ -1069,6 +1152,11 @@ async function executePrerequisites(opts: {
       const config = loadServicesConfig(PROJECT_DIR);
       const result = resolveLocalSecrets(config);
       resolvedEnv = result.resolvedEnv;
+
+      // Apply project-specific dev-mode env to prerequisites (e.g., E2E_REBUILD_EXTENSION, EXT_API_BASE)
+      if (config.demoDevModeEnv) {
+        Object.assign(resolvedEnv, config.demoDevModeEnv);
+      }
     } catch {
       // Secret resolution unavailable — prerequisites run with process.env only
     }
@@ -1282,6 +1370,16 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       success: false,
       project,
       message: `Demo prerequisites failed: ${prereqResult.message}. Run preflight_check to diagnose. Do NOT bypass by running Playwright directly.`,
+    };
+  }
+
+  // Worktree freshness gate — auto-sync or block stale demos
+  const freshness = checkAndSyncWorktree();
+  if (!freshness.fresh) {
+    return {
+      success: false,
+      project,
+      message: `Worktree stale: ${freshness.message}`,
     };
   }
 
@@ -3609,6 +3707,19 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
     warnings.push(`Prerequisites check failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // 0.5. Worktree freshness (auto-sync if possible)
+  if (WORKTREE_DIR) {
+    const freshnessStart = Date.now();
+    const freshness = checkAndSyncWorktree();
+    if (freshness.fresh) {
+      checks.push({ name: 'worktree_freshness', status: 'pass', message: 'Worktree is up to date with base branch', duration_ms: Date.now() - freshnessStart });
+    } else {
+      checks.push({ name: 'worktree_freshness', status: 'fail', message: freshness.message || 'Worktree is behind base branch', duration_ms: Date.now() - freshnessStart });
+      failures.push(`Worktree freshness: ${freshness.message}`);
+      recoverySteps.push('Commit any changes, then run: git fetch origin && git merge origin/preview --no-edit');
+    }
+  }
+
   // 1. Config exists
   checks.push(runCheck('config_exists', () => {
     const tsConfig = path.join(EFFECTIVE_CWD, 'playwright.config.ts');
@@ -4797,6 +4908,12 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
   const prereqResult = await executePrerequisites({ base_url: devServerUrl });
   if (!prereqResult.success) {
     return JSON.stringify({ error: `Prerequisites failed: ${prereqResult.message}. Run preflight_check to diagnose. Do NOT bypass by running Playwright directly.` });
+  }
+
+  // Worktree freshness gate — auto-sync or block stale demos
+  const batchFreshness = checkAndSyncWorktree();
+  if (!batchFreshness.fresh) {
+    return JSON.stringify({ error: `Worktree stale: ${batchFreshness.message}` });
   }
 
   // Verify dev server is healthy (fallback if no prerequisite started it)

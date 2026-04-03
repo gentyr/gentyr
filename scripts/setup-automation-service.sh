@@ -556,6 +556,7 @@ PLIST_FILE="$LAUNCHD_DIR/com.local.${SERVICE_NAME}.plist"
 PROXY_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-rotation-proxy.plist"
 REVIVAL_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-revival-daemon.plist"
 MCP_DAEMON_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-mcp-daemon.plist"
+PREVIEW_WATCHER_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-preview-watcher.plist"
 
 setup_macos() {
   log_info "Setting up launchd agent..."
@@ -770,6 +771,57 @@ EOF
     log_warn "MCP server daemon script not found — skipping MCP daemon service."
   fi
 
+  # --- Preview Watcher Daemon (KeepAlive, auto-syncs worktrees with base branch) ---
+  if [ -n "$FRAMEWORK_DIR" ] && [ -f "$FRAMEWORK_DIR/scripts/preview-watcher.js" ]; then
+    cat > "$PREVIEW_WATCHER_PLIST_FILE" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.gentyr-preview-watcher</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$NODE_PATH</string>
+        <string>$FRAMEWORK_DIR/scripts/preview-watcher.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>$PROJECT_DIR</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CLAUDE_PROJECT_DIR</key>
+        <string>$PROJECT_DIR</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>GENTYR_LAUNCHD_SERVICE</key>
+        <string>true</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>$PROJECT_DIR/.claude/preview-watcher.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>$PROJECT_DIR/.claude/preview-watcher.log</string>
+</dict>
+</plist>
+EOF
+
+    launchctl unload "$PREVIEW_WATCHER_PLIST_FILE" 2>/dev/null || true
+    launchctl load "$PREVIEW_WATCHER_PLIST_FILE"
+    log_info "Preview watcher daemon service loaded (KeepAlive, RunAtLoad)."
+  else
+    log_warn "Preview watcher script not found — skipping preview watcher service."
+  fi
+
   # --- Automation Service (10-min interval) ---
   # Create plist file
   cat > "$PLIST_FILE" << EOF
@@ -856,6 +908,11 @@ remove_macos() {
   rm -f "$REVIVAL_PLIST_FILE"
   log_info "Revival daemon service removed."
 
+  # Unload and remove preview watcher daemon
+  launchctl unload "$PREVIEW_WATCHER_PLIST_FILE" 2>/dev/null || true
+  rm -f "$PREVIEW_WATCHER_PLIST_FILE"
+  log_info "Preview watcher daemon service removed."
+
   # Unload and remove rotation proxy service
   launchctl unload "$PROXY_PLIST_FILE" 2>/dev/null || true
   rm -f "$PROXY_PLIST_FILE"
@@ -929,6 +986,27 @@ status_macos() {
     tail -5 "$PROJECT_DIR/.claude/revival-daemon.log"
   else
     echo "No revival daemon log file found yet."
+  fi
+
+  echo ""
+  echo "=== Preview Watcher Status (macOS) ==="
+  echo ""
+
+  if [ -f "$PREVIEW_WATCHER_PLIST_FILE" ]; then
+    echo "Preview watcher plist: $PREVIEW_WATCHER_PLIST_FILE (exists)"
+  else
+    echo "Preview watcher plist: $PREVIEW_WATCHER_PLIST_FILE (NOT FOUND)"
+  fi
+
+  echo "Preview watcher launchd:"
+  launchctl list | grep "gentyr-preview-watcher" || echo "  Preview watcher not loaded"
+
+  echo ""
+  if [ -f "$PROJECT_DIR/.claude/preview-watcher.log" ]; then
+    echo "Last 5 preview watcher log lines:"
+    tail -5 "$PROJECT_DIR/.claude/preview-watcher.log"
+  else
+    echo "No preview watcher log file found yet."
   fi
 
   echo ""

@@ -25,7 +25,7 @@ import { getCooldown } from './config-reader.js';
 import { runUsageOptimizer } from './usage-optimizer.js';
 import { syncKeys } from './key-sync.js';
 import { runFeedbackPipeline, startFeedbackRun, personaRanRecently } from './feedback-orchestrator.js';
-import { createWorktree, cleanupMergedWorktrees, listWorktrees } from './lib/worktree-manager.js';
+import { createWorktree, cleanupMergedWorktrees, listWorktrees, removeWorktree } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
 import { detectStaleWork, formatReport } from './stale-work-detector.js';
 import { reviveInterruptedSessions } from './session-reviver.js';
@@ -1691,6 +1691,81 @@ function spawnTaskAgent(task) {
   });
 
   return true;
+}
+
+// =========================================================================
+// STALE WORKTREE REAPER
+// =========================================================================
+
+/**
+ * Reap worktrees older than 4 hours with no active agent process.
+ * If the worktree has uncommitted changes, it's skipped (rescue handles those).
+ * Frees port allocations and disk space from forgotten worktrees.
+ *
+ * @returns {number} Number of worktrees reaped
+ */
+function reapStaleWorktrees() {
+  const worktrees = listWorktrees();
+  let reaped = 0;
+  const STALE_THRESHOLD_MS = 4 * 60 * 60 * 1000; // 4 hours
+  const now = Date.now();
+
+  // Read port allocations to get creation times
+  let allocations = {};
+  try {
+    const allocPath = path.join(PROJECT_DIR, '.claude', 'state', 'port-allocations.json');
+    if (fs.existsSync(allocPath)) {
+      allocations = JSON.parse(fs.readFileSync(allocPath, 'utf8'));
+    }
+  } catch { /* non-fatal */ }
+
+  for (const wt of worktrees) {
+    if (!wt.path || !fs.existsSync(wt.path)) continue;
+
+    // Check age from port allocation or fallback to git reflog
+    const alloc = allocations[wt.path];
+    let createdAt = alloc?.allocatedAt ? new Date(alloc.allocatedAt).getTime() : 0;
+    if (!createdAt) {
+      // Fallback: check mtime of the worktree .git file
+      try {
+        const gitFile = path.join(wt.path, '.git');
+        if (fs.existsSync(gitFile)) {
+          createdAt = fs.statSync(gitFile).mtimeMs;
+        }
+      } catch { /* skip */ }
+    }
+    if (!createdAt || (now - createdAt) < STALE_THRESHOLD_MS) continue;
+
+    // Skip if active processes detected
+    try {
+      const result = execFileSync('lsof', ['+D', wt.path, '-t'], {
+        encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      if (result.trim().length > 0) continue; // in use
+    } catch { /* lsof returned no results — safe to reap */ }
+
+    // Skip if uncommitted changes (rescue handles those)
+    try {
+      const status = execFileSync('git', ['status', '--porcelain'], {
+        cwd: wt.path, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+      }).trim();
+      if (status.length > 0) {
+        log(`Stale reaper: skipping ${wt.path} (has uncommitted changes, rescue will handle)`);
+        continue;
+      }
+    } catch { continue; }
+
+    // Safe to reap
+    try {
+      removeWorktree(wt.branch);
+      log(`Stale reaper: removed stale worktree ${wt.branch} (age: ${Math.round((now - createdAt) / 3600000)}h)`);
+      reaped++;
+    } catch (err) {
+      log(`Stale reaper: failed to remove ${wt.branch}: ${err.message}`);
+    }
+  }
+
+  return reaped;
 }
 
 // =========================================================================
@@ -3642,6 +3717,27 @@ ${demoInstructions}${bridgeInstructions}`;
         log(`Worktree cleanup: removed ${cleaned} merged worktree(s).`);
       } else {
         log('Worktree cleanup: no merged worktrees to remove.');
+      }
+    },
+  });
+
+  // =========================================================================
+  // STALE WORKTREE REAPER (60min cooldown)
+  // Removes worktrees older than 4 hours with no active process
+  // =========================================================================
+  await runIfDue('stale_worktree_reaper', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastStaleWorktreeReaper',
+    configToggle: 'staleWorktreeReaperEnabled',
+    config,
+    label: 'Stale worktree reaper',
+    fn: async () => {
+      log('Stale worktree reaper: scanning for old worktrees...');
+      const reaped = reapStaleWorktrees();
+      if (reaped > 0) {
+        log(`Stale worktree reaper: removed ${reaped} stale worktree(s).`);
+      } else {
+        log('Stale worktree reaper: no stale worktrees to reap.');
       }
     },
   });

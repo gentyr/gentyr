@@ -72,9 +72,9 @@ npx gentyr protect
 
 Start Claude Code in your project and run `/setup-gentyr` to configure credentials. See [docs/SETUP-GUIDE.md](docs/SETUP-GUIDE.md) for details.
 
-## the CTO report
+## the CTO dashboard
 
-This is what the CTO sees.
+This is what the CTO sees. Run `/cto-report` for a static multi-page report in the Claude Code session, or `/cto-dashboard` to open a live TUI in a new Terminal.app window (polls every 3 seconds, keyboard-navigable).
 
 <img src="docs/assets/claude-logo.svg" width="69" height="70" align="left">
 
@@ -219,7 +219,7 @@ This is what the CTO sees.
 
 See [docs/CTO-DASHBOARD.md](docs/CTO-DASHBOARD.md) for the full report.
 
-The dashboard is auto-generated. To refresh:
+The static report is auto-generated. To refresh:
 
 ```bash
 npm run generate:readme

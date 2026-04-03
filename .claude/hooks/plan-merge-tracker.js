@@ -12,6 +12,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execFileSync } from 'child_process';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const PLANS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
@@ -138,6 +139,35 @@ async function main() {
     }
 
     db.close();
+
+    // Broadcast worktree freshness signal on merge
+    try {
+      const { broadcastSignal } = await import('./lib/session-signals.js');
+      // Detect base branch
+      let baseBranch = 'main';
+      try {
+        execFileSync('git', ['rev-parse', '--verify', 'origin/preview'], {
+          cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+        });
+        baseBranch = 'preview';
+      } catch { /* no preview branch */ }
+
+      // Fetch latest (single fetch updates all worktrees via shared .git)
+      try {
+        execFileSync('git', ['fetch', 'origin', baseBranch, '--quiet'], {
+          cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10000, stdio: 'pipe',
+        });
+      } catch { /* fetch failed, non-fatal */ }
+
+      broadcastSignal({
+        fromAgentId: process.env.CLAUDE_AGENT_ID || 'merge-tracker',
+        tier: 'instruction',
+        message: `PR #${prNumber} merged to ${baseBranch}. New commits available on origin/${baseBranch}. Your worktree will be auto-synced by the preview watcher. If urgent, run: git fetch origin && git merge origin/${baseBranch} --no-edit`,
+        projectDir: PROJECT_DIR,
+      });
+    } catch {
+      // Non-fatal — broadcast failure must not break the merge tracker
+    }
 
     let msg = `Plan progress: PR #${prNumber} merged. Task '${planTask.title}' complete. Phase now ${phaseProgress}.`;
     if (readyTasks.length > 0) {

@@ -353,7 +353,22 @@ export function createWorktree(branchName, baseBranch, options = {}) {
   // Provision with GENTYR config
   provisionWorktree(worktreePath);
 
-  return { path: worktreePath, branch: branchName, created: true };
+  // Verify worktree base is fresh (informational, non-fatal)
+  let behindBy = 0;
+  try {
+    const countStr = execFileSync('git', ['rev-list', `${branchName}..origin/${baseBranch}`, '--count'], {
+      ...GIT_OPTS,
+      cwd: worktreePath,
+    }).trim();
+    behindBy = parseInt(countStr, 10) || 0;
+    if (behindBy > 0) {
+      console.error(`[worktree-manager] WARNING: new worktree is ${behindBy} commit(s) behind origin/${baseBranch}`);
+    }
+  } catch {
+    // Non-fatal — freshness check failure doesn't block worktree creation
+  }
+
+  return { path: worktreePath, branch: branchName, created: true, behindBy };
 }
 
 /**
