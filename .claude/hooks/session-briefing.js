@@ -19,7 +19,7 @@
 import { createInterface } from 'readline';
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const IS_SPAWNED = process.env.CLAUDE_SPAWNED_SESSION === 'true';
@@ -608,6 +608,35 @@ function buildSpawnedBriefing() {
     lines.push(`Worktrees: ${git.worktrees.length} active`);
     for (const wt of git.worktrees.slice(0, 5)) {
       lines.push(`  - ${wt.path} (${wt.branch})`);
+    }
+  }
+
+  // Worktree freshness check
+  if (process.env.CLAUDE_WORKTREE_DIR) {
+    try {
+      // Detect base branch
+      let baseBranch = 'main';
+      try {
+        execFileSync('git', ['rev-parse', '--verify', 'origin/preview'], {
+          cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+        });
+        baseBranch = 'preview';
+      } catch { /* no preview branch */ }
+
+      const behindStr = execFileSync(
+        'git', ['rev-list', `HEAD..origin/${baseBranch}`, '--count'],
+        { cwd: process.env.CLAUDE_WORKTREE_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe' },
+      ).trim();
+      const behind = parseInt(behindStr, 10) || 0;
+
+      lines.push('');
+      if (behind > 0) {
+        lines.push(`WORKTREE STALE: ${behind} commit(s) behind origin/${baseBranch}. Run: git fetch origin && git merge origin/${baseBranch} --no-edit`);
+      } else {
+        lines.push(`Worktree is up to date with origin/${baseBranch}`);
+      }
+    } catch {
+      // Non-fatal — freshness check shouldn't block session start
     }
   }
 

@@ -28,6 +28,7 @@ import { debugLog } from './debug-log.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
 import { buildPersistentMonitorBridgeInstructions } from './persistent-monitor-bridge-instructions.js';
 import { checkAndExpireResources } from './resource-lock.js';
+import { cleanupStaleAllocations as cleanupStalePortAllocations } from './port-allocator.js';
 import { buildRevivalContext } from './persistent-revival-context.js';
 // NOTE: revival-utils.js imports from session-queue.js (circular dep), so we
 // inline these three utilities here instead of importing from revival-utils.js.
@@ -750,6 +751,11 @@ export function drainQueue() {
   try {
     checkAndExpireResources();
   } catch (_) { /* non-fatal — resource lock module may not be initialized */ }
+
+  // Step 2.7: Cleanup stale port allocations from removed worktrees
+  try {
+    cleanupStalePortAllocations();
+  } catch (_) { /* non-fatal — port allocator may not be available */ }
 
   // Step 3: Count running items by lane (suspended items do NOT count toward capacity)
   const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent')").get().cnt;

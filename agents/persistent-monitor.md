@@ -148,8 +148,7 @@ infrastructure access (builds, demos, dev servers) should be created with `bridg
 This gives them MCP-first instructions for using `secret_run_command`, `secret_dev_server_*`,
 and `run_demo` tools instead of running Bash infrastructure commands.
 
-**Merge-first rule**: Code changes must be merged before demo verification. Pipeline:
-code-writer → project-manager (merge) → demo-manager (verify merged code).
+**Worktree-first rule**: Child agents run demos directly in their worktrees on isolated ports. No merge needed between fix/test iterations. Merge only when the demo passes. Pipeline: code-writer → demo-manager (verify in worktree) → project-manager (merge on success).
 
 **Display queue**: Child agents running headed demos (video recording, real Chrome) automatically coordinate exclusive display access via the display queue. You do NOT need to manage display exclusivity — the demo-manager agent acquires and releases the lock as part of its headed demo workflow.
 

@@ -45,8 +45,9 @@ const DEFAULTS = {
   key_sync: 5,                         // 5 minutes
   version_watch: 5,                    // 5 minutes
   pr_sweep: 60,                        // 1h
-  worktree_cleanup: 30,                // 30 minutes
-  abandoned_worktree_rescue: 120,      // 2h
+  worktree_cleanup: 10,                // 10 minutes
+  abandoned_worktree_rescue: 30,       // 30 minutes
+  stale_worktree_reaper: 60,           // 1 hour
   stale_work_detector: 2880,           // 48 hours
   demo_validation: 1440,               // daily
   persistent_stale_pause_resume: 5,    // 5 minutes

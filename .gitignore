@@ -4,6 +4,7 @@ node_modules/
 # Build outputs
 packages/mcp-servers/dist/
 packages/cto-dashboard/dist/
+packages/cto-dashboard-live/dist/
 packages/playwright-helpers/dist/
 packages/chrome-actions/dist/
 packages/vscode-extension/dist/
