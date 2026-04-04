@@ -880,6 +880,6 @@ All 3 hooks are in the `criticalHooks` list in `cli/commands/protect.js` and are
 
 The CTO dashboard (`packages/cto-dashboard/`) supports `--mock` for development and `--page N` to split rendering across 3 pages. `/cto-report` runs all three pages. Includes WORKLOG system for agent work tracking via `summarize_work` tool.
 
-**Live CTO Dashboard** (`packages/cto-dashboard-live/`): Real-time Ink/React TUI that polls live data every 3 seconds. Launched via `/cto-dashboard` slash command (macOS only — opens a Terminal.app window). Supports keyboard navigation: arrow keys to select sessions, Enter to join a running session interactively, number keys to switch pages, `h` for home, `q` to quit. Build: `cd packages/cto-dashboard-live && npm run build`. Built `dist/` is gitignored.
+**Live CTO Dashboard** (`packages/cto-dashboard-live/`): Real-time Ink/React TUI that polls live data every 3 seconds. Launched via `/cto-dashboard` slash command (macOS only — opens a Terminal.app window). Supports keyboard navigation: arrow keys to select sessions, Enter to join a running session interactively, number keys to switch pages, `h` for home, `q` to quit. Built automatically by `npx gentyr sync` (step 7d); if `dist/` is missing, the `/cto-dashboard` command instructs the user to run sync rather than building inline (blocked by lockdown guard). Built `dist/` is gitignored.
 
 > Full details: [CTO Dashboard Development](docs/CLAUDE-REFERENCE.md#cto-dashboard-development)

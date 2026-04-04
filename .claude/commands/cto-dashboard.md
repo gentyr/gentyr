@@ -19,13 +19,15 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 DASHBOARD_DIR="$GENTYR_DIR/packages/cto-dashboard-live"
 ```
 
-2. Build the dashboard if dist is stale or missing:
+2. Check if the dashboard is built:
 
 ```bash
-if [ ! -f "$DASHBOARD_DIR/dist/index.js" ] || [ "$DASHBOARD_DIR/src/index.tsx" -nt "$DASHBOARD_DIR/dist/index.js" ]; then
-  cd "$DASHBOARD_DIR" && npm run build 2>/dev/null
+if [ ! -f "$DASHBOARD_DIR/dist/index.js" ]; then
+  echo "dist missing or stale"
 fi
 ```
+
+If the dist is missing or stale, tell the user: "CTO dashboard is not built. Run `npx gentyr sync` to build it." and stop — do NOT attempt to build it inline.
 
 3. Open Terminal.app with the live dashboard:
 

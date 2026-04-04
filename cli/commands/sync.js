@@ -257,6 +257,23 @@ export default async function sync(args) {
     }
   }
 
+  // 7d. Build CTO dashboard live TUI
+  const ctoDashboardDir = path.join(frameworkDir, 'packages', 'cto-dashboard-live');
+  if (fs.existsSync(path.join(ctoDashboardDir, 'tsconfig.json'))) {
+    console.log(`\n${YELLOW}Building CTO dashboard live TUI...${NC}`);
+    try {
+      const hasTypesNode = fs.existsSync(path.join(ctoDashboardDir, 'node_modules', '@types', 'node'));
+      if (!hasTypesNode) {
+        execFileSync('npm', ['install', '--no-fund', '--no-audit'], { cwd: ctoDashboardDir, stdio: 'pipe', timeout: 120000 });
+        console.log('  Dependencies installed');
+      }
+      execFileSync('npm', ['run', 'build'], { cwd: ctoDashboardDir, stdio: 'pipe', timeout: 120000 });
+      console.log('  TypeScript built');
+    } catch (err) {
+      console.log(`  ${YELLOW}Warning: CTO dashboard build failed: ${err.message}${NC}`);
+    }
+  }
+
   // 8. Regenerate launchd plists (macOS only)
   if (process.platform === 'darwin') {
     const script = path.join(frameworkDir, 'scripts', 'setup-automation-service.sh');
