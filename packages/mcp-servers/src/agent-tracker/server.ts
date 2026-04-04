@@ -200,6 +200,53 @@ function findSessionFileByAgentId(sessionDir: string, agentId: string): string |
 }
 
 /**
+ * Search across all session directories matching a project prefix for an agent's session.
+ * Worktree agents get their own session dir (e.g. -Users-...-git-my-project--claude-worktrees-feature-...).
+ * This scans all dirs starting with the encoded project path to find sessions in worktree dirs.
+ */
+function findSessionFileAcrossProject(projectDir: string, agentId: string): string | null {
+  const encodedPrefix = projectDir.replace(/[^a-zA-Z0-9]/g, '-');
+  let dirs: string[];
+  try {
+    dirs = fs.readdirSync(CLAUDE_PROJECTS_DIR);
+  } catch {
+    return null;
+  }
+
+  for (const dir of dirs) {
+    if (!dir.startsWith(encodedPrefix) && !dir.startsWith(encodedPrefix.replace(/^-/, ''))) continue;
+    const candidate = path.join(CLAUDE_PROJECTS_DIR, dir);
+    try {
+      if (!fs.statSync(candidate).isDirectory()) continue;
+    } catch { continue; }
+    const found = findSessionFileByAgentId(candidate, agentId);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * Find a session JSONL file by UUID across all session directories matching a project prefix.
+ */
+function findSessionFileByIdAcrossProject(projectDir: string, sessionUuid: string): string | null {
+  const encodedPrefix = projectDir.replace(/[^a-zA-Z0-9]/g, '-');
+  let dirs: string[];
+  try {
+    dirs = fs.readdirSync(CLAUDE_PROJECTS_DIR);
+  } catch {
+    return null;
+  }
+
+  const filename = `${sessionUuid}.jsonl`;
+  for (const dir of dirs) {
+    if (!dir.startsWith(encodedPrefix) && !dir.startsWith(encodedPrefix.replace(/^-/, ''))) continue;
+    const candidate = path.join(CLAUDE_PROJECTS_DIR, dir, filename);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
  * Find Claude session transcript for a given spawn.
  * 3-step pattern ported from reap-completed-agents.js:
  *   1. Return cached sessionFile if it exists on disk
@@ -3542,21 +3589,30 @@ function launchInteractiveMonitor(args: LaunchInteractiveMonitorArgs): object {
     return { error: 'Provide one of: task_id, session_id, queue_id, or agent_id' };
   }
 
+  // Resolve target project dir (cross-project support)
+  const targetProjectDir = args.project_dir ? path.resolve(args.project_dir.replace(/^~/, os.homedir())) : PROJECT_DIR;
+  const targetQueueDbPath = path.join(targetProjectDir, '.claude', 'state', 'session-queue.db');
+
   let sessionId: string | null = null;
   let resolvedAgentId: string | null = null;
   let killedPid: number | null = null;
   let title = 'Agent session';
   let persistentTaskId: string | null = null;
 
-  const sessionDir = getSessionDir(PROJECT_DIR);
+  const sessionDir = getSessionDir(targetProjectDir);
 
   // ── Mode 1: Direct session_id ──
   if (args.session_id) {
     sessionId = args.session_id.trim();
-    // Verify the session file exists
+    // Verify the session file exists — check main dir first, then scan worktree dirs
+    let sessionFileFound = false;
     if (sessionDir) {
       const sessionFile = path.join(sessionDir, `${sessionId}.jsonl`);
-      if (!fs.existsSync(sessionFile)) {
+      if (fs.existsSync(sessionFile)) sessionFileFound = true;
+    }
+    if (!sessionFileFound) {
+      const found = findSessionFileByIdAcrossProject(targetProjectDir, sessionId);
+      if (!found) {
         return { error: `Session file not found: ${sessionId}.jsonl` };
       }
     }
@@ -3565,6 +3621,7 @@ function launchInteractiveMonitor(args: LaunchInteractiveMonitorArgs): object {
   // ── Mode 2: agent_id — find session file, kill process ──
   if (args.agent_id && !sessionId) {
     resolvedAgentId = args.agent_id.trim();
+    // Search main session dir first, then scan all worktree dirs for this project
     if (sessionDir) {
       const sessionFile = findSessionFileByAgentId(sessionDir, resolvedAgentId);
       if (sessionFile) {
@@ -3572,13 +3629,19 @@ function launchInteractiveMonitor(args: LaunchInteractiveMonitorArgs): object {
       }
     }
     if (!sessionId) {
+      const found = findSessionFileAcrossProject(targetProjectDir, resolvedAgentId);
+      if (found) {
+        sessionId = path.basename(found, '.jsonl');
+      }
+    }
+    if (!sessionId) {
       return { error: `No session file found for agent_id '${resolvedAgentId}'` };
     }
     // Try to find and kill the running process from the queue
-    if (fs.existsSync(QUEUE_DB_PATH)) {
+    if (fs.existsSync(targetQueueDbPath)) {
       let qDb;
       try {
-        qDb = openReadonlyDb(QUEUE_DB_PATH);
+        qDb = openReadonlyDb(targetQueueDbPath);
         const row = qDb.prepare("SELECT pid, title FROM queue_items WHERE agent_id = ? AND status = 'running'").get(resolvedAgentId) as { pid: number | null; title: string } | undefined;
         if (row) {
           title = row.title || title;
@@ -3594,12 +3657,12 @@ function launchInteractiveMonitor(args: LaunchInteractiveMonitorArgs): object {
 
   // ── Mode 3: queue_id — look up agent_id and session from queue DB ──
   if (args.queue_id && !sessionId) {
-    if (!fs.existsSync(QUEUE_DB_PATH)) {
+    if (!fs.existsSync(targetQueueDbPath)) {
       return { error: 'Session queue database not found' };
     }
     let qDb;
     try {
-      qDb = openReadonlyDb(QUEUE_DB_PATH);
+      qDb = openReadonlyDb(targetQueueDbPath);
       const row = qDb.prepare("SELECT agent_id, pid, title, metadata FROM queue_items WHERE id = ?").get(args.queue_id.trim()) as { agent_id: string | null; pid: number | null; title: string; metadata: string | null } | undefined;
       if (!row) {
         return { error: `Queue item not found: ${args.queue_id}` };
@@ -3611,11 +3674,17 @@ function launchInteractiveMonitor(args: LaunchInteractiveMonitorArgs): object {
         const meta = row.metadata ? JSON.parse(row.metadata) : {};
         if (meta.persistentTaskId) persistentTaskId = meta.persistentTaskId;
       } catch { /* ignore */ }
-      // Find session file
+      // Find session file — search main dir, then worktree dirs
       if (resolvedAgentId && sessionDir) {
         const sessionFile = findSessionFileByAgentId(sessionDir, resolvedAgentId);
         if (sessionFile) {
           sessionId = path.basename(sessionFile, '.jsonl');
+        }
+      }
+      if (!sessionId && resolvedAgentId) {
+        const found = findSessionFileAcrossProject(targetProjectDir, resolvedAgentId);
+        if (found) {
+          sessionId = path.basename(found, '.jsonl');
         }
       }
       if (!sessionId) {
@@ -3632,9 +3701,9 @@ function launchInteractiveMonitor(args: LaunchInteractiveMonitorArgs): object {
 
   // ── Mode 4: task_id — persistent task monitor ──
   if (args.task_id && !sessionId) {
-    const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+    const ptDbPath = path.join(targetProjectDir, '.claude', 'state', 'persistent-tasks.db');
     if (!fs.existsSync(ptDbPath)) {
-      return { error: 'persistent-tasks.db not found' };
+      return { error: `persistent-tasks.db not found at ${targetProjectDir}` };
     }
     let ptDb;
     try {
@@ -3657,12 +3726,20 @@ function launchInteractiveMonitor(args: LaunchInteractiveMonitorArgs): object {
         return { error: `Task '${task.title}' is ${task.status}, not active. Resume it first with mcp__persistent-task__resume_persistent_task.` };
       }
 
-      // Find session file
-      if (task.monitor_agent_id && sessionDir) {
+      // Find session file — search main dir, then worktree dirs
+      if (task.monitor_agent_id) {
         resolvedAgentId = task.monitor_agent_id;
-        const sessionFile = findSessionFileByAgentId(sessionDir, task.monitor_agent_id);
-        if (sessionFile) {
-          sessionId = path.basename(sessionFile, '.jsonl');
+        if (sessionDir) {
+          const sessionFile = findSessionFileByAgentId(sessionDir, task.monitor_agent_id);
+          if (sessionFile) {
+            sessionId = path.basename(sessionFile, '.jsonl');
+          }
+        }
+        if (!sessionId) {
+          const found = findSessionFileAcrossProject(targetProjectDir, task.monitor_agent_id);
+          if (found) {
+            sessionId = path.basename(found, '.jsonl');
+          }
         }
       }
       // Kill headless monitor
@@ -3696,7 +3773,7 @@ export HTTP_PROXY="http://localhost:${proxyPort}"
 export NO_PROXY="localhost,127.0.0.1"
 export NODE_EXTRA_CA_CERTS="${path.join(os.homedir(), '.claude', 'proxy-certs', 'ca.pem')}"` : '';
 
-  const gitWrappersDir = path.join(PROJECT_DIR, '.claude', 'hooks', 'git-wrappers');
+  const gitWrappersDir = path.join(targetProjectDir, '.claude', 'hooks', 'git-wrappers');
   const pathPrepend = fs.existsSync(gitWrappersDir) ? `\nexport PATH="${gitWrappersDir}:$PATH"` : '';
 
   const safeTitle = title.replace(/['"\\]/g, '');
@@ -3711,11 +3788,11 @@ export GENTYR_PERSISTENT_MONITOR="true"` : '';
   if (sessionId) {
     // Resume existing session
     const scriptContent = `#!/bin/bash
-cd ${JSON.stringify(PROJECT_DIR)}
+cd ${JSON.stringify(targetProjectDir)}
 
 export GENTYR_INTERACTIVE_MONITOR="true"
 export CLAUDE_AGENT_ID="${resolvedAgentId || ''}"
-export CLAUDE_PROJECT_DIR=${JSON.stringify(PROJECT_DIR)}${ptEnv}${pathPrepend}${proxyEnv}
+export CLAUDE_PROJECT_DIR=${JSON.stringify(targetProjectDir)}${ptEnv}${pathPrepend}${proxyEnv}
 
 exec claude --resume ${sessionId}
 `;
@@ -3730,11 +3807,11 @@ exec claude --resume ${sessionId}
 
     const agentFlag = persistentTaskId ? '--agent persistent-monitor' : '';
     const scriptContent = `#!/bin/bash
-cd ${JSON.stringify(PROJECT_DIR)}
+cd ${JSON.stringify(targetProjectDir)}
 
 export GENTYR_INTERACTIVE_MONITOR="true"
 export CLAUDE_AGENT_ID="${newAgentId}"
-export CLAUDE_PROJECT_DIR=${JSON.stringify(PROJECT_DIR)}${ptEnv}${pathPrepend}${proxyEnv}
+export CLAUDE_PROJECT_DIR=${JSON.stringify(targetProjectDir)}${ptEnv}${pathPrepend}${proxyEnv}
 
 exec claude ${agentFlag} ${JSON.stringify(prompt)}
 `;

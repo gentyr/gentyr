@@ -383,6 +383,7 @@ export const LaunchInteractiveMonitorArgsSchema = z.object({
   session_id: z.string().min(1).optional().describe('Claude session UUID to resume directly in Terminal.app'),
   queue_id: z.string().min(1).optional().describe('Session queue item ID — resolves to agent_id, finds the session, kills the process'),
   agent_id: z.string().min(1).optional().describe('Agent ID — finds the session JSONL by agent marker, kills the process if running'),
+  project_dir: z.string().min(1).optional().describe('Target project directory (e.g. ~/git/my-project) — use when monitoring agents from a different project than the current one'),
 });
 export type LaunchInteractiveMonitorArgs = z.infer<typeof LaunchInteractiveMonitorArgsSchema>;
 
