@@ -26,7 +26,9 @@ import { execFileSync } from 'node:child_process';
 // ============================================================================
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-const WORKTREE_DIR = process.env.CLAUDE_WORKTREE_DIR;
+// CLAUDE_WORKTREE_DIR is injected by spawnQueueItem; CWD fallback for edge cases
+const cwdWorktreeMatch = process.cwd().match(/^(.+\/\.claude\/worktrees\/[^/]+)/);
+const WORKTREE_DIR = process.env.CLAUDE_WORKTREE_DIR || (cwdWorktreeMatch ? cwdWorktreeMatch[1] : null);
 const AGENT_ID = process.env.CLAUDE_AGENT_ID || 'unknown';
 
 // ============================================================================

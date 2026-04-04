@@ -67,16 +67,15 @@ const ALLOWED_TOOLS = new Set([
 const READONLY_SUBAGENT_TYPES = new Set([
   'Explore',
   'Plan',
-  'investigator',
-  'general-purpose',
-  'product-manager',
   'claude-code-guide',
-  'statusline-setup',
   'deputy-cto',
-  'antipattern-hunter',
+  'feedback-agent',
+  'investigator',
+  'product-manager',
   'repo-hygiene-expert',
   'secret-manager',
-  'icon-finder',
+  'statusline-setup',
+  'user-alignment',
 ]);
 
 /**
