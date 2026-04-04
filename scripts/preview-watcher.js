@@ -265,6 +265,29 @@ async function checkAndSync() {
 }
 
 // ============================================================================
+// Worktree Cleanup (piggybacks on daemon — runs every 5 minutes)
+// ============================================================================
+
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+let lastCleanupAt = 0;
+
+async function runWorktreeCleanup() {
+  const now = Date.now();
+  if (now - lastCleanupAt < CLEANUP_INTERVAL_MS) return;
+  lastCleanupAt = now;
+
+  try {
+    const mod = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'worktree-manager.js'));
+    const cleaned = mod.cleanupMergedWorktrees();
+    if (cleaned > 0) {
+      log(`Worktree cleanup: removed ${cleaned} worktree(s)/orphan(s)`);
+    }
+  } catch (err) {
+    log(`Worktree cleanup error: ${err.message}`);
+  }
+}
+
+// ============================================================================
 // Entry Point
 // ============================================================================
 
@@ -272,12 +295,14 @@ log('Preview watcher daemon starting');
 log(`Project: ${PROJECT_DIR}`);
 log(`Poll interval: ${POLL_INTERVAL_MS}ms`);
 
-// Initial check
+// Initial check + cleanup
 checkAndSync().catch(err => log(`Initial check error: ${err.message}`));
+runWorktreeCleanup().catch(err => log(`Initial cleanup error: ${err.message}`));
 
-// Poll loop
+// Poll loop — freshness check every 30s, cleanup piggybacks every 5min
 setInterval(() => {
   checkAndSync().catch(err => log(`Poll error: ${err.message}`));
+  runWorktreeCleanup().catch(err => log(`Cleanup error: ${err.message}`));
 }, POLL_INTERVAL_MS);
 
 // Keep process alive
