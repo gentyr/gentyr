@@ -16,6 +16,7 @@ import { Footer } from './components/Footer.js';
 import { Page1 } from './components/page1/Page1.js';
 import { Page2 } from './components/page2/Page2.js';
 import { Page3 } from './components/page3/Page3.js';
+import { Page4 } from './components/page4/Page4.js';
 import { buildSelectableItems, findHomeIndex } from './components/page1/SessionList.js';
 
 interface AppProps {
@@ -27,7 +28,7 @@ export function App({ mock }: AppProps): React.ReactElement {
   const { columns, rows } = useTerminalSize();
   const now = useClock();
   const { data, loadMoreCompleted } = useDataPoller(3000, mock);
-  const [page, setPage] = useState<1 | 2 | 3>(1);
+  const [page, setPage] = useState<1 | 2 | 3 | 4>(1);
 
   const selectableItems = useMemo(() => buildSelectableItems(data), [data]);
   const homeIndex = useMemo(() => findHomeIndex(data), [data]);
@@ -66,13 +67,18 @@ export function App({ mock }: AppProps): React.ReactElement {
     if (input === '1') { setPage(1); return; }
     if (input === '2') { setPage(2); return; }
     if (input === '3') { setPage(3); return; }
+    if (input === '4') { setPage(4); return; }
 
     if (input === 'h') {
       if (page === 1) page1Scroll.scrollToHome();
       else if (page === 2) page2Scroll.scrollToTop();
-      else page3Scroll.scrollToTop();
+      else if (page === 3) page3Scroll.scrollToTop();
+      // page 4 handles 'h' internally (no-op at App level)
       return;
     }
+
+    // Page 4 owns its own arrow key and 's' handling — do not intercept.
+    if (page === 4) return;
 
     if (key.upArrow) {
       if (page === 1) page1Scroll.selectPrev();
@@ -126,6 +132,14 @@ export function App({ mock }: AppProps): React.ReactElement {
           scrollOffset={page3Scroll.scrollOffset}
           height={bodyHeight}
           width={columns}
+        />
+      )}
+
+      {page === 4 && (
+        <Page4
+          data={data}
+          bodyHeight={bodyHeight}
+          bodyWidth={columns}
         />
       )}
 
