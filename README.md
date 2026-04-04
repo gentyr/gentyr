@@ -42,7 +42,7 @@ Sixty-four automation hooks triggered by session events, commits, timers, and fa
 
 ### servers
 
-Thirty-six protocol servers connecting agents to external systems. Deployment platforms, secret vaults, task databases, plan orchestrators, log aggregators, feedback pipelines, coverage reporters. Agents never touch raw APIs. Every external interaction goes through a typed MCP server with a schema and a handler.
+Thirty-seven protocol servers connecting agents to external systems. Deployment platforms, secret vaults, task databases, plan orchestrators, log aggregators, feedback pipelines, coverage reporters. Agents never touch raw APIs. Every external interaction goes through a typed MCP server with a schema and a handler.
 
 Fifteen stateless API-proxy servers (GitHub, Cloudflare, Supabase, Vercel, Render, and others) run as a single shared HTTP daemon instead of one process per agent session. A single daemon process on port 18090 replaces up to 15 per-session stdio processes, saving ~750MB RAM per concurrent agent. Installed via `setup-automation-service.sh`; auto-detected by `config-gen.js` which rewrites `.mcp.json` with HTTP entries when the daemon is running.
 
@@ -275,7 +275,7 @@ The Notion plugin (`plugins/notion/`) syncs four GENTYR data sources to Notion d
 
 ## components
 
-36 MCP servers. 16 agents. 64 hooks. 37 commands. CLI dashboard. Plugin system with extensible local MCP servers.
+37 MCP servers. 16 agents. 64 hooks. 37 commands. CLI dashboard. Plugin system with extensible local MCP servers.
 
 ## documentation
 
