@@ -139,10 +139,14 @@ function resolveFrameworkDir(dir) {
  * - Generates a worktree-specific `.mcp.json` with absolute paths
  * - Symlinks shared config directories (hooks, agents, commands, MCP servers)
  * - Copies `CLAUDE.md` (copy, not symlink, so worktree edits stay isolated)
+ * - Runs package manager install unless `options.skipInstall` is true or
+ *   `node_modules` is already populated (re-provisioning guard)
  *
  * @param {string} worktreePath - Absolute path to the worktree directory
+ * @param {object} [options]
+ * @param {boolean} [options.skipInstall=false] - Skip package manager install
  */
-export function provisionWorktree(worktreePath) {
+export function provisionWorktree(worktreePath, options = {}) {
   // --- .mcp.json: rewrite CLAUDE_PROJECT_DIR env values to absolute path ---
   const mainMcpPath = path.join(PROJECT_DIR, '.mcp.json');
   if (fs.existsSync(mainMcpPath)) {
@@ -289,6 +293,40 @@ export function provisionWorktree(worktreePath) {
   if (fs.existsSync(claudeMdSrc)) {
     fs.copyFileSync(claudeMdSrc, path.join(worktreePath, 'CLAUDE.md'));
   }
+
+  // --- Package manager install (non-fatal, provides project dependencies) ---
+  if (!options?.skipInstall) {
+    const lockFiles = [
+      { file: 'pnpm-lock.yaml', cmd: ['pnpm', 'install', '--frozen-lockfile', '--prefer-offline'] },
+      { file: 'yarn.lock', cmd: ['yarn', 'install', '--frozen-lockfile'] },
+      { file: 'bun.lockb', cmd: ['bun', 'install', '--frozen-lockfile'] },
+      { file: 'package-lock.json', cmd: ['npm', 'ci'] },
+    ];
+
+    // Skip if node_modules already populated (re-provisioning)
+    const nmDir = path.join(worktreePath, 'node_modules');
+    const hasNodeModules = fs.existsSync(nmDir) && fs.readdirSync(nmDir).length > 5;
+
+    if (!hasNodeModules) {
+      for (const { file, cmd } of lockFiles) {
+        if (fs.existsSync(path.join(worktreePath, file))) {
+          try {
+            const installTimeout = 120000; // 2 minutes
+            execSync(cmd.join(' '), {
+              cwd: worktreePath,
+              encoding: 'utf8',
+              timeout: installTimeout,
+              stdio: 'pipe',
+            });
+            console.error(`[worktree-manager] Installed dependencies via ${cmd[0]} in ${worktreePath}`);
+          } catch (err) {
+            console.error(`[worktree-manager] Warning: ${cmd[0]} install failed (non-fatal): ${err.message}`);
+          }
+          break; // Only run one package manager
+        }
+      }
+    }
+  }
 }
 
 // ============================================================================
@@ -366,7 +404,7 @@ export function createWorktree(branchName, baseBranch, options = {}) {
   execSync(`git worktree add ${worktreePath} ${branchName}`, GIT_OPTS);
 
   // Provision with GENTYR config
-  provisionWorktree(worktreePath);
+  provisionWorktree(worktreePath, { skipInstall: options.skipInstall });
 
   // Verify worktree base is fresh (informational, non-fatal)
   let behindBy = 0;

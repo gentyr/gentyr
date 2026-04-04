@@ -209,6 +209,19 @@ When the user asks to spawn agents in plain English (e.g., "spawn an agent to fi
 
 Long-running objectives use persistent tasks (`/persistent-task` to create, `/persistent-tasks` to manage). `activate_persistent_task`, `resume_persistent_task`, and `amend_persistent_task` (auto-resume) all trigger a PostToolUse hook that automatically enqueues a monitor session. Do NOT manually create tasks or call `force_spawn_tasks` after these calls — the monitor is spawned by the hook.
 
+### Session Activity Broadcasting
+
+A background daemon broadcasts activity summaries every 5 minutes. Each running agent receives a digest of what all other agents are working on, with UUIDs to access detailed per-session summaries. Use `session-activity` MCP tools to review historical summaries:
+
+| Tool | Description |
+|------|-------------|
+| `mcp__session-activity__get_session_summary` | Get detailed summary by UUID |
+| `mcp__session-activity__list_session_summaries` | List summaries for a session/agent |
+| `mcp__session-activity__list_project_summaries` | List project-wide super-summaries |
+| `mcp__session-activity__get_project_summary` | Get a super-summary by UUID |
+
+When you receive a broadcast showing sessions related to your work, use `mcp__agent-tracker__send_session_signal` to coordinate directly.
+
 ### Session Queue Management
 
 All agent spawning goes through a centralized session queue with a global concurrency limit. When the queue is at capacity, new agents are queued until slots free up. The interactive session can always manage this:

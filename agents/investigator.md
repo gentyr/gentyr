@@ -75,6 +75,19 @@ mcp__claude-sessions__search_sessions({ query: "todo.db migration" })
 
 **Why this matters**: AI agents frequently re-investigate the same problems across sessions. Session history prevents circular work and surfaces decisions that aren't captured in code or docs.
 
+## Session Activity Summaries (Cross-Session Awareness)
+
+Use session-activity MCP tools to understand what other agents are currently or recently working on. These LLM-generated summaries are produced every 5 minutes by the session-activity-broadcaster daemon.
+
+| Tool | Description |
+|------|-------------|
+| `mcp__session-activity__get_session_summary` | Get detailed summary by UUID (from broadcast or list) |
+| `mcp__session-activity__list_session_summaries` | List summaries for a specific session/agent ID |
+| `mcp__session-activity__list_project_summaries` | List project-wide super-summaries |
+| `mcp__session-activity__get_project_summary` | Get a specific super-summary by UUID |
+
+Use these when investigating issues that might involve multiple agents or recent changes from other sessions.
+
 ## Investigation Workflow
 
 1. **Search Session History**: Use claude-sessions MCP to find prior work on this topic (MANDATORY — do this FIRST)

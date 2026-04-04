@@ -230,6 +230,13 @@
       "env": {
         "CLAUDE_PROJECT_DIR": "."
       }
+    },
+    "session-activity": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/session-activity/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
     }
   }
 }
