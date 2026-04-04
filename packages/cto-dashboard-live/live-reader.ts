@@ -9,6 +9,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import Database from 'better-sqlite3';
 import type {
   LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem,
@@ -19,6 +20,7 @@ import type {
   DeputyCtoDetail, TriageReport, PendingQuestion, AnsweredQuestion,
   AccountInfo, FeedbackPersona, WorklogEntryDetail,
   TestingData, DeploymentItem, WorktreeInfo, InfraStatus, LoggingData,
+  ActivityEntry,
 } from './types.js';
 import { formatElapsed } from './utils/formatters.js';
 
@@ -694,4 +696,179 @@ export function readLiveData(): LiveDashboardData {
     page3: readPage3(),
     pageAnalytics: { usage: { hasData: false, fiveHourSnapshots: [], sevenDaySnapshots: [], cooldownFactor: 1, targetPct: 80, projectedAtResetPct: null }, automatedInstances: [] },
   };
+}
+
+// ============================================================================
+// Page 4: Session Tail + Signal
+// ============================================================================
+
+/**
+ * Parse JSONL content from a byte position range into ActivityEntry[].
+ * Returns parsed entries and the new file position (byte offset).
+ */
+export function readSessionTail(
+  agentId: string,
+  fromPosition?: number,
+): { entries: ActivityEntry[]; newPosition: number } {
+  const file = findSessionFile(agentId);
+  if (!file) return { entries: [], newPosition: 0 };
+
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(file, 'r');
+    const stat = fs.fstatSync(fd);
+    const fileSize = stat.size;
+    if (fileSize === 0) return { entries: [], newPosition: 0 };
+
+    const startPos = fromPosition !== undefined ? Math.min(fromPosition, fileSize) : Math.max(0, fileSize - 65536);
+    const bytesToRead = fileSize - startPos;
+    if (bytesToRead <= 0) return { entries: [], newPosition: fileSize };
+
+    const buf = Buffer.alloc(bytesToRead);
+    fs.readSync(fd, buf, 0, bytesToRead, startPos);
+    const text = buf.toString('utf8');
+
+    const lines = text.split('\n');
+    const entries: ActivityEntry[] = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+
+      const timestamp = (typeof parsed['timestamp'] === 'string' ? parsed['timestamp'] : new Date().toISOString());
+
+      // Compaction boundary marker
+      if (parsed['type'] === 'compact_boundary') {
+        entries.push({ type: 'compaction', timestamp, text: '[context compacted]' });
+        continue;
+      }
+
+      // Assistant message — extract tool_use and text blocks
+      if (parsed['type'] === 'assistant') {
+        const msg = parsed['message'] as Record<string, unknown> | undefined;
+        const content = Array.isArray(msg?.['content']) ? (msg!['content'] as unknown[]) : [];
+        for (const block of content) {
+          const b = block as Record<string, unknown>;
+          if (b['type'] === 'tool_use') {
+            const toolName = typeof b['name'] === 'string' ? b['name'] : 'unknown';
+            const inputObj = b['input'];
+            let toolInput = '';
+            if (inputObj && typeof inputObj === 'object') {
+              // Show first meaningful key/value as preview
+              const keys = Object.keys(inputObj as object);
+              const firstKey = keys[0];
+              if (firstKey) {
+                const val = (inputObj as Record<string, unknown>)[firstKey];
+                const valStr = typeof val === 'string' ? val : JSON.stringify(val);
+                toolInput = `${firstKey}: ${valStr.substring(0, 60)}`;
+                if (keys.length > 1) toolInput += ` +${keys.length - 1}`;
+              }
+            }
+            entries.push({
+              type: 'tool_call',
+              timestamp,
+              text: toolName,
+              toolName,
+              toolInput,
+            });
+          } else if (b['type'] === 'text') {
+            const textVal = typeof b['text'] === 'string' ? b['text'] : '';
+            const preview = textVal.trim().split('\n').find((l: string) => l.trim().length > 3) ?? textVal;
+            if (preview.trim().length > 0) {
+              entries.push({
+                type: 'assistant_text',
+                timestamp,
+                text: preview.trim().substring(0, 200),
+              });
+            }
+          }
+        }
+        continue;
+      }
+
+      // Tool result
+      if (parsed['type'] === 'tool_result') {
+        const content = parsed['content'];
+        let preview = '';
+        if (typeof content === 'string') {
+          preview = content.trim().substring(0, 150);
+        } else if (Array.isArray(content)) {
+          for (const c of content as unknown[]) {
+            const cb = c as Record<string, unknown>;
+            if (cb['type'] === 'text' && typeof cb['text'] === 'string') {
+              preview = cb['text'].trim().substring(0, 150);
+              break;
+            }
+          }
+        }
+        if (preview) {
+          entries.push({
+            type: 'tool_result',
+            timestamp,
+            text: preview,
+            resultPreview: preview,
+          });
+        }
+        continue;
+      }
+
+      // Error messages
+      if (parsed['type'] === 'error' || (typeof parsed['error'] === 'string' && parsed['error'])) {
+        const errMsg = typeof parsed['error'] === 'string'
+          ? parsed['error']
+          : JSON.stringify(parsed).substring(0, 150);
+        entries.push({ type: 'error', timestamp, text: errMsg });
+        continue;
+      }
+    }
+
+    return { entries, newPosition: fileSize };
+  } catch {
+    return { entries: [], newPosition: fromPosition ?? 0 };
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* */ }
+  }
+}
+
+/**
+ * Write a directive signal JSON file to the session-signals directory.
+ * Uses atomic tmp+rename to avoid partial reads.
+ * Returns true on success, throws on failure.
+ */
+export function sendDirectiveSignal(toAgentId: string, message: string): boolean {
+  const signalDir = path.join(PROJECT_DIR, '.claude', 'state', 'session-signals');
+  fs.mkdirSync(signalDir, { recursive: true });
+  const id = `sig-${crypto.randomUUID().slice(0, 8)}`;
+  const filename = `${toAgentId}-${Date.now()}-${id}.json`;
+  const signal = {
+    id,
+    from_agent_id: 'cto-dashboard',
+    from_agent_type: 'cto',
+    from_task_title: 'CTO Dashboard Signal',
+    to_agent_id: toAgentId,
+    to_agent_type: 'agent',
+    tier: 'directive',
+    message,
+    created_at: new Date().toISOString(),
+    read_at: null,
+    acknowledged_at: null,
+  };
+  const tmpPath = path.join(signalDir, `.${filename}.tmp`);
+  fs.writeFileSync(tmpPath, JSON.stringify(signal));
+  fs.renameSync(tmpPath, path.join(signalDir, filename));
+  // Append to comms log (best-effort)
+  try {
+    fs.appendFileSync(
+      path.join(PROJECT_DIR, '.claude', 'state', 'session-comms.log'),
+      JSON.stringify(signal) + '\n',
+    );
+  } catch { /* non-fatal */ }
+  return true;
 }

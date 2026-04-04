@@ -289,6 +289,19 @@ export interface PageAnalyticsData {
 }
 
 // ============================================================================
+// Page 4: Observe (Session Tail / Signal)
+// ============================================================================
+
+export interface ActivityEntry {
+  type: 'tool_call' | 'assistant_text' | 'tool_result' | 'error' | 'compaction';
+  timestamp: string;
+  text: string;
+  toolName?: string;
+  toolInput?: string;
+  resultPreview?: string;
+}
+
+// ============================================================================
 // Unified Dashboard Data
 // ============================================================================
 

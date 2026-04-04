@@ -6,11 +6,11 @@ interface HeaderProps {
   now: Date;
   running: number;
   max: number;
-  page: 1 | 2 | 3;
+  page: 1 | 2 | 3 | 4;
   mock: boolean;
 }
 
-const PAGE_LABELS: Record<number, string> = { 1: 'Operations', 2: 'Details', 3: 'Analytics' };
+const PAGE_LABELS: Record<number, string> = { 1: 'Operations', 2: 'Details', 3: 'Analytics', 4: 'Observe' };
 
 export function Header({ now, running, max, page, mock }: HeaderProps): React.ReactElement {
   return (
@@ -22,7 +22,7 @@ export function Header({ now, running, max, page, mock }: HeaderProps): React.Re
       <Text bold>{running}</Text>
       <Text dimColor>/{max} sessions</Text>
       <Text dimColor> {'│'} </Text>
-      {[1, 2, 3].map(p => (
+      {[1, 2, 3, 4].map(p => (
         <React.Fragment key={p}>
           {p === page ? (
             <Text bold inverse> {p} </Text>
