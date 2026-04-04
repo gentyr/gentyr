@@ -570,39 +570,6 @@ function startWindowRecorder(outputPath: string, appName?: string): { pid: numbe
 }
 
 /**
- * Stop a running WindowRecorder gracefully (async).
- * SIGINT triggers AVAssetWriter finalization for a valid MP4 container.
- * Waits up to 10s, then SIGKILL as fallback.
- */
-async function stopWindowRecorder(pid: number, outputPath: string): Promise<boolean> {
-  try {
-    try { process.kill(pid, 'SIGINT'); } catch { /* already dead */ }
-
-    let exited = false;
-    const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline) {
-      try {
-        process.kill(pid, 0);
-        await new Promise<void>(r => setTimeout(r, 500));
-      } catch {
-        exited = true;
-        break;
-      }
-    }
-
-    if (!exited) {
-      // Process still alive at deadline — SIGKILL corrupts the MP4 (no moov atom)
-      try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
-      return false;
-    }
-
-    return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Stop a running WindowRecorder synchronously.
  * For use in sync contexts like event handlers.
  */
@@ -1519,6 +1486,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     // Collect stderr for crash diagnostics and track progress
     let stderrChunks: Buffer[] = [];
     let lastProgressAt = Date.now();
+    let lastOutputLine = '';
 
     const MAX_STDOUT_LINES = 50;
     let stdoutLines: string[] = [];
@@ -1570,41 +1538,25 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       screenshotCapture = startScreenshotCapture(args.scenario_id, chromeWindowId);
     }
 
-    // Progress-based crash/stall detection:
-    // - 90s startup grace period (no stall checks — browser + webServer boot is slow)
-    // - After grace, check every 5s — if 90s silence (based on JSONL progress events, not
-    //   raw stdout noise), kill and report stall
-    // - Early exit during grace period is reported immediately
-    // - Scale stall window for longer timeouts
-    // - suite_end detection: when a suite_end JSONL event is detected, wait 5s then auto-kill
-    //   the process group (gives user a moment to see the final state). Only applies in
-    //   run_demo mode (not launch_ui_mode — which never uses a progress file).
+    // Progress-based monitoring constants
     const GRACE_MS = 90_000;
     const STALL_MS = Math.max(90_000, (args.timeout ?? 120000) > 120000 ? (args.timeout ?? 120000) / 2 : 90_000);
     const SUITE_END_KILL_DELAY_MS = 5_000;
     const CHECK_INTERVAL_MS = 5_000;
-    let lastOutputLine = '';
-    // lastProgressEventAt tracks the timestamp of the last meaningful JSONL event
-    // (test_begin, test_end, suite_begin, suite_end). Used for stall detection to avoid
-    // false stalls caused by raw stdout/stderr noise (browser console chatter, etc.).
+    const STARTUP_CHECK_MS = 15_000;
     let lastProgressEventAt = Date.now();
-    // Byte offset into the progress file — incremented after each read to avoid
-    // re-parsing the entire file on every stall check.
     let progressFileOffset = 0;
-    // Timestamp when suite_end was detected in the JSONL file; null until then.
     let suiteEndDetectedAt: number | null = null;
 
     /**
      * Read new JSONL lines from the progress file since the last read offset.
      * Updates lastProgressEventAt and suiteEndDetectedAt as a side effect.
-     * Returns the number of new meaningful events found.
      */
     const readNewProgressEvents = (): number => {
       try {
         if (!fs.existsSync(progressFilePath)) return 0;
         const stat = fs.statSync(progressFilePath);
         if (stat.size <= progressFileOffset) return 0;
-        // Read only the new bytes since last check
         const fd = fs.openSync(progressFilePath, 'r');
         let newData: Buffer;
         try {
@@ -1616,10 +1568,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           fs.closeSync(fd);
         }
         const newText = newData.toString('utf-8');
-        // Only advance offset to last complete line boundary to avoid losing partial lines
         const lastNewline = newText.lastIndexOf('\n');
         if (lastNewline === -1) {
-          // No complete lines yet — rewind offset so we re-read next time
           progressFileOffset -= newData.length;
           return 0;
         }
@@ -1652,360 +1602,22 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       }
     };
 
-    const result = await new Promise<
-      | { type: 'early_exit'; code: number | null; signal: string | null }
-      | { type: 'stall' }
-      | { type: 'suite_end_killed' }
-      | { type: 'ok' }
-    >(
-      (resolve) => {
-        let settled = false;
-        let stallCheckInterval: ReturnType<typeof setInterval> | null = null;
-        let graceTimer: ReturnType<typeof setTimeout> | null = null;
-        let successTimer: ReturnType<typeof setTimeout> | null = null;
-
-        const cleanup = () => {
-          if (stallCheckInterval) clearInterval(stallCheckInterval);
-          if (graceTimer) clearTimeout(graceTimer);
-          if (successTimer) clearTimeout(successTimer);
-        };
-
-        // Start stall checking after the grace period
-        graceTimer = setTimeout(() => {
-          if (settled) return;
-          stallCheckInterval = setInterval(() => {
-            if (settled) { cleanup(); return; }
-
-            // Read new JSONL events to update lastProgressEventAt and suiteEndDetectedAt
-            readNewProgressEvents();
-
-            // Auto-kill after suite_end + SUITE_END_KILL_DELAY_MS
-            if (suiteEndDetectedAt !== null && Date.now() - suiteEndDetectedAt >= SUITE_END_KILL_DELAY_MS) {
-              settled = true;
-              cleanup();
-              if (child.pid) {
-                try { process.kill(-child.pid, 'SIGTERM'); } catch {}
-              }
-              resolve({ type: 'suite_end_killed' });
-              return;
-            }
-
-            // Stall detection: use the more recent of raw output and JSONL progress events.
-            // This prevents false stalls from processes that emit browser console chatter
-            // but no meaningful test progress events.
-            const lastActivity = Math.max(lastProgressAt, lastProgressEventAt);
-            const silenceMs = Date.now() - lastActivity;
-            if (silenceMs >= STALL_MS) {
-              settled = true;
-              cleanup();
-              if (child.pid) {
-                try { process.kill(-child.pid, 'SIGTERM'); } catch {}
-              }
-              resolve({ type: 'stall' });
-            }
-          }, CHECK_INTERVAL_MS);
-        }, GRACE_MS);
-
-        // Return success once past grace + first stall check window
-        successTimer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          resolve({ type: 'ok' });
-        }, GRACE_MS + STALL_MS);
-
-        child.on('exit', (code, signal) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          resolve({ type: 'early_exit', code, signal });
-        });
-
-        child.on('error', (err) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          resolve({ type: 'early_exit', code: 1, signal: err.message });
-        });
-      }
-    );
-
-    if (result.type === 'early_exit') {
-      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
-      const snippet = stderr.length > 2000 ? stderr.slice(0, 2000) + '...' : stderr;
-      const stdout = stdoutLines.join('\n').trim();
-
-      if (result.code === 0) {
-        // Tests completed successfully within the monitoring window — treat as success.
-        // Read progress for test result details.
-        const progress = readDemoProgress(progressFilePath);
-        const hasFailures = progress?.has_failures ?? false;
-        const demoPid = child.pid!;
-        const demoState: DemoRunState = {
-          pid: demoPid,
-          project,
-          test_file: effectiveTestFile,
-          started_at: new Date().toISOString(),
-          status: hasFailures ? 'failed' : 'passed',
-          ended_at: new Date().toISOString(),
-          exit_code: 0,
-          progress_file: progressFilePath,
-          scenario_id: args.scenario_id,
-          stdout_tail: stdout.slice(0, 5000),
-        };
-
-        if (hasFailures) {
-          demoState.failure_summary = progress
-            ? `${progress.tests_failed} test(s) failed out of ${progress.tests_completed}`
-            : undefined;
-          demoState.artifacts = scanArtifacts();
-        }
-
-        // Parse trace for play-by-play
-        try {
-          const testResultsDir = path.join(PROJECT_DIR, 'test-results');
-          const traceZip = findTraceZip(testResultsDir);
-          if (traceZip) {
-            const summary = parseTraceZip(traceZip);
-            if (summary) demoState.trace_summary = summary;
-          }
-        } catch { /* Non-fatal */ }
-
-        // Exit fullscreen before teardown
-        if (fullscreened) {
-          await unfullscreenChromeWindow();
-          fullscreened = false;
-        }
-
-        // Persist video recording for the scenario
-        if (demoState.scenario_id) {
-          try {
-            let videoToUse: string | undefined;
-
-            // Stop window recorder and use its output
-            if (windowRecorder && windowRecordingPath) {
-              const recordingOk = await stopWindowRecorder(windowRecorder.pid, windowRecordingPath);
-              if (recordingOk) {
-                videoToUse = windowRecordingPath;
-              }
-              windowRecorder = null; // Prevent double-stop
-            }
-
-            if (videoToUse && fs.existsSync(videoToUse)) {
-              const recordingsDir = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos');
-              fs.mkdirSync(recordingsDir, { recursive: true });
-              const destPath = path.join(recordingsDir, `${demoState.scenario_id}.mp4`);
-              fs.copyFileSync(videoToUse, destPath);
-              const userFeedbackDbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
-              const db = new Database(userFeedbackDbPath);
-              try {
-                db.prepare(
-                  'UPDATE demo_scenarios SET last_recorded_at = ?, recording_path = ? WHERE id = ?'
-                ).run(new Date().toISOString(), destPath, demoState.scenario_id);
-              } finally {
-                db.close();
-              }
-            }
-
-            // Clean up temp window recording
-            if (windowRecordingPath) {
-              try { fs.unlinkSync(windowRecordingPath); } catch { /* Non-fatal */ }
-              windowRecordingPath = null;
-            }
-          } catch { /* Non-fatal */ }
-        } else {
-          // No scenario_id — still stop window recorder if running
-          if (windowRecorder && windowRecordingPath) {
-            try {
-              await stopWindowRecorder(windowRecorder.pid, windowRecordingPath);
-            } catch { /* Non-fatal */ }
-            windowRecorder = null;
-            try { fs.unlinkSync(windowRecordingPath); } catch { /* Non-fatal */ }
-            windowRecordingPath = null;
-          }
-        }
-
-        // Stop screenshot capture — demo completed synchronously
-        if (screenshotCapture) {
-          stopScreenshotCapture(screenshotCapture.interval);
-          demoState.screenshot_dir = screenshotCapture.dir;
-          demoState.screenshot_start_time = screenshotCapture.startTime;
-          screenshotCapture = null;
-        }
-
-        // Clean up progress file
-        try { fs.unlinkSync(progressFilePath); } catch { /* Non-fatal */ }
-
-        demoRuns.set(demoPid, demoState);
-        persistDemoRuns();
-
-        return {
-          success: !hasFailures,
-          project,
-          message: hasFailures
-            ? `Demo completed with failures (exit code 0).${stdout ? `\nstdout: ${stdout.slice(0, 2000)}` : ''}`
-            : `Demo completed successfully.${effectiveTestFile ? ` File: ${effectiveTestFile}.` : ''} Use check_demo_result with PID ${demoPid} to see details.`,
-          pid: demoPid,
-          slow_mo,
-          test_file: effectiveTestFile,
-        };
-      }
-
-      // Non-zero exit code — actual crash
-      // Exit fullscreen before teardown
-      if (fullscreened) {
-        await unfullscreenChromeWindow();
-        fullscreened = false;
-      }
-      // Stop window recorder if running, then clean up
-      if (windowRecorder && windowRecordingPath) {
-        try {
-          await stopWindowRecorder(windowRecorder.pid, windowRecordingPath);
-        } catch { /* Non-fatal */ }
-        windowRecorder = null;
-        try { fs.unlinkSync(windowRecordingPath); } catch { /* Non-fatal */ }
-        windowRecordingPath = null;
-      }
-
-      // Stop screenshot capture on crash
-      if (screenshotCapture) {
-        stopScreenshotCapture(screenshotCapture.interval);
-        screenshotCapture = null;
-      }
-
-      // Auto-release display lock if we acquired it — crash means demo is done
-      if (displayLockAutoAcquired) {
-        try {
-          const dlMod = await loadDisplayLock();
-          if (dlMod) dlMod.releaseDisplayLock(getCallerAgentId());
-        } catch { /* Non-fatal */ }
-      }
-
-      // Write crash event to progress file so check_demo_result can surface the error
-      try {
-        fs.mkdirSync(path.dirname(progressFilePath), { recursive: true });
-        const crashEvent = {
-          type: 'crash',
-          timestamp: new Date().toISOString(),
-          exit_code: result.code,
-          signal: result.signal,
-          stderr_snippet: stderr.slice(0, 5000),
-          stdout_snippet: stdout.slice(0, 5000),
-        };
-        fs.appendFileSync(progressFilePath, JSON.stringify(crashEvent) + '\n');
-      } catch { /* non-fatal */ }
-
-      return {
-        success: false,
-        project,
-        message: `Playwright process crashed during startup (exit code: ${result.code}, signal: ${result.signal})${stdout ? `\nstdout: ${stdout.slice(0, 2000)}` : ''}${snippet ? `\nstderr: ${snippet}` : ''}`,
-      };
-    }
-
-    if (result.type === 'stall') {
-      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
-      const snippet = stderr.length > 2000 ? stderr.slice(0, 2000) + '...' : stderr;
-      const lastContext = lastOutputLine ? `\nLast output: ${lastOutputLine}` : '';
-
-      // Exit fullscreen before teardown
-      if (fullscreened) {
-        await unfullscreenChromeWindow();
-        fullscreened = false;
-      }
-      // Stop window recorder on stall, then clean up
-      if (windowRecorder && windowRecordingPath) {
-        try {
-          await stopWindowRecorder(windowRecorder.pid, windowRecordingPath);
-        } catch { /* Non-fatal */ }
-        windowRecorder = null;
-        try { fs.unlinkSync(windowRecordingPath); } catch { /* Non-fatal */ }
-        windowRecordingPath = null;
-      }
-
-      // Stop screenshot capture on stall
-      if (screenshotCapture) {
-        stopScreenshotCapture(screenshotCapture.interval);
-        screenshotCapture = null;
-      }
-
-      // Auto-release display lock if we acquired it — stall means demo is done
-      if (displayLockAutoAcquired) {
-        try {
-          const dlMod = await loadDisplayLock();
-          if (dlMod) dlMod.releaseDisplayLock(getCallerAgentId());
-        } catch { /* Non-fatal */ }
-      }
-
-      return {
-        success: false,
-        project,
-        message: `Playwright process stalled (no output for ${Math.round(STALL_MS / 1000)}s after startup grace period)${lastContext}${snippet ? `\nstderr: ${snippet}` : ''}`,
-      };
-    }
-
-    // Still running (or auto-killed after suite_end) — detach and return success
-    if (child.stdout) {
-      child.stdout.removeAllListeners('data');
-      child.stdout.resume();
-    }
-    if (child.stderr) {
-      child.stderr.removeAllListeners('data');
-      child.stderr.resume();
-    }
-
-    // Register demo run for check_demo_result tracking
+    // ── Register demo run immediately (before any waiting) ──
     const demoPid = child.pid!;
-    const isSuiteEndKilled = result.type === 'suite_end_killed';
     const demoState: DemoRunState = {
       pid: demoPid,
       project,
       test_file: effectiveTestFile,
       started_at: new Date().toISOString(),
-      // suite_end_killed: process was already sent SIGTERM — mark 'passed' directly
-      // to avoid a race where the exit handler never fires (process already dead)
-      status: isSuiteEndKilled ? 'passed' : 'running',
+      status: 'running',
       progress_file: progressFilePath,
       scenario_id: args.scenario_id,
     };
-    if (isSuiteEndKilled) {
-      demoState.ended_at = new Date().toISOString();
-      demoState.stdout_tail = stdoutLines.join('\n').slice(0, 5000);
-      suiteEndAutoKilledPids.add(demoPid);
-
-      // Exit fullscreen before teardown
-      if (fullscreened) {
-        await unfullscreenChromeWindow();
-        fullscreened = false;
-      }
-
-      // Persist video recording before clearing recorder state
-      if (args.scenario_id && windowRecorder && windowRecordingPath) {
-        try {
-          const recordingOk = await stopWindowRecorder(windowRecorder.pid, windowRecordingPath);
-          if (recordingOk) {
-            persistScenarioRecording(args.scenario_id, windowRecordingPath);
-          }
-        } catch { /* Non-fatal */ }
-        try { fs.unlinkSync(windowRecordingPath); } catch { /* Non-fatal */ }
-        windowRecorder = null;
-        windowRecordingPath = null;
-      }
-
-      // suite_end_killed: stop screenshot capture since demo is already done
-      if (screenshotCapture) {
-        stopScreenshotCapture(screenshotCapture.interval);
-        demoState.screenshot_dir = screenshotCapture.dir;
-        demoState.screenshot_start_time = screenshotCapture.startTime;
-        screenshotCapture = null;
-      }
-    }
-    // Store window recorder info so check_demo_result and the exit handler can stop it
     if (windowRecorder) {
       demoState.window_recorder_pid = windowRecorder.pid;
       demoState.window_recording_path = windowRecordingPath ?? undefined;
     }
     demoState.fullscreened = fullscreened;
-    // Store screenshot capture so it continues running and can be stopped later
     if (screenshotCapture) {
       demoState.screenshot_interval = screenshotCapture.interval;
       demoState.screenshot_dir = screenshotCapture.dir;
@@ -2014,19 +1626,61 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     demoRuns.set(demoPid, demoState);
     persistDemoRuns();
 
-    // Track display lock auto-acquisition so release can happen on demo completion.
     if (displayLockAutoAcquired) {
       displayLockAutoAcquiredPids.add(demoPid);
     }
 
-    // Track exit for post-hoc status checks (fires even after unref since MCP server stays alive)
+    // ── Background stall/suite_end monitoring (fire-and-forget) ──
+    // Continues running after runDemo returns. Cleaned up on child exit.
+    const bgMonitorStart = Date.now();
+    const bgMonitorInterval = setInterval(() => {
+      readNewProgressEvents();
+
+      // Suite_end auto-kill: once tests finish, wait 5s then SIGTERM
+      if (suiteEndDetectedAt !== null && Date.now() - suiteEndDetectedAt >= SUITE_END_KILL_DELAY_MS) {
+        clearInterval(bgMonitorInterval);
+        suiteEndAutoKilledPids.add(demoPid);
+        if (child.pid) {
+          try { process.kill(-child.pid, 'SIGTERM'); } catch {}
+        }
+        return;
+      }
+
+      // Stall detection (only after grace period)
+      if (Date.now() - bgMonitorStart >= GRACE_MS) {
+        const lastActivity = Math.max(lastProgressAt, lastProgressEventAt);
+        const silenceMs = Date.now() - lastActivity;
+        if (silenceMs >= STALL_MS) {
+          clearInterval(bgMonitorInterval);
+          const entry = demoRuns.get(demoPid);
+          if (entry && entry.status === 'running') {
+            entry.failure_summary = `Stalled: no progress for ${Math.round(STALL_MS / 1000)}s after ${Math.round(GRACE_MS / 1000)}s grace period. Last output: ${lastOutputLine || '(none)'}`;
+          }
+          if (child.pid) {
+            try { process.kill(-child.pid, 'SIGTERM'); } catch {}
+          }
+        }
+      }
+    }, CHECK_INTERVAL_MS);
+
+    // ── Permanent exit handler (single source of truth for cleanup) ──
     child.on('exit', (code) => {
+      clearInterval(bgMonitorInterval);
       clearAutoKillTimer(demoPid);
       const entry = demoRuns.get(demoPid);
       if (!entry) return;
 
-      // If suite_end_killed already finalized or autoKillDemo already finalized, don't overwrite
+      // If already finalized (suite_end_killed via check_demo_result, autoKillDemo, etc.), skip
       if (entry.status !== 'running') return;
+
+      // Suite_end killed → treat as passed (background monitor set the flag before SIGTERM)
+      if (suiteEndAutoKilledPids.has(demoPid)) {
+        const progress = readDemoProgress(progressFilePath);
+        entry.status = (progress?.has_failures) ? 'failed' : 'passed';
+        suiteEndAutoKilledPids.delete(demoPid);
+      } else {
+        entry.status = (code === 0) ? 'passed' : 'failed';
+      }
 
       if (entry.fullscreened) {
         void unfullscreenChromeWindow();
@@ -2035,7 +1689,6 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
       entry.ended_at = new Date().toISOString();
       entry.exit_code = code ?? undefined;
-      entry.status = (code === 0) ? 'passed' : 'failed';
       entry.stdout_tail = stdoutLines.join('\n').slice(0, 5000);
 
       if (entry.status === 'failed') {
@@ -2151,16 +1804,64 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       autoReleaseDisplayLockForPid(demoPid);
     });
 
-    child.unref();
+    // ── Quick startup check (15s) — catch immediate spawn failures ──
+    // Returns early if process crashes during startup. Otherwise returns PID
+    // for polling via check_demo_result. Stall/suite_end detection continues
+    // in the background interval above.
+    const earlyExit = await new Promise<{ code: number | null; signal: string | null } | null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), STARTUP_CHECK_MS);
+      const onExit = (code: number | null, signal: string | null) => {
+        clearTimeout(timer);
+        resolve({ code, signal });
+      };
+      child.once('exit', onExit);
+      child.once('error', (err: Error) => onExit(1, err.message));
+    });
 
-    // Start auto-kill countdown — reset on each check_demo_result poll
+    if (earlyExit) {
+      // Process died within 15s — exit handler already ran and updated demoState.
+      // Return the result directly so the caller knows immediately.
+      const entry = demoRuns.get(demoPid);
+      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
+      const snippet = stderr.length > 2000 ? stderr.slice(0, 2000) + '...' : stderr;
+      const stdout = stdoutLines.join('\n').trim();
+
+      if (earlyExit.code === 0) {
+        return {
+          success: !(entry?.status === 'failed'),
+          project,
+          message: entry?.status === 'failed'
+            ? `Demo completed with failures (exit code 0).${stdout ? `\nstdout: ${stdout.slice(0, 2000)}` : ''}`
+            : `Demo completed successfully.${effectiveTestFile ? ` File: ${effectiveTestFile}.` : ''} Use check_demo_result with PID ${demoPid} for details.`,
+          pid: demoPid,
+          slow_mo,
+          test_file: effectiveTestFile,
+        };
+      }
+
+      return {
+        success: false,
+        project,
+        message: `Playwright process crashed during startup (exit code: ${earlyExit.code}, signal: ${earlyExit.signal})${stdout ? `\nstdout: ${stdout.slice(0, 2000)}` : ''}${snippet ? `\nstderr: ${snippet}` : ''}`,
+      };
+    }
+
+    // ── Process still running — detach and return PID for polling ──
+    if (child.stdout) {
+      child.stdout.removeAllListeners('data');
+      child.stdout.resume();
+    }
+    if (child.stderr) {
+      child.stderr.removeAllListeners('data');
+      child.stderr.resume();
+    }
+    child.unref();
     resetAutoKillTimer(demoPid);
 
     const warningText = preflight.warnings.length > 0
       ? `\nWarnings:\n${preflight.warnings.map(w => `  - ${w}`).join('\n')}`
       : '';
 
-    // Include window recorder diagnostics in launch message
     let recorderInfo = '';
     if (windowRecorder) {
       const diag = recorderDiagnostics.get(windowRecorder.pid);
@@ -2175,44 +1876,21 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       recorderInfo = `\nWindowRecorder: not started (binary=${getWindowRecorderBinary() ? 'found' : 'not found'})`;
     }
 
-    // Build recording status for launch message
     let recordingStatus = '';
-    if (result.type === 'suite_end_killed') {
-      // suite_end_killed: recording was already persisted (or not) above
-      if (args.scenario_id && !windowRecorder) {
-        // windowRecorder was consumed — recording was persisted
-        const recPath = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', `${args.scenario_id}.mp4`);
-        if (fs.existsSync(recPath)) {
-          recordingStatus = ` Video recorded: ${recPath}`;
-        } else {
-          recordingStatus = ' No video recorded (window recorder failed to produce valid MP4).';
-        }
-      } else if (!windowRecorder && !args.headless) {
-        recordingStatus = args.skip_recording
-          ? ' No video recorded (recording skipped).'
-          : ' No video recorded (window recorder unavailable).';
-      }
+    if (windowRecorder) {
+      recordingStatus = ' Video recording active.';
+    } else if (args.headless) {
+      recordingStatus = ' No video recording (headless mode).';
     } else {
-      // Still running
-      if (windowRecorder) {
-        recordingStatus = ' Video recording active.';
-      } else if (args.headless) {
-        recordingStatus = ' No video recording (headless mode).';
-      } else {
-        recordingStatus = args.skip_recording
-          ? ' No video recording (recording skipped).'
-          : ' No video recording (window recorder unavailable).';
-      }
+      recordingStatus = args.skip_recording
+        ? ' No video recording (recording skipped).'
+        : ' No video recording (window recorder unavailable).';
     }
-
-    const launchMessage = result.type === 'suite_end_killed'
-      ? `Demo completed and process auto-killed after suite_end for project "${project}".${effectiveTestFile ? ` File: ${effectiveTestFile}.` : ''} Use check_demo_result to see the final status.${recordingStatus}${warningText}${recorderInfo}`
-      : `Headed auto-play demo launched for project "${project}" with ${slow_mo}ms slow motion.${effectiveTestFile ? ` Running file: ${effectiveTestFile}.` : ''} The browser window should open shortly.${recordingStatus}${warningText}${recorderInfo}`;
 
     return {
       success: true,
       project,
-      message: launchMessage,
+      message: `Demo launched for project "${project}" with ${slow_mo}ms slow motion.${effectiveTestFile ? ` Running file: ${effectiveTestFile}.` : ''} Use check_demo_result with PID ${demoPid} to monitor.${recordingStatus}${warningText}${recorderInfo}`,
       pid: child.pid,
       slow_mo,
       test_file: effectiveTestFile,
