@@ -157,6 +157,20 @@ Extract: running count, max, memoryPressure level, free RAM (MB), queued count, 
 
 Record: file names, sizes, modification timestamps. If a file was modified within the last 30 minutes, flag it as "recent".
 
+## Step F: Session activity summaries (REQUIRED)
+
+Gather cross-session activity context from the session-activity broadcaster:
+
+  mcp__session-activity__list_project_summaries({ limit: 3 })
+
+If results returned, get the most recent super-summary:
+  mcp__session-activity__get_project_summary({ id: "<most_recent_uuid>" })
+
+Also, for each running child agent, check if there's a recent activity summary:
+  mcp__session-activity__list_session_summaries({ session_id: "<agent_id>", limit: 1 })
+
+Extract: the latest project super-summary text, and per-agent summary previews if available. Include these in the JSON response.
+
 ## Return ALL data as this exact JSON structure:
 
 {
@@ -227,6 +241,17 @@ Record: file names, sizes, modification timestamps. If a file was modified withi
       "isRecent": true
     }
   ],
+  "sessionActivity": {
+    "latestProjectSummary": "Concise unified summary of all session activity from last broadcast..." or null,
+    "projectSummaryAge": "5 minutes ago" or null,
+    "agentSummaries": [
+      {
+        "agentId": "...",
+        "preview": "120-char preview of what this agent was doing...",
+        "summaryId": "uuid for get_session_summary"
+      }
+    ]
+  },
   "interventionNeeded": false,
   "interventionReason": null
 }
@@ -490,7 +515,37 @@ If `memoryPressure === "critical"`, increment `criticalMemoryRounds`. If `memory
 
 ---
 
-#### Section 9: Assessment
+#### Section 9: Cross-Session Activity
+
+```
+### Cross-Session Activity
+```
+
+If `sessionActivity.latestProjectSummary` is available:
+```
+**Latest project summary** ([age]):
+> "[project summary text — verbatim from broadcaster]"
+```
+
+If `sessionActivity.agentSummaries` has entries, list them:
+```
+**Agent activity snapshots:**
+- Agent [id prefix]: [preview] (details: `mcp__session-activity__get_session_summary({ id: "[summaryId]" })`)
+```
+
+If no session activity data available:
+```
+Session activity broadcaster not yet running or no summaries available. Deploy with `npx gentyr sync && scripts/setup-automation-service.sh setup`.
+```
+
+If related work detected between monitored task and other sessions, add:
+```
+[!] **Coordination opportunity**: [description of overlap]. Consider using `mcp__agent-tracker__send_session_signal` to coordinate.
+```
+
+---
+
+#### Section 10: Assessment
 
 ```
 ### Assessment
@@ -587,7 +642,7 @@ Execute `Bash("sleep 60")`, then return to Step 4 (increment `roundNumber` and r
 - Paraphrase verbatim quotes — copy them character-for-character
 - Write "No issues" in the Assessment without citing specific data points
 - Delegate the sleep loop to a sub-agent — only the investigator and user-alignment are spawned as sub-agents
-- Call `inspect_persistent_task`, `peek_session`, `get_session_queue_status`, or `get_comms_log` directly — ALL data gathering goes through the investigator sub-agent
+- Call `inspect_persistent_task`, `peek_session`, `get_session_queue_status`, `get_comms_log`, or `session-activity` tools directly — ALL data gathering goes through the investigator sub-agent
 - Skip spawning the investigator sub-agent and call MCP tools yourself — this produces shallow reports
 - Use `AskUserQuestion` for the demo offering more than once per monitoring session
 

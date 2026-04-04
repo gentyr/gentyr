@@ -91,9 +91,10 @@ Use these when investigating issues that might involve multiple agents or recent
 ## Investigation Workflow
 
 1. **Search Session History**: Use claude-sessions MCP to find prior work on this topic (MANDATORY — do this FIRST)
-2. **Understand the Problem**: Read error messages, logs, and user reports
-3. **Review Specifications**: Use specs-browser to understand architectural constraints
-4. **Analyze Session Data**: Use session-events to review recorded behavior
+2. **Check Session Activity**: Use `mcp__session-activity__list_project_summaries` to see what other agents are currently working on — avoid duplicating their work or conflicting with in-progress changes
+3. **Understand the Problem**: Read error messages, logs, and user reports
+4. **Review Specifications**: Use specs-browser to understand architectural constraints
+5. **Analyze Session Data**: Use session-events to review recorded behavior
 5. **Examine Code**: Read relevant source files to understand current implementation
 6. **Run Tests**: Execute existing tests to validate current behavior
 7. **Document Findings**: Create clear, specific plans for fixes
