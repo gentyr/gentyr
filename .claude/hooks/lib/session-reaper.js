@@ -21,6 +21,7 @@ import { auditEvent } from './session-audit.js';
 import { getCooldown } from '../config-reader.js';
 import { debugLog } from './debug-log.js';
 import { releaseAllResources, removeFromAllQueues } from './resource-lock.js';
+import { removeWorktree as removeWorktreeCleanup } from './worktree-manager.js';
 
 // Lazy-loaded SQLite
 let Database = null;
@@ -377,6 +378,29 @@ export function reapSyncPass(db) {
       // Release display lock if this dead agent held it
       if (item.agent_id) {
         try { releaseAllResources(item.agent_id); removeFromAllQueues(item.agent_id); } catch (_) { /* non-fatal */ }
+      }
+
+      // Reactive worktree cleanup: if the dead agent was in a worktree, clean it up immediately
+      // instead of waiting for the 5-min background sweep. Only remove if the worktree is clean.
+      const worktreePath = metadata?.worktreePath || item.worktree_path;
+      if (worktreePath && fs.existsSync(worktreePath)) {
+        try {
+          const gitStatus = execSync('git status --porcelain', {
+            cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+          }).trim();
+          if (gitStatus.length === 0) {
+            // Clean worktree — safe to remove immediately
+            // Extract branch name from worktree path
+            const wtBranch = execSync('git branch --show-current', {
+              cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+            }).trim();
+            if (wtBranch) {
+              removeWorktreeCleanup(wtBranch);
+              debugLog(`[session-reaper] Cleaned up worktree for dead agent ${item.agent_id}: ${wtBranch}`);
+            }
+          }
+          // Dirty worktrees are left for rescueAbandonedWorktrees()
+        } catch (_) { /* non-fatal — background sweep will catch it */ }
       }
     } else if (item.lane === 'persistent') {
       // Persistent monitors are long-running by design — don't use elapsed time.

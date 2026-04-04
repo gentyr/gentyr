@@ -21,11 +21,20 @@
  */
 
 // Whitelist of agent types allowed in interactive sessions (read-only)
+// Structurally read-only: tools exclude Edit/Write/NotebookEdit
+// Behaviorally read-only: investigator (CLAUDE.md), user-alignment (agent def)
 const ALLOWED_INTERACTIVE_TYPES = new Set([
   'Explore',
   'Plan',
   'claude-code-guide',
+  'deputy-cto',
+  'feedback-agent',
+  'investigator',
+  'product-manager',
+  'repo-hygiene-expert',
+  'secret-manager',
   'statusline-setup',
+  'user-alignment',
 ]);
 
 async function main() {

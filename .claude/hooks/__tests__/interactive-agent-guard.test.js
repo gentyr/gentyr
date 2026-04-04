@@ -102,45 +102,29 @@ describe('interactive-agent-guard.js', () => {
   });
 
   describe('interactive + allowed read-only types → allows', () => {
-    it('allows Explore', async () => {
-      const result = await runHook({
-        tool_name: 'Agent',
-        tool_input: { subagent_type: 'Explore' },
+    for (const type of [
+      'Explore',
+      'Plan',
+      'claude-code-guide',
+      'deputy-cto',
+      'feedback-agent',
+      'investigator',
+      'product-manager',
+      'repo-hygiene-expert',
+      'secret-manager',
+      'statusline-setup',
+      'user-alignment',
+    ]) {
+      it(`allows ${type}`, async () => {
+        const result = await runHook({
+          tool_name: 'Agent',
+          tool_input: { subagent_type: type },
+        });
+
+        const output = parseOutput(result.stdout);
+        assert.deepStrictEqual(output, { allow: true });
       });
-
-      const output = parseOutput(result.stdout);
-      assert.deepStrictEqual(output, { allow: true });
-    });
-
-    it('allows Plan', async () => {
-      const result = await runHook({
-        tool_name: 'Agent',
-        tool_input: { subagent_type: 'Plan' },
-      });
-
-      const output = parseOutput(result.stdout);
-      assert.deepStrictEqual(output, { allow: true });
-    });
-
-    it('allows claude-code-guide', async () => {
-      const result = await runHook({
-        tool_name: 'Agent',
-        tool_input: { subagent_type: 'claude-code-guide' },
-      });
-
-      const output = parseOutput(result.stdout);
-      assert.deepStrictEqual(output, { allow: true });
-    });
-
-    it('allows statusline-setup', async () => {
-      const result = await runHook({
-        tool_name: 'Agent',
-        tool_input: { subagent_type: 'statusline-setup' },
-      });
-
-      const output = parseOutput(result.stdout);
-      assert.deepStrictEqual(output, { allow: true });
-    });
+    }
   });
 
   describe('interactive + code-modifying types → denies', () => {

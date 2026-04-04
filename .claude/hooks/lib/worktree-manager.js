@@ -316,9 +316,24 @@ export function createWorktree(branchName, baseBranch, options = {}) {
   const sanitized = sanitizeBranchName(branchName);
   const worktreePath = path.join(WORKTREES_DIR, sanitized);
 
-  // If worktree already exists, return early
+  // If worktree already exists, check if it's valid or an orphaned remnant
   if (fs.existsSync(worktreePath)) {
-    return { path: worktreePath, branch: branchName, created: false };
+    const hasGitFile = fs.existsSync(path.join(worktreePath, '.git'));
+    const hasMcpJson = fs.existsSync(path.join(worktreePath, '.mcp.json'));
+    if (hasGitFile && hasMcpJson) {
+      return { path: worktreePath, branch: branchName, created: false };
+    }
+    // Orphaned remnant (no .git or no .mcp.json) — remove and recreate
+    try {
+      if (hasGitFile) {
+        execSync(`git worktree remove ${worktreePath} --force`, GIT_OPTS);
+      }
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+      console.error(`[worktree-manager] Removed orphaned directory at ${worktreePath}, recreating`);
+    } catch (err) {
+      console.error(`[worktree-manager] Warning: failed to clean orphan at ${worktreePath}: ${err.message}`);
+      return { path: worktreePath, branch: branchName, created: false };
+    }
   }
 
   fs.mkdirSync(WORKTREES_DIR, { recursive: true });
@@ -399,6 +414,15 @@ export function removeWorktree(branchName) {
   }
 
   execSync(`git worktree remove ${worktreePath} --force`, GIT_OPTS);
+
+  // Clean up any orphaned directories left behind (untracked files like .claude/state/)
+  if (fs.existsSync(worktreePath)) {
+    try {
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+    } catch (err) {
+      console.error('[worktree-manager] Warning: orphan dir cleanup failed:', err.message);
+    }
+  }
 
   // Attempt to delete the branch (non-fatal: branch may have unmerged work)
   try {
@@ -640,6 +664,33 @@ export function cleanupMergedWorktrees() {
     }
   } catch (err) {
     console.error('[worktree-manager] Warning: stale port allocation cleanup failed:', err.message);
+  }
+
+  // Scan for orphaned directories that are NOT registered git worktrees.
+  // These are remnants from `git worktree remove` leaving behind untracked dirs.
+  if (fs.existsSync(WORKTREES_DIR)) {
+    try {
+      const registeredPaths = new Set(worktrees.map(wt => wt.path));
+      for (const entry of fs.readdirSync(WORKTREES_DIR)) {
+        const dirPath = path.join(WORKTREES_DIR, entry);
+        if (!fs.statSync(dirPath).isDirectory()) continue;
+        if (registeredPaths.has(dirPath)) continue; // real worktree, skip
+        // Not a registered worktree — check if it's truly orphaned
+        const hasGitFile = fs.existsSync(path.join(dirPath, '.git'));
+        if (hasGitFile) continue; // has .git file, might be valid but unlisted — skip to be safe
+        // No .git file = definitely orphaned remnant. Check for active processes before removing.
+        try {
+          const lsofResult = execFileSync('lsof', ['+D', dirPath, '-t'], {
+            encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+          });
+          if (lsofResult.trim().length > 0) continue; // active processes, skip
+        } catch (_) { /* lsof returned no results — safe to remove */ }
+        fs.rmSync(dirPath, { recursive: true, force: true });
+        cleaned++;
+      }
+    } catch (err) {
+      console.error('[worktree-manager] Warning: orphan directory scan failed:', err.message);
+    }
   }
 
   return cleaned;

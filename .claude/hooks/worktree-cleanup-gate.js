@@ -13,7 +13,11 @@
 
 import fs from 'fs';
 
-const WORKTREE_DIR = process.env.CLAUDE_WORKTREE_DIR;
+// Detect worktree from CWD (CLAUDE_WORKTREE_DIR is only in MCP server env, not hook env).
+// Hooks run as children of the Claude process, which has its CWD set to the worktree.
+const cwd = process.cwd();
+const worktreeMatch = cwd.match(/^(.+\/\.claude\/worktrees\/[^/]+)/);
+const WORKTREE_DIR = process.env.CLAUDE_WORKTREE_DIR || (worktreeMatch ? worktreeMatch[1] : null);
 
 // Fast exit: not in a worktree or the worktree directory no longer exists
 if (!WORKTREE_DIR || !fs.existsSync(WORKTREE_DIR)) {

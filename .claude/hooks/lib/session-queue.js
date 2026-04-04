@@ -1012,6 +1012,11 @@ function spawnQueueItem(db, item) {
     extraEnv,
   });
 
+  // Inject CLAUDE_WORKTREE_DIR for worktree-spawned agents so hooks can detect worktree context
+  if (item.worktree_path) {
+    spawnEnv.CLAUDE_WORKTREE_DIR = item.worktree_path;
+  }
+
   // Spawn
   const effectiveCwd = item.cwd || item.worktree_path || item.project_dir;
   const claude = spawn('claude', spawnArgs, {
