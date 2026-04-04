@@ -17,7 +17,9 @@ import * as http from 'http';
 import * as https from 'https';
 import * as net from 'net';
 import * as crypto from 'crypto';
-import { spawn, execFileSync } from 'child_process';
+import { spawn, execFile, execFileSync } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import { loadServicesConfig, resolveLocalSecrets, INFRA_CRED_KEYS, buildCleanEnv } from '../shared/op-secrets.js';
@@ -253,7 +255,7 @@ function autoKillDemo(pid: number): void {
 
   // Exit fullscreen before teardown
   if (entry.fullscreened) {
-    unfullscreenChromeWindow();
+    void unfullscreenChromeWindow();
     entry.fullscreened = false;
   }
 
@@ -645,10 +647,10 @@ async function waitForChromeWindow(timeoutMs: number = 30000): Promise<boolean> 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const result = execFileSync('osascript', ['-e',
+      const { stdout } = await execFileAsync('osascript', ['-e',
         'tell application "System Events" to return (count of windows of process "Google Chrome for Testing") > 0'
-      ], { timeout: 3000, stdio: 'pipe', encoding: 'utf8' }).trim();
-      if (result === 'true') return true;
+      ], { timeout: 3000, encoding: 'utf8' });
+      if (stdout.trim() === 'true') return true;
     } catch { /* not yet */ }
     await new Promise(r => setTimeout(r, 500));
   }
@@ -662,10 +664,10 @@ async function waitForChromeWindow(timeoutMs: number = 30000): Promise<boolean> 
 async function fullscreenChromeWindow(): Promise<boolean> {
   if (process.platform !== 'darwin') return false;
   try {
-    execFileSync('osascript', ['-e',
+    await execFileAsync('osascript', ['-e',
       'tell application "System Events" to tell process "Google Chrome for Testing" ' +
       'to set value of attribute "AXFullScreen" of window 1 to true'
-    ], { timeout: 5000, stdio: 'pipe' });
+    ], { timeout: 5000 });
     return true;
   } catch { return false; }
 }
@@ -673,13 +675,13 @@ async function fullscreenChromeWindow(): Promise<boolean> {
 /**
  * Exit fullscreen for Chrome for Testing window.
  */
-function unfullscreenChromeWindow(): void {
+async function unfullscreenChromeWindow(): Promise<void> {
   if (process.platform !== 'darwin') return;
   try {
-    execFileSync('osascript', ['-e',
+    await execFileAsync('osascript', ['-e',
       'tell application "System Events" to tell process "Google Chrome for Testing" ' +
       'to set value of attribute "AXFullScreen" of window 1 to false'
-    ], { timeout: 5000, stdio: 'pipe' });
+    ], { timeout: 5000 });
   } catch { /* non-fatal */ }
 }
 
@@ -692,7 +694,7 @@ function unfullscreenChromeWindow(): void {
  * Uses swift + CoreGraphics to query CGWindowListCopyWindowInfo.
  * Returns null on non-macOS or if no matching window is found.
  */
-function getChromeWindowId(): number | null {
+async function getChromeWindowId(): Promise<number | null> {
   if (process.platform !== 'darwin') return null;
   try {
     const script = `
@@ -710,12 +712,11 @@ for w in windowList {
         }
     }
 }`;
-    const result = execFileSync('swift', ['-e', script], {
+    const { stdout } = await execFileAsync('swift', ['-e', script], {
       timeout: 10000,
-      stdio: 'pipe',
       encoding: 'utf8',
-    }).trim();
-    const id = parseInt(result, 10);
+    });
+    const id = parseInt(stdout.trim(), 10);
     return isNaN(id) ? null : id;
   } catch {
     return null;
@@ -1562,7 +1563,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     // Get Chrome window ID for targeted screenshot capture (macOS only).
     // Must be called after Chrome is already running (waitForChromeWindow above ensures this
     // for the recording path; for non-recording headed paths Chrome is already up at this point).
-    const chromeWindowId = !args.headless ? getChromeWindowId() : null;
+    const chromeWindowId = !args.headless ? await getChromeWindowId() : null;
 
     // Start periodic screenshot capture for headed demos (macOS only)
     if (!args.headless && args.scenario_id) {
@@ -1772,7 +1773,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
         // Exit fullscreen before teardown
         if (fullscreened) {
-          unfullscreenChromeWindow();
+          await unfullscreenChromeWindow();
           fullscreened = false;
         }
 
@@ -1853,7 +1854,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       // Non-zero exit code — actual crash
       // Exit fullscreen before teardown
       if (fullscreened) {
-        unfullscreenChromeWindow();
+        await unfullscreenChromeWindow();
         fullscreened = false;
       }
       // Stop window recorder if running, then clean up
@@ -1908,7 +1909,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
       // Exit fullscreen before teardown
       if (fullscreened) {
-        unfullscreenChromeWindow();
+        await unfullscreenChromeWindow();
         fullscreened = false;
       }
       // Stop window recorder on stall, then clean up
@@ -1973,7 +1974,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
       // Exit fullscreen before teardown
       if (fullscreened) {
-        unfullscreenChromeWindow();
+        await unfullscreenChromeWindow();
         fullscreened = false;
       }
 
@@ -2028,7 +2029,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       if (entry.status !== 'running') return;
 
       if (entry.fullscreened) {
-        unfullscreenChromeWindow();
+        void unfullscreenChromeWindow();
         entry.fullscreened = false;
       }
 
@@ -2371,7 +2372,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
       if (progress?.suite_completed) {
         // Exit fullscreen before teardown
         if (entry.fullscreened) {
-          unfullscreenChromeWindow();
+          void unfullscreenChromeWindow();
           entry.fullscreened = false;
         }
         // Suite done — stop window recorder first (sync), then kill playwright process
@@ -2529,7 +2530,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
 
       // Exit fullscreen before teardown (may fail if process already dead — non-fatal)
       if (entry.fullscreened) {
-        unfullscreenChromeWindow();
+        void unfullscreenChromeWindow();
         entry.fullscreened = false;
       }
 
@@ -2804,7 +2805,7 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
   } catch {
     // Exit fullscreen before teardown
     if (entry.fullscreened) {
-      unfullscreenChromeWindow();
+      void unfullscreenChromeWindow();
       entry.fullscreened = false;
     }
     // Stop window recorder and persist video before returning
@@ -2843,7 +2844,7 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
 
   // Exit fullscreen before teardown
   if (entry.fullscreened) {
-    unfullscreenChromeWindow();
+    void unfullscreenChromeWindow();
     entry.fullscreened = false;
   }
 
