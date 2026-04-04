@@ -90,10 +90,18 @@ mcp__agent-tracker__launch_interactive_monitor({ queue_id: "<sq-id>" })
 mcp__agent-tracker__launch_interactive_monitor({ agent_id: "<agent-id>" })
 ```
 
+**Cross-project sessions**: If the target session belongs to a different project (e.g., monitoring `~/git/my-project` agents from the gentyr repo), add the `project_dir` parameter:
+
+```
+mcp__agent-tracker__launch_interactive_monitor({ task_id: "<prefix>", project_dir: "/Users/you/git/my-project" })
+```
+
+The tool reads that project's DBs (session-queue.db, persistent-tasks.db) and searches that project's worktree session directories. The generated Terminal.app script `cd`s to the target project and sets `CLAUDE_PROJECT_DIR` accordingly.
+
 This single tool call handles everything:
 - Resolves the session from the provided identifier
 - Kills the headless process (SIGTERM)
-- Finds the session JSONL file
+- Finds the session JSONL file (including worktree-scoped session dirs)
 - Uses `claude --resume <session-id>` to continue with full history
 - Detects and configures proxy env vars
 - Opens a Terminal.app window via AppleScript
