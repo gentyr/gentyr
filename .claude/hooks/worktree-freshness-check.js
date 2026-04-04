@@ -116,7 +116,7 @@ async function main() {
   const state = readState();
   const now = Date.now();
   if (state.lastCheck && (now - state.lastCheck) < COOLDOWN_MS) {
-    approve();
+    return approve();
   }
 
   // Detect base branch
@@ -124,17 +124,12 @@ async function main() {
   try {
     baseBranch = detectBaseBranch();
   } catch (_) {
-    approve();
+    return approve();
   }
 
-  // Fetch to ensure remote refs are current — use a tight timeout to avoid blocking
-  try {
-    execFileSync('git', ['fetch', 'origin', baseBranch, '--quiet'], {
-      cwd: WORKTREE_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
-    });
-  } catch (_) {
-    // Non-fatal: stale remote ref is better than blocking the session
-  }
+  // NOTE: No git fetch here — the preview-watcher daemon fetches every 30s globally.
+  // All worktrees share the same .git, so the daemon's fetch updates refs for everyone.
+  // The rev-list check below uses existing refs, which are at most 30s stale.
 
   // Count how far behind we are
   let behindBy = 0;
@@ -152,7 +147,7 @@ async function main() {
   writeState({ lastCheck: now });
 
   if (behindBy === 0) {
-    approve();
+    return approve();
   }
 
   // Determine whether there are uncommitted changes
