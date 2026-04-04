@@ -557,6 +557,7 @@ PROXY_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-rotation-proxy.plist"
 REVIVAL_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-revival-daemon.plist"
 MCP_DAEMON_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-mcp-daemon.plist"
 PREVIEW_WATCHER_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-preview-watcher.plist"
+SESSION_ACTIVITY_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-session-activity-broadcaster.plist"
 
 setup_macos() {
   log_info "Setting up launchd agent..."
@@ -820,6 +821,57 @@ EOF
     log_info "Preview watcher daemon service loaded (KeepAlive, RunAtLoad)."
   else
     log_warn "Preview watcher script not found — skipping preview watcher service."
+  fi
+
+  # --- Session Activity Broadcaster (KeepAlive, LLM-powered session summaries) ---
+  if [ -n "$FRAMEWORK_DIR" ] && [ -f "$FRAMEWORK_DIR/scripts/session-activity-broadcaster.js" ]; then
+    cat > "$SESSION_ACTIVITY_PLIST_FILE" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.gentyr-session-activity-broadcaster</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$NODE_PATH</string>
+        <string>$FRAMEWORK_DIR/scripts/session-activity-broadcaster.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>$PROJECT_DIR</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CLAUDE_PROJECT_DIR</key>
+        <string>$PROJECT_DIR</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>GENTYR_LAUNCHD_SERVICE</key>
+        <string>true</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>$PROJECT_DIR/.claude/session-activity-broadcaster.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>$PROJECT_DIR/.claude/session-activity-broadcaster.log</string>
+</dict>
+</plist>
+EOF
+
+    launchctl unload "$SESSION_ACTIVITY_PLIST_FILE" 2>/dev/null || true
+    launchctl load "$SESSION_ACTIVITY_PLIST_FILE"
+    log_info "Session activity broadcaster loaded (KeepAlive, RunAtLoad)."
+  else
+    log_warn "Session activity broadcaster script not found — skipping."
   fi
 
   # --- Automation Service (10-min interval) ---
