@@ -3735,8 +3735,21 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
 
   // 2. Dependencies installed
   checks.push(runCheck('dependencies_installed', () => {
-    const pwTestDir = path.join(EFFECTIVE_CWD, 'node_modules', '@playwright', 'test');
-    if (fs.existsSync(pwTestDir)) {
+    // Check for @playwright/test in node_modules, walking up directory tree
+    // (matches Node.js resolution behavior — worktrees inherit from main tree)
+    let depCheckDir: string | null = EFFECTIVE_CWD;
+    let depsFound = false;
+    while (depCheckDir) {
+      const pwTestDir = path.join(depCheckDir, 'node_modules', '@playwright', 'test');
+      if (fs.existsSync(pwTestDir)) {
+        depsFound = true;
+        break;
+      }
+      const parent = path.dirname(depCheckDir);
+      if (parent === depCheckDir) break; // reached filesystem root
+      depCheckDir = parent;
+    }
+    if (depsFound) {
       return { status: 'pass', message: '@playwright/test is installed' };
     }
     return { status: 'fail', message: '@playwright/test not found in node_modules' };
