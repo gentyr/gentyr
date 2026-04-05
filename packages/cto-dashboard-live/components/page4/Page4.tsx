@@ -24,13 +24,14 @@ import { SessionInfo } from './SessionInfo.js';
 import { ActivityStream } from './ActivityStream.js';
 import { SignalInput } from './SignalInput.js';
 import { useSessionTail } from '../../hooks/useSessionTail.js';
-import { sendDirectiveSignal } from '../../live-reader.js';
-import type { LiveDashboardData } from '../../types.js';
+import { sendDirectiveSignal, isProcessAlive, resumeSessionWithMessage } from '../../live-reader.js';
+import type { LiveDashboardData, SessionItem } from '../../types.js';
 
 interface Page4Props {
   data: LiveDashboardData;
   bodyHeight: number;
   bodyWidth: number;
+  initialSession?: SessionItem | null;
 }
 
 const LEFT_WIDTH_FRACTION = 0.36;
@@ -41,16 +42,24 @@ const RIGHT_HEADER_OVERHEAD = 2;
 const SIGNAL_ROW_HEIGHT = 1;
 const DIVIDER_HEIGHT = 1;
 
-export function Page4({ data, bodyHeight, bodyWidth }: Page4Props): React.ReactElement {
+export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Props): React.ReactElement {
   // ── Session selection ────────────────────────────────────────────────────
   const sessions = [
     ...data.runningSessions,
+    ...data.completedSessions,
     ...data.persistentTasks.map(pt => pt.monitorSession),
-  ];
+  ].filter(Boolean) as SessionItem[];
 
   const [selectedId, setSelectedId] = useState<string | null>(
-    sessions.length > 0 ? sessions[0].id : null,
+    initialSession ? initialSession.id : (sessions.length > 0 ? sessions[0].id : null),
   );
+
+  // When a target session is passed in (e.g. from Page 1 Enter), select it.
+  useEffect(() => {
+    if (initialSession) {
+      setSelectedId(initialSession.id);
+    }
+  }, [initialSession]);
 
   // Keep selection valid when sessions list changes.
   const selectedSession = sessions.find(s => s.id === selectedId) ?? sessions[0] ?? null;
@@ -86,22 +95,32 @@ export function Page4({ data, bodyHeight, bodyWidth }: Page4Props): React.ReactE
       }
       if (key.return) {
         const msg = signalText.trim();
-        if (msg.length > 0 && effectiveSelectedId) {
-          try {
-            sendDirectiveSignal(effectiveSelectedId, msg);
-          } catch (err) {
-            // Fail loudly — surface error in last signal display.
-            const errMsg = err instanceof Error ? err.message : String(err);
-            setLastSignalSent(`ERROR: ${errMsg}`);
+        if (msg.length > 0 && selectedSession) {
+          const alive = selectedSession.pid != null ? isProcessAlive(selectedSession.pid) : false;
+          if (alive && effectiveSelectedId) {
+            // Running session: inject directive signal.
+            try {
+              sendDirectiveSignal(effectiveSelectedId, msg);
+            } catch (err) {
+              // Fail loudly — surface error in last signal display.
+              const errMsg = err instanceof Error ? err.message : String(err);
+              setLastSignalSent(`ERROR: ${errMsg}`);
+              clearSentTimer();
+              sentTimerRef.current = setTimeout(() => setLastSignalSent(null), 5000);
+              setSignalMode(false);
+              setSignalText('');
+              return;
+            }
             clearSentTimer();
+            setLastSignalSent(msg);
             sentTimerRef.current = setTimeout(() => setLastSignalSent(null), 5000);
-            setSignalMode(false);
-            setSignalText('');
-            return;
+          } else if (selectedSession.sessionId) {
+            // Completed/dead session: resume in a new Terminal window.
+            resumeSessionWithMessage(selectedSession.sessionId, msg);
+            clearSentTimer();
+            setLastSignalSent(`Resumed: ${msg}`);
+            sentTimerRef.current = setTimeout(() => setLastSignalSent(null), 5000);
           }
-          clearSentTimer();
-          setLastSignalSent(msg);
-          sentTimerRef.current = setTimeout(() => setLastSignalSent(null), 5000);
         }
         setSignalMode(false);
         setSignalText('');
@@ -153,11 +172,14 @@ export function Page4({ data, bodyHeight, bodyWidth }: Page4Props): React.ReactE
   const streamHeight = Math.max(1, rightInnerHeight - SIGNAL_ROW_HEIGHT - DIVIDER_HEIGHT);
 
   const connectedLabel = isConnected ? ' live' : ' disconnected';
+  const isCompleted = selectedSession == null
+    || selectedSession.pid == null
+    || !isProcessAlive(selectedSession.pid);
 
   return (
     <Box flexDirection="row" height={bodyHeight}>
       {/* Left column */}
-      <Section title="Running Sessions" width={leftWidth}>
+      <Section title="Sessions" width={leftWidth}>
         <SessionSelector
           sessions={sessions}
           selectedId={effectiveSelectedId}
@@ -193,6 +215,7 @@ export function Page4({ data, bodyHeight, bodyWidth }: Page4Props): React.ReactE
           text={signalText}
           lastSent={lastSignalSent}
           width={rightWidth - 4}
+          isCompleted={isCompleted}
         />
       </Section>
     </Box>
