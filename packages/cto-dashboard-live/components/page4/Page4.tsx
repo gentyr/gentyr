@@ -34,7 +34,7 @@ interface Page4Props {
   initialSession?: SessionItem | null;
 }
 
-const LEFT_WIDTH_FRACTION = 0.36;
+const LEFT_WIDTH_FRACTION = 0.22;
 // Rows consumed by the Section border/header in the left column.
 const LEFT_HEADER_OVERHEAD = 2;
 // Rows consumed by Section border + SignalInput row at bottom in the right column.
@@ -43,26 +43,37 @@ const SIGNAL_ROW_HEIGHT = 1;
 const DIVIDER_HEIGHT = 1;
 
 export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Props): React.ReactElement {
-  // ── Session selection ────────────────────────────────────────────────────
-  const sessions = [
+  // ── All available sessions (for lookup) ─────────────────────────────────
+  const allSessions = [
     ...data.runningSessions,
     ...data.completedSessions,
     ...data.persistentTasks.map(pt => pt.monitorSession),
   ].filter(Boolean) as SessionItem[];
 
+  // ── Recent view history (ephemeral, clears on dashboard restart) ────────
+  const [viewHistory, setViewHistory] = useState<SessionItem[]>([]);
+
   const [selectedId, setSelectedId] = useState<string | null>(
-    initialSession ? initialSession.id : (sessions.length > 0 ? sessions[0].id : null),
+    initialSession ? initialSession.id : null,
   );
 
-  // When a target session is passed in (e.g. from Page 1 Enter), select it.
+  // When a target session is passed in (e.g. from Page 1 Enter), select it
+  // and add to view history.
   useEffect(() => {
     if (initialSession) {
       setSelectedId(initialSession.id);
+      setViewHistory(prev => {
+        // Deduplicate: move to front if already in history
+        const filtered = prev.filter(s => s.id !== initialSession.id);
+        return [initialSession, ...filtered].slice(0, 20); // max 20 items
+      });
     }
   }, [initialSession]);
 
-  // Keep selection valid when sessions list changes.
-  const selectedSession = sessions.find(s => s.id === selectedId) ?? sessions[0] ?? null;
+  // Resolve selected session from all available sessions (running data may update)
+  const selectedSession = allSessions.find(s => s.id === selectedId)
+    ?? viewHistory.find(s => s.id === selectedId)
+    ?? viewHistory[0] ?? null;
   const effectiveSelectedId = selectedSession?.id ?? null;
 
   // ── Signal state ─────────────────────────────────────────────────────────
@@ -83,7 +94,10 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
   useEffect(() => clearSentTimer, [clearSentTimer]);
 
   // ── Live tail ────────────────────────────────────────────────────────────
-  const { entries, isConnected } = useSessionTail(effectiveSelectedId);
+  // useSessionTail needs the AGENT ID (used as [AGENT:xxx] marker in JSONL files),
+  // not the queue item ID. SessionItem.sessionId contains the agent_id.
+  const tailAgentId = selectedSession?.sessionId ?? null;
+  const { entries, isConnected } = useSessionTail(tailAgentId);
 
   // ── Keyboard handling ────────────────────────────────────────────────────
   useInput((input, key) => {
@@ -97,10 +111,10 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
         const msg = signalText.trim();
         if (msg.length > 0 && selectedSession) {
           const alive = selectedSession.pid != null ? isProcessAlive(selectedSession.pid) : false;
-          if (alive && effectiveSelectedId) {
-            // Running session: inject directive signal.
+          if (alive && tailAgentId) {
+            // Running session: inject directive signal (needs agent ID, not queue ID).
             try {
-              sendDirectiveSignal(effectiveSelectedId, msg);
+              sendDirectiveSignal(tailAgentId, msg);
             } catch (err) {
               // Fail loudly — surface error in last signal display.
               const errMsg = err instanceof Error ? err.message : String(err);
@@ -140,13 +154,13 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
 
     // Normal navigation mode.
     if (key.upArrow) {
-      const idx = sessions.findIndex(s => s.id === effectiveSelectedId);
-      if (idx > 0) setSelectedId(sessions[idx - 1].id);
+      const idx = viewHistory.findIndex(s => s.id === effectiveSelectedId);
+      if (idx > 0) setSelectedId(viewHistory[idx - 1].id);
       return;
     }
     if (key.downArrow) {
-      const idx = sessions.findIndex(s => s.id === effectiveSelectedId);
-      if (idx >= 0 && idx < sessions.length - 1) setSelectedId(sessions[idx + 1].id);
+      const idx = viewHistory.findIndex(s => s.id === effectiveSelectedId);
+      if (idx >= 0 && idx < viewHistory.length - 1) setSelectedId(viewHistory[idx + 1].id);
       return;
     }
     if (input === 's') {
@@ -179,9 +193,9 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
   return (
     <Box flexDirection="row" height={bodyHeight}>
       {/* Left column */}
-      <Section title="Sessions" width={leftWidth}>
+      <Section title="Recent" width={leftWidth}>
         <SessionSelector
-          sessions={sessions}
+          sessions={viewHistory}
           selectedId={effectiveSelectedId}
           height={selectorHeight}
         />
