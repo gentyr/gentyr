@@ -701,7 +701,7 @@ Register setup commands that must run before demos. Prerequisites are idempotent
 **Flow:**
 1. Query enabled scenarios from `user-feedback.db`
 2. Run global prerequisites
-3. Execute each scenario headless (`DEMO_HEADLESS=1, DEMO_SLOW_MO=0`); scenario `env_vars` are merged into the execution environment
+3. Execute each scenario headless (`DEMO_HEADLESS=1, DEMO_SLOW_MO=0`); scenario `env_vars` are merged into the execution environment; `op://` references in `env_vars` are resolved via 1Password before merging
 4. Persist results to `.claude/state/demo-validation-history.json` (last 100 runs)
 5. Spawn `demo-manager` repair agents (max 3) for failures in isolated worktrees; repair prompts include prerequisite context queried from `user-feedback.db`
 6. Report failures to deputy-CTO via `agent-reports`
