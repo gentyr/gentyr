@@ -8,7 +8,11 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { ServicesConfigSchema, type ServicesConfig } from '../secret-sync/types.js';
 
-const { OP_SERVICE_ACCOUNT_TOKEN } = process.env;
+/** Read OP_SERVICE_ACCOUNT_TOKEN at call time, not module load time.
+ *  mcp-launcher.js may set it after this module is first imported. */
+function getOpToken(): string | undefined {
+  return process.env.OP_SERVICE_ACCOUNT_TOKEN;
+}
 
 /** Infrastructure credentials that must NOT leak to child processes */
 export const INFRA_CRED_KEYS = new Set([
@@ -24,14 +28,15 @@ export const INFRA_CRED_KEYS = new Set([
  * Read a secret from 1Password (value stays in-process, never returned to agent)
  */
 export function opRead(reference: string): string {
-  if (!OP_SERVICE_ACCOUNT_TOKEN) {
+  const token = getOpToken();
+  if (!token) {
     throw new Error('OP_SERVICE_ACCOUNT_TOKEN not set');
   }
 
   try {
     return execFileSync('op', ['read', reference], {
       encoding: 'utf-8',
-      env: { ...process.env, OP_SERVICE_ACCOUNT_TOKEN },
+      env: { ...process.env, OP_SERVICE_ACCOUNT_TOKEN: token },
     }).trim();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
