@@ -223,7 +223,7 @@ export function provisionWorktree(worktreePath, options = {}) {
   const worktreeClaudeDir = path.join(worktreePath, '.claude');
   fs.mkdirSync(worktreeClaudeDir, { recursive: true });
 
-  const sharedLinks = ['settings.json', 'hooks', 'commands', 'mcp'];
+  const sharedLinks = ['settings.json', 'hooks', 'commands', 'mcp', 'config'];
   for (const name of sharedLinks) {
     const target = path.join(PROJECT_DIR, '.claude', name);
     if (fs.existsSync(target)) {

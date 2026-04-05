@@ -16,10 +16,12 @@ import {
   listItemsSchema,
   createServiceAccountSchema,
   getAuditLogSchema,
+  checkAuthSchema,
   type ReadSecretArgs,
   type ListItemsArgs,
   type CreateServiceAccountArgs,
   type GetAuditLogArgs,
+  type CheckAuthArgs,
 } from './types.js';
 
 // Helper: Execute op CLI command (uses execFileSync to prevent shell injection)
@@ -154,6 +156,39 @@ async function getAuditLog(args: GetAuditLogArgs) {
   };
 }
 
+// Tool: Check 1Password authentication status (no secret access, no CTO approval)
+async function checkAuth(args: CheckAuthArgs) {
+  checkAuthSchema.parse(args);
+  const hasToken = !!process.env.OP_SERVICE_ACCOUNT_TOKEN;
+
+  if (!hasToken) {
+    return {
+      authenticated: false,
+      message: '1Password is not configured — OP_SERVICE_ACCOUNT_TOKEN is not set. Run /setup-gentyr to configure.',
+    };
+  }
+
+  try {
+    const result = opCommand(['whoami', '--format', 'json']);
+    const info = JSON.parse(result) as { url?: string; email?: string; user_uuid?: string };
+    return {
+      authenticated: true,
+      account_url: info.url,
+      email: info.email,
+      message: `1Password authenticated as ${info.email || 'service account'} (${info.url || 'unknown'}).`,
+    };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const isAuthError = msg.includes('not signed in') || msg.includes('auth') || msg.includes('session expired') || msg.includes('401');
+    return {
+      authenticated: false,
+      message: isAuthError
+        ? '1Password is not authenticated. Please unlock the 1Password desktop app or re-authenticate before running demos that require credentials.'
+        : `1Password connectivity check failed: ${msg.slice(0, 200)}`,
+    };
+  }
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -182,6 +217,12 @@ export const tools: AnyToolHandler[] = [
     description: 'Get audit log of vault access (for security review)',
     schema: getAuditLogSchema,
     handler: getAuditLog as (args: unknown) => unknown,
+  },
+  {
+    name: 'check_auth',
+    description: 'Check if 1Password is authenticated and accessible. Returns structured status — no secret access, no CTO approval needed. Use before demos or any workflow that requires credentials.',
+    schema: checkAuthSchema,
+    handler: checkAuth as (args: unknown) => unknown,
   },
 ];
 
