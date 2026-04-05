@@ -19,9 +19,11 @@ interface SignalInputProps {
   text: string;
   lastSent: string | null;
   width: number;
+  /** When true the selected session is dead/completed — 's' resumes rather than signals. */
+  isCompleted?: boolean;
 }
 
-export function SignalInput({ active, text, lastSent, width }: SignalInputProps): React.ReactElement {
+export function SignalInput({ active, text, lastSent, width, isCompleted }: SignalInputProps): React.ReactElement {
   const innerWidth = Math.max(10, width - 4);
 
   if (lastSent !== null && !active) {
@@ -44,11 +46,15 @@ export function SignalInput({ active, text, lastSent, width }: SignalInputProps)
     );
   }
 
+  const hint = isCompleted
+    ? 'to resume session with a message'
+    : 'to send a directive signal';
+
   return (
     <Box flexDirection="row">
       <Text dimColor>Press </Text>
       <Text bold inverse>{' s '}</Text>
-      <Text dimColor> to send a directive signal</Text>
+      <Text dimColor> {hint}</Text>
     </Box>
   );
 }

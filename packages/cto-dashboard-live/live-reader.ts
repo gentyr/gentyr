@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { execFileSync } from 'child_process';
 import Database from 'better-sqlite3';
 import type {
   LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem,
@@ -835,6 +836,32 @@ export function readSessionTail(
   } finally {
     if (fd !== undefined) try { fs.closeSync(fd); } catch { /* */ }
   }
+}
+
+/**
+ * Check whether a process with the given PID is alive.
+ * Uses POSIX signal 0 — does not actually send a signal.
+ */
+export function isProcessAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+/**
+ * Open a new Terminal.app window and resume the given Claude session with an
+ * initial message.  Best-effort: failures are swallowed so the TUI stays alive.
+ */
+export function resumeSessionWithMessage(sessionId: string, message: string): void {
+  const projectDir = process.env['CLAUDE_PROJECT_DIR'] || process.cwd();
+  // Escape backslashes first, then double-quotes, so the final shell string
+  // is safe inside the outer AppleScript double-quoted string literal.
+  const escaped = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const cmd = `cd "${projectDir}" && claude --resume "${sessionId}" -p "${escaped}"`;
+  try {
+    execFileSync('osascript', [
+      '-e',
+      `tell application "Terminal"\ndo script "${cmd}"\nactivate\nend tell`,
+    ], { timeout: 10000, stdio: 'pipe' });
+  } catch { /* best effort — TUI must not crash */ }
 }
 
 /**

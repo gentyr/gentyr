@@ -7,6 +7,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { execFileSync } from 'child_process';
 import { Box, useApp, useInput } from 'ink';
+import type { SessionItem } from './types.js';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
 import { useClock } from './hooks/useClock.js';
 import { useScrollState } from './hooks/useScrollState.js';
@@ -29,6 +30,7 @@ export function App({ mock }: AppProps): React.ReactElement {
   const now = useClock();
   const { data, loadMoreCompleted } = useDataPoller(3000, mock);
   const [page, setPage] = useState<1 | 2 | 3 | 4>(1);
+  const [page4TargetSession, setPage4TargetSession] = useState<SessionItem | null>(null);
 
   const selectableItems = useMemo(() => buildSelectableItems(data), [data]);
   const homeIndex = useMemo(() => findHomeIndex(data), [data]);
@@ -52,6 +54,11 @@ export function App({ mock }: AppProps): React.ReactElement {
     page2Scroll.setMaxScroll(100);
     page3Scroll.setMaxScroll(50);
   }, [page2Scroll, page3Scroll]);
+
+  // Clear page 4 target session when navigating away from page 4.
+  useEffect(() => {
+    if (page !== 4) setPage4TargetSession(null);
+  }, [page]);
 
   // Infinite scroll: load more completed sessions when near the bottom
   useEffect(() => {
@@ -95,8 +102,9 @@ export function App({ mock }: AppProps): React.ReactElement {
 
     if (key.return && page === 1) {
       const selected = selectableItems[page1Scroll.selectedIndex];
-      if (selected && selected.item.pid && selected.item.sessionId) {
-        joinSession(selected.item);
+      if (selected?.item) {
+        setPage4TargetSession(selected.item);
+        setPage(4);
       }
       return;
     }
@@ -140,6 +148,7 @@ export function App({ mock }: AppProps): React.ReactElement {
           data={data}
           bodyHeight={bodyHeight}
           bodyWidth={columns}
+          initialSession={page4TargetSession}
         />
       )}
 
