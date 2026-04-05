@@ -90,10 +90,13 @@ export function SessionInfo({ session, agentId, summaryIndex, height }: SessionI
   return (
     <Box flexDirection="column" height={height}>
       <InfoRow label="PID:" value={pid} />
-      <InfoRow label="Type:" value={truncate(agentType, 18)} />
+      <InfoRow label="Type:" value={truncate(agentType, 30)} />
       <InfoRow label="Elapsed:" value={elapsed} />
-      <InfoRow label="Last tool:" value={truncate(lastTool, 18)} />
-      <InfoRow label="Title:" value={truncate(title, 18)} />
+      <InfoRow label="Last tool:" value={truncate(lastTool, 30)} />
+      <Box flexDirection="column">
+        <Text dimColor>{'Title:'.padEnd(12)}</Text>
+        <Text wrap="wrap">{title}</Text>
+      </Box>
 
       {/* Summaries section */}
       <Box marginTop={1} flexDirection="column">
