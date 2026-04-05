@@ -26,8 +26,11 @@ export const getAuditLogSchema = z.object({
   action: z.string().optional().describe('Filter by action type'),
 });
 
+export const checkAuthSchema = z.object({});
+
 // Type exports
 export type ReadSecretArgs = z.infer<typeof readSecretSchema>;
 export type ListItemsArgs = z.infer<typeof listItemsSchema>;
 export type CreateServiceAccountArgs = z.infer<typeof createServiceAccountSchema>;
 export type GetAuditLogArgs = z.infer<typeof getAuditLogSchema>;
+export type CheckAuthArgs = z.infer<typeof checkAuthSchema>;
