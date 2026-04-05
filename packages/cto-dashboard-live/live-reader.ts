@@ -323,6 +323,7 @@ function readPersistentTasks(runningSessions: SessionItem[]): PersistentTaskItem
   const ptDb = openDb(path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db'));
   if (!ptDb) return [];
   const todoDb = openDb(path.join(PROJECT_DIR, '.claude', 'todo.db'));
+  const queueDb = openDb(path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db'));
   try {
     const tasks = ptDb.prepare("SELECT id, title, status, monitor_pid, activated_at, last_heartbeat, cycle_count, metadata FROM persistent_tasks WHERE status IN ('active','paused') ORDER BY activated_at DESC").all() as Array<{ id: string; title: string; status: string; monitor_pid: number | null; activated_at: string | null; last_heartbeat: string | null; cycle_count: number | null; metadata: string | null }>;
 
@@ -331,6 +332,17 @@ function readPersistentTasks(runningSessions: SessionItem[]): PersistentTaskItem
       const hbMs = t.last_heartbeat ? Date.now() - new Date(t.last_heartbeat).getTime() : Infinity;
       let meta: Record<string, unknown> = {};
       try { if (t.metadata) meta = JSON.parse(t.metadata); } catch { /* */ }
+
+      // Resolve the real agent_id from session-queue.db using the monitor PID
+      let monitorAgentId: string | null = null;
+      if (queueDb && t.monitor_pid) {
+        try {
+          const row = queueDb.prepare(
+            "SELECT agent_id FROM queue_items WHERE pid = ? AND status = 'running' LIMIT 1",
+          ).get(t.monitor_pid) as { agent_id: string } | undefined;
+          monitorAgentId = row?.agent_id ?? null;
+        } catch { /* */ }
+      }
 
       // Monitor session
       const monitorSession: SessionItem = {
@@ -346,7 +358,7 @@ function readPersistentTasks(runningSessions: SessionItem[]): PersistentTaskItem
         description: null,
         killReason: null,
         totalTokens: null,
-        sessionId: `pt-monitor-${t.id}`,
+        sessionId: monitorAgentId || `pt-monitor-${t.id}`,
         elapsed: ageStr(t.activated_at),
         worklog: null,
       };
