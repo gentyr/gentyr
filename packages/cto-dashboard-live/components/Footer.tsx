@@ -15,7 +15,7 @@ export function Footer({ page }: FooterProps): React.ReactElement {
           </Text>
         ) : page === 4 ? (
           <Text dimColor>
-            {' '}<Text bold inverse>{' \u2191\u2193 '}</Text> select session  <Text bold inverse>{' s '}</Text> signal  <Text bold inverse>{' 1-3 '}</Text> other pages
+            {' '}<Text bold inverse>{' \u2191\u2193 '}</Text> select  <Text bold inverse>{' s '}</Text> signal  <Text bold inverse>{' [ ] '}</Text> summaries  <Text bold inverse>{' 1-3 '}</Text> pages
           </Text>
         ) : (
           <Text dimColor>

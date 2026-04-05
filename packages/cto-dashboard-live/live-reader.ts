@@ -899,3 +899,20 @@ export function sendDirectiveSignal(toAgentId: string, message: string): boolean
   } catch { /* non-fatal */ }
   return true;
 }
+
+/**
+ * Read LLM-generated summaries for a specific agent from session-activity.db.
+ * Returns summaries in chronological order (oldest first).
+ */
+export function getSessionSummaries(agentId: string): Array<{ id: string; summary: string; created_at: string }> {
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-activity.db');
+  if (!fs.existsSync(dbPath)) return [];
+  let db: InstanceType<typeof Database> | null = null;
+  try {
+    db = new Database(dbPath, { readonly: true });
+    return db.prepare(
+      'SELECT id, summary, created_at FROM session_summaries WHERE agent_id = ? ORDER BY created_at ASC',
+    ).all(agentId) as Array<{ id: string; summary: string; created_at: string }>;
+  } catch { return []; }
+  finally { try { db?.close(); } catch { /* */ } }
+}
