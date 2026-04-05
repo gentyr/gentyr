@@ -83,6 +83,28 @@ export function resolveLocalSecrets(config: ServicesConfig): { resolvedEnv: Reco
 }
 
 /**
+ * Resolve any op:// references in an env var map.
+ * Values starting with "op://" are resolved via opRead(); others are left as-is.
+ * Failed resolutions are removed from the map and logged to stderr.
+ */
+export function resolveOpReferences(envVars: Record<string, string>): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(envVars)) {
+    if (typeof value === 'string' && value.startsWith('op://')) {
+      try {
+        resolved[key] = opRead(value);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[op-secrets] resolveOpReferences: failed to resolve ${key}: ${message}\n`);
+      }
+    } else {
+      resolved[key] = value;
+    }
+  }
+  return resolved;
+}
+
+/**
  * Build a clean child environment from process.env:
  * - Strips INFRA_CRED_KEYS
  * - Merges in optional extra secrets

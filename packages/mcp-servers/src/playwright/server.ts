@@ -22,7 +22,7 @@ import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
-import { loadServicesConfig, resolveLocalSecrets, INFRA_CRED_KEYS, buildCleanEnv } from '../shared/op-secrets.js';
+import { loadServicesConfig, resolveLocalSecrets, resolveOpReferences, INFRA_CRED_KEYS, buildCleanEnv } from '../shared/op-secrets.js';
 import {
   LaunchUiModeArgsSchema,
   RunTestsArgsSchema,
@@ -1422,6 +1422,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         feedbackDb.close();
       }
     } catch { /* non-fatal */ }
+  }
+
+  // Resolve any op:// references in scenario env_vars before merging
+  if (scenarioEnvVars) {
+    scenarioEnvVars = resolveOpReferences(scenarioEnvVars);
   }
 
   // Merge env_vars: scenario env_vars as base, explicit extra_env overrides
@@ -4376,7 +4381,10 @@ function discoverScenarios(opts: {
     return rows.map(r => {
       let envVars: Record<string, string> | undefined;
       if (r.env_vars) {
-        try { envVars = JSON.parse(r.env_vars); } catch { /* invalid JSON */ }
+        try {
+          const parsed = JSON.parse(r.env_vars) as Record<string, string>;
+          envVars = resolveOpReferences(parsed);
+        } catch { /* invalid JSON */ }
       }
       return {
         id: r.id,
