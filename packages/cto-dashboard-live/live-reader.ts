@@ -144,7 +144,7 @@ function getSessionSnapshot(agentId: string): SessionSnapshot {
 // Session Queue
 // ============================================================================
 
-interface QueueRow { id: string; status: string; priority: string; lane: string; title: string; agent_type: string; source: string; pid: number | null; enqueued_at: string; spawned_at: string | null; completed_at: string | null; metadata: string | null; prompt: string | null; }
+interface QueueRow { id: string; status: string; priority: string; lane: string; title: string; agent_type: string; agent_id: string | null; source: string; pid: number | null; enqueued_at: string; spawned_at: string | null; completed_at: string | null; metadata: string | null; prompt: string | null; }
 
 function readSessionQueue(): { queued: SessionItem[]; running: SessionItem[]; suspended: SessionItem[]; completed: SessionItem[]; maxConcurrent: number } {
   const db = openDb(path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db'));
@@ -158,25 +158,9 @@ function readSessionQueue(): { queued: SessionItem[]; running: SessionItem[]; su
     // Get recently completed (initial batch)
     const doneRows = db.prepare("SELECT * FROM queue_items WHERE status IN ('completed','failed') ORDER BY completed_at DESC LIMIT 20").all() as QueueRow[];
 
-    // Load agent history for agentId resolution
-    let agentHistory: Array<{ id: string; timestamp: string; metadata?: Record<string, unknown> }> = [];
-    try {
-      const histPath = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
-      if (fs.existsSync(histPath)) {
-        const parsed = JSON.parse(fs.readFileSync(histPath, 'utf8'));
-        agentHistory = Array.isArray(parsed?.agents) ? parsed.agents : [];
-      }
-    } catch { /* */ }
-
-    function resolveAgentId(row: QueueRow): string | null {
-      if (!row.spawned_at) return null;
-      const t = new Date(row.spawned_at).getTime();
-      const match = agentHistory.find(a => Math.abs(new Date(a.timestamp).getTime() - t) < 60_000);
-      return match?.id ?? null;
-    }
-
     function toSession(row: QueueRow): SessionItem {
-      const agentId = resolveAgentId(row);
+      // Use agent_id directly from queue_items (always populated for spawned sessions)
+      const agentId: string | null = row.agent_id || null;
       const elapsed = row.spawned_at ? formatElapsed(now - new Date(row.spawned_at).getTime()) : formatElapsed(now - new Date(row.enqueued_at).getTime());
       const snapshot = agentId ? getSessionSnapshot(agentId) : { tool: null, timestamp: null, lastMessage: null };
 
@@ -248,22 +232,9 @@ export function readMoreCompleted(offset: number, limit: number): SessionItem[] 
     const now = Date.now();
     const rows = db.prepare("SELECT * FROM queue_items WHERE status IN ('completed','failed') ORDER BY completed_at DESC LIMIT ? OFFSET ?").all(limit + 10, offset) as QueueRow[];
 
-    let agentHistory: Array<{ id: string; timestamp: string; metadata?: Record<string, unknown> }> = [];
-    try {
-      const histPath = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
-      if (fs.existsSync(histPath)) {
-        const parsed = JSON.parse(fs.readFileSync(histPath, 'utf8'));
-        agentHistory = Array.isArray(parsed?.agents) ? parsed.agents : [];
-      }
-    } catch { /* */ }
-
     const sessions = rows.map(row => {
-      let agentId: string | null = null;
-      if (row.spawned_at) {
-        const t = new Date(row.spawned_at).getTime();
-        const match = agentHistory.find(a => Math.abs(new Date(a.timestamp).getTime() - t) < 60_000);
-        agentId = match?.id ?? null;
-      }
+      // Use agent_id directly from queue_items (always populated for spawned sessions)
+      const agentId: string | null = row.agent_id || null;
       const elapsed = row.spawned_at ? formatElapsed(now - new Date(row.spawned_at).getTime()) : '';
       const snapshot = agentId ? getSessionSnapshot(agentId) : { tool: null, timestamp: null, lastMessage: null };
 
