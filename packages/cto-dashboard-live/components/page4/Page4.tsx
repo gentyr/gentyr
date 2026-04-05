@@ -76,6 +76,11 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
     ?? viewHistory[0] ?? null;
   const effectiveSelectedId = selectedSession?.id ?? null;
 
+  // ── Summary navigation state ─────────────────────────────────────────────
+  const [summaryIndex, setSummaryIndex] = useState(0);
+  // Reset summary index when session changes
+  useEffect(() => { setSummaryIndex(0); }, [effectiveSelectedId]);
+
   // ── Signal state ─────────────────────────────────────────────────────────
   const [signalMode, setSignalMode] = useState(false);
   const [signalText, setSignalText] = useState('');
@@ -163,6 +168,15 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
       if (idx >= 0 && idx < viewHistory.length - 1) setSelectedId(viewHistory[idx + 1].id);
       return;
     }
+    // Summary navigation: [ previous, ] next
+    if (input === '[') {
+      setSummaryIndex(prev => Math.max(0, prev - 1));
+      return;
+    }
+    if (input === ']') {
+      setSummaryIndex(prev => prev + 1); // SessionInfo clamps to max
+      return;
+    }
     if (input === 's') {
       if (effectiveSelectedId) {
         setSignalMode(true);
@@ -207,6 +221,8 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
         </Box>
         <SessionInfo
           session={selectedSession}
+          agentId={tailAgentId}
+          summaryIndex={summaryIndex}
           height={infoHeight}
         />
       </Section>
