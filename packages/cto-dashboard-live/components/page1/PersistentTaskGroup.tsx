@@ -6,9 +6,8 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import { Section } from '../Section.js';
-import type { PersistentTaskItem } from '../../types.js';
+import type { PersistentTaskItem, SessionItem } from '../../types.js';
 import { SessionRow } from './SessionRow.js';
-import { SubTaskRow } from './SubTaskRow.js';
 import { truncate } from '../../utils/formatters.js';
 
 interface PersistentTaskGroupProps {
@@ -39,22 +38,33 @@ export function PersistentTaskGroup({ task, monitorSelected, selectedChildId, wi
         <SessionRow item={task.monitorSession} selected={monitorSelected} width={width - 2} />
       </Box>
 
-      {/* Sub-tasks — indented text + child session cards */}
+      {/* Sub-tasks — rendered as session cards, same style as monitor */}
       {task.subTasks.length > 0 && (
         <Box flexDirection="column" marginLeft={2} marginTop={1}>
           <Text dimColor bold>{'Sub-Tasks ('}{task.subTasks.length}{')'}</Text>
-          {task.subTasks.map((st, idx) => {
+          {task.subTasks.map((st) => {
             const isChildSel = selectedChildId === st.id;
-            const isLast = idx === task.subTasks.length - 1;
-
+            // Use the existing session card if available, otherwise build one from sub-task data
+            const sessionItem: SessionItem = st.session ?? {
+              id: st.id,
+              status: st.status === 'completed' ? 'completed' : st.status === 'in_progress' ? 'alive' : 'queued',
+              priority: 'normal',
+              agentType: st.section || 'unknown',
+              title: st.title,
+              pid: null,
+              lastAction: st.agentStage,
+              lastActionTimestamp: new Date().toISOString(),
+              lastMessage: st.worklog?.summary ?? null,
+              description: null,
+              killReason: null,
+              totalTokens: st.worklog?.tokens ?? null,
+              sessionId: null,
+              elapsed: st.worklog?.durationMs != null ? `${Math.round(st.worklog.durationMs / 1000)}s` : '',
+              worklog: st.worklog,
+            };
             return (
-              <Box key={st.id} flexDirection="column">
-                <SubTaskRow subTask={st} isLast={isLast} width={width - 4} />
-                {st.session && (
-                  <Box marginLeft={4}>
-                    <SessionRow item={st.session} selected={isChildSel} width={width - 8} />
-                  </Box>
-                )}
+              <Box key={st.id} marginLeft={2}>
+                <SessionRow item={sessionItem} selected={isChildSel} width={width - 6} />
               </Box>
             );
           })}
