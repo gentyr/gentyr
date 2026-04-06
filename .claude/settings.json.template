@@ -204,6 +204,11 @@
           },
           {
             "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/crash-loop-resume.js",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-health-check.js",
             "timeout": 5
           },

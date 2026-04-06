@@ -32,6 +32,7 @@ import { reviveInterruptedSessions } from './session-reviver.js';
 import { buildPersistentMonitorDemoInstructions } from './lib/persistent-monitor-demo-instructions.js';
 import { reapAsyncPass, getStuckAliveSessions } from './lib/session-reaper.js';
 import { buildRevivalContext } from './lib/persistent-revival-context.js';
+import { buildPersistentMonitorRevivalPrompt } from './lib/persistent-monitor-revival-prompt.js';
 import { cleanupAuditLog } from './lib/session-audit.js';
 import { debugLog, cleanupDebugLog } from './lib/debug-log.js';
 import { isProxyDisabled } from './lib/proxy-state.js';
@@ -2811,49 +2812,10 @@ async function main() {
    * @param {string} revivalReason - Reason string stored in queue metadata (e.g. 'monitor_dead', 'stale_pause_resumed')
    * @returns {{ prompt: string, extraEnv: object, metadata: object }}
    */
-  async function buildPersistentMonitorRevivalPrompt(task, revivalReason) {
-    // Build revival context from last known state (last_summary, amendments, child agent status)
-    let revivalContext = '';
-    try {
-      revivalContext = buildRevivalContext(task.id, PROJECT_DIR, { monitorSessionId: task.monitor_session_id });
-    } catch (_) { /* non-fatal */ }
-
-    // Check if demo/bridge is involved
-    let demoInstructions = '';
-    let bridgeInstructions = '';
-    try {
-      const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
-      if (taskMeta.demo_involved) {
-        demoInstructions = buildPersistentMonitorDemoInstructions();
-      }
-      if (taskMeta.bridge_main_tree) {
-        const { buildPersistentMonitorBridgeInstructions: buildBridge } = await import('./lib/persistent-monitor-bridge-instructions.js');
-        bridgeInstructions = buildBridge();
-      }
-    } catch (_) { /* non-fatal */ }
-
-    const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
-
-## Persistent Task: ${task.title}
-
-Your previous monitor session died. Here is your last known state:
-${revivalContext || '(no prior state available — this may be the first revival)'}
-
-Read full task details to fill any gaps:
-mcp__persistent-task__get_persistent_task({ id: "${task.id}", include_amendments: true, include_subtasks: true })
-${demoInstructions}${bridgeInstructions}`;
-
-    const extraEnv = {
-      GENTYR_PERSISTENT_TASK_ID: task.id,
-      GENTYR_PERSISTENT_MONITOR: 'true',
-    };
-
-    const metadata = {
-      persistentTaskId: task.id,
-      revivalReason,
-    };
-
-    return { prompt, extraEnv, metadata };
+  // buildPersistentMonitorRevivalPrompt is now imported from lib/persistent-monitor-revival-prompt.js
+  // Local wrapper that binds PROJECT_DIR for backward compatibility with callers in this file.
+  async function buildRevivalPrompt(task, revivalReason) {
+    return buildPersistentMonitorRevivalPrompt(task, revivalReason, PROJECT_DIR);
   }
 
   // =========================================================================
@@ -2906,7 +2868,7 @@ ${demoInstructions}${bridgeInstructions}`;
           log(`Persistent monitor health: monitor for "${task.title}" (${task.id}) is dead — re-enqueuing`);
 
           try {
-            const { prompt, extraEnv, metadata } = await buildPersistentMonitorRevivalPrompt(task, 'monitor_dead');
+            const { prompt, extraEnv, metadata } = await buildRevivalPrompt(task, 'monitor_dead');
             const result = enqueueSession({
               title: `[Persistent] Monitor revival: ${task.title}`,
               agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
@@ -3088,7 +3050,7 @@ ${demoInstructions}${bridgeInstructions}`;
 
           // Enqueue the monitor
           try {
-            const { prompt, extraEnv, metadata } = await buildPersistentMonitorRevivalPrompt(task, 'stale_pause_resumed');
+            const { prompt, extraEnv, metadata } = await buildRevivalPrompt(task, 'stale_pause_resumed');
             const result = enqueueSession({
               title: `[Persistent] Stale-pause revival: ${task.title}`,
               agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,

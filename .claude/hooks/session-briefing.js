@@ -317,11 +317,6 @@ function getPersistentTaskState() {
       "SELECT id, title, status, monitor_pid, last_heartbeat, cycle_count FROM persistent_tasks WHERE status = 'active'"
     ).all();
 
-    if (active.length === 0) {
-      db.close();
-      return null;
-    }
-
     const result = [];
     let monitorsAlive = 0;
     let monitorsDead = 0;
@@ -347,8 +342,30 @@ function getPersistentTaskState() {
       });
     }
 
+    // Also query paused tasks for visibility
+    const paused = db.prepare(
+      "SELECT id, title FROM persistent_tasks WHERE status = 'paused'"
+    ).all();
+    const pausedTasks = [];
+    for (const task of paused) {
+      let pauseReason = 'unknown';
+      try {
+        const evt = db.prepare(
+          "SELECT details FROM events WHERE persistent_task_id = ? AND event_type = 'paused' ORDER BY created_at DESC LIMIT 1"
+        ).get(task.id);
+        if (evt?.details) {
+          const d = JSON.parse(evt.details);
+          pauseReason = d.reason === 'crash_loop_circuit_breaker' ? 'crash-loop' : 'manual';
+        }
+      } catch { /* non-fatal */ }
+      pausedTasks.push({ title: task.title, pauseReason });
+    }
+
     db.close();
-    return { tasks: result, monitorsAlive, monitorsDead };
+
+    if (result.length === 0 && pausedTasks.length === 0) return null;
+
+    return { tasks: result, monitorsAlive, monitorsDead, pausedTasks };
   } catch (_) {
     return null;
   }
@@ -514,11 +531,22 @@ function buildInteractiveBriefing() {
   // Persistent tasks
   const ptState = getPersistentTaskState();
   if (ptState) {
-    lines.push(`PERSISTENT TASKS: ${ptState.tasks.length} active | ${ptState.monitorsAlive} monitor(s) alive${ptState.monitorsDead > 0 ? `, ${ptState.monitorsDead} DEAD` : ''}`);
-    for (const t of ptState.tasks) {
-      const monStatus = t.monitorAlive ? 'running' : 'DEAD';
-      const amendStr = t.pendingAmendments > 0 ? `, ${t.pendingAmendments} pending amendment(s)` : '';
-      lines.push(`  "${truncate(t.title, 50)}" — monitor ${monStatus}${amendStr}`);
+    if (ptState.tasks.length > 0) {
+      lines.push(`PERSISTENT TASKS: ${ptState.tasks.length} active | ${ptState.monitorsAlive} monitor(s) alive${ptState.monitorsDead > 0 ? `, ${ptState.monitorsDead} DEAD` : ''}`);
+      for (const t of ptState.tasks) {
+        const monStatus = t.monitorAlive ? 'running' : 'DEAD';
+        const amendStr = t.pendingAmendments > 0 ? `, ${t.pendingAmendments} pending amendment(s)` : '';
+        lines.push(`  "${truncate(t.title, 50)}" — monitor ${monStatus}${amendStr}`);
+      }
+    }
+    if (ptState.pausedTasks && ptState.pausedTasks.length > 0) {
+      const crashLoop = ptState.pausedTasks.filter(t => t.pauseReason === 'crash-loop').length;
+      const manual = ptState.pausedTasks.length - crashLoop;
+      const summary = [crashLoop > 0 && `${crashLoop} crash-loop`, manual > 0 && `${manual} manual`].filter(Boolean).join(', ');
+      lines.push(`PAUSED TASKS: ${ptState.pausedTasks.length} (${summary})`);
+      for (const t of ptState.pausedTasks) {
+        lines.push(`  "${truncate(t.title, 50)}" — ${t.pauseReason} paused`);
+      }
     }
   }
 
