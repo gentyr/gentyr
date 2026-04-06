@@ -83,19 +83,55 @@ function getSessionDir(): string | null {
   return null;
 }
 
-/** Find a session JSONL file by [AGENT:id] marker in first 2KB. */
-function findSessionFile(agentId: string): string | null {
+/** Find a session JSONL file by [AGENT:id] marker. Checks head (8KB) then tail (16KB). */
+export function findSessionFile(agentId: string): string | null {
   const dir = getSessionDir();
   if (!dir) return null;
+  const marker = `[AGENT:${agentId}]`;
+  // Also check for bare agent ID (appears in tool results, hook output, etc.)
+  const bareMarker = agentId;
   try {
-    for (const f of fs.readdirSync(dir)) {
-      if (!f.endsWith('.jsonl')) continue;
-      const fp = path.join(dir, f);
-      const fd = fs.openSync(fp, 'r');
-      const buf = Buffer.alloc(2048);
-      const n = fs.readSync(fd, buf, 0, 2048, 0);
-      fs.closeSync(fd);
-      if (buf.toString('utf8', 0, n).includes(`[AGENT:${agentId}]`)) return fp;
+    // Sort by mtime descending — most recently modified files first (most likely to be the active session)
+    const files = fs.readdirSync(dir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, 50); // Only check the 50 most recent files
+
+    for (const { name } of files) {
+      const fp = path.join(dir, name);
+      let fd: number | undefined;
+      try {
+        fd = fs.openSync(fp, 'r');
+        const stat = fs.fstatSync(fd);
+        const fileSize = stat.size;
+
+        // Check head (first 8KB)
+        const headSize = Math.min(8192, fileSize);
+        const headBuf = Buffer.alloc(headSize);
+        fs.readSync(fd, headBuf, 0, headSize, 0);
+        const headStr = headBuf.toString('utf8');
+        if (headStr.includes(marker) || headStr.includes(bareMarker)) {
+          fs.closeSync(fd);
+          return fp;
+        }
+
+        // Check tail (last 16KB) — marker often appears in recent tool calls
+        if (fileSize > 8192) {
+          const tailSize = Math.min(16384, fileSize - headSize);
+          const tailBuf = Buffer.alloc(tailSize);
+          fs.readSync(fd, tailBuf, 0, tailSize, fileSize - tailSize);
+          const tailStr = tailBuf.toString('utf8');
+          if (tailStr.includes(marker) || tailStr.includes(bareMarker)) {
+            fs.closeSync(fd);
+            return fp;
+          }
+        }
+
+        fs.closeSync(fd);
+      } catch {
+        if (fd !== undefined) try { fs.closeSync(fd); } catch { /* */ }
+      }
     }
   } catch { /* */ }
   return null;
