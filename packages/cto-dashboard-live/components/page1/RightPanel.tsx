@@ -6,8 +6,111 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import { Section } from '../Section.js';
 import { QuotaBar } from '../QuotaBar.js';
-import type { LiveDashboardData, PlanItem } from '../../types.js';
+import type { LiveDashboardData, PlanItem, UsageSnapshot, AutomatedInstance } from '../../types.js';
 import { formatNumber, formatDuration, formatPercent, formatTokens, formatTimeAgo, truncate } from '../../utils/formatters.js';
+
+// ── Analytics helpers (mirrored from Page3) ─────────────────────────────────
+
+function sparkline(snapshots: UsageSnapshot[], width: number): string {
+  if (snapshots.length === 0) return '';
+  const chars = ['\u2581', '\u2582', '\u2583', '\u2584', '\u2585', '\u2586', '\u2587', '\u2588'];
+  const values = snapshots.map(s => s.utilization);
+  const maxVal = Math.max(...values, 1);
+  const step = Math.max(1, Math.floor(values.length / width));
+  let result = '';
+  for (let i = 0; i < values.length && result.length < width; i += step) {
+    const idx = Math.min(chars.length - 1, Math.floor((values[i] / maxVal) * (chars.length - 1)));
+    result += chars[idx];
+  }
+  return result;
+}
+
+function UsageTrendsWidget({ data, width }: { data: LiveDashboardData; width: number }): React.ReactElement {
+  const usage = data.pageAnalytics.usage;
+  if (!usage.hasData) {
+    return (
+      <Section title="USAGE TRENDS" width={width} tip="/show usage">
+        <Text dimColor>No usage data available</Text>
+      </Section>
+    );
+  }
+  const sparkW = Math.max(10, width - 20);
+  const fiveHourSpark = sparkline(usage.fiveHourSnapshots, sparkW);
+  const sevenDaySpark = sparkline(usage.sevenDaySnapshots, sparkW);
+  const lastFive = usage.fiveHourSnapshots.length > 0 ? usage.fiveHourSnapshots[usage.fiveHourSnapshots.length - 1].utilization : 0;
+  const lastSeven = usage.sevenDaySnapshots.length > 0 ? usage.sevenDaySnapshots[usage.sevenDaySnapshots.length - 1].utilization : 0;
+  return (
+    <Section title="USAGE TRENDS" width={width} tip="/show usage">
+      <Text bold>5-Hour Window</Text>
+      <Text dimColor>{fiveHourSpark}</Text>
+      <QuotaBar label="Current" percentage={lastFive} width={Math.max(8, width - 20)} />
+      <Text bold>7-Day Window</Text>
+      <Text dimColor>{sevenDaySpark}</Text>
+      <QuotaBar label="Current" percentage={lastSeven} width={Math.max(8, width - 20)} />
+    </Section>
+  );
+}
+
+function UsageTrajectoryWidget({ data, width }: { data: LiveDashboardData; width: number }): React.ReactElement {
+  const usage = data.pageAnalytics.usage;
+  if (!usage.hasData) {
+    return (
+      <Section title="USAGE TRAJECTORY" width={width} tip="/show usage">
+        <Text dimColor>No projection data</Text>
+      </Section>
+    );
+  }
+  return (
+    <Section title="USAGE TRAJECTORY" width={width} tip="/show usage">
+      <Box>
+        <Text dimColor>Cooldown Factor </Text>
+        <Text bold>{usage.cooldownFactor.toFixed(1)}x</Text>
+      </Box>
+      <Box>
+        <Text dimColor>Target </Text>
+        <Text bold>{usage.targetPct}%</Text>
+      </Box>
+      <Box>
+        <Text dimColor>Projected at Reset </Text>
+        <Text bold>{usage.projectedAtResetPct != null ? `${usage.projectedAtResetPct}%` : 'N/A'}</Text>
+      </Box>
+    </Section>
+  );
+}
+
+function AutomatedInstancesWidget({ data, width }: { data: LiveDashboardData; width: number }): React.ReactElement {
+  const instances = data.pageAnalytics.automatedInstances;
+  if (instances.length === 0) {
+    return (
+      <Section title="AUTOMATED INSTANCES" width={width} tip="/show automations">
+        <Text dimColor>No automation data</Text>
+      </Section>
+    );
+  }
+  const totalSessions = instances.reduce((s: number, i: AutomatedInstance) => s + i.count, 0);
+  const totalTokens = instances.reduce((s: number, i: AutomatedInstance) => s + i.tokensTotal, 0);
+  const sorted = [...instances].sort((a: AutomatedInstance, b: AutomatedInstance) => b.tokensTotal - a.tokensTotal);
+  return (
+    <Section title={`AUTOMATED INSTANCES (${totalSessions} total, ${formatNumber(totalTokens)} tokens)`} width={width} tip="/show automations">
+      <Box flexDirection="column">
+        <Box>
+          <Text bold dimColor>{'Agent Type'.padEnd(22)}{'Count'.padStart(7)}{'Tokens'.padStart(10)}{'Share'.padStart(7)}</Text>
+        </Box>
+        {sorted.map((inst: AutomatedInstance) => {
+          const share = totalTokens > 0 ? Math.round((inst.tokensTotal / totalTokens) * 100) : 0;
+          return (
+            <Box key={inst.type}>
+              <Text>{truncate(inst.type, 21).padEnd(22)}</Text>
+              <Text bold>{String(inst.count).padStart(7)}</Text>
+              <Text dimColor>{formatNumber(inst.tokensTotal).padStart(10)}</Text>
+              <Text dimColor>{`${share}%`.padStart(7)}</Text>
+            </Box>
+          );
+        })}
+      </Box>
+    </Section>
+  );
+}
 
 interface RightPanelProps {
   data: LiveDashboardData;
@@ -165,6 +268,9 @@ export function RightPanel({ data, width, height }: RightPanelProps): React.Reac
       <PlansWidget data={data} width={width} />
       <MetricsWidget data={data} width={width} />
       <WorklogWidget data={data} width={width} maxEntries={worklogMax} />
+      <UsageTrendsWidget data={data} width={width} />
+      <UsageTrajectoryWidget data={data} width={width} />
+      <AutomatedInstancesWidget data={data} width={width} />
     </Box>
   );
 }
