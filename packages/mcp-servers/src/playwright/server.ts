@@ -3077,6 +3077,18 @@ async function checkDevServer(baseUrl: string): Promise<PreflightCheckEntry> {
             return;
           }
 
+          // 403/401 typically means a non-app service is on this port (e.g., macOS AirPlay
+          // Receiver on port 5000). A real dev server returns 200 or 3xx, not 403.
+          if (statusCode === 403 || statusCode === 401) {
+            resolve({
+              name: 'dev_server',
+              status: 'fail',
+              message: `Dev server at ${baseUrl} returned HTTP ${statusCode} — this is likely NOT a dev server (macOS AirPlay Receiver or another service). Check port allocation.`,
+              duration_ms: Date.now() - start,
+            });
+            return;
+          }
+
           const errorPatterns = [
             'Unhandled Runtime Error',
             'Missing Supabase environment variables',
@@ -3127,7 +3139,8 @@ async function checkDevServer(baseUrl: string): Promise<PreflightCheckEntry> {
 }
 
 /**
- * Poll a URL until it responds with a non-5xx status.
+ * Poll a URL until it responds with a healthy status (2xx or 3xx).
+ * Rejects 401/403 (likely a non-app service like macOS AirPlay) and 5xx.
  * @returns true if healthy within the timeout, false otherwise
  */
 async function pollHealth(url: URL, timeoutMs: number = 30_000): Promise<boolean> {
@@ -3143,7 +3156,8 @@ async function pollHealth(url: URL, timeoutMs: number = 30_000): Promise<boolean
           { hostname: url.hostname, port: url.port || (isHttps ? 443 : 80), path: '/', method: 'GET', timeout: 3000 },
           (res) => {
             res.resume();
-            resolve((res.statusCode ?? 0) < 500);
+            const code = res.statusCode ?? 0;
+            resolve(code >= 200 && code < 400);
           }
         );
         req.on('error', () => resolve(false));

@@ -43,37 +43,35 @@ const SIGNAL_ROW_HEIGHT = 1;
 const DIVIDER_HEIGHT = 1;
 
 export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Props): React.ReactElement {
-  // ── All available sessions (for lookup) ─────────────────────────────────
-  const allSessions = [
-    ...data.runningSessions,
-    ...data.completedSessions,
-    ...data.persistentTasks.map(pt => pt.monitorSession),
-  ].filter(Boolean) as SessionItem[];
+  // ── All available sessions (queued → running → persistent+sub-tasks → completed) ──
+  const subTaskSessions: SessionItem[] = data.persistentTasks.flatMap(pt =>
+    pt.subTasks
+      .filter(st => st.session != null)
+      .map(st => ({ ...st.session!, title: `\u2514 ${st.session!.title}` }))
+  );
 
-  // ── Recent view history (ephemeral, clears on dashboard restart) ────────
-  const [viewHistory, setViewHistory] = useState<SessionItem[]>([]);
+  const allSessions: SessionItem[] = [
+    ...data.queuedSessions,
+    ...data.runningSessions,
+    ...data.persistentTasks.map(pt => pt.monitorSession).filter(Boolean) as SessionItem[],
+    ...subTaskSessions,
+    ...data.completedSessions,
+  ];
 
   const [selectedId, setSelectedId] = useState<string | null>(
     initialSession ? initialSession.id : null,
   );
 
-  // When a target session is passed in (e.g. from Page 1 Enter), select it
-  // and add to view history.
+  // When a target session is passed in (e.g. from Page 1 Enter), select it.
   useEffect(() => {
     if (initialSession) {
       setSelectedId(initialSession.id);
-      setViewHistory(prev => {
-        // Deduplicate: move to front if already in history
-        const filtered = prev.filter(s => s.id !== initialSession.id);
-        return [initialSession, ...filtered].slice(0, 20); // max 20 items
-      });
     }
   }, [initialSession]);
 
   // Resolve selected session from all available sessions (running data may update)
   const selectedSession = allSessions.find(s => s.id === selectedId)
-    ?? viewHistory.find(s => s.id === selectedId)
-    ?? viewHistory[0] ?? null;
+    ?? (allSessions.length > 0 ? allSessions[0] : null);
   const effectiveSelectedId = selectedSession?.id ?? null;
 
   // ── Summary navigation state ─────────────────────────────────────────────
@@ -159,13 +157,13 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
 
     // Normal navigation mode.
     if (key.upArrow) {
-      const idx = viewHistory.findIndex(s => s.id === effectiveSelectedId);
-      if (idx > 0) setSelectedId(viewHistory[idx - 1].id);
+      const idx = allSessions.findIndex(s => s.id === effectiveSelectedId);
+      if (idx > 0) setSelectedId(allSessions[idx - 1].id);
       return;
     }
     if (key.downArrow) {
-      const idx = viewHistory.findIndex(s => s.id === effectiveSelectedId);
-      if (idx >= 0 && idx < viewHistory.length - 1) setSelectedId(viewHistory[idx + 1].id);
+      const idx = allSessions.findIndex(s => s.id === effectiveSelectedId);
+      if (idx >= 0 && idx < allSessions.length - 1) setSelectedId(allSessions[idx + 1].id);
       return;
     }
     // Summary navigation: [ previous, ] next
@@ -207,9 +205,9 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
   return (
     <Box flexDirection="row" height={bodyHeight}>
       {/* Left column */}
-      <Section title="Recent" width={leftWidth}>
+      <Section title="Sessions" width={leftWidth}>
         <SessionSelector
-          sessions={viewHistory}
+          sessions={allSessions}
           selectedId={effectiveSelectedId}
           height={selectorHeight}
         />
