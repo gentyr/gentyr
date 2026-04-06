@@ -35,6 +35,7 @@ const SESSION_START_HOOKS = [
   'plan-briefing.js',
   'playwright-health-check.js',
   'dead-agent-recovery.js',
+  'crash-loop-resume.js',
   'session-briefing.js',
 ];
 

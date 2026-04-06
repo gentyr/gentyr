@@ -414,7 +414,9 @@ Lets the CTO delegate complex multi-step objectives to a dedicated monitor sessi
 
 **Stale-pause auto-resume**: `hourly-automation.js` runs a `persistent_stale_pause_resume` check every 5 minutes. If a task has been `paused` for longer than `persistent_stale_pause_threshold_minutes` (default 30 min) AND no monitor is already queued or running for it, a new monitor is automatically enqueued. This handles self-paused monitors that forgot to self-resume (e.g., after writing a deputy-CTO report and pausing). The resumed task transitions back to `active` via `resume_persistent_task`, and the spawner hook fires to launch a new monitor.
 
-**`buildPersistentMonitorRevivalPrompt()` helper**: Shared function in `hourly-automation.js` used by both the health-check dead monitor path and the stale-pause auto-resume path. Builds the full revival prompt with correct demo/bridge flags and revival metadata, keeping both revival code paths in sync. Internally calls `buildRevivalContext()` from `lib/persistent-revival-context.js` to assemble enriched context from `last_summary`, recent amendments, and sub-task status.
+**Crash-loop login resume** (`crash-loop-resume.js` SessionStart hook): On interactive session start, detects persistent tasks paused by the crash-loop circuit breaker (`reason: 'crash_loop_circuit_breaker'` in the most-recent `paused` event) and auto-resumes them by setting `status = 'active'` and enqueuing a new monitor at `critical` priority. Manually paused tasks are left untouched. Skipped entirely for spawned sessions (`CLAUDE_SPAWNED_SESSION=true`). Uses a TOCTOU-safe `UPDATE ... WHERE status = 'paused'` guard and deduplicates against in-flight queue items before enqueuing. Rollback sets the task back to `paused` if monitor enqueue fails. All errors are accumulated in `systemMessage` (never stderr, per SessionStart rules). Session briefing now shows a PAUSED TASKS section with pause reason (crash-loop vs manual) to give the CTO visibility at login.
+
+**`buildPersistentMonitorRevivalPrompt()` helper**: Shared module at `lib/persistent-monitor-revival-prompt.js`, consumed by `hourly-automation.js` (dead monitor path and stale-pause auto-resume), `session-queue.js` revival paths, and `crash-loop-resume.js`. Accepts `(task, revivalReason, projectDir)` and builds the full revival prompt with correct demo/bridge flags and revival metadata. Internally calls `buildRevivalContext()` from `lib/persistent-revival-context.js` to assemble enriched context from `last_summary`, recent amendments, and sub-task status. `hourly-automation.js` uses a local `buildRevivalPrompt()` wrapper that binds `PROJECT_DIR`.
 
 **`last_summary` field**: `persistent_tasks` table carries a `last_summary TEXT` column (auto-migrated on DB open). Monitors write their current progress summary here before each sleep cycle. Revival prompts include this field so revived monitors know what was accomplished before the session died, reducing repeated work after crashes.
 
@@ -605,13 +607,13 @@ Hooks that need the AI to act on their output must include both:
 
 ### SessionStart Hooks — No stderr
 
-`SessionStart` hooks must **never** write to `stderr` under any conditions. Claude Code treats any stderr output from a `SessionStart` hook as an error, displaying "SessionStart:startup hook error" in the UI even when the hook exits cleanly with valid JSON on stdout. This applies to all 9 `SessionStart` hooks: `gentyr-sync.js`, `gentyr-splash.js`, `todo-maintenance.js`, `credential-health-check.js`, `api-key-watcher.js`, `plan-briefing.js`, `playwright-health-check.js`, `dead-agent-recovery.js`, and `session-briefing.js`.
+`SessionStart` hooks must **never** write to `stderr` under any conditions. Claude Code treats any stderr output from a `SessionStart` hook as an error, displaying "SessionStart:startup hook error" in the UI even when the hook exits cleanly with valid JSON on stdout. This applies to all 10 `SessionStart` hooks: `gentyr-sync.js`, `gentyr-splash.js`, `todo-maintenance.js`, `credential-health-check.js`, `api-key-watcher.js`, `plan-briefing.js`, `playwright-health-check.js`, `dead-agent-recovery.js`, `crash-loop-resume.js`, and `session-briefing.js`.
 
 Rules:
 - **Never** call `process.stderr.write()` or `console.error()` in a `SessionStart` hook or any library it imports.
 - Route all non-fatal errors to `systemMessage` in the JSON stdout response.
 - Fatal/unexpected errors should exit with `{ continue: true, systemMessage: "..." }` — never with `process.exit(1)` or a raw stderr write.
-- The cross-hook guard test at `.claude/hooks/__tests__/session-start-no-stderr.test.js` enforces this with static analysis + runtime subprocess checks (33 tests).
+- The cross-hook guard test at `.claude/hooks/__tests__/session-start-no-stderr.test.js` enforces this with static analysis + runtime subprocess checks (36 tests).
 
 ## Hooks Reference
 
