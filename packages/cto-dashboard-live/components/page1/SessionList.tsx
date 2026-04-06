@@ -8,7 +8,7 @@
 
 import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
-import type { LiveDashboardData, SessionItem, PersistentTaskItem } from '../../types.js';
+import type { LiveDashboardData, SessionItem, SessionStatus, SessionPriority, PersistentTaskItem } from '../../types.js';
 import { SessionRow, estimateCardLines } from './SessionRow.js';
 import { PersistentTaskGroup } from './PersistentTaskGroup.js';
 
@@ -74,7 +74,25 @@ export function buildSelectableItems(data: LiveDashboardData): SelectableItem[] 
   for (const pt of data.persistentTasks) {
     items.push({ type: 'session', sessionId: pt.monitorSession.id, item: pt.monitorSession });
     for (const st of pt.subTasks) {
-      if (st.session) items.push({ type: 'session', sessionId: st.session.id, item: st.session });
+      // Use active session if running, otherwise build SessionItem from sub-task data
+      const stItem: SessionItem = st.session ?? {
+        id: st.id,
+        status: (st.status === 'completed' ? 'completed' : st.status === 'in_progress' ? 'alive' : 'queued') as SessionStatus,
+        priority: 'normal' as SessionPriority,
+        agentType: st.section || 'unknown',
+        title: st.title,
+        pid: null,
+        lastAction: st.agentStage,
+        lastActionTimestamp: new Date().toISOString(),
+        lastMessage: st.worklog?.summary ?? null,
+        description: null,
+        killReason: null,
+        totalTokens: st.worklog?.tokens ?? null,
+        sessionId: null,
+        elapsed: st.worklog?.durationMs != null ? `${Math.round(st.worklog.durationMs / 1000)}s` : '',
+        worklog: st.worklog,
+      };
+      items.push({ type: 'session', sessionId: stItem.id, item: stItem });
     }
   }
   for (const s of data.runningSessions) {
