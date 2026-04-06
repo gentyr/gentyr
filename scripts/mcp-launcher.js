@@ -49,7 +49,11 @@ if (!process.env.OP_SERVICE_ACCOUNT_TOKEN) {
   if (fallbackToken) {
     process.env.OP_SERVICE_ACCOUNT_TOKEN = fallbackToken;
     console.error(`[mcp-launcher:${serverName}] Self-healed: OP_SERVICE_ACCOUNT_TOKEN from launchd plist`);
+  } else {
+    console.error(`[mcp-launcher:${serverName}] WARNING: OP_SERVICE_ACCOUNT_TOKEN not in env and plist fallback failed. Secret resolution will not work.`);
   }
+} else {
+  console.error(`[mcp-launcher:${serverName}] OP_SERVICE_ACCOUNT_TOKEN: present (${process.env.OP_SERVICE_ACCOUNT_TOKEN.slice(0, 8)}...)`);
 }
 
 // ---------------------------------------------------------------------------
