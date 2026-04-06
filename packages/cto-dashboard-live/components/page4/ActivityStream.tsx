@@ -53,10 +53,14 @@ function EntryRow({ entry, maxTextLen }: { entry: ActivityEntry; maxTextLen: num
     }
     case 'assistant_text':
       return (
-        <Box>
-          <Text dimColor>{prefix}</Text>
-          <Text dimColor>[text] </Text>
-          <Text>{truncate(entry.text, maxTextLen)}</Text>
+        <Box flexDirection="column">
+          <Box>
+            <Text dimColor>{prefix}</Text>
+            <Text dimColor>[text] </Text>
+          </Box>
+          <Box marginLeft={2}>
+            <Text wrap="wrap">{entry.text}</Text>
+          </Box>
         </Box>
       );
     case 'tool_result':
