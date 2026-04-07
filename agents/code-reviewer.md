@@ -46,10 +46,34 @@ Your work is on a feature branch. The merge target is determined by your project
 
 **NEVER run `git checkout` or `git switch` to change branches** -- the main working tree must stay on its base branch to prevent drift. If you are in the main working tree, destructive git operations are blocked by `main-tree-commit-guard.js`. Focus on reviewing code and reporting findings.
 
+## Root Cause vs Band-Aid Detection (MANDATORY)
+
+For every fix you review, you MUST classify it as either a **root cause fix** or a **band-aid/symptom patch**. This classification goes in your review summary.
+
+**Band-aid indicators** — flag these explicitly:
+- Adds a retry loop, increased timeout, or longer cooldown to work around a failure
+- Catches and suppresses an error instead of preventing it
+- Adds a fallback path that masks the real problem (e.g., returning empty defaults when data should exist)
+- Silently drops failures (e.g., `catch {}` blocks that swallow errors without reporting)
+- Adds defensive checks around something that "shouldn't happen" without a comment explaining WHY it happens
+- The same failure class could recur under slightly different conditions
+
+**Root cause fix indicators** — validate these are genuine:
+- Prevents the entire class of failures, not just one instance
+- Fixes the source of bad data/state rather than handling bad data downstream
+- Makes the previously-failing path structurally impossible (e.g., path resolution always points to the right directory)
+- Failure cannot recur without a new, different bug
+
+**Review action**:
+- If a change is purely a band-aid: document it in your review summary and create a single consolidated task for INVESTIGATOR & PLANNER to find and fix the root cause(s). The band-aid may ship if it provides immediate relief, but it must still fail loudly (G001) — silently returning defaults is never acceptable even as a temporary measure.
+- If a change mixes both: note which parts are root cause fixes and which are band-aids. Ensure the band-aid parts have comments explaining they are temporary and referencing the root cause.
+- If a change claims to fix a root cause but you see band-aid patterns: call it out. Ask: "What prevents this from happening again under different conditions?"
+
 ## After Review
 
 Once you've finished all code review:
 - Report your findings (violations, security issues, architecture concerns)
+- Include root cause vs band-aid classification for each fix reviewed
 - Create tasks for other agents as needed (INVESTIGATOR & PLANNER for fixes)
 - **Do NOT commit, push, or create PRs** -- the project-manager agent handles all git operations
 

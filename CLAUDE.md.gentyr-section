@@ -37,6 +37,7 @@ Or use `/spawn-tasks <description>` for interactive task creation and spawning.
 3. **ONE agent per role** - Don't combine responsibilities
 4. **Use MCP tools** - All agents use specs-browser and todo-db
 5. **Report to CTO** - Use `mcp__cto-reports__report_to_cto` for important items
+6. **Fix root causes, not symptoms** - Retries, timeouts, cooldowns, and error suppression are band-aids. Every fix must target the deepest cause. If a band-aid is needed for immediate relief, it ships alongside the root cause fix — never instead of it. Code reviewers will flag symptom-only patches.
 
 ### Standard Development Workflow
 
