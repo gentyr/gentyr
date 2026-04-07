@@ -26,6 +26,8 @@ export interface SessionItem {
   elapsed: string;                  // total run time
   /** Only for completed sessions with worklog */
   worklog: WorklogEntry | null;
+  /** Worktree path from queue DB — used to find session JSONL in worktree dirs */
+  worktreePath: string | null;
 }
 
 export interface WorklogEntry {

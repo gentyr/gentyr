@@ -100,7 +100,8 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
   // useSessionTail needs the AGENT ID (used as [AGENT:xxx] marker in JSONL files),
   // not the queue item ID. SessionItem.sessionId contains the agent_id.
   const tailAgentId = selectedSession?.sessionId ?? null;
-  const { entries, isConnected } = useSessionTail(tailAgentId);
+  const tailWorktreePath = selectedSession?.worktreePath ?? null;
+  const { entries, isConnected } = useSessionTail(tailAgentId, tailWorktreePath);
 
   // ── Keyboard handling ────────────────────────────────────────────────────
   useInput((input, key) => {

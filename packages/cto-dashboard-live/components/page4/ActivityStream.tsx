@@ -1,14 +1,15 @@
 /**
  * ActivityStream — displays the tail of a running session's JSONL file.
  *
- * Shows the last `height` entries. Each entry is color-coded by type:
+ * Shows the last `height` rows of entries. Each entry is color-coded by type:
  *   tool_call     → cyan
  *   assistant_text→ white
  *   tool_result   → dim
  *   error         → red
  *   compaction    → yellow
  *
- * Auto-scrolls to the bottom by always slicing the last `height` items.
+ * Row-aware: assistant_text entries consume 2+ rows (header + wrapped body),
+ * so we walk backwards counting actual rows rather than naively slicing.
  */
 
 import React from 'react';
@@ -20,6 +21,7 @@ interface ActivityStreamProps {
   entries: ActivityEntry[];
   height: number;
   width: number;
+  scrollOffset?: number;
 }
 
 function formatTimestamp(iso: string): string {
@@ -34,14 +36,26 @@ function formatTimestamp(iso: string): string {
   }
 }
 
+/** Estimate how many terminal rows an entry will consume. */
+function estimateRows(entry: ActivityEntry, availableWidth: number): number {
+  if (entry.type !== 'assistant_text') return 1;
+  // Header row "[HH:MM:SS] [text] " + text rows (marginLeft=2 reduces width by 2)
+  const textWidth = Math.max(10, availableWidth - 2);
+  const textRows = Math.max(1, Math.ceil(entry.text.length / textWidth));
+  return 1 + textRows;
+}
+
 function EntryRow({ entry, maxTextLen }: { entry: ActivityEntry; maxTextLen: number }): React.ReactElement {
   const ts = formatTimestamp(entry.timestamp);
   const prefix = `[${ts}] `;
 
   switch (entry.type) {
     case 'tool_call': {
-      const toolLabel = entry.toolName ?? entry.text;
-      const inputPart = entry.toolInput ? ` (${truncate(entry.toolInput, maxTextLen - toolLabel.length - 10)})` : '';
+      const toolLabel = truncate(entry.toolName ?? entry.text, maxTextLen - 10);
+      const inputMaxLen = Math.max(0, maxTextLen - toolLabel.length - 10);
+      const inputPart = entry.toolInput && inputMaxLen > 3
+        ? ` (${truncate(entry.toolInput, inputMaxLen)})`
+        : '';
       return (
         <Box>
           <Text dimColor>{prefix}</Text>
@@ -95,16 +109,26 @@ function EntryRow({ entry, maxTextLen }: { entry: ActivityEntry; maxTextLen: num
   }
 }
 
-export function ActivityStream({ entries, height, width }: ActivityStreamProps): React.ReactElement {
+export function ActivityStream({ entries, height, width, scrollOffset = 0 }: ActivityStreamProps): React.ReactElement {
   const visibleHeight = Math.max(1, height);
-  // Always show the newest entries (auto-scroll to bottom).
-  const visible = entries.length > visibleHeight
-    ? entries.slice(entries.length - visibleHeight)
-    : entries;
 
   // Reserve space for timestamp prefix "[HH:MM:SS] [type] "
   const prefixLen = 22;
   const maxTextLen = Math.max(10, width - prefixLen);
+
+  // Row-aware visible entry selection: walk backwards counting actual rows
+  // so multi-row assistant_text entries are properly accounted for.
+  const clampedOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, entries.length - 1)));
+  const endIndex = entries.length - clampedOffset;
+
+  const visible: ActivityEntry[] = [];
+  let usedRows = 0;
+  for (let i = endIndex - 1; i >= 0 && usedRows < visibleHeight; i--) {
+    const rows = estimateRows(entries[i], width);
+    if (usedRows + rows > visibleHeight) break;
+    visible.unshift(entries[i]);
+    usedRows += rows;
+  }
 
   if (visible.length === 0) {
     return (
