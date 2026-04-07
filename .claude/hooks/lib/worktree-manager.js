@@ -327,6 +327,37 @@ export function provisionWorktree(worktreePath, options = {}) {
       }
     }
   }
+
+  // --- Workspace build (non-fatal, provides build artifacts for demos) ---
+  // Worktrees only get source files — dist/ dirs are gitignored.
+  // If configured in services.json, run a build command to produce build artifacts.
+  if (!options?.skipInstall) {
+    try {
+      const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+      if (fs.existsSync(configPath)) {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        const buildCmd = config.worktreeBuildCommand;
+        if (buildCmd) {
+          const healthCheck = config.worktreeBuildHealthCheck;
+          let needsBuild = true;
+          if (healthCheck) {
+            try {
+              execSync(healthCheck, { cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+              needsBuild = false;
+            } catch (_) { /* needs build */ }
+          }
+          if (needsBuild) {
+            try {
+              execSync(buildCmd, { cwd: worktreePath, encoding: 'utf8', timeout: 300000, stdio: 'pipe' });
+              console.error(`[worktree-manager] Built workspace packages in ${worktreePath}`);
+            } catch (err) {
+              console.error(`[worktree-manager] Warning: workspace build failed (non-fatal): ${err.message?.slice(0, 200)}`);
+            }
+          }
+        }
+      }
+    } catch (_) { /* services.json parse error — non-fatal */ }
+  }
 }
 
 // ============================================================================
