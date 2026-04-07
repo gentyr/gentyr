@@ -475,18 +475,23 @@ function buildDemoEnv(opts: {
   // Strip infrastructure credentials from child env (unconditional)
   for (const key of INFRA_CRED_KEYS) delete env[key];
 
-  // Resolve 1Password secrets for child process (non-fatal)
+  // Resolve 1Password secrets for child process (fail-closed: missing credentials = abort)
   try {
     const config = loadServicesConfig(PROJECT_DIR);
-    const { resolvedEnv } = resolveLocalSecrets(config);
+    const { resolvedEnv, failedKeys } = resolveLocalSecrets(config);
     Object.assign(env, resolvedEnv);
+
+    if (failedKeys.length > 0) {
+      throw new Error(`Failed to resolve credentials: ${failedKeys.join(', ')}. Check OP_SERVICE_ACCOUNT_TOKEN and 1Password connectivity.`);
+    }
 
     // Apply project-specific dev-mode env when dev server is running
     if (opts.dev_server_ready && config.demoDevModeEnv) {
       Object.assign(env, config.demoDevModeEnv);
     }
   } catch (err) {
-    process.stderr.write(`[playwright] Secret resolution skipped: ${err instanceof Error ? err.message : err}\n`);
+    // Re-throw to caller — launching with missing credentials wastes sessions
+    throw err;
   }
 
   if (opts.progress_file) env.DEMO_PROGRESS_FILE = opts.progress_file;
@@ -1523,15 +1528,24 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const progressId = crypto.randomBytes(4).toString('hex');
   const progressFilePath = path.join(PROJECT_DIR, '.claude', 'state', `demo-progress-${progressId}.jsonl`);
 
-  const env = buildDemoEnv({
-    slow_mo,
-    headless: args.headless,
-    base_url: effectiveBaseUrl,
-    trace: args.trace,
-    extra_env: Object.keys(mergedExtraEnv).length > 0 ? mergedExtraEnv : undefined,
-    progress_file: progressFilePath,
-    dev_server_ready: devServer.ready,
-  });
+  let env: Record<string, string>;
+  try {
+    env = buildDemoEnv({
+      slow_mo,
+      headless: args.headless,
+      base_url: effectiveBaseUrl,
+      trace: args.trace,
+      extra_env: Object.keys(mergedExtraEnv).length > 0 ? mergedExtraEnv : undefined,
+      progress_file: progressFilePath,
+      dev_server_ready: devServer.ready,
+    });
+  } catch (err) {
+    return {
+      success: false,
+      project,
+      message: `Credential resolution failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 
   const cmdArgs = ['playwright', 'test', '--project', project];
   if (args.trace) {
@@ -4565,15 +4579,25 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
     }
 
     // Build environment
-    const env = buildDemoEnv({
-      slow_mo: args.slow_mo,
-      headless: args.headless,
-      base_url: effectiveBaseUrl ?? args.base_url,
-      trace: args.trace,
-      progress_file: progressFile,
-      extra_env: batchEnvVars,
-      dev_server_ready: devServerReady,
-    });
+    let env: Record<string, string>;
+    try {
+      env = buildDemoEnv({
+        slow_mo: args.slow_mo,
+        headless: args.headless,
+        base_url: effectiveBaseUrl ?? args.base_url,
+        trace: args.trace,
+        progress_file: progressFile,
+        extra_env: batchEnvVars,
+        dev_server_ready: devServerReady,
+      });
+    } catch (err) {
+      const errMsg = `Credential resolution failed: ${err instanceof Error ? err.message : String(err)}`;
+      process.stderr.write(`[playwright] ${errMsg}\n`);
+      for (const s of batchScenarios) { s.status = 'failed'; s.failure_summary = errMsg; }
+      state.status = 'failed';
+      persistDemoBatches();
+      return;
+    }
 
     // Build command args — include all test files in this batch
     const cmdArgs = ['playwright', 'test', '--project', args.project];
