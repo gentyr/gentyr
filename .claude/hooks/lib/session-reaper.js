@@ -424,7 +424,7 @@ export function reapSyncPass(db) {
               // frozen heartbeat — without this grace period, they get killed before
               // they can make their first tool call and update the heartbeat.
               const spawnedMs = item.spawned_at ? now - parseSqliteDatetime(item.spawned_at).getTime() : Infinity;
-              const SPAWN_GRACE_MS = 120_000; // 120 seconds
+              const SPAWN_GRACE_MS = 60_000; // 60 seconds
 
               if (heartbeatAge > STALE_HEARTBEAT_MS && spawnedMs > SPAWN_GRACE_MS) {
                 // Kill immediately in sync pass — don't defer to async pass
