@@ -22,7 +22,7 @@ import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
-import { loadServicesConfig, resolveLocalSecrets, resolveOpReferencesStrict, INFRA_CRED_KEYS, buildCleanEnv } from '../shared/op-secrets.js';
+import { loadServicesConfig, resolveLocalSecrets, resolveOpReferencesStrict, opRead, INFRA_CRED_KEYS, buildCleanEnv } from '../shared/op-secrets.js';
 import {
   LaunchUiModeArgsSchema,
   RunTestsArgsSchema,
@@ -428,16 +428,23 @@ function validatePrerequisites(): PreflightResult {
     }
   }
 
-  // Check 3: Validate required secrets from services.json are resolved
+  // Check 3: Validate secrets are resolvable from 1Password (not just in process.env)
+  // Secrets live in 1Password — they're resolved on-demand by resolveLocalSecrets()/opRead(),
+  // NOT injected into process.env. So we test resolvability with a single canary secret.
   try {
     const config = loadServicesConfig(PROJECT_DIR);
-    const localSecrets = config.secrets.local || {};
-    const missingSecrets = Object.keys(localSecrets).filter(key => {
-      const val = process.env[key];
-      return !val || val.startsWith('op://');
-    });
-    if (missingSecrets.length > 0) {
-      errors.push(`Required secrets missing or unresolved: ${missingSecrets.join(', ')}`);
+    const localSecrets = config.secrets?.local || {};
+    const secretRefs = Object.entries(localSecrets);
+    if (secretRefs.length > 0) {
+      // Test the first secret as a canary — if 1Password is reachable and the vault
+      // mapping is correct, all secrets should be resolvable
+      const [canaryKey, canaryRef] = secretRefs[0];
+      try {
+        opRead(canaryRef);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        errors.push(`Cannot resolve secrets from 1Password (tested ${canaryKey}): ${message}`);
+      }
     }
   } catch {
     // services.json not available — fall through to existing heuristic
