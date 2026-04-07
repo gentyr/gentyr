@@ -36,6 +36,7 @@ export function opRead(reference: string): string {
   try {
     return execFileSync('op', ['read', reference], {
       encoding: 'utf-8',
+      timeout: 15000,
       env: { ...process.env, OP_SERVICE_ACCOUNT_TOKEN: token },
     }).trim();
   } catch (err) {
