@@ -28,6 +28,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
 
+// Auto-mock child_process so that all exports become vi.fn() stubs.
+// This must appear before any imports that transitively use child_process
+// (vitest hoists vi.mock calls to run before imports).
+// The inline-implementation describe blocks in this file build local functions
+// and never call childProcess.execFileSync directly, so the mock is safe for
+// the whole file.
+vi.mock('child_process');
+
 // ---------------------------------------------------------------------------
 // The op-secrets module does not exist yet — these tests are written against
 // the expected public API once the module is created from secret-sync/server.ts.
@@ -554,5 +562,352 @@ describe('loadServicesConfig — services.json loading and validation', () => {
     const calledPath = readFileSync.mock.calls[0][0] as string;
     // Path must end with exactly this suffix — no traversal possible
     expect(calledPath.endsWith('/.claude/config/services.json')).toBe(true);
+  });
+});
+
+// ============================================================================
+// REAL MODULE TESTS — import actual op-secrets.ts, mock child_process
+//
+// These tests exercise the real exported functions (not inline re-implementations)
+// to catch defects in the production code that the inline tests cannot reach.
+// child_process is mocked via vi.mock at the top of this file.
+// ============================================================================
+
+import {
+  opRead,
+  resolveLocalSecrets,
+  resolveOpReferencesStrict,
+  buildCleanEnv,
+  INFRA_CRED_KEYS,
+} from '../op-secrets.js';
+
+// Grab the mocked execFileSync that the module uses internally
+const mockedExecFileSync = childProcess.execFileSync as ReturnType<typeof vi.fn>;
+
+describe('opRead (real module) — execFileSync integration', () => {
+  const SAVED_TOKEN = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.OP_SERVICE_ACCOUNT_TOKEN = 'test-op-token-xyz';
+  });
+
+  afterEach(() => {
+    if (SAVED_TOKEN === undefined) {
+      delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    } else {
+      process.env.OP_SERVICE_ACCOUNT_TOKEN = SAVED_TOKEN;
+    }
+  });
+
+  it('should pass timeout: 15000 to execFileSync (defect fix — was no timeout)', () => {
+    mockedExecFileSync.mockReturnValue('secret-value\n');
+
+    opRead('op://vault/item/field');
+
+    expect(mockedExecFileSync).toHaveBeenCalledWith(
+      'op',
+      ['read', 'op://vault/item/field'],
+      expect.objectContaining({ timeout: 15000 }),
+    );
+  });
+
+  it('should throw loudly when OP_SERVICE_ACCOUNT_TOKEN is not set', () => {
+    delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+
+    expect(() => opRead('op://vault/item/field')).toThrow('OP_SERVICE_ACCOUNT_TOKEN not set');
+    expect(mockedExecFileSync).not.toHaveBeenCalled();
+  });
+
+  it('should return trimmed output from execFileSync', () => {
+    mockedExecFileSync.mockReturnValue('  trimmed-secret  \n');
+
+    const result = opRead('op://vault/item/field');
+
+    expect(result).toBe('trimmed-secret');
+  });
+
+  it('should include the reference in the error message when op fails', () => {
+    mockedExecFileSync.mockImplementation(() => {
+      throw new Error('exit status 1');
+    });
+
+    expect(() => opRead('op://vault/myitem/password')).toThrow(/op:\/\/vault\/myitem\/password/);
+  });
+
+  it('should inject OP_SERVICE_ACCOUNT_TOKEN into the child env for the op call', () => {
+    mockedExecFileSync.mockReturnValue('secret');
+
+    opRead('op://vault/item/field');
+
+    expect(mockedExecFileSync).toHaveBeenCalledWith(
+      'op',
+      ['read', 'op://vault/item/field'],
+      expect.objectContaining({
+        env: expect.objectContaining({ OP_SERVICE_ACCOUNT_TOKEN: 'test-op-token-xyz' }),
+      }),
+    );
+  });
+});
+
+describe('getOpToken (real module) — lazy env read', () => {
+  const SAVED_TOKEN = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+
+  afterEach(() => {
+    if (SAVED_TOKEN === undefined) {
+      delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    } else {
+      process.env.OP_SERVICE_ACCOUNT_TOKEN = SAVED_TOKEN;
+    }
+    vi.clearAllMocks();
+  });
+
+  it('should read the token set AFTER import — demonstrates lazy evaluation', () => {
+    // Set token after the module has already been imported
+    process.env.OP_SERVICE_ACCOUNT_TOKEN = 'lazy-token-set-after-import';
+    mockedExecFileSync.mockReturnValue('secret');
+
+    // opRead calls getOpToken() at invocation time, not at import time
+    opRead('op://vault/item/field');
+
+    expect(mockedExecFileSync).toHaveBeenCalledWith(
+      'op',
+      expect.any(Array),
+      expect.objectContaining({
+        env: expect.objectContaining({ OP_SERVICE_ACCOUNT_TOKEN: 'lazy-token-set-after-import' }),
+      }),
+    );
+  });
+
+  it('should return undefined when OP_SERVICE_ACCOUNT_TOKEN is unset — fails loudly in opRead', () => {
+    delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+
+    // getOpToken() returning undefined causes opRead to throw
+    expect(() => opRead('op://vault/item/field')).toThrow('OP_SERVICE_ACCOUNT_TOKEN not set');
+  });
+});
+
+describe('resolveLocalSecrets (real module) — batch resolution with mock execFileSync', () => {
+  const SAVED_TOKEN = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.OP_SERVICE_ACCOUNT_TOKEN = 'test-token-for-batch';
+  });
+
+  afterEach(() => {
+    if (SAVED_TOKEN === undefined) {
+      delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    } else {
+      process.env.OP_SERVICE_ACCOUNT_TOKEN = SAVED_TOKEN;
+    }
+  });
+
+  it('should return resolved keys in resolvedEnv and empty failedKeys on full success', () => {
+    mockedExecFileSync
+      .mockReturnValueOnce('db-url-value')
+      .mockReturnValueOnce('api-key-value');
+
+    const config = {
+      secrets: {
+        local: {
+          DATABASE_URL: 'op://vault/DB/url',
+          API_KEY: 'op://vault/API/key',
+        },
+      },
+    };
+
+    const { resolvedEnv, failedKeys } = resolveLocalSecrets(config as any);
+
+    expect(resolvedEnv['DATABASE_URL']).toBe('db-url-value');
+    expect(resolvedEnv['API_KEY']).toBe('api-key-value');
+    expect(failedKeys).toHaveLength(0);
+  });
+
+  it('should put failing keys in failedKeys and exclude them from resolvedEnv', () => {
+    mockedExecFileSync
+      .mockReturnValueOnce('good-value')    // DATABASE_URL succeeds
+      .mockImplementationOnce(() => {        // SECRET_KEY fails
+        throw new Error('item not found');
+      });
+
+    const config = {
+      secrets: {
+        local: {
+          DATABASE_URL: 'op://vault/DB/url',
+          SECRET_KEY: 'op://vault/Secret/key',
+        },
+      },
+    };
+
+    const { resolvedEnv, failedKeys } = resolveLocalSecrets(config as any);
+
+    expect(resolvedEnv['DATABASE_URL']).toBe('good-value');
+    expect(resolvedEnv['SECRET_KEY']).toBeUndefined();
+    expect(failedKeys).toContain('SECRET_KEY');
+    expect(failedKeys).not.toContain('DATABASE_URL');
+  });
+
+  it('should return empty resolvedEnv when no local secrets are configured', () => {
+    const config = { secrets: {} };
+
+    const { resolvedEnv, failedKeys } = resolveLocalSecrets(config as any);
+
+    expect(resolvedEnv).toEqual({});
+    expect(failedKeys).toEqual([]);
+    expect(mockedExecFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveOpReferencesStrict (real module) — strict variant', () => {
+  const SAVED_TOKEN = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.OP_SERVICE_ACCOUNT_TOKEN = 'test-token-strict';
+  });
+
+  afterEach(() => {
+    if (SAVED_TOKEN === undefined) {
+      delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    } else {
+      process.env.OP_SERVICE_ACCOUNT_TOKEN = SAVED_TOKEN;
+    }
+  });
+
+  it('should report failed keys without throwing', () => {
+    mockedExecFileSync.mockImplementation(() => {
+      throw new Error('vault not found');
+    });
+
+    const { resolved, failedKeys } = resolveOpReferencesStrict({
+      BAD_KEY: 'op://vault/item/field',
+    });
+
+    expect(failedKeys).toContain('BAD_KEY');
+    expect(resolved['BAD_KEY']).toBeUndefined();
+  });
+
+  it('should resolve successful op:// references and include them in resolved', () => {
+    mockedExecFileSync.mockReturnValue('resolved-value');
+
+    const { resolved, failedKeys } = resolveOpReferencesStrict({
+      GOOD_KEY: 'op://vault/item/field',
+    });
+
+    expect(resolved['GOOD_KEY']).toBe('resolved-value');
+    expect(failedKeys).toHaveLength(0);
+  });
+
+  it('should pass non-op:// values through unchanged without calling execFileSync', () => {
+    const { resolved, failedKeys } = resolveOpReferencesStrict({
+      PLAIN_VALUE: 'not-a-secret',
+      ANOTHER: 'also-plain',
+    });
+
+    expect(resolved['PLAIN_VALUE']).toBe('not-a-secret');
+    expect(resolved['ANOTHER']).toBe('also-plain');
+    expect(failedKeys).toHaveLength(0);
+    expect(mockedExecFileSync).not.toHaveBeenCalled();
+  });
+
+  it('should handle a mix of op:// and plain values — resolving op:// and passing through plain', () => {
+    mockedExecFileSync.mockReturnValue('resolved-secret');
+
+    const { resolved, failedKeys } = resolveOpReferencesStrict({
+      SECRET: 'op://vault/item/field',
+      PLAIN: 'plain-value',
+    });
+
+    expect(resolved['SECRET']).toBe('resolved-secret');
+    expect(resolved['PLAIN']).toBe('plain-value');
+    expect(failedKeys).toHaveLength(0);
+  });
+
+  it('should include all failed op:// keys when multiple fail', () => {
+    mockedExecFileSync.mockImplementation(() => {
+      throw new Error('unauthorized');
+    });
+
+    const { resolved, failedKeys } = resolveOpReferencesStrict({
+      KEY_A: 'op://vault/A/field',
+      KEY_B: 'op://vault/B/field',
+    });
+
+    expect(failedKeys).toContain('KEY_A');
+    expect(failedKeys).toContain('KEY_B');
+    expect(Object.keys(resolved)).toHaveLength(0);
+  });
+});
+
+describe('buildCleanEnv (real module) — strips INFRA_CRED_KEYS from process.env', () => {
+  const SAVED_OP_TOKEN = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+  const SAVED_GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.OP_SERVICE_ACCOUNT_TOKEN = 'should-be-stripped';
+    process.env.GITHUB_TOKEN = 'github-should-be-stripped';
+  });
+
+  afterEach(() => {
+    if (SAVED_OP_TOKEN === undefined) {
+      delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    } else {
+      process.env.OP_SERVICE_ACCOUNT_TOKEN = SAVED_OP_TOKEN;
+    }
+    if (SAVED_GITHUB_TOKEN === undefined) {
+      delete process.env.GITHUB_TOKEN;
+    } else {
+      process.env.GITHUB_TOKEN = SAVED_GITHUB_TOKEN;
+    }
+  });
+
+  it('should strip OP_SERVICE_ACCOUNT_TOKEN from the result', () => {
+    const result = buildCleanEnv();
+
+    expect('OP_SERVICE_ACCOUNT_TOKEN' in result).toBe(false);
+  });
+
+  it('should strip GITHUB_TOKEN from the result', () => {
+    const result = buildCleanEnv();
+
+    expect('GITHUB_TOKEN' in result).toBe(false);
+  });
+
+  it('should strip all INFRA_CRED_KEYS', () => {
+    // Set all infra keys in process.env
+    process.env.RENDER_API_KEY = 'render-key';
+    process.env.VERCEL_TOKEN = 'vercel-token';
+    process.env.VERCEL_TEAM_ID = 'team-id';
+    process.env.GH_TOKEN = 'gh-token';
+
+    try {
+      const result = buildCleanEnv();
+
+      for (const key of INFRA_CRED_KEYS) {
+        expect(key in result).toBe(false);
+      }
+    } finally {
+      delete process.env.RENDER_API_KEY;
+      delete process.env.VERCEL_TOKEN;
+      delete process.env.VERCEL_TEAM_ID;
+      delete process.env.GH_TOKEN;
+    }
+  });
+
+  it('should inject extraSecrets values into the result', () => {
+    const result = buildCleanEnv({ DATABASE_URL: 'injected-db-url' });
+
+    expect(result['DATABASE_URL']).toBe('injected-db-url');
+  });
+
+  it('should preserve non-credential env vars', () => {
+    process.env.NODE_ENV = 'test';
+
+    const result = buildCleanEnv();
+
+    // NODE_ENV is not an infra cred key and should be preserved
+    expect(result['NODE_ENV']).toBe('test');
   });
 });
