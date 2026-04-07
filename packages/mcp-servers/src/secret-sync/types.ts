@@ -131,6 +131,10 @@ export const ServicesConfigSchema = z.object({
   }).optional(),
   devServices: z.record(z.string(), DevServiceSchema).optional(),
   demoDevModeEnv: z.record(z.string(), z.string()).optional(),
+  worktreeBuildCommand: z.string().optional()
+    .describe('Shell command to build workspace packages in worktrees (e.g., "pnpm --recursive build")'),
+  worktreeBuildHealthCheck: z.string().optional()
+    .describe('Shell command that exits 0 if build artifacts exist (e.g., "test -f packages/browser-proxy/dist/index.js")'),
   runCommandConfig: z.object({
     allowedExecutables: z.array(z.string()).optional()
       .describe('Additional executables to allow beyond defaults'),
