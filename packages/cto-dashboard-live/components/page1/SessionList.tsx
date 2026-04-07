@@ -91,6 +91,7 @@ export function buildSelectableItems(data: LiveDashboardData): SelectableItem[] 
         sessionId: null,
         elapsed: st.worklog?.durationMs != null ? `${Math.round(st.worklog.durationMs / 1000)}s` : '',
         worklog: st.worklog,
+        worktreePath: null,
       };
       items.push({ type: 'session', sessionId: stItem.id, item: stItem });
     }

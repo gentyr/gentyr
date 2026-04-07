@@ -28,6 +28,7 @@ function mkSession(overrides: Partial<SessionItem> & { id: string; title: string
     sessionId: null,
     elapsed: '0s',
     worklog: null,
+    worktreePath: null,
     ...overrides,
   };
 }

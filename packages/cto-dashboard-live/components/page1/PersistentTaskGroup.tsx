@@ -61,6 +61,7 @@ export function PersistentTaskGroup({ task, monitorSelected, selectedChildId, wi
               sessionId: null,
               elapsed: st.worklog?.durationMs != null ? `${Math.round(st.worklog.durationMs / 1000)}s` : '',
               worklog: st.worklog,
+              worktreePath: null,
             };
             return (
               <Box key={st.id} marginLeft={2}>

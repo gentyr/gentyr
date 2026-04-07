@@ -72,9 +72,9 @@ function readTail(filePath: string, bytes = 8192): string {
   }
 }
 
-/** Find session dir for this project under ~/.claude/projects/ */
-function getSessionDir(): string | null {
-  const encoded = PROJECT_DIR.replace(/[^a-zA-Z0-9]/g, '-');
+/** Find session dir for a given project/worktree path under ~/.claude/projects/ */
+function getSessionDirForPath(dirPath: string): string | null {
+  const encoded = dirPath.replace(/[^a-zA-Z0-9]/g, '-');
   const base = path.join(os.homedir(), '.claude', 'projects');
   for (const variant of [encoded, encoded.replace(/^-/, '')]) {
     const p = path.join(base, variant);
@@ -83,58 +83,71 @@ function getSessionDir(): string | null {
   return null;
 }
 
-/** Find a session JSONL file by [AGENT:id] marker. Checks head (8KB) then tail (16KB). */
-export function findSessionFile(agentId: string): string | null {
-  const dir = getSessionDir();
-  if (!dir) return null;
+function getSessionDir(): string | null {
+  return getSessionDirForPath(PROJECT_DIR);
+}
+
+/** Find a session JSONL file by [AGENT:id] marker. Searches worktree dir first, then main project dir. */
+export function findSessionFile(agentId: string, worktreePath?: string | null): string | null {
   const marker = `[AGENT:${agentId}]`;
-  // Also check for bare agent ID (appears in tool results, hook output, etc.)
-  const bareMarker = agentId;
-  try {
-    // Sort by mtime descending — most recently modified files first (most likely to be the active session)
-    const files = fs.readdirSync(dir)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime)
-      .slice(0, 50); // Only check the 50 most recent files
 
-    for (const { name } of files) {
-      const fp = path.join(dir, name);
-      let fd: number | undefined;
-      try {
-        fd = fs.openSync(fp, 'r');
-        const stat = fs.fstatSync(fd);
-        const fileSize = stat.size;
+  function searchDir(dir: string): string | null {
+    try {
+      const files = fs.readdirSync(dir)
+        .filter(f => f.endsWith('.jsonl'))
+        .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)
+        .slice(0, 50);
 
-        // Check head (first 8KB)
-        const headSize = Math.min(8192, fileSize);
-        const headBuf = Buffer.alloc(headSize);
-        fs.readSync(fd, headBuf, 0, headSize, 0);
-        const headStr = headBuf.toString('utf8');
-        if (headStr.includes(marker) || headStr.includes(bareMarker)) {
-          fs.closeSync(fd);
-          return fp;
-        }
+      for (const { name } of files) {
+        const fp = path.join(dir, name);
+        let fd: number | undefined;
+        try {
+          fd = fs.openSync(fp, 'r');
+          const stat = fs.fstatSync(fd);
+          const fileSize = stat.size;
 
-        // Check tail (last 16KB) — marker often appears in recent tool calls
-        if (fileSize > 8192) {
-          const tailSize = Math.min(16384, fileSize - headSize);
-          const tailBuf = Buffer.alloc(tailSize);
-          fs.readSync(fd, tailBuf, 0, tailSize, fileSize - tailSize);
-          const tailStr = tailBuf.toString('utf8');
-          if (tailStr.includes(marker) || tailStr.includes(bareMarker)) {
+          // Check head (first 8KB)
+          const headSize = Math.min(8192, fileSize);
+          const headBuf = Buffer.alloc(headSize);
+          fs.readSync(fd, headBuf, 0, headSize, 0);
+          if (headBuf.toString('utf8').includes(marker)) {
             fs.closeSync(fd);
             return fp;
           }
-        }
 
-        fs.closeSync(fd);
-      } catch {
-        if (fd !== undefined) try { fs.closeSync(fd); } catch { /* */ }
+          // Check tail (last 16KB)
+          if (fileSize > 8192) {
+            const tailSize = Math.min(16384, fileSize - headSize);
+            const tailBuf = Buffer.alloc(tailSize);
+            fs.readSync(fd, tailBuf, 0, tailSize, fileSize - tailSize);
+            if (tailBuf.toString('utf8').includes(marker)) {
+              fs.closeSync(fd);
+              return fp;
+            }
+          }
+
+          fs.closeSync(fd);
+        } catch {
+          if (fd !== undefined) try { fs.closeSync(fd); } catch { /* */ }
+        }
       }
+    } catch { /* */ }
+    return null;
+  }
+
+  // Search worktree session dir first (O(1) lookup — typically 1-2 files)
+  if (worktreePath) {
+    const wtDir = getSessionDirForPath(worktreePath);
+    if (wtDir) {
+      const found = searchDir(wtDir);
+      if (found) return found;
     }
-  } catch { /* */ }
-  return null;
+  }
+
+  // Fall back to main project session dir
+  const mainDir = getSessionDir();
+  return mainDir ? searchDir(mainDir) : null;
 }
 
 interface SessionSnapshot {
@@ -144,8 +157,8 @@ interface SessionSnapshot {
 }
 
 /** Extract last tool name, timestamp, and last assistant text from session JSONL tail. */
-function getSessionSnapshot(agentId: string): SessionSnapshot {
-  const file = findSessionFile(agentId);
+function getSessionSnapshot(agentId: string, worktreePath?: string | null): SessionSnapshot {
+  const file = findSessionFile(agentId, worktreePath);
   if (!file) return { tool: null, timestamp: null, lastMessage: null };
   const tail = readTail(file, 16384); // read more for message extraction
   const lines = tail.split('\n').filter(l => l.trim());
@@ -180,7 +193,7 @@ function getSessionSnapshot(agentId: string): SessionSnapshot {
 // Session Queue
 // ============================================================================
 
-interface QueueRow { id: string; status: string; priority: string; lane: string; title: string; agent_type: string; agent_id: string | null; source: string; pid: number | null; enqueued_at: string; spawned_at: string | null; completed_at: string | null; metadata: string | null; prompt: string | null; }
+interface QueueRow { id: string; status: string; priority: string; lane: string; title: string; agent_type: string; agent_id: string | null; source: string; pid: number | null; enqueued_at: string; spawned_at: string | null; completed_at: string | null; metadata: string | null; prompt: string | null; worktree_path: string | null; }
 
 function readSessionQueue(): { queued: SessionItem[]; running: SessionItem[]; suspended: SessionItem[]; completed: SessionItem[]; maxConcurrent: number } {
   const db = openDb(path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db'));
@@ -197,8 +210,9 @@ function readSessionQueue(): { queued: SessionItem[]; running: SessionItem[]; su
     function toSession(row: QueueRow): SessionItem {
       // Use agent_id directly from queue_items (always populated for spawned sessions)
       const agentId: string | null = row.agent_id || null;
+      const worktreePath: string | null = row.worktree_path || null;
       const elapsed = row.spawned_at ? formatElapsed(now - new Date(row.spawned_at).getTime()) : formatElapsed(now - new Date(row.enqueued_at).getTime());
-      const snapshot = agentId ? getSessionSnapshot(agentId) : { tool: null, timestamp: null, lastMessage: null };
+      const snapshot = agentId ? getSessionSnapshot(agentId, worktreePath) : { tool: null, timestamp: null, lastMessage: null };
 
       // Description: first 150 chars of prompt (useful for queued items)
       let description: string | null = null;
@@ -223,6 +237,7 @@ function readSessionQueue(): { queued: SessionItem[]; running: SessionItem[]; su
         sessionId: agentId || row.id,
         elapsed,
         worklog: null,
+        worktreePath,
       };
     }
 
@@ -271,8 +286,9 @@ export function readMoreCompleted(offset: number, limit: number): SessionItem[] 
     const sessions = rows.map(row => {
       // Use agent_id directly from queue_items (always populated for spawned sessions)
       const agentId: string | null = row.agent_id || null;
+      const worktreePath: string | null = row.worktree_path || null;
       const elapsed = row.spawned_at ? formatElapsed(now - new Date(row.spawned_at).getTime()) : '';
-      const snapshot = agentId ? getSessionSnapshot(agentId) : { tool: null, timestamp: null, lastMessage: null };
+      const snapshot = agentId ? getSessionSnapshot(agentId, worktreePath) : { tool: null, timestamp: null, lastMessage: null };
 
       const s: SessionItem = {
         id: row.id,
@@ -290,6 +306,7 @@ export function readMoreCompleted(offset: number, limit: number): SessionItem[] 
         sessionId: agentId || row.id,
         elapsed,
         worklog: findWorklog(row.id, row.metadata),
+        worktreePath,
       };
       return s;
     });
@@ -368,6 +385,7 @@ function readPersistentTasks(runningSessions: SessionItem[]): PersistentTaskItem
         sessionId: monitorAgentId || `pt-monitor-${t.id}`,
         elapsed: ageStr(t.activated_at),
         worklog: null,
+        worktreePath: null,
       };
 
       // Sub-tasks — resolve titles, sort by status, limit displayed count
@@ -729,8 +747,9 @@ export function readLiveData(): LiveDashboardData {
 export function readSessionTail(
   agentId: string,
   fromPosition?: number,
+  worktreePath?: string | null,
 ): { entries: ActivityEntry[]; newPosition: number } {
-  const file = findSessionFile(agentId);
+  const file = findSessionFile(agentId, worktreePath);
   if (!file) return { entries: [], newPosition: 0 };
 
   let fd: number | undefined;
@@ -800,12 +819,12 @@ export function readSessionTail(
             });
           } else if (b['type'] === 'text') {
             const textVal = typeof b['text'] === 'string' ? b['text'] : '';
-            const preview = textVal.trim().split('\n').find((l: string) => l.trim().length > 3) ?? textVal;
-            if (preview.trim().length > 0) {
+            const preview = textVal.trim().split('\n').find((l: string) => l.trim().length > 3) ?? '';
+            if (preview.length > 5) {
               entries.push({
                 type: 'assistant_text',
                 timestamp,
-                text: preview.trim().substring(0, 200),
+                text: preview.substring(0, 200),
               });
             }
           }
