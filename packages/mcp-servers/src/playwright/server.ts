@@ -22,7 +22,7 @@ import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
-import { loadServicesConfig, resolveLocalSecrets, resolveOpReferences, INFRA_CRED_KEYS, buildCleanEnv } from '../shared/op-secrets.js';
+import { loadServicesConfig, resolveLocalSecrets, resolveOpReferencesStrict, INFRA_CRED_KEYS, buildCleanEnv } from '../shared/op-secrets.js';
 import {
   LaunchUiModeArgsSchema,
   RunTestsArgsSchema,
@@ -405,6 +405,21 @@ function validatePrerequisites(): PreflightResult {
     if (credentialVars.length === 0) {
       errors.push('No credential environment variables found — 1Password injection may have failed entirely');
     }
+  }
+
+  // Check 3: Validate required secrets from services.json are resolved
+  try {
+    const config = loadServicesConfig(PROJECT_DIR);
+    const localSecrets = config.secrets.local || {};
+    const missingSecrets = Object.keys(localSecrets).filter(key => {
+      const val = process.env[key];
+      return !val || val.startsWith('op://');
+    });
+    if (missingSecrets.length > 0) {
+      errors.push(`Required secrets missing or unresolved: ${missingSecrets.join(', ')}`);
+    }
+  } catch {
+    // services.json not available — fall through to existing heuristic
   }
 
   return { ok: errors.length === 0, errors, warnings };
@@ -1399,6 +1414,34 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     }
   }
 
+  // Auth file freshness gate — prevent burning a full demo run on stale auth
+  if (pwConfig.authFiles.length > 0 && pwConfig.primaryAuthFile) {
+    const primaryFile = path.join(PROJECT_DIR, pwConfig.primaryAuthFile);
+    if (fs.existsSync(primaryFile)) {
+      const ageMs = Date.now() - fs.statSync(primaryFile).mtimeMs;
+      if (ageMs > 24 * 60 * 60 * 1000) {
+        return {
+          success: false,
+          project,
+          message: `Auth state file is ${(ageMs / 3600000).toFixed(1)}h old (>24h). Run mcp__playwright__run_auth_setup to refresh.`,
+        };
+      }
+      // Cookie expiry check
+      try {
+        const state = JSON.parse(fs.readFileSync(primaryFile, 'utf-8'));
+        const now = Date.now() / 1000;
+        const expiredCookies = (state.cookies || []).filter((c: { expires?: number }) => c.expires && c.expires > 0 && c.expires < now);
+        if (expiredCookies.length > 0) {
+          return {
+            success: false,
+            project,
+            message: `Auth cookies are expired (${expiredCookies.length} expired cookie(s)). Run mcp__playwright__run_auth_setup to refresh.`,
+          };
+        }
+      } catch { /* non-fatal — file may not be valid JSON storage state */ }
+    }
+  }
+
   // Look up scenario env_vars and test_file if scenario_id is provided
   let scenarioEnvVars: Record<string, string> | undefined;
   if (args.scenario_id) {
@@ -1426,7 +1469,15 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
   // Resolve any op:// references in scenario env_vars before merging
   if (scenarioEnvVars) {
-    scenarioEnvVars = resolveOpReferences(scenarioEnvVars);
+    const { resolved: resolvedScenarioEnv, failedKeys: scenarioFailedKeys } = resolveOpReferencesStrict(scenarioEnvVars);
+    if (scenarioFailedKeys.length > 0) {
+      return {
+        success: false,
+        project,
+        message: `Credential resolution failed for scenario env vars: ${scenarioFailedKeys.join(', ')}. Check OP_SERVICE_ACCOUNT_TOKEN and 1Password connectivity.`,
+      };
+    }
+    scenarioEnvVars = resolvedScenarioEnv;
   }
 
   // Merge env_vars: scenario env_vars as base, explicit extra_env overrides
@@ -3503,6 +3554,25 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
     return { status: 'fail', message: preflight.errors.join('; ') };
   }));
 
+  // 5b. 1Password connectivity check
+  checks.push(runCheck('op_connectivity', () => {
+    const token = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    if (!token) {
+      return { status: 'warn' as const, message: 'OP_SERVICE_ACCOUNT_TOKEN not set — op:// secret resolution will fail for scenarios using 1Password references' };
+    }
+    try {
+      execFileSync('op', ['whoami'], {
+        encoding: 'utf-8',
+        timeout: 10000,
+        env: { ...process.env as Record<string, string>, OP_SERVICE_ACCOUNT_TOKEN: token },
+        stdio: 'pipe',
+      });
+      return { status: 'pass' as const, message: '1Password service account reachable' };
+    } catch (err) {
+      return { status: 'fail' as const, message: `1Password unreachable: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }));
+
   // 6. Compilation succeeds (unless skipped)
   if (!args.skip_compilation && args.project) {
     checks.push(runCheck('compilation', () => {
@@ -3809,6 +3879,9 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
         break;
       case 'credentials_valid':
         recoverySteps.push('Check 1Password credential injection — ensure all op:// references in MCP server env are resolved');
+        break;
+      case 'op_connectivity':
+        recoverySteps.push('Set OP_SERVICE_ACCOUNT_TOKEN env var with a valid 1Password service account token, or run: npx gentyr sync to re-inject credentials');
         break;
       case 'compilation':
         recoverySteps.push('Fix TypeScript compilation errors — run: npx playwright test --list to see details');
@@ -4349,7 +4422,7 @@ function discoverScenarios(opts: {
   scenario_ids?: string[];
   persona_ids?: string[];
   category_filter?: string;
-}): Array<{ id: string; title: string; test_file: string; persona_id?: string; env_vars?: Record<string, string> }> {
+}): Array<{ id: string; title: string; test_file: string; persona_id?: string; env_vars?: Record<string, string>; credential_warnings?: string[] }> {
   const dbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
   if (!fs.existsSync(dbPath)) return [];
 
@@ -4394,10 +4467,15 @@ function discoverScenarios(opts: {
     }>;
     return rows.map(r => {
       let envVars: Record<string, string> | undefined;
+      let credentialWarnings: string[] | undefined;
       if (r.env_vars) {
         try {
           const parsed = JSON.parse(r.env_vars) as Record<string, string>;
-          envVars = resolveOpReferences(parsed);
+          const { resolved, failedKeys } = resolveOpReferencesStrict(parsed);
+          envVars = resolved;
+          if (failedKeys.length > 0) {
+            credentialWarnings = failedKeys.map(k => `Failed to resolve credential: ${k}`);
+          }
         } catch { /* invalid JSON */ }
       }
       return {
@@ -4406,6 +4484,7 @@ function discoverScenarios(opts: {
         test_file: r.test_file,
         persona_id: r.persona_id ?? undefined,
         env_vars: envVars,
+        ...(credentialWarnings ? { credential_warnings: credentialWarnings } : {}),
       };
     });
   } finally {

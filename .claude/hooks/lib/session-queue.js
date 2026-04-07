@@ -204,6 +204,14 @@ function getDb() {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS revival_events (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_revival_task_time ON revival_events(task_id, created_at);
   `);
 
   // Seed default config if not present
@@ -487,20 +495,54 @@ export function enqueueSession(spec) {
  * @param {string} taskId - persistent task ID
  */
 function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
-  // In-memory rate limiter: max 3 hard revivals per task in 10 minutes
-  // Heartbeat-stale revivals don't count toward this limit (they're routine recovery)
-  const revivalEntries = _monitorRevivalTimestamps.get(taskId) || [];
+  // In-memory rate limiter + DB fallback: max 3 hard revivals per task in 10 minutes
+  // In-memory is fast path; DB is source of truth after process restart
+  const memEntries = _monitorRevivalTimestamps.get(taskId) || [];
   const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
-  const recentEntries = revivalEntries.filter(e => e.ts > tenMinutesAgo);
-  const hardRevivals = recentEntries.filter(e => e.reason !== 'stale_heartbeat');
-  if (hardRevivals.length >= 3) {
-    log(`[persistent-revival] Rate-limited revival for ${taskId}: ${hardRevivals.length} revivals in last 10min (max 3)`);
+  let recentHardCount;
+  if (memEntries.length > 0) {
+    const recentEntries = memEntries.filter(e => e.ts > tenMinutesAgo);
+    recentHardCount = recentEntries.filter(e => e.reason !== 'stale_heartbeat').length;
+  } else {
+    // Cold-start: read from DB (survives process restart)
+    try {
+      const dbRecent = db.prepare(
+        "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason != 'stale_heartbeat'"
+      ).get(taskId);
+      recentHardCount = dbRecent?.cnt || 0;
+    } catch (_) {
+      recentHardCount = 0;
+    }
+  }
+  if (recentHardCount >= 3) {
+    log(`[persistent-revival] Rate-limited revival for ${taskId}: ${recentHardCount} hard revivals in last 10min (max 3)`);
+    // Auto-pause the task to stop the crash loop
+    try {
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (fs.existsSync(ptDbPath)) {
+        const ptDb2 = new Database(ptDbPath);
+        ptDb2.pragma('busy_timeout = 3000');
+        ptDb2.prepare("UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status = 'active'").run(taskId);
+        try {
+          ptDb2.prepare(
+            "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'paused', ?, ?)"
+          ).run(
+            generateQueueId(),
+            taskId,
+            JSON.stringify({ reason: 'crash_loop_circuit_breaker', source: 'session-queue-rate-limiter' }),
+            new Date().toISOString()
+          );
+        } catch (_) { /* non-fatal */ }
+        ptDb2.close();
+        log(`Auto-paused persistent task ${taskId} due to rate-limited crash loop`);
+      }
+    } catch (e) { log(`Failed to auto-pause: ${e.message}`); }
     return;
   }
 
-  // Dedup: already queued or running?
+  // Dedup: already queued, spawning, or running?
   const existing = db.prepare(
-    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running') AND json_extract(metadata, '$.persistentTaskId') = ?"
+    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.persistentTaskId') = ?"
   ).get(taskId);
   if (existing && existing.cnt > 0) {
     const existingItem = db.prepare(
@@ -510,16 +552,16 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
     return;
   }
 
-  // Crash-loop circuit breaker: cap at 5 hard revivals per task in the last hour
+  // Crash-loop circuit breaker: cap at 3 hard revivals per task in the last 10 minutes
   // Heartbeat-stale revivals are excluded from this count — they're routine recovery, not crashes.
-  // NOTE: Use datetime('now', '-1 hour') in SQL — NOT JS toISOString(). SQLite's datetime()
+  // NOTE: Use datetime('now', '-10 minutes') in SQL — NOT JS toISOString(). SQLite's datetime()
   // produces '2026-03-29 14:53:59' (space separator) while toISOString() produces
   // '2026-03-29T14:53:59.000Z' (T separator). String comparison breaks across formats.
   const dbRecentRevivals = db.prepare(
-    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-1 hour') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') != 'heartbeat_stale_revival'"
+    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') != 'heartbeat_stale_revival'"
   ).get(taskId);
-  if (dbRecentRevivals && dbRecentRevivals.cnt >= 5) {
-    log(`[persistent-revival] Circuit breaker tripped for ${taskId}: ${dbRecentRevivals.cnt} revivals in last hour (max 5). Auto-pausing task.`);
+  if (dbRecentRevivals && dbRecentRevivals.cnt >= 3) {
+    log(`[persistent-revival] Circuit breaker tripped for ${taskId}: ${dbRecentRevivals.cnt} revivals in last 10 minutes (max 3). Auto-pausing task.`);
 
     // Auto-pause the task to stop the crash loop
     try {
@@ -623,6 +665,12 @@ Persistent Task ID: ${taskId}`;
 
   const revivalReason = reapReason === 'stale_heartbeat' ? 'heartbeat_stale_revival' : 'immediate_reaper_revival';
   log(`[persistent-revival] Enqueued revival for ${taskId} (reason: ${reapReason}, revivalReason: ${revivalReason}, queueId: ${id})`);
+
+  // Persist revival event (survives process restart)
+  try {
+    db.prepare("INSERT INTO revival_events (id, task_id, reason, created_at) VALUES (?, ?, ?, datetime('now'))")
+      .run(generateQueueId(), taskId, reapReason === 'stale_heartbeat' ? 'stale_heartbeat' : 'hard_revival');
+  } catch (_) { /* non-fatal */ }
 
   // Record revival entry for in-memory rate limiting
   const entries = _monitorRevivalTimestamps.get(taskId) || [];

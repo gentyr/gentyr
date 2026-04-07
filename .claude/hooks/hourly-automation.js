@@ -2777,6 +2777,14 @@ async function main() {
       cleanupAuditLog();
       cleanupDebugLog();
 
+      // Clean up old revival events (24h retention)
+      try {
+        const qDb = new Database(path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db'));
+        qDb.pragma('busy_timeout = 3000');
+        qDb.prepare("DELETE FROM revival_events WHERE created_at < datetime('now', '-24 hours')").run();
+        qDb.close();
+      } catch (_) { /* non-fatal — table may not exist yet */ }
+
       // Clean up orphaned progress files (agent no longer running)
       const agentProgressDir = path.join(PROJECT_DIR, '.claude', 'state', 'agent-progress');
       if (fs.existsSync(agentProgressDir)) {
@@ -3035,6 +3043,43 @@ async function main() {
               continue;
             }
           } catch (_) { /* non-fatal — proceed with resume */ }
+
+          // Validate 1Password connectivity before auto-resuming
+          // Only gates when token IS configured but unreachable — skip check entirely when unconfigured
+          if (process.env.OP_SERVICE_ACCOUNT_TOKEN) {
+            let opReachable = false;
+            try {
+              execFileSync('op', ['whoami'], {
+                encoding: 'utf-8',
+                timeout: 10000,
+                stdio: 'pipe',
+              });
+              opReachable = true;
+            } catch (_) { /* op unreachable */ }
+            if (!opReachable) {
+              log(`Persistent stale pause auto-resume: "${task.title}" — 1Password unreachable, skipping resume`);
+              continue;
+            }
+          }
+
+          // Crash-loop paused tasks require longer cooldown (default 2h vs standard 30min)
+          const pauseDetails = (() => {
+            try {
+              const evt = ptDb.prepare(
+                "SELECT details FROM events WHERE persistent_task_id = ? AND event_type = 'paused' ORDER BY created_at DESC LIMIT 1"
+              ).get(task.id);
+              return evt?.details ? JSON.parse(evt.details) : {};
+            } catch { return {}; }
+          })();
+
+          if (pauseDetails.reason === 'crash_loop_circuit_breaker') {
+            const crashLoopCooldownMinutes = getCooldown('crash_loop_auto_resume_minutes', 120);
+            const crashLoopCooldownMs = crashLoopCooldownMinutes * 60 * 1000;
+            if (pauseAge < crashLoopCooldownMs) {
+              log(`Persistent stale pause auto-resume: "${task.title}" was crash-loop paused ${Math.round(pauseAge / 60000)}min ago — below ${crashLoopCooldownMinutes}min crash-loop threshold`);
+              continue;
+            }
+          }
 
           log(`Persistent stale pause auto-resume: resuming "${task.title}" (paused ${Math.round(pauseAge / 60000)}min ago, threshold=${thresholdMinutes}min)`);
 

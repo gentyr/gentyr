@@ -110,6 +110,32 @@ export function resolveOpReferences(envVars: Record<string, string>): Record<str
 }
 
 /**
+ * Strict variant of resolveOpReferences — returns failed keys instead of silently dropping them.
+ * Callers can decide whether to abort or continue with partial results.
+ */
+export function resolveOpReferencesStrict(envVars: Record<string, string>): {
+  resolved: Record<string, string>;
+  failedKeys: string[];
+} {
+  const resolved: Record<string, string> = {};
+  const failedKeys: string[] = [];
+  for (const [key, value] of Object.entries(envVars)) {
+    if (typeof value === 'string' && value.startsWith('op://')) {
+      try {
+        resolved[key] = opRead(value);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[op-secrets] resolveOpReferencesStrict: failed to resolve ${key}: ${message}\n`);
+        failedKeys.push(key);
+      }
+    } else {
+      resolved[key] = value;
+    }
+  }
+  return { resolved, failedKeys };
+}
+
+/**
  * Build a clean child environment from process.env:
  * - Strips INFRA_CRED_KEYS
  * - Merges in optional extra secrets
