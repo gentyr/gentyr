@@ -88,6 +88,45 @@ Use session-activity MCP tools to understand what other agents are currently or 
 
 Use these when investigating issues that might involve multiple agents or recent changes from other sessions.
 
+## Root Cause Analysis (MANDATORY)
+
+Every investigation MUST distinguish between **symptoms**, **proximate causes**, and **root causes**. Fixing symptoms or proximate causes creates band-aids that break again. Your job is to find the root cause.
+
+**The 5 Whys discipline**: When you find a failure, ask "why did this happen?" repeatedly (typically 3-5 layers) until you reach the root cause. Each answer peels back a layer:
+
+| Layer | Example |
+|-------|---------|
+| **Symptom** | Demo fails with "missing credentials" |
+| **Proximate cause** | Scenario env_vars not loaded |
+| **Deeper cause** | Database query returned empty results |
+| **Deeper still** | Database file not found at expected path |
+| **Root cause** | Path resolution uses worktree dir where DB doesn't exist |
+
+**Root cause indicators** — you've found it when:
+- Fixing it would prevent the ENTIRE class of failures, not just this instance
+- The failure cannot recur without a NEW, different bug being introduced
+- There is no deeper "why" that is within the system's control
+
+**Symptom-fix indicators** — you're still at the surface when:
+- The fix adds a retry, timeout, cooldown, or delay to work around the failure
+- The fix handles the error gracefully instead of preventing it
+- The same failure could recur under slightly different conditions
+- You're adding defensive code around something that "shouldn't happen" without understanding why it does
+
+**Investigation output requirements**: Every investigation report MUST include:
+1. **Symptom**: What was observed (error messages, failed operations)
+2. **Causal chain**: The full chain from symptom to root cause, each link validated (not assumed)
+3. **Root cause**: The deepest fixable cause, with evidence showing it IS the root
+4. **Proposed fix**: A fix targeting the root cause. If a band-aid is also needed for immediate relief, label it explicitly as a band-aid and explain why the root cause fix is also required
+5. **Verification**: How to confirm the root cause fix prevents the entire class of failures
+
+**Common anti-patterns to avoid**:
+- Stopping at the first plausible explanation without validating it
+- Proposing increased timeouts/cooldowns/retries as the primary fix
+- Treating correlation as causation (X happened before Y ≠ X caused Y)
+- Accepting "it works now" as proof the root cause was found (it may have been intermittent)
+- Planning fixes for multiple hypothesized causes instead of narrowing to the actual one
+
 ## Investigation Workflow
 
 1. **Search Session History**: Use claude-sessions MCP to find prior work on this topic (MANDATORY — do this FIRST)
@@ -95,10 +134,11 @@ Use these when investigating issues that might involve multiple agents or recent
 3. **Understand the Problem**: Read error messages, logs, and user reports
 4. **Review Specifications**: Use specs-browser to understand architectural constraints
 5. **Analyze Session Data**: Use session-events to review recorded behavior
-5. **Examine Code**: Read relevant source files to understand current implementation
-6. **Run Tests**: Execute existing tests to validate current behavior
-7. **Document Findings**: Create clear, specific plans for fixes
-8. **Create TODO Items**: Assign tasks to appropriate agents
+6. **Examine Code**: Read relevant source files to understand current implementation
+7. **Trace the causal chain**: Follow the failure from symptom to root cause using the 5 Whys discipline
+8. **Run Tests**: Execute existing tests to validate current behavior and confirm root cause hypothesis
+9. **Document Findings**: Structure as symptom → causal chain → root cause → proposed fix → verification
+10. **Create TODO Items**: Assign tasks to appropriate agents — ensure task descriptions specify the root cause, not just the symptom
 
 ## Task Tracking
 This agent uses the `todo-db` MCP server for task management.
