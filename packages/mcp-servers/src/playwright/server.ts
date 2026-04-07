@@ -109,6 +109,27 @@ const EFFECTIVE_CWD = WORKTREE_DIR ? path.resolve(WORKTREE_DIR) : PROJECT_DIR;
 const pwConfig = discoverPlaywrightConfig(EFFECTIVE_CWD);
 const REPORT_DIR = path.join(PROJECT_DIR, 'playwright-report');
 
+/**
+ * Resolve user-feedback.db path — falls back to main tree when running in a worktree.
+ * The DB is global shared state (gitignored), so it only exists in the main tree.
+ */
+function getUserFeedbackDbPath(): string {
+  const primary = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+  if (fs.existsSync(primary)) return primary;
+
+  // Worktree fallback: derive main tree from worktree path
+  if (WORKTREE_DIR) {
+    const worktreeIdx = PROJECT_DIR.indexOf('/.claude/worktrees/');
+    if (worktreeIdx !== -1) {
+      const mainTree = PROJECT_DIR.substring(0, worktreeIdx);
+      const fallback = path.join(mainTree, '.claude', 'user-feedback.db');
+      if (fs.existsSync(fallback)) return fallback;
+    }
+  }
+
+  return primary;
+}
+
 /** Path to the display-lock shared module (hooks/lib/display-lock.js). */
 const DISPLAY_LOCK_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'display-lock.js');
 const RUN_TIMEOUT = 300_000; // 5 minutes for test runs
@@ -497,7 +518,7 @@ function persistScenarioRecording(scenarioId: string, videoPath: string): void {
     const destPath = path.join(recordingsDir, `${scenarioId}.mp4`);
     fs.copyFileSync(videoPath, destPath);
 
-    const userFeedbackDbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+    const userFeedbackDbPath = getUserFeedbackDbPath();
     const db = new Database(userFeedbackDbPath);
     try {
       db.prepare(
@@ -1055,7 +1076,7 @@ async function executePrerequisites(opts: {
   dry_run?: boolean;
   base_url?: string;
 }): Promise<RunPrerequisitesResult> {
-  const dbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+  const dbPath = getUserFeedbackDbPath();
   const entries: PrerequisiteExecEntry[] = [];
 
   if (!fs.existsSync(dbPath)) {
@@ -1446,7 +1467,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   let scenarioEnvVars: Record<string, string> | undefined;
   if (args.scenario_id) {
     try {
-      const feedbackDbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+      const feedbackDbPath = getUserFeedbackDbPath();
       if (fs.existsSync(feedbackDbPath)) {
         const feedbackDb = new Database(feedbackDbPath, { readonly: true });
         try {
@@ -4423,7 +4444,7 @@ function discoverScenarios(opts: {
   persona_ids?: string[];
   category_filter?: string;
 }): Array<{ id: string; title: string; test_file: string; persona_id?: string; env_vars?: Record<string, string>; credential_warnings?: string[] }> {
-  const dbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+  const dbPath = getUserFeedbackDbPath();
   if (!fs.existsSync(dbPath)) return [];
 
   const db = new Database(dbPath, { readonly: true });
