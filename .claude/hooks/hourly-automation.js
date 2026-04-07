@@ -3062,7 +3062,7 @@ async function main() {
             }
           }
 
-          // Crash-loop paused tasks require longer cooldown (default 2h vs standard 30min)
+          // Crash-loop paused tasks use a separate cooldown (default 15min, configurable)
           const pauseDetails = (() => {
             try {
               const evt = ptDb.prepare(
@@ -3073,7 +3073,7 @@ async function main() {
           })();
 
           if (pauseDetails.reason === 'crash_loop_circuit_breaker') {
-            const crashLoopCooldownMinutes = getCooldown('crash_loop_auto_resume_minutes', 120);
+            const crashLoopCooldownMinutes = getCooldown('crash_loop_auto_resume_minutes', 15);
             const crashLoopCooldownMs = crashLoopCooldownMinutes * 60 * 1000;
             if (pauseAge < crashLoopCooldownMs) {
               log(`Persistent stale pause auto-resume: "${task.title}" was crash-loop paused ${Math.round(pauseAge / 60000)}min ago — below ${crashLoopCooldownMinutes}min crash-loop threshold`);
