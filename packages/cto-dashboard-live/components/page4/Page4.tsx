@@ -199,9 +199,12 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
   const streamHeight = Math.max(1, rightInnerHeight - SIGNAL_ROW_HEIGHT - DIVIDER_HEIGHT);
 
   const connectedLabel = isConnected ? ' live' : ' disconnected';
+  const TERMINAL_TOOLS = ['mcp__todo-db__complete_task', 'mcp__todo-db__summarize_work', 'complete_task', 'summarize_work'];
+  const lastToolIsTerminal = selectedSession?.lastAction != null && TERMINAL_TOOLS.some(t => selectedSession.lastAction!.includes(t));
   const isCompleted = selectedSession == null
     || selectedSession.pid == null
-    || !isProcessAlive(selectedSession.pid);
+    || !isProcessAlive(selectedSession.pid)
+    || lastToolIsTerminal;
 
   return (
     <Box flexDirection="row" height={bodyHeight}>

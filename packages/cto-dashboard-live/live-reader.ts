@@ -909,7 +909,14 @@ export function resumeSessionWithMessage(agentOrSessionId: string, message: stri
       '-e',
       `tell application "Terminal"\ndo script "${cmd}"\nactivate\nend tell`,
     ], { timeout: 10000, stdio: 'pipe' });
-  } catch { /* best effort — TUI must not crash */ }
+  } catch (err) {
+    // Log to file for debugging — TUI must not crash but we need visibility
+    try {
+      const logPath = path.join(projectDir, '.claude', 'state', 'dashboard-resume.log');
+      const msg = `[${new Date().toISOString()}] resumeSessionWithMessage failed: agentOrSessionId=${agentOrSessionId}, resumeId=${resumeId}, error=${err instanceof Error ? err.message : String(err)}\n`;
+      fs.appendFileSync(logPath, msg);
+    } catch { /* truly best effort */ }
+  }
 }
 
 /**
