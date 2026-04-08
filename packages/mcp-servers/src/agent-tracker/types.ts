@@ -289,7 +289,7 @@ export const GetSessionSummaryArgsSchema = z.object({
 export const PeekSessionArgsSchema = z.object({
   agent_id: z.string().optional().describe('Agent ID to peek'),
   queue_id: z.string().optional().describe('Queue ID to peek'),
-  depth: z.number().optional().default(16).describe('KB of JSONL to read per page'),
+  depth: z.number().optional().default(24).describe('KB of JSONL to read per page (default 24). Increase to 32-48 for comprehensive analysis.'),
   offset: z.number().min(0).optional().default(0).describe('Bytes from end of file to start reading. 0 = latest. Use next_offset from previous response to page backward.'),
   include_compaction_context: z.boolean().optional().default(false)
     .describe('Scan backward for compaction summaries when session has been compacted. Adds ~50ms for compacted sessions.'),
@@ -311,6 +311,19 @@ export const SuspendSessionArgsSchema = z.object({
   requeue_priority: z.string().optional().default('urgent').describe('Priority for resumed session'),
 });
 export type SuspendSessionArgs = z.infer<typeof SuspendSessionArgsSchema>;
+
+export const KillSessionArgsSchema = z.object({
+  queue_id: z.string().optional().describe('Queue ID of the session to kill'),
+  agent_id: z.string().optional().describe('Agent ID of the session to kill'),
+  reason: z.string().optional().default('manually killed by CTO').describe('Reason for killing'),
+});
+export type KillSessionArgs = z.infer<typeof KillSessionArgsSchema>;
+
+export const RestartSessionArgsSchema = z.object({
+  queue_id: z.string().describe('Queue ID of the session to restart'),
+  priority: z.string().optional().default('urgent').describe('Priority for restarted session: cto, critical, urgent, normal, low'),
+});
+export type RestartSessionArgs = z.infer<typeof RestartSessionArgsSchema>;
 
 export const ReorderQueueArgsSchema = z.object({
   queue_id: z.string().describe('Queue item ID'),
