@@ -167,6 +167,8 @@ Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/
 - `worktreeInstallTimeout` — timeout in ms for the package manager install step (default: 120000). Large monorepos with 43+ packages may need 300000 or more.
 - `worktreeProvisioningMode` — `"strict"` or `"lenient"` (default). In strict mode, install or build failures abort `createWorktree()`, remove the broken worktree, and re-throw. In lenient mode (default), failures are non-fatal warnings.
 
+These fields can be read and updated via the `get_services_config` / `update_services_config` tools on the `secret-sync` MCP server — no manual sudo commands required. See Secret Management section for details.
+
 `core.hooksPath` poisoning is defended by 4 layers (removeWorktree, tamperCheck, husky pre-commit, safeSymlink EINVAL fix).
 
 > Full details: [Worktrees core.hooksPath Poisoning Defense](docs/CLAUDE-REFERENCE.md#worktrees-corehookspath-poisoning-defense)
@@ -853,7 +855,7 @@ The root `package.json` `dependencies` field includes MCP server runtime deps (`
 
 ## Secret Management
 
-The secret-sync MCP server orchestrates secrets from 1Password to deployment platforms without exposing values to agent context. 6 tools available. Secret values never pass through agent context window.
+The secret-sync MCP server orchestrates secrets from 1Password to deployment platforms without exposing values to agent context. 8 tools available. Secret values never pass through agent context window. The `update_services_config` and `get_services_config` tools allow agents to read and update `services.json` config fields (e.g., `worktreeBuildCommand`, `worktreeInstallTimeout`, `devServices`) without CTO manual intervention. `update_services_config` validates updates against `ServicesConfigSchema`, writes directly when the file is writable, and stages to `.claude/state/services-config-pending.json` on EACCES (root-owned file); staged changes are applied by `sync.js` step 1.5 on the next `npx gentyr sync`. The `secrets` key is blocked on both paths.
 
 > Full details: [Secret Management](docs/CLAUDE-REFERENCE.md#secret-management)
 
