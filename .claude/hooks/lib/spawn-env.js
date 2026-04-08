@@ -15,10 +15,6 @@
 
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
-import { isProxyDisabled } from './proxy-state.js';
-
-const PROXY_PORT = process.env.GENTYR_PROXY_PORT || 18080;
 
 /**
  * Build the environment object for spawning a detached Claude agent.
@@ -53,13 +49,6 @@ export function buildSpawnEnv(agentId, options = {}) {
     CLAUDE_AGENT_ID: agentId,
     PATH: guardedPath,
   };
-
-  if (!isProxyDisabled()) {
-    env.HTTPS_PROXY = `http://localhost:${PROXY_PORT}`;
-    env.HTTP_PROXY = `http://localhost:${PROXY_PORT}`;
-    env.NO_PROXY = 'localhost,127.0.0.1';
-    env.NODE_EXTRA_CA_CERTS = path.join(os.homedir(), '.claude', 'proxy-certs', 'ca.pem');
-  }
 
   return env;
 }

@@ -391,8 +391,6 @@ const completedSessions: SessionItem[] = [
 const quota: QuotaData = {
   fiveHourPct: 28,
   sevenDayPct: 91,
-  activeAccounts: 3,
-  rotationEvents24h: 2,
 };
 
 const deputyCtoSummary: DeputyCtoSummary = {
@@ -444,11 +442,6 @@ const worklogMetrics: WorklogMetrics = {
 // ============================================================================
 
 const page2Data: Page2Data = {
-  accounts: [
-    { email: 'dev@company.com', status: 'active', subscription: 'max_5x', fiveHourPct: 15, sevenDayPct: 85 },
-    { email: 'ops@company.com', status: 'active', subscription: 'max_5x', fiveHourPct: 32, sevenDayPct: 94 },
-    { email: 'team@company.com', status: 'active', subscription: 'max_5x', fiveHourPct: 8, sevenDayPct: 72 },
-  ],
   deputyCto: {
     hasData: true,
     untriaged: [
@@ -613,7 +606,7 @@ const TASK_TITLES = [
   'Refactor port allocator', 'Fix heartbeat detection', 'Scaffold vendor demo', 'Investigate stale gate',
   'Add display lock retry logic', 'Resource lock unit tests', 'Analyze quota patterns',
   'Fix session signal race condition', 'Dashboard tour demo scenario', 'Merge feature/auth-cors',
-  'Strip hop-by-hop headers in proxy', 'Rewrite console URLs to regional', 'Add diagnostic logging',
+  'Add caching layer for API responses', 'Rewrite console URLs to regional', 'Add diagnostic logging',
   'Post-revival verification run', 'Run AWS demo from main tree', 'Fix tab switching in extension',
   'Update demo documentation', 'Register demo prerequisites', 'Repair vendor onboarding demo',
   'Implement token encryption', 'Migration script for tokens', 'Fix branch checkout guard',
@@ -621,10 +614,10 @@ const TASK_TITLES = [
   'Investigate quota exhaustion', 'Triage security report', 'Review deployment pipeline',
   'Fix eslint configuration', 'Update pre-commit hooks', 'Add feedback persona: CLI Chris',
   'Run demo validation suite', 'Fix window recorder SIGINT', 'Update plan orchestrator schema',
-  'Add plan-merge-tracker hook', 'Fix session audit log rotation', 'Implement focus mode guard',
+  'Add plan-merge-tracker hook', 'Fix session audit log cleanup', 'Implement focus mode guard',
   'Add reserved pool slots', 'Fix gate lane exemption', 'Update auth stall detection',
   'Implement inline preemption', 'Fix tombstone token swap', 'Add gateway error retry',
-  'Update rotation proxy audit', 'Fix MCP daemon health check', 'Add plugin system config',
+  'Update session audit trail', 'Fix MCP daemon health check', 'Add plugin system config',
   'Implement Notion sync daemon', 'Fix chrome extension permissions', 'Update native host install',
 ];
 const WORKLOG_SUMMARIES = [
@@ -641,11 +634,11 @@ const WORKLOG_SUMMARIES = [
   'Fixed race condition in session signal delivery. Signals were being acknowledged before processing.',
   'Implemented dashboard tour scenario with 8 navigation steps. Covers all main dashboard sections.',
   'Merged feature/auth-cors into preview. Squash merge, 3 commits, all CI checks passed.',
-  'Stripped hop-by-hop headers (Connection, Keep-Alive, Transfer-Encoding) from both primary and retry paths.',
-  'Rewrote console.aws.amazon.com URLs to us-east-1.console.aws. Fixes CORS issues in proxy relay.',
-  'Added diagnostic logging to network-proxy relay. Logs request/response headers and timing for debugging.',
+  'Added caching layer for session API responses. Cache TTL set to 60s with LRU eviction on 512 entries.',
+  'Rewrote console.aws.amazon.com URLs to us-east-1.console.aws. Fixes CORS issues in API relay.',
+  'Added diagnostic logging to network relay. Logs request/response headers and timing for debugging.',
   'All demo scenarios passed post-revival. Vendor onboarding 12s, dashboard tour 8s, settings 6s, API 15s.',
-  'Demo FAILED at step 8 — proxy-chrome extension not installed. Created follow-up task for extension setup.',
+  'Demo FAILED at step 8 — chrome extension not installed. Created follow-up task for extension setup.',
   'Fixed tab switching race in chrome extension. Tab IDs were stale after navigation, now re-queried.',
   'Updated demo docs with prerequisite health check patterns. Added PORT-aware examples for worktree compat.',
 ];
@@ -660,7 +653,7 @@ const DESCRIPTIONS = [
   'Scaffold the vendor onboarding demo with prerequisite health checks and PORT-aware worktree compatibility.',
   'Analyze 7-day API quota consumption patterns. Identify peak usage windows and recommend batch job scheduling.',
   'Fix the heartbeat stale detection. Current threshold is hardcoded at 15min, should read from automation-config.',
-  'Strip hop-by-hop headers from the network proxy relay. Both primary and retry paths need the fix.',
+  'Add caching for session data. Both primary and retry paths need the TTL configuration.',
   'Investigate the stale gate agent issue. Gate may be timing out on large task descriptions exceeding 4KB.',
   'Implement focus mode guard to block automated spawning except CTO-directed and persistent monitor sessions.',
   'Add reserved pool slots for priority-eligible sessions. Non-priority items see reduced max concurrent.',
@@ -675,7 +668,7 @@ const LAST_MESSAGES = [
   'Checking if the worktree port allocation conflicts with the main tree dev server on port 3000.',
   'I\'ll create a new branch feature/session-reaper-tests and set up the test file structure.',
   'The demo prerequisite health check is passing. Dev server responds on port 3000 within 2 seconds.',
-  'Looking at the api-key-rotation.json to extract the 7-day usage snapshots for the analysis.',
+  'Looking at the usage-snapshots.json to extract the 7-day usage data for the analysis.',
   'The heartbeat threshold is now reading from automation-config.json. Default remains 15 minutes if not set.',
   'All hop-by-hop headers are stripped. Verified with a headed demo run that CloudFront responses pass through.',
   'Gate agent timeout confirmed at 30s. Large task descriptions (>4KB) consistently cause Haiku to exceed this limit.',

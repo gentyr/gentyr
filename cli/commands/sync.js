@@ -5,6 +5,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { resolveFrameworkDir, resolveFrameworkRelative, detectInstallModel } from '../lib/resolve-framework.js';
@@ -55,6 +56,131 @@ function runProtect(projectDir) {
   execFileSync(process.execPath, [cliEntry, 'protect'], {
     cwd: projectDir, stdio: 'inherit', timeout: 60000,
   });
+}
+
+/**
+ * Remove all remnants of the deleted rotation proxy system from existing installs.
+ * Idempotent — silently skips anything that is already gone.
+ * MUST NOT throw: every destructive operation is wrapped in try/catch.
+ * @param {string} projectDir
+ */
+function cleanupRotationProxy(projectDir) {
+  const home = os.homedir();
+
+  // ── 1. Stop and remove launchd service (macOS) ─────────────────────────────
+  if (process.platform === 'darwin') {
+    const plistPath = path.join(home, 'Library', 'LaunchAgents', 'com.local.gentyr-rotation-proxy.plist');
+    if (fs.existsSync(plistPath)) {
+      console.log(`\n${YELLOW}Removing rotation proxy launchd service...${NC}`);
+      try {
+        execFileSync('launchctl', ['unload', plistPath], { stdio: 'pipe', timeout: 10000 });
+      } catch {
+        // Service may already be unloaded — not an error
+      }
+      try {
+        fs.unlinkSync(plistPath);
+        console.log('  Removed com.local.gentyr-rotation-proxy.plist');
+      } catch (err) {
+        console.log(`  ${YELLOW}Warning: could not remove proxy plist: ${err.message}${NC}`);
+      }
+    }
+  }
+
+  // ── 2. Stop and disable systemd service (Linux) ────────────────────────────
+  if (process.platform === 'linux') {
+    try {
+      execFileSync('systemctl', ['--user', 'stop', 'gentyr-rotation-proxy.service'],
+        { stdio: 'pipe', timeout: 10000 });
+    } catch {
+      // Not running or not found — not an error
+    }
+    try {
+      execFileSync('systemctl', ['--user', 'disable', 'gentyr-rotation-proxy.service'],
+        { stdio: 'pipe', timeout: 10000 });
+    } catch {
+      // Not enabled or not found — not an error
+    }
+  }
+
+  // ── 3. Strip GENTYR PROXY blocks from shell profiles ───────────────────────
+  const proxyBlockPattern = /\n?# BEGIN GENTYR PROXY\b[\s\S]*?# END GENTYR PROXY[^\n]*(\n|$)/g;
+  for (const profileName of ['.zshrc', '.bashrc']) {
+    const profilePath = path.join(home, profileName);
+    if (!fs.existsSync(profilePath)) continue;
+    try {
+      const original = fs.readFileSync(profilePath, 'utf8');
+      const cleaned = original.replace(proxyBlockPattern, '\n').replace(/\n{3,}/g, '\n\n');
+      if (cleaned !== original) {
+        fs.writeFileSync(profilePath, cleaned, 'utf8');
+        console.log(`  Stripped GENTYR PROXY block from ~/${profileName}`);
+      }
+    } catch (err) {
+      console.log(`  ${YELLOW}Warning: could not clean ~/${profileName}: ${err.message}${NC}`);
+    }
+  }
+
+  // ── 4. Kill any lingering process on port 18080 ────────────────────────────
+  try {
+    const pids = execFileSync('lsof', ['-ti', ':18080'], { stdio: 'pipe', timeout: 5000, encoding: 'utf8' }).trim();
+    if (pids) {
+      for (const pid of pids.split('\n').filter(Boolean)) {
+        try {
+          process.kill(Number(pid));
+        } catch {
+          // Process may have already exited
+        }
+      }
+      console.log(`  Killed rotation proxy process(es) on port 18080`);
+    }
+  } catch {
+    // lsof exits non-zero when nothing is found — not an error
+  }
+
+  // ── 5. Delete TLS certificate directory ────────────────────────────────────
+  const certDir = path.join(home, '.claude', 'proxy-certs');
+  if (fs.existsSync(certDir)) {
+    try {
+      fs.rmSync(certDir, { recursive: true, force: true });
+      console.log(`  Deleted ~/.claude/proxy-certs/`);
+    } catch (err) {
+      console.log(`  ${YELLOW}Warning: could not delete proxy-certs/: ${err.message}${NC}`);
+    }
+  }
+
+  // ── 6. Delete user-level state files ───────────────────────────────────────
+  const userStateFiles = [
+    path.join(home, '.claude', 'api-key-rotation.json'),
+    path.join(home, '.claude', 'proxy-disabled.json'),
+    path.join(home, '.claude', 'rotation-proxy.log'),
+  ];
+  for (const filePath of userStateFiles) {
+    if (fs.existsSync(filePath)) {
+      try {
+        fs.unlinkSync(filePath);
+        console.log(`  Deleted ${filePath.replace(home, '~')}`);
+      } catch (err) {
+        console.log(`  ${YELLOW}Warning: could not delete ${path.basename(filePath)}: ${err.message}${NC}`);
+      }
+    }
+  }
+
+  // ── 7. Delete project-level state files ────────────────────────────────────
+  const projectStateFiles = [
+    path.join(projectDir, '.claude', 'api-key-rotation.log'),
+    path.join(projectDir, '.claude', 'state', 'quota-interrupted-sessions.json'),
+    path.join(projectDir, '.claude', 'state', 'paused-sessions.json'),
+    path.join(projectDir, '.claude', 'state', 'quota-monitor-state.json'),
+  ];
+  for (const filePath of projectStateFiles) {
+    if (fs.existsSync(filePath)) {
+      try {
+        fs.unlinkSync(filePath);
+        console.log(`  Deleted ${path.relative(projectDir, filePath)}`);
+      } catch (err) {
+        console.log(`  ${YELLOW}Warning: could not delete ${path.basename(filePath)}: ${err.message}${NC}`);
+      }
+    }
+  }
 }
 
 export default async function sync(args) {
@@ -117,6 +243,9 @@ export default async function sync(args) {
   try {
 
   console.log(`${GREEN}Syncing GENTYR...${NC}`);
+
+  // 0. One-time migration: remove rotation proxy remnants from existing installs
+  cleanupRotationProxy(projectDir);
 
   // 1. Re-merge settings.json
   console.log(`\n${YELLOW}Merging settings.json...${NC}`);

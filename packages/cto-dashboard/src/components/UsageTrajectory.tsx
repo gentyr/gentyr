@@ -8,15 +8,10 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import { Section } from './Section.js';
-import { QuotaBar } from './QuotaBar.js';
 import type { TrajectoryResult } from '../utils/trajectory.js';
-import type { VerifiedQuotaResult } from '../utils/data-reader.js';
-import type { AccountOverviewData, AccountKeyDetail } from '../utils/account-overview-reader.js';
 
 export interface UsageTrajectoryProps {
   trajectory: TrajectoryResult;
-  verifiedQuota?: VerifiedQuotaResult;
-  accountOverview?: AccountOverviewData;
 }
 
 /**
@@ -142,95 +137,7 @@ function WindowCard({
   );
 }
 
-/**
- * Deduplicate accounts by email (or keyId if no email).
- * Multiple keys for the same account have identical quota — keep only the first.
- */
-function deduplicateByEmail(accounts: AccountKeyDetail[]): AccountKeyDetail[] {
-  const seen = new Set<string>();
-  const result: AccountKeyDetail[] = [];
-  for (const acct of accounts) {
-    // Skip invalid accounts with no quota data
-    if (acct.status === 'invalid' && acct.fiveHourPct == null && acct.sevenDayPct == null) continue;
-    const key = acct.email ?? acct.keyId;
-    if (!seen.has(key)) {
-      seen.add(key);
-      result.push(acct);
-    }
-  }
-  return result;
-}
-
-const LABEL_PAD = 22;
-
-function truncateLabel(label: string, max: number): string {
-  if (label.length <= max) return label;
-  return label.slice(0, max - 3) + '...';
-}
-
-interface AccountQuotaBarsProps {
-  verifiedQuota: VerifiedQuotaResult;
-  accountOverview: AccountOverviewData;
-}
-
-function AccountQuotaBars({ verifiedQuota: _verifiedQuota, accountOverview }: AccountQuotaBarsProps): React.ReactElement | null {
-  const unique = deduplicateByEmail(accountOverview.accounts);
-  if (unique.length <= 1) return null;
-
-  // Average across all displayed accounts (not just healthy ones)
-  const total5h = unique.length > 0
-    ? Math.round(unique.reduce((s, a) => s + (a.fiveHourPct ?? 0), 0) / unique.length)
-    : 0;
-  const total7d = unique.length > 0
-    ? Math.round(unique.reduce((s, a) => s + (a.sevenDayPct ?? 0), 0) / unique.length)
-    : 0;
-
-  return (
-    <Box flexDirection="column" marginTop={1}>
-      <Text color="gray" bold>Per-Account Quota  {'(* = active)'}</Text>
-      <Box flexDirection="column" marginTop={1}>
-        <Text color="cyan" bold>5-Hour</Text>
-        <Box marginLeft={1} flexDirection="column">
-          <QuotaBar label={truncateLabel('Total', LABEL_PAD).padEnd(LABEL_PAD)} percentage={total5h} width={16} />
-          {unique.map((acct) => {
-            const label = truncateLabel(acct.email ?? acct.keyId, LABEL_PAD - 2);
-            const suffix = acct.isCurrent ? ' *' : '';
-            const padded = (label + suffix).padEnd(LABEL_PAD);
-            return (
-              <QuotaBar
-                key={acct.keyId + '-5h'}
-                label={padded}
-                percentage={acct.fiveHourPct ?? 0}
-                width={16}
-              />
-            );
-          })}
-        </Box>
-      </Box>
-      <Box flexDirection="column" marginTop={1}>
-        <Text color="magenta" bold>7-Day</Text>
-        <Box marginLeft={1} flexDirection="column">
-          <QuotaBar label={truncateLabel('Total', LABEL_PAD).padEnd(LABEL_PAD)} percentage={total7d} width={16} />
-          {unique.map((acct) => {
-            const label = truncateLabel(acct.email ?? acct.keyId, LABEL_PAD - 2);
-            const suffix = acct.isCurrent ? ' *' : '';
-            const padded = (label + suffix).padEnd(LABEL_PAD);
-            return (
-              <QuotaBar
-                key={acct.keyId + '-7d'}
-                label={padded}
-                percentage={acct.sevenDayPct ?? 0}
-                width={16}
-              />
-            );
-          })}
-        </Box>
-      </Box>
-    </Box>
-  );
-}
-
-export function UsageTrajectory({ trajectory, verifiedQuota, accountOverview }: UsageTrajectoryProps): React.ReactElement | null {
+export function UsageTrajectory({ trajectory }: UsageTrajectoryProps): React.ReactElement | null {
   if (!trajectory.hasData || trajectory.snapshots.length === 0) {
     return null;
   }
@@ -265,11 +172,6 @@ export function UsageTrajectory({ trajectory, verifiedQuota, accountOverview }: 
             trendUnit="day"
           />
         </Box>
-
-        {/* Per-account quota bars */}
-        {verifiedQuota && accountOverview?.hasData && (
-          <AccountQuotaBars verifiedQuota={verifiedQuota} accountOverview={accountOverview} />
-        )}
 
         {/* Footer with projection method */}
         <Box marginTop={1}>

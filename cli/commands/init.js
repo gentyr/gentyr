@@ -263,41 +263,6 @@ export OP_SERVICE_ACCOUNT_TOKEN="${opToken}"
 }
 
 /**
- * Set up rotation proxy shell integration.
- */
-function setupProxyShellIntegration() {
-  const home = process.env.HOME || '';
-  const profiles = [path.join(home, '.zshrc'), path.join(home, '.bashrc')];
-  const profile = profiles.find(p => fs.existsSync(p));
-
-  if (!profile) {
-    console.log(`  ${YELLOW}No .zshrc or .bashrc found, skipping shell integration${NC}`);
-    return;
-  }
-
-  const content = fs.readFileSync(profile, 'utf8');
-  if (content.includes('# BEGIN GENTYR PROXY')) {
-    console.log(`  Proxy env already in ${profile}`);
-    return;
-  }
-
-  const block = `
-# BEGIN GENTYR PROXY
-# Rotation proxy for transparent credential rotation (added by GENTYR)
-if curl -sf http://localhost:18080/__health > /dev/null 2>&1; then
-  export HTTPS_PROXY=http://localhost:18080
-  export HTTP_PROXY=http://localhost:18080
-  export NO_PROXY=localhost,127.0.0.1
-  export NODE_EXTRA_CA_CERTS="$HOME/.claude/proxy-certs/ca.pem"
-fi
-# END GENTYR PROXY
-`;
-
-  fs.appendFileSync(profile, block);
-  console.log(`  Added proxy env to ${profile} (guarded by health check)`);
-}
-
-/**
  * Set up automation service.
  * @param {string} frameworkDir
  * @param {string} projectDir
@@ -317,21 +282,6 @@ function setupAutomationService(frameworkDir, projectDir, opToken) {
     execFileSync(script, args, { stdio: 'inherit', timeout: 60000 });
   } catch {
     console.log(`  ${YELLOW}Automation service setup failed (non-fatal)${NC}`);
-  }
-}
-
-/**
- * Generate proxy certificates.
- * @param {string} frameworkDir
- */
-function generateProxyCerts(frameworkDir) {
-  const script = path.join(frameworkDir, 'scripts', 'generate-proxy-certs.sh');
-  if (fs.existsSync(script)) {
-    try {
-      execFileSync(script, [], { stdio: 'inherit', timeout: 30000 });
-    } catch {
-      console.log(`  ${YELLOW}Cert generation failed (non-fatal)${NC}`);
-    }
   }
 }
 
@@ -439,17 +389,9 @@ export default async function init(args) {
     } catch {}
   }
 
-  // 5c. Proxy certificates
-  console.log(`\n${YELLOW}Setting up rotation proxy certificates...${NC}`);
-  generateProxyCerts(frameworkDir);
-
   // 6. Automation service
   console.log(`\n${YELLOW}Setting up automation service...${NC}`);
   setupAutomationService(frameworkDir, projectDir, opts.opToken);
-
-  // 6d. Rotation proxy shell integration
-  console.log(`\n${YELLOW}Setting up rotation proxy shell integration...${NC}`);
-  setupProxyShellIntegration();
 
   // 7. Gitignore
   console.log(`\n${YELLOW}Updating .gitignore...${NC}`);

@@ -275,7 +275,6 @@ export function updateGitignore(projectDir) {
     '# State and config files',
     '.claude/*-state.json',
     '.claude/*.log',
-    '.claude/api-key-rotation.json',
     '.claude/commit-approval-token.json',
     '.claude/autonomous-mode.json',
     '.claude/vault-mappings.json',

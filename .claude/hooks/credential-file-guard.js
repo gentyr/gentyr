@@ -58,7 +58,6 @@ const BLOCKED_BASENAMES = new Set([
  */
 const BLOCKED_PATH_SUFFIXES = [
   '.claude/protection-key',
-  '.claude/api-key-rotation.json',
   '.claude/bypass-approval-token.json',
   '.claude/commit-approval-token.json',
   '.claude/credential-provider.json',
@@ -70,8 +69,6 @@ const BLOCKED_PATH_SUFFIXES = [
   // protected-actions.json (requires deputy-CTO approval to modify).
   '.mcp.json',
 ];
-// Note: The suffix '.claude/api-key-rotation.json' also blocks the user-level
-// path at ~/.claude/api-key-rotation.json since both end with the same suffix.
 
 /**
  * Path substrings that block Write/Edit/NotebookEdit but NOT Read (G027 A1/A2).

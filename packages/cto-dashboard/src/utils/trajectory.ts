@@ -5,7 +5,6 @@
  * Used by UsageTrends (line graphs) and UsageTrajectory (projections).
  *
  * Data source: .claude/state/usage-snapshots.json
- * Collected by: usage-optimizer.js every 10 minutes
  * Retention: 7 days
  */
 
@@ -163,7 +162,7 @@ function calculateAggregate(raw: RawSnapshot): AggregateResult | null {
     return null;
   }
 
-  // Classify keys as exhausted (7d >= 0.995) vs active — matches usage-optimizer.js
+  // Classify keys as exhausted (7d >= 0.995) vs active
   const EXHAUSTED_THRESHOLD = 0.995;
   let reset5h: string | null = null;
   let reset7d: string | null = null;

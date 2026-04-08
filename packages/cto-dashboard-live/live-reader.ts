@@ -19,7 +19,7 @@ import type {
   Page2Data, Page3Data, TimelineEvent,
   SessionStatus, SessionPriority,
   DeputyCtoDetail, TriageReport, PendingQuestion, AnsweredQuestion,
-  AccountInfo, FeedbackPersona, WorklogEntryDetail,
+  FeedbackPersona, WorklogEntryDetail,
   TestingData, DeploymentItem, WorktreeInfo, InfraStatus, LoggingData,
   ActivityEntry,
 } from './types.js';
@@ -477,17 +477,32 @@ function readPersistentTasks(runningSessions: SessionItem[]): PersistentTaskItem
 // ============================================================================
 
 function readQuota(): QuotaData {
+  const empty: QuotaData = { fiveHourPct: 0, sevenDayPct: 0 };
   try {
-    const rotPath = path.join(os.homedir(), '.claude', 'api-key-rotation.json');
-    if (!fs.existsSync(rotPath)) return { fiveHourPct: 0, sevenDayPct: 0, activeAccounts: 0, rotationEvents24h: 0 };
-    const data = JSON.parse(fs.readFileSync(rotPath, 'utf8'));
+    const snapshotsPath = path.join(PROJECT_DIR, '.claude', 'state', 'usage-snapshots.json');
+    if (!fs.existsSync(snapshotsPath)) return empty;
+    const file = JSON.parse(fs.readFileSync(snapshotsPath, 'utf8'));
+    if (!file || !Array.isArray(file.snapshots) || file.snapshots.length === 0) return empty;
+    const latest = file.snapshots[file.snapshots.length - 1];
+    if (!latest || !latest.keys || typeof latest.keys !== 'object') return empty;
+    const entries = Object.entries(latest.keys) as [string, Record<string, number>][];
+    if (entries.length === 0) return empty;
+    const EXHAUSTED_THRESHOLD = 0.995;
+    const active = entries.filter(([, k]) => (k['7d'] ?? 0) < EXHAUSTED_THRESHOLD);
+    const toUse = active.length > 0 ? active : entries;
+    let sum5h = 0;
+    let sum7d = 0;
+    for (const [, k] of toUse) {
+      sum5h += k['5h'] ?? 0;
+      sum7d += k['7d'] ?? 0;
+    }
+    const avg5h = sum5h / toUse.length;
+    const avg7d = sum7d / toUse.length;
     return {
-      fiveHourPct: data.aggregate?.five_hour?.utilization ?? 0,
-      sevenDayPct: data.aggregate?.seven_day?.utilization ?? 0,
-      activeAccounts: data.healthy_count ?? (Array.isArray(data.keys) ? new Set(data.keys.filter((k: { status: string }) => k.status === 'active').map((k: { email: string }) => k.email)).size : 0),
-      rotationEvents24h: 0,
+      fiveHourPct: Math.round(avg5h <= 1 ? avg5h * 100 : avg5h),
+      sevenDayPct: Math.round(avg7d <= 1 ? avg7d * 100 : avg7d),
     };
-  } catch { return { fiveHourPct: 0, sevenDayPct: 0, activeAccounts: 0, rotationEvents24h: 0 }; }
+  } catch { return empty; }
 }
 
 function readDeputyCtoSummary(): DeputyCtoSummary {
@@ -607,23 +622,6 @@ function readPage2(): Page2Data {
   } catch { /* */ }
   finally { closeDb(ctoDb); closeDb(dcDb); }
 
-  // Accounts (from rotation state)
-  let accounts: AccountInfo[] = [];
-  try {
-    const rotPath = path.join(os.homedir(), '.claude', 'api-key-rotation.json');
-    if (fs.existsSync(rotPath)) {
-      const data = JSON.parse(fs.readFileSync(rotPath, 'utf8'));
-      if (Array.isArray(data.keys)) {
-        const seen = new Set<string>();
-        for (const k of data.keys) {
-          if (seen.has(k.email)) continue;
-          seen.add(k.email);
-          accounts.push({ email: k.email, status: k.status ?? 'unknown', subscription: k.subscription_type ?? '', fiveHourPct: 0, sevenDayPct: 0 });
-        }
-      }
-    }
-  } catch { /* */ }
-
   // Personas
   let personas: FeedbackPersona[] = [];
   const fbDb = openDb(path.join(PROJECT_DIR, '.claude', 'user-feedback.db'));
@@ -636,7 +634,7 @@ function readPage2(): Page2Data {
   }
 
   return {
-    accounts, deputyCto, personas,
+    deputyCto, personas,
     productManagerEnabled: false, productManagerSectionsCompleted: 0,
     worklogEntries: entries, worklogMetrics: metrics,
   };

@@ -452,19 +452,11 @@ describe('config-reader.js - Structure Validation', () => {
       );
     });
 
-    it('should document usage by usage-optimizer', () => {
+    it('should have JSDoc for getConfigPath', () => {
       const code = fs.readFileSync(CONFIG_READER_PATH, 'utf8');
 
-      // Should have comment mentioning usage-optimizer
       const jsdocMatch = code.match(/\/\*\*[\s\S]*?export function getConfigPath/);
       assert.ok(jsdocMatch, 'getConfigPath must have JSDoc');
-
-      const jsdoc = jsdocMatch[0];
-      assert.match(
-        jsdoc,
-        /usage-optimizer/i,
-        'JSDoc must mention usage-optimizer as use case'
-      );
     });
   });
 

@@ -8,8 +8,7 @@
  * This covers crashes where the Stop hook never fires (process kill, laptop
  * restart, OOM). The hourly-automation session reviver is the fallback.
  *
- * Runs as a launchd KeepAlive service alongside the rotation proxy and
- * hourly automation services.
+ * Runs as a launchd KeepAlive service alongside the hourly automation service.
  *
  * @version 1.0.0
  */
@@ -75,7 +74,6 @@ let debounceTimer = null;
 // Lazy imports — loaded after PROJECT_DIR is set
 let registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES, acquireLock, releaseLock;
 let buildRevivalPrompt, spawnResumedSession, getSessionDir, findSessionFileByAgentId, extractSessionIdFromPath, resolveTaskIdForAgent;
-let readRotationState;
 let shouldAllowSpawn;
 let drainQueue;
 let auditEvent;
@@ -97,9 +95,6 @@ async function loadDependencies() {
   findSessionFileByAgentId = revivalUtils.findSessionFileByAgentId;
   extractSessionIdFromPath = revivalUtils.extractSessionIdFromPath;
   resolveTaskIdForAgent = revivalUtils.resolveTaskIdForAgent;
-
-  const keySync = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'key-sync.js'));
-  readRotationState = keySync.readRotationState;
 
   const memPressure = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'memory-pressure.js'));
   shouldAllowSpawn = memPressure.shouldAllowSpawn;
@@ -135,29 +130,6 @@ function isProcessAlive(pid) {
     return true;
   } catch (err) {
     return err.code !== 'ESRCH';
-  }
-}
-
-/**
- * Check quota before reviving — same logic as Phase 2 evaluateQuotaGating.
- * Returns true if we have enough quota headroom to revive.
- */
-function hasQuotaHeadroom() {
-  try {
-    const state = readRotationState();
-    if (!state.keys || Object.keys(state.keys).length === 0) return true;
-
-    for (const [, keyData] of Object.entries(state.keys)) {
-      if (keyData.status === 'invalid' || keyData.status === 'tombstone') continue;
-      const usage = keyData.last_usage;
-      if (!usage) continue;
-      const maxUsage = Math.max(usage.five_hour || 0, usage.seven_day || 0, usage.seven_day_sonnet || 0);
-      if (maxUsage < 90) return true;
-    }
-
-    return false;
-  } catch {
-    return true; // fail open
   }
 }
 
@@ -204,9 +176,11 @@ function scanAndRevive() {
   for (const agent of history.agents) {
     // Pick up memory-blocked agents for retry (they have status=completed + memoryBlocked=true)
     const isMemoryRetry = agent.status === 'completed' && agent.memoryBlocked && !agent.revivalAttempted;
+    // Pick up quota-blocked agents for retry (they have status=completed + quotaBlocked=true)
+    const isQuotaRetry = agent.status === 'completed' && agent.quotaBlocked && !agent.revivalAttempted;
 
-    // Normal path: check running agents with PIDs; OR retry memory-blocked agents
-    if (!isMemoryRetry) {
+    // Normal path: check running agents with PIDs; OR retry memory-blocked/quota-blocked agents
+    if (!isMemoryRetry && !isQuotaRetry) {
       if (agent.status !== 'running' || !agent.pid) continue;
     }
 
@@ -214,12 +188,18 @@ function scanAndRevive() {
     if (revivalAttempted.has(agent.id)) continue;
     if (agent.revivalAttempted) continue;
 
+    // Safety cap: max 5 revival retries per agent (prevents infinite loops on permanent failures)
+    if ((agent.revivalRetries || 0) >= 5) {
+      agent.revivalAttempted = true;
+      continue;
+    }
+
     // Skip old agents
     const agentTime = new Date(agent.timestamp).getTime();
     if (agentTime < cutoff) continue;
 
-    // Check if process is actually dead (skip for memory retries — already confirmed dead)
-    if (!isMemoryRetry && isProcessAlive(agent.pid)) continue;
+    // Check if process is actually dead (skip for memory/quota retries — already confirmed dead)
+    if (!isMemoryRetry && !isQuotaRetry && isProcessAlive(agent.pid)) continue;
 
     // Skip if this agent is suspended (preempted by a CTO task) — it will be re-enqueued automatically
     if (isAgentSuspended(agent.id)) {
@@ -233,41 +213,32 @@ function scanAndRevive() {
       try { auditEvent('session_reaped_dead', { agent_id: agent.id, pid: agent.pid, source: 'revival-daemon' }); } catch {}
     }
 
+    // Mark as dead in history (status/reapReason/reapedAt are always set regardless of revival outcome)
+    agent.status = 'completed';
+    agent.reapReason = 'process_already_dead';
+    agent.reapedAt = new Date().toISOString();
+    agent.quotaBlocked = false;
+    agent.revivalRetries = (agent.revivalRetries || 0) + 1;
+    historyDirty = true;
+
     // Check memory pressure first — if blocked, DON'T mark revivalAttempted so we retry
     if (shouldAllowSpawn) {
       const memCheck = shouldAllowSpawn({ priority: 'normal', context: 'revival-daemon' });
       if (!memCheck.allowed) {
         log(`  ${memCheck.reason}`);
         log(`  Revival queued — will retry when memory pressure drops (next scan in ${POLL_INTERVAL_MS / 1000}s)`);
-        // Mark agent as dead but NOT revivalAttempted — it stays in the retry queue
-        agent.status = 'completed';
-        agent.reapReason = 'process_already_dead';
-        agent.reapedAt = new Date().toISOString();
         agent.memoryBlocked = true;
-        historyDirty = true;
         continue;
       }
       if (memCheck.reason) log(`  ${memCheck.reason}`);
-    }
-
-    // Mark as dead in history — revival is proceeding
-    agent.status = 'completed';
-    agent.reapReason = 'process_already_dead';
-    agent.reapedAt = new Date().toISOString();
-    agent.revivalAttempted = true;
-    historyDirty = true;
-    revivalAttempted.set(agent.id, now);
-
-    // Check quota headroom
-    if (!hasQuotaHeadroom()) {
-      log(`  Skipping revival — all keys at >90% usage`);
-      continue;
     }
 
     // Find task ID
     const taskId = agent.metadata?.taskId;
     if (!taskId) {
       log(`  No taskId for agent ${agent.id}, skipping revival`);
+      agent.revivalAttempted = true;
+      revivalAttempted.set(agent.id, now);
       continue;
     }
 
@@ -281,6 +252,8 @@ function scanAndRevive() {
           db.close();
           if (!task) {
             log(`  Task ${taskId} already completed or missing, skipping revival`);
+            agent.revivalAttempted = true;
+            revivalAttempted.set(agent.id, now);
             continue;
           }
           // Reset in_progress tasks to pending so revival can re-claim
@@ -297,6 +270,8 @@ function scanAndRevive() {
     const sessionDir = getSessionDir(PROJECT_DIR);
     if (!sessionDir) {
       log(`  No session dir found, skipping revival`);
+      agent.revivalAttempted = true;
+      revivalAttempted.set(agent.id, now);
       continue;
     }
 
@@ -312,6 +287,8 @@ function scanAndRevive() {
     }
     if (!sessionFile) {
       log(`  No session file found for agent ${agent.id}, skipping revival`);
+      agent.revivalAttempted = true;
+      revivalAttempted.set(agent.id, now);
       continue;
     }
 
@@ -340,6 +317,8 @@ function scanAndRevive() {
     });
 
     if (spawnResumedSession(sessionId, newAgentId, log, revivalPrompt, agent.metadata?.worktreePath || null, { projectDir: PROJECT_DIR })) {
+      agent.revivalAttempted = true;
+      revivalAttempted.set(agent.id, now);
       revived++;
       if (auditEvent) {
         try { auditEvent('session_revival_triggered', { source: 'revival-daemon', agent_id: agent.id, new_agent_id: newAgentId, reason: 'daemon_crash_detection' }); } catch {}
@@ -361,9 +340,12 @@ function scanAndRevive() {
           drainQueue();
         } catch { /* non-fatal */ }
       }
+    } else {
+      agent.revivalAttempted = true;
+      revivalAttempted.set(agent.id, now);
+      log(`  Revival spawn failed for ${agent.id}`);
     }
   }
-
   if (historyDirty) {
     try {
       fs.writeFileSync(HISTORY_PATH, JSON.stringify(history, null, 2), 'utf8');

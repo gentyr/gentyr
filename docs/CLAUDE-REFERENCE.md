@@ -180,16 +180,13 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 
 **Session Reviver** (`.claude/hooks/session-reviver.js`):
 - Called from `hourly-automation.js` every automation cycle (10-minute cooldown via `getCooldown('session_reviver', 10)`)
-- Gate-exempt step: runs after key sync, not subject to the CTO activity gate, so recovery proceeds even when the CTO is inactive
+- Gate-exempt step: not subject to the CTO activity gate, so recovery proceeds even when the CTO is inactive
 - **Retroactive first-run window**: On the first cycle after startup, uses a 12-hour stale window instead of 30 minutes, picking up sessions interrupted before the automation process started
 - **Revival prompt**: Each resumed session receives a structured context prompt with elapsed time, interruption reason, and task verification instructions — the agent must call `mcp__todo-db__get_task` or `mcp__todo-db__list_tasks` before continuing to avoid duplicating work already handled by another agent
 - **taskId resolution**: Resolved from `agent-tracker-history.json` metadata so the revival prompt can reference the specific task ID
-- **Mode 3 sessionId fallback**: When `paused-sessions.json` lacks an explicit `sessionId`, finds the session JSONL file by scanning for the `[AGENT:<agentId>]` marker in the first 2KB of each transcript file
-- **Mode 3 worktree path**: Resolves `worktreePath` from `agent-tracker-history.json` by `agentId` (same lookup as Mode 1), fixing a gap where Mode 3 sessions were resumed in the main project directory instead of their original worktree CWD
 - **Worktree CWD support** (`resumeCwd` param): `spawnResumedSession()` accepts an optional `resumeCwd` argument; resumes in the agent's original worktree path if it still exists, falls back to the main project directory otherwise (adds a note to the revival prompt when the worktree has been cleaned up)
-- **Worktree session discovery** (Mode 1 and 2): When `findSessionFileByAgentId` fails in the main project session directory, falls back to `agent.metadata?.worktreePath` via `getSessionDir()` — covers the ~95% of task-runner agents that run in worktrees and store sessions in worktree-specific directories
-- **Mode 2 `in_progress` task acceptance**: Queries TODO tasks with `status IN ('pending', 'in_progress')` — handles the case where the reaper ran and marked the agent dead but couldn't find the session file (so the task was never reset to `pending`); also performs inline reaping of running-but-dead agents found during the scan (sets task to `pending` before attempting revival)
-- **Duplicate revival guard**: Checks `quota-interrupted-sessions.json` for `status: 'revived'` before attempting Mode 1 spawns — prevents double-revival when inline revival in the stop hook already succeeded
+- **Worktree session discovery**: When `findSessionFileByAgentId` fails in the main project session directory, falls back to `agent.metadata?.worktreePath` via `getSessionDir()` — covers the ~95% of task-runner agents that run in worktrees and store sessions in worktree-specific directories
+- **`in_progress` task acceptance**: Queries TODO tasks with `status IN ('pending', 'in_progress')` — handles the case where the reaper ran and marked the agent dead but couldn't find the session file (so the task was never reset to `pending`); also performs inline reaping of running-but-dead agents found during the scan (sets task to `pending` before attempting revival)
 - **Advisory file locking**: Uses `acquireLock`/`releaseLock` from `agent-tracker.js` around history-file reads and writes to coordinate with concurrent automation processes; includes lock leak fix on error paths
 - **Memory pressure gate**: `shouldAllowSpawn()` from `lib/memory-pressure.js` checked before each spawn; revival is queued (not permanently skipped) when memory-blocked
 - Cap: 3 revivals per cycle (`MAX_REVIVALS_PER_CYCLE`); respects the running-agent concurrency limit
@@ -198,32 +195,24 @@ GENTYR automatically detects and recovers sessions interrupted by API quota limi
 
 | Mode | Source state file | Trigger | Stale window |
 |------|-------------------|---------|--------------|
-| 1 — Quota-interrupted | `.claude/state/quota-interrupted-sessions.json` | `stop-continue-hook.js` writes on quota death | 30 min (12h retroactive on first run) |
-| 2 — Dead session recovery | `.claude/state/agent-tracker-history.json` | Agents reaped with `process_already_dead` + pending/in_progress TODO task | 7 days |
-| 3 — Paused sessions | `.claude/state/paused-sessions.json` | `quota-monitor.js` `writePausedSession()` when all accounts exhausted | 24h |
+| 1 — Dead session recovery | `.claude/state/agent-tracker-history.json` | Agents reaped with `process_already_dead` + pending/in_progress TODO task | 7 days |
 
 **Stop Hook** (`.claude/hooks/stop-continue-hook.js`):
-- Writes `quota-interrupted-sessions.json` entries with `status: 'pending_revival'` when a spawned session dies from a rate limit error
-- **Phase 1 — Inline revival**: After successful credential rotation, immediately spawns `claude --resume <sessionId>` via `inlineRevive()` — reducing revival latency from 5-15 minutes to 0-2 seconds. The safety-net record is written to `quota-interrupted-sessions.json` first (with `status: 'pending_revival'`); if inline revival succeeds the record is updated to `status: 'revived'` so session-reviver skips it. If all keys are exhausted, inline revival is skipped and session-reviver Modes 1 + 3 handle recovery once keys recover.
-- **Memory pressure gate**: `shouldAllowSpawn()` from `lib/memory-pressure.js` is called before inline revival; spawn is blocked at critical pressure (blocked inline, queued for session-reviver).
-- **Worktree path capture**: Resolves `worktreePath` from `agent-tracker-history.json` (keyed by `agentId` extracted from the transcript) and includes it in the quota-interrupted session record so Mode 1 revival can resume the session in the correct worktree CWD
-- Cleanup window widened from 30 min to 12 h so records survive for retroactive revival on the first automation cycle after restart
-- Tombstone consumer: filters tombstoned rotation state keys before passing to `checkKeyHealth()`
+- **Memory pressure gate**: `shouldAllowSpawn()` from `lib/memory-pressure.js` is called before spawning; spawn is blocked at critical pressure.
+- **Worktree path capture**: Resolves `worktreePath` from `agent-tracker-history.json` (keyed by `agentId` extracted from the transcript) and includes it in the session record so revival can resume the session in the correct worktree CWD
 - **First [Automation]/[Task] stop — uncommitted changes gate**: On the first stop event for a spawned session, checks for uncommitted changes in the worktree; if found, injects a specific `additionalContext` instruction to spawn project-manager before exiting rather than a generic continue message. Ensures git discipline even when orchestrators reach their natural stop without explicitly invoking project-manager.
 - Uses `lib/revival-utils.js` helpers (`buildRevivalPrompt`, `resolveTaskIdForAgent`, `extractSessionIdFromPath`) and `lib/spawn-env.js` (`buildSpawnEnv`) shared modules.
 
 **Agent Reaper** (`scripts/reap-completed-agents.js`):
 - **Worktree session discovery**: Both the dead-process path and the live-process path now fall back to `agent.metadata?.worktreePath` via `getSessionDir()` when `findSessionFileByAgentId` returns null for the main project session directory — enables session file caching and TODO reconciliation for worktree agents
 
-**`quota-monitor.js` Mode 3 integration**: Calls `writePausedSession(agentId)` when all accounts are exhausted and a spawned session is about to be abandoned; session-reviver resumes it once any account recovers below 90% usage
-
 **`agent-tracker.js` constants**: Exports `SESSION_REVIVED` (`'session-revived'`) and `SESSION_REVIVER` (`'session-reviver'`) agent/hook type constants consumed by session-reviver; mirrored in `packages/mcp-servers/src/agent-tracker/types.ts`. Also exports `acquireLock` / `releaseLock` for advisory file locking, used by session-reviver and dead-agent-recovery to coordinate concurrent history-file access.
 
 **`config-reader.js` defaults**: `session_reviver: 10` and `abandoned_worktree_rescue: 30` minutes added to `DEFAULTS`; operators can override via `.claude/state/automation-config.json`
 
 **Shared Revival Modules** (`lib/`):
-- **`lib/memory-pressure.js`**: Monitors free RAM using `vm_stat` (macOS) or `/proc/meminfo` (Linux). Exports `shouldAllowSpawn({ priority, context })` — returns `{ allowed: boolean, reason: string }`. Critical pressure (< 256 MB free) blocks all spawning; high pressure (< 512 MB free) blocks non-urgent spawning. Spawns blocked by memory pressure are not permanently skipped — they remain in their source queue (quota-interrupted, paused-sessions, or task DB) for the next automation cycle or reviver pass.
-- **`lib/spawn-env.js`**: Exports `buildSpawnEnv(projectDir)`, shared across stop-continue-hook, session-reviver, urgent-task-spawner, and hourly-automation. Consolidates proxy env-var injection (`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`/`NODE_EXTRA_CA_CERTS`) with `isProxyDisabled()` check.
+- **`lib/memory-pressure.js`**: Monitors free RAM using `vm_stat` (macOS) or `/proc/meminfo` (Linux). Exports `shouldAllowSpawn({ priority, context })` — returns `{ allowed: boolean, reason: string }`. Critical pressure (< 256 MB free) blocks all spawning; high pressure (< 512 MB free) blocks non-urgent spawning. Spawns blocked by memory pressure are not permanently skipped — they remain in their source queue (task DB) for the next automation cycle or reviver pass.
+- **`lib/spawn-env.js`**: Exports `buildSpawnEnv(projectDir)`, shared across stop-continue-hook, session-reviver, urgent-task-spawner, and hourly-automation.
 - **`lib/revival-utils.js`**: Exports `buildRevivalPrompt({ reason, interruptedAt, taskId })`, `resolveTaskIdForAgent(agentId, projectDir)`, and `extractSessionIdFromPath(sessionPath)`. Used by both stop-continue-hook (inline revival) and session-reviver to produce consistent revival context prompts.
 
 **Revival Daemon** (`scripts/revival-daemon.js`):
@@ -273,63 +262,6 @@ All agent spawning routes through `enqueueSession()` in `.claude/hooks/lib/sessi
 
 **Migrated spawn sites** (21 files): `task-gate-spawner.js`, `urgent-task-spawner.js`, `demo-failure-spawner.js`, `stop-continue-hook.js`, `session-reviver.js`, `compliance-checker.js`, `antipattern-hunter-hook.js`, `plan-executor.js`, `schema-mapper-hook.js`, `reporters/jest-failure-reporter.js`, `reporters/vitest-failure-reporter.js`, `reporters/playwright-failure-reporter.js`, `lib/revival-utils.js`, `todo-maintenance.js`, `hourly-automation.js`, `scripts/force-spawn-tasks.js`, `scripts/force-triage-reports.js`, `scripts/feedback-launcher.js`, `.claude/hooks/feedback-launcher.js`, `scripts/revival-daemon.js`, `packages/mcp-servers/test/reporters/test-failure-reporter.ts`
 
-### Quota Monitor Hook
-
-**Quota Monitor Hook** (`.claude/hooks/quota-monitor.js`):
-- Runs after every tool call (throttled to 5-minute intervals)
-- Checks active key usage and triggers rotation at 95% utilization
-- **Step 4b unified refresh loop**: Refreshes expired tokens AND proactively refreshes non-active tokens approaching expiry (within 10 min of `EXPIRY_BUFFER_MS`); uses single loop with `isExpired`/`isApproachingExpiry` variables for efficiency
-- `refreshExpiredToken` returns the sentinel string `'invalid_grant'` (not `null`) when the OAuth server responds HTTP 400 + `{ error: 'invalid_grant' }`; callers mark the key `invalid` and skip it permanently
-- **Step 4c pre-expiry restartless swap**: When the active key is within 10 min of expiry and a valid standby exists, writes standby to Keychain via `updateActiveCredentials()`; Claude Code's built-in `SRA()` (proactive refresh at 5 min before expiry) or `r6T()` (401 recovery) picks up the new token seamlessly — no restart needed
-- Safe: refreshing Account B does not revoke Account A's in-memory token
-- **Seamless rotation** (quota-based): writes new credentials to Keychain, continues with `continue: true` for all sessions, credentials adopted at token expiry (SRA) or 401 (r6T); rotation message shows `fromEmail (usage%) → toEmail` for human-readable account identification
-  - No disruptive kill/restart paths; no orphaned processes
-  - All-exhausted message differentiates interactive vs automated sessions and includes active account email; interactive prompt suggests `/login`, automated prompt notes session will resume when quota resets
-- Post-rotation health audit: logs rotation verification to `rotation-audit.log`
-- Fires `account_nearly_depleted` rotation log event when active key reaches 95% usage (5-hour per-key cooldown to avoid re-firing every check cycle)
-- Fires `account_quota_refreshed` rotation log event when a previously exhausted key's usage drops back below 100% (also fires in `api-key-watcher.js` during SessionStart health checks)
-
-### API Key Watcher Hook
-
-**API Key Watcher Hook** (`.claude/hooks/api-key-watcher.js`):
-- Runs at `SessionStart` for interactive sessions only; performs health checks on all registered keys
-- **Refresh-before-invalidate**: When a health check fails (401/invalid), calls `refreshExpiredToken(keyData)` before marking the key `invalid`. Three outcomes:
-  - `refreshed === 'invalid_grant'` — refresh token permanently revoked; marks key `invalid`, logs `health_check_failed_then_invalid_grant`
-  - `refreshed` truthy — access token recovered; updates `accessToken`/`refreshToken`/`expiresAt`, marks key `active`, logs `key_added` with reason `token_refreshed_after_health_check_failure`
-  - `refreshed` falsy (transient error) — marks key `expired` (recoverable), logs `health_check_failed_*_refresh_failed`
-- This replaces the previous behavior of immediately marking keys `invalid` on any health check failure, preventing false-positive permanent invalidation of keys with expired (but refreshable) access tokens
-- Fires `account_quota_refreshed` when a previously exhausted key's usage drops back below 100%
-
-### Key Sync Module
-
-**Key Sync Module** (`.claude/hooks/key-sync.js`):
-- Shared library used by api-key-watcher, hourly-automation, credential-sync-hook, and quota-monitor
-- Exports `EXPIRY_BUFFER_MS` (10 min) and `HEALTH_DATA_MAX_AGE_MS` (15 min) constants for consistent timing across all rotation logic
-- `refreshExpiredToken` returns `'invalid_grant'` sentinel (distinct from `null`) when OAuth responds 400 + `error: invalid_grant`; all callers mark the key `status: 'invalid'` and log `refresh_token_invalid_grant`
-- `readCredentialSources()` no longer filters Keychain entries by `expiresAt`: expired Keychain tokens are included so `syncKeys()` can pick them up and call `refreshExpiredToken()` to obtain a new access token. Previously, expired Keychain tokens were silently dropped before reaching the refresh path, causing auth failures.
-- `syncKeys()` proactively refreshes non-active tokens approaching expiry (within `EXPIRY_BUFFER_MS`), resolves account profiles for keys missing `account_uuid` via `fetchAccountProfile()`, and performs pre-expiry restartless swap to Keychain; covers idle sessions because hourly-automation calls `syncKeys()` every 10 min via launchd even when no Claude Code process is active
-- `fetchAccountProfile(accessToken)` — exported function that calls `https://api.anthropic.com/api/oauth/profile` to resolve `account_uuid` and `email` for keys added by automation or token refresh that skipped the interactive SessionStart profile-resolution path; non-fatal, retried on next sync
-- `selectActiveKey()` freshness gate: nulls out usage data older than 15 minutes to prevent uninformed switches based on stale health checks; stale keys pass "usable" filter but are excluded from comparison logic, causing system to stay put rather than make blind decisions
-- `pruneDeadKeys` converts keys with `status: 'invalid'` to `status: 'tombstone'` (with `tombstoned_at` timestamp and 24h TTL) rather than deleting them; tombstoned keys are distinguishable from genuinely unknown tokens so the rotation proxy can swap rather than passthrough; fires `account_auth_failed` rotation log event only when an account loses its last viable key; email resolution order: key-level `account_email` → sibling key with same `account_uuid` → rotation_log history for same `key_id`; fires `account_auth_failed` only once per account (checks remaining non-pruned keys with same email to avoid duplicates); tombstoned entries removed from rotation_log only after their 24h TTL expires; `hasOtherViableKey` filter excludes `tombstone` status; never prunes the active key; called automatically at the end of every `syncKeys()` run
-- `refreshExpiredToken` skips keys with `status: 'tombstone'` (in addition to `'invalid'`)
-- `deduplicateKeys()` returns `{ merged: number, details: Array<{ removed: string, survivor: string, email: string|null }> }` — `details` contains truncated key ID pairs and account email for each merge; used by `syncKeys()` to log human-readable dedup output (e.g., `a1b2c3d4→e5f6g7h8 (user@example.com)`)
-
-### Rotation Monitoring
-
-**Rotation Monitoring** (`scripts/monitor-token-swap.mjs`):
-```bash
-# Real-time rotation state monitoring
-node scripts/monitor-token-swap.mjs --path /project [--interval 30]
-
-# Rotation health audit report
-node scripts/monitor-token-swap.mjs --path /project --audit
-```
-
-Tracks credential rotation state, Keychain sync status, and account health. Audit mode generates rotation health reports showing recent rotations, pending audits, and system alerts.
-
-**Binary Patch Research** (`scripts/patch-credential-cache.js`) — **ARCHIVED**:
-Research artifact from investigating Claude Code's credential memoization cache. Replaced by the rotation proxy which handles credential swap at the network level, eliminating the need for binary modification. Kept for reference only.
-
 ---
 
 ## Hooks Reference
@@ -354,9 +286,8 @@ Research artifact from investigating Claude Code's credential memoization cache.
 **CTO Notification Hook** (`.claude/hooks/cto-notification-hook.js`):
 - Runs at `UserPromptSubmit` for interactive sessions only; skipped for spawned `[Automation]`/`[Task]` sessions (`CLAUDE_SPAWNED_SESSION=true`) and slash commands (sentinel markers or `/command-name` pattern)
 - Checks deputy-cto database (pending decisions, rejections), agent-reports database (unread reports), todo.db (queued/active task counts), and autonomous mode status
-- Reads aggregate quota from `~/.claude/api-key-rotation.json`; deduplicates same-account keys by `account_uuid`; falls back to fingerprint cross-match for null-UUID keys
-- Displays a multi-line status block each prompt (quota bar, 30-day token usage, session counts, TODO counts, pending CTO items)
-- Critical mode: when `rejections > 0`, collapses to a compact one-liner with `COMMITS BLOCKED` prefix; compact quota display appends `[activeEmail]` and uses `activeCount >= 1` guard (works for single-account setups too) with singular/plural grammar
+- Displays a multi-line status block each prompt (30-day token usage, session counts, TODO counts, pending CTO items)
+- Critical mode: when `rejections > 0`, collapses to a compact one-liner with `COMMITS BLOCKED` prefix
 - Uses an incremental session-file cache (`~/.claude/cto-metrics-cache-*.json`) with a 3-second time budget to compute token usage without blocking
 - Output uses both `systemMessage` (terminal display) and `hookSpecificOutput.additionalContext` (AI model context) so the AI can act on quota/deadline data
 - Tests at `.claude/hooks/__tests__/cto-notification-hook.test.js` (38 tests, runs via `node --test`)
@@ -443,7 +374,7 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 
 **Credential File Guard Hook** (`.claude/hooks/credential-file-guard.js`):
 - Runs at `PreToolUse` for Read, Write, Edit, Grep, Glob, and Bash tool calls; hard-blocking (uses `permissionDecision: "deny"` — not just a warning)
-- Blocks access to `BLOCKED_BASENAMES` (`.env`, `.zshrc`, `.bashrc`, etc.) and `BLOCKED_PATH_SUFFIXES` (`.claude/protection-key`, `.claude/api-key-rotation.json`, `.mcp.json`, etc.)
+- Blocks access to `BLOCKED_BASENAMES` (`.env`, `.zshrc`, `.bashrc`, etc.) and `BLOCKED_PATH_SUFFIXES` (`.claude/protection-key`, `.mcp.json`, etc.)
 - For Bash commands, uses a quote-aware shell tokenizer (`tokenize()`) to extract redirection targets (including quoted targets like `echo hello > ".env"`), command arguments, and inline path references; `NON_FILE_COMMANDS` set exempts echo/printf/git/package managers to avoid false positives
 - Redirection scan covers `>`, `>>`, `<`, `2>`, `2>>`, `1>`, `1>>`, `0<` and operates on tokenized output so quoted bypasses (e.g. `> ".env"`) are caught; also detects protected basename references in path context (`/basename` or `~basename` patterns) to block deep-path variants
 - `ALWAYS_BLOCKED_SUFFIXES` and `ALWAYS_BLOCKED_BASENAMES` are hard-blocked with no approval escape hatch; other protected paths can be approved via `protected-action-approvals.json`
@@ -696,83 +627,6 @@ Curated product walkthroughs (NOT tests) mapped to personas. Scenarios are manag
 
 ---
 
-## Rotation Proxy
-
-Local MITM proxy for transparent credential rotation (`scripts/rotation-proxy.js`).
-
-**Architecture:**
-```
-Claude Code ──HTTPS_PROXY──> localhost:18080 ──TLS──> api.anthropic.com
-                                    │
-                            reads rotation state
-                        (~/.claude/api-key-rotation.json)
-                                    │
-                            on 429: rotate key, retry
-```
-
-**What it intercepts** (TLS MITM + header swap):
-- `api.anthropic.com` — main API
-
-**What passes through** (transparent CONNECT tunnel):
-- `mcp-proxy.anthropic.com` — MCP proxy endpoint (uses session-bound OAuth tokens; swapping them causes 401 → revocation cascade)
-- `platform.claude.com` — OAuth refresh
-- Everything else
-
-**429 retry**: On quota exhaustion response, marks the current key as exhausted, calls `selectActiveKey()` to pick the next available key, and retries the request (max 2 retries). If no keys are available, returns the original 429 to the client.
-
-**401 retry**: On auth failure response (not a quota issue), retries up to `MAX_401_RETRIES` times with a fresh key selection — allows picking up a key that was rotated between the proxy's token resolution and the upstream response. Does not call `rotateOnExhaustion`; fires `rotating_on_401` log event. Defense-in-depth: 401s from `mcp-proxy.anthropic.com` are never retried (the host validates session-bound OAuth tokens; a 401 there is a token mismatch, not key expiration).
-
-**Tombstone-aware routing** (`forwardRequest`): When the incoming request carries a token known to rotation state, the proxy inspects its entry:
-- `status: 'tombstone'` — pruned dead token; swap with the active key and forward (prevents "OAuth token revoked" errors from stale sessions sending tombstoned credentials)
-- No entry at all — genuinely unknown token (fresh login not yet registered); pass through unchanged and trigger async `syncKeys()` to register it (preserves fresh login flow)
-- Any other status — normal swap path (inject active key's token)
-
-**Path-level swap allowlist** (`SWAP_PATH_PREFIXES`): Even within a MITM'd TLS connection to `api.anthropic.com`, only paths matching `SWAP_PATH_PREFIXES` get the Authorization header swapped with the active rotation key. Paths not in the allowlist (OAuth endpoints, session-health checks, MCP server registration, etc.) receive a `session_path_passthrough` log event and are forwarded with the session's original token. The allowlist approach is intentionally conservative — new endpoints default to passthrough rather than accidental swap. Current entries: `/v1/messages`, `/v1/organizations`, `/api/event_logging/`, `/api/eval/`, `/api/web/`.
-
-**`forceSwap` for merged/tombstone tokens**: Merged and tombstone tokens have no valid `accessToken` — passing them through unchanged guarantees a 403. When the token-identity check detects a tombstone or merged token, it sets `forceSwap = true`, ensuring the active key's token is swapped in. However, the path-level passthrough check (`SWAP_PATH_PREFIXES`) ALWAYS applies regardless of `forceSwap` — OAuth and session-health paths receive the session's original token even if it is tombstoned or merged. This prevents swapping the active key onto OAuth paths, which would revoke the session token. On non-SWAP paths, `forceSwap` is irrelevant because the passthrough already applies; on SWAP paths, `forceSwap` ensures the swap happens.
-
-**Dead active key passthrough**: When the active key's status is not usable (`expired`, `invalid`, `tombstone`, `merged`, or missing from state), `forwardRequest()` evaluates whether to fall back to passthrough. If the incoming token differs from the dead active key, it passes through unchanged (`dead_active_key_passthrough`) — this preserves fresh tokens from `/login`. If the incoming token IS the dead active key (same key ID), passthrough is skipped (`dead_active_key_self_hit`) and 401 rotation handles recovery instead. Only `active` and `exhausted` statuses are considered usable (`exhausted` is still valid for 429 retry + rotation). Both paths trigger async `syncKeys()` to register fresh credentials.
-
-**401 rotation debounce**: Multiple concurrent MITM connections can see a 401 simultaneously for the same key and each independently trigger `rotateOnAuth401Sync()`. To prevent cascading rotations, a 5-second per-key debounce (`ROTATION_DEBOUNCE_MS = 5000`) is applied at the call site. The second 401 for the same key within 5s is logged as `rotation_debounced` and passed through to the client; the first connection's rotation handles recovery.
-
-**Conditional auth header injection** (`rebuildRequest`): Authorization header is only added back to the rebuilt request if the original request had one. Requests without auth headers (e.g., health checks, OAuth flows that pass through to a MITM host) are forwarded without injecting a token.
-
-**Logging**: Structured JSON lines to `~/.claude/rotation-proxy.log` (max 1MB with rotation). Logs token swaps (key ID only, never token values), 429 retries, 401 retries, tombstone swaps, unknown-token passthroughs, and errors for debugging.
-
-**Health endpoint**: `GET http://localhost:18080/__health` returns JSON status with active key ID, uptime, and request count.
-
-**Lifecycle**: Runs as a launchd KeepAlive service (`com.local.gentyr-rotation-proxy`). Auto-restarts on crash. Starts before the automation service.
-
-**CONNECT head buffer handling**: The CONNECT handler's `head` parameter (early client data — typically the TLS ClientHello — sent before the 200 response arrives) is pushed back into the socket's readable stream with `clientSocket.unshift(head)` before wrapping in TLSSocket. Omitting this caused intermittent ECONNRESET errors because the TLS handshake began with incomplete data. This is the textbook fix for Node.js HTTPS MITM proxies.
-
-**Tombstone consumer filters**: Consumer hooks that iterate rotation state keys (`session-reviver.js`, `api-key-watcher.js`, `stop-continue-hook.js`, `quota-monitor.js`) filter out tombstoned entries before passing key data to `checkKeyHealth()`, preventing calls with `undefined` access tokens.
-
-**Complements existing rotation**: The proxy handles immediate token swap at the network level. Quota-monitor still handles usage detection and key selection. Key-sync still handles token refresh and Keychain writes.
-
-### Proxy Enable/Disable
-
-```bash
-npx gentyr proxy disable   # Stop proxy service, remove shell env, persist flag
-npx gentyr proxy enable    # Restart proxy service, restore shell env
-npx gentyr proxy status    # Show current state (default when no subcommand)
-npx gentyr proxy           # Same as status
-```
-
-Emergency kill switch for the rotation proxy. When the Anthropic usage API is degraded and the proxy's key-selection logic causes issues, `disable` takes the proxy completely out of the equation:
-
-1. Unloads the launchd/systemd service (stops the process, prevents auto-restart)
-2. Kill-by-port fallback: uses `lsof -ti :18080` + `process.kill(SIGTERM)` to terminate any lingering proxy process that `launchctl unload` may have left running
-3. Strips the `# BEGIN GENTYR PROXY` / `# END GENTYR PROXY` block from `~/.zshrc`/`~/.bashrc`
-4. Writes `~/.claude/proxy-disabled.json` with `{ disabled: true }` — read by all spawn helpers
-
-**State file**: `~/.claude/proxy-disabled.json` (global, not per-project — one proxy serves all projects).
-
-**Spawn helper integration**: `isProxyDisabled()` from `.claude/hooks/lib/proxy-state.js` is checked by `buildSpawnEnv()` in `.claude/hooks/lib/spawn-env.js` (shared module) — consumed by `hourly-automation.js`, `urgent-task-spawner.js`, `task-gate-spawner.js`, and `session-reviver.js`. When disabled, `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`/`NODE_EXTRA_CA_CERTS` are omitted from spawned agent environments — agents connect directly to `api.anthropic.com`.
-
-**Default**: Enabled. Missing state file = proxy enabled. `npx gentyr init` does not create this file.
-
----
-
 ## Chrome Browser Automation
 
 The chrome-bridge MCP server provides access to Claude for Chrome extension capabilities:
@@ -989,19 +843,6 @@ The CTO dashboard (`packages/cto-dashboard/`) supports a `--mock` flag for devel
 - No `--page` argument renders all sections (backwards compatible; used by `generate-readme.js`)
 
 The `/cto-report` slash command runs all three pages sequentially. Data fetching is optimized per page — sections not rendered on the active page skip their I/O readers in `index.tsx`.
-
-**`getVerifiedQuota()` fallback** (`packages/cto-dashboard/src/utils/data-reader.ts`): When no live API health checks succeed (all keys unreachable or offline), quota display falls back to stored `last_usage` data from `api-key-rotation.json` instead of showing "No healthy keys". Accounts with `status: 'invalid'` or `'tombstone'` are excluded; remaining accounts are deduplicated by `account_uuid` or `account_email`. The `account_email` field is now included in `KeyRotationKeyDataSchema` to support this deduplication path.
-
-The **ACCOUNT OVERVIEW** section displays a curated EVENT HISTORY (last 24h, capped at 20 entries). Only 7 event types pass the `ALLOWED_EVENTS` whitelist in `account-overview-reader.ts`:
-- `key_added` — new account registered (token-refresh re-additions filtered as noise); also fires when `api-key-watcher.js` recovers a key via `refreshExpiredToken()` after a failed health check (reason: `token_refreshed_after_health_check_failure`)
-- `key_switched` — active account changed by rotation logic
-- `key_exhausted` — account reached 100% quota in any bucket
-- `account_nearly_depleted` — active account hit 95% (5-hour per-key cooldown; fired by quota-monitor)
-- `account_quota_refreshed` — previously exhausted account dropped below 100% (fired by quota-monitor and api-key-watcher)
-- `account_auth_failed` — account lost its last key to invalid_grant pruning (fired by pruneDeadKeys in key-sync)
-- `account_removed` — account explicitly removed by user via `npx gentyr remove-account` or `/remove-account`
-
-Event descriptions resolve account identity via entry-level `account_email` → key-level `account_email` → rotation_log history lookup (email captured in earlier events for the same key_id) → truncated key ID fallback. Consecutive identical events (same type + description) are deduplicated after sorting so a burst of duplicate `account_auth_failed` entries collapses to one. Events are colored in the dashboard: `key_switched`/`account_quota_refreshed` cyan/green, `key_exhausted`/`account_auth_failed` red, `account_nearly_depleted`/`account_removed` yellow.
 
 ### WORKLOG System
 

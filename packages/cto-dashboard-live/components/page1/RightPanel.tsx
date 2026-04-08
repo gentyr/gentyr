@@ -121,7 +121,7 @@ interface RightPanelProps {
 function QuotaWidget({ data, width }: { data: LiveDashboardData; width: number }): React.ReactElement {
   const { quota } = data;
   return (
-    <Section title={`QUOTA (${quota.activeAccounts} acct${quota.activeAccounts !== 1 ? 's' : ''})`} width={width} tip="/show quota">
+    <Section title="QUOTA & CAPACITY" width={width} tip="/show quota">
       <QuotaBar label="5-hour" percentage={quota.fiveHourPct} width={Math.max(8, width - 20)} />
       <QuotaBar label="7-day" percentage={quota.sevenDayPct} width={Math.max(8, width - 20)} />
     </Section>

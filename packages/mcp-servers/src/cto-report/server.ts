@@ -35,9 +35,6 @@ import {
   type SectionTaskCounts,
   type SessionMetricsResult,
   type TaskMetricsResult,
-  type KeyRotationMetrics,
-  type TrackedKeyInfo,
-  type AggregateQuota,
   type AgentActivity,
   type HookExecutions,
   type SystemHealth,
@@ -57,7 +54,6 @@ const DEPUTY_CTO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'deputy-cto.db');
 const CTO_REPORTS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
 const AUTONOMOUS_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
-const KEY_ROTATION_STATE_PATH = path.join(os.homedir(), '.claude', 'api-key-rotation.json');
 const AGENT_TRACKER_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
 const AUTOMATION_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
 const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
@@ -114,34 +110,10 @@ function parseBucket(bucket: { utilization: number; resets_at: string } | null |
 
 /**
  * Get an access token from available sources.
- * Checks rotation state first (project-level, accumulates keys from multiple accounts),
- * then falls back to credentials file (user-level, current session only).
+ * Reads from credentials file (user-level, current session).
  */
 function getAccessToken(): string | null {
-  // Source 1: Rotation state (project-level, has accumulated keys)
-  if (fs.existsSync(KEY_ROTATION_STATE_PATH)) {
-    try {
-      const state = JSON.parse(fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8')) as KeyRotationState;
-      if (state?.version === 1 && state.keys) {
-        // Prefer the active key
-        const activeToken = state.active_key_id ? state.keys[state.active_key_id]?.accessToken : undefined;
-        if (activeToken) return activeToken;
-        // Fall back to any key with a token (prefer active, then try any)
-        let fallbackToken: string | null = null;
-        for (const keyData of Object.values(state.keys)) {
-          if (keyData.accessToken) {
-            if (keyData.status === 'active') return keyData.accessToken;
-            if (!fallbackToken) fallbackToken = keyData.accessToken;
-          }
-        }
-        if (fallbackToken) return fallbackToken;
-      }
-    } catch {
-      // Silently fall through to next source
-    }
-  }
-
-  // Source 2: Credentials file (user-level, current session)
+  // Credentials file (user-level, current session)
   if (fs.existsSync(CREDENTIALS_PATH)) {
     try {
       const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8')) as CredentialsFile;
@@ -750,102 +722,6 @@ function getHookExecutions(): HookExecutions {
 }
 
 // ============================================================================
-// Key Rotation Metrics
-// ============================================================================
-
-interface KeyRotationState {
-  version: number;
-  active_key_id: string | null;
-  keys: Record<string, {
-    accessToken?: string;
-    subscriptionType: string;
-    last_usage: {
-      five_hour: number;
-      seven_day: number;
-    } | null;
-    status: 'active' | 'exhausted' | 'invalid' | 'expired';
-  }>;
-  rotation_log: {
-    timestamp: number;
-    event: string;
-  }[];
-}
-
-function getKeyRotationMetrics(hours: number): KeyRotationMetrics | null {
-  if (!fs.existsSync(KEY_ROTATION_STATE_PATH)) {
-    return null;
-  }
-
-  const content = fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8');
-  const state = JSON.parse(content) as KeyRotationState;
-
-  if (!state || state.version !== 1 || typeof state.keys !== 'object') {
-    throw new Error(`Invalid key rotation state file at ${KEY_ROTATION_STATE_PATH}`);
-  }
-
-  const now = Date.now();
-  const since = now - (hours * 60 * 60 * 1000);
-
-  // Count keys by status and build active key list
-  const keys: TrackedKeyInfo[] = [];
-  let fiveHourSum = 0;
-  let sevenDaySum = 0;
-  let activeKeysWithData = 0;
-  let expiredKeys = 0;
-  let invalidKeys = 0;
-  let exhaustedKeys = 0;
-
-  for (const [keyId, keyData] of Object.entries(state.keys)) {
-    if (keyData.status === 'expired') { expiredKeys++; continue; }
-    if (keyData.status === 'invalid') { invalidKeys++; continue; }
-    if (keyData.status === 'exhausted') { exhaustedKeys++; }
-
-    // Include active and exhausted keys in the list
-    if (keyData.status !== 'active' && keyData.status !== 'exhausted') continue;
-
-    const isCurrent = keyId === state.active_key_id;
-
-    keys.push({
-      key_id: `${keyId.slice(0, 8)}...`,
-      subscription_type: keyData.subscriptionType || 'unknown',
-      five_hour_pct: keyData.last_usage?.five_hour ?? null,
-      seven_day_pct: keyData.last_usage?.seven_day ?? null,
-      is_current: isCurrent,
-    });
-
-    // Accumulate for aggregate (active keys only)
-    if (keyData.status === 'active' && keyData.last_usage) {
-      fiveHourSum += keyData.last_usage.five_hour ?? 0;
-      sevenDaySum += keyData.last_usage.seven_day ?? 0;
-      activeKeysWithData++;
-    }
-  }
-
-  // Count rotation events in time range
-  const rotationEvents24h = state.rotation_log.filter(
-    entry => entry.timestamp >= since && entry.event === 'key_switched'
-  ).length;
-
-  // Compute aggregate (% of total capacity)
-  const aggregate: AggregateQuota | null = activeKeysWithData > 0 ? {
-    active_keys: activeKeysWithData,
-    five_hour_pct: Math.round(fiveHourSum / activeKeysWithData),
-    seven_day_pct: Math.round(sevenDaySum / activeKeysWithData),
-  } : null;
-
-  return {
-    current_key_id: state.active_key_id ? `${state.active_key_id.slice(0, 8)}...` : null,
-    active_keys: keys.length - exhaustedKeys,
-    expired_keys: expiredKeys,
-    invalid_keys: invalidKeys,
-    exhausted_keys: exhaustedKeys,
-    keys,
-    rotation_events_24h: rotationEvents24h,
-    aggregate,
-  };
-}
-
-// ============================================================================
 // Usage Projection
 // ============================================================================
 
@@ -1104,7 +980,6 @@ async function getReport(args: GetReportArgs): Promise<CTOReport> {
   const hours = args.hours ?? 24;
   const tokenUsage = getTokenUsage(hours);
   const quotaStatus = await getQuotaStatus();
-  const keyRotation = getKeyRotationMetrics(hours);
 
   const report: CTOReport = {
     generated_at: new Date().toISOString(),
@@ -1115,14 +990,11 @@ async function getReport(args: GetReportArgs): Promise<CTOReport> {
     usage: {
       plan_type: 'unknown',
       tokens_24h: tokenUsage,
-      estimated_remaining_pct: keyRotation?.aggregate?.seven_day_pct != null
-        ? 100 - keyRotation.aggregate.seven_day_pct
-        : quotaStatus.seven_day?.utilization
+      estimated_remaining_pct: quotaStatus.seven_day?.utilization
         ? 100 - quotaStatus.seven_day.utilization
         : null,
     },
     usage_projection: getUsageProjection(),
-    key_rotation: keyRotation,
     agents: getAgentActivity(),
     hooks: getHookExecutions(),
     sessions: getSessionMetricsData(hours),

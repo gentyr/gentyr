@@ -17,7 +17,6 @@ import {
   getMockDeployments,
   getMockInfra,
   getMockLogging,
-  getMockAccountOverview,
 } from '../mock-data.js';
 
 describe('Mock Data Validation', () => {
@@ -31,52 +30,20 @@ describe('Mock Data Validation', () => {
       expect(data.hours).toBeGreaterThan(0);
     });
 
-    it('should have verified_quota with multiple keys', () => {
+    it('should have valid quota data', () => {
       const data = getMockDashboardData();
 
-      expect(data.verified_quota).toBeDefined();
-      expect(data.verified_quota.keys).toBeDefined();
-      expect(Array.isArray(data.verified_quota.keys)).toBe(true);
-      expect(data.verified_quota.keys.length).toBeGreaterThan(1);
-    });
-
-    it('should have quota data for each key', () => {
-      const data = getMockDashboardData();
-
-      data.verified_quota.keys.forEach((key, index) => {
-        expect(key.key_id).toBeDefined();
-        expect(typeof key.key_id).toBe('string');
-        expect(key.subscription_type).toBeDefined();
-        expect(typeof key.is_current).toBe('boolean');
-        expect(typeof key.healthy).toBe('boolean');
-
-        if (key.healthy && key.quota) {
-          expect(key.quota.five_hour).toBeDefined();
-          expect(key.quota.seven_day).toBeDefined();
-          expect(typeof key.quota.five_hour?.utilization).toBe('number');
-          expect(typeof key.quota.seven_day?.utilization).toBe('number');
-          expect(key.quota.five_hour!.utilization).toBeGreaterThanOrEqual(0);
-          expect(key.quota.five_hour!.utilization).toBeLessThanOrEqual(100);
-          expect(key.quota.seven_day!.utilization).toBeGreaterThanOrEqual(0);
-          expect(key.quota.seven_day!.utilization).toBeLessThanOrEqual(100);
-        }
-      });
-    });
-
-    it('should have exactly one active key', () => {
-      const data = getMockDashboardData();
-
-      const activeKeys = data.verified_quota.keys.filter(k => k.is_current);
-      expect(activeKeys.length).toBe(1);
-    });
-
-    it('should have aggregate quota matching key count', () => {
-      const data = getMockDashboardData();
-
-      expect(data.verified_quota.aggregate).toBeDefined();
-      expect(data.verified_quota.healthy_count).toBe(
-        data.verified_quota.keys.filter(k => k.healthy).length
-      );
+      expect(data.quota).toBeDefined();
+      if (data.quota.five_hour) {
+        expect(typeof data.quota.five_hour.utilization).toBe('number');
+        expect(data.quota.five_hour.utilization).toBeGreaterThanOrEqual(0);
+        expect(data.quota.five_hour.utilization).toBeLessThanOrEqual(100);
+      }
+      if (data.quota.seven_day) {
+        expect(typeof data.quota.seven_day.utilization).toBe('number');
+        expect(data.quota.seven_day.utilization).toBeGreaterThanOrEqual(0);
+        expect(data.quota.seven_day.utilization).toBeLessThanOrEqual(100);
+      }
     });
 
     it('should have valid token usage metrics', () => {
@@ -220,78 +187,7 @@ describe('Mock Data Validation', () => {
     });
   });
 
-  describe('getMockAccountOverview', () => {
-    it('should return valid AccountOverviewData structure', () => {
-      const data = getMockAccountOverview();
-
-      expect(data).toBeDefined();
-      expect(data.hasData).toBe(true);
-      expect(Array.isArray(data.accounts)).toBe(true);
-      expect(Array.isArray(data.events)).toBe(true);
-      expect(data.accounts.length).toBeGreaterThan(1);
-    });
-
-    it('should have exactly one active account', () => {
-      const data = getMockAccountOverview();
-
-      const activeAccounts = data.accounts.filter(a => a.isCurrent);
-      expect(activeAccounts.length).toBe(1);
-      expect(data.activeKeyId).toBe(activeAccounts[0].keyId);
-    });
-
-    it('should have valid account structures', () => {
-      const data = getMockAccountOverview();
-
-      data.accounts.forEach((account) => {
-        expect(typeof account.keyId).toBe('string');
-        expect(typeof account.status).toBe('string');
-        expect(typeof account.isCurrent).toBe('boolean');
-        expect(typeof account.subscriptionType).toBe('string');
-        expect(typeof account.fiveHourPct).toBe('number');
-        expect(typeof account.sevenDayPct).toBe('number');
-        expect(account.fiveHourPct).toBeGreaterThanOrEqual(0);
-        expect(account.fiveHourPct).toBeLessThanOrEqual(100);
-        expect(account.sevenDayPct).toBeGreaterThanOrEqual(0);
-        expect(account.sevenDayPct).toBeLessThanOrEqual(100);
-        expect(account.expiresAt).toBeInstanceOf(Date);
-        expect(account.addedAt).toBeInstanceOf(Date);
-      });
-    });
-
-    it('should have valid event structures', () => {
-      const data = getMockAccountOverview();
-
-      data.events.forEach((event) => {
-        expect(event.timestamp).toBeInstanceOf(Date);
-        expect(typeof event.event).toBe('string');
-        expect(typeof event.keyId).toBe('string');
-        expect(typeof event.description).toBe('string');
-      });
-    });
-
-    it('should have events in reverse chronological order', () => {
-      const data = getMockAccountOverview();
-
-      for (let i = 1; i < data.events.length; i++) {
-        const prev = data.events[i - 1].timestamp.getTime();
-        const curr = data.events[i].timestamp.getTime();
-        expect(prev).toBeGreaterThanOrEqual(curr);
-      }
-    });
-  });
-
   describe('Mock Data Consistency', () => {
-    it('should have consistent key IDs across dashboard and trajectory', () => {
-      const dashboardData = getMockDashboardData();
-
-      expect(dashboardData.verified_quota.keys.length).toBeGreaterThan(1);
-
-      // Verify all keys have unique IDs
-      const keyIds = dashboardData.verified_quota.keys.map(k => k.key_id);
-      const uniqueKeyIds = new Set(keyIds);
-      expect(uniqueKeyIds.size).toBe(keyIds.length);
-    });
-
     it('should have timestamps within reasonable range', () => {
       const now = Date.now();
       const trajectory = getMockTrajectory();
@@ -307,22 +203,14 @@ describe('Mock Data Validation', () => {
     it('should have realistic utilization values', () => {
       const data = getMockDashboardData();
 
-      data.verified_quota.keys.forEach((key) => {
-        if (key.healthy && key.quota) {
-          const fiveHour = key.quota.five_hour?.utilization;
-          const sevenDay = key.quota.seven_day?.utilization;
-
-          if (fiveHour !== undefined) {
-            expect(fiveHour).toBeGreaterThanOrEqual(0);
-            expect(fiveHour).toBeLessThanOrEqual(100);
-          }
-
-          if (sevenDay !== undefined) {
-            expect(sevenDay).toBeGreaterThanOrEqual(0);
-            expect(sevenDay).toBeLessThanOrEqual(100);
-          }
-        }
-      });
+      if (data.quota.five_hour) {
+        expect(data.quota.five_hour.utilization).toBeGreaterThanOrEqual(0);
+        expect(data.quota.five_hour.utilization).toBeLessThanOrEqual(100);
+      }
+      if (data.quota.seven_day) {
+        expect(data.quota.seven_day.utilization).toBeGreaterThanOrEqual(0);
+        expect(data.quota.seven_day.utilization).toBeLessThanOrEqual(100);
+      }
     });
   });
 });

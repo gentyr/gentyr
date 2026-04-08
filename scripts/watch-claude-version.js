@@ -2,7 +2,6 @@
 /**
  * Watch Claude Version — detects Claude Code binary updates and auto-re-patches Clawd mascot.
  *
- * Note: credential patch is archived, replaced by rotation proxy.
  * Computes a SHA-256 hash of the resolved binary and compares it to the last
  * known hash. When a change is detected, runs the Clawd mascot patch only.
  *
@@ -16,8 +15,6 @@ import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
 import { execFileSync } from 'child_process';
-import { appendRotationAudit } from '../.claude/hooks/key-sync.js';
-
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_DIR = path.join(os.homedir(), '.claude', 'state');
 const HASH_STATE_PATH = path.join(STATE_DIR, 'claude-binary-hash.json');
@@ -120,7 +117,6 @@ export async function checkAndRepatch(log) {
         stdio: 'pipe',
       });
       log('[version-watch] Clawd patch re-applied');
-      appendRotationAudit('CLAWD_PATCH_REAPPLIED', { binary: binaryPath });
       clawdPatchStatus = 'patched';
     } else {
       log('[version-watch] Clawd patch already present');

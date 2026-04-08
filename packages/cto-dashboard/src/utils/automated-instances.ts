@@ -1,8 +1,7 @@
 /**
  * Automated Instances Utility
  *
- * Reads hook configurations, run counts from agent-tracker,
- * and interval adjustments from usage-optimizer.
+ * Reads hook configurations and run counts from agent-tracker.
  */
 
 import * as fs from 'fs';

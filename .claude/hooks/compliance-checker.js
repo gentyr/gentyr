@@ -85,7 +85,7 @@ try {
   process.exit(1);
 }
 
-// Overlay dynamic cooldowns from usage-optimizer (allows overdrive to scale these)
+// Overlay dynamic cooldowns (allows overdrive to scale these)
 CONFIG.global.fileVerificationCooldownDays = getCooldown('compliance_checker_file', 10080) / (60 * 24);
 CONFIG.local.specCooldownDays = getCooldown('compliance_checker_spec', 10080) / (60 * 24);
 

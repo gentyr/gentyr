@@ -1,14 +1,14 @@
 /**
  * Page 2: Intelligence + Infrastructure — two-column layout. Monochrome.
  *
- * Left:  Accounts, Deputy-CTO Detail, Personas, Product-Market Fit
+ * Left:  Deputy-CTO Detail, Personas, Product-Market Fit
  * Right: Testing, Deployments, Worktrees, Infra, Logging, Timeline
  */
 
 import React from 'react';
 import { Box, Text } from 'ink';
 import { Section } from '../Section.js';
-import type { Page2Data, Page3Data, TriageReport, PendingQuestion, FeedbackPersona, AccountInfo, DeploymentItem, WorktreeInfo, TimelineEvent } from '../../types.js';
+import type { Page2Data, Page3Data, TriageReport, PendingQuestion, FeedbackPersona, DeploymentItem, WorktreeInfo, TimelineEvent } from '../../types.js';
 import { formatTimeAgo, formatTimestamp, truncate } from '../../utils/formatters.js';
 
 interface Page2Props {
@@ -22,22 +22,6 @@ interface Page2Props {
 // ============================================================================
 // Left column sections (Intelligence)
 // ============================================================================
-
-function AccountOverviewSection({ accounts, width }: { accounts: AccountInfo[]; width: number }): React.ReactElement {
-  if (accounts.length === 0) return <></>;
-  return (
-    <Section title={`ACCOUNT OVERVIEW (${accounts.length})`} width={width} tip="/show accounts">
-      {accounts.map(a => (
-        <Box key={a.email}>
-          <Text>{truncate(a.email, 24).padEnd(25)}</Text>
-          <Text bold>{a.status.padEnd(8)}</Text>
-          <Text dimColor>{a.subscription.padEnd(10)}</Text>
-          <Text dimColor>5h:{a.fiveHourPct}% 7d:{a.sevenDayPct}%</Text>
-        </Box>
-      ))}
-    </Section>
-  );
-}
 
 function DeputyCtoDetailSection({ data, width }: { data: Page2Data['deputyCto']; width: number }): React.ReactElement {
   if (!data.hasData) return <></>;
@@ -287,10 +271,7 @@ export function Page2({ data, infra, scrollOffset, height, width }: Page2Props):
       {/* Left: Intelligence */}
       <Box flexDirection="column" width={leftW} height={height} overflow="hidden">
         <Box flexDirection="column" marginTop={-scrollOffset}>
-          <AccountOverviewSection accounts={data.accounts} width={leftW} />
-          <Box marginTop={1}>
-            <DeputyCtoDetailSection data={data.deputyCto} width={leftW} />
-          </Box>
+          <DeputyCtoDetailSection data={data.deputyCto} width={leftW} />
           <Box marginTop={1}>
             <PersonasSection personas={data.personas} width={leftW} />
           </Box>

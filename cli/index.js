@@ -11,7 +11,6 @@
  *   npx gentyr uninstall                     # Remove GENTYR from project
  *   npx gentyr migrate                       # Convert from .claude-framework to npm
  *   npx gentyr scaffold <name>               # Scaffold new project
- *   npx gentyr proxy [disable|enable]       # Disable/enable the rotation proxy
  *
  * @module cli
  */
@@ -31,8 +30,6 @@ const COMMANDS = {
   uninstall: './commands/uninstall.js',
   migrate: './commands/migrate.js',
   scaffold: './commands/scaffold.js',
-  'remove-account': './commands/remove-account.js',
-  proxy: './commands/proxy.js',
 };
 
 const RED = '\x1b[0;31m';
@@ -53,8 +50,6 @@ Commands:
   uninstall                   Remove GENTYR from project
   migrate                     Convert from .claude-framework to npm model
   scaffold <name>             Scaffold new project
-  remove-account <email>     Remove an account from rotation
-  proxy [disable|enable]     Disable/enable the rotation proxy
 
 Options:
   --help, -h                  Show this help message

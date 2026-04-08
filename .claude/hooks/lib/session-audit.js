@@ -1,7 +1,7 @@
 /**
  * Session Audit Log — structured JSON-lines audit trail for session lifecycle events.
  *
- * Single log file at .claude/state/session-audit.log. Follows rotation-proxy.js logging pattern.
+ * Single log file at .claude/state/session-audit.log. JSON-lines format.
  *
  * Event types:
  *   session_enqueued, session_spawned, session_completed, session_failed,
