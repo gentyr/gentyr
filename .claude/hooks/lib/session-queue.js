@@ -807,6 +807,15 @@ export function drainQueue() {
           if (task) {
             const revivalId = generateQueueId();
             const revivalPriority = task.priority === 'urgent' ? 'urgent' : 'normal';
+            const revivalPrompt = [
+              `[Revival] Re-spawned after agent death.`,
+              `Task: ${task.title}`,
+              task.section ? `Section: ${task.section}` : null,
+              task.description ? `\nDescription:\n${task.description}` : null,
+              `\nThis task was previously being worked on by agent ${candidate.agentId} which died unexpectedly.`,
+              `Continue from where the previous agent left off. Check the task status and any existing work before starting.`,
+            ].filter(Boolean).join('\n');
+
             db.prepare(`
               INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
                 tag_context, prompt, project_dir, metadata, source, expires_at)
@@ -815,10 +824,10 @@ export function drainQueue() {
               revivalId,
               revivalPriority,
               `[Revival] ${task.title || taskId}`,
-              candidate.metadata?.agentType || 'task-runner',
+              candidate.agentType || candidate.metadata?.agentType || 'task-runner',
               'session-reviver',
               `revival-${taskId.slice(0, 8)}`,
-              null,
+              revivalPrompt,
               PROJECT_DIR,
               JSON.stringify({ taskId, revivalReason: 'dead_agent_requeue', originalAgentId: candidate.agentId })
             );

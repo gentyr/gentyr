@@ -349,6 +349,7 @@ export function reapSyncPass(db) {
         pid: item.pid,
         revivalCandidate,
         metadata,
+        agentType: item.agent_type,
       });
 
       // Reset linked TODO task to pending so it can be re-spawned
