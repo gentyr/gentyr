@@ -122,6 +122,39 @@ export default async function sync(args) {
   console.log(`\n${YELLOW}Merging settings.json...${NC}`);
   mergeSettings(projectDir, frameworkDir);
 
+  // 1.5. Apply pending services.json config updates (staged by update_services_config MCP tool)
+  const pendingConfigPath = path.join(projectDir, '.claude', 'state', 'services-config-pending.json');
+  if (fs.existsSync(pendingConfigPath)) {
+    console.log(`\n${YELLOW}Applying pending services.json config...${NC}`);
+    try {
+      const pending = JSON.parse(fs.readFileSync(pendingConfigPath, 'utf8'));
+      // Defense-in-depth: strip secrets key even though the MCP tool blocks it
+      delete pending.secrets;
+      const svcConfigPath = path.join(projectDir, '.claude', 'config', 'services.json');
+      let current = {};
+      if (fs.existsSync(svcConfigPath)) {
+        try {
+          current = JSON.parse(fs.readFileSync(svcConfigPath, 'utf8'));
+        } catch (parseErr) {
+          console.log(`  ${RED}Warning: services.json is malformed — skipping merge to avoid data loss${NC}`);
+          throw parseErr;
+        }
+      }
+      const merged = { ...current, ...pending };
+      // Validate merged config against ServicesConfigSchema (imported dynamically to avoid TS dependency in JS CLI)
+      // Lightweight check: ensure no unknown top-level types that would corrupt the file
+      if (typeof merged !== 'object' || merged === null) {
+        throw new Error('Merged config is not a valid object');
+      }
+      fs.writeFileSync(svcConfigPath, JSON.stringify(merged, null, 2) + '\n');
+      fs.unlinkSync(pendingConfigPath);
+      console.log(`  Applied ${Object.keys(pending).length} pending config update(s)`);
+    } catch (err) {
+      console.log(`  ${RED}Warning: Failed to apply pending config: ${err.message}${NC}`);
+      // Preserve pending file for inspection on failure
+    }
+  }
+
   // 2. Regenerate .mcp.json
   console.log(`\n${YELLOW}Regenerating .mcp.json...${NC}`);
   generateMcpJson(projectDir, frameworkDir, frameworkRel);

@@ -17,8 +17,8 @@
  */
 
 import { execFileSync, spawn, type ChildProcess } from 'child_process';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { resolve } from 'path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { resolve, join, dirname } from 'path';
 import { createServer } from 'net';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import { INFRA_CRED_KEYS, opRead, loadServicesConfig as loadServicesConfigShared, resolveLocalSecrets } from '../shared/op-secrets.js';
@@ -53,6 +53,10 @@ import {
   type DevServerStatusService,
   type RunCommandForegroundResult,
   type RunCommandBackgroundResult,
+  UpdateServicesConfigArgsSchema,
+  GetServicesConfigArgsSchema,
+  ServicesConfigSchema,
+  type UpdateServicesConfigArgs,
 } from './types.js';
 
 const { RENDER_API_KEY, VERCEL_TOKEN, VERCEL_TEAM_ID } = process.env;
@@ -1240,6 +1244,72 @@ async function devServerStatus(args: DevServerStatusArgs): Promise<DevServerStat
 }
 
 // ============================================================================
+// Services Config Management
+// ============================================================================
+
+async function updateServicesConfig(args: UpdateServicesConfigArgs): Promise<string> {
+  if ('secrets' in args.updates) {
+    return JSON.stringify({ error: 'Cannot modify secrets via this tool. Use secret_sync_secrets for secret management.' });
+  }
+
+  const configPath = join(PROJECT_DIR, '.claude', 'config', 'services.json');
+  const pendingPath = join(PROJECT_DIR, '.claude', 'state', 'services-config-pending.json');
+
+  // Load current config
+  let current: Record<string, unknown> = {};
+  try {
+    current = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+  } catch { /* file may not exist yet */ }
+
+  // Merge updates (top-level only — nested objects like devServices are replaced wholesale)
+  const merged = { ...current, ...args.updates };
+
+  // Validate against schema
+  const result = ServicesConfigSchema.safeParse(merged);
+  if (!result.success) {
+    return JSON.stringify({ error: `Validation failed: ${result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
+  }
+
+  // Try direct write
+  try {
+    writeFileSync(configPath, JSON.stringify(result.data, null, 2) + '\n');
+    return JSON.stringify({ applied: true, pending: false, updatedKeys: Object.keys(args.updates) });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EACCES') {
+      // File is protected (root-owned) — stage validated data for next sync
+      let pending: Record<string, unknown> = {};
+      try { pending = JSON.parse(readFileSync(pendingPath, 'utf-8')) as Record<string, unknown>; } catch { /* new */ }
+      // Store validated values (not raw input) so Zod defaults/transforms are preserved
+      const validatedData = result.data as Record<string, unknown>;
+      for (const key of Object.keys(args.updates)) {
+        if (key in validatedData) pending[key] = validatedData[key];
+      }
+      mkdirSync(dirname(pendingPath), { recursive: true });
+      writeFileSync(pendingPath, JSON.stringify(pending, null, 2) + '\n');
+      return JSON.stringify({
+        applied: false,
+        pending: true,
+        updatedKeys: Object.keys(args.updates),
+        message: 'Config staged — will be applied on next "npx gentyr sync".',
+      });
+    }
+    throw err;
+  }
+}
+
+async function getServicesConfig(): Promise<string> {
+  const configPath = join(PROJECT_DIR, '.claude', 'config', 'services.json');
+  try {
+    const raw = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+    // Omit secrets — agents should not see 1Password references via this tool
+    const { secrets: _, ...safe } = raw;
+    return JSON.stringify(safe, null, 2);
+  } catch {
+    return JSON.stringify({ error: 'services.json not found or unreadable' });
+  }
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -1285,6 +1355,18 @@ export const tools = [
     description: 'Run an arbitrary command with 1Password secrets injected into env vars. Secrets are resolved in MCP server memory and never returned to the agent. Output is sanitized to redact any leaked secret values. Executable must be in the allowlist (pnpm, npx, node, tsx, playwright, prisma, drizzle-kit, vitest). No shell interpretation — command is an argv array. Do NOT use this to run Playwright tests or demos — use run_demo or run_demo_batch MCP tools which handle prerequisites, secrets, and video recording automatically.',
     schema: RunCommandArgsSchema,
     handler: runCommand as (args: unknown) => unknown,
+  },
+  {
+    name: 'update_services_config',
+    description: 'Update services.json config fields (e.g., worktreeBuildCommand, worktreeInstallTimeout, devServices). Validates against schema before writing. If file is root-owned (protected), stages changes for next "npx gentyr sync". Cannot modify the "secrets" key.',
+    schema: UpdateServicesConfigArgsSchema,
+    handler: updateServicesConfig as (args: unknown) => unknown,
+  },
+  {
+    name: 'get_services_config',
+    description: 'Read current services.json config (excluding secrets). Returns all non-secret configuration fields.',
+    schema: GetServicesConfigArgsSchema,
+    handler: getServicesConfig as (args: unknown) => unknown,
   },
 ] satisfies AnyToolHandler[];
 

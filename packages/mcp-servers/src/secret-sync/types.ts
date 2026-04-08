@@ -161,6 +161,15 @@ export const ServicesConfigSchema = z.object({
 
 export type ServicesConfig = z.infer<typeof ServicesConfigSchema>;
 
+export const UpdateServicesConfigArgsSchema = z.object({
+  updates: z.record(z.string(), z.unknown())
+    .describe('Top-level key-value pairs to merge into services.json. The "secrets" key is not allowed — use secret_sync_secrets for secret management.'),
+});
+export type UpdateServicesConfigArgs = z.infer<typeof UpdateServicesConfigArgsSchema>;
+
+export const GetServicesConfigArgsSchema = z.object({});
+export type GetServicesConfigArgs = z.infer<typeof GetServicesConfigArgsSchema>;
+
 // ============================================================================
 // Response Types
 // ============================================================================
