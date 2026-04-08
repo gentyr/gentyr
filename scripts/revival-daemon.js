@@ -176,11 +176,9 @@ function scanAndRevive() {
   for (const agent of history.agents) {
     // Pick up memory-blocked agents for retry (they have status=completed + memoryBlocked=true)
     const isMemoryRetry = agent.status === 'completed' && agent.memoryBlocked && !agent.revivalAttempted;
-    // Pick up quota-blocked agents for retry (they have status=completed + quotaBlocked=true)
-    const isQuotaRetry = agent.status === 'completed' && agent.quotaBlocked && !agent.revivalAttempted;
 
-    // Normal path: check running agents with PIDs; OR retry memory-blocked/quota-blocked agents
-    if (!isMemoryRetry && !isQuotaRetry) {
+    // Normal path: check running agents with PIDs; OR retry memory-blocked agents
+    if (!isMemoryRetry) {
       if (agent.status !== 'running' || !agent.pid) continue;
     }
 
@@ -198,8 +196,8 @@ function scanAndRevive() {
     const agentTime = new Date(agent.timestamp).getTime();
     if (agentTime < cutoff) continue;
 
-    // Check if process is actually dead (skip for memory/quota retries — already confirmed dead)
-    if (!isMemoryRetry && !isQuotaRetry && isProcessAlive(agent.pid)) continue;
+    // Check if process is actually dead (skip for memory retries — already confirmed dead)
+    if (!isMemoryRetry && isProcessAlive(agent.pid)) continue;
 
     // Skip if this agent is suspended (preempted by a CTO task) — it will be re-enqueued automatically
     if (isAgentSuspended(agent.id)) {
@@ -217,8 +215,6 @@ function scanAndRevive() {
     agent.status = 'completed';
     agent.reapReason = 'process_already_dead';
     agent.reapedAt = new Date().toISOString();
-    agent.quotaBlocked = false;
-    agent.revivalRetries = (agent.revivalRetries || 0) + 1;
     historyDirty = true;
 
     // Check memory pressure first — if blocked, DON'T mark revivalAttempted so we retry
@@ -232,6 +228,9 @@ function scanAndRevive() {
       }
       if (memCheck.reason) log(`  ${memCheck.reason}`);
     }
+
+    // Only count a retry when we actually attempt revival (not when blocked by memory/quota)
+    agent.revivalRetries = (agent.revivalRetries || 0) + 1;
 
     // Find task ID
     const taskId = agent.metadata?.taskId;
