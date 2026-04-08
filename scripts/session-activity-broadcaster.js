@@ -216,12 +216,13 @@ function extractActivityText(entries) {
 // ============================================================================
 
 async function callLLM(prompt, systemPrompt) {
-  const args = ['-p', '--model', LLM_MODEL, '--output-format', 'json'];
+  // Pass prompt as -p argument, not stdin. execFile does NOT support the `input` option
+  // (only exec/execSync do). Passing via stdin silently drops the data.
+  const args = ['-p', prompt, '--model', LLM_MODEL, '--output-format', 'json'];
   if (systemPrompt) args.push('--system-prompt', systemPrompt);
 
   try {
     const { stdout } = await execFileAsync('claude', args, {
-      input: prompt,
       encoding: 'utf8',
       timeout: LLM_TIMEOUT_MS,
     });

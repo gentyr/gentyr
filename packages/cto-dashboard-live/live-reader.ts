@@ -924,7 +924,7 @@ export function resumeSessionWithMessage(agentOrSessionId: string, message: stri
  * Uses atomic tmp+rename to avoid partial reads.
  * Returns true on success, throws on failure.
  */
-export function sendDirectiveSignal(toAgentId: string, message: string): boolean {
+export function sendDirectiveSignal(toAgentId: string, message: string): { success: boolean; signalId: string } {
   const signalDir = path.join(PROJECT_DIR, '.claude', 'state', 'session-signals');
   fs.mkdirSync(signalDir, { recursive: true });
   const id = `sig-${crypto.randomUUID().slice(0, 8)}`;
@@ -952,13 +952,31 @@ export function sendDirectiveSignal(toAgentId: string, message: string): boolean
       JSON.stringify(signal) + '\n',
     );
   } catch { /* non-fatal */ }
-  return true;
+  return { success: true, signalId: id };
 }
 
 /**
  * Read LLM-generated summaries for a specific agent from session-activity.db.
  * Returns summaries in chronological order (oldest first).
  */
+/**
+ * Check delivery status of a signal by its ID.
+ * Returns null if signal not found, or { status, read_at, acknowledged_at }.
+ */
+export function getSignalDeliveryStatus(signalId: string): { status: 'pending' | 'read' | 'acknowledged'; read_at?: string; acknowledged_at?: string } | null {
+  const signalDir = path.join(PROJECT_DIR, '.claude', 'state', 'session-signals');
+  try {
+    const files = fs.readdirSync(signalDir).filter(f => f.includes(signalId));
+    for (const file of files) {
+      const signal = JSON.parse(fs.readFileSync(path.join(signalDir, file), 'utf8'));
+      if (signal.acknowledged_at) return { status: 'acknowledged', read_at: signal.read_at, acknowledged_at: signal.acknowledged_at };
+      if (signal.read_at) return { status: 'read', read_at: signal.read_at };
+      return { status: 'pending' };
+    }
+  } catch { /* non-fatal */ }
+  return null;
+}
+
 export function getSessionSummaries(agentId: string): Array<{ id: string; summary: string; created_at: string }> {
   const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-activity.db');
   if (!fs.existsSync(dbPath)) return [];
