@@ -15,6 +15,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 import {
   JsonRpcRequestSchema,
   McpToolCallParamsSchema,
@@ -971,7 +975,285 @@ const CHROME_TOOLS: ChromeToolDefinition[] = [
       properties: {},
     },
   },
+  {
+    name: 'list_chrome_extensions',
+    description: 'List all installed Chrome extensions with their IDs, names, versions, enabled status, and type. macOS only — uses AppleScript to query chrome.developerPrivate API on the chrome://extensions page. Does not require a Chrome extension socket connection.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        enabled_only: {
+          type: 'boolean',
+          description: 'If true, only return enabled extensions. Default: false (return all).',
+        },
+      },
+    },
+  },
+  {
+    name: 'reload_chrome_extension',
+    description: 'Reload a Chrome extension by its extension ID or by name (case-insensitive substring match). macOS only — uses AppleScript to call chrome.developerPrivate.reload() on the chrome://extensions page. Does not require a Chrome extension socket connection. Use list_chrome_extensions first if you need to find the extension ID.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        extension_id: {
+          type: 'string',
+          description: 'The Chrome extension ID to reload (e.g., "dojoamdbiafnflmaknagfcakgpdkmpmn"). Provide either extension_id or name.',
+        },
+        name: {
+          type: 'string',
+          description: 'Substring of the extension name to match (case-insensitive). If multiple extensions match, returns an error listing the matches so you can use extension_id instead. Provide either extension_id or name.',
+        },
+      },
+    },
+  },
 ];
+
+// ============================================================================
+// Server-Side AppleScript Tools (extension management, no socket needed)
+// ============================================================================
+
+const SERVER_SIDE_TOOLS = new Set(['list_chrome_extensions', 'reload_chrome_extension']);
+
+/**
+ * Detect which Chrome application is running.
+ * Tries "Google Chrome" first, then "Google Chrome for Testing".
+ */
+async function detectChromeApp(): Promise<string> {
+  if (process.platform !== 'darwin') {
+    throw new Error('Chrome extension management tools require macOS (AppleScript). Current platform: ' + process.platform);
+  }
+
+  for (const appName of ['Google Chrome', 'Google Chrome for Testing']) {
+    try {
+      const { stdout } = await execFileAsync('osascript', ['-e',
+        `tell application "System Events" to return (name of processes) contains "${appName}"`,
+      ], { timeout: 5000, encoding: 'utf8' });
+      if (stdout.trim() === 'true') return appName;
+    } catch { /* try next */ }
+  }
+
+  throw new Error('Chrome is not running. Start Google Chrome and try again.');
+}
+
+/**
+ * Execute JavaScript on a chrome://extensions page via AppleScript.
+ * Finds an existing extensions tab or creates one temporarily.
+ * Returns the JS result string (the JS should return JSON.stringify(...)).
+ */
+async function executeOnExtensionsPage(chromeApp: string, javascript: string): Promise<string> {
+  // Escape backslashes and double-quotes for embedding JS inside AppleScript string
+  const escapedJs = javascript.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+  const script = `
+tell application "${chromeApp}"
+  set foundTab to missing value
+  set foundWinIdx to -1
+  set foundTabIdx to -1
+  set createdTab to false
+
+  repeat with w from 1 to count of windows
+    repeat with t from 1 to count of tabs of window w
+      if URL of tab t of window w starts with "chrome://extensions" then
+        set foundTab to tab t of window w
+        set foundWinIdx to w
+        set foundTabIdx to t
+        exit repeat
+      end if
+    end repeat
+    if foundTab is not missing value then exit repeat
+  end repeat
+
+  if foundTab is missing value then
+    if (count of windows) is 0 then
+      make new window
+    end if
+    tell window 1
+      set foundTab to make new tab with properties {URL:"chrome://extensions"}
+    end tell
+    set createdTab to true
+    delay 1.5
+  end if
+
+  set jsResult to execute foundTab javascript "${escapedJs}"
+
+  if createdTab then
+    close foundTab
+  end if
+
+  return jsResult
+end tell`;
+
+  const { stdout } = await execFileAsync('osascript', ['-e', script], {
+    timeout: 15000,
+    encoding: 'utf8',
+  });
+  return stdout.trim();
+}
+
+async function handleListExtensions(args: Record<string, unknown>): Promise<{ content: McpContent[]; isError?: boolean }> {
+  try {
+    const chromeApp = await detectChromeApp();
+    const enabledOnly = args.enabled_only === true;
+
+    const js = `(async () => {
+  const exts = await chrome.developerPrivate.getExtensionsInfo();
+  const mapped = exts.map(e => ({
+    id: e.id,
+    name: e.name,
+    version: e.version,
+    enabled: e.state === 'ENABLED',
+    type: e.type,
+    description: (e.description || '').slice(0, 120)
+  }));
+  return JSON.stringify(mapped);
+})()`;
+
+    const raw = await executeOnExtensionsPage(chromeApp, js);
+    let extensions: Array<{
+      id: string; name: string; version: string;
+      enabled: boolean; type: string; description: string;
+    }>;
+    try { extensions = JSON.parse(raw); } catch {
+      return { content: [{ type: 'text', text: `Unexpected response from Chrome: ${raw.slice(0, 200)}` }], isError: true };
+    }
+
+    if (enabledOnly) {
+      extensions = extensions.filter((e) => e.enabled);
+    }
+
+    const lines = extensions.map((e) =>
+      `${e.enabled ? '[ON] ' : '[OFF]'} ${e.name} (${e.id}) v${e.version} [${e.type}]${e.description ? ' — ' + e.description : ''}`,
+    );
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Found ${extensions.length} extension${extensions.length !== 1 ? 's' : ''}:\n\n${lines.join('\n')}`,
+      }],
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { content: [{ type: 'text', text: msg }], isError: true };
+  }
+}
+
+// Chrome extension IDs are 32 lowercase a-p characters
+const CHROME_EXTENSION_ID_RE = /^[a-p]{32}$/;
+
+async function handleReloadExtension(args: Record<string, unknown>): Promise<{ content: McpContent[]; isError?: boolean }> {
+  const extensionId = typeof args.extension_id === 'string' ? args.extension_id.trim() : '';
+  const extensionName = typeof args.name === 'string' ? args.name.trim() : '';
+
+  if (!extensionId && !extensionName) {
+    return {
+      content: [{ type: 'text', text: 'Provide either extension_id or name to identify the extension to reload.' }],
+      isError: true,
+    };
+  }
+
+  if (extensionId && extensionName) {
+    return {
+      content: [{ type: 'text', text: 'Provide either extension_id or name, not both.' }],
+      isError: true,
+    };
+  }
+
+  if (extensionId && !CHROME_EXTENSION_ID_RE.test(extensionId)) {
+    return {
+      content: [{ type: 'text', text: `Invalid extension_id "${extensionId}". Chrome extension IDs are 32 lowercase a-p characters.` }],
+      isError: true,
+    };
+  }
+
+  try {
+    const chromeApp = await detectChromeApp();
+
+    if (extensionId) {
+      // Direct reload by ID (format-validated above, safe to interpolate)
+      const js = `(async () => {
+  try {
+    await chrome.developerPrivate.reload('${extensionId}', {failQuietly: true});
+    return JSON.stringify({success: true, id: '${extensionId}'});
+  } catch (e) {
+    return JSON.stringify({success: false, error: e.message});
+  }
+})()`;
+
+      const raw = await executeOnExtensionsPage(chromeApp, js);
+      let result: { success: boolean; id?: string; error?: string };
+      try { result = JSON.parse(raw); } catch { result = { success: false, error: `Unexpected response from Chrome: ${raw.slice(0, 200)}` }; }
+      if (!result.success) {
+        return { content: [{ type: 'text', text: `Failed to reload extension ${extensionId}: ${result.error}` }], isError: true };
+      }
+      return { content: [{ type: 'text', text: `Extension ${extensionId} reloaded successfully.` }] };
+    }
+
+    // Name-based lookup + reload
+    const safeNeedle = extensionName.replace(/'/g, "\\'");
+    const js = `(async () => {
+  const exts = await chrome.developerPrivate.getExtensionsInfo();
+  const needle = '${safeNeedle}'.toLowerCase();
+  const matches = exts.filter(e => e.name.toLowerCase().includes(needle));
+  if (matches.length === 0) {
+    const all = exts.map(e => e.name + ' (' + e.id + ')').join(', ');
+    return JSON.stringify({success: false, error: 'no_match', available: all});
+  }
+  if (matches.length > 1) {
+    const list = matches.map(e => ({id: e.id, name: e.name}));
+    return JSON.stringify({success: false, error: 'ambiguous', matches: list});
+  }
+  try {
+    await chrome.developerPrivate.reload(matches[0].id, {failQuietly: true});
+    return JSON.stringify({success: true, id: matches[0].id, name: matches[0].name});
+  } catch (e) {
+    return JSON.stringify({success: false, error: 'reload_failed', message: e.message});
+  }
+})()`;
+
+    const raw = await executeOnExtensionsPage(chromeApp, js);
+    let result: {
+      success: boolean; id?: string; name?: string;
+      error?: string; message?: string; available?: string;
+      matches?: Array<{ id: string; name: string }>;
+    };
+    try { result = JSON.parse(raw); } catch { result = { success: false, error: `Unexpected response from Chrome: ${raw.slice(0, 200)}` }; }
+
+    if (result.error === 'no_match') {
+      return {
+        content: [{ type: 'text', text: `No extension found matching "${extensionName}". Available extensions: ${result.available}` }],
+        isError: true,
+      };
+    }
+    if (result.error === 'ambiguous') {
+      const list = (result.matches || []).map((m) => `  - ${m.name} (${m.id})`).join('\n');
+      return {
+        content: [{ type: 'text', text: `Multiple extensions match "${extensionName}":\n${list}\n\nUse extension_id for an exact match.` }],
+        isError: true,
+      };
+    }
+    if (!result.success) {
+      return { content: [{ type: 'text', text: `Failed to reload: ${result.message || result.error}` }], isError: true };
+    }
+
+    return { content: [{ type: 'text', text: `Extension "${result.name}" (${result.id}) reloaded successfully.` }] };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { content: [{ type: 'text', text: msg }], isError: true };
+  }
+}
+
+async function executeServerSideTool(
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<{ content: McpContent[]; isError?: boolean }> {
+  switch (toolName) {
+    case 'list_chrome_extensions':
+      return handleListExtensions(args);
+    case 'reload_chrome_extension':
+      return handleReloadExtension(args);
+    default:
+      return { content: [{ type: 'text', text: `Unknown server-side tool: ${toolName}` }], isError: true };
+  }
+}
 
 // ============================================================================
 // JSON-RPC Server
@@ -1018,6 +1300,12 @@ async function handleRequest(request: JsonRpcRequest): Promise<JsonRpcResponse |
       const toolDef = CHROME_TOOLS.find((t) => t.name === name);
       if (!toolDef) {
         return createError(id, JSON_RPC_ERRORS.METHOD_NOT_FOUND, `Unknown tool: ${name}`);
+      }
+
+      // Server-side tools (AppleScript-based, no socket needed)
+      if (SERVER_SIDE_TOOLS.has(name)) {
+        const result = await executeServerSideTool(name, args ?? {});
+        return createResponse(id, result);
       }
 
       // Soft warning: check if another agent holds the display lock.
