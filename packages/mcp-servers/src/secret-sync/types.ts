@@ -135,6 +135,10 @@ export const ServicesConfigSchema = z.object({
     .describe('Shell command to build workspace packages in worktrees (e.g., "pnpm --recursive build")'),
   worktreeBuildHealthCheck: z.string().optional()
     .describe('Shell command that exits 0 if build artifacts exist (e.g., "test -f packages/browser-proxy/dist/index.js")'),
+  worktreeInstallTimeout: z.number().int().min(10000).max(600000).optional()
+    .describe('Timeout in ms for pnpm/yarn/npm install in worktrees (default: 120000). Large monorepos may need 300000+.'),
+  worktreeProvisioningMode: z.enum(['strict', 'lenient']).optional()
+    .describe('When "strict", install/build failures abort worktree creation and clean up. Default: "lenient" (non-fatal warnings).'),
   runCommandConfig: z.object({
     allowedExecutables: z.array(z.string()).optional()
       .describe('Additional executables to allow beyond defaults'),
