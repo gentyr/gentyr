@@ -888,12 +888,22 @@ export function isProcessAlive(pid: number): boolean {
  * Open a new Terminal.app window and resume the given Claude session with an
  * initial message.  Best-effort: failures are swallowed so the TUI stays alive.
  */
-export function resumeSessionWithMessage(sessionId: string, message: string): void {
+export function resumeSessionWithMessage(agentOrSessionId: string, message: string): void {
   const projectDir = process.env['CLAUDE_PROJECT_DIR'] || process.cwd();
+
+  // Resolve agent ID to JSONL session UUID — claude --resume needs the UUID, not the agent ID.
+  let resumeId = agentOrSessionId;
+  if (agentOrSessionId.startsWith('agent-')) {
+    const sessionFile = findSessionFile(agentOrSessionId);
+    if (sessionFile) {
+      resumeId = path.basename(sessionFile, '.jsonl');
+    }
+  }
+
   // Escape backslashes first, then double-quotes, so the final shell string
   // is safe inside the outer AppleScript double-quoted string literal.
   const escaped = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const cmd = `cd "${projectDir}" && claude --resume "${sessionId}" -p "${escaped}"`;
+  const cmd = `cd "${projectDir}" && claude --resume "${resumeId}" -p "${escaped}"`;
   try {
     execFileSync('osascript', [
       '-e',
