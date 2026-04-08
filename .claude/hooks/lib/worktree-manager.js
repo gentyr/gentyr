@@ -321,7 +321,10 @@ export function provisionWorktree(worktreePath, options = {}) {
     const hasNodeModules = fs.existsSync(nmDir) && fs.readdirSync(nmDir).length > 5;
 
     if (!hasNodeModules) {
-      const installTimeout = servicesConfig?.worktreeInstallTimeout ?? 120000;
+      const rawTimeout = servicesConfig?.worktreeInstallTimeout;
+      const installTimeout = (typeof rawTimeout === 'number' && rawTimeout >= 10000 && rawTimeout <= 600000)
+        ? rawTimeout
+        : 120000;
       for (const { file, cmd } of lockFiles) {
         if (fs.existsSync(path.join(worktreePath, file))) {
           try {
@@ -453,6 +456,7 @@ export function createWorktree(branchName, baseBranch, options = {}) {
   } catch (err) {
     // Strict provisioning failed — clean up the broken worktree
     console.error(`[worktree-manager] Provisioning failed, removing worktree: ${err.message}`);
+    try { releasePortBlock(worktreePath); } catch (_) { /* best-effort */ }
     try {
       execSync(`git worktree remove ${worktreePath} --force`, GIT_OPTS);
     } catch (_) { /* best-effort cleanup */ }
