@@ -15,7 +15,6 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
@@ -1083,8 +1082,6 @@ function planAudit(args: PlanAuditArgs) {
 }
 
 function planSessions(args: PlanSessionsArgs) {
-  const homeDir = os.homedir();
-
   // Step 1: Collect plan tasks with todo_task_id from plans.db
   const db = getDb();
 
@@ -1201,35 +1198,7 @@ function planSessions(args: PlanSessionsArgs) {
   }
   const agentById = new Map(matchedAgents.map((a) => [a.id, a]));
 
-  // Step 4: Rotation log — proxy rotations within agent time windows
-  try {
-    const rotationPath = path.join(homeDir, '.claude', 'api-key-rotation.json');
-    if (fs.existsSync(rotationPath)) {
-      const rotData = JSON.parse(fs.readFileSync(rotationPath, 'utf8'));
-      const rotLog: Array<{ event: string; timestamp: number; [k: string]: unknown }> = rotData.rotation_log ?? [];
-
-      for (const session of sessions) {
-        const agent = agentById.get(session.agentId);
-        if (!agent) continue;
-        const windowStart = new Date(agent.timestamp).getTime();
-        const windowEnd = agent.reapedAt ? new Date(agent.reapedAt).getTime() : Date.now();
-
-        for (const entry of rotLog) {
-          if (entry.event !== 'key_switched') continue;
-          if (typeof entry.timestamp !== 'number') continue;
-          if (entry.timestamp >= windowStart && entry.timestamp <= windowEnd) {
-            session.events.push({
-              timestamp: new Date(entry.timestamp).toISOString(),
-              label: 'Proxy Rotated',
-              detail: String(entry.to_key_id ?? 'new key'),
-            });
-          }
-        }
-      }
-    }
-  } catch { /* non-fatal */ }
-
-  // Step 5: Quota-interrupted sessions
+  // Step 4: Quota-interrupted sessions
   try {
     const quotaPath = path.join(PROJECT_DIR, '.claude', 'state', 'quota-interrupted-sessions.json');
     if (fs.existsSync(quotaPath)) {
@@ -1248,7 +1217,7 @@ function planSessions(args: PlanSessionsArgs) {
     }
   } catch { /* non-fatal */ }
 
-  // Step 6: Paused sessions
+  // Step 5: Paused sessions
   try {
     const pausedPath = path.join(PROJECT_DIR, '.claude', 'state', 'paused-sessions.json');
     if (fs.existsSync(pausedPath)) {
@@ -1265,7 +1234,7 @@ function planSessions(args: PlanSessionsArgs) {
     }
   } catch { /* non-fatal */ }
 
-  // Step 7: Revival agents
+  // Step 6: Revival agents
   try {
     for (const revivalAgent of allAgentHistory) {
       if (revivalAgent.type !== 'session-revived') continue;
@@ -1281,7 +1250,7 @@ function planSessions(args: PlanSessionsArgs) {
     }
   } catch { /* non-fatal */ }
 
-  // Step 8: Worklog entries
+  // Step 7: Worklog entries
   try {
     if (fs.existsSync(WORKLOG_DB_PATH)) {
       const wdb = new Database(WORKLOG_DB_PATH, { readonly: true });
@@ -1310,7 +1279,7 @@ function planSessions(args: PlanSessionsArgs) {
     }
   } catch { /* non-fatal */ }
 
-  // Step 9: State changes from plans.db — route events to correct session by timestamp window
+  // Step 8: State changes from plans.db — route events to correct session by timestamp window
   try {
     const processedPlanTaskIds = new Set<string>();
     for (const session of sessions) {
@@ -1375,7 +1344,7 @@ function planSessions(args: PlanSessionsArgs) {
     }
   } catch { /* non-fatal */ }
 
-  // Step 10: Sort events, build output
+  // Step 9: Sort events, build output
   const now = Date.now();
   const lines: string[] = [];
 

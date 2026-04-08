@@ -61,12 +61,6 @@ export interface QuotaStatus {
   error: string | null;
 }
 
-export interface AggregateQuota {
-  active_keys: number;
-  five_hour_pct: number;
-  seven_day_pct: number;
-}
-
 export interface AutonomousModeStatus {
   enabled: boolean;
   next_run_minutes: number | null;
@@ -76,35 +70,6 @@ export interface UsageMetrics {
   plan_type: 'pro' | 'max5' | 'max20' | 'api' | 'unknown';
   tokens_24h: TokenUsage;
   estimated_remaining_pct: number | null;
-}
-
-// ============================================================================
-// Multi-Key Rotation Types
-// ============================================================================
-
-export interface KeyUsageData {
-  five_hour: number;
-  seven_day: number;
-  checked_at: number;
-}
-
-export interface TrackedKeyInfo {
-  key_id: string;
-  subscription_type: string;
-  five_hour_pct: number | null;
-  seven_day_pct: number | null;
-  is_current: boolean;
-}
-
-export interface KeyRotationMetrics {
-  current_key_id: string | null;
-  active_keys: number;
-  expired_keys?: number;
-  invalid_keys?: number;
-  exhausted_keys?: number;
-  keys: TrackedKeyInfo[];
-  rotation_events_24h: number;
-  aggregate: AggregateQuota | null;
 }
 
 export interface AgentActivity {
@@ -226,7 +191,6 @@ export interface CTOReport {
   quota: QuotaStatus;
   usage: UsageMetrics;
   usage_projection: UsageProjection;
-  key_rotation: KeyRotationMetrics | null;
   agents: AgentActivity;
   hooks: HookExecutions;
   sessions: SessionMetrics;

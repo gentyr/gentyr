@@ -1008,15 +1008,6 @@ if [ -f "$SERVICES_JSON" ]; then
     " "$SERVICES_JSON" "$PROJECT_DIR"
 fi
 
-# --- 5c. Rotation Proxy Certificates ---
-echo ""
-echo -e "${YELLOW}Setting up rotation proxy certificates...${NC}"
-if [ -x "$FRAMEWORK_DIR/scripts/generate-proxy-certs.sh" ]; then
-    "$FRAMEWORK_DIR/scripts/generate-proxy-certs.sh"
-else
-    echo -e "  ${YELLOW}generate-proxy-certs.sh not found, skipping cert generation.${NC}"
-fi
-
 # --- 6. Automation Service ---
 echo ""
 echo -e "${YELLOW}Setting up automation service (10-min timer)...${NC}"
@@ -1055,38 +1046,6 @@ else
     echo -e "${YELLOW}Skipping Chrome extension permissions (not macOS)${NC}"
 fi
 
-# --- 6d. Rotation Proxy Shell Integration ---
-echo ""
-echo -e "${YELLOW}Setting up rotation proxy shell integration...${NC}"
-SHELL_PROFILE=""
-if [ -f "$HOME/.zshrc" ]; then
-    SHELL_PROFILE="$HOME/.zshrc"
-elif [ -f "$HOME/.bashrc" ]; then
-    SHELL_PROFILE="$HOME/.bashrc"
-fi
-
-if [ -n "$SHELL_PROFILE" ]; then
-    if grep -q "# BEGIN GENTYR PROXY" "$SHELL_PROFILE" 2>/dev/null; then
-        echo "  Proxy env already in $SHELL_PROFILE"
-    else
-        cat >> "$SHELL_PROFILE" << 'PROXYEOF'
-
-# BEGIN GENTYR PROXY
-# Rotation proxy for transparent credential rotation (added by GENTYR setup.sh)
-if curl -sf http://localhost:18080/__health > /dev/null 2>&1; then
-  export HTTPS_PROXY=http://localhost:18080
-  export HTTP_PROXY=http://localhost:18080
-  export NO_PROXY=localhost,127.0.0.1
-  export NODE_EXTRA_CA_CERTS="$HOME/.claude/proxy-certs/ca.pem"
-fi
-# END GENTYR PROXY
-PROXYEOF
-        echo "  Added proxy env to $SHELL_PROFILE (guarded by health check)"
-    fi
-else
-    echo -e "  ${YELLOW}No .zshrc or .bashrc found, skipping shell integration${NC}"
-fi
-
 # --- 7. Gitignore ---
 echo ""
 echo -e "${YELLOW}Updating .gitignore...${NC}"
@@ -1100,7 +1059,6 @@ GITIGNORE_ENTRIES="
 # State and config files
 .claude/*-state.json
 .claude/*.log
-.claude/api-key-rotation.json
 .claude/commit-approval-token.json
 .claude/autonomous-mode.json
 .claude/vault-mappings.json
@@ -1634,27 +1592,6 @@ if is_protected; then
 fi
 
 echo -e "${YELLOW}Uninstalling GENTYR from $PROJECT_DIR...${NC}"
-echo ""
-
-# --- Remove rotation proxy certs ---
-echo -e "${YELLOW}Removing rotation proxy certificates...${NC}"
-if [ -x "$FRAMEWORK_DIR/scripts/generate-proxy-certs.sh" ]; then
-    "$FRAMEWORK_DIR/scripts/generate-proxy-certs.sh" --remove
-elif [ -x "$PROJECT_DIR/.claude-framework/scripts/generate-proxy-certs.sh" ]; then
-    "$PROJECT_DIR/.claude-framework/scripts/generate-proxy-certs.sh" --remove
-else
-    echo "  generate-proxy-certs.sh not found, skipping cert removal."
-fi
-echo ""
-
-# --- Remove rotation proxy shell integration ---
-echo -e "${YELLOW}Removing rotation proxy shell integration...${NC}"
-for profile_file in "$HOME/.zshrc" "$HOME/.bashrc"; do
-    if [ -f "$profile_file" ] && grep -q "# BEGIN GENTYR PROXY" "$profile_file" 2>/dev/null; then
-        sed -i '' '/# BEGIN GENTYR PROXY/,/# END GENTYR PROXY/d' "$profile_file"
-        echo "  Removed proxy env from $profile_file"
-    fi
-done
 echo ""
 
 # --- Remove OP shell integration ---

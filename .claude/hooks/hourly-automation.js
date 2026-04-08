@@ -22,8 +22,6 @@ import { spawn, execSync, execFileSync } from 'child_process';
 import { registerSpawn, updateAgent, registerHookExecution, AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { enqueueSession, drainQueue } from './lib/session-queue.js';
 import { getCooldown } from './config-reader.js';
-import { runUsageOptimizer } from './usage-optimizer.js';
-import { syncKeys } from './key-sync.js';
 import { runFeedbackPipeline, startFeedbackRun, personaRanRecently } from './feedback-orchestrator.js';
 import { createWorktree, cleanupMergedWorktrees, listWorktrees, removeWorktree } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
@@ -35,7 +33,6 @@ import { buildRevivalContext } from './lib/persistent-revival-context.js';
 import { buildPersistentMonitorRevivalPrompt } from './lib/persistent-monitor-revival-prompt.js';
 import { cleanupAuditLog } from './lib/session-audit.js';
 import { debugLog, cleanupDebugLog } from './lib/debug-log.js';
-import { isProxyDisabled } from './lib/proxy-state.js';
 import { buildSpawnEnv } from './lib/spawn-env.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { buildBridgeMainTreePrompt } from './lib/bridge-main-tree-prompt.js';
@@ -57,10 +54,6 @@ const CONFIG_FILE = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
 const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'hourly-automation.log');
 const STATE_FILE = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
 const CTO_REPORTS_DB = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
-
-// Rotation proxy
-const PROXY_PORT = process.env.GENTYR_PROXY_PORT || 18080;
-const PROXY_HEALTH_URL = `http://localhost:${PROXY_PORT}/__health`;
 
 // Thresholds
 const CLAUDE_MD_SIZE_THRESHOLD = 25000; // 25K characters
@@ -274,32 +267,6 @@ function extractRenderServiceId(entry) {
 // It's used directly for non-Claude process spawns (e.g., demo validation playwright runs).
 // For Claude agent spawns, buildSpawnEnv is called internally by enqueueSession.
 // Credentials are passed via extraEnv after ensureCredentials() is called by each spawner.
-
-/**
- * Check if the rotation proxy is running and healthy.
- * Non-blocking, returns status for logging only. Agents still spawn if proxy is down.
- */
-async function checkProxyHealth() {
-  const http = await import('http');
-  return new Promise((resolve) => {
-    const req = http.request(PROXY_HEALTH_URL, { timeout: 2000 }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        try {
-          const health = JSON.parse(data);
-          resolve({ running: true, ...health });
-        } catch (err) {
-          console.error('[hourly-automation] Warning:', err.message);
-          resolve({ running: true, raw: data });
-        }
-      });
-    });
-    req.on('error', () => resolve({ running: false }));
-    req.on('timeout', () => { req.destroy(); resolve({ running: false }); });
-    req.end();
-  });
-}
 
 /**
  * Append to log file
@@ -687,8 +654,6 @@ function getState() {
       stagingFreezeActivatedAt: 0,
       lastSessionReviverCheck: 0,
       lastSessionReaperRun: 0,
-      lastUsageOptimizerRun: 0,
-      lastKeySyncRun: 0,
       lastVersionWatchRun: 0,
       lastCiMonitoringRun: 0,
       lastMergeChainGapRun: 0,
@@ -715,8 +680,6 @@ function getState() {
     if (state.stagingFreezeActivatedAt === undefined) state.stagingFreezeActivatedAt = 0;
     if (state.lastSessionReviverCheck === undefined) state.lastSessionReviverCheck = 0;
     if (state.lastSessionReaperRun === undefined) state.lastSessionReaperRun = 0;
-    if (state.lastUsageOptimizerRun === undefined) state.lastUsageOptimizerRun = 0;
-    if (state.lastKeySyncRun === undefined) state.lastKeySyncRun = 0;
     if (state.lastVersionWatchRun === undefined) state.lastVersionWatchRun = 0;
     if (state.lastCiMonitoringRun === undefined) state.lastCiMonitoringRun = 0;
     if (state.lastMergeChainGapRun === undefined) state.lastMergeChainGapRun = 0;
@@ -2680,55 +2643,13 @@ async function main() {
   // Credentials are resolved lazily on first agent spawn via ensureCredentials().
   // This avoids unnecessary `op` CLI calls on cycles where all tasks hit cooldowns.
 
-  // Check rotation proxy health (non-blocking, informational only)
-  const proxyHealth = await checkProxyHealth();
-  if (proxyHealth.running) {
-    log(`Rotation proxy: UP (activeKey=${proxyHealth.activeKeyId?.slice(0, 8) || 'unknown'})`);
-  } else {
-    log('Rotation proxy: DOWN — agents will run without proxy-based rotation.');
-  }
-
   // Overdrive and reaper removed — session queue manages concurrency and stale PID cleanup.
 
   const state = getState();
   const now = Date.now();
 
   // =========================================================================
-  // USAGE OPTIMIZER (gate-exempt, cooldown-based)
-  // =========================================================================
-  await runIfDue('usage_optimizer', {
-    state, now, intervals: config.intervals,
-    stateKey: 'lastUsageOptimizerRun',
-    label: 'Usage optimizer',
-    fn: async () => {
-      const optimizerResult = await runUsageOptimizer(log);
-      if (optimizerResult.snapshotTaken) {
-        log(`Usage optimizer: snapshot taken. Adjustment: ${optimizerResult.adjustmentMade ? 'yes' : 'no'}.`);
-      }
-    },
-  });
-
-  // =========================================================================
-  // KEY SYNC (gate-exempt, cooldown-based)
-  // Discovers keys from all sources, refreshes expiring tokens
-  // =========================================================================
-  await runIfDue('key_sync', {
-    state, now, intervals: config.intervals,
-    stateKey: 'lastKeySyncRun',
-    label: 'Key sync',
-    fn: async () => {
-      const syncResult = await syncKeys(log);
-      if (syncResult.keysAdded > 0) {
-        log(`Key sync: ${syncResult.keysAdded} new key(s) discovered.`);
-      }
-      if (syncResult.tokensRefreshed > 0) {
-        log(`Key sync: ${syncResult.tokensRefreshed} token(s) refreshed.`);
-      }
-    },
-  });
-
-  // =========================================================================
-  // SESSION REVIVER (after key sync — credentials must be fresh first)
+  // SESSION REVIVER
   // Gate-exempt: recovery operation. Runs even with config.enabled=false.
   // Phase 4a: Moved BEFORE concurrency guard so revival is never blocked by
   // a full agent pool. The reviver has its own internal concurrency check.
@@ -2739,13 +2660,9 @@ async function main() {
 
   if (timeSinceLastSessionReviver >= SESSION_REVIVER_COOLDOWN_MS) {
     try {
-      const isFirstRun = !state.lastSessionReviverCheck;
-      const reviverResult = await reviveInterruptedSessions(log, MAX_CONCURRENT_AGENTS, {
-        retroactive: isFirstRun,
-      });
-      const total = reviverResult.revivedQuota + reviverResult.revivedDead + reviverResult.revivedPaused;
-      if (total > 0) {
-        log(`Session reviver: revived ${total} (quota:${reviverResult.revivedQuota} dead:${reviverResult.revivedDead} paused:${reviverResult.revivedPaused})${isFirstRun ? ' [retroactive]' : ''}`);
+      const reviverResult = await reviveInterruptedSessions(log, MAX_CONCURRENT_AGENTS);
+      if (reviverResult.revivedDead > 0) {
+        log(`Session reviver: revived ${reviverResult.revivedDead} dead sessions`);
       }
     } catch (err) {
       log(`Session reviver error (non-fatal): ${err.message}`);

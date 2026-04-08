@@ -26,7 +26,6 @@ import {
   DeploymentsSection,
   InfraSection,
   LoggingSection,
-  AccountOverviewSection,
   WorktreeSection,
   ProductManagerSection,
   WorklogSection,
@@ -44,7 +43,6 @@ import type { TestingData } from './utils/testing-reader.js';
 import type { DeploymentsData } from './utils/deployments-reader.js';
 import type { InfraData } from './utils/infra-reader.js';
 import type { LoggingData } from './utils/logging-reader.js';
-import type { AccountOverviewData } from './utils/account-overview-reader.js';
 import type { WorktreeData } from './utils/worktree-reader.js';
 import type { ProductManagerData } from './utils/product-manager-reader.js';
 import type { WorklogData } from './utils/worklog-reader.js';
@@ -63,7 +61,6 @@ interface AppProps {
   deployments: DeploymentsData;
   infra: InfraData;
   logging: LoggingData;
-  accountOverview: AccountOverviewData;
   worktrees: WorktreeData;
   productManager: ProductManagerData;
   worklog: WorklogData;
@@ -90,25 +87,19 @@ function Header({ data }: { data: DashboardData }): React.ReactElement {
 }
 
 function QuotaSection({ data, width, tip }: { data: DashboardData; width?: number | string; tip?: string }): React.ReactElement {
-  const { verified_quota } = data;
-  const { aggregate } = verified_quota;
+  const { quota } = data;
 
-  const activeAccounts = verified_quota.healthy_count;
-  const fiveHourPct = aggregate.five_hour?.utilization ?? 0;
-  const sevenDayPct = aggregate.seven_day?.utilization ?? 0;
-  const title = `QUOTA & CAPACITY (${activeAccounts} account${activeAccounts !== 1 ? 's' : ''})`;
+  const fiveHourPct = quota.five_hour?.utilization ?? 0;
+  const sevenDayPct = quota.seven_day?.utilization ?? 0;
 
   return (
-    <Section title={title} width={width ?? "100%"} tip={tip}>
-      {aggregate.error ? (
-        <Text color="red">Error: {aggregate.error}</Text>
+    <Section title="QUOTA & CAPACITY" width={width ?? "100%"} tip={tip}>
+      {quota.error ? (
+        <Text color="red">Error: {quota.error}</Text>
       ) : (
         <Box flexDirection="column">
           <QuotaBar label="5-hour" percentage={fiveHourPct} width={16} />
           <QuotaBar label="7-day" percentage={sevenDayPct} width={16} />
-          {verified_quota.rotation_events_24h > 0 && (
-            <Text color="gray">Rotations (24h): {verified_quota.rotation_events_24h}</Text>
-          )}
         </Box>
       )}
     </Section>
@@ -256,7 +247,7 @@ function MetricsSummary({ data, tip }: { data: DashboardData; tip?: string }): R
   );
 }
 
-export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager, worklog, planData, sessionQueueData, persistentTaskMonitorData, page }: AppProps): React.ReactElement {
+export function App({ data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, worktrees, productManager, worklog, planData, sessionQueueData, persistentTaskMonitorData, page }: AppProps): React.ReactElement {
   // Compute explicit widths for side-by-side sections
   const termCols = process.stdout.columns || 80;
   const leftWidth = Math.floor((termCols - 1) / 2);  // -1 for gap
@@ -278,13 +269,6 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
         <Box marginTop={1} flexDirection="row" gap={1}>
           <QuotaSection data={data} width={leftWidth} tip="/show quota" />
           <SystemStatusSection data={data} width={rightWidth} />
-        </Box>
-      )}
-
-      {/* Account Overview */}
-      {showPage1 && accountOverview.hasData && (
-        <Box marginTop={1}>
-          <AccountOverviewSection data={accountOverview} tip="/show accounts" />
         </Box>
       )}
 
@@ -326,7 +310,7 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       {/* Usage Trajectory - projections (only if data available) */}
       {showPage1 && trajectory.hasData && (
         <Box marginTop={1}>
-          <UsageTrajectory trajectory={trajectory} verifiedQuota={data.verified_quota} accountOverview={accountOverview} />
+          <UsageTrajectory trajectory={trajectory} />
         </Box>
       )}
 

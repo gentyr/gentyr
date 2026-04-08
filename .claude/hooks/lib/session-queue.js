@@ -775,6 +775,71 @@ export function drainQueue() {
     log(`Step 1c persistent task orphan check error (non-fatal): ${err.message}`);
   }
 
+  // Step 1d: Re-enqueue dead non-persistent task agents for revival
+  // The reaper reset their TODO tasks to 'pending', but without a new queue item they'll never re-spawn.
+  if (reaperResult && result.revivalCandidates.length > 0) {
+    let revivalCount = 0;
+    const MAX_NON_PERSISTENT_REVIVALS_PER_DRAIN = 3;
+
+    for (const candidate of result.revivalCandidates) {
+      if (revivalCount >= MAX_NON_PERSISTENT_REVIVALS_PER_DRAIN) break;
+
+      // Skip persistent task agents — handled by Step 1b
+      if (candidate.metadata?.persistentTaskId) continue;
+
+      const taskId = candidate.metadata?.taskId;
+      if (!taskId) continue;
+
+      // Dedup: check if already queued for this task
+      const existing = db.prepare(
+        "SELECT id FROM queue_items WHERE status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.taskId') = ?"
+      ).get(taskId);
+      if (existing) continue;
+
+      // Verify the task still exists and is pending in todo.db
+      try {
+        const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
+        if (Database && fs.existsSync(todoDbPath)) {
+          const todoDb = new Database(todoDbPath, { readonly: true });
+          todoDb.pragma('busy_timeout = 3000');
+          const task = todoDb.prepare("SELECT id, title, section, description, priority FROM tasks WHERE id = ? AND status = 'pending'").get(taskId);
+          todoDb.close();
+          if (task) {
+            const revivalId = generateQueueId();
+            const revivalPriority = task.priority === 'urgent' ? 'urgent' : 'normal';
+            db.prepare(`
+              INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
+                tag_context, prompt, project_dir, metadata, source, expires_at)
+              VALUES (?, 'queued', ?, 'revival', 'fresh', ?, ?, ?, ?, ?, ?, ?, 'session-queue-reaper', datetime('now', '+30 minutes'))
+            `).run(
+              revivalId,
+              revivalPriority,
+              `[Revival] ${task.title || taskId}`,
+              candidate.metadata?.agentType || 'task-runner',
+              'session-reviver',
+              `revival-${taskId.slice(0, 8)}`,
+              null,
+              PROJECT_DIR,
+              JSON.stringify({ taskId, revivalReason: 'dead_agent_requeue', originalAgentId: candidate.agentId })
+            );
+
+            auditEvent('session_revival_triggered', {
+              source: 'drain-step-1d',
+              queue_id: revivalId,
+              task_id: taskId,
+              original_agent_id: candidate.agentId,
+            });
+
+            log(`Step 1d: Re-enqueued dead task ${taskId} as ${revivalId} (revival lane, ${revivalPriority})`);
+            revivalCount++;
+          }
+        }
+      } catch (err) {
+        log(`Step 1d revival re-enqueue error (non-fatal): ${err.message}`);
+      }
+    }
+  }
+
   // Step 2: Expire old queued items past TTL
   const ttlResult = db.prepare("UPDATE queue_items SET status = 'cancelled', error = 'TTL expired', completed_at = datetime('now') WHERE status = 'queued' AND expires_at IS NOT NULL AND expires_at < datetime('now')").run();
   if (ttlResult.changes > 0) {

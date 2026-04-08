@@ -83,8 +83,6 @@ export const HOOK_TYPES = {
   PRE_COMMIT_REVIEW: 'pre-commit-review',
   HOURLY_AUTOMATION: 'hourly-automation',
   TASK_RUNNER: 'task-runner',
-  API_KEY_WATCHER: 'api-key-watcher',
-  QUOTA_MONITOR: 'quota-monitor',
   SESSION_REVIVER: 'session-reviver',
   TASK_GATE: 'task-gate',
   DEMO_FAILURE: 'demo-failure',

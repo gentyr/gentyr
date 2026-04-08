@@ -13,7 +13,6 @@ import type {
   DashboardData,
   TokenUsage,
   QuotaStatus,
-  VerifiedQuotaResult,
   AutonomousModeStatus,
   SessionMetrics,
   PendingItems,
@@ -36,7 +35,6 @@ import type { TestingData } from './utils/testing-reader.js';
 import type { DeploymentsData } from './utils/deployments-reader.js';
 import type { InfraData } from './utils/infra-reader.js';
 import type { LoggingData } from './utils/logging-reader.js';
-import type { AccountOverviewData } from './utils/account-overview-reader.js';
 import type { WorktreeData } from './utils/worktree-reader.js';
 import type { ProductManagerData } from './utils/product-manager-reader.js';
 import type { WorklogData } from './utils/worklog-reader.js';
@@ -456,75 +454,6 @@ export function getMockDashboardData(): DashboardData {
     error: null,
   };
 
-  const verifiedQuota: VerifiedQuotaResult = {
-    keys: [
-      {
-        key_id: 'a3f8d21c...',
-        subscription_type: 'claude_max',
-        is_current: true,
-        healthy: true,
-        quota: {
-          five_hour: {
-            utilization: 35,
-            resets_at: fiveHourResetAt,
-            resets_in_hours: 1.7,
-          },
-          seven_day: {
-            utilization: 88,
-            resets_at: sevenDayResetAt,
-            resets_in_hours: 111,
-          },
-          extra_usage_enabled: false,
-          error: null,
-        },
-      },
-      {
-        key_id: 'b7c4e92f...',
-        subscription_type: 'claude_max',
-        is_current: false,
-        healthy: false,
-        quota: {
-          five_hour: {
-            utilization: 100,
-            resets_at: fiveHourResetAt,
-            resets_in_hours: 1.7,
-          },
-          seven_day: {
-            utilization: 100,
-            resets_at: sevenDayResetAt,
-            resets_in_hours: 111,
-          },
-          extra_usage_enabled: false,
-          error: null,
-        },
-      },
-      {
-        key_id: 'c9d5f13a...',
-        subscription_type: 'claude_max',
-        is_current: false,
-        healthy: true,
-        quota: {
-          five_hour: {
-            utilization: 12,
-            resets_at: fiveHourResetAt,
-            resets_in_hours: 1.7,
-          },
-          seven_day: {
-            utilization: 45,
-            resets_at: sevenDayResetAt,
-            resets_in_hours: 111,
-          },
-          extra_usage_enabled: false,
-          error: null,
-        },
-      },
-    ],
-    healthy_count: 2,
-    total_attempted: 3,
-    aggregate: quota,
-    rotation_events_24h: 2,
-  };
-
   const autonomousMode: AutonomousModeStatus = {
     enabled: true,
     interval_minutes: 50,
@@ -758,42 +687,8 @@ export function getMockDashboardData(): DashboardData {
     system_health: systemHealth,
     autonomous_mode: autonomousMode,
     quota,
-    verified_quota: verifiedQuota,
     token_usage: tokenUsage,
     usage_projection: usageProjection,
-    key_rotation: {
-      current_key_id: 'a3f8d21c...',
-      active_keys: 3,
-      keys: [
-        {
-          key_id: 'a3f8d21c...',
-          subscription_type: 'claude_max',
-          five_hour_pct: 35,
-          seven_day_pct: 88,
-          is_current: true,
-        },
-        {
-          key_id: 'b7c4e92f...',
-          subscription_type: 'claude_max',
-          five_hour_pct: 100,
-          seven_day_pct: 100,
-          is_current: false,
-        },
-        {
-          key_id: 'c9d5f13a...',
-          subscription_type: 'claude_max',
-          five_hour_pct: 12,
-          seven_day_pct: 45,
-          is_current: false,
-        },
-      ],
-      rotation_events_24h: 2,
-      aggregate: {
-        active_keys: 3,
-        five_hour_pct: 35,
-        seven_day_pct: 88,
-      },
-    },
     automations: [
       {
         name: 'Triage Check',
@@ -1558,122 +1453,6 @@ export function getMockLogging(): LoggingData {
 }
 
 // ============================================================================
-// Account Overview data
-// ============================================================================
-
-export function getMockAccountOverview(): AccountOverviewData {
-  const now = Date.now();
-  const DAY = 24 * 60 * 60 * 1000;
-  const HOUR = 60 * 60 * 1000;
-  const MIN = 60 * 1000;
-
-  return {
-    hasData: true,
-    activeKeyId: 'a3f8d21c...',
-    totalRotations24h: 2,
-    accounts: [
-      {
-        keyId: 'a3f8d21c...',
-        status: 'active',
-        isCurrent: true,
-        subscriptionType: 'claude_max',
-        email: 'dev@gentyr.io',
-        expiresAt: new Date(now + 1 * DAY),
-        addedAt: new Date(now - 5 * DAY),
-        lastUsedAt: new Date(now - 12 * MIN),
-        fiveHourPct: 35,
-        sevenDayPct: 88,
-        sevenDaySonnetPct: 17,
-      },
-      {
-        keyId: 'b7c4e92f...',
-        status: 'exhausted',
-        isCurrent: false,
-        subscriptionType: 'claude_max',
-        email: 'ops@gentyr.io',
-        expiresAt: new Date(now + 3 * DAY),
-        addedAt: new Date(now - 3 * DAY),
-        lastUsedAt: new Date(now - 4 * HOUR),
-        fiveHourPct: 100,
-        sevenDayPct: 100,
-        sevenDaySonnetPct: 22,
-      },
-      {
-        keyId: 'c9d5f13a...',
-        status: 'active',
-        isCurrent: false,
-        subscriptionType: 'claude_max',
-        email: 'backup@gentyr.io',
-        expiresAt: new Date(now + 5 * DAY),
-        addedAt: new Date(now - 1 * DAY),
-        lastUsedAt: new Date(now - 2 * HOUR),
-        fiveHourPct: 12,
-        sevenDayPct: 45,
-        sevenDaySonnetPct: 8,
-      },
-    ],
-    events: [
-      {
-        timestamp: new Date(now - 38 * MIN),
-        event: 'key_switched',
-        keyId: 'a3f8d21c...',
-        description: 'Account selected: dev@gentyr.io',
-        usageSnapshot: { fiveHour: 35, sevenDay: 88 },
-      },
-      {
-        timestamp: new Date(now - 1.2 * HOUR),
-        event: 'key_exhausted',
-        keyId: 'b7c4e92f...',
-        description: 'Account fully depleted: ops@gentyr.io',
-        usageSnapshot: { fiveHour: 100, sevenDay: 100 },
-      },
-      {
-        timestamp: new Date(now - 2.5 * HOUR),
-        event: 'account_nearly_depleted',
-        keyId: 'b7c4e92f...',
-        description: 'Account nearly depleted: ops@gentyr.io',
-        usageSnapshot: { fiveHour: 96, sevenDay: 91 },
-      },
-      {
-        timestamp: new Date(now - 4.1 * HOUR),
-        event: 'key_switched',
-        keyId: 'b7c4e92f...',
-        description: 'Account selected: ops@gentyr.io',
-        usageSnapshot: { fiveHour: 62, sevenDay: 91 },
-      },
-      {
-        timestamp: new Date(now - 5.8 * HOUR),
-        event: 'key_added',
-        keyId: 'c9d5f13a...',
-        description: 'New account added: backup@gentyr.io',
-        usageSnapshot: null,
-      },
-      {
-        timestamp: new Date(now - 8.3 * HOUR),
-        event: 'account_quota_refreshed',
-        keyId: 'a3f8d21c...',
-        description: 'Account quota refreshed: dev@gentyr.io',
-        usageSnapshot: null,
-      },
-      {
-        timestamp: new Date(now - 11.7 * HOUR),
-        event: 'key_switched',
-        keyId: 'a3f8d21c...',
-        description: 'Account selected: dev@gentyr.io',
-        usageSnapshot: { fiveHour: 8, sevenDay: 72 },
-      },
-      {
-        timestamp: new Date(now - 14.2 * HOUR),
-        event: 'account_auth_failed',
-        keyId: 'd2e6a47b...',
-        description: 'Account can no longer auth: old@gentyr.io',
-        usageSnapshot: null,
-      },
-    ],
-  };
-}
-
-// ============================================================================
 // Worktree data
 // ============================================================================
 
@@ -2064,12 +1843,6 @@ export function getMockPlanSessionData(): PlanSessionData {
             type: 'session_spawned',
             label: 'Session Spawned',
             detail: 'code-writer, PID 12345',
-          },
-          {
-            timestamp: new Date(s1Start + 8 * 60 * 1000).toISOString(),
-            type: 'proxy_rotated',
-            label: 'Proxy Rotated',
-            detail: 'key-b7c4e92f',
           },
           {
             timestamp: new Date(s1Start + 15 * 60 * 1000).toISOString(),

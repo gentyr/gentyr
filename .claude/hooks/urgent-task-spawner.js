@@ -2,13 +2,8 @@
 /**
  * PostToolUse Hook: Universal Task Spawner
  *
- * Fires after mcp__todo-db__create_task. Uses quota-based gating to decide
- * whether to spawn an agent immediately:
- *
- *   - Urgent tasks: always spawn (backward compatible)
- *   - Normal tasks with < 75% quota: spawn immediately
- *   - Normal tasks with 75-90% quota: spawn if < 3 running agents
- *   - Normal tasks with > 90% quota: only urgent tasks
+ * Fires after mcp__todo-db__create_task. Spawns an agent immediately for any
+ * task that passes the memory pressure check. Urgent and CTO tasks always spawn.
  *
  * Deduplication strategy:
  *   1. markTaskInProgress() as atomic gate — hourly dispatcher skips in_progress tasks
@@ -25,7 +20,6 @@ import path from 'path';
 import { AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { createWorktree } from './lib/worktree-manager.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
-import { readRotationState } from './key-sync.js';
 import { shouldAllowSpawn } from './lib/memory-pressure.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { enqueueSession, preemptForCtoTask } from './lib/session-queue.js';
@@ -119,83 +113,22 @@ function resetTaskToPending(taskId) {
 }
 
 /**
- * Phase 2: Quota-based gating for task spawning.
+ * Determine whether spawning is allowed based on memory pressure.
  *
- * Reads aggregate quota usage across all valid keys and determines whether
- * to spawn based on current load:
- *   - < 75%: spawn immediately, no limit
- *   - 75-90%: spawn only if < 3 running agents (fast check via history file)
- *   - > 90%: only urgent tasks (backward compatible)
- *
- * Fails open on errors (returns true).
+ * Memory pressure is the only gating mechanism — there is no multi-account
+ * quota tracking. Fails open on errors (returns true).
  *
  * @param {string} priority - Task priority ('urgent' or 'normal')
  * @returns {boolean} Whether to proceed with spawning
  */
-function evaluateQuotaGating(priority) {
-  // Memory pressure check — runs before quota check, blocks even urgent tasks if critical
+function shouldSpawnTask(priority) {
   const memCheck = shouldAllowSpawn({ priority, context: 'task-spawner' });
   if (!memCheck.allowed) {
     log(memCheck.reason);
     return false;
   }
   if (memCheck.reason) log(memCheck.reason);
-
-  // Urgent tasks always spawn (memory check already passed)
-  if (priority === 'urgent') return true;
-
-  try {
-    const state = readRotationState();
-    if (!state.keys || Object.keys(state.keys).length === 0) return true;
-
-    // Calculate best (lowest) max usage across all valid keys
-    let bestMaxUsage = 100;
-    for (const [, keyData] of Object.entries(state.keys)) {
-      if (keyData.status === 'invalid' || keyData.status === 'tombstone' || keyData.status === 'merged') continue;
-      const usage = keyData.last_usage;
-      if (!usage) continue;
-      const maxUsage = Math.max(usage.five_hour || 0, usage.seven_day || 0, usage.seven_day_sonnet || 0);
-      if (maxUsage < bestMaxUsage) bestMaxUsage = maxUsage;
-    }
-
-    if (bestMaxUsage < 75) {
-      // Green zone: spawn freely
-      log(`Quota gating: green zone (${Math.round(bestMaxUsage)}% best key), spawning`);
-      return true;
-    }
-
-    if (bestMaxUsage < 90) {
-      // Yellow zone: spawn if < 3 running agents (quick file-based check, no pgrep fork)
-      let runningCount = 0;
-      try {
-        const historyPath = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
-        if (fs.existsSync(historyPath)) {
-          const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
-          if (Array.isArray(history.agents)) {
-            runningCount = history.agents.filter(a => a.status === 'running').length;
-          }
-        }
-      } catch (err) {
-        console.error('[urgent-task-spawner] Warning:', err.message);
-        /* fail open */
-      }
-
-      if (runningCount < 3) {
-        log(`Quota gating: yellow zone (${Math.round(bestMaxUsage)}%, ${runningCount} running), spawning`);
-        return true;
-      }
-      log(`Quota gating: yellow zone (${Math.round(bestMaxUsage)}%, ${runningCount} running), deferring to hourly`);
-      return false;
-    }
-
-    // Red zone: only urgent
-    log(`Quota gating: red zone (${Math.round(bestMaxUsage)}%), deferring normal task to hourly`);
-    return false;
-  } catch (err) {
-    // Fail open
-    log(`Quota gating error (fail open): ${err.message}`);
-    return true;
-  }
+  return true;
 }
 
 /**
@@ -562,12 +495,11 @@ process.stdin.on('end', async () => {
     const hookInput = JSON.parse(input);
     const toolInput = hookInput.tool_input || {};
 
-    // Phase 2: Quota-based gating replaces the old urgent-only guard.
-    // CTO/human tasks bypass quota gating entirely — they always spawn.
+    // CTO/human tasks bypass memory pressure check — they always spawn.
     const assignedBy = toolInput.assigned_by || null;
     const isCtoOrHuman = assignedBy === 'cto' || assignedBy === 'human';
-    const shouldSpawn = isCtoOrHuman || evaluateQuotaGating(toolInput.priority);
-    debugLog('urgent-task-spawner', 'spawn_decision', { taskId: toolInput.title?.substring(0, 40), decision: shouldSpawn ? 'spawn' : 'defer', reason: isCtoOrHuman ? 'cto_or_human' : 'quota_gating', priority: toolInput.priority });
+    const shouldSpawn = isCtoOrHuman || shouldSpawnTask(toolInput.priority);
+    debugLog('urgent-task-spawner', 'spawn_decision', { taskId: toolInput.title?.substring(0, 40), decision: shouldSpawn ? 'spawn' : 'defer', reason: isCtoOrHuman ? 'cto_or_human' : 'memory_pressure', priority: toolInput.priority });
     if (!shouldSpawn) {
       process.exit(0);
     }

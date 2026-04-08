@@ -6,7 +6,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { openReadonlyDb } from './readonly-db.js';
 import { z } from 'zod';
@@ -22,7 +21,6 @@ const CTO_REPORTS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
 const USER_FEEDBACK_DB_PATH = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
 const AUTONOMOUS_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
-const KEY_ROTATION_STATE_PATH = path.join(os.homedir(), '.claude', 'api-key-rotation.json');
 const AGENT_TRACKER_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
 const AUTOMATION_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
 const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
@@ -71,44 +69,6 @@ export interface AutonomousModeStatus {
   interval_minutes: number;
   next_run_time: Date | null;
   seconds_until_next: number | null;
-}
-
-export interface AggregateQuota {
-  active_keys: number;
-  five_hour_pct: number;
-  seven_day_pct: number;
-}
-
-export interface TrackedKeyInfo {
-  key_id: string;
-  subscription_type: string;
-  five_hour_pct: number | null;
-  seven_day_pct: number | null;
-  is_current: boolean;
-}
-
-export interface KeyRotationMetrics {
-  current_key_id: string | null;
-  active_keys: number;
-  keys: TrackedKeyInfo[];
-  rotation_events_24h: number;
-  aggregate: AggregateQuota | null;
-}
-
-export interface VerifiedKey {
-  key_id: string;
-  subscription_type: string;
-  is_current: boolean;
-  healthy: boolean;
-  quota: QuotaStatus | null;
-}
-
-export interface VerifiedQuotaResult {
-  keys: VerifiedKey[];
-  healthy_count: number;
-  total_attempted: number;
-  aggregate: QuotaStatus;
-  rotation_events_24h: number;
 }
 
 export interface SessionMetrics {
@@ -259,10 +219,8 @@ export interface DashboardData {
   system_health: SystemHealth;
   autonomous_mode: AutonomousModeStatus;
   quota: QuotaStatus;
-  verified_quota: VerifiedQuotaResult;
   token_usage: TokenUsage;
   usage_projection: UsageProjection;
-  key_rotation: KeyRotationMetrics | null;
   automations: AutomationInfo[];
   agents: AgentActivity;
   hooks: HookExecutions;
@@ -346,31 +304,6 @@ const HookHistorySchema = z.object({
   }).passthrough()).default([]),
 }).passthrough();
 
-const KeyRotationKeyDataSchema = z.object({
-  accessToken: z.string().optional(),
-  subscriptionType: z.string().optional(),
-  last_usage: z.object({
-    five_hour: z.number(),
-    seven_day: z.number(),
-  }).nullable().optional(),
-  status: z.enum(['active', 'exhausted', 'invalid', 'expired', 'tombstone', 'merged']),
-  account_uuid: z.string().nullable().optional(),
-  account_email: z.string().nullable().optional(),
-  tombstoned_at: z.number().optional(),
-}).passthrough();
-
-const KeyRotationStateSchema = z.object({
-  version: z.number(),
-  active_key_id: z.string().nullable(),
-  keys: z.record(z.string(), KeyRotationKeyDataSchema),
-  rotation_log: z.array(z.object({
-    timestamp: z.number(),
-    event: z.string(),
-  }).passthrough()),
-});
-
-type KeyRotationState = z.infer<typeof KeyRotationStateSchema>;
-
 const AutomationCooldownsPartialSchema = z.object({
   hourly_tasks: z.number().optional(),
   triage_check: z.number().optional(),
@@ -405,17 +338,6 @@ const AutomationConfigFileSchema = z.object({
     last_updated: z.string().optional(),
   }).passthrough().optional(),
 }).passthrough();
-
-// ============================================================================
-// Key ID Generation (matches api-key-watcher.js:89-98)
-// ============================================================================
-
-function generateKeyId(accessToken: string): string {
-  const cleanToken = accessToken
-    .replace(/^sk-ant-oat01-/, '')
-    .replace(/^sk-ant-/, '');
-  return crypto.createHash('sha256').update(cleanToken).digest('hex').substring(0, 16);
-}
 
 // ============================================================================
 // Quota Status
@@ -500,38 +422,6 @@ function getCredentialToken(): string | null {
   return null;
 }
 
-/**
- * Get an access token from all available sources, in priority order:
- *   1-4. Credential sources (env, keychain, config dir, standard creds)
- *   5. api-key-rotation.json (user-level, active keys only)
- */
-function getAccessToken(): string | null {
-  const credToken = getCredentialToken();
-  if (credToken) return credToken;
-
-  // Source 5: Key rotation state (project-level, active keys only)
-  if (fs.existsSync(KEY_ROTATION_STATE_PATH)) {
-    try {
-      const state = KeyRotationStateSchema.parse(JSON.parse(fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8')));
-      if (state?.version === 1 && state.keys) {
-        const activeKeyData = state.active_key_id ? state.keys[state.active_key_id] : undefined;
-        if (activeKeyData?.accessToken && activeKeyData.status === 'active') {
-          return activeKeyData.accessToken;
-        }
-        for (const keyData of Object.values(state.keys)) {
-          if (keyData.accessToken && keyData.status === 'active') {
-            return keyData.accessToken;
-          }
-        }
-      }
-    } catch {
-      // Fall through
-    }
-  }
-
-  return null;
-}
-
 const EMPTY_QUOTA: QuotaStatus = {
   five_hour: null,
   seven_day: null,
@@ -570,192 +460,11 @@ async function fetchQuotaForToken(accessToken: string): Promise<QuotaStatus> {
 }
 
 export async function getQuotaStatus(): Promise<QuotaStatus> {
-  const accessToken = getAccessToken();
+  const accessToken = getCredentialToken();
   if (!accessToken) {
     return { ...EMPTY_QUOTA, error: 'No credentials found' };
   }
   return fetchQuotaForToken(accessToken);
-}
-
-// ============================================================================
-// Per-Key Verified Quota
-// ============================================================================
-
-interface CollectedKey {
-  key_id: string;
-  access_token: string;
-  subscription_type: string;
-  is_current: boolean;
-}
-
-/**
- * Collect all unique keys from rotation state + credentials.
- * Keys are deduplicated by key ID (SHA256 hash of token).
- */
-function collectAllKeys(): { keys: CollectedKey[]; rotationState: KeyRotationState | null } {
-  const keyMap = new Map<string, CollectedKey>();
-  let rotationState: KeyRotationState | null = null;
-
-  // Source A: Key rotation state file — include active and exhausted keys
-  // (exhausted keys may have recovered since the last watcher run)
-  if (fs.existsSync(KEY_ROTATION_STATE_PATH)) {
-    try {
-      const content = fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8');
-      const state = KeyRotationStateSchema.parse(JSON.parse(content));
-      if (state?.version === 1 && typeof state.keys === 'object') {
-        rotationState = state;
-        for (const [keyId, keyData] of Object.entries(state.keys)) {
-          if (keyData.status === 'invalid' || keyData.status === 'expired' || keyData.status === 'tombstone' || keyData.status === 'merged') continue;
-          if (!keyData.accessToken) continue;
-          keyMap.set(keyId, {
-            key_id: keyId,
-            access_token: keyData.accessToken,
-            subscription_type: keyData.subscriptionType || 'unknown',
-            is_current: keyId === state.active_key_id,
-          });
-        }
-      }
-    } catch (err) {
-      process.stderr.write(`[data-reader] Failed to parse key rotation state at ${KEY_ROTATION_STATE_PATH}: ${err instanceof Error ? err.message : String(err)}\n`);
-    }
-  }
-
-  // Source B: Current credentials (env, keychain, creds file)
-  // Skip rotation state source (source 5 in getAccessToken) to avoid double-count —
-  // we read those directly above. Check env, keychain, and creds file sources.
-  const credToken = getCredentialToken();
-  if (credToken) {
-    const credKeyId = generateKeyId(credToken);
-    if (!keyMap.has(credKeyId)) {
-      keyMap.set(credKeyId, {
-        key_id: credKeyId,
-        access_token: credToken,
-        subscription_type: 'unknown',
-        is_current: !rotationState,
-      });
-    }
-  }
-
-  return { keys: Array.from(keyMap.values()), rotationState };
-}
-
-/**
- * Fetch quota for all keys in parallel, return verified results.
- * Only keys that successfully authenticate are counted as healthy.
- */
-export async function getVerifiedQuota(hours: number): Promise<VerifiedQuotaResult> {
-  const { keys, rotationState } = collectAllKeys();
-
-  if (keys.length === 0) {
-    return {
-      keys: [],
-      healthy_count: 0,
-      total_attempted: 0,
-      aggregate: { ...EMPTY_QUOTA, error: 'No keys found' },
-      rotation_events_24h: 0,
-    };
-  }
-
-  // Fetch quota for all keys in parallel
-  const results = await Promise.all(
-    keys.map(async (key): Promise<VerifiedKey> => {
-      const quota = await fetchQuotaForToken(key.access_token);
-      return {
-        key_id: `${key.key_id.slice(0, 8)}...`,
-        subscription_type: key.subscription_type,
-        is_current: key.is_current,
-        healthy: !quota.error,
-        quota: quota.error ? null : quota,
-      };
-    })
-  );
-
-  const healthyKeys = results.filter(k => k.healthy && k.quota);
-
-  // Aggregate: average utilization across healthy keys
-  let aggregate = buildAggregate(healthyKeys);
-  let healthyCount = healthyKeys.length;
-
-  // Fallback: when no live keys responded, use stored last_usage from rotation state.
-  // Stale data is better than "No healthy keys".
-  if (healthyKeys.length === 0 && rotationState) {
-    const storedAccounts: Array<{ fiveHour: number; sevenDay: number }> = [];
-    const seen = new Set<string>();
-    for (const [, keyData] of Object.entries(rotationState.keys)) {
-      if (keyData.status === 'invalid' || keyData.status === 'tombstone' || keyData.status === 'merged') continue;
-      if (!keyData.last_usage) continue;
-      const dedupeKey = keyData.account_uuid || keyData.account_email
-        || `fp:${keyData.last_usage.five_hour}:${keyData.last_usage.seven_day}`;
-      if (seen.has(dedupeKey)) continue;
-      seen.add(dedupeKey);
-      storedAccounts.push({
-        fiveHour: keyData.last_usage.five_hour ?? 0,
-        sevenDay: keyData.last_usage.seven_day ?? 0,
-      });
-    }
-    if (storedAccounts.length > 0) {
-      const avgFiveHour = Math.round(
-        storedAccounts.reduce((s, a) => s + a.fiveHour, 0) / storedAccounts.length
-      );
-      const avgSevenDay = Math.round(
-        storedAccounts.reduce((s, a) => s + a.sevenDay, 0) / storedAccounts.length
-      );
-      aggregate = {
-        five_hour: { utilization: avgFiveHour, resets_at: '', resets_in_hours: 0 },
-        seven_day: { utilization: avgSevenDay, resets_at: '', resets_in_hours: 0 },
-        extra_usage_enabled: false,
-        error: null,
-      };
-      healthyCount = storedAccounts.length;
-    }
-  }
-
-  // Rotation events from state file
-  let rotationEvents24h = 0;
-  if (rotationState) {
-    const since = Date.now() - (hours * 60 * 60 * 1000);
-    rotationEvents24h = rotationState.rotation_log.filter(
-      entry => entry.timestamp >= since && entry.event === 'key_switched'
-    ).length;
-  }
-
-  return {
-    keys: results,
-    healthy_count: healthyCount,
-    total_attempted: keys.length,
-    aggregate,
-    rotation_events_24h: rotationEvents24h,
-  };
-}
-
-function buildAggregate(healthyKeys: VerifiedKey[]): QuotaStatus {
-  if (healthyKeys.length === 0) {
-    return { ...EMPTY_QUOTA, error: 'No healthy keys' };
-  }
-
-  const avgBucket = (getBucket: (q: QuotaStatus) => QuotaBucket | null): QuotaBucket | null => {
-    const buckets = healthyKeys
-      .map(k => getBucket(k.quota!))
-      .filter((b): b is QuotaBucket => b !== null);
-    if (buckets.length === 0) return null;
-    const avgUtil = Math.round(buckets.reduce((s, b) => s + b.utilization, 0) / buckets.length);
-    // Use earliest reset time
-    const earliest = buckets.reduce((a, b) =>
-      new Date(a.resets_at).getTime() < new Date(b.resets_at).getTime() ? a : b
-    );
-    return {
-      utilization: avgUtil,
-      resets_at: earliest.resets_at,
-      resets_in_hours: earliest.resets_in_hours,
-    };
-  };
-
-  return {
-    five_hour: avgBucket(q => q.five_hour),
-    seven_day: avgBucket(q => q.seven_day),
-    extra_usage_enabled: healthyKeys.some(k => k.quota!.extra_usage_enabled),
-    error: null,
-  };
 }
 
 // ============================================================================
@@ -1202,82 +911,6 @@ export function getHookExecutions(): HookExecutions {
 }
 
 // ============================================================================
-// Key Rotation Metrics
-// ============================================================================
-
-export function getKeyRotationMetrics(hours: number): KeyRotationMetrics | null {
-  if (!fs.existsSync(KEY_ROTATION_STATE_PATH)) return null;
-
-  let state: z.infer<typeof KeyRotationStateSchema>;
-  try {
-    const content = fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8');
-    state = KeyRotationStateSchema.parse(JSON.parse(content));
-  } catch {
-    process.stderr.write(`[data-reader] Failed to parse key rotation state at ${KEY_ROTATION_STATE_PATH}\n`);
-    return null;
-  }
-
-  if (!state || state.version !== 1 || typeof state.keys !== 'object') {
-    process.stderr.write(`[data-reader] Invalid key rotation state format at ${KEY_ROTATION_STATE_PATH}\n`);
-    return null;
-  }
-
-  const now = Date.now();
-  const since = now - (hours * 60 * 60 * 1000);
-
-  const keys: TrackedKeyInfo[] = [];
-
-  // Per-key display list (all active keys shown in dashboard key list)
-  for (const [keyId, keyData] of Object.entries(state.keys)) {
-    if (keyData.status !== 'active') continue;
-    const isCurrent = keyId === state.active_key_id;
-
-    keys.push({
-      key_id: `${keyId.slice(0, 8)}...`,
-      subscription_type: keyData.subscriptionType || 'unknown',
-      five_hour_pct: keyData.last_usage?.five_hour ?? null,
-      seven_day_pct: keyData.last_usage?.seven_day ?? null,
-      is_current: isCurrent,
-    });
-  }
-
-  // Group by account for aggregate calculation (dedup same-account tokens).
-  // Matches the pattern in cto-notification-hook.js:getAggregateQuota().
-  const accountMap = new Map<string, { fiveHour: number; sevenDay: number }>();
-  for (const [, keyData] of Object.entries(state.keys)) {
-    if (keyData.status !== 'active') continue;
-    if (!keyData.last_usage) continue;
-    const dedupeKey = keyData.account_uuid
-      || `fp:${keyData.last_usage.five_hour}:${keyData.last_usage.seven_day}`;
-    if (!accountMap.has(dedupeKey)) {
-      accountMap.set(dedupeKey, {
-        fiveHour: keyData.last_usage.five_hour ?? 0,
-        sevenDay: keyData.last_usage.seven_day ?? 0,
-      });
-    }
-  }
-  const accounts = Array.from(accountMap.values());
-
-  const rotationEvents24h = state.rotation_log.filter(
-    entry => entry.timestamp >= since && entry.event === 'key_switched'
-  ).length;
-
-  const aggregate: AggregateQuota | null = accounts.length > 0 ? {
-    active_keys: accounts.length,
-    five_hour_pct: Math.round(accounts.reduce((s, a) => s + a.fiveHour, 0) / accounts.length),
-    seven_day_pct: Math.round(accounts.reduce((s, a) => s + a.sevenDay, 0) / accounts.length),
-  } : null;
-
-  return {
-    current_key_id: state.active_key_id ? `${state.active_key_id.slice(0, 8)}...` : null,
-    active_keys: keys.length,
-    keys,
-    rotation_events_24h: rotationEvents24h,
-    aggregate,
-  };
-}
-
-// ============================================================================
 // Usage Projection
 // ============================================================================
 
@@ -1611,18 +1244,16 @@ export function getFeedbackPersonas(): FeedbackPersonasData {
 
 export async function getDashboardData(hours: number = 24): Promise<DashboardData> {
   const tokenUsage = getTokenUsage(hours);
-  const verifiedQuota = await getVerifiedQuota(hours);
+  const quota = await getQuotaStatus();
 
   return {
     generated_at: new Date(),
     hours,
     system_health: getSystemHealth(),
     autonomous_mode: getAutonomousModeStatus(),
-    quota: verifiedQuota.aggregate,
-    verified_quota: verifiedQuota,
+    quota,
     token_usage: tokenUsage,
     usage_projection: getUsageProjection(),
-    key_rotation: getKeyRotationMetrics(hours),
     automations: getAutomations(),
     agents: getAgentActivity(),
     hooks: getHookExecutions(),

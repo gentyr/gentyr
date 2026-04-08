@@ -5,11 +5,10 @@
  * Sources:
  *   1. plans.db — plan tasks with todo_task_id links
  *   2. agent-tracker-history.json — agent spawn/reap records
- *   3. ~/.claude/api-key-rotation.json — proxy rotation log
- *   4. quota-interrupted-sessions.json — quota interrupt records
- *   5. paused-sessions.json — paused session records
- *   6. worklog.db — worklog entries by task_id
- *   7. plans.db state_changes — substep/task/PR state changes
+ *   3. quota-interrupted-sessions.json — quota interrupt records
+ *   4. paused-sessions.json — paused session records
+ *   5. worklog.db — worklog entries by task_id
+ *   6. plans.db state_changes — substep/task/PR state changes
  *
  * Every source read is wrapped in try/catch — missing files degrade
  * gracefully rather than returning an error.
@@ -17,7 +16,6 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { openReadonlyDb } from './readonly-db.js';
 
 // ============================================================================
@@ -26,7 +24,6 @@ import { openReadonlyDb } from './readonly-db.js';
 
 export type SessionEventType =
   | 'session_spawned'
-  | 'proxy_rotated'
   | 'quota_interrupt'
   | 'session_interrupted'
   | 'session_paused'
@@ -90,17 +87,6 @@ interface AgentHistoryEntry {
   };
 }
 
-interface RotationLogEntry {
-  event: string;
-  timestamp: number;  // epoch ms
-  [key: string]: unknown;
-}
-
-interface RotationData {
-  rotation_log?: RotationLogEntry[];
-  [key: string]: unknown;
-}
-
 interface QuotaInterruptEntry {
   agentId?: string;
   [key: string]: unknown;
@@ -150,7 +136,6 @@ const EMPTY: PlanSessionData = {
 
 export function getPlanSessionData(): PlanSessionData {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const homeDir = os.homedir();
 
   // ============================================================================
   // Step 1: Open plans.db, collect plan tasks with todo_task_id
@@ -252,43 +237,6 @@ export function getPlanSessionData(): PlanSessionData {
 
   // Build a map agentId -> AgentHistoryEntry for window lookups
   const agentById = new Map<string, AgentHistoryEntry>(matchedAgents.map((a) => [a.id, a]));
-
-  // ============================================================================
-  // Step 4: Read rotation log, correlate proxy rotations by agent time window
-  // ============================================================================
-
-  try {
-    const rotationPath = path.join(homeDir, '.claude', 'api-key-rotation.json');
-    if (fs.existsSync(rotationPath)) {
-      const rotationData = JSON.parse(fs.readFileSync(rotationPath, 'utf8')) as RotationData;
-      const rotationLog = rotationData.rotation_log ?? [];
-
-      for (const session of sessions) {
-        const agent = agentById.get(session.agentId);
-        if (!agent) continue;
-
-        const windowStart = new Date(agent.timestamp).getTime();
-        const windowEnd = agent.reapedAt ? new Date(agent.reapedAt).getTime() : Date.now();
-
-        for (const entry of rotationLog) {
-          if (entry.event !== 'key_switched') continue;
-          // Rotation log timestamps are epoch ms
-          const ts = entry.timestamp;
-          if (typeof ts !== 'number') continue;
-          if (ts >= windowStart && ts <= windowEnd) {
-            session.events.push({
-              timestamp: new Date(ts).toISOString(),
-              type: 'proxy_rotated',
-              label: 'Proxy Rotated',
-              detail: String((entry as Record<string, unknown>).to_key_id ?? 'new key'),
-            });
-          }
-        }
-      }
-    }
-  } catch {
-    // Rotation log unavailable
-  }
 
   // ============================================================================
   // Step 5: Read quota-interrupted-sessions.json

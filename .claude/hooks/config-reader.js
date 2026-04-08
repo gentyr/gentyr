@@ -149,7 +149,7 @@ export function getDefaults() {
 }
 
 /**
- * Get the config file path (for use by usage-optimizer when writing updates).
+ * Get the config file path.
  * @returns {string}
  */
 export function getConfigPath() {

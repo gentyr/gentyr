@@ -1,44 +1,18 @@
 #!/usr/bin/env node
 
 /**
- * Stop Hook - Auto-continue for automated [Task] sessions + quota death detection
+ * Stop Hook - Auto-continue for automated [Task] sessions
  *
  * This hook forces one continuation cycle for spawned sessions that begin with "[Task]".
  * It checks:
  * 1. Was the initial prompt tagged with "[Task]"? (automated session)
- * 2. Is the session dying from a quota/rate limit? (detect and record for revival)
- * 3. Is stop_hook_active false? (first stop, not already continuing)
- *
- * Quota detection: If the last JSONL entries show error:"rate_limit" + isApiErrorMessage,
- * the hook writes recovery state and approves the stop immediately (instead of wasting
- * the one remaining API call on a doomed retry). The session-reviver picks up later.
- *
- * It also attempts credential rotation when quota is hit, so the next retry (if any)
- * or the revived session will use fresh credentials.
+ * 2. Is stop_hook_active false? (first stop, not already continuing)
  */
 
 import { createInterface } from 'readline';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import {
-  readRotationState,
-  writeRotationState,
-  logRotationEvent,
-  updateActiveCredentials,
-  checkKeyHealth,
-  selectActiveKey,
-  refreshExpiredToken,
-} from './key-sync.js';
-import { AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
-import {
-  buildRevivalPrompt,
-  resolveTaskIdForAgent,
-  extractSessionIdFromPath,
-} from './lib/revival-utils.js';
-import { shouldAllowSpawn } from './lib/memory-pressure.js';
-import { enqueueSession } from './lib/session-queue.js';
-import { auditEvent } from './lib/session-audit.js';
 import { debugLog as gentyrDebugLog } from './lib/debug-log.js';
 
 // Lazy-loaded SQLite (needed for persistent-tasks.db check)
@@ -79,8 +53,6 @@ async function readStdin() {
   });
 }
 
-const STATE_DIR = path.join(process.cwd(), '.claude', 'state');
-const QUOTA_INTERRUPTED_PATH = path.join(STATE_DIR, 'quota-interrupted-sessions.json');
 const TAIL_BYTES = 8192;
 
 /**
@@ -102,269 +74,6 @@ function readTail(filePath, numBytes) {
   }
 }
 
-/**
- * Check if the session is dying from a quota/rate limit by examining recent JSONL entries.
- * Returns { isQuotaDeath: boolean, quotaMessage?: string }
- */
-function detectQuotaDeath(transcriptPath) {
-  if (!transcriptPath) return { isQuotaDeath: false };
-
-  const tail = readTail(transcriptPath, TAIL_BYTES);
-  if (!tail) return { isQuotaDeath: false };
-
-  const lines = tail.split('\n').filter(l => l.trim());
-
-  // Check last 5 parseable entries for rate_limit error
-  let checked = 0;
-  for (let i = lines.length - 1; i >= 0 && checked < 5; i--) {
-    let parsed;
-    try {
-      parsed = JSON.parse(lines[i]);
-    } catch (err) {
-      console.error('[stop-continue-hook] Warning:', err.message);
-      continue;
-    }
-    checked++;
-
-    if (parsed.error === 'rate_limit' && parsed.isApiErrorMessage === true) {
-      const quotaMessage = parsed.message?.content?.[0]?.text || 'Rate limit reached';
-      return { isQuotaDeath: true, quotaMessage };
-    }
-  }
-
-  return { isQuotaDeath: false };
-}
-
-/**
- * Extract agent ID from the first user message in transcript.
- */
-function extractAgentId(transcriptPath) {
-  if (!transcriptPath) return null;
-  try {
-    // Read first 4KB for the initial prompt
-    let fd;
-    try {
-      fd = fs.openSync(transcriptPath, 'r');
-      const buf = Buffer.alloc(4096);
-      const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
-      const head = buf.toString('utf8', 0, bytesRead);
-      const match = head.match(/\[AGENT:(agent-[^\]]+)\]/);
-      return match ? match[1] : null;
-    } finally {
-      if (fd !== undefined) fs.closeSync(fd);
-    }
-  } catch (err) {
-    console.error('[stop-continue-hook] Warning:', err.message);
-    return null;
-  }
-}
-
-/**
- * Write a quota-interrupted session record for the session-reviver to pick up.
- */
-function writeQuotaInterruptedSession(record) {
-  try {
-    if (!fs.existsSync(STATE_DIR)) {
-      fs.mkdirSync(STATE_DIR, { recursive: true });
-    }
-
-    let data = { sessions: [] };
-    if (fs.existsSync(QUOTA_INTERRUPTED_PATH)) {
-      data = JSON.parse(fs.readFileSync(QUOTA_INTERRUPTED_PATH, 'utf8'));
-      if (!Array.isArray(data.sessions)) data.sessions = [];
-    }
-
-    // Don't duplicate
-    const existingIdx = data.sessions.findIndex(
-      s => s.transcriptPath === record.transcriptPath
-    );
-    if (existingIdx >= 0) {
-      data.sessions[existingIdx] = record;
-    } else {
-      data.sessions.push(record);
-    }
-
-    // Clean up entries older than 12 hours (session-reviver handles finer-grained discard)
-    const cutoff = Date.now() - 12 * 60 * 60 * 1000;
-    data.sessions = data.sessions.filter(s => new Date(s.interruptedAt).getTime() > cutoff);
-
-    fs.writeFileSync(QUOTA_INTERRUPTED_PATH, JSON.stringify(data, null, 2), 'utf8');
-  } catch (err) {
-    console.error('[stop-continue-hook] Warning:', err.message);
-    // Non-fatal
-  }
-}
-
-/**
- * Attempt credential rotation when quota is hit.
- * Returns true if rotation succeeded (a usable key was found and swapped).
- */
-async function attemptQuotaRotation() {
-  try {
-    const state = readRotationState();
-    if (!state.active_key_id) return false;
-
-    // Refresh expired tokens before health-check so they can be candidates
-    for (const [keyId, keyData] of Object.entries(state.keys)) {
-      if (keyData.status === 'expired' && keyData.expiresAt && keyData.expiresAt < Date.now()) {
-        try {
-          const refreshed = await refreshExpiredToken(keyData);
-          if (refreshed === 'invalid_grant') {
-            keyData.status = 'invalid';
-            logRotationEvent(state, {
-              timestamp: Date.now(),
-              event: 'key_removed',
-              key_id: keyId,
-              reason: 'refresh_token_invalid_grant',
-            });
-            debugLog(`Refresh token revoked for key ${keyId.slice(0, 8)}... — marked invalid`);
-          } else if (refreshed) {
-            keyData.accessToken = refreshed.accessToken;
-            keyData.refreshToken = refreshed.refreshToken;
-            keyData.expiresAt = refreshed.expiresAt;
-            keyData.status = 'active';
-            logRotationEvent(state, {
-              timestamp: Date.now(),
-              event: 'key_added',
-              key_id: keyId,
-              reason: 'token_refreshed_by_stop_hook',
-            });
-            debugLog(`Refreshed expired token for key ${keyId.slice(0, 8)}...`);
-          }
-        } catch (err) {
-          console.error('[stop-continue-hook] Warning:', err.message);
-          // Non-fatal: key stays expired
-        }
-      }
-    }
-    writeRotationState(state);
-
-    // Health-check all keys to get fresh usage data
-    const healthPromises = Object.entries(state.keys)
-      .filter(([_, k]) => k.status !== 'invalid' && k.status !== 'expired' && k.status !== 'tombstone')
-      .map(async ([keyId, keyData]) => {
-        const result = await checkKeyHealth(keyData.accessToken);
-        if (result.valid && result.usage) {
-          keyData.last_health_check = Date.now();
-          keyData.last_usage = { ...result.usage, checked_at: Date.now() };
-        }
-        return { keyId, result };
-      });
-
-    await Promise.all(healthPromises);
-    writeRotationState(state);
-
-    const selectedKeyId = selectActiveKey(state);
-    if (selectedKeyId && selectedKeyId !== state.active_key_id) {
-      const previousKeyId = state.active_key_id;
-      state.active_key_id = selectedKeyId;
-      const selectedKey = state.keys[selectedKeyId];
-      selectedKey.last_used_at = Date.now();
-
-      logRotationEvent(state, {
-        timestamp: Date.now(),
-        event: 'key_switched',
-        key_id: selectedKeyId,
-        reason: `stop_hook_quota_rotation_from_${previousKeyId.slice(0, 8)}`,
-      });
-
-      updateActiveCredentials(selectedKey);
-      writeRotationState(state);
-      debugLog('Quota rotation succeeded', { from: previousKeyId.slice(0, 8), to: selectedKeyId.slice(0, 8) });
-      return true;
-    }
-
-    return false;
-  } catch (err) {
-    debugLog('Quota rotation error', { error: err.message });
-    return false;
-  }
-}
-
-/**
- * Phase 1: Inline revival — spawn `claude --resume` directly in the stop hook
- * instead of waiting for the session-reviver (5-15 min delay).
- *
- * Only called when credentials were successfully rotated. On failure, falls through
- * to the session-reviver via the quota-interrupted-sessions.json record.
- *
- * @param {object} params
- * @param {string} params.sessionId - Session UUID to resume
- * @param {string} params.agentId - Original agent ID
- * @param {string} [params.worktreePath] - Worktree CWD for the resumed session
- * @param {string} params.quotaMessage - Quota error message for context
- * @returns {boolean} Whether inline revival succeeded
- */
-function inlineRevive({ sessionId, agentId, worktreePath, quotaMessage }) {
-  if (!sessionId) {
-    debugLog('Inline revival: no sessionId, skipping');
-    return false;
-  }
-
-  // Memory pressure check — block revival if system is under critical/high pressure
-  const memCheck = shouldAllowSpawn({ priority: 'normal', context: 'inline-revival' });
-  if (!memCheck.allowed) {
-    debugLog(`Inline revival blocked by memory pressure: ${memCheck.reason}`);
-    return false;
-  }
-  if (memCheck.reason) debugLog(memCheck.reason);
-
-  try {
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-
-    const taskId = resolveTaskIdForAgent(agentId, projectDir);
-    const revivalPrompt = buildRevivalPrompt({
-      reason: 'inline_revival',
-      interruptedAt: new Date().toISOString(),
-      taskId,
-    });
-
-    // Use original worktree CWD if it still exists, otherwise fall back to main project
-    const effectiveCwd = (worktreePath && fs.existsSync(worktreePath)) ? worktreePath : projectDir;
-
-    // Forward persistent monitor env vars for revival
-    let extraEnvObj = {};
-    if (process.env.GENTYR_PERSISTENT_TASK_ID) {
-      extraEnvObj.GENTYR_PERSISTENT_TASK_ID = process.env.GENTYR_PERSISTENT_TASK_ID;
-      extraEnvObj.GENTYR_PERSISTENT_MONITOR = 'true';
-    }
-
-    const result = enqueueSession({
-      title: `Inline revival of quota-interrupted session ${sessionId.slice(0, 8)}`,
-      agentType: AGENT_TYPES.SESSION_REVIVED,
-      hookType: HOOK_TYPES.SESSION_REVIVER,
-      tagContext: 'session-revived',
-      source: 'stop-continue-hook',
-      spawnType: 'resume',
-      resumeSessionId: sessionId,
-      lane: 'revival',
-      priority: 'urgent',
-      prompt: revivalPrompt,
-      cwd: effectiveCwd,
-      mcpConfig: path.join(effectiveCwd, '.mcp.json'),
-      projectDir,
-      worktreePath: worktreePath || null,
-      extraEnv: Object.keys(extraEnvObj).length > 0 ? extraEnvObj : undefined,
-      metadata: {
-        originalAgentId: agentId,
-        originalSessionId: sessionId,
-        revivalReason: 'inline_revival',
-        worktreePath,
-      },
-    });
-
-    const spawned = result.drained.spawned > 0;
-    debugLog('Inline revival enqueued', {
-      sessionId: sessionId.slice(0, 8),
-      queueId: result.queueId,
-      spawned,
-    });
-    return spawned;
-  } catch (err) {
-    debugLog('Inline revival failed', { error: err.message });
-    return false;
-  }
-}
 
 async function main() {
   debugLog('Stop hook triggered');
@@ -387,8 +96,8 @@ async function main() {
     debugLog('Full input structure', input);
 
     // Check if this session was preempted (suspended by CTO priority preemption).
-    // Must run BEFORE quota-death detection — a suspended session should exit
-    // cleanly without attempting revival, as it will be re-enqueued automatically.
+    // A suspended session should exit cleanly without attempting revival,
+    // as it will be re-enqueued automatically.
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const suspendedPath = path.join(projectDir, '.claude', 'state', 'suspended-sessions.json');
     try {
@@ -411,7 +120,7 @@ async function main() {
         } else {
           fs.writeFileSync(suspendedPath, JSON.stringify(remaining, null, 2));
         }
-        // Exit cleanly — don't attempt revival, don't write to quota-interrupted-sessions
+        // Exit cleanly — don't attempt revival
         gentyrDebugLog('stop-hook', 'decision', { decision: 'approve', reason: 'suspended_session', isTask: false, isPersistent: !!process.env.GENTYR_PERSISTENT_MONITOR });
         console.log(JSON.stringify({ decision: 'approve' }));
         process.exit(0);
@@ -461,86 +170,6 @@ async function main() {
     // Check if this is an automated [Task] session
     // The initial prompt should be in the conversation history
     const isTaskSession = checkIfTaskSession(input);
-
-    // Check for quota death BEFORE continuation logic
-    // If this is a rate_limit death, don't waste the API call on a continuation
-    if (isTaskSession) {
-      const quotaCheck = detectQuotaDeath(input.transcript_path);
-      if (quotaCheck.isQuotaDeath) {
-        debugLog('Quota death detected', { quotaMessage: quotaCheck.quotaMessage });
-
-        // Attempt credential rotation for the next session/revival
-        const rotated = await attemptQuotaRotation();
-
-        // Write recovery state for session-reviver
-        const agentId = extractAgentId(input.transcript_path);
-
-        // Resolve worktreePath from agent-tracker history so session-reviver can resume in the correct CWD
-        let worktreePath = null;
-        if (agentId) {
-          try {
-            const historyPath = path.join(STATE_DIR, 'agent-tracker-history.json');
-            if (fs.existsSync(historyPath)) {
-              const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
-              const agentEntry = Array.isArray(history.agents) && history.agents.find(a => a.id === agentId);
-              worktreePath = agentEntry?.metadata?.worktreePath || null;
-            }
-          } catch (err) {
-            console.error('[stop-continue-hook] Warning:', err.message);
-            /* non-fatal */
-          }
-        }
-
-        // Write recovery state as safety net BEFORE inline revival attempt.
-        // If inline revival fails, session-reviver picks this up later.
-        const record = {
-          sessionId: input.session_id || null,
-          transcriptPath: input.transcript_path,
-          agentId,
-          worktreePath,
-          quotaMessage: quotaCheck.quotaMessage,
-          interruptedAt: new Date().toISOString(),
-          credentialsRotated: rotated,
-          status: 'pending_revival',
-        };
-        writeQuotaInterruptedSession(record);
-
-        // Phase 1: Inline revival — spawn immediately if credentials rotated
-        let inlineRevived = false;
-        if (rotated && record.sessionId) {
-          inlineRevived = inlineRevive({
-            sessionId: record.sessionId,
-            agentId,
-            worktreePath,
-            quotaMessage: quotaCheck.quotaMessage,
-          });
-          if (inlineRevived) {
-            // Mark as revived so session-reviver doesn't double-spawn
-            record.status = 'revived';
-            writeQuotaInterruptedSession(record);
-            try { auditEvent('session_revival_triggered', { source: 'stop-continue-hook', reason: 'inline_revival', session_id: record.sessionId, agent_id: agentId }); } catch (err) {
-              console.error('[stop-continue-hook] Warning:', err.message);
-            }
-          }
-        } else if (!rotated) {
-          // Phase 4f: All keys exhausted — proxy returned raw 429.
-          // Don't attempt inline revival (would hit same wall).
-          // Session-reviver Mode 1 + Mode 3 will pick up when keys recover.
-          debugLog('Inline revival skipped: rotation failed (all keys exhausted), deferring to session-reviver');
-        }
-
-        debugLog('Decision: APPROVE (quota death - recorded for revival)', {
-          agentId,
-          rotated,
-          inlineRevived,
-          quotaMessage: quotaCheck.quotaMessage,
-        });
-
-        gentyrDebugLog('stop-hook', 'decision', { decision: 'approve', reason: 'quota_death', isTask: true, isPersistent: !!process.env.GENTYR_PERSISTENT_MONITOR });
-        console.log(JSON.stringify({ decision: 'approve' }));
-        process.exit(0);
-      }
-    }
 
     // Check if we're already in a continuation cycle
     const alreadyContinuing = input.stop_hook_active === true;

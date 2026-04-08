@@ -72,8 +72,6 @@ export interface SubTaskItem {
 export interface QuotaData {
   fiveHourPct: number;
   sevenDayPct: number;
-  activeAccounts: number;
-  rotationEvents24h: number;
 }
 
 export interface DeputyCtoSummary {
@@ -165,14 +163,6 @@ export interface AnsweredQuestion {
   createdAt: string;
 }
 
-export interface AccountInfo {
-  email: string;
-  status: string;
-  subscription: string;
-  fiveHourPct: number;
-  sevenDayPct: number;
-}
-
 export interface FeedbackPersona {
   name: string;
   consumptionModes: string;
@@ -193,7 +183,6 @@ export interface WorklogEntryDetail {
 }
 
 export interface Page2Data {
-  accounts: AccountInfo[];
   deputyCto: DeputyCtoDetail;
   personas: FeedbackPersona[];
   productManagerEnabled: boolean;

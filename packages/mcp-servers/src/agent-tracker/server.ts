@@ -3970,26 +3970,6 @@ function launchInteractiveMonitor(args: LaunchInteractiveMonitorArgs): object {
 
   // ── Build and launch ──
 
-  // Detect proxy state
-  const proxyPort = process.env.GENTYR_PROXY_PORT || '18080';
-  let proxyEnabled = true;
-  try {
-    const proxyDisabledPath = path.join(os.homedir(), '.claude', 'proxy-disabled.json');
-    if (fs.existsSync(proxyDisabledPath)) {
-      const state = JSON.parse(fs.readFileSync(proxyDisabledPath, 'utf8'));
-      if (state.disabled) proxyEnabled = false;
-    }
-  } catch { /* default to enabled */ }
-  if (proxyEnabled) {
-    try { execSync(`curl -sf http://localhost:${proxyPort}/health`, { timeout: 2000, stdio: 'pipe' }); } catch { proxyEnabled = false; }
-  }
-
-  const proxyEnv = proxyEnabled ? `
-export HTTPS_PROXY="http://localhost:${proxyPort}"
-export HTTP_PROXY="http://localhost:${proxyPort}"
-export NO_PROXY="localhost,127.0.0.1"
-export NODE_EXTRA_CA_CERTS="${path.join(os.homedir(), '.claude', 'proxy-certs', 'ca.pem')}"` : '';
-
   const gitWrappersDir = path.join(targetProjectDir, '.claude', 'hooks', 'git-wrappers');
   const pathPrepend = fs.existsSync(gitWrappersDir) ? `\nexport PATH="${gitWrappersDir}:$PATH"` : '';
 
@@ -4009,7 +3989,7 @@ cd ${JSON.stringify(targetProjectDir)}
 
 export GENTYR_INTERACTIVE_MONITOR="true"
 export CLAUDE_AGENT_ID="${resolvedAgentId || ''}"
-export CLAUDE_PROJECT_DIR=${JSON.stringify(targetProjectDir)}${ptEnv}${pathPrepend}${proxyEnv}
+export CLAUDE_PROJECT_DIR=${JSON.stringify(targetProjectDir)}${ptEnv}${pathPrepend}
 
 exec claude --resume ${sessionId}
 `;
@@ -4028,7 +4008,7 @@ cd ${JSON.stringify(targetProjectDir)}
 
 export GENTYR_INTERACTIVE_MONITOR="true"
 export CLAUDE_AGENT_ID="${newAgentId}"
-export CLAUDE_PROJECT_DIR=${JSON.stringify(targetProjectDir)}${ptEnv}${pathPrepend}${proxyEnv}
+export CLAUDE_PROJECT_DIR=${JSON.stringify(targetProjectDir)}${ptEnv}${pathPrepend}
 
 exec claude ${agentFlag} ${JSON.stringify(prompt)}
 `;
@@ -4055,7 +4035,6 @@ end tell`
     agentId: resolvedAgentId,
     title,
     killedPid,
-    proxyEnabled,
     message: resumed
       ? `Resumed session in Terminal.app for "${safeTitle}". Full conversation history is visible.`
       : `Fresh session launched in Terminal.app for "${safeTitle}".`,

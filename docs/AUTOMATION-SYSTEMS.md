@@ -2,9 +2,9 @@
 
 Automation is not a feature of GENTYR. It is the point.
 
-Every ten minutes a background timer wakes up. It checks quota across multiple accounts. It refreshes expiring tokens. It spawns agents for pending tasks. It adjusts its own frequency based on how much API budget remains. No human triggers any of this. No human needs to.
+Every ten minutes a background timer wakes up. It spawns agents for pending tasks. It adjusts its own frequency based on how much API budget remains. No human triggers any of this. No human needs to.
 
-The system has one goal: keep agents working at 90% of available capacity, indefinitely, without intervention. When quota runs low, it slows down. When quota resets, it speeds up.
+The system has one goal: keep agents working at capacity, indefinitely, without intervention.
 
 This document describes how.
 
@@ -12,18 +12,16 @@ This document describes how.
 
 ## Overview
 
-GENTYR manages API quota across multiple Anthropic accounts through coordinated hooks that handle credential rotation, dynamic throughput adjustment, and session recovery. The system operates at four layers:
+GENTYR coordinates background automation, dynamic throughput adjustment, and session recovery. The system operates at three layers:
 
-1. **Rotation proxy** - Transparent network-level credential swap (localhost:18080 MITM on api.anthropic.com)
-2. **In-session hooks** - Monitor quota and rotate credentials during active Claude Code sessions
-3. **Background automation** - Orchestrates task spawning and key syncing on a timer
-4. **Dynamic optimization** - Adjusts all automation cooldowns based on projected quota utilization
+1. **In-session hooks** - Monitor and protect sessions during active Claude Code sessions
+2. **Background automation** - Orchestrates task spawning on a timer
+3. **Dynamic optimization** - Adjusts all automation cooldowns based on projected quota utilization
 
 ```
 launchd timer (10 min) ──> hourly-automation.js ──> CTO Activity Gate
                                   |
                                   |── runUsageOptimizer()   -> adjust cooldown factor
-                                  |── syncKeys()            -> refresh tokens, maintain standby pool
                                   |── task runner           -> spawn pending TODO tasks
                                   |── feedback pipeline     -> user persona testing
                                   v
@@ -43,66 +41,8 @@ launchd timer (10 min) ──> hourly-automation.js ──> CTO Activity Gate
 | Event | Hooks | Purpose |
 |-------|-------|---------|
 | **SessionStart** | gentyr-sync | Framework version/config change detection; auto-sync settings.json, .mcp.json, hooks, agents |
-| **SessionStart** | api-key-watcher | Discover credentials, health-check, select optimal key |
 | **SessionStart** | credential-health-check | Vault mapping validation, OP token desync detection |
-| **PreToolUse(Bash)** | credential-sync-hook | Periodic credential sync (30-min throttle) |
 | **PreToolUse(Bash)** | playwright-cli-guard | Block CLI-based Playwright test invocations (hard deny); escape hatch: `PLAYWRIGHT_CLI_BYPASS=1` prefix |
-| **PostToolUse** | quota-monitor | Mid-session quota check (5-min throttle), rotate at 95% |
-
----
-
-## Credential Rotation
-
-### Multi-Account Architecture
-
-The system supports multiple Anthropic OAuth accounts. Each account can have multiple discovered keys (from environment, Keychain, and credentials file). Keys are tracked in a central rotation state file with lifecycle management.
-
-### Key Lifecycle
-
-```
-Discovered -> Active -> [High Usage 90%+] -> [Exhausted 100%] -> [Token Expires] -> Expired
-                                                                       |
-                                                              [OAuth Refresh]
-                                                                /            \
-                                                         Success          invalid_grant
-                                                            |                  |
-                                                         Active            Invalid -> [immediate] -> Pruned
-                                                                                           |
-                                                                               account_auth_failed event logged
-```
-
-### Key Selection Algorithm (`selectActiveKey`)
-
-1. Filter to keys with `status === 'active'`
-2. Exclude keys exhausted in any bucket (5h, 7d, or 7d_sonnet at 100%)
-3. For each candidate, compute `maxUsage = max(five_hour, seven_day, seven_day_sonnet)`
-4. Select key with lowest `maxUsage`
-5. Ties broken by `last_used_at` (least recently used)
-6. Only switch when current key hits >= 90% and an alternative exists below 90%
-
-### Token Refresh
-
-Multiple hooks can refresh tokens independently, all using `refreshExpiredToken()` from key-sync.js:
-
-- **quota-monitor** Step 4b: Proactive refresh of standby tokens approaching expiry
-- **syncKeys()**: Comprehensive refresh during periodic sync cycle
-
-The refresh function returns three possible outcomes:
-- `{ accessToken, refreshToken, expiresAt }` on success
-- `'invalid_grant'` sentinel on permanent failure (HTTP 400) - callers mark key invalid
-- `null` on transient failure - key stays in current status
-
-### Restartless Token Swap
-
-When the active key approaches expiry (within `EXPIRY_BUFFER_MS`):
-
-1. Find a standby key with valid status and sufficient expiry window
-2. Write standby token to macOS Keychain via `updateActiveCredentials()`
-3. Update `active_key_id` in rotation state
-4. Claude Code's built-in `SRA()` (fires 5 min before expiry) clears in-memory cache, re-reads Keychain, adopts new token
-5. No restart needed - seamless credential handoff
-
-This is safe because refreshing Account B's token does not revoke Account A's in-memory token.
 
 ---
 
@@ -173,10 +113,6 @@ hourly-automation.js
   v
 Session runs task
   |
-  |-- [PostToolUse] quota-monitor checks every 5 min
-  |       |-- usage >= 95%? -> rotate key, write to Keychain, continue: true
-  |       |-- token expiring? -> restartless swap via Keychain
-  |
   v
 Session ends
 ```
@@ -185,14 +121,9 @@ Session ends
 
 ```
 User starts claude
-  |-- [SessionStart] api-key-watcher discovers keys, selects optimal
+  |-- [SessionStart] credential-health-check validates vault mappings
   |
 User works
-  |-- [PreToolUse:Bash] credential-sync-hook (30-min throttle)
-  |-- [PostToolUse] quota-monitor (5-min throttle)
-  |       |-- usage >= 95%? -> rotate key, write to Keychain, continue (continue: true)
-  |       |       |-- credentials adopted at token expiry (SRA) or 401 (r6T)
-  |       |-- token expiring? -> restartless Keychain swap
   |
 User or system stops session
 ```
@@ -201,62 +132,6 @@ User or system stops session
 
 - `MAX_CONCURRENT_AGENTS = 5` - total running agents across all types
 - `MAX_TASKS_PER_CYCLE = 3` - new task spawns per automation cycle
-
----
-
-## Rotation Proxy
-
-Local MITM proxy (`scripts/rotation-proxy.js`) that handles immediate credential swap at the network layer.
-
-```
-Claude Code ──HTTPS_PROXY──> localhost:18080 ──TLS──> api.anthropic.com
-                                    |
-                            reads api-key-rotation.json
-                                    |
-                            on 429: rotate key, retry
-```
-
-**Intercepts** (TLS MITM + Authorization header swap):
-- `api.anthropic.com` — main API
-- `mcp-proxy.anthropic.com` — MCP proxy endpoint
-
-**Passes through transparently** (CONNECT tunnel, no MITM):
-- `platform.claude.com` — OAuth refresh
-- Everything else
-
-**Lifecycle**: KeepAlive launchd service (`com.local.gentyr-rotation-proxy`). Provisioned by `setup-automation-service.sh`. Starts before the automation service. Proxy env vars (`HTTPS_PROXY/HTTP_PROXY/NO_PROXY`) injected into all spawned agent environments.
-
-**Relationship to hook-based rotation**: The proxy handles the actual HTTP-level token swap. Quota-monitor still detects usage thresholds and writes new `active_key_id` to rotation state. Key-sync still refreshes OAuth tokens and writes to Keychain. The proxy reads rotation state on every request, so token swap is immediate — no waiting for SRA or r6T.
-
----
-
-## Quota Monitor (PostToolUse)
-
-Runs after every tool call, throttled to 5-minute intervals.
-
-### Steps
-
-1. **Throttle check**: Skip if last check < 5 min ago
-2. **Anti-loop check**: Skip if rotated < 10 min ago
-3. **Health check**: Query Anthropic usage API for active key
-4. **Step 4a0 - Nearly depleted event**: If max usage >= 95% and not yet exhausted, fires `account_nearly_depleted` rotation log event (5-hour per-key cooldown prevents re-firing on every check cycle)
-5. **Step 4b - Proactive refresh**: Refresh expired AND approaching-expiry standby tokens
-6. **Step 4c - Pre-expiry swap**: If active key near expiry, write standby to Keychain (no restart)
-7. **Rotation check**: If max usage >= 95%, select better key and rotate
-8. **Seamless session handling**: write to Keychain, continue with `continue: true` for all sessions, credentials adopted at SRA/r6T
-9. **Post-rotation audit**: Log rotation event to `rotation-audit.log` for health tracking
-10. **Quota refresh detection**: If previously exhausted key's usage drops below 100%, marks status `active` and fires `account_quota_refreshed` event (also checked in `api-key-watcher.js` at SessionStart)
-
-### Key Thresholds
-
-```
-PROACTIVE_THRESHOLD    = 95%     (trigger rotation)
-HIGH_USAGE_THRESHOLD   = 90%     (from key-sync.js)
-EXHAUSTED_THRESHOLD    = 100%    (from key-sync.js)
-EXPIRY_BUFFER_MS       = 600,000 (10 min - token pre-expiry window)
-CHECK_INTERVAL_MS      = 300,000 (5 min - throttle between checks)
-ROTATION_COOLDOWN_MS   = 600,000 (10 min - anti-loop after rotation)
-```
 
 ---
 
@@ -299,10 +174,9 @@ All automation is gated behind a recency check on the deputy-CTO briefing. If th
 ### Execution Order
 
 1. **Usage Optimizer** - Collect snapshot, adjust factor
-2. **Key Sync** - Discover credentials, refresh tokens, prune dead keys
-3. **Urgent Task Dispatcher** - Dispatch urgent priority tasks immediately (bypasses age filter)
-4. **Task Runner** - Query todo.db for pending normal tasks (1-hour age filter), spawn agents up to concurrency limit
-5. **Feedback Pipeline** - Trigger user persona testing on staging changes
+2. **Urgent Task Dispatcher** - Dispatch urgent priority tasks immediately (bypasses age filter)
+3. **Task Runner** - Query todo.db for pending normal tasks (1-hour age filter), spawn agents up to concurrency limit
+4. **Feedback Pipeline** - Trigger user persona testing on staging changes
 
 ### Task Orchestration
 
@@ -329,46 +203,6 @@ All automation is gated behind a recency check on the deputy-CTO briefing. If th
 ### Credential Cache
 
 1Password credentials are lazily resolved on first agent spawn. Skipped in headless mode without `OP_SERVICE_ACCOUNT_TOKEN` to avoid macOS permission prompts. Results cached in memory only.
-
----
-
-## Key Sync Module (key-sync.js)
-
-Shared library used by api-key-watcher, hourly-automation, credential-sync-hook, and quota-monitor.
-
-### `syncKeys()` Process
-
-1. Discover credentials from all sources (env, Keychain, credentials file)
-2. Sync into rotation state (add new, update existing)
-3. Refresh expired tokens AND proactively refresh non-active tokens approaching expiry
-4. Resolve account profiles for keys with `account_uuid === null` — calls `fetchAccountProfile()` for each active/exhausted key missing a UUID; non-fatal, retried on next sync
-5. Set initial `active_key_id` if not set
-6. Pre-expiry restartless swap if active key near expiry
-7. Prune dead keys (`status: 'invalid'`, immediately — no age threshold); fires `account_auth_failed` rotation log event for each pruned key before removal; event is preserved in rotation_log even after the key entry is deleted; never prunes the active key
-8. Write state and return `{ keysAdded, keysUpdated, tokensRefreshed }`
-
-### Credential Sources (priority order)
-
-1. `CLAUDE_CODE_OAUTH_TOKEN` environment variable
-2. macOS Keychain `Claude Code-credentials` entry
-3. `~/.claude/.credentials.json` file
-
-All sources are read (not short-circuited) and merged into rotation state.
-
-### Rotation Log Event Types
-
-All events are appended to `rotation_log` in `~/.claude/api-key-rotation.json`. The CTO dashboard's ACCOUNT OVERVIEW section shows a curated subset (last 24h, max 20 entries, newest first) filtered by the `ALLOWED_EVENTS` whitelist in `account-overview-reader.ts`:
-
-| Event | Source | Color | Meaning |
-|-------|--------|-------|---------|
-| `key_added` | api-key-watcher, syncKeys | green | New account registered (token-refresh re-additions filtered) |
-| `key_switched` | quota-monitor, api-key-watcher | cyan | Active account changed by rotation |
-| `key_exhausted` | api-key-watcher | red | Account reached 100% in any quota bucket |
-| `account_nearly_depleted` | quota-monitor | yellow | Active account hit 95%; 5-hour per-key cooldown |
-| `account_quota_refreshed` | quota-monitor, api-key-watcher | green | Previously exhausted account dropped below 100% |
-| `account_auth_failed` | pruneDeadKeys (key-sync) | red | Account lost last key to invalid_grant; event preserved after key deletion |
-
-Other event types (`token_refreshed`, `health_check`, etc.) are logged for debugging but filtered from the dashboard display.
 
 ---
 
@@ -497,10 +331,5 @@ The SQL fix in `pre-commit-review.js` (`AND question_id IS NOT NULL`) ensures th
 
 | File | Scope | Written By | Read By |
 |------|-------|-----------|---------|
-| `~/.claude/api-key-rotation.json` | User | key-sync, quota-monitor, api-key-watcher | All rotation hooks, rotation-proxy |
-| `~/.claude/.credentials.json` | User | Claude Code | key-sync |
-| `~/.claude/rotation-proxy.log` | User | rotation-proxy | monitor-token-swap (--audit) |
 | `.claude/state/automation-config.json` | Project | usage-optimizer | config-reader (all hooks) |
 | `.claude/state/usage-snapshots.json` | Project | usage-optimizer | usage-optimizer, cto-dashboard |
-| `.claude/state/quota-monitor-state.json` | Project | quota-monitor | quota-monitor |
-| macOS Keychain `Claude Code-credentials` | System | key-sync, quota-monitor | Claude Code runtime |

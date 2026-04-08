@@ -48,19 +48,6 @@ Root-owned critical hook files prevent agent modification. Tamper detection uses
 
 > Full details: [Protection Security Model](docs/CLAUDE-REFERENCE.md#protection-security-model)
 
-### Remove an Account from Rotation
-
-```bash
-npx gentyr remove-account <email>           # Remove account (must not be the only account)
-npx gentyr remove-account <email> --force   # Remove even if it is the last account
-```
-
-Tombstones all keys for the given email address. If the active key belongs to the removed account, switches to the next available account first (seamless — no restart required). With `--force`, allows removal when no replacement exists, setting `active_key_id` to null.
-
-- Tombstoned keys are auto-cleaned after 24h by the existing `pruneDeadKeys` TTL mechanism.
-- Fires `key_switched` event (if active account changed) and `account_removed` event per tombstoned key.
-- Interactive wrapper: `/remove-account` slash command — prompts for account selection and confirmation before executing.
-
 ### Uninstall
 
 ```bash
@@ -381,7 +368,7 @@ New tasks created by non-privileged agents enter `pending_review` status and are
 
 **Crash recovery**: `hourly-automation.js` auto-approves stale `pending_review` tasks older than 10 minutes (gate agent timed out or crashed).
 
-**Race condition prevention**: `urgent-task-spawner.js` (Universal Task Spawner v2.0.0) checks quota-zone gating on the input side — urgent tasks always spawn, normal tasks are gated by API quota utilization (green/yellow/red zones); `task-gate-spawner.js` checks `tool_response.status === 'pending_review'` (output-side). No overlap.
+**Race condition prevention**: `urgent-task-spawner.js` (Universal Task Spawner v2.0.0) checks concurrency limits on the input side; `task-gate-spawner.js` checks `tool_response.status === 'pending_review'` (output-side). No overlap.
 
 ## Feature Stability Registry
 
@@ -487,9 +474,7 @@ Traceability chain from user prompts through tasks, specs, and implementations. 
 
 ## Automatic Session Recovery
 
-GENTYR automatically detects and recovers sessions interrupted by API quota limits, unexpected process death, or full account exhaustion. Three revival modes: (1) quota-interrupted sessions, (2) dead session recovery, (3) paused sessions. Dead Agent Recovery Hook runs at SessionStart; Session Reviver runs every 10 minutes from hourly automation.
-
-**Inline revival** (Phase 1): When quota rotation succeeds inside the stop hook, `stop-continue-hook.js` spawns `claude --resume` immediately — reducing revival latency from 5-15 minutes to 0-2 seconds. A safety-net record is written to `quota-interrupted-sessions.json` first so session-reviver picks up if inline revival fails.
+GENTYR automatically detects and recovers sessions interrupted by unexpected process death. Dead Agent Recovery Hook runs at SessionStart; Session Reviver runs every 10 minutes from hourly automation.
 
 **Revival daemon** (`scripts/revival-daemon.js`): Persistent `fs.watch()` + polling daemon for sub-second crash detection. Integrated as a launchd/systemd service via `setup-automation-service.sh`.
 
@@ -615,7 +600,7 @@ Hooks that need the AI to act on their output must include both:
 
 ### SessionStart Hooks — No stderr
 
-`SessionStart` hooks must **never** write to `stderr` under any conditions. Claude Code treats any stderr output from a `SessionStart` hook as an error, displaying "SessionStart:startup hook error" in the UI even when the hook exits cleanly with valid JSON on stdout. This applies to all 10 `SessionStart` hooks: `gentyr-sync.js`, `gentyr-splash.js`, `todo-maintenance.js`, `credential-health-check.js`, `api-key-watcher.js`, `plan-briefing.js`, `playwright-health-check.js`, `dead-agent-recovery.js`, `crash-loop-resume.js`, and `session-briefing.js`.
+`SessionStart` hooks must **never** write to `stderr` under any conditions. Claude Code treats any stderr output from a `SessionStart` hook as an error, displaying "SessionStart:startup hook error" in the UI even when the hook exits cleanly with valid JSON on stdout. This applies to all 9 `SessionStart` hooks: `gentyr-sync.js`, `gentyr-splash.js`, `todo-maintenance.js`, `credential-health-check.js`, `plan-briefing.js`, `playwright-health-check.js`, `dead-agent-recovery.js`, `crash-loop-resume.js`, and `session-briefing.js`.
 
 Rules:
 - **Never** call `process.stderr.write()` or `console.error()` in a `SessionStart` hook or any library it imports.
@@ -732,48 +717,6 @@ Sole authority for demo lifecycle work. Handles prerequisite registration, scena
 **Rules:** Only modifies `.demo.ts` files and demo configuration. Does NOT commit (project-manager handles git). Other agents (`code-writer`, `test-writer`, `feedback-agent`) are explicitly forbidden from modifying `.demo.ts` files. When any agent encounters demo-related work, it MUST create a `DEMO-MANAGER` section task.
 
 **Failure-triggered automation:** A PostToolUse hook on `check_demo_result`, `check_demo_batch_result`, and `run_demo` detects failures, deduplicates against in-flight repairs, and spawns demo-manager agents in isolated worktrees. Repair prompts are enriched with prerequisite context (global, persona, and scenario-scoped prerequisites queried from `user-feedback.db`) so agents diagnose prerequisite failures before modifying `.demo.ts` files. The `run_demo` hook handles immediate failures (e.g., prerequisite failure before test execution begins), with title and test file fallback lookup from `user-feedback.db` when the tool response lacks them.
-
-## Rotation Proxy
-
-Local MITM proxy on `localhost:18080` for transparent credential rotation. Intercepts `api.anthropic.com` (TLS MITM + header swap); `mcp-proxy.anthropic.com` and everything else passes through as a transparent CONNECT tunnel (MCP proxy uses session-bound OAuth tokens that must not be swapped). Within MITM'd requests, only paths in `SWAP_PATH_PREFIXES` (`/v1/messages`, `/v1/organizations`, `/api/event_logging/`, `/api/eval/`, `/api/web/`) get the Authorization header swapped — OAuth and session-health paths always pass through unchanged (regardless of token status) to prevent token revocation. Handles 429 retry with automatic key rotation. 401 rotation is debounced (5s) per key to prevent concurrent connections from triggering redundant rotations. Runs as a launchd KeepAlive service. Enable/disable via `npx gentyr proxy enable|disable`.
-
-**`/toggle-auth-proxy` slash command**: CTO-only interactive toggle for the rotation proxy. Reads current proxy state, shows the intended action (enable or disable), requires explicit `confirm` input before proceeding, then runs `npx gentyr proxy enable|disable` and confirms the final state. Prevents agents from disabling the proxy unilaterally.
-
-> Full details: [Rotation Proxy](docs/CLAUDE-REFERENCE.md#rotation-proxy)
-
-### Proxy Audit Trail
-
-Structured JSON log at `~/.claude/rotation-proxy.log`. 24h retention (auto-cleaned hourly). 10MB safety cap.
-
-**Key events for debugging:**
-| Event | When | Key Fields |
-|-------|------|------------|
-| `tunnel_passthrough` | CONNECT for non-MITM host | `host`, `port` |
-| `tunnel_established` | Upstream TCP connected | `host`, `port`, `head_bytes` |
-| `tunnel_closed` | Tunnel ended | `host`, `duration_ms`, `bytes_from_server`, `bytes_from_client`, `closed_by` |
-| `tunnel_error` | Upstream connect failed | `host`, `error`, `duration_ms` |
-| `tunnel_client_error` | Client socket error | `host`, `error`, `duration_ms` |
-| `mitm_intercept` | CONNECT for MITM host | `host`, `port` |
-| `request_intercepted` | MITM request forwarded | `host`, `method`, `path`, `active_key_id`, `key_status`, `swap_reason` |
-| `response_received` | MITM response status | `host`, `status`, `is_sse`, `active_key_id` |
-| `rotating_on_429` | Key exhausted | `host`, `exhausted_key_id`, `retry` |
-| `rotating_on_401` | Auth failure rotation (after same-key retries exhausted) | `host`, `failed_key_id`, `retry`, `same_key_retries_exhausted` |
-| `rotation_debounced` | Second 401 for same key within 5s — rotation skipped, 401 passed through | `host`, `method`, `path`, `key_id` |
-| `transient_401_retry` | Same-key backoff retry before rotating — key not yet marked as failing | `host`, `method`, `path`, `key_id`, `same_key_retry`, `backoff_ms` |
-| `transient_401_recovered` | Key that was `auth_failing` got a 200 — status restored to `active` | `key_id` |
-| `gateway_error_retry` | 502/503/504 from Cloudflare/upstream — retrying same key with backoff | `host`, `method`, `path`, `status`, `key_id`, `gateway_retry`, `backoff_ms` |
-| `gateway_error_exhausted` | Gateway retries exhausted — forwarding error to client | `host`, `method`, `path`, `status`, `key_id`, `gateway_retries` |
-| `session_path_passthrough` | Path not in swap allowlist (OAuth, session-health, etc.) | `host`, `method`, `path`, `incoming_key_id`, `active_key_id` |
-| `tombstone_token_swap` | Incoming token is tombstoned — swapping to active key | `host`, `method`, `path`, `incoming_key_id`, `active_key_id` |
-| `merged_token_swap` | Incoming token is merged/deduped — swapping to active key | `host`, `method`, `path`, `incoming_key_id`, `merged_into`, `active_key_id` |
-| `dead_active_key_passthrough` | Active key is dead and incoming token differs — passed through unchanged | `host`, `method`, `path`, `incoming_key_id`, `active_key_id`, `active_status` |
-| `dead_active_key_self_hit` | Active key is dead and incoming token IS the active key — let 401 rotation handle | `host`, `method`, `path`, `incoming_key_id`, `active_key_id`, `active_status` |
-
-**Debug workflow:**
-1. `grep 'tunnel_error\|tunnel_client_error' ~/.claude/rotation-proxy.log` — find broken tunnels
-2. `grep 'mcp-proxy' ~/.claude/rotation-proxy.log | tail -20` — check MCP proxy connections
-3. `grep 'rotating_on_' ~/.claude/rotation-proxy.log` — find rotation cascades
-4. `grep 'tunnel_closed.*mcp-proxy' ~/.claude/rotation-proxy.log` — check tunnel lifecycle (duration, bytes)
 
 ## Chrome Browser Automation
 

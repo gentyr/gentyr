@@ -1863,11 +1863,6 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
             phrase: 'APPROVE MCP',
             description: 'MCP server definitions',
           },
-          '.claude/api-key-rotation.json': {
-            protection: 'approval-only',
-            phrase: 'APPROVE ROTATION',
-            description: 'API key rotation state',
-          },
         },
         settings: {
           codeLength: 6,
@@ -2167,7 +2162,7 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
 
       const result = await runHook({
         tool_name: 'Edit',
-        tool_input: { file_path: `${tempDir.path}/.claude/api-key-rotation.json` },
+        tool_input: { file_path: `${tempDir.path}/.mcp.json` },
         cwd: tempDir.path,
       }, { env: { CLAUDE_PROJECT_DIR: tempDir.path } });
 
@@ -2178,8 +2173,8 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
       assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
       assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('Approval Required'),
         'Edit to approvable file should show Approval Required');
-      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('APPROVE ROTATION'),
-        'Edit to api-key-rotation.json should show APPROVE ROTATION phrase');
+      assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('APPROVE MCP'),
+        'Edit to .mcp.json should show APPROVE MCP phrase');
     });
 
     // --- Grep/Glob approval path ---

@@ -50,7 +50,6 @@ const BLOCKED_BASENAMES = new Set([
  */
 const BLOCKED_PATH_SUFFIXES = [
   '.claude/protection-key',
-  '.claude/api-key-rotation.json',
   '.claude/bypass-approval-token.json',
   '.claude/commit-approval-token.json',
   '.claude/credential-provider.json',

@@ -72,7 +72,6 @@ const PLANS_DB = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
 const AGENT_TRACKER_HISTORY = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
 const AUTONOMOUS_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
-const KEY_ROTATION_STATE_PATH = path.join(os.homedir(), '.claude', 'api-key-rotation.json');
 const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/api/oauth/usage';
 const ANTHROPIC_BETA_HEADER = 'oauth-2025-04-20';
@@ -520,83 +519,6 @@ function progressBar(percent, width = 10) {
   return '\u2588'.repeat(filled) + '\u2591'.repeat(empty);
 }
 
-/**
- * Get aggregate quota from api-key-rotation.json (active keys only)
- * Groups keys by account_uuid to deduplicate same-account tokens.
- * Returns { activeCount, fiveHourPct, sevenDayPct, accounts } or null
- * Percentages are of total capacity (average across unique accounts)
- */
-function getAggregateQuota() {
-  if (!fs.existsSync(KEY_ROTATION_STATE_PATH)) {
-    return null;
-  }
-
-  try {
-    const state = JSON.parse(fs.readFileSync(KEY_ROTATION_STATE_PATH, 'utf8'));
-    if (!state || state.version !== 1 || !state.keys) {
-      return null;
-    }
-
-    // Group by account_uuid to deduplicate same-account tokens
-    const accountMap = new Map();
-    const activeKey = state.active_key_id ? state.keys[state.active_key_id] : null;
-    const activeAccountUuid = activeKey?.account_uuid || null;
-
-    for (const [keyId, keyData] of Object.entries(state.keys)) {
-      if ((keyData.status === 'active' || keyData.status === 'exhausted') && keyData.last_usage) {
-        const dedupeKey = keyData.account_uuid || `fp:${keyData.last_usage.seven_day}:${keyData.last_usage.seven_day_sonnet}`;
-        const isActiveKey = keyId === state.active_key_id;
-        if (!accountMap.has(dedupeKey)) {
-          accountMap.set(dedupeKey, {
-            email: keyData.account_email || null,
-            fiveHour: keyData.last_usage.five_hour || 0,
-            sevenDay: keyData.last_usage.seven_day || 0,
-            sevenDaySonnet: keyData.last_usage.seven_day_sonnet || 0,
-            isActive: isActiveKey || (activeAccountUuid && keyData.account_uuid === activeAccountUuid),
-          });
-        } else if (isActiveKey) {
-          accountMap.get(dedupeKey).isActive = true;
-        }
-      }
-    }
-
-    // Cross-match fingerprint-based entries (null-UUID keys) against UUID-bearing entries.
-    // If a null-UUID key has the same seven_day + seven_day_sonnet as a UUID-bearing key,
-    // it's the same account — merge it to prevent "unknown" in the display.
-    const fpKeys = [...accountMap.keys()].filter(k => k.startsWith('fp:'));
-    for (const fpKey of fpKeys) {
-      const fpEntry = accountMap.get(fpKey);
-      for (const [uuidKey, uuidEntry] of accountMap) {
-        if (uuidKey.startsWith('fp:') || !uuidEntry.email) continue;
-        if (uuidEntry.sevenDay === fpEntry.sevenDay && uuidEntry.sevenDaySonnet === fpEntry.sevenDaySonnet) {
-          // Same account — take the higher fiveHour value and transfer isActive
-          uuidEntry.fiveHour = Math.max(uuidEntry.fiveHour, fpEntry.fiveHour);
-          if (fpEntry.isActive) uuidEntry.isActive = true;
-          accountMap.delete(fpKey);
-          break;
-        }
-      }
-    }
-
-    if (accountMap.size === 0) {
-      return null;
-    }
-
-    const accounts = Array.from(accountMap.values());
-    const fiveHourSum = accounts.reduce((sum, a) => sum + a.fiveHour, 0);
-    const sevenDaySum = accounts.reduce((sum, a) => sum + a.sevenDay, 0);
-
-    return {
-      activeCount: accounts.length,
-      fiveHourPct: Math.round(fiveHourSum / accounts.length),
-      sevenDayPct: Math.round(sevenDaySum / accounts.length),
-      accounts,
-    };
-  } catch (err) {
-    console.error('[cto-notification-hook] Warning:', err.message);
-    return null;
-  }
-}
 
 /**
  * Fetch quota status from Anthropic API
@@ -689,7 +611,6 @@ async function main() {
   // Gather all metrics (quota is async, session metrics use incremental cache)
   const gitContext = getGitContext();
   const sessionMetricsCached = getSessionMetricsCached();
-  const aggregateQuota = getAggregateQuota();
   const planSummary = getPlanSummary();
   const [quota, deputyCto, unreadReports, autonomousMode, todoCounts] = await Promise.all([
     getQuotaStatus(),
@@ -728,13 +649,7 @@ async function main() {
 
   // Build quota status part (compact for critical mode)
   let quotaPart = '';
-  if (aggregateQuota && aggregateQuota.activeCount >= 1) {
-    // Compact aggregate display for critical mode (% of total capacity)
-    const activeAccount = aggregateQuota.accounts?.find(a => a.isActive);
-    const activeLabel = activeAccount?.email || 'unknown';
-    quotaPart = `Quota (${aggregateQuota.activeCount} account${aggregateQuota.activeCount > 1 ? 's' : ''}): 5h ${aggregateQuota.fiveHourPct}% 7d ${aggregateQuota.sevenDayPct}% [${activeLabel}]`;
-  } else if (!quota.error && quota.five_hour && quota.seven_day) {
-    // Single key display
+  if (!quota.error && quota.five_hour && quota.seven_day) {
     const fiveHour = `5h: ${Math.round(quota.five_hour.utilization)}%`;
     const sevenDay = `7d: ${Math.round(quota.seven_day.utilization)}%`;
     quotaPart = `Quota ${fiveHour} ${sevenDay}`;
@@ -760,24 +675,8 @@ async function main() {
       lines.push(gitLabel);
     }
 
-    // Line 1: Quota status - use aggregate if available, otherwise single-key
-    if (aggregateQuota && aggregateQuota.activeCount >= 1) {
-      // Aggregate display (% of total capacity) — works for 1 or more accounts
-      const fhBar = progressBar(aggregateQuota.fiveHourPct, 8);
-      const sdBar = progressBar(aggregateQuota.sevenDayPct, 8);
-      lines.push(`Quota (${aggregateQuota.activeCount} account${aggregateQuota.activeCount > 1 ? 's' : ''}): 5h ${fhBar} ${aggregateQuota.fiveHourPct}% | 7d ${sdBar} ${aggregateQuota.sevenDayPct}%`);
-
-      // Accounts line with emails and per-account 5h usage
-      if (aggregateQuota.accounts) {
-        const accountParts = aggregateQuota.accounts.map(a => {
-          const label = a.email || 'unknown';
-          const display = a.isActive ? `[${label}]` : label;
-          return `${display} (${Math.round(a.fiveHour)}% 5h)`;
-        });
-        lines.push(`Accounts: ${accountParts.join(' | ')}`);
-      }
-    } else if (quota.five_hour && quota.seven_day) {
-      // Single-key display with reset times
+    // Line 1: Quota status
+    if (quota.five_hour && quota.seven_day) {
       const fh = quota.five_hour;
       const sd = quota.seven_day;
       lines.push(`Quota: 5-hour ${progressBar(fh.utilization, 8)} ${Math.round(fh.utilization)}% (resets ${formatHours(fh.resets_in_hours)}) | 7-day ${progressBar(sd.utilization, 8)} ${Math.round(sd.utilization)}% (resets ${formatHours(sd.resets_in_hours)})`);

@@ -518,9 +518,9 @@ describe('Automated Instances - Usage Projection', () => {
 });
 
 describe('Automated Instances - projected_at_reset fraction-to-percentage conversion', () => {
-  // automated-instances.ts stores projected_at_reset as a fraction (0.0 – 1.5+)
-  // written by usage-optimizer.js. The getAutomatedInstances() function converts
-  // it to a display percentage by multiplying by 100 and rounding.
+  // automated-instances.ts stores projected_at_reset as a fraction (0.0 – 1.5+).
+  // The getAutomatedInstances() function converts it to a display percentage
+  // by multiplying by 100 and rounding.
 
   const convertProjection = (raw: number | null | undefined): number | null => {
     if (raw == null) return null;
@@ -540,8 +540,7 @@ describe('Automated Instances - projected_at_reset fraction-to-percentage conver
   });
 
   it('should convert the MAX_PROJECTION cap value 1.5 to integer 150', () => {
-    // When usage-optimizer caps projections at 1.5 and uses that as
-    // projected_at_reset, the display should show 150%.
+    // When projections are capped at 1.5, the display should show 150%.
     expect(convertProjection(1.5)).toBe(150);
   });
 
@@ -561,7 +560,7 @@ describe('Automated Instances - projected_at_reset fraction-to-percentage conver
   });
 
   it('should convert a value produced by the optimizer rounding convention', () => {
-    // usage-optimizer writes: Math.round(projectedAtReset * 1000) / 1000
+    // Values are stored with 3 decimal places: Math.round(projectedAtReset * 1000) / 1000
     // For a raw projection of 0.87654: stored as 0.877
     const optimizerOutput = Math.round(0.87654 * 1000) / 1000; // 0.877
     expect(convertProjection(optimizerOutput)).toBe(88); // Math.round(0.877 * 100) = 88

@@ -27,11 +27,6 @@
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-sync-hook.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/playwright-cli-guard.js",
             "timeout": 5
           },
@@ -219,11 +214,6 @@
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/api-key-watcher.js",
-            "timeout": 10
-          },
-          {
-            "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-briefing.js",
             "timeout": 10
           },
@@ -291,11 +281,6 @@
       {
         "matcher": "",
         "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/quota-monitor.js",
-            "timeout": 10
-          },
           {
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/signal-reader.js",

@@ -24,7 +24,6 @@ import { getTestingData, getCodecovData } from './utils/testing-reader.js';
 import { getDeploymentsData } from './utils/deployments-reader.js';
 import { getInfraData } from './utils/infra-reader.js';
 import { getLoggingData } from './utils/logging-reader.js';
-import { getAccountOverviewData } from './utils/account-overview-reader.js';
 import { getWorktreeData } from './utils/worktree-reader.js';
 import { getProductManagerData } from './utils/product-manager-reader.js';
 import { getWorklogData } from './utils/worklog-reader.js';
@@ -36,7 +35,7 @@ import { getPersistentTaskMonitorData } from './utils/persistent-task-monitor-re
 import {
   getMockDashboardData, getMockTimelineEvents, getMockTrajectory,
   getMockAutomatedInstances, getMockDeputyCto, getMockTesting,
-  getMockDeployments, getMockInfra, getMockLogging, getMockAccountOverview,
+  getMockDeployments, getMockInfra, getMockLogging,
   getMockWorktrees, getMockProductManager, getMockWorklog,
   getMockPlanData, getMockPlanProgressData, getMockPlanTimelineData, getMockPlanAuditData,
   getMockPlanSessionData, getMockSessionQueueData, getMockPersistentTaskData,
@@ -55,7 +54,6 @@ import {
   DeploymentsSection,
   InfraSection,
   LoggingSection,
-  AccountOverviewSection,
   WorktreeSection,
   ProductManagerSection,
   WorklogSection,
@@ -77,7 +75,7 @@ import { formatNumber, calculateCacheRate } from './utils/formatters.js';
 
 // Canonical source: packages/mcp-servers/src/show/types.ts
 const SECTION_IDS = [
-  'quota', 'accounts', 'deputy-cto', 'usage', 'automations',
+  'quota', 'deputy-cto', 'usage', 'automations',
   'testing', 'deployments', 'worktrees', 'infra', 'logging',
   'timeline', 'tasks', 'product-market-fit', 'worklog',
   'plans', 'plan-progress', 'plan-timeline', 'plan-audit', 'plan-sessions',
@@ -159,25 +157,17 @@ async function renderSection(sectionId: SectionId, mock: boolean, hours: number,
   switch (sectionId) {
     case 'quota': {
       const data = mock ? getMockDashboardData() : await getDashboardData(hours);
-      const { verified_quota } = data;
-      const { aggregate } = verified_quota;
-      const activeAccounts = verified_quota.healthy_count;
-      const fiveHourPct = aggregate.five_hour?.utilization ?? 0;
-      const sevenDayPct = aggregate.seven_day?.utilization ?? 0;
-      const title = `QUOTA & CAPACITY (${activeAccounts} account${activeAccounts !== 1 ? 's' : ''})`;
+      const { quota } = data;
+      const fiveHourPct = quota.five_hour?.utilization ?? 0;
+      const sevenDayPct = quota.seven_day?.utilization ?? 0;
       return (
-        <Section title={title}>
+        <Section title="QUOTA & CAPACITY">
           <Box flexDirection="column">
             <QuotaBar label="5-hour" percentage={fiveHourPct} width={16} />
             <QuotaBar label="7-day" percentage={sevenDayPct} width={16} />
           </Box>
         </Section>
       );
-    }
-
-    case 'accounts': {
-      const accountOverview = mock ? getMockAccountOverview() : getAccountOverviewData();
-      return <AccountOverviewSection data={accountOverview} />;
     }
 
     case 'deputy-cto': {
@@ -187,13 +177,11 @@ async function renderSection(sectionId: SectionId, mock: boolean, hours: number,
 
     case 'usage': {
       const trajectory = mock ? getMockTrajectory() : getUsageTrajectory();
-      const data = mock ? getMockDashboardData() : await getDashboardData(hours);
-      const accountOverview = mock ? getMockAccountOverview() : getAccountOverviewData();
       return (
         <Box flexDirection="column">
           <UsageTrends trajectory={trajectory} />
           <Box marginTop={1}>
-            <UsageTrajectory trajectory={trajectory} verifiedQuota={data.verified_quota} accountOverview={accountOverview} />
+            <UsageTrajectory trajectory={trajectory} />
           </Box>
         </Box>
       );
@@ -383,7 +371,7 @@ async function main(): Promise<void> {
     const needPage2 = !page || page === 2;
     const needPage3 = !page || page === 3;
 
-    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, accountOverview, worktrees, productManager, worklog, planData, sessionQueueData, persistentTaskMonitorData;
+    let data, timelineEvents, trajectory, automatedInstances, deputyCto, testing, deployments, infra, logging, worktrees, productManager, worklog, planData, sessionQueueData, persistentTaskMonitorData;
 
     // Empty defaults for sections not needed on the current page
     const emptyDeployments = { hasData: false, render: { services: [], recentDeploys: [] }, vercel: { projects: [], recentDeploys: [] }, pipeline: { previewStatus: null, stagingStatus: null, lastPromotionAt: null, lastPreviewCheck: null, lastStagingCheck: null, localDevCount: 0, stagingFreezeActive: false }, combined: [], byEnvironment: { preview: [], staging: [], production: [] }, stats: { totalDeploys24h: 0, successCount24h: 0, failedCount24h: 0 } } as const;
@@ -401,7 +389,6 @@ async function main(): Promise<void> {
       deployments = needPage2 ? getMockDeployments() : emptyDeployments as any;
       infra = needPage2 ? getMockInfra() : emptyInfra as any;
       logging = needPage2 ? getMockLogging() : emptyLogging as any;
-      accountOverview = needPage1 ? getMockAccountOverview() : { hasData: false } as any;
       worktrees = needPage2 ? getMockWorktrees() : { hasData: false } as any;
       productManager = needPage3 ? getMockProductManager() : { hasData: false } as any;
       worklog = needPage3 ? getMockWorklog() : { hasData: false } as any;
@@ -416,7 +403,6 @@ async function main(): Promise<void> {
       trajectory = needPage1 ? getUsageTrajectory() : { hasData: false } as any;
       automatedInstances = needPage1 ? getAutomatedInstances() : { hasData: false } as any;
       deputyCto = needPage1 ? getDeputyCtoData() : { hasData: false } as any;
-      accountOverview = needPage1 ? getAccountOverviewData() : { hasData: false } as any;
       planData = needPage1 ? getPlanData() : { hasData: false } as any;
       sessionQueueData = needPage1 ? getSessionQueueData() : { hasData: false } as any;
       persistentTaskMonitorData = needPage1 ? getPersistentTaskMonitorData() : { hasData: false } as any;
@@ -480,7 +466,6 @@ async function main(): Promise<void> {
         deployments={deployments}
         infra={infra}
         logging={logging}
-        accountOverview={accountOverview}
         worktrees={worktrees}
         productManager={productManager}
         worklog={worklog}

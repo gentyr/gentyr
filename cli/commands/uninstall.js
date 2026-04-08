@@ -43,30 +43,8 @@ export default async function uninstall() {
   console.log(`${YELLOW}Uninstalling GENTYR from ${projectDir}...${NC}`);
   console.log('');
 
-  // Remove rotation proxy certs
-  console.log(`${YELLOW}Removing rotation proxy certificates...${NC}`);
-  if (frameworkDir) {
-    const certScript = path.join(frameworkDir, 'scripts', 'generate-proxy-certs.sh');
-    if (fs.existsSync(certScript)) {
-      try { execFileSync(certScript, ['--remove'], { stdio: 'inherit', timeout: 30000 }); } catch {}
-    }
-  }
-
-  // Remove proxy shell integration
-  console.log(`\n${YELLOW}Removing rotation proxy shell integration...${NC}`);
-  const home = process.env.HOME || '';
-  for (const profile of [path.join(home, '.zshrc'), path.join(home, '.bashrc')]) {
-    if (fs.existsSync(profile)) {
-      let content = fs.readFileSync(profile, 'utf8');
-      if (content.includes('# BEGIN GENTYR PROXY')) {
-        content = content.replace(/\n?# BEGIN GENTYR PROXY[\s\S]*?# END GENTYR PROXY\n?/g, '');
-        fs.writeFileSync(profile, content);
-        console.log(`  Removed proxy env from ${profile}`);
-      }
-    }
-  }
-
   // Remove OP shell integration
+  const home = process.env.HOME || '';
   console.log(`\n${YELLOW}Removing OP shell integration...${NC}`);
   for (const profile of [path.join(home, '.zshrc'), path.join(home, '.bashrc')]) {
     if (fs.existsSync(profile)) {
