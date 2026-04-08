@@ -24,7 +24,7 @@ import { SessionInfo } from './SessionInfo.js';
 import { ActivityStream } from './ActivityStream.js';
 import { SignalInput } from './SignalInput.js';
 import { useSessionTail } from '../../hooks/useSessionTail.js';
-import { sendDirectiveSignal, isProcessAlive, resumeSessionWithMessage } from '../../live-reader.js';
+import { sendDirectiveSignal, isProcessAlive, resumeSessionWithMessage, getSignalDeliveryStatus } from '../../live-reader.js';
 import type { LiveDashboardData, SessionItem } from '../../types.js';
 
 interface Page4Props {
@@ -85,6 +85,8 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
   const [lastSignalSent, setLastSignalSent] = useState<string | null>(null);
   // Timer ref to clear the "Sent: …" confirmation after 5 s.
   const sentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Poll signal delivery status after sending
+  const deliveryPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const clearSentTimer = useCallback(() => {
     if (sentTimerRef.current !== null) {
@@ -92,6 +94,16 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
       sentTimerRef.current = null;
     }
   }, []);
+
+  const clearDeliveryPoll = useCallback(() => {
+    if (deliveryPollRef.current !== null) {
+      clearInterval(deliveryPollRef.current);
+      deliveryPollRef.current = null;
+    }
+  }, []);
+
+  // Clean up delivery poll on unmount
+  useEffect(() => () => clearDeliveryPoll(), [clearDeliveryPoll]);
 
   // Clear timer on unmount.
   useEffect(() => clearSentTimer, [clearSentTimer]);
@@ -117,8 +129,10 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
           const alive = selectedSession.pid != null ? isProcessAlive(selectedSession.pid) : false;
           if (alive && tailAgentId) {
             // Running session: inject directive signal (needs agent ID, not queue ID).
+            let signalId: string | undefined;
             try {
-              sendDirectiveSignal(tailAgentId, msg);
+              const result = sendDirectiveSignal(tailAgentId, msg);
+              signalId = result.signalId;
             } catch (err) {
               // Fail loudly — surface error in last signal display.
               const errMsg = err instanceof Error ? err.message : String(err);
@@ -130,8 +144,29 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
               return;
             }
             clearSentTimer();
-            setLastSignalSent(msg);
-            sentTimerRef.current = setTimeout(() => setLastSignalSent(null), 5000);
+            clearDeliveryPoll();
+            setLastSignalSent(`Sent: ${msg}`);
+            // Poll for delivery confirmation (every 2s for 30s)
+            if (signalId) {
+              let pollCount = 0;
+              deliveryPollRef.current = setInterval(() => {
+                pollCount++;
+                const status = getSignalDeliveryStatus(signalId!);
+                if (status?.status === 'acknowledged') {
+                  setLastSignalSent(`Ack'd: ${msg}`);
+                  clearDeliveryPoll();
+                  sentTimerRef.current = setTimeout(() => setLastSignalSent(null), 5000);
+                } else if (status?.status === 'read') {
+                  setLastSignalSent(`Delivered: ${msg}`);
+                }
+                if (pollCount >= 15) { // 30s max
+                  clearDeliveryPoll();
+                  sentTimerRef.current = setTimeout(() => setLastSignalSent(null), 5000);
+                }
+              }, 2000);
+            } else {
+              sentTimerRef.current = setTimeout(() => setLastSignalSent(null), 5000);
+            }
           } else if (selectedSession.sessionId) {
             // Completed/dead session: resume in a new Terminal window.
             resumeSessionWithMessage(selectedSession.sessionId, msg);
