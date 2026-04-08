@@ -51,6 +51,8 @@ import {
   GetSessionActivitySummaryArgsSchema,
   SearchCtoSessionsArgsSchema,
   SuspendSessionArgsSchema,
+  KillSessionArgsSchema,
+  RestartSessionArgsSchema,
   ReorderQueueArgsSchema,
   InspectPersistentTaskArgsSchema,
   LaunchInteractiveMonitorArgsSchema,
@@ -87,6 +89,8 @@ import {
   type GetSessionActivitySummaryArgs,
   type SearchCtoSessionsArgs,
   type SuspendSessionArgs,
+  type KillSessionArgs,
+  type RestartSessionArgs,
   type ReorderQueueArgs,
   type InspectPersistentTaskArgs,
   type LaunchInteractiveMonitorArgs,
@@ -3007,7 +3011,7 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
     return { error: `Session file not found for agent: ${agentId}` };
   }
 
-  const depthBytes = (args.depth ?? 16) * 1024;
+  const depthBytes = (args.depth ?? 24) * 1024;
   const offsetBytes = args.offset ?? 0;
   let tailResult: { content: string; fileSize: number; windowStart: number; windowEnd: number };
   try {
@@ -3037,11 +3041,11 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
 
       const texts = content.filter((b: any) => b.type === 'text' && b.text).map((b: any) => b.text as string);
       if (texts.length > 0) {
-        lastText = texts.join('\n').substring(0, 300);
+        lastText = texts.join('\n').substring(0, 1000);
         // Check for alignment findings
         const joined = texts.join('\n');
         if (joined.toLowerCase().includes('alignment') || joined.toLowerCase().includes('user intent')) {
-          alignmentFindings = joined.substring(0, 200);
+          alignmentFindings = joined.substring(0, 500);
         }
       }
 
@@ -3051,15 +3055,15 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
         const input = (block as any).input;
         let inputStr = '';
         try {
-          inputStr = (typeof input === 'string' ? input : JSON.stringify(input) ?? '').substring(0, 80);
+          inputStr = (typeof input === 'string' ? input : JSON.stringify(input) ?? '').substring(0, 200);
         } catch { /* skip */ }
 
         lastTools.push({ name: toolName, inputPreview: inputStr });
-        if (lastTools.length > 5) lastTools.shift();
+        if (lastTools.length > 10) lastTools.shift();
 
         if (toolName === 'Agent' || toolName === 'Task') {
           const desc = (input as Record<string, unknown>)?.description;
-          if (typeof desc === 'string') spawnedAgents.push(desc.substring(0, 60));
+          if (typeof desc === 'string') spawnedAgents.push(desc.substring(0, 120));
         }
         if (toolName === 'Bash') {
           const cmd = (input as Record<string, unknown>)?.command;
@@ -3073,6 +3077,9 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
       messageCount++;
     }
   }
+
+  // Chronological activity feed (reuses extractActivity for structured view)
+  const recentActivity = extractActivity(entries);
 
   // Compaction detection (zero-cost: checks already-parsed entries)
   const compactionDetected = detectCompactionInEntries(entries);
@@ -3100,6 +3107,7 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
     spawnedAgents,
     gitCommits,
     alignmentFindings,
+    recentActivity,
     compactionDetected,
     ...(compaction ? { compaction } : {}),
     // Pagination metadata
@@ -3386,6 +3394,215 @@ async function suspendSession(args: SuspendSessionArgs): Promise<object | ErrorR
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { error: `Failed to suspend session: ${message}` };
+  }
+}
+
+/**
+ * Kill a running, suspended, or spawning session. Does NOT re-enqueue.
+ */
+async function killSession(args: KillSessionArgs): Promise<object> {
+  if (!args.queue_id && !args.agent_id) {
+    return { error: 'Must provide queue_id or agent_id' };
+  }
+  if (!fs.existsSync(QUEUE_DB_PATH)) {
+    return { error: 'Session queue database not found' };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = new Database(QUEUE_DB_PATH);
+    db.pragma('busy_timeout = 3000');
+
+    // Resolve queue_id from agent_id if needed
+    let queueId = args.queue_id;
+    if (!queueId && args.agent_id) {
+      const history = readHistory();
+      const agentRecord = (history.agents ?? []).find((a: { id: string; timestamp: string }) => a.id === args.agent_id);
+      if (agentRecord) {
+        const agentTime = new Date(agentRecord.timestamp).getTime();
+        interface RunningRow { id: string; spawned_at: string | null; }
+        const rows = db.prepare("SELECT id, spawned_at FROM queue_items WHERE status IN ('running', 'suspended', 'spawning')").all() as RunningRow[];
+        const match = rows.find(r => r.spawned_at && Math.abs(new Date(r.spawned_at).getTime() - agentTime) < 60_000);
+        if (match) queueId = match.id;
+      }
+    }
+    if (!queueId) {
+      return { error: `Could not resolve queue_id for: ${args.agent_id || args.queue_id}` };
+    }
+
+    interface QueueRow { id: string; status: string; pid: number | null; title: string | null; metadata: string | null; }
+    const item = db.prepare('SELECT id, status, pid, title, metadata FROM queue_items WHERE id = ?').get(queueId) as QueueRow | undefined;
+    if (!item) return { error: `Queue item not found: ${queueId}` };
+    if (['completed', 'failed', 'cancelled'].includes(item.status)) {
+      return { error: `Session already in terminal state: ${item.status}` };
+    }
+
+    // Kill the process
+    let killed = false;
+    if (item.pid) {
+      try {
+        process.kill(item.pid, 'SIGTERM');
+        for (let i = 0; i < 10; i++) {
+          await new Promise(r => setTimeout(r, 500));
+          try { process.kill(item.pid!, 0); } catch { killed = true; break; }
+        }
+        if (!killed) {
+          try { process.kill(item.pid, 'SIGKILL'); killed = true; } catch { killed = true; }
+        }
+      } catch { killed = true; }
+    }
+
+    db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?").run(queueId);
+
+    // Reset linked TODO task
+    try {
+      const metadata = item.metadata ? JSON.parse(item.metadata) : {};
+      if (metadata.taskId) {
+        const todoDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'todo.db');
+        if (fs.existsSync(todoDbPath)) {
+          const todoDb = new Database(todoDbPath);
+          todoDb.pragma('busy_timeout = 3000');
+          todoDb.prepare("UPDATE tasks SET status = 'pending' WHERE id = ? AND status = 'in_progress'").run(metadata.taskId);
+          todoDb.close();
+        }
+      }
+    } catch { /* non-fatal */ }
+
+    // Release shared resources
+    try {
+      const resourceLockPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'resource-lock.js');
+      if (fs.existsSync(resourceLockPath)) {
+        const resourceModule = await import(resourceLockPath);
+        if (typeof resourceModule.releaseAllResources === 'function') {
+          resourceModule.releaseAllResources(args.agent_id || queueId);
+        }
+      }
+    } catch { /* non-fatal */ }
+
+    // Audit + drain
+    try {
+      const auditPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-audit.js');
+      if (fs.existsSync(auditPath)) {
+        const auditModule = await import(auditPath);
+        if (typeof auditModule.auditEvent === 'function') {
+          auditModule.auditEvent('session_killed', { queue_id: queueId, pid: item.pid, reason: args.reason, title: item.title });
+        }
+      }
+    } catch { /* non-fatal */ }
+    try {
+      const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+      if (fs.existsSync(queueModulePath)) {
+        const queueModule = await import(queueModulePath);
+        if (typeof queueModule.drainQueue === 'function') queueModule.drainQueue();
+      }
+    } catch { /* non-fatal */ }
+
+    return { success: true, queue_id: queueId, pid: item.pid, killed, reason: args.reason };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to kill session: ${message}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+/**
+ * Kill a session and re-enqueue from scratch (fresh spawn, not resume).
+ */
+async function restartSession(args: RestartSessionArgs): Promise<object> {
+  if (!fs.existsSync(QUEUE_DB_PATH)) {
+    return { error: 'Session queue database not found' };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = new Database(QUEUE_DB_PATH);
+    db.pragma('busy_timeout = 3000');
+
+    interface FullQueueRow {
+      id: string; status: string; pid: number | null; title: string | null;
+      prompt: string | null; agent_type: string | null; hook_type: string | null;
+      model: string | null; extra_env: string | null; metadata: string | null;
+      project_dir: string | null; tag_context: string | null; source: string | null; lane: string | null;
+    }
+    const item = db.prepare('SELECT * FROM queue_items WHERE id = ?').get(args.queue_id) as FullQueueRow | undefined;
+    if (!item) return { error: `Queue item not found: ${args.queue_id}` };
+    if (item.status === 'completed') return { error: 'Cannot restart a completed session' };
+
+    // Kill if running
+    let killed = false;
+    if (item.pid && ['running', 'spawning'].includes(item.status)) {
+      try {
+        process.kill(item.pid, 'SIGTERM');
+        for (let i = 0; i < 10; i++) {
+          await new Promise(r => setTimeout(r, 500));
+          try { process.kill(item.pid!, 0); } catch { killed = true; break; }
+        }
+        if (!killed) {
+          try { process.kill(item.pid, 'SIGKILL'); killed = true; } catch { killed = true; }
+        }
+      } catch { killed = true; }
+    }
+
+    // Mark old item failed
+    db.prepare("UPDATE queue_items SET status = 'failed', completed_at = datetime('now') WHERE id = ?").run(args.queue_id);
+
+    // Reset linked TODO task
+    try {
+      const metadata = item.metadata ? JSON.parse(item.metadata) : {};
+      if (metadata.taskId) {
+        const todoDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'todo.db');
+        if (fs.existsSync(todoDbPath)) {
+          const todoDb = new Database(todoDbPath);
+          todoDb.pragma('busy_timeout = 3000');
+          todoDb.prepare("UPDATE tasks SET status = 'pending' WHERE id = ? AND status = 'in_progress'").run(metadata.taskId);
+          todoDb.close();
+        }
+      }
+    } catch { /* non-fatal */ }
+
+    db.close();
+    db = undefined;
+
+    // Re-enqueue from scratch
+    const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+    if (!fs.existsSync(queueModulePath)) return { error: 'session-queue.js not found' };
+    const queueModule = await import(queueModulePath);
+    const validPriorities = ['cto', 'critical', 'urgent', 'normal', 'low'];
+    const priority = validPriorities.includes(args.priority ?? '') ? args.priority : 'urgent';
+
+    const result = queueModule.enqueueSession({
+      title: item.title || 'Restarted session',
+      agentType: item.agent_type,
+      hookType: item.hook_type,
+      tagContext: item.tag_context || undefined,
+      source: 'kill-restart',
+      priority,
+      lane: item.lane || 'standard',
+      prompt: item.prompt,
+      model: item.model || undefined,
+      projectDir: item.project_dir || PROJECT_DIR,
+      extraEnv: item.extra_env ? JSON.parse(item.extra_env) : undefined,
+      metadata: item.metadata ? JSON.parse(item.metadata) : undefined,
+    });
+
+    // Audit
+    try {
+      const auditPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-audit.js');
+      if (fs.existsSync(auditPath)) {
+        const auditModule = await import(auditPath);
+        if (typeof auditModule.auditEvent === 'function') {
+          auditModule.auditEvent('session_restarted', { old_queue_id: args.queue_id, new_queue_id: result?.queueId, priority, title: item.title });
+        }
+      }
+    } catch { /* non-fatal */ }
+
+    return { success: true, killed_queue_id: args.queue_id, new_queue_id: result?.queueId, priority, killed };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to restart session: ${message}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
   }
 }
 
@@ -3929,9 +4146,21 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'cancel_queued_session',
-    description: 'Cancel a queued (not yet running) session queue item by its queue ID. Only works on items with status "queued" — cannot cancel running or suspended items. Use suspend_session for running items.',
+    description: 'Cancel a queued (not yet running) session queue item by its queue ID. Only works on items with status "queued" — cannot cancel running or suspended items. Use kill_session or suspend_session for running items.',
     schema: CancelQueuedSessionArgsSchema,
     handler: cancelQueuedSession,
+  },
+  {
+    name: 'kill_session',
+    description: 'Kill a running, suspended, or spawning session. Sends SIGTERM then SIGKILL if needed. Marks queue item completed and resets linked TODO task. Does NOT re-enqueue — use restart_session to kill and re-enqueue.',
+    schema: KillSessionArgsSchema,
+    handler: killSession,
+  },
+  {
+    name: 'restart_session',
+    description: 'Kill a session and re-enqueue it from scratch (fresh spawn, not resume). Works on running, suspended, spawning, queued, or failed items. Preserves the original prompt and config.',
+    schema: RestartSessionArgsSchema,
+    handler: restartSession,
   },
   {
     name: 'drain_session_queue',
@@ -4022,7 +4251,7 @@ const tools: AnyToolHandler[] = [
   // WS5 Session Introspection Tools
   {
     name: 'peek_session',
-    description: 'Peek at a running agent session\'s JSONL. Returns last tool calls, assistant text, sub-agents, git commits, alignment findings. Provide agent_id or queue_id. Pagination: use offset: 0 (default, latest) then pass nextOffset from the response to page backward through the session. depth controls KB per page (default 16). Returns hasMore and nextOffset for easy continuation. Set include_compaction_context: true for pre-compaction summaries.',
+    description: 'Peek at a running agent session\'s JSONL. Returns summary fields (lastText: up to 1000 chars, lastTools: last 10 with 200-char input previews) plus a chronological recentActivity array with assistant text (1000 chars each), tool calls (500-char inputs), and tool results from the window. Provide agent_id or queue_id. If the summary fields feel incomplete or you need more context, increase depth (e.g. depth: 48) or page backward using nextOffset from the previous response. Pagination: offset: 0 (default, latest), then pass nextOffset to page backward. Returns hasMore/nextOffset for continuation. Set include_compaction_context: true for pre-compaction summaries.',
     schema: PeekSessionArgsSchema,
     handler: peekSession,
   },
@@ -4053,7 +4282,7 @@ const tools: AnyToolHandler[] = [
   // Persistent Task Deep Inspection
   {
     name: 'inspect_persistent_task',
-    description: 'Deep inspection of a persistent task. Returns task state, monitor JSONL excerpts (500 char tool inputs, 1000 char text — much more than peek_session), child session activity, amendments, progress files, and worktree git state. Single call replaces chaining get_persistent_task_summary + monitor_agents + peek_session. Returns verbatim assistant text excerpts suitable for direct quoting in monitoring reports. Use depth_kb: 32 for comprehensive analysis. Auto-includes compaction context (pre-compaction work summary) for the monitor session when compaction is detected.',
+    description: 'Deep inspection of a persistent task. Returns task state, monitor JSONL excerpts (500 char tool inputs, 1000 char text), child session activity, amendments, progress files, and worktree git state. Single call replaces chaining get_persistent_task_summary + monitor_agents + peek_session. Returns verbatim assistant text excerpts suitable for direct quoting in monitoring reports. Use depth_kb: 32 for comprehensive analysis. Auto-includes compaction context (pre-compaction work summary) for the monitor session when compaction is detected.',
     schema: InspectPersistentTaskArgsSchema,
     handler: inspectPersistentTask,
   },
