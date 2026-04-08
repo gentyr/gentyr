@@ -294,7 +294,20 @@ export function provisionWorktree(worktreePath, options = {}) {
     fs.copyFileSync(claudeMdSrc, path.join(worktreePath, 'CLAUDE.md'));
   }
 
-  // --- Package manager install (non-fatal, provides project dependencies) ---
+  // --- Load services.json config for install/build settings ---
+  let servicesConfig = null;
+  if (!options?.skipInstall) {
+    try {
+      const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+      if (fs.existsSync(configPath)) {
+        servicesConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      }
+    } catch (_) { /* services.json parse error — non-fatal */ }
+  }
+
+  const isStrict = servicesConfig?.worktreeProvisioningMode === 'strict';
+
+  // --- Package manager install ---
   if (!options?.skipInstall) {
     const lockFiles = [
       { file: 'pnpm-lock.yaml', cmd: ['pnpm', 'install', '--frozen-lockfile', '--prefer-offline'] },
@@ -308,10 +321,10 @@ export function provisionWorktree(worktreePath, options = {}) {
     const hasNodeModules = fs.existsSync(nmDir) && fs.readdirSync(nmDir).length > 5;
 
     if (!hasNodeModules) {
+      const installTimeout = servicesConfig?.worktreeInstallTimeout ?? 120000;
       for (const { file, cmd } of lockFiles) {
         if (fs.existsSync(path.join(worktreePath, file))) {
           try {
-            const installTimeout = 120000; // 2 minutes
             execSync(cmd.join(' '), {
               cwd: worktreePath,
               encoding: 'utf8',
@@ -320,6 +333,9 @@ export function provisionWorktree(worktreePath, options = {}) {
             });
             console.error(`[worktree-manager] Installed dependencies via ${cmd[0]} in ${worktreePath}`);
           } catch (err) {
+            if (isStrict) {
+              throw new Error(`[worktree-manager] STRICT: ${cmd[0]} install failed in ${worktreePath}: ${err.message?.slice(0, 300)}`);
+            }
             console.error(`[worktree-manager] Warning: ${cmd[0]} install failed (non-fatal): ${err.message}`);
           }
           break; // Only run one package manager
@@ -328,35 +344,32 @@ export function provisionWorktree(worktreePath, options = {}) {
     }
   }
 
-  // --- Workspace build (non-fatal, provides build artifacts for demos) ---
+  // --- Workspace build ---
   // Worktrees only get source files — dist/ dirs are gitignored.
   // If configured in services.json, run a build command to produce build artifacts.
-  if (!options?.skipInstall) {
-    try {
-      const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
-      if (fs.existsSync(configPath)) {
-        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        const buildCmd = config.worktreeBuildCommand;
-        if (buildCmd) {
-          const healthCheck = config.worktreeBuildHealthCheck;
-          let needsBuild = true;
-          if (healthCheck) {
-            try {
-              execSync(healthCheck, { cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
-              needsBuild = false;
-            } catch (_) { /* needs build */ }
+  if (!options?.skipInstall && servicesConfig) {
+    const buildCmd = servicesConfig.worktreeBuildCommand;
+    if (buildCmd) {
+      const healthCheck = servicesConfig.worktreeBuildHealthCheck;
+      let needsBuild = true;
+      if (healthCheck) {
+        try {
+          execSync(healthCheck, { cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+          needsBuild = false;
+        } catch (_) { /* needs build */ }
+      }
+      if (needsBuild) {
+        try {
+          execSync(buildCmd, { cwd: worktreePath, encoding: 'utf8', timeout: 300000, stdio: 'pipe' });
+          console.error(`[worktree-manager] Built workspace packages in ${worktreePath}`);
+        } catch (err) {
+          if (isStrict) {
+            throw new Error(`[worktree-manager] STRICT: workspace build failed in ${worktreePath}: ${err.message?.slice(0, 300)}`);
           }
-          if (needsBuild) {
-            try {
-              execSync(buildCmd, { cwd: worktreePath, encoding: 'utf8', timeout: 300000, stdio: 'pipe' });
-              console.error(`[worktree-manager] Built workspace packages in ${worktreePath}`);
-            } catch (err) {
-              console.error(`[worktree-manager] Warning: workspace build failed (non-fatal): ${err.message?.slice(0, 200)}`);
-            }
-          }
+          console.error(`[worktree-manager] Warning: workspace build failed (non-fatal): ${err.message?.slice(0, 200)}`);
         }
       }
-    } catch (_) { /* services.json parse error — non-fatal */ }
+    }
   }
 }
 
@@ -434,8 +447,20 @@ export function createWorktree(branchName, baseBranch, options = {}) {
   // Add the worktree
   execSync(`git worktree add ${worktreePath} ${branchName}`, GIT_OPTS);
 
-  // Provision with GENTYR config
-  provisionWorktree(worktreePath, { skipInstall: options.skipInstall });
+  // Provision with GENTYR config (strict mode may throw on install/build failure)
+  try {
+    provisionWorktree(worktreePath, { skipInstall: options.skipInstall });
+  } catch (err) {
+    // Strict provisioning failed — clean up the broken worktree
+    console.error(`[worktree-manager] Provisioning failed, removing worktree: ${err.message}`);
+    try {
+      execSync(`git worktree remove ${worktreePath} --force`, GIT_OPTS);
+    } catch (_) { /* best-effort cleanup */ }
+    try {
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+    } catch (_) { /* best-effort cleanup */ }
+    throw err;
+  }
 
   // Verify worktree base is fresh (informational, non-fatal)
   let behindBy = 0;
