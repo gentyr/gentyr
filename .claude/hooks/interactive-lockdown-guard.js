@@ -103,6 +103,15 @@ const ALLOWED_MCP_PREFIXES = [
 ];
 
 /**
+ * Individual MCP tools allowed from otherwise-blocked server prefixes.
+ * These are safe read/config operations on servers that also have write tools.
+ */
+const ALLOWED_MCP_INDIVIDUAL = new Set([
+  'mcp__secret-sync__get_services_config',       // Read config (no secrets)
+  'mcp__secret-sync__update_services_config',     // Update config (secrets key blocked by handler)
+]);
+
+/**
  * Specific MCP tools blocked even within allowed prefixes.
  * These require CTO bypass approval — they change system-level settings.
  */
@@ -240,6 +249,11 @@ async function main() {
           permissionDecisionReason: `Deputy-CTO console: \`${toolName}\` requires CTO bypass approval.\n\nThis tool changes system-level settings. Request a bypass via mcp__deputy-cto__request_bypass.`,
         },
       }));
+      return;
+    }
+    // Check individual allowlist (specific tools from otherwise-blocked servers)
+    if (ALLOWED_MCP_INDIVIDUAL.has(toolName)) {
+      process.stdout.write(JSON.stringify({ decision: 'approve' }));
       return;
     }
     const allowed = ALLOWED_MCP_PREFIXES.some(prefix => toolName.startsWith(prefix));
