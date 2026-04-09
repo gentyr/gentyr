@@ -535,6 +535,7 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
         } catch (_) { /* non-fatal */ }
         ptDb2.close();
         log(`Auto-paused persistent task ${taskId} due to rate-limited crash loop`);
+        try { auditEvent('crash_loop_circuit_breaker', { task_id: taskId, revival_count: recentHardCount }); } catch (_) { /* non-fatal */ }
       }
     } catch (e) { log(`Failed to auto-pause: ${e.message}`); }
     return;
@@ -585,6 +586,7 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
 
         ptDb2.close();
         log(`Auto-paused persistent task ${taskId} due to crash loop`);
+        try { auditEvent('crash_loop_circuit_breaker', { task_id: taskId, revival_count: dbRecentRevivals.cnt }); } catch (_) { /* non-fatal */ }
       }
     } catch (e) { log(`Failed to auto-pause: ${e.message}`); }
 

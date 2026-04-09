@@ -31,7 +31,7 @@ import { buildPersistentMonitorDemoInstructions } from './lib/persistent-monitor
 import { reapAsyncPass, getStuckAliveSessions } from './lib/session-reaper.js';
 import { buildRevivalContext } from './lib/persistent-revival-context.js';
 import { buildPersistentMonitorRevivalPrompt } from './lib/persistent-monitor-revival-prompt.js';
-import { cleanupAuditLog } from './lib/session-audit.js';
+import { auditEvent, cleanupAuditLog } from './lib/session-audit.js';
 import { debugLog, cleanupDebugLog } from './lib/debug-log.js';
 import { buildSpawnEnv } from './lib/spawn-env.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
@@ -2810,6 +2810,7 @@ async function main() {
             });
 
             log(`Persistent monitor health: re-enqueued for "${task.title}" (queueId: ${result.queueId})`);
+            try { auditEvent('persistent_monitor_revived', { task_id: task.id, title: task.title, source: 'hourly-automation' }); } catch (_) { /* non-fatal */ }
             revived++;
           } catch (err) {
             log(`Persistent monitor health: failed to re-enqueue for "${task.title}": ${err.message}`);
@@ -3029,6 +3030,7 @@ async function main() {
             });
 
             log(`Persistent stale pause auto-resume: enqueued monitor for "${task.title}" (queueId: ${result.queueId})`);
+            try { auditEvent('persistent_task_auto_resumed', { task_id: task.id, title: task.title, pause_age_minutes: Math.round(pauseAge / 60000) }); } catch (_) { /* non-fatal */ }
             resumed++;
           } catch (err) {
             log(`Persistent stale pause auto-resume: failed to enqueue monitor for "${task.title}": ${err.message}`);

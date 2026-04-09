@@ -365,6 +365,7 @@ export function reapSyncPass(db) {
             todoDb.close();
             if (resetResult.changes > 0) {
               debugLog('session-reaper', 'todo_reset_dead_pid', { taskId: metadata.taskId });
+              try { auditEvent('task_reset_on_reap', { queue_id: item.id, task_id: metadata.taskId, agent_id: item.agent_id }); } catch (_) { /* non-fatal */ }
             }
           }
         } catch (_) { /* non-fatal */ }
@@ -378,7 +379,11 @@ export function reapSyncPass(db) {
 
       // Release display lock if this dead agent held it
       if (item.agent_id) {
-        try { releaseAllResources(item.agent_id); removeFromAllQueues(item.agent_id); } catch (_) { /* non-fatal */ }
+        try {
+          releaseAllResources(item.agent_id);
+          removeFromAllQueues(item.agent_id);
+          try { auditEvent('resources_released_on_reap', { queue_id: item.id, agent_id: item.agent_id }); } catch (_) { /* non-fatal */ }
+        } catch (_) { /* non-fatal */ }
       }
 
       // Reactive worktree cleanup: if the dead agent was in a worktree, clean it up immediately
@@ -398,6 +403,7 @@ export function reapSyncPass(db) {
             if (wtBranch) {
               removeWorktreeCleanup(wtBranch);
               debugLog(`[session-reaper] Cleaned up worktree for dead agent ${item.agent_id}: ${wtBranch}`);
+              try { auditEvent('worktree_cleaned_on_reap', { queue_id: item.id, agent_id: item.agent_id, worktree_path: metadata?.worktreePath || item.worktree_path }); } catch (_) { /* non-fatal */ }
             }
           }
           // Dirty worktrees are left for rescueAbandonedWorktrees()
