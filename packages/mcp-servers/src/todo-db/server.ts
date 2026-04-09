@@ -267,11 +267,19 @@ function initializeDatabase(): Database.Database {
     db.exec("ALTER TABLE tasks ADD COLUMN persistent_task_id TEXT");
   }
 
-  // Auto-migration: add bridge_main_tree column if missing
+  // Auto-migration: ensure strict_infra_guidance column exists.
+  // Three cases: (a) fresh DB, (b) legacy DB with bridge_main_tree, (c) already migrated.
   try {
-    db.prepare("SELECT bridge_main_tree FROM tasks LIMIT 0").get();
+    db.prepare("SELECT strict_infra_guidance FROM tasks LIMIT 0").get();
+    // Case (c): already migrated, no-op
   } catch {
-    db.exec("ALTER TABLE tasks ADD COLUMN bridge_main_tree INTEGER DEFAULT 0");
+    try {
+      // Case (b): rename legacy column (SQLite >= 3.25)
+      db.exec("ALTER TABLE tasks RENAME COLUMN bridge_main_tree TO strict_infra_guidance");
+    } catch {
+      // Case (a): fresh DB, add new column
+      db.exec("ALTER TABLE tasks ADD COLUMN strict_infra_guidance INTEGER DEFAULT 0");
+    }
   }
 
   // Auto-migration: add demo_involved column if missing
@@ -354,7 +362,7 @@ function taskToResponse(task: TaskRecord): TaskResponse {
     priority: (task.priority ?? 'normal') as TaskPriority,
     user_prompt_uuids: userPromptUuids,
     persistent_task_id: task.persistent_task_id ?? null,
-    bridge_main_tree: task.bridge_main_tree === 1,
+    strict_infra_guidance: task.strict_infra_guidance === 1,
     demo_involved: task.demo_involved === 1,
   };
 }
@@ -543,14 +551,14 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
   const priority = args.priority ?? 'normal';
   const userPromptUuidsJson = userPromptUuids ? JSON.stringify(userPromptUuids) : null;
   const persistentTaskId = args.persistent_task_id ?? null;
-  const bridgeMainTree = args.bridge_main_tree ? 1 : 0;
+  const strictInfraGuidance = args.strict_infra_guidance ? 1 : 0;
   const demoInvolved = args.demo_involved ? 1 : 0;
 
   try {
     db.prepare(`
-      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority, user_prompt_uuids, persistent_task_id, bridge_main_tree, demo_involved)
+      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority, user_prompt_uuids, persistent_task_id, strict_infra_guidance, demo_involved)
       VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, args.section, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority, userPromptUuidsJson, persistentTaskId, bridgeMainTree, demoInvolved);
+    `).run(id, args.section, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority, userPromptUuidsJson, persistentTaskId, strictInfraGuidance, demoInvolved);
   } catch (err: unknown) {
     if (
       err instanceof Error &&
@@ -579,7 +587,7 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     priority: priority as TaskPriority,
     user_prompt_uuids: userPromptUuids,
     persistent_task_id: persistentTaskId,
-    bridge_main_tree: bridgeMainTree === 1,
+    strict_infra_guidance: strictInfraGuidance === 1,
     demo_involved: demoInvolved === 1,
     warning,
   };

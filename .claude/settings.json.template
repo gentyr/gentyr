@@ -348,7 +348,7 @@
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/bridge-nudge-hook.js",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/strict-infra-nudge-hook.js",
             "timeout": 5
           }
         ]

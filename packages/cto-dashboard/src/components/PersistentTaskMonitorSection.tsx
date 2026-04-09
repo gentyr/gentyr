@@ -251,7 +251,7 @@ function MonitorStatusLine({ task }: { task: PersistentTaskMonitorData }): React
       <Text color="gray"> | Cycles: </Text>
       <Text color="white">{task.cycleCount}</Text>
       {task.demoInvolved && <Text color="magenta"> [demo]</Text>}
-      {task.bridgeMainTree && <Text color="cyan"> [bridge]</Text>}
+      {task.strictInfraGuidance && <Text color="cyan"> [strict-infra]</Text>}
     </Box>
   );
 }

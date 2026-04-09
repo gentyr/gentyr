@@ -36,7 +36,7 @@ function log(message) {
 }
 
 import { buildPersistentMonitorDemoInstructions } from './lib/persistent-monitor-demo-instructions.js';
-import { buildPersistentMonitorBridgeInstructions } from './lib/persistent-monitor-bridge-instructions.js';
+import { buildPersistentMonitorStrictInfraInstructions } from './lib/persistent-monitor-strict-infra-instructions.js';
 
 async function readStdin() {
   return new Promise((resolve) => {
@@ -201,16 +201,17 @@ async function main() {
     ? `\n\n## Outcome Criteria\n${task.outcome_criteria}`
     : '';
 
-  // Check if demo/bridge is involved via task metadata
+  // Check if demo/strict-infra is involved via task metadata
   let demoInstructions = '';
-  let bridgeInstructions = '';
+  let strictInfraInstructions = '';
   try {
     const meta = task.metadata ? JSON.parse(task.metadata) : {};
     if (meta.demo_involved) {
       demoInstructions = buildPersistentMonitorDemoInstructions();
     }
-    if (meta.bridge_main_tree) {
-      bridgeInstructions = buildPersistentMonitorBridgeInstructions();
+    // TODO(cleanup 2026-04-23): drop bridge_main_tree dual-read
+    if (meta.strict_infra_guidance === true || meta.bridge_main_tree === true) {
+      strictInfraInstructions = buildPersistentMonitorStrictInfraInstructions();
     }
   } catch (_) { /* non-fatal */ }
 
@@ -230,7 +231,7 @@ ${task.prompt}${outcomeCriteria}${amendmentSection}
 3. Spawn sub-agents for implementation work (use isolation: "worktree" for code changes)
 4. Monitor progress, check signals, run alignment checks
 5. Complete when outcome criteria are met
-${demoInstructions}${bridgeInstructions}
+${demoInstructions}${strictInfraInstructions}
 Persistent Task ID: ${taskId}
 Parent TODO Task ID: ${task.parent_todo_task_id || 'none'}`;
 

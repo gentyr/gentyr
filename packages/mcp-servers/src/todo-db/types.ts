@@ -48,8 +48,8 @@ export const CreateTaskArgsSchema = z.object({
     .describe('UUIDs of user prompts this task derives from. Auto-enables followup_enabled when non-empty.'),
   persistent_task_id: z.string().optional()
     .describe('UUID of the persistent task this sub-task belongs to. Set by persistent monitor sessions.'),
-  bridge_main_tree: z.boolean().optional().default(false)
-    .describe('When true, the spawned agent receives MCP-first infrastructure instructions (use secret_run_command for builds, MCP tools for demos, merge before integration testing).'),
+  strict_infra_guidance: z.boolean().optional().default(false)
+    .describe('When true, the spawned agent receives strict MCP-only infrastructure instructions (use secret_run_command for builds, MCP tools for demos, no Bash for infrastructure operations).'),
   demo_involved: z.boolean().optional().default(false)
     .describe('Task involves demo scenarios — spawned agent receives demo validation instructions.'),
 });
@@ -156,7 +156,7 @@ export interface TaskRecord {
   priority: string;                // 'normal' | 'urgent'
   user_prompt_uuids: string | null; // JSON string of UUID array
   persistent_task_id: string | null;
-  bridge_main_tree: number;         // 0 or 1 (SQLite boolean)
+  strict_infra_guidance: number;    // 0 or 1 (SQLite boolean)
   demo_involved: number;            // 0 or 1 (SQLite boolean)
 }
 
@@ -174,7 +174,7 @@ export interface TaskResponse {
   priority: TaskPriority;
   user_prompt_uuids: string[] | null;
   persistent_task_id: string | null;
-  bridge_main_tree: boolean;
+  strict_infra_guidance: boolean;
   demo_involved: boolean;
 }
 

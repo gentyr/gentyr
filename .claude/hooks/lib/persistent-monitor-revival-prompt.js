@@ -25,18 +25,19 @@ export async function buildPersistentMonitorRevivalPrompt(task, revivalReason, p
   }
 
   let demoInstructions = '';
-  let bridgeInstructions = '';
+  let strictInfraInstructions = '';
   try {
     const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
     if (taskMeta.demo_involved) {
       demoInstructions = buildPersistentMonitorDemoInstructions();
     }
-    if (taskMeta.bridge_main_tree) {
-      const { buildPersistentMonitorBridgeInstructions: buildBridge } = await import('./persistent-monitor-bridge-instructions.js');
-      bridgeInstructions = buildBridge();
+    // TODO(cleanup 2026-04-23): drop bridge_main_tree dual-read
+    if (taskMeta.strict_infra_guidance === true || taskMeta.bridge_main_tree === true) {
+      const { buildPersistentMonitorStrictInfraInstructions: buildStrictInfra } = await import('./persistent-monitor-strict-infra-instructions.js');
+      strictInfraInstructions = buildStrictInfra();
     }
   } catch (err) {
-    process.stderr.write(`[persistent-monitor-revival-prompt] demo/bridge instructions failed for ${task.id}: ${err.message || err}\n`);
+    process.stderr.write(`[persistent-monitor-revival-prompt] demo/strict-infra instructions failed for ${task.id}: ${err.message || err}\n`);
   }
 
   const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
@@ -48,7 +49,7 @@ ${revivalContext || '(no prior state available — this may be the first revival
 
 Read full task details to fill any gaps:
 mcp__persistent-task__get_persistent_task({ id: "${task.id}", include_amendments: true, include_subtasks: true })
-${demoInstructions}${bridgeInstructions}`;
+${demoInstructions}${strictInfraInstructions}`;
 
   const extraEnv = {
     GENTYR_PERSISTENT_TASK_ID: task.id,

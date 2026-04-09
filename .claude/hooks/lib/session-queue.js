@@ -26,7 +26,7 @@ import { reapSyncPass } from './session-reaper.js';
 import { auditEvent } from './session-audit.js';
 import { debugLog } from './debug-log.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
-import { buildPersistentMonitorBridgeInstructions } from './persistent-monitor-bridge-instructions.js';
+import { buildPersistentMonitorStrictInfraInstructions } from './persistent-monitor-strict-infra-instructions.js';
 import { checkAndExpireResources } from './resource-lock.js';
 import { cleanupStaleAllocations as cleanupStalePortAllocations } from './port-allocator.js';
 import { buildRevivalContext } from './persistent-revival-context.js';
@@ -612,16 +612,17 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
     revivalContext = buildRevivalContext(taskId, PROJECT_DIR, { monitorSessionId: task.monitor_session_id });
   } catch (_) { /* non-fatal */ }
 
-  // Check if demo/bridge is involved
+  // Check if demo/strict-infra is involved
   let demoInstructions = '';
-  let bridgeInstructions = '';
+  let strictInfraInstructions = '';
   try {
     const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
     if (taskMeta.demo_involved) {
       demoInstructions = buildPersistentMonitorDemoInstructions();
     }
-    if (taskMeta.bridge_main_tree) {
-      bridgeInstructions = buildPersistentMonitorBridgeInstructions();
+    // TODO(cleanup 2026-04-23): drop bridge_main_tree dual-read
+    if (taskMeta.strict_infra_guidance === true || taskMeta.bridge_main_tree === true) {
+      strictInfraInstructions = buildPersistentMonitorStrictInfraInstructions();
     }
   } catch (_) { /* non-fatal */ }
 
@@ -635,7 +636,7 @@ ${revivalContext || '(no prior state available — this may be the first revival
 
 Read full task details to fill any gaps:
 mcp__persistent-task__get_persistent_task({ id: "${taskId}", include_amendments: true, include_subtasks: true })
-${demoInstructions}${bridgeInstructions}
+${demoInstructions}${strictInfraInstructions}
 Persistent Task ID: ${taskId}`;
 
   const id = generateQueueId();

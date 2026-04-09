@@ -141,11 +141,11 @@ You have multimodal capabilities -- you can view images using the Read tool. Whe
 
 **Child task creation**: When creating child tasks for demo work via `create_task`, ALWAYS set `demo_involved: true`. This ensures the spawned agent receives demo validation instructions automatically. Include shared resource acquisition instructions in the task description when the demo involves chrome-bridge or main-tree services.
 
-### Infrastructure Bridge Mode
+### Strict Infrastructure Guidance
 
-If your persistent task has `bridge_main_tree` in its metadata, child agents that need
-infrastructure access (builds, demos, dev servers) should be created with `bridge_main_tree: true`.
-This gives them MCP-first instructions for using `secret_run_command`, `secret_dev_server_*`,
+If your persistent task has `strict_infra_guidance` in its metadata, child agents that need
+infrastructure access (builds, demos, dev servers) should be created with `strict_infra_guidance: true`.
+This gives them MCP-only instructions for using `secret_run_command`, `secret_dev_server_*`,
 and `run_demo` tools instead of running Bash infrastructure commands.
 
 **Worktree-first rule**: Child agents run demos directly in their worktrees on isolated ports. No merge needed between fix/test iterations. Merge only when the demo passes. Pipeline: code-writer → demo-manager (verify in worktree) → project-manager (merge on success).

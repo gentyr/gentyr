@@ -1,18 +1,22 @@
 /**
- * MCP-first infrastructure instructions for bridge-enabled agents.
- * Injected into task runner prompts when bridge_main_tree is set.
- * Language is intentionally strict/prohibitive to force correct tool usage.
+ * MCP-first infrastructure instructions for strict-infra tasks.
+ * Injected when `strict_infra_guidance` is set on a task.
  *
- * @module lib/bridge-main-tree-prompt
+ * Worktrees already have per-worktree port isolation (base 3100, +100 per worktree),
+ * so demos and dev servers run directly from the worktree — no merge needed.
+ * This block enforces MCP-only usage for infrastructure operations and adds
+ * shared resource coordination guidance.
+ *
+ * @module lib/strict-infra-guidance-prompt
  */
 
 /**
- * Build MCP-first infrastructure prompt for bridge-enabled agents.
+ * Build MCP-first infrastructure prompt for strict-infra agents.
  * @param {string} worktreePath - Absolute path to the agent's worktree
  * @param {boolean} [demoInvolved=false] - Whether demo scenarios are involved
  * @returns {string} Markdown instruction block
  */
-export function buildBridgeMainTreePrompt(worktreePath, demoInvolved = false) {
+export function buildStrictInfraGuidancePrompt(worktreePath, demoInvolved = false) {
   const demoSection = demoInvolved ? `
 
 ### Demo Execution (MANDATORY MCP WORKFLOW)
@@ -91,8 +95,8 @@ After the demo completes (pass or fail), you MUST report what you SAW:
   return `
 ## Infrastructure Access (STRICT MCP-ONLY)
 
-You are in a worktree at \`${worktreePath}\` for git isolation. The main project has running
-dev servers, built artifacts, and Chrome infrastructure.
+You are in a worktree at \`${worktreePath}\`. Your worktree has isolated ports (3100+) for dev
+servers and demos — you can test your changes directly without merging first.
 
 **ALL infrastructure operations MUST use MCP tools. Using Bash for infrastructure is PROHIBITED.**
 A nudge hook monitors your Bash commands and will flag violations.
@@ -144,8 +148,7 @@ For manual control (non-demo contexts only):
 - Status: \`mcp__secret-sync__secret_dev_server_status({})\`
 - Start: \`mcp__secret-sync__secret_dev_server_start({})\`
 - Stop: \`mcp__secret-sync__secret_dev_server_stop({})\`
-${demoSection}
-### Allowed Bash Operations
+${demoSection}### Allowed Bash Operations
 You MAY use Bash for:
 - Git operations (status, diff, log — but NOT commit/push, which is project-manager's job)
 - File inspection (ls, cat — but prefer Read/Glob/Grep tools)
