@@ -191,6 +191,14 @@ export interface GetPageTextArgs {
   tabId: number;
 }
 
+export interface TreeElement {
+  role: string;
+  text: string;
+  ref: string;
+  attributes: string;
+  line: string;
+}
+
 export interface FormInputArgs {
   ref: string;
   value: string | boolean | number;
