@@ -32,7 +32,6 @@ export type {
   NavigateArgs,
   ReadPageArgs,
   GetPageTextArgs,
-  FindArgs,
   FormInputArgs,
   JavascriptToolArgs,
   ReadConsoleMessagesArgs,
