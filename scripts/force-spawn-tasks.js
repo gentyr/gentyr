@@ -22,14 +22,14 @@ import { execSync } from 'child_process';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Bridge mode prompt builder
-let buildBridgeMainTreePrompt;
+// Strict infra guidance prompt builder
+let buildStrictInfraGuidancePrompt;
 try {
-  const mod = await import(path.resolve(__dirname, '..', '.claude', 'hooks', 'lib', 'bridge-main-tree-prompt.js'));
-  buildBridgeMainTreePrompt = mod.buildBridgeMainTreePrompt;
+  const mod = await import(path.resolve(__dirname, '..', '.claude', 'hooks', 'lib', 'strict-infra-guidance-prompt.js'));
+  buildStrictInfraGuidancePrompt = mod.buildStrictInfraGuidancePrompt;
 } catch {
-  // Non-fatal: bridge mode will be unavailable
-  buildBridgeMainTreePrompt = null;
+  // Non-fatal: strict infra guidance will be unavailable
+  buildStrictInfraGuidancePrompt = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,11 +306,11 @@ This will automatically create a follow-up verification task.
 }
 
 function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
-  // Bridge mode: inject MCP-first infrastructure instructions when bridge_main_tree is set
-  const bridgeSection = (task.bridge_main_tree && worktreePath && buildBridgeMainTreePrompt)
-    ? buildBridgeMainTreePrompt(worktreePath, !!task.demo_involved)
+  // Strict infra guidance: inject MCP-only infrastructure instructions when strict_infra_guidance is set
+  const strictInfraSection = (task.strict_infra_guidance && worktreePath && buildStrictInfraGuidancePrompt)
+    ? buildStrictInfraGuidancePrompt(worktreePath, !!task.demo_involved)
     : '';
-  const appendBridge = (prompt) => bridgeSection ? `${prompt}${bridgeSection}` : prompt;
+  const appendBridge = (prompt) => strictInfraSection ? `${prompt}${strictInfraSection}` : prompt;
 
   const taskDetails = `[Automation][task-runner-${agentName}][AGENT:${agentId}] You are an orchestrator processing a TODO task.
 
@@ -565,7 +565,7 @@ async function main() {
       // Include in_progress tasks that may be orphaned (no running agent).
       const placeholders = config.taskIds.map(() => '?').join(',');
       candidates = db.prepare(`
-        SELECT id, section, title, description, priority, status, bridge_main_tree, demo_involved
+        SELECT id, section, title, description, priority, status, strict_infra_guidance, demo_involved
         FROM tasks
         WHERE status IN ('pending', 'in_progress')
           AND id IN (${placeholders})
@@ -577,7 +577,7 @@ async function main() {
       // Section mode: only pending tasks (in_progress are assumed to have agents)
       const placeholders = config.sections.map(() => '?').join(',');
       candidates = db.prepare(`
-        SELECT id, section, title, description, priority, status, bridge_main_tree, demo_involved
+        SELECT id, section, title, description, priority, status, strict_infra_guidance, demo_involved
         FROM tasks
         WHERE status = 'pending'
           AND section IN (${placeholders})
@@ -709,7 +709,7 @@ async function main() {
         projectDir: config.projectDir,
         priority: task.priority === 'urgent' ? 'urgent' : 'normal',
         extraEnv: {
-          ...(task.bridge_main_tree ? { GENTYR_BRIDGE_MAIN_TREE: 'true' } : {}),
+          ...(task.strict_infra_guidance ? { GENTYR_STRICT_INFRA_GUIDANCE: 'true' } : {}),
         },
         metadata: { taskId: task.id, section: task.section, worktreePath, source: 'force-spawn-tasks' },
         ttlMs: 30 * 60 * 1000,

@@ -46,7 +46,7 @@ export interface PersistentTaskItem {
   heartbeatAge: string;
   heartbeatStale: boolean;
   demoInvolved: boolean;
-  bridgeMainTree: boolean;
+  strictInfraGuidance: boolean;
   monitorSession: SessionItem;      // the monitor session (selectable)
   subTasks: SubTaskItem[];
 }

@@ -28,7 +28,7 @@ export const CreatePersistentTaskArgsSchema = z.object({
   outcome_criteria: z.string().optional().describe("What 'done' looks like — measurable success criteria"),
   user_prompt_uuids: z.array(z.string()).optional().describe('UUIDs of user prompts this task derives from'),
   demo_involved: z.boolean().optional().default(false).describe('Whether this task involves demo scenarios. When true, the monitor receives specialized demo validation instructions.'),
-  bridge_main_tree: z.boolean().optional().default(false).describe('Whether child agents need MCP-first infrastructure access (builds, demos, dev servers, secrets). When true, the monitor and child agents receive strict MCP-only infrastructure instructions.'),
+  strict_infra_guidance: z.boolean().optional().default(false).describe('When true, the monitor and all child agents that touch infrastructure (builds, demos, dev servers, secrets) receive strict MCP-only infrastructure instructions. Opt-in — not all tasks need this level of enforcement.'),
 });
 
 export const ActivatePersistentTaskArgsSchema = z.object({

@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * Bridge Mode Nudge Hook
+ * Strict-infra Nudge Hook
  *
- * PostToolUse on Bash. Detects bridge-enabled agents running infrastructure
- * commands via Bash and injects an MCP tool redirect into the AI context.
- * Fast-exits for non-bridge sessions (< 1ms overhead).
+ * PostToolUse on Bash. Redirects infrastructure Bash commands to their MCP
+ * equivalents when GENTYR_STRICT_INFRA_GUIDANCE=true is set.
+ * Fast-exits for non-strict-infra sessions (< 1ms overhead).
  */
 import { createInterface } from 'readline';
 
-// Fast exit: not a bridge session
-if (process.env.GENTYR_BRIDGE_MAIN_TREE !== 'true') {
+// Fast exit: not a strict-infra session
+if (process.env.GENTYR_STRICT_INFRA_GUIDANCE !== 'true') {
   process.stdout.write(JSON.stringify({ }));
   process.exit(0);
 }
@@ -41,8 +41,8 @@ rl.on('close', () => {
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PostToolUse',
-          additionalContext: `BRIDGE MODE VIOLATION: You ran "${command.substring(0, 80)}" via Bash. ` +
-            `This is PROHIBITED in bridge mode. ${match.msg} ` +
+          additionalContext: `STRICT INFRA VIOLATION: You ran "${command.substring(0, 80)}" via Bash. ` +
+            `This is PROHIBITED in strict-infra mode. ${match.msg} ` +
             `Review the "Infrastructure Access" section in your prompt for the correct MCP tools.`
         }
       }));

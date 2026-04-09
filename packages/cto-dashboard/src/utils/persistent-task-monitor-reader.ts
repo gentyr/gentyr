@@ -68,7 +68,7 @@ export interface PersistentTaskMonitorData {
   subTasks: PersistentTaskMonitorSubTask[];
   recentEvents: PersistentTaskMonitorEvent[];
   demoInvolved: boolean;
-  bridgeMainTree: boolean;
+  strictInfraGuidance: boolean;
   activatedAt: string | null;
   age: string;
 }
@@ -326,14 +326,15 @@ export function getPersistentTaskMonitorData(): PersistentTaskMonitorSectionData
         else monitorsDead++;
       }
 
-      // Parse metadata for demo_involved and bridge_main_tree flags
+      // Parse metadata for demo_involved and strict_infra_guidance flags
       let demoInvolved = false;
-      let bridgeMainTree = false;
+      let strictInfraGuidance = false;
       if (row.metadata) {
         try {
           const meta = JSON.parse(row.metadata);
           demoInvolved = meta.demo_involved === true;
-          bridgeMainTree = meta.bridge_main_tree === true;
+          // TODO(cleanup 2026-04-23): drop bridge_main_tree dual-read
+          strictInfraGuidance = meta.strict_infra_guidance === true || meta.bridge_main_tree === true;
         } catch {
           // Non-critical
         }
@@ -487,7 +488,7 @@ export function getPersistentTaskMonitorData(): PersistentTaskMonitorSectionData
         subTasks,
         recentEvents,
         demoInvolved,
-        bridgeMainTree,
+        strictInfraGuidance,
         activatedAt: row.activated_at,
         age: formatAge(row.activated_at),
       };

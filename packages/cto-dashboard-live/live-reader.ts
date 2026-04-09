@@ -461,7 +461,8 @@ function readPersistentTasks(runningSessions: SessionItem[]): PersistentTaskItem
         heartbeatAge: t.last_heartbeat ? ageStr(t.last_heartbeat) : 'never',
         heartbeatStale: hbMs > 15 * 60 * 1000,
         demoInvolved: meta.demo_involved === true,
-        bridgeMainTree: meta.bridge_main_tree === true,
+        // TODO(cleanup 2026-04-23): drop bridge_main_tree dual-read
+        strictInfraGuidance: meta.strict_infra_guidance === true || meta.bridge_main_tree === true,
         monitorSession,
         subTasks,
       };

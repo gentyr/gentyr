@@ -1,23 +1,26 @@
 /**
- * Bridge instructions injected into persistent monitor prompts
- * when the persistent task has bridge_main_tree: true.
+ * Strict infrastructure guidance block injected into persistent monitor prompts
+ * when the persistent task has strict_infra_guidance: true.
+ *
+ * Instructs the monitor to propagate the flag to child tasks that touch
+ * builds, demos, dev servers, or secrets.
  *
  * Shared between persistent-task-spawner.js, hourly-automation.js,
  * and session-queue.js (requeueDeadPersistentMonitor).
  *
- * @module lib/persistent-monitor-bridge-instructions
+ * @module lib/persistent-monitor-strict-infra-instructions
  */
 
 /**
- * Build bridge-mode instructions for the persistent monitor prompt.
+ * Build strict infrastructure guidance instructions for the persistent monitor prompt.
  * @returns {string} Markdown instruction block
  */
-export function buildPersistentMonitorBridgeInstructions() {
+export function buildPersistentMonitorStrictInfraInstructions() {
   return `
 
-## Infrastructure Bridge Mode (STRICT)
+## Strict Infrastructure Guidance (Child Task Propagation)
 
-This persistent task has bridge mode enabled. You MUST set \`bridge_main_tree: true\` on
+This persistent task has strict infrastructure guidance enabled. You MUST set \`strict_infra_guidance: true\` on
 ALL child tasks that touch infrastructure (builds, demos, dev servers, secrets).
 
 \`\`\`
@@ -27,7 +30,7 @@ mcp__todo-db__create_task({
   description: '... Use MCP tools for builds (secret_run_command) and demos (run_demo). Do NOT use Bash for infrastructure.',
   assigned_by: 'persistent-monitor',
   persistent_task_id: '<your task ID>',
-  bridge_main_tree: true
+  strict_infra_guidance: true
 })
 \`\`\`
 
@@ -54,11 +57,11 @@ mcp__todo-db__create_task({
   description: 'Run preflight_check, then run_demo for scenarios X, Y, Z. Use check_demo_result to verify. If headed, extract_video_frames at key moments for visual verification. Report results.',
   assigned_by: 'persistent-monitor',
   persistent_task_id: '<your task ID>',
-  bridge_main_tree: true
+  strict_infra_guidance: true
 })
 \`\`\`
 
-### When to set bridge_main_tree: true
+### When to set strict_infra_guidance: true
 - ANY task involving: demos, builds, dev servers, secrets, integration tests
 ### When to leave it false
 - Pure code-only changes with no infrastructure interaction

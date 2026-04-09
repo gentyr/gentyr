@@ -279,10 +279,10 @@ function createPersistentTask(args: CreatePersistentTaskArgs): object | ErrorRes
     process.stderr.write(`[persistent-task] Warning: failed to create parent todo task: ${message}\n`);
   }
 
-  // Build metadata JSON (stores demo_involved, bridge_main_tree, and future extensible config)
+  // Build metadata JSON (stores demo_involved, strict_infra_guidance, and future extensible config)
   const metadataObj: Record<string, unknown> = {};
   if (args.demo_involved) metadataObj.demo_involved = true;
-  if (args.bridge_main_tree) metadataObj.bridge_main_tree = true;
+  if (args.strict_infra_guidance) metadataObj.strict_infra_guidance = true;
   const metadata = Object.keys(metadataObj).length > 0 ? JSON.stringify(metadataObj) : null;
 
   // Insert persistent task row
@@ -383,15 +383,16 @@ function getPersistentTask(args: GetPersistentTaskArgs): object | ErrorResult {
     last_summary: task.last_summary,
   };
 
-  // Parse metadata for bridge_main_tree and demo_involved
-  let bridge_main_tree = false;
+  // Parse metadata for strict_infra_guidance and demo_involved
+  let strict_infra_guidance = false;
   let demo_involved = false;
   try {
     const meta = task.metadata ? JSON.parse(task.metadata) : {};
-    bridge_main_tree = meta.bridge_main_tree === true;
+    // TODO(cleanup 2026-04-23): drop bridge_main_tree dual-read
+    strict_infra_guidance = meta.strict_infra_guidance === true || meta.bridge_main_tree === true;
     demo_involved = meta.demo_involved === true;
   } catch { /* non-fatal */ }
-  result.bridge_main_tree = bridge_main_tree;
+  result.strict_infra_guidance = strict_infra_guidance;
   result.demo_involved = demo_involved;
 
   if (args.include_amendments) {
@@ -511,12 +512,13 @@ function listPersistentTasks(args: ListPersistentTasksArgs): object {
       }
     }
 
-    // Parse metadata for bridge_main_tree and demo_involved
-    let bridge_main_tree = false;
+    // Parse metadata for strict_infra_guidance and demo_involved
+    let strict_infra_guidance = false;
     let demo_involved = false;
     try {
       const meta = task.metadata ? JSON.parse(task.metadata) : {};
-      bridge_main_tree = meta.bridge_main_tree === true;
+      // TODO(cleanup 2026-04-23): drop bridge_main_tree dual-read
+      strict_infra_guidance = meta.strict_infra_guidance === true || meta.bridge_main_tree === true;
       demo_involved = meta.demo_involved === true;
     } catch { /* non-fatal */ }
 
@@ -534,7 +536,7 @@ function listPersistentTasks(args: ListPersistentTasksArgs): object {
       last_heartbeat: task.last_heartbeat,
       cycle_count: task.cycle_count,
       amendment_count: amendmentCount,
-      bridge_main_tree,
+      strict_infra_guidance,
       demo_involved,
       sub_task_counts: {
         total: subtaskLinks.length,

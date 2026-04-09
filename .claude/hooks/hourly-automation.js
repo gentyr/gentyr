@@ -35,7 +35,7 @@ import { auditEvent, cleanupAuditLog } from './lib/session-audit.js';
 import { debugLog, cleanupDebugLog } from './lib/debug-log.js';
 import { buildSpawnEnv } from './lib/spawn-env.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
-import { buildBridgeMainTreePrompt } from './lib/bridge-main-tree-prompt.js';
+import { buildStrictInfraGuidancePrompt } from './lib/strict-infra-guidance-prompt.js';
 // shouldAllowSpawn import removed — session queue handles memory pressure internally
 
 // Try to import better-sqlite3 for task runner
@@ -1223,7 +1223,7 @@ function getPendingTasksForRunner() {
     const oneHourAgo = nowTimestamp - 3600;
 
     const candidates = db.prepare(`
-      SELECT id, section, title, description, bridge_main_tree, demo_involved, persistent_task_id
+      SELECT id, section, title, description, strict_infra_guidance, demo_involved, persistent_task_id
       FROM tasks
       WHERE status = 'pending'
         AND section IN (${Object.keys(SECTION_AGENT_MAP).map(() => '?').join(',')})
@@ -1249,7 +1249,7 @@ function getUrgentPendingTasks() {
   try {
     const db = new Database(TODO_DB_PATH, { readonly: true });
     const candidates = db.prepare(`
-      SELECT id, section, title, description, bridge_main_tree, demo_involved, persistent_task_id
+      SELECT id, section, title, description, strict_infra_guidance, demo_involved, persistent_task_id
       FROM tasks
       WHERE status = 'pending'
         AND priority = 'urgent'
@@ -1389,11 +1389,11 @@ This will automatically create a follow-up verification task.
  * Build the prompt for a task runner agent
  */
 function buildTaskRunnerPrompt(task, agentName, agentId, worktreePath = null) {
-  // Bridge mode: inject MCP-first infrastructure instructions when bridge_main_tree is set
-  const bridgeSection = (task.bridge_main_tree && worktreePath)
-    ? buildBridgeMainTreePrompt(worktreePath, !!task.demo_involved)
+  // Strict infra guidance: inject MCP-only infrastructure instructions when strict_infra_guidance is set
+  const strictInfraSection = (task.strict_infra_guidance && worktreePath)
+    ? buildStrictInfraGuidancePrompt(worktreePath, !!task.demo_involved)
     : '';
-  const appendBridgeSection = (prompt) => bridgeSection ? `${prompt}${bridgeSection}` : prompt;
+  const appendBridgeSection = (prompt) => strictInfraSection ? `${prompt}${strictInfraSection}` : prompt;
 
   // Resolve user prompt references if available
   let userPromptBlock = '';
@@ -1645,7 +1645,7 @@ function spawnTaskAgent(task) {
     extraEnv: {
       ...resolvedCredentials,
       CLAUDE_PROJECT_DIR: PROJECT_DIR,
-      ...(task.bridge_main_tree ? { GENTYR_BRIDGE_MAIN_TREE: 'true' } : {}),
+      ...(task.strict_infra_guidance ? { GENTYR_STRICT_INFRA_GUIDANCE: 'true' } : {}),
     },
     metadata: { taskId: task.id, section: task.section, worktreePath },
     cwd: worktreePath,

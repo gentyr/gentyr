@@ -20,7 +20,7 @@ interface PersistentTaskGroupProps {
 export function PersistentTaskGroup({ task, monitorSelected, selectedChildId, width }: PersistentTaskGroupProps): React.ReactElement {
   const flags: string[] = [];
   if (task.demoInvolved) flags.push('demo');
-  if (task.bridgeMainTree) flags.push('bridge');
+  if (task.strictInfraGuidance) flags.push('strict-infra');
   const flagStr = flags.length > 0 ? ` [${flags.join(',')}]` : '';
   const titleText = `${truncate(task.title, width - 30)} ${task.status.toUpperCase()} (${task.age})${flagStr}`;
 

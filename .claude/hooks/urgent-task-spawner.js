@@ -24,7 +24,7 @@ import { shouldAllowSpawn } from './lib/memory-pressure.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { enqueueSession, preemptForCtoTask } from './lib/session-queue.js';
 import { debugLog } from './lib/debug-log.js';
-import { buildBridgeMainTreePrompt } from './lib/bridge-main-tree-prompt.js';
+import { buildStrictInfraGuidancePrompt } from './lib/strict-infra-guidance-prompt.js';
 
 // Try to import better-sqlite3 for DB access
 let Database = null;
@@ -390,12 +390,12 @@ Use the Task tool to spawn the appropriate sub-agent: \`Task(subagent_type='${ag
     }
   }
 
-  // Bridge mode: inject MCP-first infrastructure instructions when bridge_main_tree is set
-  const bridgeSection = (task.bridge_main_tree && worktreePath)
-    ? buildBridgeMainTreePrompt(worktreePath, !!task.demo_involved)
+  // Strict infra guidance: inject MCP-only infrastructure instructions when strict_infra_guidance is set
+  const strictInfraSection = (task.strict_infra_guidance && worktreePath)
+    ? buildStrictInfraGuidancePrompt(worktreePath, !!task.demo_involved)
     : '';
 
-  return `${taskDetails}\n${userPromptBlock}\n${action}\n\n${completionBlock}${bridgeSection}`;
+  return `${taskDetails}\n${userPromptBlock}\n${action}\n\n${completionBlock}${strictInfraSection}`;
 }
 
 /**
@@ -446,7 +446,7 @@ async function spawnTaskAgent(task) {
       projectDir: PROJECT_DIR,
       worktreePath: worktreePath || null,
       extraEnv: {
-        ...(task.bridge_main_tree ? { GENTYR_BRIDGE_MAIN_TREE: 'true' } : {}),
+        ...(task.strict_infra_guidance ? { GENTYR_STRICT_INFRA_GUIDANCE: 'true' } : {}),
       },
       metadata: { taskId: task.id, section: task.section, worktreePath, urgent: true, assignedBy: task.assigned_by },
     });
@@ -585,9 +585,9 @@ process.stdin.on('end', async () => {
     debugLog('urgent-task-spawner', 'task_marked_in_progress', { taskId });
 
     // Build task object for spawn (include assigned_by for CTO priority detection)
-    const bridgeMainTree = toolInput.bridge_main_tree === true;
+    const strictInfraGuidance = toolInput.strict_infra_guidance === true;
     const demoInvolved = toolInput.demo_involved === true;
-    const task = { id: taskId, section, title, description, assigned_by: assignedBy, bridge_main_tree: bridgeMainTree, demo_involved: demoInvolved ? 1 : 0 };
+    const task = { id: taskId, section, title, description, assigned_by: assignedBy, strict_infra_guidance: strictInfraGuidance, demo_involved: demoInvolved ? 1 : 0 };
 
     const spawnResult = await spawnTaskAgent(task);
     debugLog('urgent-task-spawner', 'spawn_result', { taskId, result: spawnResult === true ? 'spawned' : spawnResult === 'queued' ? 'queued' : 'failed' });
