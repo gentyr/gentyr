@@ -8,11 +8,13 @@
 import { ChromeSocketClient } from './client.js';
 import {
   ChromeNotConnectedError,
+  ElementNotFoundError,
   NavigationTimeoutError,
   ToolExecutionError,
 } from './errors.js';
 import type {
   ChromeActionsOptions,
+  TreeElement,
   GifAction,
   GifExportOptions,
   McpContent,
@@ -793,6 +795,121 @@ export class ChromeActions {
    */
   async settle(ms: number): Promise<void> {
     await new Promise<void>((r) => setTimeout(r, ms));
+  }
+
+  // ============================================================================
+  // Deterministic Element Finding (accessibility tree parsing, no LLM)
+  // ============================================================================
+
+  /**
+   * Parse the accessibility tree text from readPage() into structured elements.
+   */
+  private parseAccessibilityTree(tree: string): TreeElement[] {
+    const elements: TreeElement[] = [];
+    // Each line: optional indent, role, "text label", [ref_N], optional attributes
+    const lineRegex = /^\s*(\w+)\s+"([^"]*)"\s+\[ref_(\d+)\](.*)$/;
+    for (const line of tree.split('\n')) {
+      const m = line.match(lineRegex);
+      if (m) {
+        elements.push({
+          role: m[1],
+          text: m[2],
+          ref: `ref_${m[3]}`,
+          attributes: m[4].trim(),
+          line: line.trim(),
+        });
+      }
+    }
+    return elements;
+  }
+
+  /**
+   * Find elements on the page by matching text, role, or attributes (case-insensitive substring).
+   * Deterministic — uses readPage() accessibility tree, no LLM.
+   */
+  async findElements(
+    query: string,
+    opts?: { filter?: 'interactive' | 'all'; tabId?: number },
+  ): Promise<TreeElement[]> {
+    await this.ensureReady();
+    const tree = await this.readPage({
+      filter: opts?.filter ?? 'interactive',
+      tabId: opts?.tabId,
+    });
+    const parsed = this.parseAccessibilityTree(tree);
+    const q = query.toLowerCase();
+    return parsed.filter(
+      (el) =>
+        el.text.toLowerCase().includes(q) ||
+        el.role.toLowerCase().includes(q) ||
+        el.attributes.toLowerCase().includes(q),
+    );
+  }
+
+  /**
+   * Find an element by text, scroll it into view, and click it.
+   * Deterministic — uses readPage() accessibility tree, no LLM.
+   * Throws ElementNotFoundError if no match is found.
+   */
+  async clickByText(text: string, opts?: { tabId?: number }): Promise<void> {
+    const matches = await this.findElements(text, { tabId: opts?.tabId });
+    if (matches.length === 0) {
+      throw new ElementNotFoundError(text);
+    }
+    const ref = matches[0].ref;
+    const tabId = this.resolveTabId(opts?.tabId);
+    await this.scrollTo({ ref }, tabId);
+    await this.click({ ref }, { tabId });
+  }
+
+  /**
+   * Find an input element by label/placeholder and fill it with a value.
+   * Deterministic — uses readPage() accessibility tree, no LLM.
+   * Throws ElementNotFoundError if no matching input is found.
+   */
+  async fillInput(
+    labelOrPlaceholder: string,
+    value: string | boolean | number,
+    opts?: { tabId?: number },
+  ): Promise<void> {
+    const INPUT_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton', 'slider']);
+    const matches = await this.findElements(labelOrPlaceholder, { tabId: opts?.tabId });
+    const input = matches.find((el) => INPUT_ROLES.has(el.role));
+    if (!input) {
+      throw new ElementNotFoundError(labelOrPlaceholder);
+    }
+    await this.formInput(input.ref, value, this.resolveTabId(opts?.tabId));
+  }
+
+  /**
+   * Wait until an element matching the query appears on the page.
+   * Deterministic — polls readPage() accessibility tree, no LLM.
+   * Throws NavigationTimeoutError after timeoutMs.
+   */
+  async waitForElement(
+    query: string,
+    opts?: { timeoutMs?: number; pollIntervalMs?: number; tabId?: number },
+  ): Promise<void> {
+    const timeoutMs = opts?.timeoutMs ?? 30_000;
+    const pollIntervalMs = opts?.pollIntervalMs ?? 1_000;
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      try {
+        const matches = await this.findElements(query, { tabId: opts?.tabId });
+        if (matches.length > 0) return;
+      } catch (err) {
+        if (!(err instanceof ElementNotFoundError) && !(err instanceof ToolExecutionError)) {
+          throw err;
+        }
+      }
+
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await new Promise((r) => setTimeout(r, Math.min(pollIntervalMs, remaining)));
+    }
+
+    throw new NavigationTimeoutError(query, timeoutMs);
   }
 
   // ============================================================================
