@@ -202,6 +202,9 @@ function scanAndRevive() {
     // Skip if this agent is suspended (preempted by a CTO task) — it will be re-enqueued automatically
     if (isAgentSuspended(agent.id)) {
       log(`Dead agent ${agent.id} is suspended in queue (preempted by CTO task), skipping revival`);
+      if (auditEvent) {
+        try { auditEvent('revival_skipped_suspended', { agent_id: agent.id }); } catch {}
+      }
       continue;
     }
 
@@ -224,6 +227,9 @@ function scanAndRevive() {
         log(`  ${memCheck.reason}`);
         log(`  Revival queued — will retry when memory pressure drops (next scan in ${POLL_INTERVAL_MS / 1000}s)`);
         agent.memoryBlocked = true;
+        if (auditEvent) {
+          try { auditEvent('revival_blocked_memory', { agent_id: agent.id }); } catch {}
+        }
         continue;
       }
       if (memCheck.reason) log(`  ${memCheck.reason}`);
@@ -260,6 +266,9 @@ function scanAndRevive() {
             const writeDb = new Database(todoDbPath);
             writeDb.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ?").run(taskId);
             writeDb.close();
+            if (auditEvent) {
+              try { auditEvent('task_reset_pre_revival', { agent_id: agent.id, task_id: taskId }); } catch {}
+            }
           }
         }
       } catch { /* non-fatal */ }
@@ -331,6 +340,9 @@ function scanAndRevive() {
           writeDb.prepare("UPDATE tasks SET status = 'in_progress', started_at = ?, started_timestamp = ? WHERE id = ?")
             .run(nowDate.toISOString(), Math.floor(nowDate.getTime() / 1000), taskId);
           writeDb.close();
+          if (auditEvent) {
+            try { auditEvent('task_resumed_post_revival', { agent_id: newAgentId || agent.id, task_id: taskId }); } catch {}
+          }
         } catch { /* non-fatal */ }
       }
       // Drain the session queue: other queued sessions may now fit under the concurrency limit
