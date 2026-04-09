@@ -720,11 +720,11 @@ Sole authority for demo lifecycle work. Handles prerequisite registration, scena
 
 ## Chrome Browser Automation
 
-The chrome-bridge MCP server provides 17 tools for browser automation. 15 tools communicate via local Unix domain socket using the Claude for Chrome extension. 2 tools (`list_chrome_extensions`, `reload_chrome_extension`) are server-side AppleScript-based tools (macOS only) that operate without a socket connection, allowing Chrome extension management independently of whether the extension is connected.
+The chrome-bridge MCP server provides 19 tools for browser automation. 17 tools communicate via local Unix domain socket using the Claude for Chrome extension. 2 tools (`list_chrome_extensions`, `reload_chrome_extension`) are server-side AppleScript-based tools (macOS only) that operate without a socket connection, allowing Chrome extension management independently of whether the extension is connected.
 
 ### Gentyr Browser Automation Extension
 
-A stripped-down Chrome extension (`tools/chrome-extension/`) for headless browser automation. Forked from Claude Chrome Extension v1.0.66 with all authentication, permission prompts, side panel UI, and analytics removed. All 15 socket-based browser automation tools work identically via auto-approved permissions (`source:'bridge'` + `permissionMode:'skip_all_permission_checks'`).
+A stripped-down Chrome extension (`tools/chrome-extension/`) for headless browser automation. Forked from Claude Chrome Extension v1.0.66 with all authentication, permission prompts, side panel UI, and analytics removed. All 17 socket-based browser automation tools work identically via auto-approved permissions (`source:'bridge'` + `permissionMode:'skip_all_permission_checks'`).
 
 **Extension ID**: `dojoamdbiafnflmaknagfcakgpdkmpmn`
 
@@ -742,7 +742,7 @@ The extension must be loaded in Chrome as an unpacked extension from `tools/chro
 
 ### @gentyr/chrome-actions Package
 
-TypeScript bindings for the Chrome Extension's Unix domain socket protocol. Located at `packages/chrome-actions/`. Published as `@gentyr/chrome-actions`. Provides typed methods for all 15 socket-based chrome-bridge MCP tools plus convenience helpers (`clickByText`, `fillInput`, `waitForUrl`, `waitForElement`). Lets target project test code (`.demo.ts` files) directly control Chrome without Claude in the loop. The 2 server-side AppleScript tools (`list_chrome_extensions`, `reload_chrome_extension`) are not included here — they are invoked directly via MCP. Built to `dist/` (gitignored).
+TypeScript bindings for the Chrome Extension's Unix domain socket protocol. Located at `packages/chrome-actions/`. Published as `@gentyr/chrome-actions`. Provides typed methods for all 17 socket-based chrome-bridge MCP tools plus the `waitForUrl` convenience helper. Lets target project test code (`.demo.ts` files) directly control Chrome without Claude in the loop. The 2 server-side AppleScript tools (`list_chrome_extensions`, `reload_chrome_extension`) are not included here — they are invoked directly via MCP. Built to `dist/` (gitignored).
 
 ```bash
 cd packages/chrome-actions && npm run build

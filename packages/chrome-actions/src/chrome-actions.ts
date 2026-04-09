@@ -8,7 +8,6 @@
 import { ChromeSocketClient } from './client.js';
 import {
   ChromeNotConnectedError,
-  ElementNotFoundError,
   NavigationTimeoutError,
   ToolExecutionError,
 } from './errors.js';
@@ -268,19 +267,7 @@ export class ChromeActions {
   }
 
   /**
-   * Find elements on the page using natural language.
-   */
-  async find(query: string, tabId?: number): Promise<string> {
-    await this.ensureReady();
-    const result = await this.client.executeTool('find', {
-      query,
-      tabId: this.resolveTabId(tabId),
-    });
-    return this.extractText(result, 'find');
-  }
-
-  /**
-   * Set a value in a form element using its ref from read_page or find.
+   * Set a value in a form element using its ref from read_page.
    */
   async formInput(ref: string, value: string | boolean | number, tabId?: number): Promise<string> {
     await this.ensureReady();
@@ -735,45 +722,6 @@ export class ChromeActions {
   // ============================================================================
 
   /**
-   * Find an element by text/description, scroll it into view, and click it.
-   * Throws ElementNotFoundError if no match is found.
-   */
-  async clickByText(text: string, opts?: { tabId?: number }): Promise<void> {
-    await this.ensureReady();
-    const tabId = this.resolveTabId(opts?.tabId);
-
-    const findText = await this.find(text, tabId);
-    const ref = this.extractFirstRef(findText);
-    if (!ref) {
-      throw new ElementNotFoundError(text);
-    }
-
-    await this.scrollTo({ ref }, tabId);
-    await this.click({ ref }, { tabId });
-  }
-
-  /**
-   * Find an input element by label/placeholder and fill it with a value.
-   * Throws ElementNotFoundError if no match is found.
-   */
-  async fillInput(
-    labelOrPlaceholder: string,
-    value: string | boolean | number,
-    opts?: { tabId?: number },
-  ): Promise<void> {
-    await this.ensureReady();
-    const tabId = this.resolveTabId(opts?.tabId);
-
-    const findText = await this.find(labelOrPlaceholder, tabId);
-    const ref = this.extractFirstRef(findText);
-    if (!ref) {
-      throw new ElementNotFoundError(labelOrPlaceholder);
-    }
-
-    await this.formInput(ref, value, tabId);
-  }
-
-  /**
    * Wait until the active tab's URL matches the given pattern.
    * Throws NavigationTimeoutError after timeoutMs.
    */
@@ -823,38 +771,6 @@ export class ChromeActions {
   }
 
   /**
-   * Wait until an element matching the query becomes findable on the page.
-   * Throws NavigationTimeoutError after timeoutMs.
-   */
-  async waitForElement(
-    query: string,
-    opts?: { timeoutMs?: number; pollIntervalMs?: number; tabId?: number },
-  ): Promise<void> {
-    const timeoutMs = opts?.timeoutMs ?? 30_000;
-    const pollIntervalMs = opts?.pollIntervalMs ?? 1_000;
-    const tabId = this.resolveTabId(opts?.tabId);
-    const deadline = Date.now() + timeoutMs;
-
-    while (Date.now() < deadline) {
-      try {
-        const findText = await this.find(query, tabId);
-        const ref = this.extractFirstRef(findText);
-        if (ref) return;
-      } catch (err) {
-        if (!(err instanceof ElementNotFoundError) && !(err instanceof ToolExecutionError)) {
-          throw err;
-        }
-      }
-
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) break;
-      await new Promise((r) => setTimeout(r, Math.min(pollIntervalMs, remaining)));
-    }
-
-    throw new NavigationTimeoutError(query, timeoutMs);
-  }
-
-  /**
    * Take a screenshot and return the base64 data and MIME type.
    */
   async getScreenshot(tabId?: number): Promise<{ data: string; mimeType: string }> {
@@ -881,34 +797,4 @@ export class ChromeActions {
 
   // ============================================================================
   // Internal Helpers
-  // ============================================================================
-
-  /**
-   * Parse the text output from `find` to extract the first element ref.
-   * The find tool returns text like:
-   *   "Found 3 results:\n1. ref_1 - Submit button\n2. ref_2 - Cancel button\n..."
-   * or JSON with element objects containing ref fields.
-   */
-  private extractFirstRef(findOutput: string): string | null {
-    if (!findOutput) return null;
-
-    // Try to parse as JSON first
-    try {
-      const parsed = JSON.parse(findOutput) as unknown;
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        const first = parsed[0] as Record<string, unknown>;
-        if (typeof first['ref'] === 'string') return first['ref'];
-        if (typeof first['ref_id'] === 'string') return first['ref_id'];
-      }
-    } catch {
-      // Not JSON — parse text format
-    }
-
-    // Look for ref_NNN pattern (e.g., "ref_1", "ref_42")
-    const refMatch = findOutput.match(/\bref_\d+\b/);
-    if (refMatch) return refMatch[0];
-
-    // No ref found — element not found
-    return null;
-  }
 }

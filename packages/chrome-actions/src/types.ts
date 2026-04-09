@@ -191,11 +191,6 @@ export interface GetPageTextArgs {
   tabId: number;
 }
 
-export interface FindArgs {
-  query: string;
-  tabId: number;
-}
-
 export interface FormInputArgs {
   ref: string;
   value: string | boolean | number;
