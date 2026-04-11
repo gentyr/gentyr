@@ -15,6 +15,7 @@ import path from 'path';
 import { execSync, execFileSync } from 'child_process';
 import { detectBaseBranch as detectBaseBranchShared } from './feature-branch-helper.js';
 import { allocatePortBlock, releasePortBlock, cleanupStaleAllocations } from './port-allocator.js';
+import { killProcessesInDirectory } from './process-tree.js';
 
 // Lazy-loaded Database for suspended worktree check
 let _Database = null;
@@ -500,6 +501,22 @@ export function removeWorktree(branchName) {
     console.error('[worktree-manager] Warning: port release failed:', err.message);
   }
 
+  // Kill all processes with open files in this worktree before removal
+  try {
+    const { killed, errors } = killProcessesInDirectory(worktreePath);
+    if (killed.length > 0) {
+      console.error(`[worktree-manager] Killed ${killed.length} process group(s) in ${worktreePath}: ${killed.join(', ')}`);
+      // Brief wait for processes to release file handles
+      const waitUntil = Date.now() + 1000;
+      while (Date.now() < waitUntil) { /* busy-wait 1s */ }
+    }
+    for (const err of errors) {
+      console.error(`[worktree-manager] Warning: ${err}`);
+    }
+  } catch (err) {
+    console.error(`[worktree-manager] Warning: process cleanup failed: ${err.message}`);
+  }
+
   // Before removing, check if core.hooksPath points into this worktree and reset
   try {
     const hooksPath = execSync('git config --local --get core.hooksPath', GIT_OPTS).trim();
@@ -768,7 +785,7 @@ export function cleanupMergedWorktrees() {
   // These are remnants from `git worktree remove` leaving behind untracked dirs.
   if (fs.existsSync(WORKTREES_DIR)) {
     try {
-      const registeredPaths = new Set(worktrees.map(wt => wt.path));
+      const registeredPaths = new Set(managed.map(wt => wt.path));
       for (const entry of fs.readdirSync(WORKTREES_DIR)) {
         const dirPath = path.join(WORKTREES_DIR, entry);
         if (!fs.statSync(dirPath).isDirectory()) continue;

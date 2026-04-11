@@ -2297,3 +2297,72 @@ describe('Health Monitor Credential Preflight', () => {
     );
   });
 });
+
+// ============================================================================
+// reapOrphanProcesses() structural validation
+// ============================================================================
+
+describe('reapOrphanProcesses() — source structure', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should define a reapOrphanProcesses function', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    assert.match(code, /function reapOrphanProcesses\b/,
+      'Must define reapOrphanProcesses function');
+  });
+
+  it('should import killProcessGroup from process-tree.js', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    assert.ok(code.includes('killProcessGroup') && code.includes('process-tree.js'),
+      'hourly-automation.js must import killProcessGroup from process-tree.js');
+  });
+
+  it('should use lsof -d cwd to discover orphan process CWDs', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    assert.match(code, /lsof.*-d.*cwd|-d.*cwd.*lsof/,
+      'reapOrphanProcesses must use lsof -d cwd for CWD discovery');
+  });
+
+  it('should check that the CWD no longer exists before killing', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    // Must verify the worktree directory is gone before sending a kill signal
+    assert.ok(
+      code.includes('!fs.existsSync(cwd)') || code.includes('existsSync') && code.includes('reapOrphan'),
+      'reapOrphanProcesses must verify directory no longer exists before killing'
+    );
+  });
+
+  it('should only target processes inside .claude/worktrees/', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    assert.ok(code.includes('worktreesDir') || code.includes('.claude/worktrees'),
+      'reapOrphanProcesses must scope kills to .claude/worktrees/ directory');
+  });
+
+  it('should call killProcessGroup (not process.kill) for orphan kills', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    // reapOrphanProcesses must delegate to killProcessGroup for group-level termination
+    const fnMatch = code.match(/function reapOrphanProcesses\b[\s\S]*?(?=\n(?:async )?function |\n\/\/ ====)/);
+    assert.ok(fnMatch, 'reapOrphanProcesses function body must be findable');
+    const fnBody = fnMatch[0];
+    assert.ok(fnBody.includes('killProcessGroup('),
+      'reapOrphanProcesses must use killProcessGroup() not bare process.kill()');
+  });
+
+  it('should return the count of killed processes', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const fnMatch = code.match(/function reapOrphanProcesses\b[\s\S]*?(?=\n(?:async )?function |\n\/\/ ====)/);
+    assert.ok(fnMatch, 'reapOrphanProcesses function body must be findable');
+    const fnBody = fnMatch[0];
+    assert.ok(fnBody.includes('return') && fnBody.includes('killed'),
+      'reapOrphanProcesses must return the count of killed processes');
+  });
+
+  it('should be registered with runIfDue for periodic execution', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    // The function must be registered via runIfDue for cooldown-gated periodic execution
+    assert.ok(
+      code.includes("runIfDue") && code.includes("reapOrphanProcesses"),
+      'reapOrphanProcesses must be scheduled via runIfDue'
+    );
+  });
+});

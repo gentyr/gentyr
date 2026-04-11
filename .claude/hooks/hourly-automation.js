@@ -24,6 +24,7 @@ import { enqueueSession, drainQueue } from './lib/session-queue.js';
 import { getCooldown } from './config-reader.js';
 import { runFeedbackPipeline, startFeedbackRun, personaRanRecently } from './feedback-orchestrator.js';
 import { createWorktree, cleanupMergedWorktrees, listWorktrees, removeWorktree } from './lib/worktree-manager.js';
+import { killProcessGroup } from './lib/process-tree.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
 import { detectStaleWork, formatReport } from './stale-work-detector.js';
 import { reviveInterruptedSessions } from './session-reviver.js';
@@ -1700,13 +1701,17 @@ function reapStaleWorktrees() {
     }
     if (!createdAt || (now - createdAt) < STALE_THRESHOLD_MS) continue;
 
-    // Skip if active processes detected
+    // Check for active processes — removeWorktree() will kill them before removal,
+    // but log a warning so we have visibility into force-killed processes
     try {
       const result = execFileSync('lsof', ['+D', wt.path, '-t'], {
         encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
       });
-      if (result.trim().length > 0) continue; // in use
-    } catch { /* lsof returned no results — safe to reap */ }
+      if (result.trim().length > 0) {
+        const pids = result.trim().split('\n').filter(Boolean);
+        log(`Stale reaper: worktree ${wt.branch} has ${pids.length} active process(es) — will be killed during removal`);
+      }
+    } catch { /* lsof returned no results or errored — proceed */ }
 
     // Skip if uncommitted changes (rescue handles those)
     try {
@@ -1730,6 +1735,68 @@ function reapStaleWorktrees() {
   }
 
   return reaped;
+}
+
+// =========================================================================
+// ORPHAN PROCESS REAPER
+// =========================================================================
+
+/**
+ * Find and kill orphaned node/esbuild processes whose CWD is a
+ * non-existent worktree path. These are children that survived
+ * after their parent session was killed and worktree was removed.
+ *
+ * @returns {number} Number of orphan processes killed
+ */
+function reapOrphanProcesses() {
+  let killed = 0;
+  const worktreesDir = path.join(PROJECT_DIR, '.claude', 'worktrees');
+
+  try {
+    // Get all node/esbuild processes and their CWDs
+    const psOutput = execFileSync('ps', ['-eo', 'pid,command'], {
+      encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    const candidatePids = [];
+    for (const line of psOutput.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      // Match node, esbuild, vitest processes
+      if (!/\b(node|esbuild|vitest)\b/.test(trimmed)) continue;
+      const pidMatch = trimmed.match(/^(\d+)/);
+      if (!pidMatch) continue;
+      candidatePids.push(parseInt(pidMatch[1], 10));
+    }
+
+    for (const pid of candidatePids) {
+      if (pid === process.pid) continue; // Never kill ourselves
+      try {
+        // Get the process's CWD via lsof
+        const lsofOutput = execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], {
+          encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'],
+        });
+
+        // Parse lsof output: lines starting with 'n' contain the path
+        const cwdLine = lsofOutput.split('\n').find(l => l.startsWith('n'));
+        if (!cwdLine) continue;
+        const cwd = cwdLine.slice(1); // Remove 'n' prefix
+
+        // Check if the CWD is inside a worktree directory that no longer exists
+        if (cwd.startsWith(worktreesDir) && !fs.existsSync(cwd)) {
+          log(`Orphan reaper: killing PID ${pid} (CWD: ${cwd} no longer exists)`);
+          killProcessGroup(pid);
+          killed++;
+        }
+      } catch (_) {
+        // lsof or kill failed — process may have already exited
+      }
+    }
+  } catch (err) {
+    log(`Orphan reaper: scan failed (non-fatal): ${err.message}`);
+  }
+
+  return killed;
 }
 
 // =========================================================================
@@ -3664,6 +3731,27 @@ async function main() {
         log(`Stale worktree reaper: removed ${reaped} stale worktree(s).`);
       } else {
         log('Stale worktree reaper: no stale worktrees to reap.');
+      }
+    },
+  });
+
+  // =========================================================================
+  // ORPHAN PROCESS REAPER (60min cooldown)
+  // Kills node/esbuild processes whose CWD is a non-existent worktree path
+  // =========================================================================
+  await runIfDue('orphan_process_reaper', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastOrphanProcessReaper',
+    configToggle: 'orphanProcessReaperEnabled',
+    config,
+    label: 'Orphan process reaper',
+    fn: async () => {
+      log('Orphan process reaper: scanning for orphaned processes...');
+      const killed = reapOrphanProcesses();
+      if (killed > 0) {
+        log(`Orphan process reaper: killed ${killed} orphan process(es).`);
+      } else {
+        log('Orphan process reaper: no orphan processes found.');
       }
     },
   });
