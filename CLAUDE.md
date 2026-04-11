@@ -21,7 +21,7 @@ Installs framework symlinks (via `node_modules/gentyr`), configs, husky hooks, b
 npx gentyr sync
 ```
 
-Rebuilds MCP servers, re-merges settings.json, regenerates .mcp.json, and deploys staged hooks. Also runs automatically on `SessionStart` when framework version or config hash changes.
+Rebuilds MCP servers, re-merges settings.json, regenerates .mcp.json, and deploys staged hooks. Also runs automatically on `SessionStart` when framework version or config hash changes. When `settings.json` is root-owned and a sync is needed, the SessionStart hook detects any stale hook file references (hooks listed in `settings.json` that no longer exist on disk) and emits an escalated warning to run `npx gentyr sync` immediately.
 
 ### Migrate from legacy install
 
@@ -132,7 +132,7 @@ Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/
 
 **Abandoned worktree rescue**: `rescueAbandonedWorktrees()` in `hourly-automation.js` detects worktrees that have uncommitted changes but no active agent process, then spawns a project-manager to commit, push, and merge the orphaned work. Runs every **15 minutes** (`getCooldown('abandoned_worktree_rescue', 15)`).
 
-**Stale worktree reaper**: `reapStaleWorktrees()` in `hourly-automation.js` removes worktrees older than 4 hours with no active process and no uncommitted changes. Runs every **20 minutes** (`getCooldown('stale_worktree_reaper', 20)`). Dirty worktrees are skipped (rescue handles those).
+**Stale worktree reaper**: `reapStaleWorktrees()` in `hourly-automation.js` removes worktrees older than 4 hours with no uncommitted changes. Runs every **20 minutes** (`getCooldown('stale_worktree_reaper', 20)`). Dirty worktrees are skipped (rescue handles those). Active processes are killed by `removeWorktree()` before removal — no pre-check skip needed.
 
 **Reactive worktree cleanup**: `reapSyncPass()` in `session-reaper.js` automatically cleans up worktrees when it detects a dead agent PID. If the worktree has no uncommitted changes, `removeWorktree()` is called immediately (seconds, not minutes). Dirty worktrees are left for `rescueAbandonedWorktrees()`.
 
@@ -140,7 +140,11 @@ Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/
 
 **Worktree env var injection**: `spawnQueueItem()` in `session-queue.js` injects `CLAUDE_WORKTREE_DIR` into the spawned agent's environment when `worktree_path` is set. This makes worktree context available to all hooks (PostToolUse, PreToolUse, Stop) via `process.env.CLAUDE_WORKTREE_DIR`. Hooks should also include a CWD-based fallback (`process.cwd().match(/\.claude\/worktrees\//)`) for robustness.
 
-**Active session protection**: `cleanupMergedWorktrees()` in `worktree-manager.js` uses `isWorktreeInUse()` (`lsof +D`) to detect open file descriptors before removing a worktree. Worktrees with active processes are skipped to prevent CWD eviction of live sessions. The `worktree-cwd-guard.js` hook additionally detects stale CWD at tool-call time and blocks Bash execution with a recovery hint if the worktree directory no longer exists.
+**Process group cleanup** (`lib/process-tree.js`): Shared module with three exports — `killProcessGroup(pid, signal)` (synchronous, sends signal to `-pid` process group with EPERM fallback to lead PID), `killProcessGroupEscalated(pid)` (async SIGTERM→SIGKILL with 5s wait), and `killProcessesInDirectory(dirPath)` (uses `lsof +D` to find all PIDs with open files in a directory, deduplicates by process group, kills each group). Used by `removeWorktree()` and `reapOrphanProcesses()` to ensure child processes (esbuild, vitest, dev servers) spawned with `detached: true` are fully terminated.
+
+**Active session protection**: `cleanupMergedWorktrees()` in `worktree-manager.js` still checks `isWorktreeInUse()` (`lsof +D`) before removing merged worktrees to protect live sessions from CWD eviction. `removeWorktree()` (called by stale reaper and reactive cleanup) now uses `killProcessesInDirectory()` to kill all processes with open files in the worktree before attempting removal, rather than skipping. The `worktree-cwd-guard.js` hook additionally detects stale CWD at tool-call time and blocks Bash execution with a recovery hint if the worktree directory no longer exists.
+
+**Orphan process reaper**: `reapOrphanProcesses()` in `hourly-automation.js` finds `node`/`esbuild`/`vitest` processes whose CWD (resolved via `lsof -d cwd`) is inside `.claude/worktrees/` but the directory no longer exists, then kills their process groups. Runs every **60 minutes** (`getCooldown('orphan_process_reaper', 60)`). Guards against processes that survived after their parent session was killed and their worktree removed.
 
 **Session activity broadcasting**: `scripts/session-activity-broadcaster.js` daemon (launchd KeepAlive) polls every 5 minutes, reads all running session JSONL tails, generates per-session summaries via `claude -p --model haiku`, creates a unified super-summary, stores both in `.claude/state/session-activity.db`, and broadcasts the super-summary to all agents. Agents access detailed summaries via `session-activity` MCP tools: `get_session_summary` (by UUID), `list_session_summaries` (by session/agent ID), `list_project_summaries`, `get_project_summary`. No DB cleanup — summaries are stored long-term.
 

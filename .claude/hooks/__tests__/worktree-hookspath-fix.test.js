@@ -161,9 +161,17 @@ describe('removeWorktree() core.hooksPath reset', () => {
       'utf8',
     );
 
-    // The hooksPath check must appear BEFORE the worktree remove command
-    const hooksPathIdx = code.indexOf("git config --local --get core.hooksPath");
-    const removeIdx = code.indexOf("git worktree remove");
+    // Scope the ordering check to removeWorktree()'s function body.
+    // The file contains multiple `git worktree remove` calls (createWorktree
+    // also uses it on rollback paths), so a global indexOf produces a false
+    // negative when a pre-removal cleanup step (killProcessesInDirectory) was
+    // inserted before the hooksPath check inside removeWorktree().
+    const fnMatch = code.match(/export function removeWorktree\b[\s\S]*?(?=\nexport |\n\/\/ ====)/);
+    assert.ok(fnMatch, 'removeWorktree function must exist in worktree-manager.js');
+    const fnBody = fnMatch[0];
+
+    const hooksPathIdx = fnBody.indexOf("git config --local --get core.hooksPath");
+    const removeIdx = fnBody.indexOf("git worktree remove");
     assert.ok(hooksPathIdx > 0, 'Must read core.hooksPath in removeWorktree');
     assert.ok(removeIdx > 0, 'Must have git worktree remove command');
     assert.ok(hooksPathIdx < removeIdx,
@@ -202,6 +210,61 @@ describe('removeWorktree() core.hooksPath reset', () => {
     // The hooksPath check must be wrapped in try-catch
     assert.ok(fnBody.includes('try {') && fnBody.includes("// No hooksPath set or git error"),
       'hooksPath check must be in a try-catch with appropriate comment');
+  });
+});
+
+// ============================================================================
+// Change 2b: removeWorktree() kills processes before git worktree remove
+// ============================================================================
+
+describe('removeWorktree() process kill before removal', () => {
+  it('should import killProcessesInDirectory from process-tree.js', () => {
+    const code = fs.readFileSync(
+      path.resolve(import.meta.dirname, '..', 'lib', 'worktree-manager.js'),
+      'utf8',
+    );
+    assert.ok(code.includes("killProcessesInDirectory") && code.includes("process-tree.js"),
+      'worktree-manager.js must import killProcessesInDirectory from process-tree.js');
+  });
+
+  it('should call killProcessesInDirectory before git worktree remove in removeWorktree()', () => {
+    const code = fs.readFileSync(
+      path.resolve(import.meta.dirname, '..', 'lib', 'worktree-manager.js'),
+      'utf8',
+    );
+    const fnMatch = code.match(/export function removeWorktree\b[\s\S]*?(?=\nexport |\n\/\/ ====)/);
+    assert.ok(fnMatch, 'removeWorktree function must exist');
+    const fnBody = fnMatch[0];
+
+    const killIdx = fnBody.indexOf('killProcessesInDirectory(worktreePath)');
+    const removeIdx = fnBody.indexOf('git worktree remove');
+    assert.ok(killIdx > 0, 'removeWorktree must call killProcessesInDirectory(worktreePath)');
+    assert.ok(removeIdx > 0, 'removeWorktree must have git worktree remove command');
+    assert.ok(killIdx < removeIdx,
+      'killProcessesInDirectory must be called BEFORE git worktree remove');
+  });
+
+  it('should wrap killProcessesInDirectory call in try-catch (non-fatal)', () => {
+    const code = fs.readFileSync(
+      path.resolve(import.meta.dirname, '..', 'lib', 'worktree-manager.js'),
+      'utf8',
+    );
+    const fnMatch = code.match(/export function removeWorktree\b[\s\S]*?(?=\nexport |\n\/\/ ====)/);
+    assert.ok(fnMatch, 'removeWorktree function must exist');
+    const fnBody = fnMatch[0];
+
+    // Find the block containing killProcessesInDirectory and verify try/catch wraps it
+    const killBlock = fnBody.match(/try \{[\s\S]*?killProcessesInDirectory[\s\S]*?\} catch/);
+    assert.ok(killBlock, 'killProcessesInDirectory call must be wrapped in try-catch');
+  });
+
+  it('should log killed process count when processes were terminated', () => {
+    const code = fs.readFileSync(
+      path.resolve(import.meta.dirname, '..', 'lib', 'worktree-manager.js'),
+      'utf8',
+    );
+    assert.ok(code.includes('killed.length > 0') && code.includes('Killed'),
+      'Must log number of killed processes when killed.length > 0');
   });
 });
 

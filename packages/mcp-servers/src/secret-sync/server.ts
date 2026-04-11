@@ -201,7 +201,8 @@ function cleanupManagedProcesses(): void {
   for (const [name, managed] of managedProcesses.entries()) {
     try {
       if (isProcessAlive(managed.pid)) {
-        managed.process.kill('SIGTERM');
+        // Kill entire process group to ensure children (esbuild, etc.) are also killed
+        try { process.kill(-managed.pid, 'SIGTERM'); } catch { managed.process.kill('SIGTERM'); }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -904,8 +905,9 @@ function runCommandBackground(
     cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: false,
-    detached: false,
+    detached: true,
   });
+  child.unref();
 
   const pid = child.pid;
   if (!pid) {
@@ -1088,8 +1090,9 @@ async function devServerStart(args: DevServerStartArgs): Promise<DevServerStartR
         env: childEnv,
         cwd: spawnCwd,
         stdio: ['ignore', 'pipe', 'pipe'],
-        detached: false,
+        detached: true,
       });
+      child.unref();
 
       const pid = child.pid;
       if (!pid) {
@@ -1186,7 +1189,8 @@ async function devServerStop(args: DevServerStopArgs): Promise<DevServerStopResu
     }
 
     try {
-      managed.process.kill('SIGTERM');
+      // Kill entire process group (negative PID) to ensure children (esbuild, etc.) are also killed
+      try { process.kill(-pid, 'SIGTERM'); } catch { managed.process.kill('SIGTERM'); }
 
       // Wait up to SIGTERM_TIMEOUT_MS for graceful exit
       const exited = await new Promise<boolean>((resolve) => {
@@ -1198,7 +1202,7 @@ async function devServerStop(args: DevServerStopArgs): Promise<DevServerStopResu
       });
 
       if (!exited && isProcessAlive(pid)) {
-        managed.process.kill('SIGKILL');
+        try { process.kill(-pid, 'SIGKILL'); } catch { managed.process.kill('SIGKILL'); }
         managedProcesses.delete(key);
         stopped.push({ name: managed.name, pid, status: 'force_killed' });
       } else {
