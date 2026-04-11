@@ -177,18 +177,35 @@ function scanAndRevive() {
     // Pick up memory-blocked agents for retry (they have status=completed + memoryBlocked=true)
     const isMemoryRetry = agent.status === 'completed' && agent.memoryBlocked && !agent.revivalAttempted;
 
-    // Normal path: check running agents with PIDs; OR retry memory-blocked agents
-    if (!isMemoryRetry) {
+    // Pick up cooldown-expired agents for retry (exhausted retries, cooldown period elapsed)
+    const isCooldownRetry = agent.status === 'completed' && agent.revivalCooldownUntil
+      && now >= agent.revivalCooldownUntil && !agent.revivalAttempted;
+    if (isCooldownRetry) {
+      // Cooldown expired — reset retries so the agent gets a fresh batch of attempts
+      agent.revivalRetries = 0;
+      agent.revivalCooldownUntil = null;
+      agent.memoryBlocked = false;
+      historyDirty = true;
+    }
+
+    // Normal path: check running agents with PIDs; OR retry blocked/cooldown agents
+    if (!isMemoryRetry && !isCooldownRetry) {
       if (agent.status !== 'running' || !agent.pid) continue;
     }
 
-    // Skip if already attempted
+    // Skip if permanently terminal (no taskId, task completed, no session file, etc.)
     if (revivalAttempted.has(agent.id)) continue;
     if (agent.revivalAttempted) continue;
 
-    // Safety cap: max 5 revival retries per agent (prevents infinite loops on permanent failures)
+    // Retry cap: after 5 attempts, enter escalating cooldown instead of permanent abandonment
+    // Cooldown: 5 min → 10 min → 20 min → 30 min (capped)
     if ((agent.revivalRetries || 0) >= 5) {
-      agent.revivalAttempted = true;
+      const cooldownCycle = agent.revivalCooldownCycle || 0;
+      const cooldownMinutes = Math.min(5 * Math.pow(2, cooldownCycle), 30);
+      agent.revivalCooldownUntil = now + cooldownMinutes * 60 * 1000;
+      agent.revivalCooldownCycle = cooldownCycle + 1;
+      historyDirty = true;
+      log(`  Agent ${agent.id} exhausted 5 retries, entering ${cooldownMinutes}m cooldown (cycle ${cooldownCycle + 1})`);
       continue;
     }
 
@@ -196,8 +213,8 @@ function scanAndRevive() {
     const agentTime = new Date(agent.timestamp).getTime();
     if (agentTime < cutoff) continue;
 
-    // Check if process is actually dead (skip for memory retries — already confirmed dead)
-    if (!isMemoryRetry && isProcessAlive(agent.pid)) continue;
+    // Check if process is actually dead (skip for memory/cooldown retries — already confirmed dead)
+    if (!isMemoryRetry && !isCooldownRetry && isProcessAlive(agent.pid)) continue;
 
     // Skip if this agent is suspended (preempted by a CTO task) — it will be re-enqueued automatically
     if (isAgentSuspended(agent.id)) {

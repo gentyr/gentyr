@@ -166,9 +166,10 @@ async function main() {
         JSON.stringify({ reason: 'crash_loop_login_resume', source: 'crash-loop-resume' })
       );
 
-      // Enqueue monitor
+      // Enqueue monitor — prefer --resume if monitor_session_id available
       try {
         const { prompt, extraEnv, metadata } = await buildPrompt(task, 'crash_loop_login_resume', PROJECT_DIR);
+        const resumeSessionId = task.monitor_session_id || null;
         enqueueSession({
           title: `[Persistent] Login resume: ${task.title}`,
           agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
@@ -178,6 +179,8 @@ async function main() {
           priority: 'critical',
           lane: 'persistent',
           ttlMs: 0,
+          spawnType: resumeSessionId ? 'resume' : 'fresh',
+          resumeSessionId,
           prompt,
           projectDir: PROJECT_DIR,
           extraEnv,
