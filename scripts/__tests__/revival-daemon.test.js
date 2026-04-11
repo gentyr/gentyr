@@ -160,16 +160,20 @@ describe('revival-daemon: safety cap of 5 revival retries', () => {
     );
   });
 
-  it('sets agent.revivalAttempted = true when the retry cap (>= 5) is hit', () => {
+  it('enters escalating cooldown when the retry cap (>= 5) is hit', () => {
     const body = getScanAndReviveBody();
     const capIndex = body.indexOf('>= 5');
     assert.ok(capIndex >= 0, 'Retry cap check must exist');
 
-    // The block around >= 5 must set revivalAttempted
-    const surroundingCap = body.slice(Math.max(0, capIndex - 100), capIndex + 200);
+    // The block around >= 5 must set a cooldown, not permanent revivalAttempted
+    const surroundingCap = body.slice(Math.max(0, capIndex - 100), capIndex + 400);
     assert.ok(
-      surroundingCap.includes('agent.revivalAttempted = true'),
-      'Must set agent.revivalAttempted = true permanently when retry cap (5) is reached'
+      surroundingCap.includes('revivalCooldownUntil'),
+      'Must set revivalCooldownUntil when retry cap (5) is reached (escalating cooldown, not permanent abandonment)'
+    );
+    assert.ok(
+      surroundingCap.includes('revivalCooldownCycle'),
+      'Must track revivalCooldownCycle for escalating cooldown durations'
     );
   });
 

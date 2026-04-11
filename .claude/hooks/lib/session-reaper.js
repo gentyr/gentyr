@@ -18,6 +18,7 @@ import path from 'path';
 import os from 'os';
 import { execSync } from 'child_process';
 import { auditEvent } from './session-audit.js';
+import { killProcessGroup, killProcessGroupEscalated } from './process-tree.js';
 import { getCooldown } from '../config-reader.js';
 import { debugLog } from './debug-log.js';
 import { releaseAllResources, removeFromAllQueues } from './resource-lock.js';
@@ -93,13 +94,7 @@ function isProcessZombieOrStopped(pid) {
  * @returns {Promise<void>}
  */
 async function killProcess(pid) {
-  try { process.kill(pid, 'SIGTERM'); } catch (_) { /* cleanup - failure expected */ return; }
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 200));
-    try { process.kill(pid, 0); } catch (_) { /* cleanup - failure expected */ return; } // Dead
-  }
-  try { process.kill(pid, 'SIGKILL'); } catch (_) { /* cleanup - failure expected */ /* already dead */ }
+  await killProcessGroupEscalated(pid);
 }
 
 // ============================================================================
@@ -434,8 +429,8 @@ export function reapSyncPass(db) {
               const SPAWN_GRACE_MS = 60_000; // 60 seconds
 
               if (heartbeatAge > STALE_HEARTBEAT_MS && spawnedMs > SPAWN_GRACE_MS) {
-                // Kill immediately in sync pass — don't defer to async pass
-                try { process.kill(item.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
+                // Kill entire process group in sync pass — don't defer to async pass
+                killProcessGroup(item.pid);
                 db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?")
                   .run(item.id);
 
@@ -486,7 +481,7 @@ export function reapSyncPass(db) {
             const stat = fs.statSync(sessionFile);
             const staleMs = now - stat.mtimeMs;
             if (staleMs > AUTH_STALL_MS && isAuthStalled(sessionFile)) {
-              try { process.kill(item.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
+              killProcessGroup(item.pid);
               db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?")
                 .run(item.id);
 

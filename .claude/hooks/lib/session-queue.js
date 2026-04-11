@@ -23,6 +23,7 @@ import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from '../agent-tr
 import { buildSpawnEnv } from './spawn-env.js';
 import { shouldAllowSpawn } from './memory-pressure.js';
 import { reapSyncPass } from './session-reaper.js';
+import { killProcessGroup } from './process-tree.js';
 import { auditEvent } from './session-audit.js';
 import { debugLog } from './debug-log.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
@@ -639,18 +640,24 @@ mcp__persistent-task__get_persistent_task({ id: "${taskId}", include_amendments:
 ${demoInstructions}${strictInfraInstructions}
 Persistent Task ID: ${taskId}`;
 
+  // Prefer --resume if monitor_session_id is available
+  const resumeSessionId = task.monitor_session_id || null;
+  const spawnType = resumeSessionId ? 'resume' : 'fresh';
+
   const id = generateQueueId();
   db.prepare(`
     INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
       tag_context, prompt, model, cwd, mcp_config, resume_session_id, extra_args, extra_env,
       project_dir, worktree_path, metadata, source, expires_at)
-    VALUES (?, 'queued', 'critical', 'persistent', 'fresh', ?, ?, ?, 'persistent-monitor', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL, ?, ?, NULL)
+    VALUES (?, 'queued', 'critical', 'persistent', ?, ?, ?, ?, 'persistent-monitor', ?, NULL, NULL, NULL, ?, NULL, ?, ?, NULL, ?, ?, NULL)
   `).run(
     id,
+    spawnType,
     `[Persistent] Monitor revival: ${task.title}`,
     AGENT_TYPES.PERSISTENT_TASK_MONITOR,
     HOOK_TYPES.PERSISTENT_TASK_MONITOR,
     prompt,
+    resumeSessionId,
     JSON.stringify({ GENTYR_PERSISTENT_TASK_ID: taskId, GENTYR_PERSISTENT_MONITOR: 'true' }),
     PROJECT_DIR,
     JSON.stringify({ persistentTaskId: taskId, revivalReason: reapReason === 'stale_heartbeat' ? 'heartbeat_stale_revival' : 'immediate_reaper_revival' }),
@@ -667,7 +674,7 @@ Persistent Task ID: ${taskId}`;
   });
 
   const revivalReason = reapReason === 'stale_heartbeat' ? 'heartbeat_stale_revival' : 'immediate_reaper_revival';
-  log(`[persistent-revival] Enqueued revival for ${taskId} (reason: ${reapReason}, revivalReason: ${revivalReason}, queueId: ${id})`);
+  log(`[persistent-revival] Enqueued revival for ${taskId} (reason: ${reapReason}, revivalReason: ${revivalReason}, spawnType: ${spawnType}, queueId: ${id})`);
 
   // Persist revival event (survives process restart)
   try {
@@ -780,9 +787,11 @@ export function drainQueue() {
 
   // Step 1d: Re-enqueue dead non-persistent task agents for revival
   // The reaper reset their TODO tasks to 'pending', but without a new queue item they'll never re-spawn.
+  // Prefers --resume when the dead agent's session file is found; falls back to fresh.
   if (reaperResult && result.revivalCandidates.length > 0) {
     let revivalCount = 0;
     const MAX_NON_PERSISTENT_REVIVALS_PER_DRAIN = 3;
+    const sessionDir = getSessionDir(PROJECT_DIR);
 
     for (const candidate of result.revivalCandidates) {
       if (revivalCount >= MAX_NON_PERSISTENT_REVIVALS_PER_DRAIN) break;
@@ -810,6 +819,21 @@ export function drainQueue() {
           if (task) {
             const revivalId = generateQueueId();
             const revivalPriority = task.priority === 'urgent' ? 'urgent' : 'normal';
+
+            // Try to find the dead agent's session file for --resume
+            let spawnType = 'fresh';
+            let resumeSessionId = null;
+            if (sessionDir && candidate.agentId) {
+              const sessionFile = findSessionFileByAgentId(sessionDir, candidate.agentId);
+              if (sessionFile) {
+                const sid = extractSessionIdFromPath(sessionFile);
+                if (sid) {
+                  spawnType = 'resume';
+                  resumeSessionId = sid;
+                }
+              }
+            }
+
             const revivalPrompt = [
               `[Revival] Re-spawned after agent death.`,
               `Task: ${task.title}`,
@@ -821,16 +845,18 @@ export function drainQueue() {
 
             db.prepare(`
               INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
-                tag_context, prompt, project_dir, metadata, source, expires_at)
-              VALUES (?, 'queued', ?, 'revival', 'fresh', ?, ?, ?, ?, ?, ?, ?, 'session-queue-reaper', datetime('now', '+30 minutes'))
+                tag_context, prompt, resume_session_id, project_dir, metadata, source, expires_at)
+              VALUES (?, 'queued', ?, 'revival', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'session-queue-reaper', datetime('now', '+30 minutes'))
             `).run(
               revivalId,
               revivalPriority,
+              spawnType,
               `[Revival] ${task.title || taskId}`,
               candidate.agentType || candidate.metadata?.agentType || 'task-runner',
               'session-reviver',
               `revival-${taskId.slice(0, 8)}`,
               revivalPrompt,
+              resumeSessionId,
               PROJECT_DIR,
               JSON.stringify({ taskId, revivalReason: 'dead_agent_requeue', originalAgentId: candidate.agentId })
             );
@@ -840,9 +866,10 @@ export function drainQueue() {
               queue_id: revivalId,
               task_id: taskId,
               original_agent_id: candidate.agentId,
+              spawn_type: spawnType,
             });
 
-            log(`Step 1d: Re-enqueued dead task ${taskId} as ${revivalId} (revival lane, ${revivalPriority})`);
+            log(`Step 1d: Re-enqueued dead task ${taskId} as ${revivalId} (revival lane, ${revivalPriority}, ${spawnType})`);
             revivalCount++;
           }
         }
@@ -1030,7 +1057,7 @@ export function drainQueue() {
       for (const s of suspended) {
         if (s.pid && isPidAlive(s.pid)) {
           db.prepare("UPDATE queue_items SET status = 'running' WHERE id = ?").run(s.id);
-          try { process.kill(s.pid, 'SIGCONT'); } catch (_) { /* already dead */ }
+          killProcessGroup(s.pid, 'SIGCONT');
           log(`Resumed suspended session ${s.id} (PID ${s.pid})`);
           auditEvent('session_resumed', { queue_id: s.id, pid: s.pid, priority: s.priority });
         } else {
@@ -1224,7 +1251,7 @@ function preemptLowestPriority(db, incomingItem) {
   db.prepare("UPDATE queue_items SET status = 'suspended', completed_at = NULL WHERE id = ?")
     .run(candidate.id);
 
-  try { process.kill(candidate.pid, 'SIGTSTP'); } catch (_) { /* already exited */ }
+  killProcessGroup(candidate.pid, 'SIGTSTP');
 
   auditEvent('session_preempted', {
     preempted_queue_id: candidate.id,

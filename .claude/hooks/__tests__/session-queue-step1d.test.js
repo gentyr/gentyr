@@ -333,6 +333,83 @@ describe('session-queue.js Step 1d — source-code structural verification', () 
       "Step 1d must set revivalReason: 'dead_agent_requeue' in queue item metadata"
     );
   });
+
+  // --- Resume-first tests (added for resume-first session revival changes) ---
+
+  it('Step 1d calls findSessionFileByAgentId before the INSERT', () => {
+    const body = getStep1dBody();
+    assert.ok(
+      body.includes('findSessionFileByAgentId'),
+      'Step 1d must call findSessionFileByAgentId to look up dead agent session file'
+    );
+    // findSessionFileByAgentId must appear before the INSERT statement
+    const findIdx = body.indexOf('findSessionFileByAgentId');
+    const insertIdx = body.indexOf('INSERT INTO queue_items');
+    assert.ok(findIdx >= 0, 'findSessionFileByAgentId reference must exist in Step 1d');
+    assert.ok(insertIdx >= 0, 'INSERT INTO queue_items must exist in Step 1d');
+    assert.ok(findIdx < insertIdx, 'findSessionFileByAgentId must be called before the INSERT');
+  });
+
+  it('Step 1d calls extractSessionIdFromPath to derive the resume session ID', () => {
+    const body = getStep1dBody();
+    assert.ok(
+      body.includes('extractSessionIdFromPath'),
+      'Step 1d must call extractSessionIdFromPath after finding the session file'
+    );
+  });
+
+  it('Step 1d uses a spawnType variable (not hardcoded fresh) in the INSERT', () => {
+    const body = getStep1dBody();
+    // Must declare spawnType as a variable that can hold 'resume'
+    assert.ok(
+      body.includes("spawnType = 'fresh'") || body.includes("spawnType='fresh'"),
+      "Step 1d must initialise spawnType to 'fresh' as the default"
+    );
+    assert.ok(
+      body.includes("spawnType = 'resume'") || body.includes("spawnType='resume'"),
+      "Step 1d must set spawnType to 'resume' when a session file is found"
+    );
+    // The INSERT must reference the variable, not the literal 'fresh'
+    const insertStart = body.indexOf('INSERT INTO queue_items');
+    assert.ok(insertStart >= 0, 'INSERT INTO queue_items must exist in Step 1d');
+    const insertBlock = body.slice(insertStart, insertStart + 600);
+    assert.ok(
+      insertBlock.includes('spawnType'),
+      'Step 1d INSERT must reference the spawnType variable, not a hardcoded literal'
+    );
+  });
+
+  it('Step 1d includes resume_session_id column in the INSERT', () => {
+    const body = getStep1dBody();
+    assert.ok(
+      body.includes('resume_session_id'),
+      'Step 1d INSERT must include the resume_session_id column'
+    );
+  });
+
+  it('Step 1d includes resumeSessionId in the INSERT values', () => {
+    const body = getStep1dBody();
+    assert.ok(
+      body.includes('resumeSessionId'),
+      'Step 1d must declare and pass resumeSessionId into the INSERT values'
+    );
+  });
+
+  it('Step 1d audit event includes spawn_type field', () => {
+    const body = getStep1dBody();
+    assert.ok(
+      body.includes('spawn_type:') || body.includes('spawn_type :'),
+      'Step 1d audit event must include spawn_type field so revival type is traceable'
+    );
+  });
+
+  it('Step 1d uses candidate.agentId to locate session file', () => {
+    const body = getStep1dBody();
+    assert.ok(
+      body.includes('candidate.agentId'),
+      'Step 1d must use candidate.agentId as the lookup key for findSessionFileByAgentId'
+    );
+  });
 });
 
 // ============================================================================
@@ -603,5 +680,113 @@ describe('Step 1d todo.db pending check — only re-enqueue pending tasks', () =
     const revivalPriorityNormal = normalTask.priority === 'urgent' ? 'urgent' : 'normal';
     assert.strictEqual(revivalPriorityUrgent, 'urgent', 'Urgent task must get urgent revival priority');
     assert.strictEqual(revivalPriorityNormal, 'normal', 'Non-urgent task must get normal revival priority');
+  });
+});
+
+// ============================================================================
+// Part E: SQLite behavioral tests — resume_session_id column (resume-first)
+// ============================================================================
+
+describe('Step 1d revival insertion — resume_session_id (resume-first changes)', () => {
+  let ctx;
+
+  beforeEach(() => { ctx = createQueueDb('step1d-resume'); });
+  afterEach(() => { ctx.cleanup(); });
+
+  /**
+   * Insert a revival item that simulates a resume-path (spawnType = 'resume').
+   * Mirrors the INSERT in Step 1d when a session file is found.
+   */
+  function insertResumeRevivalItem(db, { revivalId, taskId, resumeSessionId }) {
+    db.prepare(`
+      INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
+        tag_context, prompt, resume_session_id, project_dir, metadata, source, expires_at)
+      VALUES (?, 'queued', 'normal', 'revival', 'resume', ?, 'task-runner', 'session-reviver',
+        ?, ?, ?, '/tmp/test', ?, 'session-queue-reaper', datetime('now', '+30 minutes'))
+    `).run(
+      revivalId,
+      `[Revival] Task ${taskId.slice(0, 8)}`,
+      `revival-${taskId.slice(0, 8)}`,
+      `Revival prompt for ${taskId}`,
+      resumeSessionId,
+      JSON.stringify({ taskId, revivalReason: 'dead_agent_requeue', originalAgentId: 'agent-xyz' })
+    );
+  }
+
+  /**
+   * Insert a revival item that simulates a fresh-path (spawnType = 'fresh').
+   * Mirrors the INSERT in Step 1d when no session file is found.
+   */
+  function insertFreshRevivalItem(db, { revivalId, taskId }) {
+    db.prepare(`
+      INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
+        tag_context, prompt, resume_session_id, project_dir, metadata, source, expires_at)
+      VALUES (?, 'queued', 'normal', 'revival', 'fresh', ?, 'task-runner', 'session-reviver',
+        ?, ?, NULL, '/tmp/test', ?, 'session-queue-reaper', datetime('now', '+30 minutes'))
+    `).run(
+      revivalId,
+      `[Revival] Task ${taskId.slice(0, 8)}`,
+      `revival-${taskId.slice(0, 8)}`,
+      `Revival prompt for ${taskId}`,
+      JSON.stringify({ taskId, revivalReason: 'dead_agent_requeue', originalAgentId: 'agent-xyz' })
+    );
+  }
+
+  it("resume-path revival item has spawn_type = 'resume'", () => {
+    const revivalId = generateId();
+    const taskId = generateId();
+    const resumeSessionId = crypto.randomUUID();
+
+    insertResumeRevivalItem(ctx.db, { revivalId, taskId, resumeSessionId });
+
+    const row = ctx.db.prepare('SELECT spawn_type FROM queue_items WHERE id = ?').get(revivalId);
+    assert.ok(row, 'Resume revival item must be inserted');
+    assert.strictEqual(row.spawn_type, 'resume', "Resume revival item must have spawn_type = 'resume'");
+  });
+
+  it('resume-path revival item has correct resume_session_id', () => {
+    const revivalId = generateId();
+    const taskId = generateId();
+    const resumeSessionId = crypto.randomUUID();
+
+    insertResumeRevivalItem(ctx.db, { revivalId, taskId, resumeSessionId });
+
+    const row = ctx.db.prepare('SELECT resume_session_id FROM queue_items WHERE id = ?').get(revivalId);
+    assert.ok(row, 'Resume revival item must be inserted');
+    assert.strictEqual(row.resume_session_id, resumeSessionId, 'resume_session_id must match the session UUID');
+  });
+
+  it("fresh-path revival item has spawn_type = 'fresh'", () => {
+    const revivalId = generateId();
+    const taskId = generateId();
+
+    insertFreshRevivalItem(ctx.db, { revivalId, taskId });
+
+    const row = ctx.db.prepare('SELECT spawn_type FROM queue_items WHERE id = ?').get(revivalId);
+    assert.ok(row, 'Fresh revival item must be inserted');
+    assert.strictEqual(row.spawn_type, 'fresh', "Fresh revival item must have spawn_type = 'fresh'");
+  });
+
+  it('fresh-path revival item has null resume_session_id', () => {
+    const revivalId = generateId();
+    const taskId = generateId();
+
+    insertFreshRevivalItem(ctx.db, { revivalId, taskId });
+
+    const row = ctx.db.prepare('SELECT resume_session_id FROM queue_items WHERE id = ?').get(revivalId);
+    assert.ok(row, 'Fresh revival item must be inserted');
+    assert.strictEqual(row.resume_session_id, null, 'Fresh revival item must have null resume_session_id');
+  });
+
+  it('resume_session_id column accepts a valid UUID string', () => {
+    const revivalId = generateId();
+    const taskId = generateId();
+    // Verify column accepts the UUID format extractSessionIdFromPath returns
+    const validUuid = '550e8400-e29b-41d4-a716-446655440000';
+
+    insertResumeRevivalItem(ctx.db, { revivalId, taskId, resumeSessionId: validUuid });
+
+    const row = ctx.db.prepare('SELECT resume_session_id FROM queue_items WHERE id = ?').get(revivalId);
+    assert.strictEqual(row.resume_session_id, validUuid, 'resume_session_id must store the UUID unchanged');
   });
 });
