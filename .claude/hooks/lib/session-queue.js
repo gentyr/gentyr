@@ -71,9 +71,8 @@ function log(message) {
   const line = `[${timestamp}] [session-queue] ${message}\n`;
   try {
     fs.appendFileSync(LOG_FILE, line);
-  } catch (err) {
-    console.error('[session-queue] Warning:', err.message);
-    // Non-fatal
+  } catch {
+    // Non-fatal — log file not writable, nothing we can do
   }
 }
 
@@ -111,7 +110,7 @@ function findSessionFileByAgentId(sessionDir, agentId) {
   try {
     files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
   } catch (err) {
-    console.error('[session-queue] Warning:', err.message);
+    log(`Warning: ${err.message}`);
     return null;
   }
 
@@ -125,7 +124,7 @@ function findSessionFileByAgentId(sessionDir, agentId) {
       const head = buf.toString('utf8', 0, bytesRead);
       if (head.includes(marker)) return filePath;
     } catch (err) {
-      console.error('[session-queue] Warning:', err.message);
+      log(`Warning: ${err.message}`);
     } finally {
       if (fd !== undefined) fs.closeSync(fd);
     }
@@ -735,7 +734,7 @@ export function drainQueue() {
     reaperResult = reapSyncPass(db);
     result.revivalCandidates = reaperResult.reaped.filter(r => r.revivalCandidate);
   } catch (err) {
-    console.error('[session-queue] Warning:', err.message);
+    log(`Warning: ${err.message}`);
     // Fallback: existing simple PID check
     const running = db.prepare("SELECT id, pid, agent_id FROM queue_items WHERE status = 'running'").all();
     for (const item of running) {
@@ -1346,7 +1345,7 @@ export async function preemptForCtoTask(ctoQueueId, projectDir) {
         const raw = JSON.parse(fs.readFileSync(suspendedPath, 'utf8'));
         existing = Array.isArray(raw) ? raw : [raw];
       } catch (err) {
-        console.error('[session-queue] Warning: could not parse suspended-sessions.json:', err.message);
+        log(`Warning: could not parse suspended-sessions.json: ${err.message}`);
       }
     }
 
@@ -1415,7 +1414,7 @@ export async function preemptForCtoTask(ctoQueueId, projectDir) {
           const raw = JSON.parse(fs.readFileSync(suspendedPath, 'utf8'));
           existing = Array.isArray(raw) ? raw : [raw];
         } catch (err) {
-          console.error('[session-queue] Warning:', err.message);
+          log(`Warning: ${err.message}`);
         }
       }
       const entry = existing.find(e => e.agentId === agentId && e.queueId === victim.id);
@@ -1436,7 +1435,7 @@ export async function preemptForCtoTask(ctoQueueId, projectDir) {
   try {
     victimMetadata = victim.metadata ? JSON.parse(victim.metadata) : {};
   } catch (err) {
-    console.error('[session-queue] Warning: could not parse victim metadata:', err.message);
+    log(`Warning: could not parse victim metadata: ${err.message}`);
   }
 
   if (victimMetadata.taskId) {
@@ -1503,7 +1502,7 @@ export async function preemptForCtoTask(ctoQueueId, projectDir) {
       preempted_title: victim.title,
     });
   } catch (err) {
-    console.error('[session-queue] Warning: failed to emit audit events:', err.message);
+    log(`Warning: failed to emit audit events: ${err.message}`);
   }
 
   // The drainQueue() calls inside enqueueSession (for the resume item, if applicable)
@@ -1598,7 +1597,7 @@ export function getQueueStatus() {
   try {
     reapSyncPass(db);
   } catch (err) {
-    console.error('[session-queue] Warning:', err.message);
+    log(`Warning: ${err.message}`);
     // Fallback: simple PID check
     const runningItems = db.prepare("SELECT * FROM queue_items WHERE status = 'running' ORDER BY spawned_at ASC").all();
     for (const item of runningItems) {
