@@ -70,7 +70,8 @@ Call `mcp__playwright__run_demo({
   project: "<scenario.playwright_project>",
   test_file: "<scenario.test_file>",
   scenario_id: "<scenario.id>",
-  slow_mo: 200
+  slow_mo: 200,
+  success_pause_ms: 5000
 })`.
 
 ### Step 7: Report

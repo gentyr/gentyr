@@ -74,7 +74,8 @@ Call `mcp__playwright__run_demo({
   project: "<scenario.playwright_project>",
   test_file: "<scenario.test_file>",
   scenario_id: "<scenario.id>",
-  slow_mo: 800
+  slow_mo: 800,
+  success_pause_ms: 5000
 })`.
 
 ### Step 6b: ADK Replay Path
@@ -92,6 +93,7 @@ Instead of calling `run_demo` with the scenario's `test_file`, show:
        test_file: "e2e/demo/session-replay-runner.demo.ts",
        scenario_id: "<scenario.id>",
        slow_mo: 800,
+       success_pause_ms: 5000,
        extra_env: {
          REPLAY_SESSION_ID: "<session_id>",
          REPLAY_AUDIT_DATA: JSON.stringify(auditActions)

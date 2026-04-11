@@ -255,6 +255,8 @@ export const RunDemoArgsSchema = z.object({
     .describe('Demo scenario ID from user-feedback DB. Required — used for video recording persistence, prerequisite resolution, and env_vars lookup.'),
   skip_recording: z.coerce.boolean().optional().default(false)
     .describe('Skip window recording even in headed mode. Useful for automated validation runs.'),
+  success_pause_ms: z.coerce.number().int().min(0).max(30000).optional().default(0)
+    .describe('Milliseconds to keep the browser open after a successful demo before teardown (0-30000, default 0). Only applies in headed mode when all tests pass. The technical flush buffer (5s) is always added on top.'),
   extra_env: z.record(z.string(), z.string())
     .optional()
     .describe(
@@ -348,6 +350,8 @@ export interface DemoRunState {
   screenshot_dir?: string;
   screenshot_start_time?: number;
   fullscreened?: boolean;
+  success_pause_ms?: number;
+  suite_end_detected_at?: number;  // Runtime-only — epoch ms when suite_end was first seen
   // Runtime-only — NOT persisted (NodeJS.Timeout is not serializable)
   screenshot_interval?: ReturnType<typeof setInterval>;
 }
