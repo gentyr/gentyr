@@ -225,6 +225,9 @@ const DEMO_RUNS_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'demo-runs.jso
 const demoRuns = new Map<number, DemoRunState>();
 const demoAutoKillTimers = new Map<number, ReturnType<typeof setTimeout>>();
 const DEMO_AUTO_KILL_MS = 60_000;
+// Milliseconds to wait after detecting suite_end before sending SIGTERM (technical flush buffer).
+// success_pause_ms is additive on top of this.
+const SUITE_END_KILL_DELAY_MS = 5_000;
 // PIDs that were auto-killed after a suite_end event — treated as 'passed' by the exit handler.
 const suiteEndAutoKilledPids = new Set<number>();
 // PIDs for which run_demo auto-acquired the display lock — release on demo completion.
@@ -258,7 +261,7 @@ function persistDemoRuns(): void {
     const entries = [...demoRuns.values()]
       .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
       .slice(0, 20)
-      .map(({ trace_summary, progress_file, stdout_tail, screenshot_interval, ...rest }) => rest);
+      .map(({ trace_summary, progress_file, stdout_tail, screenshot_interval, suite_end_detected_at, ...rest }) => rest);
     fs.writeFileSync(DEMO_RUNS_PATH, JSON.stringify(entries, null, 2));
   } catch {
     // Non-fatal — state will be lost on MCP restart
@@ -1639,7 +1642,6 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     // Progress-based monitoring constants
     const GRACE_MS = 90_000;
     const STALL_MS = Math.max(90_000, (args.timeout ?? 120000) > 120000 ? (args.timeout ?? 120000) / 2 : 90_000);
-    const SUITE_END_KILL_DELAY_MS = 5_000;
     const CHECK_INTERVAL_MS = 5_000;
     const STARTUP_CHECK_MS = 15_000;
     let lastProgressEventAt = Date.now();
@@ -1688,6 +1690,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
               meaningfulEventCount++;
               if (event.type === 'suite_end' && suiteEndDetectedAt === null) {
                 suiteEndDetectedAt = Date.now();
+                const suiteEndEntry = demoRuns.get(demoPid);
+                if (suiteEndEntry) suiteEndEntry.suite_end_detected_at = suiteEndDetectedAt;
               }
             }
           } catch {
@@ -1710,6 +1714,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       status: 'running',
       progress_file: progressFilePath,
       scenario_id: args.scenario_id,
+      success_pause_ms: args.headless ? 0 : (args.success_pause_ms ?? 0),
     };
     if (windowRecorder) {
       demoState.window_recorder_pid = windowRecorder.pid;
@@ -1734,14 +1739,21 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     const bgMonitorInterval = setInterval(() => {
       readNewProgressEvents();
 
-      // Suite_end auto-kill: once tests finish, wait 5s then SIGTERM
-      if (suiteEndDetectedAt !== null && Date.now() - suiteEndDetectedAt >= SUITE_END_KILL_DELAY_MS) {
-        clearInterval(bgMonitorInterval);
-        suiteEndAutoKilledPids.add(demoPid);
-        if (child.pid) {
-          try { process.kill(-child.pid, 'SIGTERM'); } catch {}
+      // Suite_end auto-kill: once tests finish, wait for SUITE_END_KILL_DELAY_MS plus any
+      // user-requested success pause (headed + no failures only) before SIGTERM
+      if (suiteEndDetectedAt !== null) {
+        const bgEntry = demoRuns.get(demoPid);
+        const bgProgress = bgEntry?.progress_file ? readDemoProgress(bgEntry.progress_file) : null;
+        const successPause = (!args.headless && !bgProgress?.has_failures && bgEntry?.success_pause_ms)
+          ? bgEntry.success_pause_ms : 0;
+        if (Date.now() - suiteEndDetectedAt >= SUITE_END_KILL_DELAY_MS + successPause) {
+          clearInterval(bgMonitorInterval);
+          suiteEndAutoKilledPids.add(demoPid);
+          if (child.pid) {
+            try { process.kill(-child.pid, 'SIGTERM'); } catch {}
+          }
+          return;
         }
-        return;
       }
 
       // Stall detection (only after grace period)
@@ -2146,6 +2158,23 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
       // Process alive — but check if suite already completed (stops unnecessary video recording)
       const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
       if (progress?.suite_completed) {
+        // If success pause is active and time hasn't elapsed, don't kill yet
+        if (!progress.has_failures && entry.success_pause_ms && entry.suite_end_detected_at) {
+          const elapsed = Date.now() - entry.suite_end_detected_at;
+          const totalDelay = SUITE_END_KILL_DELAY_MS + entry.success_pause_ms;
+          if (elapsed < totalDelay) {
+            resetAutoKillTimer(pid);
+            const remainingSec = Math.ceil((totalDelay - elapsed) / 1000);
+            return {
+              status: 'running',
+              pid,
+              project: entry.project,
+              scenario_id: entry.scenario_id,
+              progress,
+              message: `Demo passed — pausing ${remainingSec}s on success state before teardown (${totalDelay - elapsed}ms remaining)`,
+            };
+          }
+        }
         // Exit fullscreen before teardown
         if (entry.fullscreened) {
           void unfullscreenChromeWindow();

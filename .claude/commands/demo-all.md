@@ -38,7 +38,8 @@ STOP — do not proceed until preflight passes.
 
 Call `mcp__playwright__run_demo({
   project: "demo",
-  slow_mo: 1200
+  slow_mo: 1200,
+  success_pause_ms: 5000
 })`.
 
 Video recording is always enabled. No `test_file` filter — this runs the entire
