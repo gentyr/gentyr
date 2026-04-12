@@ -28,16 +28,22 @@ const COL_TYPE = 18;
 const COL_PRI = 5;
 const INDENT_WIDTH = 4;
 
+const DOT = '\u25CF';   // filled circle
+const RING = '\u25CB';  // empty circle
+const PAUSE = '\u2016'; // double bar
+const CROSS = '\u2717'; // x mark
+const TREE = '\u2514';  // corner connector
+
 function statusIcon(status: string): { char: string; color: string } {
   switch (status) {
-    case 'alive':     return { char: '\u25CF', color: 'green' };
-    case 'queued':    return { char: '\u25CB', color: 'yellow' };
-    case 'spawning':  return { char: '\u25CB', color: 'yellow' };
-    case 'suspended': return { char: '\u2016', color: 'yellow' };
-    case 'paused':    return { char: '\u2016', color: 'yellow' };
-    case 'completed': return { char: '\u2713', color: 'gray' };
-    case 'failed':    return { char: '\u2717', color: 'red' };
-    case 'killed':    return { char: '\u2717', color: 'red' };
+    case 'alive':     return { char: DOT, color: 'white' };
+    case 'queued':    return { char: RING, color: 'yellow' };
+    case 'spawning':  return { char: RING, color: 'yellow' };
+    case 'suspended': return { char: PAUSE, color: 'yellow' };
+    case 'paused':    return { char: PAUSE, color: 'yellow' };
+    case 'completed': return { char: DOT, color: 'green' };
+    case 'failed':    return { char: CROSS, color: 'red' };
+    case 'killed':    return { char: CROSS, color: 'red' };
     default:          return { char: '?', color: 'gray' };
   }
 }
@@ -77,7 +83,7 @@ function SessionRow({ ds, isSelected, width }: { ds: DisplaySession; isSelected:
     <Box flexDirection="column" height={2} overflow="hidden">
       {/* Row 1: icon | id | title | elapsed */}
       <Box height={1}>
-        {isIndented && <Box width={INDENT_WIDTH}><Text dimColor>  \u2514 </Text></Box>}
+        {isIndented && <Box width={INDENT_WIDTH}><Text dimColor>{`  ${TREE} `}</Text></Box>}
         <Box width={COL_ICON}>
           <Text {...(isSelected ? { inverse: true } : {})} color={icon.color} bold>{icon.char} </Text>
         </Box>
