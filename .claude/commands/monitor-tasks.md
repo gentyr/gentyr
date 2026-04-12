@@ -66,6 +66,19 @@ Before entering the loop, record:
 - `previousCycleCounts = {}` — map of task ID → last seen cycle count
 - `previousChildIds = {}` — map of task ID → set of child agent IDs seen last round
 - `childErrorPatterns = {}` — map of task ID → list of error strings seen across rounds
+- `successClaimsUnverified = []` — list of { taskId, agentId, claim, round } awaiting evidence
+- `evidenceLog = []` — list of { round, agentId, claim, evidence, verdict: "confirmed"|"unverified"|"refuted" }
+
+### Subscribe to Verbatim Summaries
+
+Subscribe this interactive session to verbatim-tier summaries from all monitored sessions. This gives you automatic delivery of raw session history every 5 minutes without polling.
+
+For each persistent task's monitor agent ID (from Step 2):
+```
+mcp__agent-tracker__subscribe_session_summaries({ target_agent_id: "<monitor_agent_id>", detail_level: "verbatim" })
+```
+
+As child agents are discovered in subsequent rounds, subscribe to them too (the subscription system auto-subscribes monitors to their children, but the CTO interactive session needs its own subscriptions).
 
 ---
 
@@ -77,11 +90,13 @@ Before entering the loop, record:
 
 Each round:
 1. Increment `roundNumber`
-2. Spawn a short-lived investigator to gather data (Step 4a) — MANDATORY EVERY ROUND
-3. Spawn a user-alignment sub-agent (Step 4b) — MANDATORY every 3rd round
-4. Render the full report (Step 4c) — using ONLY the data returned by the sub-agents
-5. Check intervention conditions (Step 4d)
-6. Sleep and repeat (Step 4e)
+2. Subscribe to any NEW child agents discovered (verbatim tier)
+3. Spawn a short-lived investigator to gather data (Step 4a) — MANDATORY EVERY ROUND
+4. Spawn a user-alignment sub-agent (Step 4b) — MANDATORY every 3rd round
+5. Scrutinize success claims (Step 4b.5) — MANDATORY whenever a child reports completion or success
+6. Render the full report (Step 4c) — using ONLY the data returned by the sub-agents
+7. Check intervention conditions (Step 4d)
+8. Sleep and repeat (Step 4e)
 
 ---
 
@@ -96,8 +111,18 @@ Spawn an investigator sub-agent using `Agent(subagent_type='investigator')` with
 ```
 You are gathering monitoring data for the /monitor-tasks command. Do a SINGLE analysis pass — gather all data, then return JSON. Do NOT loop or spawn additional agents.
 
+**CRITICAL: Be skeptical.** Do NOT take agent claims at face value. When an agent says "test passed" or "demo working", verify the claim with evidence. Look for:
+- Actual exit codes (not just "completed")
+- Specific output proving the claimed outcome (not just absence of errors)
+- Screenshot/artifact paths that actually exist
+- PR merge confirmations (not just "PR created")
+- Test output showing specific assertions passed (not just "tests ran")
+
+If an agent claims success but the JSONL shows no evidence of verification, flag it as `unverified_claim`.
+
 **Persistent tasks to inspect:** [LIST OF TASK IDs]
 **Running child agent IDs (from prior round, may be empty):** [LIST OF CHILD AGENT IDs]
+**Prior unverified claims to re-check:** [LIST FROM successClaimsUnverified]
 
 ## Step A: Inspect each persistent task (REQUIRED)
 
@@ -170,6 +195,27 @@ Also, for each running child agent, check if there's a recent activity summary:
   mcp__session-activity__list_session_summaries({ session_id: "<agent_id>", limit: 1 })
 
 Extract: the latest project super-summary text, and per-agent summary previews if available. Include these in the JSON response.
+
+## Step G: Evidence Audit (REQUIRED)
+
+For each child agent or sub-task that claims completion or success this round:
+
+1. **Examine the JSONL for verification actions**: Did the agent actually run the test/demo and check the result? Or did it just edit code and claim done?
+2. **Look for concrete evidence**: exit codes, "PASS"/"FAIL" strings in output, screenshot paths, `check_demo_result` calls with `status: 'passed'`, PR merge confirmations
+3. **Check for diagnostic gaps**: Did the agent report success without viewing failure frames, reading test output, or confirming the expected UI state?
+4. **Re-check prior unverified claims**: For each entry in the prior unverified claims list, search the current JSONL data for new evidence
+
+Classify each claim:
+- `confirmed` — concrete evidence found (exit code 0, screenshots showing expected state, PR merged)
+- `unverified` — agent claims success but no verification evidence visible in JSONL
+- `refuted` — evidence contradicts the claim (exit code non-zero, error in output, test actually failed)
+
+## Step H: Subscription Status (OPTIONAL but recommended)
+
+Check if the CTO session has active subscriptions to monitored sessions:
+  mcp__agent-tracker__list_summary_subscriptions({})
+
+If any monitored agent is missing from the subscription list, note it in the response so the main loop can subscribe.
 
 ## Return ALL data as this exact JSON structure:
 
@@ -252,6 +298,16 @@ Extract: the latest project super-summary text, and per-agent summary previews i
       }
     ]
   },
+  "evidenceAudit": [
+    {
+      "agentId": "...",
+      "claim": "Test passed / Demo working / PR merged / etc.",
+      "evidence": "Specific evidence found (exit code, screenshot path, output line)" or null,
+      "verdict": "confirmed|unverified|refuted",
+      "reasoning": "Why this verdict — what was present or missing in the JSONL"
+    }
+  ],
+  "subscriptionGaps": ["agent-id-1", "agent-id-2"],
   "interventionNeeded": false,
   "interventionReason": null
 }
@@ -300,6 +356,21 @@ Return a brief assessment:
 Capture the sub-agent's response. Parse `alignment` and `finding` fields. Store `alignmentResult` for use in the report.
 
 If `alignment === "misaligned"`, set `interventionNeeded = true` with reason "User-alignment agent reports misalignment: [finding]".
+
+---
+
+### Step 4b.5: Scrutinize Success Claims
+
+After the investigator returns, examine the `evidenceAudit` array. For each entry:
+
+- **`confirmed`** — add to `evidenceLog` with verdict. No further action.
+- **`unverified`** — add to `successClaimsUnverified` for re-checking next round. Note in the report.
+- **`refuted`** — this is a serious issue. The agent claimed success but evidence shows failure. Flag prominently in the report. Consider sending a signal to the monitor: `mcp__agent-tracker__send_session_signal({ target: "<monitor_agent_id>", tier: "instruction", message: "Agent [id] claimed [claim] but evidence shows [refutation]. Re-verify before proceeding." })`
+
+**Subscription maintenance:** If `subscriptionGaps` is non-empty, subscribe to those agents now:
+```
+mcp__agent-tracker__subscribe_session_summaries({ target_agent_id: "<agent_id>", detail_level: "verbatim" })
+```
 
 ---
 
@@ -545,21 +616,68 @@ If related work detected between monitored task and other sessions, add:
 
 ---
 
-#### Section 10: Assessment
+#### Section 10: Evidence Audit
+
+```
+### Evidence Audit
+```
+
+Render from the `evidenceAudit` array. This section holds agents accountable — every claim of success must be backed by evidence.
+
+If any entries exist:
+```
+| Agent            | Claim                        | Evidence                          | Verdict        |
+|------------------|------------------------------|-----------------------------------|----------------|
+| [id prefix 8ch]  | [claim, truncated 35ch]      | [evidence or "None found"]        | [verdict icon] |
+```
+
+Verdict icons:
+- `confirmed` → `[done] Confirmed`
+- `unverified` → `[!] UNVERIFIED` — agent claims success but no proof in JSONL
+- `refuted` → `[!!] REFUTED` — evidence contradicts the claim
+
+For `unverified` entries, add a line below the table:
+```
+[!] [N] unverified success claim(s) — agents reported success without observable evidence of verification. Do NOT accept these as real progress until confirmed in a future round.
+```
+
+For `refuted` entries:
+```
+[!!] [N] REFUTED claim(s) — agents reported success but evidence shows otherwise. Signal sent to monitor to re-verify.
+```
+
+If no evidence audit entries: `No success claims to audit this round.`
+
+---
+
+#### Section 11: Assessment
 
 ```
 ### Assessment
 ```
 
-Write a **detailed multi-sentence assessment** (minimum 4 sentences). This section MUST contain specific evidence from the data gathered this round. Do NOT write vague summaries like "Everything looks healthy." Instead:
+Write a **detailed, skeptical multi-paragraph assessment** (minimum 6 sentences). This section MUST contain specific evidence from the data gathered this round. You are the CTO's eyes — be honest, be specific, be skeptical. Do NOT write vague summaries like "Everything looks healthy." Instead:
 
-- State the monitor's current operational status with specific cycle count and heartbeat data
-- Describe what milestone or sub-task was most recently completed (with PR numbers if applicable)
-- Describe what is currently in progress and what specific action the child agent is performing
-- State what the next expected milestone is based on the pending sub-tasks
-- Highlight any concerns (stale heartbeat, zero cycle delta, recurring errors, unacknowledged amendments) with specific data
-- End with one of these verdict lines:
+**Paragraph 1 — Operational Status:**
+- Monitor's cycle count, heartbeat age, and whether it's actually making forward progress (cycle delta)
+- Number of active children and what each is specifically doing (from verbatim text, not just tool names)
 
+**Paragraph 2 — Progress Analysis:**
+- What milestone or sub-task was most recently completed (with PR numbers if applicable)
+- Whether the completed work actually advances the objective (or is tangential/busywork)
+- What is in progress and what specific action the child agent is performing right now
+
+**Paragraph 3 — Evidence & Trust Assessment:**
+- Summary of evidence audit results — how many claims confirmed vs unverified vs refuted
+- Whether agents are verifying their own work (checking test output, viewing screenshots, confirming PRs merged) or just claiming success
+- Any patterns of agents claiming completion without evidence (cite specific rounds if recurring)
+
+**Paragraph 4 — Forward Look:**
+- What the next expected milestone is based on pending sub-tasks
+- Estimated time to completion (rough, based on velocity of cycle deltas and completed sub-tasks)
+- Risks: stale heartbeat, zero cycle delta, recurring errors, unacknowledged amendments, unverified claims carried forward
+
+End with one of these verdict lines:
 ```
 [done] Healthy — [specific reason with data]
 [!] Warning — [specific concern with data]
@@ -645,6 +763,9 @@ Execute `Bash("sleep 60")`, then return to Step 4 (increment `roundNumber` and r
 - Call `inspect_persistent_task`, `peek_session`, `get_session_queue_status`, `get_comms_log`, or `session-activity` tools directly — ALL data gathering goes through the investigator sub-agent
 - Skip spawning the investigator sub-agent and call MCP tools yourself — this produces shallow reports
 - Use `AskUserQuestion` for the demo offering more than once per monitoring session
+- **Accept agent claims of success without evidence** — if an agent says "test passed" but the JSONL shows no exit code, no assertion output, no screenshot, mark it UNVERIFIED
+- **Assume completed sub-tasks mean progress** — a completed sub-task with no PR merged may be dead work
+- **Trust "no errors" as evidence of success** — absence of errors is not proof of correct behavior
 
 **DO:**
 - Track state between rounds (cycle deltas, child ID churn, error pattern recurrence, criticalMemoryRounds)
@@ -652,6 +773,10 @@ Execute `Bash("sleep 60")`, then return to Step 4 (increment `roundNumber` and r
 - Treat a new child agent ID replacing a departed one as evidence of a prior failure (note in Section 3)
 - Quote the most diagnostic sentence from verbatim text when it is long — prefer the sentence that explains a decision or describes a blocker
 - If `inspect_persistent_task` is slow (>30s), note this in the Assessment as a potential MCP tool health issue
+- **Subscribe to every new child agent at verbatim tier** — you need the raw session history to verify claims
+- **Carry forward unverified claims** across rounds until confirmed or refuted — do not let them silently drop
+- **Interrogate completion claims**: When a sub-task moves to "completed", check the evidence log — was the work confirmed with an exit code, merged PR, or screenshot? Or did the agent just call `complete_task`?
+- **Signal monitors when claims are refuted** — use `send_session_signal` with tier `instruction` to force re-verification
 
 **Investigator completion time target:** Under 45 seconds. If the investigator takes longer, note it.
 
