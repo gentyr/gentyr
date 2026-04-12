@@ -601,12 +601,63 @@ function tamperCheck() {
   }
 }
 
+/**
+ * Check for stale hook file references in ~/.claude/settings.json.
+ * If any hook commands reference files that no longer exist on disk, emits
+ * a warning instructing the user to run `npx gentyr sync` to clean them up.
+ * Never throws — silently no-ops if the file is unreadable or has no hooks.
+ */
+function staleHookCheck() {
+  try {
+    const globalSettingsPath = path.join(process.env.HOME || '', '.claude', 'settings.json');
+    if (!fs.existsSync(globalSettingsPath)) return;
+    const raw = fs.readFileSync(globalSettingsPath, 'utf8');
+    const settings = JSON.parse(raw);
+    if (!settings.hooks || typeof settings.hooks !== 'object') return;
+
+    const missingBasenames = [];
+    for (const hookType of Object.keys(settings.hooks)) {
+      const matchers = settings.hooks[hookType];
+      if (!Array.isArray(matchers)) continue;
+      for (const matcher of matchers) {
+        if (!Array.isArray(matcher.hooks)) continue;
+        for (const entry of matcher.hooks) {
+          const cmd = typeof entry === 'string' ? entry : entry.command;
+          if (!cmd) continue;
+          const match = cmd.match(/^node\s+(\S+)/);
+          if (!match) continue;
+          const filePath = match[1].replace(/\$\{CLAUDE_PROJECT_DIR\}/g, projectDir);
+          if (!fs.existsSync(filePath)) {
+            const basename = path.basename(filePath);
+            if (!missingBasenames.includes(basename)) {
+              missingBasenames.push(basename);
+            }
+          }
+        }
+      }
+    }
+
+    if (missingBasenames.length > 0) {
+      warn(
+        `WARNING: ~/.claude/settings.json references hook file(s) that no longer exist on disk: ` +
+        `${missingBasenames.join(', ')}. ` +
+        `Run \`npx gentyr sync\` to remove stale hook references.`
+      );
+    }
+  } catch (_) {
+    // Unreadable settings or parse error — silently no-op
+  }
+}
+
 try {
   const frameworkDir = resolveFrameworkDir(projectDir);
   if (!frameworkDir) silent();
 
   // Check for hook tampering before sync (may exit via warn())
   tamperCheck();
+
+  // Check for stale hook file references in global settings
+  staleHookCheck();
 
   // Try state-based sync first; fall back to legacy check.
   if (!statBasedSync(frameworkDir)) {
