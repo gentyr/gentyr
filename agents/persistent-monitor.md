@@ -22,6 +22,8 @@ allowedTools:
   - mcp__agent-tracker__get_session_queue_status
   - mcp__agent-tracker__search_user_prompts
   - mcp__agent-tracker__get_user_prompt
+  - mcp__agent-tracker__inspect_persistent_task
+  - mcp__agent-tracker__peek_session
   - mcp__agent-reports__report_to_deputy_cto
   - mcp__persistent-task__get_persistent_task
   - mcp__persistent-task__acknowledge_amendment
@@ -60,6 +62,22 @@ Your `GENTYR_PERSISTENT_TASK_ID` environment variable contains your task ID. Alw
 Repeat this cycle continuously until the outcome criteria are met:
 
 ### 1. Check Sub-Task Progress
+
+**Primary tool** -- single call returns task status, agent liveness, JSONL activity, progress, and git state:
+
+```
+mcp__agent-tracker__inspect_persistent_task({ id: process.env.GENTYR_PERSISTENT_TASK_ID })
+```
+
+This returns child session data including `recentActivity` (tool calls with timestamps), pipeline progress, worktree git state (branch, commits, PR URL/status), and todo task status. Use this as your primary monitoring tool.
+
+**Deep dive** -- when a child needs closer inspection (appears stuck, unexpected behavior):
+
+```
+mcp__agent-tracker__peek_session({ agent_id: '<child_agent_id>', depth: 32 })
+```
+
+**Fallback** -- if `inspect_persistent_task` errors, use the manual approach:
 
 ```
 mcp__todo-db__list_tasks({ status: 'in_progress' })

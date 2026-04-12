@@ -2782,7 +2782,9 @@ async function main() {
               const running = queueDb.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE agent_id = ? AND status = 'running'").get(agentId);
               queueDb.close();
               if (!running || running.cnt === 0) {
-                fs.unlinkSync(path.join(agentProgressDir, file));
+                // Retire instead of delete — monitors may still need the data
+                const filePath = path.join(agentProgressDir, file);
+                try { fs.renameSync(filePath, filePath + '.retired'); } catch (_) { /* non-fatal */ }
               }
             } catch (_) { /* non-fatal */ }
           }

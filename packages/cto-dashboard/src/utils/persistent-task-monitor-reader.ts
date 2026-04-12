@@ -224,7 +224,7 @@ function loadAgentProgressMap(): Map<string, AgentProgressFile> {
 
   let files: string[];
   try {
-    files = fs.readdirSync(PROGRESS_DIR).filter(f => f.endsWith('.json'));
+    files = fs.readdirSync(PROGRESS_DIR).filter(f => f.endsWith('.json') || f.endsWith('.json.retired'));
   } catch {
     return result;
   }
@@ -233,7 +233,7 @@ function loadAgentProgressMap(): Map<string, AgentProgressFile> {
     try {
       const raw = fs.readFileSync(path.join(PROGRESS_DIR, file), 'utf8');
       const parsed: AgentProgressFile = JSON.parse(raw);
-      const agentId = parsed.agentId ?? path.basename(file, '.json');
+      const agentId = parsed.agentId ?? path.basename(file, '.json').replace('.retired', '');
       result.set(agentId, parsed);
     } catch {
       // Non-fatal: skip malformed progress files
