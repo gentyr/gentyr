@@ -8,7 +8,7 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
 import type { SessionItem } from '../../types.js';
-import { truncate, formatTimeAgo, formatElapsed } from '../../utils/formatters.js';
+import { truncate, formatTimeAgo, formatElapsed, cleanTitle } from '../../utils/formatters.js';
 import { getSessionSummaries } from '../../live-reader.js';
 
 interface SessionInfoProps {
@@ -81,7 +81,7 @@ export function SessionInfo({ session, agentId, summaryIndex, height }: SessionI
   const pid = session.pid ? String(session.pid) : 'N/A';
   const agentType = session.agentType || 'unknown';
   const elapsed = session.elapsed;
-  const title = session.title || '(untitled)';
+  const title = cleanTitle(session.title || '(untitled)');
   const started = formatTimeHHMM(session.startedAt);
   const completed = session.completedAt ? formatTimeHHMM(session.completedAt) : null;
   const lastActivity = lastActivityAgo(session.lastActionTimestamp);

@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import Database from 'better-sqlite3';
 import type {
   LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem,
@@ -289,7 +289,7 @@ function readPersistentTasks(runningSessions: SessionItem[]): PersistentTaskItem
       }
       const monitorSession: SessionItem = {
         id: `pt-monitor-${t.id}`, status: monitorAlive ? 'alive' : 'paused', priority: 'critical',
-        agentType: 'persistent-monitor', title: `Monitor: ${t.title}`, pid: t.monitor_pid,
+        agentType: 'persistent-monitor', title: t.title, pid: t.monitor_pid,
         lastAction: null, lastActionTimestamp: t.last_heartbeat || t.activated_at || new Date().toISOString(),
         lastMessage: null, description: null, killReason: null, totalTokens: null,
         sessionId: monitorAgentId || `pt-monitor-${t.id}`, elapsed: ageStr(t.activated_at), worklog: null, worktreePath: null,
@@ -421,38 +421,79 @@ export function readSessionTail(agentId: string, fromPosition?: number, worktree
 export function resumeSessionWithMessage(agentOrSessionId: string, message: string): void {
   const projectDir = process.env['CLAUDE_PROJECT_DIR'] || process.cwd();
   let resumeId = agentOrSessionId;
-  if (agentOrSessionId.startsWith('agent-')) { const sessionFile = findSessionFile(agentOrSessionId); if (sessionFile) resumeId = path.basename(sessionFile, '.jsonl'); }
-  const escaped = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const cmd = `cd "${projectDir}" && claude --resume "${resumeId}" -p "${escaped}"`;
-  try { execFileSync('osascript', ['-e', `tell application "Terminal"\ndo script "${cmd}"\nactivate\nend tell`], { timeout: 10000, stdio: 'pipe' }); }
-  catch (err) { try { fs.appendFileSync(path.join(projectDir, '.claude', 'state', 'dashboard-resume.log'), `[${new Date().toISOString()}] resumeSessionWithMessage failed: ${err instanceof Error ? err.message : String(err)}\n`); } catch { /* */ } }
+  if (agentOrSessionId.startsWith('agent-')) {
+    const sessionFile = findSessionFile(agentOrSessionId);
+    if (sessionFile) resumeId = path.basename(sessionFile, '.jsonl');
+  }
+  try {
+    const child = spawn('claude', ['--resume', resumeId, '-p', message], {
+      cwd: projectDir,
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
+    });
+    child.unref();
+  } catch (err) {
+    try {
+      fs.appendFileSync(
+        path.join(projectDir, '.claude', 'state', 'dashboard-resume.log'),
+        `[${new Date().toISOString()}] resumeSessionWithMessage failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    } catch { /* */ }
+  }
 }
 
-export function sendDirectiveSignal(toAgentId: string, message: string): { success: boolean; signalId: string } {
-  const signalDir = path.join(PROJECT_DIR, '.claude', 'state', 'session-signals');
-  fs.mkdirSync(signalDir, { recursive: true });
+export function sendDirectiveSignal(toAgentId: string, message: string, worktreePath?: string | null): { success: boolean; signalId: string } {
   const id = `sig-${crypto.randomUUID().slice(0, 8)}`;
   const filename = `${toAgentId}-${Date.now()}-${id}.json`;
   const signal = { id, from_agent_id: 'cto-dashboard', from_agent_type: 'cto', from_task_title: 'CTO Dashboard Signal', to_agent_id: toAgentId, to_agent_type: 'agent', tier: 'directive', message, created_at: new Date().toISOString(), read_at: null, acknowledged_at: null };
-  const tmpPath = path.join(signalDir, `.${filename}.tmp`);
-  fs.writeFileSync(tmpPath, JSON.stringify(signal));
-  fs.renameSync(tmpPath, path.join(signalDir, filename));
-  try { fs.appendFileSync(path.join(PROJECT_DIR, '.claude', 'state', 'session-comms.log'), JSON.stringify(signal) + '\n'); } catch { /* */ }
+  const content = JSON.stringify(signal);
+
+  // Write to main project signal dir
+  const mainSignalDir = path.join(PROJECT_DIR, '.claude', 'state', 'session-signals');
+  fs.mkdirSync(mainSignalDir, { recursive: true });
+  const mainTmp = path.join(mainSignalDir, `.${filename}.tmp`);
+  fs.writeFileSync(mainTmp, content);
+  fs.renameSync(mainTmp, path.join(mainSignalDir, filename));
+
+  // Also write to worktree signal dir if agent is in a worktree
+  // (worktree .claude/state/ is a separate directory, not symlinked to main tree)
+  if (worktreePath) {
+    try {
+      const wtSignalDir = path.join(worktreePath, '.claude', 'state', 'session-signals');
+      fs.mkdirSync(wtSignalDir, { recursive: true });
+      const wtTmp = path.join(wtSignalDir, `.${filename}.tmp`);
+      fs.writeFileSync(wtTmp, content);
+      fs.renameSync(wtTmp, path.join(wtSignalDir, filename));
+    } catch { /* non-fatal — main tree copy is the fallback */ }
+  }
+
+  try { fs.appendFileSync(path.join(PROJECT_DIR, '.claude', 'state', 'session-comms.log'), content + '\n'); } catch { /* */ }
   return { success: true, signalId: id };
 }
 
-export function getSignalDeliveryStatus(signalId: string): { status: 'pending' | 'read' | 'acknowledged'; read_at?: string; acknowledged_at?: string } | null {
-  const signalDir = path.join(PROJECT_DIR, '.claude', 'state', 'session-signals');
-  try {
-    const files = fs.readdirSync(signalDir).filter(f => f.includes(signalId));
-    for (const file of files) {
-      const signal = JSON.parse(fs.readFileSync(path.join(signalDir, file), 'utf8'));
-      if (signal.acknowledged_at) return { status: 'acknowledged', read_at: signal.read_at, acknowledged_at: signal.acknowledged_at };
-      if (signal.read_at) return { status: 'read', read_at: signal.read_at };
-      return { status: 'pending' };
-    }
-  } catch { /* */ }
-  return null;
+export function getSignalDeliveryStatus(signalId: string, worktreePath?: string | null): { status: 'pending' | 'read' | 'acknowledged'; read_at?: string; acknowledged_at?: string } | null {
+  // Check both main tree and worktree signal dirs — return the most-advanced status
+  // (agent updates the worktree copy; main tree copy stays pending)
+  const dirs = [path.join(PROJECT_DIR, '.claude', 'state', 'session-signals')];
+  if (worktreePath) dirs.push(path.join(worktreePath, '.claude', 'state', 'session-signals'));
+  type SignalStatus = { status: 'pending' | 'read' | 'acknowledged'; read_at?: string; acknowledged_at?: string };
+  let best: SignalStatus | null = null;
+  const rank: Record<string, number> = { pending: 0, read: 1, acknowledged: 2 };
+  for (const signalDir of dirs) {
+    try {
+      const files = fs.readdirSync(signalDir).filter(f => f.includes(signalId));
+      for (const file of files) {
+        const signal = JSON.parse(fs.readFileSync(path.join(signalDir, file), 'utf8'));
+        let current: SignalStatus;
+        if (signal.acknowledged_at) current = { status: 'acknowledged', read_at: signal.read_at, acknowledged_at: signal.acknowledged_at };
+        else if (signal.read_at) current = { status: 'read', read_at: signal.read_at };
+        else current = { status: 'pending' };
+        if (!best || (rank[current.status] ?? 0) > (rank[best.status] ?? 0)) best = current;
+      }
+    } catch { /* */ }
+  }
+  return best;
 }
 
 export function getSessionSummaries(agentId: string): Array<{ id: string; summary: string; created_at: string }> {

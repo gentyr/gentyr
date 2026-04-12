@@ -84,7 +84,7 @@ export interface DisplaySession {
 // ============================================================================
 
 export interface ActivityEntry {
-  type: 'tool_call' | 'assistant_text' | 'tool_result' | 'error' | 'compaction' | 'session_end';
+  type: 'tool_call' | 'assistant_text' | 'tool_result' | 'error' | 'compaction' | 'session_end' | 'user_message';
   timestamp: string;
   text: string;
   toolName?: string;

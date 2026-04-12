@@ -87,3 +87,14 @@ export function calculateCacheRate(cacheRead: number, input: number): number {
 export function truncate(s: string, max: number): string {
   return s.length > max ? s.substring(0, max - 3) + '...' : s;
 }
+
+/** Strip redundant prefixes from session titles (Monitor:, Force-spawn:, [Persistent], etc.) */
+export function cleanTitle(title: string): string {
+  return title
+    .replace(/^\[Persistent\]\s*/i, '')
+    .replace(/^Monitor revival:\s*/i, '')
+    .replace(/^Stale-pause revival:\s*/i, '')
+    .replace(/^Monitor:\s*/i, '')
+    .replace(/^Force-spawn:\s*\S+\s*-\s*/i, '')
+    .replace(/^\[Revival\]\s*/i, '');
+}
