@@ -38,11 +38,11 @@ The persistent monitor is a long-running Opus session that the CTO delegates com
 
 ### hooks
 
-Sixty-four automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Quota rotation, credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection. Hooks govern what agents can and cannot do.
+Sixty-six automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection, long-running command routing. Hooks govern what agents can and cannot do.
 
 ### servers
 
-Thirty-seven protocol servers connecting agents to external systems. Deployment platforms, secret vaults, task databases, plan orchestrators, log aggregators, feedback pipelines, coverage reporters. Agents never touch raw APIs. Every external interaction goes through a typed MCP server with a schema and a handler.
+Thirty-eight protocol servers connecting agents to external systems. Deployment platforms, secret vaults, task databases, plan orchestrators, log aggregators, feedback pipelines, coverage reporters. Agents never touch raw APIs. Every external interaction goes through a typed MCP server with a schema and a handler.
 
 Fifteen stateless API-proxy servers (GitHub, Cloudflare, Supabase, Vercel, Render, and others) run as a single shared HTTP daemon instead of one process per agent session. A single daemon process on port 18090 replaces up to 15 per-session stdio processes, saving ~750MB RAM per concurrent agent. Installed via `setup-automation-service.sh`; auto-detected by `config-gen.js` which rewrites `.mcp.json` with HTTP entries when the daemon is running.
 
@@ -227,7 +227,7 @@ npm run generate:readme
 
 ## the automation layer
 
-Thirty-five hooks and background timers keep the system running without human triggers.
+Sixty-six hooks and background timers keep the system running without human triggers.
 
 ### quota and credentials
 
@@ -275,7 +275,7 @@ The Notion plugin (`plugins/notion/`) syncs four GENTYR data sources to Notion d
 
 ## components
 
-37 MCP servers. 16 agents. 64 hooks. 37 commands. CLI dashboard. Plugin system with extensible local MCP servers.
+38 MCP servers. 16 agents. 66 hooks. 39 commands. CLI dashboard. Plugin system with extensible local MCP servers.
 
 ## documentation
 
