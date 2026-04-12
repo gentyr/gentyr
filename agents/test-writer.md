@@ -225,6 +225,83 @@ describe('Azure Frontend Connector Integration', () => {
 4. **Rate Limiting** - Respect platform rate limits
 5. **Browser Proxy Tests** - Verify all requests go through proxy with delays
 
+## Test Observability (Integration & E2E)
+
+Integration tests and E2E tests are often run by autonomous agents via `secret_run_command`. These agents need visibility into what's happening — a test that silently runs for 90 seconds and returns pass/fail is useless when it fails.
+
+### Progress Logging for Long-Running Tests
+
+Tests expected to take **>30 seconds** MUST write incremental progress so agents can diagnose failures:
+
+```typescript
+import { appendFileSync } from 'fs';
+
+function logProgress(step: string, details?: Record<string, unknown>) {
+  const progressFile = process.env.TEST_PROGRESS_FILE;
+  if (!progressFile) return;
+  const event = { type: 'step', step, timestamp: Date.now(), ...details };
+  try { appendFileSync(progressFile, JSON.stringify(event) + '\n'); } catch { /* non-fatal */ }
+}
+
+// Usage in test:
+logProgress('Navigating to login page');
+logProgress('Entering email', { email: 'test@example.com' });
+logProgress('MFA challenge detected', { mfaType: 'email' });
+logProgress('MFA code received', { codeLength: 6 });
+logProgress('Login complete — on console page');
+```
+
+### Diagnostic Artifacts on Failure
+
+Tests that interact with browsers, APIs, or external services MUST save diagnostic artifacts when they fail:
+
+- **Screenshots**: Capture browser state at key moments and on failure
+- **Network logs**: Save relevant request/response data
+- **DOM snapshots**: Save page HTML on assertion failures
+- **Structured result**: Write a JSON summary file with step timings and failure details
+
+```typescript
+afterEach(async () => {
+  if (expect.getState().isNot === false) { // test failed
+    const diagDir = `.claude/state/test-diagnostics/${testId}`;
+    mkdirSync(diagDir, { recursive: true });
+    await page.screenshot({ path: `${diagDir}/failure.png` });
+    writeFileSync(`${diagDir}/page.html`, await page.content());
+    writeFileSync(`${diagDir}/result.json`, JSON.stringify({
+      test: expect.getState().currentTestName,
+      url: page.url(),
+      timestamp: Date.now(),
+    }));
+  }
+});
+```
+
+### Structured Test Results
+
+Integration tests SHOULD write a structured result summary that agents can parse:
+
+```typescript
+afterAll(() => {
+  const resultFile = process.env.TEST_RESULT_FILE || `test-result-${Date.now()}.json`;
+  writeFileSync(resultFile, JSON.stringify({
+    passed: passedCount,
+    failed: failedCount,
+    steps: stepTimings,     // Array of { name, durationMs, status }
+    artifacts: savedPaths,  // Array of screenshot/log file paths
+    totalDurationMs: Date.now() - suiteStart,
+  }));
+});
+```
+
+### Why This Matters
+
+When another agent runs your test via `secret_run_command`, it gets at most the last 500 lines of sanitized output. If the test takes >55 seconds, `secret_run_command` auto-backgrounds it and the agent must poll for results. Without progress logging, the agent has no way to know:
+- Whether the test is stuck or making progress
+- Which step failed
+- What the browser/API state was at failure time
+
+A test that just prints "PASS" or "FAIL" after 90 seconds of silence is nearly impossible for an agent to debug.
+
 ## Running Tests
 
 ```bash
