@@ -83,11 +83,23 @@ export const RunCommandArgsSchema = z.object({
     .describe('Subset of secrets.local keys to inject. Omit = inject all.'),
   profile: z.string().optional()
     .describe('Named secret profile from services.json. Merges profile secretKeys with any explicit secretKeys. Use list_secret_profiles to discover available profiles.'),
-  outputLines: z.number().int().min(0).max(200).default(100)
+  outputLines: z.number().int().min(0).max(500).default(100)
     .describe('Max output lines to return (foreground only). Sanitized of secret values.'),
   label: z.string().optional()
     .describe('Label for background process tracking. Defaults to command[0].'),
 });
+
+export const RunCommandPollArgsSchema = z.object({
+  label: z.string().optional()
+    .describe('Label of the background process to check.'),
+  pid: z.number().int().optional()
+    .describe('PID of the background process to check.'),
+  outputLines: z.number().int().min(0).max(500).default(50)
+    .describe('Number of recent output lines to return.'),
+}).refine(data => data.label !== undefined || data.pid !== undefined,
+  { message: 'Either label or pid is required' });
+
+export type RunCommandPollArgs = z.infer<typeof RunCommandPollArgsSchema>;
 
 // ============================================================================
 // Secret Profile Schemas
@@ -354,9 +366,22 @@ export interface RunCommandForegroundResult {
 }
 
 export interface RunCommandBackgroundResult {
-  mode: 'background';
+  mode: 'background' | 'auto_background';
   pid: number;
   label: string;
   secretsResolved: number;
   secretsFailed: string[];
+  progressFile: string | null;
+  message?: string;
+}
+
+export interface RunCommandPollResult {
+  found: boolean;
+  running: boolean;
+  pid: number | null;
+  label: string | null;
+  exitCode: number | null;
+  durationMs: number;
+  outputLines: string[];
+  progressFile: string | null;
 }

@@ -17,7 +17,7 @@
  */
 
 import { execFileSync, spawn, type ChildProcess } from 'child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync } from 'fs';
 import { resolve, join, dirname } from 'path';
 import { createServer } from 'net';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
@@ -30,6 +30,7 @@ import {
   DevServerStopArgsSchema,
   DevServerStatusArgsSchema,
   RunCommandArgsSchema,
+  RunCommandPollArgsSchema,
   RegisterSecretProfileArgsSchema,
   GetSecretProfileArgsSchema,
   DeleteSecretProfileArgsSchema,
@@ -41,6 +42,8 @@ import {
   type DevServerStopArgs,
   type DevServerStatusArgs,
   type RunCommandArgs,
+  type RunCommandPollArgs,
+  type RunCommandPollResult,
   type RegisterSecretProfileArgs,
   type GetSecretProfileArgs,
   type DeleteSecretProfileArgs,
@@ -104,7 +107,7 @@ function loadServicesConfig(): ServicesConfig {
 // Dev Server Process Management
 // ============================================================================
 
-const MAX_OUTPUT_LINES = 50;
+const MAX_OUTPUT_LINES = 500;
 const SIGTERM_TIMEOUT_MS = 5000;
 
 interface ManagedProcess {
@@ -899,6 +902,8 @@ async function runCommandForeground(
 
 /**
  * Run a command in background mode: spawn, register in managedProcesses.
+ * When progressFile is provided, writes typed JSONL events (start/stdout/stderr/exit)
+ * so the poll tool can reconstruct state even after the process exits.
  */
 function runCommandBackground(
   command: string[],
@@ -906,6 +911,7 @@ function runCommandBackground(
   sanitize: (text: string) => string,
   cwd: string,
   label: string,
+  progressFile?: string,
 ): RunCommandBackgroundResult {
   const child = spawn(command[0], command.slice(1), {
     env: childEnv,
@@ -921,6 +927,7 @@ function runCommandBackground(
     throw new Error('Failed to spawn process (no PID)');
   }
 
+  const startedAt = Date.now();
   const name = `run:${label}`;
   const managed: ManagedProcess = {
     name,
@@ -928,21 +935,51 @@ function runCommandBackground(
     process: child,
     pid,
     port: 0,
-    startedAt: Date.now(),
+    startedAt,
     outputBuffer: [],
   };
 
+  // Write a single JSONL event to the progress file. Non-fatal on error.
+  const writeProgress = progressFile
+    ? (event: object): void => {
+        try { appendFileSync(progressFile, JSON.stringify(event) + '\n'); } catch { /* non-fatal */ }
+      }
+    : null;
+
+  if (writeProgress) {
+    // Ensure parent directory exists before first write
+    try { mkdirSync(dirname(progressFile!), { recursive: true }); } catch { /* non-fatal */ }
+    writeProgress({ type: 'start', command: command.join(' '), label, pid, timestamp: Date.now() });
+  }
+
   child.stdout?.on('data', (data: Buffer) => {
     const lines = data.toString().split('\n').filter(Boolean);
-    for (const line of lines) appendOutput(managed, sanitize(line));
+    for (const line of lines) {
+      const sanitized = sanitize(line);
+      appendOutput(managed, sanitized);
+      if (writeProgress) writeProgress({ type: 'stdout', line: sanitized, timestamp: Date.now() });
+    }
   });
   child.stderr?.on('data', (data: Buffer) => {
     const lines = data.toString().split('\n').filter(Boolean);
-    for (const line of lines) appendOutput(managed, sanitize(line));
+    for (const line of lines) {
+      const sanitized = sanitize(line);
+      appendOutput(managed, sanitized);
+      if (writeProgress) writeProgress({ type: 'stderr', line: sanitized, timestamp: Date.now() });
+    }
   });
 
-  child.on('exit', () => {
+  child.on('exit', (code, signal) => {
     managedProcesses.delete(name);
+    if (writeProgress) {
+      writeProgress({
+        type: 'exit',
+        exitCode: code ?? -1,
+        signal: signal ?? null,
+        durationMs: Date.now() - startedAt,
+        timestamp: Date.now(),
+      });
+    }
   });
 
   managedProcesses.set(name, managed);
@@ -953,6 +990,7 @@ function runCommandBackground(
     label,
     secretsResolved: 0, // filled by caller
     secretsFailed: [],   // filled by caller
+    progressFile: progressFile ?? null,
   };
 }
 
@@ -1013,6 +1051,23 @@ async function runCommand(args: RunCommandArgs): Promise<RunCommandForegroundRes
   const secretsResolved = Object.keys(injectedEnv).length;
   const sanitize = createSanitizer(injectedEnv);
 
+  // Auto-background: when timeout > 55s and not already background,
+  // auto-switch to prevent MCP transport timeout (~60s) from killing the call.
+  const AUTO_BG_THRESHOLD_MS = 55000;
+  if (!args.background && args.timeout > AUTO_BG_THRESHOLD_MS) {
+    const rawLabel = args.label || args.command[0];
+    // Sanitize label for use in filename (replace path separators and spaces)
+    const label = rawLabel.replace(/[/\\ ]+/g, '-').replace(/^-+|-+$/g, '');
+    const stateDir = join(PROJECT_DIR, '.claude', 'state');
+    const progressFile = join(stateDir, `run-command-${label}-${Date.now()}.jsonl`);
+    const result = runCommandBackground(args.command, childEnv, sanitize, cwd, rawLabel, progressFile);
+    result.secretsResolved = secretsResolved;
+    result.secretsFailed = failedKeys;
+    result.mode = 'auto_background';
+    result.message = `Command timeout (${args.timeout}ms) exceeds MCP transport limit (~60s). Running in background automatically. Poll with secret_run_command_poll({ label: "${rawLabel}" }) or read progress file: ${progressFile}`;
+    return result;
+  }
+
   if (args.background) {
     const label = args.label || args.command[0];
     const result = runCommandBackground(args.command, childEnv, sanitize, cwd, label);
@@ -1027,6 +1082,90 @@ async function runCommand(args: RunCommandArgs): Promise<RunCommandForegroundRes
   result.secretsResolved = secretsResolved;
   result.secretsFailed = failedKeys;
   return result;
+}
+
+/**
+ * Poll the status of a background command started by secret_run_command.
+ * Searches in-memory managedProcesses first; falls back to JSONL progress file
+ * written by runCommandBackground() after the process exits.
+ */
+async function runCommandPoll(args: RunCommandPollArgs): Promise<RunCommandPollResult> {
+  // Search in-memory managed processes by label or pid
+  let found: ManagedProcess | undefined;
+  for (const managed of managedProcesses.values()) {
+    if (args.label !== undefined && managed.label === args.label) { found = managed; break; }
+    if (args.pid !== undefined && managed.pid === args.pid) { found = managed; break; }
+  }
+
+  if (found) {
+    const running = isProcessAlive(found.pid);
+    const maxLines = args.outputLines ?? 50;
+    const outputLines = found.outputBuffer.slice(-maxLines);
+    return {
+      found: true,
+      running,
+      pid: found.pid,
+      label: found.label,
+      exitCode: null, // not available while still in managedProcesses
+      durationMs: Date.now() - found.startedAt,
+      outputLines,
+      progressFile: null, // in-memory process, no separate progress file reference
+    };
+  }
+
+  // Process not in memory — try to find a matching JSONL progress file
+  if (args.label !== undefined) {
+    const stateDir = join(PROJECT_DIR, '.claude', 'state');
+    try {
+      const sanitizedLabel = args.label.replace(/[/\\ ]+/g, '-').replace(/^-+|-+$/g, '');
+      const files = readdirSync(stateDir)
+        .filter(f => f.startsWith(`run-command-${sanitizedLabel}-`) && f.endsWith('.jsonl'));
+      if (files.length > 0) {
+        // Read the most-recent progress file (sort lexicographically — timestamp suffix ensures order)
+        const latest = files.sort().pop()!;
+        const progressFile = join(stateDir, latest);
+        const content = readFileSync(progressFile, 'utf8');
+        const events: Array<Record<string, unknown>> = content
+          .split('\n')
+          .filter(Boolean)
+          .map(l => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return null; } })
+          .filter((e): e is Record<string, unknown> => e !== null);
+
+        const startEvent = events.find(e => e.type === 'start');
+        const exitEvent = events.find(e => e.type === 'exit');
+        const maxLines = args.outputLines ?? 50;
+        const outputLines = events
+          .filter(e => e.type === 'stdout' || e.type === 'stderr')
+          .map(e => e.line as string)
+          .slice(-maxLines);
+
+        return {
+          found: true,
+          running: exitEvent === undefined,
+          pid: (startEvent?.pid as number | undefined) ?? (args.pid ?? null),
+          label: args.label,
+          exitCode: exitEvent !== undefined ? (exitEvent.exitCode as number) : null,
+          durationMs: exitEvent !== undefined
+            ? (exitEvent.durationMs as number)
+            : (startEvent ? Date.now() - (startEvent.timestamp as number) : 0),
+          outputLines,
+          progressFile,
+        };
+      }
+    } catch { /* non-fatal: stateDir may not exist or file may be unreadable */ }
+  }
+
+  // Not found anywhere
+  return {
+    found: false,
+    running: false,
+    pid: args.pid ?? null,
+    label: args.label ?? null,
+    exitCode: null,
+    durationMs: 0,
+    outputLines: [],
+    progressFile: null,
+  };
 }
 
 // ============================================================================
@@ -1510,9 +1649,15 @@ export const tools = [
   },
   {
     name: 'secret_run_command',
-    description: 'Run a command with 1Password secrets injected into env vars. IMPORTANT: Check list_secret_profiles first — if a profile matches your command, use the profile param to ensure all required secrets are injected. Omitting a matching profile will be blocked on first attempt. Secrets resolved in MCP server memory, never returned to agent. Output sanitized. Executable must be in allowlist (pnpm, npx, node, tsx, playwright, prisma, drizzle-kit, vitest). No shell — argv array. Do NOT use for Playwright tests/demos — use run_demo or run_demo_batch.',
+    description: 'Run a command with 1Password secrets injected into env vars. IMPORTANT: Check list_secret_profiles first — if a profile matches your command, use the profile param to ensure all required secrets are injected. Omitting a matching profile will be blocked on first attempt. Secrets resolved in MCP server memory, never returned to agent. Output sanitized. Executable must be in allowlist (pnpm, npx, node, tsx, playwright, prisma, drizzle-kit, vitest). No shell — argv array. Do NOT use for Playwright tests/demos — use run_demo or run_demo_batch. Commands with timeout > 55s are automatically run in background to avoid MCP transport timeout — poll results with secret_run_command_poll.',
     schema: RunCommandArgsSchema,
     handler: runCommand as (args: unknown) => unknown,
+  },
+  {
+    name: 'secret_run_command_poll',
+    description: 'Poll status of a background command started by secret_run_command. Returns running state, exit code, recent output lines, and progress file path. Use after secret_run_command returns mode "auto_background" or "background". Specify label (recommended) or pid.',
+    schema: RunCommandPollArgsSchema,
+    handler: runCommandPoll as (args: unknown) => unknown,
   },
   {
     name: 'register_secret_profile',

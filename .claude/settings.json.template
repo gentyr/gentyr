@@ -453,6 +453,14 @@
         }]
       },
       {
+        "matcher": "mcp__secret-sync__secret_run_command",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/long-command-warning.js",
+          "timeout": 5
+        }]
+      },
+      {
         "matcher": "mcp__persistent-task__activate_persistent_task",
         "hooks": [{
           "type": "command",
