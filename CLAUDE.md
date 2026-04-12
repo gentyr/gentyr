@@ -21,7 +21,7 @@ Installs framework symlinks (via `node_modules/gentyr`), configs, husky hooks, b
 npx gentyr sync
 ```
 
-Rebuilds MCP servers, re-merges settings.json, regenerates .mcp.json, and deploys staged hooks. Also runs automatically on `SessionStart` when framework version or config hash changes. When `settings.json` is root-owned and a sync is needed, the SessionStart hook detects any stale hook file references (hooks listed in `settings.json` that no longer exist on disk) and emits an escalated warning to run `npx gentyr sync` immediately.
+Rebuilds MCP servers, re-merges settings.json, regenerates .mcp.json, and deploys staged hooks. Also runs automatically on `SessionStart` when framework version or config hash changes. At every SessionStart, the hook also checks `~/.claude/settings.json` for stale hook file references (hook entries whose referenced file no longer exists on disk) and emits an escalated warning to run `npx gentyr sync` immediately. `npx gentyr sync` itself removes stale hook entries from `~/.claude/settings.json` as part of its cleanup pass.
 
 ### Migrate from legacy install
 
