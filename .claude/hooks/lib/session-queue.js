@@ -23,7 +23,7 @@ import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from '../agent-tr
 import { buildSpawnEnv } from './spawn-env.js';
 import { shouldAllowSpawn } from './memory-pressure.js';
 import { reapSyncPass } from './session-reaper.js';
-import { killProcessGroup } from './process-tree.js';
+import { killProcessGroup, isClaudeProcess } from './process-tree.js';
 import { auditEvent } from './session-audit.js';
 import { debugLog } from './debug-log.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
@@ -1361,6 +1361,12 @@ export async function preemptForCtoTask(ctoQueueId, projectDir) {
   } catch (err) {
     // Non-fatal — log and continue, the stop hook fallback will still handle it
     log(`preemptForCtoTask: failed to write suspended-sessions.json: ${err.message}`);
+  }
+
+  // Verify PID identity before killing (defense against PID reuse)
+  if (!isClaudeProcess(pid)) {
+    log(`preemptForCtoTask: PID ${pid} is no longer a Claude process — skipping`);
+    return;
   }
 
   // Send SIGTERM to the victim process

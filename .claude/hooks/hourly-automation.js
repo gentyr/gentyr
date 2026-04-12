@@ -24,7 +24,7 @@ import { enqueueSession, drainQueue } from './lib/session-queue.js';
 import { getCooldown } from './config-reader.js';
 import { runFeedbackPipeline, startFeedbackRun, personaRanRecently } from './feedback-orchestrator.js';
 import { createWorktree, cleanupMergedWorktrees, listWorktrees, removeWorktree } from './lib/worktree-manager.js';
-import { killProcessGroup } from './lib/process-tree.js';
+import { killProcessGroup, isClaudeProcess } from './lib/process-tree.js';
 import { getFeatureBranchName } from './lib/feature-branch-helper.js';
 import { detectStaleWork, formatReport } from './stale-work-detector.js';
 import { reviveInterruptedSessions } from './session-reviver.js';
@@ -2892,32 +2892,39 @@ async function main() {
           if (heartbeatAge > staleKillMs) {
             log(`Persistent monitor health: "${task.title}" has stale heartbeat (${Math.round(heartbeatAge / 60000)}min, threshold=${staleKillMinutes}min) — killing stuck monitor PID ${task.monitor_pid}`);
 
-            // Send SIGTERM first
-            try {
-              process.kill(task.monitor_pid, 'SIGTERM');
-              log(`Persistent monitor health: sent SIGTERM to PID ${task.monitor_pid} for "${task.title}"`);
-            } catch (killErr) {
-              log(`Persistent monitor health: SIGTERM failed for PID ${task.monitor_pid}: ${killErr.message} (may already be dead)`);
-            }
-
-            // Wait briefly for graceful shutdown
-            try {
-              execSync('sleep 2');
-            } catch (_) { /* non-fatal */ }
-
-            // Check if still alive and SIGKILL if needed
-            let stillAlive = false;
-            try {
-              process.kill(task.monitor_pid, 0);
-              stillAlive = true;
-            } catch (_) { /* process is dead — good */ }
-
-            if (stillAlive) {
+            // Verify PID identity before killing (defense against PID reuse)
+            if (!isClaudeProcess(task.monitor_pid)) {
+              log(`Persistent monitor health: PID ${task.monitor_pid} is no longer a Claude process — skipping kill for "${task.title}"`);
+            } else {
+              // Send SIGTERM first
               try {
-                process.kill(task.monitor_pid, 'SIGKILL');
-                log(`Persistent monitor health: sent SIGKILL to PID ${task.monitor_pid} for "${task.title}" (did not exit after SIGTERM)`);
+                process.kill(task.monitor_pid, 'SIGTERM');
+                log(`Persistent monitor health: sent SIGTERM to PID ${task.monitor_pid} for "${task.title}"`);
+                auditEvent('persistent_monitor_killed', { task_id: task.id, pid: task.monitor_pid, signal: 'SIGTERM', reason: 'stale_heartbeat' });
               } catch (killErr) {
-                log(`Persistent monitor health: SIGKILL failed for PID ${task.monitor_pid}: ${killErr.message}`);
+                log(`Persistent monitor health: SIGTERM failed for PID ${task.monitor_pid}: ${killErr.message} (may already be dead)`);
+              }
+
+              // Wait briefly for graceful shutdown
+              try {
+                execSync('sleep 2');
+              } catch (_) { /* non-fatal */ }
+
+              // Check if still alive and SIGKILL if needed
+              let stillAlive = false;
+              try {
+                process.kill(task.monitor_pid, 0);
+                stillAlive = true;
+              } catch (_) { /* process is dead — good */ }
+
+              if (stillAlive) {
+                try {
+                  process.kill(task.monitor_pid, 'SIGKILL');
+                  log(`Persistent monitor health: sent SIGKILL to PID ${task.monitor_pid} for "${task.title}" (did not exit after SIGTERM)`);
+                  auditEvent('persistent_monitor_killed', { task_id: task.id, pid: task.monitor_pid, signal: 'SIGKILL', reason: 'stale_heartbeat' });
+                } catch (killErr) {
+                  log(`Persistent monitor health: SIGKILL failed for PID ${task.monitor_pid}: ${killErr.message}`);
+                }
               }
             }
 
