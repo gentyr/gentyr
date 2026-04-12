@@ -81,11 +81,62 @@ export const RunCommandArgsSchema = z.object({
     .describe('Timeout in ms for foreground mode. Default 120s, max 10min.'),
   secretKeys: z.array(z.string()).optional()
     .describe('Subset of secrets.local keys to inject. Omit = inject all.'),
+  profile: z.string().optional()
+    .describe('Named secret profile from services.json. Merges profile secretKeys with any explicit secretKeys. Use list_secret_profiles to discover available profiles.'),
   outputLines: z.number().int().min(0).max(200).default(100)
     .describe('Max output lines to return (foreground only). Sanitized of secret values.'),
   label: z.string().optional()
     .describe('Label for background process tracking. Defaults to command[0].'),
 });
+
+// ============================================================================
+// Secret Profile Schemas
+// ============================================================================
+
+export const SecretProfileSchema = z.object({
+  secretKeys: z.array(z.string()).min(1)
+    .describe('Secret key names from secrets.local to inject when this profile is used.'),
+  description: z.string().optional()
+    .describe('Human-readable description of what this profile provides.'),
+  match: z.object({
+    commandPattern: z.string().optional()
+      .describe('Regex tested against the joined command string (e.g. "vitest.*aws-login").'),
+    cwdPattern: z.string().optional()
+      .describe('Glob-style suffix tested against cwd (e.g. "*/aws-integration").'),
+  }).optional()
+    .describe('Auto-match rules. When a secret_run_command call matches these patterns, the agent is gated to use this profile.'),
+});
+
+export type SecretProfile = z.infer<typeof SecretProfileSchema>;
+
+export const RegisterSecretProfileArgsSchema = z.object({
+  name: z.string().min(1).max(64).regex(/^[a-z][a-z0-9-]*$/, 'Profile name must be lowercase alphanumeric with hyphens')
+    .describe('Profile name (lowercase alphanumeric + hyphens).'),
+  secretKeys: z.array(z.string()).min(1)
+    .describe('Secret key names from secrets.local.'),
+  description: z.string().optional()
+    .describe('What this profile provides.'),
+  commandPattern: z.string().optional()
+    .describe('Regex to auto-match against command (e.g. "vitest.*aws-login").'),
+  cwdPattern: z.string().optional()
+    .describe('Suffix pattern to auto-match against cwd (e.g. "*/aws-integration").'),
+});
+
+export type RegisterSecretProfileArgs = z.infer<typeof RegisterSecretProfileArgsSchema>;
+
+export const GetSecretProfileArgsSchema = z.object({
+  name: z.string().min(1).describe('Profile name to retrieve.'),
+});
+
+export type GetSecretProfileArgs = z.infer<typeof GetSecretProfileArgsSchema>;
+
+export const DeleteSecretProfileArgsSchema = z.object({
+  name: z.string().min(1).describe('Profile name to delete.'),
+});
+
+export type DeleteSecretProfileArgs = z.infer<typeof DeleteSecretProfileArgsSchema>;
+
+export const ListSecretProfilesArgsSchema = z.object({});
 
 // ============================================================================
 // Type Exports
@@ -143,6 +194,7 @@ export const ServicesConfigSchema = z.object({
     allowedExecutables: z.array(z.string()).optional()
       .describe('Additional executables to allow beyond defaults'),
   }).optional(),
+  secretProfiles: z.record(z.string(), SecretProfileSchema).optional(),
   secrets: z.object({
     renderProduction: z.record(z.string(), z.string()).optional(),
     renderStaging: z.record(z.string(), z.string()).optional(),

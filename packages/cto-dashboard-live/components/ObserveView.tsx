@@ -1,91 +1,110 @@
 /**
- * Page 4: Observe — real-time session tail + signal injection.
+ * ObserveView — real-time session tail + signal injection.
  *
  * Layout (two-column):
  *   Left  : SessionSelector (selectable list) + SessionInfo
  *   Right : ActivityStream (JSONL tail) + SignalInput
  *
  * Keyboard map (when NOT in signal mode):
- *   ↑ / ↓   select session
- *   s        enter signal mode
+ *   up/down   select session
+ *   Enter     enter signal mode
+ *   [ / ]     navigate summaries
  *
  * Keyboard map (when in signal mode):
  *   printable char   append to text
  *   Backspace        delete last char
- *   Enter            send signal, exit signal mode
+ *   Enter            send signal (if text non-empty) or exit signal mode
  *   Escape           cancel, exit signal mode
  */
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
-import { Section } from '../Section.js';
-import { SessionSelector } from './SessionSelector.js';
-import { SessionInfo } from './SessionInfo.js';
-import { ActivityStream } from './ActivityStream.js';
-import { SignalInput } from './SignalInput.js';
-import { useSessionTail } from '../../hooks/useSessionTail.js';
-import { sendDirectiveSignal, isProcessAlive, resumeSessionWithMessage, getSignalDeliveryStatus } from '../../live-reader.js';
-import type { LiveDashboardData, SessionItem } from '../../types.js';
+import { Section } from './Section.js';
+import { SessionSelector } from './page4/SessionSelector.js';
+import { SessionInfo } from './page4/SessionInfo.js';
+import { ActivityStream } from './page4/ActivityStream.js';
+import { SignalInput } from './page4/SignalInput.js';
+import { useSessionTail } from '../hooks/useSessionTail.js';
+import { sendDirectiveSignal, isProcessAlive, resumeSessionWithMessage, getSignalDeliveryStatus } from '../live-reader.js';
+import type { LiveDashboardData, SessionItem, DisplaySession } from '../types.js';
 
-interface Page4Props {
+interface ObserveViewProps {
   data: LiveDashboardData;
   bodyHeight: number;
   bodyWidth: number;
-  initialSession?: SessionItem | null;
 }
 
 const LEFT_WIDTH_FRACTION = 0.22;
-// Rows consumed by the Section border/header in the left column.
 const LEFT_HEADER_OVERHEAD = 2;
-// Rows consumed by Section border + SignalInput row at bottom in the right column.
 const RIGHT_HEADER_OVERHEAD = 2;
 const SIGNAL_ROW_HEIGHT = 1;
 const DIVIDER_HEIGHT = 1;
 
-export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Props): React.ReactElement {
-  // ── All available sessions (queued → running → persistent+sub-tasks → completed) ──
-  const subTaskSessions: SessionItem[] = data.persistentTasks.flatMap(pt =>
-    pt.subTasks
-      .filter(st => st.session != null)
-      .map(st => ({ ...st.session!, title: `\u2514 ${st.session!.title}` }))
-  );
+/** Build a flat list of DisplaySession with hierarchy info */
+function buildDisplaySessions(data: LiveDashboardData): DisplaySession[] {
+  const result: DisplaySession[] = [];
 
-  const allSessions: SessionItem[] = [
-    ...data.queuedSessions,
-    ...data.runningSessions,
-    ...data.persistentTasks.map(pt => pt.monitorSession).filter(Boolean) as SessionItem[],
-    ...subTaskSessions,
-    ...data.completedSessions,
-  ];
+  // Queued sessions (top-level)
+  for (const s of data.queuedSessions) {
+    result.push({ session: s, indent: 0, isMonitor: false });
+  }
+
+  // Persistent tasks: monitor + indented children
+  for (const pt of data.persistentTasks) {
+    result.push({
+      session: pt.monitorSession,
+      indent: 0,
+      isMonitor: true,
+      persistentTaskTitle: pt.title,
+    });
+    // Sub-task sessions (indented)
+    for (const st of pt.subTasks) {
+      if (st.session) {
+        result.push({ session: st.session, indent: 1, isMonitor: false });
+      }
+    }
+  }
+
+  // Standalone running sessions
+  for (const s of data.runningSessions) {
+    result.push({ session: s, indent: 0, isMonitor: false });
+  }
+
+  // Suspended sessions
+  for (const s of data.suspendedSessions) {
+    result.push({ session: s, indent: 0, isMonitor: false });
+  }
+
+  // Completed sessions
+  for (const s of data.completedSessions) {
+    result.push({ session: s, indent: 0, isMonitor: false });
+  }
+
+  return result;
+}
+
+export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): React.ReactElement {
+  const displaySessions = buildDisplaySessions(data);
+  const allSessions = displaySessions.map(ds => ds.session);
 
   const [selectedId, setSelectedId] = useState<string | null>(
-    initialSession ? initialSession.id : null,
+    allSessions.length > 0 ? allSessions[0].id : null,
   );
 
-  // When a target session is passed in (e.g. from Page 1 Enter), select it.
-  useEffect(() => {
-    if (initialSession) {
-      setSelectedId(initialSession.id);
-    }
-  }, [initialSession]);
-
-  // Resolve selected session from all available sessions (running data may update)
+  // Resolve selected session
   const selectedSession = allSessions.find(s => s.id === selectedId)
     ?? (allSessions.length > 0 ? allSessions[0] : null);
   const effectiveSelectedId = selectedSession?.id ?? null;
 
-  // ── Summary navigation state ─────────────────────────────────────────────
+  // Summary navigation state
   const [summaryIndex, setSummaryIndex] = useState(0);
-  // Reset summary index when session changes
   useEffect(() => { setSummaryIndex(0); }, [effectiveSelectedId]);
 
-  // ── Signal state ─────────────────────────────────────────────────────────
+  // Signal state
   const [signalMode, setSignalMode] = useState(false);
   const [signalText, setSignalText] = useState('');
-  const [lastSignalSent, setLastSignalSent] = useState<string | null>(null);
-  // Timer ref to clear the "Sent: …" confirmation after 5 s.
+  const [lastSignalStatus, setLastSignalStatus] = useState<string | null>(null);
   const sentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Poll signal delivery status after sending
   const deliveryPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const clearSentTimer = useCallback(() => {
@@ -102,20 +121,23 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
     }
   }, []);
 
-  // Clean up delivery poll on unmount
   useEffect(() => () => clearDeliveryPoll(), [clearDeliveryPoll]);
-
-  // Clear timer on unmount.
   useEffect(() => clearSentTimer, [clearSentTimer]);
 
-  // ── Live tail ────────────────────────────────────────────────────────────
-  // useSessionTail needs the AGENT ID (used as [AGENT:xxx] marker in JSONL files),
-  // not the queue item ID. SessionItem.sessionId contains the agent_id.
+  // Live tail
   const tailAgentId = selectedSession?.sessionId ?? null;
   const tailWorktreePath = selectedSession?.worktreePath ?? null;
   const { entries, isConnected } = useSessionTail(tailAgentId, tailWorktreePath);
 
-  // ── Keyboard handling ────────────────────────────────────────────────────
+  // Detect if selected session is completed/dead
+  const TERMINAL_TOOLS = ['mcp__todo-db__complete_task', 'mcp__todo-db__summarize_work', 'complete_task', 'summarize_work'];
+  const lastToolIsTerminal = selectedSession?.lastAction != null && TERMINAL_TOOLS.some(t => selectedSession.lastAction!.includes(t));
+  const isCompleted = selectedSession == null
+    || selectedSession.pid == null
+    || !isProcessAlive(selectedSession.pid)
+    || lastToolIsTerminal;
+
+  // Keyboard handling
   useInput((input, key) => {
     if (signalMode) {
       if (key.escape) {
@@ -125,54 +147,52 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
       }
       if (key.return) {
         const msg = signalText.trim();
-        if (msg.length > 0 && selectedSession) {
+        if (msg.length === 0) {
+          // Empty enter = cancel signal mode
+          setSignalMode(false);
+          setSignalText('');
+          return;
+        }
+        if (selectedSession) {
           const alive = selectedSession.pid != null ? isProcessAlive(selectedSession.pid) : false;
           if (alive && tailAgentId) {
-            // Running session: inject directive signal (needs agent ID, not queue ID).
+            // Running session: inject directive signal
             let signalId: string | undefined;
             try {
               const result = sendDirectiveSignal(tailAgentId, msg);
               signalId = result.signalId;
             } catch (err) {
-              // Fail loudly — surface error in last signal display.
               const errMsg = err instanceof Error ? err.message : String(err);
-              setLastSignalSent(`ERROR: ${errMsg}`);
+              setLastSignalStatus(`ERROR: ${errMsg}`);
               clearSentTimer();
-              sentTimerRef.current = setTimeout(() => setLastSignalSent(null), 5000);
+              sentTimerRef.current = setTimeout(() => setLastSignalStatus(null), 8000);
               setSignalMode(false);
               setSignalText('');
               return;
             }
             clearSentTimer();
             clearDeliveryPoll();
-            setLastSignalSent(`Sent: ${msg}`);
-            // Poll for delivery confirmation (every 2s for 30s)
+            setLastSignalStatus(`Pending: "${msg}"`);
+            // Poll for delivery indefinitely while this session is selected
             if (signalId) {
-              let pollCount = 0;
               deliveryPollRef.current = setInterval(() => {
-                pollCount++;
                 const status = getSignalDeliveryStatus(signalId!);
                 if (status?.status === 'acknowledged') {
-                  setLastSignalSent(`Ack'd: ${msg}`);
+                  setLastSignalStatus(`Ack'd: "${msg}"`);
                   clearDeliveryPoll();
-                  sentTimerRef.current = setTimeout(() => setLastSignalSent(null), 5000);
+                  sentTimerRef.current = setTimeout(() => setLastSignalStatus(null), 10000);
                 } else if (status?.status === 'read') {
-                  setLastSignalSent(`Delivered: ${msg}`);
-                }
-                if (pollCount >= 15) { // 30s max
-                  clearDeliveryPoll();
-                  sentTimerRef.current = setTimeout(() => setLastSignalSent(null), 5000);
+                  setLastSignalStatus(`Delivered: "${msg}"`);
+                  // Keep polling for acknowledgment
                 }
               }, 2000);
-            } else {
-              sentTimerRef.current = setTimeout(() => setLastSignalSent(null), 5000);
             }
           } else if (selectedSession.sessionId) {
             // Completed/dead session: resume in a new Terminal window.
             resumeSessionWithMessage(selectedSession.sessionId, msg);
             clearSentTimer();
-            setLastSignalSent(`Resumed: ${msg}`);
-            sentTimerRef.current = setTimeout(() => setLastSignalSent(null), 5000);
+            setLastSignalStatus(`Resumed: "${msg}"`);
+            sentTimerRef.current = setTimeout(() => setLastSignalStatus(null), 8000);
           }
         }
         setSignalMode(false);
@@ -183,7 +203,6 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
         setSignalText(prev => prev.slice(0, -1));
         return;
       }
-      // Regular printable character.
       if (input && input.length === 1 && input.charCodeAt(0) >= 32) {
         setSignalText(prev => prev + input);
         return;
@@ -191,7 +210,7 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
       return;
     }
 
-    // Normal navigation mode.
+    // Normal navigation mode
     if (key.upArrow) {
       const idx = allSessions.findIndex(s => s.id === effectiveSelectedId);
       if (idx > 0) setSelectedId(allSessions[idx - 1].id);
@@ -202,16 +221,15 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
       if (idx >= 0 && idx < allSessions.length - 1) setSelectedId(allSessions[idx + 1].id);
       return;
     }
-    // Summary navigation: [ previous, ] next
     if (input === '[') {
       setSummaryIndex(prev => Math.max(0, prev - 1));
       return;
     }
     if (input === ']') {
-      setSummaryIndex(prev => prev + 1); // SessionInfo clamps to max
+      setSummaryIndex(prev => prev + 1);
       return;
     }
-    if (input === 's') {
+    if (key.return) {
       if (effectiveSelectedId) {
         setSignalMode(true);
         setSignalText('');
@@ -220,38 +238,36 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
     }
   });
 
-  // ── Layout ───────────────────────────────────────────────────────────────
-  const leftWidth = Math.floor(bodyWidth * LEFT_WIDTH_FRACTION);
-  const rightWidth = bodyWidth - leftWidth - 1; // -1 for gap
+  // Clear delivery poll when session changes
+  useEffect(() => {
+    clearDeliveryPoll();
+    setLastSignalStatus(null);
+  }, [effectiveSelectedId, clearDeliveryPoll]);
 
-  // Left column: split between selector and info panel.
+  // Layout
+  const leftWidth = Math.floor(bodyWidth * LEFT_WIDTH_FRACTION);
+  const rightWidth = bodyWidth - leftWidth - 1;
+
   const leftInnerHeight = Math.max(2, bodyHeight - LEFT_HEADER_OVERHEAD);
   const selectorHeight = Math.floor(leftInnerHeight * 0.6);
   const infoHeight = Math.max(2, leftInnerHeight - selectorHeight - DIVIDER_HEIGHT);
 
-  // Right column: activity stream + signal row.
   const rightInnerHeight = Math.max(2, bodyHeight - RIGHT_HEADER_OVERHEAD);
   const streamHeight = Math.max(1, rightInnerHeight - SIGNAL_ROW_HEIGHT - DIVIDER_HEIGHT);
 
   const connectedLabel = isConnected ? ' live' : ' disconnected';
-  const TERMINAL_TOOLS = ['mcp__todo-db__complete_task', 'mcp__todo-db__summarize_work', 'complete_task', 'summarize_work'];
-  const lastToolIsTerminal = selectedSession?.lastAction != null && TERMINAL_TOOLS.some(t => selectedSession.lastAction!.includes(t));
-  const isCompleted = selectedSession == null
-    || selectedSession.pid == null
-    || !isProcessAlive(selectedSession.pid)
-    || lastToolIsTerminal;
 
   return (
     <Box flexDirection="row" height={bodyHeight}>
       {/* Left column */}
       <Section title="Sessions" width={leftWidth}>
         <SessionSelector
-          sessions={allSessions}
+          displaySessions={displaySessions}
           selectedId={effectiveSelectedId}
           height={selectorHeight}
         />
         <Box height={DIVIDER_HEIGHT}>
-          <Text dimColor>{'─'.repeat(Math.max(1, leftWidth - 4))}</Text>
+          <Text dimColor>{'\u2500'.repeat(Math.max(1, leftWidth - 4))}</Text>
         </Box>
         <Box flexDirection="column">
           <Text dimColor bold>Session Info</Text>
@@ -275,12 +291,12 @@ export function Page4({ data, bodyHeight, bodyWidth, initialSession }: Page4Prop
           width={rightWidth - 4}
         />
         <Box height={DIVIDER_HEIGHT}>
-          <Text dimColor>{'─'.repeat(Math.max(1, rightWidth - 4))}</Text>
+          <Text dimColor>{'\u2500'.repeat(Math.max(1, rightWidth - 4))}</Text>
         </Box>
         <SignalInput
           active={signalMode}
           text={signalText}
-          lastSent={lastSignalSent}
+          lastStatus={lastSignalStatus}
           width={rightWidth - 4}
           isCompleted={isCompleted}
         />

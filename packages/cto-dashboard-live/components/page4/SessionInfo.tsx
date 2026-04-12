@@ -47,7 +47,7 @@ export function SessionInfo({ session, agentId, summaryIndex, height }: SessionI
   if (!session) {
     return (
       <Box flexDirection="column" height={height}>
-        <Text dimColor>  Select a session from Page 1</Text>
+        <Text dimColor>  Select a session</Text>
       </Box>
     );
   }

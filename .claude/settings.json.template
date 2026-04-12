@@ -163,6 +163,16 @@
         ]
       },
       {
+        "matcher": "mcp__secret-sync__secret_run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/secret-profile-gate.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "mcp__*",
         "hooks": [
           {

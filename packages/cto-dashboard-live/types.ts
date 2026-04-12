@@ -3,7 +3,7 @@
  */
 
 // ============================================================================
-// Session List (Page 1 left panel)
+// Session List
 // ============================================================================
 
 export type SessionStatus = 'alive' | 'queued' | 'spawning' | 'suspended' | 'paused' | 'completed' | 'failed' | 'killed';
@@ -66,225 +66,23 @@ export interface SubTaskItem {
 }
 
 // ============================================================================
-// Right Panel Widgets (Page 1)
+// Session List Display
 // ============================================================================
 
-export interface QuotaData {
-  fiveHourPct: number;
-  sevenDayPct: number;
-}
-
-export interface DeputyCtoSummary {
-  untriagedCount: number;
-  escalatedCount: number;
-  pendingQuestionCount: number;
-  handled24h: number;
-  dismissed24h: number;
-}
-
-export interface SystemStatusData {
-  deputyEnabled: boolean;
-  deputyIntervalMinutes: number;
-  protectionStatus: string;
-  commitsBlocked: boolean;
-}
-
-export interface PlanItem {
-  id: string;
-  title: string;
-  status: string;
-  progressPct: number;
-  completedTasks: number;
-  totalTasks: number;
-  readyTasks: number;
-}
-
-export interface MetricsSummaryData {
-  tokensIn: number;
-  tokensOut: number;
-  cacheRate: number;
-  tasksPending: number;
-  tasksActive: number;
-  tasksDone24h: number;
-  hooksTotal: number;
-  hooksSuccessRate: number;
-  triagePending: number;
-  triageHandled24h: number;
-  cooldownFactor: number;
-  cooldownTargetPct: number;
-}
-
-export interface WorklogMetrics {
-  successRatePct: number | null;
-  avgCompleteMs: number | null;
-  coveragePct: number;
-  cacheHitPct: number | null;
-  entries: number;
-  completedTasks: number;
+/** Wrapper for rendering sessions with hierarchy (indent for PT children) */
+export interface DisplaySession {
+  session: SessionItem;
+  indent: number;            // 0 = top-level, 1 = child of persistent task
+  isMonitor: boolean;        // true for persistent task monitor sessions
+  persistentTaskTitle?: string; // PT title for monitor sessions
 }
 
 // ============================================================================
-// Page 2: Intelligence
-// ============================================================================
-
-export interface DeputyCtoDetail {
-  hasData: boolean;
-  untriaged: TriageReport[];
-  escalated: TriageReport[];
-  recentlyTriaged: TriageReport[];
-  pendingQuestions: PendingQuestion[];
-  answeredQuestions: AnsweredQuestion[];
-  handled24h: number;
-  escalated24h: number;
-  dismissed24h: number;
-}
-
-export interface TriageReport {
-  id: string;
-  title: string;
-  priority: string;
-  status: string;
-  createdAt: string;
-  outcome?: string;
-}
-
-export interface PendingQuestion {
-  id: string;
-  title: string;
-  type: string;
-  createdAt: string;
-  recommendation: string | null;
-}
-
-export interface AnsweredQuestion {
-  id: string;
-  title: string;
-  answer: string;
-  createdAt: string;
-}
-
-export interface FeedbackPersona {
-  name: string;
-  consumptionModes: string;
-  enabled: boolean;
-  sessionCount: number;
-  lastSatisfaction: string | null;
-  findingsCount: number;
-}
-
-export interface WorklogEntryDetail {
-  id: string;
-  section: string;
-  title: string;
-  success: boolean;
-  durationMs: number | null;
-  tokens: number | null;
-  createdAt: string;
-}
-
-export interface Page2Data {
-  deputyCto: DeputyCtoDetail;
-  personas: FeedbackPersona[];
-  productManagerEnabled: boolean;
-  productManagerSectionsCompleted: number;
-  worklogEntries: WorklogEntryDetail[];
-  worklogMetrics: WorklogMetrics;
-}
-
-// ============================================================================
-// Page 3: Infrastructure
-// ============================================================================
-
-export interface TimelineEvent {
-  type: 'hook' | 'report' | 'question' | 'task' | 'session';
-  timestamp: Date;
-  title: string;
-  subtitle?: string;
-  priority?: string;
-}
-
-export interface TestingData {
-  hasData: boolean;
-  totalTests: number;
-  passing: number;
-  failing: number;
-  skipped: number;
-  coveragePct: number | null;
-}
-
-export interface DeploymentItem {
-  service: string;
-  environment: string;
-  status: string;
-  timestamp: string;
-}
-
-export interface WorktreeInfo {
-  branch: string;
-  path: string;
-  age: string;
-  hasChanges: boolean;
-}
-
-export interface InfraStatus {
-  renderServices: number;
-  renderSuspended: number;
-  vercelProjects: number;
-  supabaseHealthy: boolean;
-  cloudflareStatus: string;
-}
-
-export interface LoggingData {
-  totalLogs1h: number;
-  totalLogs24h: number;
-  errorCount1h: number;
-  warnCount1h: number;
-}
-
-export interface Page3Data {
-  testing: TestingData;
-  deployments: DeploymentItem[];
-  worktrees: WorktreeInfo[];
-  infra: InfraStatus;
-  logging: LoggingData;
-  timeline: TimelineEvent[];
-}
-
-// ============================================================================
-// Page Analytics (Usage + Automations)
-// ============================================================================
-
-export interface UsageSnapshot {
-  timestamp: string;
-  utilization: number;
-}
-
-export interface UsageData {
-  hasData: boolean;
-  fiveHourSnapshots: UsageSnapshot[];
-  sevenDaySnapshots: UsageSnapshot[];
-  cooldownFactor: number;
-  targetPct: number;
-  projectedAtResetPct: number | null;
-}
-
-export interface AutomatedInstance {
-  type: string;
-  count: number;
-  tokensTotal: number;
-}
-
-export interface PageAnalyticsData {
-  usage: UsageData;
-  automatedInstances: AutomatedInstance[];
-}
-
-// ============================================================================
-// Page 4: Observe (Session Tail / Signal)
+// Activity Stream
 // ============================================================================
 
 export interface ActivityEntry {
-  type: 'tool_call' | 'assistant_text' | 'tool_result' | 'error' | 'compaction';
+  type: 'tool_call' | 'assistant_text' | 'tool_result' | 'error' | 'compaction' | 'session_end';
   timestamp: string;
   text: string;
   toolName?: string;
@@ -297,23 +95,10 @@ export interface ActivityEntry {
 // ============================================================================
 
 export interface LiveDashboardData {
-  // Page 1
   queuedSessions: SessionItem[];
   persistentTasks: PersistentTaskItem[];
   runningSessions: SessionItem[];       // non-persistent running sessions
   suspendedSessions: SessionItem[];
   completedSessions: SessionItem[];
   capacity: { running: number; max: number };
-  quota: QuotaData;
-  deputyCtoSummary: DeputyCtoSummary;
-  systemStatus: SystemStatusData;
-  plans: PlanItem[];
-  metricsSummary: MetricsSummaryData;
-  worklogMetrics: WorklogMetrics;
-  // Page 2
-  page2: Page2Data;
-  // Page 3 (infra)
-  page3: Page3Data;
-  // Page 3 analytics (usage + automations)
-  pageAnalytics: PageAnalyticsData;
 }
