@@ -181,6 +181,55 @@ function cleanupRotationProxy(projectDir) {
       }
     }
   }
+
+  // ── 8. Remove stale hook references from ~/.claude/settings.json ──────────
+  // Generic: removes any hook whose referenced file no longer exists on disk.
+  const globalSettingsPath = path.join(home, '.claude', 'settings.json');
+  try {
+    if (fs.existsSync(globalSettingsPath)) {
+      const raw = fs.readFileSync(globalSettingsPath, 'utf8');
+      const settings = JSON.parse(raw);
+      if (settings.hooks && typeof settings.hooks === 'object') {
+        let changed = false;
+        for (const hookType of Object.keys(settings.hooks)) {
+          const matchers = settings.hooks[hookType];
+          if (!Array.isArray(matchers)) continue;
+          for (const matcher of matchers) {
+            if (!Array.isArray(matcher.hooks)) continue;
+            const before = matcher.hooks.length;
+            matcher.hooks = matcher.hooks.filter(entry => {
+              const cmd = typeof entry === 'string' ? entry : entry.command;
+              if (!cmd) return true;
+              const match = cmd.match(/^node\s+(\S+)/);
+              if (!match) return true;
+              const filePath = match[1].replace(/\$\{CLAUDE_PROJECT_DIR\}/g, projectDir);
+              return fs.existsSync(filePath);
+            });
+            if (matcher.hooks.length !== before) changed = true;
+          }
+          // Remove matchers with no hooks remaining
+          const before = matchers.length;
+          settings.hooks[hookType] = matchers.filter(m => Array.isArray(m.hooks) ? m.hooks.length > 0 : true);
+          if (settings.hooks[hookType].length !== before) changed = true;
+          // Remove hook type key if array is now empty
+          if (settings.hooks[hookType].length === 0) {
+            delete settings.hooks[hookType];
+            changed = true;
+          }
+        }
+        // Remove hooks key entirely if all types were removed
+        if (changed && Object.keys(settings.hooks).length === 0) {
+          delete settings.hooks;
+        }
+        if (changed) {
+          fs.writeFileSync(globalSettingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+          console.log('  Removed stale hook references from ~/.claude/settings.json');
+        }
+      }
+    }
+  } catch (err) {
+    console.log(`  ${YELLOW}Warning: could not clean stale hooks from ~/.claude/settings.json: ${err.message}${NC}`);
+  }
 }
 
 export default async function sync(args) {
