@@ -15,6 +15,7 @@ import Database from 'better-sqlite3';
 import type {
   LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem,
   WorklogEntry, SessionStatus, SessionPriority, ActivityEntry,
+  DemoScenarioItem, TestFileItem, Page2Data,
 } from './types.js';
 import { formatElapsed } from './utils/formatters.js';
 
@@ -503,4 +504,135 @@ export function getSessionSummaries(agentId: string): Array<{ id: string; summar
   try { db = new Database(dbPath, { readonly: true }); return db.prepare('SELECT id, summary, created_at FROM session_summaries WHERE agent_id = ? ORDER BY created_at ASC').all(agentId) as Array<{ id: string; summary: string; created_at: string }>; }
   catch { return []; }
   finally { try { db?.close(); } catch { /* */ } }
+}
+
+// ============================================================================
+// Page 2: Demo Scenarios + Test Files
+// ============================================================================
+
+interface ScenarioRow {
+  id: string; persona_id: string; title: string; description: string;
+  category: string | null; playwright_project: string; test_file: string;
+  sort_order: number; enabled: number; headed: number;
+  last_recorded_at: string | null; persona_name: string;
+}
+
+export function readDemoScenarios(): DemoScenarioItem[] {
+  const db = openDb(path.join(PROJECT_DIR, '.claude', 'user-feedback.db'));
+  if (!db) return [];
+  try {
+    const rows = db.prepare(`
+      SELECT ds.id, ds.persona_id, ds.title, ds.description, ds.category,
+             ds.playwright_project, ds.test_file, ds.sort_order, ds.enabled,
+             ds.headed, ds.last_recorded_at,
+             p.name AS persona_name
+      FROM demo_scenarios ds
+      JOIN personas p ON p.id = ds.persona_id
+      ORDER BY ds.sort_order ASC, ds.title ASC
+    `).all() as ScenarioRow[];
+    return rows.map(r => ({
+      id: r.id,
+      personaId: r.persona_id,
+      personaName: r.persona_name,
+      title: r.title,
+      description: r.description,
+      category: r.category,
+      playwrightProject: r.playwright_project,
+      testFile: r.test_file,
+      sortOrder: r.sort_order,
+      enabled: r.enabled === 1,
+      headed: r.headed === 1,
+      lastRecordedAt: r.last_recorded_at,
+    }));
+  } catch { return []; }
+  finally { closeDb(db); }
+}
+
+const INFRA_PROJECTS = new Set(['seed', 'auth-setup', 'cleanup', 'setup']);
+
+export function discoverTestFiles(): TestFileItem[] {
+  const configFile = ['playwright.config.ts', 'playwright.config.js']
+    .map(f => path.join(PROJECT_DIR, f))
+    .find(f => fs.existsSync(f));
+  if (!configFile) return [];
+
+  let configText: string;
+  try { configText = fs.readFileSync(configFile, 'utf8'); } catch { return []; }
+
+  // Extract projects array
+  const projectsMatch = configText.match(/projects\s*:\s*\[/);
+  if (!projectsMatch) return [];
+
+  const startIdx = projectsMatch.index! + projectsMatch[0].length;
+  let depth = 1;
+  let endIdx = startIdx;
+  for (let i = startIdx; i < configText.length && depth > 0; i++) {
+    if (configText[i] === '[') depth++;
+    else if (configText[i] === ']') depth--;
+    endIdx = i;
+  }
+  const projectsBlock = configText.substring(startIdx, endIdx);
+
+  // Extract individual project blocks
+  const results: TestFileItem[] = [];
+  const projectBlockRegex = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
+  let match: RegExpExecArray | null;
+  while ((match = projectBlockRegex.exec(projectsBlock)) !== null) {
+    const block = match[0];
+    const nameMatch = block.match(/name\s*:\s*['"]([^'"]+)['"]/);
+    const testDirMatch = block.match(/testDir\s*:\s*['"]([^'"]+)['"]/);
+    if (!nameMatch) continue;
+    const projectName = nameMatch[1];
+    if (INFRA_PROJECTS.has(projectName)) continue;
+    if (projectName.endsWith('-manual')) continue;
+
+    const testDir = testDirMatch ? testDirMatch[1] : 'e2e';
+    const fullDir = path.join(PROJECT_DIR, testDir);
+    if (!fs.existsSync(fullDir)) continue;
+
+    try {
+      const scanDir = (dir: string, prefix: string) => {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isFile() && (entry.name.endsWith('.spec.ts') || entry.name.endsWith('.demo.ts'))) {
+            const filePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+            results.push({
+              project: projectName,
+              filePath: `${testDir}/${filePath}`,
+              fileName: entry.name,
+              isDemo: entry.name.endsWith('.demo.ts'),
+            });
+          } else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+            scanDir(path.join(dir, entry.name), prefix ? `${prefix}/${entry.name}` : entry.name);
+          }
+        }
+      };
+      scanDir(fullDir, '');
+    } catch { /* */ }
+  }
+
+  results.sort((a, b) => a.project.localeCompare(b.project) || a.fileName.localeCompare(b.fileName));
+  return results;
+}
+
+export function readProcessOutput(filePath: string, fromByte: number): { text: string; newPosition: number } {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+    const fileSize = stat.size;
+    if (fileSize <= fromByte) return { text: '', newPosition: fileSize };
+    const bytesToRead = fileSize - fromByte;
+    const buf = Buffer.alloc(bytesToRead);
+    fs.readSync(fd, buf, 0, bytesToRead, fromByte);
+    return { text: buf.toString('utf8'), newPosition: fileSize };
+  } catch { return { text: '', newPosition: fromByte }; }
+  finally { if (fd !== undefined) try { fs.closeSync(fd); } catch { /* */ } }
+}
+
+export function readPage2Data(): Page2Data {
+  return {
+    scenarios: readDemoScenarios(),
+    testFiles: discoverTestFiles(),
+  };
 }

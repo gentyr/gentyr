@@ -32,6 +32,7 @@ interface ObserveViewProps {
   data: LiveDashboardData;
   bodyHeight: number;
   bodyWidth: number;
+  isActive: boolean;
 }
 
 const LEFT_WIDTH_FRACTION = 0.35;
@@ -83,7 +84,7 @@ function buildDisplaySessions(data: LiveDashboardData): DisplaySession[] {
   return result;
 }
 
-export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): React.ReactElement {
+export function ObserveView({ data, bodyHeight, bodyWidth, isActive }: ObserveViewProps): React.ReactElement {
   const displaySessions = buildDisplaySessions(data);
   const allSessions = displaySessions.map(ds => ds.session);
 
@@ -276,7 +277,7 @@ export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): 
       }
       return;
     }
-  });
+  }, { isActive });
 
   // Clear delivery poll when session changes
   useEffect(() => {
