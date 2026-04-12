@@ -49,6 +49,27 @@ const SESSION_SYSTEM_PROMPT = 'You are a concise activity summarizer. Given rece
 
 const SUPER_SYSTEM_PROMPT = 'You are a project coordinator. Given individual session summaries from multiple concurrent Claude Code agents, produce ONE concise paragraph (3-5 sentences) summarizing the overall project activity. Highlight connections between sessions, potential coordination opportunities, and the overall direction of work. Output plain text only, no markdown.';
 
+const RELEVANCE_SYSTEM_PROMPT = 'You are a coordination analyst. Given a list of running agent sessions and their activity summaries, decide which sessions should receive detailed summaries of OTHER sessions based on relevance. Only include deliveries where the target session would genuinely benefit — e.g., they are working on overlapping files, dependent features, or could create merge conflicts. Return an empty deliveries array if no cross-session relevance exists. Never deliver a session its own summary.';
+
+const RELEVANCE_SCHEMA = JSON.stringify({
+  type: 'object',
+  properties: {
+    deliveries: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          target_agent_id: { type: 'string', description: 'The agent_id of the session that should receive the summary' },
+          summary_titles: { type: 'array', items: { type: 'string' }, description: 'Titles of sessions whose summaries are relevant' },
+          reason: { type: 'string', description: 'Brief explanation of why these summaries are relevant to the target' },
+        },
+        required: ['target_agent_id', 'summary_titles', 'reason'],
+      },
+    },
+  },
+  required: ['deliveries'],
+});
+
 // ============================================================================
 // Logging
 // ============================================================================
@@ -92,6 +113,17 @@ function initActivityDb() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_ps_created ON project_summaries(created_at);
+
+    CREATE TABLE IF NOT EXISTS summary_subscriptions (
+      id TEXT PRIMARY KEY,
+      subscriber_agent_id TEXT NOT NULL,
+      target_agent_id TEXT NOT NULL,
+      detail_level TEXT NOT NULL DEFAULT 'detailed',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(subscriber_agent_id, target_agent_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_subs_subscriber ON summary_subscriptions(subscriber_agent_id);
+    CREATE INDEX IF NOT EXISTS idx_subs_target ON summary_subscriptions(target_agent_id);
   `);
   return db;
 }
@@ -237,6 +269,31 @@ async function callLLM(prompt, systemPrompt) {
   }
 }
 
+/**
+ * Call LLM with structured JSON output via --json-schema.
+ * Returns the parsed result object directly, or null on failure.
+ */
+async function callLLMStructured(prompt, systemPrompt, jsonSchema) {
+  const args = ['-p', prompt, '--model', LLM_MODEL, '--output-format', 'json', '--json-schema', jsonSchema];
+  if (systemPrompt) args.push('--system-prompt', systemPrompt);
+
+  try {
+    const { stdout } = await execFileAsync('claude', args, {
+      encoding: 'utf8',
+      timeout: LLM_TIMEOUT_MS,
+    });
+    const data = JSON.parse(stdout);
+    // --json-schema output wraps the structured result in data.result (as a JSON string)
+    if (typeof data.result === 'string') {
+      return JSON.parse(data.result);
+    }
+    return data.result || data;
+  } catch (err) {
+    log(`Structured LLM call failed: ${err.message}`);
+    return null;
+  }
+}
+
 // ============================================================================
 // Broadcast Message Builder
 // ============================================================================
@@ -313,7 +370,7 @@ async function pollCycle() {
     const id = randomUUID();
     try {
       insertStmt.run(id, null, session.agent_id, session.id, session.title, text, LLM_MODEL, tokens);
-      storedSummaries.push({ id, title: session.title, summary: text });
+      storedSummaries.push({ id, title: session.title, summary: text, agentId: session.agent_id });
     } catch (err) {
       log(`DB insert failed for session ${session.id}: ${err.message}`);
     }
@@ -348,12 +405,9 @@ async function pollCycle() {
     superSummaryText = storedSummaries.map(s => `${s.title}: ${s.summary}`).join(' | ');
   }
 
-  // Broadcast to all running agents
+  // Step 7: Broadcast to all running agents
   try {
-    if (!broadcastSignalFn) {
-      const mod = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-signals.js'));
-      broadcastSignalFn = mod.broadcastSignal;
-    }
+    await ensureSignalModules();
     const message = buildBroadcastMessage(superSummaryText, storedSummaries);
     broadcastSignalFn({
       fromAgentId: 'session-activity-broadcaster',
@@ -365,6 +419,214 @@ async function pollCycle() {
   } catch (err) {
     log(`Broadcast failed: ${err.message}`);
   }
+
+  // Step 8: Auto-subscribe PT monitors to their children
+  try {
+    autoSubscribePersistentTaskMonitors(sessions);
+  } catch (err) {
+    log(`PT auto-subscribe failed: ${err.message}`);
+  }
+
+  // Step 9: Deliver subscription-based summaries
+  const alreadyDelivered = new Set();
+  try {
+    await ensureSignalModules();
+    const delivered = deliverSubscriptions(sessions, storedSummaries, sessionPrompts);
+    for (const agentId of delivered) alreadyDelivered.add(agentId);
+  } catch (err) {
+    log(`Subscription delivery failed: ${err.message}`);
+  }
+
+  // Step 10: LLM-driven selective detail delivery
+  try {
+    await selectiveDetailDelivery(sessions, storedSummaries, alreadyDelivered);
+  } catch (err) {
+    log(`Selective detail delivery failed: ${err.message}`);
+  }
+}
+
+// ============================================================================
+// Step 8: Auto-Subscribe PT Monitors to Children
+// ============================================================================
+
+function autoSubscribePersistentTaskMonitors(sessions) {
+  // Find persistent-lane monitor sessions and their children (same persistentTaskId)
+  const monitors = [];
+  const childrenByTaskId = new Map();
+
+  for (const s of sessions) {
+    let meta = {};
+    try { if (s.metadata) meta = JSON.parse(s.metadata); } catch { /* */ }
+
+    if (meta.persistentTaskId && s.agent_type === 'persistent-monitor') {
+      monitors.push({ agentId: s.agent_id, taskId: meta.persistentTaskId });
+    }
+
+    if (meta.persistentTaskId && s.agent_type !== 'persistent-monitor') {
+      if (!childrenByTaskId.has(meta.persistentTaskId)) childrenByTaskId.set(meta.persistentTaskId, []);
+      childrenByTaskId.get(meta.persistentTaskId).push(s.agent_id);
+    }
+  }
+
+  if (monitors.length === 0) return;
+
+  const upsertStmt = activityDb.prepare(
+    "INSERT INTO summary_subscriptions (id, subscriber_agent_id, target_agent_id, detail_level) VALUES (?, ?, ?, 'verbatim') ON CONFLICT(subscriber_agent_id, target_agent_id) DO UPDATE SET detail_level = 'verbatim'"
+  );
+
+  let count = 0;
+  for (const monitor of monitors) {
+    const children = childrenByTaskId.get(monitor.taskId) || [];
+    for (const childAgentId of children) {
+      if (childAgentId === monitor.agentId) continue; // no self-subscribe
+      const id = `auto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      try {
+        upsertStmt.run(id, monitor.agentId, childAgentId);
+        count++;
+      } catch { /* upsert — ignore conflicts */ }
+    }
+  }
+
+  // Clean up stale subscriptions (subscriber or target no longer running)
+  const runningAgentIds = new Set(sessions.map(s => s.agent_id).filter(Boolean));
+  try {
+    const allSubs = activityDb.prepare('SELECT id, subscriber_agent_id, target_agent_id FROM summary_subscriptions').all();
+    const deleteStmt = activityDb.prepare('DELETE FROM summary_subscriptions WHERE id = ?');
+    for (const sub of allSubs) {
+      if (!runningAgentIds.has(sub.subscriber_agent_id) && !runningAgentIds.has(sub.target_agent_id)) {
+        deleteStmt.run(sub.id);
+      }
+    }
+  } catch { /* best-effort cleanup */ }
+
+  if (count > 0) log(`Auto-subscribed PT monitors: ${count} subscription(s) upserted`);
+}
+
+// ============================================================================
+// Step 9: Subscription-Based Delivery
+// ============================================================================
+
+function deliverSubscriptions(sessions, storedSummaries, sessionPrompts) {
+  const subs = activityDb.prepare(
+    'SELECT subscriber_agent_id, target_agent_id, detail_level FROM summary_subscriptions'
+  ).all();
+
+  if (subs.length === 0) return [];
+
+  const runningAgentIds = new Set(sessions.map(s => s.agent_id).filter(Boolean));
+  const delivered = [];
+
+  for (const sub of subs) {
+    if (!runningAgentIds.has(sub.subscriber_agent_id)) continue;
+
+    const targetSummary = storedSummaries.find(s => s.agentId === sub.target_agent_id);
+    if (!targetSummary) continue;
+
+    let message;
+    const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+    if (sub.detail_level === 'verbatim') {
+      // Full summary + raw recent session messages
+      const targetSession = sessions.find(s => s.agent_id === sub.target_agent_id);
+      let recentMessages = '';
+      if (targetSession) {
+        const file = findSessionFile(targetSession);
+        if (file) {
+          const tail = readTailBytes(file);
+          const entries = parseTailEntries(tail);
+          recentMessages = extractActivityText(entries);
+        }
+      }
+      message = `[SUBSCRIBED SESSION DETAIL — ${timestamp}]\n\n## ${targetSummary.title}\n${targetSummary.summary}\n\n### Recent Activity (verbatim)\n${recentMessages || '(no recent activity)'}\n\nSubscription tier: verbatim`;
+    } else if (sub.detail_level === 'detailed') {
+      const targetSession = sessions.find(s => s.agent_id === sub.target_agent_id);
+      const agentType = targetSession?.agent_type || 'unknown';
+      message = `[SUBSCRIBED SESSION DETAIL — ${timestamp}]\n\n## ${targetSummary.title}\nAgent type: ${agentType}\n\n${targetSummary.summary}\n\nSubscription tier: detailed`;
+    } else {
+      message = `[SUBSCRIBED SESSION SUMMARY — ${timestamp}]\n\n${targetSummary.title}: ${targetSummary.summary}`;
+    }
+
+    try {
+      sendSignalFn({
+        fromAgentId: 'session-activity-broadcaster',
+        fromAgentType: 'broadcaster',
+        fromTaskTitle: 'Summary Subscription',
+        toAgentId: sub.subscriber_agent_id,
+        toAgentType: 'agent',
+        tier: 'note',
+        message,
+        projectDir: PROJECT_DIR,
+      });
+      delivered.push(sub.subscriber_agent_id);
+    } catch (err) {
+      log(`Subscription delivery to ${sub.subscriber_agent_id} failed: ${err.message}`);
+    }
+  }
+
+  if (delivered.length > 0) log(`Delivered ${delivered.length} subscription-based summary/summaries`);
+  return delivered;
+}
+
+// ============================================================================
+// Step 10: LLM-Driven Selective Detail Delivery
+// ============================================================================
+
+async function selectiveDetailDelivery(sessions, storedSummaries, alreadyDelivered) {
+  // Need at least 2 sessions with summaries for cross-referencing
+  if (sessions.length < 2 || storedSummaries.length < 2) return;
+
+  // Build prompt with session list + summaries
+  const sessionList = sessions
+    .filter(s => s.agent_id)
+    .map(s => `- agent_id: ${s.agent_id}, title: "${s.title || 'Untitled'}", type: ${s.agent_type || 'unknown'}`)
+    .join('\n');
+
+  const summaryList = storedSummaries
+    .map(s => `## ${s.title || 'Untitled'} (agent: ${s.agentId})\n${s.summary}`)
+    .join('\n\n');
+
+  const prompt = `Running agent sessions:\n${sessionList}\n\nSession activity summaries:\n${summaryList}\n\nDecide which sessions should receive detailed summaries of OTHER sessions based on work relevance. Skip sessions that already received subscription-based deliveries: ${[...alreadyDelivered].join(', ') || 'none'}.`;
+
+  const result = await callLLMStructured(prompt, RELEVANCE_SYSTEM_PROMPT, RELEVANCE_SCHEMA);
+  if (!result?.deliveries?.length) {
+    log('Selective delivery: no cross-session relevance detected');
+    return;
+  }
+
+  const runningAgentIds = new Set(sessions.map(s => s.agent_id).filter(Boolean));
+  let sentCount = 0;
+
+  for (const delivery of result.deliveries) {
+    if (!runningAgentIds.has(delivery.target_agent_id)) continue;
+    if (alreadyDelivered.has(delivery.target_agent_id)) continue;
+
+    const relevantSummaries = storedSummaries.filter(s =>
+      (delivery.summary_titles || []).includes(s.title) && s.agentId !== delivery.target_agent_id
+    );
+    if (relevantSummaries.length === 0) continue;
+
+    const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const summaryBlock = relevantSummaries.map(s => `## ${s.title}\n${s.summary}`).join('\n\n');
+    const message = `[RELEVANT SESSION DETAIL — ${timestamp}]\n\nThe following session activity is relevant to your current work:\n\n${summaryBlock}\n\nReason: ${delivery.reason}\n\nCoordinate via: mcp__agent-tracker__send_session_signal({ target: "<agent_id>", tier: "note", message: "..." })`;
+
+    try {
+      sendSignalFn({
+        fromAgentId: 'session-activity-broadcaster',
+        fromAgentType: 'broadcaster',
+        fromTaskTitle: 'Selective Detail Delivery',
+        toAgentId: delivery.target_agent_id,
+        toAgentType: 'agent',
+        tier: 'note',
+        message,
+        projectDir: PROJECT_DIR,
+      });
+      sentCount++;
+    } catch (err) {
+      log(`Selective delivery to ${delivery.target_agent_id} failed: ${err.message}`);
+    }
+  }
+
+  if (sentCount > 0) log(`Selective detail delivery: sent ${sentCount} targeted summary/summaries`);
 }
 
 // ============================================================================
@@ -373,6 +635,15 @@ async function pollCycle() {
 
 const activityDb = initActivityDb();
 let broadcastSignalFn = null;
+let sendSignalFn = null;
+
+async function ensureSignalModules() {
+  if (!broadcastSignalFn || !sendSignalFn) {
+    const mod = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-signals.js'));
+    broadcastSignalFn = mod.broadcastSignal;
+    sendSignalFn = mod.sendSignal;
+  }
+}
 
 log('Session activity broadcaster daemon starting');
 log(`Project: ${PROJECT_DIR}`);

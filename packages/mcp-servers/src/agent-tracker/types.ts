@@ -128,6 +128,26 @@ export const GetFocusModeArgsSchema = z.object({});
 
 const SIGNAL_TIER_VALUES = ['note', 'instruction', 'directive'] as const;
 
+// ============================================================================
+// Summary Subscription Schemas
+// ============================================================================
+
+const DETAIL_LEVEL_VALUES = ['short', 'detailed', 'verbatim'] as const;
+
+export const SubscribeSessionSummariesArgsSchema = z.object({
+  target_agent_id: z.string().describe('Agent ID of the session to subscribe to'),
+  detail_level: z.enum(DETAIL_LEVEL_VALUES).default('detailed')
+    .describe('Subscription tier: short (2-4 sentence summary), detailed (full summary + context), verbatim (full summary + recent raw session messages)'),
+});
+
+export const UnsubscribeSessionSummariesArgsSchema = z.object({
+  target_agent_id: z.string().describe('Agent ID of the session to unsubscribe from'),
+});
+
+export const ListSummarySubscriptionsArgsSchema = z.object({
+  agent_id: z.string().optional().describe('Agent ID to list subscriptions for (defaults to caller)'),
+});
+
 export const SendSessionSignalArgsSchema = z.object({
   target: z.string().describe('Target agent ID to send the signal to'),
   message: z.string().min(1).describe('The message to send to the target agent'),
@@ -435,6 +455,11 @@ export type BroadcastSignalArgs = z.infer<typeof BroadcastSignalArgsSchema>;
 export type GetSessionSignalsArgs = z.infer<typeof GetSessionSignalsArgsSchema>;
 export type GetCommsLogArgs = z.infer<typeof GetCommsLogArgsSchema>;
 export type AcknowledgeSignalArgs = z.infer<typeof AcknowledgeSignalArgsSchema>;
+
+// Summary Subscription Types
+export type SubscribeSessionSummariesArgs = z.infer<typeof SubscribeSessionSummariesArgsSchema>;
+export type UnsubscribeSessionSummariesArgs = z.infer<typeof UnsubscribeSessionSummariesArgsSchema>;
+export type ListSummarySubscriptionsArgs = z.infer<typeof ListSummarySubscriptionsArgsSchema>;
 
 // User Prompt Index Types
 export type GetUserPromptArgs = z.infer<typeof GetUserPromptArgsSchema>;
