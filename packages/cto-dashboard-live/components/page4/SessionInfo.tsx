@@ -7,7 +7,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Box, Text } from 'ink';
 import type { SessionItem } from '../../types.js';
-import { truncate, formatTimeAgo } from '../../utils/formatters.js';
+import { truncate, formatTimeAgo, humanizeTool } from '../../utils/formatters.js';
 import { getSessionSummaries } from '../../live-reader.js';
 
 interface SessionInfoProps {
@@ -55,7 +55,7 @@ export function SessionInfo({ session, agentId, summaryIndex, height }: SessionI
   const pid = session.pid ? String(session.pid) : 'N/A';
   const agentType = session.agentType || 'unknown';
   const elapsed = session.elapsed;
-  const lastTool = session.lastAction ?? 'none';
+  const lastTool = session.lastAction ? humanizeTool(session.lastAction) : 'none';
   const title = session.title || '(untitled)';
 
   // Clamp summary index

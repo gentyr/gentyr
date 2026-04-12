@@ -12,7 +12,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import type { DisplaySession } from '../../types.js';
-import { truncate } from '../../utils/formatters.js';
+import { truncate, humanizeTool } from '../../utils/formatters.js';
 
 interface SessionSelectorProps {
   displaySessions: DisplaySession[];
@@ -75,7 +75,7 @@ function SessionRow({ ds, isSelected, width }: { ds: DisplaySession; isSelected:
   const typeText = truncate(session.agentType, COL_TYPE - 1).padEnd(COL_TYPE - 1);
   const priText = pri.text.padEnd(COL_PRI - 1);
   const actionWidth = Math.max(4, width - COL_ICON - COL_TYPE - COL_PRI - (isIndented ? INDENT_WIDTH : 0));
-  const actionText = session.lastAction ? truncate(session.lastAction, actionWidth) : '';
+  const actionText = session.lastAction ? truncate(humanizeTool(session.lastAction), actionWidth) : '';
 
   const bg = isSelected ? 'inverse' : undefined;
 
