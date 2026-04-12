@@ -316,6 +316,13 @@ export const PeekSessionArgsSchema = z.object({
 });
 export type PeekSessionArgs = z.infer<typeof PeekSessionArgsSchema>;
 
+export const BrowseSessionArgsSchema = z.object({
+  agent_id: z.string().describe('Agent ID to browse'),
+  page_size: z.number().min(5).max(50).optional().default(20).describe('Messages per page (default 20)'),
+  before_index: z.number().optional().describe('Return messages before this index (for paging backward). Omit for latest.'),
+});
+export type BrowseSessionArgs = z.infer<typeof BrowseSessionArgsSchema>;
+
 export const GetSessionActivitySummaryArgsSchema = z.object({});
 export type GetSessionActivitySummaryArgs = z.infer<typeof GetSessionActivitySummaryArgsSchema>;
 

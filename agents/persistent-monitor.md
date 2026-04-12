@@ -24,6 +24,7 @@ allowedTools:
   - mcp__agent-tracker__get_user_prompt
   - mcp__agent-tracker__inspect_persistent_task
   - mcp__agent-tracker__peek_session
+  - mcp__agent-tracker__browse_session
   - mcp__agent-tracker__get_session_activity_summary
   - mcp__session-activity__get_session_summary
   - mcp__session-activity__list_session_summaries

@@ -51,6 +51,7 @@ import {
   GetCommsLogArgsSchema,
   AcknowledgeSignalArgsSchema,
   PeekSessionArgsSchema,
+  BrowseSessionArgsSchema,
   GetSessionActivitySummaryArgsSchema,
   SearchCtoSessionsArgsSchema,
   SuspendSessionArgsSchema,
@@ -92,6 +93,7 @@ import {
   type GetCommsLogArgs,
   type AcknowledgeSignalArgs,
   type PeekSessionArgs,
+  type BrowseSessionArgs,
   type GetSessionActivitySummaryArgs,
   type SearchCtoSessionsArgs,
   type SuspendSessionArgs,
@@ -3232,6 +3234,152 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
   };
 }
 
+// ============================================================================
+// browse_session — message-indexed session browsing for CTO monitoring
+// ============================================================================
+
+interface BrowseMessage {
+  index: number;
+  type: 'assistant_text' | 'tool_call' | 'tool_result' | 'error' | 'compaction' | 'user' | 'system';
+  timestamp: string | null;
+  content?: string;
+  tool?: string;
+  input_preview?: string;
+  result_preview?: string;
+}
+
+function formatBrowseMessage(entry: any, index: number): BrowseMessage | null {
+  const ts = entry.timestamp ?? null;
+
+  if (entry.type === 'system' && entry.subtype === 'compact_boundary') {
+    return { index, type: 'compaction', timestamp: ts, content: `Context compacted (${entry.compactMetadata?.trigger ?? 'unknown'})` };
+  }
+
+  if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+    const blocks = entry.message.content as any[];
+    const results: BrowseMessage[] = [];
+
+    const texts = blocks.filter((b: any) => b.type === 'text' && b.text).map((b: any) => b.text as string);
+    if (texts.length > 0) {
+      const joined = texts.join('\n');
+      results.push({ index, type: 'assistant_text', timestamp: ts, content: joined.length > 2000 ? joined.substring(0, 2000) + '...' : joined });
+    }
+
+    for (const block of blocks) {
+      if (block.type !== 'tool_use') continue;
+      let inputStr = '';
+      try {
+        const input = block.input;
+        inputStr = typeof input === 'string' ? input : JSON.stringify(input) ?? '';
+        if (inputStr.length > 300) inputStr = inputStr.substring(0, 300) + '...';
+      } catch { /* */ }
+      results.push({ index, type: 'tool_call', timestamp: ts, tool: block.name ?? 'unknown', input_preview: inputStr });
+    }
+
+    return results.length > 0 ? results[0] : null; // return first; caller handles multi
+  }
+
+  if (entry.type === 'tool_result') {
+    let preview = '';
+    if (typeof entry.content === 'string') {
+      preview = entry.content.length > 500 ? entry.content.substring(0, 500) + '...' : entry.content;
+    } else if (Array.isArray(entry.content)) {
+      const textParts = entry.content.filter((c: any) => c.type === 'text' && c.text).map((c: any) => c.text);
+      const joined = textParts.join('\n');
+      preview = joined.length > 500 ? joined.substring(0, 500) + '...' : joined;
+    }
+    return { index, type: 'tool_result', timestamp: ts, result_preview: preview || undefined };
+  }
+
+  if (entry.type === 'user') {
+    const text = typeof entry.message?.content === 'string'
+      ? entry.message.content
+      : Array.isArray(entry.message?.content)
+        ? entry.message.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
+        : '';
+    if (text.length > 0) {
+      return { index, type: 'user', timestamp: ts, content: text.length > 1000 ? text.substring(0, 1000) + '...' : text };
+    }
+  }
+
+  return null;
+}
+
+async function browseSession(args: BrowseSessionArgs): Promise<object | ErrorResult> {
+  const agentId = args.agent_id;
+  if (!agentId) return { error: 'agent_id is required' };
+
+  // Find session file (same pattern as peekSession)
+  const history = readHistory();
+  const agentRecord = (history.agents ?? []).find((a: AgentRecord) => a.id === agentId);
+  let sessionFile: string | null = null;
+  if (agentRecord) {
+    sessionFile = findSessionFile(agentRecord);
+  } else {
+    const sessionDir = getSessionDir(PROJECT_DIR);
+    if (sessionDir) {
+      sessionFile = findSessionFileByAgentId(sessionDir, agentId);
+    }
+  }
+  if (!sessionFile) return { error: `Session file not found for agent: ${agentId}` };
+
+  // For files > 10MB, fall back to tail-based reading
+  const stat = fs.statSync(sessionFile);
+  if (stat.size > 10 * 1024 * 1024) {
+    return { error: `Session file too large for indexed browsing (${Math.round(stat.size / 1024 / 1024)}MB). Use peek_session with offset pagination instead.` };
+  }
+
+  // Read and parse all lines
+  const content = fs.readFileSync(sessionFile, 'utf8');
+  const lines = content.split('\n').filter(l => l.trim());
+  const totalMessages = lines.length;
+
+  const pageSize = args.page_size ?? 20;
+  let endIndex = totalMessages;
+  if (args.before_index !== undefined) {
+    endIndex = Math.min(args.before_index, totalMessages);
+  }
+  const startIndex = Math.max(0, endIndex - pageSize);
+
+  const messages: BrowseMessage[] = [];
+  for (let i = startIndex; i < endIndex; i++) {
+    try {
+      const entry = JSON.parse(lines[i]);
+      // An assistant entry can produce multiple messages (text + tool_use blocks)
+      if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+        const blocks = entry.message.content as any[];
+        const ts = entry.timestamp ?? null;
+        const texts = blocks.filter((b: any) => b.type === 'text' && b.text).map((b: any) => b.text as string);
+        if (texts.length > 0) {
+          const joined = texts.join('\n');
+          messages.push({ index: i, type: 'assistant_text', timestamp: ts, content: joined.length > 2000 ? joined.substring(0, 2000) + '...' : joined });
+        }
+        for (const block of blocks) {
+          if (block.type !== 'tool_use') continue;
+          let inputStr = '';
+          try {
+            const input = block.input;
+            inputStr = typeof input === 'string' ? input : JSON.stringify(input) ?? '';
+            if (inputStr.length > 300) inputStr = inputStr.substring(0, 300) + '...';
+          } catch { /* */ }
+          messages.push({ index: i, type: 'tool_call', timestamp: ts, tool: block.name ?? 'unknown', input_preview: inputStr });
+        }
+      } else {
+        const msg = formatBrowseMessage(entry, i);
+        if (msg) messages.push(msg);
+      }
+    } catch { /* skip malformed */ }
+  }
+
+  return {
+    agent_id: agentId,
+    total_messages: totalMessages,
+    range: { start_index: startIndex, end_index: endIndex },
+    messages,
+    has_more: startIndex > 0,
+  };
+}
+
 /**
  * Get a summary of all currently running agent sessions, including last tool and elapsed time.
  */
@@ -4366,6 +4514,12 @@ const tools: AnyToolHandler[] = [
     description: 'Peek at a running agent session\'s JSONL. Returns summary fields (lastText: up to 1000 chars, lastTools: last 10 with 200-char input previews) plus a chronological recentActivity array with assistant text (1000 chars each), tool calls (500-char inputs), and tool results from the window. Provide agent_id or queue_id. If the summary fields feel incomplete or you need more context, increase depth (e.g. depth: 48) or page backward using nextOffset from the previous response. Pagination: offset: 0 (default, latest), then pass nextOffset to page backward. Returns hasMore/nextOffset for continuation. Set include_compaction_context: true for pre-compaction summaries.',
     schema: PeekSessionArgsSchema,
     handler: peekSession,
+  },
+  {
+    name: 'browse_session',
+    description: 'Browse a session\'s message history with indexed pagination. Returns numbered messages (assistant text, tool calls, tool results) that can be paged backward using before_index. Designed for CTO monitoring — shows raw session content with minimal processing. Use page_size to control how many messages per page (default 20). Omit before_index for latest messages; pass before_index from the response range.start_index to page backward.',
+    schema: BrowseSessionArgsSchema,
+    handler: browseSession,
   },
   {
     name: 'get_session_activity_summary',
