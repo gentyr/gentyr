@@ -132,10 +132,12 @@ export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): 
   // Detect if selected session is completed/dead
   const TERMINAL_TOOLS = ['mcp__todo-db__complete_task', 'mcp__todo-db__summarize_work', 'complete_task', 'summarize_work'];
   const lastToolIsTerminal = selectedSession?.lastAction != null && TERMINAL_TOOLS.some(t => selectedSession.lastAction!.includes(t));
+  const hasSessionEndMarker = entries.some(e => e.type === 'session_end');
   const isCompleted = selectedSession == null
     || selectedSession.pid == null
     || !isProcessAlive(selectedSession.pid)
-    || lastToolIsTerminal;
+    || lastToolIsTerminal
+    || hasSessionEndMarker;
 
   // Keyboard handling
   useInput((input, key) => {
@@ -154,7 +156,9 @@ export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): 
           return;
         }
         if (selectedSession) {
-          const alive = selectedSession.pid != null ? isProcessAlive(selectedSession.pid) : false;
+          const alive = selectedSession.pid != null
+            ? isProcessAlive(selectedSession.pid) && !hasSessionEndMarker
+            : false;
           if (alive && tailAgentId) {
             // Running session: inject directive signal
             let signalId: string | undefined;
@@ -173,9 +177,11 @@ export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): 
             clearSentTimer();
             clearDeliveryPoll();
             setLastSignalStatus(`Pending: "${msg}"`);
-            // Poll for delivery indefinitely while this session is selected
+            // Poll for delivery; escalate to resume if agent dies mid-delivery
             if (signalId) {
+              let pollCount = 0;
               deliveryPollRef.current = setInterval(() => {
+                pollCount++;
                 const status = getSignalDeliveryStatus(signalId!);
                 if (status?.status === 'acknowledged') {
                   setLastSignalStatus(`Ack'd: "${msg}"`);
@@ -183,7 +189,19 @@ export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): 
                   sentTimerRef.current = setTimeout(() => setLastSignalStatus(null), 10000);
                 } else if (status?.status === 'read') {
                   setLastSignalStatus(`Delivered: "${msg}"`);
-                  // Keep polling for acknowledgment
+                } else if (pollCount >= 15) {
+                  // 30s without read — check if agent is still alive
+                  const stillAlive = selectedSession.pid != null && isProcessAlive(selectedSession.pid);
+                  if (!stillAlive && selectedSession.sessionId) {
+                    // Agent died — escalate to resume
+                    clearDeliveryPoll();
+                    resumeSessionWithMessage(selectedSession.sessionId, msg);
+                    setLastSignalStatus(`Resumed: "${msg}" (agent exited)`);
+                    sentTimerRef.current = setTimeout(() => setLastSignalStatus(null), 10000);
+                  } else {
+                    // Agent alive but busy — update status
+                    setLastSignalStatus(`Queued: "${msg}"`);
+                  }
                 }
               }, 2000);
             }

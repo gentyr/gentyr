@@ -20,13 +20,20 @@ export function SignalInput({ active, text, lastStatus, width, isCompleted }: Si
 
   if (lastStatus !== null && !active) {
     const isPending = lastStatus.startsWith('Pending:');
+    const isQueued = lastStatus.startsWith('Queued:');
+    const isResumed = lastStatus.startsWith('Resumed:');
     const isError = lastStatus.startsWith('ERROR:');
     const isAcked = lastStatus.startsWith("Ack'd:");
-    const color = isError ? 'red' : isAcked ? 'green' : isPending ? 'yellow' : 'cyan';
+    const isDelivered = lastStatus.startsWith('Delivered:');
+    const color = isError ? 'red' : isAcked ? 'green' : isDelivered ? 'cyan' : isResumed ? 'cyan' : (isPending || isQueued) ? 'yellow' : 'cyan';
+    const hint = isPending ? ' (waiting for agent tool call...)'
+      : isQueued ? ' (agent busy, will deliver on next tool call)'
+      : isResumed ? ' (opened in new Terminal)'
+      : '';
     return (
       <Box flexDirection="row">
         <Text color={color}>{truncate(lastStatus, innerWidth)}</Text>
-        {isPending && <Text dimColor> (waiting for agent tool call...)</Text>}
+        {hint && <Text dimColor>{hint}</Text>}
       </Box>
     );
   }
