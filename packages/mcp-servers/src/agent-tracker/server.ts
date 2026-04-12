@@ -3248,35 +3248,16 @@ interface BrowseMessage {
   result_preview?: string;
 }
 
+/**
+ * Format a single non-assistant JSONL entry into a BrowseMessage.
+ * Assistant entries are handled inline by browseSession() because they expand
+ * into multiple messages (text + tool_use blocks).
+ */
 function formatBrowseMessage(entry: any, index: number): BrowseMessage | null {
   const ts = entry.timestamp ?? null;
 
   if (entry.type === 'system' && entry.subtype === 'compact_boundary') {
     return { index, type: 'compaction', timestamp: ts, content: `Context compacted (${entry.compactMetadata?.trigger ?? 'unknown'})` };
-  }
-
-  if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
-    const blocks = entry.message.content as any[];
-    const results: BrowseMessage[] = [];
-
-    const texts = blocks.filter((b: any) => b.type === 'text' && b.text).map((b: any) => b.text as string);
-    if (texts.length > 0) {
-      const joined = texts.join('\n');
-      results.push({ index, type: 'assistant_text', timestamp: ts, content: joined.length > 2000 ? joined.substring(0, 2000) + '...' : joined });
-    }
-
-    for (const block of blocks) {
-      if (block.type !== 'tool_use') continue;
-      let inputStr = '';
-      try {
-        const input = block.input;
-        inputStr = typeof input === 'string' ? input : JSON.stringify(input) ?? '';
-        if (inputStr.length > 300) inputStr = inputStr.substring(0, 300) + '...';
-      } catch { /* */ }
-      results.push({ index, type: 'tool_call', timestamp: ts, tool: block.name ?? 'unknown', input_preview: inputStr });
-    }
-
-    return results.length > 0 ? results[0] : null; // return first; caller handles multi
   }
 
   if (entry.type === 'tool_result') {
@@ -3324,13 +3305,23 @@ async function browseSession(args: BrowseSessionArgs): Promise<object | ErrorRes
   if (!sessionFile) return { error: `Session file not found for agent: ${agentId}` };
 
   // For files > 10MB, fall back to tail-based reading
-  const stat = fs.statSync(sessionFile);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(sessionFile);
+  } catch (err) {
+    return { error: `Session file no longer accessible: ${err instanceof Error ? err.message : String(err)}` };
+  }
   if (stat.size > 10 * 1024 * 1024) {
     return { error: `Session file too large for indexed browsing (${Math.round(stat.size / 1024 / 1024)}MB). Use peek_session with offset pagination instead.` };
   }
 
   // Read and parse all lines
-  const content = fs.readFileSync(sessionFile, 'utf8');
+  let content: string;
+  try {
+    content = fs.readFileSync(sessionFile, 'utf8');
+  } catch (err) {
+    return { error: `Failed to read session file: ${err instanceof Error ? err.message : String(err)}` };
+  }
   const lines = content.split('\n').filter(l => l.trim());
   const totalMessages = lines.length;
 
