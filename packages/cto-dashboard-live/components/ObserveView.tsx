@@ -34,7 +34,7 @@ interface ObserveViewProps {
   bodyWidth: number;
 }
 
-const LEFT_WIDTH_FRACTION = 0.22;
+const LEFT_WIDTH_FRACTION = 0.35;
 const LEFT_HEADER_OVERHEAD = 2;
 const RIGHT_HEADER_OVERHEAD = 2;
 const SIGNAL_ROW_HEIGHT = 1;
@@ -265,6 +265,7 @@ export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): 
           displaySessions={displaySessions}
           selectedId={effectiveSelectedId}
           height={selectorHeight}
+          width={leftWidth - 4}
         />
         <Box height={DIVIDER_HEIGHT}>
           <Text dimColor>{'\u2500'.repeat(Math.max(1, leftWidth - 4))}</Text>
