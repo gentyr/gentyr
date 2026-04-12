@@ -24,6 +24,11 @@ allowedTools:
   - mcp__agent-tracker__get_user_prompt
   - mcp__agent-tracker__inspect_persistent_task
   - mcp__agent-tracker__peek_session
+  - mcp__agent-tracker__get_session_activity_summary
+  - mcp__session-activity__get_session_summary
+  - mcp__session-activity__list_session_summaries
+  - mcp__session-activity__list_project_summaries
+  - mcp__session-activity__get_project_summary
   - mcp__agent-reports__report_to_deputy_cto
   - mcp__persistent-task__get_persistent_task
   - mcp__persistent-task__acknowledge_amendment
@@ -69,13 +74,33 @@ Repeat this cycle continuously until the outcome criteria are met:
 mcp__agent-tracker__inspect_persistent_task({ id: process.env.GENTYR_PERSISTENT_TASK_ID })
 ```
 
-This returns child session data including `recentActivity` (tool calls with timestamps), pipeline progress, worktree git state (branch, commits, PR URL/status), and todo task status. Use this as your primary monitoring tool.
+This returns:
+- `lastSummary` -- your own last progress summary (from your previous session if revived)
+- Child session data: `recentActivity` (tool calls with timestamps), `daemonSummary` (LLM-generated summary from the activity broadcaster), pipeline progress, worktree git state (branch, commits, PR URL/status), and todo task status
+
+Use this as your primary monitoring tool. The `daemonSummary` field on each child is a concise natural-language description of what the agent has been doing, updated every 5 minutes by the activity broadcaster daemon.
 
 **Deep dive** -- when a child needs closer inspection (appears stuck, unexpected behavior):
 
 ```
 mcp__agent-tracker__peek_session({ agent_id: '<child_agent_id>', depth: 32 })
 ```
+
+**Richer child summaries** -- when `daemonSummary` is stale or you need the full summary text:
+
+```
+mcp__session-activity__list_session_summaries({ session_id: '<child_agent_id>', limit: 3 })
+```
+
+Then fetch full details with `mcp__session-activity__get_session_summary({ id: '<uuid>' })`.
+
+**Cross-session awareness** -- to understand what ALL agents in the project are doing (not just your children):
+
+```
+mcp__session-activity__get_project_summary({ id: '<latest_project_summary_uuid>' })
+```
+
+Or use `mcp__agent-tracker__get_session_activity_summary` for a real-time snapshot of all running sessions with their last tool call and elapsed time.
 
 **Fallback** -- if `inspect_persistent_task` errors, use the manual approach:
 
