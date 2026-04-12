@@ -209,8 +209,7 @@ async function main() {
     if (meta.demo_involved) {
       demoInstructions = buildPersistentMonitorDemoInstructions();
     }
-    // TODO(cleanup 2026-04-23): drop bridge_main_tree dual-read
-    if (meta.strict_infra_guidance === true || meta.bridge_main_tree === true) {
+    if (meta.strict_infra_guidance === true) {
       strictInfraInstructions = buildPersistentMonitorStrictInfraInstructions();
     }
   } catch (_) { /* non-fatal */ }

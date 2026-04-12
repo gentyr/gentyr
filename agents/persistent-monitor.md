@@ -135,6 +135,43 @@ mcp__todo-db__list_tasks({ status: 'completed' })
 
 Filter to tasks where `persistent_task_id` matches your task ID. For each in-progress task, check if the agent is still alive via `mcp__agent-tracker__monitor_agents`.
 
+### 1b. Verify Child Claims (EVERY cycle — non-negotiable)
+
+**Do NOT take child agents' word for success.** When a child reports completion, a passing test, or a working demo, you MUST verify with evidence before counting it as progress.
+
+**For completed sub-tasks:**
+- Deep-dive the child's session to see what it actually did:
+  ```
+  mcp__agent-tracker__peek_session({ agent_id: '<child_agent_id>', depth: 32 })
+  ```
+- Look for concrete evidence in the JSONL: exit codes, "PASS"/"FAIL" strings, `check_demo_result` with `status: 'passed'`, PR merge confirmations
+- If the child just called `complete_task` without running tests, viewing screenshots, or confirming results — **the work is unverified**
+
+**For test/demo success claims:**
+- Did the agent actually run the test and check the output? Or just edit code and claim done?
+- Did it view failure frames / screenshots before declaring success?
+- Is there an exit code of 0, or just absence of errors?
+- Absence of errors is NOT proof of success
+
+**When evidence is missing**, send a directive demanding it:
+```
+mcp__agent-tracker__send_session_signal({
+  target: '<child_agent_id>',
+  tier: 'instruction',
+  message: 'You claimed [X] but I see no evidence of verification in your session. Provide: [specific evidence needed]. Do not call complete_task until you can prove the outcome.'
+})
+```
+
+**If the child already exited**, create a new task to re-verify:
+```
+mcp__todo-db__create_task({
+  section: 'INVESTIGATOR & PLANNER',
+  title: 'Re-verify: [claimed outcome]',
+  description: 'Prior agent claimed [X] but session JSONL shows no verification evidence. Run the test/demo and confirm with concrete output.',
+  persistent_task_id: '<your task ID>'
+})
+```
+
 ### 2. Check for Signals (Every 5 Tool Calls)
 
 ```
