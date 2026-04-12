@@ -202,6 +202,15 @@ function checkAndSyncWorktree(): { fresh: boolean; message?: string } {
       cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
     });
     process.stderr.write(`[playwright] Auto-synced worktree: merged ${behindBy} commit(s) from origin/${baseBranch}\n`);
+    // Re-install deps if lockfile changed in the merge (fire-and-forget async)
+    import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'worktree-manager.js'))
+      .then(wtMgr => {
+        const depResult = wtMgr.syncWorktreeDeps(EFFECTIVE_CWD);
+        if (depResult.synced) process.stderr.write(`[playwright] Re-installed deps after merge in ${EFFECTIVE_CWD}\n`);
+      })
+      .catch((depErr: unknown) => {
+        process.stderr.write(`[playwright] Warning: dep sync after merge failed: ${(depErr as Error)?.message?.slice(0, 200)}\n`);
+      });
     return { fresh: true };
   } catch (err) {
     // Merge conflict or other failure — abort and report

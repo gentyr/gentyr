@@ -12,6 +12,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { execSync, execFileSync } from 'child_process';
 import { detectBaseBranch as detectBaseBranchShared } from './feature-branch-helper.js';
 import { allocatePortBlock, releasePortBlock, cleanupStaleAllocations } from './port-allocator.js';
@@ -336,6 +337,14 @@ export function provisionWorktree(worktreePath, options = {}) {
               stdio: 'pipe',
             });
             console.error(`[worktree-manager] Installed dependencies via ${cmd[0]} in ${worktreePath}`);
+            // Store lockfile hash so syncWorktreeDeps skips until lockfile actually changes
+            try {
+              const lockfilePath = path.join(worktreePath, file);
+              const hash = crypto.createHash('sha256').update(fs.readFileSync(lockfilePath)).digest('hex').slice(0, 16);
+              const hashDir = path.join(worktreePath, '.claude', 'state');
+              fs.mkdirSync(hashDir, { recursive: true });
+              fs.writeFileSync(path.join(hashDir, 'lockfile-hash'), hash);
+            } catch { /* non-fatal */ }
           } catch (err) {
             if (isStrict) {
               throw new Error(`[worktree-manager] STRICT: ${cmd[0]} install failed in ${worktreePath}: ${err.message?.slice(0, 300)}`);
@@ -375,6 +384,129 @@ export function provisionWorktree(worktreePath, options = {}) {
       }
     }
   }
+}
+
+// ============================================================================
+// Post-Merge Dependency Sync
+// ============================================================================
+
+/**
+ * Sync dependencies in a worktree after a git merge/pull that may have changed
+ * the lockfile. Detects lockfile changes by comparing a hash stored at install
+ * time. If the lockfile changed, runs the package manager install + build.
+ *
+ * This ensures agents in worktrees NEVER need to manually install deps.
+ * Called from: preview-watcher.js, checkAndSyncWorktree(), hourly-automation.
+ *
+ * @param {string} worktreePath - Absolute path to the worktree
+ * @param {object} [options]
+ * @param {number} [options.timeout] - Install timeout in ms (default: from services.json or 120000)
+ * @returns {{ synced: boolean, reason?: string }}
+ */
+export function syncWorktreeDeps(worktreePath, options = {}) {
+  const HASH_FILE = path.join(worktreePath, '.claude', 'state', 'lockfile-hash');
+
+  // Detect which lockfile exists
+  const lockFiles = [
+    { file: 'pnpm-lock.yaml', cmd: ['pnpm', 'install', '--frozen-lockfile', '--prefer-offline'] },
+    { file: 'yarn.lock', cmd: ['yarn', 'install', '--frozen-lockfile'] },
+    { file: 'bun.lockb', cmd: ['bun', 'install', '--frozen-lockfile'] },
+    { file: 'package-lock.json', cmd: ['npm', 'ci'] },
+  ];
+
+  let lockfilePath = null;
+  let installCmd = null;
+  for (const { file, cmd } of lockFiles) {
+    const candidate = path.join(worktreePath, file);
+    if (fs.existsSync(candidate)) {
+      lockfilePath = candidate;
+      installCmd = cmd;
+      break;
+    }
+  }
+
+  if (!lockfilePath || !installCmd) {
+    return { synced: false, reason: 'no lockfile found' };
+  }
+
+  // Hash the current lockfile
+  let currentHash;
+  try {
+    currentHash = crypto.createHash('sha256').update(fs.readFileSync(lockfilePath)).digest('hex').slice(0, 16);
+  } catch {
+    // If crypto fails, always install as a safety measure
+    currentHash = 'unknown-' + Date.now();
+  }
+
+  // Compare with stored hash
+  let storedHash = null;
+  try {
+    storedHash = fs.readFileSync(HASH_FILE, 'utf8').trim();
+  } catch { /* no stored hash — first sync */ }
+
+  if (storedHash === currentHash) {
+    return { synced: false, reason: 'lockfile unchanged' };
+  }
+
+  // Lockfile changed (or first sync) — install deps
+  let servicesConfig = null;
+  try {
+    const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+    if (fs.existsSync(configPath)) {
+      servicesConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    }
+  } catch { /* non-fatal */ }
+
+  const rawTimeout = options.timeout ?? servicesConfig?.worktreeInstallTimeout;
+  const installTimeout = (typeof rawTimeout === 'number' && rawTimeout >= 10000 && rawTimeout <= 600000)
+    ? rawTimeout : 120000;
+
+  try {
+    execSync(installCmd.join(' '), {
+      cwd: worktreePath,
+      encoding: 'utf8',
+      timeout: installTimeout,
+      stdio: 'pipe',
+    });
+    console.error(`[worktree-manager] syncWorktreeDeps: installed deps in ${worktreePath}`);
+  } catch (err) {
+    console.error(`[worktree-manager] syncWorktreeDeps: install failed in ${worktreePath}: ${err.message?.slice(0, 200)}`);
+    return { synced: false, reason: `install failed: ${err.message?.slice(0, 100)}` };
+  }
+
+  // Run build if health check fails
+  if (servicesConfig?.worktreeBuildCommand) {
+    const healthCheck = servicesConfig.worktreeBuildHealthCheck;
+    let needsBuild = true;
+    if (healthCheck) {
+      try {
+        execSync(healthCheck, { cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+        needsBuild = false;
+      } catch { /* needs build */ }
+    }
+    if (needsBuild) {
+      try {
+        execSync(servicesConfig.worktreeBuildCommand, {
+          cwd: worktreePath,
+          encoding: 'utf8',
+          timeout: 300000,
+          stdio: 'pipe',
+        });
+        console.error(`[worktree-manager] syncWorktreeDeps: built workspace in ${worktreePath}`);
+      } catch (err) {
+        console.error(`[worktree-manager] syncWorktreeDeps: build failed (non-fatal): ${err.message?.slice(0, 200)}`);
+      }
+    }
+  }
+
+  // Store the hash for next time
+  try {
+    const hashDir = path.dirname(HASH_FILE);
+    fs.mkdirSync(hashDir, { recursive: true });
+    fs.writeFileSync(HASH_FILE, currentHash);
+  } catch { /* non-fatal */ }
+
+  return { synced: true };
 }
 
 // ============================================================================

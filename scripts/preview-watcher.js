@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { syncWorktreeDeps } from '../.claude/hooks/lib/worktree-manager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -153,6 +154,13 @@ function syncWorktrees(baseBranch) {
         results.worktreeDetails.push({ name: wt.name, status: 'synced', behindBy });
         clearWorktreeState(wt.path);
         log(`Synced worktree ${wt.name}: merged ${behindBy} commit(s) from origin/${baseBranch}`);
+        // Re-install deps if lockfile changed in the merge
+        try {
+          const depResult = syncWorktreeDeps(wt.path);
+          if (depResult.synced) log(`Synced deps in ${wt.name} after merge`);
+        } catch (depErr) {
+          log(`Warning: dep sync failed in ${wt.name}: ${depErr.message}`);
+        }
       } catch (mergeErr) {
         // Merge conflict — abort and mark pending
         try {
