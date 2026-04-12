@@ -11,6 +11,37 @@
  */
 
 import { execFileSync } from 'child_process';
+import { auditEvent } from './session-audit.js';
+
+/**
+ * Verify a PID belongs to a Claude/GENTYR process before killing.
+ * Returns false (fail-safe: don't kill) if verification fails or process is not ours.
+ */
+export function isClaudeProcess(pid) {
+  if (!pid || pid <= 0) return false;
+  try {
+    const cmd = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
+      encoding: 'utf8',
+      timeout: 3000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    if (!cmd) return false;
+    return /\bclaude\b/i.test(cmd)
+      || /\bnode\b.*\.claude[/\\]/i.test(cmd)
+      || /\bnode\b.*gentyr/i.test(cmd)
+      || /\besbuild\b/.test(cmd)
+      || /\bvitest\b/.test(cmd);
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Log a kill attempt to the audit trail. Non-fatal. */
+function logKillAttempt(pid, signal, context = {}) {
+  try {
+    auditEvent('process_kill_attempt', { pid, signal, ...context });
+  } catch (_) { /* non-fatal */ }
+}
 
 /**
  * Kill an entire process group (synchronous, immediate).
@@ -23,6 +54,11 @@ import { execFileSync } from 'child_process';
  */
 export function killProcessGroup(pid, signal = 'SIGTERM') {
   if (!pid || pid <= 0) return false;
+  if (!isClaudeProcess(pid)) {
+    logKillAttempt(pid, signal, { blocked: true, reason: 'pid_not_claude' });
+    return false;
+  }
+  logKillAttempt(pid, signal, { verified: true });
   try {
     process.kill(-pid, signal);
     return true;

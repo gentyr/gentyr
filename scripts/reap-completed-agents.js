@@ -21,6 +21,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { isClaudeProcess } from '../.claude/hooks/lib/process-tree.js';
 
 // Lazy-loaded SQLite for TODO reconciliation
 let Database = null;
@@ -374,7 +375,11 @@ export function reapCompletedAgents(projectDir) {
       continue;
     }
 
-    // Step 5: Kill the process
+    // Step 5: Verify PID identity then kill
+    if (!isClaudeProcess(pid)) {
+      result.skipped.push({ agentId, reason: 'pid_not_claude_process' });
+      continue;
+    }
     try {
       process.kill(pid, 'SIGKILL');
       agent.status = 'reaped';
