@@ -87,11 +87,3 @@ export function calculateCacheRate(cacheRead: number, input: number): number {
 export function truncate(s: string, max: number): string {
   return s.length > max ? s.substring(0, max - 3) + '...' : s;
 }
-
-export function humanizeTool(raw: string | null): string {
-  if (!raw) return '';
-  // Strip mcp__ prefix and server name: "mcp__todo-db__complete_task" → "complete_task"
-  const stripped = raw.replace(/^mcp__[^_]+__/, '');
-  // Convert underscores to spaces: "complete_task" → "complete task"
-  return stripped.replace(/_/g, ' ');
-}

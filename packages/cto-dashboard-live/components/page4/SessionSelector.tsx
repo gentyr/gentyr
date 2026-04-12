@@ -2,8 +2,8 @@
  * SessionSelector — scrollable list of sessions with strict two-line items.
  *
  * Each item is exactly 2 rows using fixed-width Ink columns:
- *   Row 1: [icon 2] [id 9] [title ...fill...] [elapsed 8]
- *   Row 2: [pad  2] [type 18] [pri 5] [lastAction ...fill...]
+ *   Row 1: [icon 2] [id 9] [title ...fill...]
+ *   Row 2: [pad  2] [type 18] [pri 5] [last activity ago ...fill...]
  *
  * Persistent task children are indented with a tree connector.
  * overflow="hidden" on each item prevents content from wrapping to a 3rd row.
@@ -12,7 +12,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import type { DisplaySession } from '../../types.js';
-import { truncate, humanizeTool } from '../../utils/formatters.js';
+import { truncate, formatElapsed } from '../../utils/formatters.js';
 
 interface SessionSelectorProps {
   displaySessions: DisplaySession[];
@@ -23,7 +23,6 @@ interface SessionSelectorProps {
 
 const COL_ICON = 2;
 const COL_ID = 9;
-const COL_ELAPSED = 8;
 const COL_TYPE = 18;
 const COL_PRI = 5;
 const INDENT_WIDTH = 4;
@@ -58,6 +57,15 @@ function priLabel(priority: string): { text: string; color: string | undefined; 
   }
 }
 
+function lastActivityAgo(timestamp: string | null): string {
+  if (!timestamp) return '';
+  try {
+    const ms = Date.now() - new Date(timestamp).getTime();
+    if (ms < 0 || isNaN(ms)) return '';
+    return formatElapsed(ms) + ' ago';
+  } catch { return ''; }
+}
+
 function SessionRow({ ds, isSelected, width }: { ds: DisplaySession; isSelected: boolean; width: number }): React.ReactElement {
   const { session, indent, isMonitor } = ds;
   const icon = statusIcon(session.status);
@@ -65,8 +73,8 @@ function SessionRow({ ds, isSelected, width }: { ds: DisplaySession; isSelected:
   const idText = session.id.slice(0, 8);
   const isIndented = indent > 0;
 
-  // Calculate title width: total - icon - id - elapsed - padding - optional indent
-  const titleWidth = Math.max(4, width - COL_ICON - COL_ID - COL_ELAPSED - (isIndented ? INDENT_WIDTH : 0));
+  // Calculate title width: total - icon - id - padding - optional indent
+  const titleWidth = Math.max(4, width - COL_ICON - COL_ID - (isIndented ? INDENT_WIDTH : 0));
   const monitorPrefix = isMonitor ? '[M] ' : '';
   const rawTitle = session.title || session.agentType;
   const titleText = truncate(`${monitorPrefix}${rawTitle}`, titleWidth);
@@ -74,14 +82,13 @@ function SessionRow({ ds, isSelected, width }: { ds: DisplaySession; isSelected:
   // Row 2 fields
   const typeText = truncate(session.agentType, COL_TYPE - 1).padEnd(COL_TYPE - 1);
   const priText = pri.text.padEnd(COL_PRI - 1);
-  const actionWidth = Math.max(4, width - COL_ICON - COL_TYPE - COL_PRI - (isIndented ? INDENT_WIDTH : 0));
-  const actionText = session.lastAction ? truncate(humanizeTool(session.lastAction), actionWidth) : '';
-
-  const bg = isSelected ? 'inverse' : undefined;
+  const activityAgo = lastActivityAgo(session.lastActionTimestamp);
+  const activityWidth = Math.max(4, width - COL_ICON - COL_TYPE - COL_PRI - (isIndented ? INDENT_WIDTH : 0));
+  const activityText = activityAgo ? truncate(activityAgo, activityWidth) : '';
 
   return (
     <Box flexDirection="column" height={2} overflow="hidden">
-      {/* Row 1: icon | id | title | elapsed */}
+      {/* Row 1: icon | id | title */}
       <Box height={1}>
         {isIndented && <Box width={INDENT_WIDTH}><Text dimColor>{`  ${TREE} `}</Text></Box>}
         <Box width={COL_ICON}>
@@ -93,12 +100,9 @@ function SessionRow({ ds, isSelected, width }: { ds: DisplaySession; isSelected:
         <Box width={titleWidth} overflow="hidden">
           <Text {...(isSelected ? { inverse: true, bold: true } : { dimColor: true })}>{titleText}</Text>
         </Box>
-        <Box width={COL_ELAPSED} justifyContent="flex-end">
-          <Text {...(isSelected ? { inverse: true } : { dimColor: true })}>{session.elapsed.padStart(COL_ELAPSED - 1)}</Text>
-        </Box>
       </Box>
 
-      {/* Row 2: pad | type | priority | lastAction */}
+      {/* Row 2: pad | type | priority | last activity ago */}
       <Box height={1}>
         {isIndented && <Box width={INDENT_WIDTH}><Text> </Text></Box>}
         <Box width={COL_ICON}><Text> </Text></Box>
@@ -113,8 +117,8 @@ function SessionRow({ ds, isSelected, width }: { ds: DisplaySession; isSelected:
           )}
         </Box>
         <Box overflow="hidden">
-          {actionText ? (
-            <Text {...(isSelected ? { inverse: true } : {})} dimColor>{actionText}</Text>
+          {activityText ? (
+            <Text {...(isSelected ? { inverse: true } : {})} dimColor>{activityText}</Text>
           ) : null}
         </Box>
       </Box>
