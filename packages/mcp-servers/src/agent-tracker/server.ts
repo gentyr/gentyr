@@ -42,6 +42,9 @@ import {
   GetUserPromptArgsSchema,
   SearchUserPromptsArgsSchema,
   ListUserPromptsArgsSchema,
+  SubscribeSessionSummariesArgsSchema,
+  UnsubscribeSessionSummariesArgsSchema,
+  ListSummarySubscriptionsArgsSchema,
   SendSessionSignalArgsSchema,
   BroadcastSignalArgsSchema,
   GetSessionSignalsArgsSchema,
@@ -80,6 +83,9 @@ import {
   type GetReservedSlotsArgs,
   type SetFocusModeArgs,
   type GetFocusModeArgs,
+  type SubscribeSessionSummariesArgs,
+  type UnsubscribeSessionSummariesArgs,
+  type ListSummarySubscriptionsArgs,
   type SendSessionSignalArgs,
   type BroadcastSignalArgs,
   type GetSessionSignalsArgs,
@@ -2870,6 +2876,86 @@ function readSignalFiles(agentId: string, status: 'pending' | 'read' | 'all'): o
   return results;
 }
 
+// ============================================================================
+// Summary Subscription Handlers
+// ============================================================================
+
+function getActivityDb(): Database.Database {
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-activity.db');
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+  db.pragma('busy_timeout = 5000');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS summary_subscriptions (
+      id TEXT PRIMARY KEY,
+      subscriber_agent_id TEXT NOT NULL,
+      target_agent_id TEXT NOT NULL,
+      detail_level TEXT NOT NULL DEFAULT 'detailed',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(subscriber_agent_id, target_agent_id)
+    )
+  `);
+  return db;
+}
+
+async function subscribeSessionSummaries(args: SubscribeSessionSummariesArgs): Promise<object | ErrorResult> {
+  const subscriberId = process.env.CLAUDE_AGENT_ID || 'cto-session';
+  const { target_agent_id, detail_level } = args;
+
+  if (subscriberId === target_agent_id) {
+    return { error: 'Cannot subscribe to your own summaries' };
+  }
+
+  let db: Database.Database | undefined;
+  try {
+    db = getActivityDb();
+    const id = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    db.prepare(
+      'INSERT INTO summary_subscriptions (id, subscriber_agent_id, target_agent_id, detail_level) VALUES (?, ?, ?, ?) ON CONFLICT(subscriber_agent_id, target_agent_id) DO UPDATE SET detail_level = excluded.detail_level'
+    ).run(id, subscriberId, target_agent_id, detail_level ?? 'detailed');
+    return { success: true, subscription_id: id, subscriber: subscriberId, target: target_agent_id, detail_level: detail_level ?? 'detailed' };
+  } catch (err) {
+    return { error: `Failed to subscribe: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* */ }
+  }
+}
+
+async function unsubscribeSessionSummaries(args: UnsubscribeSessionSummariesArgs): Promise<object | ErrorResult> {
+  const subscriberId = process.env.CLAUDE_AGENT_ID || 'cto-session';
+  let db: Database.Database | undefined;
+  try {
+    db = getActivityDb();
+    const result = db.prepare(
+      'DELETE FROM summary_subscriptions WHERE subscriber_agent_id = ? AND target_agent_id = ?'
+    ).run(subscriberId, args.target_agent_id);
+    return { success: true, deleted: result.changes > 0 };
+  } catch (err) {
+    return { error: `Failed to unsubscribe: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* */ }
+  }
+}
+
+async function listSummarySubscriptions(args: ListSummarySubscriptionsArgs): Promise<object | ErrorResult> {
+  const agentId = args.agent_id || process.env.CLAUDE_AGENT_ID || 'cto-session';
+  let db: Database.Database | undefined;
+  try {
+    db = getActivityDb();
+    const subs = db.prepare(
+      'SELECT target_agent_id, detail_level, created_at FROM summary_subscriptions WHERE subscriber_agent_id = ? ORDER BY created_at DESC'
+    ).all(agentId) as Array<{ target_agent_id: string; detail_level: string; created_at: string }>;
+    const subscribers = db.prepare(
+      'SELECT subscriber_agent_id, detail_level, created_at FROM summary_subscriptions WHERE target_agent_id = ? ORDER BY created_at DESC'
+    ).all(agentId) as Array<{ subscriber_agent_id: string; detail_level: string; created_at: string }>;
+    return { agent_id: agentId, subscribed_to: subs, subscribed_by: subscribers };
+  } catch (err) {
+    return { error: `Failed to list subscriptions: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* */ }
+  }
+}
+
 /**
  * Send a signal to a specific running session.
  */
@@ -4223,6 +4309,25 @@ const tools: AnyToolHandler[] = [
     description: 'List recent user prompts. Optional session_id filter. Returns UUID, timestamp, content_preview. Only user/human messages are indexed.',
     schema: ListUserPromptsArgsSchema,
     handler: listUserPrompts,
+  },
+  // Summary Subscription Tools
+  {
+    name: 'subscribe_session_summaries',
+    description: 'Subscribe to activity summaries from another running session. Three tiers: "short" (2-4 sentence summary), "detailed" (full summary + task context), "verbatim" (full summary + recent raw session messages for near-complete visibility). Summaries are delivered as signals every 5 minutes by the activity broadcaster.',
+    schema: SubscribeSessionSummariesArgsSchema,
+    handler: subscribeSessionSummaries,
+  },
+  {
+    name: 'unsubscribe_session_summaries',
+    description: 'Unsubscribe from activity summaries of another session.',
+    schema: UnsubscribeSessionSummariesArgsSchema,
+    handler: unsubscribeSessionSummaries,
+  },
+  {
+    name: 'list_summary_subscriptions',
+    description: 'List summary subscriptions for the caller (default) or a specific agent. Shows both subscribed-to (outgoing) and subscribed-by (incoming) relationships.',
+    schema: ListSummarySubscriptionsArgsSchema,
+    handler: listSummarySubscriptions,
   },
   // Inter-Agent Communication Tools
   {
