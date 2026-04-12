@@ -173,10 +173,6 @@ async function main() {
     fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
   } catch { /* non-fatal — block anyway */ }
 
-  if (pruned) {
-    try { fs.writeFileSync(stateFile, JSON.stringify(state, null, 2)); } catch { /* non-fatal */ }
-  }
-
   const matchingNames = matchingProfiles.map(([name]) => name);
   const profileDetails = matchingProfiles.map(([name, p]) => {
     const keys = (p.secretKeys || []).join(', ');

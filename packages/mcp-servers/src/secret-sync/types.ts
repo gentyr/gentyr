@@ -100,6 +100,14 @@ export const SecretProfileSchema = z.object({
     .describe('Human-readable description of what this profile provides.'),
   match: z.object({
     commandPattern: z.string().optional()
+      .refine(
+        (val) => { if (!val) return true; try { new RegExp(val); return true; } catch { return false; } },
+        { message: 'commandPattern must be a valid regular expression' },
+      )
+      .refine(
+        (val) => { if (!val) return true; return !/\([^)]*[+*]\)[+*?{]/.test(val) && !/[+*]\??\{/.test(val); },
+        { message: 'commandPattern contains nested quantifiers (potential ReDoS). Simplify the pattern.' },
+      )
       .describe('Regex tested against the joined command string (e.g. "vitest.*aws-login").'),
     cwdPattern: z.string().optional()
       .describe('Glob-style suffix tested against cwd (e.g. "*/aws-integration").'),
@@ -117,6 +125,14 @@ export const RegisterSecretProfileArgsSchema = z.object({
   description: z.string().optional()
     .describe('What this profile provides.'),
   commandPattern: z.string().optional()
+    .refine(
+      (val) => { if (!val) return true; try { new RegExp(val); return true; } catch { return false; } },
+      { message: 'commandPattern must be a valid regular expression' },
+    )
+    .refine(
+      (val) => { if (!val) return true; return !/\([^)]*[+*]\)[+*?{]/.test(val) && !/[+*]\??\{/.test(val); },
+      { message: 'commandPattern contains nested quantifiers (potential ReDoS). Simplify the pattern.' },
+    )
     .describe('Regex to auto-match against command (e.g. "vitest.*aws-login").'),
   cwdPattern: z.string().optional()
     .describe('Suffix pattern to auto-match against cwd (e.g. "*/aws-integration").'),
