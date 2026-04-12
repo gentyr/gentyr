@@ -43,7 +43,7 @@ end tell"
 ```
 Live CTO Dashboard opened in Terminal.app.
 
-Keys: ↑↓ select sessions · Enter join · h home · 1 Ops · 2 Details · q quit
+Keys: ↑↓ select sessions · Enter send message · [ ] summaries · q quit
 ```
 
 ## Notes
@@ -51,5 +51,6 @@ Keys: ↑↓ select sessions · Enter join · h home · 1 Ops · 2 Details · q 
 - **macOS only** — uses Terminal.app via AppleScript
 - Dashboard reads from `$CLAUDE_PROJECT_DIR` databases (session-queue.db, persistent-tasks.db, todo.db, worklog.db, etc.)
 - Data refreshes every 3 seconds
-- Press Enter on a running session to kill the headless process and resume it interactively in a new Terminal.app window
+- Press Enter to send a message/signal to the selected session (or resume a dead session)
+- Persistent task children are indented under their monitor session
 - Use `--mock` flag for testing with fake data: `node $DASHBOARD_DIR/dist/index.js --mock`

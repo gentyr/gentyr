@@ -599,8 +599,243 @@ describe('runCommand - Full Integration', () => {
 });
 
 // ============================================================================
+// Secret Profile Resolution Tests
+// ============================================================================
+
+describe('runCommand - Profile Resolution', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('should merge profile secretKeys with explicit secretKeys', async () => {
+    const mockSpawn = createMockSpawn({ exitCode: 0, stdout: [] });
+    const spawnSpy = vi.fn(mockSpawn);
+    vi.mocked(childProcess.spawn).mockImplementation(spawnSpy);
+
+    const mockResolve = vi.fn(() => ({
+      resolvedEnv: {
+        AWS_ROOT_EMAIL: 'test@example.com',
+        AWS_ROOT_PASSWORD: 'pass123',
+        GMAIL_CLIENT_ID: 'gid',
+        EXTRA_KEY: 'extra',
+      },
+      failedKeys: [],
+    }));
+
+    const runCommand = createRunCommandWithProfileFn({
+      resolveLocalSecrets: mockResolve,
+      config: {
+        secretProfiles: {
+          'aws-login': {
+            secretKeys: ['AWS_ROOT_EMAIL', 'AWS_ROOT_PASSWORD', 'GMAIL_CLIENT_ID'],
+          },
+        },
+        secrets: { local: {} },
+      },
+    });
+
+    const result = await runCommand({
+      command: ['npx', 'vitest', 'run'],
+      background: false,
+      profile: 'aws-login',
+      secretKeys: ['EXTRA_KEY', 'AWS_ROOT_EMAIL'], // overlap + extra
+      timeout: 5000,
+      outputLines: 100,
+    });
+
+    const childEnv = spawnSpy.mock.calls[0][2]?.env;
+    // All 4 unique keys should be injected (3 from profile + 1 extra, deduped)
+    expect(childEnv).toHaveProperty('AWS_ROOT_EMAIL');
+    expect(childEnv).toHaveProperty('AWS_ROOT_PASSWORD');
+    expect(childEnv).toHaveProperty('GMAIL_CLIENT_ID');
+    expect(childEnv).toHaveProperty('EXTRA_KEY');
+    expect(result.secretsResolved).toBe(4);
+  });
+
+  it('should throw on nonexistent profile', async () => {
+    const runCommand = createRunCommandWithProfileFn({
+      config: {
+        secretProfiles: { 'existing': { secretKeys: ['A'] } },
+        secrets: { local: {} },
+      },
+    });
+
+    await expect(async () => {
+      await runCommand({
+        command: ['npx', 'test'],
+        background: false,
+        profile: 'nonexistent',
+        timeout: 5000,
+        outputLines: 100,
+      });
+    }).rejects.toThrow(/not found.*Available: existing/);
+  });
+
+  it('should use only profile keys when no explicit secretKeys given', async () => {
+    const mockSpawn = createMockSpawn({ exitCode: 0, stdout: [] });
+    const spawnSpy = vi.fn(mockSpawn);
+    vi.mocked(childProcess.spawn).mockImplementation(spawnSpy);
+
+    const mockResolve = vi.fn(() => ({
+      resolvedEnv: {
+        KEY_A: 'a',
+        KEY_B: 'b',
+        KEY_C: 'c',
+      },
+      failedKeys: [],
+    }));
+
+    const runCommand = createRunCommandWithProfileFn({
+      resolveLocalSecrets: mockResolve,
+      config: {
+        secretProfiles: {
+          'my-profile': { secretKeys: ['KEY_A', 'KEY_B'] },
+        },
+        secrets: { local: {} },
+      },
+    });
+
+    const result = await runCommand({
+      command: ['pnpm', 'test'],
+      background: false,
+      profile: 'my-profile',
+      timeout: 5000,
+      outputLines: 100,
+    });
+
+    const childEnv = spawnSpy.mock.calls[0][2]?.env;
+    expect(childEnv).toHaveProperty('KEY_A');
+    expect(childEnv).toHaveProperty('KEY_B');
+    expect(childEnv).not.toHaveProperty('KEY_C');
+    expect(result.secretsResolved).toBe(2);
+  });
+
+  it('should inject all secrets when no profile and no secretKeys specified', async () => {
+    const mockSpawn = createMockSpawn({ exitCode: 0, stdout: [] });
+    const spawnSpy = vi.fn(mockSpawn);
+    vi.mocked(childProcess.spawn).mockImplementation(spawnSpy);
+
+    const mockResolve = vi.fn(() => ({
+      resolvedEnv: { ALL_KEY: 'val' },
+      failedKeys: [],
+    }));
+
+    const runCommand = createRunCommandWithProfileFn({
+      resolveLocalSecrets: mockResolve,
+      config: {
+        secretProfiles: { 'unused': { secretKeys: ['UNUSED'] } },
+        secrets: { local: {} },
+      },
+    });
+
+    const result = await runCommand({
+      command: ['npx', 'test'],
+      background: false,
+      timeout: 5000,
+      outputLines: 100,
+    });
+
+    const childEnv = spawnSpy.mock.calls[0][2]?.env;
+    expect(childEnv).toHaveProperty('ALL_KEY');
+    expect(result.secretsResolved).toBe(1);
+  });
+
+  it('should throw helpful message when no profiles exist', async () => {
+    const runCommand = createRunCommandWithProfileFn({
+      config: { secrets: { local: {} } },
+    });
+
+    await expect(async () => {
+      await runCommand({
+        command: ['npx', 'test'],
+        background: false,
+        profile: 'anything',
+        timeout: 5000,
+        outputLines: 100,
+      });
+    }).rejects.toThrow(/not found.*Available: \(none\)/);
+  });
+});
+
+// ============================================================================
 // Test Helper Functions
 // ============================================================================
+
+/**
+ * Create a runCommand function with profile support for testing.
+ */
+function createRunCommandWithProfileFn(deps?: {
+  resolveLocalSecrets?: (config: any) => { resolvedEnv: Record<string, string>; failedKeys: string[] };
+  config?: any;
+}): any {
+  const INFRA_CRED_KEYS = new Set([
+    'OP_SERVICE_ACCOUNT_TOKEN', 'RENDER_API_KEY', 'VERCEL_TOKEN',
+    'VERCEL_TEAM_ID', 'GH_TOKEN', 'GITHUB_TOKEN',
+  ]);
+
+  const resolveLocalSecrets = deps?.resolveLocalSecrets || (() => ({
+    resolvedEnv: {},
+    failedKeys: [],
+  }));
+
+  const config = deps?.config || { secrets: { local: {} } };
+
+  return async function runCommand(args: any): Promise<any> {
+    const validateCommand = createValidateCommandFn();
+    const safeProjectPath = (p: string) => {
+      if (p.includes('..') || p.startsWith('/etc')) throw new Error('Path outside project');
+      return p;
+    };
+
+    validateCommand(args.command, []);
+    const cwd = args.cwd ? safeProjectPath(args.cwd) : '/tmp';
+    const { resolvedEnv, failedKeys } = resolveLocalSecrets(config);
+
+    // Profile resolution
+    let effectiveSecretKeys = args.secretKeys;
+    if (args.profile) {
+      const profiles = config.secretProfiles || {};
+      const profile = profiles[args.profile];
+      if (!profile) {
+        const available = Object.keys(profiles);
+        throw new Error(`Secret profile "${args.profile}" not found. Available: ${available.length ? available.join(', ') : '(none)'}`);
+      }
+      const merged = new Set(profile.secretKeys);
+      if (args.secretKeys) {
+        for (const key of args.secretKeys) merged.add(key);
+      }
+      effectiveSecretKeys = Array.from(merged);
+    }
+
+    // Filter to requested subset
+    let injectedEnv: Record<string, string> = {};
+    if (effectiveSecretKeys) {
+      for (const key of effectiveSecretKeys) {
+        if (key in resolvedEnv) {
+          injectedEnv[key] = resolvedEnv[key];
+        } else if (!failedKeys.includes(key)) {
+          failedKeys.push(key);
+        }
+      }
+    } else {
+      injectedEnv = resolvedEnv;
+    }
+
+    const childEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined && !INFRA_CRED_KEYS.has(k)) childEnv[k] = v;
+    }
+    Object.assign(childEnv, injectedEnv);
+
+    const secretsResolved = Object.keys(injectedEnv).length;
+    const sanitize = createSanitizerFn(injectedEnv);
+    const runCommandForeground = createRunCommandForegroundFn();
+    const result = await runCommandForeground(args.command, childEnv, sanitize, cwd, args.timeout, args.outputLines);
+    result.secretsResolved = secretsResolved;
+    result.secretsFailed = failedKeys;
+    return result;
+  };
+}
 
 /**
  * Create a validateCommand function for testing.

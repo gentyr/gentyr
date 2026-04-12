@@ -30,6 +30,10 @@ import {
   DevServerStopArgsSchema,
   DevServerStatusArgsSchema,
   RunCommandArgsSchema,
+  RegisterSecretProfileArgsSchema,
+  GetSecretProfileArgsSchema,
+  DeleteSecretProfileArgsSchema,
+  ListSecretProfilesArgsSchema,
   type SyncSecretsArgs,
   type ListMappingsArgs,
   type VerifySecretsArgs,
@@ -37,6 +41,9 @@ import {
   type DevServerStopArgs,
   type DevServerStatusArgs,
   type RunCommandArgs,
+  type RegisterSecretProfileArgs,
+  type GetSecretProfileArgs,
+  type DeleteSecretProfileArgs,
   type ServicesConfig,
   type VercelSecretEntry,
   type SyncResult,
@@ -965,11 +972,27 @@ async function runCommand(args: RunCommandArgs): Promise<RunCommandForegroundRes
   // Resolve secrets
   const { resolvedEnv, failedKeys } = resolveLocalSecrets(config);
 
+  // Profile resolution: merge profile keys with explicit keys
+  let effectiveSecretKeys = args.secretKeys;
+  if (args.profile) {
+    const profiles = config.secretProfiles || {};
+    const profile = profiles[args.profile];
+    if (!profile) {
+      const available = Object.keys(profiles);
+      throw new Error(`Secret profile "${args.profile}" not found. Available: ${available.length ? available.join(', ') : '(none)'}`);
+    }
+    const merged = new Set(profile.secretKeys);
+    if (args.secretKeys) {
+      for (const key of args.secretKeys) merged.add(key);
+    }
+    effectiveSecretKeys = Array.from(merged);
+  }
+
   // Filter to requested subset if specified
   let injectedEnv: Record<string, string>;
-  if (args.secretKeys) {
+  if (effectiveSecretKeys) {
     injectedEnv = {};
-    for (const key of args.secretKeys) {
+    for (const key of effectiveSecretKeys) {
       if (key in resolvedEnv) {
         injectedEnv[key] = resolvedEnv[key];
       } else if (!failedKeys.includes(key)) {
@@ -1248,6 +1271,126 @@ async function devServerStatus(args: DevServerStatusArgs): Promise<DevServerStat
 }
 
 // ============================================================================
+// Secret Profile Management
+// ============================================================================
+
+function writeServicesConfig(config: ServicesConfig): { applied: boolean; pending: boolean } {
+  const configPath = join(PROJECT_DIR, '.claude', 'config', 'services.json');
+  const pendingPath = join(PROJECT_DIR, '.claude', 'state', 'services-config-pending.json');
+
+  // Validate against schema
+  const result = ServicesConfigSchema.safeParse(config);
+  if (!result.success) {
+    throw new Error(`Validation failed: ${result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
+  }
+
+  try {
+    writeFileSync(configPath, JSON.stringify(result.data, null, 2) + '\n');
+    return { applied: true, pending: false };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EACCES') {
+      let pending: Record<string, unknown> = {};
+      try { pending = JSON.parse(readFileSync(pendingPath, 'utf-8')) as Record<string, unknown>; } catch { /* new */ }
+      pending.secretProfiles = (result.data as Record<string, unknown>).secretProfiles;
+      mkdirSync(dirname(pendingPath), { recursive: true });
+      writeFileSync(pendingPath, JSON.stringify(pending, null, 2) + '\n');
+      return { applied: false, pending: true };
+    }
+    throw err;
+  }
+}
+
+async function registerSecretProfile(args: RegisterSecretProfileArgs): Promise<string> {
+  const config = loadServicesConfig();
+  if (!config.secretProfiles) config.secretProfiles = {};
+
+  // Build profile object
+  const match = (args.commandPattern || args.cwdPattern)
+    ? {
+      ...(args.commandPattern ? { commandPattern: args.commandPattern } : {}),
+      ...(args.cwdPattern ? { cwdPattern: args.cwdPattern } : {}),
+    }
+    : undefined;
+
+  config.secretProfiles[args.name] = {
+    secretKeys: args.secretKeys,
+    ...(args.description ? { description: args.description } : {}),
+    ...(match ? { match } : {}),
+  };
+
+  // Check which secretKeys exist in secrets.local
+  const localKeys = Object.keys(config.secrets?.local || {});
+  const missingKeys = args.secretKeys.filter(k => !localKeys.includes(k));
+
+  const { applied, pending } = writeServicesConfig(config);
+
+  const result: Record<string, unknown> = {
+    name: args.name,
+    profile: config.secretProfiles[args.name],
+    applied,
+    pending,
+  };
+  if (missingKeys.length > 0) {
+    result.warning = `These secretKeys are not yet defined in secrets.local: ${missingKeys.join(', ')}. They must be added before the profile can resolve them.`;
+  }
+  if (pending) {
+    result.message = 'Config staged — will be applied on next "npx gentyr sync".';
+  }
+  return JSON.stringify(result, null, 2);
+}
+
+async function getSecretProfile(args: GetSecretProfileArgs): Promise<string> {
+  const config = loadServicesConfig();
+  const profiles = config.secretProfiles || {};
+  const profile = profiles[args.name];
+  if (!profile) {
+    const available = Object.keys(profiles);
+    return JSON.stringify({ error: `Profile "${args.name}" not found. Available: ${available.length ? available.join(', ') : '(none)'}` });
+  }
+
+  // Health check: which keys exist in secrets.local
+  const localKeys = Object.keys(config.secrets?.local || {});
+  const health = profile.secretKeys.map(k => ({ key: k, configured: localKeys.includes(k) }));
+
+  return JSON.stringify({ name: args.name, profile, health }, null, 2);
+}
+
+async function deleteSecretProfile(args: DeleteSecretProfileArgs): Promise<string> {
+  const config = loadServicesConfig();
+  if (!config.secretProfiles || !(args.name in config.secretProfiles)) {
+    return JSON.stringify({ error: `Profile "${args.name}" not found.` });
+  }
+
+  delete config.secretProfiles[args.name];
+  if (Object.keys(config.secretProfiles).length === 0) {
+    delete config.secretProfiles;
+  }
+
+  const { applied, pending } = writeServicesConfig(config);
+  const result: Record<string, unknown> = { deleted: args.name, applied, pending };
+  if (pending) result.message = 'Config staged — will be applied on next "npx gentyr sync".';
+  return JSON.stringify(result);
+}
+
+async function listSecretProfiles(): Promise<string> {
+  const config = loadServicesConfig();
+  const profiles = config.secretProfiles || {};
+  const localKeys = Object.keys(config.secrets?.local || {});
+
+  const entries = Object.entries(profiles).map(([name, profile]) => ({
+    name,
+    ...profile,
+    health: {
+      total: profile.secretKeys.length,
+      configured: profile.secretKeys.filter(k => localKeys.includes(k)).length,
+      missing: profile.secretKeys.filter(k => !localKeys.includes(k)),
+    },
+  }));
+
+  return JSON.stringify({ profiles: entries, count: entries.length }, null, 2);
+}
+
+// ============================================================================
 // Services Config Management
 // ============================================================================
 
@@ -1356,9 +1499,33 @@ export const tools = [
   },
   {
     name: 'secret_run_command',
-    description: 'Run an arbitrary command with 1Password secrets injected into env vars. Secrets are resolved in MCP server memory and never returned to the agent. Output is sanitized to redact any leaked secret values. Executable must be in the allowlist (pnpm, npx, node, tsx, playwright, prisma, drizzle-kit, vitest). No shell interpretation — command is an argv array. Do NOT use this to run Playwright tests or demos — use run_demo or run_demo_batch MCP tools which handle prerequisites, secrets, and video recording automatically.',
+    description: 'Run a command with 1Password secrets injected into env vars. IMPORTANT: Check list_secret_profiles first — if a profile matches your command, use the profile param to ensure all required secrets are injected. Omitting a matching profile will be blocked on first attempt. Secrets resolved in MCP server memory, never returned to agent. Output sanitized. Executable must be in allowlist (pnpm, npx, node, tsx, playwright, prisma, drizzle-kit, vitest). No shell — argv array. Do NOT use for Playwright tests/demos — use run_demo or run_demo_batch.',
     schema: RunCommandArgsSchema,
     handler: runCommand as (args: unknown) => unknown,
+  },
+  {
+    name: 'register_secret_profile',
+    description: 'Create or update a named secret profile. Profiles declare which secrets.local keys a command needs, preventing agents from forgetting required secrets. Use commandPattern/cwdPattern for auto-matching — when an agent calls secret_run_command with a matching command/cwd, the profile gate will block unless the profile is used.',
+    schema: RegisterSecretProfileArgsSchema,
+    handler: registerSecretProfile as (args: unknown) => unknown,
+  },
+  {
+    name: 'get_secret_profile',
+    description: 'Get a secret profile by name. Shows secretKeys, match patterns, and whether each key exists in secrets.local.',
+    schema: GetSecretProfileArgsSchema,
+    handler: getSecretProfile as (args: unknown) => unknown,
+  },
+  {
+    name: 'delete_secret_profile',
+    description: 'Delete a secret profile by name.',
+    schema: DeleteSecretProfileArgsSchema,
+    handler: deleteSecretProfile as (args: unknown) => unknown,
+  },
+  {
+    name: 'list_secret_profiles',
+    description: 'List all secret profiles with their secretKeys and match patterns. Call this before secret_run_command to check if a profile exists for your command.',
+    schema: ListSecretProfilesArgsSchema,
+    handler: listSecretProfiles as (args: unknown) => unknown,
   },
   {
     name: 'update_services_config',
