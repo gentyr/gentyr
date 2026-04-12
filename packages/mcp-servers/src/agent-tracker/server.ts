@@ -1115,6 +1115,29 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
     });
   }
 
+  // ── Phase 4b: Enrich with daemon-generated summaries ─────────────────
+  const saDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-activity.db');
+  const daemonSummaryMap = new Map<string, string>();
+  try {
+    if (fs.existsSync(saDbPath)) {
+      const saDb = openReadonlyDb(saDbPath);
+      for (const cs of childSessions) {
+        if (!cs.agentId) continue;
+        const row = saDb.prepare(
+          'SELECT summary FROM session_summaries WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1'
+        ).get(cs.agentId) as { summary: string } | undefined;
+        if (row?.summary) daemonSummaryMap.set(cs.agentId, row.summary);
+      }
+      saDb.close();
+    }
+  } catch { /* non-critical — session-activity.db may not exist or be locked */ }
+
+  for (const cs of childSessions) {
+    if (cs.agentId && daemonSummaryMap.has(cs.agentId)) {
+      cs.daemonSummary = daemonSummaryMap.get(cs.agentId);
+    }
+  }
+
   // ── Phase 5: Assemble response ────────────────────────────────────────
   let metadata: Record<string, unknown> = {};
   try {
@@ -1131,6 +1154,7 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
     activatedAt: task.activated_at ?? null,
     createdAt: task.created_at,
     demoInvolved: metadata.demo_involved ?? false,
+    lastSummary: task.last_summary ?? null,
 
     monitor,
 
