@@ -933,9 +933,10 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
 
     let progress: any = null;
     const progressFile = path.join(PROJECT_DIR, '.claude', 'state', 'agent-progress', `${monitorAgentId}.json`);
+    const resolvedMonitorProgress = fs.existsSync(progressFile) ? progressFile : fs.existsSync(progressFile + '.retired') ? progressFile + '.retired' : null;
     try {
-      if (fs.existsSync(progressFile)) {
-        const raw = fs.readFileSync(progressFile, 'utf8');
+      if (resolvedMonitorProgress) {
+        const raw = fs.readFileSync(resolvedMonitorProgress, 'utf8');
         const pf = JSON.parse(raw);
         const completedStages = ((pf.pipeline?.stages ?? []) as Array<{ name: string; status: string }>)
           .filter(s => s.status === 'completed')
@@ -1016,9 +1017,10 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
 
     let progress: any = null;
     const progressFile = path.join(PROJECT_DIR, '.claude', 'state', 'agent-progress', `${childAgent.id}.json`);
+    const resolvedChildProgress = fs.existsSync(progressFile) ? progressFile : fs.existsSync(progressFile + '.retired') ? progressFile + '.retired' : null;
     try {
-      if (fs.existsSync(progressFile)) {
-        const raw = fs.readFileSync(progressFile, 'utf8');
+      if (resolvedChildProgress) {
+        const raw = fs.readFileSync(resolvedChildProgress, 'utf8');
         const pf = JSON.parse(raw);
         const completedStages = ((pf.pipeline?.stages ?? []) as Array<{ name: string; status: string }>)
           .filter(s => s.status === 'completed')
@@ -2235,9 +2237,10 @@ function monitorAgents(args: MonitorAgentsArgs): MonitorAgentsResult {
     // Read agent progress file
     let progress: AgentProgress | null = null;
     const progressFile = path.join(PROJECT_DIR, '.claude', 'state', 'agent-progress', `${agentId}.json`);
+    const resolvedAgentProgress = fs.existsSync(progressFile) ? progressFile : fs.existsSync(progressFile + '.retired') ? progressFile + '.retired' : null;
     try {
-      if (fs.existsSync(progressFile)) {
-        const raw = fs.readFileSync(progressFile, 'utf8');
+      if (resolvedAgentProgress) {
+        const raw = fs.readFileSync(resolvedAgentProgress, 'utf8');
         const pf = JSON.parse(raw);
         const completedStages = ((pf.pipeline?.stages ?? []) as Array<{ name: string; status: string }>)
           .filter(s => s.status === 'completed')
@@ -3183,7 +3186,7 @@ async function getSessionActivitySummary(_args: GetSessionActivitySummaryArgs): 
       if (sessionFile) {
         sessionId = path.basename(sessionFile, '.jsonl');
         try {
-          const entries = parseTailEntries(readTailBytes(sessionFile, 4096).content);
+          const entries = parseTailEntries(readTailBytes(sessionFile, 16384).content);
           compacted = detectCompactionInEntries(entries);
           for (const entry of entries) {
             if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
@@ -3210,9 +3213,10 @@ async function getSessionActivitySummary(_args: GetSessionActivitySummaryArgs): 
     let pipelineStage: string | null = null;
     if (agentId) {
       const progressFile = path.join(PROJECT_DIR, '.claude', 'state', 'agent-progress', `${agentId}.json`);
+      const resolvedSummaryProgress = fs.existsSync(progressFile) ? progressFile : fs.existsSync(progressFile + '.retired') ? progressFile + '.retired' : null;
       try {
-        if (fs.existsSync(progressFile)) {
-          const pf = JSON.parse(fs.readFileSync(progressFile, 'utf8')) as {
+        if (resolvedSummaryProgress) {
+          const pf = JSON.parse(fs.readFileSync(resolvedSummaryProgress, 'utf8')) as {
             pipeline?: { currentStage?: string; progressPercent?: number };
           };
           if (pf.pipeline?.currentStage) {

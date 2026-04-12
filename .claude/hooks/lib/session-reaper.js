@@ -24,6 +24,14 @@ import { debugLog } from './debug-log.js';
 import { releaseAllResources, removeFromAllQueues } from './resource-lock.js';
 import { removeWorktree as removeWorktreeCleanup } from './worktree-manager.js';
 
+/**
+ * Rename progress file to .retired instead of deleting immediately.
+ * Deferred cleanup in reapAsyncPass sweeps files older than 30 minutes.
+ */
+function retireProgressFile(filePath) {
+  try { fs.renameSync(filePath, filePath + '.retired'); } catch (_) { /* non-fatal */ }
+}
+
 // Lazy-loaded SQLite
 let Database = null;
 try {
@@ -366,11 +374,8 @@ export function reapSyncPass(db) {
         } catch (_) { /* non-fatal */ }
       }
 
-      // Clean up progress file for dead agent
-      try {
-        const progressFile = path.join(projectDir, '.claude', 'state', 'agent-progress', `${item.agent_id}.json`);
-        fs.unlinkSync(progressFile);
-      } catch (_) { /* non-fatal — file may not exist */ }
+      // Retire progress file for dead agent (deferred cleanup in reapAsyncPass)
+      retireProgressFile(path.join(projectDir, '.claude', 'state', 'agent-progress', `${item.agent_id}.json`));
 
       // Release display lock if this dead agent held it
       if (item.agent_id) {
@@ -454,11 +459,8 @@ export function reapSyncPass(db) {
                   stale_ms: heartbeatAge,
                 });
 
-                // Clean up progress file
-                try {
-                  const progressFile = path.join(projectDir, '.claude', 'state', 'agent-progress', `${item.agent_id}.json`);
-                  fs.unlinkSync(progressFile);
-                } catch (_) { /* non-fatal */ }
+                // Retire progress file (deferred cleanup in reapAsyncPass)
+                retireProgressFile(path.join(projectDir, '.claude', 'state', 'agent-progress', `${item.agent_id}.json`));
 
                 // Release display lock if this stale monitor held it
                 if (item.agent_id) {
@@ -505,10 +507,8 @@ export function reapSyncPass(db) {
                 stale_ms: staleMs,
               });
 
-              try {
-                const progressFile = path.join(projectDir, '.claude', 'state', 'agent-progress', `${item.agent_id}.json`);
-                fs.unlinkSync(progressFile);
-              } catch (_) { /* non-fatal */ }
+              // Retire progress file (deferred cleanup in reapAsyncPass)
+              retireProgressFile(path.join(projectDir, '.claude', 'state', 'agent-progress', `${item.agent_id}.json`));
 
               // Release display lock if this auth-stalled agent held it
               if (item.agent_id) {
@@ -708,6 +708,21 @@ export async function reapAsyncPass(projectDir, stuckAliveItems, options = {}) {
   }
 
   debugLog('session-reaper', 'async_pass', { completedReaped: result.completedReaped, hardKilled: result.hardKilled });
+
+  // Clean up retired progress files older than 30 minutes
+  const PROGRESS_RETIRE_TTL_MS = 30 * 60 * 1000;
+  const progressDir = path.join(projectDir, '.claude', 'state', 'agent-progress');
+  try {
+    if (fs.existsSync(progressDir)) {
+      for (const entry of fs.readdirSync(progressDir)) {
+        if (!entry.endsWith('.retired')) continue;
+        try {
+          const fp = path.join(progressDir, entry);
+          if (Date.now() - fs.statSync(fp).mtimeMs > PROGRESS_RETIRE_TTL_MS) fs.unlinkSync(fp);
+        } catch (_) { /* non-fatal */ }
+      }
+    }
+  } catch (_) { /* non-fatal */ }
 
   return result;
 }
