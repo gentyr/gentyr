@@ -1289,9 +1289,17 @@ function writeServicesConfig(config: ServicesConfig): { applied: boolean; pendin
     return { applied: true, pending: false };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EACCES') {
+      // Diff new config against on-disk config, stage only changed keys
+      let current: Record<string, unknown> = {};
+      try { current = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>; } catch { /* no file */ }
       let pending: Record<string, unknown> = {};
       try { pending = JSON.parse(readFileSync(pendingPath, 'utf-8')) as Record<string, unknown>; } catch { /* new */ }
-      pending.secretProfiles = (result.data as Record<string, unknown>).secretProfiles;
+      const validated = result.data as Record<string, unknown>;
+      for (const key of Object.keys(validated)) {
+        if (key !== 'secrets' && JSON.stringify(validated[key]) !== JSON.stringify(current[key])) {
+          pending[key] = validated[key];
+        }
+      }
       mkdirSync(dirname(pendingPath), { recursive: true });
       writeFileSync(pendingPath, JSON.stringify(pending, null, 2) + '\n');
       return { applied: false, pending: true };
@@ -1397,6 +1405,9 @@ async function listSecretProfiles(): Promise<string> {
 async function updateServicesConfig(args: UpdateServicesConfigArgs): Promise<string> {
   if ('secrets' in args.updates) {
     return JSON.stringify({ error: 'Cannot modify secrets via this tool. Use secret_sync_secrets for secret management.' });
+  }
+  if ('secretProfiles' in args.updates) {
+    return JSON.stringify({ error: 'Cannot modify secretProfiles via this tool. Use register_secret_profile / delete_secret_profile for profile management.' });
   }
 
   const configPath = join(PROJECT_DIR, '.claude', 'config', 'services.json');
