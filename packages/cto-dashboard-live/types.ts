@@ -24,6 +24,8 @@ export interface SessionItem {
   totalTokens: number | null;
   sessionId: string | null;         // queue ID or agent ID
   elapsed: string;                  // total run time
+  startedAt: string | null;         // ISO — spawned_at or enqueued_at
+  completedAt: string | null;       // ISO — completed_at (null if running/resumed)
   /** Only for completed sessions with worklog */
   worklog: WorklogEntry | null;
   /** Worktree path from queue DB — used to find session JSONL in worktree dirs */

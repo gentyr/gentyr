@@ -7,7 +7,7 @@ import type { LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem, W
 function ago(minutes: number): string { return new Date(Date.now() - minutes * 60 * 1000).toISOString(); }
 
 function mkSession(overrides: Partial<SessionItem> & { id: string; title: string; agentType: string }): SessionItem {
-  return { status: 'alive', priority: 'normal', pid: null, lastAction: null, lastActionTimestamp: ago(1), lastMessage: null, description: null, killReason: null, totalTokens: null, sessionId: null, elapsed: '0s', worklog: null, worktreePath: null, ...overrides };
+  return { status: 'alive', priority: 'normal', pid: null, lastAction: null, lastActionTimestamp: ago(1), lastMessage: null, description: null, killReason: null, totalTokens: null, sessionId: null, elapsed: '0s', worklog: null, worktreePath: null, startedAt: ago(5), completedAt: null, ...overrides };
 }
 
 function mkWorklog(summary: string, success: boolean, durationMs: number, tokens: number): WorklogEntry {

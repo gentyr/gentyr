@@ -206,6 +206,8 @@ function readSessionQueue(): { queued: SessionItem[]; running: SessionItem[]; su
         pid: row.pid, lastAction: snapshot.tool, lastActionTimestamp: snapshot.timestamp || row.spawned_at || row.enqueued_at,
         lastMessage: snapshot.lastMessage, description, killReason: null, totalTokens: null,
         sessionId: agentId || row.id, elapsed, worklog: null, worktreePath,
+        startedAt: row.spawned_at || row.enqueued_at || null,
+        completedAt: row.completed_at || null,
       };
     }
 
@@ -240,6 +242,7 @@ export function readMoreCompleted(offset: number, limit: number): SessionItem[] 
         pid: row.pid, lastAction: snapshot.tool, lastActionTimestamp: snapshot.timestamp || row.completed_at || row.spawned_at || row.enqueued_at,
         lastMessage: snapshot.lastMessage, description: null, killReason: null, totalTokens: null,
         sessionId: agentId || row.id, elapsed, worklog: findWorklog(row.id, row.metadata), worktreePath,
+        startedAt: row.spawned_at || row.enqueued_at || null, completedAt: row.completed_at || null,
       } as SessionItem;
     });
     const seen = new Map<string, { session: SessionItem; count: number }>();
@@ -290,6 +293,7 @@ function readPersistentTasks(runningSessions: SessionItem[]): PersistentTaskItem
         lastAction: null, lastActionTimestamp: t.last_heartbeat || t.activated_at || new Date().toISOString(),
         lastMessage: null, description: null, killReason: null, totalTokens: null,
         sessionId: monitorAgentId || `pt-monitor-${t.id}`, elapsed: ageStr(t.activated_at), worklog: null, worktreePath: null,
+        startedAt: t.activated_at || null, completedAt: null,
       };
       let subTasks: SubTaskItem[] = [];
       if (todoDb) {

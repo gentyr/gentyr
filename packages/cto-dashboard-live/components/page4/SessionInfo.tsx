@@ -1,13 +1,14 @@
 /**
  * SessionInfo — detail panel for the selected session.
- * Shows: PID, agent type, elapsed, title, and a timeline of LLM summaries.
+ * Shows: PID, agent type, elapsed, started, completed, last activity, title,
+ * and a timeline of LLM summaries.
  * Navigate summaries with [ and ] keys (driven by parent via summaryIndex prop).
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
 import type { SessionItem } from '../../types.js';
-import { truncate, formatTimeAgo, humanizeTool } from '../../utils/formatters.js';
+import { truncate, formatTimeAgo, formatElapsed } from '../../utils/formatters.js';
 import { getSessionSummaries } from '../../live-reader.js';
 
 interface SessionInfoProps {
@@ -20,16 +21,35 @@ interface SessionInfoProps {
 function InfoRow({ label, value }: { label: string; value: string }): React.ReactElement {
   return (
     <Box flexDirection="row">
-      <Text dimColor>{label.padEnd(12)}</Text>
+      <Text dimColor>{label.padEnd(14)}</Text>
       <Text>{value}</Text>
     </Box>
   );
 }
 
+function formatTimeHHMM(iso: string | null): string {
+  if (!iso) return '-';
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '-';
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  } catch { return '-'; }
+}
+
+function lastActivityAgo(timestamp: string | null): string {
+  if (!timestamp) return '-';
+  try {
+    const ms = Date.now() - new Date(timestamp).getTime();
+    if (ms < 0 || isNaN(ms)) return '-';
+    return formatElapsed(ms) + ' ago';
+  } catch { return '-'; }
+}
+
 export function SessionInfo({ session, agentId, summaryIndex, height }: SessionInfoProps): React.ReactElement {
   const [summaries, setSummaries] = useState<Array<{ id: string; summary: string; created_at: string }>>([]);
+  const [, setTick] = useState(0);
 
-  // Reload summaries when agent changes or periodically (every 30s via parent re-render)
+  // Reload summaries when agent changes
   useEffect(() => {
     if (!agentId) { setSummaries([]); return; }
     setSummaries(getSessionSummaries(agentId));
@@ -44,6 +64,12 @@ export function SessionInfo({ session, agentId, summaryIndex, height }: SessionI
     return () => clearInterval(id);
   }, [agentId]);
 
+  // Tick every 5s to update "last activity ago" in real time
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 5000);
+    return () => clearInterval(id);
+  }, []);
+
   if (!session) {
     return (
       <Box flexDirection="column" height={height}>
@@ -55,8 +81,10 @@ export function SessionInfo({ session, agentId, summaryIndex, height }: SessionI
   const pid = session.pid ? String(session.pid) : 'N/A';
   const agentType = session.agentType || 'unknown';
   const elapsed = session.elapsed;
-  const lastTool = session.lastAction ? humanizeTool(session.lastAction) : 'none';
   const title = session.title || '(untitled)';
+  const started = formatTimeHHMM(session.startedAt);
+  const completed = session.completedAt ? formatTimeHHMM(session.completedAt) : null;
+  const lastActivity = lastActivityAgo(session.lastActionTimestamp);
 
   // Clamp summary index
   const clampedIdx = summaries.length > 0
@@ -64,9 +92,8 @@ export function SessionInfo({ session, agentId, summaryIndex, height }: SessionI
     : -1;
   const currentSummary = clampedIdx >= 0 ? summaries[clampedIdx] : null;
 
-  // Calculate available height for summary text
-  // Info rows: PID, Type, Elapsed, Last tool, Title = ~5-6 rows, divider = 1, header = 1
-  const infoRows = 5;
+  // Info rows count: PID, Type, Elapsed, Started, [Completed], Last activity, Title = 6-7 rows
+  const infoRows = completed ? 7 : 6;
   const summaryHeaderRows = 1;
   const availableForSummary = Math.max(1, height - infoRows - summaryHeaderRows - 1);
 
@@ -92,9 +119,11 @@ export function SessionInfo({ session, agentId, summaryIndex, height }: SessionI
       <InfoRow label="PID:" value={pid} />
       <InfoRow label="Type:" value={truncate(agentType, 30)} />
       <InfoRow label="Elapsed:" value={elapsed} />
-      <InfoRow label="Last tool:" value={truncate(lastTool, 30)} />
+      <InfoRow label="Started:" value={started} />
+      {completed && <InfoRow label="Completed:" value={completed} />}
+      <InfoRow label="Last active:" value={lastActivity} />
       <Box flexDirection="column">
-        <Text dimColor>{'Title:'.padEnd(12)}</Text>
+        <Text dimColor>{'Title:'.padEnd(14)}</Text>
         <Text wrap="wrap">{title}</Text>
       </Box>
 
