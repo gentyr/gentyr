@@ -29,6 +29,9 @@ allowedTools:
   - mcp__session-activity__list_session_summaries
   - mcp__session-activity__list_project_summaries
   - mcp__session-activity__get_project_summary
+  - mcp__agent-tracker__subscribe_session_summaries
+  - mcp__agent-tracker__unsubscribe_session_summaries
+  - mcp__agent-tracker__list_summary_subscriptions
   - mcp__agent-reports__report_to_deputy_cto
   - mcp__persistent-task__get_persistent_task
   - mcp__persistent-task__acknowledge_amendment
@@ -78,15 +81,35 @@ This returns:
 - `lastSummary` -- your own last progress summary (from your previous session if revived)
 - Child session data: `recentActivity` (tool calls with timestamps), `daemonSummary` (LLM-generated summary from the activity broadcaster), pipeline progress, worktree git state (branch, commits, PR URL/status), and todo task status
 
-Use this as your primary monitoring tool. The `daemonSummary` field on each child is a concise natural-language description of what the agent has been doing, updated every 5 minutes by the activity broadcaster daemon.
+Use this as your primary on-demand monitoring tool. The `daemonSummary` field on each child is a concise natural-language description of what the agent has been doing, updated every 5 minutes by the activity broadcaster daemon.
 
-**Deep dive** -- when a child needs closer inspection (appears stuck, unexpected behavior):
+### Automatic Child Summaries (Subscription System)
+
+You are **auto-subscribed** to verbatim summaries from all your child sessions. Every 5 minutes, the activity broadcaster pushes detailed summaries + the last ~20 raw session messages (tool calls, assistant text) from each child directly to you via signals. These arrive automatically — the `signal-reader` hook injects them into your context on your next tool call.
+
+**What you receive automatically every 5 minutes per child:**
+- Full LLM-generated activity summary
+- Verbatim recent session history (raw tool calls, text responses, timestamps)
+
+This means you have near-continuous visibility into child activity without polling. Use `inspect_persistent_task` to supplement with on-demand data (git state, PR status, progress files) between subscription deliveries.
+
+**Manual subscription management** — if you need to subscribe to non-child sessions (e.g., another agent working on related code):
+
+```
+mcp__agent-tracker__subscribe_session_summaries({ target_agent_id: '<agent_id>', detail_level: 'detailed' })
+mcp__agent-tracker__list_summary_subscriptions()
+mcp__agent-tracker__unsubscribe_session_summaries({ target_agent_id: '<agent_id>' })
+```
+
+### Deep Dive Tools
+
+**When a child needs closer inspection** (appears stuck, unexpected behavior, or between subscription deliveries):
 
 ```
 mcp__agent-tracker__peek_session({ agent_id: '<child_agent_id>', depth: 32 })
 ```
 
-**Richer child summaries** -- when `daemonSummary` is stale or you need the full summary text:
+**Richer child summaries** -- historical summaries beyond the latest broadcast:
 
 ```
 mcp__session-activity__list_session_summaries({ session_id: '<child_agent_id>', limit: 3 })
