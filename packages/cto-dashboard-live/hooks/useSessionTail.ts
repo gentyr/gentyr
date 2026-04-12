@@ -5,9 +5,10 @@
  * Uses fs.watch for near-instant updates with a 2s interval fallback.
  * Ring buffer: keeps at most MAX_ENTRIES entries.
  * On session death: keeps entries and appends a session_end marker.
+ * Exposes resetSessionEnd() to re-activate tailing after an inline resume.
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import * as fs from 'fs';
 import type { ActivityEntry } from '../types.js';
 import { readSessionTail, findSessionFile } from '../live-reader.js';
@@ -18,6 +19,8 @@ const STALE_READ_THRESHOLD = 5;
 interface SessionTailResult {
   entries: ActivityEntry[];
   isConnected: boolean;
+  /** Re-activate tailing after resuming a dead session. Clears session_end state and restarts the watcher. */
+  resetSessionEnd: () => void;
 }
 
 export function useSessionTail(agentId: string | null, worktreePath?: string | null): SessionTailResult {
@@ -31,6 +34,15 @@ export function useSessionTail(agentId: string | null, worktreePath?: string | n
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const staleReadCount = useRef<number>(0);
   const sessionEndedRef = useRef<boolean>(false);
+  // Incremented to force the effect to re-run after resetSessionEnd
+  const [restartToken, setRestartToken] = useState(0);
+
+  const resetSessionEnd = useCallback(() => {
+    sessionEndedRef.current = false;
+    staleReadCount.current = 0;
+    // Trigger the effect to re-run, which re-creates the watcher and interval
+    setRestartToken(t => t + 1);
+  }, []);
 
   useEffect(() => {
     function cleanup() {
@@ -106,7 +118,7 @@ export function useSessionTail(agentId: string | null, worktreePath?: string | n
     tryWatch();
     intervalRef.current = setInterval(() => { doRead(); if (!watcherRef.current) tryWatch(); }, 2000);
     return cleanup;
-  }, [agentId, worktreePath]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agentId, worktreePath, restartToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { entries, isConnected };
+  return { entries, isConnected, resetSessionEnd };
 }

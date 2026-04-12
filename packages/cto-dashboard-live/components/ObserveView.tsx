@@ -32,6 +32,7 @@ interface ObserveViewProps {
   data: LiveDashboardData;
   bodyHeight: number;
   bodyWidth: number;
+  isActive: boolean;
 }
 
 const LEFT_WIDTH_FRACTION = 0.35;
@@ -83,7 +84,7 @@ function buildDisplaySessions(data: LiveDashboardData): DisplaySession[] {
   return result;
 }
 
-export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): React.ReactElement {
+export function ObserveView({ data, bodyHeight, bodyWidth, isActive }: ObserveViewProps): React.ReactElement {
   const displaySessions = buildDisplaySessions(data);
   const allSessions = displaySessions.map(ds => ds.session);
 
@@ -127,7 +128,17 @@ export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): 
   // Live tail
   const tailAgentId = selectedSession?.sessionId ?? null;
   const tailWorktreePath = selectedSession?.worktreePath ?? null;
-  const { entries, isConnected } = useSessionTail(tailAgentId, tailWorktreePath);
+  const { entries, isConnected, resetSessionEnd } = useSessionTail(tailAgentId, tailWorktreePath);
+
+  // Injected entries (user messages) that appear in the activity stream
+  const [injectedEntries, setInjectedEntries] = useState<import('../types.js').ActivityEntry[]>([]);
+  // Merge tail entries with injected entries, sorted by timestamp
+  const mergedEntries = React.useMemo(() => {
+    if (injectedEntries.length === 0) return entries;
+    return [...entries, ...injectedEntries].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  }, [entries, injectedEntries]);
+  // Clear injected entries when switching sessions
+  useEffect(() => { setInjectedEntries([]); }, [effectiveSelectedId]);
 
   // Detect if selected session is completed/dead
   const TERMINAL_TOOLS = ['mcp__todo-db__complete_task', 'mcp__todo-db__summarize_work', 'complete_task', 'summarize_work'];
@@ -163,7 +174,7 @@ export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): 
             // Running session: inject directive signal
             let signalId: string | undefined;
             try {
-              const result = sendDirectiveSignal(tailAgentId, msg);
+              const result = sendDirectiveSignal(tailAgentId, msg, selectedSession.worktreePath);
               signalId = result.signalId;
             } catch (err) {
               const errMsg = err instanceof Error ? err.message : String(err);
@@ -182,7 +193,7 @@ export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): 
               let pollCount = 0;
               deliveryPollRef.current = setInterval(() => {
                 pollCount++;
-                const status = getSignalDeliveryStatus(signalId!);
+                const status = getSignalDeliveryStatus(signalId!, selectedSession.worktreePath);
                 if (status?.status === 'acknowledged') {
                   setLastSignalStatus(`Ack'd: "${msg}"`);
                   clearDeliveryPoll();
@@ -193,10 +204,16 @@ export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): 
                   // 30s without read — check if agent is still alive
                   const stillAlive = selectedSession.pid != null && isProcessAlive(selectedSession.pid);
                   if (!stillAlive && selectedSession.sessionId) {
-                    // Agent died — escalate to resume
+                    // Agent died — escalate to inline resume
                     clearDeliveryPoll();
+                    setInjectedEntries(prev => [...prev, {
+                      type: 'user_message' as const,
+                      timestamp: new Date().toISOString(),
+                      text: msg,
+                    }]);
+                    resetSessionEnd();
                     resumeSessionWithMessage(selectedSession.sessionId, msg);
-                    setLastSignalStatus(`Resumed: "${msg}" (agent exited)`);
+                    setLastSignalStatus(`Resuming... (agent exited)`);
                     sentTimerRef.current = setTimeout(() => setLastSignalStatus(null), 10000);
                   } else {
                     // Agent alive but busy — update status
@@ -206,10 +223,16 @@ export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): 
               }, 2000);
             }
           } else if (selectedSession.sessionId) {
-            // Completed/dead session: resume in a new Terminal window.
+            // Completed/dead session: resume inline (background spawn)
+            setInjectedEntries(prev => [...prev, {
+              type: 'user_message' as const,
+              timestamp: new Date().toISOString(),
+              text: msg,
+            }]);
+            resetSessionEnd();
             resumeSessionWithMessage(selectedSession.sessionId, msg);
             clearSentTimer();
-            setLastSignalStatus(`Resumed: "${msg}"`);
+            setLastSignalStatus(`Resuming...`);
             sentTimerRef.current = setTimeout(() => setLastSignalStatus(null), 8000);
           }
         }
@@ -254,7 +277,7 @@ export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): 
       }
       return;
     }
-  });
+  }, { isActive });
 
   // Clear delivery poll when session changes
   useEffect(() => {
@@ -305,7 +328,7 @@ export function ObserveView({ data, bodyHeight, bodyWidth }: ObserveViewProps): 
       {/* Right column */}
       <Section title={`Live Activity Stream${connectedLabel}`} width={rightWidth} flexGrow={1}>
         <ActivityStream
-          entries={entries}
+          entries={mergedEntries}
           height={streamHeight}
           width={rightWidth - 4}
         />

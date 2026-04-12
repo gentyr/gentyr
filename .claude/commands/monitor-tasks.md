@@ -1,5 +1,5 @@
 <!-- HOOK:GENTYR:monitor-tasks -->
-# /monitor-tasks - Monitor Running Tasks and Persistent Task Monitors
+# /monitor-tasks — Live Session Monitor
 
 ## Framework Path Resolution
 
@@ -9,775 +9,185 @@ GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .
 
 ## Overview
 
-Enters a continuous monitoring loop that tracks task progress, monitor health, child agent status, demo recordings, user-alignment, and queue capacity. Produces a rich, prescriptive report each round. Stops only when the user interrupts or an intervention-needed condition is detected.
+Enters a continuous monitoring loop that shows the CTO **raw session data** from running agents and persistent task monitors. Each round calls MCP tools directly and displays verbatim indexed session messages — no LLM summaries, no investigator sub-agents.
 
 Accepts optional argument: `/monitor-tasks persistent`, `/monitor-tasks <task-id-prefix>`, or bare `/monitor-tasks`.
 
 ---
 
-## Step 1: Determine Monitoring Scope
+## Step 1: Determine Scope
 
-**If the user provided an argument** (e.g., `/monitor-tasks persistent` or `/monitor-tasks 7d2cb0f9`):
-- `persistent` → skip to Step 2 with persistent tasks only
-- A task ID prefix → skip to Step 3 with that specific task
-
-**Otherwise**, ask:
+**If argument is `persistent`** → list persistent tasks, let CTO select
+**If argument is a task ID prefix** → monitor that specific task
+**Otherwise** → ask:
 
 ```
-AskUserQuestion: What would you like to monitor?
-  - "All active tasks" — monitor all running agents and persistent tasks
-  - "Persistent tasks only" — focus on persistent task monitors and their children
+AskUserQuestion: What to monitor?
+  - "All active persistent tasks"
+  - "All running sessions"
 ```
+
+For persistent tasks, call `mcp__persistent-task__list_persistent_tasks({})` and show a selection table.
 
 ---
 
-## Step 2: Select Specific Task(s)
+## Step 2: Initialize
 
-### For persistent tasks:
+Create the state file `.claude/state/monitor-tasks-active.json`:
 
-Call `mcp__persistent-task__list_persistent_tasks({})` and display:
-
-```
-| # | Title                       | Status  | Cycles | Heartbeat | Monitor |
-|---|-----------------------------|---------|--------|-----------|---------|
-| 1 | AWS one-click demo E2E      | active  | 204    | 2m ago    | alive   |
-| 2 | Refactor auth middleware    | paused  | 50     | 2h ago    | dead    |
-```
-
-```
-AskUserQuestion: Which task(s) to monitor?
-  - "All active" — monitor all active/paused persistent tasks
-  - Individual task checkboxes (multiSelect: true)
+```json
+{
+  "startedAt": "<ISO timestamp>",
+  "roundNumber": 0,
+  "monitoredSessions": [],
+  "monitoredTaskIds": ["<selected task IDs>"],
+  "currentStep": "INIT",
+  "lastRoundAt": null
+}
 ```
 
-### For all tasks:
+Write this file using `Bash("echo '<json>' > .claude/state/monitor-tasks-active.json")`. The `monitor-tasks-reminder.js` PostToolUse hook reads this file to inject reminders every 10 tool calls.
 
-Call `mcp__agent-tracker__get_session_queue_status` and display running agents. Ask user to select "All" or specific agents.
-
----
-
-## Step 3: Initialize Loop State
-
-Before entering the loop, record:
+Record loop state:
 - `roundNumber = 0`
-- `criticalMemoryRounds = 0`
-- `lastAlignmentRound = 0`
-- `demoOfferMade = false`
-- `previousCycleCounts = {}` — map of task ID → last seen cycle count
-- `previousChildIds = {}` — map of task ID → set of child agent IDs seen last round
-- `childErrorPatterns = {}` — map of task ID → list of error strings seen across rounds
-- `successClaimsUnverified = []` — list of { taskId, agentId, claim, round } awaiting evidence
-- `evidenceLog = []` — list of { round, agentId, claim, evidence, verdict: "confirmed"|"unverified"|"refuted" }
-
-### Subscribe to Verbatim Summaries
-
-Subscribe this interactive session to verbatim-tier summaries from all monitored sessions. This gives you automatic delivery of raw session history every 5 minutes without polling.
-
-For each persistent task's monitor agent ID (from Step 2):
-```
-mcp__agent-tracker__subscribe_session_summaries({ target_agent_id: "<monitor_agent_id>", detail_level: "verbatim" })
-```
-
-As child agents are discovered in subsequent rounds, subscribe to them too (the subscription system auto-subscribes monitors to their children, but the CTO interactive session needs its own subscriptions).
+- `previousCycleCounts = {}` — task ID → last cycle count
 
 ---
 
-## Step 4: Monitoring Loop
+## Step 3: Monitoring Loop
 
-**IMPORTANT:** You (the main agent) handle the sleep and display loop. Do NOT delegate the loop to a sub-agent.
-
-**MANDATORY SUB-AGENT SPAWNING:** You MUST spawn the investigator sub-agent (Step 4a) EVERY round. You MUST NOT call inspect_persistent_task, peek_session, get_session_queue_status, or other MCP data-gathering tools DIRECTLY. The investigator sub-agent does ALL data gathering. You also MUST spawn the user-alignment sub-agent (Step 4b) every 3rd round. These sub-agents provide the deep analysis that makes the report valuable — skipping them and calling MCP tools directly produces shallow reports.
+**YOU call MCP tools directly. Do NOT spawn investigator sub-agents.**
 
 Each round:
-1. Increment `roundNumber`
-2. Subscribe to any NEW child agents discovered (verbatim tier)
-3. Spawn a short-lived investigator to gather data (Step 4a) — MANDATORY EVERY ROUND
-4. Spawn a user-alignment sub-agent (Step 4b) — MANDATORY every 3rd round
-5. Scrutinize success claims (Step 4b.5) — MANDATORY whenever a child reports completion or success
-6. Render the full report (Step 4c) — using ONLY the data returned by the sub-agents
-7. Check intervention conditions (Step 4d)
-8. Sleep and repeat (Step 4e)
 
----
+### Step 3a: OVERVIEW
 
-### Step 4a: Gather Data (Investigator Sub-Agent)
+For each monitored persistent task:
+```
+mcp__agent-tracker__inspect_persistent_task({ id: "<task_id>" })
+```
 
-Spawn an investigator sub-agent using `Agent(subagent_type='investigator')` with the following prompt. Fill in all `[PLACEHOLDER]` values before spawning.
-
----
-
-**INVESTIGATOR PROMPT:**
+Display a compact status table:
 
 ```
-You are gathering monitoring data for the /monitor-tasks command. Do a SINGLE analysis pass — gather all data, then return JSON. Do NOT loop or spawn additional agents.
+## Round N (HH:MM)
 
-**CRITICAL: Be skeptical.** Do NOT take agent claims at face value. When an agent says "test passed" or "demo working", verify the claim with evidence. Look for:
-- Actual exit codes (not just "completed")
-- Specific output proving the claimed outcome (not just absence of errors)
-- Screenshot/artifact paths that actually exist
-- PR merge confirmations (not just "PR created")
-- Test output showing specific assertions passed (not just "tests ran")
+| Task | Status | Cycles | Δ | Heartbeat | Monitor | Children |
+|------|--------|--------|---|-----------|---------|----------|
+| [title 30ch] | active | 126 | +4 | 2m ago | alive | 3 running |
+```
 
-If an agent claims success but the JSONL shows no evidence of verification, flag it as `unverified_claim`.
+Note the monitor's `lastSummary` field (1-2 sentences, if available).
 
-**Persistent tasks to inspect:** [LIST OF TASK IDs]
-**Running child agent IDs (from prior round, may be empty):** [LIST OF CHILD AGENT IDs]
-**Prior unverified claims to re-check:** [LIST FROM successClaimsUnverified]
+### Step 3b: BROWSE SESSIONS
 
-## Step A: Inspect each persistent task (REQUIRED)
+**This is the core of the new design.** For each active session (monitor + running children), call:
 
-For EACH persistent task ID:
-  mcp__agent-tracker__inspect_persistent_task({
-    id: "<task_id>",
-    depth_kb: 32,
-    running_only: false,
-    max_children: 10
-  })
+```
+mcp__agent-tracker__browse_session({ agent_id: "<agent_id>", page_size: 15 })
+```
 
-From the response, extract:
-- task.status, task.cycleCount, task.heartbeat (compute age in minutes)
-- task.monitorPid — is it alive? (PID will be in the response)
-- task.metadata — check for demo_involved key
-- task.lastAssistantText or equivalent verbatim monitor text (the most recent assistant message from the monitor's session)
-- For each child: agentId, section, stage (pipeline stage like "code-writer"), progress %, lastTool, elapsed time, stale minutes
-- Any error strings visible in JSONL excerpts (lines containing "Error", "failed", "ENOENT", "timeout", "0/N secrets", "Cannot", "rejected")
-- Tool calls that FOLLOW those errors (these are the "solutions applied")
-- task.subTasks — all sub-tasks with their statuses
-- task.amendments — count and acknowledgement status
+**Display the output verbatim as indexed messages:**
 
-## Step B: Peek monitor session (REQUIRED for each active task)
+```
+### agent-mnvwjhrj — Monitor: AWS Login Chain
+Messages 270-284 of 284
 
-For each active persistent task where the monitor PID is known:
-  mcp__agent-tracker__peek_session({
-    agent_id: "<monitor_agent_id>",
-    depth: 16
-  })
+  #270 [16:22:30] [text] Let me check the bridge connection status before acquiring locks...
+  #271 [16:22:31] [tool] mcp__chrome-bridge__tabs_context_mcp
+  #272 [16:22:32] [result] { tabs: [], groups: [] }
+  #273 [16:22:33] [text] Bridge connected, no tabs open. Clean state. Locks expire at 16:24...
+  #274 [16:24:53] [tool] mcp__agent-tracker__acquire_shared_resource (resource_id: "display")
+  #275 [16:24:54] [result] { acquired: true }
+  #276 [16:25:01] [tool] mcp__playwright__run_demo (scenario_id: "c6fda62f...", headless: false)
+  ...
 
-Extract verbatim lastText (the monitor's most recent reasoning paragraph). This is quoted directly in the report.
+  [284 total — browse earlier: browse_session({ before_index: 270 })]
+```
 
-## Step C: Peek each running child agent (REQUIRED)
+**Formatting rules for each message type:**
+- `assistant_text` → `#N [HH:MM:SS] [text] <content, up to 200 chars per line>`
+- `tool_call` → `#N [HH:MM:SS] [tool] <tool_name> (<input_preview truncated to 80ch>)`
+- `tool_result` → `#N [HH:MM:SS] [result] <preview truncated to 120ch>`
+- `user` → `#N [HH:MM:SS] [user] <content>`
+- `compaction` → `#N [HH:MM:SS] [compacted] <reason>`
+- `error` → `#N [HH:MM:SS] [ERROR] <message>`
 
-For EACH running child agent ID (from inspect response):
-  mcp__agent-tracker__peek_session({
-    agent_id: "<child_agent_id>",
-    depth: 12
-  })
+**Offset adjustment:** After retrieving messages, preview them to check if they're diagnostic. If the latest messages are just sleep/polling with no substance:
+1. Page backward: `browse_session({ agent_id, page_size: 15, before_index: <range.start_index> })`
+2. Find the window where the agent last made a real decision or encountered an error
+3. Show THAT window to the CTO
 
-From each response extract:
-- lastText: the child's most recent assistant message (verbatim)
-- recentTools: last 3-5 tool calls
-- errorLines: any lines containing error patterns
-- solutionLines: tool calls that immediately follow error lines
-- gitState: branch name, commit count, PR number and status if visible
+**Multiple sessions:** Show the monitor session first, then each running child session, separated by headers.
 
-## Step D: Queue health (REQUIRED)
+### Step 3c: QUEUE
 
-  mcp__agent-tracker__get_session_queue_status({})
+```
+mcp__agent-tracker__get_session_queue_status({})
+```
 
-Extract: running count, max, memoryPressure level, free RAM (MB), queued count, any persistent lane items queued but not running.
+Show one line: `Queue: N/M running | memory: low | N queued`
 
-## Step E: Demo recordings (REQUIRED — even if no demo involved)
+### Step 3d: ASSESS
 
-  Bash("ls -la .claude/recordings/demos/ 2>/dev/null | tail -10 || echo 'NO_RECORDINGS_DIR'")
+Write **3-5 sentences** with specific evidence from Steps 3a-3b. Reference message indices:
+- "Monitor acquired display lock at #274 and launched demo at #276"
+- "Child agent-xyz has been polling check_demo_result since #180 (3 min ago)"
+- "No errors in recent 15 messages; last substantive action was at #265"
 
-Record: file names, sizes, modification timestamps. If a file was modified within the last 30 minutes, flag it as "recent".
+**End with a verdict:** `Healthy`, `Warning — <reason>`, or `INTERVENTION NEEDED — <reason>`
 
-## Step F: Session activity summaries (REQUIRED)
+### Step 3e: SLEEP AND REPEAT
 
-Gather cross-session activity context from the session-activity broadcaster:
+Update `.claude/state/monitor-tasks-active.json` with current round number and step.
 
-  mcp__session-activity__list_project_summaries({ limit: 3 })
+```
+---
+Sleeping 60s before Round N+1... (Ctrl+C to stop)
+```
 
-If results returned, get the most recent super-summary:
-  mcp__session-activity__get_project_summary({ id: "<most_recent_uuid>" })
+`Bash("sleep 60")`
 
-Also, for each running child agent, check if there's a recent activity summary:
-  mcp__session-activity__list_session_summaries({ session_id: "<agent_id>", limit: 1 })
+Return to Step 3a. Increment `roundNumber`.
 
-Extract: the latest project super-summary text, and per-agent summary previews if available. Include these in the JSON response.
+---
 
-## Step G: Evidence Audit (REQUIRED)
+## Step 4: Intervention Conditions
 
-For each child agent or sub-task that claims completion or success this round:
+Stop the loop and alert if:
+1. Monitor PID dead with no revival queued
+2. Task transitioned to `paused` or `completed`
+3. Critical memory pressure for 3+ consecutive rounds
+4. Child agent stale for 15+ minutes (no tool calls)
 
-1. **Examine the JSONL for verification actions**: Did the agent actually run the test/demo and check the result? Or did it just edit code and claim done?
-2. **Look for concrete evidence**: exit codes, "PASS"/"FAIL" strings in output, screenshot paths, `check_demo_result` calls with `status: 'passed'`, PR merge confirmations
-3. **Check for diagnostic gaps**: Did the agent report success without viewing failure frames, reading test output, or confirming the expected UI state?
-4. **Re-check prior unverified claims**: For each entry in the prior unverified claims list, search the current JSONL data for new evidence
+Display recommended action for each condition.
 
-Classify each claim:
-- `confirmed` — concrete evidence found (exit code 0, screenshots showing expected state, PR merged)
-- `unverified` — agent claims success but no verification evidence visible in JSONL
-- `refuted` — evidence contradicts the claim (exit code non-zero, error in output, test actually failed)
+---
 
-## Step H: Subscription Status (OPTIONAL but recommended)
+## Step 5: Cleanup
 
-Check if the CTO session has active subscriptions to monitored sessions:
-  mcp__agent-tracker__list_summary_subscriptions({})
+When monitoring ends (user interrupt, intervention, or all tasks done):
 
-If any monitored agent is missing from the subscription list, note it in the response so the main loop can subscribe.
-
-## Return ALL data as this exact JSON structure:
-
-{
-  "tasks": [
-    {
-      "id": "...",
-      "title": "...",
-      "status": "active|paused|completed|cancelled|failed",
-      "cycleCount": 204,
-      "heartbeatAgeMinutes": 2,
-      "heartbeatFreshness": "fresh|aging|stale|DEAD",
-      "monitorAgentId": "...",
-      "monitorPid": 12345,
-      "monitorAlive": true,
-      "monitorVerbatim": "Exact last paragraph of monitor's reasoning text...",
-      "monitorSummary": "1-2 sentence summary of what the monitor decided/did",
-      "demoInvolved": false,
-      "amendments": { "total": 2, "unacknowledged": 0 },
-      "subTasks": [
-        {
-          "id": "...",
-          "title": "...",
-          "status": "pending|in_progress|completed|failed",
-          "assignedAgentId": "..." or null,
-          "prNumber": 1460 or null,
-          "prMerged": true or null
-        }
-      ],
-      "children": [
-        {
-          "agentId": "...",
-          "taskTitle": "...",
-          "section": "CODE-WRITER",
-          "stage": "code-writer",
-          "progress": 42,
-          "elapsedMinutes": 28,
-          "staleMinutes": 0,
-          "lastTool": "Edit",
-          "verbatim": "Exact last paragraph of child's reasoning text...",
-          "recentTools": ["Edit", "Read", "Bash"],
-          "errorLines": ["Error: ENOENT /path/to/file", "Build failed: 3 errors"],
-          "solutionLines": ["Bash: mkdir -p /path/to", "Edit: fixed import path"],
-          "gitBranch": "feature/fix-demo-config",
-          "gitCommits": 2,
-          "prNumber": 1461,
-          "prStatus": "open|merged|closed|null"
-        }
-      ],
-      "issues": ["description of any detected problems"],
-      "cycleDelta": 0
-    }
-  ],
-  "queue": {
-    "running": 4,
-    "max": 10,
-    "queued": 2,
-    "memoryPressure": "low|moderate|high|critical",
-    "freeMB": 4200,
-    "persistentLaneQueued": 0,
-    "persistentLaneRunning": 1
-  },
-  "demoRecordings": [
-    {
-      "filename": "scenario-abc.mp4",
-      "path": ".claude/recordings/demos/scenario-abc.mp4",
-      "sizeBytes": 14200000,
-      "modifiedMinutesAgo": 5,
-      "isRecent": true
-    }
-  ],
-  "sessionActivity": {
-    "latestProjectSummary": "Concise unified summary of all session activity from last broadcast..." or null,
-    "projectSummaryAge": "5 minutes ago" or null,
-    "agentSummaries": [
-      {
-        "agentId": "...",
-        "preview": "120-char preview of what this agent was doing...",
-        "summaryId": "uuid for get_session_summary"
-      }
-    ]
-  },
-  "evidenceAudit": [
-    {
-      "agentId": "...",
-      "claim": "Test passed / Demo working / PR merged / etc.",
-      "evidence": "Specific evidence found (exit code, screenshot path, output line)" or null,
-      "verdict": "confirmed|unverified|refuted",
-      "reasoning": "Why this verdict — what was present or missing in the JSONL"
-    }
-  ],
-  "subscriptionGaps": ["agent-id-1", "agent-id-2"],
-  "interventionNeeded": false,
-  "interventionReason": null
-}
-
-Return ONLY this JSON. No preamble, no explanation, no markdown fences.
+```
+Bash("rm -f .claude/state/monitor-tasks-active.json")
 ```
 
 ---
 
-### Step 4b: User-Alignment Check (Every 3rd Round)
-
-**Check condition:** `(roundNumber % 3 === 0)`
-
-If true, AND there is at least one active persistent task, spawn a user-alignment sub-agent BEFORE rendering the report. Use `Agent(subagent_type='user-alignment')` with this prompt (fill in values):
-
-```
-Verify the work on persistent task "[TASK TITLE]" aligns with the CTO's original objective.
-
-Original objective:
-[COPY THE FULL TASK DESCRIPTION/PROMPT FROM inspect_persistent_task RESPONSE]
-
-Current state (from this round's data):
-- Status: [STATUS], Cycles: [CYCLE COUNT], Heartbeat: [AGE]
-- Completed sub-tasks: [LIST COMPLETED SUB-TASK TITLES]
-- In-progress sub-tasks: [LIST IN-PROGRESS SUB-TASK TITLES]
-- Pending sub-tasks: [LIST PENDING SUB-TASK TITLES]
-
-Recent monitor activity (verbatim):
-"[MONITOR VERBATIM TEXT FROM INVESTIGATOR DATA]"
-
-Recent child agent activity (verbatim):
-[FOR EACH CHILD: "Agent [ID] ([STAGE]): [CHILD VERBATIM TEXT]"]
-
-Check:
-1. Is the work addressing the stated objective? Look for scope drift.
-2. Are completed sub-tasks actually relevant to the objective?
-3. Are any important parts of the objective being neglected?
-4. Is the monitor orchestrating sensibly toward completion?
-
-Return a brief assessment:
-- alignment: "aligned" | "drifting" | "misaligned"
-- finding: 2-3 sentences of specific evidence for your assessment
-- concerns: list of specific concerns (empty list if aligned)
-```
-
-Capture the sub-agent's response. Parse `alignment` and `finding` fields. Store `alignmentResult` for use in the report.
-
-If `alignment === "misaligned"`, set `interventionNeeded = true` with reason "User-alignment agent reports misalignment: [finding]".
-
----
-
-### Step 4b.5: Scrutinize Success Claims
-
-After the investigator returns, examine the `evidenceAudit` array. For each entry:
-
-- **`confirmed`** — add to `evidenceLog` with verdict. No further action.
-- **`unverified`** — add to `successClaimsUnverified` for re-checking next round. Note in the report.
-- **`refuted`** — this is a serious issue. The agent claimed success but evidence shows failure. Flag prominently in the report. Consider sending a signal to the monitor: `mcp__agent-tracker__send_session_signal({ target: "<monitor_agent_id>", tier: "instruction", message: "Agent [id] claimed [claim] but evidence shows [refutation]. Re-verify before proceeding." })`
-
-**Subscription maintenance:** If `subscriptionGaps` is non-empty, subscribe to those agents now:
-```
-mcp__agent-tracker__subscribe_session_summaries({ target_agent_id: "<agent_id>", detail_level: "verbatim" })
-```
-
----
-
-### Step 4c: Render the Report
-
-Render the following report sections in order. Every section is REQUIRED. Do not skip sections even if data is sparse — use "No data available" rather than omitting.
-
----
-
-```
-## Monitor Report — Round [N] ([HH:MM])
-```
-
----
-
-#### Section 1: Task Overview
-
-```
-### Task Overview
-
-| Task ID     | Title                          | Status  | Cycles | Δ Cycles | Heartbeat  | Monitor     |
-|-------------|--------------------------------|---------|--------|----------|------------|-------------|
-| [id prefix] | [title, truncated to 35 chars] | [status]| [N]    | +[delta] | [N]m ago   | [alive/dead]|
-```
-
-For `Δ Cycles`: compare current cycle count to `previousCycleCounts[taskId]`. A delta of 0 for 2+ consecutive rounds is a warning sign. Update `previousCycleCounts` after rendering.
-
-Heartbeat freshness labels:
-- 0-3 minutes: `fresh`
-- 4-10 minutes: `aging`
-- 11-30 minutes: `stale [!]`
-- 31+ minutes: `DEAD [!!]`
-
-Monitor PID labels:
-- Alive: `PID [N] (alive)`
-- Dead: `PID [N] (DEAD [!!])` or `unknown (dead [!!])`
-
----
-
-#### Section 2: Monitor Activity (Verbatim)
-
-```
-### Monitor Activity (verbatim)
-
-> "[EXACT QUOTE from monitorVerbatim — do not paraphrase, do not summarize, copy character-for-character]"
-
-[1-2 sentence summary of what the monitor decided or did since the last round, inferred from the verbatim text and cycle delta]
-```
-
-If `monitorVerbatim` is empty or unavailable, write: `> [No recent monitor text available — monitor may be sleeping or peek_session returned no assistant messages]`
-
----
-
-#### Section 3: Child Agents — Detailed Progress
-
-```
-### Child Agents — Detailed Progress
-```
-
-For EACH child agent in the investigator data:
-
-```
-#### Agent [agentId prefix, 8 chars] — [taskTitle, truncated to 40 chars]
-
-- **Stage**: [stage] | **Elapsed**: [N]m | **Progress**: [N]% (if available, else omit)
-- **Current action** (verbatim):
-  > "[EXACT QUOTE from child verbatim — copy character-for-character]"
-- **Challenges**: [List each error line extracted. If none: "None detected this round"]
-- **Solutions applied**: [List each solution line — tool calls that followed errors. If none: "None this round"]
-- **Git state**: branch `[gitBranch]`, [N] commit(s)[, PR #[N] ([status]) if PR exists]
-```
-
-If there are no running child agents:
-```
-#### No active child agents this round
-```
-
-After the per-agent sections, note any NEW child agents (IDs not seen in `previousChildIds`) with: `[NEW] Agent [id] spawned this round`. Note any DEPARTED agents (in `previousChildIds` but not in current data) with: `[DONE] Agent [id] no longer active`. Update `previousChildIds` after rendering.
-
----
-
-#### Section 4: Task Hierarchy
-
-```
-### Task Hierarchy
-```
-
-Render a Unicode tree using the `subTasks` array enriched with active child agent data. Use these symbols:
-
-- `[done]` — completed sub-task
-- `[active]` — in_progress sub-task
-- `[pending]` — pending sub-task
-- `[FAILED]` — failed sub-task
-
-Format:
-
-```
-[*] Persistent Task: [TITLE]
-├── [done] [Sub-task title] (completed[, PR #N merged])
-├── [active] [Sub-task title] (in_progress)
-│   └── Agent [agentId prefix] ([N]m, [last tool or verbatim excerpt ≤50 chars])
-├── [pending] [Sub-task title] (pending)
-└── [pending] [Sub-task title] (pending)
-```
-
-If a sub-task has no child agent but is in_progress, show it as `[active] [title] (in_progress, no active agent [!])`.
-
-If `amendments.unacknowledged > 0`, add a line after the tree:
-```
-[!] [N] unacknowledged amendment(s) — monitor has not yet processed CTO input
-```
-
----
-
-#### Section 5: Challenges & Solutions Log
-
-```
-### Challenges & Solutions Log
-
-| Time  | Agent              | Challenge                              | Resolution                        | Outcome     |
-|-------|--------------------|----------------------------------------|-----------------------------------|-------------|
-| [HH:MM] | Agent [id prefix] | [error line, truncated to 45 chars]  | [solution line, truncated to 35c] | [inferred]  |
-```
-
-Extract from the `errorLines` and `solutionLines` arrays in the investigator data. For each error line, pair it with the corresponding solution line (same index) if available.
-
-Infer outcome:
-- If a solution line exists and no repeat of the same error: `resolved`
-- If the same error appeared in a prior round: `recurring [!]`
-- If no solution found: `open`
-
-Update `childErrorPatterns[taskId]` with any new error strings seen this round. If the same error string has appeared in 3+ consecutive rounds across any children of the same task, add it to `issues` and set intervention flag per Step 4d.
-
-If no challenges detected: write a single row with `—` in Challenge column and `"No errors detected this round"` in Resolution.
-
----
-
-#### Section 6: Demo Status
-
-```
-### Demo Status
-```
-
-Always render this section. Check `demoInvolved` from the task metadata AND check `demoRecordings` from the investigator data.
-
-If `demoInvolved === true`:
-```
-Demo recording active for this task.
-```
-
-If `demoRecordings` is non-empty:
-```
-| Recording                    | Size    | Last Modified  | Status   |
-|------------------------------|---------|----------------|----------|
-| [filename, truncated to 30c] | [N] MB  | [N] min ago    | [recent/old] |
-```
-
-If a recording has `isRecent === true` AND `demoOfferMade === false`:
-```
-Recording updated [N] minutes ago. Would you like me to open it?
-```
-Set `demoOfferMade = true`. Use `AskUserQuestion` only once per session — if the user says yes, call `mcp__playwright__open_video({ path: "[recording path]" })`.
-
-If no recordings and no demo involvement:
-```
-No demo recordings found. Task does not involve demo scenarios.
-```
-
----
-
-#### Section 7: User Alignment (Every 3rd Round)
-
-```
-### User Alignment
-```
-
-If `roundNumber % 3 === 0` and alignment check was performed (Step 4b):
-```
-**Alignment**: [aligned [done] | drifting [!] | misaligned [!!]]
-
-[alignmentResult.finding — copy verbatim from sub-agent response]
-
-[If concerns list non-empty:]
-**Concerns:**
-- [concern 1]
-- [concern 2]
-```
-
-If not a 3rd round:
-```
-Next alignment check: Round [next multiple of 3]. ([rounds until check] rounds away)
-```
-
----
-
-#### Section 8: Queue Health
-
-```
-### Queue Health
-
-| Running / Max | Memory Pressure | Free RAM   | Queued | Persistent Lane |
-|---------------|-----------------|------------|--------|-----------------|
-| [N] / [N]     | [level]         | [N] MB     | [N]    | [Q queued, R running] |
-```
-
-Memory pressure color indicators (rendered as text labels):
-- `low` → `low [done]`
-- `moderate` → `moderate [!]`
-- `high` → `high [!][!]`
-- `critical` → `critical [!!]`
-
-If `memoryPressure === "critical"`, increment `criticalMemoryRounds`. If `memoryPressure !== "critical"`, reset `criticalMemoryRounds = 0`.
-
----
-
-#### Section 9: Cross-Session Activity
-
-```
-### Cross-Session Activity
-```
-
-If `sessionActivity.latestProjectSummary` is available:
-```
-**Latest project summary** ([age]):
-> "[project summary text — verbatim from broadcaster]"
-```
-
-If `sessionActivity.agentSummaries` has entries, list them:
-```
-**Agent activity snapshots:**
-- Agent [id prefix]: [preview] (details: `mcp__session-activity__get_session_summary({ id: "[summaryId]" })`)
-```
-
-If no session activity data available:
-```
-Session activity broadcaster not yet running or no summaries available. Deploy with `npx gentyr sync && scripts/setup-automation-service.sh setup`.
-```
-
-If related work detected between monitored task and other sessions, add:
-```
-[!] **Coordination opportunity**: [description of overlap]. Consider using `mcp__agent-tracker__send_session_signal` to coordinate.
-```
-
----
-
-#### Section 10: Evidence Audit
-
-```
-### Evidence Audit
-```
-
-Render from the `evidenceAudit` array. This section holds agents accountable — every claim of success must be backed by evidence.
-
-If any entries exist:
-```
-| Agent            | Claim                        | Evidence                          | Verdict        |
-|------------------|------------------------------|-----------------------------------|----------------|
-| [id prefix 8ch]  | [claim, truncated 35ch]      | [evidence or "None found"]        | [verdict icon] |
-```
-
-Verdict icons:
-- `confirmed` → `[done] Confirmed`
-- `unverified` → `[!] UNVERIFIED` — agent claims success but no proof in JSONL
-- `refuted` → `[!!] REFUTED` — evidence contradicts the claim
-
-For `unverified` entries, add a line below the table:
-```
-[!] [N] unverified success claim(s) — agents reported success without observable evidence of verification. Do NOT accept these as real progress until confirmed in a future round.
-```
-
-For `refuted` entries:
-```
-[!!] [N] REFUTED claim(s) — agents reported success but evidence shows otherwise. Signal sent to monitor to re-verify.
-```
-
-If no evidence audit entries: `No success claims to audit this round.`
-
----
-
-#### Section 11: Assessment
-
-```
-### Assessment
-```
-
-Write a **detailed, skeptical multi-paragraph assessment** (minimum 6 sentences). This section MUST contain specific evidence from the data gathered this round. You are the CTO's eyes — be honest, be specific, be skeptical. Do NOT write vague summaries like "Everything looks healthy." Instead:
-
-**Paragraph 1 — Operational Status:**
-- Monitor's cycle count, heartbeat age, and whether it's actually making forward progress (cycle delta)
-- Number of active children and what each is specifically doing (from verbatim text, not just tool names)
-
-**Paragraph 2 — Progress Analysis:**
-- What milestone or sub-task was most recently completed (with PR numbers if applicable)
-- Whether the completed work actually advances the objective (or is tangential/busywork)
-- What is in progress and what specific action the child agent is performing right now
-
-**Paragraph 3 — Evidence & Trust Assessment:**
-- Summary of evidence audit results — how many claims confirmed vs unverified vs refuted
-- Whether agents are verifying their own work (checking test output, viewing screenshots, confirming PRs merged) or just claiming success
-- Any patterns of agents claiming completion without evidence (cite specific rounds if recurring)
-
-**Paragraph 4 — Forward Look:**
-- What the next expected milestone is based on pending sub-tasks
-- Estimated time to completion (rough, based on velocity of cycle deltas and completed sub-tasks)
-- Risks: stale heartbeat, zero cycle delta, recurring errors, unacknowledged amendments, unverified claims carried forward
-
-End with one of these verdict lines:
-```
-[done] Healthy — [specific reason with data]
-[!] Warning — [specific concern with data]
-[!!] INTERVENTION NEEDED — [specific reason with data]
-```
-
----
-
-### Step 4d: Check Intervention Conditions
-
-After rendering the report, evaluate these conditions. Stop the loop if ANY are true and display the stop block below.
-
-**Condition 1 — Monitor dead, no revival queued**
-- `monitorAlive === false` AND `persistentLaneQueued === 0`
-- Reason: "Monitor PID [N] is dead and no revival is queued in the persistent lane."
-
-**Condition 2 — Task self-paused**
-- Task `status === "paused"` (and it was `active` in a prior round)
-- Reason: "Task transitioned to paused — monitor escalated a blocker. Review task amendments."
-
-**Condition 3 — Task completed or cancelled**
-- Task `status === "completed"` or `status === "cancelled"`
-- Reason: "Task reached terminal state: [status]. Objective [achieved/abandoned]."
-
-**Condition 4 — Critical memory pressure 3+ rounds**
-- `criticalMemoryRounds >= 3`
-- Reason: "Critical memory pressure for [N] consecutive rounds — persistent monitor revival may be blocked."
-
-**Condition 5 — Child agent stale 15+ minutes**
-- Any child with `staleMinutes >= 15`
-- Reason: "Agent [id] has been stale for [N] minutes with no tool calls — possible hang."
-
-**Condition 6 — Systemic error pattern**
-- Same error string seen in 3+ consecutive rounds across 3+ different children of the same task
-- Reason: "Systemic error detected across [N] agents: '[error string]'. Infrastructure or environment issue likely."
-
-**Condition 7 — User-alignment misaligned**
-- `alignmentResult.alignment === "misaligned"` (set in Step 4b)
-- Reason: "User-alignment agent reports misalignment: [alignmentResult.finding]"
-
-When stopping, display:
-
-```
----
-[!!] MONITORING STOPPED — Round [N]
-
-**Reason:** [condition reason]
-
-**Recommended action:**
-- [Condition 1]: Call mcp__persistent-task__resume_persistent_task({ id: "[task_id]" }) to trigger immediate revival.
-- [Condition 2]: Review task details with mcp__persistent-task__get_persistent_task({ id: "[task_id]" }). Check amendments for the escalation reason.
-- [Condition 3]: Review completed work. Call mcp__persistent-task__get_persistent_task_summary({ id: "[task_id]" }) for a full report.
-- [Condition 4]: Check memory with mcp__agent-tracker__get_session_queue_status. Kill unnecessary sessions to free RAM.
-- [Condition 5]: Inspect the stale agent with mcp__agent-tracker__peek_session({ agent_id: "[id]", depth: 24 }). Consider killing and re-creating the task.
-- [Condition 6]: Investigate infrastructure. Check secrets resolution, dev server health, and network connectivity.
-- [Condition 7]: Amend the persistent task with mcp__persistent-task__amend_persistent_task to provide corrective direction.
-
-Last report data is above. Resume monitoring with /monitor-tasks [task-id-prefix] after addressing the issue.
-```
-
----
-
-### Step 4e: Sleep and Repeat
-
-If no intervention condition triggered:
-
-```
----
-Sleeping 60s before Round [N+1]... (use Ctrl+C or send a message to stop)
-```
-
-Execute `Bash("sleep 60")`, then return to Step 4 (increment `roundNumber` and repeat).
-
----
-
-## Notes and Anti-Patterns
-
-**DO NOT:**
-- Skip any report section, even if data is sparse
-- Paraphrase verbatim quotes — copy them character-for-character
-- Write "No issues" in the Assessment without citing specific data points
-- Delegate the sleep loop to a sub-agent — only the investigator and user-alignment are spawned as sub-agents
-- Call `inspect_persistent_task`, `peek_session`, `get_session_queue_status`, `get_comms_log`, or `session-activity` tools directly — ALL data gathering goes through the investigator sub-agent
-- Skip spawning the investigator sub-agent and call MCP tools yourself — this produces shallow reports
-- Use `AskUserQuestion` for the demo offering more than once per monitoring session
-- **Accept agent claims of success without evidence** — if an agent says "test passed" but the JSONL shows no exit code, no assertion output, no screenshot, mark it UNVERIFIED
-- **Assume completed sub-tasks mean progress** — a completed sub-task with no PR merged may be dead work
-- **Trust "no errors" as evidence of success** — absence of errors is not proof of correct behavior
+## Rules
 
 **DO:**
-- Track state between rounds (cycle deltas, child ID churn, error pattern recurrence, criticalMemoryRounds)
-- Treat a cycle delta of 0 for 2+ rounds as a warning worth noting in Assessment
-- Treat a new child agent ID replacing a departed one as evidence of a prior failure (note in Section 3)
-- Quote the most diagnostic sentence from verbatim text when it is long — prefer the sentence that explains a decision or describes a blocker
-- If `inspect_persistent_task` is slow (>30s), note this in the Assessment as a potential MCP tool health issue
-- **Subscribe to every new child agent at verbatim tier** — you need the raw session history to verify claims
-- **Carry forward unverified claims** across rounds until confirmed or refuted — do not let them silently drop
-- **Interrogate completion claims**: When a sub-task moves to "completed", check the evidence log — was the work confirmed with an exit code, merged PR, or screenshot? Or did the agent just call `complete_task`?
-- **Signal monitors when claims are refuted** — use `send_session_signal` with tier `instruction` to force re-verification
+- Call MCP tools directly — no investigator sub-agents
+- Show `browse_session` output as indexed messages with timestamps
+- Reference message indices in your assessment ("at #274...")
+- Page backward through history when recent messages are uninteresting
+- Update the state file each round (the hook reads it)
+- Continue looping until all sessions are done or CTO interrupts
 
-**Investigator completion time target:** Under 45 seconds. If the investigator takes longer, note it.
-
-**Round numbering:** Start at 1. Increment before rendering (so the first report says "Round 1").
+**DO NOT:**
+- Spawn investigator or user-alignment sub-agents
+- Paraphrase or summarize session messages — show them verbatim
+- Skip the browse step — it's the most valuable part
+- Write vague assessments — cite specific message indices and tool calls
+- Call `sleep` for more than 60s between rounds
+- Forget to clean up the state file on exit

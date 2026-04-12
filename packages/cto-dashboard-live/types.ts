@@ -84,7 +84,7 @@ export interface DisplaySession {
 // ============================================================================
 
 export interface ActivityEntry {
-  type: 'tool_call' | 'assistant_text' | 'tool_result' | 'error' | 'compaction' | 'session_end';
+  type: 'tool_call' | 'assistant_text' | 'tool_result' | 'error' | 'compaction' | 'session_end' | 'user_message';
   timestamp: string;
   text: string;
   toolName?: string;
@@ -103,4 +103,53 @@ export interface LiveDashboardData {
   suspendedSessions: SessionItem[];
   completedSessions: SessionItem[];
   capacity: { running: number; max: number };
+}
+
+// ============================================================================
+// Page Navigation
+// ============================================================================
+
+export type PageId = 1 | 2;
+
+// ============================================================================
+// Page 2: Demos & Tests
+// ============================================================================
+
+export interface DemoScenarioItem {
+  id: string;
+  personaId: string;
+  personaName: string;
+  title: string;
+  description: string;
+  category: string | null;
+  playwrightProject: string;
+  testFile: string;
+  sortOrder: number;
+  enabled: boolean;
+  headed: boolean;
+  lastRecordedAt: string | null;
+}
+
+export interface TestFileItem {
+  project: string;
+  filePath: string;         // relative to project root
+  fileName: string;         // basename
+  isDemo: boolean;          // .demo.ts vs .spec.ts
+}
+
+export type ProcessStatus = 'running' | 'passed' | 'failed';
+
+export interface RunningProcess {
+  pid: number;
+  label: string;
+  type: 'demo' | 'test';
+  status: ProcessStatus;
+  startedAt: string;
+  outputFile: string;
+  exitCode: number | null;
+}
+
+export interface Page2Data {
+  scenarios: DemoScenarioItem[];
+  testFiles: TestFileItem[];
 }

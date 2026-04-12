@@ -10,11 +10,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import Database from 'better-sqlite3';
 import type {
   LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem,
   WorklogEntry, SessionStatus, SessionPriority, ActivityEntry,
+  DemoScenarioItem, TestFileItem, Page2Data,
 } from './types.js';
 import { formatElapsed } from './utils/formatters.js';
 
@@ -289,7 +290,7 @@ function readPersistentTasks(runningSessions: SessionItem[]): PersistentTaskItem
       }
       const monitorSession: SessionItem = {
         id: `pt-monitor-${t.id}`, status: monitorAlive ? 'alive' : 'paused', priority: 'critical',
-        agentType: 'persistent-monitor', title: `Monitor: ${t.title}`, pid: t.monitor_pid,
+        agentType: 'persistent-monitor', title: t.title, pid: t.monitor_pid,
         lastAction: null, lastActionTimestamp: t.last_heartbeat || t.activated_at || new Date().toISOString(),
         lastMessage: null, description: null, killReason: null, totalTokens: null,
         sessionId: monitorAgentId || `pt-monitor-${t.id}`, elapsed: ageStr(t.activated_at), worklog: null, worktreePath: null,
@@ -421,38 +422,79 @@ export function readSessionTail(agentId: string, fromPosition?: number, worktree
 export function resumeSessionWithMessage(agentOrSessionId: string, message: string): void {
   const projectDir = process.env['CLAUDE_PROJECT_DIR'] || process.cwd();
   let resumeId = agentOrSessionId;
-  if (agentOrSessionId.startsWith('agent-')) { const sessionFile = findSessionFile(agentOrSessionId); if (sessionFile) resumeId = path.basename(sessionFile, '.jsonl'); }
-  const escaped = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const cmd = `cd "${projectDir}" && claude --resume "${resumeId}" -p "${escaped}"`;
-  try { execFileSync('osascript', ['-e', `tell application "Terminal"\ndo script "${cmd}"\nactivate\nend tell`], { timeout: 10000, stdio: 'pipe' }); }
-  catch (err) { try { fs.appendFileSync(path.join(projectDir, '.claude', 'state', 'dashboard-resume.log'), `[${new Date().toISOString()}] resumeSessionWithMessage failed: ${err instanceof Error ? err.message : String(err)}\n`); } catch { /* */ } }
+  if (agentOrSessionId.startsWith('agent-')) {
+    const sessionFile = findSessionFile(agentOrSessionId);
+    if (sessionFile) resumeId = path.basename(sessionFile, '.jsonl');
+  }
+  try {
+    const child = spawn('claude', ['--resume', resumeId, '-p', message], {
+      cwd: projectDir,
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
+    });
+    child.unref();
+  } catch (err) {
+    try {
+      fs.appendFileSync(
+        path.join(projectDir, '.claude', 'state', 'dashboard-resume.log'),
+        `[${new Date().toISOString()}] resumeSessionWithMessage failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    } catch { /* */ }
+  }
 }
 
-export function sendDirectiveSignal(toAgentId: string, message: string): { success: boolean; signalId: string } {
-  const signalDir = path.join(PROJECT_DIR, '.claude', 'state', 'session-signals');
-  fs.mkdirSync(signalDir, { recursive: true });
+export function sendDirectiveSignal(toAgentId: string, message: string, worktreePath?: string | null): { success: boolean; signalId: string } {
   const id = `sig-${crypto.randomUUID().slice(0, 8)}`;
   const filename = `${toAgentId}-${Date.now()}-${id}.json`;
   const signal = { id, from_agent_id: 'cto-dashboard', from_agent_type: 'cto', from_task_title: 'CTO Dashboard Signal', to_agent_id: toAgentId, to_agent_type: 'agent', tier: 'directive', message, created_at: new Date().toISOString(), read_at: null, acknowledged_at: null };
-  const tmpPath = path.join(signalDir, `.${filename}.tmp`);
-  fs.writeFileSync(tmpPath, JSON.stringify(signal));
-  fs.renameSync(tmpPath, path.join(signalDir, filename));
-  try { fs.appendFileSync(path.join(PROJECT_DIR, '.claude', 'state', 'session-comms.log'), JSON.stringify(signal) + '\n'); } catch { /* */ }
+  const content = JSON.stringify(signal);
+
+  // Write to main project signal dir
+  const mainSignalDir = path.join(PROJECT_DIR, '.claude', 'state', 'session-signals');
+  fs.mkdirSync(mainSignalDir, { recursive: true });
+  const mainTmp = path.join(mainSignalDir, `.${filename}.tmp`);
+  fs.writeFileSync(mainTmp, content);
+  fs.renameSync(mainTmp, path.join(mainSignalDir, filename));
+
+  // Also write to worktree signal dir if agent is in a worktree
+  // (worktree .claude/state/ is a separate directory, not symlinked to main tree)
+  if (worktreePath) {
+    try {
+      const wtSignalDir = path.join(worktreePath, '.claude', 'state', 'session-signals');
+      fs.mkdirSync(wtSignalDir, { recursive: true });
+      const wtTmp = path.join(wtSignalDir, `.${filename}.tmp`);
+      fs.writeFileSync(wtTmp, content);
+      fs.renameSync(wtTmp, path.join(wtSignalDir, filename));
+    } catch { /* non-fatal — main tree copy is the fallback */ }
+  }
+
+  try { fs.appendFileSync(path.join(PROJECT_DIR, '.claude', 'state', 'session-comms.log'), content + '\n'); } catch { /* */ }
   return { success: true, signalId: id };
 }
 
-export function getSignalDeliveryStatus(signalId: string): { status: 'pending' | 'read' | 'acknowledged'; read_at?: string; acknowledged_at?: string } | null {
-  const signalDir = path.join(PROJECT_DIR, '.claude', 'state', 'session-signals');
-  try {
-    const files = fs.readdirSync(signalDir).filter(f => f.includes(signalId));
-    for (const file of files) {
-      const signal = JSON.parse(fs.readFileSync(path.join(signalDir, file), 'utf8'));
-      if (signal.acknowledged_at) return { status: 'acknowledged', read_at: signal.read_at, acknowledged_at: signal.acknowledged_at };
-      if (signal.read_at) return { status: 'read', read_at: signal.read_at };
-      return { status: 'pending' };
-    }
-  } catch { /* */ }
-  return null;
+export function getSignalDeliveryStatus(signalId: string, worktreePath?: string | null): { status: 'pending' | 'read' | 'acknowledged'; read_at?: string; acknowledged_at?: string } | null {
+  // Check both main tree and worktree signal dirs — return the most-advanced status
+  // (agent updates the worktree copy; main tree copy stays pending)
+  const dirs = [path.join(PROJECT_DIR, '.claude', 'state', 'session-signals')];
+  if (worktreePath) dirs.push(path.join(worktreePath, '.claude', 'state', 'session-signals'));
+  type SignalStatus = { status: 'pending' | 'read' | 'acknowledged'; read_at?: string; acknowledged_at?: string };
+  let best: SignalStatus | null = null;
+  const rank: Record<string, number> = { pending: 0, read: 1, acknowledged: 2 };
+  for (const signalDir of dirs) {
+    try {
+      const files = fs.readdirSync(signalDir).filter(f => f.includes(signalId));
+      for (const file of files) {
+        const signal = JSON.parse(fs.readFileSync(path.join(signalDir, file), 'utf8'));
+        let current: SignalStatus;
+        if (signal.acknowledged_at) current = { status: 'acknowledged', read_at: signal.read_at, acknowledged_at: signal.acknowledged_at };
+        else if (signal.read_at) current = { status: 'read', read_at: signal.read_at };
+        else current = { status: 'pending' };
+        if (!best || (rank[current.status] ?? 0) > (rank[best.status] ?? 0)) best = current;
+      }
+    } catch { /* */ }
+  }
+  return best;
 }
 
 export function getSessionSummaries(agentId: string): Array<{ id: string; summary: string; created_at: string }> {
@@ -462,4 +504,135 @@ export function getSessionSummaries(agentId: string): Array<{ id: string; summar
   try { db = new Database(dbPath, { readonly: true }); return db.prepare('SELECT id, summary, created_at FROM session_summaries WHERE agent_id = ? ORDER BY created_at ASC').all(agentId) as Array<{ id: string; summary: string; created_at: string }>; }
   catch { return []; }
   finally { try { db?.close(); } catch { /* */ } }
+}
+
+// ============================================================================
+// Page 2: Demo Scenarios + Test Files
+// ============================================================================
+
+interface ScenarioRow {
+  id: string; persona_id: string; title: string; description: string;
+  category: string | null; playwright_project: string; test_file: string;
+  sort_order: number; enabled: number; headed: number;
+  last_recorded_at: string | null; persona_name: string;
+}
+
+export function readDemoScenarios(): DemoScenarioItem[] {
+  const db = openDb(path.join(PROJECT_DIR, '.claude', 'user-feedback.db'));
+  if (!db) return [];
+  try {
+    const rows = db.prepare(`
+      SELECT ds.id, ds.persona_id, ds.title, ds.description, ds.category,
+             ds.playwright_project, ds.test_file, ds.sort_order, ds.enabled,
+             ds.headed, ds.last_recorded_at,
+             p.name AS persona_name
+      FROM demo_scenarios ds
+      JOIN personas p ON p.id = ds.persona_id
+      ORDER BY ds.sort_order ASC, ds.title ASC
+    `).all() as ScenarioRow[];
+    return rows.map(r => ({
+      id: r.id,
+      personaId: r.persona_id,
+      personaName: r.persona_name,
+      title: r.title,
+      description: r.description,
+      category: r.category,
+      playwrightProject: r.playwright_project,
+      testFile: r.test_file,
+      sortOrder: r.sort_order,
+      enabled: r.enabled === 1,
+      headed: r.headed === 1,
+      lastRecordedAt: r.last_recorded_at,
+    }));
+  } catch { return []; }
+  finally { closeDb(db); }
+}
+
+const INFRA_PROJECTS = new Set(['seed', 'auth-setup', 'cleanup', 'setup']);
+
+export function discoverTestFiles(): TestFileItem[] {
+  const configFile = ['playwright.config.ts', 'playwright.config.js']
+    .map(f => path.join(PROJECT_DIR, f))
+    .find(f => fs.existsSync(f));
+  if (!configFile) return [];
+
+  let configText: string;
+  try { configText = fs.readFileSync(configFile, 'utf8'); } catch { return []; }
+
+  // Extract projects array
+  const projectsMatch = configText.match(/projects\s*:\s*\[/);
+  if (!projectsMatch) return [];
+
+  const startIdx = projectsMatch.index! + projectsMatch[0].length;
+  let depth = 1;
+  let endIdx = startIdx;
+  for (let i = startIdx; i < configText.length && depth > 0; i++) {
+    if (configText[i] === '[') depth++;
+    else if (configText[i] === ']') depth--;
+    endIdx = i;
+  }
+  const projectsBlock = configText.substring(startIdx, endIdx);
+
+  // Extract individual project blocks
+  const results: TestFileItem[] = [];
+  const projectBlockRegex = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
+  let match: RegExpExecArray | null;
+  while ((match = projectBlockRegex.exec(projectsBlock)) !== null) {
+    const block = match[0];
+    const nameMatch = block.match(/name\s*:\s*['"]([^'"]+)['"]/);
+    const testDirMatch = block.match(/testDir\s*:\s*['"]([^'"]+)['"]/);
+    if (!nameMatch) continue;
+    const projectName = nameMatch[1];
+    if (INFRA_PROJECTS.has(projectName)) continue;
+    if (projectName.endsWith('-manual')) continue;
+
+    const testDir = testDirMatch ? testDirMatch[1] : 'e2e';
+    const fullDir = path.join(PROJECT_DIR, testDir);
+    if (!fs.existsSync(fullDir)) continue;
+
+    try {
+      const scanDir = (dir: string, prefix: string) => {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isFile() && (entry.name.endsWith('.spec.ts') || entry.name.endsWith('.demo.ts'))) {
+            const filePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+            results.push({
+              project: projectName,
+              filePath: `${testDir}/${filePath}`,
+              fileName: entry.name,
+              isDemo: entry.name.endsWith('.demo.ts'),
+            });
+          } else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+            scanDir(path.join(dir, entry.name), prefix ? `${prefix}/${entry.name}` : entry.name);
+          }
+        }
+      };
+      scanDir(fullDir, '');
+    } catch { /* */ }
+  }
+
+  results.sort((a, b) => a.project.localeCompare(b.project) || a.fileName.localeCompare(b.fileName));
+  return results;
+}
+
+export function readProcessOutput(filePath: string, fromByte: number): { text: string; newPosition: number } {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+    const fileSize = stat.size;
+    if (fileSize <= fromByte) return { text: '', newPosition: fileSize };
+    const bytesToRead = fileSize - fromByte;
+    const buf = Buffer.alloc(bytesToRead);
+    fs.readSync(fd, buf, 0, bytesToRead, fromByte);
+    return { text: buf.toString('utf8'), newPosition: fileSize };
+  } catch { return { text: '', newPosition: fromByte }; }
+  finally { if (fd !== undefined) try { fs.closeSync(fd); } catch { /* */ } }
+}
+
+export function readPage2Data(): Page2Data {
+  return {
+    scenarios: readDemoScenarios(),
+    testFiles: discoverTestFiles(),
+  };
 }

@@ -48,6 +48,8 @@ function EntryRow({ entry, maxTextLen }: { entry: ActivityEntry; maxTextLen: num
       return (<Box><Text dimColor>{prefix}</Text><Text color="yellow">[compact] {entry.text}</Text></Box>);
     case 'session_end':
       return (<Box><Text dimColor>{prefix}[end] {entry.text}</Text></Box>);
+    case 'user_message':
+      return (<Box><Text dimColor>{prefix}</Text><Text color="green" bold>[you] </Text><Text>{truncate(entry.text, maxTextLen)}</Text></Box>);
     default:
       return (<Box><Text dimColor>{prefix}{truncate(entry.text, maxTextLen)}</Text></Box>);
   }
