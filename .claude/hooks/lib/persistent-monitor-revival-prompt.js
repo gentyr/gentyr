@@ -31,8 +31,7 @@ export async function buildPersistentMonitorRevivalPrompt(task, revivalReason, p
     if (taskMeta.demo_involved) {
       demoInstructions = buildPersistentMonitorDemoInstructions();
     }
-    // TODO(cleanup 2026-04-23): drop bridge_main_tree dual-read
-    if (taskMeta.strict_infra_guidance === true || taskMeta.bridge_main_tree === true) {
+    if (taskMeta.strict_infra_guidance === true) {
       const { buildPersistentMonitorStrictInfraInstructions: buildStrictInfra } = await import('./persistent-monitor-strict-infra-instructions.js');
       strictInfraInstructions = buildStrictInfra();
     }

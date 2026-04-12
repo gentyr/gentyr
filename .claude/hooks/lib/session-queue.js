@@ -620,8 +620,7 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
     if (taskMeta.demo_involved) {
       demoInstructions = buildPersistentMonitorDemoInstructions();
     }
-    // TODO(cleanup 2026-04-23): drop bridge_main_tree dual-read
-    if (taskMeta.strict_infra_guidance === true || taskMeta.bridge_main_tree === true) {
+    if (taskMeta.strict_infra_guidance === true) {
       strictInfraInstructions = buildPersistentMonitorStrictInfraInstructions();
     }
   } catch (_) { /* non-fatal */ }

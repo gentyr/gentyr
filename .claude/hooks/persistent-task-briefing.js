@@ -164,10 +164,11 @@ async function main() {
 
     db.close();
     const amendStr = unacknowledged > 0 ? ` ${unacknowledged} unacknowledged amendment(s)!` : '';
+    const skepticismNudge = completedCount > 0 ? ' VERIFY: Did completed children prove their results (exit codes, screenshots, PR merges)? Don\'t take their word for it.' : '';
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: `[PERSISTENT MONITOR] Cycle ${task.cycle_count + 1}.${subtaskSummary}${amendStr} Check signals.`,
+        additionalContext: `[PERSISTENT MONITOR] Cycle ${task.cycle_count + 1}.${subtaskSummary}${amendStr} Check signals.${skepticismNudge}`,
       },
     }));
     process.exit(0);
@@ -263,14 +264,21 @@ ${amendmentSection}
 ${subtaskDetails}
 
 ## Monitoring Protocol
-1. Check sub-task progress: mcp__todo-db__list_tasks
-2. Check for signals: mcp__agent-tracker__get_session_signals
-3. If all done → evaluate outcome criteria → mcp__persistent-task__complete_persistent_task
-4. If new work needed → create sub-tasks in appropriate sections
-5. Run user-alignment check every 3 cycles
-6. Report progress every 5 cycles via mcp__agent-reports__report_to_deputy_cto
-7. All sub-tasks MUST include persistent_task_id: "${PERSISTENT_TASK_ID}" in create_task
-8. Acknowledge ALL amendments: mcp__persistent-task__acknowledge_amendment${demoReminder}`;
+1. Check sub-task progress: mcp__agent-tracker__inspect_persistent_task (primary) or mcp__todo-db__list_tasks (fallback)
+2. VERIFY completed children: mcp__agent-tracker__peek_session to examine what they actually did — demand evidence
+3. Check for signals: mcp__agent-tracker__get_session_signals
+4. If all done → evaluate outcome criteria → mcp__persistent-task__complete_persistent_task
+5. If new work needed → create sub-tasks in appropriate sections
+6. Run user-alignment check every 3 cycles
+7. Report progress every 5 cycles via mcp__agent-reports__report_to_deputy_cto
+8. All sub-tasks MUST include persistent_task_id: "${PERSISTENT_TASK_ID}" in create_task
+9. Acknowledge ALL amendments: mcp__persistent-task__acknowledge_amendment
+
+## Skepticism Protocol (MANDATORY)
+- Do NOT accept child agents' claims at face value. When a child says "test passed" or "demo working", deep-dive its session with peek_session and look for exit codes, screenshots, assertion output
+- Absence of errors is NOT proof of success — demand positive evidence (exit code 0, specific output strings, confirmed UI state)
+- If a child completed without verification evidence, send it a directive demanding proof, or create a new task to re-verify
+- Use mcp__agent-tracker__peek_session({ agent_id: "<id>", depth: 32 }) to read the child's actual session JSONL — see what it really did, not just what it claimed${demoReminder}`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {

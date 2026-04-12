@@ -388,8 +388,7 @@ function getPersistentTask(args: GetPersistentTaskArgs): object | ErrorResult {
   let demo_involved = false;
   try {
     const meta = task.metadata ? JSON.parse(task.metadata) : {};
-    // TODO(cleanup 2026-04-23): drop bridge_main_tree dual-read
-    strict_infra_guidance = meta.strict_infra_guidance === true || meta.bridge_main_tree === true;
+    strict_infra_guidance = meta.strict_infra_guidance === true;
     demo_involved = meta.demo_involved === true;
   } catch { /* non-fatal */ }
   result.strict_infra_guidance = strict_infra_guidance;
@@ -517,8 +516,7 @@ function listPersistentTasks(args: ListPersistentTasksArgs): object {
     let demo_involved = false;
     try {
       const meta = task.metadata ? JSON.parse(task.metadata) : {};
-      // TODO(cleanup 2026-04-23): drop bridge_main_tree dual-read
-      strict_infra_guidance = meta.strict_infra_guidance === true || meta.bridge_main_tree === true;
+      strict_infra_guidance = meta.strict_infra_guidance === true;
       demo_involved = meta.demo_involved === true;
     } catch { /* non-fatal */ }
 

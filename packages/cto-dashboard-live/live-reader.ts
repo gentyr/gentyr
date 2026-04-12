@@ -320,7 +320,7 @@ function readPersistentTasks(runningSessions: SessionItem[]): PersistentTaskItem
           if (pendingCount > 0) { subTasks.push({ id: `pending-summary-${t.id}`, title: `${pendingCount} pending task${pendingCount !== 1 ? 's' : ''}`, status: 'pending', section: '', session: null, agentStage: null, agentProgressPct: null, prUrl: null, prMerged: false, worklog: null }); }
         } catch { /* */ }
       }
-      return { id: t.id, title: t.title, status: t.status, age: ageStr(t.activated_at), cycleCount: t.cycle_count ?? 0, heartbeatAge: t.last_heartbeat ? ageStr(t.last_heartbeat) : 'never', heartbeatStale: hbMs > 15 * 60 * 1000, demoInvolved: meta.demo_involved === true, strictInfraGuidance: meta.strict_infra_guidance === true || meta.bridge_main_tree === true, monitorSession, subTasks };
+      return { id: t.id, title: t.title, status: t.status, age: ageStr(t.activated_at), cycleCount: t.cycle_count ?? 0, heartbeatAge: t.last_heartbeat ? ageStr(t.last_heartbeat) : 'never', heartbeatStale: hbMs > 15 * 60 * 1000, demoInvolved: meta.demo_involved === true, strictInfraGuidance: meta.strict_infra_guidance === true, monitorSession, subTasks };
     });
   } finally { closeDb(ptDb); closeDb(todoDb); }
 }

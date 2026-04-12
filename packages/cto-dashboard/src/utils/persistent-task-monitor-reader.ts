@@ -333,8 +333,7 @@ export function getPersistentTaskMonitorData(): PersistentTaskMonitorSectionData
         try {
           const meta = JSON.parse(row.metadata);
           demoInvolved = meta.demo_involved === true;
-          // TODO(cleanup 2026-04-23): drop bridge_main_tree dual-read
-          strictInfraGuidance = meta.strict_infra_guidance === true || meta.bridge_main_tree === true;
+          strictInfraGuidance = meta.strict_infra_guidance === true;
         } catch {
           // Non-critical
         }
