@@ -254,6 +254,7 @@ function doUnprotect(projectDir) {
     path.join(projectDir, '.husky', 'pre-push'),
     path.join(projectDir, '.mcp.json'),
     path.join(projectDir, 'package.json'),
+    path.join(projectDir, '.claude', 'config', 'services.json'),
   ];
 
   const dirs = [
@@ -283,6 +284,7 @@ function doUnprotect(projectDir) {
   const fixDirs = [
     [path.join(projectDir, '.husky'), 1],
     [path.join(projectDir, '.claude'), 1],
+    [path.join(projectDir, '.claude', 'config'), 1],
     [path.join(projectDir, '.claude', 'state'), 1],
   ];
   if (!hasLocalCopies) {
