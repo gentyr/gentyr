@@ -1,11 +1,12 @@
 /**
- * SessionSelector — scrollable list of sessions with two-line items.
+ * SessionSelector — scrollable list of sessions with strict two-line items.
  *
- * Each item renders two lines:
- *   Line 1: [status icon] [id-prefix] [title]                [elapsed]
- *   Line 2:   [agent-type] [priority] [last action or status]
+ * Each item is exactly 2 rows using fixed-width Ink columns:
+ *   Row 1: [icon 2] [id 9] [title ...fill...] [elapsed 8]
+ *   Row 2: [pad  2] [type 18] [pri 5] [lastAction ...fill...]
  *
  * Persistent task children are indented with a tree connector.
+ * overflow="hidden" on each item prevents content from wrapping to a 3rd row.
  */
 
 import React from 'react';
@@ -17,7 +18,15 @@ interface SessionSelectorProps {
   displaySessions: DisplaySession[];
   selectedId: string | null;
   height: number;
+  width: number;
 }
+
+const COL_ICON = 2;
+const COL_ID = 9;
+const COL_ELAPSED = 8;
+const COL_TYPE = 18;
+const COL_PRI = 5;
+const INDENT_WIDTH = 4;
 
 function statusIcon(status: string): { char: string; color: string } {
   switch (status) {
@@ -33,74 +42,81 @@ function statusIcon(status: string): { char: string; color: string } {
   }
 }
 
-function priorityBadge(priority: string): React.ReactElement | null {
+function priLabel(priority: string): { text: string; color: string | undefined; bold: boolean; dim: boolean } {
   switch (priority) {
-    case 'cto':      return <Text color="magenta" bold>CTO</Text>;
-    case 'critical':  return <Text color="red" bold>CRIT</Text>;
-    case 'urgent':    return <Text color="yellow">URG</Text>;
-    case 'low':       return <Text dimColor>low</Text>;
-    default:          return null;
+    case 'cto':      return { text: 'CTO', color: 'magenta', bold: true, dim: false };
+    case 'critical': return { text: 'CRIT', color: 'red', bold: true, dim: false };
+    case 'urgent':   return { text: 'URG', color: 'yellow', bold: false, dim: false };
+    case 'low':      return { text: 'low', color: undefined, bold: false, dim: true };
+    default:         return { text: '', color: undefined, bold: false, dim: true };
   }
 }
 
-function SessionRow({ ds, isSelected, maxWidth }: { ds: DisplaySession; isSelected: boolean; maxWidth: number }): React.ReactElement {
+function SessionRow({ ds, isSelected, width }: { ds: DisplaySession; isSelected: boolean; width: number }): React.ReactElement {
   const { session, indent, isMonitor } = ds;
   const icon = statusIcon(session.status);
-  const indentStr = indent > 0 ? '  \u2514 ' : '';
-  const monitorTag = isMonitor ? '[M] ' : '';
-  const idPrefix = session.id.slice(0, 8);
-  const fixedCharsLine1 = indentStr.length + 2 + idPrefix.length + 1 + monitorTag.length + 1 + session.elapsed.length;
-  const titleMaxLen = Math.max(8, maxWidth - fixedCharsLine1);
-  const title = truncate(session.title || session.agentType, titleMaxLen);
-  const agentType = truncate(session.agentType, 20);
-  const lastAction = session.lastAction ? truncate(session.lastAction, 30) : '';
+  const pri = priLabel(session.priority);
+  const idText = session.id.slice(0, 8);
+  const isIndented = indent > 0;
 
-  if (isSelected) {
-    return (
-      <Box flexDirection="column">
-        <Box>
-          <Text inverse bold>
-            {indentStr}<Text color={icon.color}>{icon.char}</Text> {idPrefix} {monitorTag}{title.padEnd(titleMaxLen)} {session.elapsed}
-          </Text>
-        </Box>
-        <Box>
-          <Text inverse dimColor>
-            {' '.repeat(indent > 0 ? 4 : 0)}  {agentType}
-          </Text>
-          {priorityBadge(session.priority) && <Text inverse> </Text>}
-          {priorityBadge(session.priority)}
-          {lastAction ? <Text inverse dimColor> {lastAction}</Text> : null}
-        </Box>
-      </Box>
-    );
-  }
+  // Calculate title width: total - icon - id - elapsed - padding - optional indent
+  const titleWidth = Math.max(4, width - COL_ICON - COL_ID - COL_ELAPSED - (isIndented ? INDENT_WIDTH : 0));
+  const monitorPrefix = isMonitor ? '[M] ' : '';
+  const rawTitle = session.title || session.agentType;
+  const titleText = truncate(`${monitorPrefix}${rawTitle}`, titleWidth);
+
+  // Row 2 fields
+  const typeText = truncate(session.agentType, COL_TYPE - 1).padEnd(COL_TYPE - 1);
+  const priText = pri.text.padEnd(COL_PRI - 1);
+  const actionWidth = Math.max(4, width - COL_ICON - COL_TYPE - COL_PRI - (isIndented ? INDENT_WIDTH : 0));
+  const actionText = session.lastAction ? truncate(session.lastAction, actionWidth) : '';
+
+  const bg = isSelected ? 'inverse' : undefined;
 
   return (
-    <Box flexDirection="column">
-      <Box>
-        <Text dimColor>{indentStr}</Text>
-        <Text color={icon.color}>{icon.char}</Text>
-        <Text> </Text>
-        <Text>{idPrefix}</Text>
-        <Text> </Text>
-        {isMonitor && <Text color="cyan">[M] </Text>}
-        <Text dimColor>{truncate(session.title || session.agentType, titleMaxLen)}</Text>
-        <Text> </Text>
-        <Text dimColor>{session.elapsed}</Text>
+    <Box flexDirection="column" height={2} overflow="hidden">
+      {/* Row 1: icon | id | title | elapsed */}
+      <Box height={1}>
+        {isIndented && <Box width={INDENT_WIDTH}><Text dimColor>  \u2514 </Text></Box>}
+        <Box width={COL_ICON}>
+          <Text {...(isSelected ? { inverse: true } : {})} color={icon.color} bold>{icon.char} </Text>
+        </Box>
+        <Box width={COL_ID}>
+          <Text {...(isSelected ? { inverse: true, bold: true } : {})}>{idText} </Text>
+        </Box>
+        <Box width={titleWidth} overflow="hidden">
+          <Text {...(isSelected ? { inverse: true, bold: true } : { dimColor: true })}>{titleText}</Text>
+        </Box>
+        <Box width={COL_ELAPSED} justifyContent="flex-end">
+          <Text {...(isSelected ? { inverse: true } : { dimColor: true })}>{session.elapsed.padStart(COL_ELAPSED - 1)}</Text>
+        </Box>
       </Box>
-      <Box>
-        <Text dimColor>
-          {' '.repeat(indent > 0 ? 4 : 0)}  {agentType}
-        </Text>
-        {priorityBadge(session.priority) && <Text> </Text>}
-        {priorityBadge(session.priority)}
-        {lastAction ? <Text dimColor> {lastAction}</Text> : null}
+
+      {/* Row 2: pad | type | priority | lastAction */}
+      <Box height={1}>
+        {isIndented && <Box width={INDENT_WIDTH}><Text> </Text></Box>}
+        <Box width={COL_ICON}><Text> </Text></Box>
+        <Box width={COL_TYPE}>
+          <Text {...(isSelected ? { inverse: true } : {})} dimColor>{typeText}</Text>
+        </Box>
+        <Box width={COL_PRI}>
+          {pri.text ? (
+            <Text {...(isSelected ? { inverse: true } : {})} color={pri.color} bold={pri.bold} dimColor={pri.dim}>{priText}</Text>
+          ) : (
+            <Text> </Text>
+          )}
+        </Box>
+        <Box overflow="hidden">
+          {actionText ? (
+            <Text {...(isSelected ? { inverse: true } : {})} dimColor>{actionText}</Text>
+          ) : null}
+        </Box>
       </Box>
     </Box>
   );
 }
 
-export function SessionSelector({ displaySessions, selectedId, height }: SessionSelectorProps): React.ReactElement {
+export function SessionSelector({ displaySessions, selectedId, height, width }: SessionSelectorProps): React.ReactElement {
   if (displaySessions.length === 0) {
     return (
       <Box flexDirection="column" height={height}>
@@ -109,6 +125,7 @@ export function SessionSelector({ displaySessions, selectedId, height }: Session
     );
   }
 
+  // Each item is exactly 2 rows
   const itemsPerPage = Math.max(1, Math.floor(height / 2));
   const selectedIndex = displaySessions.findIndex(ds => ds.session.id === selectedId);
   let startIdx = 0;
@@ -120,7 +137,7 @@ export function SessionSelector({ displaySessions, selectedId, height }: Session
   return (
     <Box flexDirection="column" height={height} overflow="hidden">
       {visible.map((ds) => (
-        <SessionRow key={ds.session.id} ds={ds} isSelected={ds.session.id === selectedId} maxWidth={40} />
+        <SessionRow key={ds.session.id} ds={ds} isSelected={ds.session.id === selectedId} width={width} />
       ))}
     </Box>
   );
