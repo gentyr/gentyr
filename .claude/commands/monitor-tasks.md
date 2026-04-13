@@ -33,20 +33,18 @@ For persistent tasks, call `mcp__persistent-task__list_persistent_tasks({})` and
 
 ## Step 2: Initialize
 
-Create the state file `.claude/state/monitor-tasks-active.json`:
+Create the monitoring state via MCP (NOT Bash — never write state files with Bash):
 
-```json
-{
-  "startedAt": "<ISO timestamp>",
-  "roundNumber": 0,
-  "monitoredSessions": [],
-  "monitoredTaskIds": ["<selected task IDs>"],
-  "currentStep": "INIT",
-  "lastRoundAt": null
-}
+```
+mcp__agent-tracker__update_monitor_state({
+  round_number: 0,
+  monitored_sessions: [],
+  monitored_task_ids: ["<selected task IDs>"],
+  current_step: "INIT"
+})
 ```
 
-Write this file using `Bash("echo '<json>' > .claude/state/monitor-tasks-active.json")`. The `monitor-tasks-reminder.js` PostToolUse hook reads this file to inject reminders every 10 tool calls.
+This writes `.claude/state/monitor-tasks-active.json` which the `monitor-tasks-reminder.js` PostToolUse hook reads to inject reminders every 10 tool calls.
 
 Record loop state:
 - `roundNumber = 0`
@@ -81,7 +79,7 @@ Note the monitor's `lastSummary` field (1-2 sentences, if available).
 
 ### Step 3b: BROWSE SESSIONS
 
-**This is the core of the new design.** For each active session (monitor + running children), call:
+**This is the core of the design.** For each active session (monitor + running children), call:
 
 ```
 mcp__agent-tracker__browse_session({ agent_id: "<agent_id>", page_size: 15 })
@@ -106,9 +104,9 @@ Messages 270-284 of 284
 ```
 
 **Formatting rules for each message type:**
-- `assistant_text` → `#N [HH:MM:SS] [text] <content, up to 200 chars per line>`
-- `tool_call` → `#N [HH:MM:SS] [tool] <tool_name> (<input_preview truncated to 80ch>)`
-- `tool_result` → `#N [HH:MM:SS] [result] <preview truncated to 120ch>`
+- `assistant_text` → `#N [HH:MM:SS] [text] <content>`
+- `tool_call` → `#N [HH:MM:SS] [tool] <tool_name> (<input_preview>)`
+- `tool_result` → `#N [HH:MM:SS] [result] <preview>`
 - `user` → `#N [HH:MM:SS] [user] <content>`
 - `compaction` → `#N [HH:MM:SS] [compacted] <reason>`
 - `error` → `#N [HH:MM:SS] [ERROR] <message>`
@@ -137,9 +135,20 @@ Write **3-5 sentences** with specific evidence from Steps 3a-3b. Reference messa
 
 **End with a verdict:** `Healthy`, `Warning — <reason>`, or `INTERVENTION NEEDED — <reason>`
 
-### Step 3e: SLEEP AND REPEAT
+### Step 3e: UPDATE STATE AND SLEEP
 
-Update `.claude/state/monitor-tasks-active.json` with current round number and step.
+Update monitoring state via MCP:
+
+```
+mcp__agent-tracker__update_monitor_state({
+  round_number: N,
+  monitored_sessions: ["<current agent IDs from inspect>"],
+  monitored_task_ids: ["<task IDs>"],
+  current_step: "SLEEP"
+})
+```
+
+Then sleep:
 
 ```
 ---
@@ -169,7 +178,7 @@ Display recommended action for each condition.
 When monitoring ends (user interrupt, intervention, or all tasks done):
 
 ```
-Bash("rm -f .claude/state/monitor-tasks-active.json")
+mcp__agent-tracker__stop_monitoring({})
 ```
 
 ---
@@ -178,16 +187,17 @@ Bash("rm -f .claude/state/monitor-tasks-active.json")
 
 **DO:**
 - Call MCP tools directly — no investigator sub-agents
+- Use `update_monitor_state` to track round progress (NEVER write state files with Bash)
+- Use `stop_monitoring` to clean up (NEVER use `Bash("rm ...")` for state files)
 - Show `browse_session` output as indexed messages with timestamps
 - Reference message indices in your assessment ("at #274...")
 - Page backward through history when recent messages are uninteresting
-- Update the state file each round (the hook reads it)
 - Continue looping until all sessions are done or CTO interrupts
 
 **DO NOT:**
+- Use Bash to write or delete state files — always use MCP tools
 - Spawn investigator or user-alignment sub-agents
 - Paraphrase or summarize session messages — show them verbatim
 - Skip the browse step — it's the most valuable part
 - Write vague assessments — cite specific message indices and tool calls
 - Call `sleep` for more than 60s between rounds
-- Forget to clean up the state file on exit

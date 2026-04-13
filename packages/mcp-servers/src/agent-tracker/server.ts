@@ -52,6 +52,8 @@ import {
   AcknowledgeSignalArgsSchema,
   PeekSessionArgsSchema,
   BrowseSessionArgsSchema,
+  UpdateMonitorStateArgsSchema,
+  StopMonitoringArgsSchema,
   GetSessionActivitySummaryArgsSchema,
   SearchCtoSessionsArgsSchema,
   SuspendSessionArgsSchema,
@@ -94,6 +96,8 @@ import {
   type AcknowledgeSignalArgs,
   type PeekSessionArgs,
   type BrowseSessionArgs,
+  type UpdateMonitorStateArgs,
+  type StopMonitoringArgs,
   type GetSessionActivitySummaryArgs,
   type SearchCtoSessionsArgs,
   type SuspendSessionArgs,
@@ -3371,6 +3375,41 @@ async function browseSession(args: BrowseSessionArgs): Promise<object | ErrorRes
   };
 }
 
+// ============================================================================
+// /monitor-tasks state management
+// ============================================================================
+
+const MONITOR_STATE_FILE = path.join(PROJECT_DIR, '.claude', 'state', 'monitor-tasks-active.json');
+const MONITOR_COUNTER_FILE = path.join(PROJECT_DIR, '.claude', 'state', 'monitor-tasks-reminder.count');
+
+async function updateMonitorState(args: UpdateMonitorStateArgs): Promise<object | ErrorResult> {
+  let existing: Record<string, unknown> = {};
+  try {
+    existing = JSON.parse(fs.readFileSync(MONITOR_STATE_FILE, 'utf8'));
+  } catch { /* new file */ }
+
+  const state = {
+    startedAt: existing.startedAt ?? new Date().toISOString(),
+    roundNumber: args.round_number,
+    monitoredSessions: args.monitored_sessions,
+    monitoredTaskIds: args.monitored_task_ids,
+    currentStep: args.current_step,
+    lastRoundAt: new Date().toISOString(),
+  };
+
+  const dir = path.dirname(MONITOR_STATE_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(MONITOR_STATE_FILE, JSON.stringify(state, null, 2));
+  return { success: true, state };
+}
+
+async function stopMonitoring(_args: StopMonitoringArgs): Promise<object | ErrorResult> {
+  let removed = false;
+  try { fs.unlinkSync(MONITOR_STATE_FILE); removed = true; } catch { /* already gone */ }
+  try { fs.unlinkSync(MONITOR_COUNTER_FILE); } catch { /* already gone */ }
+  return { success: true, removed };
+}
+
 /**
  * Get a summary of all currently running agent sessions, including last tool and elapsed time.
  */
@@ -4511,6 +4550,18 @@ const tools: AnyToolHandler[] = [
     description: 'Browse a session\'s message history with indexed pagination. Returns numbered messages (assistant text, tool calls, tool results) that can be paged backward using before_index. Designed for CTO monitoring — shows raw session content with minimal processing. Use page_size to control how many messages per page (default 20). Omit before_index for latest messages; pass before_index from the response range.start_index to page backward.',
     schema: BrowseSessionArgsSchema,
     handler: browseSession,
+  },
+  {
+    name: 'update_monitor_state',
+    description: 'Update the /monitor-tasks monitoring state file. Called each round to track progress. The monitor-tasks-reminder hook reads this file to inject reminders.',
+    schema: UpdateMonitorStateArgsSchema,
+    handler: updateMonitorState,
+  },
+  {
+    name: 'stop_monitoring',
+    description: 'Stop /monitor-tasks monitoring. Removes the state file and counter file so the reminder hook stops firing.',
+    schema: StopMonitoringArgsSchema,
+    handler: stopMonitoring,
   },
   {
     name: 'get_session_activity_summary',

@@ -321,6 +321,17 @@ export const BrowseSessionArgsSchema = z.object({
 });
 export type BrowseSessionArgs = z.infer<typeof BrowseSessionArgsSchema>;
 
+export const UpdateMonitorStateArgsSchema = z.object({
+  round_number: z.number().describe('Current monitoring round number'),
+  monitored_sessions: z.array(z.string()).describe('Agent IDs being monitored'),
+  monitored_task_ids: z.array(z.string()).describe('Persistent task IDs being monitored'),
+  current_step: z.string().describe('Current step: OVERVIEW, BROWSE, QUEUE, ASSESS, or SLEEP'),
+});
+export type UpdateMonitorStateArgs = z.infer<typeof UpdateMonitorStateArgsSchema>;
+
+export const StopMonitoringArgsSchema = z.object({});
+export type StopMonitoringArgs = z.infer<typeof StopMonitoringArgsSchema>;
+
 export const GetSessionActivitySummaryArgsSchema = z.object({});
 export type GetSessionActivitySummaryArgs = z.infer<typeof GetSessionActivitySummaryArgsSchema>;
 
