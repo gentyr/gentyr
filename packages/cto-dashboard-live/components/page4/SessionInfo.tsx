@@ -16,6 +16,7 @@ interface SessionInfoProps {
   agentId: string | null;
   summaryIndex: number;
   height: number;
+  width: number;
 }
 
 function InfoRow({ label, value }: { label: string; value: string }): React.ReactElement {
@@ -45,7 +46,7 @@ function lastActivityAgo(timestamp: string | null): string {
   } catch { return '-'; }
 }
 
-export function SessionInfo({ session, agentId, summaryIndex, height }: SessionInfoProps): React.ReactElement {
+export function SessionInfo({ session, agentId, summaryIndex, height, width }: SessionInfoProps): React.ReactElement {
   const [summaries, setSummaries] = useState<Array<{ id: string; summary: string; created_at: string }>>([]);
   const [, setTick] = useState(0);
 
@@ -81,7 +82,9 @@ export function SessionInfo({ session, agentId, summaryIndex, height }: SessionI
   const pid = session.pid ? String(session.pid) : 'N/A';
   const agentType = session.agentType || 'unknown';
   const elapsed = session.elapsed;
-  const title = cleanTitle(session.title || '(untitled)');
+  const rawTitle = cleanTitle(session.title || '(untitled)');
+  const titleMaxChars = Math.max(20, (width - 2) * 2); // ~2 lines worth
+  const title = rawTitle.length > titleMaxChars ? rawTitle.substring(0, titleMaxChars - 3) + '...' : rawTitle;
   const started = formatTimeHHMM(session.startedAt);
   const completed = session.completedAt ? formatTimeHHMM(session.completedAt) : null;
   const lastActivity = lastActivityAgo(session.lastActionTimestamp);
@@ -92,13 +95,15 @@ export function SessionInfo({ session, agentId, summaryIndex, height }: SessionI
     : -1;
   const currentSummary = clampedIdx >= 0 ? summaries[clampedIdx] : null;
 
-  // Info rows count: PID, Type, Elapsed, Started, [Completed], Last activity, Title = 6-7 rows
-  const infoRows = completed ? 7 : 6;
+  // Title takes ~2 lines, plus label line
+  const titleLines = Math.ceil(title.length / Math.max(10, width - 2)) + 1;
+  // Info rows count: PID, Type, Elapsed, Started, [Completed], Last activity, Title lines
+  const infoRows = (completed ? 5 : 4) + titleLines;
   const summaryHeaderRows = 1;
   const availableForSummary = Math.max(1, height - infoRows - summaryHeaderRows - 1);
 
-  // Wrap summary text to fit width (rough, ~26 chars for left column)
-  const wrapWidth = 26;
+  // Wrap summary text to fit available width
+  const wrapWidth = Math.max(20, width - 2);
   const summaryLines: string[] = [];
   if (currentSummary) {
     const words = currentSummary.summary.split(' ');

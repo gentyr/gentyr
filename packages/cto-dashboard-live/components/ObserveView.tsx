@@ -319,6 +319,7 @@ export function ObserveView({ data, bodyHeight, bodyWidth, isActive }: ObserveVi
           agentId={tailAgentId}
           summaryIndex={summaryIndex}
           height={infoHeight}
+          width={leftWidth - 4}
         />
       </Section>
 
