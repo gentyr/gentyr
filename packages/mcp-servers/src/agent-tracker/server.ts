@@ -785,7 +785,7 @@ function extractActivity(entries: any[]): ActivityEntry[] {
         activity.push({
           type: 'assistant_text',
           timestamp: entry.timestamp ?? undefined,
-          text: joined.length > 1000 ? joined.substring(0, 1000) + '...' : joined,
+          text: joined,
         });
       }
 
@@ -3156,11 +3156,11 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
 
       const texts = content.filter((b: any) => b.type === 'text' && b.text).map((b: any) => b.text as string);
       if (texts.length > 0) {
-        lastText = texts.join('\n').substring(0, 1000);
-        // Check for alignment findings
         const joined = texts.join('\n');
+        lastText = joined;
+        // Check for alignment findings
         if (joined.toLowerCase().includes('alignment') || joined.toLowerCase().includes('user intent')) {
-          alignmentFindings = joined.substring(0, 500);
+          alignmentFindings = joined;
         }
       }
 
@@ -3279,7 +3279,7 @@ function formatBrowseMessage(entry: any, index: number): BrowseMessage | null {
         ? entry.message.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
         : '';
     if (text.length > 0) {
-      return { index, type: 'user', timestamp: ts, content: text.length > 1000 ? text.substring(0, 1000) + '...' : text };
+      return { index, type: 'user', timestamp: ts, content: text };
     }
   }
 
@@ -3343,7 +3343,7 @@ async function browseSession(args: BrowseSessionArgs): Promise<object | ErrorRes
         const texts = blocks.filter((b: any) => b.type === 'text' && b.text).map((b: any) => b.text as string);
         if (texts.length > 0) {
           const joined = texts.join('\n');
-          messages.push({ index: i, type: 'assistant_text', timestamp: ts, content: joined.length > 2000 ? joined.substring(0, 2000) + '...' : joined });
+          messages.push({ index: i, type: 'assistant_text', timestamp: ts, content: joined });
         }
         for (const block of blocks) {
           if (block.type !== 'tool_use') continue;

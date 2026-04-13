@@ -395,8 +395,7 @@ export function readSessionTail(agentId: string, fromPosition?: number, worktree
             entries.push({ type: 'tool_call', timestamp, text: toolName, toolName, toolInput });
           } else if (b['type'] === 'text') {
             const textVal = typeof b['text'] === 'string' ? b['text'] : '';
-            const preview = textVal.trim().split('\n').find((l: string) => l.trim().length > 3) ?? '';
-            if (preview.length > 5) entries.push({ type: 'assistant_text', timestamp, text: preview.substring(0, 200) });
+            if (textVal.trim().length > 3) entries.push({ type: 'assistant_text', timestamp, text: textVal.trim() });
           }
         }
         continue;
