@@ -111,6 +111,37 @@ After committing, the project-manager agent:
 
 Code review happens at promotion time (preview -> staging), not at the feature branch level.
 
+### Test Scope Profiles
+
+Test scope profiles let teams gate pushes on a vertical slice of tests rather than the full suite. This is useful when an active feature area has known failing tests outside its scope that should not block development on other verticals.
+
+**Configuration**: Two fields in `ServicesConfigSchema` (`services.json`) control scope gating:
+- `testScopes` — named map of `TestScope` objects. Each scope defines: `unitTestPattern` (regex applied to test file paths), `scopedUnitCommand`/`scopedIntegrationCommand` (explicit command overrides), plus reserved-future fields `e2eTestPattern`, `e2eDemoPath`, `additionalPatterns`, and `gatingBehavior`.
+- `activeTestScope` — name of the currently active scope (or `null` for full-suite gating, the default).
+
+**`GENTYR_TEST_SCOPE` env var** overrides `activeTestScope` from config. Useful for CI or temporary overrides without modifying `services.json`.
+
+**Pre-push hook behavior** (`husky/pre-push`): When a scope is active, the full unit + integration suite still runs on every push. If the full suite passes, the push proceeds normally. If the full suite has failures, the hook invokes `lib/test-scope-classifier.js` to re-run only the scoped subset:
+- Scoped tests fail → push is **blocked** (exit 1)
+- Scoped tests pass, non-scoped tests fail → push is **allowed with a warning** (exit 0)
+- Scope config missing or unresolvable → **fail-closed** (push blocked)
+
+The original non-scoped path (full suite failures always block) is preserved verbatim when no scope is active.
+
+**Key modules**:
+- `lib/test-scope.js` — shared ES module: `getActiveTestScope()`, `getTestScopeConfig()`, `buildScopedCommand()`, `formatPushSummary()`. Shell metacharacter sanitization in `buildScopedCommand()` prevents injection via `unitTestPattern` values in `services.json`.
+- `lib/test-scope-classifier.js` — Node CLI called from `pre-push` on failures. Resolves scope config, re-runs scoped tests, prints a formatted summary, exits 0 or 1. Fail-closed when scope config is absent or malformed.
+
+**Promotion pipeline awareness**: `hourly-automation.js` injects scope context into preview, staging, and hotfix promotion agent prompts via `getTestScopePromptContext()`. When a scope is active, promotion agents are instructed that only scoped test failures are blocking; non-scoped failures are informational.
+
+**Session briefing**: Both interactive (deputy-CTO) and spawned-agent briefings in `session-briefing.js` display the active scope name and description when `activeTestScope` is set.
+
+**Schema validation**: `TestScopeSchema` and `TestScopeGatingSchema` in `packages/mcp-servers/src/secret-sync/types.ts` validate scope objects. The `e2eTestPattern`, `e2eDemoPath`, `additionalPatterns`, and `gatingBehavior` fields are schema-defined but marked "reserved for future promotion pipeline use" — the pre-push hook does not consume them yet.
+
+**Tests**: 23 unit tests in `.claude/hooks/__tests__/test-scope.test.js` cover all four exported functions. 19 structural tests in `.claude/hooks/__tests__/test-scope-classifier.test.js` cover the classifier CLI and pre-push integration.
+
+Read and write `testScopes` and `activeTestScope` via the `get_services_config` / `update_services_config` tools on the `secret-sync` MCP server.
+
 ### Deputy-CTO Promotion Review
 
 The deputy-CTO reviews promotion PRs (preview -> staging, staging -> main), NOT individual feature PRs. Feature PRs are self-merged by the project-manager immediately after creation.
@@ -154,7 +185,7 @@ Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/
 
 **Port isolation** (`lib/port-allocator.js`): Each worktree is assigned a dedicated port block (base 3100, increments of 100 per worktree, max 50). `provisionWorktree()` calls `allocatePortBlock()` and injects `CLAUDE_WORKTREE_DIR`, `PLAYWRIGHT_WEB_PORT`, `PLAYWRIGHT_BACKEND_PORT`, and `PLAYWRIGHT_BRIDGE_PORT` into `.mcp.json` env for the `playwright` and `secret-sync` servers. This enables worktree-local demo testing — `run_demo`, `run_tests`, and `secret_dev_server_start` all operate from the worktree at its allocated ports without merging first. State at `.claude/state/port-allocations.json` (O_EXCL lockfile for TOCTOU safety). `removeWorktree()` releases the block; `cleanupMergedWorktrees()` calls `cleanupStaleAllocations()` as a safety net for worktrees removed via paths that bypassed `removeWorktree()`.
 
-**Worktree provisioning config** (`services.json`): Five optional fields in `ServicesConfigSchema` control install and build behavior during `provisionWorktree()`:
+**Worktree provisioning config** (`services.json`): Five optional fields in `ServicesConfigSchema` control install and build behavior during `provisionWorktree()`. Two additional fields control test scope gating (see Test Scope Profiles below):
 - `worktreeBuildCommand` — shell command to build workspace packages (e.g., `"pnpm --recursive build"`). Runs after install when build artifacts are absent.
 - `worktreeBuildHealthCheck` — shell command that exits 0 if build artifacts already exist; skips the build command when it passes (e.g., `"test -f packages/browser-proxy/dist/index.js"`).
 - `worktreeInstallTimeout` — timeout in ms for the package manager install step (default: 120000). Large monorepos with 43+ packages may need 300000 or more.

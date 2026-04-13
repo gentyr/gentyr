@@ -1970,6 +1970,26 @@ function hasBugFixCommits(commits) {
 }
 
 /**
+ * Read the active test scope from services.json and return a context block
+ * for injection into promotion agent prompts. Returns empty string if no scope.
+ */
+function getTestScopePromptContext() {
+  try {
+    const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+    if (!fs.existsSync(configPath)) return '';
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const scopeName = process.env.GENTYR_TEST_SCOPE || cfg.activeTestScope;
+    if (!scopeName || !cfg.testScopes?.[scopeName]) return '';
+    const scope = cfg.testScopes[scopeName];
+    return `\n**Active Test Scope:** \`${scopeName}\`${scope.description ? ` — ${scope.description}` : ''}
+- Only failures in tests matching scope patterns are BLOCKING
+- Non-scoped test failures are INFORMATIONAL (report but do not block promotion)
+- Include "[scope: ${scopeName}]" in the promotion commit message\n`;
+  } catch { /* non-fatal */ }
+  return '';
+}
+
+/**
  * Create or reuse a worktree for promotion agents.
  * Uses deterministic branch names so worktrees persist across cycles.
  * Falls back to PROJECT_DIR on failure (matches task runner pattern).
@@ -2025,7 +2045,7 @@ ${commitList}
 
 **Hours since last staging merge:** ${hoursSinceLastStagingMerge}
 **Bug-fix commits detected:** ${hasBugFix ? 'YES (24h waiting period bypassed)' : 'No'}
-
+${getTestScopePromptContext()}
 ## Process
 
 ### Step 1: Code Review
@@ -2039,7 +2059,7 @@ Spawn a code-reviewer sub-agent (Task tool, subagent_type: code-reviewer) to rev
 
 Spawn a test-writer sub-agent (Task tool, subagent_type: test-writer) to assess test quality:
 - Check if new code has adequate test coverage
-- Verify no tests were disabled or weakened
+- Verify no tests were disabled or weakened${getTestScopePromptContext() ? `\n- NOTE: Active test scope is in effect. Only scoped test failures are blocking. Report non-scoped failures as warnings.` : ''}
 
 ### Step 3: Evaluate Results
 
@@ -2116,7 +2136,7 @@ ${commitList}
 \`\`\`
 
 **Hours since last staging commit:** ${hoursSinceLastStagingCommit} (must be >= 24 for stability)
-
+${getTestScopePromptContext()}
 ## Process
 
 ### Step 1: Code Review
@@ -2130,7 +2150,7 @@ Spawn a code-reviewer sub-agent (Task tool, subagent_type: code-reviewer) to rev
 
 Spawn a test-writer sub-agent (Task tool, subagent_type: test-writer) to assess:
 - Test coverage meets thresholds (80% global, 100% critical paths)
-- No tests disabled or weakened
+- No tests disabled or weakened${getTestScopePromptContext() ? `\n- NOTE: Active test scope is in effect. Only scoped test failures are blocking. Report non-scoped failures as warnings.` : ''}
 
 ### Step 3: Evaluate Results
 
@@ -2228,7 +2248,7 @@ Code review and quality checks still apply.
 \`\`\`
 ${commitList}
 \`\`\`
-
+${getTestScopePromptContext()}
 ## Process
 
 ### Step 1: Code Review

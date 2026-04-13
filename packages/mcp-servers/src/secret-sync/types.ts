@@ -167,6 +167,48 @@ export type DeleteSecretProfileArgs = z.infer<typeof DeleteSecretProfileArgsSche
 export const ListSecretProfilesArgsSchema = z.object({});
 
 // ============================================================================
+// Test Scope Profile Schemas
+// ============================================================================
+
+export const TestScopeGatingSchema = z.object({
+  matchedTests: z.enum(['block', 'warn']).default('block')
+    .describe('Action for tests matching the scope: "block" fails the push, "warn" only warns'),
+  unmatchedTests: z.enum(['block', 'warn']).default('warn')
+    .describe('Action for tests NOT matching the scope: "block" fails the push, "warn" only warns'),
+});
+
+export const TestScopeSchema = z.object({
+  description: z.string().optional()
+    .describe('Human-readable description of what this scope covers'),
+  unitTestPattern: z.string().optional()
+    .refine(
+      (val) => { if (!val) return true; try { new RegExp(val); return true; } catch { return false; } },
+      { message: 'unitTestPattern must be a valid regular expression' },
+    )
+    .describe('Regex for matching unit/integration test file paths (e.g., "\\.allow\\.")'),
+  // e2eTestPattern, e2eDemoPath, additionalPatterns: defined in schema for config validation
+  // but not yet wired into the pre-push hook (which only runs unit + integration tests).
+  // These will be consumed by future e2e/demo scope gating in the promotion pipeline.
+  e2eTestPattern: z.string().optional()
+    .describe('Pattern for e2e test name filtering via --grep (e.g., "@allow"). Reserved for promotion pipeline.'),
+  e2eDemoPath: z.string().optional()
+    .describe('Directory prefix for demo tests in scope (e.g., "e2e/demo/allow/"). Reserved for promotion pipeline.'),
+  additionalPatterns: z.array(z.string()).optional()
+    .describe('Extra regex patterns matched against test file paths. Reserved for promotion pipeline.'),
+  scopedUnitCommand: z.string().optional()
+    .describe('Override: explicit command to run scoped unit tests (bypasses pattern construction)'),
+  scopedIntegrationCommand: z.string().optional()
+    .describe('Override: explicit command to run scoped integration tests'),
+  // gatingBehavior: currently the pre-push hook hardcodes matched=block, unmatched=warn.
+  // This field allows future customization (e.g., both block during release freeze).
+  gatingBehavior: TestScopeGatingSchema.optional()
+    .describe('Controls whether matched/unmatched test failures block or warn. Defaults: matched=block, unmatched=warn. Reserved for future customization.'),
+});
+
+export type TestScopeGating = z.infer<typeof TestScopeGatingSchema>;
+export type TestScope = z.infer<typeof TestScopeSchema>;
+
+// ============================================================================
 // Type Exports
 // ============================================================================
 
@@ -220,6 +262,10 @@ export const ServicesConfigSchema = z.object({
     .describe('When "strict", install/build failures abort worktree creation and clean up. Default: "lenient" (non-fatal warnings).'),
   worktreeArtifactCopy: z.array(z.string()).optional()
     .describe('Glob patterns of build artifact directories to copy from main tree to worktrees (e.g., ["packages/*/dist"]). Copied BEFORE install so bin symlinks resolve. Single-level * wildcards only.'),
+  testScopes: z.record(z.string(), TestScopeSchema).optional()
+    .describe('Named test scope profiles for vertical slice deployment gating. Each scope defines patterns that classify which tests are "in scope" for push/promotion gating.'),
+  activeTestScope: z.string().nullable().optional()
+    .describe('Active scope name from testScopes. Only scoped test failures block push; non-scoped failures produce warnings. null or absent = full suite gates (default behavior).'),
   runCommandConfig: z.object({
     allowedExecutables: z.array(z.string()).optional()
       .describe('Additional executables to allow beyond defaults'),

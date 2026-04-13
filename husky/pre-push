@@ -43,43 +43,122 @@ echo ""
 #
 # This hook runs the FULL test suite (unit + integration) on every push to
 # ensure no broken code reaches the remote repository.
+#
+# TEST SCOPE PROFILES: When GENTYR_TEST_SCOPE is set (or activeTestScope in
+# services.json), all tests still run but only scoped test failures block the
+# push. Non-scoped failures produce warnings. This supports vertical slice
+# deployment gating without hiding test failures.
 # =============================================================================
 
-echo "=============================================="
-echo "FULL TEST SUITE"
-echo "=============================================="
-echo ""
-
-echo "Running unit tests..."
-pnpm run test:unit
-UNIT_EXIT=$?
-
-if [ $UNIT_EXIT -ne 0 ]; then
-  echo ""
-  echo "Unit tests FAILED. Push blocked."
-  echo "   Fix failing tests before pushing."
-  exit 1
+# Detect active test scope (env var overrides config)
+CONFIG_FILE=".claude/config/services.json"
+ACTIVE_SCOPE=""
+if [ -n "$GENTYR_TEST_SCOPE" ]; then
+  ACTIVE_SCOPE="$GENTYR_TEST_SCOPE"
+elif [ -f "$CONFIG_FILE" ]; then
+  ACTIVE_SCOPE=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf8'));if(c.activeTestScope)console.log(c.activeTestScope)}catch{}" 2>/dev/null)
 fi
-echo "Unit tests passed"
-echo ""
 
-echo "Running integration tests..."
-pnpm run test:integration
-INT_EXIT=$?
-
-if [ $INT_EXIT -ne 0 ]; then
+if [ -n "$ACTIVE_SCOPE" ]; then
+  # ==========================================================================
+  # SCOPE-AWARE PATH: run full suite, re-run scoped subset on failure
+  # ==========================================================================
+  echo "=============================================="
+  echo "FULL TEST SUITE (scope: $ACTIVE_SCOPE)"
+  echo "All tests run. Only '$ACTIVE_SCOPE' failures block."
+  echo "=============================================="
   echo ""
-  echo "Integration tests FAILED. Push blocked."
-  echo "   Fix failing tests before pushing."
-  exit 1
-fi
-echo "Integration tests passed"
-echo ""
 
-echo "=============================================="
-echo "Full test suite passed"
-echo "=============================================="
-echo ""
+  echo "Running unit tests..."
+  pnpm run test:unit
+  UNIT_EXIT=$?
+  if [ $UNIT_EXIT -eq 0 ]; then
+    echo "Unit tests passed"
+  else
+    echo "Unit tests had failures (will check scope)"
+  fi
+  echo ""
+
+  echo "Running integration tests..."
+  pnpm run test:integration
+  INT_EXIT=$?
+  if [ $INT_EXIT -eq 0 ]; then
+    echo "Integration tests passed"
+  else
+    echo "Integration tests had failures (will check scope)"
+  fi
+  echo ""
+
+  if [ $UNIT_EXIT -eq 0 ] && [ $INT_EXIT -eq 0 ]; then
+    echo "=============================================="
+    echo "Full test suite passed (scoped and non-scoped)"
+    echo "=============================================="
+    echo ""
+  else
+    # Resolve GENTYR framework root via the hooks symlink
+    GENTYR_ROOT=$(node -e "try{console.log(require('path').resolve(require('fs').realpathSync('.claude/hooks'),'../..'))}catch{console.log('')}" 2>/dev/null)
+    if [ -z "$GENTYR_ROOT" ] || [ ! -f "$GENTYR_ROOT/lib/test-scope-classifier.js" ]; then
+      # Fallback: try node_modules/gentyr
+      GENTYR_ROOT="node_modules/gentyr"
+    fi
+    if [ ! -f "$GENTYR_ROOT/lib/test-scope-classifier.js" ]; then
+      echo "[pre-push] WARNING: test-scope-classifier.js not found at $GENTYR_ROOT/lib/"
+      echo "[pre-push] Fail-closed: cannot classify failures by scope. Push blocked."
+      exit 1
+    fi
+
+    node "$GENTYR_ROOT/lib/test-scope-classifier.js" \
+      --scope "$ACTIVE_SCOPE" \
+      --project-dir "$(pwd)" \
+      --unit-exit "$UNIT_EXIT" \
+      --integration-exit "$INT_EXIT"
+    SCOPE_EXIT=$?
+
+    if [ $SCOPE_EXIT -ne 0 ]; then
+      exit 1
+    fi
+    echo ""
+  fi
+else
+  # ==========================================================================
+  # ORIGINAL PATH: no scope active — full suite gates (unchanged behavior)
+  # ==========================================================================
+  echo "=============================================="
+  echo "FULL TEST SUITE"
+  echo "=============================================="
+  echo ""
+
+  echo "Running unit tests..."
+  pnpm run test:unit
+  UNIT_EXIT=$?
+
+  if [ $UNIT_EXIT -ne 0 ]; then
+    echo ""
+    echo "Unit tests FAILED. Push blocked."
+    echo "   Fix failing tests before pushing."
+    exit 1
+  fi
+  echo "Unit tests passed"
+  echo ""
+
+  echo "Running integration tests..."
+  pnpm run test:integration
+  INT_EXIT=$?
+
+  if [ $INT_EXIT -ne 0 ]; then
+    echo ""
+    echo "Integration tests FAILED. Push blocked."
+    echo "   Fix failing tests before pushing."
+    exit 1
+  fi
+  echo "Integration tests passed"
+  echo ""
+
+  echo "=============================================="
+  echo "Full test suite passed"
+  echo "=============================================="
+  echo ""
+fi
 
 # =============================================================================
 # REPO HYGIENE CHECK (Fire-and-Forget)
