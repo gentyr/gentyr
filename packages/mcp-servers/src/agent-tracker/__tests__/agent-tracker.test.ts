@@ -554,7 +554,6 @@ describe('Agent Tracker Server', () => {
       scriptExists: boolean,
       execFileSyncImpl: ExecFileSyncFn,
       sections: string[],
-      maxConcurrent: number,
       scriptPath: string,
     ): { error: string } | {
       spawned: Array<{ taskId: string; title: string; section: string; agent: string; agentId: string; pid: number }>;
@@ -570,7 +569,6 @@ describe('Agent Tracker Server', () => {
           scriptPath,
           '--sections', sections.join(','),
           '--project-dir', '/mock/project',
-          '--max-concurrent', String(maxConcurrent),
         ]);
         return JSON.parse(output.trim()) as ReturnType<typeof buildForceSpawnResult>;
       } catch (err: unknown) {
@@ -601,7 +599,6 @@ describe('Agent Tracker Server', () => {
         false,
         () => { throw new Error('should not be called'); },
         ['CODE-REVIEWER'],
-        10,
         '/mock/scripts/force-spawn-tasks.js',
       );
       expect(result).toHaveProperty('error');
@@ -614,7 +611,6 @@ describe('Agent Tracker Server', () => {
         true,
         () => JSON.stringify(expected),
         ['CODE-REVIEWER'],
-        10,
         '/mock/scripts/force-spawn-tasks.js',
       );
       expect(result).not.toHaveProperty('error');
@@ -631,7 +627,6 @@ describe('Agent Tracker Server', () => {
         true,
         () => 'not valid json',
         ['CODE-REVIEWER'],
-        10,
         '/mock/scripts/force-spawn-tasks.js',
       );
       expect(result).toHaveProperty('error');
@@ -646,7 +641,6 @@ describe('Agent Tracker Server', () => {
         true,
         () => { throw execErr; },
         ['CODE-REVIEWER'],
-        10,
         '/mock/scripts/force-spawn-tasks.js',
       );
 
@@ -663,7 +657,6 @@ describe('Agent Tracker Server', () => {
         true,
         () => { throw execErr; },
         ['TEST-WRITER'],
-        5,
         '/mock/scripts/force-spawn-tasks.js',
       );
 
@@ -677,7 +670,6 @@ describe('Agent Tracker Server', () => {
         true,
         () => JSON.stringify(expected),
         ['CODE-REVIEWER'],
-        10,
         '/mock/scripts/force-spawn-tasks.js',
       ) as ReturnType<typeof makeSuccessResult>;
 
@@ -697,7 +689,6 @@ describe('Agent Tracker Server', () => {
         true,
         () => JSON.stringify(emptyResult),
         ['CODE-REVIEWER'],
-        10,
         '/mock/scripts/force-spawn-tasks.js',
       ) as ReturnType<typeof makeSuccessResult>;
 
@@ -715,7 +706,6 @@ describe('Agent Tracker Server', () => {
           return JSON.stringify(makeSuccessResult());
         },
         ['CODE-REVIEWER', 'TEST-WRITER'],
-        5,
         '/mock/scripts/force-spawn-tasks.js',
       );
 
@@ -724,7 +714,7 @@ describe('Agent Tracker Server', () => {
       expect(capturedArgs[sectionsIndex + 1]).toBe('CODE-REVIEWER,TEST-WRITER');
     });
 
-    it('should pass maxConcurrent as string to script args', () => {
+    it('should not pass --max-concurrent to script args (concurrency read from session queue)', () => {
       const capturedArgs: string[] = [];
       buildForceSpawnResult(
         true,
@@ -733,13 +723,10 @@ describe('Agent Tracker Server', () => {
           return JSON.stringify(makeSuccessResult());
         },
         ['CODE-REVIEWER'],
-        7,
         '/mock/scripts/force-spawn-tasks.js',
       );
 
-      const maxIndex = capturedArgs.indexOf('--max-concurrent');
-      expect(maxIndex).toBeGreaterThanOrEqual(0);
-      expect(capturedArgs[maxIndex + 1]).toBe('7');
+      expect(capturedArgs.indexOf('--max-concurrent')).toBe(-1);
     });
   });
 

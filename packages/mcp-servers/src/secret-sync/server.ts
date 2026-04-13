@@ -1685,7 +1685,7 @@ export const tools = [
   },
   {
     name: 'update_services_config',
-    description: 'Update services.json config fields (e.g., worktreeBuildCommand, worktreeInstallTimeout, devServices). Validates against schema before writing. If file is root-owned (protected), stages changes for next "npx gentyr sync". Cannot modify the "secrets" key.',
+    description: 'Update services.json config fields (e.g., worktreeArtifactCopy, worktreeBuildCommand, worktreeInstallTimeout, devServices). Validates against schema before writing. If file is root-owned (protected), stages changes for next "npx gentyr sync". Cannot modify the "secrets" key. Tip: Set worktreeArtifactCopy to copy pre-built dist/ directories into worktrees instead of running a full build (e.g., ["packages/*/dist"]).',
     schema: UpdateServicesConfigArgsSchema,
     handler: updateServicesConfig as (args: unknown) => unknown,
   },

@@ -140,7 +140,7 @@ function resolveFrameworkDir(dir) {
  * Returns an array of absolute paths to directories that exist in baseDir.
  *
  * @param {string} baseDir - Absolute path to the main tree
- * @param {string} pattern - Relative glob pattern (e.g., 'packages/*/dist')
+ * @param {string} pattern - Relative glob pattern (e.g., "packages/{star}/dist")
  * @returns {string[]} Array of absolute paths that exist
  */
 function expandArtifactGlob(baseDir, pattern) {
@@ -486,6 +486,9 @@ export function provisionWorktree(worktreePath, options = {}) {
         } catch (_) { /* needs build */ }
       }
       if (needsBuild) {
+        if (!servicesConfig.worktreeArtifactCopy || servicesConfig.worktreeArtifactCopy.length === 0) {
+          console.error(`[worktree-manager] HINT: Running full build in worktree. Configure worktreeArtifactCopy in services.json to copy pre-built artifacts instead (seconds vs minutes). Use update_services_config MCP tool.`);
+        }
         try {
           execSync(buildCmd, { cwd: worktreePath, encoding: 'utf8', timeout: 300000, stdio: 'pipe' });
           console.error(`[worktree-manager] Built workspace packages in ${worktreePath}`);
