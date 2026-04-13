@@ -528,6 +528,19 @@ function buildInteractiveBriefing() {
     lines.push(`Tasks: ${tasks.pending} pending, ${tasks.active} active, ${tasks.completed24h} completed (24h)`);
   }
 
+  // Active test scope
+  try {
+    const cfgPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+    if (fs.existsSync(cfgPath)) {
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      const scopeName = process.env.GENTYR_TEST_SCOPE || cfg.activeTestScope;
+      if (scopeName && cfg.testScopes?.[scopeName]) {
+        const s = cfg.testScopes[scopeName];
+        lines.push(`Test Scope: "${scopeName}"${s.description ? ` — ${s.description}` : ''} (only scoped failures block push/promotion)`);
+      }
+    }
+  } catch { /* non-fatal */ }
+
   // Persistent tasks
   const ptState = getPersistentTaskState();
   if (ptState) {
@@ -569,6 +582,18 @@ function buildSpawnedBriefing() {
   } else {
     lines.push('You are starting a new work session.');
   }
+
+  // Active test scope (awareness for spawned agents)
+  try {
+    const cfgPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+    if (fs.existsSync(cfgPath)) {
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      const scopeName = process.env.GENTYR_TEST_SCOPE || cfg.activeTestScope;
+      if (scopeName && cfg.testScopes?.[scopeName]) {
+        lines.push(`Active test scope: "${scopeName}" — only scoped test failures block deployment`);
+      }
+    }
+  } catch { /* non-fatal */ }
 
   lines.push('');
   lines.push('BEFORE doing ANY work on your task, you MUST complete these steps IN ORDER:');
