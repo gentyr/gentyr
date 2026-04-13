@@ -22,13 +22,23 @@ function formatTimestamp(iso: string): string {
   } catch { return '??:??:??'; }
 }
 
+const MAX_TEXT_LINES = 3;
+
 function estimateRows(entry: ActivityEntry, availableWidth: number): number {
   if (entry.type !== 'assistant_text') return 1;
-  const textWidth = Math.max(10, availableWidth - 2);
-  return 1 + Math.max(1, Math.ceil(entry.text.length / textWidth));
+  const textWidth = Math.max(10, availableWidth - 4);
+  const textLines = Math.min(MAX_TEXT_LINES, Math.ceil(entry.text.length / textWidth));
+  return 1 + textLines;
 }
 
-function EntryRow({ entry, maxTextLen }: { entry: ActivityEntry; maxTextLen: number }): React.ReactElement {
+/** Truncate text to fit within maxLines of the given width */
+function fitText(text: string, lineWidth: number, maxLines: number): string {
+  const maxChars = lineWidth * maxLines;
+  if (text.length <= maxChars) return text;
+  return text.substring(0, maxChars - 3) + '...';
+}
+
+function EntryRow({ entry, maxTextLen, width }: { entry: ActivityEntry; maxTextLen: number; width: number }): React.ReactElement {
   const prefix = `[${formatTimestamp(entry.timestamp)}] `;
 
   switch (entry.type) {
@@ -38,8 +48,11 @@ function EntryRow({ entry, maxTextLen }: { entry: ActivityEntry; maxTextLen: num
       const inputPart = entry.toolInput && inputMaxLen > 3 ? ` (${truncate(entry.toolInput, inputMaxLen)})` : '';
       return (<Box><Text dimColor>{prefix}</Text><Text color="cyan">[tool] </Text><Text color="cyan" bold>{toolLabel}</Text><Text dimColor>{inputPart}</Text></Box>);
     }
-    case 'assistant_text':
-      return (<Box flexDirection="column"><Box><Text dimColor>{prefix}</Text><Text dimColor>[text] </Text></Box><Box marginLeft={2}><Text wrap="wrap">{entry.text}</Text></Box></Box>);
+    case 'assistant_text': {
+      const lineWidth = Math.max(10, width - 4);
+      const fitted = fitText(entry.text, lineWidth, MAX_TEXT_LINES);
+      return (<Box flexDirection="column"><Box><Text dimColor>{prefix}</Text><Text dimColor>[text] </Text></Box><Box marginLeft={2}><Text wrap="wrap">{fitted}</Text></Box></Box>);
+    }
     case 'tool_result':
       return (<Box><Text dimColor>{prefix}[result] {truncate(entry.resultPreview ?? entry.text, maxTextLen)}</Text></Box>);
     case 'error':
@@ -72,7 +85,7 @@ export function ActivityStream({ entries, height, width, scrollOffset = 0 }: Act
   }
   return (
     <Box flexDirection="column" height={visibleHeight} overflow="hidden">
-      {visible.map((entry, i) => (<EntryRow key={`${entry.timestamp}-${i}`} entry={entry} maxTextLen={maxTextLen} />))}
+      {visible.map((entry, i) => (<EntryRow key={`${entry.timestamp}-${i}`} entry={entry} maxTextLen={maxTextLen} width={width} />))}
     </Box>
   );
 }
