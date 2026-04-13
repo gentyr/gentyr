@@ -42,7 +42,6 @@ function parseArgs() {
     sections: [],
     taskIds: [],
     projectDir: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
-    maxConcurrent: 10,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -52,9 +51,6 @@ function parseArgs() {
       result.taskIds = args[++i].split(',').map(s => s.trim()).filter(Boolean);
     } else if (args[i] === '--project-dir' && args[i + 1]) {
       result.projectDir = args[++i];
-    } else if (args[i] === '--max-concurrent' && args[i + 1]) {
-      const val = parseInt(args[++i], 10);
-      if (val >= 1 && val <= 20) result.maxConcurrent = val;
     }
   }
 
@@ -618,9 +614,19 @@ async function main() {
     // Non-fatal — count will be conservative
   }
 
+  // Read the queue's configured concurrency limit
+  let maxConcurrent = 10;
+  try {
+    const sessionQueuePath = path.resolve(config.projectDir, '.claude', 'hooks', 'lib', 'session-queue.js');
+    const { getMaxConcurrentSessions } = await import(sessionQueuePath);
+    maxConcurrent = getMaxConcurrentSessions();
+  } catch {
+    // Fallback to default if session-queue.js is not available
+  }
+
   // Check running agents, calculate available slots
   const runningAgents = countRunningAgents();
-  const availableSlots = Math.max(0, config.maxConcurrent - runningAgents);
+  const availableSlots = Math.max(0, maxConcurrent - runningAgents);
 
   const spawned = [];
   const skipped = [];
@@ -645,7 +651,7 @@ async function main() {
         taskId: task.id,
         title: task.title,
         section: task.section,
-        reason: `Concurrency limit reached (${runningAgents + availableSlots}/${config.maxConcurrent})`,
+        reason: `Concurrency limit reached (${runningAgents + availableSlots}/${maxConcurrent})`,
       });
       continue;
     }

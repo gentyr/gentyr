@@ -132,6 +132,110 @@ function resolveFrameworkDir(dir) {
 }
 
 // ============================================================================
+// Build Artifact Copying
+// ============================================================================
+
+/**
+ * Expand a glob pattern with single-level * wildcards against the filesystem.
+ * Returns an array of absolute paths to directories that exist in baseDir.
+ *
+ * @param {string} baseDir - Absolute path to the main tree
+ * @param {string} pattern - Relative glob pattern (e.g., 'packages/*/dist')
+ * @returns {string[]} Array of absolute paths that exist
+ */
+function expandArtifactGlob(baseDir, pattern) {
+  const segments = pattern.split('/');
+  // Guard against path traversal
+  if (segments.some(s => s === '..')) return [];
+  let candidates = [baseDir];
+
+  for (const segment of segments) {
+    const nextCandidates = [];
+    for (const dir of candidates) {
+      if (segment.includes('*')) {
+        // Wildcard segment: enumerate directory entries and filter
+        const regexStr = segment
+          .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+          .replace(/\*/g, '[^/]*');
+        const regex = new RegExp(`^${regexStr}$`);
+        try {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory() && regex.test(entry.name)) {
+              nextCandidates.push(path.join(dir, entry.name));
+            }
+          }
+        } catch (_) { /* directory doesn't exist or isn't readable */ }
+      } else {
+        const next = path.join(dir, segment);
+        try {
+          if (fs.statSync(next).isDirectory()) {
+            nextCandidates.push(next);
+          }
+        } catch (_) { /* doesn't exist */ }
+      }
+    }
+    candidates = nextCandidates;
+  }
+
+  return candidates;
+}
+
+/**
+ * Copy build artifact directories from the main tree to a worktree.
+ *
+ * @param {string} mainDir - Absolute path to the main project tree (PROJECT_DIR)
+ * @param {string} worktreePath - Absolute path to the target worktree
+ * @param {string[]} patterns - Array of glob patterns from worktreeArtifactCopy
+ * @param {boolean} isStrict - Whether to throw on errors (strict provisioning mode)
+ * @returns {{ copied: number, skipped: number, errors: string[] }}
+ */
+function copyBuildArtifacts(mainDir, worktreePath, patterns, isStrict) {
+  let copied = 0;
+  let skipped = 0;
+  const errors = [];
+
+  for (const pattern of patterns) {
+    const sourceDirs = expandArtifactGlob(mainDir, pattern);
+    if (sourceDirs.length === 0) {
+      skipped++;
+      continue;
+    }
+
+    for (const srcDir of sourceDirs) {
+      const relPath = path.relative(mainDir, srcDir);
+      const destDir = path.join(worktreePath, relPath);
+
+      try {
+        // Ensure parent directory exists
+        fs.mkdirSync(path.dirname(destDir), { recursive: true });
+
+        // Remove existing dest if present (idempotent re-provisioning)
+        if (fs.existsSync(destDir)) {
+          fs.rmSync(destDir, { recursive: true, force: true });
+        }
+
+        fs.cpSync(srcDir, destDir, { recursive: true });
+        copied++;
+      } catch (err) {
+        const msg = `artifact-copy: failed to copy ${relPath}: ${err.message?.slice(0, 150)}`;
+        errors.push(msg);
+        if (isStrict) {
+          throw new Error(`[worktree-manager] STRICT: ${msg}`);
+        }
+        console.error(`[worktree-manager] Warning: ${msg}`);
+      }
+    }
+  }
+
+  if (copied > 0) {
+    console.error(`[worktree-manager] artifact-copy: copied ${copied} artifact director${copied === 1 ? 'y' : 'ies'} to ${worktreePath}`);
+  }
+
+  return { copied, skipped, errors };
+}
+
+// ============================================================================
 // Worktree Provisioning
 // ============================================================================
 
@@ -309,6 +413,16 @@ export function provisionWorktree(worktreePath, options = {}) {
 
   const isStrict = servicesConfig?.worktreeProvisioningMode === 'strict';
 
+  // --- Build artifact copy (BEFORE install) ---
+  // Copy pre-built dist/ directories from the main tree to avoid a full build.
+  // Must run before install so pnpm can create proper bin symlinks.
+  if (!options?.skipInstall && servicesConfig?.worktreeArtifactCopy) {
+    const patterns = servicesConfig.worktreeArtifactCopy;
+    if (Array.isArray(patterns) && patterns.length > 0) {
+      copyBuildArtifacts(PROJECT_DIR, worktreePath, patterns, isStrict);
+    }
+  }
+
   // --- Package manager install ---
   if (!options?.skipInstall) {
     const lockFiles = [
@@ -472,6 +586,18 @@ export function syncWorktreeDeps(worktreePath, options = {}) {
   } catch (err) {
     console.error(`[worktree-manager] syncWorktreeDeps: install failed in ${worktreePath}: ${err.message?.slice(0, 200)}`);
     return { synced: false, reason: `install failed: ${err.message?.slice(0, 100)}` };
+  }
+
+  // Copy fresh artifacts from main tree (after install, before build check)
+  if (servicesConfig?.worktreeArtifactCopy) {
+    const patterns = servicesConfig.worktreeArtifactCopy;
+    if (Array.isArray(patterns) && patterns.length > 0) {
+      try {
+        copyBuildArtifacts(PROJECT_DIR, worktreePath, patterns, false);
+      } catch (err) {
+        console.error(`[worktree-manager] syncWorktreeDeps: artifact copy failed (non-fatal): ${err.message?.slice(0, 200)}`);
+      }
+    }
   }
 
   // Run build if health check fails

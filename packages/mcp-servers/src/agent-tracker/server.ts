@@ -2113,7 +2113,7 @@ function forceSpawnTasks(args: ForceSpawnTasksArgs): ForceSpawnTasksResult | Err
   }
 
   try {
-    const scriptArgs = [scriptPath, '--project-dir', PROJECT_DIR, '--max-concurrent', String(args.maxConcurrent)];
+    const scriptArgs = [scriptPath, '--project-dir', PROJECT_DIR];
     if (args.taskIds) {
       scriptArgs.push('--task-ids', args.taskIds.join(','));
     } else if (args.sections) {
