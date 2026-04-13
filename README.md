@@ -8,7 +8,7 @@ Eleven agents work. A deputy CTO triages. You make the decisions that count.
 
 GENTYR turns Claude Code into an autonomous engineering team. It installs as a framework of agents, hooks, servers, and guards that govern how AI writes, tests, reviews, and ships code. You point it at a new SaaS project. It builds. You steer.
 
-> **macOS only.** The automation services, credential rotation, and persistent proxy use launchd. Linux and Windows are not supported.
+> **macOS only.** The automation services and window recording features use launchd and macOS APIs. Linux and Windows are not supported.
 
 > **Install:** `pnpm add gentyr` (npm) or `pnpm link ~/git/gentyr` (local dev)
 
@@ -56,7 +56,7 @@ An autonomous Opus agent that reviews every PR before it merges, triages reports
 
 ## how it runs
 
-Tasks enter the database. The task runner assigns agents on a timer. Agents work in isolated git worktrees. Code flows through the merge chain. The deputy reviews every PR before it merges. Hooks enforce compliance on every file change. The quota monitor rotates credentials when usage hits 95%. Dead sessions revive automatically. The usage optimizer scales all cooldowns to target 90% API utilization.
+Tasks enter the database. The task runner assigns agents on a timer. Agents work in isolated git worktrees. Code flows through the merge chain. The deputy reviews every PR before it merges. Hooks enforce compliance on every file change. Dead sessions revive automatically. Persistent monitors drive complex objectives to completion without supervision.
 
 You make the decisions that matter. Automation handles everything else.
 
@@ -229,17 +229,17 @@ npm run generate:readme
 
 Sixty-six hooks and background timers keep the system running without human triggers.
 
-### quota and credentials
+### credentials
 
-Multi-account rotation with restartless token swap. The quota monitor checks every five minutes. At 95% utilization it rotates to the lowest-usage account. Tokens refresh proactively before expiry. The swap writes to Keychain and Claude Code picks it up without restart. No session interruption. No lost work.
+Single-account model. The `credential-health-check.js` hook validates credentials at session start. 1Password resolves all secrets at runtime through `op://` references — no credentials stored in `.env` files or agent context windows. The secret-sync MCP server propagates secrets to deployment platforms without exposing values to agents.
 
 ### session recovery
 
-Three modes. Quota-interrupted sessions resume automatically via `--resume`. Dead agents are detected immediately at session start and also cross-referenced by the periodic reaper. Session revival now follows worktree-based agents into their original working directories. Paused sessions wait for account recovery then re-spawn. Maximum three revivals per cycle. Seven-day historical scan window.
+Three modes. Interrupted sessions resume automatically via `--resume`. Dead agents are detected immediately at session start and also cross-referenced by the periodic reaper. Session revival follows worktree-based agents into their original working directories. Paused sessions re-spawn immediately when a slot opens. Persistent monitors have their own dedicated revival path: dead monitors re-enqueue at critical priority within seconds, with a crash-loop circuit breaker (max 5 revivals per hour) that auto-pauses the task if a monitor crashes repeatedly.
 
 ### task orchestration
 
-A background timer spawns agents for pending tasks every cycle. Urgent tasks dispatch immediately. Normal tasks wait one hour. Concurrency capped at five simultaneous agents. The usage optimizer targets 90% API quota utilization by scaling all nineteen automation cooldowns through a single factor. When projected usage is low, agents spawn faster. When quota is tight, everything slows down.
+A background timer spawns agents for pending tasks every cycle. Urgent tasks dispatch immediately. Normal tasks wait one hour. Concurrency configurable (default 10 simultaneous agents) via `set_max_concurrent_sessions` or `/concurrent-sessions`. All spawning routes through a single SQLite-backed session queue with priority ordering (`cto` > `critical` > `urgent` > `normal` > `low`), reserved slot pools for high-priority work, inline preemption (SIGTSTP/SIGCONT — non-destructive), and focus mode to block automated spawning except CTO-directed work.
 
 Structured multi-phase work is managed by the plan orchestrator (`plan-orchestrator` MCP server). Plans contain phases, tasks, substeps, and dependency graphs with cycle detection. Progress rolls up automatically from substep to plan. PR merges auto-advance linked plan tasks via the plan-merge-tracker hook. Four dashboard views (`/plan`, `/plan-progress`, `/plan-timeline`, `/plan-audit`) show live execution state.
 

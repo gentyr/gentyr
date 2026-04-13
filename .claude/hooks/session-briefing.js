@@ -639,6 +639,23 @@ function buildSpawnedBriefing() {
     }
   }
 
+  // Worktree artifact copy status
+  if (process.env.CLAUDE_WORKTREE_DIR) {
+    try {
+      const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+      if (fs.existsSync(configPath)) {
+        const svcConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (!svcConfig.worktreeArtifactCopy || svcConfig.worktreeArtifactCopy.length === 0) {
+          if (svcConfig.worktreeBuildCommand) {
+            lines.push('');
+            lines.push('HINT: worktreeArtifactCopy is not configured. Worktrees run a full build on each provision.');
+            lines.push('  Configure via: update_services_config({ updates: { worktreeArtifactCopy: ["packages/*/dist"] } })');
+          }
+        }
+      }
+    } catch { /* non-fatal */ }
+  }
+
   // Worktree freshness check
   if (process.env.CLAUDE_WORKTREE_DIR) {
     try {

@@ -44,12 +44,6 @@ Use AskUserQuestion with **two questions**:
 - **"All sections"** — All 6 sections
 - **"Cancel"** — Do nothing
 
-**Question 2** — Concurrency limit (multiSelect: false):
-- **"Current default (N)"** — Use the maxConcurrent value from prefetch (Recommended)
-- **"5"** — Conservative limit
-- **"15"** — Higher limit
-- **"20"** — Maximum limit
-
 ### Step A3: Spawn via MCP Tool
 
 Map the user's section selection:
@@ -63,7 +57,7 @@ If the user chose "Other" and typed specific section names, parse those into the
 
 Call:
 ```
-mcp__agent-tracker__force_spawn_tasks({ sections: [...], maxConcurrent: N })
+mcp__agent-tracker__force_spawn_tasks({ sections: [...] })
 ```
 
 Then go to **Step 5: Display Results & Monitor**.
@@ -178,7 +172,7 @@ Format elapsed time as: `Xs` (under 60s), `Xm Ys` (under 60m), `Xh Ym` (over 60m
 
 ## What This Preserves
 
-- Concurrency guard (configurable via maxConcurrent parameter)
+- Concurrency guard (reads configured limit from session queue; change via `set_max_concurrent_sessions`)
 - Task status tracking (marks in_progress, resets on failure)
 - Agent tracker registration (spawned agents appear in `/cto-report`)
 - Tasks already in_progress are excluded
