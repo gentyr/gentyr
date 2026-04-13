@@ -75,8 +75,6 @@ export const ForceSpawnTasksArgsSchema = z.object({
   taskIds: z.array(z.string())
     .describe('Specific task IDs to spawn (overrides section-based selection)')
     .optional(),
-  maxConcurrent: z.coerce.number().optional().default(10)
-    .describe('Maximum concurrent agents allowed (default: 10)'),
 }).refine(data => data.sections || data.taskIds, {
   message: 'Either sections or taskIds must be provided',
 });

@@ -12,6 +12,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { execSync, execFileSync } from 'child_process';
 import { detectBaseBranch as detectBaseBranchShared } from './feature-branch-helper.js';
 import { allocatePortBlock, releasePortBlock, cleanupStaleAllocations } from './port-allocator.js';
@@ -128,6 +129,110 @@ function resolveFrameworkDir(dir) {
   }
 
   return null;
+}
+
+// ============================================================================
+// Build Artifact Copying
+// ============================================================================
+
+/**
+ * Expand a glob pattern with single-level * wildcards against the filesystem.
+ * Returns an array of absolute paths to directories that exist in baseDir.
+ *
+ * @param {string} baseDir - Absolute path to the main tree
+ * @param {string} pattern - Relative glob pattern (e.g., 'packages/*/dist')
+ * @returns {string[]} Array of absolute paths that exist
+ */
+function expandArtifactGlob(baseDir, pattern) {
+  const segments = pattern.split('/');
+  // Guard against path traversal
+  if (segments.some(s => s === '..')) return [];
+  let candidates = [baseDir];
+
+  for (const segment of segments) {
+    const nextCandidates = [];
+    for (const dir of candidates) {
+      if (segment.includes('*')) {
+        // Wildcard segment: enumerate directory entries and filter
+        const regexStr = segment
+          .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+          .replace(/\*/g, '[^/]*');
+        const regex = new RegExp(`^${regexStr}$`);
+        try {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory() && regex.test(entry.name)) {
+              nextCandidates.push(path.join(dir, entry.name));
+            }
+          }
+        } catch (_) { /* directory doesn't exist or isn't readable */ }
+      } else {
+        const next = path.join(dir, segment);
+        try {
+          if (fs.statSync(next).isDirectory()) {
+            nextCandidates.push(next);
+          }
+        } catch (_) { /* doesn't exist */ }
+      }
+    }
+    candidates = nextCandidates;
+  }
+
+  return candidates;
+}
+
+/**
+ * Copy build artifact directories from the main tree to a worktree.
+ *
+ * @param {string} mainDir - Absolute path to the main project tree (PROJECT_DIR)
+ * @param {string} worktreePath - Absolute path to the target worktree
+ * @param {string[]} patterns - Array of glob patterns from worktreeArtifactCopy
+ * @param {boolean} isStrict - Whether to throw on errors (strict provisioning mode)
+ * @returns {{ copied: number, skipped: number, errors: string[] }}
+ */
+function copyBuildArtifacts(mainDir, worktreePath, patterns, isStrict) {
+  let copied = 0;
+  let skipped = 0;
+  const errors = [];
+
+  for (const pattern of patterns) {
+    const sourceDirs = expandArtifactGlob(mainDir, pattern);
+    if (sourceDirs.length === 0) {
+      skipped++;
+      continue;
+    }
+
+    for (const srcDir of sourceDirs) {
+      const relPath = path.relative(mainDir, srcDir);
+      const destDir = path.join(worktreePath, relPath);
+
+      try {
+        // Ensure parent directory exists
+        fs.mkdirSync(path.dirname(destDir), { recursive: true });
+
+        // Remove existing dest if present (idempotent re-provisioning)
+        if (fs.existsSync(destDir)) {
+          fs.rmSync(destDir, { recursive: true, force: true });
+        }
+
+        fs.cpSync(srcDir, destDir, { recursive: true });
+        copied++;
+      } catch (err) {
+        const msg = `artifact-copy: failed to copy ${relPath}: ${err.message?.slice(0, 150)}`;
+        errors.push(msg);
+        if (isStrict) {
+          throw new Error(`[worktree-manager] STRICT: ${msg}`);
+        }
+        console.error(`[worktree-manager] Warning: ${msg}`);
+      }
+    }
+  }
+
+  if (copied > 0) {
+    console.error(`[worktree-manager] artifact-copy: copied ${copied} artifact director${copied === 1 ? 'y' : 'ies'} to ${worktreePath}`);
+  }
+
+  return { copied, skipped, errors };
 }
 
 // ============================================================================
@@ -308,6 +413,16 @@ export function provisionWorktree(worktreePath, options = {}) {
 
   const isStrict = servicesConfig?.worktreeProvisioningMode === 'strict';
 
+  // --- Build artifact copy (BEFORE install) ---
+  // Copy pre-built dist/ directories from the main tree to avoid a full build.
+  // Must run before install so pnpm can create proper bin symlinks.
+  if (!options?.skipInstall && servicesConfig?.worktreeArtifactCopy) {
+    const patterns = servicesConfig.worktreeArtifactCopy;
+    if (Array.isArray(patterns) && patterns.length > 0) {
+      copyBuildArtifacts(PROJECT_DIR, worktreePath, patterns, isStrict);
+    }
+  }
+
   // --- Package manager install ---
   if (!options?.skipInstall) {
     const lockFiles = [
@@ -336,6 +451,14 @@ export function provisionWorktree(worktreePath, options = {}) {
               stdio: 'pipe',
             });
             console.error(`[worktree-manager] Installed dependencies via ${cmd[0]} in ${worktreePath}`);
+            // Store lockfile hash so syncWorktreeDeps skips until lockfile actually changes
+            try {
+              const lockfilePath = path.join(worktreePath, file);
+              const hash = crypto.createHash('sha256').update(fs.readFileSync(lockfilePath)).digest('hex').slice(0, 16);
+              const hashDir = path.join(worktreePath, '.claude', 'state');
+              fs.mkdirSync(hashDir, { recursive: true });
+              fs.writeFileSync(path.join(hashDir, 'lockfile-hash'), hash);
+            } catch { /* non-fatal */ }
           } catch (err) {
             if (isStrict) {
               throw new Error(`[worktree-manager] STRICT: ${cmd[0]} install failed in ${worktreePath}: ${err.message?.slice(0, 300)}`);
@@ -375,6 +498,141 @@ export function provisionWorktree(worktreePath, options = {}) {
       }
     }
   }
+}
+
+// ============================================================================
+// Post-Merge Dependency Sync
+// ============================================================================
+
+/**
+ * Sync dependencies in a worktree after a git merge/pull that may have changed
+ * the lockfile. Detects lockfile changes by comparing a hash stored at install
+ * time. If the lockfile changed, runs the package manager install + build.
+ *
+ * This ensures agents in worktrees NEVER need to manually install deps.
+ * Called from: preview-watcher.js, checkAndSyncWorktree(), hourly-automation.
+ *
+ * @param {string} worktreePath - Absolute path to the worktree
+ * @param {object} [options]
+ * @param {number} [options.timeout] - Install timeout in ms (default: from services.json or 120000)
+ * @returns {{ synced: boolean, reason?: string }}
+ */
+export function syncWorktreeDeps(worktreePath, options = {}) {
+  const HASH_FILE = path.join(worktreePath, '.claude', 'state', 'lockfile-hash');
+
+  // Detect which lockfile exists
+  const lockFiles = [
+    { file: 'pnpm-lock.yaml', cmd: ['pnpm', 'install', '--frozen-lockfile', '--prefer-offline'] },
+    { file: 'yarn.lock', cmd: ['yarn', 'install', '--frozen-lockfile'] },
+    { file: 'bun.lockb', cmd: ['bun', 'install', '--frozen-lockfile'] },
+    { file: 'package-lock.json', cmd: ['npm', 'ci'] },
+  ];
+
+  let lockfilePath = null;
+  let installCmd = null;
+  for (const { file, cmd } of lockFiles) {
+    const candidate = path.join(worktreePath, file);
+    if (fs.existsSync(candidate)) {
+      lockfilePath = candidate;
+      installCmd = cmd;
+      break;
+    }
+  }
+
+  if (!lockfilePath || !installCmd) {
+    return { synced: false, reason: 'no lockfile found' };
+  }
+
+  // Hash the current lockfile
+  let currentHash;
+  try {
+    currentHash = crypto.createHash('sha256').update(fs.readFileSync(lockfilePath)).digest('hex').slice(0, 16);
+  } catch {
+    // If crypto fails, always install as a safety measure
+    currentHash = 'unknown-' + Date.now();
+  }
+
+  // Compare with stored hash
+  let storedHash = null;
+  try {
+    storedHash = fs.readFileSync(HASH_FILE, 'utf8').trim();
+  } catch { /* no stored hash — first sync */ }
+
+  if (storedHash === currentHash) {
+    return { synced: false, reason: 'lockfile unchanged' };
+  }
+
+  // Lockfile changed (or first sync) — install deps
+  let servicesConfig = null;
+  try {
+    const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+    if (fs.existsSync(configPath)) {
+      servicesConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    }
+  } catch { /* non-fatal */ }
+
+  const rawTimeout = options.timeout ?? servicesConfig?.worktreeInstallTimeout;
+  const installTimeout = (typeof rawTimeout === 'number' && rawTimeout >= 10000 && rawTimeout <= 600000)
+    ? rawTimeout : 120000;
+
+  try {
+    execSync(installCmd.join(' '), {
+      cwd: worktreePath,
+      encoding: 'utf8',
+      timeout: installTimeout,
+      stdio: 'pipe',
+    });
+    console.error(`[worktree-manager] syncWorktreeDeps: installed deps in ${worktreePath}`);
+  } catch (err) {
+    console.error(`[worktree-manager] syncWorktreeDeps: install failed in ${worktreePath}: ${err.message?.slice(0, 200)}`);
+    return { synced: false, reason: `install failed: ${err.message?.slice(0, 100)}` };
+  }
+
+  // Copy fresh artifacts from main tree (after install, before build check)
+  if (servicesConfig?.worktreeArtifactCopy) {
+    const patterns = servicesConfig.worktreeArtifactCopy;
+    if (Array.isArray(patterns) && patterns.length > 0) {
+      try {
+        copyBuildArtifacts(PROJECT_DIR, worktreePath, patterns, false);
+      } catch (err) {
+        console.error(`[worktree-manager] syncWorktreeDeps: artifact copy failed (non-fatal): ${err.message?.slice(0, 200)}`);
+      }
+    }
+  }
+
+  // Run build if health check fails
+  if (servicesConfig?.worktreeBuildCommand) {
+    const healthCheck = servicesConfig.worktreeBuildHealthCheck;
+    let needsBuild = true;
+    if (healthCheck) {
+      try {
+        execSync(healthCheck, { cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+        needsBuild = false;
+      } catch { /* needs build */ }
+    }
+    if (needsBuild) {
+      try {
+        execSync(servicesConfig.worktreeBuildCommand, {
+          cwd: worktreePath,
+          encoding: 'utf8',
+          timeout: 300000,
+          stdio: 'pipe',
+        });
+        console.error(`[worktree-manager] syncWorktreeDeps: built workspace in ${worktreePath}`);
+      } catch (err) {
+        console.error(`[worktree-manager] syncWorktreeDeps: build failed (non-fatal): ${err.message?.slice(0, 200)}`);
+      }
+    }
+  }
+
+  // Store the hash for next time
+  try {
+    const hashDir = path.dirname(HASH_FILE);
+    fs.mkdirSync(hashDir, { recursive: true });
+    fs.writeFileSync(HASH_FILE, currentHash);
+  } catch { /* non-fatal */ }
+
+  return { synced: true };
 }
 
 // ============================================================================

@@ -218,6 +218,8 @@ export const ServicesConfigSchema = z.object({
     .describe('Timeout in ms for pnpm/yarn/npm install in worktrees (default: 120000). Large monorepos may need 300000+.'),
   worktreeProvisioningMode: z.enum(['strict', 'lenient']).optional()
     .describe('When "strict", install/build failures abort worktree creation and clean up. Default: "lenient" (non-fatal warnings).'),
+  worktreeArtifactCopy: z.array(z.string()).optional()
+    .describe('Glob patterns of build artifact directories to copy from main tree to worktrees (e.g., ["packages/*/dist"]). Copied BEFORE install so bin symlinks resolve. Single-level * wildcards only.'),
   runCommandConfig: z.object({
     allowedExecutables: z.array(z.string()).optional()
       .describe('Additional executables to allow beyond defaults'),

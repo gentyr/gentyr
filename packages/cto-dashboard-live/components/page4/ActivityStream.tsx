@@ -1,6 +1,6 @@
 /**
  * ActivityStream — displays the tail of a running session's JSONL file.
- * Color-coded by type. Row-aware for multi-line text entries.
+ * Color-coded by type. Messages render at full height — no line caps.
  */
 
 import React from 'react';
@@ -24,7 +24,7 @@ function formatTimestamp(iso: string): string {
 
 function estimateRows(entry: ActivityEntry, availableWidth: number): number {
   if (entry.type !== 'assistant_text') return 1;
-  const textWidth = Math.max(10, availableWidth - 2);
+  const textWidth = Math.max(10, availableWidth - 4);
   return 1 + Math.max(1, Math.ceil(entry.text.length / textWidth));
 }
 
@@ -49,7 +49,7 @@ function EntryRow({ entry, maxTextLen }: { entry: ActivityEntry; maxTextLen: num
     case 'session_end':
       return (<Box><Text dimColor>{prefix}[end] {entry.text}</Text></Box>);
     case 'user_message':
-      return (<Box><Text dimColor>{prefix}</Text><Text color="green" bold>[you] </Text><Text>{truncate(entry.text, maxTextLen)}</Text></Box>);
+      return (<Box><Text dimColor>{prefix}</Text><Text color="green" bold>[you] </Text><Text wrap="wrap">{entry.text}</Text></Box>);
     default:
       return (<Box><Text dimColor>{prefix}{truncate(entry.text, maxTextLen)}</Text></Box>);
   }
