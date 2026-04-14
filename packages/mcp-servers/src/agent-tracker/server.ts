@@ -39,6 +39,8 @@ import {
   GetReservedSlotsArgsSchema,
   SetFocusModeArgsSchema,
   GetFocusModeArgsSchema,
+  SetLockdownModeArgsSchema,
+  GetLockdownModeArgsSchema,
   GetUserPromptArgsSchema,
   SearchUserPromptsArgsSchema,
   ListUserPromptsArgsSchema,
@@ -89,6 +91,8 @@ import {
   type GetReservedSlotsArgs,
   type SetFocusModeArgs,
   type GetFocusModeArgs,
+  type SetLockdownModeArgs,
+  type GetLockdownModeArgs,
   type SubscribeSessionSummariesArgs,
   type UnsubscribeSessionSummariesArgs,
   type ListSummarySubscriptionsArgs,
@@ -2822,6 +2826,69 @@ async function getFocusMode(_args: GetFocusModeArgs): Promise<object | ErrorResu
 }
 
 // ============================================================================
+// Lockdown Mode Tool Implementations
+// ============================================================================
+
+const AUTOMATION_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
+
+function readAutomationConfig(): Record<string, unknown> {
+  try {
+    return JSON.parse(fs.readFileSync(AUTOMATION_CONFIG_PATH, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeAutomationConfig(config: Record<string, unknown>): void {
+  const dir = path.dirname(AUTOMATION_CONFIG_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(AUTOMATION_CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
+}
+
+function setLockdownMode(args: SetLockdownModeArgs): object | ErrorResult {
+  // Disabling lockdown requires CTO bypass
+  if (!args.enabled) {
+    if (!args.cto_bypass) {
+      return {
+        error: 'Disabling lockdown requires cto_bypass: true. '
+          + 'WARNING: Only disable lockdown if directly asked by the CTO. '
+          + 'When disabled, interactive sessions have unrestricted tool access '
+          + '(file editing, sub-agent spawning, infrastructure commands).',
+      };
+    }
+  }
+
+  const config = readAutomationConfig();
+  if (args.enabled) {
+    delete config.interactiveLockdownDisabled;
+  } else {
+    config.interactiveLockdownDisabled = true;
+  }
+  writeAutomationConfig(config);
+
+  return {
+    success: true,
+    lockdown_enabled: args.enabled,
+    message: args.enabled
+      ? 'Lockdown ENABLED — interactive sessions operate as deputy-CTO console. File-editing and code-modifying agents are blocked.'
+      : 'Lockdown DISABLED — all tools available in interactive sessions. Re-enable with set_lockdown_mode({ enabled: true }).',
+  };
+}
+
+function getLockdownMode(_args: GetLockdownModeArgs): object {
+  const config = readAutomationConfig();
+  const enabled = config.interactiveLockdownDisabled !== true;
+  return {
+    lockdown_enabled: enabled,
+    message: enabled
+      ? 'Lockdown is ENABLED — interactive sessions are restricted to read-only and management tools.'
+      : 'Lockdown is DISABLED — interactive sessions have full tool access.',
+  };
+}
+
+// ============================================================================
 // Session Signal Tool Implementations
 // ============================================================================
 
@@ -4900,6 +4967,18 @@ const tools: AnyToolHandler[] = [
     description: 'Get the current focus mode state, including when it was enabled and which sources are still allowed to spawn.',
     schema: GetFocusModeArgsSchema,
     handler: getFocusMode,
+  },
+  {
+    name: 'set_lockdown_mode',
+    description: 'Enable or disable the interactive session lockdown. Enabling is unrestricted. Disabling requires cto_bypass: true — only disable when directly asked by the CTO.',
+    schema: SetLockdownModeArgsSchema,
+    handler: setLockdownMode,
+  },
+  {
+    name: 'get_lockdown_mode',
+    description: 'Get the current interactive session lockdown state.',
+    schema: GetLockdownModeArgsSchema,
+    handler: getLockdownMode,
   },
   // User Prompt Index Tools
   {
