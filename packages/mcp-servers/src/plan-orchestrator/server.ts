@@ -204,42 +204,44 @@ function initializeDatabase(): Database.Database {
   db.exec(SCHEMA);
 
   // ── plans table: CHECK constraint migration (add 'cancelled') ──────────────
-  // Try inserting a test row with the new status; if it fails, the existing DB
-  // has an old CHECK constraint that excludes 'cancelled'. Recreate the table.
-  const testPlanId = `_migration_check_${Date.now()}`;
-  try {
-    db.prepare(
-      "INSERT INTO plans (id, title, status, created_at, updated_at) VALUES (?, '_migration_test', 'cancelled', ?, ?)"
-    ).run(testPlanId, new Date().toISOString(), new Date().toISOString());
-    db.prepare('DELETE FROM plans WHERE id = ?').run(testPlanId);
-  } catch {
-    // Old CHECK constraint — recreate plans table preserving data.
-    // Temporarily disable foreign keys so CASCADE constraints don't interfere.
+  // Check sqlite_master directly instead of test-INSERT (avoids fragile catch-all
+  // that can leave plans_old orphans on partial failure).
+  const plansSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='plans'").get() as { sql: string } | undefined)?.sql ?? '';
+  const needsCheckMigration = plansSql && !plansSql.includes("'cancelled'");
+
+  if (needsCheckMigration) {
     db.pragma('foreign_keys = OFF');
-    db.exec(`
-      ALTER TABLE plans RENAME TO plans_old;
-      CREATE TABLE IF NOT EXISTS plans (
-          id TEXT PRIMARY KEY,
-          title TEXT NOT NULL,
-          description TEXT,
-          status TEXT NOT NULL DEFAULT 'draft',
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          started_at TEXT,
-          completed_at TEXT,
-          created_by TEXT,
-          metadata TEXT,
-          persistent_task_id TEXT,
-          manager_agent_id TEXT,
-          manager_pid INTEGER,
-          manager_session_id TEXT,
-          last_heartbeat TEXT,
-          CONSTRAINT valid_plan_status CHECK (status IN ('draft','active','paused','completed','archived','cancelled'))
-      );
-      INSERT INTO plans (id, title, description, status, created_at, updated_at, started_at, completed_at, created_by, metadata)
-        SELECT id, title, description, status, created_at, updated_at, started_at, completed_at, created_by, metadata FROM plans_old;
-      DROP TABLE plans_old;
-    `);
+    // Guard: drop leftover plans_old from any previous failed migration
+    db.exec('DROP TABLE IF EXISTS plans_old');
+    const migrate = db.transaction(() => {
+      db.exec('ALTER TABLE plans RENAME TO plans_old');
+      db.exec(`
+        CREATE TABLE plans (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            description TEXT,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            created_by TEXT,
+            metadata TEXT,
+            persistent_task_id TEXT,
+            manager_agent_id TEXT,
+            manager_pid INTEGER,
+            manager_session_id TEXT,
+            last_heartbeat TEXT,
+            CONSTRAINT valid_plan_status CHECK (status IN ('draft','active','paused','completed','archived','cancelled'))
+        )
+      `);
+      db.exec(`
+        INSERT INTO plans (id, title, description, status, created_at, updated_at, started_at, completed_at, created_by, metadata)
+          SELECT id, title, description, status, created_at, updated_at, started_at, completed_at, created_by, metadata FROM plans_old
+      `);
+      db.exec('DROP TABLE plans_old');
+    });
+    migrate();
     db.pragma('foreign_keys = ON');
   }
 
