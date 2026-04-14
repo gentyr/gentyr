@@ -408,6 +408,27 @@ New tasks created by non-privileged agents enter `pending_review` status and are
 
 **Race condition prevention**: `urgent-task-spawner.js` (Universal Task Spawner v2.0.0) checks concurrency limits on the input side; `task-gate-spawner.js` checks `tool_response.status === 'pending_review'` (output-side). No overlap.
 
+## Task Category System
+
+Task categories replace the legacy hardcoded `section` routing. A category defines an agent pipeline (ordered sequence of sub-agent types), prompt template, model tier, creator restrictions, and urgency authorization — all stored in `todo.db` and editable at runtime without code changes.
+
+**`task_categories` table** (in `todo.db`, auto-migrated): `id`, `name`, `description`, `sequence` (JSON array of `{ agent_type, label }` steps), `prompt_template` (optional custom prompt; if absent, the standard multi-step workflow is generated), `model`, `creator_restrictions` (JSON array of authorized `assigned_by` values, or null for open), `force_followup` (boolean), `urgency_authorized` (boolean — whether this category's tasks bypass the urgency downgrade), `is_default` (boolean), `deprecated_section` (the legacy section string this category replaces, for backward-compat lookup).
+
+**5 seeded categories**: `Standard Development` (6-step pipeline: investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager), `Deep Investigation` (investigator-only), `Test Suite Work` (test-writer → code-reviewer → project-manager), `Triage & Delegation` (deputy-cto-only), `Demo Design` (demo-manager-only). Additional categories can be created at runtime via MCP tools.
+
+**`category_id` dual-write**: `create_task` accepts an optional `category_id`. If provided, it is stored on the task. If absent but `section` is provided, the category is resolved by `deprecated_section` lookup. `list_tasks` returns `category_id` and `category_name` on each task. `list_tasks` also supports `category_id` as a filter.
+
+**5 CRUD tools** (on `todo-db` server):
+- `list_categories` — list all categories with their sequences
+- `get_category` — retrieve a single category by ID
+- `create_category` — define a new category with a custom pipeline sequence
+- `update_category` — modify an existing category (name, description, sequence, model, etc.)
+- `delete_category` — remove a category (cannot delete the default category)
+
+**Shared module** (`lib/task-category.js`): Single source of truth replacing the three previous copies of `SECTION_AGENT_MAP` and `buildTaskRunnerPrompt()` across spawner scripts. Exports `resolveCategory(dbPath, { section?, category_id? })`, `getAllCategories(dbPath)`, `getPipelineStages(category)`, `buildSequenceList(sequence)`, and `buildPromptFromCategory(task, category, agentId, worktreePath, options)`. All three spawners (`hourly-automation.js`, `urgent-task-spawner.js`, `force-spawn-tasks.js`) and `progress-tracker.js` now consume this module. Resolution priority: `category_id` → `deprecated_section` → default category.
+
+**`progress-tracker.js` integration**: Pipeline stage tracking (`PIPELINE_TEMPLATES`) is now derived from `category.sequence` via `getPipelineStages()`. Falls back to the legacy hardcoded sequence if category resolution fails (non-fatal, backward-compatible).
+
 ## Feature Stability Registry
 
 CTO-gated mechanism to lock features and prevent endless agent nitpick chains on solid features.
@@ -888,24 +909,39 @@ The icon-processor MCP server provides 12 tools for sourcing, downloading, proce
 
 ## Plan Orchestrator MCP Server
 
-The plan-orchestrator MCP server (`packages/mcp-servers/src/plan-orchestrator/`) manages structured execution plans with phases, tasks, substeps, dependencies, and cross-DB integration with `todo.db`. State is in `.claude/state/plans.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
+The plan-orchestrator MCP server (`packages/mcp-servers/src/plan-orchestrator/`) manages structured execution plans with phases, tasks, substeps, dependencies, and cross-DB integration with `todo.db` and the persistent task system. State is in `.claude/state/plans.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
 
-**17 tools**: `create_plan`, `get_plan`, `list_plans`, `update_plan_status`, `add_phase`, `update_phase`, `add_plan_task`, `update_task_progress`, `link_task`, `add_substeps`, `complete_substep`, `add_dependency`, `get_spawn_ready_tasks`, `plan_dashboard`, `plan_timeline`, `plan_audit`, `plan_sessions`.
+**18 tools**: `create_plan`, `get_plan`, `list_plans`, `update_plan_status`, `add_phase`, `update_phase`, `add_plan_task`, `update_task_progress`, `link_task`, `add_substeps`, `complete_substep`, `add_dependency`, `get_spawn_ready_tasks`, `plan_dashboard`, `plan_timeline`, `plan_audit`, `plan_sessions`, `force_close_plan`.
+
+**`force_close_plan`**: CTO-only tool (requires `cto_bypass: true`). Cancels a plan and returns the IDs of linked persistent tasks for separate cancellation. Irreversible.
 
 **6-table SQLite schema**: `plans`, `phases`, `plan_tasks`, `substeps`, `dependencies`, `state_changes`. Cycle detection on dependency graph. Progress rollup from substep → task → phase → plan.
 
+**Plan-persistent task marriage schema**: Plans and persistent tasks are linked at two levels. The `plans` table carries `persistent_task_id` (the plan manager's own persistent task), `manager_agent_id`, `manager_pid`, `manager_session_id`, and `last_heartbeat`. The `plan_tasks` table carries `persistent_task_id` (the persistent task executing that plan step) and `category_id`. Plan status now includes `cancelled` in addition to `draft`, `active`, `paused`, `completed`, and `archived`. `add_plan_task` accepts an optional `category_id` for routing.
+
 **Cross-DB integration**: `add_plan_task` optionally creates a corresponding `todo.db` task and links them via `todo_task_id`. `plan-merge-tracker.js` hook detects `gh pr merge` calls (PostToolUse Bash) and auto-advances linked plan tasks to `completed`, then cascades `ready` status to unblocked dependents.
 
-**3 hooks registered in `settings.json.template`**:
+**Plan-persistent sync hook** (`plan-persistent-sync.js`, PostToolUse): Fires on `complete_persistent_task`. When the completed persistent task has `plan_task_id` in its metadata, auto-marks the linked plan task as `completed`, cascades phase completion when all tasks in the phase are done, and cascades plan completion when all phases are done. Non-fatal — always exits 0.
+
+**4 hooks registered in `settings.json.template`**:
 - `plan-briefing.js` (SessionStart) — briefs the active session on current plan state
 - `plan-work-tracker.js` (PostToolUse `summarize_work`) — records agent work against plan tasks
 - `plan-merge-tracker.js` (PostToolUse Bash) — detects PR merges and auto-completes plan tasks
+- `plan-persistent-sync.js` (PostToolUse) — syncs persistent task completion back to the linked plan task
 
 **5 slash commands**: `/plan`, `/plan-progress`, `/plan-timeline`, `/plan-audit`, `/plan-sessions`.
 
 **CTO Dashboard integration**: 5 sections (`plans`, `plan-progress`, `plan-timeline`, `plan-audit`, `plan-sessions`) rendered via `PlanSection`, `PlanProgressSection`, `PlanTimelineSection`, `PlanAuditSection`, `PlanSessionSection` components. Data read from `plans.db` via `packages/cto-dashboard/src/utils/plan-reader.ts`; session correlation data from 7 sources via `packages/cto-dashboard/src/utils/plan-session-reader.ts`.
 
-All 3 hooks are in the `criticalHooks` list in `cli/commands/protect.js` and are root-owned when protection is enabled.
+All 4 hooks are in the `criticalHooks` list in `cli/commands/protect.js` and are root-owned when protection is enabled.
+
+### Plan Manager and Plan Updater Agents
+
+**`plan-manager` agent** (`agents/plan-manager.md`): Opus-tier. A specialized persistent task monitor that executes a structured plan by spawning persistent tasks for each plan step. Runs as a persistent task itself (spawned via the persistent task system with `GENTYR_PLAN_MANAGER=true`, `GENTYR_PLAN_ID`, and `GENTYR_PERSISTENT_TASK_ID` env vars). On each cycle: checks ready tasks via `get_spawn_ready_tasks`, creates and activates persistent tasks for each ready plan task that lacks a `persistent_task_id`, monitors running persistent tasks via `inspect_persistent_task`, verifies auto-sync from `plan-persistent-sync.js` hook, processes CTO amendments, and checks for plan completion. Does NOT create standalone tasks in `todo.db`, edit files, or run Bash commands. Spawns `plan-updater` sub-agents for explicit progress sync.
+
+**Plan task granularity rule**: Each plan task must represent a persistent-task-grade objective — work requiring multiple sessions. If a task can be completed by a single category sequence (one task-runner session), it should be a substep inside a plan task, NOT a standalone plan task.
+
+**`plan-updater` agent** (`agents/plan-updater.md`): Haiku-tier lightweight sync agent. Given a `plan_task_id` and `plan_id`, reads completed standalone tasks for the linked persistent task, maps them to plan substeps by title/description matching, calls `complete_substep` for each match, and updates plan task progress. Completes in under 30 seconds. Does not create tasks or edit files.
 
 ## CTO Dashboard Development
 
