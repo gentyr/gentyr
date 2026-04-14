@@ -1160,12 +1160,117 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
     }
   }
 
-  // ── Phase 5: Assemble response ────────────────────────────────────────
+  // ── Phase 5: Plan context enrichment ──────────────────────────────────
   let metadata: Record<string, unknown> = {};
   try {
     if (task.metadata) metadata = JSON.parse(task.metadata);
   } catch { /* ignore */ }
 
+  const planTaskId = (metadata.plan_task_id as string) ?? null;
+  const planId = (metadata.plan_id as string) ?? null;
+  const isPlanManager = !!(metadata.is_plan_manager);
+
+  let planContext: any = null;
+  if ((planTaskId || planId) || isPlanManager) {
+    const plansDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+    if (fs.existsSync(plansDbPath)) {
+      let plansDb;
+      try {
+        plansDb = openReadonlyDb(plansDbPath);
+        const effectivePlanId = planId ?? (planTaskId ? (plansDb.prepare('SELECT plan_id FROM plan_tasks WHERE id = ?').get(planTaskId) as any)?.plan_id : null);
+
+        if (effectivePlanId) {
+          const plan = plansDb.prepare('SELECT id, title, status FROM plans WHERE id = ?').get(effectivePlanId) as any;
+          if (plan) {
+            const allPlanTasks = plansDb.prepare(
+              'SELECT pt.id, pt.title, pt.status, pt.persistent_task_id, pt.category_id, p.title as phase_title FROM plan_tasks pt JOIN phases p ON pt.phase_id = p.id WHERE pt.plan_id = ? ORDER BY p.phase_order, pt.task_order'
+            ).all(effectivePlanId) as any[];
+
+            const totalTasks = allPlanTasks.length;
+            const completedTasks = allPlanTasks.filter(t => t.status === 'completed' || t.status === 'skipped').length;
+
+            // Find the current plan task's phase (if this is not a plan manager)
+            let currentPhase: string | null = null;
+            if (planTaskId) {
+              const currentTask = allPlanTasks.find(t => t.id === planTaskId);
+              currentPhase = currentTask?.phase_title ?? null;
+            }
+
+            // Get dependencies for the current plan task
+            let dependencies: any[] = [];
+            if (planTaskId) {
+              dependencies = plansDb.prepare(
+                `SELECT d.blocker_id, d.blocked_id, d.blocker_type, d.blocked_type,
+                        CASE WHEN d.blocker_id = ? THEN 'blocks' ELSE 'blocked_by' END as relation,
+                        CASE WHEN d.blocker_id = ? THEN pt2.title ELSE pt1.title END as related_title,
+                        CASE WHEN d.blocker_id = ? THEN pt2.status ELSE pt1.status END as related_status
+                 FROM dependencies d
+                 LEFT JOIN plan_tasks pt1 ON d.blocker_id = pt1.id
+                 LEFT JOIN plan_tasks pt2 ON d.blocked_id = pt2.id
+                 WHERE d.blocker_id = ? OR d.blocked_id = ?`
+              ).all(planTaskId, planTaskId, planTaskId, planTaskId, planTaskId) as any[];
+            }
+
+            planContext = {
+              planId: effectivePlanId,
+              planTitle: plan.title,
+              planStatus: plan.status,
+              progress: `${completedTasks}/${totalTasks}`,
+              currentPhase,
+              tasks: allPlanTasks.map(t => ({
+                id: t.id,
+                title: t.title,
+                status: t.status,
+                persistentTaskId: t.persistent_task_id ?? null,
+                categoryId: t.category_id ?? null,
+                phase: t.phase_title,
+              })),
+              dependencies: dependencies.map(d => ({
+                relation: d.relation,
+                relatedTitle: d.related_title,
+                relatedStatus: d.related_status,
+              })),
+            };
+          }
+        }
+      } catch { /* non-critical — plans.db may not exist or be incompatible */ }
+      finally {
+        try { plansDb?.close(); } catch { /* best-effort */ }
+      }
+    }
+  }
+
+  // ── Phase 5b: Enrich child sessions with category info ──────────────
+  if (childSessions.length > 0 && fs.existsSync(todoDbPath)) {
+    let todoDb2;
+    try {
+      todoDb2 = openReadonlyDb(todoDbPath);
+      // Check if category columns exist
+      let hasCategoryColumns = false;
+      try {
+        todoDb2.prepare('SELECT category_id FROM tasks LIMIT 0').get();
+        hasCategoryColumns = true;
+      } catch { /* column doesn't exist yet */ }
+
+      if (hasCategoryColumns) {
+        for (const cs of childSessions) {
+          if (!cs.todoTaskId) continue;
+          const row = todoDb2.prepare(
+            'SELECT t.category_id, tc.name as category_name FROM tasks t LEFT JOIN task_categories tc ON t.category_id = tc.id WHERE t.id = ?'
+          ).get(cs.todoTaskId) as { category_id: string | null; category_name: string | null } | undefined;
+          if (row) {
+            cs.categoryId = row.category_id ?? null;
+            cs.categoryName = row.category_name ?? null;
+          }
+        }
+      }
+    } catch { /* non-critical */ }
+    finally {
+      try { todoDb2?.close(); } catch { /* best-effort */ }
+    }
+  }
+
+  // ── Phase 6: Assemble response ──────────────────────────────────────
   return {
     id: task.id,
     title: task.title,
@@ -1177,6 +1282,12 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
     createdAt: task.created_at,
     demoInvolved: metadata.demo_involved ?? false,
     lastSummary: task.last_summary ?? null,
+
+    // Plan linkage
+    planTaskId,
+    planId,
+    isPlanManager,
+    planContext,
 
     monitor,
 

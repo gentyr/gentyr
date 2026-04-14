@@ -32,12 +32,14 @@ mcp__persistent-task__create_persistent_task({
   title: "<plan task title>",
   prompt: "<plan task description + substeps as outcome criteria>",
   outcome_criteria: "<derived from plan task substeps>",
-  metadata: {
-    plan_task_id: "<plan task ID>",
-    plan_id: "<plan ID>"
-  }
+  plan_task_id: "<plan task ID>",
+  plan_id: "<plan ID>"
 })
 ```
+
+These fields are stored in the persistent task's metadata and enable:
+- `plan-persistent-sync.js` to auto-cascade completion back to the plan
+- `persistent-task-briefing.js` to inject plan context into the monitor's briefing
 
 Then activate it:
 ```
