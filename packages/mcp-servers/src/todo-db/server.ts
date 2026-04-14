@@ -515,6 +515,19 @@ function taskToResponse(task: TaskRecord): TaskResponse {
     }
   }
 
+  // Look up category name if category_id exists
+  let categoryName: string | null = null;
+  if (task.category_id) {
+    try {
+      const db = getDb();
+      const cat = db.prepare('SELECT name FROM task_categories WHERE id = ?')
+        .get(task.category_id) as { name: string } | undefined;
+      categoryName = cat?.name ?? null;
+    } catch {
+      // Non-fatal: category name lookup failure leaves it as null
+    }
+  }
+
   return {
     id: task.id,
     section: task.section,
@@ -531,6 +544,8 @@ function taskToResponse(task: TaskRecord): TaskResponse {
     persistent_task_id: task.persistent_task_id ?? null,
     strict_infra_guidance: task.strict_infra_guidance === 1,
     demo_involved: task.demo_involved === 1,
+    category_id: task.category_id ?? null,
+    category_name: categoryName,
   };
 }
 
@@ -620,7 +635,10 @@ function listTasks(args: ListTasksArgs): ListTasksResult {
   let sql = 'SELECT * FROM tasks WHERE 1=1';
   const params: unknown[] = [];
 
-  if (args.section) {
+  if (args.category_id) {
+    sql += ' AND category_id = ?';
+    params.push(args.category_id);
+  } else if (args.section) {
     sql += ' AND section = ?';
     params.push(args.section);
   }
@@ -661,24 +679,78 @@ function getTask(args: GetTaskArgs): TaskResponse | ErrorResult {
 function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
   const db = getDb();
 
-  if (!(VALID_SECTIONS as readonly string[]).includes(args.section)) {
-    return { error: `Invalid section: ${args.section}. Must be one of: ${VALID_SECTIONS.join(', ')}` };
+  // Category resolution — determines both resolvedCategoryId and resolvedSection.
+  // Resolution order: category_id wins > section lookup > default category.
+  let resolvedCategoryId: string | null = null;
+  let resolvedSection: string = '';
+
+  if (args.category_id) {
+    // Direct category lookup — category_id takes precedence over section.
+    const cat = db.prepare('SELECT id, deprecated_section FROM task_categories WHERE id = ?')
+      .get(args.category_id) as { id: string; deprecated_section: string | null } | undefined;
+    if (!cat) {
+      return { error: `Category not found: ${args.category_id}` };
+    }
+    resolvedCategoryId = cat.id;
+    // Derive section from: explicit section arg > category's deprecated_section > fallback
+    resolvedSection = args.section ?? cat.deprecated_section ?? 'CODE-REVIEWER';
+  } else if (args.section) {
+    // Legacy path: resolve section string to category via deprecated_section mapping.
+    if (!(VALID_SECTIONS as readonly string[]).includes(args.section)) {
+      return { error: `Invalid section: ${args.section}. Must be one of: ${VALID_SECTIONS.join(', ')}` };
+    }
+    const cat = db.prepare('SELECT id FROM task_categories WHERE deprecated_section = ?')
+      .get(args.section) as { id: string } | undefined;
+    resolvedCategoryId = cat?.id ?? null;
+    resolvedSection = args.section;
+  } else {
+    // Neither provided: use default category.
+    const cat = db.prepare('SELECT id, deprecated_section FROM task_categories WHERE is_default = 1')
+      .get() as { id: string; deprecated_section: string | null } | undefined;
+    if (cat) {
+      resolvedCategoryId = cat.id;
+      resolvedSection = cat.deprecated_section ?? 'CODE-REVIEWER';
+    } else {
+      return { error: 'No section or category_id provided, and no default category exists.' };
+    }
   }
 
-  // Soft access control
-  const restrictions = SECTION_CREATOR_RESTRICTIONS[args.section as ValidSection];
-  if (restrictions) {
-    if (!args.assigned_by || !restrictions.includes(args.assigned_by)) {
-      const gotValue = args.assigned_by ?? '(none)';
-      return {
-        error: `Section '${args.section}' requires assigned_by to be one of: ${restrictions.join(', ')}. Got: '${gotValue}'`,
-      };
+  // The tasks table still has a CHECK constraint on section for the migration period.
+  // If the resolved section isn't in VALID_SECTIONS (e.g., a custom category with no
+  // deprecated_section), fall back to CODE-REVIEWER so the INSERT doesn't fail.
+  if (!(VALID_SECTIONS as readonly string[]).includes(resolvedSection)) {
+    resolvedSection = 'CODE-REVIEWER';
+  }
+
+  // Soft access control — check category creator_restrictions first, then fall back to section restrictions.
+  if (resolvedCategoryId) {
+    const cat = db.prepare('SELECT creator_restrictions FROM task_categories WHERE id = ?')
+      .get(resolvedCategoryId) as { creator_restrictions: string | null } | undefined;
+    if (cat?.creator_restrictions) {
+      const restrictions = JSON.parse(cat.creator_restrictions) as string[];
+      if (!args.assigned_by || !restrictions.includes(args.assigned_by)) {
+        const gotValue = args.assigned_by ?? '(none)';
+        return {
+          error: `Category '${resolvedCategoryId}' requires assigned_by to be one of: ${restrictions.join(', ')}. Got: '${gotValue}'`,
+        };
+      }
+    }
+  } else {
+    // No category resolved — fall back to section-based restrictions.
+    const restrictions = SECTION_CREATOR_RESTRICTIONS[resolvedSection as ValidSection];
+    if (restrictions) {
+      if (!args.assigned_by || !restrictions.includes(args.assigned_by)) {
+        const gotValue = args.assigned_by ?? '(none)';
+        return {
+          error: `Section '${resolvedSection}' requires assigned_by to be one of: ${restrictions.join(', ')}. Got: '${gotValue}'`,
+        };
+      }
     }
   }
 
   // Follow-up enforcement for forced creators
   let followup_enabled = args.followup_enabled ?? false;
-  let followup_section = args.followup_section ?? args.section;
+  let followup_section = args.followup_section ?? (args.section ?? resolvedSection);
   let followup_prompt = args.followup_prompt ?? null;
   let warning: string | undefined;
 
@@ -723,9 +795,9 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
 
   try {
     db.prepare(`
-      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority, user_prompt_uuids, persistent_task_id, strict_infra_guidance, demo_involved)
-      VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, args.section, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority, userPromptUuidsJson, persistentTaskId, strictInfraGuidance, demoInvolved);
+      INSERT INTO tasks (id, section, category_id, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority, user_prompt_uuids, persistent_task_id, strict_infra_guidance, demo_involved)
+      VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, resolvedSection, resolvedCategoryId, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority, userPromptUuidsJson, persistentTaskId, strictInfraGuidance, demoInvolved);
   } catch (err: unknown) {
     if (
       err instanceof Error &&
@@ -734,15 +806,27 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
       // Fallback: return the record that won the race
       const fallback = db.prepare(`
         SELECT * FROM tasks WHERE section = ? AND title = ? AND status != 'completed'
-      `).get(args.section, args.title) as TaskRecord | undefined;
+      `).get(resolvedSection, args.title) as TaskRecord | undefined;
       if (fallback) {return taskToResponse(fallback);}
     }
     throw err; // Re-throw unexpected errors
   }
 
+  // Look up category name for the response
+  let createdCategoryName: string | null = null;
+  if (resolvedCategoryId) {
+    try {
+      const catRow = db.prepare('SELECT name FROM task_categories WHERE id = ?')
+        .get(resolvedCategoryId) as { name: string } | undefined;
+      createdCategoryName = catRow?.name ?? null;
+    } catch {
+      // Non-fatal
+    }
+  }
+
   return {
     id,
-    section: args.section,
+    section: resolvedSection as ValidSection,
     status: 'pending',
     title: args.title,
     description: args.description ?? null,
@@ -756,6 +840,8 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     persistent_task_id: persistentTaskId,
     strict_infra_guidance: strictInfraGuidance === 1,
     demo_involved: demoInvolved === 1,
+    category_id: resolvedCategoryId,
+    category_name: createdCategoryName,
     warning,
   };
 }
@@ -825,10 +911,11 @@ function completeTask(args: CompleteTaskArgs): CompleteTaskResult | ErrorResult 
     const followup_timestamp = Math.floor(now.getTime() / 1000);
 
     // priority intentionally omitted — follow-ups default to 'normal' regardless of parent's priority
+    // category_id inherited from the parent task so the follow-up runs the same workflow
     db.prepare(`
-      INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt)
-      VALUES (?, ?, 'pending', ?, ?, 'system-followup', ?, ?, 0, NULL, NULL)
-    `).run(followupId, section, title, description, followup_created_at, followup_timestamp);
+      INSERT INTO tasks (id, section, category_id, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt)
+      VALUES (?, ?, ?, 'pending', ?, ?, 'system-followup', ?, ?, 0, NULL, NULL)
+    `).run(followupId, section, task.category_id ?? null, title, description, followup_created_at, followup_timestamp);
 
     followup_task_id = followupId;
   }

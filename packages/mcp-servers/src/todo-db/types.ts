@@ -17,7 +17,10 @@ export { SECTION_CREATOR_RESTRICTIONS, FORCED_FOLLOWUP_CREATORS } from '../share
 export const ListTasksArgsSchema = z.object({
   section: z.enum(VALID_SECTIONS)
     .optional()
-    .describe('Filter by section (recommended: use your own section)'),
+    .describe('Filter by section (deprecated, use category_id instead)'),
+  category_id: z.string()
+    .optional()
+    .describe('Filter by category ID'),
   status: z.enum(TASK_STATUS)
     .optional()
     .describe('Filter by status'),
@@ -35,7 +38,10 @@ export const GetTaskArgsSchema = z.object({
 });
 
 export const CreateTaskArgsSchema = z.object({
-  section: z.enum(VALID_SECTIONS).describe('Section to create task in'),
+  section: z.enum(VALID_SECTIONS).optional()
+    .describe('DEPRECATED: Use category_id instead. Kept for backward compatibility. Resolved to category via deprecated_section mapping.'),
+  category_id: z.string().optional()
+    .describe('Category ID for the task. Determines the agent workflow sequence. Takes precedence over section.'),
   title: z.string().describe('Task title (required)'),
   description: z.string().optional().describe('Detailed description'),
   assigned_by: z.string().optional().describe('Your agent name (required for restricted sections like DEPUTY-CTO)'),
@@ -224,6 +230,7 @@ export interface TaskRecord {
   persistent_task_id: string | null;
   strict_infra_guidance: number;    // 0 or 1 (SQLite boolean)
   demo_involved: number;            // 0 or 1 (SQLite boolean)
+  category_id: string | null;
 }
 
 export interface TaskResponse {
@@ -242,6 +249,8 @@ export interface TaskResponse {
   persistent_task_id: string | null;
   strict_infra_guidance: boolean;
   demo_involved: boolean;
+  category_id: string | null;
+  category_name: string | null;
 }
 
 export interface ListTasksResult {
