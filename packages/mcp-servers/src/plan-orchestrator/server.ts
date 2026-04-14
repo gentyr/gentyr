@@ -211,6 +211,10 @@ function initializeDatabase(): Database.Database {
 
   if (needsCheckMigration) {
     db.pragma('foreign_keys = OFF');
+    // Prevent ALTER TABLE RENAME from rewriting FK references in child tables
+    // (phases, plan_tasks). Without this, SQLite auto-updates their FKs from
+    // "plans" to "plans_old", leaving dangling references after we drop plans_old.
+    db.pragma('legacy_alter_table = ON');
     // Guard: drop leftover plans_old from any previous failed migration
     db.exec('DROP TABLE IF EXISTS plans_old');
     const migrate = db.transaction(() => {
@@ -242,6 +246,22 @@ function initializeDatabase(): Database.Database {
       db.exec('DROP TABLE plans_old');
     });
     migrate();
+    db.pragma('legacy_alter_table = OFF');
+    db.pragma('foreign_keys = ON');
+  }
+
+  // ── Repair FK corruption from previous ALTER TABLE RENAME ───────────────
+  // A previous migration (before legacy_alter_table fix) renamed plans → plans_old,
+  // which caused SQLite to rewrite FK references in phases and plan_tasks from
+  // "plans" to "plans_old". Fix by surgically editing sqlite_master.
+  const phasesSqlCheck = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='phases'").get() as { sql: string } | undefined)?.sql ?? '';
+  if (phasesSqlCheck.includes('plans_old')) {
+    db.pragma('foreign_keys = OFF');
+    db.pragma('writable_schema = ON');
+    db.prepare(
+      `UPDATE sqlite_master SET sql = REPLACE(sql, '"plans_old"', 'plans') WHERE type = 'table' AND name IN ('phases', 'plan_tasks')`
+    ).run();
+    db.pragma('writable_schema = OFF');
     db.pragma('foreign_keys = ON');
   }
 
