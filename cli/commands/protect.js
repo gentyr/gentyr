@@ -96,6 +96,7 @@ function doProtect(projectDir) {
     'plan-briefing.js',
     'plan-work-tracker.js',
     'plan-merge-tracker.js',
+    'plan-persistent-sync.js',
     'git-wrappers/git',
   ];
 

@@ -504,6 +504,14 @@
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/persistent-task-spawner.js",
           "timeout": 15
         }]
+      },
+      {
+        "matcher": "mcp__persistent-task__complete_persistent_task",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-persistent-sync.js",
+          "timeout": 10
+        }]
       }
     ],
     "Stop": [
