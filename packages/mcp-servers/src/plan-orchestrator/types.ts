@@ -11,7 +11,7 @@ import { z } from 'zod';
 // Constants
 // ============================================================================
 
-export const PLAN_STATUS = ['draft', 'active', 'paused', 'completed', 'archived'] as const;
+export const PLAN_STATUS = ['draft', 'active', 'paused', 'completed', 'archived', 'cancelled'] as const;
 export type PlanStatus = (typeof PLAN_STATUS)[number];
 
 export const PHASE_STATUS = ['pending', 'in_progress', 'completed', 'skipped'] as const;
@@ -92,6 +92,8 @@ export const AddPlanTaskArgsSchema = z.object({
   title: z.string().min(1).max(200).describe('Task title'),
   description: z.string().optional().describe('Task description'),
   agent_type: z.string().optional().describe('Agent type for spawning'),
+  category_id: z.string().optional()
+    .describe('Category ID for this task. Determines the agent workflow sequence when spawned.'),
   blocked_by: z.array(z.string()).optional().describe('Task IDs that must complete first'),
   create_todo: z.coerce.boolean().optional().default(false).describe('Also create a linked todo-db task'),
   todo_section: z.string().optional().default('GENERAL').describe('Section for todo-db task'),
@@ -184,6 +186,11 @@ export interface PlanRecord {
   completed_at: string | null;
   created_by: string | null;
   metadata: string | null;
+  persistent_task_id: string | null;
+  manager_agent_id: string | null;
+  manager_pid: number | null;
+  manager_session_id: string | null;
+  last_heartbeat: string | null;
 }
 
 export interface PhaseRecord {
@@ -218,6 +225,8 @@ export interface PlanTaskRecord {
   started_at: string | null;
   completed_at: string | null;
   metadata: string | null;
+  persistent_task_id: string | null;
+  category_id: string | null;
 }
 
 export interface SubstepRecord {
@@ -256,6 +265,17 @@ export const PlanSessionsArgsSchema = z.object({
   hours: z.coerce.number().optional().default(24).describe('Hours of history'),
 });
 export type PlanSessionsArgs = z.infer<typeof PlanSessionsArgsSchema>;
+
+// Force-close plan
+export const ForceClosePlanArgsSchema = z.object({
+  plan_id: z.string().describe('Plan ID to force-close'),
+  reason: z.string().describe('Reason for force-closing the plan'),
+  cto_bypass: z.literal(true).describe(
+    'WARNING: Only set to true if directly asked by the CTO. ' +
+    'This cancels all running persistent tasks and sub-sessions under this plan and cannot be undone.'
+  ),
+});
+export type ForceClosePlanArgs = z.infer<typeof ForceClosePlanArgsSchema>;
 
 // ============================================================================
 // Result Types
