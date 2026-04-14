@@ -118,6 +118,67 @@ export const ListArchivedTasksArgsSchema = z.object({
 });
 
 // ============================================================================
+// Category Schemas
+// ============================================================================
+
+export const CategorySequenceStepSchema = z.object({
+  agent_type: z.string().describe('Agent type for this step (e.g., "investigator", "code-writer")'),
+  label: z.string().describe('Human-readable label for this step'),
+  optional: z.boolean().optional().default(false).describe('Whether this step can be skipped'),
+});
+
+export const ListCategoriesArgsSchema = z.object({
+  include_deprecated: z.boolean().optional().default(false)
+    .describe('Include categories that map to deprecated sections'),
+});
+
+export const GetCategoryArgsSchema = z.object({
+  id: z.string().describe('Category ID (slug)'),
+});
+
+export const CreateCategoryArgsSchema = z.object({
+  id: z.string().regex(/^[a-z0-9-]+$/, 'Category ID must be lowercase alphanumeric with hyphens')
+    .describe('Unique category slug (e.g., "quick-fix", "full-dev")'),
+  name: z.string().min(1).describe('Display name'),
+  description: z.string().optional().describe('Human-readable description'),
+  sequence: z.array(CategorySequenceStepSchema).min(1)
+    .describe('Ordered agent sequence for this category'),
+  prompt_template: z.string().optional()
+    .describe('Markdown prompt template with variable interpolation (${task.id}, ${task.title}, ${agent_sequence_numbered_list})'),
+  model: z.enum(['opus', 'sonnet', 'haiku']).optional().default('sonnet')
+    .describe('Model for the orchestrator session'),
+  creator_restrictions: z.array(z.string()).optional()
+    .describe('Allowed assigned_by values. Null/omitted = anyone can create tasks in this category.'),
+  force_followup: z.boolean().optional().default(false)
+    .describe('Auto-enable followup for all tasks in this category'),
+  urgency_authorized: z.boolean().optional().default(true)
+    .describe('Whether tasks in this category can be marked urgent'),
+  is_default: z.boolean().optional().default(false)
+    .describe('Set as default category (clears any existing default)'),
+});
+
+export const UpdateCategoryArgsSchema = z.object({
+  id: z.string().describe('Category ID to update'),
+  name: z.string().min(1).optional().describe('New display name'),
+  description: z.string().optional().describe('New description'),
+  sequence: z.array(CategorySequenceStepSchema).min(1).optional()
+    .describe('New agent sequence'),
+  prompt_template: z.string().nullable().optional()
+    .describe('New prompt template (null to clear)'),
+  model: z.enum(['opus', 'sonnet', 'haiku']).optional()
+    .describe('New orchestrator model'),
+  creator_restrictions: z.array(z.string()).nullable().optional()
+    .describe('New creator restrictions (null to clear)'),
+  force_followup: z.boolean().optional(),
+  urgency_authorized: z.boolean().optional(),
+  is_default: z.boolean().optional(),
+});
+
+export const DeleteCategoryArgsSchema = z.object({
+  id: z.string().describe('Category ID to delete'),
+});
+
+// ============================================================================
 // Type Definitions
 // ============================================================================
 
@@ -135,6 +196,11 @@ export type GetCompletedSinceArgs = z.infer<typeof GetCompletedSinceArgsSchema>;
 export type SummarizeWorkArgs = z.infer<typeof SummarizeWorkArgsSchema>;
 export type GetWorklogArgs = z.infer<typeof GetWorklogArgsSchema>;
 export type ListArchivedTasksArgs = z.infer<typeof ListArchivedTasksArgsSchema>;
+export type ListCategoriesArgs = z.infer<typeof ListCategoriesArgsSchema>;
+export type GetCategoryArgs = z.infer<typeof GetCategoryArgsSchema>;
+export type CreateCategoryArgs = z.infer<typeof CreateCategoryArgsSchema>;
+export type UpdateCategoryArgs = z.infer<typeof UpdateCategoryArgsSchema>;
+export type DeleteCategoryArgs = z.infer<typeof DeleteCategoryArgsSchema>;
 
 export interface TaskRecord {
   id: string;
@@ -344,5 +410,48 @@ export interface ArchivedTask {
 
 export interface ListArchivedTasksResult {
   tasks: ArchivedTask[];
+  total: number;
+}
+
+export interface CategorySequenceStep {
+  agent_type: string;
+  label: string;
+  optional: boolean;
+}
+
+export interface CategoryRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  sequence: string;  // JSON string
+  prompt_template: string | null;
+  model: string;
+  creator_restrictions: string | null;  // JSON string
+  force_followup: number;
+  urgency_authorized: number;
+  is_default: number;
+  deprecated_section: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CategoryResponse {
+  id: string;
+  name: string;
+  description: string | null;
+  sequence: CategorySequenceStep[];
+  prompt_template: string | null;
+  model: string;
+  creator_restrictions: string[] | null;
+  force_followup: boolean;
+  urgency_authorized: boolean;
+  is_default: boolean;
+  deprecated_section: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ListCategoriesResult {
+  categories: CategoryResponse[];
   total: number;
 }
