@@ -19,6 +19,13 @@ import path from 'path';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
+// Bypass guard — check for pending CTO bypass requests
+let checkBypassBlock = () => ({ blocked: false });
+try {
+  const bg = await import('./lib/bypass-guard.js');
+  checkBypassBlock = bg.checkBypassBlock;
+} catch (_) { /* non-fatal — fail open */ }
+
 // Accumulate warnings/errors for systemMessage (never stderr in SessionStart hooks)
 const warnings = [];
 
@@ -149,6 +156,13 @@ async function main() {
         } catch (err) {
           warnings.push(`Dedup check failed for ${task.id.slice(0, 8)}: ${err.message || err}`);
         }
+      }
+
+      // Bypass request guard — skip tasks with pending CTO bypass requests
+      const bypassCheck = checkBypassBlock('persistent', task.id);
+      if (bypassCheck.blocked) {
+        warnings.push(`Skipping "${task.title?.slice(0, 30) || task.id.slice(0, 8)}" — pending CTO bypass request`);
+        continue;
       }
 
       // Resume: TOCTOU guard with AND status = 'paused'

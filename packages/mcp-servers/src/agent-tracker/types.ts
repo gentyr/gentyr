@@ -427,6 +427,41 @@ export const InspectPersistentTaskArgsSchema = z.object({
 });
 export type InspectPersistentTaskArgs = z.infer<typeof InspectPersistentTaskArgsSchema>;
 
+// CTO Bypass Request Schemas
+export const SubmitBypassRequestArgsSchema = z.object({
+  task_type: z.enum(['persistent', 'todo'])
+    .describe('Type of task: "persistent" for persistent tasks, "todo" for todo-db tasks'),
+  task_id: z.string().min(1)
+    .describe('The persistent task ID or todo task ID requiring CTO authorization'),
+  category: z.enum(['destructive_operation', 'scope_change', 'ambiguous_requirement', 'resource_access', 'general'])
+    .default('general')
+    .describe('Category of bypass request'),
+  summary: z.string().min(10).max(500)
+    .describe('1-3 sentence explanation of what CTO authorization is needed for'),
+  details: z.string().max(5000).optional()
+    .describe('Extended context: what was attempted, options considered, file paths involved'),
+});
+export type SubmitBypassRequestArgs = z.infer<typeof SubmitBypassRequestArgsSchema>;
+
+export const ResolveBypassRequestArgsSchema = z.object({
+  request_id: z.string().min(1)
+    .describe('Bypass request ID to resolve (from session briefing or list_bypass_requests)'),
+  decision: z.enum(['approved', 'rejected'])
+    .describe('CTO decision: approve or reject the bypass request'),
+  context: z.string().min(1).max(5000)
+    .describe('CTO instructions/context for the agent — included in the revival prompt (approved) or rejection notice (rejected)'),
+});
+export type ResolveBypassRequestArgs = z.infer<typeof ResolveBypassRequestArgsSchema>;
+
+export const ListBypassRequestsArgsSchema = z.object({
+  status: z.enum(['pending', 'approved', 'rejected', 'cancelled', 'all'])
+    .default('pending')
+    .describe('Filter by status (default: pending)'),
+  limit: z.coerce.number().min(1).max(100).optional().default(20)
+    .describe('Maximum number of requests to return'),
+});
+export type ListBypassRequestsArgs = z.infer<typeof ListBypassRequestsArgsSchema>;
+
 export const LaunchInteractiveMonitorArgsSchema = z.object({
   task_id: z.string().min(1).optional().describe('Persistent task UUID or prefix — resolves to the monitor session and kills the headless monitor'),
   session_id: z.string().min(1).optional().describe('Claude session UUID to resume directly in Terminal.app'),

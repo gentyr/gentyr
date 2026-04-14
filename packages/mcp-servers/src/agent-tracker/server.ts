@@ -62,6 +62,9 @@ import {
   ReorderQueueArgsSchema,
   InspectPersistentTaskArgsSchema,
   LaunchInteractiveMonitorArgsSchema,
+  SubmitBypassRequestArgsSchema,
+  ResolveBypassRequestArgsSchema,
+  ListBypassRequestsArgsSchema,
   AcquireSharedResourceArgsSchema,
   ReleaseSharedResourceArgsSchema,
   RenewSharedResourceArgsSchema,
@@ -106,6 +109,9 @@ import {
   type ReorderQueueArgs,
   type InspectPersistentTaskArgs,
   type LaunchInteractiveMonitorArgs,
+  type SubmitBypassRequestArgs,
+  type ResolveBypassRequestArgs,
+  type ListBypassRequestsArgs,
   type AcquireSharedResourceArgs,
   type ReleaseSharedResourceArgs,
   type RenewSharedResourceArgs,
@@ -4333,6 +4339,432 @@ end tell`
   };
 }
 
+// ============================================================================
+// CTO Bypass Request System
+// ============================================================================
+
+const BYPASS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+
+function getBypassDb(): InstanceType<typeof Database> {
+  const db = new Database(BYPASS_DB_PATH);
+  db.pragma('journal_mode = WAL');
+  db.pragma('busy_timeout = 5000');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bypass_requests (
+      id TEXT PRIMARY KEY,
+      task_type TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      task_title TEXT NOT NULL,
+      agent_id TEXT,
+      session_queue_id TEXT,
+      category TEXT NOT NULL DEFAULT 'general',
+      summary TEXT NOT NULL,
+      details TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      resolution_context TEXT,
+      resolved_at TEXT,
+      resolved_by TEXT DEFAULT 'cto',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      CHECK (task_type IN ('persistent', 'todo')),
+      CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled')),
+      CHECK (category IN ('destructive_operation', 'scope_change', 'ambiguous_requirement', 'resource_access', 'general'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_bypass_status ON bypass_requests(status);
+    CREATE INDEX IF NOT EXISTS idx_bypass_task ON bypass_requests(task_type, task_id);
+  `);
+  return db;
+}
+
+function generateBypassId(): string {
+  return 'bypass-' + crypto.randomUUID().slice(0, 12);
+}
+
+async function submitBypassRequest(args: SubmitBypassRequestArgs): Promise<object | ErrorResult> {
+  // Validate the task exists and get its title
+  let taskTitle = '';
+
+  if (args.task_type === 'persistent') {
+    const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+    if (!fs.existsSync(ptDbPath)) {
+      return { error: 'Persistent tasks database not found. No persistent tasks exist.' };
+    }
+    let ptDb: InstanceType<typeof Database> | undefined;
+    try {
+      ptDb = openReadonlyDb(ptDbPath);
+      const task = ptDb.prepare('SELECT id, title, status FROM persistent_tasks WHERE id = ?').get(args.task_id) as { id: string; title: string; status: string } | undefined;
+      if (!task) return { error: `Persistent task not found: ${args.task_id}` };
+      if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
+        return { error: `Persistent task is already in terminal state: ${task.status}` };
+      }
+      taskTitle = task.title;
+    } finally {
+      try { ptDb?.close(); } catch { /* best-effort */ }
+    }
+  } else {
+    const todoDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'todo.db');
+    if (!fs.existsSync(todoDbPath)) {
+      return { error: 'Todo database not found. No tasks exist.' };
+    }
+    let todoDb: InstanceType<typeof Database> | undefined;
+    try {
+      todoDb = openReadonlyDb(todoDbPath);
+      const task = todoDb.prepare('SELECT id, title, status FROM tasks WHERE id = ?').get(args.task_id) as { id: string; title: string; status: string } | undefined;
+      if (!task) return { error: `Todo task not found: ${args.task_id}` };
+      if (task.status === 'completed') {
+        return { error: 'Todo task is already completed.' };
+      }
+      taskTitle = task.title;
+    } finally {
+      try { todoDb?.close(); } catch { /* best-effort */ }
+    }
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+
+    // Check for existing pending request
+    const existing = db.prepare(
+      "SELECT id, summary FROM bypass_requests WHERE task_type = ? AND task_id = ? AND status = 'pending' LIMIT 1"
+    ).get(args.task_type, args.task_id) as { id: string; summary: string } | undefined;
+
+    if (existing) {
+      return {
+        error: `A bypass request already exists for this task (id: ${existing.id}). Wait for the CTO to resolve it.`,
+        existing_request_id: existing.id,
+        existing_summary: existing.summary,
+      };
+    }
+
+    const requestId = generateBypassId();
+    const agentId = process.env.CLAUDE_AGENT_ID || null;
+
+    db.prepare(`
+      INSERT INTO bypass_requests (id, task_type, task_id, task_title, agent_id, category, summary, details)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(requestId, args.task_type, args.task_id, taskTitle, agentId, args.category, args.summary, args.details || null);
+
+    // Pause the task to block revival
+    if (args.task_type === 'persistent') {
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      let ptDb: InstanceType<typeof Database> | undefined;
+      try {
+        ptDb = new Database(ptDbPath);
+        ptDb.pragma('busy_timeout = 3000');
+        const result = ptDb.prepare(
+          "UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status IN ('active', 'draft')"
+        ).run(args.task_id);
+
+        if (result.changes > 0) {
+          ptDb.prepare(
+            "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'paused', ?, datetime('now'))"
+          ).run(
+            crypto.randomUUID(),
+            args.task_id,
+            JSON.stringify({ reason: 'cto_bypass_request', bypass_request_id: requestId }),
+          );
+        }
+      } finally {
+        try { ptDb?.close(); } catch { /* best-effort */ }
+      }
+    } else {
+      // For todo tasks, reset to 'pending' so no agent picks it up
+      const todoDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'todo.db');
+      let todoDb: InstanceType<typeof Database> | undefined;
+      try {
+        todoDb = new Database(todoDbPath);
+        todoDb.pragma('busy_timeout = 3000');
+        todoDb.prepare(
+          "UPDATE tasks SET status = 'pending' WHERE id = ? AND status = 'in_progress'"
+        ).run(args.task_id);
+      } finally {
+        try { todoDb?.close(); } catch { /* best-effort */ }
+      }
+    }
+
+    const isPersistent = args.task_type === 'persistent';
+    const instructions = [
+      'BYPASS REQUEST SUBMITTED SUCCESSFULLY.',
+      '',
+      'Your request for CTO authorization has been recorded. The CTO will see it',
+      'at their next session start. You MUST now follow this exit protocol:',
+      '',
+      '1. STOP all work on this task immediately',
+      '2. Call summarize_work with a summary that includes:',
+      '   - What you accomplished before hitting the bypass point',
+      '   - What specific action requires CTO authorization',
+      '   - Any relevant context the CTO should know',
+      '3. Exit gracefully — do NOT continue working or attempt workarounds',
+      '',
+      'The CTO may take hours or days to respond. When they decide, your task',
+      'will be handled with their decision context included.',
+      ...(isPersistent ? ['', '4. Your persistent task has been paused. It will NOT be auto-resumed until the CTO resolves this request.'] : []),
+    ].join('\n');
+
+    return {
+      bypass_request_id: requestId,
+      status: 'pending',
+      task_title: taskTitle,
+      task_type: args.task_type,
+      instructions,
+    };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+async function resolveBypassRequest(args: ResolveBypassRequestArgs): Promise<object | ErrorResult> {
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+
+    const request = db.prepare(
+      'SELECT id, task_type, task_id, task_title, status, category, summary FROM bypass_requests WHERE id = ?'
+    ).get(args.request_id) as { id: string; task_type: string; task_id: string; task_title: string; status: string; category: string; summary: string } | undefined;
+
+    if (!request) {
+      return { error: `Bypass request not found: ${args.request_id}` };
+    }
+    if (request.status !== 'pending') {
+      return { error: `Bypass request is already ${request.status}. Only pending requests can be resolved.` };
+    }
+
+    // Check if the underlying task still exists and is in a valid state
+    if (request.task_type === 'persistent') {
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (fs.existsSync(ptDbPath)) {
+        let ptDb: InstanceType<typeof Database> | undefined;
+        try {
+          ptDb = openReadonlyDb(ptDbPath);
+          const task = ptDb.prepare('SELECT status FROM persistent_tasks WHERE id = ?').get(request.task_id) as { status: string } | undefined;
+          if (!task) {
+            db.prepare(
+              "UPDATE bypass_requests SET status = 'cancelled', resolution_context = 'Auto-cancelled: task no longer exists', resolved_at = datetime('now') WHERE id = ?"
+            ).run(request.id);
+            return { error: 'Task no longer exists. Bypass request has been auto-cancelled.', auto_cancelled: true };
+          }
+          if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
+            db.prepare(
+              "UPDATE bypass_requests SET status = 'cancelled', resolution_context = ?, resolved_at = datetime('now') WHERE id = ?"
+            ).run(`Auto-cancelled: task is ${task.status}`, request.id);
+            return { error: `Task is already ${task.status}. Bypass request has been auto-cancelled.`, auto_cancelled: true };
+          }
+        } finally {
+          try { ptDb?.close(); } catch { /* best-effort */ }
+        }
+      }
+    } else {
+      const todoDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'todo.db');
+      if (fs.existsSync(todoDbPath)) {
+        let todoDb: InstanceType<typeof Database> | undefined;
+        try {
+          todoDb = openReadonlyDb(todoDbPath);
+          const task = todoDb.prepare('SELECT status FROM tasks WHERE id = ?').get(request.task_id) as { status: string } | undefined;
+          if (!task) {
+            db.prepare(
+              "UPDATE bypass_requests SET status = 'cancelled', resolution_context = 'Auto-cancelled: task no longer exists', resolved_at = datetime('now') WHERE id = ?"
+            ).run(request.id);
+            return { error: 'Task no longer exists. Bypass request has been auto-cancelled.', auto_cancelled: true };
+          }
+          if (task.status === 'completed') {
+            db.prepare(
+              "UPDATE bypass_requests SET status = 'cancelled', resolution_context = 'Auto-cancelled: task completed', resolved_at = datetime('now') WHERE id = ?"
+            ).run(request.id);
+            return { error: 'Task is already completed. Bypass request has been auto-cancelled.', auto_cancelled: true };
+          }
+        } finally {
+          try { todoDb?.close(); } catch { /* best-effort */ }
+        }
+      }
+    }
+
+    // Resolve the request
+    db.prepare(
+      "UPDATE bypass_requests SET status = ?, resolution_context = ?, resolved_at = datetime('now'), resolved_by = 'cto' WHERE id = ?"
+    ).run(args.decision, args.context, request.id);
+
+    // Handle approval — resume the task
+    if (args.decision === 'approved') {
+      if (request.task_type === 'persistent') {
+        const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+        if (fs.existsSync(ptDbPath)) {
+          let ptDb: InstanceType<typeof Database> | undefined;
+          try {
+            ptDb = new Database(ptDbPath);
+            ptDb.pragma('busy_timeout = 3000');
+            const result = ptDb.prepare(
+              "UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'"
+            ).run(request.task_id);
+
+            if (result.changes > 0) {
+              ptDb.prepare(
+                "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'resumed', ?, datetime('now'))"
+              ).run(
+                crypto.randomUUID(),
+                request.task_id,
+                JSON.stringify({ reason: 'cto_bypass_approved', bypass_request_id: request.id }),
+              );
+            }
+          } finally {
+            try { ptDb?.close(); } catch { /* best-effort */ }
+          }
+
+          // Enqueue a monitor revival via session-queue
+          try {
+            const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+            if (fs.existsSync(queueModulePath)) {
+              const revivalPromptPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'persistent-monitor-revival-prompt.js');
+              if (fs.existsSync(revivalPromptPath)) {
+                // Read the task fresh for revival prompt
+                const ptDbR = openReadonlyDb(ptDbPath);
+                const task = ptDbR.prepare('SELECT id, title, metadata, monitor_session_id FROM persistent_tasks WHERE id = ?').get(request.task_id) as { id: string; title: string; metadata: string | null; monitor_session_id: string | null } | undefined;
+                ptDbR.close();
+
+                if (task) {
+                  const { buildPersistentMonitorRevivalPrompt } = await import(revivalPromptPath);
+                  const revival = await buildPersistentMonitorRevivalPrompt(task, 'cto_bypass_approved', PROJECT_DIR);
+                  const queueModule = await import(queueModulePath);
+                  queueModule.enqueueSession({
+                    title: `[Persistent] Bypass approved: ${task.title}`,
+                    agentType: 'persistent-task-monitor',
+                    hookType: 'persistent-task-monitor',
+                    tagContext: 'persistent-monitor',
+                    source: 'bypass-request-resolve',
+                    prompt: revival.prompt,
+                    priority: 'critical',
+                    lane: 'persistent',
+                    spawnType: task.monitor_session_id ? 'resume' : 'fresh',
+                    resumeSessionId: task.monitor_session_id || undefined,
+                    extraEnv: revival.extraEnv,
+                    metadata: { ...revival.metadata, persistentTaskId: request.task_id },
+                    ttlMs: 0,
+                  });
+                }
+              }
+            }
+          } catch (err) {
+            // Non-fatal — task is active, normal revival paths will pick it up
+            process.stderr.write(`[bypass-resolve] Failed to enqueue revival: ${err instanceof Error ? err.message : String(err)}\n`);
+          }
+        }
+
+        return {
+          resolved: true,
+          request_id: request.id,
+          decision: 'approved',
+          task_type: request.task_type,
+          task_title: request.task_title,
+          message: `Bypass request approved. Persistent task "${request.task_title}" has been set to active and a monitor session is being revived with your instructions.`,
+        };
+      } else {
+        // Todo task — it's already 'pending', bypass guard clears, normal spawning resumes
+        return {
+          resolved: true,
+          request_id: request.id,
+          decision: 'approved',
+          task_type: request.task_type,
+          task_title: request.task_title,
+          message: `Bypass request approved. Todo task "${request.task_title}" will be picked up by the next spawn cycle with your approval context.`,
+        };
+      }
+    }
+
+    // Handle rejection — leave task paused/pending
+    return {
+      resolved: true,
+      request_id: request.id,
+      decision: 'rejected',
+      task_type: request.task_type,
+      task_title: request.task_title,
+      message: request.task_type === 'persistent'
+        ? `Bypass request rejected. Persistent task "${request.task_title}" remains paused. Use resume_persistent_task or cancel_persistent_task to manage it.`
+        : `Bypass request rejected. Todo task "${request.task_title}" remains pending. The next spawn will include your rejection context so the agent can take an alternative approach.`,
+    };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+async function listBypassRequests(args: ListBypassRequestsArgs): Promise<object | ErrorResult> {
+  if (!fs.existsSync(BYPASS_DB_PATH)) {
+    return { requests: [], total: 0 };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+
+    // Auto-cancel pending requests for tasks that no longer exist or are terminal
+    const pending = db.prepare(
+      "SELECT id, task_type, task_id FROM bypass_requests WHERE status = 'pending'"
+    ).all() as Array<{ id: string; task_type: string; task_id: string }>;
+
+    for (const req of pending) {
+      let shouldCancel = false;
+      let cancelReason = '';
+
+      if (req.task_type === 'persistent') {
+        const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+        if (!fs.existsSync(ptDbPath)) {
+          shouldCancel = true;
+          cancelReason = 'Persistent tasks DB not found';
+        } else {
+          let ptDb: InstanceType<typeof Database> | undefined;
+          try {
+            ptDb = openReadonlyDb(ptDbPath);
+            const task = ptDb.prepare('SELECT status FROM persistent_tasks WHERE id = ?').get(req.task_id) as { status: string } | undefined;
+            if (!task) { shouldCancel = true; cancelReason = 'Task deleted'; }
+            else if (['completed', 'cancelled', 'failed'].includes(task.status)) {
+              shouldCancel = true; cancelReason = `Task ${task.status}`;
+            }
+          } finally { try { ptDb?.close(); } catch { /* best-effort */ } }
+        }
+      } else {
+        const todoDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'todo.db');
+        if (!fs.existsSync(todoDbPath)) {
+          shouldCancel = true;
+          cancelReason = 'Todo DB not found';
+        } else {
+          let todoDb: InstanceType<typeof Database> | undefined;
+          try {
+            todoDb = openReadonlyDb(todoDbPath);
+            const task = todoDb.prepare('SELECT status FROM tasks WHERE id = ?').get(req.task_id) as { status: string } | undefined;
+            if (!task) { shouldCancel = true; cancelReason = 'Task deleted'; }
+            else if (task.status === 'completed') { shouldCancel = true; cancelReason = 'Task completed'; }
+          } finally { try { todoDb?.close(); } catch { /* best-effort */ } }
+        }
+      }
+
+      if (shouldCancel) {
+        db.prepare(
+          "UPDATE bypass_requests SET status = 'cancelled', resolution_context = ?, resolved_at = datetime('now') WHERE id = ?"
+        ).run(`Auto-cancelled: ${cancelReason}`, req.id);
+      }
+    }
+
+    // Query with filter
+    const statusFilter = args.status === 'all' ? '' : "WHERE status = ?";
+    const params: (string | number)[] = args.status === 'all' ? [] : [args.status];
+    params.push(args.limit);
+
+    const requests = db.prepare(
+      `SELECT id, task_type, task_id, task_title, agent_id, category, summary, details, status, resolution_context, resolved_at, created_at FROM bypass_requests ${statusFilter} ORDER BY created_at DESC LIMIT ?`
+    ).all(...params) as Array<{
+      id: string; task_type: string; task_id: string; task_title: string;
+      agent_id: string | null; category: string; summary: string; details: string | null;
+      status: string; resolution_context: string | null; resolved_at: string | null; created_at: string;
+    }>;
+
+    const total = (db.prepare(
+      `SELECT COUNT(*) as cnt FROM bypass_requests ${statusFilter}`
+    ).get(...(args.status === 'all' ? [] : [args.status])) as { cnt: number }).cnt;
+
+    return { requests, total };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
 const tools: AnyToolHandler[] = [
   {
     name: 'list_spawned_agents',
@@ -4632,11 +5064,30 @@ const tools: AnyToolHandler[] = [
     schema: LaunchInteractiveMonitorArgsSchema,
     handler: launchInteractiveMonitor,
   },
+  // CTO Bypass Request tools
+  {
+    name: 'submit_bypass_request',
+    description: 'Submit a CTO bypass request to pause your task and request authorization. The CTO will see this in their next session briefing. After submitting, you MUST summarize your work and exit — do NOT continue working.',
+    schema: SubmitBypassRequestArgsSchema,
+    handler: submitBypassRequest,
+  },
+  {
+    name: 'resolve_bypass_request',
+    description: 'Approve or reject a pending CTO bypass request. On approval, persistent tasks are resumed and a monitor is revived with your instructions. On rejection, the task stays paused (persistent) or pending (todo).',
+    schema: ResolveBypassRequestArgsSchema,
+    handler: resolveBypassRequest,
+  },
+  {
+    name: 'list_bypass_requests',
+    description: 'List CTO bypass requests. Defaults to pending requests. Auto-cancels requests for tasks that no longer exist or are completed.',
+    schema: ListBypassRequestsArgsSchema,
+    handler: listBypassRequests,
+  },
 ];
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '9.2.0',  // Added shared resource registry tools (acquire/release/renew/status/register)
+  version: '9.3.0',  // Added CTO bypass request system (submit/resolve/list)
   tools,
 });
 

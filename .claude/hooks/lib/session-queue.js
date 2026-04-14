@@ -31,6 +31,7 @@ import { buildPersistentMonitorStrictInfraInstructions } from './persistent-moni
 import { checkAndExpireResources } from './resource-lock.js';
 import { cleanupStaleAllocations as cleanupStalePortAllocations } from './port-allocator.js';
 import { buildRevivalContext } from './persistent-revival-context.js';
+import { checkBypassBlock, getBypassResolutionContext } from './bypass-guard.js';
 // NOTE: revival-utils.js imports from session-queue.js (circular dep), so we
 // inline these three utilities here instead of importing from revival-utils.js.
 // Mirrors the same pattern used in session-reaper.js.
@@ -403,6 +404,20 @@ export function enqueueSession(spec) {
     }
   }
 
+  // Bypass request gate: block spawns for tasks with pending CTO bypass requests
+  // Source 'bypass-request-resolve' is exempt — it's the CTO approving the request
+  if (spec.source !== 'bypass-request-resolve') {
+    const bypassTaskId = spec.metadata?.persistentTaskId || spec.metadata?.taskId;
+    const bypassTaskType = spec.metadata?.persistentTaskId ? 'persistent' : (spec.metadata?.taskId ? 'todo' : null);
+    if (bypassTaskType && bypassTaskId) {
+      const bypassCheck = checkBypassBlock(bypassTaskType, bypassTaskId);
+      if (bypassCheck.blocked) {
+        log(`Bypass request BLOCKED: "${spec.title}" — pending CTO bypass request ${bypassCheck.requestId} (${bypassCheck.category})`);
+        return { queueId: null, blocked: 'bypass_request', title: spec.title, bypassRequestId: bypassCheck.requestId };
+      }
+    }
+  }
+
   // Focus mode gate: block non-CTO automated spawns
   if (isFocusModeEnabled()) {
     const allowed =
@@ -606,6 +621,13 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
     return;
   }
 
+  // Bypass request guard — belt-and-suspenders (task is typically paused, caught above)
+  const bypassCheck = checkBypassBlock('persistent', taskId);
+  if (bypassCheck.blocked) {
+    log(`[persistent-revival] Skipped revival for ${taskId}: pending CTO bypass request ${bypassCheck.requestId}`);
+    return;
+  }
+
   // Build revival context from last known state
   let revivalContext = '';
   try {
@@ -771,6 +793,12 @@ export function drainQueue() {
         ).get(task.id);
 
         if (!existing) {
+          // Bypass request guard — skip orphaned tasks with pending CTO bypass requests
+          const bypassCheck1c = checkBypassBlock('persistent', task.id);
+          if (bypassCheck1c.blocked) {
+            log(`Step 1c: Skipping orphan ${task.id} — pending CTO bypass request ${bypassCheck1c.requestId}`);
+            continue;
+          }
           try {
             requeueDeadPersistentMonitor(db, task.id, 'orphan_catch_all');
           } catch (err) {
@@ -806,6 +834,13 @@ export function drainQueue() {
       ).get(taskId);
       if (existing) continue;
 
+      // Bypass request guard — skip tasks with pending CTO bypass requests
+      const bypassCheck1d = checkBypassBlock('todo', taskId);
+      if (bypassCheck1d.blocked) {
+        log(`Step 1d: Skipping revival for task ${taskId} — pending CTO bypass request ${bypassCheck1d.requestId}`);
+        continue;
+      }
+
       // Verify the task still exists and is pending in todo.db
       try {
         const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
@@ -832,11 +867,22 @@ export function drainQueue() {
               }
             }
 
+            // Check for resolved bypass request context
+            let bypassCtxBlock = '';
+            try {
+              const bypassCtx = getBypassResolutionContext('todo', taskId);
+              if (bypassCtx) {
+                const decisionLabel = bypassCtx.decision === 'approved' ? 'APPROVED' : 'REJECTED';
+                bypassCtxBlock = `\n## CTO Bypass Resolution\nYour previous session submitted a bypass request:\n  Category: ${bypassCtx.category}\n  Summary: ${bypassCtx.summary}\n\nCTO Decision: ${decisionLabel}\nCTO Instructions: "${bypassCtx.context}"\n\n${bypassCtx.decision === 'approved' ? 'Proceed with the work, following the CTO\'s instructions above.' : 'The CTO rejected your request. Take an alternative approach or wrap up without the bypassed action.'}\n`;
+              }
+            } catch (_) { /* non-fatal */ }
+
             const revivalPrompt = [
               `[Revival] Re-spawned after agent death.`,
               `Task: ${task.title}`,
               task.section ? `Section: ${task.section}` : null,
               task.description ? `\nDescription:\n${task.description}` : null,
+              bypassCtxBlock || null,
               `\nThis task was previously being worked on by agent ${candidate.agentId} which died unexpectedly.`,
               `Continue from where the previous agent left off. Check the task status and any existing work before starting.`,
             ].filter(Boolean).join('\n');

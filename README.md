@@ -245,6 +245,8 @@ Structured multi-phase work is managed by the plan orchestrator (`plan-orchestra
 
 Complex delegated objectives run through the persistent task system. The CTO creates a persistent task via `/persistent-task`, which refines the intent into a high-specificity prompt and spawns a dedicated Opus monitor session. The monitor runs in its own session queue lane (not counted against the global concurrency cap), creates and tracks sub-tasks, acknowledges amendments as the CTO steers the objective, and drives work to completion without interruption. Manage all active monitors with `/persistent-tasks`.
 
+Agents blocked by authorization or access constraints use the bypass request system instead of failing silently. The agent calls `submit_bypass_request` (on the `agent-tracker` MCP server), which pauses the task and surfaces the request in the CTO's next session briefing with a one-call resolution (`resolve_bypass_request`). On approval, the task is immediately revived with the CTO's instructions injected into the revival prompt. All revival paths check for pending bypass requests before spawning, preventing auto-resumption while a request is awaiting the CTO.
+
 ### code quality
 
 The compliance checker validates against framework specifications on every file change. The antipattern hunter scans for silent catches, hardcoded secrets, and disabled tests. Test failures auto-spawn the test-writer agent. Lint runs on every cycle. Every PR is reviewed by the deputy CTO before it merges. Feature branch commits pass through lint and security gates only, keeping commit latency low.

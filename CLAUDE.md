@@ -447,7 +447,7 @@ Lets the CTO delegate complex multi-step objectives to a dedicated monitor sessi
 
 **Stale-pause auto-resume**: `hourly-automation.js` runs a `persistent_stale_pause_resume` check every 5 minutes. If a task has been `paused` for longer than `persistent_stale_pause_threshold_minutes` (default 30 min) AND no monitor is already queued or running for it, a new monitor is automatically enqueued. This handles self-paused monitors that forgot to self-resume (e.g., after writing a deputy-CTO report and pausing). The resumed task transitions back to `active` via `resume_persistent_task`, and the spawner hook fires to launch a new monitor.
 
-**Crash-loop login resume** (`crash-loop-resume.js` SessionStart hook): On interactive session start, detects persistent tasks paused by the crash-loop circuit breaker (`reason: 'crash_loop_circuit_breaker'` in the most-recent `paused` event) and auto-resumes them by setting `status = 'active'` and enqueuing a new monitor at `critical` priority. Manually paused tasks are left untouched. Skipped entirely for spawned sessions (`CLAUDE_SPAWNED_SESSION=true`). Uses a TOCTOU-safe `UPDATE ... WHERE status = 'paused'` guard and deduplicates against in-flight queue items before enqueuing. Rollback sets the task back to `paused` if monitor enqueue fails. All errors are accumulated in `systemMessage` (never stderr, per SessionStart rules). Session briefing now shows a PAUSED TASKS section with pause reason (crash-loop vs manual) to give the CTO visibility at login.
+**Crash-loop login resume** (`crash-loop-resume.js` SessionStart hook): On interactive session start, detects persistent tasks paused by the crash-loop circuit breaker (`reason: 'crash_loop_circuit_breaker'` in the most-recent `paused` event) and auto-resumes them by setting `status = 'active'` and enqueuing a new monitor at `critical` priority. Manually paused tasks are left untouched. Tasks with a pending CTO bypass request are also skipped (checked via `lib/bypass-guard.js` `checkBypassBlock()`). Skipped entirely for spawned sessions (`CLAUDE_SPAWNED_SESSION=true`). Uses a TOCTOU-safe `UPDATE ... WHERE status = 'paused'` guard and deduplicates against in-flight queue items before enqueuing. Rollback sets the task back to `paused` if monitor enqueue fails. All errors are accumulated in `systemMessage` (never stderr, per SessionStart rules). Session briefing shows a PAUSED TASKS section with pause reason (crash-loop / bypass-request / manual) to give the CTO visibility at login.
 
 **`buildPersistentMonitorRevivalPrompt()` helper**: Shared module at `lib/persistent-monitor-revival-prompt.js`, consumed by `hourly-automation.js` (dead monitor path and stale-pause auto-resume), `session-queue.js` revival paths, and `crash-loop-resume.js`. Accepts `(task, revivalReason, projectDir)` and builds the full revival prompt with correct demo/strict-infra flags and revival metadata. Internally calls `buildRevivalContext()` from `lib/persistent-revival-context.js` to assemble enriched context from `last_summary`, recent amendments, and sub-task status. `hourly-automation.js` uses a local `buildRevivalPrompt()` wrapper that binds `PROJECT_DIR`.
 
@@ -646,6 +646,41 @@ Rules:
 - Route all non-fatal errors to `systemMessage` in the JSON stdout response.
 - Fatal/unexpected errors should exit with `{ continue: true, systemMessage: "..." }` — never with `process.exit(1)` or a raw stderr write.
 - The cross-hook guard test at `.claude/hooks/__tests__/session-start-no-stderr.test.js` enforces this with static analysis + runtime subprocess checks (36 tests).
+
+## CTO Bypass Request System
+
+Agents blocked by access, authorization, or resource constraints can pause themselves and request CTO authorization rather than failing silently or spinning in retry loops. The CTO sees pending requests in the next interactive session briefing and resolves them with a single MCP tool call.
+
+**DB**: `.claude/state/bypass-requests.db` (SQLite, auto-created). Schema: `bypass_requests` table with `id`, `task_type` (`persistent`/`todo`), `task_id`, `task_title`, `agent_id`, `category`, `summary`, `details`, `status` (`pending`/`approved`/`rejected`/`cancelled`), `resolution_context`, `resolved_at`, `resolved_by`, `created_at`. Two indexes on `status` and `(task_type, task_id)`.
+
+**Bypass categories** (passed as `category` to `submit_bypass_request`): guides the CTO on what kind of authorization is needed — e.g., `"infrastructure"`, `"secrets"`, `"scope"`, `"access"`, or any custom string.
+
+**Agent workflow**: An agent that needs CTO authorization calls `submit_bypass_request` with `task_type`, `task_id`, `category`, `summary`, and `details`. The tool pauses the relevant task (persistent → `paused` with `reason: 'cto_bypass_request'`; todo → `pending` so spawning is blocked by the bypass guard), emits a signal to the CTO's interactive session, and returns instructions: write a `last_summary`, then exit. The agent MUST call `summarize_work` and stop — it must not continue working.
+
+**Dedup guard**: `submit_bypass_request` checks for an existing `pending` request for the same `(task_type, task_id)` pair before inserting. Duplicate submissions are rejected with an error pointing to the existing request ID.
+
+**CTO workflow**: Pending requests appear in the `=== CTO BYPASS REQUESTS AWAITING DECISION ===` section of the interactive session briefing (above the Persistent Tasks section) with title, type, category, age, summary, and the exact `resolve_bypass_request` invocation to copy. The CTO calls `resolve_bypass_request` with `request_id`, `decision` (`"approved"` or `"rejected"`), and `context` (instructions for the agent on how to proceed). On approval: persistent tasks are set to `active` and a monitor is immediately enqueued in the `persistent` lane at `critical` priority, with the CTO's approval context injected into the revival prompt. Todo tasks are left in `pending` — the bypass guard clears and normal spawning resumes on the next drain cycle, with the approval context injected via `getBypassResolutionContext()`. On rejection: persistent tasks stay `paused`, todo tasks stay `pending`, and the rejection context is injected into the next revival/spawn so the agent can take an alternative approach.
+
+**Auto-cancel**: `list_bypass_requests` (and `resolve_bypass_request`) auto-cancel requests for tasks that no longer exist or are already `completed`/`cancelled`, returning `auto_cancelled: true` so the CTO knows no action is needed.
+
+**Revival guard** (`lib/bypass-guard.js`): Shared read-only module with two exports:
+- `checkBypassBlock(taskType, taskId)` — returns `{ blocked: true, requestId, summary, category }` if a `pending` request exists; `{ blocked: false }` otherwise. Fail-open on any error (never blocks revival due to DB unavailability).
+- `getBypassResolutionContext(taskType, taskId)` — returns the most-recent resolved (`approved`/`rejected`) request's `{ decision, context, requestId, category, summary }` for injection into revival prompts.
+
+**Integration points** (bypass guard applied at 4 locations):
+- `session-queue.js` `requeueDeadPersistentMonitor()` — skips revival if a pending bypass request exists
+- `session-queue.js` `spawnQueueItem()` — injects approval/rejection context into spawn prompt when a resolved request exists
+- `hourly-automation.js` `persistent_stale_pause_resume` — skips auto-resume for tasks with pending bypass requests
+- `crash-loop-resume.js` SessionStart hook — skips crash-loop auto-resume for tasks with pending bypass requests
+- `session-reviver.js` — skips revival for tasks with pending bypass requests
+- `persistent-monitor-revival-prompt.js` — injects bypass resolution context block when `getBypassResolutionContext()` returns a result
+
+**Session briefing integration**: `session-briefing.js` adds a `=== CTO BYPASS REQUESTS AWAITING DECISION ===` block to the interactive briefing when pending requests exist. Pause reason detection extended to include `'bypass-request'` alongside `'crash-loop'` and `'manual'` — the PAUSED TASKS summary line now shows the breakdown (e.g., `"2 bypass-request, 1 crash-loop, 1 manual"`).
+
+**3 MCP tools** (on `agent-tracker` server, version 9.3.0):
+- `submit_bypass_request` — agent-facing; submits a bypass request and pauses the task. After submitting, the agent MUST summarize work and exit.
+- `resolve_bypass_request` — CTO-facing; approves or rejects a pending request. On approval of a persistent task, immediately enqueues a revival monitor.
+- `list_bypass_requests` — CTO-facing; lists requests by status (default: `pending`). Auto-cancels stale requests for gone/completed tasks.
 
 ## Hooks Reference
 

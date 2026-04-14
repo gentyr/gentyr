@@ -7,6 +7,7 @@
 
 import { buildRevivalContext } from './persistent-revival-context.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
+import { getBypassResolutionContext } from './bypass-guard.js';
 
 /**
  * Build a full revival prompt for a persistent task monitor.
@@ -39,13 +40,32 @@ export async function buildPersistentMonitorRevivalPrompt(task, revivalReason, p
     process.stderr.write(`[persistent-monitor-revival-prompt] demo/strict-infra instructions failed for ${task.id}: ${err.message || err}\n`);
   }
 
+  // Check for resolved bypass request context
+  let bypassSection = '';
+  try {
+    const bypassCtx = getBypassResolutionContext('persistent', task.id);
+    if (bypassCtx) {
+      const decisionLabel = bypassCtx.decision === 'approved' ? 'APPROVED' : 'REJECTED';
+      bypassSection = `\n## CTO Bypass Resolution
+Your previous session submitted a bypass request:
+  Category: ${bypassCtx.category}
+  Summary: ${bypassCtx.summary}
+
+CTO Decision: ${decisionLabel}
+CTO Instructions: "${bypassCtx.context}"
+
+${bypassCtx.decision === 'approved' ? 'Proceed with the work, following the CTO\'s instructions above.' : 'The CTO rejected your request. Take an alternative approach or wrap up without the bypassed action.'}
+`;
+    }
+  } catch (_) { /* non-fatal */ }
+
   const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
 
 ## Persistent Task: ${task.title}
 
 Your previous monitor session died. Here is your last known state:
 ${revivalContext || '(no prior state available — this may be the first revival)'}
-
+${bypassSection}
 Read full task details to fill any gaps:
 mcp__persistent-task__get_persistent_task({ id: "${task.id}", include_amendments: true, include_subtasks: true })
 ${demoInstructions}${strictInfraInstructions}`;
