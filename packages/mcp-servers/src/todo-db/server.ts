@@ -1542,15 +1542,31 @@ function listArchivedTasks(args: ListArchivedTasksArgs): ListArchivedTasksResult
 // Category Tool Implementations
 // ============================================================================
 
-function categoryToResponse(record: CategoryRecord): CategoryResponse {
+function categoryToResponse(record: CategoryRecord): CategoryResponse | ErrorResult {
+  let sequence: unknown[];
+  try {
+    sequence = JSON.parse(record.sequence);
+  } catch {
+    return { error: `Category '${record.id}' has corrupt sequence JSON` };
+  }
+
+  let creatorRestrictions: string[] | null = null;
+  if (record.creator_restrictions) {
+    try {
+      creatorRestrictions = JSON.parse(record.creator_restrictions);
+    } catch {
+      return { error: `Category '${record.id}' has corrupt creator_restrictions JSON` };
+    }
+  }
+
   return {
     id: record.id,
     name: record.name,
     description: record.description,
-    sequence: JSON.parse(record.sequence),
+    sequence: sequence as CategoryResponse['sequence'],
     prompt_template: record.prompt_template,
     model: record.model,
-    creator_restrictions: record.creator_restrictions ? JSON.parse(record.creator_restrictions) : null,
+    creator_restrictions: creatorRestrictions,
     force_followup: record.force_followup === 1,
     urgency_authorized: record.urgency_authorized === 1,
     is_default: record.is_default === 1,
@@ -1560,12 +1576,16 @@ function categoryToResponse(record: CategoryRecord): CategoryResponse {
   };
 }
 
-function listCategories(_args: ListCategoriesArgs): ListCategoriesResult {
+function listCategories(args: ListCategoriesArgs): ListCategoriesResult {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM task_categories ORDER BY is_default DESC, name ASC').all() as CategoryRecord[];
+  const query = args.include_deprecated
+    ? 'SELECT * FROM task_categories ORDER BY is_default DESC, name ASC'
+    : 'SELECT * FROM task_categories WHERE deprecated_section IS NULL ORDER BY is_default DESC, name ASC';
+  const rows = db.prepare(query).all() as CategoryRecord[];
+  const categories = rows.map(categoryToResponse).filter((c): c is CategoryResponse => !('error' in c));
   return {
-    categories: rows.map(categoryToResponse),
-    total: rows.length,
+    categories,
+    total: categories.length,
   };
 }
 
@@ -1575,7 +1595,7 @@ function getCategory(args: GetCategoryArgs): CategoryResponse | ErrorResult {
   if (!row) {
     return { error: `Category not found: ${args.id}` };
   }
-  return categoryToResponse(row);
+  return categoryToResponse(row); // may return ErrorResult if JSON is corrupt
 }
 
 function createCategory(args: CreateCategoryArgs): CategoryResponse | ErrorResult {
@@ -1587,29 +1607,32 @@ function createCategory(args: CreateCategoryArgs): CategoryResponse | ErrorResul
     return { error: `Category already exists: ${args.id}` };
   }
 
-  // If setting as default, clear existing default
-  if (args.is_default) {
-    db.prepare('UPDATE task_categories SET is_default = 0 WHERE is_default = 1').run();
-  }
-
   const now = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO task_categories (id, name, description, sequence, prompt_template, model, creator_restrictions, force_followup, urgency_authorized, is_default, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    args.id,
-    args.name,
-    args.description ?? null,
-    JSON.stringify(args.sequence),
-    args.prompt_template ?? null,
-    args.model ?? 'sonnet',
-    args.creator_restrictions ? JSON.stringify(args.creator_restrictions) : null,
-    args.force_followup ? 1 : 0,
-    args.urgency_authorized !== false ? 1 : 0,
-    args.is_default ? 1 : 0,
-    now,
-    now,
-  );
+  const createTx = db.transaction(() => {
+    // If setting as default, clear existing default within the same transaction
+    if (args.is_default) {
+      db.prepare('UPDATE task_categories SET is_default = 0 WHERE is_default = 1').run();
+    }
+
+    db.prepare(`
+      INSERT INTO task_categories (id, name, description, sequence, prompt_template, model, creator_restrictions, force_followup, urgency_authorized, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      args.id,
+      args.name,
+      args.description ?? null,
+      JSON.stringify(args.sequence),
+      args.prompt_template ?? null,
+      args.model ?? 'sonnet',
+      args.creator_restrictions ? JSON.stringify(args.creator_restrictions) : null,
+      args.force_followup ? 1 : 0,
+      args.urgency_authorized !== false ? 1 : 0,
+      args.is_default ? 1 : 0,
+      now,
+      now,
+    );
+  });
+  createTx();
 
   const row = db.prepare('SELECT * FROM task_categories WHERE id = ?').get(args.id) as CategoryRecord;
   return categoryToResponse(row);
@@ -1659,15 +1682,19 @@ function updateCategory(args: UpdateCategoryArgs): CategoryResponse | ErrorResul
     values.push(args.urgency_authorized ? 1 : 0);
   }
   if (args.is_default !== undefined) {
-    if (args.is_default) {
-      db.prepare('UPDATE task_categories SET is_default = 0 WHERE is_default = 1').run();
-    }
     updates.push('is_default = ?');
     values.push(args.is_default ? 1 : 0);
   }
 
   values.push(args.id);
-  db.prepare(`UPDATE task_categories SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  const updateTx = db.transaction(() => {
+    // Clear existing default within same transaction to avoid orphaned state
+    if (args.is_default) {
+      db.prepare('UPDATE task_categories SET is_default = 0 WHERE is_default = 1').run();
+    }
+    db.prepare(`UPDATE task_categories SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  });
+  updateTx();
 
   const row = db.prepare('SELECT * FROM task_categories WHERE id = ?').get(args.id) as CategoryRecord;
   return categoryToResponse(row);

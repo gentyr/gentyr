@@ -134,8 +134,8 @@ export const CategorySequenceStepSchema = z.object({
 });
 
 export const ListCategoriesArgsSchema = z.object({
-  include_deprecated: z.boolean().optional().default(false)
-    .describe('Include categories that map to deprecated sections'),
+  include_deprecated: z.boolean().optional().default(true)
+    .describe('Include categories that map to deprecated sections (default: true, shows all)'),
 });
 
 export const GetCategoryArgsSchema = z.object({
