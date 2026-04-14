@@ -32,6 +32,18 @@ try {
   buildStrictInfraGuidancePrompt = null;
 }
 
+// Task category module
+let resolveCategory, buildPromptFromCategory;
+try {
+  const mod = await import(path.resolve(__dirname, '..', '.claude', 'hooks', 'lib', 'task-category.js'));
+  resolveCategory = mod.resolveCategory;
+  buildPromptFromCategory = mod.buildPromptFromCategory;
+} catch {
+  // Non-fatal: category-based routing will fall back to SECTION_AGENT_MAP
+  resolveCategory = null;
+  buildPromptFromCategory = null;
+}
+
 // ---------------------------------------------------------------------------
 // CLI ARGS
 // ---------------------------------------------------------------------------
@@ -154,6 +166,27 @@ function resolveSectionAgentMap() {
     }
     SECTION_AGENT_MAP[section] = { agent, agentType };
   }
+}
+
+// Category-aware agent mapping (uses shared module, falls back to SECTION_AGENT_MAP)
+// Must be called after resolveSectionAgentMap() and loadAgentTracker() have run.
+function getAgentMapping(task, todoDbPath) {
+  if (resolveCategory) {
+    const category = resolveCategory(todoDbPath, {
+      category_id: task.category_id,
+      section: task.section,
+    });
+    if (category) {
+      return {
+        agent: 'task-runner',
+        agentType: AGENT_TYPES.TASK_RUNNER,
+        category,
+      };
+    }
+  }
+  // Fallback to legacy section map
+  const mapping = SECTION_AGENT_MAP[task.section];
+  return mapping ? { ...mapping, category: null } : null;
 }
 
 /**
@@ -634,7 +667,7 @@ async function main() {
 
   for (let i = 0; i < candidates.length; i++) {
     const task = candidates[i];
-    const mapping = SECTION_AGENT_MAP[task.section];
+    const mapping = getAgentMapping(task, todoDbPath);
 
     if (!mapping) {
       skipped.push({
@@ -697,18 +730,29 @@ async function main() {
       }
     }
 
+    const agentLabel = mapping.category?.name || mapping.agent;
+
     // Enqueue the session — the queue handles registerSpawn, buildSpawnEnv, and spawn internally.
     // Use buildPrompt as a deferred builder so the agentId is available when the prompt is constructed.
     try {
       const { queueId } = enqueueSession({
-        title: `Force-spawn: ${mapping.agent} - ${task.title}`,
+        title: `Force-spawn: ${agentLabel} - ${task.title}`,
         agentType: mapping.agentType,
         hookType: HOOK_TYPES.TASK_RUNNER,
         tagContext: `task-runner-${mapping.agent}`,
         source: 'force-spawn-tasks',
-        buildPrompt: (agentId) => mapping.agent === 'deputy-cto'
-          ? buildDeputyCtoTaskPrompt(task, agentId)
-          : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath),
+        buildPrompt: (agentId) => {
+          if (mapping.category && buildPromptFromCategory) {
+            return buildPromptFromCategory(task, mapping.category, agentId, worktreePath, {
+              resolveUserPrompts: null, // not available in force-spawn — user prompt UUIDs are best-effort
+              buildStrictInfraGuidancePrompt,
+            });
+          }
+          // Legacy fallback
+          return mapping.agent === 'deputy-cto'
+            ? buildDeputyCtoTaskPrompt(task, agentId)
+            : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath);
+        },
         cwd: agentCwd,
         mcpConfig: agentMcpConfig,
         worktreePath: worktreePath || null,
@@ -717,7 +761,7 @@ async function main() {
         extraEnv: {
           ...(task.strict_infra_guidance ? { GENTYR_STRICT_INFRA_GUIDANCE: 'true' } : {}),
         },
-        metadata: { taskId: task.id, section: task.section, worktreePath, source: 'force-spawn-tasks' },
+        metadata: { taskId: task.id, section: task.section, categoryId: task.category_id, worktreePath, source: 'force-spawn-tasks' },
         ttlMs: 30 * 60 * 1000,
       });
 
@@ -727,7 +771,7 @@ async function main() {
         taskId: task.id,
         title: task.title,
         section: task.section,
-        agent: mapping.agent,
+        agent: agentLabel,
         queueId,
         worktreePath,
       });

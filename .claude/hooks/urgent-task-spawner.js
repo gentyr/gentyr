@@ -25,6 +25,7 @@ import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { enqueueSession, preemptForCtoTask } from './lib/session-queue.js';
 import { debugLog } from './lib/debug-log.js';
 import { buildStrictInfraGuidancePrompt } from './lib/strict-infra-guidance-prompt.js';
+import { resolveCategory, buildPromptFromCategory } from './lib/task-category.js';
 
 // Try to import better-sqlite3 for DB access
 let Database = null;
@@ -52,6 +53,24 @@ const SECTION_AGENT_MAP = {
   'PRODUCT-MANAGER': { agent: 'product-manager', agentType: AGENT_TYPES.TASK_RUNNER_PRODUCT_MANAGER },
   'DEMO-MANAGER': { agent: 'demo-manager', agentType: AGENT_TYPES.TASK_RUNNER_DEMO_MANAGER },
 };
+
+// Category-aware agent mapping (uses shared module, falls back to SECTION_AGENT_MAP)
+function getAgentMapping(task) {
+  const category = resolveCategory(TODO_DB_PATH, {
+    category_id: task.category_id,
+    section: task.section,
+  });
+  if (category) {
+    return {
+      agent: 'task-runner',
+      agentType: AGENT_TYPES.TASK_RUNNER,
+      category,
+    };
+  }
+  // Fallback to legacy section map
+  const mapping = SECTION_AGENT_MAP[task.section];
+  return mapping ? { ...mapping, category: null } : null;
+}
 
 // ============================================================================
 // Logging
@@ -406,7 +425,7 @@ Use the Task tool to spawn the appropriate sub-agent: \`Task(subagent_type='${ag
  * @returns {Promise<boolean>} Whether the task was successfully enqueued
  */
 async function spawnTaskAgent(task) {
-  const mapping = SECTION_AGENT_MAP[task.section];
+  const mapping = getAgentMapping(task);
   if (!mapping) return false;
 
   // Determine if this is a CTO-directed task — use highest priority
@@ -430,16 +449,27 @@ async function spawnTaskAgent(task) {
     log(`Worktree creation failed, falling back to PROJECT_DIR: ${err.message}`);
   }
 
+  const agentLabel = mapping.category?.name || mapping.agent;
+
   try {
     const result = enqueueSession({
-      title: `${isCtoTask ? 'CTO task' : 'Task'}: ${mapping.agent} - ${task.title}`,
+      title: `${isCtoTask ? 'CTO task' : 'Task'}: ${agentLabel} - ${task.title}`,
       agentType: mapping.agentType,
       hookType: HOOK_TYPES.TASK_RUNNER,
       tagContext: `task-runner-${mapping.agent}`,
       source: 'urgent-task-spawner',
-      buildPrompt: (agentId) => mapping.agent === 'deputy-cto'
-        ? buildDeputyCtoTaskPrompt(task, agentId)
-        : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath),
+      buildPrompt: (agentId) => {
+        if (mapping.category) {
+          return buildPromptFromCategory(task, mapping.category, agentId, worktreePath, {
+            resolveUserPrompts,
+            buildStrictInfraGuidancePrompt,
+          });
+        }
+        // Legacy fallback
+        return mapping.agent === 'deputy-cto'
+          ? buildDeputyCtoTaskPrompt(task, agentId)
+          : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath);
+      },
       priority: queuePriority,
       cwd: worktreePath || PROJECT_DIR,
       mcpConfig: path.join(worktreePath || PROJECT_DIR, '.mcp.json'),
@@ -448,11 +478,11 @@ async function spawnTaskAgent(task) {
       extraEnv: {
         ...(task.strict_infra_guidance ? { GENTYR_STRICT_INFRA_GUIDANCE: 'true' } : {}),
       },
-      metadata: { taskId: task.id, section: task.section, worktreePath, urgent: true, assignedBy: task.assigned_by },
+      metadata: { taskId: task.id, section: task.section, categoryId: task.category_id, worktreePath, urgent: true, assignedBy: task.assigned_by },
     });
 
     const spawnedImmediately = result.drained && result.drained.spawned > 0;
-    log(`Enqueued ${mapping.agent} for task ${task.id}: "${task.title}" (priority: ${queuePriority}, queueId: ${result.queueId}, spawned: ${spawnedImmediately})`);
+    log(`Enqueued ${agentLabel} for task ${task.id}: "${task.title}" (priority: ${queuePriority}, queueId: ${result.queueId}, spawned: ${spawnedImmediately})`);
 
     // For CTO tasks: if the queue was at capacity (nothing was spawned immediately),
     // trigger preemption of the lowest-priority running session to make room.
@@ -506,6 +536,7 @@ process.stdin.on('end', async () => {
 
     // Extract task info from tool_input (available at PostToolUse time)
     const section = toolInput.section;
+    const categoryId = toolInput.category_id || null;
     const title = toolInput.title;
     const description = toolInput.description || null;
 
@@ -566,8 +597,10 @@ process.stdin.on('end', async () => {
 
     debugLog('urgent-task-spawner', 'task_detected', { taskId, section, priority: toolInput.priority, title: title?.substring(0, 80) });
 
-    if (!section || !SECTION_AGENT_MAP[section]) {
-      log(`Urgent task ${taskId} has no agent mapping for section "${section}". Deferring to hourly.`);
+    // Accept tasks that have either a known section mapping OR a category_id
+    // (category_id tasks are routed via the task-category module at spawn time)
+    if (!categoryId && (!section || !SECTION_AGENT_MAP[section])) {
+      log(`Urgent task ${taskId} has no agent mapping for section "${section}" and no category_id. Deferring to hourly.`);
       process.exit(0);
     }
 
@@ -587,7 +620,7 @@ process.stdin.on('end', async () => {
     // Build task object for spawn (include assigned_by for CTO priority detection)
     const strictInfraGuidance = toolInput.strict_infra_guidance === true;
     const demoInvolved = toolInput.demo_involved === true;
-    const task = { id: taskId, section, title, description, assigned_by: assignedBy, strict_infra_guidance: strictInfraGuidance, demo_involved: demoInvolved ? 1 : 0 };
+    const task = { id: taskId, section, category_id: categoryId, title, description, assigned_by: assignedBy, strict_infra_guidance: strictInfraGuidance, demo_involved: demoInvolved ? 1 : 0 };
 
     const spawnResult = await spawnTaskAgent(task);
     debugLog('urgent-task-spawner', 'spawn_result', { taskId, result: spawnResult === true ? 'spawned' : spawnResult === 'queued' ? 'queued' : 'failed' });
