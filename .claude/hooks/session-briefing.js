@@ -600,6 +600,13 @@ function buildInteractiveBriefing() {
     }
   }
 
+  // Plan vs persistent task decision guidance
+  lines.push('');
+  lines.push('WORK STRUCTURING: When the CTO describes complex work, suggest the right tool:');
+  lines.push('  Multi-phase with dependencies → /plan (structured phases, dependency tracking, plan manager)');
+  lines.push('  Complex single-stream objective → /persistent-task (sustained multi-session monitoring)');
+  lines.push('  Simple request (single session) → just do it directly');
+
   lines.push('');
   lines.push('Hint: Use mcp__agent-tracker__peek_session to drill into any session.');
   lines.push('      Use mcp__agent-tracker__send_session_signal to communicate with agents.');
