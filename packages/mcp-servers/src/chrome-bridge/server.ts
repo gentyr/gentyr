@@ -987,13 +987,116 @@ const CHROME_TOOLS: ChromeToolDefinition[] = [
       },
     },
   },
+  // ==========================================================================
+  // Convenience tools (server-side, compose existing socket tools)
+  // ==========================================================================
+  {
+    name: 'find_elements',
+    title: 'Find Elements',
+    description: 'Find elements on the page by matching text, role, or attributes (case-insensitive substring match). Uses the accessibility tree from read_page — no JavaScript execution needed. Returns matching elements with their reference IDs, roles, text, and attributes. Use this instead of javascript_tool for finding elements on React/SPA pages.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Text to search for. Matches against element text, role name, or attributes (case-insensitive substring match).',
+        },
+        tabId: {
+          type: 'number',
+          description: "Tab ID to search in. Must be a tab in the current group. Use tabs_context_mcp first if you don't have a valid tab ID.",
+        },
+        filter: {
+          type: 'string',
+          enum: ['interactive', 'all'],
+          description: 'Filter elements: "interactive" for buttons/links/inputs only (default), "all" for all elements.',
+        },
+      },
+      required: ['query', 'tabId'],
+    },
+  },
+  {
+    name: 'click_by_text',
+    title: 'Click By Text',
+    description: 'Find an element by text, scroll it into view, and click it. Uses the accessibility tree — no coordinate guessing or JavaScript needed. Works reliably with React/SPA pages because it clicks via element references (MAIN world). Clicks the first matching element. Returns an error if no element matches the text.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'Text to search for (case-insensitive substring match against element text, role, or attributes).',
+        },
+        tabId: {
+          type: 'number',
+          description: "Tab ID to click in. Must be a tab in the current group. Use tabs_context_mcp first if you don't have a valid tab ID.",
+        },
+      },
+      required: ['text', 'tabId'],
+    },
+  },
+  {
+    name: 'fill_input',
+    title: 'Fill Input',
+    description: 'Find an input element by its label or placeholder text and fill it with a value. Searches the accessibility tree for elements with input roles (textbox, combobox, searchbox, spinbutton, slider). Works reliably with React/SPA pages because it uses form_input via element references (MAIN world). No coordinate guessing or JavaScript needed. Returns an error if no matching input is found.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        label: {
+          type: 'string',
+          description: 'Label or placeholder text to search for (case-insensitive substring match).',
+        },
+        value: {
+          type: ['string', 'boolean', 'number'],
+          description: 'The value to set. For checkboxes use boolean, for other inputs use string or number.',
+        },
+        tabId: {
+          type: 'number',
+          description: "Tab ID to fill input in. Must be a tab in the current group. Use tabs_context_mcp first if you don't have a valid tab ID.",
+        },
+      },
+      required: ['label', 'value', 'tabId'],
+    },
+  },
+  {
+    name: 'wait_for_element',
+    title: 'Wait For Element',
+    description: 'Wait until an element matching the query appears on the page. Polls the accessibility tree until a match is found or timeout. Useful for waiting after navigation, form submissions, or dynamic content loading. Default timeout is 30 seconds with 1 second polling interval.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Text to search for (case-insensitive substring match against element text, role, or attributes).',
+        },
+        tabId: {
+          type: 'number',
+          description: "Tab ID to wait in. Must be a tab in the current group. Use tabs_context_mcp first if you don't have a valid tab ID.",
+        },
+        timeoutMs: {
+          type: 'number',
+          description: 'Maximum time to wait in milliseconds (default: 30000).',
+        },
+        pollIntervalMs: {
+          type: 'number',
+          description: 'How often to check for the element in milliseconds (default: 1000).',
+        },
+      },
+      required: ['query', 'tabId'],
+    },
+  },
 ];
 
 // ============================================================================
-// Server-Side AppleScript Tools (extension management, no socket needed)
+// Server-Side Tools (no direct socket passthrough — handled in executeServerSideTool)
 // ============================================================================
 
-const SERVER_SIDE_TOOLS = new Set(['list_chrome_extensions', 'reload_chrome_extension']);
+const SERVER_SIDE_TOOLS = new Set([
+  'list_chrome_extensions',
+  'reload_chrome_extension',
+  'find_elements',
+  'click_by_text',
+  'fill_input',
+  'wait_for_element',
+]);
 
 /**
  * Detect which Chrome application is running.
@@ -1223,6 +1326,203 @@ async function handleReloadExtension(args: Record<string, unknown>): Promise<{ c
   }
 }
 
+// ============================================================================
+// Convenience tool helpers (accessibility tree parsing, element interaction)
+// ============================================================================
+
+interface TreeElement {
+  role: string;
+  text: string;
+  ref: string;
+  attributes: string;
+  line: string;
+}
+
+function parseAccessibilityTree(tree: string): TreeElement[] {
+  const elements: TreeElement[] = [];
+  const lineRegex = /^\s*(\w+)\s+"([^"]*)"\s+\[ref_(\d+)\](.*)$/;
+  for (const line of tree.split('\n')) {
+    const m = line.match(lineRegex);
+    if (m) {
+      elements.push({
+        role: m[1],
+        text: m[2],
+        ref: `ref_${m[3]}`,
+        attributes: m[4].trim(),
+        line: line.trim(),
+      });
+    }
+  }
+  return elements;
+}
+
+function extractTextFromResult(
+  result: { content: McpContent[]; isError?: boolean },
+): string {
+  return result.content
+    .filter((c): c is McpContent & { text: string } => c.type === 'text' && typeof c.text === 'string')
+    .map((c) => c.text)
+    .join('\n');
+}
+
+function findMatchingElements(parsed: TreeElement[], query: string): TreeElement[] {
+  const q = query.toLowerCase();
+  return parsed.filter(
+    (el) =>
+      el.text.toLowerCase().includes(q) ||
+      el.role.toLowerCase().includes(q) ||
+      el.attributes.toLowerCase().includes(q),
+  );
+}
+
+async function handleFindElements(
+  args: Record<string, unknown>,
+): Promise<{ content: McpContent[]; isError?: boolean }> {
+  const query = typeof args.query === 'string' ? args.query : '';
+  const tabId = typeof args.tabId === 'number' ? args.tabId : undefined;
+  const filter = args.filter === 'all' ? 'all' : 'interactive';
+
+  if (!query) {
+    return { content: [{ type: 'text', text: 'Missing required parameter: query' }], isError: true };
+  }
+  if (tabId === undefined) {
+    return { content: [{ type: 'text', text: 'Missing required parameter: tabId' }], isError: true };
+  }
+
+  const readResult = await client.executeTool('read_page', { tabId, filter });
+  if (readResult.isError) return readResult;
+
+  const treeText = extractTextFromResult(readResult);
+  const matches = findMatchingElements(parseAccessibilityTree(treeText), query);
+
+  if (matches.length === 0) {
+    return { content: [{ type: 'text', text: `No elements found matching "${query}"` }] };
+  }
+
+  const summary = matches
+    .map((el) => `${el.role} "${el.text}" [${el.ref}]${el.attributes ? ' ' + el.attributes : ''}`)
+    .join('\n');
+  return {
+    content: [{ type: 'text', text: `Found ${matches.length} element(s) matching "${query}":\n\n${summary}` }],
+  };
+}
+
+async function handleClickByText(
+  args: Record<string, unknown>,
+): Promise<{ content: McpContent[]; isError?: boolean }> {
+  const text = typeof args.text === 'string' ? args.text : '';
+  const tabId = typeof args.tabId === 'number' ? args.tabId : undefined;
+
+  if (!text) {
+    return { content: [{ type: 'text', text: 'Missing required parameter: text' }], isError: true };
+  }
+  if (tabId === undefined) {
+    return { content: [{ type: 'text', text: 'Missing required parameter: tabId' }], isError: true };
+  }
+
+  const readResult = await client.executeTool('read_page', { tabId, filter: 'interactive' });
+  if (readResult.isError) return readResult;
+
+  const matches = findMatchingElements(parseAccessibilityTree(extractTextFromResult(readResult)), text);
+  if (matches.length === 0) {
+    return { content: [{ type: 'text', text: `Element not found: "${text}"` }], isError: true };
+  }
+
+  const { ref } = matches[0];
+  await client.executeTool('computer', { action: 'scroll_to', ref, tabId });
+  const clickResult = await client.executeTool('computer', { action: 'left_click', ref, tabId });
+
+  return {
+    content: [{ type: 'text', text: `Clicked ${matches[0].role} "${matches[0].text}" [${ref}]` }],
+    isError: clickResult.isError,
+  };
+}
+
+async function handleFillInput(
+  args: Record<string, unknown>,
+): Promise<{ content: McpContent[]; isError?: boolean }> {
+  const label = typeof args.label === 'string' ? args.label : '';
+  const value = args.value;
+  const tabId = typeof args.tabId === 'number' ? args.tabId : undefined;
+
+  if (!label) {
+    return { content: [{ type: 'text', text: 'Missing required parameter: label' }], isError: true };
+  }
+  if (value === undefined || value === null) {
+    return { content: [{ type: 'text', text: 'Missing required parameter: value' }], isError: true };
+  }
+  if (tabId === undefined) {
+    return { content: [{ type: 'text', text: 'Missing required parameter: tabId' }], isError: true };
+  }
+
+  const INPUT_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton', 'slider']);
+
+  const readResult = await client.executeTool('read_page', { tabId, filter: 'interactive' });
+  if (readResult.isError) return readResult;
+
+  const matches = findMatchingElements(parseAccessibilityTree(extractTextFromResult(readResult)), label);
+  const input = matches.find((el) => INPUT_ROLES.has(el.role));
+  if (!input) {
+    return {
+      content: [{ type: 'text', text: `No input element found matching "${label}". Looked for roles: ${[...INPUT_ROLES].join(', ')}` }],
+      isError: true,
+    };
+  }
+
+  const fillResult = await client.executeTool('form_input', { ref: input.ref, value, tabId });
+  if (fillResult.isError) return fillResult;
+
+  return {
+    content: [{ type: 'text', text: `Filled ${input.role} "${input.text}" [${input.ref}] with value: ${JSON.stringify(value)}` }],
+  };
+}
+
+async function handleWaitForElement(
+  args: Record<string, unknown>,
+): Promise<{ content: McpContent[]; isError?: boolean }> {
+  const query = typeof args.query === 'string' ? args.query : '';
+  const tabId = typeof args.tabId === 'number' ? args.tabId : undefined;
+  const timeoutMs = typeof args.timeoutMs === 'number' ? args.timeoutMs : 30_000;
+  const pollIntervalMs = typeof args.pollIntervalMs === 'number' ? args.pollIntervalMs : 1_000;
+
+  if (!query) {
+    return { content: [{ type: 'text', text: 'Missing required parameter: query' }], isError: true };
+  }
+  if (tabId === undefined) {
+    return { content: [{ type: 'text', text: 'Missing required parameter: tabId' }], isError: true };
+  }
+
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const readResult = await client.executeTool('read_page', { tabId, filter: 'interactive' });
+      if (!readResult.isError) {
+        const matches = findMatchingElements(
+          parseAccessibilityTree(extractTextFromResult(readResult)),
+          query,
+        );
+        if (matches.length > 0) {
+          return {
+            content: [{ type: 'text', text: `Element found: ${matches[0].role} "${matches[0].text}" [${matches[0].ref}]` }],
+          };
+        }
+      }
+    } catch {
+      // Swallow errors during polling (page may be loading)
+    }
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise((r) => setTimeout(r, Math.min(pollIntervalMs, remaining)));
+  }
+
+  return {
+    content: [{ type: 'text', text: `Timeout after ${timeoutMs}ms waiting for element matching "${query}"` }],
+    isError: true,
+  };
+}
+
 async function executeServerSideTool(
   toolName: string,
   args: Record<string, unknown>,
@@ -1232,6 +1532,14 @@ async function executeServerSideTool(
       return handleListExtensions(args);
     case 'reload_chrome_extension':
       return handleReloadExtension(args);
+    case 'find_elements':
+      return handleFindElements(args);
+    case 'click_by_text':
+      return handleClickByText(args);
+    case 'fill_input':
+      return handleFillInput(args);
+    case 'wait_for_element':
+      return handleWaitForElement(args);
     default:
       return { content: [{ type: 'text', text: `Unknown server-side tool: ${toolName}` }], isError: true };
   }
