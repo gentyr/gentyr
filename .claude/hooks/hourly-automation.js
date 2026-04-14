@@ -3029,6 +3029,16 @@ async function main() {
         let resumed = 0;
 
         for (const task of pausedTasks) {
+          // Bypass request guard — skip tasks with pending CTO bypass requests
+          try {
+            const { checkBypassBlock } = await import('./lib/bypass-guard.js');
+            const bypassCheck = checkBypassBlock('persistent', task.id);
+            if (bypassCheck.blocked) {
+              log(`Persistent stale pause auto-resume: "${task.title}" has pending CTO bypass request — skipping`);
+              continue;
+            }
+          } catch (_) { /* non-fatal — fail open */ }
+
           // Find the most recent 'paused' event for this task
           const pauseEvent = ptDb.prepare(
             "SELECT created_at FROM events WHERE persistent_task_id = ? AND event_type = 'paused' ORDER BY created_at DESC LIMIT 1"

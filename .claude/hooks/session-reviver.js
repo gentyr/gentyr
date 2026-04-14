@@ -20,6 +20,7 @@ import { AGENT_TYPES, HOOK_TYPES, registerHookExecution, acquireLock, releaseLoc
 import { shouldAllowSpawn } from './lib/memory-pressure.js';
 import { enqueueSession } from './lib/session-queue.js';
 import { auditEvent } from './lib/session-audit.js';
+import { checkBypassBlock } from './lib/bypass-guard.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
@@ -388,6 +389,15 @@ function reviveDeadSessions(log, maxRevivals) {
       // if the reaper ran but couldn't find the session file to complete reconciliation)
       const task = db.prepare('SELECT id, status FROM tasks WHERE id = ? AND status IN (?, ?)').get(taskId, 'pending', 'in_progress');
       if (!task) continue;
+
+      // Bypass request guard — skip tasks with pending CTO bypass requests
+      try {
+        const bypassCheck = checkBypassBlock('todo', taskId);
+        if (bypassCheck.blocked) {
+          log(`  Dead session for task ${taskId} has pending CTO bypass request — skipping revival.`);
+          continue;
+        }
+      } catch (_) { /* non-fatal — fail open */ }
 
       // Find session file
       let sessionFile = agent.sessionFile;

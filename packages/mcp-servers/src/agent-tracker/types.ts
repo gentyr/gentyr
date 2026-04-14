@@ -321,6 +321,17 @@ export const BrowseSessionArgsSchema = z.object({
 });
 export type BrowseSessionArgs = z.infer<typeof BrowseSessionArgsSchema>;
 
+export const UpdateMonitorStateArgsSchema = z.object({
+  round_number: z.number().describe('Current monitoring round number'),
+  monitored_sessions: z.array(z.string()).describe('Agent IDs being monitored'),
+  monitored_task_ids: z.array(z.string()).describe('Persistent task IDs being monitored'),
+  current_step: z.string().describe('Current step: OVERVIEW, BROWSE, QUEUE, ASSESS, or SLEEP'),
+});
+export type UpdateMonitorStateArgs = z.infer<typeof UpdateMonitorStateArgsSchema>;
+
+export const StopMonitoringArgsSchema = z.object({});
+export type StopMonitoringArgs = z.infer<typeof StopMonitoringArgsSchema>;
+
 export const GetSessionActivitySummaryArgsSchema = z.object({});
 export type GetSessionActivitySummaryArgs = z.infer<typeof GetSessionActivitySummaryArgsSchema>;
 
@@ -415,6 +426,41 @@ export const InspectPersistentTaskArgsSchema = z.object({
     .describe('Maximum number of child sessions to include JSONL excerpts for (default: 10)'),
 });
 export type InspectPersistentTaskArgs = z.infer<typeof InspectPersistentTaskArgsSchema>;
+
+// CTO Bypass Request Schemas
+export const SubmitBypassRequestArgsSchema = z.object({
+  task_type: z.enum(['persistent', 'todo'])
+    .describe('Type of task: "persistent" for persistent tasks, "todo" for todo-db tasks'),
+  task_id: z.string().min(1)
+    .describe('The persistent task ID or todo task ID requiring CTO authorization'),
+  category: z.enum(['destructive_operation', 'scope_change', 'ambiguous_requirement', 'resource_access', 'general'])
+    .default('general')
+    .describe('Category of bypass request'),
+  summary: z.string().min(10).max(500)
+    .describe('1-3 sentence explanation of what CTO authorization is needed for'),
+  details: z.string().max(5000).optional()
+    .describe('Extended context: what was attempted, options considered, file paths involved'),
+});
+export type SubmitBypassRequestArgs = z.infer<typeof SubmitBypassRequestArgsSchema>;
+
+export const ResolveBypassRequestArgsSchema = z.object({
+  request_id: z.string().min(1)
+    .describe('Bypass request ID to resolve (from session briefing or list_bypass_requests)'),
+  decision: z.enum(['approved', 'rejected'])
+    .describe('CTO decision: approve or reject the bypass request'),
+  context: z.string().min(1).max(5000)
+    .describe('CTO instructions/context for the agent — included in the revival prompt (approved) or rejection notice (rejected)'),
+});
+export type ResolveBypassRequestArgs = z.infer<typeof ResolveBypassRequestArgsSchema>;
+
+export const ListBypassRequestsArgsSchema = z.object({
+  status: z.enum(['pending', 'approved', 'rejected', 'cancelled', 'all'])
+    .default('pending')
+    .describe('Filter by status (default: pending)'),
+  limit: z.coerce.number().min(1).max(100).optional().default(20)
+    .describe('Maximum number of requests to return'),
+});
+export type ListBypassRequestsArgs = z.infer<typeof ListBypassRequestsArgsSchema>;
 
 export const LaunchInteractiveMonitorArgsSchema = z.object({
   task_id: z.string().min(1).optional().describe('Persistent task UUID or prefix — resolves to the monitor session and kills the headless monitor'),

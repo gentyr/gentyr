@@ -32,6 +32,7 @@ const USER_PROMPTS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'user-pr
 const PLANS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 const SESSION_COMMS_LOG = path.join(PROJECT_DIR, '.claude', 'state', 'session-comms.log');
+const BYPASS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
 
 // Lazy SQLite
 let Database = null;
@@ -303,6 +304,25 @@ function getTaskCounts() {
 }
 
 // ---------------------------------------------------------------------------
+// Data gathering: pending CTO bypass requests
+// ---------------------------------------------------------------------------
+
+function getPendingBypassRequests() {
+  if (!Database || !fs.existsSync(BYPASS_DB_PATH)) return null;
+  try {
+    const db = new Database(BYPASS_DB_PATH, { readonly: true });
+    db.pragma('busy_timeout = 1000');
+    const requests = db.prepare(
+      "SELECT id, task_type, task_id, task_title, category, summary, created_at FROM bypass_requests WHERE status = 'pending' ORDER BY created_at ASC"
+    ).all();
+    db.close();
+    return requests.length > 0 ? requests : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Data gathering: persistent task state
 // ---------------------------------------------------------------------------
 
@@ -355,7 +375,9 @@ function getPersistentTaskState() {
         ).get(task.id);
         if (evt?.details) {
           const d = JSON.parse(evt.details);
-          pauseReason = d.reason === 'crash_loop_circuit_breaker' ? 'crash-loop' : 'manual';
+          pauseReason = d.reason === 'crash_loop_circuit_breaker' ? 'crash-loop'
+            : d.reason === 'cto_bypass_request' ? 'bypass-request'
+            : 'manual';
         }
       } catch { /* non-fatal */ }
       pausedTasks.push({ title: task.title, pauseReason });
@@ -541,6 +563,20 @@ function buildInteractiveBriefing() {
     }
   } catch { /* non-fatal */ }
 
+  // CTO Bypass Requests
+  const bypassRequests = getPendingBypassRequests();
+  if (bypassRequests) {
+    lines.push('');
+    lines.push('=== CTO BYPASS REQUESTS AWAITING DECISION ===');
+    for (let i = 0; i < bypassRequests.length; i++) {
+      const req = bypassRequests[i];
+      const ago = timeAgoStr(req.created_at);
+      lines.push(`[${i + 1}] "${truncate(req.task_title, 50)}" (${req.task_type}, ${req.category}) — ${ago}`);
+      lines.push(`    ${truncate(req.summary, 120)}`);
+      lines.push(`    → mcp__agent-tracker__resolve_bypass_request({ request_id: "${req.id}", decision: "approved"|"rejected", context: "..." })`);
+    }
+  }
+
   // Persistent tasks
   const ptState = getPersistentTaskState();
   if (ptState) {
@@ -554,8 +590,9 @@ function buildInteractiveBriefing() {
     }
     if (ptState.pausedTasks && ptState.pausedTasks.length > 0) {
       const crashLoop = ptState.pausedTasks.filter(t => t.pauseReason === 'crash-loop').length;
-      const manual = ptState.pausedTasks.length - crashLoop;
-      const summary = [crashLoop > 0 && `${crashLoop} crash-loop`, manual > 0 && `${manual} manual`].filter(Boolean).join(', ');
+      const bypassReq = ptState.pausedTasks.filter(t => t.pauseReason === 'bypass-request').length;
+      const manual = ptState.pausedTasks.length - crashLoop - bypassReq;
+      const summary = [crashLoop > 0 && `${crashLoop} crash-loop`, bypassReq > 0 && `${bypassReq} bypass-request`, manual > 0 && `${manual} manual`].filter(Boolean).join(', ');
       lines.push(`PAUSED TASKS: ${ptState.pausedTasks.length} (${summary})`);
       for (const t of ptState.pausedTasks) {
         lines.push(`  "${truncate(t.title, 50)}" — ${t.pauseReason} paused`);

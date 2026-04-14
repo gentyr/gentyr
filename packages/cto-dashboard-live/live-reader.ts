@@ -297,6 +297,25 @@ function readPersistentTasks(runningSessions: SessionItem[]): PersistentTaskItem
         startedAt: t.activated_at || null, completedAt: null,
       };
       let subTasks: SubTaskItem[] = [];
+      // Build taskId→session map from queue DB for reliable matching
+      // (the todo.db status may be 'completed' while the session is still running)
+      const taskIdToSession = new Map<string, SessionItem>();
+      if (queueDb) {
+        try {
+          const runningItems = queueDb.prepare(
+            "SELECT id, metadata FROM queue_items WHERE status IN ('running', 'spawning') AND metadata IS NOT NULL"
+          ).all() as Array<{ id: string; metadata: string }>;
+          for (const item of runningItems) {
+            try {
+              const meta = JSON.parse(item.metadata);
+              if (meta.taskId) {
+                const matched = runningSessions.find(s => s.id === item.id);
+                if (matched) taskIdToSession.set(meta.taskId, matched);
+              }
+            } catch { /* skip malformed metadata */ }
+          }
+        } catch { /* non-fatal */ }
+      }
       if (todoDb) {
         try {
           const links = ptDb.prepare("SELECT todo_task_id FROM sub_tasks WHERE persistent_task_id = ?").all(t.id) as Array<{ todo_task_id: string }>;
@@ -308,8 +327,10 @@ function readPersistentTasks(runningSessions: SessionItem[]): PersistentTaskItem
               else { const arch = todoDb.prepare("SELECT title, section FROM archived_tasks WHERE id = ?").get(link.todo_task_id) as { title: string; section: string } | undefined; if (arch) { title = arch.title; status = 'completed'; section = arch.section; resolved = true; } }
             } catch { /* */ }
             if (!resolved) return null;
-            let session: SessionItem | null = null;
-            if (status === 'in_progress') { session = runningSessions.find(s => s.title.includes(title.substring(0, 20))) ?? null; }
+            // Primary: match via queue metadata taskId (reliable, status-independent)
+            let session: SessionItem | null = taskIdToSession.get(link.todo_task_id) ?? null;
+            // Fallback: title substring match for in_progress tasks
+            if (!session && status === 'in_progress') { session = runningSessions.find(s => s.title.includes(title.substring(0, 20))) ?? null; }
             return { id: link.todo_task_id, title, status, section, session, agentStage: null, agentProgressPct: null, prUrl: null, prMerged: false, worklog: status === 'completed' ? findWorklog('', `{"taskId":"${link.todo_task_id}"}`) : null };
           }).filter(Boolean) as SubTaskItem[];
           const statusOrder: Record<string, number> = { in_progress: 0, completed: 1, pending: 2, pending_review: 3 };
@@ -323,7 +344,7 @@ function readPersistentTasks(runningSessions: SessionItem[]): PersistentTaskItem
       }
       return { id: t.id, title: t.title, status: t.status, age: ageStr(t.activated_at), cycleCount: t.cycle_count ?? 0, heartbeatAge: t.last_heartbeat ? ageStr(t.last_heartbeat) : 'never', heartbeatStale: hbMs > 15 * 60 * 1000, demoInvolved: meta.demo_involved === true, strictInfraGuidance: meta.strict_infra_guidance === true, monitorSession, subTasks };
     });
-  } finally { closeDb(ptDb); closeDb(todoDb); }
+  } finally { closeDb(ptDb); closeDb(todoDb); closeDb(queueDb); }
 }
 
 // ============================================================================
