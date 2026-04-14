@@ -36,6 +36,7 @@ import {
   PlanTimelineArgsSchema,
   PlanAuditArgsSchema,
   PlanSessionsArgsSchema,
+  ForceClosePlanArgsSchema,
   type CreatePlanArgs,
   type GetPlanArgs,
   type ListPlansArgs,
@@ -53,6 +54,7 @@ import {
   type PlanTimelineArgs,
   type PlanAuditArgs,
   type PlanSessionsArgs,
+  type ForceClosePlanArgs,
   type PlanRecord,
   type PhaseRecord,
   type PlanTaskRecord,
@@ -97,7 +99,7 @@ CREATE TABLE IF NOT EXISTS plans (
     completed_at TEXT,
     created_by TEXT,
     metadata TEXT,
-    CONSTRAINT valid_plan_status CHECK (status IN ('draft','active','paused','completed','archived'))
+    CONSTRAINT valid_plan_status CHECK (status IN ('draft','active','paused','completed','archived','cancelled'))
 );
 
 CREATE TABLE IF NOT EXISTS phases (
@@ -200,6 +202,86 @@ function initializeDatabase(): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+
+  // ── plans table: CHECK constraint migration (add 'cancelled') ──────────────
+  // Try inserting a test row with the new status; if it fails, the existing DB
+  // has an old CHECK constraint that excludes 'cancelled'. Recreate the table.
+  const testPlanId = `_migration_check_${Date.now()}`;
+  try {
+    db.prepare(
+      "INSERT INTO plans (id, title, status, created_at, updated_at) VALUES (?, '_migration_test', 'cancelled', ?, ?)"
+    ).run(testPlanId, new Date().toISOString(), new Date().toISOString());
+    db.prepare('DELETE FROM plans WHERE id = ?').run(testPlanId);
+  } catch {
+    // Old CHECK constraint — recreate plans table preserving data.
+    // Temporarily disable foreign keys so CASCADE constraints don't interfere.
+    db.pragma('foreign_keys = OFF');
+    db.exec(`
+      ALTER TABLE plans RENAME TO plans_old;
+      CREATE TABLE IF NOT EXISTS plans (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'draft',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          started_at TEXT,
+          completed_at TEXT,
+          created_by TEXT,
+          metadata TEXT,
+          persistent_task_id TEXT,
+          manager_agent_id TEXT,
+          manager_pid INTEGER,
+          manager_session_id TEXT,
+          last_heartbeat TEXT,
+          CONSTRAINT valid_plan_status CHECK (status IN ('draft','active','paused','completed','archived','cancelled'))
+      );
+      INSERT INTO plans (id, title, description, status, created_at, updated_at, started_at, completed_at, created_by, metadata)
+        SELECT id, title, description, status, created_at, updated_at, started_at, completed_at, created_by, metadata FROM plans_old;
+      DROP TABLE plans_old;
+    `);
+    db.pragma('foreign_keys = ON');
+  }
+
+  // ── plans table: add marriage columns (idempotent) ─────────────────────────
+  try {
+    db.prepare('SELECT persistent_task_id FROM plans LIMIT 0').get();
+  } catch {
+    db.exec('ALTER TABLE plans ADD COLUMN persistent_task_id TEXT');
+  }
+  try {
+    db.prepare('SELECT manager_agent_id FROM plans LIMIT 0').get();
+  } catch {
+    db.exec('ALTER TABLE plans ADD COLUMN manager_agent_id TEXT');
+  }
+  try {
+    db.prepare('SELECT manager_pid FROM plans LIMIT 0').get();
+  } catch {
+    db.exec('ALTER TABLE plans ADD COLUMN manager_pid INTEGER');
+  }
+  try {
+    db.prepare('SELECT manager_session_id FROM plans LIMIT 0').get();
+  } catch {
+    db.exec('ALTER TABLE plans ADD COLUMN manager_session_id TEXT');
+  }
+  try {
+    db.prepare('SELECT last_heartbeat FROM plans LIMIT 0').get();
+  } catch {
+    db.exec('ALTER TABLE plans ADD COLUMN last_heartbeat TEXT');
+  }
+
+  // ── plan_tasks table: add marriage columns (idempotent) ────────────────────
+  try {
+    db.prepare('SELECT persistent_task_id FROM plan_tasks LIMIT 0').get();
+  } catch {
+    db.exec('ALTER TABLE plan_tasks ADD COLUMN persistent_task_id TEXT');
+  }
+  try {
+    db.prepare('SELECT category_id FROM plan_tasks LIMIT 0').get();
+  } catch {
+    db.exec('ALTER TABLE plan_tasks ADD COLUMN category_id TEXT');
+  }
+
   return db;
 }
 
@@ -430,7 +512,9 @@ function getPlan(args: GetPlanArgs) {
         status: task.status,
         task_order: task.task_order,
         agent_type: task.agent_type,
+        category_id: task.category_id ?? null,
         todo_task_id: task.todo_task_id,
+        persistent_task_id: task.persistent_task_id ?? null,
         pr_number: task.pr_number,
         pr_merged: task.pr_merged === 1,
         branch_name: task.branch_name,
@@ -465,6 +549,11 @@ function getPlan(args: GetPlanArgs) {
     updated_at: plan.updated_at,
     started_at: plan.started_at,
     completed_at: plan.completed_at,
+    persistent_task_id: plan.persistent_task_id ?? null,
+    manager_agent_id: plan.manager_agent_id ?? null,
+    manager_pid: plan.manager_pid ?? null,
+    manager_session_id: plan.manager_session_id ?? null,
+    last_heartbeat: plan.last_heartbeat ?? null,
     phases: phaseResults,
   };
 }
@@ -620,8 +709,8 @@ function addPlanTask(args: AddPlanTaskArgs) {
 
   const addTaskTx = db.transaction(() => {
     db.prepare(
-      'INSERT INTO plan_tasks (id, phase_id, plan_id, title, description, status, task_order, agent_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(taskId, args.phase_id, phase.plan_id, args.title, args.description ?? null, 'pending', maxOrder + 1, args.agent_type ?? null, ts, ts);
+      'INSERT INTO plan_tasks (id, phase_id, plan_id, title, description, status, task_order, agent_type, category_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(taskId, args.phase_id, phase.plan_id, args.title, args.description ?? null, 'pending', maxOrder + 1, args.agent_type ?? null, args.category_id ?? null, ts, ts);
 
     // Add substeps
     if (args.substeps) {
@@ -671,6 +760,7 @@ function addPlanTask(args: AddPlanTaskArgs) {
     plan_id: phase.plan_id,
     title: args.title,
     task_order: maxOrder + 1,
+    category_id: args.category_id ?? null,
     substeps_created: args.substeps?.length ?? 0,
     created_at: ts,
   };
@@ -1404,6 +1494,41 @@ function planSessions(args: PlanSessionsArgs) {
   return { sessions: lines.join('\n') };
 }
 
+function forceClosePlan(args: ForceClosePlanArgs): object {
+  const db = getDb();
+
+  const plan = db.prepare('SELECT * FROM plans WHERE id = ?').get(args.plan_id) as PlanRecord | undefined;
+  if (!plan) {
+    return { error: `Plan not found: ${args.plan_id}` };
+  }
+
+  if (plan.status === 'completed' || plan.status === 'archived') {
+    return { error: `Plan is already ${plan.status}` };
+  }
+
+  const ts = now();
+
+  // Cancel the plan
+  const oldStatus = plan.status;
+  db.prepare("UPDATE plans SET status = 'cancelled', completed_at = ?, updated_at = ? WHERE id = ?")
+    .run(ts, ts, args.plan_id);
+  recordStateChange(db, 'plan', args.plan_id, 'status', oldStatus, 'cancelled', 'cto-force-close');
+
+  // Collect persistent task IDs from plan tasks for caller to cancel
+  const linkedPersistentTasks = db.prepare(
+    'SELECT persistent_task_id FROM plan_tasks WHERE plan_id = ? AND persistent_task_id IS NOT NULL'
+  ).all(args.plan_id) as Array<{ persistent_task_id: string }>;
+
+  return {
+    plan_id: args.plan_id,
+    status: 'cancelled',
+    reason: args.reason,
+    cancelled_at: ts,
+    persistent_tasks_to_cancel: linkedPersistentTasks.map(t => t.persistent_task_id),
+    message: `Plan force-closed. ${linkedPersistentTasks.length} linked persistent task(s) should be cancelled via cancel_persistent_task.`,
+  };
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -1429,7 +1554,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'update_plan_status',
-    description: 'Update plan status (draft/active/paused/completed/archived). Activating updates task readiness.',
+    description: 'Update plan status (draft/active/paused/completed/archived/cancelled). Activating updates task readiness.',
     schema: UpdatePlanStatusArgsSchema,
     handler: updatePlanStatus,
   },
@@ -1510,6 +1635,12 @@ const tools: AnyToolHandler[] = [
     description: 'Per-session lifecycle timeline showing spawns, rotations, interrupts, revivals, worklogs, and PR merges for plan task agents.',
     schema: PlanSessionsArgsSchema,
     handler: planSessions,
+  },
+  {
+    name: 'force_close_plan',
+    description: 'Force-close a plan and cancel all running work. WARNING: Only use when directly asked by the CTO. Returns persistent task IDs that must be separately cancelled via cancel_persistent_task.',
+    schema: ForceClosePlanArgsSchema,
+    handler: forceClosePlan,
   },
 ];
 
