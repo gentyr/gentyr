@@ -165,10 +165,33 @@ async function main() {
     db.close();
     const amendStr = unacknowledged > 0 ? ` ${unacknowledged} unacknowledged amendment(s)!` : '';
     const skepticismNudge = completedCount > 0 ? ' VERIFY: Did completed children prove their results (exit codes, screenshots, PR merges)? Don\'t take their word for it.' : '';
+
+    // Compact plan context for plan manager sessions
+    let compactPlanStr = '';
+    try {
+      const meta = task.metadata ? JSON.parse(task.metadata) : {};
+      if (meta.plan_task_id && meta.plan_id) {
+        const planDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+        if (fs.existsSync(planDbPath)) {
+          const planDb = new Database(planDbPath, { readonly: true });
+          const planTaskRow = planDb.prepare('SELECT title FROM plan_tasks WHERE id = ?').get(meta.plan_task_id);
+          const planTaskStats = planDb.prepare(
+            "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as done FROM plan_tasks WHERE plan_id = ?"
+          ).get(meta.plan_id);
+          planDb.close();
+          if (planTaskRow) {
+            const ptDone = planTaskStats?.done || 0;
+            const ptTotal = planTaskStats?.total || 0;
+            compactPlanStr = ` [PLAN: "${planTaskRow.title}" — ${ptDone}/${ptTotal} tasks done]`;
+          }
+        }
+      }
+    } catch (_) { /* non-fatal */ }
+
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: `[PERSISTENT MONITOR] Cycle ${task.cycle_count + 1}.${subtaskSummary}${amendStr} Check signals.${skepticismNudge}`,
+        additionalContext: `[PERSISTENT MONITOR] Cycle ${task.cycle_count + 1}.${subtaskSummary}${amendStr} Check signals.${skepticismNudge}${compactPlanStr}`,
       },
     }));
     process.exit(0);
@@ -235,11 +258,51 @@ async function main() {
     amendmentSection = `\n## Amendments (in chronological order)\n${lines.join('\n')}`;
   }
 
-  // Check if task involves demos (for conditional visual verification reminder)
+  // Parse metadata once for demo + plan context
   let isDemoInvolved = false;
+  let planContextSection = '';
   try {
     const meta = task.metadata ? JSON.parse(task.metadata) : {};
     isDemoInvolved = !!meta.demo_involved;
+
+    // Plan context injection for plan manager sessions
+    if (meta.plan_task_id && meta.plan_id) {
+      const planDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+      if (fs.existsSync(planDbPath)) {
+        try {
+          const planDb = new Database(planDbPath, { readonly: true });
+          const planTask = planDb.prepare('SELECT title, status FROM plan_tasks WHERE id = ?').get(meta.plan_task_id);
+          const plan = planDb.prepare('SELECT title, status FROM plans WHERE id = ?').get(meta.plan_id);
+
+          // Substep progress
+          const substepStats = planDb.prepare(
+            'SELECT COUNT(*) as total, SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END) as done FROM substeps WHERE task_id = ?'
+          ).get(meta.plan_task_id);
+
+          // Plan-level task progress
+          const planTaskStats = planDb.prepare(
+            "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as done FROM plan_tasks WHERE plan_id = ?"
+          ).get(meta.plan_id);
+
+          planDb.close();
+
+          if (plan && planTask) {
+            const subDone = substepStats?.done || 0;
+            const subTotal = substepStats?.total || 0;
+            const ptDone = planTaskStats?.done || 0;
+            const ptTotal = planTaskStats?.total || 0;
+            planContextSection = `
+
+## Plan Context
+You are executing step "${planTask.title}" (status: ${planTask.status}) of plan "${plan.title}".
+Plan progress: ${ptDone}/${ptTotal} tasks completed.
+Substeps for this task: ${subDone}/${subTotal} complete.
+After each milestone, spawn Task(subagent_type='plan-updater') to sync progress.
+When this task is done, call mcp__persistent-task__complete_persistent_task — the plan-persistent-sync hook will auto-advance the plan.`;
+          }
+        } catch (_) { /* non-fatal */ }
+      }
+    }
   } catch (_) { /* non-fatal */ }
 
   const demoReminder = isDemoInvolved ? `
@@ -278,7 +341,7 @@ ${subtaskDetails}
 - Do NOT accept child agents' claims at face value. When a child says "test passed" or "demo working", deep-dive its session with peek_session and look for exit codes, screenshots, assertion output
 - Absence of errors is NOT proof of success — demand positive evidence (exit code 0, specific output strings, confirmed UI state)
 - If a child completed without verification evidence, send it a directive demanding proof, or create a new task to re-verify
-- Use mcp__agent-tracker__peek_session({ agent_id: "<id>", depth: 32 }) to read the child's actual session JSONL — see what it really did, not just what it claimed${demoReminder}`;
+- Use mcp__agent-tracker__peek_session({ agent_id: "<id>", depth: 32 }) to read the child's actual session JSONL — see what it really did, not just what it claimed${planContextSection}${demoReminder}`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {

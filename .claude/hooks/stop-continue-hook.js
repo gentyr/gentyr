@@ -132,6 +132,42 @@ async function main() {
       }
     }
 
+    // Plan manager completion gate — must run before the generic persistent monitor check
+    if (process.env.GENTYR_PLAN_MANAGER === 'true' && process.env.GENTYR_PLAN_ID) {
+      const planId = process.env.GENTYR_PLAN_ID;
+      debugLog('Plan manager session detected', { planId });
+
+      try {
+        const planDbPath = path.join(projectDir, '.claude', 'state', 'plans.db');
+        if (Database && fs.existsSync(planDbPath)) {
+          const planDb = new Database(planDbPath, { readonly: true });
+          const plan = planDb.prepare('SELECT status FROM plans WHERE id = ?').get(planId);
+
+          if (plan && plan.status === 'active') {
+            const incompleteTasks = planDb.prepare(
+              "SELECT COUNT(*) as count FROM plan_tasks WHERE plan_id = ? AND status NOT IN ('completed', 'skipped')"
+            ).get(planId);
+            planDb.close();
+
+            if (incompleteTasks?.count > 0) {
+              debugLog('Decision: BLOCK (plan manager — incomplete plan tasks)', { count: incompleteTasks.count });
+              gentyrDebugLog('stop-hook', 'decision', { decision: 'block', reason: 'plan_manager_incomplete', isTask: true, isPersistent: true });
+              console.log(JSON.stringify({
+                decision: 'block',
+                reason: `[PLAN MANAGER] Plan has ${incompleteTasks.count} incomplete task(s). Continue executing the plan by spawning persistent tasks for each ready plan task. Only stop after all plan tasks are completed or skipped, then call mcp__persistent-task__complete_persistent_task.`,
+              }));
+              process.exit(0);
+            }
+          } else {
+            planDb.close();
+          }
+        }
+      } catch (e) {
+        debugLog('plans.db read error in plan manager gate (non-fatal)', { error: e.message });
+        // Fail open — let the persistent monitor check handle it
+      }
+    }
+
     // Persistent monitor sessions: check if task is still active
     if (process.env.GENTYR_PERSISTENT_MONITOR === 'true') {
       const ptTaskId = process.env.GENTYR_PERSISTENT_TASK_ID;
