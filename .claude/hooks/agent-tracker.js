@@ -67,6 +67,7 @@ export const AGENT_TYPES = {
   TASK_RUNNER_DEMO_MANAGER: 'task-runner-demo-manager',
   TASK_RUNNER_WORKSTREAM_MANAGER: 'task-runner-workstream-manager',
   PERSISTENT_TASK_MONITOR: 'persistent-task-monitor',
+  TASK_RUNNER: 'task-runner',
 };
 
 /**

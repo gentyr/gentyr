@@ -27,6 +27,7 @@ export const AGENT_TYPES = {
   CLAUDEMD_REFACTOR: 'claudemd-refactor',
   LINT_FIXER: 'lint-fixer',
   SESSION_REVIVED: 'session-revived',
+  TASK_RUNNER: 'task-runner',
 } as const;
 
 export type AgentType = typeof AGENT_TYPES[keyof typeof AGENT_TYPES];
