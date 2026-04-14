@@ -14,6 +14,7 @@
 import { createInterface } from 'readline';
 import fs from 'fs';
 import path from 'path';
+import { resolveCategory, getPipelineStages } from './lib/task-category.js';
 
 // Fast exit: only track spawned sessions
 if ((process.env.CLAUDE_SPAWNED_SESSION !== 'true' && process.env.GENTYR_INTERACTIVE_MONITOR !== 'true') || !process.env.CLAUDE_AGENT_ID) {
@@ -70,41 +71,54 @@ function writeProgress(progress) {
   }
 }
 
-function lookupAgentSection() {
+/**
+ * Read agent metadata (section, categoryId, taskId) in a single history file read.
+ * Returns an object with all three fields (nulls on error or missing).
+ */
+function lookupAgentMetadata() {
   try {
     const raw = fs.readFileSync(HISTORY_PATH, 'utf8');
     const history = JSON.parse(raw);
     const agents = Array.isArray(history) ? history : (history.agents || []);
     const agent = agents.find(a => a.id === AGENT_ID);
-    return agent?.metadata?.section || null;
+    const metadata = agent?.metadata || {};
+    return {
+      section: metadata.section || null,
+      categoryId: metadata.categoryId || null,
+      taskId: metadata.taskId || null,
+    };
   } catch (_) {
-    return null;
+    return { section: null, categoryId: null, taskId: null };
   }
 }
 
-function lookupAgentTaskId() {
+function createInitialProgress(section, categoryId, taskId) {
+  // Try category-based pipeline lookup first (DB-driven, single source of truth)
+  let pipeline = null;
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
   try {
-    const raw = fs.readFileSync(HISTORY_PATH, 'utf8');
-    const history = JSON.parse(raw);
-    const agents = Array.isArray(history) ? history : (history.agents || []);
-    const agent = agents.find(a => a.id === AGENT_ID);
-    return agent?.metadata?.taskId || null;
+    const category = resolveCategory(dbPath, { category_id: categoryId || undefined, section: (!categoryId && section) ? section : undefined });
+    if (category) {
+      pipeline = getPipelineStages(category);
+    }
   } catch (_) {
-    return null;
+    // Non-fatal: fall through to hardcoded templates
   }
-}
 
-function createInitialProgress(section) {
-  const template = PIPELINE_TEMPLATES[section] || DEFAULT_PIPELINE;
+  // Fallback to hardcoded PIPELINE_TEMPLATES for sections not yet in the DB
+  if (!pipeline || pipeline.length === 0) {
+    pipeline = PIPELINE_TEMPLATES[section] || DEFAULT_PIPELINE;
+  }
+
   return {
     agentId: AGENT_ID,
-    taskId: lookupAgentTaskId(),
+    taskId: taskId || null,
     section: section || 'unknown',
     pipeline: {
-      stages: template.map(name => ({ name, status: 'pending', startedAt: null, completedAt: null })),
+      stages: pipeline.map(name => ({ name, status: 'pending', startedAt: null, completedAt: null })),
       currentStage: null,
       currentStageIndex: -1,
-      totalStages: template.length,
+      totalStages: pipeline.length,
       progressPercent: 0,
     },
     lastToolCall: null,
@@ -155,8 +169,8 @@ async function main() {
   // Read or create progress
   let progress = readProgress();
   if (!progress) {
-    const section = lookupAgentSection();
-    progress = createInitialProgress(section);
+    const { section, categoryId, taskId } = lookupAgentMetadata();
+    progress = createInitialProgress(section, categoryId, taskId);
   }
 
   const now = new Date().toISOString();
