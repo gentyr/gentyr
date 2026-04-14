@@ -120,6 +120,14 @@ export const SetFocusModeArgsSchema = z.object({
 
 export const GetFocusModeArgsSchema = z.object({});
 
+export const SetLockdownModeArgsSchema = z.object({
+  enabled: z.boolean().describe('Enable (true) or disable (false) the interactive session lockdown'),
+  cto_bypass: z.boolean().optional()
+    .describe('Required when disabling lockdown. WARNING: Only set to true if directly asked by the CTO.'),
+});
+
+export const GetLockdownModeArgsSchema = z.object({});
+
 // ============================================================================
 // Session Signal Schemas
 // ============================================================================
@@ -499,6 +507,8 @@ export type SetReservedSlotsArgs = z.infer<typeof SetReservedSlotsArgsSchema>;
 export type GetReservedSlotsArgs = z.infer<typeof GetReservedSlotsArgsSchema>;
 export type SetFocusModeArgs = z.infer<typeof SetFocusModeArgsSchema>;
 export type GetFocusModeArgs = z.infer<typeof GetFocusModeArgsSchema>;
+export type SetLockdownModeArgs = z.infer<typeof SetLockdownModeArgsSchema>;
+export type GetLockdownModeArgs = z.infer<typeof GetLockdownModeArgsSchema>;
 
 // Session Signal Types
 export type SendSessionSignalArgs = z.infer<typeof SendSessionSignalArgsSchema>;
