@@ -815,7 +815,7 @@ Sole authority for demo lifecycle work. Handles prerequisite registration, scena
 
 ## Chrome Browser Automation
 
-The chrome-bridge MCP server provides 19 tools for browser automation. 17 tools communicate via local Unix domain socket using the Claude for Chrome extension. 2 tools (`list_chrome_extensions`, `reload_chrome_extension`) are server-side AppleScript-based tools (macOS only) that operate without a socket connection, allowing Chrome extension management independently of whether the extension is connected.
+The chrome-bridge MCP server provides 23 tools for browser automation. 17 tools communicate via local Unix domain socket using the Claude for Chrome extension. 2 tools (`list_chrome_extensions`, `reload_chrome_extension`) are server-side AppleScript-based tools (macOS only) that operate without a socket connection. 4 tools (`find_elements`, `click_by_text`, `fill_input`, `wait_for_element`) are server-side convenience tools that compose existing socket tools via accessibility tree parsing — these work reliably on React/SPA frameworks because they use element references (MAIN world), not JavaScript execution (ISOLATED world). Use these instead of `javascript_tool` for element interaction.
 
 ### Gentyr Browser Automation Extension
 
