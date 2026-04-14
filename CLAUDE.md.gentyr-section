@@ -206,6 +206,15 @@ Section mapping for task creation:
 
 When the user asks to spawn agents in plain English (e.g., "spawn an agent to fix the login bug", "have an investigator look at the auth module"), create tasks via `mcp__todo-db__create_task` with `assigned_by: "human"`, spawn via `mcp__agent-tracker__force_spawn_tasks({ taskIds: [...] })`, and monitor via `mcp__agent-tracker__monitor_agents`.
 
+### When to Suggest Plans vs Persistent Tasks
+
+When the CTO describes complex work, proactively suggest the right tool:
+
+- **Multi-phase with dependencies** (e.g., "build X, then migrate Y which depends on X, then update Z") → Offer a **plan** (`/plan`). Plans structure work into phases with dependency tracking. A plan manager spawns persistent tasks per step.
+- **Complex single-stream objective** (e.g., "get the demo suite fully passing") → Offer a **persistent task** (`/persistent-task`). A persistent monitor manages the objective, spawning child sessions as needed.
+- **Ambiguous** → Briefly explain both and let the CTO choose.
+- **Simple** (fits a single session) → Just do the work directly.
+
 ### Persistent Tasks
 
 Long-running objectives use persistent tasks (`/persistent-task` to create, `/persistent-tasks` to manage). `activate_persistent_task`, `resume_persistent_task`, and `amend_persistent_task` (auto-resume) all trigger a PostToolUse hook that automatically enqueues a monitor session. Do NOT manually create tasks or call `force_spawn_tasks` after these calls — the monitor is spawned by the hook.
