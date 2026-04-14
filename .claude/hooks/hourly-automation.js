@@ -37,6 +37,7 @@ import { debugLog, cleanupDebugLog } from './lib/debug-log.js';
 import { buildSpawnEnv } from './lib/spawn-env.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { buildStrictInfraGuidancePrompt } from './lib/strict-infra-guidance-prompt.js';
+import { resolveCategory, buildPromptFromCategory } from './lib/task-category.js';
 // shouldAllowSpawn import removed — session queue handles memory pressure internally
 
 // Try to import better-sqlite3 for task runner
@@ -71,6 +72,24 @@ const SECTION_AGENT_MAP = {
   'DEMO-MANAGER': { agent: 'demo-manager', agentType: AGENT_TYPES.TASK_RUNNER_DEMO_MANAGER },
 };
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
+
+// Category-aware agent mapping (uses shared module, falls back to SECTION_AGENT_MAP)
+function getAgentMapping(task) {
+  const category = resolveCategory(TODO_DB_PATH, {
+    category_id: task.category_id,
+    section: task.section,
+  });
+  if (category) {
+    return {
+      agent: 'task-runner',
+      agentType: AGENT_TYPES.TASK_RUNNER,
+      category,
+    };
+  }
+  // Fallback to legacy section map
+  const mapping = SECTION_AGENT_MAP[task.section];
+  return mapping ? { ...mapping, category: null } : null;
+}
 
 // Concurrency guard: max simultaneous automation agents
 const MAX_CONCURRENT_AGENTS = 5;
@@ -1224,7 +1243,7 @@ function getPendingTasksForRunner() {
     const oneHourAgo = nowTimestamp - 3600;
 
     const candidates = db.prepare(`
-      SELECT id, section, title, description, strict_infra_guidance, demo_involved, persistent_task_id
+      SELECT id, section, category_id, title, description, strict_infra_guidance, demo_involved, persistent_task_id, user_prompt_uuids
       FROM tasks
       WHERE status = 'pending'
         AND section IN (${Object.keys(SECTION_AGENT_MAP).map(() => '?').join(',')})
@@ -1250,7 +1269,7 @@ function getUrgentPendingTasks() {
   try {
     const db = new Database(TODO_DB_PATH, { readonly: true });
     const candidates = db.prepare(`
-      SELECT id, section, title, description, strict_infra_guidance, demo_involved, persistent_task_id
+      SELECT id, section, category_id, title, description, strict_infra_guidance, demo_involved, persistent_task_id, user_prompt_uuids
       FROM tasks
       WHERE status = 'pending'
         AND priority = 'urgent'
@@ -1612,7 +1631,7 @@ ${completionBlock}`);
  * worktree creation fails.
  */
 function spawnTaskAgent(task) {
-  const mapping = SECTION_AGENT_MAP[task.section];
+  const mapping = getAgentMapping(task);
   if (!mapping) return false;
 
   // NOTE: Memory pressure check is handled by the session queue. Do NOT check here.
@@ -1634,21 +1653,30 @@ function spawnTaskAgent(task) {
 
   ensureCredentials();
   enqueueSession({
-    title: `Task runner: ${mapping.agent} - ${task.title}`,
+    title: `Task runner: ${mapping.category?.name || mapping.agent} - ${task.title}`,
     agentType: mapping.agentType,
     hookType: HOOK_TYPES.TASK_RUNNER,
     tagContext: `task-runner-${mapping.agent}`,
     source: 'hourly-automation',
     priority: 'low',
-    buildPrompt: (agentId) => mapping.agent === 'deputy-cto'
-      ? buildDeputyCtoTaskPrompt(task, agentId)
-      : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath),
+    buildPrompt: (agentId) => {
+      if (mapping.category) {
+        return buildPromptFromCategory(task, mapping.category, agentId, worktreePath, {
+          resolveUserPrompts,
+          buildStrictInfraGuidancePrompt,
+        });
+      }
+      // Legacy fallback
+      return mapping.agent === 'deputy-cto'
+        ? buildDeputyCtoTaskPrompt(task, agentId)
+        : buildTaskRunnerPrompt(task, mapping.agent, agentId, worktreePath);
+    },
     extraEnv: {
       ...resolvedCredentials,
       CLAUDE_PROJECT_DIR: PROJECT_DIR,
       ...(task.strict_infra_guidance ? { GENTYR_STRICT_INFRA_GUIDANCE: 'true' } : {}),
     },
-    metadata: { taskId: task.id, section: task.section, worktreePath },
+    metadata: { taskId: task.id, section: task.section, categoryId: task.category_id, worktreePath },
     cwd: worktreePath,
     mcpConfig: agentMcpConfig,
     worktreePath,
@@ -3338,7 +3366,7 @@ async function main() {
       {
         let dispatched = 0;
         for (const task of urgentTasks) {
-          const mapping = SECTION_AGENT_MAP[task.section];
+          const mapping = getAgentMapping(task);
           if (!mapping) continue;
           if (!markTaskInProgress(task.id)) {
             log(`Urgent dispatcher: skipping task ${task.id} (failed to mark in_progress).`);
@@ -3346,7 +3374,7 @@ async function main() {
           }
           const success = spawnTaskAgent(task);
           if (success) {
-            log(`Urgent dispatcher: spawned ${mapping.agent} for "${task.title}" (${task.id})`);
+            log(`Urgent dispatcher: spawned ${mapping.category?.name || mapping.agent} for "${task.title}" (${task.id})`);
             dispatched++;
           } else {
             resetTaskToPending(task.id);
@@ -3498,7 +3526,7 @@ async function main() {
             break;
           }
 
-          const mapping = SECTION_AGENT_MAP[task.section];
+          const mapping = getAgentMapping(task);
           if (!mapping) continue;
 
           if (!markTaskInProgress(task.id)) {
@@ -3508,7 +3536,7 @@ async function main() {
 
           const success = spawnTaskAgent(task);
           if (success) {
-            log(`Task runner: spawning ${mapping.agent} for task "${task.title}" (${task.id})`);
+            log(`Task runner: spawning ${mapping.category?.name || mapping.agent} for task "${task.title}" (${task.id})`);
             spawned++;
           } else {
             resetTaskToPending(task.id);
