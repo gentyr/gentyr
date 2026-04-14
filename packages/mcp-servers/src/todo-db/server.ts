@@ -31,6 +31,11 @@ import {
   SummarizeWorkArgsSchema,
   GetWorklogArgsSchema,
   ListArchivedTasksArgsSchema,
+  ListCategoriesArgsSchema,
+  GetCategoryArgsSchema,
+  CreateCategoryArgsSchema,
+  UpdateCategoryArgsSchema,
+  DeleteCategoryArgsSchema,
   VALID_SECTIONS,
   SECTION_CREATOR_RESTRICTIONS,
   FORCED_FOLLOWUP_CREATORS,
@@ -46,6 +51,11 @@ import {
   type SummarizeWorkArgs,
   type GetWorklogArgs,
   type ListArchivedTasksArgs,
+  type ListCategoriesArgs,
+  type GetCategoryArgs,
+  type CreateCategoryArgs,
+  type UpdateCategoryArgs,
+  type DeleteCategoryArgs,
   type ListTasksResult,
   type TaskResponse,
   type TaskRecord,
@@ -69,6 +79,9 @@ import {
   type GetWorklogResult,
   type ArchivedTask,
   type ListArchivedTasksResult,
+  type ListCategoriesResult,
+  type CategoryResponse,
+  type CategoryRecord,
 } from './types.js';
 
 // ============================================================================
@@ -170,6 +183,24 @@ CREATE INDEX IF NOT EXISTS idx_worklog_task_id ON worklog_entries(task_id);
 CREATE INDEX IF NOT EXISTS idx_worklog_created_at ON worklog_entries(created_at);
 `;
 
+const CATEGORIES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS task_categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    sequence TEXT NOT NULL,
+    prompt_template TEXT,
+    model TEXT DEFAULT 'sonnet',
+    creator_restrictions TEXT,
+    force_followup INTEGER DEFAULT 0,
+    urgency_authorized INTEGER DEFAULT 1,
+    is_default INTEGER DEFAULT 0,
+    deprecated_section TEXT UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`;
+
 // ============================================================================
 // Database Management
 // ============================================================================
@@ -185,6 +216,7 @@ function initializeDatabase(): Database.Database {
   const db = new Database(DB_PATH);
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA);
+  db.exec(CATEGORIES_SCHEMA);
 
   // Auto-migration: add followup columns if missing (existing databases)
   try {
@@ -289,6 +321,22 @@ function initializeDatabase(): Database.Database {
     db.exec("ALTER TABLE tasks ADD COLUMN demo_involved INTEGER DEFAULT 0");
   }
 
+  // Auto-migration: add category_id column to tasks if missing
+  try {
+    db.prepare("SELECT category_id FROM tasks LIMIT 0").get();
+  } catch {
+    db.exec("ALTER TABLE tasks ADD COLUMN category_id TEXT");
+  }
+
+  // Auto-migration: add category_id column to archived_tasks if missing
+  try {
+    db.prepare("SELECT category_id FROM archived_tasks LIMIT 0").get();
+  } catch {
+    db.exec("ALTER TABLE archived_tasks ADD COLUMN category_id TEXT");
+  }
+
+  seedCategories(db);
+
   return db;
 }
 
@@ -317,6 +365,14 @@ function initializeWorklogDatabase(): Database.Database {
   const db = new Database(WORKLOG_DB_PATH);
   db.pragma('journal_mode = WAL');
   db.exec(WORKLOG_SCHEMA);
+
+  // Auto-migration: add category_id column to worklog_entries if missing
+  try {
+    db.prepare("SELECT category_id FROM worklog_entries LIMIT 0").get();
+  } catch {
+    db.exec("ALTER TABLE worklog_entries ADD COLUMN category_id TEXT");
+  }
+
   return db;
 }
 
@@ -332,6 +388,117 @@ function closeWorklogDb(): void {
     _worklogDb.close();
     _worklogDb = null;
   }
+}
+
+// ============================================================================
+// Category Seeding
+// ============================================================================
+
+function seedCategories(db: Database.Database): void {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO task_categories (id, name, description, sequence, prompt_template, model, creator_restrictions, force_followup, urgency_authorized, is_default, deprecated_section)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const seeds = [
+    {
+      id: 'standard',
+      name: 'Standard Development',
+      description: 'Full development workflow: investigation, implementation, testing, review, alignment check, and merge.',
+      sequence: JSON.stringify([
+        { agent_type: 'investigator', label: 'Investigation', optional: false },
+        { agent_type: 'code-writer', label: 'Implementation', optional: false },
+        { agent_type: 'test-writer', label: 'Test Writing', optional: true },
+        { agent_type: 'code-reviewer', label: 'Code Review', optional: false },
+        { agent_type: 'user-alignment', label: 'Alignment Check', optional: true },
+        { agent_type: 'project-manager', label: 'Merge', optional: false },
+      ]),
+      prompt_template: null,
+      model: 'opus',
+      creator_restrictions: null,
+      force_followup: 0,
+      urgency_authorized: 1,
+      is_default: 1,
+      deprecated_section: 'CODE-REVIEWER',
+    },
+    {
+      id: 'deep-investigation',
+      name: 'Deep Investigation',
+      description: 'Research and analysis with alignment verification. No code changes.',
+      sequence: JSON.stringify([
+        { agent_type: 'investigator', label: 'Investigation', optional: false },
+        { agent_type: 'user-alignment', label: 'Alignment Check', optional: false },
+      ]),
+      prompt_template: null,
+      model: 'opus',
+      creator_restrictions: null,
+      force_followup: 0,
+      urgency_authorized: 1,
+      is_default: 0,
+      deprecated_section: 'INVESTIGATOR & PLANNER',
+    },
+    {
+      id: 'test-suite',
+      name: 'Test Suite Work',
+      description: 'Test writing, review, and merge.',
+      sequence: JSON.stringify([
+        { agent_type: 'test-writer', label: 'Test Writing', optional: false },
+        { agent_type: 'code-reviewer', label: 'Code Review', optional: false },
+        { agent_type: 'project-manager', label: 'Merge', optional: false },
+      ]),
+      prompt_template: null,
+      model: 'sonnet',
+      creator_restrictions: null,
+      force_followup: 0,
+      urgency_authorized: 1,
+      is_default: 0,
+      deprecated_section: 'TEST-WRITER',
+    },
+    {
+      id: 'triage',
+      name: 'Triage & Delegation',
+      description: 'Deputy CTO triage, decomposition, and delegation.',
+      sequence: JSON.stringify([
+        { agent_type: 'deputy-cto', label: 'Triage & Delegation', optional: false },
+      ]),
+      prompt_template: null,
+      model: 'opus',
+      creator_restrictions: JSON.stringify(['deputy-cto', 'cto', 'human', 'demo', 'pr-reviewer', 'system-followup', 'persistent-monitor']),
+      force_followup: 0,
+      urgency_authorized: 1,
+      is_default: 0,
+      deprecated_section: 'DEPUTY-CTO',
+    },
+    {
+      id: 'demo-design',
+      name: 'Demo Design',
+      description: 'Investigation, demo implementation, review, and merge.',
+      sequence: JSON.stringify([
+        { agent_type: 'investigator', label: 'Investigation', optional: false },
+        { agent_type: 'demo-manager', label: 'Demo Implementation', optional: false },
+        { agent_type: 'code-reviewer', label: 'Code Review', optional: false },
+        { agent_type: 'project-manager', label: 'Merge', optional: false },
+      ]),
+      prompt_template: null,
+      model: 'sonnet',
+      creator_restrictions: null,
+      force_followup: 0,
+      urgency_authorized: 1,
+      is_default: 0,
+      deprecated_section: 'DEMO-MANAGER',
+    },
+  ];
+
+  const seedTx = db.transaction(() => {
+    for (const seed of seeds) {
+      insert.run(
+        seed.id, seed.name, seed.description, seed.sequence, seed.prompt_template,
+        seed.model, seed.creator_restrictions, seed.force_followup,
+        seed.urgency_authorized, seed.is_default, seed.deprecated_section
+      );
+    }
+  });
+  seedTx();
 }
 
 // ============================================================================
@@ -1285,6 +1452,161 @@ function listArchivedTasks(args: ListArchivedTasksArgs): ListArchivedTasksResult
 }
 
 // ============================================================================
+// Category Tool Implementations
+// ============================================================================
+
+function categoryToResponse(record: CategoryRecord): CategoryResponse {
+  return {
+    id: record.id,
+    name: record.name,
+    description: record.description,
+    sequence: JSON.parse(record.sequence),
+    prompt_template: record.prompt_template,
+    model: record.model,
+    creator_restrictions: record.creator_restrictions ? JSON.parse(record.creator_restrictions) : null,
+    force_followup: record.force_followup === 1,
+    urgency_authorized: record.urgency_authorized === 1,
+    is_default: record.is_default === 1,
+    deprecated_section: record.deprecated_section,
+    created_at: record.created_at,
+    updated_at: record.updated_at,
+  };
+}
+
+function listCategories(_args: ListCategoriesArgs): ListCategoriesResult {
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM task_categories ORDER BY is_default DESC, name ASC').all() as CategoryRecord[];
+  return {
+    categories: rows.map(categoryToResponse),
+    total: rows.length,
+  };
+}
+
+function getCategory(args: GetCategoryArgs): CategoryResponse | ErrorResult {
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM task_categories WHERE id = ?').get(args.id) as CategoryRecord | undefined;
+  if (!row) {
+    return { error: `Category not found: ${args.id}` };
+  }
+  return categoryToResponse(row);
+}
+
+function createCategory(args: CreateCategoryArgs): CategoryResponse | ErrorResult {
+  const db = getDb();
+
+  // Check for duplicate ID
+  const existing = db.prepare('SELECT id FROM task_categories WHERE id = ?').get(args.id);
+  if (existing) {
+    return { error: `Category already exists: ${args.id}` };
+  }
+
+  // If setting as default, clear existing default
+  if (args.is_default) {
+    db.prepare('UPDATE task_categories SET is_default = 0 WHERE is_default = 1').run();
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO task_categories (id, name, description, sequence, prompt_template, model, creator_restrictions, force_followup, urgency_authorized, is_default, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    args.id,
+    args.name,
+    args.description ?? null,
+    JSON.stringify(args.sequence),
+    args.prompt_template ?? null,
+    args.model ?? 'sonnet',
+    args.creator_restrictions ? JSON.stringify(args.creator_restrictions) : null,
+    args.force_followup ? 1 : 0,
+    args.urgency_authorized !== false ? 1 : 0,
+    args.is_default ? 1 : 0,
+    now,
+    now,
+  );
+
+  const row = db.prepare('SELECT * FROM task_categories WHERE id = ?').get(args.id) as CategoryRecord;
+  return categoryToResponse(row);
+}
+
+function updateCategory(args: UpdateCategoryArgs): CategoryResponse | ErrorResult {
+  const db = getDb();
+
+  const existing = db.prepare('SELECT * FROM task_categories WHERE id = ?').get(args.id) as CategoryRecord | undefined;
+  if (!existing) {
+    return { error: `Category not found: ${args.id}` };
+  }
+
+  const updates: string[] = ['updated_at = ?'];
+  const values: (string | number | null)[] = [new Date().toISOString()];
+
+  if (args.name !== undefined) {
+    updates.push('name = ?');
+    values.push(args.name);
+  }
+  if (args.description !== undefined) {
+    updates.push('description = ?');
+    values.push(args.description);
+  }
+  if (args.sequence !== undefined) {
+    updates.push('sequence = ?');
+    values.push(JSON.stringify(args.sequence));
+  }
+  if (args.prompt_template !== undefined) {
+    updates.push('prompt_template = ?');
+    values.push(args.prompt_template);
+  }
+  if (args.model !== undefined) {
+    updates.push('model = ?');
+    values.push(args.model);
+  }
+  if (args.creator_restrictions !== undefined) {
+    updates.push('creator_restrictions = ?');
+    values.push(args.creator_restrictions ? JSON.stringify(args.creator_restrictions) : null);
+  }
+  if (args.force_followup !== undefined) {
+    updates.push('force_followup = ?');
+    values.push(args.force_followup ? 1 : 0);
+  }
+  if (args.urgency_authorized !== undefined) {
+    updates.push('urgency_authorized = ?');
+    values.push(args.urgency_authorized ? 1 : 0);
+  }
+  if (args.is_default !== undefined) {
+    if (args.is_default) {
+      db.prepare('UPDATE task_categories SET is_default = 0 WHERE is_default = 1').run();
+    }
+    updates.push('is_default = ?');
+    values.push(args.is_default ? 1 : 0);
+  }
+
+  values.push(args.id);
+  db.prepare(`UPDATE task_categories SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+
+  const row = db.prepare('SELECT * FROM task_categories WHERE id = ?').get(args.id) as CategoryRecord;
+  return categoryToResponse(row);
+}
+
+function deleteCategory(args: DeleteCategoryArgs): { deleted: boolean; id: string } | ErrorResult {
+  const db = getDb();
+
+  const existing = db.prepare('SELECT * FROM task_categories WHERE id = ?').get(args.id) as CategoryRecord | undefined;
+  if (!existing) {
+    return { error: `Category not found: ${args.id}` };
+  }
+
+  // Block deletion if active tasks reference this category
+  const activeTasks = db.prepare(
+    "SELECT COUNT(*) as count FROM tasks WHERE category_id = ? AND status != 'completed'"
+  ).get(args.id) as { count: number };
+  if (activeTasks.count > 0) {
+    return { error: `Cannot delete category '${args.id}': ${activeTasks.count} active task(s) reference it.` };
+  }
+
+  db.prepare('DELETE FROM task_categories WHERE id = ?').run(args.id);
+  return { deleted: true, id: args.id };
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -1372,6 +1694,36 @@ const tools: AnyToolHandler[] = [
     description: 'List archived (previously completed) tasks. Useful for audit history. Tasks are archived automatically by cleanup or when deleted after completion.',
     schema: ListArchivedTasksArgsSchema,
     handler: listArchivedTasks,
+  },
+  {
+    name: 'list_categories',
+    description: 'List task categories. Categories define agent sequences (workflows) for tasks.',
+    schema: ListCategoriesArgsSchema,
+    handler: listCategories,
+  },
+  {
+    name: 'get_category',
+    description: 'Get a task category by ID. Returns the full category including its agent sequence and prompt template.',
+    schema: GetCategoryArgsSchema,
+    handler: getCategory,
+  },
+  {
+    name: 'create_category',
+    description: 'Create a new task category with an agent sequence. Categories define the workflow (ordered list of agents) that tasks follow.',
+    schema: CreateCategoryArgsSchema,
+    handler: createCategory,
+  },
+  {
+    name: 'update_category',
+    description: 'Update a task category. Patch semantics — only provided fields are updated. Cannot change deprecated_section.',
+    schema: UpdateCategoryArgsSchema,
+    handler: updateCategory,
+  },
+  {
+    name: 'delete_category',
+    description: 'Delete a task category. Blocked if any active (non-completed) tasks reference it.',
+    schema: DeleteCategoryArgsSchema,
+    handler: deleteCategory,
   },
 ];
 
