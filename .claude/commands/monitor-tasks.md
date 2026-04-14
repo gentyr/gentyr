@@ -70,12 +70,40 @@ Display a compact status table:
 ```
 ## Round N (HH:MM)
 
-| Task | Status | Cycles | Δ | Heartbeat | Monitor | Children |
-|------|--------|--------|---|-----------|---------|----------|
-| [title 30ch] | active | 126 | +4 | 2m ago | alive | 3 running |
+| Task | Status | Cycles | Δ | Heartbeat | Monitor | Children | Plan |
+|------|--------|--------|---|-----------|---------|----------|------|
+| [title 30ch] | active | 126 | +4 | 2m ago | alive | 3 running | [plan title] 3/7 |
 ```
 
+The **Plan** column shows plan context when `planContext` is present in the `inspect_persistent_task` response:
+- For plan-managed tasks: `[plan title] N/M` (completed/total plan tasks)
+- For plan managers (`isPlanManager: true`): `MANAGER: [plan title] N/M`
+- For non-plan tasks: leave blank
+
 Note the monitor's `lastSummary` field (1-2 sentences, if available).
+
+### Step 3a2: PLAN DEPENDENCY GRAPH (if plan-managed)
+
+If any monitored persistent task has `isPlanManager: true` or `planContext` in the inspect response, show the plan's dependency graph:
+
+```
+### Plan: <planContext.planTitle> (<planContext.planStatus>) — <planContext.progress>
+
+| Phase | Task | Status | Persistent Task |
+|-------|------|--------|-----------------|
+| Phase 1 | Build auth system | completed | pt-abc123 |
+| Phase 1 | Migrate DB | in_progress | pt-def456 |
+| Phase 2 | Update UI | blocked | — |
+```
+
+For plan managers, also show:
+```
+mcp__plan-orchestrator__get_spawn_ready_tasks({ plan_id: "<planContext.planId>" })
+```
+And list which tasks are ready to spawn next.
+
+For child sessions of plan-managed tasks, show category info when available:
+- `[Standard Development]` instead of `[CODE-REVIEWER]` when `categoryName` is present
 
 ### Step 3b: BROWSE SESSIONS
 

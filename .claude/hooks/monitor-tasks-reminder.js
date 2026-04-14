@@ -131,12 +131,13 @@ async function main() {
     additionalContext = `[MONITOR-TASKS — FULL PROTOCOL REMINDER]
 You are running /monitor-tasks. Your job is to show the CTO raw session data, not summaries.
 
-EACH ROUND (5 steps):
-1. OVERVIEW: call inspect_persistent_task for each task ID
-2. BROWSE: call browse_session for each active session (latest 15-20 messages). Preview the output, adjust offset to find the most diagnostic window. Show raw indexed messages to the CTO.
-3. QUEUE: call get_session_queue_status
-4. ASSESS: Write 3-5 sentences with specific evidence from steps 1-3
-5. SLEEP 60s, repeat
+EACH ROUND (5+ steps):
+1. OVERVIEW: call inspect_persistent_task for each task ID — check planContext, isPlanManager, categoryId fields
+2. PLAN GRAPH (if plan-managed): show plan dependency table from planContext. For plan managers, also call get_spawn_ready_tasks to show what's ready to spawn next. Show categoryName instead of section on child sessions when available.
+3. BROWSE: call browse_session for each active session (latest 15-20 messages). Preview the output, adjust offset to find the most diagnostic window. Show raw indexed messages to the CTO.
+4. QUEUE: call get_session_queue_status
+5. ASSESS: Write 3-5 sentences with specific evidence from steps 1-4
+6. SLEEP 60s, repeat
 
 Monitored tasks: ${monitoredTaskIds}
 Monitored sessions: ${monitoredSessions}
@@ -147,7 +148,8 @@ CRITICAL RULES:
 - Do NOT spawn investigator sub-agents — call MCP tools directly
 - Do NOT paraphrase or summarize session messages
 - Continue looping until all monitored sessions are done or CTO interrupts
-- Update .claude/state/monitor-tasks-active.json each round`;
+- Update .claude/state/monitor-tasks-active.json each round
+- For plan-managed tasks, show the plan dependency graph each round`;
   }
 
   console.log(JSON.stringify({

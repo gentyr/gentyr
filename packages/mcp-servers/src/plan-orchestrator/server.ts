@@ -790,6 +790,11 @@ function updateTaskProgress(args: UpdateTaskProgressArgs) {
     }
   }
 
+  if (args.persistent_task_id !== undefined) {
+    updates.push('persistent_task_id = ?');
+    values.push(args.persistent_task_id);
+  }
+
   if (args.pr_number !== undefined) {
     updates.push('pr_number = ?');
     values.push(args.pr_number);

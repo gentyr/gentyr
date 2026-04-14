@@ -29,6 +29,9 @@ export const CreatePersistentTaskArgsSchema = z.object({
   user_prompt_uuids: z.array(z.string()).optional().describe('UUIDs of user prompts this task derives from'),
   demo_involved: z.boolean().optional().default(false).describe('Whether this task involves demo scenarios. When true, the monitor receives specialized demo validation instructions.'),
   strict_infra_guidance: z.boolean().optional().default(false).describe('When true, the monitor and all child agents that touch infrastructure (builds, demos, dev servers, secrets) receive strict MCP-only infrastructure instructions. Opt-in — not all tasks need this level of enforcement.'),
+  plan_task_id: z.string().optional().describe('Plan task UUID — links this persistent task to a plan task. When set, plan-persistent-sync.js auto-cascades completion back to the plan.'),
+  plan_id: z.string().optional().describe('Plan UUID — the plan this persistent task belongs to. Used by persistent-task-briefing.js to inject plan context.'),
+  is_plan_manager: z.boolean().optional().default(false).describe('When true, this persistent task is a plan manager — it spawns persistent tasks for plan steps instead of standalone child sessions.'),
 });
 
 export const ActivatePersistentTaskArgsSchema = z.object({

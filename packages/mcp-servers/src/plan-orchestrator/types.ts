@@ -106,6 +106,7 @@ export const UpdateTaskProgressArgsSchema = z.object({
   pr_number: z.coerce.number().optional().describe('Associated PR number'),
   pr_merged: z.coerce.boolean().optional().describe('Whether PR has been merged'),
   branch_name: z.string().optional().describe('Git branch name'),
+  persistent_task_id: z.string().optional().describe('Persistent task UUID executing this plan task — links the plan step to its persistent task'),
 });
 
 export const LinkTaskArgsSchema = z.object({

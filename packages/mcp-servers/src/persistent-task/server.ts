@@ -279,10 +279,13 @@ function createPersistentTask(args: CreatePersistentTaskArgs): object | ErrorRes
     process.stderr.write(`[persistent-task] Warning: failed to create parent todo task: ${message}\n`);
   }
 
-  // Build metadata JSON (stores demo_involved, strict_infra_guidance, and future extensible config)
+  // Build metadata JSON (stores demo_involved, strict_infra_guidance, plan linkage, and future extensible config)
   const metadataObj: Record<string, unknown> = {};
   if (args.demo_involved) metadataObj.demo_involved = true;
   if (args.strict_infra_guidance) metadataObj.strict_infra_guidance = true;
+  if (args.plan_task_id) metadataObj.plan_task_id = args.plan_task_id;
+  if (args.plan_id) metadataObj.plan_id = args.plan_id;
+  if (args.is_plan_manager) metadataObj.is_plan_manager = true;
   const metadata = Object.keys(metadataObj).length > 0 ? JSON.stringify(metadataObj) : null;
 
   // Insert persistent task row
