@@ -141,6 +141,27 @@ describe('interactive-lockdown-guard.js', () => {
   });
 
   describe('interactive sessions → allowed read/observe tools', () => {
+    it('allows StructuredOutput', async () => {
+      // Fix 2: StructuredOutput added to ALLOWED_TOOLS so structured output
+      // calls are never blocked in interactive sessions — the AI model relies on
+      // this internally and blocking it breaks the session.
+      const result = await runHook({ tool_name: 'StructuredOutput', tool_input: {} });
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve', 'StructuredOutput must be allowed in interactive sessions');
+    });
+
+    it('StructuredOutput passes through even when lockdown is fully enforced (no config override)', async () => {
+      // Verify that ALLOWED_TOOLS membership is sufficient — no config file needed,
+      // no spawned-session env var needed.
+      const result = await runHook(
+        { tool_name: 'StructuredOutput', tool_input: { content: [{ type: 'text', text: 'ok' }] } },
+        { env: { CLAUDE_PROJECT_DIR: '/tmp' } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve');
+      assert.ok(!output?.hookSpecificOutput?.permissionDecision, 'Should not produce a deny decision');
+    });
+
     it('allows Read', async () => {
       const result = await runHook({ tool_name: 'Read', tool_input: {} });
       const output = parseOutput(result.stdout);

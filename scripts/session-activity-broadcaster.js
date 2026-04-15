@@ -257,6 +257,9 @@ async function callLLM(prompt, systemPrompt) {
     const { stdout } = await execFileAsync('claude', args, {
       encoding: 'utf8',
       timeout: LLM_TIMEOUT_MS,
+      // Fix 1: mark as spawned session so interactive-lockdown-guard allows all tools
+      // and the broadcaster's LLM invocations don't trigger security blocks.
+      env: { ...process.env, CLAUDE_SPAWNED_SESSION: 'true' },
     });
     const data = JSON.parse(stdout);
     return {
@@ -281,6 +284,8 @@ async function callLLMStructured(prompt, systemPrompt, jsonSchema) {
     const { stdout } = await execFileAsync('claude', args, {
       encoding: 'utf8',
       timeout: LLM_TIMEOUT_MS,
+      // Fix 1: mark as spawned session (same reason as callLLM above)
+      env: { ...process.env, CLAUDE_SPAWNED_SESSION: 'true' },
     });
     const data = JSON.parse(stdout);
     // --json-schema output wraps the structured result in data.result (as a JSON string)

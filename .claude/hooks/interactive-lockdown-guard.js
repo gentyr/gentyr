@@ -56,6 +56,7 @@ const ALLOWED_TOOLS = new Set([
   'AskUserQuestion',
   'Skill',
   'ToolSearch',
+  'StructuredOutput', // Required for the AI model's structured output — blocking this breaks the session
   'Agent',   // Allowed but filtered — only read-only sub-agent types pass (see below)
   'Task',    // Same filtering as Agent
 ]);
