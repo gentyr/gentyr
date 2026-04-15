@@ -708,6 +708,17 @@ function buildSpawnedBriefing() {
     }
   }
 
+  // Worktree filesystem layout — prevent agents from misdiagnosing symlinks as circular
+  if (process.env.CLAUDE_WORKTREE_DIR) {
+    lines.push('');
+    lines.push('WORKTREE FILESYSTEM LAYOUT:');
+    lines.push(`  Main tree (PROJECT_DIR): ${PROJECT_DIR}`);
+    lines.push(`  Your worktree (CWD):     ${process.env.CLAUDE_WORKTREE_DIR}`);
+    lines.push('  Symlinked dirs: .claude/config, .claude/hooks, .claude/commands, .claude/mcp');
+    lines.push('  These symlinks point to the main tree — this is NORMAL, not circular.');
+    lines.push('  When diagnosing filesystem errors, check the main tree target, not the symlink itself.');
+  }
+
   // Worktree artifact copy status
   if (process.env.CLAUDE_WORKTREE_DIR) {
     try {

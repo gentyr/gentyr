@@ -275,6 +275,7 @@ export interface RunDemoResult {
   pid?: number;
   slow_mo?: number;
   test_file?: string;
+  context?: string;
 }
 
 export const CheckDemoResultArgsSchema = z.object({

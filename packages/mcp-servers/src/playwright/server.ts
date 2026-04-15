@@ -1647,6 +1647,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       success: false,
       project,
       message: `Environment validation failed:\n${preflight.errors.map(e => `  - ${e}`).join('\n')}`,
+      context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
     };
   }
 
@@ -1663,6 +1664,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       success: false,
       project,
       message: `Demo prerequisites failed: ${prereqResult.message}. Run preflight_check to diagnose. Do NOT bypass by running Playwright directly.`,
+      context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
     };
   }
 
@@ -1673,6 +1675,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       success: false,
       project,
       message: `Worktree stale: ${freshness.message}`,
+      context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
     };
   }
 
@@ -1683,6 +1686,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       success: false,
       project,
       message: `Dev server not ready after prerequisites: ${devServer.message}. Register: register_prerequisite({ command: "pnpm dev", scope: "global", run_as_background: true, health_check: "curl -sf http://localhost:\${PORT:-3000}" }). Use \${PORT:-3000} for worktree compatibility. Do NOT manually call secret_dev_server_start — run_demo handles dev server lifecycle automatically.`,
+      context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
     };
   }
   const effectiveBaseUrl = devServerUrl;
