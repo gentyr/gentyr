@@ -1,5 +1,6 @@
 import type { Page, BrowserContext } from '@playwright/test';
 import { injectPersonaOverlay, type PersonaColors, type OverlayConfig } from './persona-overlay.js';
+import { throwIfInterrupted, getInterruptPromise, DemoInterruptedError } from './interrupt.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -86,6 +87,7 @@ export async function typeCommand(
   command: string,
   options?: TypeCommandOptions,
 ): Promise<void> {
+  throwIfInterrupted();
   const delay = options?.delay ?? DEFAULT_CHAR_DELAY;
   const pressEnter = options?.pressEnter ?? true;
 
@@ -108,23 +110,27 @@ export async function waitForOutput(
   pattern: string | RegExp,
   options?: { timeout?: number },
 ): Promise<void> {
+  throwIfInterrupted();
   const timeout = options?.timeout ?? 30_000;
   const regexSource = typeof pattern === 'string'
     ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     : pattern.source;
   const regexFlags = typeof pattern === 'string' ? 'i' : pattern.flags;
 
-  await page.waitForFunction(
-    ({ selector, source, flags }) => {
-      const rows = document.querySelector(selector);
-      if (!rows) {return false;}
-      const text = rows.textContent || '';
-      const re = new RegExp(source, flags);
-      return re.test(text);
-    },
-    { selector: XTERM_SELECTORS.rows, source: regexSource, flags: regexFlags },
-    { timeout },
-  );
+  await Promise.race([
+    page.waitForFunction(
+      ({ selector, source, flags }) => {
+        const rows = document.querySelector(selector);
+        if (!rows) {return false;}
+        const text = rows.textContent || '';
+        const re = new RegExp(source, flags);
+        return re.test(text);
+      },
+      { selector: XTERM_SELECTORS.rows, source: regexSource, flags: regexFlags },
+      { timeout },
+    ),
+    getInterruptPromise().then(() => { throw new DemoInterruptedError(); }),
+  ]);
 }
 
 /**
@@ -142,6 +148,7 @@ export async function waitForPrompt(
  * Clear the terminal screen (sends Ctrl+L).
  */
 export async function clearTerminal(page: Page): Promise<void> {
+  throwIfInterrupted();
   const input = page.locator(XTERM_SELECTORS.input);
   await input.focus();
   await page.keyboard.press('Control+l');

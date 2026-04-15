@@ -43,3 +43,11 @@ export {
   CURSOR_HIGHLIGHT_SCRIPT,
   addMouseAnimation,
 } from './cursor-highlight.js';
+
+export {
+  DemoInterruptedError,
+  isInterrupted,
+  throwIfInterrupted,
+  getInterruptPromise,
+  enableDemoInterrupt,
+} from './interrupt.js';

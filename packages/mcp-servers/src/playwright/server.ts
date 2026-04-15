@@ -270,10 +270,266 @@ function persistDemoRuns(): void {
     const entries = [...demoRuns.values()]
       .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
       .slice(0, 20)
-      .map(({ trace_summary, progress_file, stdout_tail, screenshot_interval, suite_end_detected_at, ...rest }) => rest);
+      .map(({ trace_summary, progress_file, stdout_tail, screenshot_interval, suite_end_detected_at, interrupt_detected_at, ...rest }) => rest);
     fs.writeFileSync(DEMO_RUNS_PATH, JSON.stringify(entries, null, 2));
   } catch {
     // Non-fatal — state will be lost on MCP restart
+  }
+}
+
+// ============================================================================
+// Demo Interrupt — Task Pause/Resume via Bypass Request System
+// ============================================================================
+
+const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
+const BYPASS_DB_PATH = path.join(STATE_DIR, 'bypass-requests.db');
+const SESSION_QUEUE_DB_PATH = path.join(STATE_DIR, 'session-queue.db');
+const PERSISTENT_TASKS_DB_PATH = path.join(STATE_DIR, 'persistent-tasks.db');
+
+/**
+ * Pause the task associated with a demo process via the bypass request system.
+ * Called when a demo_interrupted event is detected.
+ * Returns the bypass request ID if created, null otherwise.
+ */
+function pauseTaskForDemoInteraction(demoPid: number, scenarioId?: string): string | null {
+  try {
+    // 1. Find the associated task via session queue metadata
+    if (!fs.existsSync(SESSION_QUEUE_DB_PATH)) return null;
+    const queueDb = new Database(SESSION_QUEUE_DB_PATH, { readonly: true });
+    let taskId: string | null = null;
+    let persistentTaskId: string | null = null;
+    let taskTitle: string | null = null;
+    let agentId: string | null = null;
+    try {
+      const row = queueDb.prepare(
+        "SELECT metadata, title, agent_id FROM queue_items WHERE pid = ? AND status = 'running' LIMIT 1"
+      ).get(demoPid) as { metadata: string | null; title: string | null; agent_id: string | null } | undefined;
+      if (row?.metadata) {
+        const meta = JSON.parse(row.metadata);
+        taskId = meta.taskId ?? null;
+        persistentTaskId = meta.persistentTaskId ?? null;
+      }
+      taskTitle = row?.title ?? null;
+      agentId = row?.agent_id ?? null;
+    } finally {
+      queueDb.close();
+    }
+
+    // No task association — skip (CTO running demo interactively)
+    const effectiveTaskId = persistentTaskId ?? taskId;
+    const effectiveTaskType = persistentTaskId ? 'persistent' : (taskId ? 'todo' : null);
+    if (!effectiveTaskId || !effectiveTaskType) return null;
+
+    // 2. Create bypass request
+    if (!fs.existsSync(BYPASS_DB_PATH)) return null;
+    const bypassDb = new Database(BYPASS_DB_PATH);
+    try {
+      // Ensure table exists (auto-created by agent-tracker, but be safe)
+      bypassDb.exec(`
+        CREATE TABLE IF NOT EXISTS bypass_requests (
+          id TEXT PRIMARY KEY,
+          task_type TEXT NOT NULL CHECK (task_type IN ('persistent', 'todo')),
+          task_id TEXT NOT NULL,
+          task_title TEXT,
+          agent_id TEXT,
+          session_queue_id TEXT,
+          category TEXT NOT NULL DEFAULT 'general',
+          summary TEXT NOT NULL,
+          details TEXT,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled')),
+          resolution_context TEXT,
+          resolved_at TEXT,
+          resolved_by TEXT DEFAULT 'cto',
+          created_at TEXT DEFAULT (datetime('now'))
+        )
+      `);
+
+      // Dedup: check for existing pending request
+      const existing = bypassDb.prepare(
+        "SELECT id FROM bypass_requests WHERE task_type = ? AND task_id = ? AND status = 'pending'"
+      ).get(effectiveTaskType, effectiveTaskId) as { id: string } | undefined;
+      if (existing) return existing.id;
+
+      const requestId = `bypass-${crypto.randomBytes(6).toString('hex')}`;
+      const details = `Demo PID: ${demoPid}${scenarioId ? `, Scenario: ${scenarioId}` : ''}. The CTO pressed Escape during a headed demo and is manually interacting with the browser. Task is paused until the CTO calls stop_demo.`;
+      bypassDb.prepare(
+        `INSERT INTO bypass_requests (id, task_type, task_id, task_title, agent_id, category, summary, details, status)
+         VALUES (?, ?, ?, ?, ?, 'demo_interaction', 'CTO manually interacting with interrupted demo', ?, 'pending')`
+      ).run(requestId, effectiveTaskType, effectiveTaskId, taskTitle ?? 'Unknown', agentId ?? 'unknown', details);
+
+      // 3. Pause the underlying task
+      if (effectiveTaskType === 'persistent' && fs.existsSync(PERSISTENT_TASKS_DB_PATH)) {
+        const ptDb = new Database(PERSISTENT_TASKS_DB_PATH);
+        try {
+          ptDb.prepare("UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status IN ('active', 'draft')").run(effectiveTaskId);
+          // Record pause event
+          ptDb.prepare(
+            "INSERT OR IGNORE INTO events (id, task_id, event_type, details, created_at) VALUES (?, ?, 'paused', ?, datetime('now'))"
+          ).run(`evt-${crypto.randomBytes(6).toString('hex')}`, effectiveTaskId, JSON.stringify({ reason: 'cto_demo_interaction', demo_pid: demoPid }));
+        } catch { /* Non-fatal */ } finally {
+          ptDb.close();
+        }
+      } else if (effectiveTaskType === 'todo') {
+        // Reset todo task to pending (blocks re-spawning via bypass gate)
+        const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
+        if (fs.existsSync(todoDbPath)) {
+          const todoDb = new Database(todoDbPath);
+          try {
+            todoDb.prepare("UPDATE tasks SET status = 'pending' WHERE id = ? AND status = 'in_progress'").run(effectiveTaskId);
+          } catch { /* Non-fatal */ } finally {
+            todoDb.close();
+          }
+        }
+      }
+
+      // 4. Signal the persistent monitor (if persistent task child)
+      if (persistentTaskId) {
+        try {
+          const signalModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-signals.js');
+          if (fs.existsSync(signalModulePath)) {
+            // Find monitor agent_id from session queue
+            const qDb = new Database(SESSION_QUEUE_DB_PATH, { readonly: true });
+            let monitorAgentId: string | null = null;
+            try {
+              const monitorRow = qDb.prepare(
+                `SELECT agent_id FROM queue_items WHERE lane = 'persistent' AND status = 'running'
+                 AND json_extract(metadata, '$.persistentTaskId') = ? LIMIT 1`
+              ).get(persistentTaskId) as { agent_id: string } | undefined;
+              monitorAgentId = monitorRow?.agent_id ?? null;
+            } finally {
+              qDb.close();
+            }
+
+            if (monitorAgentId) {
+              // Dynamic import (fire-and-forget) to avoid hard dependency on hooks module
+              const signalMessage = `DEMO INTERACTION PAUSE — Task "${taskTitle ?? effectiveTaskId}" is paused indefinitely.\n\nThe CTO has interrupted the headed demo (PID ${demoPid}) and is manually interacting with the browser. This task is blocked until the CTO finishes and calls stop_demo.\n\nINSTRUCTIONS:\n- Continue working on other sub-tasks that do NOT depend on this task's completion\n- Do NOT attempt workarounds, alternatives, or progress on this specific task\n- Do NOT create fix/retry tasks for this demo — it is not broken, it is paused\n- Wait patiently — this may take minutes, hours, or days\n- Check status via list_bypass_requests filtered by task_id="${effectiveTaskId}"\n- The bypass will be auto-resolved when the CTO calls stop_demo`;
+              import(signalModulePath).then((mod: { sendSessionSignal?: (...args: unknown[]) => void }) => {
+                if (!mod.sendSessionSignal) return;
+                mod.sendSessionSignal(
+                  agentId ?? 'playwright-mcp',
+                  'system',
+                  'Demo Interrupt System',
+                  monitorAgentId,
+                  'persistent-monitor',
+                  'directive',
+                  signalMessage,
+                  PROJECT_DIR,
+                );
+              }).catch(() => { /* Non-fatal */ });
+            }
+          }
+        } catch {
+          // Non-fatal — signal delivery is best-effort
+        }
+      }
+
+      return requestId;
+    } finally {
+      bypassDb.close();
+    }
+  } catch {
+    // Non-fatal — task pause is best-effort
+    return null;
+  }
+}
+
+/**
+ * Resume the task associated with an interrupted demo after the CTO finishes interacting.
+ * Called from stopDemo and autoKillDemo when cleaning up an interrupted demo.
+ */
+function resumeTaskAfterDemoInteraction(entry: DemoRunState): void {
+  if (!entry.bypass_request_id) return;
+
+  try {
+    if (!fs.existsSync(BYPASS_DB_PATH)) return;
+    const bypassDb = new Database(BYPASS_DB_PATH);
+    try {
+      // Resolve the bypass request
+      const row = bypassDb.prepare(
+        "SELECT task_type, task_id, task_title FROM bypass_requests WHERE id = ? AND status = 'pending'"
+      ).get(entry.bypass_request_id) as { task_type: string; task_id: string; task_title: string | null } | undefined;
+      if (!row) return;
+
+      bypassDb.prepare(
+        "UPDATE bypass_requests SET status = 'approved', resolution_context = 'CTO completed manual demo interaction', resolved_at = datetime('now') WHERE id = ?"
+      ).run(entry.bypass_request_id);
+
+      // Resume persistent task
+      if (row.task_type === 'persistent' && fs.existsSync(PERSISTENT_TASKS_DB_PATH)) {
+        const ptDb = new Database(PERSISTENT_TASKS_DB_PATH);
+        try {
+          ptDb.prepare("UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'").run(row.task_id);
+          ptDb.prepare(
+            "INSERT OR IGNORE INTO events (id, task_id, event_type, details, created_at) VALUES (?, ?, 'resumed', ?, datetime('now'))"
+          ).run(`evt-${crypto.randomBytes(6).toString('hex')}`, row.task_id, JSON.stringify({ reason: 'demo_interaction_complete' }));
+        } catch { /* Non-fatal */ } finally {
+          ptDb.close();
+        }
+
+        // Enqueue monitor revival at critical priority
+        try {
+          const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+          if (fs.existsSync(queueModulePath)) {
+            // Dynamic import to get enqueueSession
+            import(queueModulePath).then((mod: { enqueueSession?: (...args: unknown[]) => unknown }) => {
+              if (!mod.enqueueSession) return;
+              mod.enqueueSession({
+                priority: 'critical',
+                lane: 'persistent',
+                spawnType: 'fresh',
+                title: `Revival: ${row.task_title ?? row.task_id} (demo interaction complete)`,
+                agentType: 'persistent-monitor',
+                prompt: `You are reviving persistent task ${row.task_id}. The CTO has completed manual interaction with the demo. Resume monitoring.`,
+                metadata: { persistentTaskId: row.task_id, revivalReason: 'demo_interaction_complete' },
+                source: 'bypass-request-resolve',
+              });
+            }).catch(() => { /* Non-fatal */ });
+          }
+        } catch {
+          // Non-fatal — revival is best-effort, hourly automation will catch it
+        }
+      }
+
+      // Signal the monitor that block is cleared
+      try {
+        const signalModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-signals.js');
+        if (fs.existsSync(signalModulePath) && row.task_type === 'persistent') {
+          const qDb = new Database(SESSION_QUEUE_DB_PATH, { readonly: true });
+          let monitorAgentId: string | null = null;
+          try {
+            const monitorRow = qDb.prepare(
+              `SELECT agent_id FROM queue_items WHERE lane = 'persistent' AND status = 'running'
+               AND json_extract(metadata, '$.persistentTaskId') = ? LIMIT 1`
+            ).get(row.task_id) as { agent_id: string } | undefined;
+            monitorAgentId = monitorRow?.agent_id ?? null;
+          } finally {
+            qDb.close();
+          }
+
+          if (monitorAgentId) {
+            import(signalModulePath).then((mod: { sendSessionSignal?: (...args: unknown[]) => void }) => {
+              if (!mod.sendSessionSignal) return;
+              mod.sendSessionSignal(
+                'playwright-mcp',
+                'system',
+                'Demo Interrupt System',
+                monitorAgentId,
+                'persistent-monitor',
+                'directive',
+                `DEMO INTERACTION COMPLETE — Task "${row.task_title ?? row.task_id}" resumed. The CTO has finished interacting with the demo. You may now proceed with this task.`,
+                PROJECT_DIR,
+              );
+            }).catch(() => { /* Non-fatal */ });
+          }
+        }
+      } catch {
+        // Non-fatal
+      }
+    } finally {
+      bypassDb.close();
+    }
+  } catch {
+    // Non-fatal — task resume is best-effort
   }
 }
 
@@ -284,7 +540,7 @@ function persistDemoRuns(): void {
 function autoKillDemo(pid: number): void {
   demoAutoKillTimers.delete(pid);
   const entry = demoRuns.get(pid);
-  if (!entry || entry.status !== 'running') return;
+  if (!entry || (entry.status !== 'running' && entry.status !== 'interrupted')) return;
 
   // Exit fullscreen before teardown
   if (entry.fullscreened) {
@@ -292,10 +548,12 @@ function autoKillDemo(pid: number): void {
     entry.fullscreened = false;
   }
 
-  // Stop window recorder and persist video before destroying
+  const wasInterrupted = entry.status === 'interrupted';
+
+  // Stop window recorder — skip persistence for interrupted demos (discard recording)
   if (entry.window_recorder_pid && entry.window_recording_path) {
     const recOk = stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
-    if (recOk && entry.scenario_id) {
+    if (recOk && entry.scenario_id && !wasInterrupted) {
       try { persistScenarioRecording(entry.scenario_id, entry.window_recording_path); } catch { /* Non-fatal */ }
     }
     try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
@@ -316,9 +574,16 @@ function autoKillDemo(pid: number): void {
     // Process may have already exited
   }
 
-  entry.status = 'failed';
+  if (!wasInterrupted) {
+    entry.status = 'failed';
+    entry.failure_summary = 'Auto-killed: no poll received within 60s';
+  }
   entry.ended_at = new Date().toISOString();
-  entry.failure_summary = 'Auto-killed: no poll received within 60s';
+
+  // Resume task if this was an interrupted demo with a bypass request
+  if (wasInterrupted) {
+    resumeTaskAfterDemoInteraction(entry);
+  }
 
   // Clean up progress file
   if (entry.progress_file) {
@@ -1656,10 +1921,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     let lastProgressEventAt = Date.now();
     let progressFileOffset = 0;
     let suiteEndDetectedAt: number | null = null;
+    let interruptDetectedAt: number | null = null;
 
     /**
      * Read new JSONL lines from the progress file since the last read offset.
-     * Updates lastProgressEventAt and suiteEndDetectedAt as a side effect.
+     * Updates lastProgressEventAt, suiteEndDetectedAt, and interruptDetectedAt as a side effect.
      */
     const readNewProgressEvents = (): number => {
       try {
@@ -1693,7 +1959,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
               event.type === 'test_begin' ||
               event.type === 'test_end' ||
               event.type === 'suite_begin' ||
-              event.type === 'suite_end'
+              event.type === 'suite_end' ||
+              event.type === 'demo_interrupted'
             ) {
               lastProgressEventAt = Date.now();
               meaningfulEventCount++;
@@ -1701,6 +1968,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
                 suiteEndDetectedAt = Date.now();
                 const suiteEndEntry = demoRuns.get(demoPid);
                 if (suiteEndEntry) suiteEndEntry.suite_end_detected_at = suiteEndDetectedAt;
+              }
+              if (event.type === 'demo_interrupted' && interruptDetectedAt === null) {
+                interruptDetectedAt = Date.now();
+                const interruptEntry = demoRuns.get(demoPid);
+                if (interruptEntry) interruptEntry.interrupt_detected_at = interruptDetectedAt;
               }
             }
           } catch {
@@ -1742,11 +2014,51 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       displayLockAutoAcquiredPids.add(demoPid);
     }
 
-    // ── Background stall/suite_end monitoring (fire-and-forget) ──
+    // ── Background stall/suite_end/interrupt monitoring (fire-and-forget) ──
     // Continues running after runDemo returns. Cleaned up on child exit.
     const bgMonitorStart = Date.now();
+    const INTERRUPT_GRACE_MS = 3_000; // 3s grace for test to wind down after interrupt
     const bgMonitorInterval = setInterval(() => {
       readNewProgressEvents();
+
+      // Demo interrupt handling: user pressed Escape in headed demo
+      if (interruptDetectedAt !== null && Date.now() - interruptDetectedAt >= INTERRUPT_GRACE_MS) {
+        clearInterval(bgMonitorInterval);
+        const intEntry = demoRuns.get(demoPid);
+        if (intEntry && (intEntry.status === 'running' || intEntry.status === 'interrupted')) {
+          intEntry.status = 'interrupted';
+          intEntry.failure_summary = 'Demo interrupted by user (Escape key)';
+
+          // Stop window recorder WITHOUT persisting (discard recording)
+          if (intEntry.window_recorder_pid && intEntry.window_recording_path) {
+            stopWindowRecorderSync(intEntry.window_recorder_pid, intEntry.window_recording_path);
+            try { fs.unlinkSync(intEntry.window_recording_path); } catch { /* Non-fatal */ }
+            intEntry.window_recorder_pid = undefined;
+            intEntry.window_recording_path = undefined;
+          }
+
+          // Stop screenshot capture
+          if (intEntry.screenshot_interval) {
+            stopScreenshotCapture(intEntry.screenshot_interval);
+            intEntry.screenshot_interval = undefined;
+          }
+
+          // Exit fullscreen
+          if (intEntry.fullscreened) {
+            void unfullscreenChromeWindow();
+            intEntry.fullscreened = false;
+          }
+
+          // Pause the associated task via bypass request system
+          const bypassId = pauseTaskForDemoInteraction(demoPid, intEntry.scenario_id);
+          if (bypassId) intEntry.bypass_request_id = bypassId;
+
+          persistDemoRuns();
+          // Do NOT kill the process — browser stays alive for user interaction
+          // Do NOT release display lock — user still using the browser
+        }
+        return;
+      }
 
       // Suite_end auto-kill: once tests finish, wait for SUITE_END_KILL_DELAY_MS plus any
       // user-requested success pause (headed + no failures only) before SIGTERM
@@ -1789,11 +2101,20 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       const entry = demoRuns.get(demoPid);
       if (!entry) return;
 
-      // If already finalized (suite_end_killed via check_demo_result, autoKillDemo, etc.), skip
+      // If already finalized (suite_end_killed via check_demo_result, autoKillDemo, interrupt, etc.), skip
       if (entry.status !== 'running') return;
 
-      // Suite_end killed → treat as passed (background monitor set the flag before SIGTERM)
-      if (suiteEndAutoKilledPids.has(demoPid)) {
+      // Interrupt detected but process exited before background monitor handled it (race condition)
+      if (interruptDetectedAt !== null) {
+        entry.status = 'interrupted';
+        entry.failure_summary = 'Demo interrupted by user (Escape key)';
+        // Pause task if not already done by the background monitor
+        if (!entry.bypass_request_id) {
+          const bypassId = pauseTaskForDemoInteraction(demoPid, entry.scenario_id);
+          if (bypassId) entry.bypass_request_id = bypassId;
+        }
+      } else if (suiteEndAutoKilledPids.has(demoPid)) {
+        // Suite_end killed → treat as passed (background monitor set the flag before SIGTERM)
         const progress = readDemoProgress(progressFilePath);
         entry.status = (progress?.has_failures) ? 'failed' : 'passed';
         suiteEndAutoKilledPids.delete(demoPid);
@@ -1880,8 +2201,16 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         entry.screenshot_interval = undefined;
       }
 
-      // Persist video recording for the scenario (runs for both passed and failed)
-      if (entry.scenario_id) {
+      // Persist video recording for the scenario (runs for both passed and failed, NOT interrupted)
+      if (entry.status === 'interrupted') {
+        // Interrupted demos: stop recorder and discard recording (do NOT persist)
+        if (entry.window_recorder_pid && entry.window_recording_path) {
+          stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
+          try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
+          entry.window_recorder_pid = undefined;
+          entry.window_recording_path = undefined;
+        }
+      } else if (entry.scenario_id) {
         try {
           let videoToUse: string | undefined;
 
@@ -2047,6 +2376,7 @@ function readDemoProgress(progressFilePath: string): DemoProgress | null {
       suite_completed: false,
       annotations: [],
       has_warnings: false,
+      interrupted: false,
     };
 
     for (const line of lines) {
@@ -2111,6 +2441,9 @@ function readDemoProgress(progressFilePath: string): DemoProgress | null {
             progress.current_file = null;
             progress.suite_completed = true;
             break;
+          case 'demo_interrupted':
+            progress.interrupted = true;
+            break;
         }
       } catch {
         // Skip malformed lines
@@ -2156,6 +2489,21 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
       pid,
       scenario_id: undefined,
       message: `No demo run found for PID ${pid}. The process may have been launched before the MCP server started, or the PID is incorrect.`,
+    };
+  }
+
+  // Interrupted demos: browser is alive for user interaction
+  if (entry.status === 'interrupted') {
+    resetAutoKillTimer(pid);
+    const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
+    return {
+      status: 'interrupted',
+      pid,
+      project: entry.project,
+      scenario_id: entry.scenario_id,
+      started_at: entry.started_at,
+      progress: progress ?? undefined,
+      message: 'Demo was interrupted by user (Escape key). Browser is still open for manual interaction. Call stop_demo when done.',
     };
   }
 
@@ -2348,7 +2696,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
         entry.fullscreened = false;
       }
 
-      // Stop window recorder and persist video before destroying
+      // Stop window recorder and persist video before returning
       if (entry.window_recorder_pid && entry.window_recording_path) {
         const recOk = stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
         if (recOk && entry.scenario_id) {
@@ -2603,8 +2951,8 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
     };
   }
 
-  // Guard: only stop running demos
-  if (entry.status !== 'running') {
+  // Guard: only stop running or interrupted demos
+  if (entry.status !== 'running' && entry.status !== 'interrupted') {
     return {
       success: false,
       pid,
@@ -2612,6 +2960,8 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
       message: `Demo is not running (status: ${entry.status}).`,
     };
   }
+
+  const wasInterrupted = entry.status === 'interrupted';
 
   // Verify process is still alive before killing (prevents PID recycling issues)
   try {
@@ -2622,10 +2972,10 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
       void unfullscreenChromeWindow();
       entry.fullscreened = false;
     }
-    // Stop window recorder and persist video before returning
+    // Stop window recorder — skip persistence for interrupted demos (discard recording)
     if (entry.window_recorder_pid && entry.window_recording_path) {
       const recOk = stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
-      if (recOk && entry.scenario_id) {
+      if (recOk && entry.scenario_id && !wasInterrupted) {
         try { persistScenarioRecording(entry.scenario_id, entry.window_recording_path); } catch { /* Non-fatal */ }
       }
       try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
@@ -2639,14 +2989,24 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
       entry.screenshot_interval = undefined;
     }
 
-    entry.status = 'unknown';
+    if (!wasInterrupted) {
+      entry.status = 'unknown';
+    }
     entry.ended_at = new Date().toISOString();
+
+    // Resume task if this was an interrupted demo with a bypass request
+    if (wasInterrupted) {
+      resumeTaskAfterDemoInteraction(entry);
+    }
+
     persistDemoRuns();
     return {
-      success: false,
+      success: wasInterrupted,
       pid,
       project: entry.project,
-      message: `Demo process (PID ${pid}) is no longer running.`,
+      message: wasInterrupted
+        ? `Interrupted demo (PID ${pid}) cleaned up. Task resumed.`
+        : `Demo process (PID ${pid}) is no longer running.`,
     };
   }
 
@@ -2662,10 +3022,10 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
     entry.fullscreened = false;
   }
 
-  // Stop window recorder and persist video before destroying
+  // Stop window recorder — skip persistence for interrupted demos (discard recording)
   if (entry.window_recorder_pid && entry.window_recording_path) {
     const recOk = stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
-    if (recOk && entry.scenario_id) {
+    if (recOk && entry.scenario_id && !wasInterrupted) {
       try { persistScenarioRecording(entry.scenario_id, entry.window_recording_path); } catch { /* Non-fatal */ }
     }
     try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
@@ -2687,9 +3047,16 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
   }
 
   // Update demo run state
-  entry.status = 'failed';
+  if (!wasInterrupted) {
+    entry.status = 'failed';
+    entry.failure_summary = 'Manually stopped';
+  }
   entry.ended_at = new Date().toISOString();
-  entry.failure_summary = 'Manually stopped';
+
+  // Resume task if this was an interrupted demo with a bypass request
+  if (wasInterrupted) {
+    resumeTaskAfterDemoInteraction(entry);
+  }
 
   // Clean up progress file
   if (entry.progress_file) {

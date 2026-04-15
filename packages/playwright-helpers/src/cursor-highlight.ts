@@ -11,6 +11,7 @@
  */
 
 import type { Page } from '@playwright/test';
+import { isInterrupted, DemoInterruptedError } from './interrupt.js';
 
 /**
  * Raw JS string for context.addInitScript().
@@ -128,6 +129,7 @@ export async function addMouseAnimation(page: Page): Promise<void> {
     for (const method of methods) {
       const orig = locatorProto[method] as (...args: unknown[]) => Promise<unknown>;
       locatorProto[method] = async function (this: unknown, ...args: unknown[]) {
+        if (isInterrupted()) throw new DemoInterruptedError('Demo interrupted');
         try {
           const locatorPage = (this as { page: () => Page }).page();
           const s = locatorPage ? cursorStates.get(locatorPage) : undefined;
