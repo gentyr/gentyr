@@ -609,14 +609,15 @@ SQLite-backed multi-resource coordination system. Worktree agents acquire exclus
 
 **Built-in resources**: `display` (headed browser / ScreenCaptureKit, TTL 15 min), `chrome-bridge` (real Chrome via Claude for Chrome extension, TTL 15 min), `main-dev-server` (port 3000 dev server, TTL 30 min). Additional resources can be registered dynamically via `register_shared_resource`.
 
-**Lock semantics** (per resource): TTL auto-expiry prevents orphaned locks when holders die. Holder must renew every ~5 min to stay alive. On expiry: `checkAndExpireResources()` (called from `drainQueue()`) releases and promotes the next priority-ordered waiter. On agent death: session-reaper calls `releaseAllResources()` and `removeFromAllQueues()` for all resources held or queued by the dead agent. Headless demos do NOT need the display lock.
+**Lock semantics** (per resource): TTL auto-expiry prevents orphaned locks when holders die. Holder must renew every ~5 min to stay alive. On expiry or dead-holder detection: `checkAndExpireResources()` (called from `drainQueue()`) checks holder PID liveness first (fast-path via `getAgentPid()` + `isPidAlive()` cross-referencing `session-queue.db`) — dead holders are released immediately without waiting for TTL. Live holders that have passed TTL are also released. After clearing the lock, `promoteNextWaiter()` loops through waiting agents, skipping any whose PID is confirmed dead (marks them `status = 'skipped'`), and promotes the first live waiter found. On agent death: session-reaper calls `releaseAllResources()` and `removeFromAllQueues()` for all resources held or queued by the dead agent. Headless demos do NOT need the display lock.
 
-**5 MCP tools** (on `agent-tracker` server):
+**6 MCP tools** (on `agent-tracker` server):
 - `acquire_shared_resource` — request exclusive access to a named resource; returns `{ acquired: true }` or `{ acquired: false, position: N, holder: {...} }` with auto-enqueue on contention
 - `release_shared_resource` — release a resource after work completes; promotes next waiter
 - `renew_shared_resource` — heartbeat to prevent TTL expiry (call every ~5 min during long sessions)
 - `get_shared_resource_status` — status of one resource (by `resource_id`) or all registered resources (omit argument)
 - `register_shared_resource` — add a new resource type to the registry with a custom `default_ttl_minutes`
+- `force_release_shared_resource` — CTO override: force-releases a lock regardless of holder identity, purging dead waiters before promoting the next live one; use when the holder is confirmed dead/stuck and waiting for TTL expiry is unacceptable
 
 **Playwright server display lock tools** (`acquire_display_lock`, `release_display_lock`, `renew_display_lock`, `get_display_queue_status`) remain available as backward-compat aliases via the shim.
 
@@ -624,7 +625,7 @@ SQLite-backed multi-resource coordination system. Worktree agents acquire exclus
 
 **Session reaper integration**: `reapSyncPass()` calls `releaseAllResources(agentId)` and `removeFromAllQueues(agentId)` for any agent it marks as dead, releasing all resources at once regardless of how many the agent held.
 
-**Audit events**: `display_lock_acquired`, `display_lock_released`, `display_lock_renewed`, `display_lock_expired`, `display_lock_enqueued`, `display_lock_promoted` — all emitted to `session-audit.log` (event names preserved for backward compatibility).
+**Audit events**: `display_lock_acquired`, `display_lock_released`, `display_lock_renewed`, `display_lock_expired`, `display_lock_enqueued`, `display_lock_promoted`, `resource_lock_force_released` — all emitted to `session-audit.log` (event names preserved for backward compatibility; `resource_lock_force_released` is the new event emitted on CTO override or dead-holder auto-release).
 
 ### Session Audit Log
 
@@ -947,11 +948,15 @@ All 4 hooks are in the `criticalHooks` list in `cli/commands/protect.js` and are
 
 The CTO dashboard (`packages/cto-dashboard/`) supports `--mock` for development and `--page N` to split rendering across 3 pages. `/cto-report` runs all three pages. Includes WORKLOG system for agent work tracking via `summarize_work` tool.
 
-**Live CTO Dashboard** (`packages/cto-dashboard-live/`): Real-time Ink/React TUI that polls live data every 3 seconds. Launched via `/cto-dashboard` slash command (macOS only — opens a Terminal.app window). Two pages navigated via Tab / `1` / `2`. Built automatically by `npx gentyr sync` (step 7d); if `dist/` is missing, the `/cto-dashboard` command instructs the user to run sync rather than building inline (blocked by lockdown guard). Built `dist/` is gitignored.
+**Live CTO Dashboard** (`packages/cto-dashboard-live/`): Real-time Ink/React TUI that polls live data every 3 seconds. Launched via `/cto-dashboard` slash command (macOS only — opens a Terminal.app window). Four pages navigated via Tab / `1` / `2` / `3` / `4`. Built automatically by `npx gentyr sync` (step 7d); if `dist/` is missing, the `/cto-dashboard` command instructs the user to run sync rather than building inline (blocked by lockdown guard). Built `dist/` is gitignored.
 
 **Page 1 — Observe**: Session list showing all sessions with persistent task hierarchy (monitors at top level, child sessions indented beneath). Keyboard navigation: arrow keys to select sessions, Enter to send a signal/message to the selected session (or resume a dead session), `[` / `]` to browse session summaries. Activity content persists after session death with a `session_end` marker appended. Session items are two-line: status icon + id + title + elapsed on line 1, agent type + priority badge + last action on line 2.
 
 **Page 2 — Demos & Tests**: Two-column layout — left panel lists demo scenarios from `user-feedback.db`; right panel lists Playwright test files discovered from `playwright.config.ts`. Select an item with arrow keys, press Enter to launch it (demos run headed via `DEMO_HEADED=1`; tests run headless). Press `s` or `x` to stop a running process, Escape to clear finished output. A live output panel expands at the bottom while a process is running, tailing the process output file in real time. Switch panels with left/right arrow keys. Keyboard input is gated by `isActive` so only the visible page captures keystrokes. Process launching and tracking is handled by `utils/process-runner.ts` (`launchDemo`, `launchTest`, `checkProcess`, `killProcess`); output tailing by `hooks/useProcessOutput.ts`; data polling by `hooks/usePage2Data.ts`.
+
+**Page 3 — Plans**: Two-panel layout with plan list on the left and a phase/task/substep detail tree on the right. Shows plan status, progress bars (plan-level and per-phase), dependency display, linked persistent task IDs, and the 5 most recent state changes from `state_changes` table. Data sourced from `plans.db` via `readPage3Data()` in `packages/cto-dashboard-live/src/utils/data-reader.ts`. Arrow keys to navigate; Enter to select a plan.
+
+**Page 4 — Specs**: Two-panel layout with a category-grouped spec navigator on the left and a markdown content viewer on the right. Specs are discovered from the project's spec files (`.md` / `.mdx`) via the `specs-browser` MCP server's backing data. Left panel groups specs by suite/category; right panel renders spec content with word-wrap and a scrollable "more lines" indicator that correctly handles content overflow. Data sourced from the specs directory via `readPage4Data()`. Arrow keys to navigate; Enter to select a spec.
 
 **Signal delivery states**: When a signal is sent to a running session, the status bar shows: `Pending` (sent, waiting for agent tool call), `Delivered` (signal file read), `Ack'd` (agent acknowledged via tool response), `Queued` (agent alive but unresponsive after 30s — will deliver on next tool call), or `Resumed` (agent died before reading — auto-escalated to `resumeSessionWithMessage`, opening a new Terminal.app window). Dead-session detection uses both PID liveness and `session_end` activity marker to avoid a race condition where the PID is still alive but the session has ended.
 

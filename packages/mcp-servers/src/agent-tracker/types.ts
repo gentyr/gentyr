@@ -419,11 +419,19 @@ export const RegisterSharedResourceArgsSchema = z.object({
     .describe('Default lock TTL in minutes when no TTL is specified at acquire time (default: 15)'),
 });
 
+export const ForceReleaseSharedResourceArgsSchema = z.object({
+  resource_id: z.string().min(1)
+    .describe('ID of the resource to force-release (e.g., "display", "chrome-bridge")'),
+  reason: z.string().optional()
+    .describe('Reason for force-release (e.g., "holder agent dead", "CTO override"). Logged in audit trail.'),
+});
+
 export type AcquireSharedResourceArgs = z.infer<typeof AcquireSharedResourceArgsSchema>;
 export type ReleaseSharedResourceArgs = z.infer<typeof ReleaseSharedResourceArgsSchema>;
 export type RenewSharedResourceArgs = z.infer<typeof RenewSharedResourceArgsSchema>;
 export type GetSharedResourceStatusArgs = z.infer<typeof GetSharedResourceStatusArgsSchema>;
 export type RegisterSharedResourceArgs = z.infer<typeof RegisterSharedResourceArgsSchema>;
+export type ForceReleaseSharedResourceArgs = z.infer<typeof ForceReleaseSharedResourceArgsSchema>;
 
 export const InspectPersistentTaskArgsSchema = z.object({
   id: z.string().describe('Persistent task UUID (or prefix)'),
