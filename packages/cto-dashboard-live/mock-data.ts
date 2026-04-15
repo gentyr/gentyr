@@ -47,10 +47,10 @@ export function getMockData(): LiveDashboardData {
 }
 
 const mockScenarios: DemoScenarioItem[] = [
-  { id: 'demo-001', personaId: 'p1', personaName: 'Vendor (Owner)', title: 'Complete vendor onboarding flow', description: 'End-to-end onboarding', category: 'onboarding', playwrightProject: 'vendor-owner', testFile: 'e2e/demo/vendor-onboarding.demo.ts', sortOrder: 1, enabled: true, headed: true, lastRecordedAt: ago(120) },
-  { id: 'demo-002', personaId: 'p2', personaName: 'Vendor (Admin)', title: 'Admin dashboard navigation', description: 'Navigate admin pages', category: 'navigation', playwrightProject: 'vendor-admin', testFile: 'e2e/demo/admin-nav.demo.ts', sortOrder: 2, enabled: true, headed: false, lastRecordedAt: ago(360) },
-  { id: 'demo-003', personaId: 'p1', personaName: 'Vendor (Owner)', title: 'Payment processing flow', description: 'Process a payment', category: 'payments', playwrightProject: 'vendor-owner', testFile: 'e2e/demo/payment-flow.demo.ts', sortOrder: 3, enabled: false, headed: true, lastRecordedAt: null },
-  { id: 'demo-004', personaId: 'p3', personaName: 'Cross-Persona', title: 'AWS one-click deploy', description: 'Deploy to AWS', category: 'deploy', playwrightProject: 'cross-persona', testFile: 'e2e/demo/ext-aws-one-click.demo.ts', sortOrder: 4, enabled: true, headed: true, lastRecordedAt: ago(30) },
+  { id: 'demo-001', personaId: 'p1', personaName: 'Vendor (Owner)', title: 'Complete vendor onboarding flow', description: 'End-to-end onboarding', category: 'onboarding', playwrightProject: 'vendor-owner', testFile: 'e2e/demo/vendor-onboarding.demo.ts', sortOrder: 1, enabled: true, headed: true, lastRecordedAt: ago(120), recordingPath: '/tmp/mock-demo-001.mp4' },
+  { id: 'demo-002', personaId: 'p2', personaName: 'Vendor (Admin)', title: 'Admin dashboard navigation', description: 'Navigate admin pages', category: 'navigation', playwrightProject: 'vendor-admin', testFile: 'e2e/demo/admin-nav.demo.ts', sortOrder: 2, enabled: true, headed: false, lastRecordedAt: ago(360), recordingPath: null },
+  { id: 'demo-003', personaId: 'p1', personaName: 'Vendor (Owner)', title: 'Payment processing flow', description: 'Process a payment', category: 'payments', playwrightProject: 'vendor-owner', testFile: 'e2e/demo/payment-flow.demo.ts', sortOrder: 3, enabled: false, headed: true, lastRecordedAt: null, recordingPath: null },
+  { id: 'demo-004', personaId: 'p3', personaName: 'Cross-Persona', title: 'AWS one-click deploy', description: 'Deploy to AWS', category: 'deploy', playwrightProject: 'cross-persona', testFile: 'e2e/demo/ext-aws-one-click.demo.ts', sortOrder: 4, enabled: true, headed: true, lastRecordedAt: ago(30), recordingPath: '/tmp/mock-demo-004.mp4' },
 ];
 
 const mockTestFiles: TestFileItem[] = [

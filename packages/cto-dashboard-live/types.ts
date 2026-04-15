@@ -128,6 +128,7 @@ export interface DemoScenarioItem {
   enabled: boolean;
   headed: boolean;
   lastRecordedAt: string | null;
+  recordingPath: string | null;
 }
 
 export interface TestFileItem {

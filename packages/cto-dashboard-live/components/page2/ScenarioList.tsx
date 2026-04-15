@@ -38,6 +38,7 @@ function ScenarioRow({ scenario, isSelected, width, isActive }: { scenario: Demo
   meta.push(scenario.personaName);
   if (scenario.category) meta.push(scenario.category);
   if (scenario.headed) meta.push('headed');
+  if (scenario.recordingPath) meta.push('\u25B6 video');
   meta.push(agoLabel(scenario.lastRecordedAt));
   const metaStr = truncate(meta.join(' \u00B7 '), Math.max(4, width - 4));
 

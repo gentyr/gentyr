@@ -14,6 +14,7 @@ export function Footer({ activePage }: FooterProps): React.ReactElement {
           {' '}<Text bold inverse>{' \u2191\u2193 '}</Text> select
           {'  '}<Text bold inverse>{' \u2190\u2192 '}</Text> panel
           {'  '}<Text bold inverse>{' \u23CE '}</Text> run
+          {'  '}<Text bold inverse>{' v '}</Text> video
           {'  '}<Text bold inverse>{' s '}</Text> stop
           {'  '}<Text bold inverse>{' Tab '}</Text> page
           {'  '}<Text bold inverse>{' q '}</Text> quit{' '}

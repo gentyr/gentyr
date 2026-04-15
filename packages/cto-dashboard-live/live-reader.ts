@@ -536,7 +536,7 @@ interface ScenarioRow {
   id: string; persona_id: string; title: string; description: string;
   category: string | null; playwright_project: string; test_file: string;
   sort_order: number; enabled: number; headed: number;
-  last_recorded_at: string | null; persona_name: string;
+  last_recorded_at: string | null; recording_path: string | null; persona_name: string;
 }
 
 export function readDemoScenarios(): DemoScenarioItem[] {
@@ -546,7 +546,7 @@ export function readDemoScenarios(): DemoScenarioItem[] {
     const rows = db.prepare(`
       SELECT ds.id, ds.persona_id, ds.title, ds.description, ds.category,
              ds.playwright_project, ds.test_file, ds.sort_order, ds.enabled,
-             ds.headed, ds.last_recorded_at,
+             ds.headed, ds.last_recorded_at, ds.recording_path,
              p.name AS persona_name
       FROM demo_scenarios ds
       JOIN personas p ON p.id = ds.persona_id
@@ -565,6 +565,7 @@ export function readDemoScenarios(): DemoScenarioItem[] {
       enabled: r.enabled === 1,
       headed: r.headed === 1,
       lastRecordedAt: r.last_recorded_at,
+      recordingPath: r.recording_path && fs.existsSync(r.recording_path) ? r.recording_path : null,
     }));
   } catch { return []; }
   finally { closeDb(db); }
