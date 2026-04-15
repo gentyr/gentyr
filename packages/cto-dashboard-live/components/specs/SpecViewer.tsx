@@ -90,8 +90,9 @@ export function SpecViewer({ content, scrollOffset, height, width }: SpecViewerP
   const rawLines = content.split('\n');
   const parsed = rawLines.map(parseLine);
 
-  const visible = parsed.slice(scrollOffset, scrollOffset + height);
   const remaining = parsed.length - scrollOffset - height;
+  const visibleCount = remaining > 0 ? height - 1 : height;
+  const visible = parsed.slice(scrollOffset, scrollOffset + visibleCount);
 
   return (
     <Box flexDirection="column" height={height} overflow="hidden">
