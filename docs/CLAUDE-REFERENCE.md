@@ -445,6 +445,38 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 - Root-owned and listed in `protection-state.json` `criticalHooks` array; registered in `settings.json.template` under `PreToolUse > Agent`
 - Tests at `.claude/hooks/__tests__/interactive-agent-guard.test.js` (21 tests, runs via `node --test`)
 
+### Interactive Session Lockdown Guard Hook
+
+**Interactive Session Lockdown Guard** (`.claude/hooks/interactive-lockdown-guard.js`):
+- Runs at `PreToolUse` for all tool calls in interactive sessions; hard-blocking (`permissionDecision: "deny"`)
+- Enforces the deputy-CTO console model: interactive sessions may only use read/observe tools and GENTYR's task/agent management tools — file-editing tools (`Edit`, `Write`, `NotebookEdit`) and code-modifying sub-agent invocations are blocked
+- **Spawned sessions** (`CLAUDE_SPAWNED_SESSION=true`) are always unrestricted — they need full tool access for their work. Pass-through is the first check (< 1ms hot path)
+- **Interactive monitor sessions** (`GENTYR_INTERACTIVE_MONITOR=true`) are also unrestricted, so `/monitor-live` sessions retain full tool access for sub-agent orchestration
+- **`ALLOWED_TOOLS` set**: `Read`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`, `AskUserQuestion`, `Skill`, `ToolSearch`, `StructuredOutput` (required for the AI model's internal JSON schema output — blocking this breaks the session), `Agent`, `Task` (both filtered by sub-agent type)
+- **`ALLOWED_MCP_PREFIXES`**: `mcp__deputy-cto__`, `mcp__todo-db__`, `mcp__agent-tracker__`, `mcp__agent-reports__`, `mcp__cto-report__`, `mcp__show__`, `mcp__persistent-task__`, `mcp__plan-orchestrator__`, `mcp__user-feedback__`, `mcp__product-manager__`, `mcp__playwright__`, `mcp__specs-browser__`, `mcp__feedback-explorer__`, `mcp__setup-helper__`, `mcp__workstream__`, `mcp__chrome-bridge__`. Individual exceptions from blocked servers: `mcp__secret-sync__get_services_config`, `mcp__secret-sync__update_services_config`
+- **`BLOCKED_MCP_TOOLS`**: `mcp__agent-tracker__set_max_concurrent_sessions` — requires CTO bypass token
+- **`Agent`/`Task` sub-agent filter**: only `READONLY_SUBAGENT_TYPES` (`Explore`, `Plan`, `claude-code-guide`, `deputy-cto`, `feedback-agent`, `investigator`, `product-manager`, `repo-hygiene-expert`, `secret-manager`, `statusline-setup`, `user-alignment`) are allowed; all others are denied with a prompt to use the GENTYR task system
+- **Bash write-command filter** (`BLOCKED_BASH_PATTERNS`): blocks git write ops (`checkout`, `switch`, `clean`, `reset`, `stash`, `add`, `commit`, `push`, `merge`, `rebase`, `cherry-pick`, `pull`), build commands (`pnpm`/`npm`/`yarn`/`npx run build`/`install`/`link`/`publish`, `swift build`, `tsc`), file mutation (`rm -rf`, `mkdir`, `cp`, `mv`, `chmod`, `chown`), and process management (`kill`, `sudo`, `eval`)
+- **Bypass token** (`consumeBypassToken()`): one-time-use token at `.claude/bypass-approval-token.json` — expires by timestamp; used to allow a single blocked MCP call after CTO approval
+- **Disabled state** (`isLockdownDisabled()`): reads `interactiveLockdownDisabled` from `automation-config.json`; fail-closed (lockdown enabled) if file is absent or unparseable. When disabled, injects a `[LOCKDOWN DISABLED]` warning into the AI model's context on every tool call
+- **Fail-closed** (G001): parse errors and unexpected exceptions result in `permissionDecision: "deny"`, not `allow`
+- **Security fix (v1.1)**: `StructuredOutput` added to `ALLOWED_TOOLS` — the AI model's internal structured JSON output mechanism must never be blocked even in fully locked-down sessions
+- Enabled by default; toggle via `/lockdown on|off` slash command or `set_lockdown_mode` MCP tool (see below)
+- Root-owned and listed in `protection-state.json` `criticalHooks` array; registered in `settings.json.template` under `PreToolUse > *`
+- Tests at `.claude/hooks/__tests__/interactive-lockdown-guard.test.js` (runs via vitest)
+
+**`set_lockdown_mode` / `get_lockdown_mode` MCP tools** (on `agent-tracker` server):
+- `set_lockdown_mode({ enabled: boolean, cto_bypass?: boolean })` — toggle lockdown state. Enabling is unrestricted. Disabling requires `cto_bypass: true` (pre-existing guard) AND an interactive CTO session (`CLAUDE_SPAWNED_SESSION !== 'true'` — security fix v1.1 that prevents spawned agents from removing their own constraints). On success, emits a `lockdown_enabled` or `lockdown_disabled` audit event to `session-audit.log` (security fix v1.1). Config written to `automation-config.json` (`interactiveLockdownDisabled: true` for disable; key deleted for enable)
+- `get_lockdown_mode()` — read current lockdown state from `automation-config.json`; returns `{ lockdown_enabled: boolean, message: string }`
+- **Spawned-session hard block**: `CLAUDE_SPAWNED_SESSION=true` combined with `enabled: false` returns an error immediately, even with `cto_bypass: true` — this is the server-side defense against a compromised agent attempting to disable its own lockdown constraints
+- Both tools are available from the deputy-CTO console (prefix `mcp__agent-tracker__` is in `ALLOWED_MCP_PREFIXES`)
+
+**`/lockdown` slash command** (`.claude/commands/lockdown.md`):
+- `/lockdown` — show current status via `get_lockdown_mode`
+- `/lockdown on` — enable lockdown (`set_lockdown_mode({ enabled: true })`)
+- `/lockdown off` — disable lockdown (`set_lockdown_mode({ enabled: false, cto_bypass: true })`); for development/debugging only
+- Setting persists across sessions (stored in `automation-config.json`); takes effect immediately (no session restart needed)
+
 ---
 
 ## Playwright MCP Server
