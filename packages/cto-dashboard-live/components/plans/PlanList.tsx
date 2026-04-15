@@ -40,13 +40,14 @@ function ageLabel(isoOrNull: string | null): string {
 function PlanRow({ plan, isSelected, width, isActive }: { plan: PlanItem; isSelected: boolean; width: number; isActive: boolean }): React.ReactElement {
   const { char, color } = statusDot(plan.status);
   const highlight = isSelected && isActive;
-  const sel: Record<string, unknown> = highlight ? { color: 'white', bold: true } : {};
-  const selDim: Record<string, unknown> = highlight ? { color: 'white' } : { dimColor: true };
+  const sel: Record<string, unknown> = highlight ? { color: 'white', bold: true, inverse: true } : isSelected ? { bold: true } : {};
+  const selDim: Record<string, unknown> = highlight ? { color: 'white', inverse: true } : isSelected ? {} : { dimColor: true };
+  const cursor = isSelected ? '\u25B8 ' : '  ';
 
   const BAR_WIDTH = 10;
   const bar = renderProgressBar(plan.progressPct, BAR_WIDTH);
-  const barLen = BAR_WIDTH + 5; // "████── 50%" = 10 + " " + "N%" (up to 4 chars)
-  const titleWidth = Math.max(4, width - 4 - barLen);
+  const barLen = BAR_WIDTH + 5;
+  const titleWidth = Math.max(4, width - 6 - barLen);
   const titleText = truncate(plan.title, titleWidth);
 
   const meta: string[] = [];
@@ -57,11 +58,12 @@ function PlanRow({ plan, isSelected, width, isActive }: { plan: PlanItem; isSele
   if (plan.activeTasks > 0) extras.push(`${plan.activeTasks} active`);
   meta.push(extras.length > 0 ? `${taskSummary} (${extras.join(', ')})` : taskSummary);
   meta.push(`updated ${ageLabel(plan.updatedAt)}`);
-  const metaStr = truncate(meta.join(' \u00B7 '), Math.max(4, width - 4));
+  const metaStr = truncate(meta.join(' \u00B7 '), Math.max(4, width - 6));
 
   return (
     <Box flexDirection="column" height={2} overflow="hidden">
       <Box height={1}>
+        <Text>{cursor}</Text>
         <Box width={2}>
           <Text color={color} bold>{char} </Text>
         </Box>
@@ -74,7 +76,7 @@ function PlanRow({ plan, isSelected, width, isActive }: { plan: PlanItem; isSele
         <Text dimColor={!highlight}>]</Text>
       </Box>
       <Box height={1}>
-        <Box width={2}><Text> </Text></Box>
+        <Box width={4}><Text> </Text></Box>
         <Box overflow="hidden">
           <Text {...selDim}>{metaStr}</Text>
         </Box>

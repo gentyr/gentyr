@@ -42,21 +42,23 @@ function ScenarioRow({ scenario, isSelected, width, isActive }: { scenario: Demo
   const metaStr = truncate(meta.join(' \u00B7 '), Math.max(4, width - 4));
 
   const highlight = isSelected && isActive;
-  const sel = highlight ? { color: 'white' as const, bold: true } : {};
-  const selDim = highlight ? { color: 'white' as const } : { dimColor: true };
+  const sel = highlight ? { color: 'white' as const, bold: true, inverse: true } : isSelected ? { bold: true } : {};
+  const selDim = highlight ? { color: 'white' as const, inverse: true } : isSelected ? {} : { dimColor: true };
+  const cursor = isSelected ? '\u25B8 ' : '  ';
 
   return (
     <Box flexDirection="column" height={2} overflow="hidden">
       <Box height={1}>
+        <Text>{cursor}</Text>
         <Box width={2}>
           <Text color={dotColor} bold>{DOT} </Text>
         </Box>
-        <Box width={titleWidth} overflow="hidden">
-          <Text {...(highlight ? sel : isSelected ? {} : { dimColor: !scenario.enabled })}>{titleText}</Text>
+        <Box width={Math.max(4, titleWidth - 2)} overflow="hidden">
+          <Text {...(highlight ? sel : isSelected ? { bold: true } : { dimColor: !scenario.enabled })}>{titleText}</Text>
         </Box>
       </Box>
       <Box height={1}>
-        <Box width={2}><Text> </Text></Box>
+        <Box width={4}><Text> </Text></Box>
         <Box overflow="hidden">
           <Text {...selDim}>{metaStr}</Text>
         </Box>
