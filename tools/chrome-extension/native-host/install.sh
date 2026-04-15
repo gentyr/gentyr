@@ -28,6 +28,9 @@ fi
 LAUNCHER_PATH="${SCRIPT_DIR}/launch-host.sh"
 cat > "$LAUNCHER_PATH" <<LAUNCH_EOF
 #!/bin/bash
+# Clear NODE_OPTIONS to prevent preload modules (e.g. node-version-shim.cjs from
+# nvm/fnm) from crashing the native host when launched by Chrome
+unset NODE_OPTIONS
 exec "${NODE_BIN}" "${HOST_PATH}" "\$@"
 LAUNCH_EOF
 chmod +x "$LAUNCHER_PATH"
