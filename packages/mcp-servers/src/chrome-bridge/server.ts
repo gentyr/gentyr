@@ -17,8 +17,11 @@ import * as path from 'path';
 import * as readline from 'readline';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { fileURLToPath } from 'url';
 
 const execFileAsync = promisify(execFile);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import {
   JsonRpcRequestSchema,
   McpToolCallParamsSchema,
@@ -46,6 +49,8 @@ class ChromeBridgeClient {
   private tabUrls = new Map<number, string>(); // tabId -> last known URL
   private tipTracker = new BrowserTipTracker();
   private readonly socketDir: string;
+
+  get socketDirPath(): string { return this.socketDir; }
 
   private static readonly CLIENT_ID = 'gentyr';
   private static readonly MAX_RECONNECT_ATTEMPTS = 100;
@@ -311,10 +316,16 @@ class ChromeBridgeClient {
     }
 
     if (this.connections.size === 0) {
+      const diag = await runConnectionDiagnostics(this.socketDir);
+      const failures = diag.checks
+        .filter((c) => !c.ok)
+        .map((c) => `  - ${c.name}: ${c.detail}`)
+        .join('\n');
+      const fixes = diag.remediation.map((r) => `  - ${r}`).join('\n');
       return {
         content: [{
           type: 'text',
-          text: 'Chrome extension not connected. Make sure Chrome is running with the Claude extension installed.',
+          text: `Chrome extension not connected.\n\nDiagnostics:\n${failures || '  All checks passed but no active connection.'}\n\nRemediation:\n${fixes || '  Reload the Gentyr extension in Chrome or restart Chrome.'}`,
         }],
         isError: true,
       };
@@ -1083,6 +1094,18 @@ const CHROME_TOOLS: ChromeToolDefinition[] = [
       required: ['query', 'tabId'],
     },
   },
+  // ==========================================================================
+  // Diagnostics
+  // ==========================================================================
+  {
+    name: 'health_check',
+    title: 'Health Check',
+    description: 'Check if the chrome-bridge connection chain is healthy. Diagnoses: native messaging manifest, host launch script, socket directory, live sockets, and end-to-end connectivity. Returns structured diagnostics with remediation steps when unhealthy. Call this FIRST if other chrome-bridge tools fail with connection errors.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
 ];
 
 // ============================================================================
@@ -1096,6 +1119,7 @@ const SERVER_SIDE_TOOLS = new Set([
   'click_by_text',
   'fill_input',
   'wait_for_element',
+  'health_check',
 ]);
 
 /**
@@ -1523,6 +1547,180 @@ async function handleWaitForElement(
   };
 }
 
+// ============================================================================
+// Connection Diagnostics
+// ============================================================================
+
+interface DiagnosticCheck {
+  name: string;
+  ok: boolean;
+  detail?: string;
+}
+
+interface DiagnosticResult {
+  healthy: boolean;
+  checks: DiagnosticCheck[];
+  remediation: string[];
+}
+
+const NMH_NAME = 'com.gentyr.chrome_browser_extension';
+
+function getNativeManifestDir(): string {
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts');
+  }
+  return path.join(os.homedir(), '.config', 'google-chrome', 'NativeMessagingHosts');
+}
+
+function resolveExtensionDir(): string | null {
+  // Resolve from compiled dist/ back to tools/chrome-extension/extension/
+  // From dist/chrome-bridge/ -> dist/ -> packages/mcp-servers/ -> packages/ -> framework root
+  const candidate = path.resolve(__dirname, '..', '..', '..', '..', 'tools', 'chrome-extension', 'extension');
+  try {
+    if (fs.existsSync(candidate)) return candidate;
+  } catch { /* ignore */ }
+  return null;
+}
+
+async function runConnectionDiagnostics(socketDir: string): Promise<DiagnosticResult> {
+  const checks: DiagnosticCheck[] = [];
+  const remediation: string[] = [];
+  const extensionDir = resolveExtensionDir();
+  const installHint = 'Run: tools/chrome-extension/native-host/install.sh';
+  const loadExtHint = extensionDir
+    ? `Load the Gentyr extension in Chrome: chrome://extensions -> Developer Mode -> Load Unpacked -> ${extensionDir}`
+    : 'Load the Gentyr extension in Chrome: chrome://extensions -> Developer Mode -> Load Unpacked -> <path-to-gentyr>/tools/chrome-extension/extension/';
+
+  // Check 1: Native messaging manifest
+  const manifestPath = path.join(getNativeManifestDir(), `${NMH_NAME}.json`);
+  if (!fs.existsSync(manifestPath)) {
+    checks.push({ name: 'Native manifest', ok: false, detail: `Not found: ${manifestPath}` });
+    remediation.push(installHint);
+    return { healthy: false, checks, remediation };
+  }
+  checks.push({ name: 'Native manifest', ok: true, detail: manifestPath });
+
+  // Check 2: Host launch script from manifest + extract expected extension ID
+  let launchScriptPath: string | undefined;
+  let expectedExtId: string | undefined;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    launchScriptPath = manifest.path;
+    // Extract extension ID from allowed_origins (e.g. "chrome-extension://ID/")
+    const origins: string[] = manifest.allowed_origins || [];
+    const originMatch = origins[0]?.match(/chrome-extension:\/\/([a-z]+)\//);
+    if (originMatch) expectedExtId = originMatch[1];
+
+    if (!launchScriptPath || !fs.existsSync(launchScriptPath)) {
+      checks.push({ name: 'Host launch script', ok: false, detail: `Not found: ${launchScriptPath || '(empty path in manifest)'}` });
+      remediation.push(installHint);
+      return { healthy: false, checks, remediation };
+    }
+    try {
+      fs.accessSync(launchScriptPath, fs.constants.X_OK);
+    } catch {
+      checks.push({ name: 'Host launch script', ok: false, detail: `Not executable: ${launchScriptPath}` });
+      remediation.push(`Run: chmod +x ${launchScriptPath}`);
+      return { healthy: false, checks, remediation };
+    }
+    checks.push({ name: 'Host launch script', ok: true, detail: launchScriptPath });
+  } catch (err) {
+    checks.push({ name: 'Host launch script', ok: false, detail: `Failed to parse manifest: ${err instanceof Error ? err.message : String(err)}` });
+    remediation.push(installHint);
+    return { healthy: false, checks, remediation };
+  }
+
+  // Check 3: Socket directory
+  const idMismatchHint = expectedExtId
+    ? `If the extension IS loaded but the native host still exits immediately, check for extension ID mismatch: the NMH manifest expects ID "${expectedExtId}" in allowed_origins. Unpacked extensions may get a different ID — verify at chrome://extensions. If mismatched, update ${manifestPath} allowed_origins or re-run install.sh.`
+    : '';
+  if (!fs.existsSync(socketDir)) {
+    checks.push({ name: 'Socket directory', ok: false, detail: `Not found: ${socketDir}` });
+    remediation.push(`Native host has never started successfully. ${loadExtHint}, then reload any tab.`);
+    if (idMismatchHint) remediation.push(idMismatchHint);
+    return { healthy: false, checks, remediation };
+  }
+  checks.push({ name: 'Socket directory', ok: true, detail: socketDir });
+
+  // Check 4: Live sockets with valid PIDs
+  let socketFiles: string[];
+  try {
+    socketFiles = fs.readdirSync(socketDir).filter((f) => f.endsWith('.sock'));
+  } catch {
+    socketFiles = [];
+  }
+
+  if (socketFiles.length === 0) {
+    checks.push({ name: 'Live sockets', ok: false, detail: 'No socket files in directory' });
+    remediation.push(`No native host sockets found. ${loadExtHint}, then reload any tab to trigger native host connection.`);
+    return { healthy: false, checks, remediation };
+  }
+
+  const livePids: number[] = [];
+  const staleSockets: string[] = [];
+  for (const file of socketFiles) {
+    const pidMatch = file.match(/^(\d+)\.sock$/);
+    if (!pidMatch) continue;
+    const pid = parseInt(pidMatch[1], 10);
+    try {
+      process.kill(pid, 0); // Check if alive (throws if dead)
+      livePids.push(pid);
+    } catch {
+      staleSockets.push(file);
+      // Clean up stale socket
+      try { fs.unlinkSync(path.join(socketDir, file)); } catch { /* ignore */ }
+    }
+  }
+
+  if (livePids.length === 0) {
+    const cleanedNote = staleSockets.length > 0 ? ` (${staleSockets.length} stale socket(s) cleaned)` : '';
+    checks.push({ name: 'Live sockets', ok: false, detail: `No live native host processes${cleanedNote}` });
+    remediation.push(`Native host processes have exited. Reload the Gentyr extension in Chrome (chrome://extensions -> click reload icon) or reload any tab.`);
+    if (idMismatchHint) remediation.push(idMismatchHint);
+    return { healthy: false, checks, remediation };
+  }
+
+  checks.push({ name: 'Live sockets', ok: true, detail: `${livePids.length} live (PID: ${livePids.join(', ')})${staleSockets.length > 0 ? `, ${staleSockets.length} stale cleaned` : ''}` });
+
+  return { healthy: true, checks, remediation };
+}
+
+async function handleHealthCheck(): Promise<{ content: McpContent[]; isError?: boolean }> {
+  const diag = await runConnectionDiagnostics(client.socketDirPath);
+
+  // If all filesystem checks pass, attempt end-to-end connectivity
+  if (diag.healthy) {
+    try {
+      const result = await Promise.race([
+        client.executeTool('tabs_context_mcp', {}),
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
+      ]);
+      if (result && typeof result === 'object' && 'isError' in result && result.isError) {
+        diag.checks.push({ name: 'End-to-end connectivity', ok: false, detail: 'tabs_context_mcp returned error' });
+        diag.healthy = false;
+        diag.remediation.push('Socket is live but extension is not responding. Reload the Gentyr extension in Chrome.');
+      } else {
+        diag.checks.push({ name: 'End-to-end connectivity', ok: true, detail: 'tabs_context_mcp responded' });
+      }
+    } catch {
+      diag.checks.push({ name: 'End-to-end connectivity', ok: false, detail: 'Connection timed out (3s)' });
+      diag.healthy = false;
+      diag.remediation.push('Socket exists but native host is unresponsive. Reload the Gentyr extension in Chrome.');
+    }
+  }
+
+  const output = {
+    healthy: diag.healthy,
+    checks: Object.fromEntries(diag.checks.map((c) => [c.name, { ok: c.ok, ...(c.detail ? { detail: c.detail } : {}) }])),
+    ...(diag.remediation.length > 0 ? { remediation: diag.remediation } : {}),
+  };
+
+  return {
+    content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
+    isError: !diag.healthy,
+  };
+}
+
 async function executeServerSideTool(
   toolName: string,
   args: Record<string, unknown>,
@@ -1540,6 +1738,8 @@ async function executeServerSideTool(
       return handleFillInput(args);
     case 'wait_for_element':
       return handleWaitForElement(args);
+    case 'health_check':
+      return handleHealthCheck();
     default:
       return { content: [{ type: 'text', text: `Unknown server-side tool: ${toolName}` }], isError: true };
   }
