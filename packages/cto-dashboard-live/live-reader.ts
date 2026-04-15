@@ -748,7 +748,7 @@ export function readPage3Data(selectedPlanId?: string | null): Page3Data {
 
           // Find blocking task titles
           const depRows = db!.prepare(
-            "SELECT pt.title FROM dependencies d JOIN plan_tasks pt ON pt.id = d.depends_on_task_id WHERE d.task_id = ? AND pt.status NOT IN ('completed','skipped')"
+            "SELECT pt.title FROM dependencies d JOIN plan_tasks pt ON pt.id = d.blocker_id WHERE d.blocked_id = ? AND d.blocker_type = 'task' AND pt.status NOT IN ('completed','skipped')"
           ).all(t.id) as Array<{ title: string }>;
           const blockedBy = depRows.map(r => r.title);
 
@@ -777,11 +777,11 @@ export function readPage3Data(selectedPlanId?: string | null): Page3Data {
 
     // Recent state changes (last 10)
     const changeRows = db.prepare(
-      `SELECT sc.entity_type, sc.entity_id, sc.field, sc.old_value, sc.new_value, sc.changed_at
+      `SELECT sc.entity_type, sc.entity_id, sc.field_name, sc.old_value, sc.new_value, sc.changed_at
        FROM state_changes sc
        ORDER BY sc.changed_at DESC LIMIT 10`
     ).all() as Array<{
-      entity_type: string; entity_id: string; field: string;
+      entity_type: string; entity_id: string; field_name: string;
       old_value: string | null; new_value: string | null; changed_at: string;
     }>;
 
@@ -802,7 +802,7 @@ export function readPage3Data(selectedPlanId?: string | null): Page3Data {
           label = row?.title ?? c.entity_id;
         }
       } catch { label = c.entity_id; }
-      return { label, field: c.field, oldValue: c.old_value, newValue: c.new_value, changedAt: c.changed_at };
+      return { label, field: c.field_name, oldValue: c.old_value, newValue: c.new_value, changedAt: c.changed_at };
     });
 
     return { plans, planDetail, recentChanges };
@@ -828,11 +828,11 @@ function parseSpecMetadata(filePath: string): { title: string; ruleId: string | 
   let title = path.basename(filePath, '.md');
   let ruleId: string | null = null;
   let severity: string | null = null;
+  let fd: number | undefined;
   try {
-    const fd = fs.openSync(filePath, 'r');
+    fd = fs.openSync(filePath, 'r');
     const buf = Buffer.alloc(4096);
     const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
-    fs.closeSync(fd);
     const text = buf.slice(0, bytesRead).toString('utf8');
     const lines = text.split('\n').slice(0, 20);
     for (const line of lines) {
@@ -845,7 +845,9 @@ function parseSpecMetadata(filePath: string): { title: string; ruleId: string | 
       const sevMatch = line.match(/\*\*Severity\*\*:\s*(.+)/);
       if (sevMatch) severity = sevMatch[1].trim().toLowerCase();
     }
-  } catch { /* */ }
+  } catch { /* */ } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* */ }
+  }
   return { title, ruleId, severity };
 }
 
