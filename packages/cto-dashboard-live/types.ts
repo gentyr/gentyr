@@ -131,11 +131,14 @@ export interface DemoScenarioItem {
   recordingPath: string | null;
 }
 
+export type TestRunner = 'playwright' | 'vitest' | 'jest';
+
 export interface TestFileItem {
-  project: string;
-  filePath: string;         // relative to project root
-  fileName: string;         // basename
-  isDemo: boolean;          // .demo.ts vs .spec.ts
+  project: string;            // playwright project name or vitest config group
+  filePath: string;           // relative to project root
+  fileName: string;           // basename
+  isDemo: boolean;            // .demo.ts vs .spec.ts (playwright only)
+  runner: TestRunner;
 }
 
 export type ProcessStatus = 'running' | 'passed' | 'failed';

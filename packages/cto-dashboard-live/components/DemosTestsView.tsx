@@ -49,6 +49,13 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Auto-select first scenario when data loads and nothing is selected
+  useEffect(() => {
+    if (data.scenarios.length > 0 && (selectedScenarioId === null || !data.scenarios.some(s => s.id === selectedScenarioId))) {
+      setSelectedScenarioId(data.scenarios[0].id);
+    }
+  }, [data.scenarios]);
+
   // Clear status timer on unmount
   useEffect(() => () => {
     if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
@@ -189,7 +196,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
 
         <Box width={1} />
 
-        <Section title="Playwright Tests" width={rightWidth} flexGrow={1} tip={activePanel === 'tests' ? 'active \u25B6' : undefined}>
+        <Section title="Tests" width={rightWidth} flexGrow={1} tip={activePanel === 'tests' ? 'active \u25B6' : undefined}>
           <TestFileList
             testFiles={data.testFiles}
             selectedIndex={selectedTestIndex}
