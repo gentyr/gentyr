@@ -76,14 +76,15 @@ function SpecRow({ row, isSelected, width, isActive }: { row: DisplayRow; isSele
 
   const { char, color } = severityIndicator(row.severity ?? null);
   const highlight = isSelected && isActive;
+  const cursor = isSelected ? '\u25B8 ' : '  ';
   const nameWidth = Math.max(4, width - 4);
 
   return (
     <Box height={1}>
-      <Text>{highlight ? '\u25B8 ' : '  '}</Text>
+      <Text>{cursor}</Text>
       <Text color={color} bold={highlight}>{char} </Text>
       <Box width={nameWidth} overflow="hidden">
-        <Text {...(highlight ? { color: 'white', bold: true } : isSelected ? {} : { dimColor: true })}>
+        <Text {...(highlight ? { color: 'white', bold: true, inverse: true } : isSelected ? { bold: true } : { dimColor: true })}>
           {truncate(row.label, nameWidth)}
         </Text>
       </Box>

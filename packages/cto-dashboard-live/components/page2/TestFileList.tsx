@@ -54,12 +54,13 @@ function FileRow({ row, isSelected, width, isActive }: { row: DisplayRow; isSele
   const badge = file.isDemo ? ' demo' : ' spec';
   const badgeColor = file.isDemo ? 'yellow' : 'blue';
   const nameWidth = Math.max(4, width - badge.length - 4);
+  const cursor = isSelected ? '\u25B8 ' : '  ';
 
   return (
     <Box height={1}>
-      <Text>{highlight ? '\u25B8 ' : '  '}</Text>
+      <Text>{cursor}</Text>
       <Box width={nameWidth} overflow="hidden">
-        <Text {...(highlight ? { color: 'white' as const, bold: true } : isSelected ? {} : { dimColor: true })}>
+        <Text {...(highlight ? { color: 'white' as const, bold: true, inverse: true } : isSelected ? { bold: true } : { dimColor: true })}>
           {truncate(file.fileName, nameWidth)}
         </Text>
       </Box>
