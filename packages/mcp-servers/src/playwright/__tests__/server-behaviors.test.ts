@@ -43,6 +43,7 @@ function readDemoProgress(content: string): DemoProgress | null {
       suite_completed: false,
       annotations: [],
       has_warnings: false,
+      interrupted: false,
     };
 
     for (const line of lines) {
@@ -51,6 +52,9 @@ function readDemoProgress(content: string): DemoProgress | null {
         switch (event.type) {
           case 'suite_begin':
             progress.total_tests = event.total_tests ?? null;
+            break;
+          case 'demo_interrupted':
+            progress.interrupted = true;
             break;
           case 'test_begin':
             progress.current_test = event.title ?? null;
@@ -1078,6 +1082,9 @@ describe('DemoProgress structural validation', () => {
       recent_errors: [],
       last_5_results: [],
       suite_completed: false,
+      annotations: [],
+      has_warnings: false,
+      interrupted: false,
     };
 
     expect(Number.isInteger(progress.tests_completed)).toBe(true);
@@ -1100,6 +1107,9 @@ describe('DemoProgress structural validation', () => {
       recent_errors: [],
       last_5_results: [],
       suite_completed: false,
+      annotations: [],
+      has_warnings: false,
+      interrupted: false,
     };
 
     expect(progress.tests_passed + progress.tests_failed).toBeLessThanOrEqual(progress.tests_completed);
@@ -1119,6 +1129,9 @@ describe('DemoProgress structural validation', () => {
       recent_errors: [],
       last_5_results: [{ title: 'broken test', status: 'failed' }],
       suite_completed: false,
+      annotations: [],
+      has_warnings: false,
+      interrupted: false,
     };
 
     if (progress.tests_failed > 0) {
@@ -1141,6 +1154,9 @@ describe('DemoProgress structural validation', () => {
         { title: 'test two', status: 'failed' },
       ],
       suite_completed: false,
+      annotations: [],
+      has_warnings: false,
+      interrupted: false,
     };
 
     for (const result of progress.last_5_results) {
@@ -1162,6 +1178,9 @@ describe('DemoProgress structural validation', () => {
       recent_errors: ['Error: connection refused', 'Warning: deprecated API'],
       last_5_results: [],
       suite_completed: false,
+      annotations: [],
+      has_warnings: false,
+      interrupted: false,
     };
 
     expect(Array.isArray(progress.recent_errors)).toBe(true);
@@ -1221,6 +1240,9 @@ describe('checkDemoResult dead-process status determination', () => {
         recent_errors: [],
         last_5_results: [],
         suite_completed: false,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -1240,6 +1262,9 @@ describe('checkDemoResult dead-process status determination', () => {
         recent_errors: [],
         last_5_results: [],
         suite_completed: false,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -1260,6 +1285,9 @@ describe('checkDemoResult dead-process status determination', () => {
         recent_errors: [],
         last_5_results: [],
         suite_completed: false,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -1282,6 +1310,9 @@ describe('checkDemoResult dead-process status determination', () => {
         recent_errors: [],
         last_5_results: [],
         suite_completed: false,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -1301,6 +1332,9 @@ describe('checkDemoResult dead-process status determination', () => {
         recent_errors: [],
         last_5_results: [],
         suite_completed: false,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -1321,6 +1355,9 @@ describe('checkDemoResult dead-process status determination', () => {
         recent_errors: ['Failed to fetch /favicon.ico', 'Hot reload noise'],
         last_5_results: [],
         suite_completed: false,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -1348,6 +1385,9 @@ describe('checkDemoResult dead-process status determination', () => {
         recent_errors: [],
         last_5_results: [],
         suite_completed: false,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -1369,6 +1409,9 @@ describe('checkDemoResult dead-process status determination', () => {
         recent_errors: ['Browser crashed on startup'],
         last_5_results: [],
         suite_completed: false,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineDeadProcessStatus(progress);
@@ -1384,27 +1427,27 @@ describe('checkDemoResult dead-process status determination', () => {
   });
 
   describe('status type safety', () => {
-    it('should always return one of the three valid DemoRunStatus values', () => {
-      const validStatuses = ['passed', 'failed', 'unknown'];
+    it('should always return one of the valid DemoRunStatus values', () => {
+      const validStatuses = ['passed', 'failed', 'interrupted', 'unknown'];
 
       const cases: DemoProgress[] = [
         {
           tests_completed: 0, tests_passed: 0, tests_failed: 0,
           total_tests: null, current_test: null, current_file: null,
           has_failures: false, recent_errors: [], last_5_results: [],
-          suite_completed: false,
+          suite_completed: false, annotations: [], has_warnings: false, interrupted: false,
         },
         {
           tests_completed: 2, tests_passed: 2, tests_failed: 0,
           total_tests: 2, current_test: null, current_file: null,
           has_failures: false, recent_errors: [], last_5_results: [],
-          suite_completed: false,
+          suite_completed: false, annotations: [], has_warnings: false, interrupted: false,
         },
         {
           tests_completed: 1, tests_passed: 0, tests_failed: 1,
           total_tests: 1, current_test: null, current_file: null,
           has_failures: true, recent_errors: [], last_5_results: [],
-          suite_completed: false,
+          suite_completed: false, annotations: [], has_warnings: false, interrupted: false,
         },
       ];
 
@@ -1466,6 +1509,9 @@ describe('checkDemoResult — suite_completed auto-kill status determination', (
         recent_errors: [],
         last_5_results: [],
         suite_completed: true,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineSuiteCompletedStatus(progress);
@@ -1485,6 +1531,9 @@ describe('checkDemoResult — suite_completed auto-kill status determination', (
         recent_errors: [],
         last_5_results: [],
         suite_completed: true,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineSuiteCompletedStatus(progress);
@@ -1505,6 +1554,9 @@ describe('checkDemoResult — suite_completed auto-kill status determination', (
         recent_errors: ['Failed to load resource: favicon.ico'],
         last_5_results: [],
         suite_completed: true,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineSuiteCompletedStatus(progress);
@@ -1526,6 +1578,9 @@ describe('checkDemoResult — suite_completed auto-kill status determination', (
         recent_errors: [],
         last_5_results: [],
         suite_completed: true,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineSuiteCompletedStatus(progress);
@@ -1545,6 +1600,9 @@ describe('checkDemoResult — suite_completed auto-kill status determination', (
         recent_errors: [],
         last_5_results: [],
         suite_completed: true,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineSuiteCompletedStatus(progress);
@@ -1568,6 +1626,9 @@ describe('checkDemoResult — suite_completed auto-kill status determination', (
         recent_errors: ['Browser crashed at launch'],
         last_5_results: [],
         suite_completed: true,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineSuiteCompletedStatus(progress);
@@ -1592,6 +1653,9 @@ describe('checkDemoResult — suite_completed auto-kill status determination', (
         recent_errors: [],
         last_5_results: [],
         suite_completed: true,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineSuiteCompletedStatus(progress);
@@ -1612,6 +1676,9 @@ describe('checkDemoResult — suite_completed auto-kill status determination', (
         recent_errors: [],
         last_5_results: [],
         suite_completed: true,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineSuiteCompletedStatus(progress);
@@ -1671,6 +1738,9 @@ describe('early_exit code 0 — status determination', () => {
         recent_errors: [],
         last_5_results: [],
         suite_completed: true,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineEarlyExitCode0Status(progress);
@@ -1693,6 +1763,9 @@ describe('early_exit code 0 — status determination', () => {
         recent_errors: [],
         last_5_results: [],
         suite_completed: true,
+        annotations: [],
+        has_warnings: false,
+        interrupted: false,
       };
 
       const result = determineEarlyExitCode0Status(progress);
@@ -1710,13 +1783,13 @@ describe('early_exit code 0 — status determination', () => {
           tests_completed: 0, tests_passed: 0, tests_failed: 0,
           total_tests: null, current_test: null, current_file: null,
           has_failures: false, recent_errors: [], last_5_results: [],
-          suite_completed: false,
+          suite_completed: false, annotations: [], has_warnings: false, interrupted: false,
         },
         {
           tests_completed: 1, tests_passed: 0, tests_failed: 1,
           total_tests: 1, current_test: null, current_file: null,
           has_failures: true, recent_errors: [], last_5_results: [],
-          suite_completed: true,
+          suite_completed: true, annotations: [], has_warnings: false, interrupted: false,
         },
       ];
 
@@ -2259,5 +2332,477 @@ describe('code_freshness — source vs build timestamp logic', () => {
       : { status: 'pass' as const, message: 'Source files are in sync with build output' };
 
     expect(result.status).toBe('pass');
+  });
+});
+
+// ============================================================================
+// demo_interrupted event — readDemoProgress handling
+//
+// The demo_interrupted JSONL event is written by interrupt.ts in the Node
+// callback when the user presses Escape during a headed demo. The server's
+// readDemoProgress() state machine must translate it to progress.interrupted = true.
+//
+// Gaps covered here (not present in the suite above):
+//   1. Single demo_interrupted event sets interrupted to true
+//   2. interrupted defaults to false when no demo_interrupted event is present
+//   3. demo_interrupted does NOT set has_failures (it is not a test failure)
+//   4. demo_interrupted can appear mid-sequence (interspersed with test events)
+//   5. Multiple demo_interrupted events are idempotent (still just true)
+//   6. demo_interrupted event structure round-trips through readDemoProgress
+// ============================================================================
+
+describe('readDemoProgress — demo_interrupted event handling', () => {
+  it('should set interrupted to true when demo_interrupted event is present', () => {
+    const content = JSON.stringify({
+      type: 'demo_interrupted',
+      timestamp: new Date().toISOString(),
+      source: 'escape_key',
+    });
+
+    const progress = readDemoProgress(content);
+
+    expect(progress).not.toBeNull();
+    expect(progress!.interrupted).toBe(true);
+  });
+
+  it('should default interrupted to false when no demo_interrupted event is present', () => {
+    const content = JSON.stringify({ type: 'suite_begin', total_tests: 2 });
+
+    const progress = readDemoProgress(content);
+
+    expect(progress!.interrupted).toBe(false);
+  });
+
+  it('should NOT set has_failures when demo_interrupted fires (user interrupt is not a test failure)', () => {
+    const content = JSON.stringify({
+      type: 'demo_interrupted',
+      timestamp: new Date().toISOString(),
+      source: 'escape_key',
+    });
+
+    const progress = readDemoProgress(content);
+
+    expect(progress!.interrupted).toBe(true);
+    expect(progress!.has_failures).toBe(false);
+  });
+
+  it('should set interrupted true even when demo_interrupted appears before any test events', () => {
+    const lines = [
+      JSON.stringify({ type: 'suite_begin', total_tests: 3 }),
+      JSON.stringify({ type: 'demo_interrupted', timestamp: new Date().toISOString(), source: 'escape_key' }),
+      // No test events — user pressed Escape immediately
+    ].join('\n');
+
+    const progress = readDemoProgress(lines);
+
+    expect(progress!.interrupted).toBe(true);
+    expect(progress!.tests_completed).toBe(0);
+    expect(progress!.suite_completed).toBe(false);
+  });
+
+  it('should set interrupted true when demo_interrupted appears mid-sequence after some tests ran', () => {
+    const lines = [
+      JSON.stringify({ type: 'suite_begin', total_tests: 5 }),
+      JSON.stringify({ type: 'test_end', title: 'navigate to home', status: 'passed' }),
+      JSON.stringify({ type: 'test_end', title: 'view billing', status: 'passed' }),
+      JSON.stringify({ type: 'demo_interrupted', timestamp: new Date().toISOString(), source: 'escape_key' }),
+      // Suite never reaches suite_end — user interrupted mid-run
+    ].join('\n');
+
+    const progress = readDemoProgress(lines);
+
+    expect(progress!.interrupted).toBe(true);
+    expect(progress!.tests_completed).toBe(2);
+    expect(progress!.tests_passed).toBe(2);
+    expect(progress!.has_failures).toBe(false);
+    expect(progress!.suite_completed).toBe(false);
+  });
+
+  it('should remain interrupted when demo_interrupted appears multiple times (idempotent)', () => {
+    // The browser DOM guard prevents double-fire, but the progress file should
+    // handle duplicate events gracefully without error.
+    const lines = [
+      JSON.stringify({ type: 'demo_interrupted', source: 'escape_key' }),
+      JSON.stringify({ type: 'demo_interrupted', source: 'escape_key' }),
+    ].join('\n');
+
+    const progress = readDemoProgress(lines);
+
+    expect(progress!.interrupted).toBe(true);
+  });
+
+  it('should set interrupted and still count tests that completed before the interrupt', () => {
+    const lines = [
+      JSON.stringify({ type: 'suite_begin', total_tests: 10 }),
+      JSON.stringify({ type: 'test_end', title: 'test A', status: 'passed' }),
+      JSON.stringify({ type: 'test_end', title: 'test B', status: 'passed' }),
+      JSON.stringify({ type: 'test_end', title: 'test C', status: 'failed' }),
+      JSON.stringify({ type: 'demo_interrupted', source: 'escape_key' }),
+    ].join('\n');
+
+    const progress = readDemoProgress(lines);
+
+    expect(progress!.interrupted).toBe(true);
+    expect(progress!.tests_completed).toBe(3);
+    expect(progress!.tests_passed).toBe(2);
+    expect(progress!.tests_failed).toBe(1);
+    // has_failures is set by the test_end failure, independent of the interrupt
+    expect(progress!.has_failures).toBe(true);
+  });
+
+  it('demo_interrupted event written by interrupt.ts should round-trip through readDemoProgress', () => {
+    // This mirrors the exact event written by handleInterrupt() in interrupt.ts:
+    //   { type: 'demo_interrupted', timestamp: new Date().toISOString(), source: 'escape_key' }
+    const event = {
+      type: 'demo_interrupted',
+      timestamp: new Date().toISOString(),
+      source: 'escape_key',
+    };
+    const jsonl = JSON.stringify(event) + '\n';
+
+    const progress = readDemoProgress(jsonl);
+
+    expect(progress).not.toBeNull();
+    expect(progress!.interrupted).toBe(true);
+    // Extra fields on the event (timestamp, source) are ignored by the state machine
+    expect(progress!.has_failures).toBe(false);
+    expect(progress!.tests_completed).toBe(0);
+  });
+
+  it('should parse complete interrupted demo sequence correctly', () => {
+    // Realistic sequence: user watches two tests pass, then presses Escape
+    const lines = [
+      JSON.stringify({ type: 'suite_begin', total_tests: 5 }),
+      JSON.stringify({ type: 'test_begin', title: 'load dashboard', file: 'dashboard.demo.ts' }),
+      JSON.stringify({ type: 'test_end', title: 'load dashboard', status: 'passed', duration: 1200 }),
+      JSON.stringify({ type: 'test_begin', title: 'view analytics', file: 'analytics.demo.ts' }),
+      JSON.stringify({ type: 'test_end', title: 'view analytics', status: 'passed', duration: 2300 }),
+      JSON.stringify({ type: 'demo_interrupted', timestamp: new Date().toISOString(), source: 'escape_key' }),
+      // No suite_end — Playwright teardown was patched to no-op by interrupt.ts
+    ].join('\n');
+
+    const progress = readDemoProgress(lines);
+
+    expect(progress).not.toBeNull();
+    expect(progress!.total_tests).toBe(5);
+    expect(progress!.tests_completed).toBe(2);
+    expect(progress!.tests_passed).toBe(2);
+    expect(progress!.tests_failed).toBe(0);
+    expect(progress!.has_failures).toBe(false);
+    expect(progress!.interrupted).toBe(true);
+    expect(progress!.suite_completed).toBe(false);
+    expect(progress!.current_test).toBeNull();
+  });
+});
+
+// ============================================================================
+// DemoRunStatus — 'interrupted' value structural tests
+//
+// DemoRunStatus is 'running' | 'passed' | 'failed' | 'interrupted' | 'unknown'.
+// The 'interrupted' value was added for the Escape key feature. These tests
+// verify that DemoRunState and CheckDemoResultResult accept it, and that
+// the 'interrupted' status is distinct from 'failed'.
+// ============================================================================
+
+describe("DemoRunState — 'interrupted' status", () => {
+  it("should accept status: 'interrupted' on DemoRunState", () => {
+    const state: DemoRunState = {
+      pid: 12345,
+      project: 'demo',
+      started_at: new Date().toISOString(),
+      status: 'interrupted',
+      failure_summary: 'Demo interrupted by user (Escape key)',
+    };
+
+    expect(state.status).toBe('interrupted');
+    expect(typeof state.failure_summary).toBe('string');
+  });
+
+  it("'interrupted' status should be distinguishable from 'failed' and 'passed'", () => {
+    const statuses: Array<DemoRunState['status']> = ['running', 'passed', 'failed', 'interrupted', 'unknown'];
+
+    expect(statuses).toContain('interrupted');
+    expect(statuses.indexOf('interrupted')).not.toBe(statuses.indexOf('failed'));
+    expect(statuses.indexOf('interrupted')).not.toBe(statuses.indexOf('passed'));
+  });
+
+  it('should accept interrupt_detected_at as a number (epoch ms)', () => {
+    const state: DemoRunState = {
+      pid: 12345,
+      project: 'demo',
+      started_at: new Date().toISOString(),
+      status: 'interrupted',
+      interrupt_detected_at: Date.now(),
+    };
+
+    expect(typeof state.interrupt_detected_at).toBe('number');
+    expect(state.interrupt_detected_at!).toBeGreaterThan(0);
+    expect(Number.isFinite(state.interrupt_detected_at!)).toBe(true);
+  });
+
+  it('should accept bypass_request_id as a string linking to the bypass request', () => {
+    const state: DemoRunState = {
+      pid: 12345,
+      project: 'demo',
+      started_at: new Date().toISOString(),
+      status: 'interrupted',
+      bypass_request_id: 'bypass-abc123def456',
+    };
+
+    expect(typeof state.bypass_request_id).toBe('string');
+    expect(state.bypass_request_id!.length).toBeGreaterThan(0);
+  });
+
+  it('interrupt_detected_at and bypass_request_id should be absent by default (running state)', () => {
+    const state: DemoRunState = {
+      pid: 12345,
+      project: 'demo',
+      started_at: new Date().toISOString(),
+      status: 'running',
+    };
+
+    expect(state.interrupt_detected_at).toBeUndefined();
+    expect(state.bypass_request_id).toBeUndefined();
+  });
+
+  it('both interrupt_detected_at and bypass_request_id can be set simultaneously', () => {
+    const now = Date.now();
+    const state: DemoRunState = {
+      pid: 12345,
+      project: 'demo',
+      started_at: new Date().toISOString(),
+      status: 'interrupted',
+      interrupt_detected_at: now,
+      bypass_request_id: 'bypass-abc123def456',
+    };
+
+    expect(state.interrupt_detected_at).toBe(now);
+    expect(state.bypass_request_id).toBe('bypass-abc123def456');
+  });
+
+  it("DemoRunState with 'interrupted' status round-trips through JSON", () => {
+    const original: DemoRunState = {
+      pid: 55555,
+      project: 'demo',
+      test_file: 'e2e/demo/onboarding.demo.ts',
+      started_at: '2026-04-15T00:00:00.000Z',
+      status: 'interrupted',
+      failure_summary: 'Demo interrupted by user (Escape key)',
+      interrupt_detected_at: 1744070400000,
+      bypass_request_id: 'bypass-abc123def456',
+    };
+
+    const deserialized: DemoRunState = JSON.parse(JSON.stringify(original));
+
+    expect(deserialized.status).toBe('interrupted');
+    expect(deserialized.interrupt_detected_at).toBe(1744070400000);
+    expect(deserialized.bypass_request_id).toBe('bypass-abc123def456');
+    expect(deserialized.failure_summary).toBe('Demo interrupted by user (Escape key)');
+  });
+});
+
+describe("CheckDemoResultResult — 'interrupted' status", () => {
+  it("should accept status: 'interrupted' on CheckDemoResultResult", () => {
+    const result: CheckDemoResultResult = {
+      status: 'interrupted',
+      pid: 12345,
+      project: 'demo',
+      message: 'Demo was interrupted by user (Escape key). Browser is still open for manual interaction. Call stop_demo when done.',
+    };
+
+    expect(result.status).toBe('interrupted');
+    expect(result.message).toContain('Escape key');
+  });
+
+  it("check_demo_result interrupted response should include progress when available", () => {
+    const sampleProgress: DemoProgress = {
+      tests_completed: 2,
+      tests_passed: 2,
+      tests_failed: 0,
+      total_tests: 5,
+      current_test: null,
+      current_file: null,
+      has_failures: false,
+      recent_errors: [],
+      last_5_results: [
+        { title: 'load dashboard', status: 'passed' },
+        { title: 'view analytics', status: 'passed' },
+      ],
+      suite_completed: false,
+      annotations: [],
+      has_warnings: false,
+      interrupted: true,
+    };
+
+    const result: CheckDemoResultResult = {
+      status: 'interrupted',
+      pid: 12345,
+      project: 'demo',
+      started_at: '2026-04-15T00:00:00.000Z',
+      progress: sampleProgress,
+      message: 'Demo was interrupted by user (Escape key). Browser is still open for manual interaction. Call stop_demo when done.',
+    };
+
+    expect(result.status).toBe('interrupted');
+    expect(result.progress).not.toBeUndefined();
+    expect(result.progress!.interrupted).toBe(true);
+    expect(result.progress!.tests_completed).toBe(2);
+  });
+
+  it("interrupted result should NOT include recording_path (recording is discarded on interrupt)", () => {
+    // server.ts explicitly discards the recording when status is 'interrupted'
+    const result: CheckDemoResultResult = {
+      status: 'interrupted',
+      pid: 12345,
+      message: 'Demo was interrupted by user (Escape key). Browser is still open for manual interaction. Call stop_demo when done.',
+    };
+
+    expect(result.recording_path).toBeUndefined();
+    expect(result.recording_source).toBeUndefined();
+  });
+
+  it("'interrupted' is a valid DemoRunStatus distinct from all others", () => {
+    const allStatuses: DemoRunStatus[] = ['running', 'passed', 'failed', 'interrupted', 'unknown'];
+
+    // Each status appears exactly once
+    const uniqueStatuses = new Set(allStatuses);
+    expect(uniqueStatuses.size).toBe(5);
+    expect(uniqueStatuses.has('interrupted')).toBe(true);
+  });
+
+  it("interrupted result round-trips through JSON with scenario_id intact", () => {
+    const original: CheckDemoResultResult = {
+      status: 'interrupted',
+      pid: 99999,
+      project: 'demo',
+      scenario_id: 'onboarding-v2',
+      started_at: '2026-04-15T00:00:00.000Z',
+      message: 'Demo was interrupted by user (Escape key). Browser is still open for manual interaction. Call stop_demo when done.',
+    };
+
+    const deserialized: CheckDemoResultResult = JSON.parse(JSON.stringify(original));
+
+    expect(deserialized.status).toBe('interrupted');
+    expect(deserialized.scenario_id).toBe('onboarding-v2');
+    expect(deserialized.pid).toBe(99999);
+  });
+});
+
+// ============================================================================
+// DemoProgress — interrupted field structural validation
+//
+// These tests document the required `interrupted` field on DemoProgress
+// (added with the Escape key feature) and verify the logical invariants
+// around interrupt state.
+// ============================================================================
+
+describe('DemoProgress — interrupted field structural validation', () => {
+  it('interrupted field should be a boolean', () => {
+    const progress: DemoProgress = {
+      tests_completed: 0,
+      tests_passed: 0,
+      tests_failed: 0,
+      total_tests: null,
+      current_test: null,
+      current_file: null,
+      has_failures: false,
+      recent_errors: [],
+      last_5_results: [],
+      suite_completed: false,
+      annotations: [],
+      has_warnings: false,
+      interrupted: false,
+    };
+
+    expect(typeof progress.interrupted).toBe('boolean');
+  });
+
+  it('interrupted true with has_failures false is a valid state (user escaped before any failure)', () => {
+    const progress: DemoProgress = {
+      tests_completed: 3,
+      tests_passed: 3,
+      tests_failed: 0,
+      total_tests: 10,
+      current_test: null,
+      current_file: null,
+      has_failures: false,
+      recent_errors: [],
+      last_5_results: [
+        { title: 'test A', status: 'passed' },
+        { title: 'test B', status: 'passed' },
+        { title: 'test C', status: 'passed' },
+      ],
+      suite_completed: false,
+      annotations: [],
+      has_warnings: false,
+      interrupted: true,
+    };
+
+    expect(progress.interrupted).toBe(true);
+    expect(progress.has_failures).toBe(false);
+    expect(progress.suite_completed).toBe(false);
+  });
+
+  it('interrupted true with has_failures true is valid (user escaped after a test failure)', () => {
+    const progress: DemoProgress = {
+      tests_completed: 2,
+      tests_passed: 1,
+      tests_failed: 1,
+      total_tests: 5,
+      current_test: null,
+      current_file: null,
+      has_failures: true,
+      recent_errors: [],
+      last_5_results: [
+        { title: 'test A', status: 'passed' },
+        { title: 'test B', status: 'failed' },
+      ],
+      suite_completed: false,
+      annotations: [],
+      has_warnings: false,
+      interrupted: true,
+    };
+
+    expect(progress.interrupted).toBe(true);
+    expect(progress.has_failures).toBe(true);
+  });
+
+  it('suite_completed and interrupted true simultaneously is an edge case (should not happen in practice)', () => {
+    // In practice: suite_end fires before demo_interrupted in the same JSONL,
+    // but readDemoProgress should handle it without throwing.
+    const lines = [
+      JSON.stringify({ type: 'suite_end' }),
+      JSON.stringify({ type: 'demo_interrupted', source: 'escape_key' }),
+    ].join('\n');
+
+    const progress = readDemoProgress(lines);
+
+    // Both flags are set — the state machine processes events sequentially
+    expect(progress!.suite_completed).toBe(true);
+    expect(progress!.interrupted).toBe(true);
+  });
+
+  it('DemoProgress with interrupted field round-trips through JSON', () => {
+    const original: DemoProgress = {
+      tests_completed: 2,
+      tests_passed: 2,
+      tests_failed: 0,
+      total_tests: 5,
+      current_test: null,
+      current_file: null,
+      has_failures: false,
+      recent_errors: [],
+      last_5_results: [],
+      suite_completed: false,
+      annotations: [],
+      has_warnings: false,
+      interrupted: true,
+    };
+
+    const deserialized: DemoProgress = JSON.parse(JSON.stringify(original));
+
+    expect(deserialized.interrupted).toBe(true);
+    expect(deserialized.tests_completed).toBe(2);
+    expect(deserialized.has_failures).toBe(false);
   });
 });

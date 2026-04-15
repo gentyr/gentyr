@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { enableDemoInterrupt, injectEscapeListener } from './interrupt.js';
 
 export interface PersonaColors {
   bg: string;
@@ -337,6 +338,19 @@ async function _injectOverlayDOM(
         };
         (window as unknown as Record<string, unknown>).__demoOverlayMouseHandler = handler;
         document.addEventListener('mousemove', handler);
+
+        // Escape key listener for demo interrupt (deduplicates via window flag)
+        if (!(window as unknown as Record<string, unknown>).__demoOverlayEscHandler) {
+          const escHandler = (e: KeyboardEvent) => {
+            if (e.key === 'Escape' && !(window as unknown as Record<string, boolean>).__gentyrDemoInterrupted) {
+              (window as unknown as Record<string, boolean>).__gentyrDemoInterrupted = true;
+              const fn = (window as unknown as Record<string, (() => void) | undefined>).__gentyrDemoInterrupt;
+              if (fn) fn();
+            }
+          };
+          (window as unknown as Record<string, unknown>).__demoOverlayEscHandler = escHandler;
+          document.addEventListener('keydown', escHandler);
+        }
       },
       {
         persona,
@@ -388,6 +402,11 @@ export async function injectPersonaOverlay(
       if (current) {
         try {
           await _injectOverlayDOM(page, current.persona, current.config, current.colorMap);
+          // Re-inject Escape keydown listener (DOM listeners don't survive navigation,
+          // but page.exposeFunction does). Only for demo mode.
+          if (current.config.mode !== 'feedback') {
+            await injectEscapeListener(page);
+          }
         } catch {
           // Page may have been closed or navigated away — ignore
         }
@@ -397,6 +416,15 @@ export async function injectPersonaOverlay(
 
   // Initial injection
   await _injectOverlayDOM(page, persona, config, colorMap);
+
+  // Wire up Escape key interrupt handler (demo mode only, non-fatal)
+  if ((config?.mode ?? 'demo') !== 'feedback') {
+    try {
+      await enableDemoInterrupt(page);
+    } catch {
+      // Non-fatal — interrupt feature is best-effort
+    }
+  }
 }
 
 /**

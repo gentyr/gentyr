@@ -1,5 +1,6 @@
 import type { Page, BrowserContext } from '@playwright/test';
 import { injectPersonaOverlay, type PersonaColors, type OverlayConfig } from './persona-overlay.js';
+import { throwIfInterrupted } from './interrupt.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -119,6 +120,7 @@ export async function typeCode(
   code: string,
   options?: TypeCodeOptions,
 ): Promise<void> {
+  throwIfInterrupted();
   const delay = options?.delay ?? 30;
   const clearFirst = options?.clearFirst ?? true;
 
@@ -138,6 +140,7 @@ export async function typeCode(
  * Read the current editor content.
  */
 export async function getEditorContent(page: Page): Promise<string> {
+  throwIfInterrupted();
   const editor = page.locator(EDITOR_SELECTORS.content).first();
   await editor.waitFor({ timeout: 10_000 });
   return editor.innerText();
@@ -147,6 +150,7 @@ export async function getEditorContent(page: Page): Promise<string> {
  * Click the Run button in LiveCodes.
  */
 export async function runCode(page: Page): Promise<void> {
+  throwIfInterrupted();
   const runBtn = page.locator(EDITOR_SELECTORS.runButton);
   await runBtn.waitFor({ timeout: 10_000 });
   await runBtn.click();
@@ -156,6 +160,7 @@ export async function runCode(page: Page): Promise<void> {
  * Read the console output from LiveCodes console panel.
  */
 export async function getConsoleOutput(page: Page): Promise<string> {
+  throwIfInterrupted();
   const consolePanel = page.locator(EDITOR_SELECTORS.consoleOutput).first();
   await consolePanel.waitFor({ timeout: 10_000 });
   return consolePanel.innerText();

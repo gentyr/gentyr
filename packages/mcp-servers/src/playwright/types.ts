@@ -289,7 +289,7 @@ export const StopDemoArgsSchema = z.object({
 
 export type CheckDemoResultArgs = z.infer<typeof CheckDemoResultArgsSchema>;
 export type StopDemoArgs = z.infer<typeof StopDemoArgsSchema>;
-export type DemoRunStatus = 'running' | 'passed' | 'failed' | 'unknown';
+export type DemoRunStatus = 'running' | 'passed' | 'failed' | 'interrupted' | 'unknown';
 
 export interface DemoProgress {
   tests_completed: number;
@@ -304,6 +304,7 @@ export interface DemoProgress {
   suite_completed: boolean;
   annotations: Array<{ test_title: string; type: string; description: string }>;
   has_warnings: boolean;
+  interrupted: boolean;
 }
 
 export interface CheckDemoResultResult {
@@ -352,6 +353,8 @@ export interface DemoRunState {
   fullscreened?: boolean;
   success_pause_ms?: number;
   suite_end_detected_at?: number;  // Runtime-only — epoch ms when suite_end was first seen
+  interrupt_detected_at?: number;  // Runtime-only — epoch ms when demo_interrupted was first seen
+  bypass_request_id?: string;      // Links interrupted demo to its bypass request for auto-resolution
   // Runtime-only — NOT persisted (NodeJS.Timeout is not serializable)
   screenshot_interval?: ReturnType<typeof setInterval>;
 }
