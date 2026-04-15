@@ -624,6 +624,7 @@ export function discoverTestFiles(): TestFileItem[] {
               filePath: `${testDir}/${filePath}`,
               fileName: entry.name,
               isDemo: entry.name.endsWith('.demo.ts'),
+              runner: 'playwright',
             });
           } else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
             scanDir(path.join(dir, entry.name), prefix ? `${prefix}/${entry.name}` : entry.name);
@@ -653,10 +654,98 @@ export function readProcessOutput(filePath: string, fromByte: number): { text: s
   finally { if (fd !== undefined) try { fs.closeSync(fd); } catch { /* */ } }
 }
 
+const TEST_FILE_PATTERNS = ['.test.ts', '.test.tsx', '.test.js', '.test.jsx'];
+const UNIT_SKIP_DIRS = new Set(['node_modules', '.next', '.turbo', 'dist', '.claude', '.git', 'coverage', '.cache']);
+
+function discoverUnitTests(): TestFileItem[] {
+  const results: TestFileItem[] = [];
+  // Find vitest/jest configs
+  const configs: Array<{ configPath: string; runner: 'vitest' | 'jest'; dir: string; group: string }> = [];
+
+  const scanForConfigs = (dir: string, depth: number) => {
+    if (depth > 4) return;
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          if (UNIT_SKIP_DIRS.has(entry.name)) continue;
+          scanForConfigs(path.join(dir, entry.name), depth + 1);
+        } else if (entry.isFile()) {
+          const full = path.join(dir, entry.name);
+          if (entry.name.startsWith('vitest.config.')) {
+            configs.push({ configPath: full, runner: 'vitest', dir, group: path.relative(PROJECT_DIR, dir) || '.' });
+          } else if (entry.name.startsWith('jest.config.')) {
+            configs.push({ configPath: full, runner: 'jest', dir, group: path.relative(PROJECT_DIR, dir) || '.' });
+          }
+        }
+      }
+    } catch { /* */ }
+  };
+  scanForConfigs(PROJECT_DIR, 0);
+
+  // Also check for package.json test scripts that imply vitest/jest at root
+  if (configs.length === 0) {
+    try {
+      const pkgRaw = fs.readFileSync(path.join(PROJECT_DIR, 'package.json'), 'utf8');
+      const pkg = JSON.parse(pkgRaw);
+      const testScript = pkg?.scripts?.test ?? '';
+      if (testScript.includes('vitest')) configs.push({ configPath: '', runner: 'vitest', dir: PROJECT_DIR, group: '.' });
+      else if (testScript.includes('jest')) configs.push({ configPath: '', runner: 'jest', dir: PROJECT_DIR, group: '.' });
+    } catch { /* */ }
+  }
+
+  // For each config, find test files in its directory
+  for (const cfg of configs) {
+    const scanTests = (dir: string) => {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            if (UNIT_SKIP_DIRS.has(entry.name)) continue;
+            scanTests(path.join(dir, entry.name));
+          } else if (entry.isFile() && TEST_FILE_PATTERNS.some(p => entry.name.endsWith(p))) {
+            const filePath = path.relative(PROJECT_DIR, path.join(dir, entry.name));
+            results.push({
+              project: cfg.group,
+              filePath,
+              fileName: entry.name,
+              isDemo: false,
+              runner: cfg.runner,
+            });
+          }
+        }
+      } catch { /* */ }
+    };
+    scanTests(cfg.dir);
+  }
+
+  // Also discover hook tests (.claude/hooks/__tests__)
+  const hookTestDir = path.join(PROJECT_DIR, '.claude', 'hooks', '__tests__');
+  if (fs.existsSync(hookTestDir)) {
+    try {
+      const entries = fs.readdirSync(hookTestDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile() && TEST_FILE_PATTERNS.some(p => entry.name.endsWith(p))) {
+          results.push({
+            project: 'hooks',
+            filePath: `.claude/hooks/__tests__/${entry.name}`,
+            fileName: entry.name,
+            isDemo: false,
+            runner: 'vitest',
+          });
+        }
+      }
+    } catch { /* */ }
+  }
+
+  results.sort((a, b) => a.project.localeCompare(b.project) || a.fileName.localeCompare(b.fileName));
+  return results;
+}
+
 export function readPage2Data(): Page2Data {
   return {
     scenarios: readDemoScenarios(),
-    testFiles: discoverTestFiles(),
+    testFiles: [...discoverTestFiles(), ...discoverUnitTests()],
   };
 }
 

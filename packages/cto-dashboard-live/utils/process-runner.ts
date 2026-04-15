@@ -58,7 +58,14 @@ export function launchTest(testFile: TestFileItem): RunningProcess {
   const outputFile = makeOutputFile('test', testFile.fileName.replace(/\.ts$/, ''));
   const fd = fs.openSync(outputFile, 'a');
 
-  const cmdArgs = ['playwright', 'test', testFile.filePath, '--project', testFile.project, '--reporter', 'list'];
+  let cmdArgs: string[];
+  if (testFile.runner === 'vitest') {
+    cmdArgs = ['vitest', 'run', testFile.filePath, '--reporter', 'verbose'];
+  } else if (testFile.runner === 'jest') {
+    cmdArgs = ['jest', testFile.filePath, '--verbose'];
+  } else {
+    cmdArgs = ['playwright', 'test', testFile.filePath, '--project', testFile.project, '--reporter', 'list'];
+  }
 
   const child = spawn('npx', cmdArgs, {
     detached: true,

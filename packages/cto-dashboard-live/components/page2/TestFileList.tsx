@@ -51,8 +51,8 @@ function FileRow({ row, isSelected, width, isActive }: { row: DisplayRow; isSele
 
   const file = row.file!;
   const highlight = isSelected && isActive;
-  const badge = file.isDemo ? ' demo' : ' spec';
-  const badgeColor = file.isDemo ? 'yellow' : 'blue';
+  const badge = file.isDemo ? ' demo' : file.runner === 'vitest' ? ' vite' : file.runner === 'jest' ? ' jest' : ' spec';
+  const badgeColor = file.isDemo ? 'yellow' : file.runner === 'vitest' ? 'green' : file.runner === 'jest' ? 'magenta' : 'blue';
   const nameWidth = Math.max(4, width - badge.length - 4);
   const cursor = isSelected ? '\u25B8 ' : '  ';
 

@@ -54,14 +54,19 @@ const mockScenarios: DemoScenarioItem[] = [
 ];
 
 const mockTestFiles: TestFileItem[] = [
-  { project: 'vendor-owner', filePath: 'e2e/demo/vendor-onboarding.demo.ts', fileName: 'vendor-onboarding.demo.ts', isDemo: true },
-  { project: 'vendor-owner', filePath: 'e2e/demo/payment-flow.demo.ts', fileName: 'payment-flow.demo.ts', isDemo: true },
-  { project: 'vendor-owner', filePath: 'e2e/vendor/vendor-dashboard.spec.ts', fileName: 'vendor-dashboard.spec.ts', isDemo: false },
-  { project: 'vendor-owner', filePath: 'e2e/vendor/vendor-settings.spec.ts', fileName: 'vendor-settings.spec.ts', isDemo: false },
-  { project: 'vendor-admin', filePath: 'e2e/demo/admin-nav.demo.ts', fileName: 'admin-nav.demo.ts', isDemo: true },
-  { project: 'vendor-admin', filePath: 'e2e/admin/admin-settings.spec.ts', fileName: 'admin-settings.spec.ts', isDemo: false },
-  { project: 'cross-persona', filePath: 'e2e/demo/ext-aws-one-click.demo.ts', fileName: 'ext-aws-one-click.demo.ts', isDemo: true },
-  { project: 'cross-persona', filePath: 'e2e/cross/role-switching.spec.ts', fileName: 'role-switching.spec.ts', isDemo: false },
+  { project: 'vendor-owner', filePath: 'e2e/demo/vendor-onboarding.demo.ts', fileName: 'vendor-onboarding.demo.ts', isDemo: true, runner: 'playwright' },
+  { project: 'vendor-owner', filePath: 'e2e/demo/payment-flow.demo.ts', fileName: 'payment-flow.demo.ts', isDemo: true, runner: 'playwright' },
+  { project: 'vendor-owner', filePath: 'e2e/vendor/vendor-dashboard.spec.ts', fileName: 'vendor-dashboard.spec.ts', isDemo: false, runner: 'playwright' },
+  { project: 'vendor-owner', filePath: 'e2e/vendor/vendor-settings.spec.ts', fileName: 'vendor-settings.spec.ts', isDemo: false, runner: 'playwright' },
+  { project: 'vendor-admin', filePath: 'e2e/demo/admin-nav.demo.ts', fileName: 'admin-nav.demo.ts', isDemo: true, runner: 'playwright' },
+  { project: 'vendor-admin', filePath: 'e2e/admin/admin-settings.spec.ts', fileName: 'admin-settings.spec.ts', isDemo: false, runner: 'playwright' },
+  { project: 'cross-persona', filePath: 'e2e/demo/ext-aws-one-click.demo.ts', fileName: 'ext-aws-one-click.demo.ts', isDemo: true, runner: 'playwright' },
+  { project: 'cross-persona', filePath: 'e2e/cross/role-switching.spec.ts', fileName: 'role-switching.spec.ts', isDemo: false, runner: 'playwright' },
+  { project: 'test/integration', filePath: 'test/integration/proxy-bridge.test.ts', fileName: 'proxy-bridge.test.ts', isDemo: false, runner: 'vitest' },
+  { project: 'test/integration', filePath: 'test/integration/toyapp-backend.test.ts', fileName: 'toyapp-backend.test.ts', isDemo: false, runner: 'vitest' },
+  { project: 'test/global', filePath: 'test/global/integration-structure.test.ts', fileName: 'integration-structure.test.ts', isDemo: false, runner: 'vitest' },
+  { project: 'hooks', filePath: '.claude/hooks/__tests__/session-queue-dedup.test.js', fileName: 'session-queue-dedup.test.js', isDemo: false, runner: 'vitest' },
+  { project: 'hooks', filePath: '.claude/hooks/__tests__/bypass-deny.test.js', fileName: 'bypass-deny.test.js', isDemo: false, runner: 'vitest' },
 ];
 
 export function getMockPage2Data(): Page2Data {
