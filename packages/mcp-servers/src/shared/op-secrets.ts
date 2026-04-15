@@ -4,7 +4,7 @@
  */
 
 import { execFileSync } from 'child_process';
-import { readFileSync } from 'fs';
+import { lstatSync, readFileSync, readlinkSync } from 'fs';
 import { join } from 'path';
 import { ServicesConfigSchema, type ServicesConfig } from '../secret-sync/types.js';
 
@@ -61,6 +61,23 @@ export function loadServicesConfig(projectDir: string): ServicesConfig {
 
     return result.data;
   } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ELOOP') {
+      // ELOOP = circular or excessively deep symlinks in .claude/config path
+      let diagnostic = '';
+      try {
+        const configDir = join(projectDir, '.claude/config');
+        const stat = lstatSync(configDir);
+        if (stat.isSymbolicLink()) {
+          const target = readlinkSync(configDir);
+          diagnostic = ` .claude/config is a symlink -> ${target}.`;
+          if (target === configDir || target.endsWith('/.claude/config')) {
+            diagnostic += ' If running in a worktree, this symlink should point to the MAIN tree config (not itself).';
+          }
+        }
+      } catch { /* diagnostic is best-effort */ }
+      throw new Error(`Failed to load services.json: ELOOP (too many symbolic links) at ${configPath}.${diagnostic} Verify .claude/config in the main tree is a real directory, not a symlink.`);
+    }
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to load services.json: ${message}`);
   }
