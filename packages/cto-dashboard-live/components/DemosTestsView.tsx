@@ -15,6 +15,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { execFile } from 'child_process';
 import { Box, Text, useInput } from 'ink';
 import { Section } from './Section.js';
 import { ScenarioList } from './page2/ScenarioList.js';
@@ -112,6 +113,24 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
     }
   }, [runningProcess]);
 
+  const handleWatch = useCallback(() => {
+    if (activePanel !== 'demos') return;
+    const scenario = data.scenarios.find(s => s.id === selectedScenarioId);
+    if (!scenario?.recordingPath) {
+      setStatusMessage('No recording available for this scenario');
+      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+      statusTimerRef.current = setTimeout(() => setStatusMessage(null), 3000);
+      return;
+    }
+    execFile('open', [scenario.recordingPath], (err) => {
+      if (err) {
+        setStatusMessage(`Failed to open video: ${err.message}`);
+        if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+        statusTimerRef.current = setTimeout(() => setStatusMessage(null), 5000);
+      }
+    });
+  }, [activePanel, selectedScenarioId, data]);
+
   // Keyboard
   useInput((input, key) => {
     if (key.leftArrow) { setActivePanel('demos'); return; }
@@ -138,6 +157,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
     }
 
     if (key.return) { handleRun(); return; }
+    if (input === 'v' || input === 'w') { handleWatch(); return; }
     if (input === 's' || input === 'x') { handleStop(); return; }
     if (key.escape) { handleClear(); return; }
   }, { isActive });
