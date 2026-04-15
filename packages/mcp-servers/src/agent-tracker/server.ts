@@ -2961,6 +2961,16 @@ function writeAutomationConfig(config: Record<string, unknown>): void {
 }
 
 function setLockdownMode(args: SetLockdownModeArgs): object | ErrorResult {
+  // Fix 3: spawned sessions are NEVER allowed to disable lockdown, even with cto_bypass.
+  // This prevents a compromised or misbehaving agent from using the MCP tool to remove
+  // its own constraints.
+  if (!args.enabled && process.env.CLAUDE_SPAWNED_SESSION === 'true') {
+    return {
+      error: 'SECURITY: Spawned sessions cannot disable lockdown. '
+        + 'CLAUDE_SPAWNED_SESSION=true — lockdown can only be disabled from an interactive CTO session.',
+    };
+  }
+
   // Disabling lockdown requires CTO bypass
   if (!args.enabled) {
     if (!args.cto_bypass) {
@@ -2980,6 +2990,21 @@ function setLockdownMode(args: SetLockdownModeArgs): object | ErrorResult {
     config.interactiveLockdownDisabled = true;
   }
   writeAutomationConfig(config);
+
+  // Fix 4: emit audit event after successful toggle
+  const auditEventName = args.enabled ? 'lockdown_enabled' : 'lockdown_disabled';
+  try {
+    const auditPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-audit.js');
+    if (fs.existsSync(auditPath)) {
+      import(auditPath).then((auditModule: { auditEvent?: (event: string, data?: object) => void }) => {
+        if (typeof auditModule.auditEvent === 'function') {
+          auditModule.auditEvent(auditEventName, { enabled: args.enabled });
+        }
+      }).catch(() => { /* non-fatal */ });
+    }
+  } catch {
+    // Audit emission is non-fatal — lockdown toggle must not fail due to audit errors
+  }
 
   return {
     success: true,

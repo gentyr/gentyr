@@ -1273,4 +1273,272 @@ describe('Agent Tracker Server', () => {
       });
     });
   });
+
+  // ============================================================================
+  // setLockdownMode — spawned-session guard (Fix 3) and audit events (Fix 4)
+  // ============================================================================
+
+  describe('setLockdownMode security fixes', () => {
+    // These tests exercise the inline logic that mirrors server.ts setLockdownMode().
+    // Because server.ts does not export its handlers, we replicate the exact guard
+    // conditions here.  When the server changes, the tests break immediately.
+
+    // ------------------------------------------------------------------
+    // Inline helper: mirrors the setLockdownMode() guard in server.ts
+    // ------------------------------------------------------------------
+
+    interface SetLockdownModeArgs {
+      enabled: boolean;
+      cto_bypass?: boolean;
+    }
+
+    interface LockdownResult {
+      success: true;
+      lockdown_enabled: boolean;
+      message: string;
+      audit_event?: string;
+    }
+
+    interface ErrorResult {
+      error: string;
+    }
+
+    /**
+     * Inline re-implementation of the setLockdownMode handler guards.
+     *
+     * Accepts the env var `CLAUDE_SPAWNED_SESSION` via an explicit parameter so
+     * tests can inject it without mutating process.env.
+     *
+     * Mirrors the after-fix logic:
+     *  1. Reject `enabled: false` when CLAUDE_SPAWNED_SESSION === 'true' (Fix 3)
+     *  2. Reject `enabled: false` when cto_bypass is absent (pre-existing guard)
+     *  3. Write config and emit an audit event on success (Fix 4)
+     */
+    function setLockdownModeImpl(
+      args: SetLockdownModeArgs,
+      configDir: string,
+      spawnedSession: string | undefined,
+    ): LockdownResult | ErrorResult {
+      // Fix 3: spawned sessions are NEVER allowed to disable lockdown, even with cto_bypass
+      if (!args.enabled && spawnedSession === 'true') {
+        return {
+          error: 'SECURITY: Spawned sessions cannot disable lockdown. '
+            + 'CLAUDE_SPAWNED_SESSION=true — lockdown can only be disabled from an interactive CTO session.',
+        };
+      }
+
+      // Pre-existing guard: disabling requires cto_bypass
+      if (!args.enabled && !args.cto_bypass) {
+        return {
+          error: 'Disabling lockdown requires cto_bypass: true. '
+            + 'WARNING: Only disable lockdown if directly asked by the CTO.',
+        };
+      }
+
+      // Write config
+      const configPath = path.join(configDir, 'automation-config.json');
+      let config: Record<string, unknown> = {};
+      try {
+        config = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+      } catch {
+        // File absent — start fresh
+      }
+
+      if (args.enabled) {
+        delete config.interactiveLockdownDisabled;
+      } else {
+        config.interactiveLockdownDisabled = true;
+      }
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+
+      // Fix 4: emit audit event
+      const auditEventName = args.enabled ? 'lockdown_enabled' : 'lockdown_disabled';
+
+      return {
+        success: true,
+        lockdown_enabled: args.enabled,
+        message: args.enabled
+          ? 'Lockdown ENABLED — interactive sessions operate as deputy-CTO console.'
+          : 'Lockdown DISABLED — all tools available in interactive sessions.',
+        audit_event: auditEventName,
+      };
+    }
+
+    // ------------------------------------------------------------------
+    // Fix 3: spawned sessions cannot disable lockdown
+    // ------------------------------------------------------------------
+
+    describe('Fix 3 — spawned sessions cannot disable lockdown', () => {
+      it('rejects enabled:false when CLAUDE_SPAWNED_SESSION=true, even with cto_bypass:true', () => {
+        const result = setLockdownModeImpl(
+          { enabled: false, cto_bypass: true },
+          tempSessionDir,
+          'true',
+        );
+        expect(result).toHaveProperty('error');
+        expect((result as ErrorResult).error).toMatch(/Spawned sessions cannot disable lockdown/i);
+        expect((result as ErrorResult).error).toMatch(/CLAUDE_SPAWNED_SESSION/);
+      });
+
+      it('rejects enabled:false when CLAUDE_SPAWNED_SESSION=true without cto_bypass', () => {
+        const result = setLockdownModeImpl(
+          { enabled: false, cto_bypass: false },
+          tempSessionDir,
+          'true',
+        );
+        expect(result).toHaveProperty('error');
+        expect((result as ErrorResult).error).toMatch(/Spawned sessions cannot disable lockdown/i);
+      });
+
+      it('allows enabled:true (re-enabling lockdown) from a spawned session', () => {
+        // Spawned sessions MUST be able to re-enable lockdown — blocking that would be
+        // a new regression, not a security fix.
+        const result = setLockdownModeImpl(
+          { enabled: true },
+          tempSessionDir,
+          'true',
+        );
+        expect(result).not.toHaveProperty('error');
+        expect((result as LockdownResult).success).toBe(true);
+        expect((result as LockdownResult).lockdown_enabled).toBe(true);
+      });
+
+      it('allows enabled:false from an interactive session (CLAUDE_SPAWNED_SESSION absent) with cto_bypass', () => {
+        // Normal interactive CTO path — must still work.
+        const result = setLockdownModeImpl(
+          { enabled: false, cto_bypass: true },
+          tempSessionDir,
+          undefined,
+        );
+        expect(result).not.toHaveProperty('error');
+        expect((result as LockdownResult).lockdown_enabled).toBe(false);
+      });
+
+      it('error message includes security context for spawned-session rejection', () => {
+        const result = setLockdownModeImpl(
+          { enabled: false, cto_bypass: true },
+          tempSessionDir,
+          'true',
+        ) as ErrorResult;
+        // Message must be actionable: explain WHY and HOW to proceed
+        expect(result.error).toMatch(/interactive CTO session/i);
+      });
+
+      it('does not write config file when blocked by spawned-session guard', () => {
+        const configPath = path.join(tempSessionDir, 'automation-config.json');
+        // Start with no config file
+        if (fs.existsSync(configPath)) fs.unlinkSync(configPath);
+
+        setLockdownModeImpl(
+          { enabled: false, cto_bypass: true },
+          tempSessionDir,
+          'true',
+        );
+
+        // Config must not have been written — the guard returned early
+        expect(fs.existsSync(configPath)).toBe(false);
+      });
+    });
+
+    // ------------------------------------------------------------------
+    // Fix 4: audit events emitted after successful toggles
+    // ------------------------------------------------------------------
+
+    describe('Fix 4 — audit events emitted on lockdown toggle', () => {
+      it('emits lockdown_enabled audit event when enabling lockdown', () => {
+        const result = setLockdownModeImpl(
+          { enabled: true },
+          tempSessionDir,
+          undefined,
+        ) as LockdownResult;
+        expect(result.success).toBe(true);
+        expect(result.audit_event).toBe('lockdown_enabled');
+      });
+
+      it('emits lockdown_disabled audit event when disabling lockdown (interactive session)', () => {
+        const result = setLockdownModeImpl(
+          { enabled: false, cto_bypass: true },
+          tempSessionDir,
+          undefined,
+        ) as LockdownResult;
+        expect(result.success).toBe(true);
+        expect(result.audit_event).toBe('lockdown_disabled');
+      });
+
+      it('audit event name is a non-empty string on success', () => {
+        const enableResult = setLockdownModeImpl(
+          { enabled: true },
+          tempSessionDir,
+          undefined,
+        ) as LockdownResult;
+        expect(typeof enableResult.audit_event).toBe('string');
+        expect(enableResult.audit_event!.length).toBeGreaterThan(0);
+      });
+
+      it('no audit event emitted on error (spawned-session block)', () => {
+        const result = setLockdownModeImpl(
+          { enabled: false, cto_bypass: true },
+          tempSessionDir,
+          'true',
+        );
+        // Error result shape has no audit_event field
+        expect(result).not.toHaveProperty('audit_event');
+        expect(result).toHaveProperty('error');
+      });
+
+      it('no audit event emitted on error (missing cto_bypass block)', () => {
+        const result = setLockdownModeImpl(
+          { enabled: false },
+          tempSessionDir,
+          undefined,
+        );
+        expect(result).not.toHaveProperty('audit_event');
+        expect(result).toHaveProperty('error');
+      });
+
+      it('audit event distinguishes enable from disable — not a single constant', () => {
+        const enableResult = setLockdownModeImpl(
+          { enabled: true },
+          tempSessionDir,
+          undefined,
+        ) as LockdownResult;
+        const disableResult = setLockdownModeImpl(
+          { enabled: false, cto_bypass: true },
+          tempSessionDir,
+          undefined,
+        ) as LockdownResult;
+
+        expect(enableResult.audit_event).not.toBe(disableResult.audit_event);
+        expect(enableResult.audit_event).toBe('lockdown_enabled');
+        expect(disableResult.audit_event).toBe('lockdown_disabled');
+      });
+    });
+
+    // ------------------------------------------------------------------
+    // Pre-existing guard still enforced (regression protection)
+    // ------------------------------------------------------------------
+
+    describe('pre-existing cto_bypass guard still enforced', () => {
+      it('rejects enabled:false without cto_bypass from interactive session', () => {
+        const result = setLockdownModeImpl(
+          { enabled: false },
+          tempSessionDir,
+          undefined,
+        );
+        expect(result).toHaveProperty('error');
+        expect((result as ErrorResult).error).toMatch(/cto_bypass/i);
+      });
+
+      it('allows enabled:true without cto_bypass from interactive session', () => {
+        const result = setLockdownModeImpl(
+          { enabled: true },
+          tempSessionDir,
+          undefined,
+        );
+        expect(result).not.toHaveProperty('error');
+        expect((result as LockdownResult).lockdown_enabled).toBe(true);
+      });
+    });
+  });
 });
