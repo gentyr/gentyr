@@ -22,6 +22,32 @@ export function Footer({ activePage }: FooterProps): React.ReactElement {
     );
   }
 
+  if (activePage === 3) {
+    return (
+      <Box>
+        <Text dimColor>
+          {' '}<Text bold inverse>{' \u2191\u2193 '}</Text> select
+          {'  '}<Text bold inverse>{' \u2190\u2192 '}</Text> panel
+          {'  '}<Text bold inverse>{' Tab '}</Text> page
+          {'  '}<Text bold inverse>{' q '}</Text> quit{' '}
+        </Text>
+      </Box>
+    );
+  }
+
+  if (activePage === 4) {
+    return (
+      <Box>
+        <Text dimColor>
+          {' '}<Text bold inverse>{' \u2191\u2193 '}</Text> navigate
+          {'  '}<Text bold inverse>{' \u2190\u2192 '}</Text> panel
+          {'  '}<Text bold inverse>{' Tab '}</Text> page
+          {'  '}<Text bold inverse>{' q '}</Text> quit{' '}
+        </Text>
+      </Box>
+    );
+  }
+
   return (
     <Box>
       <Text dimColor>

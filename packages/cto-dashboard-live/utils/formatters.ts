@@ -88,6 +88,14 @@ export function truncate(s: string, max: number): string {
   return s.length > max ? s.substring(0, max - 3) + '...' : s;
 }
 
+/** Render a Unicode block progress bar: e.g. "████──── 50%" */
+export function renderProgressBar(pct: number, width: number = 12): string {
+  const clamped = Math.max(0, Math.min(100, pct));
+  const filled = Math.round((clamped / 100) * width);
+  const empty = width - filled;
+  return '\u2588'.repeat(filled) + '\u2500'.repeat(empty) + ` ${Math.round(clamped)}%`;
+}
+
 /** Strip redundant prefixes from session titles (Monitor:, Force-spawn:, [Persistent], etc.) */
 export function cleanTitle(title: string): string {
   return title

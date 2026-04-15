@@ -109,7 +109,7 @@ export interface LiveDashboardData {
 // Page Navigation
 // ============================================================================
 
-export type PageId = 1 | 2;
+export type PageId = 1 | 2 | 3 | 4;
 
 // ============================================================================
 // Page 2: Demos & Tests
@@ -152,4 +152,102 @@ export interface RunningProcess {
 export interface Page2Data {
   scenarios: DemoScenarioItem[];
   testFiles: TestFileItem[];
+}
+
+// ============================================================================
+// Page 3: Plans
+// ============================================================================
+
+export interface PlanSubstepItem {
+  id: string;
+  title: string;
+  completed: boolean;
+}
+
+export interface PlanTaskItem {
+  id: string;
+  title: string;
+  status: string;             // pending, ready, in_progress, completed, skipped, blocked
+  agentType: string | null;
+  categoryId: string | null;
+  prNumber: number | null;
+  prMerged: boolean;
+  persistentTaskId: string | null;
+  substeps: PlanSubstepItem[];
+  substepProgress: string;    // "3/5"
+  progressPct: number;
+  blockedBy: string[];        // titles of blocking tasks
+}
+
+export interface PlanPhaseItem {
+  id: string;
+  title: string;
+  phaseOrder: number;
+  status: string;
+  progressPct: number;
+  tasks: PlanTaskItem[];
+}
+
+export interface PlanItem {
+  id: string;
+  title: string;
+  status: string;
+  progressPct: number;
+  phaseCount: number;
+  taskCount: number;
+  completedTasks: number;
+  readyTasks: number;
+  activeTasks: number;
+  currentPhase: string | null;
+  updatedAt: string | null;
+  managerPid: number | null;
+  managerAlive: boolean;
+}
+
+export interface PlanStateChange {
+  label: string;
+  field: string;
+  oldValue: string | null;
+  newValue: string | null;
+  changedAt: string;
+}
+
+export interface Page3Data {
+  plans: PlanItem[];
+  planDetail: { planId: string; phases: PlanPhaseItem[] } | null;
+  recentChanges: PlanStateChange[];
+}
+
+// ============================================================================
+// Page 4: Specs
+// ============================================================================
+
+export interface SpecItem {
+  specId: string;             // filename without .md
+  title: string;
+  ruleId: string | null;
+  severity: string | null;
+  category: string;
+  filePath: string;
+}
+
+export interface SpecCategoryItem {
+  key: string;
+  description: string;
+  source: 'framework' | 'project';
+  specs: SpecItem[];
+}
+
+export interface SuiteItem {
+  id: string;
+  description: string;
+  scope: string;
+  enabled: boolean;
+}
+
+export interface Page4Data {
+  categories: SpecCategoryItem[];
+  suites: SuiteItem[];
+  totalSpecs: number;
+  selectedSpecContent: string | null;
 }

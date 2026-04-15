@@ -30,6 +30,10 @@ export function Header({ now, running, max, mock, activePage }: HeaderProps): Re
       <Text {...(activePage === 1 ? { bold: true, inverse: true } : { dimColor: true })}>{' 1 Sessions '}</Text>
       <Text> </Text>
       <Text {...(activePage === 2 ? { bold: true, inverse: true } : { dimColor: true })}>{' 2 Demos & Tests '}</Text>
+      <Text> </Text>
+      <Text {...(activePage === 3 ? { bold: true, inverse: true } : { dimColor: true })}>{' 3 Plans '}</Text>
+      <Text> </Text>
+      <Text {...(activePage === 4 ? { bold: true, inverse: true } : { dimColor: true })}>{' 4 Specs '}</Text>
     </Box>
   );
 }

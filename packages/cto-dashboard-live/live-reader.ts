@@ -16,6 +16,8 @@ import type {
   LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem,
   WorklogEntry, SessionStatus, SessionPriority, ActivityEntry,
   DemoScenarioItem, TestFileItem, Page2Data,
+  Page3Data, PlanItem, PlanPhaseItem, PlanTaskItem, PlanSubstepItem, PlanStateChange,
+  Page4Data, SpecCategoryItem, SpecItem, SuiteItem,
 } from './types.js';
 import { formatElapsed } from './utils/formatters.js';
 
@@ -655,4 +657,284 @@ export function readPage2Data(): Page2Data {
     scenarios: readDemoScenarios(),
     testFiles: discoverTestFiles(),
   };
+}
+
+// ============================================================================
+// Page 3: Plans
+// ============================================================================
+
+function getTaskProgressPct(db: Database.Database, taskId: string): number {
+  try {
+    const total = (db.prepare('SELECT COUNT(*) as c FROM substeps WHERE task_id = ?').get(taskId) as { c: number }).c;
+    if (total === 0) {
+      const task = db.prepare('SELECT status FROM plan_tasks WHERE id = ?').get(taskId) as { status: string } | undefined;
+      return task?.status === 'completed' ? 100 : 0;
+    }
+    const completed = (db.prepare('SELECT COUNT(*) as c FROM substeps WHERE task_id = ? AND completed = 1').get(taskId) as { c: number }).c;
+    return Math.round((completed / total) * 100);
+  } catch { return 0; }
+}
+
+function getPhaseProgressPct(db: Database.Database, phaseId: string): number {
+  try {
+    const tasks = db.prepare('SELECT id FROM plan_tasks WHERE phase_id = ?').all(phaseId) as Array<{ id: string }>;
+    if (tasks.length === 0) return 0;
+    const progresses = tasks.map(t => getTaskProgressPct(db, t.id));
+    return Math.round(progresses.reduce((a, b) => a + b, 0) / progresses.length);
+  } catch { return 0; }
+}
+
+function getPlanProgressPct(db: Database.Database, planId: string): number {
+  try {
+    const phases = db.prepare("SELECT id FROM phases WHERE plan_id = ? AND status != 'skipped'").all(planId) as Array<{ id: string }>;
+    if (phases.length === 0) return 0;
+    const progresses = phases.map(p => getPhaseProgressPct(db, p.id));
+    return Math.round(progresses.reduce((a, b) => a + b, 0) / progresses.length);
+  } catch { return 0; }
+}
+
+export function readPage3Data(selectedPlanId?: string | null): Page3Data {
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+  const db = openDb(dbPath);
+  if (!db) return { plans: [], planDetail: null, recentChanges: [] };
+  try {
+    // Plan list
+    const planRows = db.prepare(
+      "SELECT id, title, status, updated_at, manager_pid FROM plans WHERE status IN ('draft','active','paused') ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, updated_at DESC"
+    ).all() as Array<{ id: string; title: string; status: string; updated_at: string | null; manager_pid: number | null }>;
+
+    const plans: PlanItem[] = planRows.map(p => {
+      const phaseCount = (db!.prepare('SELECT COUNT(*) as c FROM phases WHERE plan_id = ?').get(p.id) as { c: number }).c;
+      const taskCount = (db!.prepare('SELECT COUNT(*) as c FROM plan_tasks WHERE plan_id = ?').get(p.id) as { c: number }).c;
+      const completedTasks = (db!.prepare("SELECT COUNT(*) as c FROM plan_tasks WHERE plan_id = ? AND status = 'completed'").get(p.id) as { c: number }).c;
+      const readyTasks = (db!.prepare("SELECT COUNT(*) as c FROM plan_tasks WHERE plan_id = ? AND status = 'ready'").get(p.id) as { c: number }).c;
+      const activeTasks = (db!.prepare("SELECT COUNT(*) as c FROM plan_tasks WHERE plan_id = ? AND status = 'in_progress'").get(p.id) as { c: number }).c;
+      const currentPhaseRow = db!.prepare("SELECT title FROM phases WHERE plan_id = ? AND status NOT IN ('completed','skipped') ORDER BY phase_order LIMIT 1").get(p.id) as { title: string } | undefined;
+      const managerAlive = p.manager_pid !== null && isProcessAlive(p.manager_pid);
+      return {
+        id: p.id, title: p.title, status: p.status,
+        progressPct: getPlanProgressPct(db!, p.id),
+        phaseCount, taskCount, completedTasks, readyTasks, activeTasks,
+        currentPhase: currentPhaseRow?.title ?? null,
+        updatedAt: p.updated_at,
+        managerPid: p.manager_pid,
+        managerAlive,
+      };
+    });
+
+    // Plan detail (phases → tasks → substeps)
+    let planDetail: Page3Data['planDetail'] = null;
+    if (selectedPlanId) {
+      const phaseRows = db.prepare(
+        'SELECT id, title, phase_order, status FROM phases WHERE plan_id = ? ORDER BY phase_order'
+      ).all(selectedPlanId) as Array<{ id: string; title: string; phase_order: number; status: string }>;
+
+      const phases: PlanPhaseItem[] = phaseRows.map(ph => {
+        const taskRows = db!.prepare(
+          'SELECT id, title, status, agent_type, category_id, pr_number, pr_merged, persistent_task_id FROM plan_tasks WHERE phase_id = ? ORDER BY task_order'
+        ).all(ph.id) as Array<{
+          id: string; title: string; status: string; agent_type: string | null; category_id: string | null;
+          pr_number: number | null; pr_merged: number; persistent_task_id: string | null;
+        }>;
+
+        const tasks: PlanTaskItem[] = taskRows.map(t => {
+          const substepRows = db!.prepare(
+            'SELECT id, title, completed FROM substeps WHERE task_id = ? ORDER BY step_order'
+          ).all(t.id) as Array<{ id: string; title: string; completed: number }>;
+
+          const substeps: PlanSubstepItem[] = substepRows.map(s => ({
+            id: s.id, title: s.title, completed: s.completed === 1,
+          }));
+
+          // Find blocking task titles
+          const depRows = db!.prepare(
+            "SELECT pt.title FROM dependencies d JOIN plan_tasks pt ON pt.id = d.depends_on_task_id WHERE d.task_id = ? AND pt.status NOT IN ('completed','skipped')"
+          ).all(t.id) as Array<{ title: string }>;
+          const blockedBy = depRows.map(r => r.title);
+
+          const completedSubsteps = substeps.filter(s => s.completed).length;
+          return {
+            id: t.id, title: t.title, status: t.status,
+            agentType: t.agent_type, categoryId: t.category_id,
+            prNumber: t.pr_number, prMerged: t.pr_merged === 1,
+            persistentTaskId: t.persistent_task_id,
+            substeps,
+            substepProgress: substeps.length > 0 ? `${completedSubsteps}/${substeps.length}` : '',
+            progressPct: getTaskProgressPct(db!, t.id),
+            blockedBy,
+          };
+        });
+
+        return {
+          id: ph.id, title: ph.title, phaseOrder: ph.phase_order,
+          status: ph.status, progressPct: getPhaseProgressPct(db!, ph.id),
+          tasks,
+        };
+      });
+
+      planDetail = { planId: selectedPlanId, phases };
+    }
+
+    // Recent state changes (last 10)
+    const changeRows = db.prepare(
+      `SELECT sc.entity_type, sc.entity_id, sc.field, sc.old_value, sc.new_value, sc.changed_at
+       FROM state_changes sc
+       ORDER BY sc.changed_at DESC LIMIT 10`
+    ).all() as Array<{
+      entity_type: string; entity_id: string; field: string;
+      old_value: string | null; new_value: string | null; changed_at: string;
+    }>;
+
+    const recentChanges: PlanStateChange[] = changeRows.map(c => {
+      let label = '';
+      try {
+        if (c.entity_type === 'task') {
+          const row = db!.prepare('SELECT title FROM plan_tasks WHERE id = ?').get(c.entity_id) as { title: string } | undefined;
+          label = row?.title ?? c.entity_id;
+        } else if (c.entity_type === 'phase') {
+          const row = db!.prepare('SELECT title FROM phases WHERE id = ?').get(c.entity_id) as { title: string } | undefined;
+          label = row?.title ?? c.entity_id;
+        } else if (c.entity_type === 'plan') {
+          const row = db!.prepare('SELECT title FROM plans WHERE id = ?').get(c.entity_id) as { title: string } | undefined;
+          label = row?.title ?? c.entity_id;
+        } else if (c.entity_type === 'substep') {
+          const row = db!.prepare('SELECT title FROM substeps WHERE id = ?').get(c.entity_id) as { title: string } | undefined;
+          label = row?.title ?? c.entity_id;
+        }
+      } catch { label = c.entity_id; }
+      return { label, field: c.field, oldValue: c.old_value, newValue: c.new_value, changedAt: c.changed_at };
+    });
+
+    return { plans, planDetail, recentChanges };
+  } catch { return { plans: [], planDetail: null, recentChanges: [] }; }
+  finally { closeDb(db); }
+}
+
+// ============================================================================
+// Page 4: Specs
+// ============================================================================
+
+function resolveFrameworkDir(): string | null {
+  if (fs.existsSync(path.join(PROJECT_DIR, 'node_modules', 'gentyr'))) {
+    return path.join(PROJECT_DIR, 'node_modules', 'gentyr');
+  }
+  if (fs.existsSync(path.join(PROJECT_DIR, '.claude-framework'))) {
+    return path.join(PROJECT_DIR, '.claude-framework');
+  }
+  return null;
+}
+
+function parseSpecMetadata(filePath: string): { title: string; ruleId: string | null; severity: string | null } {
+  let title = path.basename(filePath, '.md');
+  let ruleId: string | null = null;
+  let severity: string | null = null;
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(4096);
+    const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
+    fs.closeSync(fd);
+    const text = buf.slice(0, bytesRead).toString('utf8');
+    const lines = text.split('\n').slice(0, 20);
+    for (const line of lines) {
+      if (!title || title === path.basename(filePath, '.md')) {
+        const headingMatch = line.match(/^#\s+(.+)/);
+        if (headingMatch) title = headingMatch[1].trim();
+      }
+      const ruleMatch = line.match(/\*\*Rule ID\*\*:\s*(.+)/);
+      if (ruleMatch) ruleId = ruleMatch[1].trim();
+      const sevMatch = line.match(/\*\*Severity\*\*:\s*(.+)/);
+      if (sevMatch) severity = sevMatch[1].trim().toLowerCase();
+    }
+  } catch { /* */ }
+  return { title, ruleId, severity };
+}
+
+function readSpecsFromDir(dirPath: string, categoryKey: string, source: 'framework' | 'project'): SpecItem[] {
+  if (!fs.existsSync(dirPath)) return [];
+  try {
+    const files = fs.readdirSync(dirPath).filter(f => f.endsWith('.md'));
+    return files.map(f => {
+      const filePath = path.join(dirPath, f);
+      const specId = f.replace(/\.md$/, '');
+      const { title, ruleId, severity } = parseSpecMetadata(filePath);
+      return { specId, title, ruleId, severity, category: categoryKey, filePath };
+    });
+  } catch { return []; }
+}
+
+export function readPage4Data(selectedSpecId?: string | null): Page4Data {
+  const fwDir = resolveFrameworkDir();
+  const categories: SpecCategoryItem[] = [];
+
+  // Framework categories
+  if (fwDir) {
+    const fwSpecs = path.join(fwDir, 'specs', 'framework');
+    if (fs.existsSync(fwSpecs)) {
+      categories.push({ key: 'framework', description: 'Core framework invariants', source: 'framework', specs: readSpecsFromDir(fwSpecs, 'framework', 'framework') });
+    }
+    const patternSpecs = path.join(fwDir, 'specs', 'patterns');
+    if (fs.existsSync(patternSpecs)) {
+      categories.push({ key: 'patterns', description: 'Framework patterns and conventions', source: 'framework', specs: readSpecsFromDir(patternSpecs, 'patterns', 'framework') });
+    }
+  }
+
+  // Project default categories
+  const specsDirs: Array<{ dir: string; key: string; description: string }> = [
+    { dir: path.join(PROJECT_DIR, 'specs', 'local'), key: 'local', description: 'Project-specific component specs' },
+    { dir: path.join(PROJECT_DIR, 'specs', 'global'), key: 'global', description: 'Global project invariants' },
+    { dir: path.join(PROJECT_DIR, 'specs', 'reference'), key: 'reference', description: 'Reference documentation specs' },
+    { dir: path.join(PROJECT_DIR, '.claude', 'specs', 'local'), key: 'local', description: 'Project-specific component specs' },
+    { dir: path.join(PROJECT_DIR, '.claude', 'specs', 'global'), key: 'global', description: 'Global project invariants' },
+    { dir: path.join(PROJECT_DIR, '.claude', 'specs', 'reference'), key: 'reference', description: 'Reference documentation specs' },
+  ];
+  for (const { dir, key, description } of specsDirs) {
+    if (!fs.existsSync(dir)) continue;
+    const existing = categories.find(c => c.key === key);
+    const newSpecs = readSpecsFromDir(dir, key, 'project');
+    if (existing) {
+      existing.specs.push(...newSpecs);
+    } else if (newSpecs.length > 0) {
+      categories.push({ key, description, source: 'project', specs: newSpecs });
+    }
+  }
+
+  // Custom categories from .claude/specs-config.json
+  const configPath = path.join(PROJECT_DIR, '.claude', 'specs-config.json');
+  if (fs.existsSync(configPath)) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { categories?: Array<{ key: string; description?: string; dir: string }> };
+      for (const cat of cfg.categories ?? []) {
+        if (!cat.key || !cat.dir) continue;
+        const specs = readSpecsFromDir(path.resolve(PROJECT_DIR, cat.dir), cat.key, 'project');
+        categories.push({ key: cat.key, description: cat.description ?? cat.key, source: 'project', specs });
+      }
+    } catch { /* */ }
+  }
+
+  // Suites from .claude/hooks/suites-config.json
+  const suitesPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'suites-config.json');
+  const suites: SuiteItem[] = [];
+  if (fs.existsSync(suitesPath)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(suitesPath, 'utf8')) as { suites?: Array<{ id: string; description?: string; scope?: string; enabled?: boolean }> };
+      for (const s of raw.suites ?? []) {
+        suites.push({ id: s.id, description: s.description ?? s.id, scope: s.scope ?? '', enabled: s.enabled !== false });
+      }
+    } catch { /* */ }
+  }
+
+  // Selected spec content
+  let selectedSpecContent: string | null = null;
+  if (selectedSpecId) {
+    for (const cat of categories) {
+      const spec = cat.specs.find(s => s.specId === selectedSpecId);
+      if (spec) {
+        try { selectedSpecContent = fs.readFileSync(spec.filePath, 'utf8'); } catch { /* */ }
+        break;
+      }
+    }
+  }
+
+  const totalSpecs = categories.reduce((sum, c) => sum + c.specs.length, 0);
+  return { categories, suites, totalSpecs, selectedSpecContent };
 }

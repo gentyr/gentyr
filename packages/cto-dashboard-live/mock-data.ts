@@ -2,7 +2,7 @@
  * Mock data for the live CTO dashboard.
  */
 
-import type { LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem, WorklogEntry, Page2Data, DemoScenarioItem, TestFileItem } from './types.js';
+import type { LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem, WorklogEntry, Page2Data, DemoScenarioItem, TestFileItem, Page3Data, PlanItem, PlanPhaseItem, PlanTaskItem, PlanSubstepItem, PlanStateChange, Page4Data, SpecCategoryItem, SpecItem, SuiteItem } from './types.js';
 
 function ago(minutes: number): string { return new Date(Date.now() - minutes * 60 * 1000).toISOString(); }
 
@@ -66,4 +66,181 @@ const mockTestFiles: TestFileItem[] = [
 
 export function getMockPage2Data(): Page2Data {
   return { scenarios: mockScenarios, testFiles: mockTestFiles };
+}
+
+// ============================================================================
+// Mock Page 3: Plans
+// ============================================================================
+
+const mockSubstepsA: PlanSubstepItem[] = [
+  { id: 'ss-a1', title: 'Create VPCs in us-east-1 and eu-west-1', completed: true },
+  { id: 'ss-a2', title: 'Configure security groups', completed: true },
+  { id: 'ss-a3', title: 'Verify cross-region connectivity', completed: true },
+];
+
+const mockSubstepsB: PlanSubstepItem[] = [
+  { id: 'ss-b1', title: 'Write CloudFormation templates', completed: true },
+  { id: 'ss-b2', title: 'Run deployment dry-run', completed: true },
+  { id: 'ss-b3', title: 'Deploy to staging', completed: false },
+  { id: 'ss-b4', title: 'Validate outputs', completed: false },
+  { id: 'ss-b5', title: 'Deploy to production', completed: false },
+];
+
+const mockSubstepsC: PlanSubstepItem[] = [
+  { id: 'ss-c1', title: 'Install Prometheus', completed: false },
+  { id: 'ss-c2', title: 'Configure alerting rules', completed: false },
+  { id: 'ss-c3', title: 'Set up Grafana dashboards', completed: false },
+  { id: 'ss-c4', title: 'Test alerts end-to-end', completed: false },
+];
+
+const mockSubstepsD: PlanSubstepItem[] = [
+  { id: 'ss-d1', title: 'Design migration strategy', completed: false },
+  { id: 'ss-d2', title: 'Test rollback procedure', completed: false },
+  { id: 'ss-d3', title: 'Document migration runbook', completed: false },
+];
+
+const mockTasksPhase1: PlanTaskItem[] = [
+  {
+    id: 'pt-task-a', title: 'Configure AWS regions', status: 'completed',
+    agentType: 'code-writer', categoryId: null, prNumber: 42, prMerged: true,
+    persistentTaskId: null, substeps: mockSubstepsA, substepProgress: '3/3', progressPct: 100, blockedBy: [],
+  },
+  {
+    id: 'pt-task-b', title: 'Deploy base CloudFormation templates', status: 'in_progress',
+    agentType: 'code-writer', categoryId: null, prNumber: null, prMerged: false,
+    persistentTaskId: 'mock-persistent-1', substeps: mockSubstepsB, substepProgress: '2/5', progressPct: 40, blockedBy: [],
+  },
+  {
+    id: 'pt-task-c', title: 'Setup monitoring and alerting', status: 'pending',
+    agentType: null, categoryId: null, prNumber: null, prMerged: false,
+    persistentTaskId: null, substeps: mockSubstepsC, substepProgress: '0/4', progressPct: 0, blockedBy: [],
+  },
+];
+
+const mockTasksPhase2: PlanTaskItem[] = [
+  {
+    id: 'pt-task-d', title: 'Plan migration strategy', status: 'ready',
+    agentType: null, categoryId: null, prNumber: null, prMerged: false,
+    persistentTaskId: null, substeps: mockSubstepsD, substepProgress: '0/3', progressPct: 0, blockedBy: [],
+  },
+  {
+    id: 'pt-task-e', title: 'Execute data migration', status: 'blocked',
+    agentType: null, categoryId: null, prNumber: null, prMerged: false,
+    persistentTaskId: null, substeps: [], substepProgress: '0/0', progressPct: 0,
+    blockedBy: ['Plan migration strategy'],
+  },
+  {
+    id: 'pt-task-f', title: 'Validate migrated data', status: 'pending',
+    agentType: null, categoryId: null, prNumber: null, prMerged: false,
+    persistentTaskId: null, substeps: [], substepProgress: '0/0', progressPct: 0,
+    blockedBy: ['Execute data migration'],
+  },
+];
+
+const mockTasksPhase3: PlanTaskItem[] = [
+  {
+    id: 'pt-task-g', title: 'Smoke test production', status: 'pending',
+    agentType: null, categoryId: null, prNumber: null, prMerged: false,
+    persistentTaskId: null, substeps: [], substepProgress: '0/0', progressPct: 0, blockedBy: [],
+  },
+];
+
+const mockPhasesDetail: PlanPhaseItem[] = [
+  { id: 'ph-1', title: 'Setup Infrastructure', phaseOrder: 1, status: 'in_progress', progressPct: 47, tasks: mockTasksPhase1 },
+  { id: 'ph-2', title: 'Data Migration', phaseOrder: 2, status: 'pending', progressPct: 0, tasks: mockTasksPhase2 },
+  { id: 'ph-3', title: 'Validation & Cutover', phaseOrder: 3, status: 'pending', progressPct: 0, tasks: mockTasksPhase3 },
+];
+
+const mockPlans: PlanItem[] = [
+  {
+    id: 'mock-plan-1', title: 'Infrastructure Migration', status: 'active', progressPct: 16,
+    phaseCount: 3, taskCount: 7, completedTasks: 1, readyTasks: 1, activeTasks: 1,
+    currentPhase: 'Setup Infrastructure', updatedAt: ago(8), managerPid: 99999, managerAlive: false,
+  },
+  {
+    id: 'mock-plan-2', title: 'Auth System Overhaul', status: 'paused', progressPct: 60,
+    phaseCount: 2, taskCount: 4, completedTasks: 2, readyTasks: 0, activeTasks: 0,
+    currentPhase: 'Implementation', updatedAt: ago(120), managerPid: null, managerAlive: false,
+  },
+];
+
+const mockStateChanges: PlanStateChange[] = [
+  { label: 'Deploy base CloudFormation templates', field: 'status', oldValue: 'ready', newValue: 'in_progress', changedAt: ago(15) },
+  { label: 'Configure AWS regions', field: 'status', oldValue: 'in_progress', newValue: 'completed', changedAt: ago(45) },
+  { label: 'Verify cross-region connectivity', field: 'completed', oldValue: '0', newValue: '1', changedAt: ago(50) },
+  { label: 'Infrastructure Migration', field: 'status', oldValue: 'draft', newValue: 'active', changedAt: ago(180) },
+  { label: 'Setup Infrastructure', field: 'status', oldValue: 'pending', newValue: 'in_progress', changedAt: ago(178) },
+];
+
+export function getMockPage3Data(): Page3Data {
+  return {
+    plans: mockPlans,
+    planDetail: { planId: 'mock-plan-1', phases: mockPhasesDetail },
+    recentChanges: mockStateChanges,
+  };
+}
+
+// ============================================================================
+// Mock Page 4: Specs
+// ============================================================================
+
+const mockFrameworkSpecs: SpecItem[] = [
+  { specId: 'G001', title: 'Core Invariants', ruleId: 'G001', severity: 'critical', category: 'framework', filePath: '/mock/specs/framework/G001.md' },
+];
+
+const mockPatternSpecs: SpecItem[] = [
+  { specId: 'AGENT-PATTERNS', title: 'Agent Patterns', ruleId: null, severity: 'required', category: 'patterns', filePath: '/mock/specs/patterns/AGENT-PATTERNS.md' },
+  { specId: 'HOOK-PATTERNS', title: 'Hook Patterns', ruleId: null, severity: 'required', category: 'patterns', filePath: '/mock/specs/patterns/HOOK-PATTERNS.md' },
+  { specId: 'MCP-SERVER-PATTERNS', title: 'MCP Server Patterns', ruleId: null, severity: null, category: 'patterns', filePath: '/mock/specs/patterns/MCP-SERVER-PATTERNS.md' },
+];
+
+const mockGlobalSpecs: SpecItem[] = [
+  { specId: 'TESTING', title: 'Testing Strategy', ruleId: null, severity: 'required', category: 'global', filePath: '/mock/specs/global/TESTING.md' },
+  { specId: 'INTEGRATION-STRUCTURE', title: 'Integration Structure', ruleId: null, severity: null, category: 'global', filePath: '/mock/specs/global/INTEGRATION-STRUCTURE.md' },
+];
+
+const mockSpecCategories: SpecCategoryItem[] = [
+  { key: 'framework', description: 'Core framework invariants', source: 'framework', specs: mockFrameworkSpecs },
+  { key: 'patterns', description: 'Framework patterns and conventions', source: 'framework', specs: mockPatternSpecs },
+  { key: 'global', description: 'Global project invariants', source: 'project', specs: mockGlobalSpecs },
+];
+
+const mockSuites: SuiteItem[] = [
+  { id: 'auth-integration', description: 'Auth integration tests', scope: 'e2e/auth/**', enabled: true },
+];
+
+const mockSelectedSpecContent = `# Core Invariants (G001)
+
+**Rule ID**: G001
+**Severity**: critical
+
+## Overview
+
+These are the non-negotiable invariants that all code in this framework must follow.
+
+## Rules
+
+1. **No graceful fallbacks** — failures must be loud and explicit
+2. **Validate all external input** — use Zod schemas at boundaries
+3. **Never log secrets** — credentials, tokens, and keys must never appear in logs
+4. **Fail closed** — when in doubt, deny access
+
+## Examples
+
+\`\`\`typescript
+// CORRECT: loud failure
+if (!token) throw new Error('Missing auth token');
+
+// WRONG: silent fallback
+const token = process.env.TOKEN || 'default';
+\`\`\`
+`;
+
+export function getMockPage4Data(): Page4Data {
+  return {
+    categories: mockSpecCategories,
+    suites: mockSuites,
+    totalSpecs: mockFrameworkSpecs.length + mockPatternSpecs.length + mockGlobalSpecs.length,
+    selectedSpecContent: mockSelectedSpecContent,
+  };
 }
