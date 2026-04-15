@@ -637,12 +637,15 @@ The chrome-bridge MCP server provides access to Claude for Chrome extension capa
 # /tmp/claude-mcp-browser-bridge-{username}/*.sock
 ```
 
-**18 Available Tools:**
+**24 Available Tools:**
 - Tab management: `tabs_context_mcp`, `tabs_create_mcp`, `navigate`, `switch_browser`
 - Page interaction: `read_page`, `get_page_text`, `find`, `form_input`, `computer`, `javascript_tool`
 - Debugging: `read_console_messages`, `read_network_requests`
 - Media: `gif_creator`, `upload_image`, `resize_window`
 - Workflows: `shortcuts_list`, `shortcuts_execute`, `update_plan`
+- Server-side (AppleScript, macOS only): `list_chrome_extensions`, `reload_chrome_extension`
+- Server-side (convenience, React/SPA): `find_elements`, `click_by_text`, `fill_input`, `wait_for_element`
+- Server-side (diagnostics): `health_check` — proactive connectivity diagnosis; returns structured check results with remediation steps; call first when other tools fail with connection errors
 
 **Contextual Tips:**
 The chrome-bridge server injects site-specific browser automation tips into tool responses. Tips are sourced from docs/SETUP-GUIDE.md and cover common UI quirks for GitHub, 1Password, Render, Vercel, Cloudflare, Supabase, Elastic Cloud, Resend, and Codecov. Each tip is shown at most once per session on interactive tools (`navigate`, `computer`, `form_input`, `find`, `read_page`).
@@ -704,7 +707,7 @@ Then load `tools/chrome-extension/extension/` as an unpacked extension in Chrome
 TypeScript bindings for the Chrome Extension's Unix domain socket protocol. Located at `packages/chrome-actions/`. Published as `@gentyr/chrome-actions`.
 
 **Exports:**
-- `ChromeActions` — high-level API class wrapping all 18 chrome-bridge tools
+- `ChromeActions` — high-level API class wrapping all 17 socket-based chrome-bridge tools
 - `ChromeSocketClient` — low-level socket protocol client
 - Typed interfaces for all tool argument/response shapes (`NavigateArgs`, `FindArgs`, `FormInputArgs`, etc.)
 - 5 custom error classes: `ChromeConnectionError`, `ChromeTimeoutError`, `ChromeToolError`, `ChromeProtocolError`, `ChromeNotFoundError`
