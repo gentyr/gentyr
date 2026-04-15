@@ -26,6 +26,7 @@ import { auditEvent } from './session-audit.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'display-lock.db');
+const QUEUE_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
 const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'session-queue.log');
 
 // Default lock TTL in minutes — holder must renew every ~5 min to stay alive
@@ -222,44 +223,95 @@ function getResourceTtl(db, resourceId) {
 }
 
 /**
+ * Check if a PID is alive.
+ * @param {number} pid
+ * @returns {boolean}
+ */
+function isPidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Look up an agent's PID from session-queue.db via their queue_id.
+ * Returns null if the queue DB doesn't exist, the entry isn't found, or any error occurs.
+ * Fail-open: callers fall through to TTL check when null is returned.
+ *
+ * @param {string|null} queueId - The queue_id (maps to queue_items.id in session-queue.db)
+ * @returns {number|null}
+ */
+function getAgentPid(queueId) {
+  if (!queueId) return null;
+  try {
+    if (!fs.existsSync(QUEUE_DB_PATH)) return null;
+    const qDb = new Database(QUEUE_DB_PATH, { readonly: true });
+    qDb.pragma('busy_timeout = 2000');
+    try {
+      const row = qDb.prepare("SELECT pid FROM queue_items WHERE id = ?").get(queueId);
+      return row?.pid ?? null;
+    } finally {
+      qDb.close();
+    }
+  } catch (_) {
+    return null; // Fail-open
+  }
+}
+
+/**
  * Promote the next waiting entry from resource_queue for a given resource to lock holder.
+ * Skips dead waiters (PID no longer alive) — marks them 'skipped' and tries the next.
  * Must be called inside a transaction.
  * @param {object} db
  * @param {string} resourceId
- * @returns {object|null} The promoted queue entry, or null if queue empty
+ * @returns {object|null} The promoted queue entry, or null if queue empty / all dead
  */
 function promoteNextWaiter(db, resourceId) {
-  const next = db.prepare(
+  const waiters = db.prepare(
     "SELECT * FROM resource_queue WHERE resource_id = ? AND status = 'waiting' ORDER BY " +
     "CASE priority WHEN 'cto' THEN 0 WHEN 'critical' THEN 1 WHEN 'urgent' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END, " +
-    "enqueued_at ASC LIMIT 1"
-  ).get(resourceId);
+    "enqueued_at ASC"
+  ).all(resourceId);
 
-  if (!next) return null;
+  for (const next of waiters) {
+    // Check if waiter is alive via session-queue PID lookup
+    const pid = getAgentPid(next.queue_id);
+    if (pid !== null && !isPidAlive(pid)) {
+      db.prepare("UPDATE resource_queue SET status = 'skipped' WHERE id = ?").run(next.id);
+      log(`Skipped dead waiter: resource_id=${resourceId}, agent_id=${next.agent_id}, pid=${pid}, queue_entry_id=${next.id}`);
+      continue;
+    }
 
-  const ttlMinutes = getResourceTtl(db, resourceId);
-  const ttlMs = ttlMinutes * 60 * 1000;
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
+    // Waiter is alive (or PID unknown — fail-open) — promote
+    const ttlMinutes = getResourceTtl(db, resourceId);
+    const ttlMs = ttlMinutes * 60 * 1000;
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
 
-  db.prepare(
-    "UPDATE resource_locks SET holder_agent_id = ?, holder_queue_id = ?, holder_title = ?, " +
-    "acquired_at = datetime('now'), expires_at = ?, heartbeat_at = datetime('now') WHERE resource_id = ?"
-  ).run(next.agent_id, next.queue_id, next.title, expiresAt, resourceId);
+    db.prepare(
+      "UPDATE resource_locks SET holder_agent_id = ?, holder_queue_id = ?, holder_title = ?, " +
+      "acquired_at = datetime('now'), expires_at = ?, heartbeat_at = datetime('now') WHERE resource_id = ?"
+    ).run(next.agent_id, next.queue_id, next.title, expiresAt, resourceId);
 
-  db.prepare("UPDATE resource_queue SET status = 'acquired' WHERE id = ?").run(next.id);
+    db.prepare("UPDATE resource_queue SET status = 'acquired' WHERE id = ?").run(next.id);
 
-  log(`Promoted waiter: resource_id=${resourceId}, agent_id=${next.agent_id}, title="${next.title}"`);
+    log(`Promoted waiter: resource_id=${resourceId}, agent_id=${next.agent_id}, title="${next.title}"`);
 
-  auditEvent('resource_lock_promoted', {
-    resource_id: resourceId,
-    agent_id: next.agent_id,
-    queue_id: next.queue_id,
-    title: next.title,
-    queue_entry_id: next.id,
-  });
+    auditEvent('resource_lock_promoted', {
+      resource_id: resourceId,
+      agent_id: next.agent_id,
+      queue_id: next.queue_id,
+      title: next.title,
+      queue_entry_id: next.id,
+    });
 
-  return next;
+    return next;
+  }
+
+  return null;
 }
 
 /**
@@ -453,6 +505,68 @@ export function releaseResource(resourceId, agentId) {
 }
 
 /**
+ * Force-release a resource lock regardless of who holds it.
+ *
+ * Skips holder verification — use for CTO overrides or when the holder is
+ * confirmed dead/stuck and you need to unblock waiting agents immediately
+ * instead of waiting for TTL expiry.
+ *
+ * Also purges dead agents from the waiting queue before promoting.
+ *
+ * @param {string} resourceId - ID of the resource to force-release
+ * @param {string} [reason='cto_override'] - Reason for force-release (logged in audit trail)
+ * @returns {{ released: boolean, prev_holder?: object, next_holder?: object, reason: string }}
+ */
+export function forceReleaseResource(resourceId, reason = 'cto_override') {
+  if (!resourceId) return { released: false, reason };
+
+  const db = getDb();
+
+  return db.transaction(() => {
+    const lock = db.prepare("SELECT * FROM resource_locks WHERE resource_id = ?").get(resourceId);
+
+    if (!lock || !lock.holder_agent_id) {
+      return { released: false, reason, message: 'Resource is not currently locked' };
+    }
+
+    const prevHolder = {
+      agent_id: lock.holder_agent_id,
+      queue_id: lock.holder_queue_id,
+      title: lock.holder_title,
+      acquired_at: lock.acquired_at,
+      expires_at: lock.expires_at,
+    };
+
+    auditEvent('resource_lock_force_released', {
+      resource_id: resourceId,
+      prev_holder_agent_id: lock.holder_agent_id,
+      prev_holder_queue_id: lock.holder_queue_id,
+      prev_holder_title: lock.holder_title,
+      reason,
+    });
+
+    log(`Lock force-released: resource_id=${resourceId}, holder=${lock.holder_agent_id}, reason="${reason}"`);
+
+    clearLock(db, resourceId);
+
+    // promoteNextWaiter already skips dead waiters
+    const promoted = promoteNextWaiter(db, resourceId);
+
+    return {
+      released: true,
+      prev_holder: prevHolder,
+      next_holder: promoted ? {
+        agent_id: promoted.agent_id,
+        queue_id: promoted.queue_id,
+        title: promoted.title,
+        queue_entry_id: promoted.id,
+      } : null,
+      reason,
+    };
+  })();
+}
+
+/**
  * Renew the TTL (heartbeat) on a resource lock.
  *
  * The lock holder should call this every ~5 minutes during long sessions
@@ -585,9 +699,15 @@ export function checkAndExpireResources() {
     const results = [];
 
     for (const lock of allLocks) {
-      if (!isLockExpired(lock)) continue;
+      // Fast-path: check if holder PID is dead before waiting for TTL
+      const holderPid = getAgentPid(lock.holder_queue_id);
+      const holderDead = holderPid !== null && !isPidAlive(holderPid);
 
-      log(`Lock expired — auto-releasing: resource_id=${lock.resource_id}, holder=${lock.holder_agent_id}, expired_at=${lock.expires_at}`);
+      if (!holderDead && !isLockExpired(lock)) continue;
+
+      const releaseReason = holderDead ? 'holder_dead' : 'ttl_expired';
+
+      log(`Lock ${releaseReason} — auto-releasing: resource_id=${lock.resource_id}, holder=${lock.holder_agent_id}, pid=${holderPid ?? 'unknown'}, expired_at=${lock.expires_at}`);
 
       auditEvent('resource_lock_expired', {
         resource_id: lock.resource_id,
@@ -596,6 +716,8 @@ export function checkAndExpireResources() {
         holder_title: lock.holder_title,
         expires_at: lock.expires_at,
         auto_released: true,
+        release_reason: releaseReason,
+        holder_pid: holderPid,
       });
 
       clearLock(db, lock.resource_id);
@@ -605,6 +727,7 @@ export function checkAndExpireResources() {
       results.push({
         resource_id: lock.resource_id,
         expired: true,
+        release_reason: releaseReason,
         prev_holder: {
           agent_id: lock.holder_agent_id,
           title: lock.holder_title,
@@ -616,6 +739,22 @@ export function checkAndExpireResources() {
           queue_entry_id: promoted.id,
         } : null,
       });
+    }
+
+    // Sweep: purge dead waiters from all resource queues proactively.
+    // This catches orphaned entries where the agent was reaped from session-queue
+    // but its resource_queue entry was never cleaned up (e.g., agent revived with
+    // a new ID, leaving the old queue entry behind).
+    const allWaiters = db.prepare(
+      "SELECT id, resource_id, agent_id, queue_id FROM resource_queue WHERE status = 'waiting'"
+    ).all();
+
+    for (const waiter of allWaiters) {
+      const pid = getAgentPid(waiter.queue_id);
+      if (pid !== null && !isPidAlive(pid)) {
+        db.prepare("UPDATE resource_queue SET status = 'skipped' WHERE id = ?").run(waiter.id);
+        log(`Swept dead waiter from queue: resource_id=${waiter.resource_id}, agent_id=${waiter.agent_id}, pid=${pid}, queue_entry_id=${waiter.id}`);
+      }
     }
 
     return results;

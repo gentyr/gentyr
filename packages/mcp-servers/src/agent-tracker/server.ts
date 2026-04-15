@@ -72,6 +72,7 @@ import {
   RenewSharedResourceArgsSchema,
   GetSharedResourceStatusArgsSchema,
   RegisterSharedResourceArgsSchema,
+  ForceReleaseSharedResourceArgsSchema,
   AGENT_TYPES,
   type ListSpawnedAgentsArgs,
   type GetAgentPromptArgs,
@@ -121,6 +122,7 @@ import {
   type RenewSharedResourceArgs,
   type GetSharedResourceStatusArgs,
   type RegisterSharedResourceArgs,
+  type ForceReleaseSharedResourceArgs,
   type ForceTriageReportsResult,
   type MonitorAgentsResult,
   type AgentProgress,
@@ -4260,6 +4262,33 @@ async function registerSharedResource(args: RegisterSharedResourceArgs): Promise
   }
 }
 
+/**
+ * Force-release a shared resource lock regardless of who holds it.
+ * Uses dynamic import so resource-lock.js resolves CLAUDE_PROJECT_DIR at call time.
+ */
+async function forceReleaseSharedResource(args: ForceReleaseSharedResourceArgs): Promise<object | ErrorResult> {
+  const resourceLockPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'resource-lock.js');
+
+  if (!fs.existsSync(resourceLockPath)) {
+    return { error: `resource-lock.js not found at ${resourceLockPath}` };
+  }
+
+  try {
+    const mod = await import(resourceLockPath);
+    if (typeof mod.forceReleaseResource !== 'function') {
+      return { error: 'forceReleaseResource function not found in resource-lock.js' };
+    }
+    const result = mod.forceReleaseResource(
+      args.resource_id,
+      args.reason ?? 'cto_override',
+    );
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to force-release shared resource: ${message}` };
+  }
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -5246,6 +5275,12 @@ const tools: AnyToolHandler[] = [
     description: 'Register a new resource in the shared resource registry, making it available for exclusive locking by agents. Idempotent — re-registering updates description and TTL. Built-in resources (display, chrome-bridge, main-dev-server) are pre-registered automatically.',
     schema: RegisterSharedResourceArgsSchema,
     handler: registerSharedResource,
+  },
+  {
+    name: 'force_release_shared_resource',
+    description: 'Force-release a shared resource lock regardless of who holds it. Use when the lock holder is dead or stuck and you need to unblock waiting agents immediately instead of waiting for TTL expiry. Also purges dead agents from the waiting queue before promoting the next live waiter. Returns the previous holder info and who was promoted next.',
+    schema: ForceReleaseSharedResourceArgsSchema,
+    handler: forceReleaseSharedResource,
   },
   // Interactive Session Launcher
   {
