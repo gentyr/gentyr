@@ -884,6 +884,20 @@ function startWindowRecorder(outputPath: string, appName?: string): { pid: numbe
       if (code !== 0 && code !== null) {
         process.stderr.write(`[playwright] WindowRecorder exited with code ${code}: ${diag.stderr.trim().slice(0, 500)}\n`);
       }
+      // Exit code 2 = Screen Recording permission denied. Propagate the error message
+      // into the associated DemoRunState so check_demo_result surfaces it clearly
+      // instead of reporting recording_source: "none" with no explanation.
+      if (code === 2 && child.pid) {
+        const permissionError = diag.stderr.trim().slice(0, 2000) ||
+          'WindowRecorder exited with code 2: Screen Recording permission is denied for this process.';
+        for (const state of demoRuns.values()) {
+          if (state.window_recorder_pid === child.pid) {
+            state.window_recorder_permission_error = permissionError;
+            state.window_recorder_pid = undefined;
+            break;
+          }
+        }
+      }
     });
 
     if (!child.pid) return null;
@@ -2677,6 +2691,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
           degraded_features: degraded,
           recording_path: suiteRecordingPath,
           recording_source: suiteRecordingSource,
+          recording_permission_error: entry.window_recorder_permission_error,
           duration_seconds: durationSec,
           screenshot_hint: screenshotHint1,
           failure_frames: failureFrames1,
@@ -2811,6 +2826,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
         degraded_features: extractDegradedFeatures(finalProgress),
         recording_path: hasProcessDeadRecording ? processDeadRecordingPath : undefined,
         recording_source: hasProcessDeadRecording ? 'window' as const : 'none' as const,
+        recording_permission_error: entry.window_recorder_permission_error,
         duration_seconds: durationSec,
         screenshot_hint: screenshotHint2,
         failure_frames: failureFrames2,
@@ -2909,6 +2925,17 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     autoReleaseDisplayLockForPid(pid);
   }
 
+  // Look up permission error from recorderDiagnostics if not yet cached in state
+  // (covers the case where the exit event fires after this call but before PID is cleared)
+  let recorderPermissionError = entry.window_recorder_permission_error;
+  if (!recorderPermissionError && entry.window_recorder_pid) {
+    const recDiag = recorderDiagnostics.get(entry.window_recorder_pid);
+    if (recDiag?.exitCode === 2) {
+      recorderPermissionError = recDiag.stderr.trim().slice(0, 2000) ||
+        'WindowRecorder exited with code 2: Screen Recording permission is denied for this process.';
+    }
+  }
+
   return {
     status: entry.status,
     pid,
@@ -2926,6 +2953,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     degraded_features,
     recording_path: finalRecordingPath,
     recording_source: finalRecordingSource,
+    recording_permission_error: recorderPermissionError,
     duration_seconds: durationSec,
     screenshot_hint: screenshotHintFinal,
     failure_frames: failureFramesFinal,
@@ -5662,6 +5690,7 @@ const tools: AnyToolHandler[] = [
       'Call after run_demo to determine if the demo passed or failed. ' +
       'Returns status (running/passed/failed/unknown), exit code, failure summary, screenshot paths, ' +
       'recording_path, recording_source (window/none), ' +
+      'recording_permission_error (set when Screen Recording permission is denied — contains the full error message and fix instructions), ' +
       'and a progress object with real-time test counts, current test name, and error detection. ' +
       'Auto-kill: demo processes are automatically killed if this tool is not called within 60 seconds. ' +
       'Each poll resets the countdown. Prevents orphaned browser processes when the polling agent stops. ' +
