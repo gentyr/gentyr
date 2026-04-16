@@ -268,8 +268,6 @@ try? "started at \(Date()), app=\(config.app), pid=\(ProcessInfo.processInfo.pro
 appendDiag("appendDiag OK, output=\(config.output)\n")
 
 // Shared state for signal handling — must outlive the Task closure
-let semaphore = DispatchSemaphore(value: 0)
-var exitCode: Int32 = 0
 var activeStream: SCStream?
 var activeDelegate: RecorderDelegate?
 
@@ -284,7 +282,7 @@ sigintSource.setEventHandler {
         activeDelegate?.finalizeRecording()
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: config.output)[.size] as? Int) ?? 0
         FileHandle.standardError.write(Data("Saved: \(config.output) (\(fileSize / 1024)KB)\n".utf8))
-        semaphore.signal()
+        exit(0)
     }
 }
 sigintSource.resume()
@@ -293,9 +291,7 @@ Task {
     // Find the target window
     guard let window = await findWindow(appName: config.app, titleSubstring: config.title, skipSnapshot: config.skipSnapshot) else {
         FileHandle.standardError.write(Data("Error: No window found matching app=\"\(config.app)\"\(config.title.map { " title=\"\($0)\"" } ?? "") after 120s\n".utf8))
-        exitCode = 1
-        semaphore.signal()
-        return
+        exit(1)
     }
 
     let windowTitle = window.title ?? "(untitled)"
@@ -319,9 +315,7 @@ Task {
 
     guard let assetWriter = try? AVAssetWriter(outputURL: outputURL, fileType: .mp4) else {
         FileHandle.standardError.write(Data("Error: Cannot create asset writer for \(config.output)\n".utf8))
-        exitCode = 1
-        semaphore.signal()
-        return
+        exit(1)
     }
 
     let videoSettings: [String: Any] = [
@@ -355,9 +349,7 @@ Task {
     } catch {
         FileHandle.standardError.write(Data("Error: Failed to start capture — \(error.localizedDescription)\n".utf8))
         FileHandle.standardError.write(Data("Grant Screen Recording permission in System Settings > Privacy & Security > Screen Recording\n".utf8))
-        exitCode = 1
-        semaphore.signal()
-        return
+        exit(1)
     }
 
     FileHandle.standardError.write(Data("Recording started. Send SIGINT (Ctrl+C) to stop.\n".utf8))
@@ -386,13 +378,14 @@ Task {
             reason = "No frames received from ScreenCaptureKit within 2s after startCapture()."
         }
         FileHandle.standardError.write(Data("Error: Permission denied — \(reason)\n".utf8))
-        FileHandle.standardError.write(Data("Fix: Run `tccutil reset ScreenCapture com.apple.Terminal`, quit Terminal, reopen, and re-grant Screen Recording permission when prompted.\n".utf8))
+        FileHandle.standardError.write(Data("Fix: Run `sudo killall -9 replayd` to restart the ScreenCaptureKit daemon, then retry. If that fails, open System Settings > Privacy & Security > Screen Recording, remove Terminal, and re-grant when prompted.\n".utf8))
         try? await activeStream?.stopCapture()
-        exitCode = 2
-        semaphore.signal()
-        return
+        exit(2)
     }
 }
 
-semaphore.wait()
-exit(exitCode)
+// Keep the main dispatch queue alive — ScreenCaptureKit's startCapture() requires it.
+// Using DispatchSemaphore.wait() here would deadlock because startCapture() dispatches
+// work to the main queue internally. dispatchMain() never returns; all exit paths above
+// call exit() directly.
+dispatchMain()

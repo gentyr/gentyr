@@ -840,10 +840,29 @@ function getWindowRecorderBinary(): string | null {
   // __dirname is dist/playwright/ — walk up to framework root
   let dir = path.dirname(new URL(import.meta.url).pathname);
   for (let i = 0; i < 5; i++) {
-    const candidate = path.join(dir, 'tools', 'window-recorder', '.build', 'release', 'WindowRecorder');
-    if (fs.existsSync(candidate)) {
-      _windowRecorderBinary = candidate;
-      return candidate;
+    const buildPath = path.join(dir, 'tools', 'window-recorder', '.build', 'release', 'WindowRecorder');
+    if (fs.existsSync(buildPath)) {
+      // Copy to a runtime location outside .build/ to avoid macOS Sequoia's
+      // path-based ScreenCaptureKit denial cache. On Sequoia 15.6+, if a binary
+      // at a specific path is ever denied screen recording permission, that denial
+      // is cached permanently by path (surviving tccd/replayd restarts and reboots).
+      // Copying to a sibling path sidesteps this cache entirely.
+      const runtimePath = path.join(dir, 'tools', 'window-recorder', 'WindowRecorder');
+      try {
+        // Only copy if build is newer than runtime copy (or runtime doesn't exist)
+        const buildStat = fs.statSync(buildPath);
+        const runtimeStat = fs.existsSync(runtimePath) ? fs.statSync(runtimePath) : null;
+        if (!runtimeStat || buildStat.mtimeMs > runtimeStat.mtimeMs) {
+          fs.copyFileSync(buildPath, runtimePath);
+          fs.chmodSync(runtimePath, 0o755);
+        }
+        _windowRecorderBinary = runtimePath;
+        return runtimePath;
+      } catch {
+        // Fall back to build path if copy fails
+        _windowRecorderBinary = buildPath;
+        return buildPath;
+      }
     }
     dir = path.dirname(dir);
   }

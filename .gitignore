@@ -9,6 +9,7 @@ packages/playwright-helpers/dist/
 packages/chrome-actions/dist/
 packages/vscode-extension/dist/
 tools/window-recorder/.build/
+tools/window-recorder/WindowRecorder
 packages/vscode-extension/*.vsix
 *.tsbuildinfo
 
