@@ -225,11 +225,15 @@ mcp__persistent-task__get_persistent_task({ id: "${taskId}", include_amendments:
 ${task.prompt}${outcomeCriteria}${amendmentSection}
 
 ## Instructions
-1. Break down the objective into concrete sub-tasks
-2. Create sub-tasks via mcp__todo-db__create_task with persistent_task_id: "${taskId}"
-3. Spawn sub-agents for implementation work (use isolation: "worktree" for code changes)
-4. Monitor progress, check signals, run alignment checks
+CRITICAL: You are an ORCHESTRATOR, not an implementer. Never read source files, investigate code, or edit files directly.
+
+1. Read the persistent task and review existing sub-tasks
+2. For EXISTING pending sub-tasks: use force_spawn_tasks({ taskIds: ['<id>'] }) to launch them — do NOT execute them yourself
+3. Create NEW sub-tasks via mcp__todo-db__create_task with persistent_task_id: "${taskId}" only when no existing sub-task covers the needed work
+4. Monitor sub-agent progress via inspect_persistent_task, check signals, run alignment checks
 5. Complete when outcome criteria are met
+
+PROHIBITED: Using Edit, Write, or the Task tool to spawn code-writer/test-writer/demo-manager agents. All implementation work must go through create_task + force_spawn_tasks.
 ${demoInstructions}${strictInfraInstructions}
 Persistent Task ID: ${taskId}
 Parent TODO Task ID: ${task.parent_todo_task_id || 'none'}`;
@@ -254,6 +258,7 @@ Parent TODO Task ID: ${task.parent_todo_task_id || 'none'}`;
       ttlMs: 0, // No TTL expiration
       prompt,
       projectDir: PROJECT_DIR,
+      extraArgs: ['--disallowedTools', 'Edit,Write,NotebookEdit'],
       extraEnv: {
         GENTYR_PERSISTENT_TASK_ID: taskId,
         GENTYR_PERSISTENT_MONITOR: 'true',

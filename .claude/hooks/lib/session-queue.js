@@ -670,7 +670,7 @@ Persistent Task ID: ${taskId}`;
     INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
       tag_context, prompt, model, cwd, mcp_config, resume_session_id, extra_args, extra_env,
       project_dir, worktree_path, metadata, source, expires_at)
-    VALUES (?, 'queued', 'critical', 'persistent', ?, ?, ?, ?, 'persistent-monitor', ?, NULL, NULL, NULL, ?, NULL, ?, ?, NULL, ?, ?, NULL)
+    VALUES (?, 'queued', 'critical', 'persistent', ?, ?, ?, ?, 'persistent-monitor', ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, ?, ?, NULL)
   `).run(
     id,
     spawnType,
@@ -679,6 +679,7 @@ Persistent Task ID: ${taskId}`;
     HOOK_TYPES.PERSISTENT_TASK_MONITOR,
     prompt,
     resumeSessionId,
+    JSON.stringify(['--disallowedTools', 'Edit,Write,NotebookEdit']),
     JSON.stringify({ GENTYR_PERSISTENT_TASK_ID: taskId, GENTYR_PERSISTENT_MONITOR: 'true' }),
     PROJECT_DIR,
     JSON.stringify({ persistentTaskId: taskId, revivalReason: reapReason === 'stale_heartbeat' ? 'heartbeat_stale_revival' : 'immediate_reaper_revival' }),
@@ -1198,6 +1199,13 @@ function spawnQueueItem(db, item) {
   if (item.extra_args) {
     const extraArgs = JSON.parse(item.extra_args);
     spawnArgs.push(...extraArgs);
+  }
+
+  // Enforce tool restrictions for persistent task monitors (belt-and-suspenders)
+  if (item.agent_type === AGENT_TYPES.PERSISTENT_TASK_MONITOR) {
+    if (!spawnArgs.includes('--disallowedTools')) {
+      spawnArgs.push('--disallowedTools', 'Edit,Write,NotebookEdit');
+    }
   }
 
   spawnArgs.push('-p', prompt);
