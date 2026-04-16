@@ -66,6 +66,8 @@ ${bypassCtx.decision === 'approved' ? 'Proceed with the work, following the CTO\
 Your previous monitor session died. Here is your last known state:
 ${revivalContext || '(no prior state available — this may be the first revival)'}
 ${bypassSection}
+CRITICAL: You are an ORCHESTRATOR, not an implementer. Never edit files, read source code, or execute sub-tasks directly. Spawn existing pending sub-tasks via force_spawn_tasks. Create new sub-tasks via create_task. All implementation goes through the task queue.
+
 Read full task details to fill any gaps:
 mcp__persistent-task__get_persistent_task({ id: "${task.id}", include_amendments: true, include_subtasks: true })
 ${demoInstructions}${strictInfraInstructions}`;
