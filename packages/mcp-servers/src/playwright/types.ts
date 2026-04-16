@@ -325,6 +325,7 @@ export interface CheckDemoResultResult {
   degraded_features?: string[];
   recording_path?: string;
   recording_source?: 'window' | 'none';
+  recording_permission_error?: string;
   duration_seconds?: number;
   screenshot_hint?: string;
   failure_frames?: Array<{ file_path: string; timestamp_seconds: number }>;
@@ -349,6 +350,7 @@ export interface DemoRunState {
   scenario_id?: string;
   window_recorder_pid?: number;
   window_recording_path?: string;
+  window_recorder_permission_error?: string;  // Set when recorder exits with code 2 (permission denied)
   screenshot_dir?: string;
   screenshot_start_time?: number;
   fullscreened?: boolean;

@@ -207,6 +207,7 @@ class RecorderDelegate: NSObject, SCStreamOutput {
     let assetWriter: AVAssetWriter
     let videoInput: AVAssetWriterInput
     private var started = false
+    private(set) var firstFrameStatus: Int? = nil
 
     init(assetWriter: AVAssetWriter, videoInput: AVAssetWriterInput) {
         self.assetWriter = assetWriter
@@ -217,10 +218,18 @@ class RecorderDelegate: NSObject, SCStreamOutput {
         guard type == .screen else { return }
         guard sampleBuffer.isValid else { return }
 
-        // Skip frames without image data (idle/blank frames from ScreenCaptureKit)
+        // Capture the first frame's status before any filtering, so permission detection
+        // can inspect it even when the status is non-zero (e.g., .suspended = 3 when denied).
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-              let statusValue = attachments.first?[.status] as? Int,
-              statusValue == 0  // SCFrameStatus.complete
+              let statusValue = attachments.first?[.status] as? Int
+        else { return }
+
+        if firstFrameStatus == nil {
+            firstFrameStatus = statusValue
+        }
+
+        // Skip frames without complete image data (idle/blank/suspended frames)
+        guard statusValue == 0  // SCFrameStatus.complete
         else { return }
 
         if !started {
@@ -332,22 +341,15 @@ Task {
     let delegate = RecorderDelegate(assetWriter: assetWriter, videoInput: videoInput)
     activeDelegate = delegate
 
-    // Create and start the stream (with timeout — startCapture hangs if permission is missing)
+    // Create and start the stream.
+    // Note: on macOS Sequoia 15.6+, startCapture() returns immediately even when Screen Recording
+    // permission is soft-revoked (TCC auth_value=2). Permission denial is detected by inspecting
+    // the status of the first frame delivered by ScreenCaptureKit (status 3 = .suspended = denied).
     do {
         let stream = SCStream(filter: filter, configuration: streamConfig, delegate: nil)
         try stream.addStreamOutput(delegate, type: .screen, sampleHandlerQueue: DispatchQueue(label: "recorder"))
 
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask { try await stream.startCapture() }
-            group.addTask {
-                try await Task.sleep(nanoseconds: 10_000_000_000)
-                throw NSError(domain: "WindowRecorder", code: 1, userInfo: [
-                    NSLocalizedDescriptionKey: "startCapture timed out — Screen Recording permission likely not granted"
-                ])
-            }
-            try await group.next()
-            group.cancelAll()
-        }
+        try await stream.startCapture()
 
         activeStream = stream
     } catch {
@@ -359,6 +361,37 @@ Task {
     }
 
     FileHandle.standardError.write(Data("Recording started. Send SIGINT (Ctrl+C) to stop.\n".utf8))
+
+    // Permission detection: poll for the first frame's status for up to 2 seconds.
+    // On Sequoia with soft-revoked Screen Recording permission, startCapture() returns
+    // successfully but ScreenCaptureKit delivers frames with status 3 (.suspended) instead
+    // of status 0 (.complete). Detect this early and exit with code 2 so callers surface
+    // a clear permission error rather than silently producing a 0-byte MP4.
+    let permissionDeadline = Date().addingTimeInterval(2.0)
+    var gotCompleteFrame = false
+    while Date() < permissionDeadline {
+        if let status = delegate.firstFrameStatus {
+            if status == 0 {
+                gotCompleteFrame = true
+            }
+            break
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms poll
+    }
+    if !gotCompleteFrame {
+        let reason: String
+        if let status = delegate.firstFrameStatus {
+            reason = "ScreenCaptureKit delivered frames with status \(status) (not .complete). Status 3 = .suspended, which means Screen Recording permission is denied for this process."
+        } else {
+            reason = "No frames received from ScreenCaptureKit within 2s after startCapture()."
+        }
+        FileHandle.standardError.write(Data("Error: Permission denied — \(reason)\n".utf8))
+        FileHandle.standardError.write(Data("Fix: Run `tccutil reset ScreenCapture com.apple.Terminal`, quit Terminal, reopen, and re-grant Screen Recording permission when prompted.\n".utf8))
+        try? await activeStream?.stopCapture()
+        exitCode = 2
+        semaphore.signal()
+        return
+    }
 }
 
 semaphore.wait()
