@@ -138,6 +138,12 @@ async function handleToolRequest(msg) {
       return;
     }
 
+    // Intercept wake_extension — it's not a tool the toolExecutor knows about.
+    if (params.tool === 'wake_extension') {
+      await handleWakeExtension(params.args || {}, params.client_id);
+      return;
+    }
+
     const clientId = params.client_id;
 
     // Parse tabGroupId
@@ -176,6 +182,40 @@ async function handleToolRequest(msg) {
       wrapError(
         `Tool execution failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
       ),
+    );
+  }
+}
+
+async function handleWakeExtension(args, clientId) {
+  const extensionId = args.extension_id;
+
+  if (typeof extensionId !== 'string' || extensionId.length === 0) {
+    sendResponse(wrapError('wake_extension: extension_id is required'), clientId);
+    return;
+  }
+
+  try {
+    // chrome.runtime.sendMessage wakes the target SW if externally_connectable is configured.
+    // Returns the target's onMessageExternal reply, or rejects if no listener / config missing.
+    const response = await chrome.runtime.sendMessage(extensionId, { type: 'wake' });
+    const result = {
+      success: true,
+      method: 'chrome.runtime.sendMessage',
+      extension_id: extensionId,
+      response_received: response !== undefined,
+    };
+    sendResponse({ content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }, clientId);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const result = {
+      success: false,
+      extension_id: extensionId,
+      error: errMsg,
+      remediation: `Target extension must declare externally_connectable.ids containing "${chrome.runtime.id}" in its manifest.json. If this is the proxy-chrome extension, add:\n  "externally_connectable": { "ids": ["${chrome.runtime.id}"] }\nand a chrome.runtime.onMessageExternal listener that responds to { type: 'wake' }.`,
+    };
+    sendResponse(
+      { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], is_error: true },
+      clientId,
     );
   }
 }

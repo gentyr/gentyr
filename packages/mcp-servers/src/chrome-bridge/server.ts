@@ -1106,6 +1106,21 @@ const CHROME_TOOLS: ChromeToolDefinition[] = [
       properties: {},
     },
   },
+  {
+    name: 'wake_extension',
+    title: 'Wake Extension Service Worker',
+    description: 'Wake a dormant MV3 extension service worker via native messaging. Used to wake proxy-chrome (or any other extension) before a demo or test run, without requiring Chrome to be launched with --remote-debugging-port=9222. The target extension MUST declare `externally_connectable.ids` containing the Gentyr extension ID ("dojoamdbiafnflmaknagfcakgpdkmpmn") in its manifest.json — otherwise Chrome will reject the wake message.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        extension_id: {
+          type: 'string',
+          description: 'Target extension ID to wake (32-character Chrome extension ID)',
+        },
+      },
+      required: ['extension_id'],
+    },
+  },
 ];
 
 // ============================================================================
