@@ -22,7 +22,7 @@ import { ScenarioList } from './page2/ScenarioList.js';
 import { TestFileList, selectableCount } from './page2/TestFileList.js';
 import { OutputPanel } from './page2/OutputPanel.js';
 import { useProcessOutput } from '../hooks/useProcessOutput.js';
-import { launchDemo, launchTest, checkProcess, killProcess } from '../utils/process-runner.js';
+import { launchDemo, launchTest, checkProcess, killProcess, releaseDemo } from '../utils/process-runner.js';
 import type { Page2Data, RunningProcess } from '../types.js';
 
 interface DemosTestsViewProps {
@@ -73,12 +73,16 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       if (checked.status !== 'running') {
         setRunningProcess(checked);
         clearInterval(id);
+        // Release display/chrome-bridge locks when demo finishes
+        if (runningProcess.type === 'demo') {
+          releaseDemo().catch(() => { /* non-fatal */ });
+        }
       }
     }, 1000);
     return () => clearInterval(id);
   }, [runningProcess]);
 
-  const handleRun = useCallback(() => {
+  const handleRun = useCallback(async () => {
     if (runningProcess?.status === 'running') {
       setStatusMessage('Process already running — press s to stop');
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
@@ -90,7 +94,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       if (activePanel === 'demos') {
         const scenario = data.scenarios.find(s => s.id === selectedScenarioId);
         if (!scenario) return;
-        const proc = launchDemo(scenario);
+        const proc = await launchDemo(scenario);
         setRunningProcess(proc);
         setStatusMessage(null);
       } else {
@@ -111,6 +115,10 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
     if (runningProcess?.status === 'running') {
       killProcess(runningProcess);
       setRunningProcess({ ...runningProcess, status: 'failed', exitCode: -1 });
+      // Release display/chrome-bridge locks when demo is manually stopped
+      if (runningProcess.type === 'demo') {
+        releaseDemo().catch(() => { /* non-fatal */ });
+      }
     }
   }, [runningProcess]);
 
