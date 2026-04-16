@@ -6,7 +6,7 @@ interactive Claude Code sessions operate as the deputy-CTO console: only read/ob
 tools are available. File-editing tools (Edit, Write, NotebookEdit) and code-modifying
 sub-agents are blocked.
 
-**Disabling lockdown requires CTO bypass authorization.**
+**Disabling lockdown creates an audit record in the CTO bypass request system. Spawned sessions are blocked server-side.**
 
 ## Framework Path Resolution
 
@@ -18,7 +18,7 @@ GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .
 
 - `/lockdown` — Show current lockdown status
 - `/lockdown on` — Enable the deputy-CTO lockdown (default)
-- `/lockdown off` — Disable the lockdown (requires CTO bypass)
+- `/lockdown off` — Disable the lockdown (creates audit record, blocked for spawned sessions)
 
 ## Step 1: Determine the Argument
 
@@ -47,10 +47,10 @@ This takes effect immediately for new tool calls.
 
 ## Disable Lockdown (/lockdown off)
 
-Call `mcp__agent-tracker__set_lockdown_mode({ enabled: false, cto_bypass: true })`.
+Call `mcp__agent-tracker__set_lockdown_mode({ enabled: false })`.
 
-The MCP tool requires `cto_bypass: true` to disable lockdown. This ensures only
-the CTO can authorize disabling the safety guard.
+Disabling lockdown creates an auto-approved record in bypass-requests.db as an audit trail.
+The MCP tool server-side blocks spawned sessions from calling this — only interactive CTO sessions can disable.
 
 Display confirmation:
 ```
@@ -86,4 +86,4 @@ Run /lockdown on to re-enable standard GENTYR workflow.
 - This does NOT require a session restart — takes effect immediately
 - The setting persists across sessions (stored in `automation-config.json`)
 - Re-enabling is always safe and recommended after debugging
-- Disabling requires CTO bypass to prevent unauthorized unlocking
+- Disabling creates an audit record in bypass-requests.db and is blocked server-side for spawned sessions

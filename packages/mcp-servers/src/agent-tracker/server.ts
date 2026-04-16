@@ -2961,26 +2961,14 @@ function writeAutomationConfig(config: Record<string, unknown>): void {
 }
 
 function setLockdownMode(args: SetLockdownModeArgs): object | ErrorResult {
-  // Fix 3: spawned sessions are NEVER allowed to disable lockdown, even with cto_bypass.
-  // This prevents a compromised or misbehaving agent from using the MCP tool to remove
-  // its own constraints.
+  // SECURITY: spawned sessions are NEVER allowed to disable lockdown.
+  // This prevents a compromised or misbehaving agent from using the MCP tool
+  // to remove its own constraints.
   if (!args.enabled && process.env.CLAUDE_SPAWNED_SESSION === 'true') {
     return {
       error: 'SECURITY: Spawned sessions cannot disable lockdown. '
         + 'CLAUDE_SPAWNED_SESSION=true — lockdown can only be disabled from an interactive CTO session.',
     };
-  }
-
-  // Disabling lockdown requires CTO bypass
-  if (!args.enabled) {
-    if (!args.cto_bypass) {
-      return {
-        error: 'Disabling lockdown requires cto_bypass: true. '
-          + 'WARNING: Only disable lockdown if directly asked by the CTO. '
-          + 'When disabled, interactive sessions have unrestricted tool access '
-          + '(file editing, sub-agent spawning, infrastructure commands).',
-      };
-    }
   }
 
   const config = readAutomationConfig();
@@ -2991,27 +2979,52 @@ function setLockdownMode(args: SetLockdownModeArgs): object | ErrorResult {
   }
   writeAutomationConfig(config);
 
-  // Fix 4: emit audit event after successful toggle
+  // Create auto-approved bypass-request audit record when disabling
+  let bypassRequestId: string | null = null;
+  if (!args.enabled) {
+    try {
+      const db = getBypassDb();
+      try {
+        bypassRequestId = `bypass-lockdown-${Date.now()}`;
+        db.prepare(
+          `INSERT INTO bypass_requests (id, task_type, task_id, task_title, category, summary, details, status, resolution_context, resolved_at, resolved_by)
+           VALUES (?, 'system', 'lockdown-disable', 'CTO lockdown disable', 'lockdown', ?, ?, 'approved', 'Auto-approved: CTO-initiated lockdown disable from interactive session', datetime('now'), 'cto')`
+        ).run(
+          bypassRequestId,
+          'CTO disabled interactive session lockdown',
+          `Lockdown disabled via set_lockdown_mode from interactive CTO session. Session can now edit files and spawn code-modifying agents.`,
+        );
+      } finally {
+        db.close();
+      }
+    } catch {
+      // Audit record is non-fatal — lockdown toggle must not fail due to DB errors
+      bypassRequestId = null;
+    }
+  }
+
+  // Emit audit event to session-audit.log
   const auditEventName = args.enabled ? 'lockdown_enabled' : 'lockdown_disabled';
   try {
     const auditPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-audit.js');
     if (fs.existsSync(auditPath)) {
       import(auditPath).then((auditModule: { auditEvent?: (event: string, data?: object) => void }) => {
         if (typeof auditModule.auditEvent === 'function') {
-          auditModule.auditEvent(auditEventName, { enabled: args.enabled });
+          auditModule.auditEvent(auditEventName, { enabled: args.enabled, bypassRequestId });
         }
       }).catch(() => { /* non-fatal */ });
     }
   } catch {
-    // Audit emission is non-fatal — lockdown toggle must not fail due to audit errors
+    // Audit emission is non-fatal
   }
 
   return {
     success: true,
     lockdown_enabled: args.enabled,
+    bypass_request_id: bypassRequestId,
     message: args.enabled
       ? 'Lockdown ENABLED — interactive sessions operate as deputy-CTO console. File-editing and code-modifying agents are blocked.'
-      : 'Lockdown DISABLED — all tools available in interactive sessions. Re-enable with set_lockdown_mode({ enabled: true }).',
+      : 'Lockdown DISABLED — all tools available in interactive sessions. Audit record created in bypass-requests.db. Re-enable with set_lockdown_mode({ enabled: true }).',
   };
 }
 
@@ -4597,13 +4610,55 @@ function getBypassDb(): InstanceType<typeof Database> {
       resolved_at TEXT,
       resolved_by TEXT DEFAULT 'cto',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      CHECK (task_type IN ('persistent', 'todo')),
+      CHECK (task_type IN ('persistent', 'todo', 'system')),
       CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled')),
-      CHECK (category IN ('destructive_operation', 'scope_change', 'ambiguous_requirement', 'resource_access', 'general'))
+      CHECK (category IN ('destructive_operation', 'scope_change', 'ambiguous_requirement', 'resource_access', 'general', 'lockdown'))
     );
     CREATE INDEX IF NOT EXISTS idx_bypass_status ON bypass_requests(status);
     CREATE INDEX IF NOT EXISTS idx_bypass_task ON bypass_requests(task_type, task_id);
   `);
+
+  // Migration: expand CHECK constraints for existing DBs to support 'system' task type and 'lockdown' category
+  try {
+    db.exec("INSERT INTO bypass_requests (id, task_type, task_id, task_title, category, summary, status) VALUES ('__migration_probe__', 'system', '_', '_', 'lockdown', '_', 'cancelled')");
+    db.exec("DELETE FROM bypass_requests WHERE id = '__migration_probe__'");
+  } catch {
+    // Old CHECK constraint — migrate by recreating the table
+    try {
+      db.exec('BEGIN');
+      db.exec('ALTER TABLE bypass_requests RENAME TO bypass_requests_old');
+      db.exec(`
+        CREATE TABLE bypass_requests (
+          id TEXT PRIMARY KEY,
+          task_type TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          task_title TEXT NOT NULL,
+          agent_id TEXT,
+          session_queue_id TEXT,
+          category TEXT NOT NULL DEFAULT 'general',
+          summary TEXT NOT NULL,
+          details TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          resolution_context TEXT,
+          resolved_at TEXT,
+          resolved_by TEXT DEFAULT 'cto',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          CHECK (task_type IN ('persistent', 'todo', 'system')),
+          CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled')),
+          CHECK (category IN ('destructive_operation', 'scope_change', 'ambiguous_requirement', 'resource_access', 'general', 'lockdown'))
+        )
+      `);
+      db.exec('INSERT INTO bypass_requests SELECT * FROM bypass_requests_old');
+      db.exec('DROP TABLE bypass_requests_old');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_bypass_status ON bypass_requests(status)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_bypass_task ON bypass_requests(task_type, task_id)');
+      db.exec('COMMIT');
+    } catch (migErr) {
+      try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+      process.stderr.write(`[bypass-db] CHECK constraint migration failed: ${(migErr as Error).message}\n`);
+    }
+  }
+
   return db;
 }
 
@@ -5135,7 +5190,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'set_lockdown_mode',
-    description: 'Enable or disable the interactive session lockdown. Enabling is unrestricted. Disabling requires cto_bypass: true — only disable when directly asked by the CTO.',
+    description: 'Enable or disable the interactive session lockdown. Enabling is unrestricted. Disabling creates an auto-approved audit record in bypass-requests.db. Spawned sessions cannot disable lockdown (enforced server-side).',
     schema: SetLockdownModeArgsSchema,
     handler: setLockdownMode,
   },
