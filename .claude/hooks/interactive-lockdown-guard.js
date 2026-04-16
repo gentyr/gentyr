@@ -59,6 +59,8 @@ const ALLOWED_TOOLS = new Set([
   'StructuredOutput', // Required for the AI model's structured output — blocking this breaks the session
   'Agent',   // Allowed but filtered — only read-only sub-agent types pass (see below)
   'Task',    // Same filtering as Agent
+  'EnterPlanMode',   // CTO plan mode — allowed in lockdown (read-only planning)
+  'ExitPlanMode',    // CTO plan mode — allowed in lockdown (exits plan mode, writes plan file)
 ]);
 
 /**
@@ -302,6 +304,20 @@ async function main() {
             permissionDecisionReason: `Deputy-CTO console: This Bash command is not available in interactive mode.\n\nBlocked: \`${command.substring(0, 80)}\`\n\nWrite operations (git checkout, builds, file mutations) must be delegated to agents via tasks. Use read-only commands (git log, git status, git diff, gh pr list, ls, cat, grep) for investigation.`,
           },
         }));
+        return;
+      }
+    }
+  }
+
+  // Plan file whitelist: CTO can write/edit plan files even in lockdown
+  // Plans are metadata/documentation, not code — treating them like read operations
+  if (toolName === 'Write' || toolName === 'Edit') {
+    const filePath = event?.tool_input?.file_path || '';
+    if (filePath) {
+      const resolved = path.resolve(filePath);
+      const plansDir = path.join(PROJECT_DIR, '.claude', 'plans');
+      if (resolved === plansDir || resolved.startsWith(plansDir + path.sep)) {
+        process.stdout.write(JSON.stringify({ decision: 'approve' }));
         return;
       }
     }

@@ -427,6 +427,125 @@ describe('interactive-lockdown-guard.js', () => {
     });
   });
 
+  describe('plan mode tools → allowed in interactive lockdown', () => {
+    it('allows EnterPlanMode', async () => {
+      const result = await runHook({ tool_name: 'EnterPlanMode', tool_input: {} });
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve', 'EnterPlanMode must be allowed in interactive sessions');
+    });
+
+    it('allows ExitPlanMode', async () => {
+      const result = await runHook({ tool_name: 'ExitPlanMode', tool_input: {} });
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve', 'ExitPlanMode must be allowed in interactive sessions');
+    });
+  });
+
+  describe('plan file whitelist → Write/Edit to .claude/plans/ allowed in lockdown', () => {
+    let plansTmpDir;
+    let plansDir;
+
+    before(() => {
+      plansTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lockdown-plans-test-'));
+      plansDir = path.join(plansTmpDir, '.claude', 'plans');
+      fs.mkdirSync(plansDir, { recursive: true });
+    });
+
+    after(() => {
+      if (plansTmpDir && fs.existsSync(plansTmpDir)) {
+        fs.rmSync(plansTmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('allows Write to .claude/plans/foo.md', async () => {
+      const filePath = path.join(plansDir, 'foo.md');
+      const result = await runHook(
+        { tool_name: 'Write', tool_input: { file_path: filePath } },
+        { env: { CLAUDE_PROJECT_DIR: plansTmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve', 'Write to .claude/plans/foo.md must be approved');
+    });
+
+    it('allows Edit to .claude/plans/bar.md', async () => {
+      const filePath = path.join(plansDir, 'bar.md');
+      const result = await runHook(
+        { tool_name: 'Edit', tool_input: { file_path: filePath } },
+        { env: { CLAUDE_PROJECT_DIR: plansTmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve', 'Edit to .claude/plans/bar.md must be approved');
+    });
+
+    it('allows Write to nested .claude/plans/subdir/plan.md', async () => {
+      const subdirPath = path.join(plansDir, 'subdir');
+      fs.mkdirSync(subdirPath, { recursive: true });
+      const filePath = path.join(subdirPath, 'plan.md');
+      const result = await runHook(
+        { tool_name: 'Write', tool_input: { file_path: filePath } },
+        { env: { CLAUDE_PROJECT_DIR: plansTmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve', 'Write to nested plans path must be approved');
+    });
+
+    it('blocks Write to .claude/plans/../../etc/passwd (path traversal)', async () => {
+      // Path traversal attack: resolves outside .claude/plans/
+      const maliciousPath = path.join(plansDir, '..', '..', 'etc', 'passwd');
+      const result = await runHook(
+        { tool_name: 'Write', tool_input: { file_path: maliciousPath } },
+        { env: { CLAUDE_PROJECT_DIR: plansTmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(
+        output?.hookSpecificOutput?.permissionDecision,
+        'deny',
+        'Path traversal attack must be denied — resolved path escapes .claude/plans/'
+      );
+    });
+
+    it('blocks Write to src/foo.ts (not in .claude/plans/)', async () => {
+      const filePath = path.join(plansTmpDir, 'src', 'foo.ts');
+      const result = await runHook(
+        { tool_name: 'Write', tool_input: { file_path: filePath } },
+        { env: { CLAUDE_PROJECT_DIR: plansTmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(
+        output?.hookSpecificOutput?.permissionDecision,
+        'deny',
+        'Write to src/foo.ts must still be blocked by lockdown'
+      );
+    });
+
+    it('blocks Edit to src/foo.ts (not in .claude/plans/)', async () => {
+      const filePath = path.join(plansTmpDir, 'src', 'foo.ts');
+      const result = await runHook(
+        { tool_name: 'Edit', tool_input: { file_path: filePath } },
+        { env: { CLAUDE_PROJECT_DIR: plansTmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(
+        output?.hookSpecificOutput?.permissionDecision,
+        'deny',
+        'Edit to src/foo.ts must still be blocked by lockdown'
+      );
+    });
+
+    it('blocks Write when file_path is empty string', async () => {
+      const result = await runHook(
+        { tool_name: 'Write', tool_input: { file_path: '' } },
+        { env: { CLAUDE_PROJECT_DIR: plansTmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(
+        output?.hookSpecificOutput?.permissionDecision,
+        'deny',
+        'Write with empty file_path must still be blocked'
+      );
+    });
+  });
+
   describe('edge cases', () => {
     it('blocks empty tool_name (treats as unknown tool)', async () => {
       const result = await runHook({ tool_name: '', tool_input: {} });

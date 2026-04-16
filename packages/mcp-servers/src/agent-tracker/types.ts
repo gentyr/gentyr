@@ -123,8 +123,6 @@ export const GetFocusModeArgsSchema = z.object({});
 
 export const SetLockdownModeArgsSchema = z.object({
   enabled: z.boolean().describe('Enable (true) or disable (false) the interactive session lockdown'),
-  cto_bypass: z.boolean().optional()
-    .describe('Required when disabling lockdown. WARNING: Only set to true if directly asked by the CTO.'),
 });
 
 export const GetLockdownModeArgsSchema = z.object({});

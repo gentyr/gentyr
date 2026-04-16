@@ -1275,10 +1275,10 @@ describe('Agent Tracker Server', () => {
   });
 
   // ============================================================================
-  // setLockdownMode — spawned-session guard (Fix 3) and audit events (Fix 4)
+  // setLockdownMode — spawned-session guard and bypass-requests.db audit trail
   // ============================================================================
 
-  describe('setLockdownMode security fixes', () => {
+  describe('setLockdownMode security and audit trail', () => {
     // These tests exercise the inline logic that mirrors server.ts setLockdownMode().
     // Because server.ts does not export its handlers, we replicate the exact guard
     // conditions here.  When the server changes, the tests break immediately.
@@ -1289,13 +1289,13 @@ describe('Agent Tracker Server', () => {
 
     interface SetLockdownModeArgs {
       enabled: boolean;
-      cto_bypass?: boolean;
     }
 
     interface LockdownResult {
       success: true;
       lockdown_enabled: boolean;
       message: string;
+      bypass_request_id: string | null;
       audit_event?: string;
     }
 
@@ -1309,29 +1309,26 @@ describe('Agent Tracker Server', () => {
      * Accepts the env var `CLAUDE_SPAWNED_SESSION` via an explicit parameter so
      * tests can inject it without mutating process.env.
      *
-     * Mirrors the after-fix logic:
-     *  1. Reject `enabled: false` when CLAUDE_SPAWNED_SESSION === 'true' (Fix 3)
-     *  2. Reject `enabled: false` when cto_bypass is absent (pre-existing guard)
-     *  3. Write config and emit an audit event on success (Fix 4)
+     * Mirrors the current server.ts logic:
+     *  1. Reject `enabled: false` when CLAUDE_SPAWNED_SESSION === 'true' (security guard)
+     *  2. Write config on success
+     *  3. Create bypass-request audit record when disabling (non-fatal if DB fails)
+     *  4. Emit audit event on success
+     *
+     * The `bypassDbPath` parameter controls where the bypass-requests.db is written.
+     * Pass `undefined` to test the no-DB path (audit record is non-fatal).
      */
     function setLockdownModeImpl(
       args: SetLockdownModeArgs,
       configDir: string,
       spawnedSession: string | undefined,
+      bypassDbPath?: string,
     ): LockdownResult | ErrorResult {
-      // Fix 3: spawned sessions are NEVER allowed to disable lockdown, even with cto_bypass
+      // Security: spawned sessions are NEVER allowed to disable lockdown
       if (!args.enabled && spawnedSession === 'true') {
         return {
           error: 'SECURITY: Spawned sessions cannot disable lockdown. '
             + 'CLAUDE_SPAWNED_SESSION=true — lockdown can only be disabled from an interactive CTO session.',
-        };
-      }
-
-      // Pre-existing guard: disabling requires cto_bypass
-      if (!args.enabled && !args.cto_bypass) {
-        return {
-          error: 'Disabling lockdown requires cto_bypass: true. '
-            + 'WARNING: Only disable lockdown if directly asked by the CTO.',
         };
       }
 
@@ -1352,27 +1349,46 @@ describe('Agent Tracker Server', () => {
       fs.mkdirSync(configDir, { recursive: true });
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
 
-      // Fix 4: emit audit event
+      // Create auto-approved bypass-request audit record when disabling
+      let bypassRequestId: string | null = null;
+      if (!args.enabled && bypassDbPath) {
+        // Write a simple JSON record to simulate the DB write (avoids requiring better-sqlite3 in tests)
+        bypassRequestId = `bypass-lockdown-${Date.now()}`;
+        const record = {
+          id: bypassRequestId,
+          task_type: 'system',
+          task_id: 'lockdown-disable',
+          task_title: 'CTO lockdown disable',
+          category: 'lockdown',
+          summary: 'CTO disabled interactive session lockdown',
+          status: 'approved',
+          resolved_by: 'cto',
+        };
+        fs.writeFileSync(bypassDbPath, JSON.stringify(record, null, 2));
+      }
+
+      // Emit audit event
       const auditEventName = args.enabled ? 'lockdown_enabled' : 'lockdown_disabled';
 
       return {
         success: true,
         lockdown_enabled: args.enabled,
+        bypass_request_id: bypassRequestId,
         message: args.enabled
-          ? 'Lockdown ENABLED — interactive sessions operate as deputy-CTO console.'
-          : 'Lockdown DISABLED — all tools available in interactive sessions.',
+          ? 'Lockdown ENABLED — interactive sessions operate as deputy-CTO console. File-editing and code-modifying agents are blocked.'
+          : 'Lockdown DISABLED — all tools available in interactive sessions. Audit record created in bypass-requests.db. Re-enable with set_lockdown_mode({ enabled: true }).',
         audit_event: auditEventName,
       };
     }
 
     // ------------------------------------------------------------------
-    // Fix 3: spawned sessions cannot disable lockdown
+    // Security: spawned sessions cannot disable lockdown
     // ------------------------------------------------------------------
 
-    describe('Fix 3 — spawned sessions cannot disable lockdown', () => {
-      it('rejects enabled:false when CLAUDE_SPAWNED_SESSION=true, even with cto_bypass:true', () => {
+    describe('spawned sessions cannot disable lockdown', () => {
+      it('rejects enabled:false when CLAUDE_SPAWNED_SESSION=true', () => {
         const result = setLockdownModeImpl(
-          { enabled: false, cto_bypass: true },
+          { enabled: false },
           tempSessionDir,
           'true',
         );
@@ -1381,19 +1397,9 @@ describe('Agent Tracker Server', () => {
         expect((result as ErrorResult).error).toMatch(/CLAUDE_SPAWNED_SESSION/);
       });
 
-      it('rejects enabled:false when CLAUDE_SPAWNED_SESSION=true without cto_bypass', () => {
-        const result = setLockdownModeImpl(
-          { enabled: false, cto_bypass: false },
-          tempSessionDir,
-          'true',
-        );
-        expect(result).toHaveProperty('error');
-        expect((result as ErrorResult).error).toMatch(/Spawned sessions cannot disable lockdown/i);
-      });
-
       it('allows enabled:true (re-enabling lockdown) from a spawned session', () => {
         // Spawned sessions MUST be able to re-enable lockdown — blocking that would be
-        // a new regression, not a security fix.
+        // a regression, not a security fix.
         const result = setLockdownModeImpl(
           { enabled: true },
           tempSessionDir,
@@ -1404,10 +1410,10 @@ describe('Agent Tracker Server', () => {
         expect((result as LockdownResult).lockdown_enabled).toBe(true);
       });
 
-      it('allows enabled:false from an interactive session (CLAUDE_SPAWNED_SESSION absent) with cto_bypass', () => {
-        // Normal interactive CTO path — must still work.
+      it('allows enabled:false from an interactive session (CLAUDE_SPAWNED_SESSION absent)', () => {
+        // Normal interactive CTO path — no cto_bypass needed now.
         const result = setLockdownModeImpl(
-          { enabled: false, cto_bypass: true },
+          { enabled: false },
           tempSessionDir,
           undefined,
         );
@@ -1417,7 +1423,7 @@ describe('Agent Tracker Server', () => {
 
       it('error message includes security context for spawned-session rejection', () => {
         const result = setLockdownModeImpl(
-          { enabled: false, cto_bypass: true },
+          { enabled: false },
           tempSessionDir,
           'true',
         ) as ErrorResult;
@@ -1431,7 +1437,7 @@ describe('Agent Tracker Server', () => {
         if (fs.existsSync(configPath)) fs.unlinkSync(configPath);
 
         setLockdownModeImpl(
-          { enabled: false, cto_bypass: true },
+          { enabled: false },
           tempSessionDir,
           'true',
         );
@@ -1442,10 +1448,10 @@ describe('Agent Tracker Server', () => {
     });
 
     // ------------------------------------------------------------------
-    // Fix 4: audit events emitted after successful toggles
+    // Audit events emitted after successful toggles
     // ------------------------------------------------------------------
 
-    describe('Fix 4 — audit events emitted on lockdown toggle', () => {
+    describe('audit events emitted on lockdown toggle', () => {
       it('emits lockdown_enabled audit event when enabling lockdown', () => {
         const result = setLockdownModeImpl(
           { enabled: true },
@@ -1458,7 +1464,7 @@ describe('Agent Tracker Server', () => {
 
       it('emits lockdown_disabled audit event when disabling lockdown (interactive session)', () => {
         const result = setLockdownModeImpl(
-          { enabled: false, cto_bypass: true },
+          { enabled: false },
           tempSessionDir,
           undefined,
         ) as LockdownResult;
@@ -1478,21 +1484,11 @@ describe('Agent Tracker Server', () => {
 
       it('no audit event emitted on error (spawned-session block)', () => {
         const result = setLockdownModeImpl(
-          { enabled: false, cto_bypass: true },
+          { enabled: false },
           tempSessionDir,
           'true',
         );
         // Error result shape has no audit_event field
-        expect(result).not.toHaveProperty('audit_event');
-        expect(result).toHaveProperty('error');
-      });
-
-      it('no audit event emitted on error (missing cto_bypass block)', () => {
-        const result = setLockdownModeImpl(
-          { enabled: false },
-          tempSessionDir,
-          undefined,
-        );
         expect(result).not.toHaveProperty('audit_event');
         expect(result).toHaveProperty('error');
       });
@@ -1504,7 +1500,7 @@ describe('Agent Tracker Server', () => {
           undefined,
         ) as LockdownResult;
         const disableResult = setLockdownModeImpl(
-          { enabled: false, cto_bypass: true },
+          { enabled: false },
           tempSessionDir,
           undefined,
         ) as LockdownResult;
@@ -1516,21 +1512,97 @@ describe('Agent Tracker Server', () => {
     });
 
     // ------------------------------------------------------------------
-    // Pre-existing guard still enforced (regression protection)
+    // Bypass-requests.db audit record on disable
     // ------------------------------------------------------------------
 
-    describe('pre-existing cto_bypass guard still enforced', () => {
-      it('rejects enabled:false without cto_bypass from interactive session', () => {
+    describe('bypass-requests.db audit record when disabling lockdown', () => {
+      it('creates an audit record with task_type=system and category=lockdown when disabling', () => {
+        const bypassDbPath = path.join(tempSessionDir, 'bypass-audit-test.json');
+        const result = setLockdownModeImpl(
+          { enabled: false },
+          tempSessionDir,
+          undefined,
+          bypassDbPath,
+        ) as LockdownResult;
+        expect(result.success).toBe(true);
+        expect(fs.existsSync(bypassDbPath)).toBe(true);
+        const record = JSON.parse(fs.readFileSync(bypassDbPath, 'utf8')) as {
+          task_type: string; category: string; status: string; resolved_by: string;
+        };
+        expect(record.task_type).toBe('system');
+        expect(record.category).toBe('lockdown');
+        expect(record.status).toBe('approved');
+        expect(record.resolved_by).toBe('cto');
+      });
+
+      it('bypass_request_id in result matches the record written to the audit file', () => {
+        const bypassDbPath = path.join(tempSessionDir, 'bypass-id-test.json');
+        const result = setLockdownModeImpl(
+          { enabled: false },
+          tempSessionDir,
+          undefined,
+          bypassDbPath,
+        ) as LockdownResult;
+        const record = JSON.parse(fs.readFileSync(bypassDbPath, 'utf8')) as { id: string };
+        expect(result.bypass_request_id).toBe(record.id);
+        expect(result.bypass_request_id).toMatch(/^bypass-lockdown-\d+$/);
+      });
+
+      it('bypass_request_id is null when enabling lockdown (no audit record created)', () => {
+        const result = setLockdownModeImpl(
+          { enabled: true },
+          tempSessionDir,
+          undefined,
+        ) as LockdownResult;
+        expect(result.bypass_request_id).toBeNull();
+      });
+
+      it('audit record is non-fatal — lockdown disable succeeds even without a bypassDbPath', () => {
+        // No bypassDbPath passed — simulates DB failure being non-fatal
+        const result = setLockdownModeImpl(
+          { enabled: false },
+          tempSessionDir,
+          undefined,
+          // no bypassDbPath
+        ) as LockdownResult;
+        expect(result.success).toBe(true);
+        expect(result.lockdown_enabled).toBe(false);
+        // bypass_request_id is null when DB path not provided (simulates DB error path)
+        expect(result.bypass_request_id).toBeNull();
+      });
+
+      it('no audit record created when spawned-session guard blocks the call', () => {
+        const bypassDbPath = path.join(tempSessionDir, 'bypass-blocked-test.json');
+        setLockdownModeImpl(
+          { enabled: false },
+          tempSessionDir,
+          'true',
+          bypassDbPath,
+        );
+        // Guard returned early — no DB file should have been written
+        expect(fs.existsSync(bypassDbPath)).toBe(false);
+      });
+    });
+
+    // ------------------------------------------------------------------
+    // cto_bypass is no longer required (regression: verify no such field exists)
+    // ------------------------------------------------------------------
+
+    describe('cto_bypass parameter removed — disable works without it', () => {
+      it('enabled:false succeeds from interactive session without any cto_bypass field', () => {
+        // The old cto_bypass: true requirement is gone — calling with just { enabled: false }
+        // from an interactive session must now succeed.
         const result = setLockdownModeImpl(
           { enabled: false },
           tempSessionDir,
           undefined,
         );
-        expect(result).toHaveProperty('error');
-        expect((result as ErrorResult).error).toMatch(/cto_bypass/i);
+        expect(result).not.toHaveProperty('error');
+        expect((result as LockdownResult).lockdown_enabled).toBe(false);
+        expect((result as LockdownResult).success).toBe(true);
       });
 
-      it('allows enabled:true without cto_bypass from interactive session', () => {
+      it('enabled:true succeeds without cto_bypass field', () => {
         const result = setLockdownModeImpl(
           { enabled: true },
           tempSessionDir,
@@ -1538,6 +1610,14 @@ describe('Agent Tracker Server', () => {
         );
         expect(result).not.toHaveProperty('error');
         expect((result as LockdownResult).lockdown_enabled).toBe(true);
+      });
+
+      it('SetLockdownModeArgs interface has no cto_bypass field', () => {
+        // Structural: verify the args type only accepts { enabled: boolean }
+        // This test enforces interface shape at compile time.
+        const args: SetLockdownModeArgs = { enabled: false };
+        expect(Object.keys(args)).toEqual(['enabled']);
+        expect(args).not.toHaveProperty('cto_bypass');
       });
     });
   });
