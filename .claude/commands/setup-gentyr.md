@@ -5,6 +5,32 @@ One command for full GENTYR project setup. Runs a programmatic check script, dis
 
 The prefetch hook has pre-run `setup-check.js` and injected its JSON output as `[PREFETCH:setup-gentyr]` context above. Use that data for Phase 1 instead of running the script. If the prefetch data is missing, run the script directly.
 
+## Local Mode Check
+
+First, check if this project is in local prototyping mode:
+
+```bash
+node -e "
+const fs = require('fs');
+const path = require('path');
+try {
+  const state = JSON.parse(fs.readFileSync(path.join(process.env.CLAUDE_PROJECT_DIR || process.cwd(), '.claude', 'state', 'local-mode.json'), 'utf8'));
+  console.log(JSON.stringify({ localMode: state.enabled === true }));
+} catch { console.log(JSON.stringify({ localMode: false })); }
+"
+```
+
+If `localMode: true`, inform the user:
+
+> **This project is in local prototyping mode.** Credential setup is not needed — no remote
+> services (1Password, Supabase, Vercel, Render, etc.) are configured. All local tooling
+> (agents, tasks, playwright, plans) works without credentials.
+>
+> To switch to full infrastructure mode later, run `/local-mode` to disable local mode,
+> then re-run `/setup-gentyr`.
+
+Then **stop** — do not proceed with the setup flow below.
+
 ## Framework Path Resolution
 
 Before running any commands, resolve the GENTYR framework directory (supports npm link, legacy symlink, and running from within the gentyr repo):

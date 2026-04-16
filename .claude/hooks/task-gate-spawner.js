@@ -21,6 +21,7 @@ import fs from 'fs';
 import path from 'path';
 import { AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 import { enqueueSession } from './lib/session-queue.js';
+import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'task-gate-spawner.log');
@@ -123,6 +124,20 @@ process.stdin.on('end', () => {
     }
 
     log(`Gate review needed for task ${taskId}: "${taskTitle}" (section: ${taskSection}, by: ${assignedBy})`);
+
+    // Auto-kill secret-manager tasks in local mode (remote tools unavailable)
+    if (isLocalModeEnabled(PROJECT_DIR) && taskSection.toLowerCase().includes('secret')) {
+      log(`Auto-killing task ${taskId}: secret-manager tasks are unavailable in local mode`);
+      try {
+        const Database = (await import('better-sqlite3')).default;
+        const db = new Database(path.join(PROJECT_DIR, '.claude', 'todo.db'));
+        db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
+        db.close();
+      } catch (err) {
+        log(`Warning: could not auto-kill task ${taskId}: ${err.message}`);
+      }
+      process.exit(0);
+    }
 
     const keyword = extractKeyword(taskTitle);
 
