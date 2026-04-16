@@ -41,6 +41,8 @@ import {
   GetFocusModeArgsSchema,
   SetLockdownModeArgsSchema,
   GetLockdownModeArgsSchema,
+  SetLocalModeArgsSchema,
+  GetLocalModeArgsSchema,
   GetUserPromptArgsSchema,
   SearchUserPromptsArgsSchema,
   ListUserPromptsArgsSchema,
@@ -94,6 +96,7 @@ import {
   type GetFocusModeArgs,
   type SetLockdownModeArgs,
   type GetLockdownModeArgs,
+  type SetLocalModeArgs,
   type SubscribeSessionSummariesArgs,
   type UnsubscribeSessionSummariesArgs,
   type ListSummarySubscriptionsArgs,
@@ -3047,6 +3050,104 @@ function getLockdownMode(_args: GetLockdownModeArgs): object {
 }
 
 // ============================================================================
+// Local Mode Tool Implementations
+// ============================================================================
+
+// Mirror of REMOTE_SERVERS from lib/shared-mcp-config.js (can't import ESM JS from compiled TS)
+const REMOTE_SERVERS_LIST = [
+  'github', 'cloudflare', 'supabase', 'vercel', 'render',
+  'codecov', 'resend', 'elastic-logs', 'onepassword', 'secret-sync',
+];
+
+async function setLocalMode(args: SetLocalModeArgs): Promise<object> {
+  // Spawned sessions cannot toggle local mode
+  if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
+    return {
+      error: 'SECURITY: Spawned sessions cannot toggle local mode. '
+        + 'CLAUDE_SPAWNED_SESSION=true — local mode can only be changed from an interactive CTO session.',
+    };
+  }
+
+  // Disabling local mode (re-enabling remote servers) requires CTO APPROVE BYPASS
+  if (!args.enabled) {
+    const tokenModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'bypass-approval-token.js');
+    let tokenResult: { valid: boolean; code?: string; request_id?: string; reason?: string };
+    try {
+      const mod = await import(tokenModulePath);
+      tokenResult = mod.verifyAndConsumeApprovalToken(PROJECT_DIR);
+    } catch (err) {
+      return {
+        error: `G001 FAIL-CLOSED: Could not load bypass-approval-token module: ${(err as Error).message}`,
+      };
+    }
+
+    if (!tokenResult.valid) {
+      return {
+        error: [
+          `Disabling local mode requires CTO approval via APPROVE BYPASS flow.`,
+          `Token check failed: ${tokenResult.reason || 'no valid token'}.`,
+          ``,
+          `To disable local mode:`,
+          `  1. Call mcp__deputy-cto__request_bypass with reason "Disable local prototyping mode"`,
+          `  2. CTO types "APPROVE BYPASS <code>" in chat (code returned by step 1)`,
+          `  3. Call mcp__agent-tracker__set_local_mode({ enabled: false }) again`,
+          ``,
+          `After disabling, run "npx gentyr sync" and restart Claude Code to restore remote MCP servers.`,
+        ].join('\n'),
+      };
+    }
+  }
+
+  // Write the state file directly (no dynamic import needed -- simple JSON write)
+  const stateDir = path.join(PROJECT_DIR, '.claude', 'state');
+  if (!fs.existsSync(stateDir)) fs.mkdirSync(stateDir, { recursive: true });
+  const state = { enabled: args.enabled, enabledAt: new Date().toISOString(), enabledBy: 'mcp-tool' };
+  fs.writeFileSync(path.join(stateDir, 'local-mode.json'), JSON.stringify(state, null, 2));
+
+  // Emit audit event
+  try {
+    const auditPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-audit.js');
+    const auditMod = await import(auditPath);
+    auditMod.auditEvent(args.enabled ? 'local_mode_enabled' : 'local_mode_disabled', {});
+  } catch {
+    // Audit emission is non-fatal
+  }
+
+  const action = args.enabled ? 'ENABLED' : 'DISABLED';
+  const nextSteps = 'Run "npx gentyr sync" then restart Claude Code to update MCP servers.';
+
+  return {
+    success: true,
+    local_mode_enabled: args.enabled,
+    message: args.enabled
+      ? `Local mode ${action} — remote servers will be excluded from .mcp.json. Credential checks and remote automation skipped. ${nextSteps}`
+      : `Local mode ${action} — all servers will be restored. ${nextSteps}`,
+    excluded_servers: args.enabled ? REMOTE_SERVERS_LIST : [],
+    next_steps: nextSteps,
+  };
+}
+
+function getLocalMode(): object {
+  const statePath = path.join(PROJECT_DIR, '.claude', 'state', 'local-mode.json');
+  let state = { enabled: false, enabledAt: null as string | null, enabledBy: null as string | null };
+  try {
+    if (fs.existsSync(statePath)) {
+      state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    }
+  } catch { /* default to disabled */ }
+
+  return {
+    local_mode_enabled: state.enabled,
+    enabledAt: state.enabledAt,
+    enabledBy: state.enabledBy,
+    excluded_servers: state.enabled ? REMOTE_SERVERS_LIST : [],
+    description: state.enabled
+      ? 'Local mode is ENABLED. Remote MCP servers are excluded. 1Password is not required. Run /local-mode or set_local_mode({ enabled: false }) to re-enable (requires CTO bypass).'
+      : 'Local mode is DISABLED. All MCP servers are available.',
+  };
+}
+
+// ============================================================================
 // Session Signal Tool Implementations
 // ============================================================================
 
@@ -5164,6 +5265,19 @@ const tools: AnyToolHandler[] = [
     description: 'Get the current interactive session lockdown state.',
     schema: GetLockdownModeArgsSchema,
     handler: getLockdownMode,
+  },
+  // Local Mode Tools
+  {
+    name: 'set_local_mode',
+    description: 'Enable or disable local prototyping mode. When enabled, remote MCP servers (GitHub, Cloudflare, Supabase, Vercel, Render, Codecov, Resend, Elastic, 1Password, Secret-Sync) are excluded from .mcp.json and credential-dependent automation is skipped. Enabling is unrestricted. Disabling requires CTO APPROVE BYPASS. Spawned sessions are blocked. After toggling, run "npx gentyr sync" and restart Claude Code.',
+    schema: SetLocalModeArgsSchema,
+    handler: setLocalMode,
+  },
+  {
+    name: 'get_local_mode',
+    description: 'Get the current local prototyping mode state, including which servers are excluded.',
+    schema: GetLocalModeArgsSchema,
+    handler: getLocalMode,
   },
   // User Prompt Index Tools
   {

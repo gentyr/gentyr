@@ -11,6 +11,7 @@
  */
 
 import Database from 'better-sqlite3';
+import { isLocalModeEnabled } from '../../../lib/shared-mcp-config.js';
 
 /**
  * Resolve a category by ID or deprecated section name.
@@ -160,6 +161,10 @@ will be orphaned and your changes will not be merged.
 ` : '';
 
   // ── Error handling block ─────────────────────────────────────────────────────
+  const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const devServerHint = isLocalModeEnabled(PROJECT_DIR)
+    ? 'Dev server not running → start it manually via Bash: `pnpm run dev`'
+    : 'Secret resolution failed → check dev server: `mcp__secret-sync__secret_dev_server_status`, start if needed';
   const errorHandlingBlock = `## Error Handling — DIAGNOSE BEFORE GIVING UP
 
 When a tool call or sub-agent fails:
@@ -167,7 +172,7 @@ When a tool call or sub-agent fails:
 1. **Read the error message** — understand what actually failed
 2. **Diagnose** — is this transient (retry), a missing dependency (fix), or a systemic blocker (escalate)?
 3. **Attempt recovery** — try at least ONE alternative approach before declaring blocked:
-   - Secret resolution failed → check dev server: \`mcp__secret-sync__secret_dev_server_status\`, start if needed
+   - ${devServerHint}
    - Build failed → read the error output, fix the code, rebuild
    - Demo failed → read \`check_demo_result\`, inspect screenshots/frames, fix and re-run
    - Tool timeout → retry once with a longer timeout

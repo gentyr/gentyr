@@ -32,6 +32,7 @@ import { checkAndExpireResources } from './resource-lock.js';
 import { cleanupStaleAllocations as cleanupStalePortAllocations } from './port-allocator.js';
 import { buildRevivalContext } from './persistent-revival-context.js';
 import { checkBypassBlock, getBypassResolutionContext } from './bypass-guard.js';
+import { isLocalModeEnabled } from '../../../lib/shared-mcp-config.js';
 // NOTE: revival-utils.js imports from session-queue.js (circular dep), so we
 // inline these three utilities here instead of importing from revival-utils.js.
 // Mirrors the same pattern used in session-reaper.js.
@@ -1684,6 +1685,7 @@ export function getQueueStatus() {
     reservedSlots,
     reservedSlotsRestore,
     focusMode: isFocusModeEnabled(),
+    localMode: isLocalModeEnabled(),
     running: activeRunning.length,
     suspended: suspendedItems.length,
     availableSlots: Math.max(0, maxConcurrent - activeRunning.length),

@@ -293,6 +293,88 @@ describe('session-briefing — graceful degradation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Local mode tests
+// ---------------------------------------------------------------------------
+
+describe('session-briefing — local mode notice', () => {
+  it('shows [LOCAL MODE] notice in interactive briefing when local-mode.json is enabled', () => {
+    const tmpDir = createTempProjectDir();
+    // Write a local-mode.json file indicating local mode is active
+    fs.writeFileSync(
+      path.join(tmpDir, '.claude', 'state', 'local-mode.json'),
+      JSON.stringify({ enabled: true, enabledAt: new Date().toISOString(), enabledBy: 'cto' }),
+      'utf8',
+    );
+
+    const result = runHook({ CLAUDE_PROJECT_DIR: tmpDir });
+
+    assert.ok(result.parsed, 'Must output valid JSON');
+    const ctx = result.parsed.hookSpecificOutput?.additionalContext || '';
+    assert.ok(
+      ctx.includes('[LOCAL MODE]'),
+      'Interactive briefing must include [LOCAL MODE] notice when local-mode.json is enabled',
+    );
+    assert.ok(
+      ctx.includes('/local-mode'),
+      'Local mode notice must mention /local-mode command to disable',
+    );
+  });
+
+  it('shows [LOCAL MODE] notice in spawned briefing when local-mode.json is enabled', () => {
+    const tmpDir = createTempProjectDir();
+    fs.writeFileSync(
+      path.join(tmpDir, '.claude', 'state', 'local-mode.json'),
+      JSON.stringify({ enabled: true, enabledAt: new Date().toISOString(), enabledBy: 'init' }),
+      'utf8',
+    );
+
+    const result = runHook({
+      CLAUDE_PROJECT_DIR: tmpDir,
+      CLAUDE_SPAWNED_SESSION: 'true',
+    });
+
+    assert.ok(result.parsed, 'Must output valid JSON');
+    const ctx = result.parsed.hookSpecificOutput?.additionalContext || '';
+    assert.ok(
+      ctx.includes('[LOCAL MODE]'),
+      'Spawned briefing must include [LOCAL MODE] notice when local-mode.json is enabled',
+    );
+  });
+
+  it('omits [LOCAL MODE] notice when local-mode.json is absent', () => {
+    const tmpDir = createTempProjectDir();
+    // No local-mode.json written — local mode is off
+
+    const result = runHook({ CLAUDE_PROJECT_DIR: tmpDir });
+
+    assert.ok(result.parsed, 'Must output valid JSON');
+    const ctx = result.parsed.hookSpecificOutput?.additionalContext || '';
+    assert.ok(
+      !ctx.includes('[LOCAL MODE]'),
+      'Briefing must NOT include [LOCAL MODE] notice when local mode is not enabled',
+    );
+  });
+
+  it('omits [LOCAL MODE] notice when local-mode.json has enabled: false', () => {
+    const tmpDir = createTempProjectDir();
+    fs.writeFileSync(
+      path.join(tmpDir, '.claude', 'state', 'local-mode.json'),
+      JSON.stringify({ enabled: false, enabledAt: new Date().toISOString(), enabledBy: 'cto' }),
+      'utf8',
+    );
+
+    const result = runHook({ CLAUDE_PROJECT_DIR: tmpDir });
+
+    assert.ok(result.parsed, 'Must output valid JSON');
+    const ctx = result.parsed.hookSpecificOutput?.additionalContext || '';
+    assert.ok(
+      !ctx.includes('[LOCAL MODE]'),
+      'Briefing must NOT include [LOCAL MODE] notice when enabled is false',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Output structure tests
 // ---------------------------------------------------------------------------
 

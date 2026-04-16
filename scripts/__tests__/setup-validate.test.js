@@ -579,6 +579,149 @@ describe('Summary Calculation', { concurrency: true }, () => {
 });
 
 // ============================================================================
+// Local Prototyping Mode Tests
+// ============================================================================
+
+describe('Local Prototyping Mode', () => {
+  const SCRIPT_PATH = path.join(__dirname, '..', 'setup-validate.js');
+
+  it('should import isLocalModeEnabled and REMOTE_SERVERS from shared-mcp-config', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    assert.match(
+      code,
+      /import.*isLocalModeEnabled.*REMOTE_SERVERS.*from.*shared-mcp-config/,
+      'Must import isLocalModeEnabled and REMOTE_SERVERS from shared-mcp-config.js'
+    );
+  });
+
+  it('should filter remote validators when local mode is active', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    // Must use REMOTE_SERVERS to filter SERVICE_VALIDATORS in local mode
+    assert.match(
+      code,
+      /localMode[\s\S]*?SERVICE_VALIDATORS\.filter/,
+      'Must filter SERVICE_VALIDATORS when local mode is active'
+    );
+
+    assert.match(
+      code,
+      /remoteSet\.has\(v\.name\)/,
+      'Filter must use REMOTE_SERVERS set to exclude validators by name'
+    );
+  });
+
+  it('should use activeValidators.length for totalServices in local mode', () => {
+    const code = fs.readFileSync(SCRIPT_PATH, 'utf8');
+
+    // totalServices must reference activeValidators, not the full SERVICE_VALIDATORS
+    assert.match(
+      code,
+      /totalServices:\s*activeValidators\.length/,
+      'totalServices must use activeValidators.length so count reflects local mode filtering'
+    );
+  });
+
+  it('should run all validators when local mode is not active', async () => {
+    const testProject = createTestProject({
+      withVaultMappings: true,
+      mappings: {},
+      // No local-mode.json — local mode is off
+    });
+
+    try {
+      const result = await runSetupValidate(testProject.path);
+
+      assert.strictEqual(result.exitCode, 0, 'Should exit with code 0');
+      assert.strictEqual(result.json.summary.totalServices, 10, 'Should validate all 10 services when local mode is off');
+    } finally {
+      testProject.cleanup();
+    }
+  });
+
+  it('should run fewer validators when local mode is enabled', async () => {
+    const testProject = createTestProject({
+      withVaultMappings: true,
+      mappings: {},
+    });
+
+    // Write a local-mode.json to activate local prototyping mode
+    const stateDir = path.join(testProject.path, '.claude', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'local-mode.json'),
+      JSON.stringify({ enabled: true, enabledAt: new Date().toISOString(), enabledBy: 'cto' }),
+      'utf8'
+    );
+
+    try {
+      const result = await runSetupValidate(testProject.path);
+
+      assert.strictEqual(result.exitCode, 0, 'Should exit with code 0');
+      assert.ok(result.json, 'Should output valid JSON');
+
+      // In local mode, remote validators are excluded so totalServices < 10
+      assert.ok(
+        result.json.summary.totalServices < 10,
+        `totalServices should be less than 10 in local mode (got ${result.json.summary.totalServices})`
+      );
+
+      // Summary counts must still add up
+      const { summary } = result.json;
+      assert.strictEqual(
+        summary.passed + summary.failed + summary.warnings + summary.skipped,
+        summary.totalServices,
+        'Summary counts must add up to totalServices in local mode'
+      );
+    } finally {
+      testProject.cleanup();
+    }
+  });
+
+  it('should exclude remote service names from output when local mode is enabled', async () => {
+    const testProject = createTestProject({
+      withVaultMappings: true,
+      mappings: {},
+    });
+
+    const stateDir = path.join(testProject.path, '.claude', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'local-mode.json'),
+      JSON.stringify({ enabled: true, enabledAt: new Date().toISOString(), enabledBy: 'cto' }),
+      'utf8'
+    );
+
+    try {
+      const result = await runSetupValidate(testProject.path);
+
+      assert.ok(result.json, 'Should output valid JSON');
+
+      // These validator names exactly match entries in REMOTE_SERVERS and must be excluded.
+      // Note: the 'elastic' validator name does not match 'elastic-logs' in REMOTE_SERVERS,
+      // so it is intentionally omitted from this list.
+      const matchedRemoteValidators = ['vercel', 'render', 'github', 'cloudflare',
+        'supabase', 'resend', 'codecov', 'onepassword'];
+      for (const remote of matchedRemoteValidators) {
+        assert.ok(
+          !result.json.services[remote],
+          `${remote} must NOT appear in services output when local mode is active`
+        );
+      }
+
+      // shellSync is not in REMOTE_SERVERS and must still appear
+      assert.ok(
+        result.json.services.shellSync,
+        'shellSync must still appear in output in local mode (it is not in REMOTE_SERVERS)'
+      );
+    } finally {
+      testProject.cleanup();
+    }
+  });
+});
+
+// ============================================================================
 // Validator Credential Keys Tests
 // ============================================================================
 

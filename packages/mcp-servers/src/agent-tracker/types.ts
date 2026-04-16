@@ -127,6 +127,12 @@ export const SetLockdownModeArgsSchema = z.object({
 
 export const GetLockdownModeArgsSchema = z.object({});
 
+export const SetLocalModeArgsSchema = z.object({
+  enabled: z.boolean().describe('Enable (true) or disable (false) local prototyping mode. When enabled, remote MCP servers are excluded from .mcp.json and credential-dependent automation is skipped.'),
+});
+
+export const GetLocalModeArgsSchema = z.object({});
+
 // ============================================================================
 // Session Signal Schemas
 // ============================================================================
@@ -516,6 +522,8 @@ export type SetFocusModeArgs = z.infer<typeof SetFocusModeArgsSchema>;
 export type GetFocusModeArgs = z.infer<typeof GetFocusModeArgsSchema>;
 export type SetLockdownModeArgs = z.infer<typeof SetLockdownModeArgsSchema>;
 export type GetLockdownModeArgs = z.infer<typeof GetLockdownModeArgsSchema>;
+export type SetLocalModeArgs = z.infer<typeof SetLocalModeArgsSchema>;
+export type GetLocalModeArgs = z.infer<typeof GetLocalModeArgsSchema>;
 
 // Session Signal Types
 export type SendSessionSignalArgs = z.infer<typeof SendSessionSignalArgsSchema>;

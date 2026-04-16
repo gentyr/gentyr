@@ -2366,3 +2366,78 @@ describe('reapOrphanProcesses() — source structure', () => {
     );
   });
 });
+
+// ============================================================================
+// Local Prototyping Mode — structural validation
+// ============================================================================
+
+describe('Local Prototyping Mode — source structure', () => {
+  const AUTOMATION_PATH = path.join(process.cwd(), '.claude/hooks/hourly-automation.js');
+
+  it('should import isLocalModeEnabled from shared-mcp-config', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    assert.match(
+      code,
+      /import.*isLocalModeEnabled.*from.*shared-mcp-config/,
+      'hourly-automation.js must import isLocalModeEnabled from shared-mcp-config.js'
+    );
+  });
+
+  it('should read local mode state at the start of main()', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    // isLocalModeEnabled must be called in main() before the runIfDue calls
+    assert.match(
+      code,
+      /isLocalModeEnabled\(PROJECT_DIR\)/,
+      'main() must call isLocalModeEnabled(PROJECT_DIR)'
+    );
+  });
+
+  it('runIfDue accepts localModeSkip option', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    // The destructuring in runIfDue must include localModeSkip
+    assert.match(
+      code,
+      /localModeSkip/,
+      'runIfDue must accept and handle localModeSkip option'
+    );
+  });
+
+  it('should pass localModeSkip to staging health monitor runIfDue call', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    // The staging health monitor block must include localModeSkip
+    const stagingBlock = code.match(/Staging health monitor[\s\S]*?localModeSkip:/);
+    assert.ok(
+      stagingBlock,
+      'Staging health monitor runIfDue call must pass localModeSkip'
+    );
+  });
+
+  it('should pass localModeSkip to production health monitor runIfDue call', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const productionBlock = code.match(/Production health monitor[\s\S]*?localModeSkip:/);
+    assert.ok(
+      productionBlock,
+      'Production health monitor runIfDue call must pass localModeSkip'
+    );
+  });
+
+  it('should pass localModeSkip to user feedback runIfDue call', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    const feedbackBlock = code.match(/User feedback[\s\S]*?localModeSkip:/);
+    assert.ok(
+      feedbackBlock,
+      'User feedback runIfDue call must pass localModeSkip'
+    );
+  });
+
+  it('should return skipped: local_mode from runIfDue when localModeSkip is true', () => {
+    const code = fs.readFileSync(AUTOMATION_PATH, 'utf8');
+    // The runIfDue body must return { ran: false, skipped: 'local_mode' } when localModeSkip is set
+    assert.match(
+      code,
+      /skipped:\s*['"]local_mode['"]/,
+      "runIfDue must return skipped: 'local_mode' when local mode is active"
+    );
+  });
+});

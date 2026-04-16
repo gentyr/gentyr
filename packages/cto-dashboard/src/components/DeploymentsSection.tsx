@@ -181,6 +181,18 @@ function DeployStats({ stats }: { stats: DeploymentsData['stats'] }): React.Reac
 // ─── Main Section ────────────────────────────────────────────────────────
 
 export function DeploymentsSection({ data, tip }: DeploymentsSectionProps): React.ReactElement | null {
+  if (data.localModeDisabled) {
+    return (
+      <Section title="DEPLOYMENTS" borderColor="blue" width="100%" tip={tip}>
+        <Box flexDirection="column">
+          <Text color="yellow">Disabled — local mode active</Text>
+          <Text color="gray">{data.localModeMessage ?? 'Remote deployment servers not configured.'}</Text>
+          <Text color="gray">Run /local-mode to re-enable.</Text>
+        </Box>
+      </Section>
+    );
+  }
+
   if (!data.hasData) return null;
 
   return (

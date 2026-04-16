@@ -7,9 +7,17 @@
  * Fast-exits for non-strict-infra sessions (< 1ms overhead).
  */
 import { createInterface } from 'readline';
+import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
 
 // Fast exit: not a strict-infra session
 if (process.env.GENTYR_STRICT_INFRA_GUIDANCE !== 'true') {
+  process.stdout.write(JSON.stringify({ }));
+  process.exit(0);
+}
+
+// Fast exit: local mode active — Bash is allowed for infrastructure, no nudge needed
+const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+if (isLocalModeEnabled(projectDir)) {
   process.stdout.write(JSON.stringify({ }));
   process.exit(0);
 }

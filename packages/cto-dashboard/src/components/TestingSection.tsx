@@ -185,6 +185,16 @@ export function TestingSection({ data, tip }: TestingSectionProps): React.ReactE
             )}
           </Box>
         )}
+
+        {/* Codecov disabled notice (local mode) */}
+        {data.codecovDisabled && (
+          <Box marginTop={1}>
+            <Text color="yellow">
+              {data.codecovDisabledMessage ?? 'Codecov integration disabled — local mode active.'}
+            </Text>
+            <Text color="gray"> Run /local-mode to re-enable.</Text>
+          </Box>
+        )}
       </Box>
     </Section>
   );

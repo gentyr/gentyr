@@ -38,6 +38,7 @@ import { buildSpawnEnv } from './lib/spawn-env.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { buildStrictInfraGuidancePrompt } from './lib/strict-infra-guidance-prompt.js';
 import { resolveCategory, buildPromptFromCategory } from './lib/task-category.js';
+import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
 // shouldAllowSpawn import removed — session queue handles memory pressure internally
 
 // Try to import better-sqlite3 for task runner
@@ -746,7 +747,13 @@ function saveState(state) {
  * @returns {Promise<{ran: boolean, skipped?: string, result?: any}>}
  */
 async function runIfDue(key, opts) {
-  const { state, now, intervals, stateKey, configToggle, config, fn, label = key } = opts;
+  const { state, now, intervals, stateKey, configToggle, config, fn, label = key, localModeSkip } = opts;
+
+  // Check local mode skip
+  if (localModeSkip) {
+    log(`${label}: skipped (local mode)`);
+    return { ran: false, skipped: 'local_mode' };
+  }
 
   // Check feature toggle
   if (configToggle && config && config[configToggle] === false) {
@@ -2760,6 +2767,11 @@ async function main() {
 
   // Overdrive and reaper removed — session queue manages concurrency and stale PID cleanup.
 
+  const localMode = isLocalModeEnabled(PROJECT_DIR);
+  if (localMode) {
+    log('Local mode is enabled. Skipping remote service automations.');
+  }
+
   const state = getState();
   const now = Date.now();
 
@@ -3251,6 +3263,7 @@ async function main() {
     stateKey: 'lastStagingHealthCheck',
     configToggle: 'stagingHealthMonitorEnabled',
     config,
+    localModeSkip: localMode,
     label: 'Staging health monitor',
     fn: async () => {
       try {
@@ -3285,6 +3298,7 @@ async function main() {
     stateKey: 'lastProductionHealthCheck',
     configToggle: 'productionHealthMonitorEnabled',
     config,
+    localModeSkip: localMode,
     label: 'Production health monitor',
     fn: async () => {
       if (!hasHealthMonitorCredentials()) {
@@ -3565,6 +3579,7 @@ async function main() {
         stateKey: 'lastStagingPromotionCheck',
         configToggle: 'stagingPromotionEnabled',
         config,
+        localModeSkip: localMode,
         label: 'Staging promotion',
         fn: async () => {
           log('Staging promotion: midnight window - checking for promotable commits...');
@@ -3670,6 +3685,7 @@ async function main() {
       stateKey: 'lastPreviewPromotionCheck',
       configToggle: 'previewPromotionEnabled',
       config,
+      localModeSkip: localMode,
       label: 'Preview promotion',
       fn: async () => {
         log('Preview promotion: checking for promotable commits...');
@@ -3931,6 +3947,7 @@ Then exit.`,
     stateKey: 'lastUserFeedbackRun',
     configToggle: 'userFeedbackEnabled',
     config,
+    localModeSkip: localMode,
     label: 'User feedback',
     fn: async () => {
       const feedbackResult = await runFeedbackPipeline(log, state, saveState, getCooldown('user_feedback', 120) * 60 * 1000);
@@ -3958,6 +3975,7 @@ Then exit.`,
     stateKey: 'lastDemoValidationRun',
     configToggle: 'demoValidationEnabled',
     config,
+    localModeSkip: localMode,
     label: 'Demo validation',
     fn: async () => {
       // Query enabled demo scenarios from user-feedback.db
@@ -4300,6 +4318,7 @@ Then exit.`,
     stateKey: 'lastDailyFeedbackCheck',
     configToggle: 'dailyFeedbackEnabled',
     config,
+    localModeSkip: localMode,
     label: 'Daily feedback',
     fn: async () => {
       log('Daily feedback: querying all enabled personas...');

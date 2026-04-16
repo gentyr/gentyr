@@ -44,6 +44,16 @@ try {
   buildPromptFromCategory = null;
 }
 
+// Local mode check
+let isLocalModeEnabled;
+try {
+  const mod = await import(path.resolve(__dirname, '..', 'lib', 'shared-mcp-config.js'));
+  isLocalModeEnabled = mod.isLocalModeEnabled;
+} catch {
+  // Non-fatal: local mode detection unavailable, default to false
+  isLocalModeEnabled = () => false;
+}
+
 // ---------------------------------------------------------------------------
 // CLI ARGS
 // ---------------------------------------------------------------------------
@@ -359,6 +369,10 @@ All git operations (commit, push, PR, merge) are handled by the project-manager 
 You MUST NOT run git add, git commit, git push, or gh pr create yourself.
 ` : '';
 
+  const _projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const devServerHint = isLocalModeEnabled(_projectDir)
+    ? 'Dev server not running → start it manually via Bash: `pnpm run dev`'
+    : 'Secret resolution failed → check dev server: `mcp__secret-sync__secret_dev_server_status`, start if needed';
   const errorHandlingBlock = `## Error Handling — DIAGNOSE BEFORE GIVING UP
 
 When a tool call or sub-agent fails:
@@ -366,7 +380,7 @@ When a tool call or sub-agent fails:
 1. **Read the error message** — understand what actually failed
 2. **Diagnose** — is this transient (retry), a missing dependency (fix), or a systemic blocker (escalate)?
 3. **Attempt recovery** — try at least ONE alternative approach before declaring blocked:
-   - Secret resolution failed → check dev server: \`mcp__secret-sync__secret_dev_server_status\`, start if needed
+   - ${devServerHint}
    - Build failed → read the error output, fix the code, rebuild
    - Demo failed → read \`check_demo_result\`, inspect screenshots/frames, fix and re-run
    - Tool timeout → retry once with a longer timeout

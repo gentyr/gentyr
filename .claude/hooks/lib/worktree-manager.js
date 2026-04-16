@@ -277,8 +277,13 @@ export function provisionWorktree(worktreePath, options = {}) {
       }
     }
 
-    // Inject CLAUDE_WORKTREE_DIR and port env vars for worktree-aware MCP servers
-    const worktreeAwareServers = ['playwright', 'secret-sync'];
+    // Inject CLAUDE_WORKTREE_DIR and port env vars for worktree-aware MCP servers.
+    // 'secret-sync' is only included when present in the config — in local prototyping
+    // mode it is excluded from .mcp.json and must not receive port env injection.
+    const configuredServerNames = new Set(Object.keys(mcpConfig.mcpServers));
+    const worktreeAwareServers = ['playwright', 'secret-sync'].filter(s =>
+      [...configuredServerNames].some(name => name.includes(s))
+    );
     let ports = null;
     try {
       ports = allocatePortBlock(worktreePath);
@@ -286,7 +291,7 @@ export function provisionWorktree(worktreePath, options = {}) {
       console.error(`[worktree-manager] CRITICAL: port allocation failed for ${worktreePath}: ${err.message}. Worktree will have NO isolated ports — demos will default to port 3000 and likely show blank pages.`);
     }
 
-    for (const serverName of Object.keys(mcpConfig.mcpServers)) {
+    for (const serverName of configuredServerNames) {
       const server = mcpConfig.mcpServers[serverName];
       if (!server.env) continue;
       // Match servers by name containing the worktree-aware identifiers

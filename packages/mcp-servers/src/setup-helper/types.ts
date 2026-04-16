@@ -117,3 +117,16 @@ export type SetupResponse =
   | NeedsInputResponse
   | ReadyResponse
   | ErrorResponse;
+
+// ============================================================================
+// Services Config Tool Schemas (mirrored from secret-sync for local mode access)
+// ============================================================================
+
+export const UpdateServicesConfigArgsSchema = z.object({
+  updates: z.record(z.string(), z.unknown())
+    .describe('Top-level key-value pairs to merge into services.json. The "secrets" key is not allowed.'),
+});
+export type UpdateServicesConfigArgs = z.infer<typeof UpdateServicesConfigArgsSchema>;
+
+export const GetServicesConfigArgsSchema = z.object({});
+export type GetServicesConfigArgs = z.infer<typeof GetServicesConfigArgsSchema>;

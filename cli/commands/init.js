@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { resolveFrameworkDir, resolveFrameworkRelative, detectInstallModel } from '../lib/resolve-framework.js';
+import { setLocalMode, isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
 
 /** Validate OP token format (alphanumeric + dashes/underscores, no shell metacharacters). */
 const SAFE_OP_TOKEN_RE = /^[a-zA-Z0-9_-]{10,}$/;
@@ -32,7 +33,7 @@ const NC = '\x1b[0m';
  * @param {string[]} args
  */
 function parseArgs(args) {
-  const opts = { opToken: '', makerkit: null };
+  const opts = { opToken: '', makerkit: null, local: false };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--op-token' && args[i + 1]) {
       opts.opToken = args[++i];
@@ -40,6 +41,8 @@ function parseArgs(args) {
       opts.makerkit = 'force';
     } else if (args[i] === '--no-makerkit') {
       opts.makerkit = 'skip';
+    } else if (args[i] === '--local') {
+      opts.local = true;
     }
   }
   return opts;
@@ -67,6 +70,11 @@ function preCreateStateFiles(projectDir) {
     path.join(claudeDir, 'protection-state.json'),
     path.join(claudeDir, 'protected-action-approvals.json'),
   ];
+  // local-mode.json — pre-created with disabled default so setLocalMode() can overwrite if needed
+  const localModeFile = path.join(stateDir, 'local-mode.json');
+  if (!fs.existsSync(localModeFile)) {
+    fs.writeFileSync(localModeFile, JSON.stringify({ enabled: false }, null, 2) + '\n');
+  }
 
   for (const file of jsonFiles) {
     if (!fs.existsSync(file)) fs.writeFileSync(file, '{}');
@@ -307,11 +315,23 @@ export default async function init(args) {
 
   console.log(`${GREEN}Installing GENTYR...${NC}`);
   console.log(`  Model: ${model === 'npm' ? 'node_modules/gentyr (npm)' : '.claude-framework (legacy)'}`);
+  if (opts.local) {
+    console.log(`  Mode:  local prototyping (remote servers excluded)`);
+  }
   console.log('');
 
   // 1. Symlinks
   console.log(`${YELLOW}Setting up .claude/ directory...${NC}`);
   preCreateStateFiles(projectDir);
+
+  // Activate local mode before MCP config generation so generateMcpJson() sees the flag
+  if (opts.local) {
+    if (opts.opToken) {
+      console.log(`  ${YELLOW}Local mode active — OP token saved but remote servers excluded from .mcp.json${NC}`);
+    }
+    setLocalMode(projectDir, true, 'init');
+    console.log('  Local mode: enabled');
+  }
   createDirectorySymlinks(projectDir, frameworkRel);
   createAgentSymlinks(projectDir, frameworkRel, agents, { preserveProjectAgents: true });
 
@@ -350,8 +370,8 @@ export default async function init(args) {
   console.log(`\n${YELLOW}Generating .mcp.json...${NC}`);
   generateMcpJson(projectDir, frameworkDir, frameworkRel, { opToken: opts.opToken });
 
-  // 3c. Shell profile OP token
-  if (opts.opToken) {
+  // 3c. Shell profile OP token (skipped in local mode)
+  if (opts.opToken && !opts.local) {
     console.log(`\n${YELLOW}Syncing OP_SERVICE_ACCOUNT_TOKEN to shell profile...${NC}`);
     setupShellOpToken(opts.opToken);
   }
@@ -421,4 +441,7 @@ export default async function init(args) {
   console.log('');
   console.log(`Framework version: ${state.version}`);
   console.log(`Install model: ${model === 'npm' ? 'node_modules/gentyr' : '.claude-framework'}`);
+  if (isLocalModeEnabled(projectDir)) {
+    console.log(`Local mode:        ${GREEN}enabled${NC}`);
+  }
 }

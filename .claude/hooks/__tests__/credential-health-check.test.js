@@ -189,6 +189,58 @@ describe('credential-health-check.js - Unit Tests', () => {
     });
   });
 
+  describe('Local Mode Detection', () => {
+    it('should import isLocalModeEnabled from shared-mcp-config', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      assert.match(
+        hookCode,
+        /import.*isLocalModeEnabled.*from.*shared-mcp-config/,
+        'Must import isLocalModeEnabled from shared-mcp-config.js'
+      );
+    });
+
+    it('should call isLocalModeEnabled and exit early when local mode is active', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // Should call isLocalModeEnabled
+      assert.match(
+        hookCode,
+        /isLocalModeEnabled\(projectDir\)/,
+        'Must call isLocalModeEnabled(projectDir)'
+      );
+
+      // The local mode check must call output(null) then exit
+      assert.match(
+        hookCode,
+        /isLocalModeEnabled\(projectDir\)[\s\S]*?output\(null\)[\s\S]*?process\.exit\(0\)/,
+        'Must call output(null) and exit early when local mode is active'
+      );
+    });
+
+    it('should check local mode after spawned-session check but before credential checks', () => {
+      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
+
+      // Search for the runtime if-statement positions, not import positions
+      const spawnedIdx = hookCode.indexOf("if (process.env.CLAUDE_SPAWNED_SESSION === 'true')");
+      const localModeIdx = hookCode.indexOf('if (isLocalModeEnabled(projectDir))');
+      const requiredKeysIdx = hookCode.indexOf('const requiredKeys = new Set()');
+
+      assert.ok(spawnedIdx > -1, 'Must have spawned session if-check');
+      assert.ok(localModeIdx > -1, 'Must have local mode if-check');
+      assert.ok(requiredKeysIdx > -1, 'Must have requiredKeys declaration');
+
+      assert.ok(
+        spawnedIdx < localModeIdx,
+        'Spawned session check must come before local mode check'
+      );
+      assert.ok(
+        localModeIdx < requiredKeysIdx,
+        'Local mode check must come before credential loading'
+      );
+    });
+  });
+
   describe('Required Credential Detection', () => {
     it('should read required keys from protected-actions.json', () => {
       const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');

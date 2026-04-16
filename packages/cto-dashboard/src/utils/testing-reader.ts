@@ -11,6 +11,14 @@ import { execFileSync } from 'child_process';
 import { resolveCredential } from './credentials.js';
 
 const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
+
+function isLocalMode(): boolean {
+  try {
+    const statePath = path.join(PROJECT_DIR, '.claude', 'state', 'local-mode.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as { enabled?: unknown };
+    return state.enabled === true;
+  } catch { return false; }
+}
 const AGENT_TRACKER_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
 
 // Test failure state can be at project root or workspace level
@@ -61,6 +69,8 @@ export interface TestingData {
     coveragePercent: number;
     trend: number[];  // 7 values for sparkline
   } | null;
+  codecovDisabled?: boolean;
+  codecovDisabledMessage?: string;
 }
 
 interface AgentHistoryEntry {
@@ -278,6 +288,13 @@ export function getTestingData(): TestingData {
     }
   }
 
+  // Mark codecov as disabled when local mode is active, but still return local test data
+  if (isLocalMode()) {
+    result.codecovDisabled = true;
+    result.codecovDisabledMessage = 'Codecov integration disabled — local mode active.';
+    result.codecov = null;
+  }
+
   return result;
 }
 
@@ -318,6 +335,8 @@ function resolveCodecovCredentials(): { token: string; owner: string; repo: stri
  * Auto-discovers credentials from vault-mappings.json and git remote.
  */
 export async function getCodecovData(): Promise<{ coveragePercent: number; trend: number[] } | null> {
+  if (isLocalMode()) return null;
+
   const creds = resolveCodecovCredentials();
   if (!creds) return null;
 

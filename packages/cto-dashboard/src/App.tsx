@@ -338,7 +338,7 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       )}
 
       {/* Deployments */}
-      {showPage2 && deployments.hasData && (
+      {showPage2 && (deployments.hasData || deployments.localModeDisabled) && (
         <Box marginTop={1}>
           <DeploymentsSection data={deployments} tip="/show deployments" />
         </Box>
@@ -352,14 +352,14 @@ export function App({ data, timelineEvents, trajectory, automatedInstances, depu
       )}
 
       {/* Infrastructure */}
-      {showPage2 && infra.hasData && (
+      {showPage2 && (infra.hasData || infra.localModeDisabled) && (
         <Box marginTop={1}>
           <InfraSection data={infra} deployments={deployments} tip="/show infra" />
         </Box>
       )}
 
       {/* Logging */}
-      {showPage2 && logging.hasData && (
+      {showPage2 && (logging.hasData || logging.localModeDisabled) && (
         <Box marginTop={1}>
           <LoggingSection data={logging} tip="/show logging" />
         </Box>
