@@ -10,13 +10,88 @@
  * @module lib/strict-infra-guidance-prompt
  */
 
+import { isLocalModeEnabled } from '../../../lib/shared-mcp-config.js';
+
+/**
+ * Build local-mode infrastructure prompt (no remote services available).
+ * Used when local prototyping mode is active — omits all secret-sync, onepassword,
+ * and secret_dev_server references, replacing them with direct Bash instructions.
+ *
+ * @param {string} worktreePath - Absolute path to the agent's worktree
+ * @param {boolean} [demoInvolved=false] - Whether demo scenarios are involved
+ * @returns {string} Markdown instruction block
+ */
+function buildLocalModeInfraGuidancePrompt(worktreePath, demoInvolved = false) {
+  const demoSection = demoInvolved ? `
+
+### Demo Execution
+
+You are in local prototyping mode. Remote MCP demo tools are unavailable.
+Run Playwright directly via Bash for E2E testing:
+\`\`\`
+cd ${worktreePath} && pnpm test:e2e
+\`\`\`
+Or use the Playwright CLI:
+\`\`\`
+cd ${worktreePath} && npx playwright test
+\`\`\`
+` : '';
+
+  return `
+## Infrastructure Access (LOCAL MODE)
+
+You are in a git worktree at \`${worktreePath}\`. **Local prototyping mode is active** —
+remote services (1Password, secret-sync, onepassword MCP) are unavailable.
+Use Bash directly for all infrastructure operations.
+
+### Dev Server
+
+Start the dev server manually:
+\`\`\`
+cd ${worktreePath} && pnpm run dev
+\`\`\`
+Or in background: \`pnpm run dev &\`
+
+### Builds & Tests
+
+Run builds and tests directly via Bash:
+\`\`\`
+cd ${worktreePath} && pnpm build
+cd ${worktreePath} && pnpm test
+\`\`\`
+
+### Package Installation
+
+Install packages directly:
+\`\`\`
+cd ${worktreePath} && pnpm install
+\`\`\`
+${demoSection}### Allowed Bash Operations
+All infrastructure Bash commands are permitted in local mode:
+- \`pnpm run dev\` / \`npm run dev\`
+- \`pnpm build\` / \`npm run build\`
+- \`pnpm install\` / \`npm install\`
+- \`npx playwright test\`
+
+### Git Operations
+All git operations (commit, push, PR, merge) are handled by the project-manager sub-agent.
+You MUST NOT run git add, git commit, git push, or gh pr create yourself.
+`;
+}
+
 /**
  * Build MCP-first infrastructure prompt for strict-infra agents.
+ * Returns a local-mode variant (Bash-based) when local prototyping mode is active.
+ *
  * @param {string} worktreePath - Absolute path to the agent's worktree
  * @param {boolean} [demoInvolved=false] - Whether demo scenarios are involved
  * @returns {string} Markdown instruction block
  */
 export function buildStrictInfraGuidancePrompt(worktreePath, demoInvolved = false) {
+  const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  if (isLocalModeEnabled(PROJECT_DIR)) {
+    return buildLocalModeInfraGuidancePrompt(worktreePath, demoInvolved);
+  }
   const demoSection = demoInvolved ? `
 
 ### Demo Execution (MANDATORY MCP WORKFLOW)

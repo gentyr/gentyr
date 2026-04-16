@@ -26,6 +26,7 @@ import { enqueueSession, preemptForCtoTask } from './lib/session-queue.js';
 import { debugLog } from './lib/debug-log.js';
 import { buildStrictInfraGuidancePrompt } from './lib/strict-infra-guidance-prompt.js';
 import { resolveCategory, buildPromptFromCategory } from './lib/task-category.js';
+import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
 
 // Try to import better-sqlite3 for DB access
 let Database = null;
@@ -260,6 +261,9 @@ is responsible for merging your work AND removing this worktree. If you skip it,
 will be orphaned and your changes will not be merged.
 ` : '';
 
+  const devServerHint = isLocalModeEnabled(PROJECT_DIR)
+    ? 'Dev server not running → start it manually via Bash: `pnpm run dev`'
+    : 'Secret resolution failed → check dev server: `mcp__secret-sync__secret_dev_server_status`, start if needed';
   const errorHandlingBlock = `## Error Handling — DIAGNOSE BEFORE GIVING UP
 
 When a tool call or sub-agent fails:
@@ -267,7 +271,7 @@ When a tool call or sub-agent fails:
 1. **Read the error message** — understand what actually failed
 2. **Diagnose** — is this transient (retry), a missing dependency (fix), or a systemic blocker (escalate)?
 3. **Attempt recovery** — try at least ONE alternative approach before declaring blocked:
-   - Secret resolution failed → check dev server: \`mcp__secret-sync__secret_dev_server_status\`, start if needed
+   - ${devServerHint}
    - Build failed → read the error output, fix the code, rebuild
    - Demo failed → read \`check_demo_result\`, inspect screenshots/frames, fix and re-run
    - Tool timeout → retry once with a longer timeout

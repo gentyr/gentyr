@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveFrameworkDir, resolveFrameworkRelative, detectInstallModel } from '../lib/resolve-framework.js';
 import { readState, readFrameworkVersion, computeConfigHash, computeClaudeMdHash } from '../lib/state.js';
+import { getLocalModeState } from '../../lib/shared-mcp-config.js';
 
 const RED = '\x1b[0;31m';
 const GREEN = '\x1b[0;32m';
@@ -74,6 +75,15 @@ export default async function status() {
     if (ps.modified_by) console.log(`Modified by:      ${ps.modified_by}`);
   } catch {
     console.log('Protection:       unknown');
+  }
+
+  // Check local mode
+  console.log('');
+  const localModeState = getLocalModeState(projectDir);
+  if (localModeState) {
+    console.log(`Local mode:       ${GREEN}enabled (since ${localModeState.enabledAt})${NC}`);
+  } else {
+    console.log('Local mode:       disabled');
   }
 
   // Check symlinks

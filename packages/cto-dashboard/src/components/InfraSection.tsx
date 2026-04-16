@@ -49,6 +49,18 @@ function EventRow({ deploy }: { deploy: DeploymentEntry }): React.ReactElement {
 }
 
 export function InfraSection({ data, deployments, tip }: InfraSectionProps): React.ReactElement | null {
+  if (data.localModeDisabled) {
+    return (
+      <Section title="INFRASTRUCTURE" borderColor="magenta" width="100%" tip={tip}>
+        <Box flexDirection="column">
+          <Text color="yellow">Disabled — local mode active</Text>
+          <Text color="gray">{data.localModeMessage ?? 'Remote services not configured.'}</Text>
+          <Text color="gray">Run /local-mode to re-enable.</Text>
+        </Box>
+      </Section>
+    );
+  }
+
   if (!data.hasData) return null;
 
   const renderColor = providerColor(data.render.available, data.render.suspendedCount > 0);

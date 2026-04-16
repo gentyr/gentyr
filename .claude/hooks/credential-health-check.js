@@ -18,6 +18,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { backupVaultMappings, restoreVaultMappings } from '../../lib/vault-mappings.js';
+import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
 
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
@@ -45,6 +46,12 @@ function output(message) {
 try {
   // Skip for spawned sessions — don't clutter agent output
   if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
+    output(null);
+    process.exit(0);
+  }
+
+  // Skip credential checks in local mode
+  if (isLocalModeEnabled(projectDir)) {
     output(null);
     process.exit(0);
   }

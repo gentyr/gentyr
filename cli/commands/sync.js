@@ -13,6 +13,7 @@ import { generateMcpJson, mergeSettings, updateClaudeMd, updateGitignore } from 
 import { createDirectorySymlinks, createAgentSymlinks, createReporterSymlinks } from '../lib/symlinks.js';
 import { buildState, writeState, getFrameworkAgents } from '../lib/state.js';
 import { restoreVaultMappings } from '../../lib/vault-mappings.js';
+import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
 
 const RED = '\x1b[0;31m';
 const GREEN = '\x1b[0;32m';
@@ -292,6 +293,9 @@ export default async function sync(args) {
   try {
 
   console.log(`${GREEN}Syncing GENTYR...${NC}`);
+  if (isLocalModeEnabled(projectDir)) {
+    console.log(`  Local mode: active (remote servers will be excluded from .mcp.json)`);
+  }
 
   // 0. One-time migration: remove rotation proxy remnants from existing installs
   cleanupRotationProxy(projectDir);

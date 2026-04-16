@@ -6,7 +6,19 @@
  * result in { available: false } for that provider.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { resolveCredential, resolveElasticEndpoint, fetchWithTimeout } from './credentials.js';
+
+const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
+
+function isLocalMode(): boolean {
+  try {
+    const statePath = path.join(PROJECT_DIR, '.claude', 'state', 'local-mode.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as { enabled?: unknown };
+    return state.enabled === true;
+  } catch { return false; }
+}
 
 // ============================================================================
 // Types
@@ -14,6 +26,8 @@ import { resolveCredential, resolveElasticEndpoint, fetchWithTimeout } from './c
 
 export interface InfraData {
   hasData: boolean;
+  localModeDisabled?: boolean;
+  localModeMessage?: string;
   render: { serviceCount: number; suspendedCount: number; available: boolean; lastDeployAt: string | null };
   vercel: { projectCount: number; errorDeploys: number; buildingCount: number; available: boolean };
   supabase: { healthy: boolean; available: boolean };
@@ -183,6 +197,19 @@ async function queryCloudflare(): Promise<InfraData['cloudflare']> {
 // ============================================================================
 
 export async function getInfraData(): Promise<InfraData> {
+  if (isLocalMode()) {
+    return {
+      hasData: false,
+      localModeDisabled: true,
+      localModeMessage: 'Infrastructure status disabled — local mode active. Remote services (Render, Vercel, Supabase, Elastic, Cloudflare) not configured.',
+      render: { serviceCount: 0, suspendedCount: 0, available: false, lastDeployAt: null },
+      vercel: { projectCount: 0, errorDeploys: 0, buildingCount: 0, available: false },
+      supabase: { healthy: false, available: false },
+      elastic: { available: false, totalLogs1h: 0, errorCount1h: 0, warnCount1h: 0, topServices: [] },
+      cloudflare: { status: 'unavailable', nameServers: [], planName: null, available: false },
+    };
+  }
+
   const [renderResult, vercelResult, supabaseResult, elasticResult, cloudflareResult] =
     await Promise.allSettled([
       queryRender(),

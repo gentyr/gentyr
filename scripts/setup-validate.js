@@ -18,6 +18,7 @@
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { isLocalModeEnabled, REMOTE_SERVERS } from '../lib/shared-mcp-config.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -654,10 +655,21 @@ async function main() {
   const mappings = readVaultMappings(projectDir);
   const credentials = resolveAllCredentials(mappings);
 
+  // In local mode, skip remote service validators entirely
+  const localMode = isLocalModeEnabled(projectDir);
+  const remoteSet = new Set(REMOTE_SERVERS);
+  const activeValidators = localMode
+    ? SERVICE_VALIDATORS.filter(v => !remoteSet.has(v.name))
+    : SERVICE_VALIDATORS;
+
+  if (localMode) {
+    process.stderr.write('[setup-validate] Local mode: skipping remote service validation\n');
+  }
+
   // Run all validations in parallel
   const results = {};
 
-  const validationPromises = SERVICE_VALIDATORS.map(async (validator) => {
+  const validationPromises = activeValidators.map(async (validator) => {
     // Check if all required credentials are available
     const requiredKeys = [...validator.credentialKeys];
 
@@ -711,7 +723,7 @@ async function main() {
   // Build summary
   const statuses = Object.values(results);
   const summary = {
-    totalServices: SERVICE_VALIDATORS.length,
+    totalServices: activeValidators.length,
     passed: statuses.filter(r => r.status === 'pass').length,
     failed: statuses.filter(r => r.status === 'fail').length,
     warnings: statuses.filter(r => r.status === 'warn').length,

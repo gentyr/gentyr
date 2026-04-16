@@ -13,6 +13,14 @@ import { resolveCredential, fetchWithTimeout } from './credentials.js';
 const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'hourly-automation-state.json');
 
+function isLocalMode(): boolean {
+  try {
+    const statePath = path.join(PROJECT_DIR, '.claude', 'state', 'local-mode.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as { enabled?: unknown };
+    return state.enabled === true;
+  } catch { return false; }
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -32,6 +40,8 @@ export interface DeploymentEntry {
 
 export interface DeploymentsData {
   hasData: boolean;
+  localModeDisabled?: boolean;
+  localModeMessage?: string;
   render: {
     services: Array<{ name: string; status: string; type: string; suspended: boolean; url?: string }>;
     recentDeploys: DeploymentEntry[];
@@ -300,6 +310,20 @@ function readPipelineState(): DeploymentsData['pipeline'] {
 // ============================================================================
 
 export async function getDeploymentsData(): Promise<DeploymentsData> {
+  if (isLocalMode()) {
+    return {
+      hasData: false,
+      localModeDisabled: true,
+      localModeMessage: 'Deployment status disabled — local mode active. Render and Vercel servers not configured.',
+      render: { services: [], recentDeploys: [] },
+      vercel: { projects: [], recentDeploys: [] },
+      pipeline: readPipelineState(),
+      combined: [],
+      byEnvironment: { preview: [], staging: [], production: [] },
+      stats: { totalDeploys24h: 0, successCount24h: 0, failedCount24h: 0 },
+    };
+  }
+
   const result: DeploymentsData = {
     hasData: false,
     render: { services: [], recentDeploys: [] },

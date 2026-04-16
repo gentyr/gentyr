@@ -19,6 +19,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readOpTokenFromPlist } from '../../lib/op-token-resolver.js';
+import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
 
 // ============================================================================
 // Output helpers
@@ -222,24 +223,26 @@ function statBasedSync(frameworkDir) {
       const template = fs.readFileSync(templatePath, 'utf8');
       const content = template.replace(/\$\{FRAMEWORK_PATH\}/g, frameworkRel);
 
-      // Preserve OP token
+      // Preserve OP token (skip in local mode — no remote servers need it)
       let opToken = '';
-      try {
-        const existing = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
-        for (const server of Object.values(existing.mcpServers || {})) {
-          if (server.env && server.env.OP_SERVICE_ACCOUNT_TOKEN) {
-            opToken = server.env.OP_SERVICE_ACCOUNT_TOKEN;
-            break;
+      if (!isLocalModeEnabled(projectDir)) {
+        try {
+          const existing = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+          for (const server of Object.values(existing.mcpServers || {})) {
+            if (server.env && server.env.OP_SERVICE_ACCOUNT_TOKEN) {
+              opToken = server.env.OP_SERVICE_ACCOUNT_TOKEN;
+              break;
+            }
           }
+        } catch (_) {
         }
-      } catch (_) {
-      }
 
-      // Fallback: read from launchd plist if not in .mcp.json
-      if (!opToken) {
-        opToken = readOpTokenFromPlist();
-        if (opToken) {
-          debugLog('[gentyr-sync] Recovered OP_SERVICE_ACCOUNT_TOKEN from launchd plist');
+        // Fallback: read from launchd plist if not in .mcp.json
+        if (!opToken) {
+          opToken = readOpTokenFromPlist();
+          if (opToken) {
+            debugLog('[gentyr-sync] Recovered OP_SERVICE_ACCOUNT_TOKEN from launchd plist');
+          }
         }
       }
 

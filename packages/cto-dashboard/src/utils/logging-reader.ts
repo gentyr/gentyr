@@ -6,7 +6,19 @@
  * storage estimates, and source coverage assessment.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { resolveCredential, resolveElasticEndpoint, fetchWithTimeout } from './credentials.js';
+
+const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
+
+function isLocalMode(): boolean {
+  try {
+    const statePath = path.join(PROJECT_DIR, '.claude', 'state', 'local-mode.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as { enabled?: unknown };
+    return state.enabled === true;
+  } catch { return false; }
+}
 
 // ============================================================================
 // Types
@@ -14,6 +26,8 @@ import { resolveCredential, resolveElasticEndpoint, fetchWithTimeout } from './c
 
 export interface LoggingData {
   hasData: boolean;
+  localModeDisabled?: boolean;
+  localModeMessage?: string;
 
   // Volume metrics
   totalLogs1h: number;
@@ -361,6 +375,24 @@ function assessSourceCoverage(
 // ============================================================================
 
 export async function getLoggingData(): Promise<LoggingData> {
+  if (isLocalMode()) {
+    return {
+      hasData: false,
+      localModeDisabled: true,
+      localModeMessage: 'Log analytics disabled — local mode active. Elasticsearch not configured.',
+      totalLogs1h: 0,
+      totalLogs24h: 0,
+      volumeTimeseries: [],
+      byLevel: [],
+      byService: [],
+      bySource: [],
+      topErrors: [],
+      topWarnings: [],
+      storage: { estimatedDailyGB: 0, estimatedMonthlyCost: 0, indexCount: 0 },
+      sourceCoverage: [],
+    };
+  }
+
   const empty: LoggingData = {
     hasData: false,
     totalLogs1h: 0,

@@ -42,6 +42,18 @@ function coverageDot(status: 'active' | 'missing' | 'low-volume'): string {
 }
 
 export function LoggingSection({ data, tip }: LoggingSectionProps): React.ReactElement | null {
+  if (data.localModeDisabled) {
+    return (
+      <Section title="LOGGING" borderColor="cyan" width="100%" tip={tip}>
+        <Box flexDirection="column">
+          <Text color="yellow">Disabled — local mode active</Text>
+          <Text color="gray">{data.localModeMessage ?? 'Elasticsearch not configured.'}</Text>
+          <Text color="gray">Run /local-mode to re-enable.</Text>
+        </Box>
+      </Section>
+    );
+  }
+
   if (!data.hasData) return null;
 
   const errorCount = data.byLevel.find(l => l.level === 'error')?.count || 0;

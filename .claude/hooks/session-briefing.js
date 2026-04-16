@@ -28,6 +28,7 @@ const AGENT_ID = process.env.CLAUDE_AGENT_ID || null;
 // DB paths
 const QUEUE_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
 const FOCUS_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'focus-mode.json');
+const LOCAL_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'local-mode.json');
 const USER_PROMPTS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'user-prompts.db');
 const PLANS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
@@ -117,6 +118,17 @@ function getFocusModeState() {
   try {
     if (!fs.existsSync(FOCUS_MODE_PATH)) return null;
     const state = JSON.parse(fs.readFileSync(FOCUS_MODE_PATH, 'utf8'));
+    if (state.enabled === true) return state;
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function getLocalModeState() {
+  try {
+    if (!fs.existsSync(LOCAL_MODE_PATH)) return null;
+    const state = JSON.parse(fs.readFileSync(LOCAL_MODE_PATH, 'utf8'));
     if (state.enabled === true) return state;
     return null;
   } catch (_) {
@@ -462,6 +474,13 @@ function buildInteractiveBriefing() {
     lines.push('');
   }
 
+  // Local mode notice
+  const localMode = getLocalModeState();
+  if (localMode) {
+    lines.push('[LOCAL MODE] Remote servers excluded. Local tooling only. Run /local-mode to disable.');
+    lines.push('');
+  }
+
   // Queue state
   const queue = getQueueState();
   if (queue) {
@@ -617,6 +636,13 @@ function buildInteractiveBriefing() {
 
 function buildSpawnedBriefing() {
   const lines = ['[SESSION BRIEFING \u2014 MANDATORY PRE-WORK PROTOCOL]', ''];
+
+  // Local mode notice
+  const localMode = getLocalModeState();
+  if (localMode) {
+    lines.push('[LOCAL MODE] Remote servers excluded. Local tooling only. Run /local-mode to disable.');
+    lines.push('');
+  }
 
   // Task context
   const task = getCurrentTaskDetails();

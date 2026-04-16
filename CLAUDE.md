@@ -48,6 +48,29 @@ Root-owned critical hook files prevent agent modification. Tamper detection uses
 
 > Full details: [Protection Security Model](docs/CLAUDE-REFERENCE.md#protection-security-model)
 
+### Local Prototyping Mode
+
+```bash
+npx gentyr init --local              # Install without remote servers
+npx gentyr status                    # Shows "Local mode: enabled"
+```
+
+Excludes all 10 remote MCP servers (`github`, `cloudflare`, `supabase`, `vercel`, `render`, `codecov`, `resend`, `elastic-logs`, `onepassword`, `secret-sync`) from `.mcp.json`. **1Password is completely unnecessary in local mode.** All 24 local servers (todo-db, agent-tracker, playwright, plans, persistent tasks, etc.) remain fully functional.
+
+**Two-layer design:** Layer 1 (MCP servers in `.mcp.json`) requires `npx gentyr sync` + session restart after toggling. Layer 2 (automation behavior, credential checks, agent prompts) takes effect immediately.
+
+**Toggle at runtime:** `/local-mode` slash command or `set_local_mode` MCP tool on agent-tracker. Enabling is unrestricted. Disabling requires CTO APPROVE BYPASS (same HMAC mechanism as lockdown).
+
+**What's skipped in local mode:**
+- Credential health check (no 1Password warnings)
+- Health monitors (staging/production), promotion pipelines, demo validation with OP secrets, feedback spawning
+- Remote MCP tool references stripped from agent prompts and CLAUDE.md.gentyr-section
+- Dashboard remote panels show "Disabled — local mode active" instead of empty data
+
+**What keeps running:** Session reviver/reaper, worktree cleanup, task runner, lint checker, antipattern hunter, triage, merge chain (falls back to feature -> main when `origin/preview` doesn't exist).
+
+**Unavailable in local mode:** `/push-secrets`, `/push-migrations`, `/hotfix`, `secret-manager` agent.
+
 ### Uninstall
 
 ```bash

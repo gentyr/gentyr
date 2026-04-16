@@ -18,8 +18,11 @@ import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import { resolveFrameworkDir } from '../shared/resolve-framework.js';
 import {
   GentyrSetupArgsSchema,
+  UpdateServicesConfigArgsSchema,
+  GetServicesConfigArgsSchema,
   type Action,
   type GentyrSetupArgs,
+  type UpdateServicesConfigArgs,
   type SetupResponse,
   type DetectedState,
   type Question,
@@ -28,6 +31,7 @@ import {
   type OverviewResponse,
   type OverviewAction,
 } from './types.js';
+import { ServicesConfigSchema } from '../secret-sync/types.js';
 
 // ============================================================================
 // Path Resolution
@@ -501,12 +505,86 @@ Three-phase workflow:
 
 For OP token commands, instruct the user to run in their terminal (not through Claude) so the token stays private.`;
 
+// ============================================================================
+// Services Config Handlers (available in local mode when secret-sync is absent)
+// ============================================================================
+
+async function getServicesConfig(): Promise<string> {
+  const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+  try {
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+    const { secrets: _, ...safe } = raw;
+    return JSON.stringify(safe, null, 2);
+  } catch {
+    return JSON.stringify({ error: 'services.json not found or unreadable' });
+  }
+}
+
+async function updateServicesConfig(args: UpdateServicesConfigArgs): Promise<string> {
+  if ('secrets' in args.updates) {
+    return JSON.stringify({ error: 'Cannot modify secrets via this tool.' });
+  }
+  if ('secretProfiles' in args.updates) {
+    return JSON.stringify({ error: 'Cannot modify secretProfiles via this tool.' });
+  }
+
+  const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+  const pendingPath = path.join(PROJECT_DIR, '.claude', 'state', 'services-config-pending.json');
+
+  let current: Record<string, unknown> = {};
+  try {
+    current = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+  } catch { /* file may not exist yet */ }
+
+  const merged = { ...current, ...args.updates };
+
+  const result = ServicesConfigSchema.safeParse(merged);
+  if (!result.success) {
+    return JSON.stringify({ error: `Validation failed: ${result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
+  }
+
+  try {
+    fs.writeFileSync(configPath, JSON.stringify(result.data, null, 2) + '\n');
+    return JSON.stringify({ applied: true, pending: false, updatedKeys: Object.keys(args.updates) });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EACCES') {
+      let pending: Record<string, unknown> = {};
+      try { pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8')) as Record<string, unknown>; } catch { /* new */ }
+      const validatedData = result.data as Record<string, unknown>;
+      for (const key of Object.keys(args.updates)) {
+        if (key in validatedData) pending[key] = validatedData[key];
+      }
+      fs.mkdirSync(path.dirname(pendingPath), { recursive: true });
+      fs.writeFileSync(pendingPath, JSON.stringify(pending, null, 2) + '\n');
+      return JSON.stringify({
+        applied: false,
+        pending: true,
+        updatedKeys: Object.keys(args.updates),
+        message: 'Config staged — will be applied on next "npx gentyr sync".',
+      });
+    }
+    throw err;
+  }
+}
+
 export const tools: AnyToolHandler[] = [
   {
     name: 'gentyr_setup',
     description: TOOL_DESCRIPTION,
     schema: GentyrSetupArgsSchema,
     handler: handleSetup,
+  },
+  {
+    name: 'get_services_config',
+    description: 'Read current services.json config (excluding secrets). Available in local mode when the secret-sync server is absent.',
+    schema: GetServicesConfigArgsSchema,
+    handler: getServicesConfig,
+  },
+  {
+    name: 'update_services_config',
+    description: 'Update services.json config fields (e.g., worktreeArtifactCopy, worktreeBuildCommand, worktreeInstallTimeout, devServices). Validates against schema. If file is root-owned, stages changes for next "npx gentyr sync". Cannot modify "secrets" key. Available in local mode when the secret-sync server is absent.',
+    schema: UpdateServicesConfigArgsSchema,
+    handler: updateServicesConfig as (args: unknown) => unknown,
   },
 ];
 
