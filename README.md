@@ -70,6 +70,12 @@ npx gentyr init --op-token <token>
 npx gentyr protect
 ```
 
+No 1Password? Use local mode — all 24 local servers stay fully functional:
+
+```bash
+npx gentyr init --local
+```
+
 Start Claude Code in your project and run `/setup-gentyr` to configure credentials. See [docs/SETUP-GUIDE.md](docs/SETUP-GUIDE.md) for details.
 
 ## the CTO dashboard
