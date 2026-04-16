@@ -41,6 +41,52 @@ const INFRA_CRED_KEYS = new Set([
 let _resolvedCredentials: Record<string, string> | null = null;
 
 /**
+ * Retrieve the OP service account token from the environment or .mcp.json fallback.
+ * Returns undefined if unavailable.
+ */
+function getOpToken(): string | undefined {
+  if (process.env.OP_SERVICE_ACCOUNT_TOKEN) return process.env.OP_SERVICE_ACCOUNT_TOKEN;
+  try {
+    const mcpPath = path.join(PROJECT_DIR, '.mcp.json');
+    const mcpData = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+    return mcpData?.mcpServers?.playwright?.env?.OP_SERVICE_ACCOUNT_TOKEN as string | undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * Resolve any op:// references in an env var map using the dashboard's OP token.
+ * Non-op:// values are passed through unchanged.
+ * Resolution failures are non-fatal: the key is still included with its raw value
+ * so the demo can start and produce a clear auth error rather than silently skipping vars.
+ */
+function resolveOpEnvVars(envVars: Record<string, string>): Record<string, string> {
+  const opToken = getOpToken();
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(envVars)) {
+    if (typeof value === 'string' && value.startsWith('op://')) {
+      if (!opToken) {
+        // No token available — pass the raw reference so the demo fails loudly
+        resolved[key] = value;
+        continue;
+      }
+      try {
+        resolved[key] = execFileSync('op', ['read', value], {
+          encoding: 'utf-8',
+          timeout: 15000,
+          env: { ...process.env, OP_SERVICE_ACCOUNT_TOKEN: opToken },
+        }).trim();
+      } catch {
+        // Resolution failed — pass raw value so the demo fails with a visible error
+        resolved[key] = value;
+      }
+    } else {
+      resolved[key] = value;
+    }
+  }
+  return resolved;
+}
+
+/**
  * Resolve credentials from vault-mappings.json + protected-actions.json.
  * Cached after first call (secrets don't change during a dashboard session).
  */
@@ -64,16 +110,7 @@ function resolvePlaywrightCredentials(): Record<string, string> {
     credentialKeys = actions.servers?.playwright?.credentialKeys || [];
   } catch { return _resolvedCredentials; }
 
-  // Get OP token (env → launchd plist fallback)
-  let opToken = process.env.OP_SERVICE_ACCOUNT_TOKEN;
-  if (!opToken) {
-    try {
-      // Read from .mcp.json playwright env (same location as the MCP server uses)
-      const mcpPath = path.join(PROJECT_DIR, '.mcp.json');
-      const mcpData = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
-      opToken = mcpData?.mcpServers?.playwright?.env?.OP_SERVICE_ACCOUNT_TOKEN;
-    } catch { /* */ }
-  }
+  const opToken = getOpToken();
 
   for (const key of credentialKeys) {
     const ref = mappings[key];
@@ -136,6 +173,13 @@ export async function launchDemo(scenario: DemoScenarioItem): Promise<RunningPro
 
   const cmdArgs = ['playwright', 'test', scenario.testFile, '--project', scenario.playwrightProject, '--headed', '--reporter', 'list'];
 
+  // Resolve per-scenario env_vars (including any op:// references).
+  // demoDevModeEnv is already merged into resolvePlaywrightCredentials().
+  // Scenario vars are applied AFTER so they take precedence over demoDevModeEnv.
+  const scenarioEnv: Record<string, string> = scenario.envVars
+    ? resolveOpEnvVars(scenario.envVars)
+    : {};
+
   const child = spawn('npx', cmdArgs, {
     detached: true,
     stdio: ['ignore', fd, fd],
@@ -145,6 +189,7 @@ export async function launchDemo(scenario: DemoScenarioItem): Promise<RunningPro
       DEMO_SLOW_MO: '800',
       DEMO_SHOW_CURSOR: '1',
       DEMO_MAXIMIZE: '1',
+      ...scenarioEnv,
     }),
   });
   child.unref();

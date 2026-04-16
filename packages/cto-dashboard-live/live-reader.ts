@@ -537,36 +537,50 @@ interface ScenarioRow {
   category: string | null; playwright_project: string; test_file: string;
   sort_order: number; enabled: number; headed: number;
   last_recorded_at: string | null; recording_path: string | null; persona_name: string;
+  env_vars: string | null;
 }
 
 export function readDemoScenarios(): DemoScenarioItem[] {
   const db = openDb(path.join(PROJECT_DIR, '.claude', 'user-feedback.db'));
   if (!db) return [];
   try {
-    const rows = db.prepare(`
+    // Check whether env_vars column exists (it may not be present in older DBs)
+    let hasEnvVars = false;
+    try { db.prepare('SELECT env_vars FROM demo_scenarios LIMIT 0').run(); hasEnvVars = true; } catch { /* column not yet migrated */ }
+
+    const query = `
       SELECT ds.id, ds.persona_id, ds.title, ds.description, ds.category,
              ds.playwright_project, ds.test_file, ds.sort_order, ds.enabled,
              ds.headed, ds.last_recorded_at, ds.recording_path,
+             ${hasEnvVars ? 'ds.env_vars,' : ''}
              p.name AS persona_name
       FROM demo_scenarios ds
       JOIN personas p ON p.id = ds.persona_id
       ORDER BY ds.sort_order ASC, ds.title ASC
-    `).all() as ScenarioRow[];
-    return rows.map(r => ({
-      id: r.id,
-      personaId: r.persona_id,
-      personaName: r.persona_name,
-      title: r.title,
-      description: r.description,
-      category: r.category,
-      playwrightProject: r.playwright_project,
-      testFile: r.test_file,
-      sortOrder: r.sort_order,
-      enabled: r.enabled === 1,
-      headed: r.headed === 1,
-      lastRecordedAt: r.last_recorded_at,
-      recordingPath: r.recording_path && fs.existsSync(r.recording_path) ? r.recording_path : null,
-    }));
+    `;
+    const rows = db.prepare(query).all() as ScenarioRow[];
+    return rows.map(r => {
+      let envVars: Record<string, string> | null = null;
+      if (hasEnvVars && r.env_vars) {
+        try { envVars = JSON.parse(r.env_vars) as Record<string, string>; } catch { /* invalid JSON — treat as null */ }
+      }
+      return {
+        id: r.id,
+        personaId: r.persona_id,
+        personaName: r.persona_name,
+        title: r.title,
+        description: r.description,
+        category: r.category,
+        playwrightProject: r.playwright_project,
+        testFile: r.test_file,
+        sortOrder: r.sort_order,
+        enabled: r.enabled === 1,
+        headed: r.headed === 1,
+        lastRecordedAt: r.last_recorded_at,
+        recordingPath: r.recording_path && fs.existsSync(r.recording_path) ? r.recording_path : null,
+        envVars,
+      };
+    });
   } catch { return []; }
   finally { closeDb(db); }
 }

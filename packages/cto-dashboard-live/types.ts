@@ -129,6 +129,7 @@ export interface DemoScenarioItem {
   headed: boolean;
   lastRecordedAt: string | null;
   recordingPath: string | null;
+  envVars: Record<string, string> | null;
 }
 
 export type TestRunner = 'playwright' | 'vitest' | 'jest';
