@@ -9,6 +9,8 @@
  *   up/down   select session
  *   Enter     enter signal mode
  *   [ / ]     navigate summaries
+ *   pgUp/pgDn scroll the activity stream (pgDn=newer, pgUp=older)
+ *   end       jump back to latest activity (scroll offset 0)
  *
  * Keyboard map (when in signal mode):
  *   printable char   append to text
@@ -101,6 +103,12 @@ export function ObserveView({ data, bodyHeight, bodyWidth, isActive }: ObserveVi
   const [summaryIndex, setSummaryIndex] = useState(0);
   useEffect(() => { setSummaryIndex(0); }, [effectiveSelectedId]);
 
+  // Activity stream scroll state — offset from the most recent entry (0 = follow live)
+  const [streamScrollOffset, setStreamScrollOffset] = useState(0);
+  const prevEntriesLenRef = useRef(0);
+  // Reset scroll on session change
+  useEffect(() => { setStreamScrollOffset(0); prevEntriesLenRef.current = 0; }, [effectiveSelectedId]);
+
   // Signal state
   const [signalMode, setSignalMode] = useState(false);
   const [signalText, setSignalText] = useState('');
@@ -139,6 +147,18 @@ export function ObserveView({ data, bodyHeight, bodyWidth, isActive }: ObserveVi
   }, [entries, injectedEntries]);
   // Clear injected entries when switching sessions
   useEffect(() => { setInjectedEntries([]); }, [effectiveSelectedId]);
+
+  // Pin viewport when new entries arrive while user has scrolled up
+  useEffect(() => {
+    const prevLen = prevEntriesLenRef.current;
+    const currLen = mergedEntries.length;
+    if (prevLen > 0 && currLen > prevLen && streamScrollOffset > 0) {
+      const delta = currLen - prevLen;
+      setStreamScrollOffset(prev => Math.min(currLen - 1, prev + delta));
+    }
+    prevEntriesLenRef.current = currLen;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mergedEntries.length]);
 
   // Detect if selected session is completed/dead
   const TERMINAL_TOOLS = ['mcp__todo-db__complete_task', 'mcp__todo-db__summarize_work', 'complete_task', 'summarize_work'];
@@ -270,6 +290,21 @@ export function ObserveView({ data, bodyHeight, bodyWidth, isActive }: ObserveVi
       setSummaryIndex(prev => prev + 1);
       return;
     }
+    if (key.pageUp) {
+      const maxOffset = Math.max(0, mergedEntries.length - 1);
+      const step = Math.max(1, Math.floor(streamHeight / 2));
+      setStreamScrollOffset(prev => Math.min(maxOffset, prev + step));
+      return;
+    }
+    if (key.pageDown) {
+      const step = Math.max(1, Math.floor(streamHeight / 2));
+      setStreamScrollOffset(prev => Math.max(0, prev - step));
+      return;
+    }
+    if (key.end) {
+      setStreamScrollOffset(0);
+      return;
+    }
     if (key.return) {
       if (effectiveSelectedId) {
         setSignalMode(true);
@@ -296,7 +331,8 @@ export function ObserveView({ data, bodyHeight, bodyWidth, isActive }: ObserveVi
   const rightInnerHeight = Math.max(2, bodyHeight - RIGHT_HEADER_OVERHEAD);
   const streamHeight = Math.max(1, rightInnerHeight - SIGNAL_ROW_HEIGHT - DIVIDER_HEIGHT);
 
-  const connectedLabel = isConnected ? ' live' : ' disconnected';
+  const scrolledLabel = streamScrollOffset > 0 ? ` — scrolled (${streamScrollOffset}, end to follow)` : '';
+  const connectedLabel = (isConnected ? ' live' : ' disconnected') + scrolledLabel;
 
   return (
     <Box flexDirection="row" height={bodyHeight}>
@@ -332,6 +368,7 @@ export function ObserveView({ data, bodyHeight, bodyWidth, isActive }: ObserveVi
           entries={mergedEntries}
           height={streamHeight}
           width={rightWidth - 4}
+          scrollOffset={streamScrollOffset}
         />
         <Box height={DIVIDER_HEIGHT}>
           <Text dimColor>{'\u2500'.repeat(Math.max(1, rightWidth - 4))}</Text>
