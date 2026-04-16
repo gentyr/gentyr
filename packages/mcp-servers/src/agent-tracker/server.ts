@@ -2960,8 +2960,8 @@ function writeAutomationConfig(config: Record<string, unknown>): void {
   fs.writeFileSync(AUTOMATION_CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
 }
 
-function setLockdownMode(args: SetLockdownModeArgs): object | ErrorResult {
-  // SECURITY: spawned sessions are NEVER allowed to disable lockdown.
+async function setLockdownMode(args: SetLockdownModeArgs): Promise<object | ErrorResult> {
+  // SECURITY: spawned sessions NEVER allowed to disable lockdown (hard guard).
   // This prevents a compromised or misbehaving agent from using the MCP tool
   // to remove its own constraints.
   if (!args.enabled && process.env.CLAUDE_SPAWNED_SESSION === 'true') {
@@ -2971,6 +2971,38 @@ function setLockdownMode(args: SetLockdownModeArgs): object | ErrorResult {
     };
   }
 
+  // Disabling lockdown requires a valid HMAC-signed approval token (APPROVE BYPASS flow).
+  if (!args.enabled) {
+    const tokenModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'bypass-approval-token.js');
+    let tokenResult: { valid: boolean; code?: string; request_id?: string; reason?: string };
+    try {
+      const mod = await import(tokenModulePath);
+      tokenResult = mod.verifyAndConsumeApprovalToken(PROJECT_DIR);
+    } catch (err) {
+      return {
+        error: `G001 FAIL-CLOSED: Could not load bypass-approval-token module: ${(err as Error).message}`,
+      };
+    }
+
+    if (!tokenResult.valid) {
+      return {
+        error: [
+          `Disabling lockdown requires CTO approval via APPROVE BYPASS flow.`,
+          `Token check failed: ${tokenResult.reason || 'no valid token'}.`,
+          ``,
+          `To disable lockdown:`,
+          `  1. Call mcp__deputy-cto__request_bypass with reason "Disable interactive session lockdown"`,
+          `  2. CTO types "APPROVE BYPASS <code>" in chat (code returned by step 1)`,
+          `  3. Call mcp__agent-tracker__set_lockdown_mode({ enabled: false }) again`,
+          ``,
+          `The agent cannot forge the 6-char code (server-generated, stored in deputy-cto.db) `,
+          `or the HMAC signature (signed with .claude/protection-key).`,
+        ].join('\n'),
+      };
+    }
+  }
+
+  // Token was valid (already consumed) OR we're enabling. Proceed with state change.
   const config = readAutomationConfig();
   if (args.enabled) {
     delete config.interactiveLockdownDisabled;
@@ -2979,30 +3011,6 @@ function setLockdownMode(args: SetLockdownModeArgs): object | ErrorResult {
   }
   writeAutomationConfig(config);
 
-  // Create auto-approved bypass-request audit record when disabling
-  let bypassRequestId: string | null = null;
-  if (!args.enabled) {
-    try {
-      const db = getBypassDb();
-      try {
-        bypassRequestId = `bypass-lockdown-${Date.now()}`;
-        db.prepare(
-          `INSERT INTO bypass_requests (id, task_type, task_id, task_title, category, summary, details, status, resolution_context, resolved_at, resolved_by)
-           VALUES (?, 'system', 'lockdown-disable', 'CTO lockdown disable', 'lockdown', ?, ?, 'approved', 'Auto-approved: CTO-initiated lockdown disable from interactive session', datetime('now'), 'cto')`
-        ).run(
-          bypassRequestId,
-          'CTO disabled interactive session lockdown',
-          `Lockdown disabled via set_lockdown_mode from interactive CTO session. Session can now edit files and spawn code-modifying agents.`,
-        );
-      } finally {
-        db.close();
-      }
-    } catch {
-      // Audit record is non-fatal — lockdown toggle must not fail due to DB errors
-      bypassRequestId = null;
-    }
-  }
-
   // Emit audit event to session-audit.log
   const auditEventName = args.enabled ? 'lockdown_enabled' : 'lockdown_disabled';
   try {
@@ -3010,7 +3018,7 @@ function setLockdownMode(args: SetLockdownModeArgs): object | ErrorResult {
     if (fs.existsSync(auditPath)) {
       import(auditPath).then((auditModule: { auditEvent?: (event: string, data?: object) => void }) => {
         if (typeof auditModule.auditEvent === 'function') {
-          auditModule.auditEvent(auditEventName, { enabled: args.enabled, bypassRequestId });
+          auditModule.auditEvent(auditEventName, { enabled: args.enabled });
         }
       }).catch(() => { /* non-fatal */ });
     }
@@ -3021,10 +3029,9 @@ function setLockdownMode(args: SetLockdownModeArgs): object | ErrorResult {
   return {
     success: true,
     lockdown_enabled: args.enabled,
-    bypass_request_id: bypassRequestId,
     message: args.enabled
       ? 'Lockdown ENABLED — interactive sessions operate as deputy-CTO console. File-editing and code-modifying agents are blocked.'
-      : 'Lockdown DISABLED — all tools available in interactive sessions. Audit record created in bypass-requests.db. Re-enable with set_lockdown_mode({ enabled: true }).',
+      : 'Lockdown DISABLED — all tools available in interactive sessions. HMAC-verified CTO approval token was consumed. Re-enable with set_lockdown_mode({ enabled: true }).',
   };
 }
 
@@ -4610,55 +4617,13 @@ function getBypassDb(): InstanceType<typeof Database> {
       resolved_at TEXT,
       resolved_by TEXT DEFAULT 'cto',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      CHECK (task_type IN ('persistent', 'todo', 'system')),
+      CHECK (task_type IN ('persistent', 'todo')),
       CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled')),
-      CHECK (category IN ('destructive_operation', 'scope_change', 'ambiguous_requirement', 'resource_access', 'general', 'lockdown'))
+      CHECK (category IN ('destructive_operation', 'scope_change', 'ambiguous_requirement', 'resource_access', 'general'))
     );
     CREATE INDEX IF NOT EXISTS idx_bypass_status ON bypass_requests(status);
     CREATE INDEX IF NOT EXISTS idx_bypass_task ON bypass_requests(task_type, task_id);
   `);
-
-  // Migration: expand CHECK constraints for existing DBs to support 'system' task type and 'lockdown' category
-  try {
-    db.exec("INSERT INTO bypass_requests (id, task_type, task_id, task_title, category, summary, status) VALUES ('__migration_probe__', 'system', '_', '_', 'lockdown', '_', 'cancelled')");
-    db.exec("DELETE FROM bypass_requests WHERE id = '__migration_probe__'");
-  } catch {
-    // Old CHECK constraint — migrate by recreating the table
-    try {
-      db.exec('BEGIN');
-      db.exec('ALTER TABLE bypass_requests RENAME TO bypass_requests_old');
-      db.exec(`
-        CREATE TABLE bypass_requests (
-          id TEXT PRIMARY KEY,
-          task_type TEXT NOT NULL,
-          task_id TEXT NOT NULL,
-          task_title TEXT NOT NULL,
-          agent_id TEXT,
-          session_queue_id TEXT,
-          category TEXT NOT NULL DEFAULT 'general',
-          summary TEXT NOT NULL,
-          details TEXT,
-          status TEXT NOT NULL DEFAULT 'pending',
-          resolution_context TEXT,
-          resolved_at TEXT,
-          resolved_by TEXT DEFAULT 'cto',
-          created_at TEXT NOT NULL DEFAULT (datetime('now')),
-          CHECK (task_type IN ('persistent', 'todo', 'system')),
-          CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled')),
-          CHECK (category IN ('destructive_operation', 'scope_change', 'ambiguous_requirement', 'resource_access', 'general', 'lockdown'))
-        )
-      `);
-      db.exec('INSERT INTO bypass_requests SELECT * FROM bypass_requests_old');
-      db.exec('DROP TABLE bypass_requests_old');
-      db.exec('CREATE INDEX IF NOT EXISTS idx_bypass_status ON bypass_requests(status)');
-      db.exec('CREATE INDEX IF NOT EXISTS idx_bypass_task ON bypass_requests(task_type, task_id)');
-      db.exec('COMMIT');
-    } catch (migErr) {
-      try { db.exec('ROLLBACK'); } catch { /* ignore */ }
-      process.stderr.write(`[bypass-db] CHECK constraint migration failed: ${(migErr as Error).message}\n`);
-    }
-  }
-
   return db;
 }
 
@@ -5190,7 +5155,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'set_lockdown_mode',
-    description: 'Enable or disable the interactive session lockdown. Enabling is unrestricted. Disabling creates an auto-approved audit record in bypass-requests.db. Spawned sessions cannot disable lockdown (enforced server-side).',
+    description: 'Enable or disable the interactive session lockdown. Enabling is unrestricted. Disabling requires a valid HMAC-signed approval token from the APPROVE BYPASS flow (CTO must physically type APPROVE BYPASS <code> in chat). Spawned sessions are blocked server-side.',
     schema: SetLockdownModeArgsSchema,
     handler: setLockdownMode,
   },
