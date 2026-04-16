@@ -228,6 +228,22 @@ Validate all external input with Zod schemas.
 Never commit credentials, API keys, or secrets.
 `;
   fs.writeFileSync(path.join(projectDir, 'specs', 'global', 'CORE-INVARIANTS.md'), coreInvariants);
+
+  const stackPreferences = `# Stack Preferences
+
+## S001: TypeScript Strict Mode
+All source code must be TypeScript with strict mode enabled. Prefer explicit types over \`any\`. Use type inference where types are obvious, explicit annotations at module boundaries (exports, function signatures).
+
+## S002: UI Components — shadcn/ui
+Use shadcn/ui as the component library. Prefer composing existing shadcn components over building custom UI from scratch. Follow the shadcn patterns: components in \`components/ui/\`, composed components alongside features. Install new components via \`npx shadcn@latest add <component>\`.
+
+## S003: Testing — Vitest
+Use Vitest as the test runner. Prefer \`describe\`/\`it\`/\`expect\` patterns. Co-locate test files next to source (\`*.test.ts\` or \`__tests__/\` directories). Use \`vi.mock()\` for module mocking, \`vi.fn()\` for function stubs.
+
+## S004: Package Manager — pnpm
+Use pnpm as the package manager. Use \`pnpm add\`, \`pnpm install\`, \`pnpm run\`. Respect the lockfile (\`pnpm-lock.yaml\`).
+`;
+  fs.writeFileSync(path.join(projectDir, 'specs', 'global', 'STACK-PREFERENCES.md'), stackPreferences);
   console.log('  Created specs/ directory structure');
 }
 
