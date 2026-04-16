@@ -567,6 +567,85 @@ export function forceReleaseResource(resourceId, reason = 'cto_override') {
 }
 
 /**
+ * Force-acquire a resource lock, displacing the current holder.
+ *
+ * Atomically (single SQLite transaction):
+ *   1. Re-enqueues the current holder as a 'waiting' entry (so they get promoted
+ *      when the force-acquirer releases).
+ *   2. Assigns the lock to the new caller with TTL.
+ *
+ * Unlike forceReleaseResource + acquireResource, this avoids promoting a waiter
+ * in the gap between release and acquire. Designed for CTO-priority preemption.
+ *
+ * @param {string} resourceId - ID of the resource to force-acquire
+ * @param {string} agentId - New holder's agent ID
+ * @param {string|null} queueId - New holder's session-queue ID (nullable)
+ * @param {string|null} title - Human-readable description
+ * @param {object} [opts={}]
+ * @param {number} [opts.ttlMinutes] - Lock TTL in minutes (defaults to resource registry value)
+ * @param {string} [opts.reEnqueuePriority='urgent'] - Priority for the displaced holder's queue entry
+ * @returns {{ acquired: boolean, prev_holder?: object }}
+ */
+export function forceAcquireResource(resourceId, agentId, queueId, title, opts = {}) {
+  if (!resourceId) throw new Error('forceAcquireResource: resourceId is required');
+  if (!agentId) throw new Error('forceAcquireResource: agentId is required');
+
+  const reEnqueuePriority = opts.reEnqueuePriority ?? 'urgent';
+  const db = getDb();
+
+  return db.transaction(() => {
+    // Ensure resource lock row exists
+    db.prepare("INSERT OR IGNORE INTO resource_locks (resource_id) VALUES (?)").run(resourceId);
+
+    const lock = db.prepare("SELECT * FROM resource_locks WHERE resource_id = ?").get(resourceId);
+    const ttlMinutes = opts.ttlMinutes ?? getResourceTtl(db, resourceId);
+    const ttlMs = ttlMinutes * 60 * 1000;
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
+
+    let prevHolder = null;
+
+    // If held by someone else, re-enqueue them as a waiter
+    if (lock && lock.holder_agent_id && lock.holder_agent_id !== agentId) {
+      prevHolder = {
+        agent_id: lock.holder_agent_id,
+        queue_id: lock.holder_queue_id,
+        title: lock.holder_title,
+        acquired_at: lock.acquired_at,
+      };
+
+      // Re-enqueue displaced holder so they get promoted on release
+      const queueEntryId = generateQueueEntryId();
+      db.prepare(
+        "INSERT INTO resource_queue (id, resource_id, agent_id, queue_id, title, priority, status) VALUES (?, ?, ?, ?, ?, ?, 'waiting')"
+      ).run(queueEntryId, resourceId, lock.holder_agent_id, lock.holder_queue_id ?? null, lock.holder_title ?? null, reEnqueuePriority);
+
+      log(`Displaced holder re-enqueued: resource_id=${resourceId}, agent_id=${lock.holder_agent_id}, priority=${reEnqueuePriority}, queue_entry_id=${queueEntryId}`);
+    }
+
+    // Assign lock to the new caller
+    db.prepare(
+      "UPDATE resource_locks SET holder_agent_id = ?, holder_queue_id = ?, holder_title = ?, " +
+      "acquired_at = datetime('now'), expires_at = ?, heartbeat_at = datetime('now') WHERE resource_id = ?"
+    ).run(agentId, queueId ?? null, title ?? null, expiresAt, resourceId);
+
+    log(`Lock force-acquired: resource_id=${resourceId}, agent_id=${agentId}, ttl=${ttlMinutes}min, title="${title}", prev_holder=${prevHolder?.agent_id ?? 'none'}`);
+
+    auditEvent('resource_lock_force_acquired', {
+      resource_id: resourceId,
+      agent_id: agentId,
+      queue_id: queueId,
+      title,
+      expires_at: expiresAt,
+      prev_holder_agent_id: prevHolder?.agent_id ?? null,
+      prev_holder_title: prevHolder?.title ?? null,
+    });
+
+    return { acquired: true, prev_holder: prevHolder };
+  })();
+}
+
+/**
  * Renew the TTL (heartbeat) on a resource lock.
  *
  * The lock holder should call this every ~5 minutes during long sessions

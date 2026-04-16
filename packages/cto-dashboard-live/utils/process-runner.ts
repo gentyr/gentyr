@@ -9,6 +9,7 @@ import * as path from 'path';
 import { spawn, execFileSync } from 'child_process';
 import type { DemoScenarioItem, TestFileItem, RunningProcess } from '../types.js';
 import { isProcessAlive } from '../live-reader.js';
+import { preemptForCtoDashboardDemo, releaseCtoDashboardDemo } from './display-lock-manager.js';
 
 const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
 
@@ -126,7 +127,10 @@ function buildDemoEnv(extra?: Record<string, string>): Record<string, string> {
   return env;
 }
 
-export function launchDemo(scenario: DemoScenarioItem): RunningProcess {
+export async function launchDemo(scenario: DemoScenarioItem): Promise<RunningProcess> {
+  // Preempt display/chrome-bridge locks — displaced agents are re-enqueued and signaled
+  await preemptForCtoDashboardDemo(scenario.title);
+
   const outputFile = makeOutputFile('demo', scenario.id);
   const fd = fs.openSync(outputFile, 'a');
 
@@ -156,6 +160,10 @@ export function launchDemo(scenario: DemoScenarioItem): RunningProcess {
     outputFile,
     exitCode: null,
   };
+}
+
+export async function releaseDemo(): Promise<void> {
+  await releaseCtoDashboardDemo();
 }
 
 export function launchTest(testFile: TestFileItem): RunningProcess {
