@@ -1908,8 +1908,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     }
 
     // Progress-based monitoring constants
-    const GRACE_MS = 90_000;
-    const STALL_MS = Math.max(90_000, (args.timeout ?? 120000) > 120000 ? (args.timeout ?? 120000) / 2 : 90_000);
+    const GRACE_MS = 30_000; // 30s startup grace — demos must emit progress early
+    const STALL_MS = 45_000; // 45s silence = stalled — demos must checkpoint every 30s
     const CHECK_INTERVAL_MS = 5_000;
     const STARTUP_CHECK_MS = 15_000;
     let lastProgressEventAt = Date.now();
@@ -2072,7 +2072,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           clearInterval(bgMonitorInterval);
           const entry = demoRuns.get(demoPid);
           if (entry && entry.status === 'running') {
-            entry.failure_summary = `Stalled: no progress for ${Math.round(STALL_MS / 1000)}s after ${Math.round(GRACE_MS / 1000)}s grace period. Last output: ${lastOutputLine || '(none)'}`;
+            entry.failure_summary = `Stalled: no progress for ${Math.round(STALL_MS / 1000)}s after ${Math.round(GRACE_MS / 1000)}s grace period. Last output: ${lastOutputLine || '(none)'}. FIX: The demo has a long-running operation that produces no output. Add console.warn('[demo-progress] ...') checkpoints every 10-15s inside helpers, or break the operation into multiple test.step() blocks. See "Progress Checkpoints" in the demo-manager agent definition.`;
           }
           if (child.pid) {
             try { process.kill(-child.pid, 'SIGTERM'); } catch {}

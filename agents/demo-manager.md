@@ -137,6 +137,62 @@ test('scenario title', async ({ page }) => {
 });
 ```
 
+### Progress Checkpoints (MANDATORY)
+
+The GENTYR stall detector kills demos that produce no output for 45 seconds (after a 30-second startup grace). Every long-running operation MUST emit progress checkpoints so the detector knows the demo is alive.
+
+**Rule: No `test.step()` should run silently for more than 20 seconds.**
+
+**Pattern 1 — Break long operations into sub-steps:**
+```typescript
+// BAD: One monolithic step that runs 90 seconds silently
+await test.step('Log into AWS', async () => {
+  await loginToAwsConsole(page); // 90s of silence → stall killed
+});
+
+// GOOD: Each phase is its own step with natural progress events
+await test.step('Enter email', async () => {
+  await page.fill('#email', email);
+  await page.click('#next');
+});
+await test.step('Enter password', async () => {
+  await page.fill('#password', password);
+  await page.click('#signin');
+});
+await test.step('Complete MFA', async () => {
+  const code = await getMfaCode();
+  await page.fill('#mfa', code);
+  await page.click('#verify');
+});
+```
+
+Each `test.step()` boundary emits a `test_begin`/`test_end` JSONL event that resets the stall timer.
+
+**Pattern 2 — Emit console.warn checkpoints from helper functions:**
+
+When a helper function runs internally for a long time (e.g., polling for an email, waiting for a redirect chain), it MUST emit `console.warn` progress lines. Any stdout/stderr output resets the stall timer.
+
+```typescript
+// Inside a long-running helper:
+console.warn('[demo-progress] Waiting for MFA email...');
+await pollForEmail(inbox, { timeout: 60_000 });
+console.warn('[demo-progress] MFA email received, extracting code...');
+const code = extractOtp(email.body);
+console.warn('[demo-progress] OTP extracted, filling verify form...');
+```
+
+**When to use which pattern:**
+- **Pattern 1** (sub-steps) when YOU control the demo file and can restructure the flow
+- **Pattern 2** (console.warn) when calling a shared helper that you cannot restructure, OR inside helpers that have internal waits (polling, retries, redirect chains)
+
+**Both patterns can combine** — use sub-steps for the high-level flow AND console.warn inside helpers for fine-grained progress.
+
+**Key timing constraints:**
+- Startup grace: 30 seconds (from process start to first progress signal)
+- Stall threshold: 45 seconds of silence = process killed
+- Target checkpoint interval: every 10-15 seconds during active work
+- Any `console.warn`, `console.log`, or `test.step()` boundary resets the timer
+
 ### 4. Validation
 
 Always run `run_prerequisites` first, then `preflight_check` before any demo execution. Run headless first to verify behavior, then headed for the final recording.
@@ -239,7 +295,7 @@ For each persona-feature mapping:
 - **Scenario**: navigate to specific state, create test records
 - Always set `health_check` — makes prerequisites idempotent
 - Always set `timeout_ms` — default 30000ms for setup, 10000ms for health checks
-- **Stall detection**: Foreground prerequisites are killed if they produce no stdout/stderr for 60 seconds. Commands that legitimately run silently for long periods should emit progress output or use `run_as_background: true` with a health check instead.
+- **Stall detection**: Foreground prerequisites are killed after 120 seconds of no stdout/stderr. Background demo processes are killed after 45 seconds of silence (following a 30-second grace period). Always emit progress output — see "Progress Checkpoints" above.
 
 ### Auto-Set PLAYWRIGHT_BASE_URL
 
