@@ -19,7 +19,7 @@
  */
 
 const { createServer } = require('net');
-const { mkdirSync, rmSync, readdirSync, statSync, existsSync, chmodSync } = require('fs');
+const { mkdirSync, rmSync, readdirSync, statSync, existsSync, chmodSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { userInfo } = require('os');
 
@@ -267,6 +267,16 @@ function processNextRequest() {
 // --- Message Routing ----------------------------------------------------------
 
 function handleChromeMessage(msg) {
+  // Handle demo interrupt signal — write signal file for MCP server to detect
+  if (msg.type === 'demo_interrupt') {
+    const signalPath = join('/tmp', 'gentyr-demo-interrupt.signal');
+    try {
+      writeFileSync(signalPath, new Date().toISOString());
+    } catch { /* best-effort */ }
+    writeNativeMessage({ type: 'demo_interrupt_ack' });
+    return;
+  }
+
   // Handle ping/pong handshake
   if (msg.type === 'ping') {
     writeNativeMessage({ type: 'pong' });

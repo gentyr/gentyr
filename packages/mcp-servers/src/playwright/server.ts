@@ -2007,12 +2007,46 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       displayLockAutoAcquiredPids.add(demoPid);
     }
 
+    // Clear any stale interrupt signal file from a previous demo session
+    // to prevent false interrupts on this new demo run.
+    if (!args.headless) {
+      try { fs.unlinkSync(path.join('/tmp', 'gentyr-demo-interrupt.signal')); } catch { /* not present */ }
+    }
+
     // ── Background stall/suite_end/interrupt monitoring (fire-and-forget) ──
     // Continues running after runDemo returns. Cleaned up on child exit.
     const bgMonitorStart = Date.now();
     const INTERRUPT_GRACE_MS = 3_000; // 3s grace for test to wind down after interrupt
     const bgMonitorInterval = setInterval(() => {
       readNewProgressEvents();
+
+      // Check for extension-based interrupt signal (written by native host
+      // when the Chrome extension content script detects Escape keydown).
+      // This is the framework-level path — works without target project changes.
+      if (!args.headless && interruptDetectedAt === null) {
+        const signalPath = path.join('/tmp', 'gentyr-demo-interrupt.signal');
+        try {
+          fs.accessSync(signalPath);
+          // Signal found — consume it and treat as interrupt
+          try { fs.unlinkSync(signalPath); } catch { /* race with another reader */ }
+          interruptDetectedAt = Date.now();
+          const sigEntry = demoRuns.get(demoPid);
+          if (sigEntry) sigEntry.interrupt_detected_at = interruptDetectedAt;
+          // Write to progress file for consistency with the in-process path
+          if (progressFilePath) {
+            try {
+              const event = JSON.stringify({
+                type: 'demo_interrupted',
+                timestamp: new Date().toISOString(),
+                source: 'escape_key_extension',
+              });
+              fs.appendFileSync(progressFilePath, event + '\n');
+            } catch { /* best-effort */ }
+          }
+        } catch {
+          // Signal file doesn't exist — normal case, no interrupt
+        }
+      }
 
       // Demo interrupt handling: user pressed Escape in headed demo
       if (interruptDetectedAt !== null && Date.now() - interruptDetectedAt >= INTERRUPT_GRACE_MS) {
