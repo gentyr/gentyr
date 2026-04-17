@@ -3034,11 +3034,11 @@ async function main() {
           try {
             const queueDb = new Database(path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db'), { readonly: true });
             const existing = queueDb.prepare(
-              "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running') AND metadata LIKE ?"
+              "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND metadata LIKE ?"
             ).get(`%"persistentTaskId":"${task.id}"%`);
             queueDb.close();
             if (existing && existing.cnt > 0) {
-              log(`Persistent monitor health: monitor for "${task.title}" already queued/running in session-queue — skipping`);
+              log(`Persistent monitor health: monitor for "${task.title}" already queued/running/spawning in session-queue — skipping`);
               continue;
             }
           } catch (_) { /* non-fatal — proceed with enqueue */ }
@@ -3223,11 +3223,11 @@ async function main() {
           try {
             const queueDb = new Database(path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db'), { readonly: true });
             const existing = queueDb.prepare(
-              "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running') AND metadata LIKE ?"
+              "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND metadata LIKE ?"
             ).get(`%"persistentTaskId":"${task.id}"%`);
             queueDb.close();
             if (existing && existing.cnt > 0) {
-              log(`Persistent stale pause auto-resume: monitor for "${task.title}" already queued/running — skipping`);
+              log(`Persistent stale pause auto-resume: monitor for "${task.title}" already queued/running/spawning — skipping`);
               continue;
             }
           } catch (_) { /* non-fatal — proceed with resume */ }
@@ -3416,8 +3416,25 @@ async function main() {
               log(`Plan orphan detection: plan "${plan.title}" linked to ${ptTask.status} persistent task ${plan.persistent_task_id} — re-creating`);
               await reviveOrphanedPlan(plan, ptDbPath, plansDbPath);
               revived++;
+            } else if (ptTask.status === 'paused') {
+              // Check if the persistent task is permanently blocked from auto-resume
+              try {
+                const ptDbRo = new Database(ptDbPath, { readonly: true });
+                ptDbRo.pragma('busy_timeout = 3000');
+                const ptFull = ptDbRo.prepare("SELECT metadata FROM persistent_tasks WHERE id = ?").get(plan.persistent_task_id);
+                ptDbRo.close();
+                if (ptFull?.metadata) {
+                  const meta = JSON.parse(ptFull.metadata);
+                  if (meta.do_not_auto_resume) {
+                    log(`Plan orphan detection: plan "${plan.title}" linked to paused persistent task ${plan.persistent_task_id} with do_not_auto_resume — re-creating plan-manager`);
+                    await reviveOrphanedPlan(plan, ptDbPath, plansDbPath);
+                    revived++;
+                  }
+                }
+              } catch (_) { /* non-fatal — if paused without the flag, stale-pause auto-resume handles it */ }
             }
-            // If ptTask.status is 'active' or 'paused', the existing persistent task revival mechanisms handle it
+            // If ptTask.status is 'active', the existing persistent task revival mechanisms handle it
+            // If ptTask.status is 'paused' without do_not_auto_resume, stale-pause auto-resume handles it
           } catch (err) {
             log(`Plan orphan detection: error checking persistent task for plan "${plan.title}": ${err.message}`);
             try { ptDb?.close(); } catch (_) {}

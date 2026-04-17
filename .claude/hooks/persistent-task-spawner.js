@@ -201,9 +201,11 @@ async function main() {
     ? `\n\n## Outcome Criteria\n${task.outcome_criteria}`
     : '';
 
-  // Check if demo/strict-infra is involved via task metadata
+  // Check if demo/strict-infra/plan-manager is involved via task metadata
   let demoInstructions = '';
   let strictInfraInstructions = '';
+  let planId = null;
+  let planSection = '';
   try {
     const meta = task.metadata ? JSON.parse(task.metadata) : {};
     if (meta.demo_involved) {
@@ -212,12 +214,17 @@ async function main() {
     if (meta.strict_infra_guidance === true) {
       strictInfraInstructions = buildPersistentMonitorStrictInfraInstructions();
     }
+    if (meta.plan_id) {
+      planId = meta.plan_id;
+      planSection = `\nYou are a PLAN MANAGER for plan "${meta.plan_title || planId}" (ID: ${planId}).
+Follow the plan-manager agent instructions. Poll get_spawn_ready_tasks, create persistent tasks for ready plan steps, monitor them, and advance the plan until all phases complete.\n`;
+    }
   } catch (_) { /* non-fatal */ }
 
   const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
 
 ## Persistent Task: ${task.title}
-
+${planSection}
 You are the persistent task monitor for this objective. Read the full task details first:
 mcp__persistent-task__get_persistent_task({ id: "${taskId}", include_amendments: true, include_subtasks: true })
 
@@ -262,6 +269,7 @@ Parent TODO Task ID: ${task.parent_todo_task_id || 'none'}`;
       extraEnv: {
         GENTYR_PERSISTENT_TASK_ID: taskId,
         GENTYR_PERSISTENT_MONITOR: 'true',
+        ...(planId ? { GENTYR_PLAN_MANAGER: 'true', GENTYR_PLAN_ID: planId } : {}),
       },
       metadata: {
         persistentTaskId: taskId,
