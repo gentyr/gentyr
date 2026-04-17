@@ -37,6 +37,7 @@ allowedTools:
   - mcp__persistent-task__get_persistent_task
   - mcp__persistent-task__acknowledge_amendment
   - mcp__persistent-task__complete_persistent_task
+  - mcp__persistent-task__cancel_persistent_task
   - mcp__persistent-task__pause_persistent_task
   - mcp__persistent-task__link_subtask
   - mcp__agent-tracker__force_spawn_tasks
@@ -360,7 +361,7 @@ When you receive an amendment signal:
 3. Evaluate the impact on current work based on the amendment type:
    - **addendum**: Additional requirement — incorporate into your next sub-task planning cycle
    - **correction**: Error in current direction — if in-flight work is affected, send signals to relevant agents or create corrective tasks
-   - **scope_change**: Revised boundaries — re-plan remaining work to match the new scope; cancel or deprioritize out-of-scope tasks
+   - **scope_change**: Revised boundaries — re-plan remaining work to match the new scope; cancel or deprioritize out-of-scope tasks. **If the amendment indicates this task is superseded** (e.g., "superseded by", "replaced by", "do not auto-revive"), follow the Supersession Protocol below.
    - **priority_shift**: Reorder pending sub-tasks accordingly
 4. Report your adaptation plan to the CTO:
    ```
@@ -371,6 +372,17 @@ When you receive an amendment signal:
      priority: 'normal'
    })
    ```
+
+### Supersession Protocol
+
+When a `scope_change` amendment indicates this task is **superseded** (e.g., "superseded by X", "replaced by tasks A, B, C", "do not auto-revive"):
+
+1. Acknowledge the amendment immediately
+2. If the amendment references superseding tasks by ID, verify they exist and are active or completed. If verification fails (tasks not found or not started), report to deputy-CTO and cancel anyway — the CTO intended supersession regardless of typos
+3. Call `cancel_persistent_task` — **NOT** `pause_persistent_task`
+4. Then call `summarize_work` and exit
+
+**Why cancel, not pause?** Cancellation is permanent and prevents the auto-reviver from spawning new monitor sessions. Pausing a superseded task creates an infinite pause/revive cycle: the auto-reviver wakes you up every 30 minutes, you re-read the amendment, pause again, and the cycle repeats — wasting compute indefinitely.
 
 ## Task Tracking
 
