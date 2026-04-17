@@ -2862,6 +2862,122 @@ async function main() {
   });
 
   // =========================================================================
+  // PLAN ORPHAN REVIVAL HELPER
+  // Creates a new plan-manager persistent task and enqueues it for an
+  // active plan whose previous plan-manager is missing or terminal.
+  // =========================================================================
+
+  async function reviveOrphanedPlan(plan, ptDbPath, plansDbPath) {
+    if (!Database) throw new Error('Database not available');
+
+    const ptId = randomUUID();
+    const nowTs = new Date().toISOString();
+
+    // Create new persistent task for the plan-manager
+    const ptDb = new Database(ptDbPath);
+    ptDb.pragma('journal_mode = WAL');
+    ptDb.pragma('busy_timeout = 3000');
+
+    const prompt = `You are a plan-manager for plan "${plan.title}" (ID: ${plan.id}). ` +
+      `Follow the plan-manager agent instructions. Your plan ID is ${plan.id}. ` +
+      `Your persistent task ID is ${ptId}. ` +
+      `Check get_spawn_ready_tasks, create and activate persistent tasks for ready plan tasks, ` +
+      `monitor their progress, and advance the plan through all phases until complete.`;
+
+    const metadata = JSON.stringify({ plan_id: plan.id, plan_title: plan.title });
+
+    ptDb.prepare(
+      `INSERT INTO persistent_tasks (id, title, prompt, outcome_criteria, status, metadata, created_at, activated_at)
+       VALUES (?, ?, ?, ?, 'active', ?, ?, ?)`
+    ).run(
+      ptId,
+      `Plan Manager: ${plan.title}`,
+      prompt,
+      `All phases of plan ${plan.id} are completed or skipped.`,
+      metadata,
+      nowTs,
+      nowTs,
+    );
+
+    ptDb.prepare(
+      "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'activated', ?, ?)"
+    ).run(randomUUID(), ptId, JSON.stringify({ source: 'plan-orphan-detection', plan_id: plan.id, previous_pt_id: plan.persistent_task_id }), nowTs);
+
+    ptDb.close();
+
+    // Link the new persistent task to the plan (TOCTOU-safe: only update if still stale)
+    const planDb = new Database(plansDbPath);
+    planDb.pragma('journal_mode = WAL');
+    planDb.pragma('busy_timeout = 3000');
+    const updateResult = planDb.prepare(
+      'UPDATE plans SET persistent_task_id = ?, updated_at = ? WHERE id = ? AND (persistent_task_id IS NULL OR persistent_task_id = ?)'
+    ).run(ptId, nowTs, plan.id, plan.persistent_task_id);
+
+    if (updateResult.changes === 0) {
+      // Another mechanism already updated the plan — clean up orphaned persistent task
+      planDb.close();
+      log(`Plan orphan detection: plan "${plan.title}" was already claimed — cleaning up orphaned persistent task ${ptId}`);
+      try {
+        const ptDb2 = new Database(ptDbPath);
+        ptDb2.pragma('busy_timeout = 3000');
+        ptDb2.prepare("DELETE FROM persistent_tasks WHERE id = ?").run(ptId);
+        ptDb2.prepare("DELETE FROM events WHERE persistent_task_id = ?").run(ptId);
+        ptDb2.close();
+      } catch (_) { /* non-fatal */ }
+      return;
+    }
+
+    planDb.prepare(
+      "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'plan', ?, 'persistent_task_id', ?, ?, ?, 'plan-orphan-detection')"
+    ).run(randomUUID(), plan.id, plan.persistent_task_id || 'NULL', ptId, nowTs);
+    planDb.close();
+
+    // Enqueue the plan-manager monitor
+    const monitorPrompt = [
+      `[Automation][persistent-monitor][plan-manager] You are the plan-manager for plan "${plan.title}" (ID: ${plan.id}).`,
+      `Your persistent task ID is ${ptId}.`,
+      '',
+      `Follow the plan-manager agent instructions in your agent definition.`,
+      `Your job: poll get_spawn_ready_tasks, create persistent tasks for ready plan steps,`,
+      `monitor them, and advance the plan until all phases complete.`,
+      '',
+      `This is a REVIVAL — the previous plan-manager died or was lost. Check plan status first.`,
+      `Environment: GENTYR_PLAN_MANAGER=true, GENTYR_PLAN_ID=${plan.id}, GENTYR_PERSISTENT_TASK_ID=${ptId}`,
+    ].join('\n');
+
+    const result = enqueueSession({
+      title: `[Plan Manager] Revival: ${plan.title}`,
+      agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
+      hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
+      tagContext: 'plan-manager',
+      source: 'hourly-automation',
+      priority: 'critical',
+      lane: 'persistent',
+      ttlMs: 0,
+      prompt: monitorPrompt,
+      projectDir: PROJECT_DIR,
+      extraEnv: {
+        GENTYR_PLAN_MANAGER: 'true',
+        GENTYR_PLAN_ID: plan.id,
+        GENTYR_PERSISTENT_TASK_ID: ptId,
+        GENTYR_PERSISTENT_MONITOR: 'true',
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+      },
+      metadata: {
+        persistentTaskId: ptId,
+        planId: plan.id,
+        revivalReason: 'plan_orphan_detection',
+      },
+    });
+
+    log(`Plan orphan detection: revived plan "${plan.title}" — new ptId=${ptId}, queueId=${result.queueId || 'blocked'}`);
+
+    try {
+      auditEvent('plan_manager_revived', { plan_id: plan.id, persistent_task_id: ptId, previous_pt_id: plan.persistent_task_id, queue_id: result.queueId });
+    } catch (_) { /* non-fatal */ }
+  }
+
+  // =========================================================================
   // PERSISTENT MONITOR REVIVAL PROMPT HELPER
   // Shared by the health check and the stale-pause auto-resume block below.
   // =========================================================================
@@ -3229,6 +3345,91 @@ async function main() {
         debugLog('hourly-automation', 'persistent_stale_pause_resume', { pausedCount: pausedTasks.length, resumed });
       } finally {
         try { ptDb.close(); } catch (_) { /* non-fatal */ }
+      }
+    },
+  });
+
+  // =========================================================================
+  // PLAN ORPHAN DETECTION (gate-exempt, 10-minute cooldown)
+  // Detects active plans whose plan-manager persistent task is missing,
+  // dead, or in a terminal state, and re-creates the plan-manager.
+  // =========================================================================
+  await runIfDue('plan_orphan_detection', {
+    state, now,
+    stateKey: 'lastPlanOrphanDetectionRun',
+    label: 'Plan orphan detection',
+    fn: async () => {
+      const plansDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (!Database || !fs.existsSync(plansDbPath)) return;
+
+      let plansDb;
+      try {
+        plansDb = new Database(plansDbPath, { readonly: true });
+        plansDb.pragma('busy_timeout = 3000');
+      } catch (err) {
+        log(`Plan orphan detection: plans.db open failed: ${err.message}`);
+        return;
+      }
+
+      try {
+        const activePlans = plansDb.prepare(
+          "SELECT id, title, persistent_task_id FROM plans WHERE status = 'active'"
+        ).all();
+
+        if (activePlans.length === 0) return;
+
+        let revived = 0;
+        for (const plan of activePlans) {
+          // Case 1: Plan has no persistent_task_id at all — activation hook never fired or failed
+          if (!plan.persistent_task_id) {
+            log(`Plan orphan detection: plan "${plan.title}" (${plan.id}) has no persistent_task_id — re-creating plan-manager`);
+            try {
+              await reviveOrphanedPlan(plan, ptDbPath, plansDbPath);
+              revived++;
+            } catch (err) {
+              log(`Plan orphan detection: failed to revive plan "${plan.title}": ${err.message}`);
+            }
+            continue;
+          }
+
+          // Case 2: Plan has a persistent_task_id — check if that task is still alive
+          if (!fs.existsSync(ptDbPath)) {
+            log(`Plan orphan detection: persistent-tasks.db not found — cannot verify plan "${plan.title}"`);
+            continue;
+          }
+
+          let ptDb;
+          try {
+            ptDb = new Database(ptDbPath, { readonly: true });
+            ptDb.pragma('busy_timeout = 3000');
+            const ptTask = ptDb.prepare(
+              "SELECT id, status FROM persistent_tasks WHERE id = ?"
+            ).get(plan.persistent_task_id);
+            ptDb.close();
+
+            if (!ptTask) {
+              log(`Plan orphan detection: plan "${plan.title}" linked to missing persistent task ${plan.persistent_task_id} — re-creating`);
+              await reviveOrphanedPlan(plan, ptDbPath, plansDbPath);
+              revived++;
+            } else if (ptTask.status === 'completed' || ptTask.status === 'cancelled' || ptTask.status === 'failed') {
+              log(`Plan orphan detection: plan "${plan.title}" linked to ${ptTask.status} persistent task ${plan.persistent_task_id} — re-creating`);
+              await reviveOrphanedPlan(plan, ptDbPath, plansDbPath);
+              revived++;
+            }
+            // If ptTask.status is 'active' or 'paused', the existing persistent task revival mechanisms handle it
+          } catch (err) {
+            log(`Plan orphan detection: error checking persistent task for plan "${plan.title}": ${err.message}`);
+            try { ptDb?.close(); } catch (_) {}
+          }
+        }
+
+        if (revived > 0) {
+          log(`Plan orphan detection: revived ${revived} orphaned plan(s)`);
+        }
+        debugLog('hourly-automation', 'plan_orphan_detection', { activePlans: activePlans.length, revived });
+      } finally {
+        try { plansDb.close(); } catch (_) {}
       }
     },
   });
