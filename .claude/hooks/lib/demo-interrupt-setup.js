@@ -58,6 +58,10 @@ async function showInterruptedOverlay(page) {
     const bubble = document.getElementById('demo-thinking-bubble');
     if (bubble) bubble.remove();
 
+    // Hide cursor dot
+    const cursor = document.getElementById('demo-cursor');
+    if (cursor) cursor.style.display = 'none';
+
     // Update status icon
     const iconEl = document.getElementById('demo-overlay-status-icon');
     if (iconEl) iconEl.innerHTML = icon;
