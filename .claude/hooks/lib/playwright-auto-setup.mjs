@@ -165,14 +165,18 @@ try {
   const chromium = pw.chromium;
 
   if (chromium && typeof chromium.launchPersistentContext === 'function') {
-    const originalLaunch = chromium.launchPersistentContext.bind(chromium);
+    // Patch the PROTOTYPE, not the instance — ensures the patch applies even
+    // when the test file gets a different chromium object (CJS/ESM interop).
+    const proto = Object.getPrototypeOf(chromium);
+    const originalLaunch = proto.launchPersistentContext;
 
-    chromium.launchPersistentContext = async function (userDataDir, options) {
-      const context = await originalLaunch(userDataDir, options);
+    proto.launchPersistentContext = async function (userDataDir, options) {
+      const context = await originalLaunch.call(this, userDataDir, options);
 
       // 1. Auto-wire Escape key interrupt for headed demos
       if (process.env.DEMO_HEADLESS !== '1') {
         try {
+          _dbg('wiring interrupt setup...');
           const interruptModule = await import(join(__dirname, 'demo-interrupt-setup.js'));
           await interruptModule.setupDemoInterrupt(context);
 

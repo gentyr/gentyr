@@ -116,7 +116,31 @@ async function handleInterrupt() {
   if (interrupted) return;
   interrupted = true;
 
-  // Write demo_interrupted event to progress JSONL (best-effort)
+  // ── SYNC CRITICAL SECTION ──────────────────────────────────────────────
+  // These MUST complete before the Locator cursor-highlight patch sees
+  // isInterrupted()===true and throws DemoInterruptedError. That throw
+  // propagates up the test stack and triggers Playwright cleanup which
+  // calls context.close(). If we haven't patched close() yet, the browser
+  // disappears before the user sees anything.
+
+  // 1. Patch context.close() to no-op (prevents browser teardown)
+  for (const page of registeredPages) {
+    try {
+      const ctx = page.context();
+      if (!ctx.__interruptPatched) {
+        ctx.__interruptPatched = true;
+        ctx.close = async () => {};
+      }
+    } catch {
+      // Context may already be closing — ignore
+    }
+  }
+
+  // 2. Keep the Node process alive so the user can interact with the browser
+  const keepAlive = setInterval(() => {}, 5000);
+  globalThis.__gentyrKeepAlive = keepAlive;
+
+  // 3. Write demo_interrupted event to progress JSONL (best-effort, sync)
   const progressFile = process.env.DEMO_PROGRESS_FILE;
   if (progressFile) {
     try {
@@ -131,7 +155,11 @@ async function handleInterrupt() {
     }
   }
 
-  // Update overlay to interrupted state on all registered pages
+  // ── ASYNC SECTION (best-effort) ────────────────────────────────────────
+  // Overlay update uses page.evaluate() which is async. May not complete
+  // before the Locator patch throws, but browser stays open either way.
+
+  // 4. Update overlay to interrupted state on all registered pages
   for (const page of registeredPages) {
     try {
       await showInterruptedOverlay(page);
@@ -139,25 +167,6 @@ async function handleInterrupt() {
       // Page may have been closed — ignore
     }
   }
-
-  // Patch context.close() to no-op so Playwright teardown doesn't close the browser.
-  // Iterate over registered pages to reach their contexts.
-  for (const page of registeredPages) {
-    try {
-      const ctx = page.context();
-      if (!ctx.__interruptPatched) {
-        ctx.__interruptPatched = true;
-        ctx.close = async () => {};
-      }
-    } catch {
-      // Context may already be closing — ignore
-    }
-  }
-
-  // Keep the Node process alive so the user can interact with the browser freely
-  const keepAlive = setInterval(() => {}, 5000);
-  // Store reference globally so it is never GC'd
-  globalThis.__gentyrKeepAlive = keepAlive;
 }
 
 // ─── Per-Page Setup ──────────────────────────────────────────────────────────
