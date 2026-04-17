@@ -188,8 +188,11 @@ function buildDependencies(frameworkDir) {
   console.log(`\n${YELLOW}Building MCP servers...${NC}`);
   const mcpDir = path.join(frameworkDir, 'packages', 'mcp-servers');
   try {
-    const hasTypesNode = fs.existsSync(path.join(mcpDir, 'node_modules', '@types', 'node'));
-    if (!hasTypesNode) {
+    const mcpNodeModules = path.join(mcpDir, 'node_modules');
+    const hasDeps = fs.existsSync(mcpNodeModules) &&
+      fs.existsSync(path.join(mcpNodeModules, '@types', 'node')) &&
+      fs.existsSync(path.join(mcpNodeModules, '@types', 'better-sqlite3'));
+    if (!hasDeps) {
       execFileSync('npm', ['install', '--no-fund', '--no-audit'], { cwd: mcpDir, stdio: 'pipe', timeout: 120000 });
       console.log('  Dependencies installed');
     } else {
@@ -425,9 +428,13 @@ export default async function init(args) {
     } catch {}
   }
 
-  // 6. Automation service
-  console.log(`\n${YELLOW}Setting up automation service...${NC}`);
-  setupAutomationService(frameworkDir, projectDir, opts.opToken);
+  // 6. Automation service (skip in CI/test environments to avoid clobbering production launchd daemons)
+  if (process.env.CI || process.env.GENTYR_E2E_TEST) {
+    console.log(`\n${YELLOW}Skipping automation service (CI/test environment)${NC}`);
+  } else {
+    console.log(`\n${YELLOW}Setting up automation service...${NC}`);
+    setupAutomationService(frameworkDir, projectDir, opts.opToken);
+  }
 
   // 7. Gitignore
   console.log(`\n${YELLOW}Updating .gitignore...${NC}`);

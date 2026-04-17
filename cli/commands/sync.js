@@ -433,8 +433,11 @@ export default async function sync(args) {
   console.log(`\n${YELLOW}Rebuilding MCP servers...${NC}`);
   const mcpDir = path.join(frameworkDir, 'packages', 'mcp-servers');
   try {
-    const hasTypesNode = fs.existsSync(path.join(mcpDir, 'node_modules', '@types', 'node'));
-    if (!hasTypesNode) {
+    const mcpNodeModules = path.join(mcpDir, 'node_modules');
+    const hasDeps = fs.existsSync(mcpNodeModules) &&
+      fs.existsSync(path.join(mcpNodeModules, '@types', 'node')) &&
+      fs.existsSync(path.join(mcpNodeModules, '@types', 'better-sqlite3'));
+    if (!hasDeps) {
       execFileSync('npm', ['install', '--no-fund', '--no-audit'], { cwd: mcpDir, stdio: 'pipe', timeout: 120000 });
       console.log('  Dependencies installed');
     } else {
@@ -443,7 +446,14 @@ export default async function sync(args) {
     execFileSync('npm', ['run', 'build'], { cwd: mcpDir, stdio: 'pipe', timeout: 120000 });
     console.log('  TypeScript built');
   } catch (err) {
-    console.log(`  ${YELLOW}Warning: MCP server build failed: ${err.message}${NC}`);
+    console.log(`  ${RED}MCP server build FAILED: ${err.message}${NC}`);
+    console.log(`  ${RED}Repair: cd ${mcpDir} && npm install && npm run build${NC}`);
+  }
+
+  // 7a-verify. Verify dist/ exists after build
+  if (!fs.existsSync(path.join(mcpDir, 'dist'))) {
+    console.log(`\n  ${RED}WARNING: packages/mcp-servers/dist/ is MISSING after build.${NC}`);
+    console.log(`  ${RED}MCP servers will not work. Run: cd ${mcpDir} && npm install && npm run build${NC}`);
   }
 
   // 7b. Build window recorder (macOS only)
@@ -491,6 +501,29 @@ export default async function sync(args) {
 
   // 8. Regenerate launchd plists (macOS only)
   if (process.platform === 'darwin') {
+    // 8a. Detect and unload stale daemon plist (e.g., clobbered by E2E test)
+    const daemonPlistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.local.gentyr-mcp-daemon.plist');
+    if (fs.existsSync(daemonPlistPath)) {
+      try {
+        const plistContent = fs.readFileSync(daemonPlistPath, 'utf8');
+        const wdMatch = plistContent.match(/<key>WorkingDirectory<\/key>\s*<string>([^<]+)<\/string>/);
+        const workDir = wdMatch ? wdMatch[1] : '';
+        const isStale = workDir && (
+          workDir.includes('gentyr-e2e-install') ||
+          (workDir.startsWith('/tmp/') || workDir.startsWith('/private/tmp/') || workDir.includes('/var/folders/')) ||
+          !fs.existsSync(workDir)
+        );
+        if (isStale) {
+          console.log(`  ${YELLOW}Detected stale MCP daemon plist (WorkingDirectory: ${workDir})${NC}`);
+          try {
+            execFileSync('launchctl', ['bootout', `gui/${process.getuid()}`, daemonPlistPath], { stdio: 'pipe', timeout: 10000 });
+            console.log(`  Unloaded stale daemon`);
+          } catch { /* may already be unloaded */ }
+        }
+      } catch { /* plist parsing failure -- regeneration in step 8b will fix it */ }
+    }
+
+    // 8b. Regenerate and reload plists
     const script = path.join(frameworkDir, 'scripts', 'setup-automation-service.sh');
     if (fs.existsSync(script)) {
       console.log(`\n${YELLOW}Updating automation services...${NC}`);
