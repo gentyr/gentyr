@@ -13,6 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -74,6 +75,7 @@ const AUTONOMOUS_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mod
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
 const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/api/oauth/usage';
+const ANTHROPIC_PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile';
 const ANTHROPIC_BETA_HEADER = 'oauth-2025-04-20';
 const COOLDOWN_MINUTES = 55;
 // Cache goes in ~/.claude/ (user-owned) since project .claude/ may be root-protected
@@ -511,47 +513,128 @@ function formatHours(hours) {
 }
 
 /**
- * Build a simple text progress bar
+ * Build a text progress bar with eighth-block precision.
+ * Uses █▉▊▋▌▍▎▏ for sub-character fill granularity.
  */
 function progressBar(percent, width = 10) {
-  const filled = Math.round((percent / 100) * width);
-  const empty = width - filled;
-  return '\u2588'.repeat(filled) + '\u2591'.repeat(empty);
+  // ▏▎▍▌▋▊▉ — 1/8 through 7/8 fill
+  const EIGHTHS = ['\u258F', '\u258E', '\u258D', '\u258C', '\u258B', '\u258A', '\u2589'];
+  const exactFill = (Math.min(100, Math.max(0, percent)) / 100) * width;
+  let fullBlocks = Math.floor(exactFill);
+  const fractional = Math.round((exactFill - fullBlocks) * 8);
+  if (fractional === 8) fullBlocks++;
+  let bar = '\u2588'.repeat(fullBlocks);
+  if (fullBlocks < width) {
+    if (fractional > 0 && fractional < 8) {
+      bar += EIGHTHS[fractional - 1];
+      bar += '\u2591'.repeat(width - fullBlocks - 1);
+    } else {
+      bar += '\u2591'.repeat(width - fullBlocks);
+    }
+  }
+  return bar;
 }
 
 
 /**
- * Fetch quota status from Anthropic API
+ * Resolve OAuth access token from multiple sources (matching dashboard resolution order).
+ * 1. CLAUDE_CODE_OAUTH_TOKEN env var
+ * 2. macOS Keychain
+ * 3. CLAUDE_CONFIG_DIR/.credentials.json
+ * 4. ~/.claude/.credentials.json
  */
-async function getQuotaStatus() {
-  const emptyStatus = { five_hour: null, seven_day: null, error: null };
+function getOAuthToken() {
+  const envToken = process.env['CLAUDE_CODE_OAUTH_TOKEN'];
+  if (envToken) return envToken;
 
-  if (!fs.existsSync(CREDENTIALS_PATH)) {
-    return { ...emptyStatus, error: 'no-creds' };
+  if (process.platform === 'darwin') {
+    try {
+      const { username } = os.userInfo();
+      const raw = execFileSync('security', [
+        'find-generic-password', '-s', 'Claude Code-credentials', '-a', username, '-w',
+      ], { encoding: 'utf8', timeout: 3000 }).trim();
+      const creds = JSON.parse(raw);
+      const token = creds.claudeAiOauth?.accessToken;
+      if (token) {
+        if (creds.claudeAiOauth.expiresAt && creds.claudeAiOauth.expiresAt < Date.now()) return null;
+        return token;
+      }
+    } catch {
+      // Keychain entry not found — fall through
+    }
+  }
+
+  const configDir = process.env['CLAUDE_CONFIG_DIR'];
+  if (configDir) {
+    try {
+      const configCredsPath = path.join(configDir, '.credentials.json');
+      if (fs.existsSync(configCredsPath)) {
+        const creds = JSON.parse(fs.readFileSync(configCredsPath, 'utf8'));
+        const token = creds.claudeAiOauth?.accessToken;
+        if (token) return token;
+      }
+    } catch {
+      // Fall through
+    }
   }
 
   try {
-    const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
-    const token = creds.claudeAiOauth?.accessToken;
-    if (!token) {
-      return { ...emptyStatus, error: 'no-token' };
+    if (fs.existsSync(CREDENTIALS_PATH)) {
+      const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
+      const token = creds.claudeAiOauth?.accessToken;
+      if (token) return token;
+    }
+  } catch {
+    // Fall through
+  }
+
+  return null;
+}
+
+/**
+ * Fetch quota status and account email from Anthropic API.
+ * Usage and profile endpoints are called in parallel.
+ */
+async function getQuotaStatus() {
+  const emptyStatus = { five_hour: null, seven_day: null, email: null, mode: null, error: null };
+
+  const token = getOAuthToken();
+  if (!token) {
+    // No OAuth — check for API key
+    if (process.env.ANTHROPIC_API_KEY) {
+      return { ...emptyStatus, mode: 'api_key' };
+    }
+    return { ...emptyStatus, error: 'no-token' };
+  }
+
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    'User-Agent': 'claude-code/2.1.14',
+    'anthropic-beta': ANTHROPIC_BETA_HEADER,
+  };
+
+  try {
+    const [usageResponse, profileResponse] = await Promise.all([
+      fetch(ANTHROPIC_API_URL, { method: 'GET', headers }),
+      fetch(ANTHROPIC_PROFILE_URL, { method: 'GET', headers }),
+    ]);
+
+    let email = null;
+    if (profileResponse.ok) {
+      try {
+        const profile = await profileResponse.json();
+        email = profile.account?.email || null;
+      } catch {
+        // Profile parse failed — non-fatal
+      }
     }
 
-    const response = await fetch(ANTHROPIC_API_URL, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'claude-code/2.1.14',
-        'anthropic-beta': ANTHROPIC_BETA_HEADER,
-      },
-    });
-
-    if (!response.ok) {
-      return { ...emptyStatus, error: `api-${response.status}` };
+    if (!usageResponse.ok) {
+      return { ...emptyStatus, email, error: `api-${usageResponse.status}` };
     }
 
-    const data = await response.json();
+    const data = await usageResponse.json();
 
     const parseReset = (isoDate) => {
       const resetTime = new Date(isoDate).getTime();
@@ -568,6 +651,8 @@ async function getQuotaStatus() {
         utilization: data.seven_day.utilization,
         resets_in_hours: parseReset(data.seven_day.resets_at),
       } : null,
+      email,
+      mode: 'subscription',
       error: null,
     };
   } catch (err) {
@@ -647,12 +732,15 @@ async function main() {
     autonomousPart = 'Deputy: OFF';
   }
 
-  // Build quota status part (compact for critical mode)
+  // Build quota status part with graphical bars (used in both compact and multi-line modes)
   let quotaPart = '';
-  if (!quota.error && quota.five_hour && quota.seven_day) {
-    const fiveHour = `5h: ${Math.round(quota.five_hour.utilization)}%`;
-    const sevenDay = `7d: ${Math.round(quota.seven_day.utilization)}%`;
-    quotaPart = `Quota ${fiveHour} ${sevenDay}`;
+  if (quota.mode === 'api_key') {
+    quotaPart = 'Auth: API Key (no usage quota available)';
+  } else if (!quota.error && quota.five_hour && quota.seven_day) {
+    const fh = quota.five_hour;
+    const sd = quota.seven_day;
+    const emailLabel = quota.email ? ` (${quota.email})` : '';
+    quotaPart = `Quota${emailLabel}: 5h ${progressBar(fh.utilization, 8)} ${Math.round(fh.utilization)}% (resets ${formatHours(fh.resets_in_hours)}) | 7d ${progressBar(sd.utilization, 8)} ${Math.round(sd.utilization)}% (resets ${formatHours(sd.resets_in_hours)})`;
   }
 
   // Build message based on state
@@ -675,11 +763,9 @@ async function main() {
       lines.push(gitLabel);
     }
 
-    // Line 1: Quota status
-    if (quota.five_hour && quota.seven_day) {
-      const fh = quota.five_hour;
-      const sd = quota.seven_day;
-      lines.push(`Quota: 5-hour ${progressBar(fh.utilization, 8)} ${Math.round(fh.utilization)}% (resets ${formatHours(fh.resets_in_hours)}) | 7-day ${progressBar(sd.utilization, 8)} ${Math.round(sd.utilization)}% (resets ${formatHours(sd.resets_in_hours)})`);
+    // Line 1: Quota status (reuse quotaPart built above)
+    if (quotaPart) {
+      lines.push(quotaPart);
     }
 
     // Line 2: Token usage, sessions, and TODOs
