@@ -97,6 +97,7 @@ function doProtect(projectDir) {
     'plan-work-tracker.js',
     'plan-merge-tracker.js',
     'plan-persistent-sync.js',
+    'plan-activation-spawner.js',
     'git-wrappers/git',
   ];
 

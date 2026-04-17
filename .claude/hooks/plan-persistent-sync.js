@@ -172,6 +172,30 @@ async function main() {
 
     db.close();
 
+    // Audit trail for plan lifecycle events
+    try {
+      const { auditEvent } = await import('./lib/session-audit.js');
+      auditEvent('plan_task_completed', {
+        plan_id: planId,
+        plan_task_id: planTaskId,
+        trigger: 'persistent_task_complete',
+        persistent_task_id: persistentTaskId,
+      });
+      if (phaseCompleted) {
+        auditEvent('plan_phase_completed', {
+          plan_id: planId,
+          phase_id: planTask.phase_id,
+          trigger: 'all_tasks_complete',
+        });
+      }
+      if (planCompleted) {
+        auditEvent('plan_completed', {
+          plan_id: planId,
+          trigger: 'all_phases_complete',
+        });
+      }
+    } catch (_) { /* non-fatal */ }
+
     const details = [
       `Persistent task ${persistentTaskId} completion synced to plan task ${planTaskId}.`,
       phaseCompleted ? 'Phase auto-completed.' : '',

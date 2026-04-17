@@ -512,6 +512,14 @@
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-persistent-sync.js",
           "timeout": 10
         }]
+      },
+      {
+        "matcher": "mcp__plan-orchestrator__update_plan_status",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-activation-spawner.js",
+          "timeout": 15
+        }]
       }
     ],
     "Stop": [
