@@ -755,6 +755,7 @@ async function main() {
         hookType: HOOK_TYPES.TASK_RUNNER,
         tagContext: `task-runner-${mapping.agent}`,
         source: 'force-spawn-tasks',
+        agent: mapping.agent,
         buildPrompt: (agentId) => {
           if (mapping.category && buildPromptFromCategory) {
             return buildPromptFromCategory(task, mapping.category, agentId, worktreePath, {

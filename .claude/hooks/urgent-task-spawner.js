@@ -462,6 +462,7 @@ async function spawnTaskAgent(task) {
       hookType: HOOK_TYPES.TASK_RUNNER,
       tagContext: `task-runner-${mapping.agent}`,
       source: 'urgent-task-spawner',
+      agent: mapping.agent,
       buildPrompt: (agentId) => {
         if (mapping.category) {
           return buildPromptFromCategory(task, mapping.category, agentId, worktreePath, {

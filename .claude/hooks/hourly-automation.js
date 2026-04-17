@@ -1666,6 +1666,7 @@ function spawnTaskAgent(task) {
     tagContext: `task-runner-${mapping.agent}`,
     source: 'hourly-automation',
     priority: 'low',
+    agent: mapping.agent,
     buildPrompt: (agentId) => {
       if (mapping.category) {
         return buildPromptFromCategory(task, mapping.category, agentId, worktreePath, {
@@ -2956,6 +2957,7 @@ async function main() {
       ttlMs: 0,
       prompt: monitorPrompt,
       projectDir: PROJECT_DIR,
+      agent: 'plan-manager',
       extraEnv: {
         GENTYR_PLAN_MANAGER: 'true',
         GENTYR_PLAN_ID: plan.id,
@@ -3046,7 +3048,7 @@ async function main() {
           log(`Persistent monitor health: monitor for "${task.title}" (${task.id}) is dead — re-enqueuing`);
 
           try {
-            const { prompt, extraEnv, metadata } = await buildRevivalPrompt(task, 'monitor_dead');
+            const { prompt, extraEnv, metadata, agent } = await buildRevivalPrompt(task, 'monitor_dead');
             const result = enqueueSession({
               title: `[Persistent] Monitor revival: ${task.title}`,
               agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
@@ -3060,6 +3062,7 @@ async function main() {
               projectDir: PROJECT_DIR,
               extraEnv,
               metadata,
+              agent,
             });
 
             log(`Persistent monitor health: re-enqueued for "${task.title}" (queueId: ${result.queueId})`);
@@ -3311,7 +3314,7 @@ async function main() {
 
           // Enqueue the monitor
           try {
-            const { prompt, extraEnv, metadata } = await buildRevivalPrompt(task, 'stale_pause_resumed');
+            const { prompt, extraEnv, metadata, agent } = await buildRevivalPrompt(task, 'stale_pause_resumed');
             const result = enqueueSession({
               title: `[Persistent] Stale-pause revival: ${task.title}`,
               agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
@@ -3325,6 +3328,7 @@ async function main() {
               projectDir: PROJECT_DIR,
               extraEnv,
               metadata,
+              agent,
             });
 
             log(`Persistent stale pause auto-resume: enqueued monitor for "${task.title}" (queueId: ${result.queueId})`);
@@ -4512,7 +4516,7 @@ Then exit.`,
             cwd: worktreePath,
             mcpConfig: fs.existsSync(agentMcpConfig) ? agentMcpConfig : undefined,
             worktreePath,
-            extraArgs: ['--agent-name', 'demo-manager'],
+            agent: 'demo-manager',
             extraEnv: { ...resolvedCredentials },
             metadata: { scenarioId: repairScenarioId, scenarioTitle: repairScenarioTitle },
             projectDir: PROJECT_DIR,

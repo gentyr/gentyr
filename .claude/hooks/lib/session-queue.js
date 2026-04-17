@@ -188,6 +188,7 @@ function getDb() {
       worktree_path TEXT,
       metadata TEXT,
       source TEXT NOT NULL,
+      agent TEXT,
 
       agent_id TEXT,
       pid INTEGER,
@@ -215,6 +216,13 @@ function getDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_revival_task_time ON revival_events(task_id, created_at);
   `);
+
+  // Idempotent migration: add agent column for existing DBs
+  try {
+    _db.prepare('SELECT agent FROM queue_items LIMIT 0').get();
+  } catch {
+    _db.exec('ALTER TABLE queue_items ADD COLUMN agent TEXT');
+  }
 
   // Seed default config if not present
   const existing = _db.prepare('SELECT value FROM queue_config WHERE key = ?').get('max_concurrent_sessions');
@@ -405,6 +413,17 @@ export function enqueueSession(spec) {
     }
   }
 
+  // Dedup: if this persistent task already has a queued/running monitor, skip
+  if (spec.metadata?.persistentTaskId && spec.lane === 'persistent') {
+    const existing = db.prepare(
+      "SELECT id FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.persistentTaskId') = ?"
+    ).get(spec.metadata.persistentTaskId);
+    if (existing) {
+      log(`Dedup: persistentTaskId ${spec.metadata.persistentTaskId} already has queue item ${existing.id} — skipping`);
+      return { queueId: existing.id, position: 0, drained: { spawned: 0, atCapacity: false } };
+    }
+  }
+
   // Bypass request gate: block spawns for tasks with pending CTO bypass requests
   // Source 'bypass-request-resolve' is exempt — it's the CTO approving the request
   if (spec.source !== 'bypass-request-resolve') {
@@ -453,8 +472,8 @@ export function enqueueSession(spec) {
   db.prepare(`
     INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
       tag_context, prompt, model, cwd, mcp_config, resume_session_id, extra_args, extra_env,
-      project_dir, worktree_path, metadata, source, expires_at)
-    VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      project_dir, worktree_path, metadata, source, agent, expires_at)
+    VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     spec.priority || 'normal',
@@ -475,6 +494,7 @@ export function enqueueSession(spec) {
     spec.worktreePath || null,
     spec.metadata ? JSON.stringify(spec.metadata) : null,
     spec.source,
+    spec.agent || null,
     expiresAt,
   );
 
@@ -670,12 +690,19 @@ Persistent Task ID: ${taskId}`;
   const resumeSessionId = task.monitor_session_id || null;
   const spawnType = resumeSessionId ? 'resume' : 'fresh';
 
+  // Determine agent definition: plan-manager or persistent-monitor
+  let agentDef = 'persistent-monitor';
+  try {
+    const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
+    if (taskMeta.plan_id) agentDef = 'plan-manager';
+  } catch (_) { /* non-fatal */ }
+
   const id = generateQueueId();
   db.prepare(`
     INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
       tag_context, prompt, model, cwd, mcp_config, resume_session_id, extra_args, extra_env,
-      project_dir, worktree_path, metadata, source, expires_at)
-    VALUES (?, 'queued', 'critical', 'persistent', ?, ?, ?, ?, 'persistent-monitor', ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, ?, ?, NULL)
+      project_dir, worktree_path, metadata, source, agent, expires_at)
+    VALUES (?, 'queued', 'critical', 'persistent', ?, ?, ?, ?, 'persistent-monitor', ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)
   `).run(
     id,
     spawnType,
@@ -689,10 +716,10 @@ Persistent Task ID: ${taskId}`;
       const env = { GENTYR_PERSISTENT_TASK_ID: taskId, GENTYR_PERSISTENT_MONITOR: 'true' };
       // Preserve plan-manager env vars if this is a plan-manager persistent task
       try {
-        const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
-        if (taskMeta.plan_id) {
+        const taskMeta2 = task.metadata ? JSON.parse(task.metadata) : {};
+        if (taskMeta2.plan_id) {
           env.GENTYR_PLAN_MANAGER = 'true';
-          env.GENTYR_PLAN_ID = taskMeta.plan_id;
+          env.GENTYR_PLAN_ID = taskMeta2.plan_id;
         }
       } catch (_) { /* non-fatal */ }
       return env;
@@ -700,6 +727,7 @@ Persistent Task ID: ${taskId}`;
     PROJECT_DIR,
     JSON.stringify({ persistentTaskId: taskId, revivalReason: reapReason === 'stale_heartbeat' ? 'heartbeat_stale_revival' : 'immediate_reaper_revival' }),
     'session-queue-reaper',
+    agentDef,
   );
 
   auditEvent('session_enqueued', {
@@ -1204,6 +1232,9 @@ function spawnQueueItem(db, item) {
     spawnArgs.push('--resume', item.resume_session_id);
   }
   spawnArgs.push('--dangerously-skip-permissions');
+  if (item.agent) {
+    spawnArgs.push('--agent', item.agent);
+  }
   if (item.model) {
     spawnArgs.push('--model', item.model);
   }
