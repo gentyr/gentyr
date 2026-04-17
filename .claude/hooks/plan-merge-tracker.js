@@ -169,6 +169,33 @@ async function main() {
       // Non-fatal — broadcast failure must not break the merge tracker
     }
 
+    // Audit trail for plan lifecycle events
+    try {
+      const { auditEvent } = await import('./lib/session-audit.js');
+      auditEvent('plan_task_completed', {
+        plan_id: planTask.plan_id,
+        plan_task_id: planTask.id,
+        task_title: planTask.title,
+        trigger: 'pr_merge',
+        pr_number: prNumber,
+        phase_progress: phaseProgress,
+      });
+      if (completedTasks.count === totalTasks.count) {
+        auditEvent('plan_phase_completed', {
+          plan_id: planTask.plan_id,
+          phase_id: planTask.phase_id,
+          trigger: 'all_tasks_complete',
+        });
+      }
+      if (readyTasks.length > 0) {
+        auditEvent('plan_tasks_ready', {
+          plan_id: planTask.plan_id,
+          ready_tasks: readyTasks,
+          trigger: 'dependency_resolved',
+        });
+      }
+    } catch (_) { /* non-fatal */ }
+
     let msg = `Plan progress: PR #${prNumber} merged. Task '${planTask.title}' complete. Phase now ${phaseProgress}.`;
     if (readyTasks.length > 0) {
       msg += ` Next ready: ${readyTasks.join(', ')}.`;

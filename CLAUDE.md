@@ -489,7 +489,7 @@ Lets the CTO delegate complex multi-step objectives to a dedicated monitor sessi
 
 **Hourly automation**: 15-minute health check detects monitors with stale heartbeats and reports dead monitors to the deputy-CTO. This is now a tertiary safety net — primary revival happens immediately in `drainQueue()` via `requeueDeadPersistentMonitor()`, and the sync-pass reaper (`reapSyncPass`) now also kills stale monitors directly (using `persistent_heartbeat_stale_minutes`, default 5 min) for near-instant revival.
 
-**Stale-pause auto-resume**: `hourly-automation.js` runs a `persistent_stale_pause_resume` check every 5 minutes. If a task has been `paused` for longer than `persistent_stale_pause_threshold_minutes` (default 30 min) AND no monitor is already queued or running for it, a new monitor is automatically enqueued. This handles self-paused monitors that forgot to self-resume (e.g., after writing a deputy-CTO report and pausing). The resumed task transitions back to `active` via `resume_persistent_task`, and the spawner hook fires to launch a new monitor.
+**Stale-pause auto-resume**: `hourly-automation.js` runs a `persistent_stale_pause_resume` check every 5 minutes. If a task has been `paused` for longer than `persistent_stale_pause_threshold_minutes` (default 30 min) AND no monitor is already queued or running for it, a new monitor is automatically enqueued. This handles self-paused monitors that forgot to self-resume (e.g., after writing a deputy-CTO report and pausing). The resumed task transitions back to `active` via `resume_persistent_task`, and the spawner hook fires to launch a new monitor. Three suppression guards prevent unwanted auto-resume: (1) `do_not_auto_resume: true` in task metadata permanently suppresses auto-resume; (2) self-pause circuit breaker detects tasks that have paused 3+ times in the last hour (monitor keeps waking up and re-pausing per an amendment directive) and auto-sets the `do_not_auto_resume` flag; (3) CTO bypass request guard skips tasks with pending bypass requests.
 
 **Crash-loop login resume** (`crash-loop-resume.js` SessionStart hook): On interactive session start, detects persistent tasks paused by the crash-loop circuit breaker (`reason: 'crash_loop_circuit_breaker'` in the most-recent `paused` event) and auto-resumes them by setting `status = 'active'` and enqueuing a new monitor at `critical` priority. Manually paused tasks are left untouched. Tasks with a pending CTO bypass request are also skipped (checked via `lib/bypass-guard.js` `checkBypassBlock()`). Skipped entirely for spawned sessions (`CLAUDE_SPAWNED_SESSION=true`). Uses a TOCTOU-safe `UPDATE ... WHERE status = 'paused'` guard and deduplicates against in-flight queue items before enqueuing. Rollback sets the task back to `paused` if monitor enqueue fails. All errors are accumulated in `systemMessage` (never stderr, per SessionStart rules). Session briefing shows a PAUSED TASKS section with pause reason (crash-loop / bypass-request / manual) to give the CTO visibility at login.
 
@@ -953,11 +953,14 @@ The plan-orchestrator MCP server (`packages/mcp-servers/src/plan-orchestrator/`)
 
 **Plan-persistent sync hook** (`plan-persistent-sync.js`, PostToolUse): Fires on `complete_persistent_task`. When the completed persistent task has `plan_task_id` in its metadata, auto-marks the linked plan task as `completed`, cascades phase completion when all tasks in the phase are done, and cascades plan completion when all phases are done. Non-fatal — always exits 0.
 
-**4 hooks registered in `settings.json.template`**:
+**Plan activation spawner hook** (`plan-activation-spawner.js`, PostToolUse): Fires on `update_plan_status`. When a plan transitions to `active` and has no `persistent_task_id`, atomically creates a persistent task for the plan-manager, links it to the plan (TOCTOU-safe via `UPDATE ... WHERE persistent_task_id IS NULL`), and enqueues the monitor in the `persistent` lane at `critical` priority. This ensures plans always have an automated orchestrator driving phase advancement. If the enqueue is blocked (focus mode, etc.), the persistent task exists and will be picked up when the block clears. Emits `plan_manager_spawned` audit event.
+
+**5 hooks registered in `settings.json.template`**:
 - `plan-briefing.js` (SessionStart) — briefs the active session on current plan state
 - `plan-work-tracker.js` (PostToolUse `summarize_work`) — records agent work against plan tasks
 - `plan-merge-tracker.js` (PostToolUse Bash) — detects PR merges and auto-completes plan tasks
 - `plan-persistent-sync.js` (PostToolUse) — syncs persistent task completion back to the linked plan task
+- `plan-activation-spawner.js` (PostToolUse) — spawns plan-manager persistent task on plan activation
 
 **5 slash commands**: `/plan`, `/plan-progress`, `/plan-timeline`, `/plan-audit`, `/plan-sessions`.
 

@@ -1659,7 +1659,7 @@ function spawnTaskAgent(task) {
   const agentMcpConfig = path.join(worktreePath, '.mcp.json');
 
   ensureCredentials();
-  enqueueSession({
+  const result = enqueueSession({
     title: `Task runner: ${mapping.category?.name || mapping.agent} - ${task.title}`,
     agentType: mapping.agentType,
     hookType: HOOK_TYPES.TASK_RUNNER,
@@ -1689,6 +1689,14 @@ function spawnTaskAgent(task) {
     worktreePath,
     projectDir: PROJECT_DIR,
   });
+
+  // If the session was blocked (focus mode, bypass request, etc.), clean up the worktree.
+  // Callers handle resetting the task to pending on false return.
+  if (result.blocked) {
+    log(`Task runner: enqueue blocked for "${task.title}" (reason: ${result.blocked}) — removing worktree`);
+    try { removeWorktree(getFeatureBranchName(task.title, task.id)); } catch (_) { /* non-fatal */ }
+    return false;
+  }
 
   return true;
 }
@@ -3144,6 +3152,34 @@ async function main() {
               continue;
             }
           }
+
+          // do_not_auto_resume metadata flag — set by CTO or amendments to permanently suppress auto-resume
+          try {
+            const meta = task.metadata ? JSON.parse(task.metadata) : {};
+            if (meta.do_not_auto_resume) {
+              log(`Persistent stale pause auto-resume: "${task.title}" has do_not_auto_resume flag — skipping`);
+              continue;
+            }
+          } catch (_) { /* non-fatal */ }
+
+          // Self-pause circuit breaker: if the monitor has paused itself 3+ times in the last hour,
+          // it's likely reading an amendment telling it to stay paused. Stop reviving it.
+          try {
+            const oneHourAgo = new Date(now2 - 60 * 60 * 1000).toISOString();
+            const recentPauses = ptDb.prepare(
+              "SELECT COUNT(*) as cnt FROM events WHERE persistent_task_id = ? AND event_type = 'paused' AND created_at > ?"
+            ).get(task.id, oneHourAgo);
+            if (recentPauses && recentPauses.cnt >= 3) {
+              log(`Persistent stale pause auto-resume: "${task.title}" has self-paused ${recentPauses.cnt} times in the last hour — suppressing auto-resume (likely amendment-directed)`);
+              // Set the flag so we don't keep checking every cycle
+              try {
+                const meta = task.metadata ? JSON.parse(task.metadata) : {};
+                meta.do_not_auto_resume = true;
+                ptDb.prepare("UPDATE persistent_tasks SET metadata = ? WHERE id = ?").run(JSON.stringify(meta), task.id);
+              } catch (_) { /* non-fatal */ }
+              continue;
+            }
+          } catch (_) { /* non-fatal */ }
 
           log(`Persistent stale pause auto-resume: resuming "${task.title}" (paused ${Math.round(pauseAge / 60000)}min ago, threshold=${thresholdMinutes}min)`);
 

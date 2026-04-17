@@ -97,11 +97,11 @@ This is what the CTO sees. Run `/cto-report` for a static multi-page report in t
      Pending: 5 CTO decision(s)
 
 ⏺ Bash(node packages/cto-dashboard/dist/index.js)
-     ╭─ QUOTA & CAPACITY (2 keys) ─────────╮ ╭─ SYSTEM STATUS ──────────────────────╮
+     ╭─ QUOTA & CAPACITY ──────────────────╮ ╭─ SYSTEM STATUS ──────────────────────╮
      │ 5-hour   ██████░░░░░░░░░░  35%      │ │ Deputy CTO: ENABLED                  │
-     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 6:39PM (3m… │
-     │ Rotations (24h): 2                  │ │ Protection: PROTECTED                │
-     │  Tip: /show quota                   │ │ Commits:    BLOCKED                  │
+     │ 7-day    ██████████████░░  88%      │ │   Runs every 50m | Next: 10:26AM (3… │
+     │  Tip: /show quota                   │ │ Protection: PROTECTED                │
+     │                                     │ │ Commits:    BLOCKED                  │
      ╰─────────────────────────────────────╯ ╰──────────────────────────────────────╯
      
      ╭─ DEPUTY CTO ─────────────────────────────────────────────────────────────────╮
