@@ -176,8 +176,10 @@ try {
       // 1. Auto-wire Escape key interrupt for headed demos
       if (process.env.DEMO_HEADLESS !== '1') {
         try {
-          _dbg('wiring interrupt setup...');
-          const interruptModule = await import(join(__dirname, 'demo-interrupt-setup.js'));
+          // Import via PROJECT path (symlink), not __dirname (real path).
+          // ESM caches by URL — if the fixture also imports via the project symlink,
+          // both get the same module instance and share the `interrupted` flag.
+          const interruptModule = await import(join(projectDir, '.claude/hooks/lib/demo-interrupt-setup.js'));
           await interruptModule.setupDemoInterrupt(context);
 
           // 2. Auto-wire cursor highlight when DEMO_SHOW_CURSOR=1
