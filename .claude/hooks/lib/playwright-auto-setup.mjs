@@ -13,9 +13,17 @@
  */
 
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import { dirname, join } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Resolve modules from the PROJECT directory, not from gentyr's directory.
+// .claude/hooks/ is a symlink into gentyr, so bare imports like '@playwright/test'
+// would resolve from gentyr's node_modules (where it doesn't exist).
+// createRequire from the project dir finds the project's installed packages.
+const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const projectRequire = createRequire(join(projectDir, 'package.json'));
 
 // ─── Cursor Highlight Init Script (injected via context.addInitScript) ────────
 
@@ -152,8 +160,8 @@ async function addMouseAnimation(page, isInterruptedFn) {
 // ─── Playwright Monkey-Patch ──────────────────────────────────────────────────
 
 try {
-  // Dynamic import — fails gracefully if @playwright/test isn't installed
-  const pw = await import('@playwright/test');
+  // Resolve from project's node_modules (not gentyr's) via createRequire
+  const pw = projectRequire('@playwright/test');
   const chromium = pw.chromium;
 
   if (chromium && typeof chromium.launchPersistentContext === 'function') {
