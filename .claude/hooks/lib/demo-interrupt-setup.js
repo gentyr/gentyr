@@ -36,6 +36,9 @@ let interrupted = false;
 const registeredPages = new Set();
 const exposedPages = new WeakSet();
 
+/** Returns true if the demo has been interrupted via Escape key. */
+export function isInterrupted() { return interrupted; }
+
 // ─── Overlay Update (Interrupted State) ─────────────────────────────────────
 
 /**

@@ -160,6 +160,14 @@ function buildDemoEnv(extra?: Record<string, string>): Record<string, string> {
   if (env.SUPABASE_ANON_KEY && !env.NEXT_PUBLIC_SUPABASE_ANON_KEY) env.NEXT_PUBLIC_SUPABASE_ANON_KEY = env.SUPABASE_ANON_KEY;
 
   env.CLAUDE_PROJECT_DIR = PROJECT_DIR;
+
+  // Auto-inject Playwright setup (interrupt + cursor highlight) via --import
+  const autoSetupPath = path.resolve(PROJECT_DIR, '.claude/hooks/lib/playwright-auto-setup.mjs');
+  try {
+    fs.accessSync(autoSetupPath);
+    env.NODE_OPTIONS = ((env.NODE_OPTIONS || '') + ` --import "${autoSetupPath}"`).trim();
+  } catch { /* auto-setup not available — skip */ }
+
   if (extra) Object.assign(env, extra);
   return env;
 }

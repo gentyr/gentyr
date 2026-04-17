@@ -781,6 +781,13 @@ function buildDemoEnv(opts: {
   if (process.env.PLAYWRIGHT_BACKEND_PORT) env.PLAYWRIGHT_BACKEND_PORT = process.env.PLAYWRIGHT_BACKEND_PORT;
   if (process.env.PLAYWRIGHT_BRIDGE_PORT) env.PLAYWRIGHT_BRIDGE_PORT = process.env.PLAYWRIGHT_BRIDGE_PORT;
 
+  // Auto-inject Playwright setup (interrupt + cursor highlight) via --import
+  const autoSetupPath = path.resolve(PROJECT_DIR, '.claude/hooks/lib/playwright-auto-setup.mjs');
+  try {
+    fs.accessSync(autoSetupPath);
+    env.NODE_OPTIONS = ((env.NODE_OPTIONS || '') + ` --import "${autoSetupPath}"`).trim();
+  } catch { /* auto-setup not available — skip */ }
+
   // Apply extra_env last — may override explicit demo vars (same as original inline behavior)
   if (opts.extra_env) {
     Object.assign(env, opts.extra_env);
