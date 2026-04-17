@@ -188,6 +188,27 @@ function spawnRepairAgent(scenario) {
       buildPrompt: (agentId) => {
         const prereqs = queryPrerequisites(scenarioId);
         const prereqBlock = formatPrerequisites(prereqs);
+        const isStall = error && error.includes('Stalled:');
+        const stallGuidance = isStall ? [
+          ``,
+          `## STALL KILL DETECTED`,
+          ``,
+          `This demo was killed by the GENTYR stall detector because it produced no output for 45+ seconds.`,
+          `The demo IS progressing internally, but the stall detector cannot see it.`,
+          ``,
+          `**Root cause**: A long-running operation (login flow, polling, redirect chain) runs inside a single`,
+          `test.step() without emitting any stdout/stderr. The stall detector sees silence and kills it.`,
+          ``,
+          `**Fix priority (try in order):**`,
+          `1. Break the monolithic test.step() into multiple smaller steps (each boundary resets the timer)`,
+          `2. Add \`console.warn('[demo-progress] ...')\` checkpoints every 10-15s inside helper functions`,
+          `3. Both — sub-steps for structure, console.warn for fine-grained progress inside helpers`,
+          ``,
+          `**Do NOT increase timeouts.** The stall detector is correct — if nothing is reporting progress,`,
+          `we want to fail fast and fix the reporting, not hide the problem behind longer waits.`,
+          ``,
+          `See "Progress Checkpoints (MANDATORY)" in your agent definition for patterns and examples.`,
+        ] : [];
         return [
           `[Automation][task-runner-demo-manager][AGENT:${agentId}] You are a demo repair agent. A demo scenario failed.`,
           ``,
@@ -198,6 +219,7 @@ function spawnRepairAgent(scenario) {
           test_file ? `- Test File: ${test_file}` : '',
           taskId ? `- Tracking Task: ${taskId}` : '',
           prereqBlock,
+          ...stallGuidance,
           ``,
           `## Instructions`,
           ``,
