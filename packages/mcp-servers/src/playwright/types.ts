@@ -353,7 +353,6 @@ export interface DemoRunState {
   window_recorder_permission_error?: string;  // Set when recorder exits with code 2 (permission denied)
   screenshot_dir?: string;
   screenshot_start_time?: number;
-  fullscreened?: boolean;
   success_pause_ms?: number;
   suite_end_detected_at?: number;  // Runtime-only — epoch ms when suite_end was first seen
   interrupt_detected_at?: number;  // Runtime-only — epoch ms when demo_interrupted was first seen
