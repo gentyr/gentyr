@@ -325,16 +325,19 @@ function statBasedSync(frameworkDir) {
   if (mcpStale) {
     const mcpDir = path.join(frameworkDir, 'packages', 'mcp-servers');
     try {
-      // Install deps if node_modules is missing or incomplete (e.g. after git clean)
+      // Install deps if node_modules is missing or incomplete (e.g. after git clean).
+      // Check multiple @types packages — @types/better-sqlite3 is needed alongside @types/node.
       const mcpNodeModules = path.join(mcpDir, 'node_modules');
-      const hasTypesNode = fs.existsSync(path.join(mcpNodeModules, '@types', 'node'));
-      if (!hasTypesNode) {
+      const hasDeps = fs.existsSync(mcpNodeModules) &&
+        fs.existsSync(path.join(mcpNodeModules, '@types', 'node')) &&
+        fs.existsSync(path.join(mcpNodeModules, '@types', 'better-sqlite3'));
+      if (!hasDeps) {
         execFileSync('npm', ['install', '--no-fund', '--no-audit'], { cwd: mcpDir, stdio: 'pipe', timeout: 120000 });
       }
       execFileSync('npm', ['run', 'build'], { cwd: mcpDir, stdio: 'pipe', timeout: 30000 });
       changes.push('MCP servers rebuilt');
-    } catch (_) {
-      // Non-fatal — MCP build failure is handled by continuing execution
+    } catch (buildErr) {
+      changes.push(`MCP server build FAILED: ${buildErr.message}. Run: cd ${mcpDir} && npm install && npm run build`);
     }
   }
 
