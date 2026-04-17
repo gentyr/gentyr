@@ -52,6 +52,7 @@ const DEFAULTS = {
   demo_validation: 1440,               // daily
   persistent_stale_pause_resume: 5,    // 5 minutes
   persistent_heartbeat_stale_minutes: 5, // 5 minutes
+  plan_orphan_detection: 10,             // 10 minutes
   session_hard_kill_minutes: 60,         // 60 minutes
 };
 

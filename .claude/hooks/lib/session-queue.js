@@ -635,9 +635,10 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
     revivalContext = buildRevivalContext(taskId, PROJECT_DIR, { monitorSessionId: task.monitor_session_id });
   } catch (_) { /* non-fatal */ }
 
-  // Check if demo/strict-infra is involved
+  // Check if demo/strict-infra/plan is involved
   let demoInstructions = '';
   let strictInfraInstructions = '';
+  let planSection = '';
   try {
     const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
     if (taskMeta.demo_involved) {
@@ -646,13 +647,17 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
     if (taskMeta.strict_infra_guidance === true) {
       strictInfraInstructions = buildPersistentMonitorStrictInfraInstructions();
     }
+    if (taskMeta.plan_id) {
+      planSection = `\nYou are a PLAN MANAGER for plan "${taskMeta.plan_title || taskMeta.plan_id}" (ID: ${taskMeta.plan_id}).
+Follow the plan-manager agent instructions. Poll get_spawn_ready_tasks, create persistent tasks for ready plan steps, monitor them, and advance the plan until all phases complete.\n`;
+    }
   } catch (_) { /* non-fatal */ }
 
   // Build enriched revival prompt with last known state
   const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
 
 ## Persistent Task: ${task.title}
-
+${planSection}
 Your previous monitor session died. Here is your last known state:
 ${revivalContext || '(no prior state available — this may be the first revival)'}
 
@@ -680,7 +685,18 @@ Persistent Task ID: ${taskId}`;
     prompt,
     resumeSessionId,
     JSON.stringify(['--disallowedTools', 'Edit,Write,NotebookEdit']),
-    JSON.stringify({ GENTYR_PERSISTENT_TASK_ID: taskId, GENTYR_PERSISTENT_MONITOR: 'true' }),
+    JSON.stringify((() => {
+      const env = { GENTYR_PERSISTENT_TASK_ID: taskId, GENTYR_PERSISTENT_MONITOR: 'true' };
+      // Preserve plan-manager env vars if this is a plan-manager persistent task
+      try {
+        const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
+        if (taskMeta.plan_id) {
+          env.GENTYR_PLAN_MANAGER = 'true';
+          env.GENTYR_PLAN_ID = taskMeta.plan_id;
+        }
+      } catch (_) { /* non-fatal */ }
+      return env;
+    })()),
     PROJECT_DIR,
     JSON.stringify({ persistentTaskId: taskId, revivalReason: reapReason === 'stale_heartbeat' ? 'heartbeat_stale_revival' : 'immediate_reaper_revival' }),
     'session-queue-reaper',
