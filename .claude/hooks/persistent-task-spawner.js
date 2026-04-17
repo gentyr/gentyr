@@ -265,6 +265,7 @@ Parent TODO Task ID: ${task.parent_todo_task_id || 'none'}`;
       ttlMs: 0, // No TTL expiration
       prompt,
       projectDir: PROJECT_DIR,
+      agent: planId ? 'plan-manager' : 'persistent-monitor',
       extraArgs: ['--disallowedTools', 'Edit,Write,NotebookEdit'],
       extraEnv: {
         GENTYR_PERSISTENT_TASK_ID: taskId,

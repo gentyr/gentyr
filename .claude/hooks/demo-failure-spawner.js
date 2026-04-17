@@ -183,7 +183,7 @@ function spawnRepairAgent(scenario) {
       worktreePath,
       projectDir: PROJECT_DIR,
       mcpConfig: fs.existsSync(agentMcpConfig) ? agentMcpConfig : undefined,
-      extraArgs: ['--agent-name', 'demo-manager'],
+      agent: 'demo-manager',
       metadata: { scenarioId, scenarioTitle: title, error, taskId },
       buildPrompt: (agentId) => {
         const prereqs = queryPrerequisites(scenarioId);

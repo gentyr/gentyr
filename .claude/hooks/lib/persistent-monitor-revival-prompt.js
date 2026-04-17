@@ -95,5 +95,7 @@ ${demoInstructions}${strictInfraInstructions}`;
     revivalReason,
   };
 
-  return { prompt, extraEnv, metadata };
+  const agent = planId ? 'plan-manager' : 'persistent-monitor';
+
+  return { prompt, extraEnv, metadata, agent };
 }

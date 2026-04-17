@@ -280,6 +280,7 @@ async function main() {
       ttlMs: 0,
       prompt: monitorPrompt,
       projectDir: PROJECT_DIR,
+      agent: 'plan-manager',
       extraEnv: {
         GENTYR_PLAN_MANAGER: 'true',
         GENTYR_PLAN_ID: planId,

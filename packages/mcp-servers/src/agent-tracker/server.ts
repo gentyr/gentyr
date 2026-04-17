@@ -4990,6 +4990,7 @@ async function resolveBypassRequest(args: ResolveBypassRequestArgs): Promise<obj
                     resumeSessionId: task.monitor_session_id || undefined,
                     extraEnv: revival.extraEnv,
                     metadata: { ...revival.metadata, persistentTaskId: request.task_id },
+                    agent: revival.agent,
                     ttlMs: 0,
                   });
                 }

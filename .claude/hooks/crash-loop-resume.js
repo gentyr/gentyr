@@ -182,7 +182,7 @@ async function main() {
 
       // Enqueue monitor — prefer --resume if monitor_session_id available
       try {
-        const { prompt, extraEnv, metadata } = await buildPrompt(task, 'crash_loop_login_resume', PROJECT_DIR);
+        const { prompt, extraEnv, metadata, agent } = await buildPrompt(task, 'crash_loop_login_resume', PROJECT_DIR);
         const resumeSessionId = task.monitor_session_id || null;
         enqueueSession({
           title: `[Persistent] Login resume: ${task.title}`,
@@ -199,6 +199,7 @@ async function main() {
           projectDir: PROJECT_DIR,
           extraEnv,
           metadata,
+          agent,
         });
         resumed.push(task.title);
       } catch (err) {
