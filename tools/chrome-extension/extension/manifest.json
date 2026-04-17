@@ -37,6 +37,12 @@
       "js": ["assets/agent-visual-indicator.js-Ct7LqXhp.js"],
       "matches": ["<all_urls>"],
       "run_at": "document_idle"
+    },
+    {
+      "all_frames": false,
+      "js": ["assets/demo-interrupt-listener.js"],
+      "matches": ["<all_urls>"],
+      "run_at": "document_idle"
     }
   ],
   "content_security_policy": {
