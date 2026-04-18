@@ -162,6 +162,10 @@ async function handleInterrupt() {
   globalThis.__gentyrKeepAlive = keepAlive;
   const originalExit = process.exit;
   process.exit = function () {};
+  // Save existing signal handlers before replacing them so we can restore
+  // them precisely when the user manually closes the browser.
+  const savedSigterm = process.listeners('SIGTERM').slice();
+  const savedSigint = process.listeners('SIGINT').slice();
   process.removeAllListeners('SIGTERM');
   process.removeAllListeners('SIGINT');
   process.on('SIGTERM', () => {});
@@ -179,6 +183,8 @@ async function handleInterrupt() {
           process.exit = originalExit;
           process.removeAllListeners('SIGTERM');
           process.removeAllListeners('SIGINT');
+          for (const fn of savedSigterm) process.on('SIGTERM', fn);
+          for (const fn of savedSigint) process.on('SIGINT', fn);
         });
       }
     } catch {}
