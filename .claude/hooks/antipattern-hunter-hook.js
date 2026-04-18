@@ -188,7 +188,7 @@ a. Call code-reviewer sub-agent to review proposed fix
 b. Create TODO item:
    \`\`\`javascript
    mcp__todo-db__create_task({
-     section: "CODE-WRITER",
+     section: "CODE-REVIEWER",
      title: "Fix [SPEC-ID] violation in [file]",
      description: "[Details and approved fix]",
      assigned_by: "ANTIPATTERN-HUNTER-REPO"
@@ -286,7 +286,7 @@ a. Call code-reviewer sub-agent to review proposed fix
 b. Create TODO item:
    \`\`\`javascript
    mcp__todo-db__create_task({
-     section: "CODE-WRITER",
+     section: "CODE-REVIEWER",
      title: "Fix [SPEC-ID] violation in [file]:[line]",
      description: "[Details and approved fix]. Found in commit: ${commitMessage.split('\n')[0]}",
      assigned_by: "ANTIPATTERN-HUNTER-COMMIT"
