@@ -116,7 +116,7 @@ function runCanaryCheck(
  * Throws when failedKeys is non-empty, just like the original.
  */
 function buildDemoEnvCredentials(
-  resolveLocalSecrets: (config: object) => { resolvedEnv: Record<string, string>; failedKeys: string[] },
+  resolveLocalSecrets: (config: object) => { resolvedEnv: Record<string, string>; failedKeys: string[]; failureDetails: Record<string, string> },
   loadServicesConfig: (dir: string) => object,
   projectDir: string,
 ): Record<string, string> {
@@ -124,12 +124,13 @@ function buildDemoEnvCredentials(
 
   try {
     const config = loadServicesConfig(projectDir);
-    const { resolvedEnv, failedKeys } = resolveLocalSecrets(config);
+    const { resolvedEnv, failedKeys, failureDetails } = resolveLocalSecrets(config);
     Object.assign(env, resolvedEnv);
 
     if (failedKeys.length > 0) {
+      const details = failedKeys.map(k => `  ${k}: ${failureDetails[k] || 'unknown error'}`).join('\n');
       throw new Error(
-        `Failed to resolve credentials: ${failedKeys.join(', ')}. Check OP_SERVICE_ACCOUNT_TOKEN and 1Password connectivity.`,
+        `Failed to resolve credentials:\n${details}\nThese op:// references could not be resolved by the MCP server.`,
       );
     }
   } catch (err) {
@@ -337,6 +338,7 @@ describe('buildDemoEnv() — credential resolution', () => {
     const resolveLocalSecrets = (_config: object) => ({
       resolvedEnv: { DB_URL: 'postgres://localhost/test', API_KEY: 'secret-value' },
       failedKeys: [],
+      failureDetails: {},
     });
     const loadServicesConfig = (_dir: string) => ({});
 
@@ -350,42 +352,46 @@ describe('buildDemoEnv() — credential resolution', () => {
     const resolveLocalSecrets = (_config: object) => ({
       resolvedEnv: { PARTIAL_KEY: 'value' },
       failedKeys: ['MISSING_SECRET'],
+      failureDetails: { MISSING_SECRET: 'Failed to read op://vault/item/field: item not found' },
     });
     const loadServicesConfig = (_dir: string) => ({});
 
     expect(() => {
       buildDemoEnvCredentials(resolveLocalSecrets, loadServicesConfig, tempDir);
-    }).toThrow(/Failed to resolve credentials: MISSING_SECRET/);
+    }).toThrow(/MISSING_SECRET: Failed to read op:\/\/vault\/item\/field: item not found/);
   });
 
-  it('error message includes OP_SERVICE_ACCOUNT_TOKEN hint on failure', () => {
+  it('error message includes per-key error details on failure', () => {
     const resolveLocalSecrets = (_config: object) => ({
       resolvedEnv: {},
       failedKeys: ['MY_KEY'],
+      failureDetails: { MY_KEY: 'Failed to read op://vault/item/field: token expired' },
     });
     const loadServicesConfig = (_dir: string) => ({});
 
     expect(() => {
       buildDemoEnvCredentials(resolveLocalSecrets, loadServicesConfig, tempDir);
-    }).toThrow(/OP_SERVICE_ACCOUNT_TOKEN and 1Password connectivity/);
+    }).toThrow(/MY_KEY: Failed to read op:\/\/vault\/item\/field: token expired/);
   });
 
   it('throws listing ALL failed keys when multiple keys fail', () => {
     const resolveLocalSecrets = (_config: object) => ({
       resolvedEnv: {},
       failedKeys: ['KEY_A', 'KEY_B', 'KEY_C'],
+      failureDetails: { KEY_A: 'token expired', KEY_B: 'vault not found', KEY_C: 'network timeout' },
     });
     const loadServicesConfig = (_dir: string) => ({});
 
     expect(() => {
       buildDemoEnvCredentials(resolveLocalSecrets, loadServicesConfig, tempDir);
-    }).toThrow(/KEY_A, KEY_B, KEY_C/);
+    }).toThrow(/KEY_A.*KEY_B.*KEY_C/s);
   });
 
   it('does NOT throw when failedKeys is empty', () => {
     const resolveLocalSecrets = (_config: object) => ({
       resolvedEnv: {},
       failedKeys: [],
+      failureDetails: {},
     });
     const loadServicesConfig = (_dir: string) => ({});
 
@@ -398,6 +404,7 @@ describe('buildDemoEnv() — credential resolution', () => {
     const resolveLocalSecrets = (_config: object) => ({
       resolvedEnv: {},
       failedKeys: [],
+      failureDetails: {},
     });
     const loadServicesConfig = (_dir: string): never => {
       throw new Error('Failed to load services.json: permission denied');
@@ -412,6 +419,7 @@ describe('buildDemoEnv() — credential resolution', () => {
     const resolveLocalSecrets = (_config: object) => ({
       resolvedEnv: {},
       failedKeys: [],
+      failureDetails: {},
     });
     const loadServicesConfig = (_dir: string) => ({});
 
