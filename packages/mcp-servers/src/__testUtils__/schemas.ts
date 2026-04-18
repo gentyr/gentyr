@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS maintenance_state (
 
 CREATE TABLE IF NOT EXISTS archived_tasks (
     id TEXT PRIMARY KEY,
-    section TEXT NOT NULL,
+    section TEXT,
+    category_id TEXT,
     title TEXT NOT NULL,
     description TEXT,
     assigned_by TEXT,

@@ -134,7 +134,8 @@ CREATE TABLE IF NOT EXISTS maintenance_state (
 -- Mirrors tasks columns minus status (always 'completed') and metadata (unused legacy column).
 CREATE TABLE IF NOT EXISTS archived_tasks (
     id TEXT PRIMARY KEY,
-    section TEXT NOT NULL,
+    section TEXT,
+    category_id TEXT,
     title TEXT NOT NULL,
     description TEXT,
     assigned_by TEXT,
@@ -364,11 +365,33 @@ function initializeDatabase(): Database.Database {
     db.exec("ALTER TABLE tasks ADD COLUMN category_id TEXT");
   }
 
-  // Auto-migration: add category_id column to archived_tasks if missing
+  // Auto-migration: relax archived_tasks.section NOT NULL constraint and add category_id.
+  // Tests by attempting to INSERT a row with section = NULL into archived_tasks. If the old
+  // NOT NULL constraint rejects it, the table is recreated without the constraint and with
+  // the category_id column. If section is already nullable, check for category_id separately.
   try {
-    db.prepare("SELECT category_id FROM archived_tasks LIMIT 0").get();
+    const archiveMigTestId = 'archive-migration-section-nullable-' + Date.now();
+    const nowIso = new Date().toISOString();
+    const nowTs = Math.floor(Date.now() / 1000);
+    db.prepare("INSERT INTO archived_tasks (id, section, title, created_at, created_timestamp, archived_at, archived_timestamp) VALUES (?, NULL, '_migration_test', ?, ?, ?, ?)").run(archiveMigTestId, nowIso, nowTs, nowIso, nowTs);
+    db.prepare("DELETE FROM archived_tasks WHERE id = ?").run(archiveMigTestId);
+    // Section column already allows NULL — check for category_id separately
+    try {
+      db.prepare("SELECT category_id FROM archived_tasks LIMIT 0").get();
+    } catch {
+      db.exec("ALTER TABLE archived_tasks ADD COLUMN category_id TEXT");
+    }
   } catch {
-    db.exec("ALTER TABLE archived_tasks ADD COLUMN category_id TEXT");
+    // Old NOT NULL constraint in place — recreate table with relaxed constraint + category_id.
+    // Preserve all existing data. user_prompt_uuids may or may not exist, so use a minimal
+    // safe column list guaranteed by all previous migrations.
+    db.exec("ALTER TABLE archived_tasks RENAME TO archived_tasks_old");
+    db.exec(SCHEMA);
+    // user_prompt_uuids was added by ALTER TABLE above (before the rename), so it exists in archived_tasks_old
+    db.exec(`INSERT INTO archived_tasks (id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, user_prompt_uuids, archived_at, archived_timestamp)
+      SELECT id, section, title, description, assigned_by, COALESCE(priority, 'normal'), created_at, started_at, completed_at, created_timestamp, completed_timestamp, COALESCE(followup_enabled, 0), followup_section, followup_prompt, user_prompt_uuids, archived_at, archived_timestamp
+      FROM archived_tasks_old`);
+    db.exec("DROP TABLE archived_tasks_old");
   }
 
   seedCategories(db);
@@ -1018,12 +1041,14 @@ function deleteTask(args: DeleteTaskArgs): DeleteTaskResult | ErrorResult {
     const archived_at = now.toISOString();
     const archived_timestamp = Math.floor(now.getTime() / 1000);
 
+    const category_id = task.category_id ?? null;
+
     const archiveAndDelete = db.transaction(() => {
       db.prepare(`
-        INSERT OR REPLACE INTO archived_tasks (id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO archived_tasks (id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        task.id, task.section, task.title, task.description, task.assigned_by,
+        task.id, task.section, category_id, task.title, task.description, task.assigned_by,
         task.priority ?? 'normal', task.created_at, task.started_at, task.completed_at,
         task.created_timestamp, task.completed_timestamp, task.followup_enabled,
         task.followup_section, task.followup_prompt, archived_at, archived_timestamp
@@ -1126,8 +1151,8 @@ function cleanup(): CleanupResult {
   // Archive completed tasks older than 3 hours
   const archiveOld = db.transaction(() => {
     const insertResult = db.prepare(`
-      INSERT OR REPLACE INTO archived_tasks (id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
-      SELECT id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, ?, ?
+      INSERT OR REPLACE INTO archived_tasks (id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
+      SELECT id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, ?, ?
       FROM tasks
       WHERE status = 'completed'
         AND completed_timestamp IS NOT NULL
@@ -1152,8 +1177,8 @@ function cleanup(): CleanupResult {
     const toRemove = completedCount - 50;
     const archiveCap = db.transaction(() => {
       const insertResult = db.prepare(`
-        INSERT INTO archived_tasks (id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
-        SELECT id, section, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, ?, ?
+        INSERT INTO archived_tasks (id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
+        SELECT id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, ?, ?
         FROM tasks
         WHERE status = 'completed'
         ORDER BY completed_timestamp ASC
@@ -1415,6 +1440,7 @@ function summarizeWork(args: SummarizeWorkArgs): SummarizeWorkResult | ErrorResu
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as TaskRecord | undefined;
 
   const section = task?.section ?? 'UNKNOWN';
+  const category_id = task?.category_id ?? null;
   const title = task?.title ?? 'Unknown task';
   const assigned_by = task?.assigned_by ?? null;
   const timestamp_assigned = task?.created_at ?? null;
@@ -1488,14 +1514,14 @@ function summarizeWork(args: SummarizeWorkArgs): SummarizeWorkResult | ErrorResu
 
   worklogDb.prepare(`
     INSERT INTO worklog_entries (
-      id, task_id, session_id, agent_id, section, title, assigned_by,
+      id, task_id, session_id, agent_id, section, category_id, title, assigned_by,
       summary, success, timestamp_assigned, timestamp_started, timestamp_completed,
       duration_assign_to_start_ms, duration_start_to_complete_ms, duration_assign_to_complete_ms,
       tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_total,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    id, taskId, session_id, agentId ?? null, section, title, assigned_by,
+    id, taskId, session_id, agentId ?? null, section, category_id, title, assigned_by,
     args.summary, args.success ? 1 : 0, timestamp_assigned, timestamp_started, timestamp_completed,
     duration_assign_to_start_ms, duration_start_to_complete_ms, duration_assign_to_complete_ms,
     tokens?.input ?? null, tokens?.output ?? null, tokens?.cache_read ?? null, tokens?.cache_creation ?? null, tokens?.total ?? null,

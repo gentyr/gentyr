@@ -46,7 +46,7 @@ export const CreateTaskArgsSchema = z.object({
   description: z.string().optional().describe('Detailed description'),
   assigned_by: z.string().optional().describe('Your agent name (required for restricted sections like DEPUTY-CTO)'),
   followup_enabled: z.boolean().optional().describe('Enable follow-up task on completion (forced true when assigned_by is deputy-cto)'),
-  followup_section: z.enum(VALID_SECTIONS).optional().describe('Section for follow-up task (defaults to same section)'),
+  followup_section: z.string().optional().describe('Section or category for follow-up task routing (deprecated — follow-up inherits parent category_id)'),
   followup_prompt: z.string().optional().describe('Custom follow-up prompt. For deputy-cto tasks, leave empty — auto-generated.'),
   priority: z.enum(TASK_PRIORITY).optional().default('normal')
     .describe('Task priority. "urgent" tasks bypass the 1-hour age filter and dispatch immediately.'),

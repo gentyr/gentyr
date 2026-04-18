@@ -81,14 +81,14 @@ mcp__todo-db__create_task({
 })
 ```
 
-**IMPORTANT**: The TODO database uses category_id values. Valid category_id values:
-- standard
-- deep-investigation
-- test-suite
-- project-management
-- triage
-- PRODUCT-MANAGER
-- DEMO-MANAGER
+**IMPORTANT**: The TODO database uses category IDs. Valid categories:
+- `standard` (code changes, features, bug fixes)
+- `deep-investigation` (research, analysis)
+- `test-suite` (test creation, coverage)
+- `project-management` (commits, PRs, cleanup)
+- `triage` (deputy-CTO escalation)
+- `product-analysis` (market research, PMF)
+- `demo-design` (demo scenarios)
 
 ### Step 5: END SESSION
 
