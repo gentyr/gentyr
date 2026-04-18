@@ -1804,16 +1804,17 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     scenarioEnvVars = resolvedScenarioEnv;
   }
 
-  // Merge env_vars: scenario env_vars as base, explicit extra_env overrides
-  const mergedExtraEnv = { ...scenarioEnvVars, ...args.extra_env };
-
-  // Validate extra_env before building the environment
-  if (Object.keys(mergedExtraEnv).length > 0) {
-    const validationError = validateExtraEnv(mergedExtraEnv);
+  // Validate extra_env independently — scenario env_vars are trusted (DB-sourced,
+  // product-manager authored) and should not be subject to the blocklist or key limit.
+  if (args.extra_env && Object.keys(args.extra_env).length > 0) {
+    const validationError = validateExtraEnv(args.extra_env);
     if (validationError) {
       return { success: false, project, message: validationError };
     }
   }
+
+  // Merge env_vars: scenario env_vars as base, explicit extra_env overrides
+  const mergedExtraEnv = { ...scenarioEnvVars, ...args.extra_env };
 
   // Fix 4: Generate progress file path for real-time progress reporting
   const progressId = crypto.randomBytes(4).toString('hex');

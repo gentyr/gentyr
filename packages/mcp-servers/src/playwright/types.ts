@@ -262,7 +262,7 @@ export const RunDemoArgsSchema = z.object({
     .describe(
       'Additional environment variables to pass to the Playwright child process. ' +
       'Use for replay data (REPLAY_SESSION_ID, REPLAY_AUDIT_DATA) or custom flags. ' +
-      'Max 10 keys, max 512KB total size. Values are not persisted to demo-runs.json.'
+      'Max 25 keys, max 512KB total size. Values are not persisted to demo-runs.json.'
     ),
 });
 

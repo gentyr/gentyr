@@ -375,7 +375,7 @@ export const CreateScenarioArgsSchema = z.object({
     .describe('Relative path to the .demo.ts file (e.g., e2e/demo/vendor-onboarding.demo.ts)'),
   sort_order: z.coerce.number().int().min(0).max(999).optional().default(0).describe('Display order within persona'),
   env_vars: z.record(z.string(), z.string()).optional()
-    .describe('Environment variables to inject when running this scenario (e.g., {"AZURE_DEMO": "1"}). Max 10 keys.'),
+    .describe('Environment variables to inject when running this scenario (e.g., {"AZURE_DEMO": "1"}). Max 25 keys.'),
   headed: z.coerce.boolean().optional().default(false)
     .describe('Whether this scenario requires exclusive display access (headed Playwright, real Chrome, etc.). Headed scenarios are serialized through the display queue to prevent window capture conflicts and corrupted recordings.'),
 });
@@ -393,7 +393,7 @@ export const UpdateScenarioArgsSchema = z.object({
   sort_order: z.coerce.number().int().min(0).max(999).optional(),
   enabled: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional(),
   env_vars: z.record(z.string(), z.string()).nullable().optional()
-    .describe('Environment variables for this scenario. Set to null to clear. Max 10 keys.'),
+    .describe('Environment variables for this scenario. Set to null to clear. Max 25 keys.'),
   headed: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
     .describe('Whether this scenario requires exclusive display access. Headed scenarios are serialized through the display queue.'),
 });

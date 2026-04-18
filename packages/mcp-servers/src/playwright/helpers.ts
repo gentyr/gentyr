@@ -39,11 +39,17 @@ export function truncateOutput(output: string, maxLength = 4000): string {
 // Environment variable prefixes/names that extra_env is not allowed to override.
 // Any key that equals a prefix exactly, or starts with "<prefix>_", or starts
 // with a prefix that itself ends in "_" (e.g. "DYLD_") is blocked.
+//
+// Note: SUPABASE_URL, SUPABASE_ANON_KEY, DATABASE_URL, and NEXT_PUBLIC_SUPABASE_*
+// are intentionally NOT blocked — they are non-secret values (public project URL,
+// publishable anon key, connection string for local dev). The truly dangerous keys
+// (service role key) are blocked individually. Infrastructure credentials are
+// already stripped by buildDemoEnv() via INFRA_CRED_KEYS.
 export const EXTRA_ENV_BLOCKED_PREFIXES = [
   'PATH', 'HOME', 'USER', 'SHELL',
   'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS',
   'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_',
-  'SUPABASE_', 'DATABASE_', 'NEXT_PUBLIC_SUPABASE_',
+  'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_ACCESS_TOKEN',
   'GITHUB_TOKEN', 'CLOUDFLARE_', 'CODECOV_', 'RESEND_',
   'OP_SERVICE_ACCOUNT_TOKEN', 'GENTYR_',
   'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY',
@@ -61,8 +67,8 @@ export function validateExtraEnv(
 ): string | null {
   const keys = Object.keys(extra_env);
 
-  if (keys.length > 10) {
-    return 'extra_env: max 10 keys allowed';
+  if (keys.length > 25) {
+    return 'extra_env: max 25 keys allowed';
   }
 
   const totalSize = keys.reduce((sum, k) => sum + k.length + (extra_env[k]?.length ?? 0), 0);
