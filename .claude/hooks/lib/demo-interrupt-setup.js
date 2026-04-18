@@ -160,11 +160,29 @@ async function handleInterrupt() {
   //    Chrome is a child of this worker — if the worker dies, Chrome dies.
   const keepAlive = setInterval(() => {}, 5000);
   globalThis.__gentyrKeepAlive = keepAlive;
+  const originalExit = process.exit;
   process.exit = function () {};
   process.removeAllListeners('SIGTERM');
   process.removeAllListeners('SIGINT');
   process.on('SIGTERM', () => {});
   process.on('SIGINT', () => {});
+
+  // When the user manually closes the browser, un-patch everything so
+  // normal cleanup proceeds (web server shutdown, test data cleanup, ports released).
+  for (const page of registeredPages) {
+    try {
+      const browser = page.context().browser();
+      if (browser && !browser.__disconnectWired) {
+        browser.__disconnectWired = true;
+        browser.on('disconnected', () => {
+          clearInterval(keepAlive);
+          process.exit = originalExit;
+          process.removeAllListeners('SIGTERM');
+          process.removeAllListeners('SIGINT');
+        });
+      }
+    } catch {}
+  }
 
   // 3. Write demo_interrupted event to progress JSONL (best-effort, sync)
   const progressFile = process.env.DEMO_PROGRESS_FILE;
