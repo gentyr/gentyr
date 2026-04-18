@@ -10,6 +10,7 @@ export interface WorklogEntryData {
   id: string;
   task_id: string;
   section: string;
+  category_id: string | null;
   title: string;
   summary: string;
   success: boolean;
@@ -66,6 +67,7 @@ export function getWorklogData(limit = 10): WorklogData {
       id: string;
       task_id: string;
       section: string;
+      category_id: string | null;
       title: string;
       summary: string;
       success: number;
@@ -78,7 +80,7 @@ export function getWorklogData(limit = 10): WorklogData {
     }
 
     const rows = db.prepare(
-      'SELECT id, task_id, section, title, summary, success, timestamp_completed, duration_assign_to_start_ms, duration_start_to_complete_ms, duration_assign_to_complete_ms, tokens_total, created_at FROM worklog_entries ORDER BY created_at DESC LIMIT ?'
+      'SELECT id, task_id, section, category_id, title, summary, success, timestamp_completed, duration_assign_to_start_ms, duration_start_to_complete_ms, duration_assign_to_complete_ms, tokens_total, created_at FROM worklog_entries ORDER BY created_at DESC LIMIT ?'
     ).all(limit) as WorklogRow[];
 
     if (rows.length === 0) {

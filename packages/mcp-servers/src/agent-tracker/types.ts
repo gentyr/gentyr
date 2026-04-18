@@ -71,13 +71,16 @@ export const GetConcurrencyStatusArgsSchema = z.object({});
 
 export const ForceSpawnTasksArgsSchema = z.object({
   sections: z.array(z.string()).min(1)
-    .describe('Sections to spawn tasks from (e.g., ["CODE-REVIEWER", "TEST-WRITER"])')
+    .describe('Sections to spawn tasks from (e.g., ["CODE-REVIEWER", "TEST-WRITER"]). Deprecated — use category_ids instead.')
+    .optional(),
+  category_ids: z.array(z.string()).min(1)
+    .describe('Category IDs to spawn tasks from (e.g., ["standard", "test-suite"]). Preferred over sections.')
     .optional(),
   taskIds: z.array(z.string())
-    .describe('Specific task IDs to spawn (overrides section-based selection)')
+    .describe('Specific task IDs to spawn (overrides section-based or category-based selection)')
     .optional(),
-}).refine(data => data.sections || data.taskIds, {
-  message: 'Either sections or taskIds must be provided',
+}).refine(data => data.sections || data.category_ids || data.taskIds, {
+  message: 'Either sections, category_ids, or taskIds must be provided',
 });
 
 export const ForceTriageReportsArgsSchema = z.object({});

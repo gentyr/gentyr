@@ -62,6 +62,7 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const result = {
     sections: [],
+    categoryIds: [],
     taskIds: [],
     projectDir: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
   };
@@ -69,6 +70,8 @@ function parseArgs() {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--sections' && args[i + 1]) {
       result.sections = args[++i].split(',').map(s => s.trim()).filter(Boolean);
+    } else if (args[i] === '--category-ids' && args[i + 1]) {
+      result.categoryIds = args[++i].split(',').map(s => s.trim()).filter(Boolean);
     } else if (args[i] === '--task-ids' && args[i + 1]) {
       result.taskIds = args[++i].split(',').map(s => s.trim()).filter(Boolean);
     } else if (args[i] === '--project-dir' && args[i + 1]) {
@@ -512,11 +515,11 @@ ${completionBlock}`);
 async function main() {
   const config = parseArgs();
 
-  if (config.sections.length === 0 && config.taskIds.length === 0) {
+  if (config.sections.length === 0 && config.categoryIds.length === 0 && config.taskIds.length === 0) {
     console.log(JSON.stringify({
       spawned: [],
       skipped: [],
-      errors: [{ message: 'No sections or task IDs specified. Use --sections or --task-ids' }],
+      errors: [{ message: 'No sections, category IDs, or task IDs specified. Use --sections, --category-ids, or --task-ids' }],
     }));
     process.exit(1);
   }
@@ -573,6 +576,18 @@ async function main() {
           CASE WHEN priority = 'urgent' THEN 0 ELSE 1 END,
           created_timestamp ASC
       `).all(...config.taskIds);
+    } else if (config.categoryIds.length > 0) {
+      // Category ID mode: filter by category_id — preferred over section-based filtering.
+      const placeholders = config.categoryIds.map(() => '?').join(',');
+      candidates = db.prepare(`
+        SELECT id, section, category_id, title, description, priority, status, strict_infra_guidance, demo_involved, user_prompt_uuids
+        FROM tasks
+        WHERE status = 'pending'
+          AND category_id IN (${placeholders})
+        ORDER BY
+          CASE WHEN priority = 'urgent' THEN 0 ELSE 1 END,
+          created_timestamp ASC
+      `).all(...config.categoryIds);
     } else {
       // Section mode: only pending tasks (in_progress are assumed to have agents)
       const placeholders = config.sections.map(() => '?').join(',');
@@ -601,7 +616,7 @@ async function main() {
   if (candidates.length === 0) {
     console.log(JSON.stringify({
       spawned: [],
-      skipped: [{ reason: 'No pending tasks found in requested sections' }],
+      skipped: [{ reason: 'No pending tasks found in requested sections or categories' }],
       errors: [],
     }));
     process.exit(0);

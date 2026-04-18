@@ -69,6 +69,7 @@ interface TaskRow {
   id: string;
   title: string;
   section: string;
+  category_id: string | null;
   status: string;
   completed_timestamp: number | null;
 }
@@ -203,7 +204,7 @@ function getTaskEvents(since: number): TimelineEvent[] {
     const sinceTimestamp = Math.floor(since / 1000);
 
     const rows = db.prepare(`
-      SELECT id, title, section, status, completed_timestamp
+      SELECT id, title, section, category_id, status, completed_timestamp
       FROM tasks
       WHERE status = 'completed' AND completed_timestamp >= ?
       ORDER BY completed_timestamp DESC
@@ -218,7 +219,7 @@ function getTaskEvents(since: number): TimelineEvent[] {
         type: 'task',
         timestamp,
         title: row.title,
-        subtitle: `Assignee: ${row.section}`,
+        subtitle: `Assignee: ${row.category_id || row.section}`,
         status: 'completed',
       });
     }

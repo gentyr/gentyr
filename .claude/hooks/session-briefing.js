@@ -428,7 +428,7 @@ function getCurrentTaskDetails() {
           const meta = JSON.parse(qItem.metadata);
           if (meta.task_id) {
             const task = db.prepare(
-              "SELECT id, title, section, priority, description FROM tasks WHERE id = ?"
+              "SELECT id, title, section, category_id, priority, description FROM tasks WHERE id = ?"
             ).get(meta.task_id);
             db.close();
             return task || null;
@@ -441,7 +441,7 @@ function getCurrentTaskDetails() {
 
     // Fallback: find any in_progress task (most recently started)
     const task = db.prepare(
-      "SELECT id, title, section, priority, description FROM tasks WHERE status = 'in_progress' ORDER BY started_at DESC LIMIT 1"
+      "SELECT id, title, section, category_id, priority, description FROM tasks WHERE status = 'in_progress' ORDER BY started_at DESC LIMIT 1"
     ).get();
     db.close();
     return task || null;
@@ -648,7 +648,7 @@ function buildSpawnedBriefing() {
   const task = getCurrentTaskDetails();
   if (task) {
     lines.push(`You are starting work on: "${truncate(task.title, 80)}"`);
-    lines.push(`Task ID: ${task.id} | Section: ${task.section} | Priority: ${task.priority}`);
+    lines.push(`Task ID: ${task.id} | Category: ${task.category_id || task.section} | Priority: ${task.priority}`);
   } else {
     lines.push('You are starting a new work session.');
   }
