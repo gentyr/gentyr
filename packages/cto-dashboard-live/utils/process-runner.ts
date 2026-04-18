@@ -274,11 +274,45 @@ export function checkProcess(proc: RunningProcess): RunningProcess {
   };
 }
 
+/**
+ * Recursively collect all descendant PIDs of a process via `pgrep -P`.
+ * Returns the full tree in bottom-up order (deepest children first).
+ */
+function getDescendantPids(pid: number): number[] {
+  const descendants: number[] = [];
+  try {
+    const out = execFileSync('pgrep', ['-P', String(pid)], { encoding: 'utf8', timeout: 5000 }).trim();
+    if (out) {
+      for (const line of out.split('\n')) {
+        const child = parseInt(line, 10);
+        if (!isNaN(child)) {
+          descendants.push(...getDescendantPids(child));
+          descendants.push(child);
+        }
+      }
+    }
+  } catch { /* no children or pgrep failed */ }
+  return descendants;
+}
+
 export function killProcess(proc: RunningProcess): void {
   if (!isProcessAlive(proc.pid)) return;
+  // Collect all descendants BEFORE sending any signals (process tree may change)
+  const descendants = getDescendantPids(proc.pid);
+  // SIGTERM the process group first for graceful cleanup
   try {
     process.kill(-proc.pid, 'SIGTERM');
   } catch {
     try { process.kill(proc.pid, 'SIGTERM'); } catch { /* */ }
   }
+  // SIGTERM each descendant individually (they may be in different process groups)
+  for (const pid of descendants) {
+    try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
+  }
+  // Escalate to SIGKILL after 2s for anything still alive
+  setTimeout(() => {
+    for (const pid of [proc.pid, ...descendants]) {
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
+    }
+  }, 2000);
 }
