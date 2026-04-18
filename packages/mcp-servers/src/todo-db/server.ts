@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     followup_prompt TEXT,
     priority TEXT NOT NULL DEFAULT 'normal',
     CONSTRAINT valid_status CHECK (status IN ('pending', 'in_progress', 'completed')),
-    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER', 'DEMO-MANAGER')),
+    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER', 'DEMO-MANAGER', 'WORKSTREAM-MANAGER')),
     CONSTRAINT valid_priority CHECK (priority IN ('normal', 'urgent'))
 );
 
@@ -256,6 +256,18 @@ function initializeDatabase(): Database.Database {
   try {
     const testId = 'migration-dm-check-' + Date.now();
     db.prepare("INSERT INTO tasks (id, section, status, title, created_at, created_timestamp) VALUES (?, 'DEMO-MANAGER', 'pending', '_migration_test', ?, ?)").run(testId, new Date().toISOString(), Math.floor(Date.now() / 1000));
+    db.prepare("DELETE FROM tasks WHERE id = ?").run(testId);
+  } catch {
+    db.exec("ALTER TABLE tasks RENAME TO tasks_old");
+    db.exec(SCHEMA);
+    db.exec(`INSERT INTO tasks (id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, priority, started_timestamp) SELECT id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, COALESCE(followup_enabled, 0), followup_section, followup_prompt, COALESCE(priority, 'normal'), started_timestamp FROM tasks_old`);
+    db.exec("DROP TABLE tasks_old");
+  }
+
+  // Auto-migration: ensure WORKSTREAM-MANAGER is in CHECK constraint
+  try {
+    const testId = 'migration-wm-check-' + Date.now();
+    db.prepare("INSERT INTO tasks (id, section, status, title, created_at, created_timestamp) VALUES (?, 'WORKSTREAM-MANAGER', 'pending', '_migration_test', ?, ?)").run(testId, new Date().toISOString(), Math.floor(Date.now() / 1000));
     db.prepare("DELETE FROM tasks WHERE id = ?").run(testId);
   } catch {
     db.exec("ALTER TABLE tasks RENAME TO tasks_old");
@@ -486,6 +498,51 @@ function seedCategories(db: Database.Database): void {
       urgency_authorized: 1,
       is_default: 0,
       deprecated_section: 'DEMO-MANAGER',
+    },
+    {
+      id: 'project-management',
+      name: 'Project Management',
+      description: 'Single-step project management workflow for commits, PRs, and cleanup',
+      sequence: JSON.stringify([
+        { agent_type: 'project-manager', label: 'Project Management' },
+      ]),
+      prompt_template: null,
+      model: 'sonnet',
+      creator_restrictions: null,
+      force_followup: 0,
+      urgency_authorized: 1,
+      is_default: 0,
+      deprecated_section: 'PROJECT-MANAGER',
+    },
+    {
+      id: 'product-analysis',
+      name: 'Product Analysis',
+      description: 'Single-step product analysis workflow for market research and PMF analysis',
+      sequence: JSON.stringify([
+        { agent_type: 'product-manager', label: 'Product Analysis' },
+      ]),
+      prompt_template: null,
+      model: 'opus',
+      creator_restrictions: null,
+      force_followup: 0,
+      urgency_authorized: 1,
+      is_default: 0,
+      deprecated_section: 'PRODUCT-MANAGER',
+    },
+    {
+      id: 'workstream-management',
+      name: 'Workstream Management',
+      description: 'Single-step workstream analysis and dependency management',
+      sequence: JSON.stringify([
+        { agent_type: 'workstream-manager', label: 'Workstream Management' },
+      ]),
+      prompt_template: null,
+      model: 'sonnet',
+      creator_restrictions: null,
+      force_followup: 0,
+      urgency_authorized: 0,
+      is_default: 0,
+      deprecated_section: 'WORKSTREAM-MANAGER',
     },
   ];
 

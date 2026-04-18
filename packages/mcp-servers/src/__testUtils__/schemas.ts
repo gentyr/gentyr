@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     priority TEXT NOT NULL DEFAULT 'normal',
     user_prompt_uuids TEXT,
     CONSTRAINT valid_status CHECK (status IN ('pending', 'in_progress', 'completed')),
-    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER', 'DEMO-MANAGER')),
+    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER', 'DEMO-MANAGER', 'WORKSTREAM-MANAGER')),
     CONSTRAINT valid_priority CHECK (priority IN ('normal', 'urgent'))
 );
 
@@ -224,6 +224,7 @@ export const VALID_SECTIONS = [
   'DEPUTY-CTO',
   'PRODUCT-MANAGER',
   'DEMO-MANAGER',
+  'WORKSTREAM-MANAGER',
 ] as const;
 
 export type ValidSection = (typeof VALID_SECTIONS)[number];
