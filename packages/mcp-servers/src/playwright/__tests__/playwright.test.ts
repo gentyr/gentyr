@@ -840,7 +840,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     // Note: Zod schema accepts any string keys in extra_env.
-    // Security-sensitive keys (PATH, SUPABASE_*, DEMO_*, etc.) are rejected
+    // Security-sensitive keys (PATH, DEMO_*, CLOUDFLARE_*, etc.) are rejected
     // at runtime via validateExtraEnv() — see the dedicated test block below.
     it('should accept extra_env with security-sensitive keys at schema level (blocked at runtime)', () => {
       const result = RunDemoArgsSchema.safeParse({
@@ -1080,18 +1080,18 @@ describe('validateExtraEnv()', () => {
 
   // --- Key count limit ---
 
-  it('should return null for exactly 10 keys (boundary)', () => {
+  it('should return null for exactly 25 keys (boundary)', () => {
     const env: Record<string, string> = {};
-    for (let i = 0; i < 10; i++) env[`KEY_${i}`] = 'v';
+    for (let i = 0; i < 25; i++) env[`KEY_${i}`] = 'v';
     expect(validateExtraEnv(env)).toBeNull();
   });
 
-  it('should return an error for 11 keys (over limit)', () => {
+  it('should return an error for 26 keys (over limit)', () => {
     const env: Record<string, string> = {};
-    for (let i = 0; i < 11; i++) env[`KEY_${i}`] = 'v';
+    for (let i = 0; i < 26; i++) env[`KEY_${i}`] = 'v';
     const result = validateExtraEnv(env);
     expect(result).not.toBeNull();
-    expect(result).toMatch(/max 10 keys/);
+    expect(result).toMatch(/max 25 keys/);
   });
 
   // --- Total size limit ---
@@ -1159,14 +1159,26 @@ describe('validateExtraEnv()', () => {
     expect(validateExtraEnv({ PLAYWRIGHT_BASE_URL: 'http://evil.com' })).toMatch(/PLAYWRIGHT_BASE_URL/);
   });
 
-  // --- BLOCKED_PREFIXES: prefix_ pattern entries (e.g. SUPABASE_URL) ---
+  // --- BLOCKED_PREFIXES: prefix_ pattern entries ---
 
-  it('should block SUPABASE_URL (prefix SUPABASE_ match)', () => {
-    expect(validateExtraEnv({ SUPABASE_URL: 'http://evil.com' })).toMatch(/SUPABASE_URL/);
+  it('should block SUPABASE_SERVICE_ROLE_KEY (exact match — dangerous credential)', () => {
+    expect(validateExtraEnv({ SUPABASE_SERVICE_ROLE_KEY: 'secret' })).toMatch(/SUPABASE_SERVICE_ROLE_KEY/);
   });
 
-  it('should block DATABASE_URL (prefix DATABASE_ match)', () => {
-    expect(validateExtraEnv({ DATABASE_URL: 'postgres://evil' })).toMatch(/DATABASE_URL/);
+  it('should block SUPABASE_ACCESS_TOKEN (exact match — management API credential)', () => {
+    expect(validateExtraEnv({ SUPABASE_ACCESS_TOKEN: 'sbp_secret' })).toMatch(/SUPABASE_ACCESS_TOKEN/);
+  });
+
+  it('should allow SUPABASE_URL (non-secret identifier)', () => {
+    expect(validateExtraEnv({ SUPABASE_URL: 'http://localhost:54321' })).toBeNull();
+  });
+
+  it('should allow DATABASE_URL (non-secret connection string)', () => {
+    expect(validateExtraEnv({ DATABASE_URL: 'postgres://localhost/dev' })).toBeNull();
+  });
+
+  it('should allow NEXT_PUBLIC_SUPABASE_URL (non-secret public identifier)', () => {
+    expect(validateExtraEnv({ NEXT_PUBLIC_SUPABASE_URL: 'http://localhost:54321' })).toBeNull();
   });
 
   it('should block CLOUDFLARE_API_TOKEN (prefix CLOUDFLARE_ match)', () => {
@@ -1228,10 +1240,10 @@ describe('validateExtraEnv()', () => {
   // --- Multi-key scenarios ---
 
   it('should report all blocked keys when multiple are provided', () => {
-    const result = validateExtraEnv({ PATH: '/usr/bin', SUPABASE_URL: 'evil', REPLAY_SESSION_ID: 'ok' });
+    const result = validateExtraEnv({ PATH: '/usr/bin', SUPABASE_SERVICE_ROLE_KEY: 'secret', REPLAY_SESSION_ID: 'ok' });
     expect(result).not.toBeNull();
     expect(result).toMatch(/PATH/);
-    expect(result).toMatch(/SUPABASE_URL/);
+    expect(result).toMatch(/SUPABASE_SERVICE_ROLE_KEY/);
     // The safe key must not appear in the error
     expect(result).not.toMatch(/REPLAY_SESSION_ID/);
   });

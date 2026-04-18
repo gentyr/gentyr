@@ -458,7 +458,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     'PATH', 'HOME', 'USER', 'SHELL',
     'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS',
     'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_',
-    'SUPABASE_', 'DATABASE_', 'NEXT_PUBLIC_SUPABASE_',
+    'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_ACCESS_TOKEN',
     'GITHUB_TOKEN', 'CLOUDFLARE_', 'CODECOV_', 'RESEND_',
     'OP_SERVICE_ACCOUNT_TOKEN', 'GENTYR_',
     'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY',
@@ -469,7 +469,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
 
   function validateScenarioEnvVars(envVars: Record<string, string>): string | null {
     const keys = Object.keys(envVars);
-    if (keys.length > 10) return 'env_vars: max 10 keys allowed';
+    if (keys.length > 25) return 'env_vars: max 25 keys allowed';
     const blocked = keys.filter(k =>
       ENV_VARS_BLOCKED_PREFIXES.some(prefix => k === prefix || k.startsWith(prefix)),
     );

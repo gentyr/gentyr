@@ -74,7 +74,7 @@ const ENV_VARS_BLOCKED_PREFIXES = [
   'PATH', 'HOME', 'USER', 'SHELL',
   'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS',
   'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_',
-  'SUPABASE_', 'DATABASE_', 'NEXT_PUBLIC_SUPABASE_',
+  'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_ACCESS_TOKEN',
   'GITHUB_TOKEN', 'CLOUDFLARE_', 'CODECOV_', 'RESEND_',
   'OP_SERVICE_ACCOUNT_TOKEN', 'GENTYR_',
   'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY',
@@ -85,7 +85,7 @@ const ENV_VARS_BLOCKED_PREFIXES = [
 
 function validateScenarioEnvVars(envVars: Record<string, string>): string | null {
   const keys = Object.keys(envVars);
-  if (keys.length > 10) return 'env_vars: max 10 keys allowed';
+  if (keys.length > 25) return 'env_vars: max 25 keys allowed';
   const blocked = keys.filter(k =>
     ENV_VARS_BLOCKED_PREFIXES.some(prefix => k === prefix || k.startsWith(prefix)),
   );
@@ -624,9 +624,9 @@ describe('Demo Scenario CRUD', () => {
       }
     });
 
-    it('should reject env_vars with more than 10 keys', () => {
+    it('should reject env_vars with more than 25 keys', () => {
       const tooManyVars: Record<string, string> = {};
-      for (let i = 0; i < 11; i++) {
+      for (let i = 0; i < 26; i++) {
         tooManyVars[`KEY_${i}`] = `value_${i}`;
       }
 
@@ -641,29 +641,29 @@ describe('Demo Scenario CRUD', () => {
 
       expect(isErrorResult(result)).toBe(true);
       if (isErrorResult(result)) {
-        expect(result.error).toContain('env_vars: max 10 keys allowed');
+        expect(result.error).toContain('env_vars: max 25 keys allowed');
       }
     });
 
-    it('should accept env_vars with exactly 10 keys', () => {
-      const exactlyTenVars: Record<string, string> = {};
-      for (let i = 0; i < 10; i++) {
-        exactlyTenVars[`KEY_${i}`] = `value_${i}`;
+    it('should accept env_vars with exactly 25 keys', () => {
+      const exactlyVars: Record<string, string> = {};
+      for (let i = 0; i < 25; i++) {
+        exactlyVars[`KEY_${i}`] = `value_${i}`;
       }
 
       const result = createScenario(db, {
         persona_id: guiPersona.id,
-        title: 'Exactly Ten Vars',
-        description: 'Exactly 10 env vars',
+        title: 'Exactly 25 Vars',
+        description: 'Exactly 25 env vars',
         playwright_project: 'vendor-owner',
-        test_file: 'e2e/demo/ten-vars.demo.ts',
-        env_vars: exactlyTenVars,
+        test_file: 'e2e/demo/twentyfive-vars.demo.ts',
+        env_vars: exactlyVars,
       });
 
       expect(isErrorResult(result)).toBe(false);
       if (!isErrorResult(result)) {
         expect(result.env_vars).not.toBeNull();
-        expect(Object.keys(result.env_vars!)).toHaveLength(10);
+        expect(Object.keys(result.env_vars!)).toHaveLength(25);
       }
     });
 
@@ -904,7 +904,7 @@ describe('Demo Scenario CRUD', () => {
       }
     });
 
-    it('should reject env_vars update with more than 10 keys', () => {
+    it('should reject env_vars update with more than 25 keys', () => {
       const created = createScenario(db, {
         persona_id: guiPersona.id,
         title: 'Env Max Keys Update',
@@ -916,7 +916,7 @@ describe('Demo Scenario CRUD', () => {
       if (isErrorResult(created)) return;
 
       const tooManyVars: Record<string, string> = {};
-      for (let i = 0; i < 11; i++) {
+      for (let i = 0; i < 26; i++) {
         tooManyVars[`KEY_${i}`] = `value_${i}`;
       }
 
@@ -927,7 +927,7 @@ describe('Demo Scenario CRUD', () => {
 
       expect(isErrorResult(result)).toBe(true);
       if (isErrorResult(result)) {
-        expect(result.error).toContain('env_vars: max 10 keys allowed');
+        expect(result.error).toContain('env_vars: max 25 keys allowed');
       }
     });
 
