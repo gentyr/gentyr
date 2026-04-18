@@ -378,7 +378,7 @@ This agent uses the `todo-db` MCP server for task management.
 
 ## Task Management (MCP Database)
 
-This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your section is `TEST-WRITER`.
+This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your category is `test-suite` (category_id: `test-suite`).
 
 ### Available MCP Tools
 
@@ -392,7 +392,7 @@ This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your sec
 
 ### Task Workflow
 
-1. **Check your tasks**: `mcp__todo-db__list_tasks({ section: "TEST-WRITER", status: "pending" })`
+1. **Check your tasks**: `mcp__todo-db__list_tasks({ category_id: "test-suite", status: "pending" })`
 2. **Before starting work**: `mcp__todo-db__start_task({ id: "task-uuid" })`
 3. **After completing work**: `mcp__todo-db__complete_task({ id: "task-uuid" })`
 4. **Creating tasks for others** (ONLY for critical gaps):
@@ -402,7 +402,7 @@ This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your sec
    - Document all non-critical coverage suggestions in your summary instead
 ```javascript
 mcp__todo-db__create_task({
-  section: "CODE-REVIEWER",
+  category_id: "standard",
   title: "Review new test coverage",
   description: "Added 15 tests for auth module - ready for review",
   assigned_by: "TEST-WRITER"

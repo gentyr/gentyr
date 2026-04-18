@@ -68,20 +68,20 @@ Then go to **Step 5: Display Results & Monitor**.
 
 ### Step B2: Parse Description into Task Specs
 
-Parse the plain English description into 1-N task specs. Use this section heuristic:
+Parse the plain English description into 1-N task specs. Use this category_id heuristic:
 
-| User intent | Section |
+| User intent | category_id |
 |---|---|
-| Code changes, features, bug fixes, refactoring | `CODE-REVIEWER` |
-| Research, analysis, investigation | `INVESTIGATOR & PLANNER` |
-| Test creation, coverage improvements | `TEST-WRITER` |
-| Documentation, cleanup, project tasks | `PROJECT-MANAGER` |
-| Strategic, cross-cutting orchestration | `DEPUTY-CTO` |
-| Product analysis, personas, PMF | `PRODUCT-MANAGER` |
+| Code changes, features, bug fixes, refactoring | `standard` |
+| Research, analysis, investigation | `deep-investigation` |
+| Test creation, coverage improvements | `test-suite` |
+| Documentation, cleanup, project tasks | `project-management` |
+| Strategic, cross-cutting orchestration | `triage` |
+| Product analysis, personas, PMF | `product-analysis` |
 
-For ambiguous descriptions, prefer `CODE-REVIEWER` (triggers full agent sequence: investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager).
+For ambiguous descriptions, prefer `standard` (triggers full agent sequence: investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager).
 
-For complex requests, split into multiple tasks (e.g., "refactor auth and add tests" → one CODE-REVIEWER task + one TEST-WRITER task).
+For complex requests, split into multiple tasks (e.g., "refactor auth and add tests" → one `standard` task + one `test-suite` task).
 
 ### Step B3: Confirm with User
 
@@ -110,7 +110,7 @@ If user selects "Edit", ask them to describe changes and regenerate the task lis
 For each proposed task, create it:
 ```
 mcp__todo-db__create_task({
-  section: "<section>",
+  category_id: "<category_id>",
   title: "<title>",
   description: "<description>",
   assigned_by: "human",

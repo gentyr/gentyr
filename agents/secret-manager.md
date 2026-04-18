@@ -290,14 +290,14 @@ When file changes are needed, create TODOs for the appropriate agent:
 ```javascript
 // Example: services.json needs a new mapping
 mcp__todo-db__create_task({
-  section: "CODE-REVIEWER",
+  category_id: "standard",
   title: "Add ELASTIC_API_KEY mapping to services.json",
   description: "Add op://Production/Elastic/api-key to secrets.renderProduction and secrets.renderStaging in .claude/config/services.json",
   assigned_by: "secret-manager"
 })
 ```
 
-Use section `CODE-REVIEWER` for tasks requiring code changes (triggers full agent workflow).
+Use category_id `standard` for tasks requiring code changes (triggers full agent workflow).
 
 ## CTO Reporting
 

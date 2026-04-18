@@ -47,7 +47,7 @@ Present sub-menu:
 2. Call `mcp__user-feedback__list_personas({enabled_only: true})` to get all personas
 3. Filter to GUI and ADK personas (`consumption_mode IN ('gui', 'adk')`)
 4. For each GUI/ADK persona, count how many scenarios exist
-5. Call `mcp__todo-db__list_tasks({section: 'CODE-REVIEWER', status: 'pending'})` and `mcp__todo-db__list_tasks({section: 'CODE-REVIEWER', status: 'in_progress'})` to find implementation tasks
+5. Call `mcp__todo-db__list_tasks({category_id: 'demo-design', status: 'pending'})` and `mcp__todo-db__list_tasks({category_id: 'demo-design', status: 'in_progress'})` to find implementation tasks
 6. For each scenario, check if a CODE-REVIEWER task exists with title matching `"Implement demo scenario: <title>"`
 7. Display a coverage table:
 
@@ -57,4 +57,4 @@ Present sub-menu:
 | ...     | gui  | 3         | 2 pending / 1 done / 0 missing |
 ```
 
-8. If any scenarios lack implementation tasks, offer to create the missing CODE-REVIEWER tasks now
+8. If any scenarios lack implementation tasks, offer to create the missing demo-design tasks now

@@ -25,7 +25,7 @@ ALL child tasks that touch infrastructure (builds, demos, dev servers, secrets).
 
 \`\`\`
 mcp__todo-db__create_task({
-  section: 'CODE-REVIEWER',
+  category_id: 'standard',
   title: 'Implement and verify feature X',
   description: '... Use MCP tools for builds (secret_run_command) and demos (run_demo). Do NOT use Bash for infrastructure.',
   assigned_by: 'persistent-monitor',
@@ -52,7 +52,7 @@ Infrastructure failures (secrets, builds, dev servers) should be debugged in-pla
 When creating demo-verification tasks, be explicit about the MCP workflow:
 \`\`\`
 mcp__todo-db__create_task({
-  section: 'DEMO-MANAGER',
+  category_id: 'demo-design',
   title: 'Verify demos pass for <feature>',
   description: 'Run preflight_check, then run_demo for scenarios X, Y, Z. Use check_demo_result to verify. If headed, extract_video_frames at key moments for visual verification. Report results.',
   assigned_by: 'persistent-monitor',

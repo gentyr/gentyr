@@ -263,7 +263,7 @@ For each GUI or ADK persona (`consumption_mode: 'gui'` or `'adk'`) that lacks de
 4. After creating the DB record, create a task for implementation:
    ```
    mcp__todo-db__create_task({
-     section: "DEMO-MANAGER",
+     category_id: "demo-design",
      title: "Implement demo scenario: <title>",
      description: "Write Playwright demo file at <test_file>.\n\nScenario: <title>\nDescription: <description>\nAuth project: <playwright_project>\n\nRequirements:\n- Import: import { maybePauseForInteraction } from './_helpers';\n- End with: await maybePauseForInteraction(page);\n- Use human-readable selectors (getByRole, getByText, getByLabel)\n- Add test.step() blocks for each logical phase\n- This is a DEMO, not a test — focus on navigation and visual flow, not assertions. Minimal expect() calls.",
      assigned_by: "product-manager",
@@ -295,7 +295,7 @@ Before calling `mcp__todo-db__complete_task()` for ANY task, verify every applic
 
 ### For Demo Scenario Tasks:
 - [ ] Every GUI persona has 2-4 scenarios (call `list_scenarios` to verify)
-- [ ] Each scenario has a CODE-REVIEWER implementation task (call `mcp__todo-db__list_tasks({section: 'CODE-REVIEWER'})` and verify matching titles)
+- [ ] Each scenario has a demo-design implementation task (call `mcp__todo-db__list_tasks({category_id: 'demo-design'})` and verify matching titles)
 - [ ] If any implementation tasks are missing, create them NOW before completing
 
 ### Generic:

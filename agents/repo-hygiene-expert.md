@@ -539,7 +539,7 @@ Remember: Only create tasks for real violations, not preferences.
 
 ```javascript
 mcp__todo-db__create_task({
-  section: "PROJECT-MANAGER",
+  category_id: "project-management",
   title: "Clean up root directory - remove legacy mvp/ folder",
   description: "The mvp/ directory at root is legacy code from early prototyping. Should be archived or removed to keep root clean per repo hygiene standards.",
   assigned_by: "REPO-HYGIENE-EXPERT"

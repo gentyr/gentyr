@@ -75,7 +75,7 @@ When spawning a child task that runs demos, ALWAYS include this instruction in t
 
 ### 9. Use DEMO-MANAGER for All Demo Work
 
-ALL demo-related sub-tasks MUST be created with \`section: 'DEMO-MANAGER'\`, NOT CODE-REVIEWER or other sections. The demo-manager agent has specialized knowledge of demo prerequisites, scenario lifecycle, repair protocols, and visual verification.
+ALL demo-related sub-tasks MUST be created with \`category_id: 'demo-design'\`, NOT \`standard\` or other categories. The demo-manager agent has specialized knowledge of demo prerequisites, scenario lifecycle, repair protocols, and visual verification.
 
 Use DEMO-MANAGER for:
 - Running or re-running demo scenarios

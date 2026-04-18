@@ -173,7 +173,7 @@ Tasks created by the deputy-cto have **forced follow-up verification** to ensure
 ```javascript
 // Deputy-CTO creates a task
 mcp__todo-db__create_task({
-  section: "CODE-REVIEWER",
+  category_id: "standard",
   title: "Fix SSRF in webhook validation",
   description: "webhook.ts allows arbitrary URLs. Add allowlist validation.",
   assigned_by: "deputy-cto"
@@ -182,7 +182,7 @@ mcp__todo-db__create_task({
 
 // Agent completes the task
 mcp__todo-db__complete_task({ id: "task-uuid" })
-// → [Follow-up] Fix SSRF in webhook validation created in CODE-REVIEWER
+// → [Follow-up] Fix SSRF in webhook validation created in standard category
 // → assigned_by: 'system-followup', followup_enabled: 0
 
 // Deputy-CTO verifies the follow-up

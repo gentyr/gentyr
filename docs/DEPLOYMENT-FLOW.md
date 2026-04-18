@@ -141,7 +141,7 @@ After creating the PR, the agent creates an urgent DEPUTY-CTO task to trigger im
 
 ```javascript
 mcp__todo-db__create_task({
-  section: "DEPUTY-CTO",
+  category_id: "triage",
   title: "Review PR: <feature-title>",
   description: "Review and merge the PR from feature branch to preview. Run gh pr diff, review for security/architecture/quality, then approve+merge or request changes.",
   assigned_by: "pr-reviewer",

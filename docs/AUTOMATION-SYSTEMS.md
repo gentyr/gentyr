@@ -263,7 +263,7 @@ pre-commit-review.js
 
 Agent pushes branch and creates PR to preview
   |-- gh pr create --base preview ...
-  |-- mcp__todo-db__create_task({ section: "DEPUTY-CTO", assigned_by: "pr-reviewer", priority: "urgent" })
+  |-- mcp__todo-db__create_task({ category_id: "triage", assigned_by: "pr-reviewer", priority: "urgent" })
   |-- Deputy-CTO reviews PR diff via gh pr diff, then approves+merges or requests changes
 ```
 

@@ -91,8 +91,8 @@ These agents are NOT part of the framework - they're project-specific and stored
 #### Test 1.1: todo-db Full CRUD
 **Natural Action:** Create tasks for different agents, track their lifecycle
 ```
-1. mcp__todo-db__create_task({ section: "TEST-WRITER", title: "Write auth tests" })
-2. mcp__todo-db__list_tasks({ section: "TEST-WRITER" })
+1. mcp__todo-db__create_task({ category_id: "test-suite", title: "Write auth tests" })
+2. mcp__todo-db__list_tasks({ category_id: "test-suite" })
 3. mcp__todo-db__start_task({ id: <id> })
 4. mcp__todo-db__complete_task({ id: <id> })
 5. mcp__todo-db__get_summary()

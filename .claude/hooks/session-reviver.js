@@ -133,7 +133,7 @@ function buildRevivalPrompt({ reason, interruptedAt, taskId }) {
     prompt += `If the task status is 'completed', report that it was already handled and exit immediately. `;
     prompt += `If the task is still 'pending' or 'in_progress', proceed with the work where you left off.`;
   } else {
-    prompt += `Check mcp__todo-db__list_tasks for your section to see if your work has been completed. `;
+    prompt += `Check mcp__todo-db__list_tasks for your category to see if your work has been completed. `;
     prompt += `If it has, exit immediately. Otherwise, proceed where you left off.`;
   }
 

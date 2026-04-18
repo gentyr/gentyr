@@ -251,7 +251,7 @@ a follow-up user-alignment check task:
 
 ```javascript
 mcp__todo-db__create_task({
-  section: "INVESTIGATOR & PLANNER",
+  category_id: "deep-investigation",
   title: "User-alignment check: [brief description of change]",
   description: "Verify the code changes align with user intent. Use the user-alignment agent workflow.",
   assigned_by: "deputy-cto",
@@ -319,6 +319,6 @@ When agents are blocked by queue capacity, take action — don't just report it:
 - Architecture violations (G016) are always blocking
 - For non-critical issues, self-handle by creating a normal-priority task
 - Do NOT escalate routine code quality issues, minor improvements, or informational reports
-- When self-handling code change tasks, also create a user-alignment check task (section: INVESTIGATOR & PLANNER)
+- When self-handling code change tasks, also create a user-alignment check task (category_id: deep-investigation)
 - Code review happens at PROMOTION time, not at the feature branch level
 - Feature PRs are self-merged by the project-manager — you do NOT review them

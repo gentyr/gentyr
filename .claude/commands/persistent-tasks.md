@@ -76,7 +76,7 @@ Use `AskUserQuestion` with `multiSelect: false` and these options:
    Then show the monitor's last 5 assistant_text and tool_call activity entries as a timeline:
    ```
    [14:30:02] 🤖 "Checking sub-task progress for test-writer..."
-   [14:30:05] 🔧 mcp__todo-db__list_tasks({ section: "TEST-WRITER", status: "in_progress" })
+   [14:30:05] 🔧 mcp__todo-db__list_tasks({ category_id: "test-suite", status: "in_progress" })
    [14:30:06] 📋 Result: Found 2 tasks in progress...
    [14:30:08] 🤖 "Both test-writer tasks are progressing well. Creating next batch..."
    [14:30:10] 🔧 mcp__todo-db__create_task({ title: "Write API integration tests", ... })

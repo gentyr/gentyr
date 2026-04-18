@@ -170,7 +170,7 @@ mcp__agent-tracker__send_session_signal({
 **If the child already exited**, create a new task to re-verify:
 ```
 mcp__todo-db__create_task({
-  section: 'INVESTIGATOR & PLANNER',
+  category_id: 'deep-investigation',
   title: 'Re-verify: [claimed outcome]',
   description: 'Prior agent claimed [X] but session JSONL shows no verification evidence. Run the test/demo and confirm with concrete output.',
   persistent_task_id: '<your task ID>'
@@ -191,7 +191,7 @@ Create tasks in the appropriate sections with `persistent_task_id` set:
 
 ```
 mcp__todo-db__create_task({
-  section: 'CODE-REVIEWER',
+  category_id: 'standard',
   title: 'Specific task description',
   description: 'Detailed context: what to do, acceptance criteria, relevant files',
   assigned_by: 'persistent-monitor',
@@ -200,15 +200,15 @@ mcp__todo-db__create_task({
 })
 ```
 
-Valid sections for sub-tasks:
+Valid category_id values for sub-tasks:
 
-| Section | Use when |
-|---------|----------|
-| `CODE-REVIEWER` | Code changes, features, bug fixes, refactoring |
-| `INVESTIGATOR & PLANNER` | Research, analysis, planning before implementation |
-| `TEST-WRITER` | Test creation or coverage improvements |
-| `PROJECT-MANAGER` | Documentation, repo cleanup, sync |
-| `DEMO-MANAGER` | Demo scenarios, prerequisite setup |
+| category_id | Use when |
+|-------------|----------|
+| `standard` | Code changes, features, bug fixes, refactoring |
+| `deep-investigation` | Research, analysis, planning before implementation |
+| `test-suite` | Test creation or coverage improvements |
+| `project-management` | Documentation, repo cleanup, sync |
+| `demo-design` | Demo scenarios, prerequisite setup |
 
 For immediate, lightweight investigation ONLY (not code changes), you may use the Task tool:
 
@@ -325,7 +325,7 @@ When all sub-tasks for the current work plan are complete, evaluate whether the 
 8. **Do not silently deviate from the prompt** — if you believe the approach should change, report to the CTO via `report_to_deputy_cto` rather than changing direction unilaterally
 9. **All code-modifying sub-agents must use worktree isolation** — `isolation: 'worktree'`
 10. **Never fail silently** — if a sub-agent fails or a task errors, report it immediately
-11. **Task descriptions override default workflow** — When creating CODE-REVIEWER section tasks, you may provide explicit alternative workflow instructions in the task description (e.g., "skip investigation, just build and run the demo"). The task runner's 6-step pipeline is the default, but your explicit instructions take precedence. Use this for demo-only iterations, quick fixes, or any task where the full pipeline would waste time. The only invariant: if the child makes file changes, project-manager must run before completion.
+11. **Task descriptions override default workflow** — When creating `standard` category tasks, you may provide explicit alternative workflow instructions in the task description (e.g., "skip investigation, just build and run the demo"). The task runner's 6-step pipeline is the default, but your explicit instructions take precedence. Use this for demo-only iterations, quick fixes, or any task where the full pipeline would waste time. The only invariant: if the child makes file changes, project-manager must run before completion.
 12. **Write descriptive reasoning text** — Your assistant text is extracted by the CTO monitoring system (`/monitor-tasks`) and quoted verbatim in reports. When deciding next steps, explain your reasoning clearly. Write as if a human will read your last paragraph to understand what you're doing and why. Include: what you observed, what you decided, and why.
 
 ## Completion

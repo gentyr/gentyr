@@ -160,7 +160,7 @@ Use `mcp__todo-db__create_task` with `priority: "urgent"` for time-sensitive wor
 
 ```typescript
 mcp__todo-db__create_task({
-  section: "CODE-REVIEWER",  // or INVESTIGATOR & PLANNER, TEST-WRITER, PROJECT-MANAGER
+  category_id: "standard",  // or deep-investigation, test-suite, project-management
   title: "Brief description of the task",
   description: "Detailed instructions for what to implement...",
   assigned_by: "deputy-cto",
@@ -180,7 +180,7 @@ Use `mcp__todo-db__create_task` for normal work that can wait for agent availabi
 
 ```typescript
 mcp__todo-db__create_task({
-  section: "INVESTIGATOR & PLANNER",  // or CODE-REVIEWER, TEST-WRITER, PROJECT-MANAGER
+  category_id: "deep-investigation",  // or standard, test-suite, project-management
   title: "Task title",
   description: "Detailed description of what needs to be done",
   assigned_by: "deputy-cto"

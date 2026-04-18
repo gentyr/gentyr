@@ -147,7 +147,7 @@ This agent uses the `todo-db` MCP server for task management.
 
 ## Task Management (MCP Database)
 
-This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your section is `INVESTIGATOR & PLANNER`.
+This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your category is `deep-investigation` (category_id: `deep-investigation`).
 
 ### Available MCP Tools
 
@@ -161,7 +161,7 @@ This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your sec
 
 ### Task Workflow
 
-1. **Check your tasks**: `mcp__todo-db__list_tasks({ section: "INVESTIGATOR & PLANNER", status: "pending" })`
+1. **Check your tasks**: `mcp__todo-db__list_tasks({ category_id: "deep-investigation", status: "pending" })`
 2. **Before starting work**: `mcp__todo-db__start_task({ id: "task-uuid" })`
 3. **After completing work**: `mcp__todo-db__complete_task({ id: "task-uuid" })`
 4. **Creating tasks for others** (be very conservative):
@@ -171,7 +171,7 @@ This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your sec
    - Document ALL other findings in your investigation summary report instead
 ```javascript
 mcp__todo-db__create_task({
-  section: "CODE-REVIEWER",
+  category_id: "standard",
   title: "Review auth refactor",
   description: "OAuth flow rewritten - needs security review",
   assigned_by: "INVESTIGATOR"
