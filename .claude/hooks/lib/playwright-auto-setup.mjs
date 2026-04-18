@@ -202,14 +202,14 @@ try {
               addMouseAnimation(p, isInterruptedFn).catch(() => {});
             });
           }
-        } catch {
-          // Non-fatal — features degrade gracefully
+        } catch (err) {
+          console.error('[playwright-auto-setup] interrupt/cursor setup failed:', err);
         }
       }
 
       return context;
     };
   }
-} catch {
-  // @playwright/test not available — skip (non-Playwright project or wrong context)
+} catch (err) {
+  console.error('[playwright-auto-setup] @playwright/test patch failed:', err);
 }

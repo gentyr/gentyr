@@ -2017,7 +2017,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     // Clear any stale interrupt signal file from a previous demo session
     // to prevent false interrupts on this new demo run.
     if (!args.headless) {
-      try { fs.unlinkSync(path.join('/tmp', 'gentyr-demo-interrupt.signal')); } catch { /* not present */ }
+      try { fs.unlinkSync(path.join('/tmp', `claude-mcp-browser-bridge-${os.userInfo().username}`, 'demo-interrupt.signal')); } catch { /* not present */ }
     }
 
     // ── Background stall/suite_end/interrupt monitoring (fire-and-forget) ──
@@ -2031,7 +2031,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       // when the Chrome extension content script detects Escape keydown).
       // This is the framework-level path — works without target project changes.
       if (!args.headless && interruptDetectedAt === null) {
-        const signalPath = path.join('/tmp', 'gentyr-demo-interrupt.signal');
+        const signalPath = path.join('/tmp', `claude-mcp-browser-bridge-${os.userInfo().username}`, 'demo-interrupt.signal');
         try {
           fs.accessSync(signalPath);
           // Signal found — consume it and treat as interrupt

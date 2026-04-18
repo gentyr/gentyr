@@ -269,7 +269,7 @@ function processNextRequest() {
 function handleChromeMessage(msg) {
   // Handle demo interrupt signal — write signal file for MCP server to detect
   if (msg.type === 'demo_interrupt') {
-    const signalPath = join('/tmp', 'gentyr-demo-interrupt.signal');
+    const signalPath = join(socketDir, 'demo-interrupt.signal');
     try {
       writeFileSync(signalPath, new Date().toISOString());
     } catch { /* best-effort */ }
