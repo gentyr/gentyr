@@ -159,22 +159,17 @@ async function handleInterrupt() {
     }
   }
 
-  // 2. Keep the Node process alive and block all exit paths.
-  //    Chrome is a child of this worker — if the worker dies, Chrome dies.
+  // 2. Keep the Node process alive so the browser stays open.
+  //    - setInterval keeps the event loop running (prevents natural drain)
+  //    - process.exit patch blocks Playwright's test runner from exiting
+  //    NOTE: We do NOT patch SIGTERM/SIGINT. External signals (dashboard 's' key,
+  //    stop_demo) must still be able to kill the process and release ports.
   const keepAlive = setInterval(() => {}, 5000);
   globalThis.__gentyrKeepAlive = keepAlive;
   const originalExit = process.exit;
   process.exit = function () {};
-  // Save existing signal handlers before replacing them so we can restore
-  // them precisely when the user manually closes the browser.
-  const savedSigterm = process.listeners('SIGTERM').slice();
-  const savedSigint = process.listeners('SIGINT').slice();
-  process.removeAllListeners('SIGTERM');
-  process.removeAllListeners('SIGINT');
-  process.on('SIGTERM', () => {});
-  process.on('SIGINT', () => {});
 
-  // When the user manually closes the browser, un-patch everything so
+  // When the user manually closes the browser, un-patch process.exit so
   // normal cleanup proceeds (web server shutdown, test data cleanup, ports released).
   for (const page of registeredPages) {
     try {
@@ -184,10 +179,10 @@ async function handleInterrupt() {
         browser.on('disconnected', () => {
           clearInterval(keepAlive);
           process.exit = originalExit;
-          process.removeAllListeners('SIGTERM');
-          process.removeAllListeners('SIGINT');
-          for (const fn of savedSigterm) process.on('SIGTERM', fn);
-          for (const fn of savedSigint) process.on('SIGINT', fn);
+          // Kill our own process group to clean up web servers, workers, etc.
+          // This ensures no orphaned child processes (e.g., Mintlify on port 3333).
+          try { process.kill(-process.pid, 'SIGTERM'); } catch {}
+          setTimeout(() => { try { process.kill(-process.pid, 'SIGKILL'); } catch {} }, 1000);
         });
       }
     } catch {}
