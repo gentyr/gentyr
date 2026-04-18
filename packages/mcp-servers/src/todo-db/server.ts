@@ -65,6 +65,7 @@ import {
   type DeleteTaskResult,
   type SummaryResult,
   type SectionStats,
+  type CategoryStats,
   type CleanupResult,
   type GetSessionsForTaskResult,
   type BrowseSessionResult,
@@ -100,7 +101,7 @@ const SESSION_WINDOW_MINUTES = 5;
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
-    section TEXT NOT NULL,
+    section TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     title TEXT NOT NULL,
     description TEXT,
@@ -117,7 +118,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     followup_prompt TEXT,
     priority TEXT NOT NULL DEFAULT 'normal',
     CONSTRAINT valid_status CHECK (status IN ('pending', 'in_progress', 'completed')),
-    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER', 'DEMO-MANAGER', 'WORKSTREAM-MANAGER')),
     CONSTRAINT valid_priority CHECK (priority IN ('normal', 'urgent'))
 );
 
@@ -274,6 +274,30 @@ function initializeDatabase(): Database.Database {
     db.exec(SCHEMA);
     db.exec(`INSERT INTO tasks (id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, priority, started_timestamp) SELECT id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, COALESCE(followup_enabled, 0), followup_section, followup_prompt, COALESCE(priority, 'normal'), started_timestamp FROM tasks_old`);
     db.exec("DROP TABLE tasks_old");
+  }
+
+  // Auto-migration: relax section column — remove NOT NULL and CHECK constraint.
+  // Tests by attempting to INSERT a row with section = NULL. If the old constraint
+  // rejects it, the table is recreated without the NOT NULL / CHECK on section.
+  try {
+    const migTestId = 'migration-section-nullable-' + Date.now();
+    db.prepare("INSERT INTO tasks (id, section, status, title, created_at, created_timestamp) VALUES (?, NULL, 'pending', '_migration_test', ?, ?)").run(migTestId, new Date().toISOString(), Math.floor(Date.now() / 1000));
+    db.prepare("DELETE FROM tasks WHERE id = ?").run(migTestId);
+    // Migration not needed — section column already allows NULL
+  } catch {
+    // Old NOT NULL or CHECK constraint still in place — recreate table.
+    // We must only reference columns that exist in tasks_old. Any columns added
+    // by later ALTER TABLE migrations (category_id, strict_infra_guidance, etc.)
+    // may not exist in very old databases — use a minimal safe column list that
+    // matches what every previous migration guarantees to exist.
+    db.exec("ALTER TABLE tasks RENAME TO tasks_old");
+    db.exec(SCHEMA);
+    db.exec(`INSERT INTO tasks (id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, priority, started_timestamp)
+      SELECT id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, COALESCE(followup_enabled, 0), followup_section, followup_prompt, COALESCE(priority, 'normal'), started_timestamp
+      FROM tasks_old`);
+    db.exec("DROP TABLE tasks_old");
+    // Backfill category_id where NULL using deprecated_section mapping
+    db.exec("UPDATE tasks SET category_id = (SELECT id FROM task_categories WHERE deprecated_section = tasks.section) WHERE category_id IS NULL AND tasks.section IS NOT NULL");
   }
 
   // Auto-migration: add priority column if missing (existing databases)
@@ -739,7 +763,7 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
   // Category resolution — determines both resolvedCategoryId and resolvedSection.
   // Resolution order: category_id wins > section lookup > default category.
   let resolvedCategoryId: string | null = null;
-  let resolvedSection: string = '';
+  let resolvedSection: string | null = null;
 
   if (args.category_id) {
     // Direct category lookup — category_id takes precedence over section.
@@ -749,8 +773,8 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
       return { error: `Category not found: ${args.category_id}` };
     }
     resolvedCategoryId = cat.id;
-    // Derive section from: explicit section arg > category's deprecated_section > fallback
-    resolvedSection = args.section ?? cat.deprecated_section ?? 'CODE-REVIEWER';
+    // Derive section from: explicit section arg > category's deprecated_section > null for custom categories
+    resolvedSection = args.section ?? cat.deprecated_section ?? null;
   } else if (args.section) {
     // Legacy path: resolve section string to category via deprecated_section mapping.
     if (!(VALID_SECTIONS as readonly string[]).includes(args.section)) {
@@ -766,17 +790,10 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
       .get() as { id: string; deprecated_section: string | null } | undefined;
     if (cat) {
       resolvedCategoryId = cat.id;
-      resolvedSection = cat.deprecated_section ?? 'CODE-REVIEWER';
+      resolvedSection = cat.deprecated_section ?? null;
     } else {
       return { error: 'No section or category_id provided, and no default category exists.' };
     }
-  }
-
-  // The tasks table still has a CHECK constraint on section for the migration period.
-  // If the resolved section isn't in VALID_SECTIONS (e.g., a custom category with no
-  // deprecated_section), fall back to CODE-REVIEWER so the INSERT doesn't fail.
-  if (!(VALID_SECTIONS as readonly string[]).includes(resolvedSection)) {
-    resolvedSection = 'CODE-REVIEWER';
   }
 
   // Soft access control — check category creator_restrictions first, then fall back to section restrictions.
@@ -792,8 +809,8 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
         };
       }
     }
-  } else {
-    // No category resolved — fall back to section-based restrictions.
+  } else if (resolvedSection) {
+    // No category resolved but section is known — fall back to section-based restrictions.
     const restrictions = SECTION_CREATOR_RESTRICTIONS[resolvedSection as ValidSection];
     if (restrictions) {
       if (!args.assigned_by || !restrictions.includes(args.assigned_by)) {
@@ -807,7 +824,7 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
 
   // Follow-up enforcement for forced creators
   let followup_enabled = args.followup_enabled ?? false;
-  let followup_section = args.followup_section ?? (args.section ?? resolvedSection);
+  let followup_section = args.followup_section ?? args.section ?? resolvedSection ?? null;
   let followup_prompt = args.followup_prompt ?? null;
   let warning: string | undefined;
 
@@ -861,9 +878,9 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
       (err as Error & { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE'
     ) {
       // Fallback: return the record that won the race
-      const fallback = db.prepare(`
-        SELECT * FROM tasks WHERE section = ? AND title = ? AND status != 'completed'
-      `).get(resolvedSection, args.title) as TaskRecord | undefined;
+      const fallback = resolvedSection
+        ? db.prepare(`SELECT * FROM tasks WHERE section = ? AND title = ? AND status != 'completed'`).get(resolvedSection, args.title) as TaskRecord | undefined
+        : db.prepare(`SELECT * FROM tasks WHERE section IS NULL AND title = ? AND status != 'completed'`).get(args.title) as TaskRecord | undefined;
       if (fallback) {return taskToResponse(fallback);}
     }
     throw err; // Re-throw unexpected errors
@@ -883,7 +900,7 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
 
   return {
     id,
-    section: resolvedSection as ValidSection,
+    section: resolvedSection,
     status: 'pending',
     title: args.title,
     description: args.description ?? null,
@@ -1035,6 +1052,7 @@ function getSummary(): SummaryResult {
     in_progress: 0,
     completed: 0,
     by_section: {},
+    by_category: {},
   };
 
   // Initialize all sections
@@ -1043,7 +1061,7 @@ function getSummary(): SummaryResult {
   }
 
   interface CountRow {
-    section: string;
+    section: string | null;
     status: string;
     count: number;
   }
@@ -1053,9 +1071,32 @@ function getSummary(): SummaryResult {
   for (const row of tasks) {
     result.total += row.count;
     result[row.status as keyof Pick<SummaryResult, 'pending' | 'in_progress' | 'completed'>] += row.count;
-    if (result.by_section[row.section]) {
+    if (row.section && result.by_section[row.section]) {
       (result.by_section[row.section] as SectionStats)[row.status as keyof SectionStats] = row.count;
     }
+  }
+
+  // Build by_category grouping
+  interface CategoryCountRow {
+    category_id: string;
+    status: string;
+    count: number;
+    name: string;
+  }
+
+  const categoryCounts = db.prepare(`
+    SELECT t.category_id, t.status, COUNT(*) as count, c.name
+    FROM tasks t
+    JOIN task_categories c ON c.id = t.category_id
+    WHERE t.category_id IS NOT NULL
+    GROUP BY t.category_id, t.status
+  `).all() as CategoryCountRow[];
+
+  for (const row of categoryCounts) {
+    if (!result.by_category[row.category_id]) {
+      result.by_category[row.category_id] = { name: row.name, pending: 0, in_progress: 0, completed: 0 };
+    }
+    (result.by_category[row.category_id] as CategoryStats)[row.status as keyof SectionStats] = row.count;
   }
 
   return result;
@@ -1318,7 +1359,7 @@ function getCompletedSince(args: GetCompletedSinceArgs): GetCompletedSinceResult
   const sinceTimestamp = Math.floor(since / 1000);
 
   interface CountRow {
-    section: string;
+    section: string | null;
     count: number;
   }
 
@@ -1330,13 +1371,30 @@ function getCompletedSince(args: GetCompletedSinceArgs): GetCompletedSinceResult
     ORDER BY count DESC
   `).all(sinceTimestamp) as CountRow[];
 
+  // Filter out null-section rows for by_section (keep backward compat)
+  const bySectionRows = rows.filter((r): r is { section: string; count: number } => r.section !== null);
+
   const total = rows.reduce((sum, row) => sum + row.count, 0);
+
+  interface CategoryCountRow {
+    category_id: string;
+    count: number;
+  }
+
+  const byCategoryRows = db.prepare(`
+    SELECT category_id, COUNT(*) as count
+    FROM tasks
+    WHERE status = 'completed' AND completed_timestamp >= ? AND category_id IS NOT NULL
+    GROUP BY category_id
+    ORDER BY count DESC
+  `).all(sinceTimestamp) as CategoryCountRow[];
 
   return {
     hours,
     since: new Date(since).toISOString(),
     total,
-    by_section: rows,
+    by_section: bySectionRows,
+    by_category: byCategoryRows,
   };
 }
 
