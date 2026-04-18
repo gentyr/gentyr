@@ -10,7 +10,7 @@
  *
  * Communication chain:
  *   Browser DOM (Escape keydown)
- *     → page.exposeFunction('__gentyrDemoInterrupt')
+ *     → context.exposeFunction('__gentyrDemoInterrupt')
  *     → Node callback (sets flag, writes JSONL progress event, updates overlay)
  *     → MCP server reads progress file → pauses task, discards recording
  */
@@ -34,7 +34,6 @@ const INTERRUPTED_ICON = `<svg width="16" height="16" viewBox="0 0 16 16" fill="
 
 let interrupted = false;
 const registeredPages = new Set();
-const exposedPages = new WeakSet();
 
 /** Returns true if the demo has been interrupted via Escape key. */
 export function isInterrupted() { return interrupted; }
@@ -58,9 +57,9 @@ async function showInterruptedOverlay(page) {
     const bubble = document.getElementById('demo-thinking-bubble');
     if (bubble) bubble.remove();
 
-    // Hide cursor dot
-    const cursor = document.getElementById('demo-cursor');
-    if (cursor) cursor.style.display = 'none';
+    // Remove cursor dot (element removal — mousemove listener becomes harmless)
+    var cursor = document.getElementById('demo-cursor');
+    if (cursor) cursor.remove();
 
     // Update status icon
     const iconEl = document.getElementById('demo-overlay-status-icon');
@@ -79,36 +78,46 @@ async function showInterruptedOverlay(page) {
     // Add interrupted message
     const msg = document.createElement('div');
     msg.style.cssText = 'font-size:12px;color:rgba(255,255,255,0.7);margin-top:4px;line-height:1.4;';
-    msg.textContent = 'Demo Interrupted — interact freely';
+    msg.textContent = 'Demo Interrupted \u2014 interact freely';
     overlay.appendChild(msg);
+
+    // Suppress thinking bubbles / step progress if demo code re-creates them
+    if (overlay.parentNode) {
+      new MutationObserver(function(muts) {
+        for (var i = 0; i < muts.length; i++) {
+          for (var j = 0; j < muts[i].addedNodes.length; j++) {
+            var n = muts[i].addedNodes[j];
+            if (n.id === 'demo-thinking-bubble' || n.id === 'demo-step-progress') n.remove();
+          }
+        }
+      }).observe(overlay.parentNode, { childList: true });
+    }
 
     // Store interrupted state on window for navigation persistence
     window.__gentyrDemoInterrupted = true;
   }, { icon: INTERRUPTED_ICON });
 }
 
-// ─── Escape Keydown Listener Injection ──────────────────────────────────────
+// ─── Escape Keydown Listener Script ─────────────────────────────────────────
 
 /**
- * Injects the Escape keydown listener into the page DOM.
- * Safe to call multiple times — deduplicates via window.__demoOverlayEscHandler flag.
- * exposeFunction survives navigation but DOM listeners do not, so this is
- * re-called from the page 'load' event handler.
+ * Raw JS string injected via context.addInitScript().
+ * Runs on every document load, on all pages in the context.
+ * Deduplicates via window.__demoOverlayEscHandler flag.
  */
-async function injectEscapeListener(page) {
-  await page.evaluate(() => {
-    if (window.__demoOverlayEscHandler) return;
-    const handler = (e) => {
+const ESCAPE_LISTENER_SCRIPT = `
+  if (!window.__demoOverlayEscHandler) {
+    var handler = function(e) {
       if (e.key === 'Escape' && !window.__gentyrDemoInterrupted) {
         window.__gentyrDemoInterrupted = true;
-        const fn = window.__gentyrDemoInterrupt;
+        var fn = window.__gentyrDemoInterrupt;
         if (fn) fn();
       }
     };
     window.__demoOverlayEscHandler = handler;
     document.addEventListener('keydown', handler);
-  });
-}
+  }
+`;
 
 // ─── Interrupt Handler (runs in Node context) ───────────────────────────────
 
@@ -127,22 +136,35 @@ async function handleInterrupt() {
   // calls context.close(). If we haven't patched close() yet, the browser
   // disappears before the user sees anything.
 
-  // 1. Patch context.close() to no-op (prevents browser teardown)
+  // 1. Patch context.close() AND browser.close() to no-op
   for (const page of registeredPages) {
     try {
       const ctx = page.context();
       if (!ctx.__interruptPatched) {
         ctx.__interruptPatched = true;
         ctx.close = async () => {};
+        try {
+          const browser = ctx.browser();
+          if (browser && !browser.__interruptPatched) {
+            browser.__interruptPatched = true;
+            browser.close = async () => {};
+          }
+        } catch {}
       }
     } catch {
       // Context may already be closing — ignore
     }
   }
 
-  // 2. Keep the Node process alive so the user can interact with the browser
+  // 2. Keep the Node process alive and block all exit paths.
+  //    Chrome is a child of this worker — if the worker dies, Chrome dies.
   const keepAlive = setInterval(() => {}, 5000);
   globalThis.__gentyrKeepAlive = keepAlive;
+  process.exit = function () {};
+  process.removeAllListeners('SIGTERM');
+  process.removeAllListeners('SIGINT');
+  process.on('SIGTERM', () => {});
+  process.on('SIGINT', () => {});
 
   // 3. Write demo_interrupted event to progress JSONL (best-effort, sync)
   const progressFile = process.env.DEMO_PROGRESS_FILE;
@@ -173,59 +195,17 @@ async function handleInterrupt() {
   }
 }
 
-// ─── Per-Page Setup ──────────────────────────────────────────────────────────
-
-/**
- * Wires up the Escape key interrupt handler for a single Playwright page.
- * Called once per page, including pages opened after setupDemoInterrupt().
- */
-async function setupPage(page) {
-  // Register page for overlay updates and de-register on close
-  registeredPages.add(page);
-  page.on('close', () => registeredPages.delete(page));
-
-  // Expose the Node-side interrupt callback into the browser (once per page).
-  // exposeFunction survives navigation, so we only need to do this once.
-  if (!exposedPages.has(page)) {
-    try {
-      await page.exposeFunction('__gentyrDemoInterrupt', handleInterrupt);
-      exposedPages.add(page);
-    } catch {
-      // May fail if the function was already exposed at the context level.
-      // Warn in the browser console so the user knows Escape won't work.
-      try {
-        await page.evaluate(() => {
-          console.warn('[GENTYR] Escape key interrupt unavailable on this page — exposeFunction failed');
-        });
-      } catch {
-        // Page may be closing — ignore
-      }
-    }
-  }
-
-  // Inject the DOM keydown listener now ...
-  await injectEscapeListener(page);
-
-  // ... and re-inject after every navigation (DOM listeners don't survive navigation).
-  page.on('load', () => {
-    injectEscapeListener(page).catch(() => {
-      // Page may be closing mid-navigation — ignore
-    });
-  });
-}
-
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
  * Wire up the Escape key interrupt handler for all pages in a BrowserContext.
  *
- * Call once from your Playwright fixture after creating the context:
- *
- *   import { setupDemoInterrupt } from '../../.claude/hooks/lib/demo-interrupt-setup.js';
- *   await setupDemoInterrupt(context);
- *
- * The function is a no-op in headless mode (DEMO_HEADLESS=1) because there is
- * no user present to press Escape.
+ * Uses context-level APIs for reliability — no per-page async setup, no race
+ * conditions with page navigation:
+ *   - context.exposeFunction: makes __gentyrDemoInterrupt available on ALL
+ *     pages (current and future), survives navigation automatically.
+ *   - context.addInitScript: injects the Escape keydown listener on every
+ *     document load across all pages — no manual re-injection needed.
  *
  * @param {import('@playwright/test').BrowserContext} context
  */
@@ -233,15 +213,23 @@ export async function setupDemoInterrupt(context) {
   // Skip entirely in headless mode — no user present
   if (process.env.DEMO_HEADLESS === '1') return;
 
-  // Wire up any pages that already exist in this context
-  for (const page of context.pages()) {
-    await setupPage(page);
+  // 1. Expose interrupt handler on ALL pages (context-level, survives navigation)
+  try {
+    await context.exposeFunction('__gentyrDemoInterrupt', handleInterrupt);
+  } catch {
+    // Already exposed (e.g., by auto-setup or double-call) — fine
   }
 
-  // Auto-wire future pages opened within this context
+  // 2. Inject Escape keydown listener on every document load (all pages, all navigations)
+  await context.addInitScript({ content: ESCAPE_LISTENER_SCRIPT });
+
+  // 3. Track pages for overlay updates when interrupt fires
+  for (const page of context.pages()) {
+    registeredPages.add(page);
+    page.on('close', () => registeredPages.delete(page));
+  }
   context.on('page', (page) => {
-    setupPage(page).catch(() => {
-      // New page may close before setup completes — ignore
-    });
+    registeredPages.add(page);
+    page.on('close', () => registeredPages.delete(page));
   });
 }
