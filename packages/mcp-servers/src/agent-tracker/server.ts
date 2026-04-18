@@ -4413,6 +4413,17 @@ async function registerSharedResource(args: RegisterSharedResourceArgs): Promise
  * Uses dynamic import so resource-lock.js resolves CLAUDE_PROJECT_DIR at call time.
  */
 async function forceReleaseSharedResource(args: ForceReleaseSharedResourceArgs): Promise<object | ErrorResult> {
+  // SECURITY: spawned sessions CANNOT force-release shared resources.
+  // This prevents a compromised or misbehaving agent from releasing CTO-held locks
+  // (e.g., the CTO dashboard display lock) to hijack the resource.
+  if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
+    return {
+      error: 'SECURITY: Spawned sessions cannot force-release shared resources. '
+        + 'force_release_shared_resource is a CTO-only override. '
+        + 'Use acquire_shared_resource and wait in the queue.',
+    };
+  }
+
   const resourceLockPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'resource-lock.js');
 
   if (!fs.existsSync(resourceLockPath)) {
@@ -4427,6 +4438,7 @@ async function forceReleaseSharedResource(args: ForceReleaseSharedResourceArgs):
     const result = mod.forceReleaseResource(
       args.resource_id,
       args.reason ?? 'cto_override',
+      { ctoOverride: true },
     );
     return result;
   } catch (err) {
@@ -5438,7 +5450,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'force_release_shared_resource',
-    description: 'Force-release a shared resource lock regardless of who holds it. Use when the lock holder is dead or stuck and you need to unblock waiting agents immediately instead of waiting for TTL expiry. Also purges dead agents from the waiting queue before promoting the next live waiter. Returns the previous holder info and who was promoted next.',
+    description: 'CTO-only override: Force-release a shared resource lock regardless of who holds it. Blocked for spawned sessions (CLAUDE_SPAWNED_SESSION=true). Use when the lock holder is dead or stuck and you need to unblock waiting agents immediately instead of waiting for TTL expiry. Also purges dead agents from the waiting queue before promoting the next live waiter. Returns the previous holder info and who was promoted next.',
     schema: ForceReleaseSharedResourceArgsSchema,
     handler: forceReleaseSharedResource,
   },

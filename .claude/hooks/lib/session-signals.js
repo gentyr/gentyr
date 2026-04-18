@@ -21,11 +21,45 @@ import Database from 'better-sqlite3';
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
 // ============================================================================
+// Worktree Resolution
+// ============================================================================
+
+/**
+ * Resolve the main project directory even when running inside a git worktree.
+ *
+ * In a worktree, `.git` is a FILE containing "gitdir: /path/to/.git/worktrees/xxx".
+ * We navigate up two levels from that gitdir to reach the main tree root.
+ *
+ * @param {string} [startDir] - Directory to start from. Defaults to CLAUDE_PROJECT_DIR or cwd.
+ * @returns {string} Main project directory path
+ */
+export function getMainProjectDir(startDir) {
+  const projectDir = startDir || PROJECT_DIR;
+  const gitPath = path.join(projectDir, '.git');
+  try {
+    const stat = fs.lstatSync(gitPath);
+    if (stat.isFile()) {
+      // Worktree: .git is a file containing "gitdir: /path/to/main/.git/worktrees/xxx"
+      const content = fs.readFileSync(gitPath, 'utf8').trim();
+      const match = content.match(/^gitdir:\s*(.+)/);
+      if (match) {
+        const gitDir = path.resolve(projectDir, match[1]);
+        // Navigate from .git/worktrees/xxx -> .git -> parent = main tree root
+        return path.dirname(path.resolve(gitDir, '..', '..'));
+      }
+    }
+  } catch {
+    // Not a worktree or .git doesn't exist, use projectDir as-is
+  }
+  return projectDir;
+}
+
+// ============================================================================
 // Path Helpers
 // ============================================================================
 
 function getSignalDir(projectDir) {
-  return path.join(projectDir || PROJECT_DIR, '.claude', 'state', 'session-signals');
+  return path.join(projectDir || getMainProjectDir(), '.claude', 'state', 'session-signals');
 }
 
 function getCommsLogPath(projectDir) {

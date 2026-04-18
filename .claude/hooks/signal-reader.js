@@ -26,8 +26,6 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-
 // ============================================================================
 // Main
 // ============================================================================
@@ -53,21 +51,25 @@ async function main() {
     return;
   }
 
-  let getUnreadCount, readPendingSignals;
+  let getUnreadCount, readPendingSignals, getMainProjectDir;
   try {
     const signals = await import(signalsModulePath);
     getUnreadCount = signals.getUnreadCount;
     readPendingSignals = signals.readPendingSignals;
+    getMainProjectDir = signals.getMainProjectDir;
   } catch (err) {
     console.error('[signal-reader] Failed to import session-signals:', err.message);
     process.stdout.write(JSON.stringify({ decision: 'approve' }));
     return;
   }
 
+  // Resolve to main tree path so worktree agents find signals written to the main tree
+  const mainProjectDir = getMainProjectDir();
+
   // Fast path: check count before reading any file contents
   let unreadCount;
   try {
-    unreadCount = getUnreadCount(agentId, PROJECT_DIR);
+    unreadCount = getUnreadCount(agentId, mainProjectDir);
   } catch (err) {
     console.error('[signal-reader] getUnreadCount error:', err.message);
     process.stdout.write(JSON.stringify({ decision: 'approve' }));
@@ -82,7 +84,7 @@ async function main() {
   // Read and mark signals as read
   let signals;
   try {
-    signals = readPendingSignals(agentId, PROJECT_DIR);
+    signals = readPendingSignals(agentId, mainProjectDir);
   } catch (err) {
     console.error('[signal-reader] readPendingSignals error:', err.message);
     process.stdout.write(JSON.stringify({ decision: 'approve' }));

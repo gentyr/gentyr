@@ -141,6 +141,12 @@ function getDb() {
     })();
   }
 
+  // Migrate: add protected_by column to resource_locks if missing
+  const rlCols = db.prepare("PRAGMA table_info(resource_locks)").all();
+  if (rlCols.length > 0 && !rlCols.some(c => c.name === 'protected_by')) {
+    db.exec("ALTER TABLE resource_locks ADD COLUMN protected_by TEXT");
+  }
+
   // Create tables if they don't exist yet (fresh install or post-migration)
   db.exec(`
     CREATE TABLE IF NOT EXISTS resource_locks (
@@ -150,7 +156,8 @@ function getDb() {
       holder_title TEXT,
       acquired_at TEXT,
       expires_at TEXT,
-      heartbeat_at TEXT
+      heartbeat_at TEXT,
+      protected_by TEXT
     );
 
     CREATE TABLE IF NOT EXISTS resource_queue (
@@ -323,7 +330,7 @@ function promoteNextWaiter(db, resourceId) {
 function clearLock(db, resourceId) {
   db.prepare(
     "UPDATE resource_locks SET holder_agent_id = NULL, holder_queue_id = NULL, holder_title = NULL, " +
-    "acquired_at = NULL, expires_at = NULL, heartbeat_at = NULL WHERE resource_id = ?"
+    "acquired_at = NULL, expires_at = NULL, heartbeat_at = NULL, protected_by = NULL WHERE resource_id = ?"
   ).run(resourceId);
 }
 
@@ -515,9 +522,11 @@ export function releaseResource(resourceId, agentId) {
  *
  * @param {string} resourceId - ID of the resource to force-release
  * @param {string} [reason='cto_override'] - Reason for force-release (logged in audit trail)
+ * @param {object} [opts={}]
+ * @param {boolean} [opts.ctoOverride=false] - Set true to bypass the protected_by guard
  * @returns {{ released: boolean, prev_holder?: object, next_holder?: object, reason: string }}
  */
-export function forceReleaseResource(resourceId, reason = 'cto_override') {
+export function forceReleaseResource(resourceId, reason = 'cto_override', opts = {}) {
   if (!resourceId) return { released: false, reason };
 
   const db = getDb();
@@ -527,6 +536,17 @@ export function forceReleaseResource(resourceId, reason = 'cto_override') {
 
     if (!lock || !lock.holder_agent_id) {
       return { released: false, reason, message: 'Resource is not currently locked' };
+    }
+
+    // If the lock is protected_by a specific holder, refuse force-release without ctoOverride
+    if (lock.protected_by && !opts.ctoOverride) {
+      log(`Force-release refused: resource_id=${resourceId} is protected_by=${lock.protected_by}, holder=${lock.holder_agent_id}`);
+      return {
+        released: false,
+        reason,
+        message: `Resource is protected by "${lock.protected_by}" and cannot be force-released without ctoOverride. The lock holder must release it explicitly, or pass ctoOverride=true.`,
+        protected_by: lock.protected_by,
+      };
     }
 
     const prevHolder = {
@@ -584,6 +604,9 @@ export function forceReleaseResource(resourceId, reason = 'cto_override') {
  * @param {object} [opts={}]
  * @param {number} [opts.ttlMinutes] - Lock TTL in minutes (defaults to resource registry value)
  * @param {string} [opts.reEnqueuePriority='urgent'] - Priority for the displaced holder's queue entry
+ * @param {string} [opts.protectedBy] - If set, records this value in protected_by; force_release_shared_resource
+ *   will refuse to release the lock unless opts.ctoOverride is passed, protecting CTO-held locks from
+ *   being seized by spawned agents via forceReleaseResource.
  * @returns {{ acquired: boolean, prev_holder?: object }}
  */
 export function forceAcquireResource(resourceId, agentId, queueId, title, opts = {}) {
@@ -591,6 +614,7 @@ export function forceAcquireResource(resourceId, agentId, queueId, title, opts =
   if (!agentId) throw new Error('forceAcquireResource: agentId is required');
 
   const reEnqueuePriority = opts.reEnqueuePriority ?? 'urgent';
+  const protectedBy = opts.protectedBy ?? null;
   const db = getDb();
 
   return db.transaction(() => {
@@ -626,10 +650,10 @@ export function forceAcquireResource(resourceId, agentId, queueId, title, opts =
     // Assign lock to the new caller
     db.prepare(
       "UPDATE resource_locks SET holder_agent_id = ?, holder_queue_id = ?, holder_title = ?, " +
-      "acquired_at = datetime('now'), expires_at = ?, heartbeat_at = datetime('now') WHERE resource_id = ?"
-    ).run(agentId, queueId ?? null, title ?? null, expiresAt, resourceId);
+      "acquired_at = datetime('now'), expires_at = ?, heartbeat_at = datetime('now'), protected_by = ? WHERE resource_id = ?"
+    ).run(agentId, queueId ?? null, title ?? null, expiresAt, protectedBy, resourceId);
 
-    log(`Lock force-acquired: resource_id=${resourceId}, agent_id=${agentId}, ttl=${ttlMinutes}min, title="${title}", prev_holder=${prevHolder?.agent_id ?? 'none'}`);
+    log(`Lock force-acquired: resource_id=${resourceId}, agent_id=${agentId}, ttl=${ttlMinutes}min, title="${title}", prev_holder=${prevHolder?.agent_id ?? 'none'}, protected_by=${protectedBy ?? 'none'}`);
 
     auditEvent('resource_lock_force_acquired', {
       resource_id: resourceId,

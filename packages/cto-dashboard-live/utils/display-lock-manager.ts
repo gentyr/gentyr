@@ -32,6 +32,7 @@ interface PreemptResult {
 let _displacedHolders: DisplacedHolder[] = [];
 let _acquiredResources: string[] = [];
 let _exitHandlerRegistered = false;
+let _renewalTimer: ReturnType<typeof setInterval> | null = null;
 
 // Cached module references for synchronous use in the exit handler
 let _resourceLockModule: any = null;
@@ -71,6 +72,10 @@ function ensureExitHandler(): void {
   _exitHandlerRegistered = true;
 
   process.on('exit', () => {
+    if (_renewalTimer !== null) {
+      clearInterval(_renewalTimer);
+      _renewalTimer = null;
+    }
     if (_acquiredResources.length === 0) return;
     if (!_resourceLockModule) return;
     for (const resourceId of _acquiredResources) {
@@ -104,7 +109,7 @@ export async function preemptForCtoDashboardDemo(demoTitle: string): Promise<Pre
   for (const resourceId of resources) {
     try {
       const acquired = resourceLock.forceAcquireResource(
-        resourceId, CTO_AGENT_ID, null, lockTitle, { ttlMinutes: 30 },
+        resourceId, CTO_AGENT_ID, null, lockTitle, { ttlMinutes: 30, protectedBy: CTO_AGENT_ID },
       );
       if (acquired.acquired) {
         result.resourcesAcquired.push(resourceId);
@@ -124,6 +129,20 @@ export async function preemptForCtoDashboardDemo(demoTitle: string): Promise<Pre
   // Update module state
   _acquiredResources = result.resourcesAcquired;
   _displacedHolders = result.displacedHolders;
+
+  // Start heartbeat renewal timer — renew every 5 minutes to prevent TTL expiry
+  if (result.resourcesAcquired.length > 0) {
+    if (_renewalTimer !== null) {
+      clearInterval(_renewalTimer);
+    }
+    _renewalTimer = setInterval(() => {
+      for (const resourceId of _acquiredResources) {
+        try {
+          resourceLock.renewResource(resourceId, CTO_AGENT_ID);
+        } catch { /* non-fatal */ }
+      }
+    }, 5 * 60 * 1000); // 5 minutes
+  }
 
   // Signal displaced agents to pause
   if (result.displacedHolders.length > 0) {
@@ -154,6 +173,12 @@ export async function preemptForCtoDashboardDemo(demoTitle: string): Promise<Pre
  * The displaced agent is auto-promoted by the lock system and signaled to resume.
  */
 export async function releaseCtoDashboardDemo(): Promise<void> {
+  // Stop the heartbeat renewal timer
+  if (_renewalTimer !== null) {
+    clearInterval(_renewalTimer);
+    _renewalTimer = null;
+  }
+
   // Snapshot and clear state atomically to prevent double-release from concurrent calls
   const resourcesToRelease = _acquiredResources;
   const holdersToSignal = _displacedHolders;

@@ -78,10 +78,14 @@ async function runHook(hookInput, opts = {}) {
 // ============================================================================
 
 let sendSignal;
+let getMainProjectDir;
+let readPendingSignals;
 
 before(async () => {
   const mod = await import(SIGNALS_MODULE_PATH);
   sendSignal = mod.sendSignal;
+  getMainProjectDir = mod.getMainProjectDir;
+  readPendingSignals = mod.readPendingSignals;
 });
 
 // ============================================================================
@@ -357,6 +361,95 @@ describe('signal-reader.js (PostToolUse hook)', () => {
 
       // Should still exit with allow (no signals in dir)
       assert.strictEqual(result.parsed.decision, 'approve');
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Worktree context
+  // --------------------------------------------------------------------------
+
+  describe('worktree context', () => {
+    it('finds signals in main tree when CLAUDE_PROJECT_DIR points to a worktree', async () => {
+      // Build a temp directory structure that simulates a worktree:
+      //   mainTree/          ← real project root, has .git/ directory
+      //     .claude/state/session-signals/
+      //     .git/worktrees/my-branch/   ← gitdir path referenced by worktree .git file
+      //   worktree/          ← worktree root
+      //     .git             ← FILE containing "gitdir: <mainTree>/.git/worktrees/my-branch"
+
+      const mainTree = fs.mkdtempSync(path.join(os.tmpdir(), 'signal-main-'));
+      const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), 'signal-wt-'));
+
+      try {
+        // Set up main tree git dir and worktrees subdir
+        const mainGitDir = path.join(mainTree, '.git');
+        const worktreeGitDir = path.join(mainGitDir, 'worktrees', 'my-branch');
+        fs.mkdirSync(worktreeGitDir, { recursive: true });
+
+        // Set up main tree signal directory
+        const mainSignalDir = path.join(mainTree, '.claude', 'state', 'session-signals');
+        fs.mkdirSync(mainSignalDir, { recursive: true });
+
+        // Worktree .git is a FILE pointing to the gitdir inside the main .git
+        fs.writeFileSync(path.join(worktreePath, '.git'), `gitdir: ${worktreeGitDir}\n`);
+
+        // Verify getMainProjectDir() resolves the worktree path to the main tree
+        const resolved = getMainProjectDir(worktreePath);
+        assert.strictEqual(resolved, mainTree, 'getMainProjectDir should resolve worktree to main tree');
+
+        // Write a signal to the MAIN TREE signal directory and verify readPendingSignals finds it
+        sendSignal({
+          fromAgentId: 'agent-sender',
+          fromAgentType: 'code-writer',
+          fromTaskTitle: 'Main task',
+          toAgentId: 'agent-wt-api',
+          toAgentType: 'test-writer',
+          tier: 'note',
+          message: 'Signal sent to main tree, read from worktree',
+          projectDir: mainTree,
+        });
+
+        const signals = readPendingSignals('agent-wt-api', resolved);
+        assert.strictEqual(signals.length, 1, 'Should find 1 pending signal in main tree');
+        assert.strictEqual(signals[0].message, 'Signal sent to main tree, read from worktree');
+
+        // Write a SECOND signal for a different agent ID so the hook subprocess sees it unread
+        sendSignal({
+          fromAgentId: 'agent-sender',
+          fromAgentType: 'code-writer',
+          fromTaskTitle: 'Main task',
+          toAgentId: 'agent-wt-hook',
+          toAgentType: 'test-writer',
+          tier: 'note',
+          message: 'Hook signal sent to main tree, read from worktree',
+          projectDir: mainTree,
+        });
+
+        // Verify the hook subprocess also finds the signal when CLAUDE_PROJECT_DIR is the worktree
+        const result = await runHook(
+          { tool_name: 'Bash', tool_input: { command: 'ls' } },
+          {
+            env: {
+              CLAUDE_PROJECT_DIR: worktreePath,
+              CLAUDE_AGENT_ID: 'agent-wt-hook',
+            },
+          },
+        );
+
+        assert.strictEqual(result.parsed.decision, 'approve');
+        assert.ok(result.parsed.hookSpecificOutput, 'Hook should have found and injected the signal');
+        const ctx = result.parsed.hookSpecificOutput.additionalContext;
+        assert.ok(ctx.includes('Hook signal sent to main tree, read from worktree'), 'Signal message should be in context');
+      } finally {
+        fs.rmSync(mainTree, { recursive: true, force: true });
+        fs.rmSync(worktreePath, { recursive: true, force: true });
+      }
+    });
+
+    it('getMainProjectDir returns projectDir unchanged for a non-worktree', async () => {
+      // project.path has no .git at all — should return projectDir as-is
+      const resolved = getMainProjectDir(project.path);
+      assert.strictEqual(resolved, project.path);
     });
   });
 });

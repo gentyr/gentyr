@@ -167,8 +167,7 @@ export function ObserveView({ data, bodyHeight, bodyWidth, isActive }: ObserveVi
   const isCompleted = selectedSession == null
     || selectedSession.pid == null
     || !isProcessAlive(selectedSession.pid)
-    || lastToolIsTerminal
-    || hasSessionEndMarker;
+    || lastToolIsTerminal;
 
   // Keyboard handling
   useInput((input, key) => {
@@ -188,7 +187,7 @@ export function ObserveView({ data, bodyHeight, bodyWidth, isActive }: ObserveVi
         }
         if (selectedSession) {
           const alive = selectedSession.pid != null
-            ? isProcessAlive(selectedSession.pid) && !hasSessionEndMarker
+            ? isProcessAlive(selectedSession.pid)
             : false;
           if (alive && tailAgentId) {
             // Running session: inject directive signal
@@ -205,6 +204,11 @@ export function ObserveView({ data, bodyHeight, bodyWidth, isActive }: ObserveVi
               setSignalText('');
               return;
             }
+            setInjectedEntries(prev => [...prev, {
+              type: 'user_message' as const,
+              timestamp: new Date().toISOString(),
+              text: msg,
+            }]);
             clearSentTimer();
             clearDeliveryPoll();
             setLastSignalStatus(`Pending: "${msg}"`);

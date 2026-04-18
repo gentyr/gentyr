@@ -92,7 +92,7 @@ export function useSessionTail(agentId: string | null, worktreePath?: string | n
         if (file) {
           try {
             const stat = fs.statSync(file);
-            if (Date.now() - stat.mtimeMs > 30000) {
+            if (Date.now() - stat.mtimeMs > 120000) {
               sessionEndedRef.current = true;
               setEntries(prev => [...prev, { type: 'session_end' as const, timestamp: new Date().toISOString(), text: 'Session ended' }]);
               cleanup();
