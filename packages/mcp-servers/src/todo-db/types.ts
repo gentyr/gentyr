@@ -107,7 +107,9 @@ export const GetWorklogArgsSchema = z.object({
   hours: z.coerce.number().min(1).max(720).optional().default(24)
     .describe('Hours to look back (1-720, default 24)'),
   section: z.enum(VALID_SECTIONS).optional()
-    .describe('Filter by section'),
+    .describe('Filter by section (deprecated, use category_id instead)'),
+  category_id: z.string().optional()
+    .describe('Filter by category ID'),
   limit: z.coerce.number().min(1).max(100).optional().default(20)
     .describe('Maximum entries to return (1-100, default 20)'),
   include_metrics: z.boolean().optional().default(true)
@@ -116,7 +118,9 @@ export const GetWorklogArgsSchema = z.object({
 
 export const ListArchivedTasksArgsSchema = z.object({
   section: z.enum(VALID_SECTIONS).optional()
-    .describe('Filter by section'),
+    .describe('Filter by section (deprecated, use category_id instead)'),
+  category_id: z.string().optional()
+    .describe('Filter by category ID'),
   limit: z.coerce.number().min(1).max(100).optional().default(20)
     .describe('Maximum tasks to return (1-100, default 20)'),
   hours: z.coerce.number().min(1).max(720).optional().default(24)

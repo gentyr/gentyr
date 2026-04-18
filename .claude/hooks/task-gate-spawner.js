@@ -67,6 +67,7 @@ process.stdin.on('end', () => {
     let taskId = null;
     let taskTitle = '';
     let taskSection = '';
+    let taskCategoryId = '';
     let taskDescription = '';
     let assignedBy = '';
 
@@ -77,6 +78,7 @@ process.stdin.on('end', () => {
         taskId = response.id;
         taskTitle = response.title || '';
         taskSection = response.section || '';
+        taskCategoryId = response.category_id || '';
         taskDescription = response.description || '';
         assignedBy = response.assigned_by || '';
       } else if (typeof response === 'string') {
@@ -85,6 +87,7 @@ process.stdin.on('end', () => {
         taskId = parsed.id;
         taskTitle = parsed.title || '';
         taskSection = parsed.section || '';
+        taskCategoryId = parsed.category_id || '';
         taskDescription = parsed.description || '';
         assignedBy = parsed.assigned_by || '';
       }
@@ -101,6 +104,7 @@ process.stdin.on('end', () => {
               taskId = parsed.id;
               taskTitle = parsed.title || '';
               taskSection = parsed.section || '';
+              taskCategoryId = parsed.category_id || '';
               taskDescription = parsed.description || '';
               assignedBy = parsed.assigned_by || '';
               break;
@@ -123,7 +127,7 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    log(`Gate review needed for task ${taskId}: "${taskTitle}" (section: ${taskSection}, by: ${assignedBy})`);
+    log(`Gate review needed for task ${taskId}: "${taskTitle}" (category: ${taskCategoryId || taskSection}, by: ${assignedBy})`);
 
     // Auto-kill secret-manager tasks in local mode (remote tools unavailable)
     if (isLocalModeEnabled(PROJECT_DIR) && taskSection.toLowerCase().includes('secret')) {
@@ -151,14 +155,14 @@ process.stdin.on('end', () => {
       lane: 'gate',
       priority: 'normal',
       projectDir: PROJECT_DIR,
-      metadata: { taskId, section: taskSection, assignedBy },
+      metadata: { taskId, section: taskSection, category_id: taskCategoryId, assignedBy },
       buildPrompt: (agentId) => `[Automation][task-gate][AGENT:${agentId}] Review task ${taskId}.
 
-"${taskTitle}" | Section: ${taskSection} | By: ${assignedBy}
+"${taskTitle}" | Category: ${taskCategoryId || taskSection} | By: ${assignedBy}
 Description: ${taskDescription || '(none)'}
 
 ## Checks (do all 3, then decide)
-1. DUPLICATES: Call mcp__todo-db__list_tasks({ section: "${taskSection}", status: "pending" }). If a very similar task exists, KILL.
+1. DUPLICATES: Call ${taskCategoryId ? `mcp__todo-db__list_tasks({ category_id: "${taskCategoryId}", status: "pending" })` : `mcp__todo-db__list_tasks({ section: "${taskSection}", status: "pending" })`}. If a very similar task exists, KILL.
 2. STABILITY: Call mcp__user-feedback__check_feature_stability with file paths or feature name from the description. If feature is locked, KILL.
 3. CTO INTENT: Call mcp__agent-tracker__search_cto_sessions({ query: "${keyword}", project_directory: "${PROJECT_DIR}" }). If CTO recently discussed this topic, APPROVE.
 

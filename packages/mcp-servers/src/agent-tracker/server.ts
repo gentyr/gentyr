@@ -2246,6 +2246,8 @@ function forceSpawnTasks(args: ForceSpawnTasksArgs): ForceSpawnTasksResult | Err
     const scriptArgs = [scriptPath, '--project-dir', PROJECT_DIR];
     if (args.taskIds) {
       scriptArgs.push('--task-ids', args.taskIds.join(','));
+    } else if (args.category_ids) {
+      scriptArgs.push('--category-ids', args.category_ids.join(','));
     } else if (args.sections) {
       scriptArgs.push('--sections', args.sections.join(','));
     }

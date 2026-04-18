@@ -152,8 +152,10 @@ export interface TaskMetrics {
   pending_total: number;
   in_progress_total: number;
   completed_total: number;
-  /** Breakdown by section */
+  /** Breakdown by section (legacy) */
   by_section: Record<string, SectionTaskCounts>;
+  /** Breakdown by category_id (preferred) */
+  by_category: Record<string, SectionTaskCounts>;
   /** Completed within time range */
   completed_24h: number;
   completed_24h_by_section: Record<string, number>;

@@ -213,9 +213,9 @@ async function main() {
       const todoDb = new Database(TODO_DB_PATH, { readonly: true });
       const details = [];
       for (const row of subtaskIds) {
-        const t = todoDb.prepare("SELECT id, title, status, section FROM tasks WHERE id = ?").get(row.todo_task_id);
+        const t = todoDb.prepare("SELECT id, title, status, section, category_id FROM tasks WHERE id = ?").get(row.todo_task_id);
         if (t) {
-          details.push(`- [${t.status}] "${t.title}" (${t.section})`);
+          details.push(`- [${t.status}] "${t.title}" (${t.category_id || t.section})`);
           if (t.status === 'completed') fullCompletedCount++;
           else if (t.status === 'in_progress') { fullInProgressCount++; if (fullActiveTitles.length < 3) fullActiveTitles.push(t.title); }
           else fullPendingCount++;

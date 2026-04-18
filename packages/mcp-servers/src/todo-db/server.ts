@@ -1522,7 +1522,10 @@ function getWorklog(args: GetWorklogArgs): GetWorklogResult {
   let sql = 'SELECT * FROM worklog_entries WHERE created_at >= ?';
   const params: unknown[] = [since];
 
-  if (args.section) {
+  if (args.category_id) {
+    sql += ' AND category_id = ?';
+    params.push(args.category_id);
+  } else if (args.section) {
     sql += ' AND section = ?';
     params.push(args.section);
   }
@@ -1637,7 +1640,10 @@ function listArchivedTasks(args: ListArchivedTasksArgs): ListArchivedTasksResult
   let sql = 'SELECT * FROM archived_tasks WHERE archived_timestamp >= ?';
   const params: unknown[] = [since];
 
-  if (args.section) {
+  if (args.category_id) {
+    sql += ' AND category_id = ?';
+    params.push(args.category_id);
+  } else if (args.section) {
     sql += ' AND section = ?';
     params.push(args.section);
   }

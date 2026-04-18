@@ -106,6 +106,7 @@ export interface TaskMetrics {
   in_progress_total: number;
   completed_total: number;
   by_section: Record<string, SectionTaskCounts>;
+  by_category: Record<string, SectionTaskCounts>;
   completed_24h: number;
   completed_24h_by_section: Record<string, number>;
 }
@@ -741,6 +742,7 @@ export function getTaskMetrics(hours: number): TaskMetrics {
     in_progress_total: 0,
     completed_total: 0,
     by_section: {},
+    by_category: {},
     completed_24h: 0,
     completed_24h_by_section: {},
   };
@@ -764,6 +766,22 @@ export function getTaskMetrics(hours: number): TaskMetrics {
     if (row.status === 'pending') metrics.pending_total += row.count;
     else if (row.status === 'in_progress') metrics.in_progress_total += row.count;
     else if (row.status === 'completed') metrics.completed_total += row.count;
+  }
+
+  // By-category breakdown for tasks with a category_id
+  interface CategoryCountRow { category_id: string; status: string; count: number }
+  const categoryTasks = db.prepare(`
+    SELECT category_id, status, COUNT(*) as count
+    FROM tasks
+    WHERE category_id IS NOT NULL
+    GROUP BY category_id, status
+  `).all() as CategoryCountRow[];
+
+  for (const row of categoryTasks) {
+    if (!metrics.by_category[row.category_id]) {
+      metrics.by_category[row.category_id] = { pending: 0, in_progress: 0, completed: 0 };
+    }
+    (metrics.by_category[row.category_id] as SectionTaskCounts)[row.status as keyof SectionTaskCounts] = row.count;
   }
 
   const since = Date.now() - (hours * 60 * 60 * 1000);

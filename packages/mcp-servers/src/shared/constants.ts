@@ -12,6 +12,8 @@
 /**
  * Valid sections for tasks in the todo-db database.
  * These match the agent roles in the project.
+ *
+ * @deprecated Use category_id instead. Kept for backward-compat Zod schema validation.
  */
 export const VALID_SECTIONS = [
   'TEST-WRITER',
@@ -29,6 +31,8 @@ export type ValidSection = (typeof VALID_SECTIONS)[number];
 /**
  * Soft access control: sections that restrict which agents can create tasks.
  * Agents self-report identity via assigned_by. Not in list = no restriction.
+ *
+ * @deprecated Creator restrictions are now defined per-category in task_categories.
  */
 export const SECTION_CREATOR_RESTRICTIONS: Partial<Record<ValidSection, readonly string[]>> = {
   'DEPUTY-CTO': ['deputy-cto', 'cto', 'human', 'demo', 'pr-reviewer', 'system-followup', 'persistent-monitor'],

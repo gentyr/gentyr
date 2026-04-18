@@ -47,7 +47,7 @@ function formatTimeAgo(isoString: string): string {
 
 function EntryRow({ entry }: { entry: import('../utils/worklog-reader.js').WorklogEntryData }): React.ReactElement {
   const time = formatTimeAgo(entry.created_at).padEnd(8);
-  const section = entry.section.substring(0, 14).padEnd(14);
+  const displayCategory = (entry.category_id || entry.section).substring(0, 14).padEnd(14);
   const title = entry.title.length > 22 ? entry.title.substring(0, 19) + '...' : entry.title.padEnd(22);
   const result = entry.success ? ' OK ' : 'FAIL';
   const resultColor = entry.success ? 'green' : 'red';
@@ -57,7 +57,7 @@ function EntryRow({ entry }: { entry: import('../utils/worklog-reader.js').Workl
   return (
     <Box>
       <Text color="gray">{time}</Text>
-      <Text color="cyan">{section}</Text>
+      <Text color="cyan">{displayCategory}</Text>
       <Text color="white">{title}</Text>
       <Text color={resultColor}> {result} </Text>
       <Text color="gray">{duration}</Text>
@@ -111,7 +111,7 @@ export function WorklogSection({ data, tip }: WorklogSectionProps): React.ReactE
         {/* Header */}
         <Box>
           <Text color="gray" bold>{'Time'.padEnd(8)}</Text>
-          <Text color="gray" bold>{'Section'.padEnd(14)}</Text>
+          <Text color="gray" bold>{'Category'.padEnd(14)}</Text>
           <Text color="gray" bold>{'Title'.padEnd(22)}</Text>
           <Text color="gray" bold>{' Res  '}</Text>
           <Text color="gray" bold>{'Duration'.padStart(9)}</Text>

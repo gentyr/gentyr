@@ -94,9 +94,6 @@ function validateProjectDir(inputPath) {
   return resolved;
 }
 
-// Valid task sections for x_test
-const VALID_SECTIONS = ['TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER'];
-
 /**
  * Perform cleanup on the TODO database
  * @param {string} projectDir

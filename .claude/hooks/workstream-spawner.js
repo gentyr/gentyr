@@ -120,7 +120,7 @@ function buildAssessmentPrompt(agentId, task, queueState, activeDeps) {
 ## New Task
 - ID: ${task.id}
 - Title: "${task.title}"
-- Section: ${task.section}
+- Category: ${task.section}
 - Description: ${task.description || '(none)'}
 
 ## Current Queue State
@@ -177,6 +177,7 @@ process.stdin.on('end', () => {
     let taskId = null;
     let taskTitle = '';
     let taskSection = '';
+    let taskCategoryId = '';
     let taskDescription = '';
 
     try {
@@ -186,6 +187,7 @@ process.stdin.on('end', () => {
         taskId = response.id;
         taskTitle = response.title || '';
         taskSection = response.section || '';
+        taskCategoryId = response.category_id || '';
         taskDescription = response.description || '';
       } else if (typeof response === 'string') {
         const parsed = JSON.parse(response);
@@ -193,6 +195,7 @@ process.stdin.on('end', () => {
         taskId = parsed.id;
         taskTitle = parsed.title || '';
         taskSection = parsed.section || '';
+        taskCategoryId = parsed.category_id || '';
         taskDescription = parsed.description || '';
       }
     } catch (err) {
@@ -207,6 +210,7 @@ process.stdin.on('end', () => {
               taskId = parsed.id;
               taskTitle = parsed.title || '';
               taskSection = parsed.section || '';
+              taskCategoryId = parsed.category_id || '';
               taskDescription = parsed.description || '';
               break;
             }
@@ -228,7 +232,7 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    log(`Assessing new task ${taskId}: "${taskTitle}" (section: ${taskSection}, status: ${taskStatus})`);
+    log(`Assessing new task ${taskId}: "${taskTitle}" (category: ${taskCategoryId || taskSection}, status: ${taskStatus})`);
 
     // Skip if a workstream-manager is already running
     if (isWorkstreamManagerRunning()) {
@@ -250,10 +254,10 @@ process.stdin.on('end', () => {
       lane: 'gate',
       priority: 'normal',
       projectDir: PROJECT_DIR,
-      metadata: { taskId, section: taskSection, assessmentFor: taskTitle },
+      metadata: { taskId, section: taskSection, category_id: taskCategoryId, assessmentFor: taskTitle },
       buildPrompt: (agentId) => buildAssessmentPrompt(
         agentId,
-        { id: taskId, title: taskTitle, section: taskSection, description: taskDescription },
+        { id: taskId, title: taskTitle, section: taskCategoryId || taskSection, description: taskDescription },
         queueState,
         activeDeps,
       ),

@@ -518,6 +518,7 @@ function getTaskMetricsData(hours: number): TaskMetrics {
     in_progress_total: 0,
     completed_total: 0,
     by_section: {},
+    by_category: {},
     completed_24h: 0,
     completed_24h_by_section: {},
   };
@@ -549,6 +550,22 @@ function getTaskMetricsData(hours: number): TaskMetrics {
     } else if (row.status === 'completed') {
       metrics.completed_total += row.count;
     }
+  }
+
+  // Get current task counts by category_id and status
+  interface CategoryCountRow { category_id: string; status: string; count: number }
+  const categoryTasks = db.prepare(`
+    SELECT category_id, status, COUNT(*) as count
+    FROM tasks
+    WHERE category_id IS NOT NULL
+    GROUP BY category_id, status
+  `).all() as CategoryCountRow[];
+
+  for (const row of categoryTasks) {
+    if (!metrics.by_category[row.category_id]) {
+      metrics.by_category[row.category_id] = { pending: 0, in_progress: 0, completed: 0 };
+    }
+    (metrics.by_category[row.category_id] as SectionTaskCounts)[row.status as keyof SectionTaskCounts] = row.count;
   }
 
   // Get completed tasks within time range
