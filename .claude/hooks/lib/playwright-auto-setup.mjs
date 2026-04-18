@@ -108,11 +108,16 @@ async function addMouseAnimation(page, isInterruptedFn) {
       const orig = locatorProto[method];
       locatorProto[method] = async function (...args) {
         if (isInterruptedFn && isInterruptedFn()) {
-          // Hang forever instead of throwing. Throwing triggers Playwright's
-          // error/cleanup path which sends CDP Browser.close and kills Chrome.
-          // Hanging keeps the test alive — browser stays open for interaction.
-          // The user stops the process via dashboard 's' key or stop_demo.
-          return new Promise(() => {});
+          // Wait for the user to manually close the browser, THEN let cleanup
+          // proceed (web server shutdown, test data cleanup, etc.). This avoids
+          // port leaks from Playwright's dev server staying alive.
+          try {
+            const browser = this.page().context().browser();
+            if (browser) {
+              await new Promise(resolve => browser.on('disconnected', resolve));
+            }
+          } catch {}
+          throw new Error('Demo interrupted');
         }
         try {
           const locatorPage = this.page();
