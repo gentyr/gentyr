@@ -749,11 +749,12 @@ function buildDemoEnv(opts: {
   // Resolve 1Password secrets for child process (fail-closed: missing credentials = abort)
   try {
     const config = loadServicesConfig(PROJECT_DIR);
-    const { resolvedEnv, failedKeys } = resolveLocalSecrets(config);
+    const { resolvedEnv, failedKeys, failureDetails } = resolveLocalSecrets(config);
     Object.assign(env, resolvedEnv);
 
     if (failedKeys.length > 0) {
-      throw new Error(`Failed to resolve credentials: ${failedKeys.join(', ')}. Check OP_SERVICE_ACCOUNT_TOKEN and 1Password connectivity.`);
+      const details = failedKeys.map(k => `  ${k}: ${failureDetails[k] || 'unknown error'}`).join('\n');
+      throw new Error(`Failed to resolve credentials:\n${details}\nThese op:// references could not be resolved by the MCP server.`);
     }
 
     // Apply project-specific dev-mode env when dev server is running
@@ -1791,12 +1792,13 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
   // Resolve any op:// references in scenario env_vars before merging
   if (scenarioEnvVars) {
-    const { resolved: resolvedScenarioEnv, failedKeys: scenarioFailedKeys } = resolveOpReferencesStrict(scenarioEnvVars);
+    const { resolved: resolvedScenarioEnv, failedKeys: scenarioFailedKeys, failureDetails: scenarioFailureDetails } = resolveOpReferencesStrict(scenarioEnvVars);
     if (scenarioFailedKeys.length > 0) {
+      const details = scenarioFailedKeys.map(k => `  ${k}: ${scenarioFailureDetails[k] || 'unknown error'}`).join('\n');
       return {
         success: false,
         project,
-        message: `Credential resolution failed for scenario env vars: ${scenarioFailedKeys.join(', ')}. Check OP_SERVICE_ACCOUNT_TOKEN and 1Password connectivity.`,
+        message: `Credential resolution failed for scenario env vars:\n${details}\nThese op:// references could not be resolved by the MCP server.`,
       };
     }
     scenarioEnvVars = resolvedScenarioEnv;
@@ -4935,10 +4937,10 @@ function discoverScenarios(opts: {
       if (r.env_vars) {
         try {
           const parsed = JSON.parse(r.env_vars) as Record<string, string>;
-          const { resolved, failedKeys } = resolveOpReferencesStrict(parsed);
+          const { resolved, failedKeys, failureDetails } = resolveOpReferencesStrict(parsed);
           envVars = resolved;
           if (failedKeys.length > 0) {
-            credentialWarnings = failedKeys.map(k => `Failed to resolve credential: ${k}`);
+            credentialWarnings = failedKeys.map(k => `Failed to resolve credential ${k}: ${failureDetails[k] || 'unknown error'}`);
           }
         } catch { /* invalid JSON */ }
       }

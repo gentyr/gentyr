@@ -87,9 +87,10 @@ export function loadServicesConfig(projectDir: string): ServicesConfig {
  * Resolve local secrets from 1Password — values stay in MCP server memory.
  * Returns env vars ready to inject into child process, plus any failed keys.
  */
-export function resolveLocalSecrets(config: ServicesConfig): { resolvedEnv: Record<string, string>; failedKeys: string[] } {
+export function resolveLocalSecrets(config: ServicesConfig): { resolvedEnv: Record<string, string>; failedKeys: string[]; failureDetails: Record<string, string> } {
   const resolvedEnv: Record<string, string> = {};
   const failedKeys: string[] = [];
+  const failureDetails: Record<string, string> = {};
   const localSecrets = config.secrets.local || {};
 
   for (const [key, ref] of Object.entries(localSecrets)) {
@@ -99,10 +100,11 @@ export function resolveLocalSecrets(config: ServicesConfig): { resolvedEnv: Reco
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[op-secrets] resolveLocalSecrets: failed to resolve ${key}: ${message}\n`);
       failedKeys.push(key);
+      failureDetails[key] = message;
     }
   }
 
-  return { resolvedEnv, failedKeys };
+  return { resolvedEnv, failedKeys, failureDetails };
 }
 
 /**
@@ -134,9 +136,11 @@ export function resolveOpReferences(envVars: Record<string, string>): Record<str
 export function resolveOpReferencesStrict(envVars: Record<string, string>): {
   resolved: Record<string, string>;
   failedKeys: string[];
+  failureDetails: Record<string, string>;
 } {
   const resolved: Record<string, string> = {};
   const failedKeys: string[] = [];
+  const failureDetails: Record<string, string> = {};
   for (const [key, value] of Object.entries(envVars)) {
     if (typeof value === 'string' && value.startsWith('op://')) {
       try {
@@ -145,12 +149,13 @@ export function resolveOpReferencesStrict(envVars: Record<string, string>): {
         const message = err instanceof Error ? err.message : String(err);
         process.stderr.write(`[op-secrets] resolveOpReferencesStrict: failed to resolve ${key}: ${message}\n`);
         failedKeys.push(key);
+        failureDetails[key] = message;
       }
     } else {
       resolved[key] = value;
     }
   }
-  return { resolved, failedKeys };
+  return { resolved, failedKeys, failureDetails };
 }
 
 /**
