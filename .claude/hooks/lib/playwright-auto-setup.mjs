@@ -108,7 +108,11 @@ async function addMouseAnimation(page, isInterruptedFn) {
       const orig = locatorProto[method];
       locatorProto[method] = async function (...args) {
         if (isInterruptedFn && isInterruptedFn()) {
-          throw new Error('Demo interrupted');
+          // Hang forever instead of throwing. Throwing triggers Playwright's
+          // error/cleanup path which sends CDP Browser.close and kills Chrome.
+          // Hanging keeps the test alive — browser stays open for interaction.
+          // The user stops the process via dashboard 's' key or stop_demo.
+          return new Promise(() => {});
         }
         try {
           const locatorPage = this.page();
