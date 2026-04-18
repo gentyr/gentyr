@@ -161,7 +161,7 @@ If the plan is ready to work on:
 6. **Spawn PROJECT-MANAGER** to sync documentation
 
 Use \`mcp__todo-db__create_task\` with \`priority: "urgent"\` to create tasks for each agent step.
-Map to sections: INVESTIGATOR & PLANNER, CODE-REVIEWER, TEST-WRITER, PROJECT-MANAGER.
+Map to category_id values: deep-investigation, standard, test-suite, project-management.
 The urgent dispatcher picks these up within seconds.
 
 ### Step 3: For COMPLETED Plans

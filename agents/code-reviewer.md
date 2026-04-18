@@ -84,7 +84,7 @@ This agent uses the `todo-db` MCP server for task management.
 
 ## Task Management (MCP Database)
 
-This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your section is `CODE-REVIEWER`.
+This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your category is `standard` (category_id: `standard`).
 
 ### Available MCP Tools
 
@@ -108,7 +108,7 @@ This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your sec
    - Document all non-critical suggestions in your review summary instead
 ```javascript
 mcp__todo-db__create_task({
-  section: "INVESTIGATOR & PLANNER",
+  category_id: "deep-investigation",
   title: "Fix G001 violation in auth.ts",
   description: "Line 45 has graceful fallback returning null",
   assigned_by: "CODE-REVIEWER"

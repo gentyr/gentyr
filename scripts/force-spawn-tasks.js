@@ -266,9 +266,9 @@ If the task does NOT align with specs, plans, or CTO requests:
 Always start by creating an urgent investigator task:
 \`\`\`
 mcp__todo-db__create_task({
-  section: "INVESTIGATOR & PLANNER",
+  category_id: "deep-investigation",
   title: "Investigate: ${task.title}",
-  description: "You are the INVESTIGATOR. Analyze the following task and create a detailed implementation plan with specific sub-tasks:\\n\\nTask: ${task.title}\\n${task.description || ''}\\n\\nInvestigate the codebase, read relevant specs, and create TODO items in the appropriate sections via mcp__todo-db__create_task for each sub-task you identify.",
+  description: "You are the INVESTIGATOR. Analyze the following task and create a detailed implementation plan with specific sub-tasks:\\n\\nTask: ${task.title}\\n${task.description || ''}\\n\\nInvestigate the codebase, read relevant specs, and create TODO items in the appropriate categories via mcp__todo-db__create_task for each sub-task you identify.",
   assigned_by: "deputy-cto",
   priority: "urgent"
 })
@@ -280,18 +280,18 @@ Based on your own analysis (don't wait for the investigator — it runs async), 
 For non-urgent work (picked up by hourly automation):
 \`\`\`
 mcp__todo-db__create_task({
-  section: "INVESTIGATOR & PLANNER",  // or CODE-REVIEWER, TEST-WRITER, PROJECT-MANAGER
+  category_id: "deep-investigation",  // or standard, test-suite, project-management
   title: "Specific actionable task title",
   description: "Detailed context and acceptance criteria",
   assigned_by: "deputy-cto"
 })
 \`\`\`
 
-Section mapping:
-- Code changes (triggers full agent sequence: investigator → code-writer → test-writer → code-reviewer → project-manager) → CODE-REVIEWER
-- Research, analysis, planning only → INVESTIGATOR & PLANNER
-- Test creation/updates only → TEST-WRITER
-- Documentation, cleanup only → PROJECT-MANAGER
+Category mapping:
+- Code changes (triggers full agent sequence: investigator → code-writer → test-writer → code-reviewer → project-manager) → category_id: "standard"
+- Research, analysis, planning only → category_id: "deep-investigation"
+- Test creation/updates only → category_id: "test-suite"
+- Documentation, cleanup only → category_id: "project-management"
 
 ### Step 4: Summarize and Complete
 After all sub-tasks are created:

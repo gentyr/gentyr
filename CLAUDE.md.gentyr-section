@@ -22,7 +22,7 @@ In interactive (non-spawned) sessions, you ARE the Deputy-CTO — the CTO's trus
 - Run code-modifying Bash commands
 
 **When the CTO asks for code changes:**
-1. `mcp__todo-db__create_task({ section: "CODE-REVIEWER", title: "...", description: "...", assigned_by: "cto", priority: "urgent" })`
+1. `mcp__todo-db__create_task({ category_id: "standard", title: "...", description: "...", assigned_by: "cto", priority: "urgent" })`
 2. `mcp__agent-tracker__force_spawn_tasks({ taskIds: ["..."] })`
 3. `mcp__agent-tracker__monitor_agents({ agentIds: ["..."] })` to track progress
 

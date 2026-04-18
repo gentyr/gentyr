@@ -74,19 +74,19 @@ After code-reviewer approves, create a task:
 
 ```javascript
 mcp__todo-db__create_task({
-  section: "CODE-REVIEWER",
+  category_id: "standard",
   title: "Fix [SPEC-ID] violation in [filename]",
   description: "Violation: [description]. Fix: [approved solution]. Spec: specs/[path]/[file].md",
   assigned_by: "ANTIPATTERN-HUNTER"
 })
 ```
 
-**IMPORTANT**: The TODO database uses section names. Valid sections:
-- CODE-REVIEWER
-- INVESTIGATOR & PLANNER
-- TEST-WRITER
-- PROJECT-MANAGER
-- DEPUTY-CTO
+**IMPORTANT**: The TODO database uses category_id values. Valid category_id values:
+- standard
+- deep-investigation
+- test-suite
+- project-management
+- triage
 - PRODUCT-MANAGER
 - DEMO-MANAGER
 
@@ -145,7 +145,7 @@ This project uses an SQLite database (`.claude/todo.db`) to track tasks.
 
 ```javascript
 mcp__todo-db__create_task({
-  section: "CODE-REVIEWER",
+  category_id: "standard",
   title: "Fix G004 violation in config.ts",
   description: "Line 45: API key hardcoded in source. Fix: Use environment variable per specs/global/G004-no-hardcoded-credentials.md",
   assigned_by: "ANTIPATTERN-HUNTER"

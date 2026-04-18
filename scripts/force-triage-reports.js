@@ -217,7 +217,7 @@ If the report matches ANY auto-escalation rule, skip to "If ESCALATING" - do not
 \`\`\`
 // Create an urgent task — dispatched immediately by the urgent dispatcher
 mcp__todo-db__create_task({
-  section: "CODE-REVIEWER",  // Choose based on task type (see section mapping below)
+  category_id: "standard",  // Choose based on task type (see category mapping below)
   title: "Brief actionable title",
   description: "Full context: what to fix, where, why, and acceptance criteria",
   assigned_by: "deputy-cto",
@@ -232,19 +232,19 @@ mcp__agent-reports__complete_triage({
 })
 \`\`\`
 
-Section mapping for self-handled tasks:
-- Code changes (full agent sequence) → "CODE-REVIEWER"
-- Research/analysis only → "INVESTIGATOR & PLANNER"
-- Test creation/updates → "TEST-WRITER"
-- Documentation/cleanup → "PROJECT-MANAGER"
-- Orchestration/delegation → "DEPUTY-CTO"
+Category mapping for self-handled tasks:
+- Code changes (full agent sequence) → category_id: "standard"
+- Research/analysis only → category_id: "deep-investigation"
+- Test creation/updates → category_id: "test-suite"
+- Documentation/cleanup → category_id: "project-management"
+- Orchestration/delegation → category_id: "triage"
 
 **If ESCALATING:**
 
 Before escalating, check for duplicate investigations:
 \`\`\`
 // Check for existing investigations on the same issue
-mcp__todo-db__list_tasks({ section: "INVESTIGATOR & PLANNER", status: "pending" })
+mcp__todo-db__list_tasks({ category_id: "deep-investigation", status: "pending" })
 // If a similar investigation task already exists, skip Step 1 and link to the existing task ID instead
 \`\`\`
 
@@ -252,12 +252,12 @@ Then follow the investigation-before-escalation flow:
 \`\`\`
 // Step 1: Create investigation task (returns task_id)
 const investigationTask = mcp__todo-db__create_task({
-  section: "INVESTIGATOR & PLANNER",
+  category_id: "deep-investigation",
   title: "Investigate: <brief issue description>",
   description: "Context from triage: <what was found, where, reproduction steps>\n\nAcceptance criteria:\n- Determine root cause\n- Verify if issue is still active\n- Document findings",
   assigned_by: "deputy-cto",
   priority: "urgent",
-  followup_section: "DEPUTY-CTO",
+  followup_section: "triage",
   followup_prompt: "[Investigation Follow-up]\nEscalation ID: <question_id from Step 2>\n\nInstructions:\n1. Read the escalation via mcp__deputy-cto__read_question(id)\n   - If not found or already answered, mark this follow-up complete (CTO already handled it)\n2. Check current state of the issue\n3. If resolved: call mcp__deputy-cto__resolve_question({ id, resolution: 'fixed', resolution_detail: '<evidence>' })\n4. If not resolved but has findings: call mcp__deputy-cto__update_question({ id, append_context: '<findings>' })\n5. Mark this follow-up task complete"
 })
 

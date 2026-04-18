@@ -917,7 +917,7 @@ If the report matches ANY auto-escalation rule, skip to "If ESCALATING" - do not
 \`\`\`
 // Create a task — processed by the task runner on next cycle
 mcp__todo-db__create_task({
-  section: "CODE-REVIEWER",  // Choose based on task type (see section mapping below)
+  category_id: "standard",  // Choose based on task type (see category mapping below)
   title: "Brief actionable title",
   description: "Full context: what to fix, where, why, and acceptance criteria",
   assigned_by: "deputy-cto",
@@ -932,11 +932,11 @@ mcp__agent-reports__complete_triage({
 })
 \`\`\`
 
-Section mapping for self-handled tasks:
-- Code changes (full agent sequence) → "CODE-REVIEWER"
-- Research/analysis only → "INVESTIGATOR & PLANNER"
-- Test creation/updates → "TEST-WRITER"
-- Documentation/cleanup → "PROJECT-MANAGER"
+Category mapping for self-handled tasks:
+- Code changes (full agent sequence) → category_id: "standard"
+- Research/analysis only → category_id: "deep-investigation"
+- Test creation/updates → category_id: "test-suite"
+- Documentation/cleanup → category_id: "project-management"
 - Orchestration/delegation → "DEPUTY-CTO"
 
 **If ESCALATING:**
@@ -1350,9 +1350,9 @@ If the task does NOT align with specs, plans, or CTO requests:
 Always start by creating an investigator task:
 \`\`\`
 mcp__todo-db__create_task({
-  section: "INVESTIGATOR & PLANNER",
+  category_id: "deep-investigation",
   title: "Investigate: ${task.title}",
-  description: "You are the INVESTIGATOR. Analyze the following task and create a detailed implementation plan with specific sub-tasks:\\n\\nTask: ${task.title}\\n${task.description || ''}\\n\\nInvestigate the codebase, read relevant specs, and create TODO items in the appropriate sections via mcp__todo-db__create_task for each sub-task you identify.",
+  description: "You are the INVESTIGATOR. Analyze the following task and create a detailed implementation plan with specific sub-tasks:\\n\\nTask: ${task.title}\\n${task.description || ''}\\n\\nInvestigate the codebase, read relevant specs, and create TODO items in the appropriate categories via mcp__todo-db__create_task for each sub-task you identify.",
   assigned_by: "deputy-cto",
   priority: "normal"
 })
@@ -1364,18 +1364,18 @@ Based on your own analysis (don't wait for the investigator — it runs async), 
 For non-urgent work (picked up by hourly automation):
 \`\`\`
 mcp__todo-db__create_task({
-  section: "INVESTIGATOR & PLANNER",  // or CODE-REVIEWER, TEST-WRITER, PROJECT-MANAGER
+  category_id: "deep-investigation",  // or standard, test-suite, project-management
   title: "Specific actionable task title",
   description: "Detailed context and acceptance criteria",
   assigned_by: "deputy-cto"
 })
 \`\`\`
 
-Section mapping:
-- Code changes (triggers full agent sequence: investigator → code-writer → test-writer → code-reviewer → project-manager) → CODE-REVIEWER
-- Research, analysis, planning only → INVESTIGATOR & PLANNER
-- Test creation/updates only → TEST-WRITER
-- Documentation, cleanup only → PROJECT-MANAGER
+Category mapping:
+- Code changes (triggers full agent sequence: investigator → code-writer → test-writer → code-reviewer → project-manager) → category_id: "standard"
+- Research, analysis, planning only → category_id: "deep-investigation"
+- Test creation/updates only → category_id: "test-suite"
+- Documentation, cleanup only → category_id: "project-management"
 
 ### Step 4: Summarize and Complete
 After all sub-tasks are created:
@@ -2215,7 +2215,7 @@ If the deputy-cto approved, create the PR yourself:
 **CTO approval**: When CTO approves via /deputy-cto, an urgent merge task is created:
 \`\`\`
 mcp__todo-db__create_task({
-  section: "CODE-REVIEWER",
+  category_id: "standard",
   title: "Merge production release PR #<number>",
   description: "CTO approved. Run: gh pr merge <number> --merge",
   assigned_by: "deputy-cto",
@@ -2380,7 +2380,7 @@ Check all deployment infrastructure for staging environment health. Query servic
 2. For actionable issues, create a fix task:
    \`\`\`
    mcp__todo-db__create_task({
-     section: "CODE-REVIEWER",
+     category_id: "standard",
      title: "Fix staging health issue: [summary]",
      description: "[Detailed description of the issue and how to fix it. Include all relevant context: error messages, service IDs, etc.]",
      assigned_by: "staging-health-monitor",
@@ -2494,7 +2494,7 @@ Check all deployment infrastructure for production environment health. This is C
 3. For actionable issues, create a fix task:
    \`\`\`
    mcp__todo-db__create_task({
-     section: "CODE-REVIEWER",
+     category_id: "standard",
      title: "Fix production health issue: [summary]",
      description: "[Detailed description of the issue and how to fix it. Include all relevant context: error messages, service IDs, etc.]",
      assigned_by: "production-health-monitor",
@@ -2597,7 +2597,7 @@ Use Grep to systematically scan for violation patterns:
 a. Create TODO item:
    \`\`\`javascript
    mcp__todo-db__create_task({
-     section: "CODE-REVIEWER",
+     category_id: "standard",
      title: "Fix [SPEC-ID] violation in [file]",
      description: "[Details and location]",
      assigned_by: "STANDALONE-ANTIPATTERN-HUNTER"
@@ -2681,7 +2681,7 @@ Based on the spec requirements:
 Create a TODO item:
 \`\`\`javascript
 mcp__todo-db__create_task({
-  section: "CODE-REVIEWER",
+  category_id: "standard",
   title: "Fix ${spec.id} violation in [file]:[line]",
   description: "[Violation details and what the spec requires]",
   assigned_by: "STANDALONE-COMPLIANCE-CHECKER"

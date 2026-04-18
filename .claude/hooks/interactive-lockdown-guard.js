@@ -337,7 +337,7 @@ async function main() {
     'team through GENTYR\'s task and agent system — you do not edit files directly.',
     '',
     'To make code changes, create a task and spawn an agent:',
-    '  1. mcp__todo-db__create_task({ section: \'CODE-REVIEWER\', title: \'...\', description: \'...\', assigned_by: \'cto\' })',
+    '  1. mcp__todo-db__create_task({ category_id: \'standard\', title: \'...\', description: \'...\', assigned_by: \'cto\' })',
     '  2. mcp__agent-tracker__force_spawn_tasks({ taskIds: [\'...\'] })',
     '  3. mcp__agent-tracker__monitor_agents({ agentIds: [\'...\'] })',
     '',

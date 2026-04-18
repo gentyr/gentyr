@@ -27,7 +27,7 @@ This agent uses the `todo-db` MCP server for task management.
 
 ## Task Management (MCP Database)
 
-This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your section is `PROJECT-MANAGER`.
+This project uses an SQLite database (`.claude/todo.db`) via MCP tools. Your category is `project-management` (category_id: `project-management`).
 
 ### Available MCP Tools
 
@@ -66,7 +66,7 @@ As project manager, you MUST monitor ALL sections:
 mcp__todo-db__get_summary({})
 
 // List tasks in a specific section
-mcp__todo-db__list_tasks({ section: "INVESTIGATOR & PLANNER", limit: 20 })
+mcp__todo-db__list_tasks({ category_id: "deep-investigation", limit: 20 })
 ```
 
 1. **Stale task escalation**: If tasks are in_progress for >4 hours, investigate
@@ -76,7 +76,7 @@ mcp__todo-db__list_tasks({ section: "INVESTIGATOR & PLANNER", limit: 20 })
 
 ```javascript
 mcp__todo-db__create_task({
-  section: "CODE-REVIEWER",
+  category_id: "standard",
   title: "Review authentication changes",
   description: "New OAuth flow added in auth.ts - needs security review",
   assigned_by: "PROJECT-MANAGER",
