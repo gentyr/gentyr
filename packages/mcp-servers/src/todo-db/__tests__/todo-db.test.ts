@@ -729,6 +729,40 @@ ${originalTask}`;
       expect(task.category_id).toBe('test-suite-work');
     });
 
+    it('should archive a completed task with NULL section without throwing (Finding 1)', () => {
+      // Regression test: archived_tasks.section was TEXT NOT NULL, so archiving a task
+      // with a custom category (null section) would crash. The schema now allows NULL.
+      const id = randomUUID();
+      const now = new Date().toISOString();
+
+      // Insert a completed task with NULL section and a custom category_id
+      db.prepare(`
+        INSERT INTO tasks (id, section, category_id, status, title, created_at, created_timestamp, completed_at, completed_timestamp)
+        VALUES (?, NULL, ?, 'completed', 'Custom category task', ?, ?, ?, ?)
+      `).run(id, 'custom-cat', now, now, now, now);
+
+      const archived_at = now;
+      const archived_timestamp = now;
+
+      // This INSERT must not throw — section is now nullable in archived_tasks
+      expect(() => {
+        db.prepare(`
+          INSERT OR REPLACE INTO archived_tasks
+            (id, section, category_id, title, created_at, created_timestamp, archived_at, archived_timestamp, priority, followup_enabled)
+          VALUES (?, NULL, ?, 'Custom category task', ?, ?, ?, ?, 'normal', 0)
+        `).run(id, 'custom-cat', now, now, archived_at, archived_timestamp);
+      }).not.toThrow();
+
+      // Verify the archived row exists with NULL section and the category_id preserved
+      const row = db.prepare('SELECT * FROM archived_tasks WHERE id = ?').get(id) as {
+        id: string; section: string | null; category_id: string | null; title: string;
+      } | undefined;
+      expect(row).toBeDefined();
+      expect(row!.section).toBeNull();
+      expect(row!.category_id).toBe('custom-cat');
+      expect(row!.title).toBe('Custom category task');
+    });
+
     it('should support by_category grouping query for getSummary', () => {
       // Seed a category in task_categories table
       const catId = 'custom-cat-' + randomUUID().slice(0, 8);
