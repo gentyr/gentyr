@@ -14,6 +14,7 @@ import { randomUUID } from 'crypto';
 import { createTestDb, createTempDir } from '../../__testUtils__/index.js';
 import { TODO_DB_SCHEMA } from '../../__testUtils__/schemas.js';
 import { SECTION_CREATOR_RESTRICTIONS, FORCED_FOLLOWUP_CREATORS } from '../../shared/constants.js';
+import { CreateTaskArgsSchema } from '../types.js';
 
 // Database row types for type safety
 interface TaskRow {
@@ -483,13 +484,24 @@ ${originalTask}`;
       expect(result.assigned_by).toBe('CODE-REVIEWER');
     });
 
-    it('should enforce valid section constraint', () => {
+    it('should allow any section value (section is no longer constrained)', () => {
+      // Phase 2 of the section sunset: the section column now allows any string value
+      // or NULL. No CHECK constraint exists — category_id is the authoritative field.
       expect(() => {
         db.prepare(`
           INSERT INTO tasks (id, section, status, title, created_at, created_timestamp)
           VALUES (?, ?, 'pending', ?, ?, ?)
-        `).run(randomUUID(), 'INVALID-SECTION', 'Test', new Date().toISOString(), Date.now());
-      }).toThrow();
+        `).run(randomUUID(), 'CUSTOM-SECTION', 'Test', new Date().toISOString(), Date.now());
+      }).not.toThrow();
+    });
+
+    it('should allow NULL section (section is now nullable)', () => {
+      expect(() => {
+        db.prepare(`
+          INSERT INTO tasks (id, section, status, title, created_at, created_timestamp)
+          VALUES (?, NULL, 'pending', ?, ?, ?)
+        `).run(randomUUID(), 'Test null section', new Date().toISOString(), Date.now());
+      }).not.toThrow();
     });
 
     it('should enforce valid status constraint', () => {
@@ -681,6 +693,78 @@ ${originalTask}`;
     it('should fail to delete non-existent task (G001)', () => {
       const result = deleteTask('non-existent') as DeleteOrError;
       expect(result.error).toContain('Task not found');
+    });
+  });
+
+  describe('Category System (Phase 2 Section Sunset)', () => {
+    it('should allow task insertion with category_id and null section', () => {
+      // Tasks created via a custom category (no deprecated_section) have null section
+      const id = randomUUID();
+      expect(() => {
+        db.prepare(`
+          INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, category_id)
+          VALUES (?, NULL, 'pending', ?, ?, ?, ?)
+        `).run(id, 'Category-only task', new Date().toISOString(), Date.now(), 'custom-category');
+      }).not.toThrow();
+
+      const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow & { category_id: string | null };
+      expect(task).toBeDefined();
+      expect(task.section).toBeNull();
+      expect(task.category_id).toBe('custom-category');
+    });
+
+    it('should allow task insertion with category_id and a section derived from deprecated_section', () => {
+      // Tasks created via a legacy section mapping will have both category_id and section set
+      const id = randomUUID();
+      expect(() => {
+        db.prepare(`
+          INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, category_id)
+          VALUES (?, ?, 'pending', ?, ?, ?, ?)
+        `).run(id, 'TEST-WRITER', 'Task with both', new Date().toISOString(), Date.now(), 'test-suite-work');
+      }).not.toThrow();
+
+      const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow & { category_id: string | null };
+      expect(task).toBeDefined();
+      expect(task.section).toBe('TEST-WRITER');
+      expect(task.category_id).toBe('test-suite-work');
+    });
+
+    it('should support by_category grouping query for getSummary', () => {
+      // Seed a category in task_categories table
+      const catId = 'custom-cat-' + randomUUID().slice(0, 8);
+      db.prepare(`
+        INSERT INTO task_categories (id, name, sequence, model, force_followup, urgency_authorized, is_default, created_at, updated_at)
+        VALUES (?, 'Custom Category', '[]', 'sonnet', 0, 1, 0, ?, ?)
+      `).run(catId, new Date().toISOString(), new Date().toISOString());
+
+      // Insert tasks with this category_id and null section
+      for (let i = 0; i < 3; i++) {
+        db.prepare(`
+          INSERT INTO tasks (id, section, status, title, created_at, created_timestamp, category_id)
+          VALUES (?, NULL, 'pending', ?, ?, ?, ?)
+        `).run(randomUUID(), `Cat task ${i}`, new Date().toISOString(), Date.now(), catId);
+      }
+
+      // Query mimicking what getSummary's by_category block does
+      interface CategoryStatRow {
+        category_id: string;
+        name: string;
+        status: string;
+        count: number;
+      }
+      const rows = db.prepare(`
+        SELECT t.category_id, tc.name, t.status, COUNT(*) as count
+        FROM tasks t
+        LEFT JOIN task_categories tc ON t.category_id = tc.id
+        WHERE t.category_id IS NOT NULL
+        GROUP BY t.category_id, t.status
+      `).all() as CategoryStatRow[];
+
+      expect(rows.length).toBeGreaterThan(0);
+      const pendingRow = rows.find(r => r.category_id === catId && r.status === 'pending');
+      expect(pendingRow).toBeDefined();
+      expect(pendingRow!.count).toBe(3);
+      expect(pendingRow!.name).toBe('Custom Category');
     });
   });
 
@@ -1355,11 +1439,21 @@ ${originalTask}`;
   });
 
   describe('Input Validation (G003)', () => {
-    it('should validate section enum', () => {
-      // This would be enforced by Zod schema in actual implementation
+    it('should validate section enum via Zod (not DB constraint)', () => {
+      // Phase 2 section sunset: section is no longer constrained at the DB level.
+      // Validation happens in the Zod schema (CreateTaskArgsSchema) in the actual
+      // MCP server handler. At the raw DB level, any string (or NULL) is accepted.
+      // Verify: inserting an invalid section does NOT throw at the DB layer.
       expect(() => {
-        createTask({ section: 'INVALID', title: 'Test' });
-      }).toThrow();
+        db.prepare(`
+          INSERT INTO tasks (id, section, status, title, created_at, created_timestamp)
+          VALUES (?, ?, 'pending', ?, ?, ?)
+        `).run(randomUUID(), 'INVALID', 'Test', new Date().toISOString(), Date.now());
+      }).not.toThrow();
+
+      // Verify: Zod schema does reject invalid sections when parsed.
+      const result = CreateTaskArgsSchema.safeParse({ section: 'INVALID', title: 'Test' });
+      expect(result.success).toBe(false);
     });
 
     it('should require title field', () => {
@@ -1380,15 +1474,16 @@ ${originalTask}`;
       expect(result.error).not.toContain('corrupt');
     });
 
-    it('should throw on database constraint violations', () => {
+    it('should throw on database constraint violations (invalid status)', () => {
+      // section is no longer constrained; status still has a CHECK constraint
       expect(() => {
         db.prepare(`
           INSERT INTO tasks (id, section, status, title, created_at, created_timestamp)
           VALUES (?, ?, ?, ?, ?, ?)
         `).run(
           randomUUID(),
-          'INVALID-SECTION',
-          'pending',
+          'TEST-WRITER',
+          'INVALID-STATUS',
           'Test',
           new Date().toISOString(),
           Date.now()

@@ -210,7 +210,7 @@ export type DeleteCategoryArgs = z.infer<typeof DeleteCategoryArgsSchema>;
 
 export interface TaskRecord {
   id: string;
-  section: ValidSection;
+  section: string | null;
   status: TaskStatus;
   title: string;
   description: string | null;
@@ -235,7 +235,7 @@ export interface TaskRecord {
 
 export interface TaskResponse {
   id: string;
-  section: ValidSection;
+  section: string | null;
   status: TaskStatus;
   title: string;
   description: string | null;
@@ -287,12 +287,20 @@ export interface SectionStats {
   completed: number;
 }
 
+export interface CategoryStats {
+  name: string;
+  pending: number;
+  in_progress: number;
+  completed: number;
+}
+
 export interface SummaryResult {
   total: number;
   pending: number;
   in_progress: number;
   completed: number;
   by_section: Record<string, SectionStats>;
+  by_category: Record<string, CategoryStats>;
 }
 
 export interface CleanupResult {
@@ -339,11 +347,17 @@ export interface CompletedSinceCount {
   count: number;
 }
 
+export interface CompletedSinceCategoryCount {
+  category_id: string;
+  count: number;
+}
+
 export interface GetCompletedSinceResult {
   hours: number;
   since: string;
   total: number;
   by_section: CompletedSinceCount[];
+  by_category: CompletedSinceCategoryCount[];
 }
 
 export interface WorklogEntry {
@@ -400,7 +414,7 @@ export interface GetWorklogResult {
 
 export interface ArchivedTask {
   id: string;
-  section: string;
+  section: string | null;
   title: string;
   description: string | null;
   assigned_by: string | null;

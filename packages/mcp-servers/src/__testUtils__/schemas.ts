@@ -20,7 +20,7 @@
 export const TODO_DB_SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
-    section TEXT NOT NULL,
+    section TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     title TEXT NOT NULL,
     description TEXT,
@@ -37,8 +37,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     followup_prompt TEXT,
     priority TEXT NOT NULL DEFAULT 'normal',
     user_prompt_uuids TEXT,
+    category_id TEXT,
     CONSTRAINT valid_status CHECK (status IN ('pending', 'in_progress', 'completed')),
-    CONSTRAINT valid_section CHECK (section IN ('TEST-WRITER', 'INVESTIGATOR & PLANNER', 'CODE-REVIEWER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER', 'DEMO-MANAGER', 'WORKSTREAM-MANAGER')),
     CONSTRAINT valid_priority CHECK (priority IN ('normal', 'urgent'))
 );
 
@@ -74,6 +74,22 @@ CREATE TABLE IF NOT EXISTS archived_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_archived_tasks_archived ON archived_tasks(archived_timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_archived_tasks_section ON archived_tasks(section);
+
+CREATE TABLE IF NOT EXISTS task_categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    sequence TEXT NOT NULL,
+    prompt_template TEXT,
+    model TEXT DEFAULT 'sonnet',
+    creator_restrictions TEXT,
+    force_followup INTEGER DEFAULT 0,
+    urgency_authorized INTEGER DEFAULT 1,
+    is_default INTEGER DEFAULT 0,
+    deprecated_section TEXT UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `;
 
 // ============================================================================
