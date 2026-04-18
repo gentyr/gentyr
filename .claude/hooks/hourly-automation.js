@@ -62,34 +62,20 @@ const CTO_REPORTS_DB = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
 const CLAUDE_MD_SIZE_THRESHOLD = 25000; // 25K characters
 // Note: Per-item cooldown (1 hour) is now handled by the agent-reports MCP server
 
-// Task Runner: section-to-agent mapping
-const SECTION_AGENT_MAP = {
-  'CODE-REVIEWER': { agent: 'code-reviewer', agentType: AGENT_TYPES.TASK_RUNNER_CODE_REVIEWER },
-  'INVESTIGATOR & PLANNER': { agent: 'investigator', agentType: AGENT_TYPES.TASK_RUNNER_INVESTIGATOR },
-  'TEST-WRITER': { agent: 'test-writer', agentType: AGENT_TYPES.TASK_RUNNER_TEST_WRITER },
-  'PROJECT-MANAGER': { agent: 'project-manager', agentType: AGENT_TYPES.TASK_RUNNER_PROJECT_MANAGER },
-  'DEPUTY-CTO': { agent: 'deputy-cto', agentType: AGENT_TYPES.TASK_RUNNER_DEPUTY_CTO },
-  'PRODUCT-MANAGER': { agent: 'product-manager', agentType: AGENT_TYPES.TASK_RUNNER_PRODUCT_MANAGER },
-  'DEMO-MANAGER': { agent: 'demo-manager', agentType: AGENT_TYPES.TASK_RUNNER_DEMO_MANAGER },
-};
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 
-// Category-aware agent mapping (uses shared module, falls back to SECTION_AGENT_MAP)
+// Category-aware agent mapping — resolves via shared module (DB-driven)
 function getAgentMapping(task) {
   const category = resolveCategory(TODO_DB_PATH, {
     category_id: task.category_id,
     section: task.section,
   });
-  if (category) {
-    return {
-      agent: 'task-runner',
-      agentType: AGENT_TYPES.TASK_RUNNER,
-      category,
-    };
-  }
-  // Fallback to legacy section map
-  const mapping = SECTION_AGENT_MAP[task.section];
-  return mapping ? { ...mapping, category: null } : null;
+  if (!category) return null;
+  return {
+    agent: 'task-runner',
+    agentType: AGENT_TYPES.TASK_RUNNER,
+    category,
+  };
 }
 
 // Concurrency guard: max simultaneous automation agents
@@ -1253,10 +1239,10 @@ function getPendingTasksForRunner() {
       SELECT id, section, category_id, title, description, strict_infra_guidance, demo_involved, persistent_task_id, user_prompt_uuids
       FROM tasks
       WHERE status = 'pending'
-        AND section IN (${Object.keys(SECTION_AGENT_MAP).map(() => '?').join(',')})
+        AND category_id IS NOT NULL
         AND created_timestamp <= ?
       ORDER BY created_timestamp ASC
-    `).all(...Object.keys(SECTION_AGENT_MAP), oneHourAgo);
+    `).all(oneHourAgo);
 
     db.close();
     return candidates;
@@ -1280,9 +1266,9 @@ function getUrgentPendingTasks() {
       FROM tasks
       WHERE status = 'pending'
         AND priority = 'urgent'
-        AND section IN (${Object.keys(SECTION_AGENT_MAP).map(() => '?').join(',')})
+        AND category_id IS NOT NULL
       ORDER BY created_timestamp ASC
-    `).all(...Object.keys(SECTION_AGENT_MAP));
+    `).all();
     db.close();
     return candidates;
   } catch (err) {

@@ -39,7 +39,7 @@ try {
   resolveCategory = mod.resolveCategory;
   buildPromptFromCategory = mod.buildPromptFromCategory;
 } catch {
-  // Non-fatal: category-based routing will fall back to SECTION_AGENT_MAP
+  // Non-fatal: tasks without category mapping will be skipped
   resolveCategory = null;
   buildPromptFromCategory = null;
 }
@@ -153,50 +153,20 @@ async function loadWorktreeHelpers(projectDir) {
 // worthy refactoring task but out of scope here.
 // ---------------------------------------------------------------------------
 
-// Task Runner: section-to-agent mapping
-// Note: agentType values are enum keys resolved to AGENT_TYPES values after import
-const SECTION_AGENT_MAP_KEYS = {
-  'CODE-REVIEWER': { agent: 'code-reviewer', agentTypeKey: 'TASK_RUNNER_CODE_REVIEWER' },
-  'INVESTIGATOR & PLANNER': { agent: 'investigator', agentTypeKey: 'TASK_RUNNER_INVESTIGATOR' },
-  'TEST-WRITER': { agent: 'test-writer', agentTypeKey: 'TASK_RUNNER_TEST_WRITER' },
-  'PROJECT-MANAGER': { agent: 'project-manager', agentTypeKey: 'TASK_RUNNER_PROJECT_MANAGER' },
-  'DEPUTY-CTO': { agent: 'deputy-cto', agentTypeKey: 'TASK_RUNNER_DEPUTY_CTO' },
-  'PRODUCT-MANAGER': { agent: 'product-manager', agentTypeKey: 'TASK_RUNNER_PRODUCT_MANAGER' },
-  'DEMO-MANAGER': { agent: 'demo-manager', agentTypeKey: 'TASK_RUNNER_DEMO_MANAGER' },
-};
-
-// Resolved after AGENT_TYPES is loaded
-let SECTION_AGENT_MAP = {};
-
-function resolveSectionAgentMap() {
-  for (const [section, { agent, agentTypeKey }] of Object.entries(SECTION_AGENT_MAP_KEYS)) {
-    const agentType = AGENT_TYPES[agentTypeKey];
-    if (!agentType) {
-      throw new Error(`AGENT_TYPES.${agentTypeKey} not found — agent-tracker.js may have changed`);
-    }
-    SECTION_AGENT_MAP[section] = { agent, agentType };
-  }
-}
-
-// Category-aware agent mapping (uses shared module, falls back to SECTION_AGENT_MAP)
-// Must be called after resolveSectionAgentMap() and loadAgentTracker() have run.
+// Category-aware agent mapping — resolves via shared module (DB-driven).
+// Must be called after loadAgentTracker() has run.
 function getAgentMapping(task, todoDbPath) {
-  if (resolveCategory) {
-    const category = resolveCategory(todoDbPath, {
-      category_id: task.category_id,
-      section: task.section,
-    });
-    if (category) {
-      return {
-        agent: 'task-runner',
-        agentType: AGENT_TYPES.TASK_RUNNER,
-        category,
-      };
-    }
-  }
-  // Fallback to legacy section map
-  const mapping = SECTION_AGENT_MAP[task.section];
-  return mapping ? { ...mapping, category: null } : null;
+  if (!resolveCategory) return null;
+  const category = resolveCategory(todoDbPath, {
+    category_id: task.category_id,
+    section: task.section,
+  });
+  if (!category) return null;
+  return {
+    agent: 'task-runner',
+    agentType: AGENT_TYPES.TASK_RUNNER,
+    category,
+  };
 }
 
 /**
@@ -551,27 +521,14 @@ async function main() {
     process.exit(1);
   }
 
-  // Validate sections only when using section-based mode
-  if (config.sections.length > 0) {
-    const invalidSections = config.sections.filter(s => !SECTION_AGENT_MAP_KEYS[s]);
-    if (invalidSections.length > 0) {
-      console.log(JSON.stringify({
-        spawned: [],
-        skipped: [],
-        errors: [{ message: `Invalid sections: ${invalidSections.join(', ')}. Valid: ${Object.keys(SECTION_AGENT_MAP_KEYS).join(', ')}` }],
-      }));
-      process.exit(1);
-    }
-  }
+  // Section names are validated at query time against task_categories.deprecated_section.
+  // Any non-empty section value is accepted here; unresolvable ones are skipped per-task.
 
   // Load dependencies
   await loadDatabase();
   await loadAgentTracker(config.projectDir);
   await loadSessionQueue(config.projectDir);
   await loadWorktreeHelpers(config.projectDir);
-
-  // Resolve SECTION_AGENT_MAP now that AGENT_TYPES is available
-  resolveSectionAgentMap();
 
   let debugLogFn = () => {};
   try {
@@ -688,7 +645,7 @@ async function main() {
         taskId: task.id,
         title: task.title,
         section: task.section,
-        reason: `Unknown section: ${task.section}. Valid: ${Object.keys(SECTION_AGENT_MAP_KEYS).join(', ')}`,
+        reason: `No category mapping found for section "${task.section}" (category_id: ${task.category_id || 'none'})`,
       });
       continue;
     }

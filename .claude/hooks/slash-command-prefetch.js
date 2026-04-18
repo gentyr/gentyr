@@ -792,7 +792,7 @@ function handleSpawnTasks() {
   if (todoDb) {
     try {
       const rows = todoDb.prepare(
-        "SELECT section, COUNT(*) as count FROM tasks WHERE status = 'pending' AND section IN ('CODE-REVIEWER', 'INVESTIGATOR & PLANNER', 'TEST-WRITER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER') GROUP BY section"
+        "SELECT section, COUNT(*) as count FROM tasks WHERE status = 'pending' AND (category_id IS NOT NULL OR section IN ('CODE-REVIEWER', 'INVESTIGATOR & PLANNER', 'TEST-WRITER', 'PROJECT-MANAGER', 'DEPUTY-CTO', 'PRODUCT-MANAGER')) GROUP BY section"
       ).all();
       output.gathered.pendingBySection = rows;
       const total = rows.reduce((sum, r) => sum + r.count, 0);

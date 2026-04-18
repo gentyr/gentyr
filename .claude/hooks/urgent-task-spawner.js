@@ -44,33 +44,18 @@ const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'urgent-task-spawner.log');
 // No concurrency limit for urgent tasks — if 100 urgent tasks are created,
 // 100 sessions spawn. The hourly automation has its own limit for normal tasks.
 
-// Section-to-agent mapping: mirrors hourly-automation.js (lines 56-63)
-const SECTION_AGENT_MAP = {
-  'CODE-REVIEWER': { agent: 'code-reviewer', agentType: AGENT_TYPES.TASK_RUNNER_CODE_REVIEWER },
-  'INVESTIGATOR & PLANNER': { agent: 'investigator', agentType: AGENT_TYPES.TASK_RUNNER_INVESTIGATOR },
-  'TEST-WRITER': { agent: 'test-writer', agentType: AGENT_TYPES.TASK_RUNNER_TEST_WRITER },
-  'PROJECT-MANAGER': { agent: 'project-manager', agentType: AGENT_TYPES.TASK_RUNNER_PROJECT_MANAGER },
-  'DEPUTY-CTO': { agent: 'deputy-cto', agentType: AGENT_TYPES.TASK_RUNNER_DEPUTY_CTO },
-  'PRODUCT-MANAGER': { agent: 'product-manager', agentType: AGENT_TYPES.TASK_RUNNER_PRODUCT_MANAGER },
-  'DEMO-MANAGER': { agent: 'demo-manager', agentType: AGENT_TYPES.TASK_RUNNER_DEMO_MANAGER },
-};
-
-// Category-aware agent mapping (uses shared module, falls back to SECTION_AGENT_MAP)
+// Category-aware agent mapping — resolves via shared module (DB-driven)
 function getAgentMapping(task) {
   const category = resolveCategory(TODO_DB_PATH, {
     category_id: task.category_id,
     section: task.section,
   });
-  if (category) {
-    return {
-      agent: 'task-runner',
-      agentType: AGENT_TYPES.TASK_RUNNER,
-      category,
-    };
-  }
-  // Fallback to legacy section map
-  const mapping = SECTION_AGENT_MAP[task.section];
-  return mapping ? { ...mapping, category: null } : null;
+  if (!category) return null;
+  return {
+    agent: 'task-runner',
+    agentType: AGENT_TYPES.TASK_RUNNER,
+    category,
+  };
 }
 
 // ============================================================================
@@ -602,10 +587,10 @@ process.stdin.on('end', async () => {
 
     debugLog('urgent-task-spawner', 'task_detected', { taskId, section, priority: toolInput.priority, title: title?.substring(0, 80) });
 
-    // Accept tasks that have either a known section mapping OR a category_id
-    // (category_id tasks are routed via the task-category module at spawn time)
-    if (!categoryId && (!section || !SECTION_AGENT_MAP[section])) {
-      log(`Urgent task ${taskId} has no agent mapping for section "${section}" and no category_id. Deferring to hourly.`);
+    // Tasks must have a category_id or section so getAgentMapping can resolve them
+    // via the task-category module (DB-driven). Defer unresolvable tasks to hourly.
+    if (!categoryId && !section) {
+      log(`Urgent task ${taskId} has no category_id or section. Deferring to hourly.`);
       process.exit(0);
     }
 

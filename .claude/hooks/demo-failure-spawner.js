@@ -122,7 +122,7 @@ function isRepairInFlight(scenarioId) {
     try {
       const db = new Database(TODO_DB_PATH, { readonly: true });
       const row = db.prepare(
-        "SELECT id FROM tasks WHERE section = 'DEMO-MANAGER' AND status IN ('pending', 'in_progress') AND (title LIKE ? OR description LIKE ?) LIMIT 1"
+        "SELECT id FROM tasks WHERE (category_id = 'demo-design' OR section = 'DEMO-MANAGER') AND status IN ('pending', 'in_progress') AND (title LIKE ? OR description LIKE ?) LIMIT 1"
       ).get(`%${scenarioId}%`, `%${scenarioId}%`);
       db.close();
       if (row) return true;

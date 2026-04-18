@@ -28,17 +28,6 @@ const PROGRESS_DIR = path.join(PROJECT_DIR, '.claude', 'state', 'agent-progress'
 const PROGRESS_FILE = path.join(PROGRESS_DIR, `${AGENT_ID}.json`);
 const HISTORY_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
 
-const PIPELINE_TEMPLATES = {
-  'CODE-REVIEWER': ['investigator', 'code-writer', 'test-writer', 'code-reviewer', 'user-alignment', 'project-manager'],
-  'TEST-WRITER': ['test-writer', 'code-reviewer', 'project-manager'],
-  'INVESTIGATOR & PLANNER': ['investigator'],
-  'PROJECT-MANAGER': ['project-manager'],
-  'DEMO-MANAGER': ['investigator', 'demo-manager', 'code-reviewer', 'project-manager'],
-  'DEPUTY-CTO': ['deputy-cto'],
-  'PRODUCT-MANAGER': ['product-manager'],
-};
-const DEFAULT_PIPELINE = ['investigator', 'code-writer', 'code-reviewer', 'project-manager'];
-
 // Completion tools that indicate the task runner is wrapping up
 const COMPLETION_TOOLS = ['mcp__todo-db__complete_task', 'mcp__todo-db__summarize_work'];
 
@@ -105,9 +94,9 @@ function createInitialProgress(section, categoryId, taskId) {
     // Non-fatal: fall through to hardcoded templates
   }
 
-  // Fallback to hardcoded PIPELINE_TEMPLATES for sections not yet in the DB
+  // Fallback to generic pipeline when category resolution fails
   if (!pipeline || pipeline.length === 0) {
-    pipeline = PIPELINE_TEMPLATES[section] || DEFAULT_PIPELINE;
+    pipeline = ['investigator', 'code-writer', 'code-reviewer', 'project-manager'];
   }
 
   return {
