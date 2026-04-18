@@ -176,7 +176,7 @@ When reviewing a promotion PR, the deputy-CTO has `Bash` access to `gh` commands
 - `gh pr merge <number> --merge --delete-branch` — merge and trigger worktree cleanup
 - `gh pr edit <number> --add-label "deputy-cto-reviewed"` — always applied
 
-**`pr-reviewer` and `system-followup` are approved `assigned_by` values** for the `DEPUTY-CTO` section in `SECTION_CREATOR_RESTRICTIONS` (defined in `packages/mcp-servers/src/shared/constants.ts`). `system-followup` is used by investigation follow-up tasks that call back into the deputy-cto triage pipeline after investigation completes.
+**`pr-reviewer` and `system-followup` are approved `assigned_by` values** for the `Triage & Delegation` category's `creator_restrictions` (stored in `task_categories` in `todo.db`). `system-followup` is used by investigation follow-up tasks that call back into the deputy-cto triage pipeline after investigation completes. The legacy `SECTION_CREATOR_RESTRICTIONS` constant in `packages/mcp-servers/src/shared/constants.ts` is deprecated — creator restrictions are now defined per-category in `task_categories`.
 
 ### Worktrees
 
@@ -397,7 +397,7 @@ By default, the automation service runs without 1Password credentials in backgro
 
 Unified agent spawning command with two modes:
 
-- **Bare mode** (`/spawn-tasks`): Browse pending tasks by section and spawn them immediately
+- **Bare mode** (`/spawn-tasks`): Browse pending tasks by category and spawn them immediately
 - **Description mode** (`/spawn-tasks <description>`): Create new tasks from plain English, then spawn
 
 Bypasses the hourly automation's age filter, batch limit, cooldowns, and CTO activity gate. Prefetches current agent counts and concurrency limits. Uses `force_spawn_tasks` on the agent-tracker MCP server with optional `taskIds` for targeted spawning, and `monitor_agents` to poll spawned agent status. Preserves the concurrency guard and task status tracking.
@@ -437,7 +437,7 @@ Task categories replace the legacy hardcoded `section` routing. A category defin
 
 **`task_categories` table** (in `todo.db`, auto-migrated): `id`, `name`, `description`, `sequence` (JSON array of `{ agent_type, label }` steps), `prompt_template` (optional custom prompt; if absent, the standard multi-step workflow is generated), `model`, `creator_restrictions` (JSON array of authorized `assigned_by` values, or null for open), `force_followup` (boolean), `urgency_authorized` (boolean — whether this category's tasks bypass the urgency downgrade), `is_default` (boolean), `deprecated_section` (the legacy section string this category replaces, for backward-compat lookup).
 
-**5 seeded categories**: `Standard Development` (6-step pipeline: investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager), `Deep Investigation` (investigator-only), `Test Suite Work` (test-writer → code-reviewer → project-manager), `Triage & Delegation` (deputy-cto-only), `Demo Design` (demo-manager-only). Additional categories can be created at runtime via MCP tools.
+**8 seeded categories**: `Standard Development` (6-step pipeline: investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager), `Deep Investigation` (investigator-only), `Test Suite Work` (test-writer → code-reviewer → project-manager), `Triage & Delegation` (deputy-cto-only), `Demo Design` (demo-manager-only), `Project Management` (project-manager-only), `Product Analysis` (product-manager-only), `Workstream Management` (workstream-manager-only). Additional categories can be created at runtime via MCP tools.
 
 **`category_id` dual-write**: `create_task` accepts an optional `category_id`. If provided, it is stored on the task. If absent but `section` is provided, the category is resolved by `deprecated_section` lookup. `list_tasks` returns `category_id` and `category_name` on each task. `list_tasks` also supports `category_id` as a filter.
 
@@ -840,7 +840,7 @@ ADK-category scenarios are skipped (require replay data). Cooldown: `demo_valida
 
 ### Demo-Manager Agent
 
-Sole authority for demo lifecycle work. Handles prerequisite registration, scenario creation, `.demo.ts` implementation, preflight, execution, video recording, debugging, repair, AND persona scenario planning/scaffolding. Routable via `DEMO-MANAGER` section in `todo.db`.
+Sole authority for demo lifecycle work. Handles prerequisite registration, scenario creation, `.demo.ts` implementation, preflight, execution, video recording, debugging, repair, AND persona scenario planning/scaffolding. Routable via the `Demo Design` category in `todo.db`.
 
 **When to assign to DEMO-MANAGER:**
 - Creating or modifying `.demo.ts` files
@@ -849,7 +849,7 @@ Sole authority for demo lifecycle work. Handles prerequisite registration, scena
 - Repairing failed demo scenarios
 - Any demo-related work that other agents encounter
 
-**Rules:** Only modifies `.demo.ts` files and demo configuration. Does NOT commit (project-manager handles git). Other agents (`code-writer`, `test-writer`, `feedback-agent`) are explicitly forbidden from modifying `.demo.ts` files. When any agent encounters demo-related work, it MUST create a `DEMO-MANAGER` section task.
+**Rules:** Only modifies `.demo.ts` files and demo configuration. Does NOT commit (project-manager handles git). Other agents (`code-writer`, `test-writer`, `feedback-agent`) are explicitly forbidden from modifying `.demo.ts` files. When any agent encounters demo-related work, it MUST create a `Demo Design` category task.
 
 **Failure-triggered automation:** A PostToolUse hook on `check_demo_result`, `check_demo_batch_result`, and `run_demo` detects failures, deduplicates against in-flight repairs, and spawns demo-manager agents in isolated worktrees. Repair prompts are enriched with prerequisite context (global, persona, and scenario-scoped prerequisites queried from `user-feedback.db`) so agents diagnose prerequisite failures before modifying `.demo.ts` files. The `run_demo` hook handles immediate failures (e.g., prerequisite failure before test execution begins), with title and test file fallback lookup from `user-feedback.db` when the tool response lacks them.
 

@@ -171,6 +171,8 @@ function cleanupRotationProxy(projectDir) {
     path.join(projectDir, '.claude', 'state', 'quota-interrupted-sessions.json'),
     path.join(projectDir, '.claude', 'state', 'paused-sessions.json'),
     path.join(projectDir, '.claude', 'state', 'quota-monitor-state.json'),
+    path.join(projectDir, '.claude', 'state', 'rotation-audit.log'),
+    path.join(projectDir, '.claude', 'state', 'token-swap-monitor.log'),
   ];
   for (const filePath of projectStateFiles) {
     if (fs.existsSync(filePath)) {
