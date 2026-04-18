@@ -165,7 +165,9 @@ function buildDemoEnv(extra?: Record<string, string>): Record<string, string> {
   const autoSetupPath = path.resolve(PROJECT_DIR, '.claude/hooks/lib/playwright-auto-setup.mjs');
   try {
     fs.accessSync(autoSetupPath);
-    env.NODE_OPTIONS = ((env.NODE_OPTIONS || '') + ` --import "${autoSetupPath}"`).trim();
+    if (!(env.NODE_OPTIONS || '').includes('playwright-auto-setup')) {
+      env.NODE_OPTIONS = ((env.NODE_OPTIONS || '') + ` --import "${autoSetupPath}"`).trim();
+    }
   } catch { /* auto-setup not available — skip */ }
 
   if (extra) Object.assign(env, extra);

@@ -81,16 +81,19 @@ async function showInterruptedOverlay(page) {
     msg.textContent = 'Demo Interrupted \u2014 interact freely';
     overlay.appendChild(msg);
 
-    // Suppress thinking bubbles / step progress if demo code re-creates them
+    // Suppress thinking bubbles / step progress if demo code re-creates them.
+    // Disconnect on page unload to avoid leak.
     if (overlay.parentNode) {
-      new MutationObserver(function(muts) {
+      var obs = new MutationObserver(function(muts) {
         for (var i = 0; i < muts.length; i++) {
           for (var j = 0; j < muts[i].addedNodes.length; j++) {
             var n = muts[i].addedNodes[j];
             if (n.id === 'demo-thinking-bubble' || n.id === 'demo-step-progress') n.remove();
           }
         }
-      }).observe(overlay.parentNode, { childList: true });
+      });
+      obs.observe(overlay.parentNode, { childList: true });
+      window.addEventListener('unload', function() { obs.disconnect(); }, { once: true });
     }
 
     // Store interrupted state on window for navigation persistence
