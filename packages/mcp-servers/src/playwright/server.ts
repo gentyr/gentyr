@@ -1966,6 +1966,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
               event.type === 'test_end' ||
               event.type === 'suite_begin' ||
               event.type === 'suite_end' ||
+              event.type === 'step' ||
               event.type === 'demo_interrupted'
             ) {
               lastProgressEventAt = Date.now();
