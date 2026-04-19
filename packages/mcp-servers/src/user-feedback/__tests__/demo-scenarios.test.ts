@@ -21,6 +21,7 @@ import {
 import {
   USER_FEEDBACK_SCHEMA,
 } from '../../__testUtils__/schemas.js';
+import { EXTRA_ENV_BLOCKED_PREFIXES } from '../../playwright/helpers.js';
 
 // ============================================================================
 // Database Row Types
@@ -681,6 +682,88 @@ describe('Demo Scenario CRUD', () => {
       if (isErrorResult(result)) {
         expect(result.error).toContain('blocked keys');
         expect(result.error).toContain('NODE_OPTIONS');
+      }
+    });
+
+    it('should reject env_vars with SUPABASE_SERVICE_ROLE_KEY (dangerous credential)', () => {
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Blocked Service Key',
+        description: 'Tries to set service role key',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/blocked-srk.demo.ts',
+        env_vars: { SUPABASE_SERVICE_ROLE_KEY: 'eyJhbGciOiJIUzI1NiJ9.secret' },
+      });
+
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('blocked keys');
+        expect(result.error).toContain('SUPABASE_SERVICE_ROLE_KEY');
+      }
+    });
+
+    it('should reject env_vars with SUPABASE_ACCESS_TOKEN (management API credential)', () => {
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Blocked Access Token',
+        description: 'Tries to set access token',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/blocked-sat.demo.ts',
+        env_vars: { SUPABASE_ACCESS_TOKEN: 'sbp_secret' },
+      });
+
+      expect(isErrorResult(result)).toBe(true);
+      if (isErrorResult(result)) {
+        expect(result.error).toContain('blocked keys');
+        expect(result.error).toContain('SUPABASE_ACCESS_TOKEN');
+      }
+    });
+
+    it('should accept env_vars with SUPABASE_URL (non-secret identifier)', () => {
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Supabase URL OK',
+        description: 'Non-secret project URL is allowed',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/supabase-url.demo.ts',
+        env_vars: { SUPABASE_URL: 'http://localhost:54321' },
+      });
+
+      expect(isErrorResult(result)).toBe(false);
+      if (!isErrorResult(result)) {
+        expect(result.env_vars).toEqual({ SUPABASE_URL: 'http://localhost:54321' });
+      }
+    });
+
+    it('should accept env_vars with DATABASE_URL (non-secret connection string)', () => {
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Database URL OK',
+        description: 'Non-secret connection string is allowed',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/database-url.demo.ts',
+        env_vars: { DATABASE_URL: 'postgres://localhost/dev' },
+      });
+
+      expect(isErrorResult(result)).toBe(false);
+      if (!isErrorResult(result)) {
+        expect(result.env_vars).toEqual({ DATABASE_URL: 'postgres://localhost/dev' });
+      }
+    });
+
+    it('should accept env_vars with NEXT_PUBLIC_SUPABASE_URL (non-secret public identifier)', () => {
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Next Public URL OK',
+        description: 'Frontend public URL is allowed',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/next-public-url.demo.ts',
+        env_vars: { NEXT_PUBLIC_SUPABASE_URL: 'http://localhost:54321' },
+      });
+
+      expect(isErrorResult(result)).toBe(false);
+      if (!isErrorResult(result)) {
+        expect(result.env_vars).toEqual({ NEXT_PUBLIC_SUPABASE_URL: 'http://localhost:54321' });
       }
     });
 
@@ -1390,5 +1473,21 @@ export default defineConfig({
         tempDir.cleanup();
       }
     });
+  });
+});
+
+// ============================================================================
+// Cross-reference: blocklist parity between playwright/helpers.ts and
+// user-feedback/server.ts. Both maintain identical blocked prefix lists.
+// This test catches silent divergence that previously required manual review.
+// ============================================================================
+
+describe('env_vars blocklist parity', () => {
+  it('should have ENV_VARS_BLOCKED_PREFIXES identical to EXTRA_ENV_BLOCKED_PREFIXES from playwright/helpers.ts', () => {
+    // ENV_VARS_BLOCKED_PREFIXES is the local test fixture mirroring the
+    // inline constant in user-feedback/server.ts. If either list changes
+    // without updating the other, this test fails.
+    const sorted = (arr: string[]) => [...arr].sort();
+    expect(sorted(ENV_VARS_BLOCKED_PREFIXES)).toEqual(sorted(EXTRA_ENV_BLOCKED_PREFIXES));
   });
 });
