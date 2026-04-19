@@ -1552,11 +1552,12 @@ async function updateServicesConfig(args: UpdateServicesConfigArgs): Promise<str
   const configPath = join(PROJECT_DIR, '.claude', 'config', 'services.json');
   const pendingPath = join(PROJECT_DIR, '.claude', 'state', 'services-config-pending.json');
 
-  // Load current config
-  let current: Record<string, unknown> = {};
+  // Load current config — seed with { secrets: {} } so schema validation passes
+  // even when the file doesn't exist yet (secrets is required but agents can't set it)
+  let current: Record<string, unknown> = { secrets: {} };
   try {
     current = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-  } catch { /* file may not exist yet */ }
+  } catch { /* file may not exist yet — use seeded default */ }
 
   // Merge updates (top-level only — nested objects like devServices are replaced wholesale)
   const merged = { ...current, ...args.updates };
@@ -1567,8 +1568,9 @@ async function updateServicesConfig(args: UpdateServicesConfigArgs): Promise<str
     return JSON.stringify({ error: `Validation failed: ${result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
   }
 
-  // Try direct write
+  // Try direct write — ensure directory exists first
   try {
+    mkdirSync(dirname(configPath), { recursive: true });
     writeFileSync(configPath, JSON.stringify(result.data, null, 2) + '\n');
     return JSON.stringify({ applied: true, pending: false, updatedKeys: Object.keys(args.updates) });
   } catch (err) {
