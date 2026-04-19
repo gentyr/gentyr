@@ -427,6 +427,7 @@ describe('buildDemoEnv() — credential resolution', () => {
 
     expect(env).toEqual({});
   });
+
 });
 
 // ============================================================================

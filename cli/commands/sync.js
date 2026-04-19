@@ -306,6 +306,16 @@ export default async function sync(args) {
   console.log(`\n${YELLOW}Merging settings.json...${NC}`);
   mergeSettings(projectDir, frameworkDir);
 
+  // 1.4. Ensure services.json exists (create scaffold if missing)
+  const svcConfigDir = path.join(projectDir, '.claude', 'config');
+  const svcConfigPath = path.join(svcConfigDir, 'services.json');
+  if (!fs.existsSync(svcConfigPath)) {
+    console.log(`\n${YELLOW}Creating services.json scaffold...${NC}`);
+    fs.mkdirSync(svcConfigDir, { recursive: true });
+    fs.writeFileSync(svcConfigPath, JSON.stringify({ secrets: {} }, null, 2) + '\n');
+    console.log(`  Created ${svcConfigPath}`);
+  }
+
   // 1.5. Apply pending services.json config updates (staged by update_services_config MCP tool)
   const pendingConfigPath = path.join(projectDir, '.claude', 'state', 'services-config-pending.json');
   if (fs.existsSync(pendingConfigPath)) {
@@ -314,7 +324,6 @@ export default async function sync(args) {
       const pending = JSON.parse(fs.readFileSync(pendingConfigPath, 'utf8'));
       // Defense-in-depth: strip secrets key even though the MCP tool blocks it
       delete pending.secrets;
-      const svcConfigPath = path.join(projectDir, '.claude', 'config', 'services.json');
       let current = {};
       if (fs.existsSync(svcConfigPath)) {
         try {
