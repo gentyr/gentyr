@@ -757,8 +757,9 @@ function buildDemoEnv(opts: {
       throw new Error(`Failed to resolve credentials:\n${details}\nThese op:// references could not be resolved by the MCP server.`);
     }
 
-    // Apply project-specific dev-mode env when dev server is running
-    if (opts.dev_server_ready && config.demoDevModeEnv) {
+    // Apply project-specific dev-mode env — always inject since it may contain
+    // env vars (e.g., SUPABASE_URL) needed regardless of dev server health
+    if (config.demoDevModeEnv) {
       Object.assign(env, config.demoDevModeEnv);
     }
   } catch (err) {
