@@ -409,19 +409,24 @@ async function executeDashboardPrerequisites(
 /**
  * Build a clean environment for demo child processes.
  * Strips infra creds, injects resolved 1Password secrets from services.json.
- * demoDevModeEnv is only applied when dev_server_ready=true (matches canonical pipeline).
+ * demoDevModeEnv is always applied — it may contain env vars (like SUPABASE_URL)
+ * that are needed regardless of dev server health.
  */
-function buildDemoEnv(opts?: { extra?: Record<string, string>; dev_server_ready?: boolean }): Record<string, string> {
+function buildDemoEnv(opts?: { extra?: Record<string, string> }): Record<string, string> {
   const env: Record<string, string> = { ...process.env as Record<string, string> };
   for (const key of INFRA_CRED_KEYS) delete env[key];
 
   // Inject resolved credentials from services.json secrets.local
-  try { Object.assign(env, resolveServicesSecrets()); } catch { /* caller handles */ }
-
-  // Apply demoDevModeEnv only when dev server is confirmed healthy
-  if (opts?.dev_server_ready) {
-    Object.assign(env, getDemoDevModeEnv());
+  try {
+    Object.assign(env, resolveServicesSecrets());
+  } catch (err) {
+    // Log the error — launchDemo should have caught this earlier, but log defensively
+    process.stderr.write(`[buildDemoEnv] resolveServicesSecrets failed: ${err instanceof Error ? err.message : String(err)}\n`);
   }
+
+  // Always apply demoDevModeEnv — vars like SUPABASE_URL are needed for demos
+  // regardless of whether the dev server is healthy
+  Object.assign(env, getDemoDevModeEnv());
 
   // Supabase NEXT_PUBLIC_ convenience mapping
   if (env.SUPABASE_URL && !env.NEXT_PUBLIC_SUPABASE_URL) env.NEXT_PUBLIC_SUPABASE_URL = env.SUPABASE_URL;
@@ -507,7 +512,6 @@ export async function launchDemo(scenario: DemoScenarioItem): Promise<RunningPro
   // Step 4: Launch Playwright with PLAYWRIGHT_BASE_URL set (skips webServer block)
   logPreflight(fd, `Launching demo: ${scenario.title}`);
   logPreflight(fd, `PLAYWRIGHT_BASE_URL=${baseUrl}`);
-  logPreflight(fd, '---');
 
   const cmdArgs = ['playwright', 'test', scenario.testFile, '--project', scenario.playwrightProject, '--headed', '--reporter', 'list'];
 
@@ -516,21 +520,29 @@ export async function launchDemo(scenario: DemoScenarioItem): Promise<RunningPro
     ? resolveOpEnvVars(scenario.envVars)
     : {};
 
+  const demoEnv = buildDemoEnv({
+    extra: {
+      DEMO_HEADED: '1',
+      DEMO_SLOW_MO: '800',
+      DEMO_SHOW_CURSOR: '1',
+      DEMO_MAXIMIZE: '1',
+      PLAYWRIGHT_BASE_URL: baseUrl,
+      ...scenarioEnv,
+    },
+  });
+
+  // Diagnostic: log critical env vars so the CTO can see what reaches the child process
+  const diagKeys = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_ALLOW_VERTICAL_SLICE'];
+  for (const k of diagKeys) {
+    if (demoEnv[k]) logPreflight(fd, `  ${k}=${k.includes('KEY') ? '***' : demoEnv[k]}`);
+  }
+  logPreflight(fd, '---');
+
   const child = spawn('npx', cmdArgs, {
     detached: true,
     stdio: ['ignore', fd, fd],
     cwd: PROJECT_DIR,
-    env: buildDemoEnv({
-      dev_server_ready: devServerHealthy,
-      extra: {
-        DEMO_HEADED: '1',
-        DEMO_SLOW_MO: '800',
-        DEMO_SHOW_CURSOR: '1',
-        DEMO_MAXIMIZE: '1',
-        PLAYWRIGHT_BASE_URL: baseUrl,
-        ...scenarioEnv,
-      },
-    }),
+    env: demoEnv,
   });
   child.unref();
 
