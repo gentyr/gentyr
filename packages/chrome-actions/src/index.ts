@@ -56,4 +56,13 @@ export type {
   LeftClickDragAction,
   ZoomAction,
   ScrollToAction,
+  // React automation tool types
+  ReactFillResult,
+  ReactFillInputArgs,
+  ClickAndWaitResult,
+  ClickAndWaitArgs,
+  PageDiagnosticResult,
+  PageDiagnosticArgs,
+  InspectInputResult,
+  InspectInputArgs,
 } from './types.js';
