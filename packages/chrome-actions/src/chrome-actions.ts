@@ -947,11 +947,7 @@ export class ChromeActions {
       ...(opts?.verify !== undefined ? { verify: opts.verify } : {}),
     });
     const text = this.extractText(result, 'react_fill_input');
-    try {
-      return JSON.parse(text) as ReactFillResult;
-    } catch {
-      return { success: false, selector };
-    }
+    return JSON.parse(text) as ReactFillResult;
   }
 
   /**
@@ -985,11 +981,7 @@ export class ChromeActions {
       tabId,
     });
     const text = this.extractText(result, 'click_and_wait');
-    try {
-      return JSON.parse(text) as ClickAndWaitResult;
-    } catch {
-      return { clicked: false, clickTarget: '', clickMethod: 'text' };
-    }
+    return JSON.parse(text) as ClickAndWaitResult;
   }
 
   /**
@@ -1012,11 +1004,7 @@ export class ChromeActions {
       ...(opts?.focus ? { focus: opts.focus } : {}),
     });
     const text = this.extractText(result, 'page_diagnostic');
-    try {
-      return JSON.parse(text) as PageDiagnosticResult;
-    } catch {
-      return { url: '', title: '', inputs: [], forms: [], buttons: [] };
-    }
+    return JSON.parse(text) as PageDiagnosticResult;
   }
 
   /**
@@ -1037,11 +1025,7 @@ export class ChromeActions {
       tabId,
     });
     const text = this.extractText(result, 'inspect_input');
-    try {
-      return JSON.parse(text) as InspectInputResult;
-    } catch {
-      return { found: false };
-    }
+    return JSON.parse(text) as InspectInputResult;
   }
 
   // ============================================================================
