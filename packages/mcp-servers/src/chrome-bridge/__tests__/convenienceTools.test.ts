@@ -1102,14 +1102,19 @@ const SERVER_SIDE_TOOLS = new Set([
   'click_by_text',
   'fill_input',
   'wait_for_element',
+  'health_check',
+  'react_fill_input',
+  'click_and_wait',
+  'page_diagnostic',
+  'inspect_input',
 ]);
 
 describe('SERVER_SIDE_TOOLS membership', () => {
-  const NEW_TOOLS = ['find_elements', 'click_by_text', 'fill_input', 'wait_for_element'];
+  const NEW_TOOLS = ['find_elements', 'click_by_text', 'fill_input', 'wait_for_element', 'react_fill_input', 'click_and_wait', 'page_diagnostic', 'inspect_input'];
   const LEGACY_TOOLS = ['list_chrome_extensions', 'reload_chrome_extension'];
   const SOCKET_TOOLS = ['navigate', 'read_page', 'computer', 'form_input', 'tabs_context_mcp'];
 
-  it('should contain all 4 new convenience tools', () => {
+  it('should contain all 8 convenience tools', () => {
     for (const tool of NEW_TOOLS) {
       expect(SERVER_SIDE_TOOLS.has(tool)).toBe(true);
     }
@@ -1121,8 +1126,8 @@ describe('SERVER_SIDE_TOOLS membership', () => {
     }
   });
 
-  it('should have exactly 6 members', () => {
-    expect(SERVER_SIDE_TOOLS.size).toBe(6);
+  it('should have exactly 11 members', () => {
+    expect(SERVER_SIDE_TOOLS.size).toBe(11);
   });
 
   it('should NOT contain socket-proxied tool names', () => {

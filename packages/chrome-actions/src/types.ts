@@ -273,6 +273,120 @@ export interface UpdatePlanArgs {
 }
 
 // ============================================================================
+// React Automation Tool Types
+// ============================================================================
+
+export interface ReactFillResult {
+  success: boolean;
+  selector: string;
+  domValueLength?: number;
+  trackerReset?: boolean;
+  onChangeCalled?: boolean;
+  hasReactProps?: boolean;
+  verify?: {
+    found: boolean;
+    domValue?: string;
+    domValueLength?: number;
+    domMatchesExpected?: boolean;
+    trackerValue?: string | null;
+    reactValue?: string | null;
+    reactMatchesExpected?: boolean | null;
+  };
+}
+
+export interface ClickAndWaitResult {
+  clicked: boolean;
+  clickTarget: string;
+  clickMethod: 'text' | 'selector' | 'submit';
+  transitioned?: boolean;
+  finalUrl?: string;
+  elapsedMs?: number;
+}
+
+export interface PageDiagnosticResult {
+  url: string;
+  title: string;
+  inputs: Array<{
+    tag: string;
+    type: string;
+    name: string;
+    id: string;
+    placeholder: string;
+    ariaLabel: string | null;
+    disabled: boolean;
+    readOnly: boolean;
+    valueLength: number;
+    hasValueTracker: boolean;
+    hasReactProps: boolean;
+    hasOnChange: boolean;
+  }>;
+  forms: Array<{
+    action: string;
+    method: string;
+    id: string;
+    inputCount: number;
+    submitButtonCount: number;
+  }>;
+  buttons: Array<{
+    type: string;
+    text: string;
+    disabled: boolean;
+    inForm: boolean;
+  }>;
+}
+
+export interface InspectInputResult {
+  found: boolean;
+  domValue?: string;
+  domValueLength?: number;
+  type?: string;
+  name?: string;
+  id?: string;
+  disabled?: boolean;
+  readOnly?: boolean;
+  inForm?: boolean;
+  hasNativeSetter?: boolean;
+  hasValueTracker?: boolean;
+  trackerValue?: string | null;
+  reactKeys?: string[];
+  hasReactProps?: boolean;
+  hasOnChange?: boolean;
+  reactControlledValue?: string | null;
+}
+
+export interface ReactFillInputArgs {
+  selector: string;
+  value: string;
+  tabId: number;
+  verify?: boolean;
+}
+
+export interface ClickAndWaitArgs {
+  text?: string;
+  selector?: string;
+  submit?: boolean;
+  tabId: number;
+  waitForUrl?: string;
+  waitForUrlGone?: string;
+  waitForText?: string;
+  waitForTextGone?: string;
+  waitForElement?: string;
+  waitForElementGone?: string;
+  timeoutMs?: number;
+  settleMs?: number;
+}
+
+export interface PageDiagnosticArgs {
+  tabId: number;
+  focus?: 'inputs' | 'forms' | 'buttons' | 'all';
+}
+
+export interface InspectInputArgs {
+  selector: string;
+  tabId: number;
+}
+
+// ============================================================================
 // Client Options
 // ============================================================================
 

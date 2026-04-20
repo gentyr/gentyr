@@ -14,6 +14,10 @@ import {
 } from './errors.js';
 import type {
   ChromeActionsOptions,
+  ClickAndWaitResult,
+  InspectInputResult,
+  PageDiagnosticResult,
+  ReactFillResult,
   TreeElement,
   GifAction,
   GifExportOptions,
@@ -910,6 +914,134 @@ export class ChromeActions {
     }
 
     throw new NavigationTimeoutError(query, timeoutMs);
+  }
+
+  // ============================================================================
+  // React Automation Tools
+  // ============================================================================
+
+  /**
+   * Fill a React controlled input using the native setter + _valueTracker reset
+   * + direct onChange call pattern. Works with React 15+ controlled components
+   * where form_input / fillInput fail silently because React's _valueTracker
+   * doesn't detect the value change.
+   *
+   * Includes optional readback verification (default: on) that confirms the
+   * value landed in both DOM and React state.
+   *
+   * @param selector - CSS selector for the input element
+   * @param value - Value to fill
+   * @param opts - Options: verify (default true), tabId
+   */
+  async reactFillInput(
+    selector: string,
+    value: string,
+    opts?: { verify?: boolean; tabId?: number },
+  ): Promise<ReactFillResult> {
+    await this.ensureReady();
+    const tabId = this.resolveTabId(opts?.tabId);
+    const result = await this.client.executeTool('react_fill_input', {
+      selector,
+      value,
+      tabId,
+      ...(opts?.verify !== undefined ? { verify: opts.verify } : {}),
+    });
+    const text = this.extractText(result, 'react_fill_input');
+    try {
+      return JSON.parse(text) as ReactFillResult;
+    } catch {
+      return { success: false, selector };
+    }
+  }
+
+  /**
+   * Click an element and wait for a page transition (URL change, content change,
+   * element appear/disappear). Collapses the common 3-step pattern
+   * (click → sleep → check) into one atomic call.
+   *
+   * Exactly one of text/selector/submit must be provided for the click target.
+   * At least one waitFor* condition should be provided for the wait phase.
+   *
+   * @param opts - Click target + wait conditions
+   */
+  async clickAndWait(opts: {
+    text?: string;
+    selector?: string;
+    submit?: boolean;
+    tabId?: number;
+    waitForUrl?: string;
+    waitForUrlGone?: string;
+    waitForText?: string;
+    waitForTextGone?: string;
+    waitForElement?: string;
+    waitForElementGone?: string;
+    timeoutMs?: number;
+    settleMs?: number;
+  }): Promise<ClickAndWaitResult> {
+    await this.ensureReady();
+    const tabId = this.resolveTabId(opts.tabId);
+    const result = await this.client.executeTool('click_and_wait', {
+      ...opts,
+      tabId,
+    });
+    const text = this.extractText(result, 'click_and_wait');
+    try {
+      return JSON.parse(text) as ClickAndWaitResult;
+    } catch {
+      return { clicked: false, clickTarget: '', clickMethod: 'text' };
+    }
+  }
+
+  /**
+   * Comprehensive page state dump for debugging automation failures.
+   * Returns all inputs, forms, and buttons with their React state indicators
+   * (_valueTracker, __reactProps, onChange handlers) in one call.
+   *
+   * Never returns raw password values — only value.length.
+   *
+   * @param opts - Focus area: "inputs" (default), "forms", "buttons", "all"
+   */
+  async pageDiagnostic(opts?: {
+    focus?: 'inputs' | 'forms' | 'buttons' | 'all';
+    tabId?: number;
+  }): Promise<PageDiagnosticResult> {
+    await this.ensureReady();
+    const tabId = this.resolveTabId(opts?.tabId);
+    const result = await this.client.executeTool('page_diagnostic', {
+      tabId,
+      ...(opts?.focus ? { focus: opts.focus } : {}),
+    });
+    const text = this.extractText(result, 'page_diagnostic');
+    try {
+      return JSON.parse(text) as PageDiagnosticResult;
+    } catch {
+      return { url: '', title: '', inputs: [], forms: [], buttons: [] };
+    }
+  }
+
+  /**
+   * Deep inspection of a single input element — DOM value, React internal value,
+   * _valueTracker state, available handlers. The "why didn't my fill work?" tool.
+   *
+   * @param selector - CSS selector for the input
+   * @param opts - tabId
+   */
+  async inspectInput(
+    selector: string,
+    opts?: { tabId?: number },
+  ): Promise<InspectInputResult> {
+    await this.ensureReady();
+    const tabId = this.resolveTabId(opts?.tabId);
+    const result = await this.client.executeTool('inspect_input', {
+      selector,
+      tabId,
+    });
+    const text = this.extractText(result, 'inspect_input');
+    try {
+      return JSON.parse(text) as InspectInputResult;
+    } catch {
+      return { found: false };
+    }
   }
 
   // ============================================================================

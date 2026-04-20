@@ -912,7 +912,7 @@ describe('handleHealthCheck() — output shaping', () => {
 
 describe('SERVER_SIDE_TOOLS set membership', () => {
   /**
-   * Mirrors the dispatch set from server.ts ~lines 1112–1120.
+   * Mirrors the dispatch set from server.ts ~lines 1112–1124.
    * Any tool in this set bypasses the socket proxy and is handled locally.
    */
   const SERVER_SIDE_TOOLS = new Set([
@@ -923,13 +923,17 @@ describe('SERVER_SIDE_TOOLS set membership', () => {
     'fill_input',
     'wait_for_element',
     'health_check',
+    'react_fill_input',
+    'click_and_wait',
+    'page_diagnostic',
+    'inspect_input',
   ]);
 
   it('should include health_check', () => {
     expect(SERVER_SIDE_TOOLS.has('health_check')).toBe(true);
   });
 
-  it('should include all 6 previously established server-side tools', () => {
+  it('should include all 10 previously established server-side tools', () => {
     expect(SERVER_SIDE_TOOLS.has('list_chrome_extensions')).toBe(true);
     expect(SERVER_SIDE_TOOLS.has('reload_chrome_extension')).toBe(true);
     expect(SERVER_SIDE_TOOLS.has('find_elements')).toBe(true);
@@ -938,8 +942,15 @@ describe('SERVER_SIDE_TOOLS set membership', () => {
     expect(SERVER_SIDE_TOOLS.has('wait_for_element')).toBe(true);
   });
 
-  it('should contain exactly 7 members', () => {
-    expect(SERVER_SIDE_TOOLS.size).toBe(7);
+  it('should include the 4 new React automation tools', () => {
+    expect(SERVER_SIDE_TOOLS.has('react_fill_input')).toBe(true);
+    expect(SERVER_SIDE_TOOLS.has('click_and_wait')).toBe(true);
+    expect(SERVER_SIDE_TOOLS.has('page_diagnostic')).toBe(true);
+    expect(SERVER_SIDE_TOOLS.has('inspect_input')).toBe(true);
+  });
+
+  it('should contain exactly 11 members', () => {
+    expect(SERVER_SIDE_TOOLS.size).toBe(11);
   });
 
   it('should NOT include socket-proxied tools', () => {
