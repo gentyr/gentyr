@@ -591,6 +591,39 @@ function seedCategories(db: Database.Database): void {
       is_default: 0,
       deprecated_section: 'WORKSTREAM-MANAGER',
     },
+    {
+      id: 'quick-fix',
+      name: 'Quick Fix',
+      description: 'Lightweight pipeline for single-file, obvious fixes (null guards, config changes, one-liner patches). Skips investigation and review for speed.',
+      sequence: JSON.stringify([
+        { agent_type: 'code-writer', label: 'Implement Fix', optional: false },
+        { agent_type: 'project-manager', label: 'Merge', optional: false },
+      ]),
+      prompt_template: null,
+      model: 'sonnet',
+      creator_restrictions: null,
+      force_followup: 0,
+      urgency_authorized: 1,
+      is_default: 0,
+      deprecated_section: null,
+    },
+    {
+      id: 'demo-iteration',
+      name: 'Demo Iteration',
+      description: 'Fix a demo scenario failure based on diagnostic data, then verify the demo passes before merging. Tight fix-verify loop.',
+      sequence: JSON.stringify([
+        { agent_type: 'code-writer', label: 'Implement Fix', optional: false },
+        { agent_type: 'demo-manager', label: 'Verify Demo Passes', optional: false },
+        { agent_type: 'project-manager', label: 'Merge', optional: false },
+      ]),
+      prompt_template: null,
+      model: 'sonnet',
+      creator_restrictions: null,
+      force_followup: 0,
+      urgency_authorized: 1,
+      is_default: 0,
+      deprecated_section: null,
+    },
   ];
 
   const seedTx = db.transaction(() => {

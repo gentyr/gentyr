@@ -209,6 +209,20 @@ Valid category_id values for sub-tasks:
 | `test-suite` | Test creation or coverage improvements |
 | `project-management` | Documentation, repo cleanup, sync |
 | `demo-design` | Demo scenarios, prerequisite setup |
+| `quick-fix` | Single-file, obvious fixes (null guards, config changes, one-liners) |
+| `demo-iteration` | Fix a demo failure based on diagnostic data, then verify it passes |
+
+### Investigation Context Injection
+
+When creating sub-tasks, enrich the task description with prior investigation findings:
+
+1. Before creating any investigation or fix sub-task, query `mcp__investigation-log__get_investigation_context` with the symptom or problem description
+2. If prior hypotheses exist (confirmed or eliminated), include them in the task description:
+   - **Eliminated hypotheses**: "DO NOT re-investigate: [list]. These have been tested and ruled out."
+   - **Confirmed root causes**: "Known root cause: [description]. Start from here."
+   - **Proven solutions**: "Known solution: [description]. Verify it applies to this case."
+3. Include any relevant CTO amendments in the task description — agents spawned for sub-tasks do not automatically receive amendment history
+4. When a sub-task targets a specific hypothesis, state it explicitly: "You are testing ONE hypothesis: [text]. If eliminated, report back — do not pivot to a different hypothesis."
 
 For immediate, lightweight investigation ONLY (not code changes), you may use the Task tool:
 

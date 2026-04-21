@@ -1007,3 +1007,264 @@ The CTO dashboard (`packages/cto-dashboard/`) supports `--mock` for development 
 **Signal delivery states**: When a signal is sent to a running session, the status bar shows: `Pending` (sent, waiting for agent tool call), `Delivered` (signal file read), `Ack'd` (agent acknowledged via tool response), `Queued` (agent alive but unresponsive after 30s — will deliver on next tool call), or `Resumed` (agent died before reading — auto-escalated to `resumeSessionWithMessage`, opening a new Terminal.app window). Dead-session detection uses PID liveness as the primary ground truth; JSONL staleness is a secondary signal with a 120-second threshold (raised from 30s to prevent false positives from temporary write pauses). When PID liveness confirms a session is alive, signals route through `sendDirectiveSignal` regardless of JSONL age — `resumeSessionWithMessage` is reserved for sessions that are genuinely dead. The `session_end` activity marker is also checked to handle the race where the PID is still alive but the session has ended.
 
 > Full details: [CTO Dashboard Development](docs/CLAUDE-REFERENCE.md#cto-dashboard-development)
+
+## Control Surface Inventory
+
+GENTYR guides Claude Code agents through **8 distinct control surface categories**, each operating at a different point in the agent lifecycle. This inventory is the authoritative reference for understanding how GENTYR shapes agent behavior.
+
+### Overview
+
+| Category | Count | When It Fires | What It Controls |
+|----------|-------|---------------|-----------------|
+| 1. Hooks | 69 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
+| 2. Agent Definitions | 18 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
+| 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
+| 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
+| 5. CLAUDE.md (managed section) | 1 template | Every conversation turn | Persistent behavioral instructions in system prompt |
+| 6. Session Briefing | 1 hook + content | Session start | One-time context dump: queue status, active tasks, bypass requests |
+| 7. Prompt Templates | ~10 builders | Agent spawn | Task-specific instructions injected into spawn prompts |
+| 8. Automation Scripts | 24 scripts | Cron/launchd/daemon | Background orchestration outside of agent sessions |
+
+### What Each Category CAN and CANNOT Do
+
+| Category | Can Block | Can Inject Context | Can Spawn Agents | Can Modify Code | Persists Across Sessions |
+|----------|-----------|-------------------|-----------------|----------------|------------------------|
+| PreToolUse hooks | **Yes** | No | No | No | No (stateless) |
+| PostToolUse hooks | No | **Yes** | **Yes** | No | No (stateless) |
+| SessionStart hooks | No | **Yes** | **Yes** | No | No (one-shot) |
+| Agent Definitions | No | **Yes** (instructions) | No | Indirectly | **Yes** (file-based) |
+| MCP Tools | No | **Yes** (returns) | No | Indirectly | **Yes** (DB-backed) |
+| CLAUDE.md | No | **Yes** (system prompt) | No | No | **Yes** (file-based) |
+| Prompt Templates | No | **Yes** (spawn prompt) | No | No | No (per-spawn) |
+| Automation Scripts | No | No | **Yes** | No | **Yes** (daemon) |
+
+### Hooks by Lifecycle Phase
+
+#### PreToolUse (12 hooks — BLOCK dangerous actions)
+
+| Hook | Matcher | Purpose |
+|------|---------|---------|
+| interactive-lockdown-guard.js | `""` (all) | Block file-editing tools in interactive CTO sessions |
+| block-no-verify.js | `Bash` | Block `--no-verify` on git commands |
+| credential-file-guard.js | `Bash,Read,Write,Edit,NotebookEdit,Grep,Glob` | Block access to credential files |
+| playwright-cli-guard.js | `Bash` | Block direct `npx playwright` CLI (use MCP tools) |
+| branch-checkout-guard.js | `Bash` | Block branch switching in main tree |
+| main-tree-commit-guard.js | `Bash` | Block git add/commit on protected branches |
+| worktree-cwd-guard.js | `Bash` | Block Bash when CWD is deleted worktree |
+| worktree-path-guard.js | `Write,Edit,NotebookEdit` | Block file writes outside worktree boundary |
+| interactive-agent-guard.js | `Agent` | Block code-modifying sub-agents in interactive sessions |
+| block-team-tools.js | `TeamCreate,TeamDelete,SendMessage` | Block Team tools (use Agent tool instead) |
+| secret-profile-gate.js | `mcp__secret-sync__secret_run_command` | Enforce secret profile usage |
+| protected-action-gate.js | `mcp__*` | Block protected MCP actions without approval |
+
+#### PostToolUse (28 hooks — REACT to actions, inject context, spawn agents)
+
+| Hook | Matcher | Purpose |
+|------|---------|---------|
+| signal-reader.js | `""` (all) | Read inter-agent signals/directives |
+| worktree-freshness-check.js | `""` (all) | Nag if worktree is stale (every 2 min) |
+| agent-comms-reminder.js | `""` (all) | Remind agents to check for communications |
+| alignment-reminder.js | `""` (all) | Remind agents to check task alignment |
+| persistent-task-briefing.js | `""` (all) | Inject persistent task state into monitor context |
+| progress-tracker.js | `""` (all) | Track pipeline stage progress |
+| monitor-tasks-reminder.js | `""` (all) | Remind monitors to check sub-task status |
+| uncommitted-change-monitor.js | `Write,Edit` | Warn after 5 uncommitted file edits |
+| pr-auto-merge-nudge.js | `Bash` | Nudge to self-merge after PR creation |
+| plan-merge-tracker.js | `Bash` | Auto-advance plan tasks on PR merge |
+| strict-infra-nudge-hook.js | `Bash` | Redirect agents from Bash infra commands to MCP tools |
+| urgent-task-spawner.js | `create_task` | Auto-spawn urgent tasks |
+| task-gate-spawner.js | `create_task` | Spawn gate agent for pending_review tasks |
+| workstream-spawner.js | `create_task` | Auto-spawn workstream tasks |
+| persistent-task-linker.js | `create_task` | Auto-link sub-tasks to persistent tasks |
+| project-manager-reminder.js | `summarize_work` | Remind to spawn project-manager |
+| worktree-cleanup-gate.js | `summarize_work` | Remind to clean up worktree |
+| plan-work-tracker.js | `summarize_work` | Record work against plan tasks |
+| session-completion-gate.js | `summarize_work,complete_task` | Validate completion prerequisites |
+| workstream-dep-satisfier.js | `complete_task` | Cascade workstream dependency satisfaction |
+| demo-failure-spawner.js | `check_demo_result,check_demo_batch_result,run_demo` | Auto-spawn repair agents on demo failure |
+| long-command-warning.js | `secret_run_command` | Warn about MCP transport timeout |
+| persistent-task-spawner.js | `activate/resume/amend/pause/cancel_persistent_task` | Spawn/stop persistent monitors |
+| plan-persistent-sync.js | `complete_persistent_task` | Sync completion to plan tasks |
+| plan-activation-spawner.js | `update_plan_status` | Spawn plan manager on plan activation |
+
+#### SessionStart (9 hooks — set initial context)
+
+| Hook | Purpose |
+|------|---------|
+| gentyr-splash.js | Display GENTYR branding |
+| gentyr-sync.js | Auto-rebuild MCP servers if stale, re-merge configs |
+| todo-maintenance.js | Clean up stale tasks |
+| dead-agent-recovery.js | Detect and revive dead agents |
+| crash-loop-resume.js | Resume persistent tasks paused by circuit breaker |
+| credential-health-check.js | Verify 1Password connectivity |
+| playwright-health-check.js | Verify Playwright and browser availability |
+| plan-briefing.js | Brief agent on active plan state |
+| session-briefing.js | Comprehensive context dump: queue, tasks, bypass requests, focus mode |
+
+#### UserPromptSubmit (9 hooks — process user/CTO input)
+
+| Hook | Purpose |
+|------|---------|
+| cto-notification-hook.js | Update CTO status line |
+| secret-leak-detector.js | Scan for leaked secrets |
+| bypass-approval-hook.js | Detect "APPROVE BYPASS" pattern |
+| protected-action-approval-hook.js | Detect protected action approval tokens |
+| slash-command-prefetch.js | Pre-fetch data for slash commands |
+| branch-drift-check.js | Check for upstream branch drift |
+| comms-notifier.js | Notify about pending inter-agent communications |
+| workstream-notifier.js | Notify about workstream updates |
+| cto-prompt-detector.js | Detect CTO-directed prompts in spawned sessions |
+
+#### Stop (1 hook — gate session termination)
+
+| Hook | Purpose |
+|------|---------|
+| stop-continue-hook.js | Gate session stop, check unfinished work, trigger revival |
+
+### Shared Hook Libraries (hooks/lib/ — 25 modules)
+
+Key modules consumed by hooks:
+- `session-queue.js` — Central queue management (enqueue, drain, spawn, suspend/resume)
+- `session-reaper.js` — Dead session detection and cleanup (sync + async passes)
+- `session-audit.js` — Audit event emission to session-audit.log
+- `session-signals.js` — Inter-agent signal delivery
+- `resource-lock.js` — Shared resource coordination (display, chrome-bridge, main-dev-server)
+- `memory-pressure.js` — RAM monitoring for spawn gating
+- `worktree-manager.js` — Worktree provisioning and cleanup
+- `port-allocator.js` — Per-worktree port isolation
+- `process-tree.js` — Process group management (killProcessGroup, killProcessesInDirectory)
+- `task-category.js` — Task pipeline resolution (resolveCategory, buildPromptFromCategory)
+- `bypass-guard.js` — CTO bypass request checking
+- `persistent-monitor-revival-prompt.js` — Revival prompt builder
+- `persistent-revival-context.js` — Revival context assembly (last_summary, amendments, sub-tasks)
+- `persistent-monitor-demo-instructions.js` — Demo-specific monitor instructions
+- `persistent-monitor-strict-infra-instructions.js` — Infrastructure guidance for monitors
+- `strict-infra-guidance-prompt.js` — Bash prohibition prompts
+- `user-prompt-resolver.js` — Resolve user prompt UUIDs to content
+- `spawn-env.js` — Environment variable injection for spawned agents
+- `feature-branch-helper.js` — Branch naming and detection
+
+### Agent Definitions (18 shared)
+
+| Agent | Model | Purpose | Key Constraints |
+|-------|-------|---------|----------------|
+| code-writer | sonnet | Write code | Must run in worktree, does NOT commit |
+| code-reviewer | opus | Review code | Read-only, does NOT commit |
+| test-writer | sonnet | Write/update tests | Must run in worktree, does NOT commit |
+| project-manager | sonnet | Git operations | ONLY agent that commits, pushes, creates PRs, self-merges |
+| investigator | opus | Research/diagnose | Read-only, no worktree needed |
+| user-alignment | opus | Verify user intent | Read-only auditor, no file edits |
+| deputy-cto | opus | Triage/escalation | Review promotion PRs, manage task queue |
+| persistent-monitor | opus | Long-running orchestrator | Never edits files, spawns sub-agents via create_task |
+| plan-manager | opus | Plan execution | Spawns persistent tasks for plan steps |
+| plan-updater | haiku | Sync plan substeps | Lightweight, completes in <30s |
+| demo-manager | sonnet | Demo lifecycle | Only agent that creates/modifies .demo.ts files |
+| feedback-agent | sonnet | User persona testing | No source code access |
+| product-manager | opus | PMF analysis | External research only |
+| antipattern-hunter | opus | Anti-pattern detection | Read-only |
+| icon-finder | opus | Icon sourcing | SVG processing pipeline |
+| secret-manager | sonnet | Credential lifecycle | 1Password-based operations |
+| repo-hygiene-expert | opus | Repo structure analysis | Read-only |
+| workstream-manager | haiku | Queue dependency analysis | Read-only |
+
+### MCP Servers (~38 servers)
+
+#### Core State Servers (Tier 2 — per-session, stateful)
+
+| Server | Key Tools | Purpose |
+|--------|-----------|---------|
+| todo-db | create_task, list_tasks, complete_task, summarize_work, gate_approve_task, list_categories | Task CRUD, categories, gate approval |
+| persistent-task | create/activate/amend/pause/resume/cancel/complete_persistent_task, inspect_persistent_task | Persistent task lifecycle |
+| plan-orchestrator | create_plan, add_phase, add_plan_task, get_spawn_ready_tasks, plan_dashboard | Plans, phases, tasks, dependencies |
+| agent-tracker | get_session_queue_status, set_max_concurrent_sessions, acquire/release_shared_resource, submit/resolve_bypass_request, peek_session, browse_session | Session queue, signals, locks, bypass |
+| user-feedback | create_persona, register_feature, create_demo_scenario, register_prerequisite, lock/unlock_feature | Personas, features, scenarios, prerequisites |
+| product-manager | start_section, approve_section, get_section | PMF analysis pipeline |
+| deputy-cto | create_report, list_reports, acknowledge_report | Reports, triage, delegation |
+
+#### Infrastructure Servers (Tier 1 — shared daemon)
+
+| Server | Purpose |
+|--------|---------|
+| secret-sync | Credential resolution, services.json config, command execution with secrets |
+| github | GitHub API (issues, PRs, repos) |
+| cloudflare | DNS and worker management |
+| supabase | Database operations |
+| onepassword | 1Password read/write |
+| vercel | Deployment management |
+| render | Service management |
+| codecov | Coverage tracking |
+| resend | Email sending |
+| elastic-logs | Log querying |
+
+#### Browser Automation Servers
+
+| Server | Tool Count | Purpose |
+|--------|-----------|---------|
+| playwright | ~36 | Demo execution, test running, screenshots, video, prerequisites |
+| chrome-bridge | 35 | 17 socket-based + 2 AppleScript + 4 convenience + 4 React automation + diagnostics |
+
+#### Content/Display Servers
+specs-browser, cto-report, cto-reports, show, setup-helper, feedback-explorer, icon-processor, docs-feedback, makerkit-docs
+
+#### Feedback Agent Servers
+feedback-reporter, playwright-feedback, programmatic-feedback
+
+### Slash Commands (42)
+
+**Demo**: demo, demo-all, demo-autonomous, demo-bulk, demo-interactive, demo-session, demo-validate
+**Tasks**: spawn-tasks, task-queue, triage, persistent-task, persistent-tasks, monitor-tasks
+**Plans**: plan, plan-progress, plan-timeline, plan-audit, plan-sessions
+**Config**: concurrent-sessions, configure-personas, focus-mode, lockdown, local-mode, setup-gentyr, toggle-automation-gentyr, toggle-product-manager
+**Operations**: cto-dashboard, deputy-cto, session-queue, show, workstream
+**Infrastructure**: hotfix, push-migrations, push-secrets, overdrive-gentyr
+**Analysis**: persona-feedback, product-manager, replay, run-feedback
+
+### Prompt Injection Points (7 major sources)
+
+| Source | When | What |
+|--------|------|------|
+| CLAUDE.md.gentyr-section | Every turn (system prompt) | Merge chain, agent workflow, commit rules, tool reference |
+| session-briefing.js | Session start | Queue state, active tasks, bypass requests, focus mode |
+| plan-briefing.js | Session start | Active plan state and progress |
+| buildPromptFromCategory() | Agent spawn | 6-step pipeline (or custom category sequence) |
+| buildPersistentMonitorRevivalPrompt() | Monitor revival | Last summary, amendments, sub-task status, demo/infra flags |
+| persistent-task-briefing.js | Every tool call (monitors) | Current task state, amendment reminders, heartbeat |
+| strict-infra-guidance-prompt.js | Agent spawn (when flagged) | MCP-only infrastructure instructions |
+
+### Control Surface Interaction Flow
+
+```
+User/CTO Message
+    |
+    +-- UserPromptSubmit hooks (9) --> Context injection, leak detection, notification
+    |
+    v
+Agent Reasoning (informed by CLAUDE.md + session briefing + plan briefing)
+    |
+    +-- PreToolUse hooks (12) --> BLOCK dangerous actions
+    |
+    v
+Tool Execution (MCP tools, Bash, Read, Write, Edit, Agent)
+    |
+    +-- PostToolUse hooks (28) --> REACT: inject context, spawn agents, track progress
+    |
+    v
+Agent Spawn (via Agent tool or session queue)
+    |
+    +-- Agent Definition (.md) --> Model, tools, behavioral constraints
+    +-- Prompt Template --> Task-specific instructions, pipeline steps
+    +-- SessionStart hooks (9) --> Initial context, health checks, briefing
+    |
+    v
+Session Stop
+    |
+    +-- Stop hook (1) --> Gate completion, trigger revival if needed
+    |
+    v
+Background Automation
+    |
+    +-- hourly-automation.js --> Spawn tasks, reap sessions, cleanup worktrees
+    +-- revival-daemon.js --> Detect dead agents, revive immediately
+    +-- session-activity-broadcaster.js --> Generate and deliver session summaries
+    +-- preview-watcher.js --> Keep worktrees fresh
+```

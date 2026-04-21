@@ -266,6 +266,14 @@ export const ServicesConfigSchema = z.object({
     .describe('Named test scope profiles for vertical slice deployment gating. Each scope defines patterns that classify which tests are "in scope" for push/promotion gating.'),
   activeTestScope: z.string().nullable().optional()
     .describe('Active scope name from testScopes. Only scoped test failures block push; non-scoped failures produce warnings. null or absent = full suite gates (default behavior).'),
+  distVerification: z.array(z.object({
+    srcGlob: z.string().describe('Glob pattern for source files (e.g., "apps/extension/src/**")'),
+    distPath: z.string().describe('Path to compiled artifact to verify (e.g., "apps/extension/dist-proxy-chrome/background.js")'),
+    buildCommand: z.string().optional().describe('Command to rebuild if stale (e.g., "npx tsx scripts/build.ts")'),
+    expectedPatterns: z.array(z.string()).optional()
+      .describe('Strings that MUST appear in the compiled output (e.g., ["evaluateViaCDP", "Runtime.evaluate"]). If missing, the artifact may be stale.'),
+  })).optional()
+    .describe('Build artifact verification checks run before demos. Detects stale compiled code that does not match source. Each entry defines a source→dist mapping with optional content verification patterns.'),
   runCommandConfig: z.object({
     allowedExecutables: z.array(z.string()).optional()
       .describe('Additional executables to allow beyond defaults'),

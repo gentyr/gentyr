@@ -10,6 +10,8 @@
  * @version 1.0.0
  */
 
+import fs from 'fs';
+import path from 'path';
 import Database from 'better-sqlite3';
 import { isLocalModeEnabled } from '../../../lib/shared-mcp-config.js';
 
@@ -137,6 +139,62 @@ export function buildPromptFromCategory(task, category, agentId, worktreePath = 
     } catch { /* non-fatal — prompt UUIDs are best-effort */ }
   }
 
+  // ── Parent persistent task amendments ────────────────────────────────────────
+  let amendmentBlock = '';
+  if (task.persistent_task_id) {
+    try {
+      const PT_DB = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (fs.existsSync(PT_DB)) {
+        const ptDb = new Database(PT_DB, { readonly: true });
+        ptDb.pragma('busy_timeout = 3000');
+        const recentAmendments = ptDb.prepare(
+          "SELECT amendment_type, content, created_at FROM amendments WHERE persistent_task_id = ? AND amendment_type = 'correction' AND created_at > datetime('now', '-24 hours') ORDER BY created_at DESC LIMIT 3"
+        ).all(task.persistent_task_id);
+        ptDb.close();
+        if (recentAmendments.length > 0) {
+          const lines = recentAmendments.map(a => `- [${a.amendment_type}, ${a.created_at}]: ${(a.content || '').slice(0, 400)}`);
+          amendmentBlock = `\n## CTO Directives (from parent persistent task — MANDATORY)\n${lines.join('\n')}\n`;
+        }
+      }
+    } catch { /* non-fatal — amendments are best-effort enrichment */ }
+  }
+
+  // ── Investigation context (prior findings for this problem area) ────────────
+  let investigationBlock = '';
+  try {
+    const ilDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'investigation-log.db');
+    if (fs.existsSync(ilDbPath)) {
+      const ilDb = new Database(ilDbPath, { readonly: true });
+      ilDb.pragma('busy_timeout = 3000');
+      const searchText = `%${(task.title || '').slice(0, 60)}%`;
+      const solutions = ilDb.prepare(
+        "SELECT problem, solution, verified_count, promoted_to_tool FROM solutions WHERE problem LIKE ? OR solution LIKE ? ORDER BY verified_count DESC LIMIT 3"
+      ).all(searchText, searchText);
+      const hypotheses = ilDb.prepare(
+        "SELECT hypothesis, conclusion FROM hypotheses WHERE (symptom LIKE ? OR hypothesis LIKE ?) AND conclusion = 'eliminated' ORDER BY created_at DESC LIMIT 5"
+      ).all(searchText, searchText);
+      ilDb.close();
+
+      const parts = [];
+      if (solutions.length > 0) {
+        parts.push('Known solutions from prior investigations:');
+        for (const s of solutions) {
+          const toolNote = s.promoted_to_tool ? ` (available as MCP tool: ${s.promoted_to_tool})` : '';
+          parts.push(`  - ${s.problem}: ${s.solution}${toolNote} (verified ${s.verified_count}x)`);
+        }
+      }
+      if (hypotheses.length > 0) {
+        parts.push('Eliminated hypotheses (DO NOT re-investigate):');
+        for (const h of hypotheses) {
+          parts.push(`  - ${h.hypothesis}`);
+        }
+      }
+      if (parts.length > 0) {
+        investigationBlock = `\n## Prior Investigation Context\n${parts.join('\n')}\n`;
+      }
+    }
+  } catch { /* non-fatal — investigation log is best-effort enrichment */ }
+
   // ── Task details header ──────────────────────────────────────────────────────
   const taskDetails = `[Automation][task-runner][AGENT:${agentId}] You are an orchestrator processing a TODO task.
 
@@ -146,7 +204,7 @@ export function buildPromptFromCategory(task, category, agentId, worktreePath = 
 - **Category**: ${category.name} (${category.id})
 - **Title**: ${task.title}
 ${task.description ? `- **Description**: ${task.description}` : ''}
-${userPromptBlock}`;
+${userPromptBlock}${amendmentBlock}${investigationBlock}`;
 
   // ── Worktree context ─────────────────────────────────────────────────────────
   const worktreeNote = worktreePath ? `
