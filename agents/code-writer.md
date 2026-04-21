@@ -64,6 +64,14 @@ Always use MCP tools — the MCP server handles credential injection from 1Passw
 
 Running tests via CLI bypasses credential resolution — tests fail or skip silently.
 
+## Post-Fix Verification
+
+After implementing a fix that involves compiled artifacts (TypeScript to JS, extension builds, bundled output):
+
+1. **Verify fix is compiled**: After `npm run build` or equivalent, grep the compiled output for expected function/variable names introduced by your fix. If the expected patterns are missing, the build may have failed silently or you edited the wrong file.
+2. **Verify fix addresses the root cause**: If the task description references an investigation or hypothesis, confirm your fix targets that specific root cause — not a symptom or side effect.
+3. **Log the solution**: If the task references a persistent_task_id, call `mcp__investigation-log__log_solution` with: the problem description, your solution pattern, files you modified, and the PR number. This helps future agents find proven solutions instead of re-deriving them.
+
 ## Task Tracking
 This agent uses the `todo-db` MCP server for task management.
 - Section: N/A (receives tasks, does not have a dedicated section)

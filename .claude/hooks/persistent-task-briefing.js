@@ -314,6 +314,43 @@ When this task is done, call mcp__persistent-task__complete_persistent_task — 
 - Screenshot analysis is MANDATORY before code investigation or spawning fix tasks.
 - You are multimodal -- use Read on image files to see browser state directly.` : '';
 
+  // Amendment compliance check (every 10 full cycles)
+  let amendmentComplianceWarning = '';
+  if (amendments.length > 0 && (task.cycle_count || 0) % 10 === 0) {
+    try {
+      const recentCorrections = amendments.filter(
+        a => a.amendment_type === 'correction' && a.acknowledged_at &&
+        (Date.now() - new Date(a.created_at).getTime()) < 6 * 60 * 60 * 1000 // last 6 hours
+      );
+      if (recentCorrections.length > 0 && fullTotalCount > 0) {
+        const todoDb = new Database(TODO_DB_PATH, { readonly: true });
+        for (const amendment of recentCorrections) {
+          const amendTime = amendment.created_at;
+          // Check if any sub-task was created AFTER this amendment
+          const postAmendTasks = todoDb.prepare(
+            "SELECT COUNT(*) as cnt FROM tasks WHERE id IN (SELECT todo_task_id FROM sub_tasks WHERE persistent_task_id = ?) AND created_at > ?"
+          ).get(PERSISTENT_TASK_ID, amendTime);
+          if (!postAmendTasks || postAmendTasks.cnt === 0) {
+            const preview = (amendment.content || '').slice(0, 150);
+            amendmentComplianceWarning += `\nUNACTED AMENDMENT WARNING: Correction from ${amendTime} has no sub-tasks created after it: "${preview}..."`;
+          }
+        }
+        todoDb.close();
+      }
+    } catch (_) { /* non-fatal */ }
+  }
+
+  // Scope guard: warn when sub-task count is high with low completion rate
+  let scopeWarning = '';
+  if (fullTotalCount > 30 && fullCompletedCount / fullTotalCount < 0.20) {
+    scopeWarning = `
+
+## SCOPE WARNING
+This task has ${fullTotalCount} sub-tasks with only ${Math.round(fullCompletedCount / fullTotalCount * 100)}% completion rate.
+Consider requesting CTO scope review via submit_bypass_request with category: 'scope'.
+The current approach may need decomposition into smaller, focused tasks targeting specific root causes.`
+  }
+
   const fullContext = `[PERSISTENT TASK MONITOR — CYCLE REINFORCEMENT]
 
 ## Your Persistent Task
@@ -341,7 +378,7 @@ ${subtaskDetails}
 - Do NOT accept child agents' claims at face value. When a child says "test passed" or "demo working", deep-dive its session with peek_session and look for exit codes, screenshots, assertion output
 - Absence of errors is NOT proof of success — demand positive evidence (exit code 0, specific output strings, confirmed UI state)
 - If a child completed without verification evidence, send it a directive demanding proof, or create a new task to re-verify
-- Use mcp__agent-tracker__peek_session({ agent_id: "<id>", depth: 32 }) to read the child's actual session JSONL — see what it really did, not just what it claimed${planContextSection}${demoReminder}`;
+- Use mcp__agent-tracker__peek_session({ agent_id: "<id>", depth: 32 }) to read the child's actual session JSONL — see what it really did, not just what it claimed${planContextSection}${demoReminder}${scopeWarning}${amendmentComplianceWarning}`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {

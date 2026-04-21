@@ -355,6 +355,61 @@ process.stdin.on('end', () => {
 
     log(`Detected ${failedScenarios.length} failed scenario(s)`);
 
+    // Investigation escalation: track consecutive failures per scenario
+    // After 5 failures, inject escalation context instead of spawning another repair agent
+    let escalationContext = '';
+    for (const scenario of failedScenarios) {
+      const failCountFile = path.join(PROJECT_DIR, '.claude', 'state', `demo-failures-${scenario.id}.count`);
+      let failCount = 0;
+      try { failCount = parseInt(fs.readFileSync(failCountFile, 'utf-8').trim(), 10) || 0; } catch { /* first failure */ }
+      failCount++;
+      try { fs.writeFileSync(failCountFile, String(failCount)); } catch { /* non-fatal */ }
+
+      if (failCount >= 5) {
+        log(`ESCALATION: scenario ${scenario.id} has failed ${failCount} consecutive times`);
+
+        // Query investigation log for prior findings
+        let priorContext = '';
+        try {
+          const ilDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'investigation-log.db');
+          if (Database && fs.existsSync(ilDbPath)) {
+            const ilDb = new Database(ilDbPath, { readonly: true });
+            const hypotheses = ilDb.prepare(
+              "SELECT hypothesis, conclusion FROM hypotheses WHERE symptom LIKE ? OR root_cause_tag LIKE ? ORDER BY created_at DESC LIMIT 5"
+            ).all(`%${scenario.id}%`, `%${scenario.id}%`);
+            if (hypotheses.length > 0) {
+              const confirmed = hypotheses.filter(h => h.conclusion === 'confirmed').map(h => h.hypothesis);
+              const eliminated = hypotheses.filter(h => h.conclusion === 'eliminated').map(h => h.hypothesis);
+              if (confirmed.length > 0) priorContext += `\nConfirmed root causes: ${confirmed.join('; ')}`;
+              if (eliminated.length > 0) priorContext += `\nEliminated hypotheses (DO NOT re-investigate): ${eliminated.join('; ')}`;
+            }
+            ilDb.close();
+          }
+        } catch { /* non-fatal */ }
+
+        escalationContext += `\n\nINVESTIGATION ESCALATION: Scenario "${scenario.title}" (${scenario.id}) has failed ${failCount} consecutive times. ` +
+          `DO NOT spawn another repair agent. Instead, create a structured investigation plan:` +
+          `\n1. FREEZE — Pause all retry attempts for this scenario` +
+          `\n2. READ — Gather the last 5 failure artifacts (logs, screenshots, error messages)` +
+          `\n3. INSTRUMENT — Add targeted diagnostic logging to the suspected failure point` +
+          `\n4. OBSERVE — Run ONE instrumented attempt and collect data` +
+          `\n5. DIAGNOSE — Produce a ranked hypothesis list with evidence` +
+          `\n6. VERIFY — Test the top hypothesis with a single-variable change` +
+          priorContext;
+      }
+    }
+
+    // If escalation triggered, inject context and skip spawning repair agents
+    if (escalationContext) {
+      console.log(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PostToolUse',
+          additionalContext: escalationContext.trim(),
+        },
+      }));
+      process.exit(0);
+    }
+
     // Process up to 3 failed scenarios
     let spawned = 0;
     for (const scenario of failedScenarios.slice(0, 3)) {

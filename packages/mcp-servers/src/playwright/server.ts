@@ -672,6 +672,99 @@ interface PreflightResult {
  *
  * Project-agnostic: no hardcoded credential key names.
  */
+
+/**
+ * Verify build artifact freshness using distVerification config from services.json.
+ * Returns an array of warning strings — empty means all checks passed.
+ *
+ * Checks:
+ *  1. Source files are not newer than dist (stale build detection)
+ *  2. Expected patterns exist in compiled output (content verification)
+ */
+function verifyDistArtifacts(): string[] {
+  const warnings: string[] = [];
+
+  try {
+    const servicesPath = path.join(EFFECTIVE_CWD, 'services.json');
+    if (!fs.existsSync(servicesPath)) return warnings;
+
+    const raw = fs.readFileSync(servicesPath, 'utf-8');
+    const config = JSON.parse(raw);
+    const checks = config.distVerification;
+    if (!Array.isArray(checks) || checks.length === 0) return warnings;
+
+    for (const check of checks) {
+      const distFullPath = path.join(EFFECTIVE_CWD, check.distPath);
+
+      // Check 1: dist file exists
+      if (!fs.existsSync(distFullPath)) {
+        warnings.push(`MISSING ARTIFACT: ${check.distPath} does not exist. Build required.`);
+        continue;
+      }
+
+      // Check 2: source newer than dist (stale build)
+      if (check.srcGlob) {
+        try {
+          const distStat = fs.statSync(distFullPath);
+          const distMtime = distStat.mtimeMs;
+
+          // Use a simple directory-level check: find the newest file in the src dir
+          const srcDir = path.join(EFFECTIVE_CWD, path.dirname(check.srcGlob.replace(/\*.*$/, '')));
+          if (fs.existsSync(srcDir)) {
+            const newestSrcMtime = getNewestMtimeInDir(srcDir);
+            if (newestSrcMtime > distMtime) {
+              warnings.push(`STALE ARTIFACT: ${check.distPath} (modified ${new Date(distMtime).toISOString()}) is older than source in ${check.srcGlob} (modified ${new Date(newestSrcMtime).toISOString()}). Rebuild required.${check.buildCommand ? ` Run: ${check.buildCommand}` : ''}`);
+            }
+          }
+        } catch {
+          // Non-fatal — skip mtime check if stat fails
+        }
+      }
+
+      // Check 3: expected patterns in compiled output
+      if (check.expectedPatterns && Array.isArray(check.expectedPatterns)) {
+        try {
+          const content = fs.readFileSync(distFullPath, 'utf-8');
+          for (const pattern of check.expectedPatterns) {
+            if (!content.includes(pattern)) {
+              warnings.push(`MISSING PATTERN: "${pattern}" not found in ${check.distPath}. The compiled artifact may not contain recent fixes.${check.buildCommand ? ` Rebuild: ${check.buildCommand}` : ''}`);
+            }
+          }
+        } catch {
+          // Non-fatal — skip content check if read fails
+        }
+      }
+    }
+  } catch {
+    // Non-fatal — if services.json is missing or malformed, skip verification
+  }
+
+  return warnings;
+}
+
+/**
+ * Recursively find the newest mtime in a directory (non-recursive, top-level only for performance).
+ */
+function getNewestMtimeInDir(dirPath: string): number {
+  let newest = 0;
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name);
+      if (entry.isFile()) {
+        const stat = fs.statSync(fullPath);
+        if (stat.mtimeMs > newest) newest = stat.mtimeMs;
+      } else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+        const subNewest = getNewestMtimeInDir(fullPath);
+        if (subNewest > newest) newest = subNewest;
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+  return newest;
+}
+
 function validatePrerequisites(): PreflightResult {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -1685,6 +1778,17 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       success: false,
       project,
       message: `Worktree stale: ${freshness.message}`,
+      context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
+    };
+  }
+
+  // Build artifact verification — detect stale compiled code before running demos
+  const distWarnings = verifyDistArtifacts();
+  if (distWarnings.length > 0) {
+    return {
+      success: false,
+      project,
+      message: `Build artifact verification failed:\n${distWarnings.map(w => `  - ${w}`).join('\n')}\nRebuild the affected artifacts before running the demo.`,
       context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
     };
   }

@@ -12,6 +12,7 @@
     "mcp-agent-tracker": "./dist/agent-tracker/server.js",
     "mcp-session-events": "./dist/session-events/server.js",
     "mcp-agent-reports": "./dist/agent-reports/server.js",
+    "mcp-investigation-log": "./dist/investigation-log/server.js",
     "mcp-deputy-cto": "./dist/deputy-cto/server.js",
     "mcp-cto-report": "./dist/cto-report/server.js",
     "mcp-cto-reports": "./dist/cto-reports/server.js",

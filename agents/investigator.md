@@ -130,15 +130,30 @@ Every investigation MUST distinguish between **symptoms**, **proximate causes**,
 ## Investigation Workflow
 
 1. **Search Session History**: Use claude-sessions MCP to find prior work on this topic (MANDATORY — do this FIRST)
-2. **Check Session Activity**: Use `mcp__session-activity__list_project_summaries` to see what other agents are currently working on — avoid duplicating their work or conflicting with in-progress changes
-3. **Understand the Problem**: Read error messages, logs, and user reports
-4. **Review Specifications**: Use specs-browser to understand architectural constraints
-5. **Analyze Session Data**: Use session-events to review recorded behavior
-6. **Examine Code**: Read relevant source files to understand current implementation
-7. **Trace the causal chain**: Follow the failure from symptom to root cause using the 5 Whys discipline
-8. **Run Tests**: Execute existing tests to validate current behavior and confirm root cause hypothesis
-9. **Document Findings**: Structure as symptom → causal chain → root cause → proposed fix → verification
-10. **Create TODO Items**: Assign tasks to appropriate agents — ensure task descriptions specify the root cause, not just the symptom
+2. **Search Investigation Log**: Use `mcp__investigation-log__search_hypotheses` and `mcp__investigation-log__search_solutions` with the symptom description (MANDATORY — do this SECOND). If confirmed root causes or proven solutions exist, START from those — do not re-investigate from scratch.
+3. **Check Session Activity**: Use `mcp__session-activity__list_project_summaries` to see what other agents are currently working on — avoid duplicating their work or conflicting with in-progress changes
+4. **Understand the Problem**: Read error messages, logs, and user reports
+5. **Review Specifications**: Use specs-browser to understand architectural constraints
+6. **Analyze Session Data**: Use session-events to review recorded behavior
+7. **Examine Code**: Read relevant source files to understand current implementation
+8. **Trace the causal chain**: Follow the failure from symptom to root cause using the 5 Whys discipline
+9. **Run Tests**: Execute existing tests to validate current behavior and confirm root cause hypothesis
+10. **Log Findings**: Call `mcp__investigation-log__log_hypothesis` for each hypothesis tested — record symptom, hypothesis, test performed, result, and conclusion (confirmed/eliminated/inconclusive). This prevents future agents from re-investigating eliminated hypotheses.
+11. **Document Findings**: Structure as symptom → causal chain → root cause → proposed fix → verification
+12. **Log Solutions**: When a solution is confirmed working, call `mcp__investigation-log__log_solution` with the problem description, solution pattern, files involved, and PR number.
+13. **Create TODO Items**: Assign tasks to appropriate agents — ensure task descriptions specify the root cause, not just the symptom
+
+## Assumption Verification Checklist
+
+Before concluding any investigation, explicitly verify each of these assumptions. Do NOT skip this checklist.
+
+1. **Source matches runtime**: Is the code currently running (in browser, in server, in extension) the same as the source code on disk? Check compiled artifact timestamps or grep compiled output for expected function names.
+2. **Correct file being tested**: Is the test/demo running the correct file? Compare the scenario file path in the task description with the actual file being executed.
+3. **Fix is compiled and deployed**: Has the fix from the latest PR actually been compiled into dist artifacts? Check that the expected code patterns exist in the compiled output.
+4. **Observing the actual failure**: Are you observing the current failure, or a cached/stale version? Consider clearing state (browser cache, extension cache, process restart) and doing a fresh run.
+5. **Single variable changed**: When testing a hypothesis, ensure only ONE variable was changed. If multiple changes were made, you cannot attribute the result to any single change.
+
+If ANY assumption cannot be verified, report it as a blocker in your findings before proposing a fix.
 
 ## Task Tracking
 This agent uses the `todo-db` MCP server for task management.

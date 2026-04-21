@@ -791,6 +791,26 @@ function buildSpawnedBriefing() {
     }
   }
 
+  // Tool changelog — notify about new GENTYR MCP tools
+  try {
+    const changelogPath = path.join(PROJECT_DIR, '.claude', 'state', 'mcp-tool-changelog.json');
+    if (fs.existsSync(changelogPath)) {
+      const changelog = JSON.parse(fs.readFileSync(changelogPath, 'utf-8'));
+      const age = Date.now() - new Date(changelog.timestamp).getTime();
+      if (age < 24 * 60 * 60 * 1000) { // < 24h old
+        const newTools = changelog.newTools || [];
+        if (newTools.length > 0) {
+          lines.push('');
+          lines.push('NEW GENTYR TOOLS AVAILABLE (added in recent framework update):');
+          for (const t of newTools.slice(0, 10)) {
+            lines.push(`  - ${t.name} (${t.server}): ${truncate(t.description, 100)}`);
+          }
+          lines.push('Check if any of these are relevant to your current task.');
+        }
+      }
+    }
+  } catch { /* non-fatal */ }
+
   lines.push('');
   lines.push('REMINDER: When done, follow the completion protocol:');
   lines.push('  user-alignment \u2192 project-manager \u2192 verify merge \u2192 user-alignment (final) \u2192 summarize_work');

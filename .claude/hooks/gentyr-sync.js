@@ -157,6 +157,39 @@ function getNewestMtime(dir) {
   return newest;
 }
 
+/**
+ * Extract tool names and descriptions from MCP server source files.
+ * Scans for { name: '...', description: '...' } patterns in server.ts files.
+ * Returns an array of { name, description, server } objects.
+ */
+function extractToolManifest(srcDir) {
+  const manifest = [];
+  try {
+    const serverDirs = fs.readdirSync(srcDir, { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith('__') && d.name !== 'shared');
+    for (const dir of serverDirs) {
+      const serverFile = path.join(srcDir, dir.name, 'server.ts');
+      if (!fs.existsSync(serverFile)) continue;
+      try {
+        const content = fs.readFileSync(serverFile, 'utf-8');
+        // Match tool name definitions: name: 'tool_name' or name: "tool_name"
+        const nameRegex = /name:\s*['"]([a-z_]+)['"]/g;
+        const descRegex = /description:\s*['"](.*?)['"]/g;
+        const names = [...content.matchAll(nameRegex)].map(m => m[1]);
+        const descs = [...content.matchAll(descRegex)].map(m => m[1]);
+        for (let i = 0; i < names.length; i++) {
+          manifest.push({
+            name: names[i],
+            description: (descs[i] || '').slice(0, 120),
+            server: dir.name,
+          });
+        }
+      } catch (_) { /* non-fatal — skip unreadable server files */ }
+    }
+  } catch (_) { /* non-fatal */ }
+  return manifest;
+}
+
 // ============================================================================
 // State-based sync (preferred path when gentyr-state.json exists)
 // ============================================================================
@@ -336,6 +369,33 @@ function statBasedSync(frameworkDir) {
       }
       execFileSync('npm', ['run', 'build'], { cwd: mcpDir, stdio: 'pipe', timeout: 30000 });
       changes.push('MCP servers rebuilt');
+
+      // Generate tool changelog after successful rebuild
+      try {
+        const manifestPath = path.join(projectDir, '.claude', 'state', 'mcp-tool-manifest.json');
+        const changelogPath = path.join(projectDir, '.claude', 'state', 'mcp-tool-changelog.json');
+        const newManifest = extractToolManifest(path.join(mcpDir, 'src'));
+
+        let newTools = [];
+        let changedTools = [];
+        if (fs.existsSync(manifestPath)) {
+          const prevManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+          const prevNames = new Set(prevManifest.map(t => t.name));
+          newTools = newManifest.filter(t => !prevNames.has(t.name));
+          changedTools = newManifest.filter(t => {
+            const prev = prevManifest.find(p => p.name === t.name);
+            return prev && prev.description !== t.description;
+          });
+        }
+
+        fs.writeFileSync(manifestPath, JSON.stringify(newManifest, null, 2));
+        if (newTools.length > 0 || changedTools.length > 0) {
+          fs.writeFileSync(changelogPath, JSON.stringify({ newTools, changedTools, timestamp: new Date().toISOString() }, null, 2));
+          if (newTools.length > 0) changes.push(`${newTools.length} new MCP tools detected`);
+        }
+      } catch (_) {
+        // Non-fatal — tool manifest generation is best-effort
+      }
     } catch (buildErr) {
       changes.push(`MCP server build FAILED: ${buildErr.message}. Run: cd ${mcpDir} && npm install && npm run build`);
     }
