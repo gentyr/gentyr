@@ -939,15 +939,100 @@ export class ChromeActions {
     opts?: { verify?: boolean; tabId?: number },
   ): Promise<ReactFillResult> {
     await this.ensureReady();
-    const tabId = this.resolveTabId(opts?.tabId);
-    const result = await this.client.executeTool('react_fill_input', {
+    const verify = opts?.verify !== false;
+
+    // Execute the React-aware fill JS directly via javascript_tool (MAIN world).
+    // Uses the native setter + _valueTracker reset + direct onChange call + event dispatch
+    // pattern to reliably update React controlled inputs.
+    const fillCode = `(function(sel, v) {
+  var el = document.querySelector(sel);
+  if (!el) return JSON.stringify({ success: false, error: 'no-element', selector: sel });
+  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
+    return JSON.stringify({ success: false, error: 'wrong-type', tagName: el.tagName });
+  }
+  el.focus();
+  var proto = el instanceof HTMLTextAreaElement
+    ? window.HTMLTextAreaElement.prototype
+    : window.HTMLInputElement.prototype;
+  var nativeSet = Object.getOwnPropertyDescriptor(proto, 'value').set;
+  nativeSet.call(el, v);
+  var tracker = el._valueTracker;
+  var trackerReset = false;
+  if (tracker) { tracker.setValue(''); trackerReset = true; }
+  var handlerKey = Object.keys(el).find(function(k) {
+    return k.indexOf('__reactEventHandlers') === 0 || k.indexOf('__reactProps') === 0;
+  });
+  var onChangeCalled = false;
+  if (handlerKey) {
+    var handlers = el[handlerKey];
+    if (handlers && typeof handlers.onChange === 'function') {
+      try {
+        handlers.onChange({ target: el, currentTarget: el, type: 'change',
+          nativeEvent: { data: v }, bubbles: true });
+        onChangeCalled = true;
+      } catch (e) {}
+    }
+  }
+  el.dispatchEvent(new InputEvent('input', { bubbles: true, data: v, inputType: 'insertText' }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return JSON.stringify({
+    success: true, domValue: el.value, domValueLength: el.value.length,
+    trackerReset: trackerReset, onChangeCalled: onChangeCalled,
+    hasReactProps: !!handlerKey
+  });
+})(${JSON.stringify(selector)}, ${JSON.stringify(value)})`;
+
+    const fillText = await this.executeJs(fillCode, opts?.tabId);
+    const fillParsed = JSON.parse(fillText);
+
+    if (!fillParsed.success) {
+      return { success: false, selector, ...fillParsed };
+    }
+
+    let verifyResult: ReactFillResult['verify'] | undefined;
+    if (verify) {
+      await new Promise((r) => setTimeout(r, 500));
+      const verifyCode = `(function(sel, expected) {
+  var el = document.querySelector(sel);
+  if (!el) return JSON.stringify({ found: false });
+  var tracker = el._valueTracker;
+  var trackerValue = tracker ? tracker.getValue() : null;
+  var handlerKey = Object.keys(el).find(function(k) {
+    return k.indexOf('__reactEventHandlers') === 0 || k.indexOf('__reactProps') === 0;
+  });
+  var reactValue = null;
+  if (handlerKey && el[handlerKey]) {
+    var v = el[handlerKey].value;
+    reactValue = (v !== undefined && v !== null) ? String(v) : null;
+  }
+  return JSON.stringify({
+    found: true,
+    domValue: el.value,
+    domValueLength: el.value.length,
+    domMatchesExpected: el.value === expected,
+    trackerValue: trackerValue,
+    reactValue: reactValue,
+    reactMatchesExpected: reactValue !== null ? reactValue === expected : null
+  });
+})(${JSON.stringify(selector)}, ${JSON.stringify(value)})`;
+
+      try {
+        const verifyText = await this.executeJs(verifyCode, opts?.tabId);
+        verifyResult = JSON.parse(verifyText);
+      } catch {
+        // Verification is best-effort — fill already succeeded
+      }
+    }
+
+    return {
+      success: true,
       selector,
-      value,
-      tabId,
-      ...(opts?.verify !== undefined ? { verify: opts.verify } : {}),
-    });
-    const text = this.extractText(result, 'react_fill_input');
-    return JSON.parse(text) as ReactFillResult;
+      domValueLength: fillParsed.domValueLength,
+      trackerReset: fillParsed.trackerReset,
+      onChangeCalled: fillParsed.onChangeCalled,
+      hasReactProps: fillParsed.hasReactProps,
+      ...(verifyResult ? { verify: verifyResult } : {}),
+    };
   }
 
   /**
@@ -975,13 +1060,131 @@ export class ChromeActions {
     settleMs?: number;
   }): Promise<ClickAndWaitResult> {
     await this.ensureReady();
-    const tabId = this.resolveTabId(opts.tabId);
-    const result = await this.client.executeTool('click_and_wait', {
-      ...opts,
-      tabId,
-    });
-    const text = this.extractText(result, 'click_and_wait');
-    return JSON.parse(text) as ClickAndWaitResult;
+    const timeoutMs = opts.timeoutMs ?? 30_000;
+    const settleMs = opts.settleMs ?? 1_000;
+    let clickTarget = '';
+    let clickMethod: 'text' | 'selector' | 'submit' = 'text';
+
+    // --- Click phase ---
+    if (opts.text) {
+      clickMethod = 'text';
+      clickTarget = opts.text;
+      await this.clickByText(opts.text, { tabId: opts.tabId });
+    } else if (opts.selector) {
+      clickMethod = 'selector';
+      clickTarget = opts.selector;
+      // Use javascript_tool for native .click() — handles React synthetic events
+      await this.executeJs(
+        `(function(sel) {
+  var el = document.querySelector(sel);
+  if (!el) throw new Error('No element for selector: ' + sel);
+  el.click();
+  return 'clicked';
+})(${JSON.stringify(opts.selector)})`,
+        opts.tabId,
+      );
+    } else if (opts.submit) {
+      clickMethod = 'submit';
+      // Cascading submit button finder — form first, then document-wide fallback
+      const submitResult = await this.executeJs(
+        `(function() {
+  var form = document.querySelector('form');
+  var btn = null;
+  if (form) {
+    btn = form.querySelector('[type="submit"]')
+      || form.querySelector('button:not([type])')
+      || form.querySelector('button');
+  }
+  if (!btn) btn = document.querySelector('[type="submit"]');
+  if (!btn) btn = document.querySelector('button:not([type="reset"]):not([type="button"])');
+  if (!btn) return JSON.stringify({ clicked: false, error: 'no-submit-button' });
+  var text = (btn.textContent || '').trim().slice(0, 50);
+  btn.click();
+  return JSON.stringify({ clicked: true, text: text });
+})()`,
+        opts.tabId,
+      );
+      const parsed = JSON.parse(submitResult);
+      if (!parsed.clicked) {
+        return { clicked: false, clickTarget: '', clickMethod: 'submit' };
+      }
+      clickTarget = parsed.text || '[submit]';
+    } else {
+      return { clicked: false, clickTarget: '', clickMethod: 'text' };
+    }
+
+    // --- Wait phase ---
+    const hasWaitCondition = opts.waitForUrl || opts.waitForUrlGone ||
+      opts.waitForText || opts.waitForTextGone ||
+      opts.waitForElement || opts.waitForElementGone;
+
+    if (!hasWaitCondition) {
+      return { clicked: true, clickTarget, clickMethod };
+    }
+
+    await new Promise((r) => setTimeout(r, settleMs));
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      let allMet = true;
+
+      if (opts.waitForUrl || opts.waitForUrlGone) {
+        const url = await this.executeJs('window.location.href', opts.tabId);
+        if (opts.waitForUrl && !url.includes(opts.waitForUrl)) allMet = false;
+        if (opts.waitForUrlGone && url.includes(opts.waitForUrlGone)) allMet = false;
+      }
+
+      if (allMet && (opts.waitForText || opts.waitForTextGone)) {
+        try {
+          const pageText = await this.getPageText(opts.tabId);
+          if (opts.waitForText && !pageText.includes(opts.waitForText)) allMet = false;
+          if (opts.waitForTextGone && pageText.includes(opts.waitForTextGone)) allMet = false;
+        } catch {
+          allMet = false; // Page may be loading
+        }
+      }
+
+      if (allMet && (opts.waitForElement || opts.waitForElementGone)) {
+        try {
+          const matches = opts.waitForElement
+            ? await this.findElements(opts.waitForElement, { tabId: opts.tabId })
+            : [];
+          const goneMatches = opts.waitForElementGone
+            ? await this.findElements(opts.waitForElementGone, { tabId: opts.tabId })
+            : [];
+          if (opts.waitForElement && matches.length === 0) allMet = false;
+          if (opts.waitForElementGone && goneMatches.length > 0) allMet = false;
+        } catch {
+          allMet = false;
+        }
+      }
+
+      if (allMet) {
+        const finalUrl = await this.executeJs('window.location.href', opts.tabId);
+        return {
+          clicked: true,
+          clickTarget,
+          clickMethod,
+          transitioned: true,
+          finalUrl,
+          elapsedMs: Date.now() + timeoutMs - deadline + settleMs,
+        };
+      }
+
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await new Promise((r) => setTimeout(r, Math.min(1_000, remaining)));
+    }
+
+    const finalUrl = await this.executeJs('window.location.href', opts.tabId);
+    return {
+      clicked: true,
+      clickTarget,
+      clickMethod,
+      transitioned: false,
+      finalUrl,
+      elapsedMs: timeoutMs + settleMs,
+    };
   }
 
   /**
@@ -998,12 +1201,58 @@ export class ChromeActions {
     tabId?: number;
   }): Promise<PageDiagnosticResult> {
     await this.ensureReady();
-    const tabId = this.resolveTabId(opts?.tabId);
-    const result = await this.client.executeTool('page_diagnostic', {
-      tabId,
-      ...(opts?.focus ? { focus: opts.focus } : {}),
+    const focus = opts?.focus ?? 'inputs';
+    const includeInputs = focus === 'inputs' || focus === 'all';
+    const includeForms = focus === 'forms' || focus === 'all';
+    const includeButtons = focus === 'buttons' || focus === 'all';
+
+    const diagCode = `(function(opts) {
+  var result = { url: window.location.href, title: document.title };
+  if (opts.inputs) {
+    result.inputs = Array.from(document.querySelectorAll('input, textarea, select')).map(function(el) {
+      var isPassword = el.type === 'password';
+      var handlerKey = Object.keys(el).find(function(k) {
+        return k.indexOf('__reactEventHandlers') === 0 || k.indexOf('__reactProps') === 0;
+      });
+      return {
+        tag: el.tagName.toLowerCase(), type: el.type || null,
+        name: el.name || null, id: el.id || null,
+        placeholder: el.placeholder || null,
+        ariaLabel: el.getAttribute('aria-label') || null,
+        disabled: el.disabled, readOnly: el.readOnly || false,
+        valueLength: el.value ? el.value.length : 0,
+        isPassword: isPassword,
+        hasValueTracker: !!el._valueTracker,
+        trackerValue: isPassword ? '[redacted]' : (el._valueTracker ? el._valueTracker.getValue() : null),
+        hasReactProps: !!handlerKey,
+        hasOnChange: handlerKey && el[handlerKey] && typeof el[handlerKey].onChange === 'function' ? true : false,
+        cssSelector: el.id ? '#' + el.id : (el.name ? el.tagName.toLowerCase() + '[name="' + el.name + '"]' : null)
+      };
     });
-    const text = this.extractText(result, 'page_diagnostic');
+  }
+  if (opts.forms) {
+    result.forms = Array.from(document.querySelectorAll('form')).map(function(form) {
+      return {
+        id: form.id || null, action: form.action || null, method: form.method || null,
+        inputCount: form.querySelectorAll('input, textarea, select').length,
+        submitButtonCount: form.querySelectorAll('[type="submit"], button:not([type])').length
+      };
+    });
+  }
+  if (opts.buttons) {
+    result.buttons = Array.from(document.querySelectorAll('button, [type="submit"], [role="button"]')).map(function(el) {
+      return {
+        tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || null,
+        text: (el.textContent || '').trim().slice(0, 50),
+        disabled: el.disabled || false,
+        id: el.id || null
+      };
+    });
+  }
+  return JSON.stringify(result);
+})({ inputs: ${includeInputs}, forms: ${includeForms}, buttons: ${includeButtons} })`;
+
+    const text = await this.executeJs(diagCode, opts?.tabId);
     return JSON.parse(text) as PageDiagnosticResult;
   }
 
@@ -1019,13 +1268,55 @@ export class ChromeActions {
     opts?: { tabId?: number },
   ): Promise<InspectInputResult> {
     await this.ensureReady();
-    const tabId = this.resolveTabId(opts?.tabId);
-    const result = await this.client.executeTool('inspect_input', {
-      selector,
-      tabId,
-    });
-    const text = this.extractText(result, 'inspect_input');
-    return JSON.parse(text) as InspectInputResult;
+
+    const inspectCode = `(function(sel) {
+  var el = document.querySelector(sel);
+  if (!el) return JSON.stringify({ found: false, selector: sel });
+  var isPassword = el.type === 'password';
+  var tracker = el._valueTracker;
+  var trackerValue = tracker ? tracker.getValue() : null;
+  var reactKeys = Object.keys(el).filter(function(k) { return k.indexOf('__react') === 0; });
+  var handlerKey = reactKeys.find(function(k) {
+    return k.indexOf('__reactEventHandlers') === 0 || k.indexOf('__reactProps') === 0;
+  });
+  var hasOnChange = false;
+  var reactControlledValue = null;
+  if (handlerKey && el[handlerKey]) {
+    hasOnChange = typeof el[handlerKey].onChange === 'function';
+    var rv = el[handlerKey].value;
+    reactControlledValue = (rv !== undefined && rv !== null) ? String(rv) : null;
+  }
+  var proto = el instanceof HTMLTextAreaElement
+    ? window.HTMLTextAreaElement.prototype
+    : window.HTMLInputElement.prototype;
+  var hasNativeSetter = !!(Object.getOwnPropertyDescriptor(proto, 'value') || {}).set;
+  return JSON.stringify({
+    found: true, selector: sel,
+    tag: el.tagName.toLowerCase(), type: el.type || null,
+    name: el.name || null, id: el.id || null,
+    disabled: el.disabled, readOnly: el.readOnly || false,
+    isPassword: isPassword,
+    domValue: isPassword ? undefined : el.value,
+    domValueLength: el.value ? el.value.length : 0,
+    hasValueTracker: !!tracker,
+    trackerValue: isPassword ? '[redacted]' : trackerValue,
+    reactKeys: reactKeys, handlerKey: handlerKey || null,
+    hasOnChange: hasOnChange,
+    reactControlledValue: isPassword ? '[redacted]' : reactControlledValue,
+    isControlled: reactControlledValue !== null,
+    hasNativeSetter: hasNativeSetter,
+    inForm: !!el.closest('form')
+  });
+})(${JSON.stringify(selector)})`;
+
+    const text = await this.executeJs(inspectCode, opts?.tabId);
+    const parsed = JSON.parse(text) as InspectInputResult;
+
+    if (!parsed.found) {
+      throw new ElementNotFoundError(selector);
+    }
+
+    return parsed;
   }
 
   // ============================================================================
