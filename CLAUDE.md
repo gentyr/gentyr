@@ -1216,7 +1216,7 @@ specs-browser, cto-report, cto-reports, show, setup-helper, feedback-explorer, i
 #### Feedback Agent Servers
 feedback-reporter, playwright-feedback, programmatic-feedback
 
-### Slash Commands (42)
+### Slash Commands (39)
 
 **Demo**: demo, demo-all, demo-autonomous, demo-bulk, demo-interactive, demo-session, demo-validate
 **Tasks**: spawn-tasks, task-queue, triage, persistent-task, persistent-tasks, monitor-tasks
