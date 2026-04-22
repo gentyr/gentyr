@@ -70,6 +70,7 @@ process.stdin.on('end', () => {
     let taskCategoryId = '';
     let taskDescription = '';
     let assignedBy = '';
+    let demoInvolved = false;
 
     try {
       const response = hookInput.tool_response;
@@ -81,6 +82,7 @@ process.stdin.on('end', () => {
         taskCategoryId = response.category_id || '';
         taskDescription = response.description || '';
         assignedBy = response.assigned_by || '';
+        demoInvolved = response.demo_involved === true || response.demo_involved === 1;
       } else if (typeof response === 'string') {
         const parsed = JSON.parse(response);
         taskStatus = parsed.status;
@@ -90,6 +92,7 @@ process.stdin.on('end', () => {
         taskCategoryId = parsed.category_id || '';
         taskDescription = parsed.description || '';
         assignedBy = parsed.assigned_by || '';
+        demoInvolved = parsed.demo_involved === true || parsed.demo_involved === 1;
       }
     } catch (err) {
       console.error('[task-gate-spawner] Warning:', err.message);
@@ -107,6 +110,7 @@ process.stdin.on('end', () => {
               taskCategoryId = parsed.category_id || '';
               taskDescription = parsed.description || '';
               assignedBy = parsed.assigned_by || '';
+              demoInvolved = parsed.demo_involved === true || parsed.demo_involved === 1;
               break;
             }
           }
@@ -155,23 +159,31 @@ process.stdin.on('end', () => {
       lane: 'gate',
       priority: 'normal',
       projectDir: PROJECT_DIR,
-      metadata: { taskId, section: taskSection, category_id: taskCategoryId, assignedBy },
-      buildPrompt: (agentId) => `[Automation][task-gate][AGENT:${agentId}] Review task ${taskId}.
+      metadata: { taskId, section: taskSection, category_id: taskCategoryId, assignedBy, demoInvolved },
+      buildPrompt: (agentId) => {
+        const demoCheck = demoInvolved ? `
+4. DEMO VALIDITY: This task has demo_involved=true. Check the description for anti-patterns:
+   a. If description mentions "secret_run_command" with "playwright" → KILL (reason: "Must use mcp__playwright__run_demo, not direct CLI via secret_run_command")
+   b. If description contains "main tree" or "DO NOT.*worktree" or "avoid worktree" → KILL (reason: "Worktree isolation is required for demos — agents must run from worktrees")
+   c. If category is not "demo-design" → ESCALATE (reason: "demo_involved tasks should use demo-design category")` : '';
+
+        return `[Automation][task-gate][AGENT:${agentId}] Review task ${taskId}.
 
 "${taskTitle}" | Category: ${taskCategoryId || taskSection} | By: ${assignedBy}
 Description: ${taskDescription || '(none)'}
 
-## Checks (do all 3, then decide)
+## Checks (do all ${demoInvolved ? '4' : '3'}, then decide)
 1. DUPLICATES: Call ${taskCategoryId ? `mcp__todo-db__list_tasks({ category_id: "${taskCategoryId}", status: "pending" })` : `mcp__todo-db__list_tasks({ section: "${taskSection}", status: "pending" })`}. If a very similar task exists, KILL.
 2. STABILITY: Call mcp__user-feedback__check_feature_stability with file paths or feature name from the description. If feature is locked, KILL.
-3. CTO INTENT: Call mcp__agent-tracker__search_cto_sessions({ query: "${keyword}", project_directory: "${PROJECT_DIR}" }). If CTO recently discussed this topic, APPROVE.
+3. CTO INTENT: Call mcp__agent-tracker__search_cto_sessions({ query: "${keyword}", project_directory: "${PROJECT_DIR}" }). If CTO recently discussed this topic, APPROVE.${demoCheck}
 
 ## Decision (pick ONE, then exit)
 - APPROVE: mcp__todo-db__gate_approve_task({ id: "${taskId}" })
 - KILL: mcp__todo-db__gate_kill_task({ id: "${taskId}", reason: "..." })
 - UNSURE: mcp__todo-db__gate_escalate_task({ id: "${taskId}", reason: "..." })
 
-If no stability lock and no duplicate, default to APPROVE. Err toward approval — only kill clear duplicates or stability-locked features.`,
+If no stability lock and no duplicate, default to APPROVE. Err toward approval — only kill clear duplicates or stability-locked features.`;
+      },
     });
 
     log(`Enqueued gate agent for task ${taskId}`);

@@ -912,6 +912,30 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     }
   }
 
+  // Demo task auto-correction: enforce strict_infra_guidance and demo-design category
+  let effectiveStrictInfra = args.strict_infra_guidance ?? false;
+  if (args.demo_involved) {
+    // Rule 1: demo_involved forces strict_infra_guidance
+    if (!effectiveStrictInfra) {
+      effectiveStrictInfra = true;
+      const w = warning ? warning + ' | ' : '';
+      warning = w + 'demo_involved=true requires strict_infra_guidance=true. Auto-enabled.';
+    }
+
+    // Rule 2: demo_involved forces demo-design category
+    if (resolvedCategoryId !== 'demo-design') {
+      const demoCategory = db.prepare('SELECT id, deprecated_section FROM task_categories WHERE id = ?')
+        .get('demo-design') as { id: string; deprecated_section: string | null } | undefined;
+      if (demoCategory) {
+        const originalCategory = resolvedCategoryId ?? resolvedSection ?? '(default)';
+        resolvedCategoryId = demoCategory.id;
+        resolvedSection = demoCategory.deprecated_section ?? resolvedSection;
+        const w = warning ? warning + ' | ' : '';
+        warning = w + `demo_involved=true auto-routed from '${originalCategory}' to 'demo-design'.`;
+      }
+    }
+  }
+
   const id = randomUUID();
   const now = new Date();
   const created_at = now.toISOString();
@@ -920,7 +944,7 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
   const priority = args.priority ?? 'normal';
   const userPromptUuidsJson = userPromptUuids ? JSON.stringify(userPromptUuids) : null;
   const persistentTaskId = args.persistent_task_id ?? null;
-  const strictInfraGuidance = args.strict_infra_guidance ? 1 : 0;
+  const strictInfraGuidance = effectiveStrictInfra ? 1 : 0;
   const demoInvolved = args.demo_involved ? 1 : 0;
 
   try {

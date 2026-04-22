@@ -167,6 +167,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/playwright-cli-guard.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/secret-profile-gate.js",
             "timeout": 5
           }
