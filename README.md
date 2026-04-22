@@ -38,7 +38,7 @@ The persistent monitor is a long-running Opus session that the CTO delegates com
 
 ### hooks
 
-Sixty-six automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection, long-running command routing. Hooks govern what agents can and cannot do.
+Sixty-nine automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection, long-running command routing. Hooks govern what agents can and cannot do.
 
 ### servers
 
@@ -233,7 +233,7 @@ npm run generate:readme
 
 ## the automation layer
 
-Sixty-six hooks and background timers keep the system running without human triggers.
+Sixty-nine hooks and background timers keep the system running without human triggers.
 
 ### credentials
 
@@ -247,7 +247,7 @@ Three modes. Interrupted sessions resume automatically via `--resume`. Dead agen
 
 A background timer spawns agents for pending tasks every cycle. Urgent tasks dispatch immediately. Normal tasks wait one hour. Concurrency configurable (default 10 simultaneous agents) via `set_max_concurrent_sessions` or `/concurrent-sessions`. All spawning routes through a single SQLite-backed session queue with priority ordering (`cto` > `critical` > `urgent` > `normal` > `low`), reserved slot pools for high-priority work, inline preemption (SIGTSTP/SIGCONT — non-destructive), and focus mode to block automated spawning except CTO-directed work.
 
-Structured multi-phase work is managed by the plan orchestrator (`plan-orchestrator` MCP server). Plans contain phases, tasks, substeps, and dependency graphs with cycle detection. Progress rolls up automatically from substep to plan. PR merges auto-advance linked plan tasks via the plan-merge-tracker hook. Four dashboard views (`/plan`, `/plan-progress`, `/plan-timeline`, `/plan-audit`) show live execution state. Plans are executed by a dedicated `plan-manager` agent — itself a specialized persistent task monitor — which spawns a separate persistent task per plan step and tracks them to completion. The `plan-persistent-sync.js` hook auto-completes linked plan tasks when their persistent task finishes, cascading phase and plan completion automatically.
+Structured multi-phase work is managed by the plan orchestrator (`plan-orchestrator` MCP server). Plans contain phases, tasks, substeps, and dependency graphs with cycle detection. Progress rolls up automatically from substep to plan. PR merges auto-advance linked plan tasks via the plan-merge-tracker hook. Four dashboard views (`/plan`, `/plan-progress`, `/plan-timeline`, `/plan-audit`) show live execution state. Plans are executed by a dedicated `plan-manager` agent — itself a specialized persistent task monitor — which spawns a separate persistent task per plan step and tracks them to completion. The `plan-persistent-sync.js` hook auto-completes linked plan tasks when their persistent task finishes, cascading phase and plan completion automatically. A multi-layer completion gate prevents plans from being marked complete when verification phases were skipped: gate phases block task skipping entirely, skipped phases do not count as complete, and plans with any skipped required phase require explicit `force_complete` with a justification note.
 
 Complex delegated objectives run through the persistent task system. The CTO creates a persistent task via `/persistent-task`, which refines the intent into a high-specificity prompt and spawns a dedicated Opus monitor session. The monitor runs in its own session queue lane (not counted against the global concurrency cap), creates and tracks sub-tasks, acknowledges amendments as the CTO steers the objective, and drives work to completion without interruption. Manage all active monitors with `/persistent-tasks`.
 
@@ -285,7 +285,7 @@ The Notion plugin (`plugins/notion/`) syncs four GENTYR data sources to Notion d
 
 ## components
 
-38 MCP servers. 16 agents. 66 hooks. 39 commands. CLI dashboard. Plugin system with extensible local MCP servers.
+38 MCP servers. 18 agents. 69 hooks. 39 commands. CLI dashboard. Plugin system with extensible local MCP servers.
 
 ## documentation
 
