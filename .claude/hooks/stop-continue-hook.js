@@ -150,11 +150,34 @@ async function main() {
             planDb.close();
 
             if (incompleteTasks?.count > 0) {
+              // Escape hatch: if the plan manager's persistent task is paused, allow exit
+              // This prevents the pressure loop that forces agents to skip tasks
+              const ptTaskId = process.env.GENTYR_PERSISTENT_TASK_ID;
+              if (ptTaskId) {
+                try {
+                  const ptDbPath = path.join(projectDir, '.claude', 'state', 'persistent-tasks.db');
+                  if (fs.existsSync(ptDbPath)) {
+                    const ptDb = new Database(ptDbPath, { readonly: true });
+                    const ptRow = ptDb.prepare('SELECT status FROM persistent_tasks WHERE id = ?').get(ptTaskId);
+                    ptDb.close();
+                    if (ptRow && (ptRow.status === 'paused' || ptRow.status === 'completed' || ptRow.status === 'cancelled')) {
+                      debugLog('Decision: APPROVE (plan manager escape hatch — persistent task is ' + ptRow.status + ')', { ptTaskId });
+                      gentyrDebugLog('stop-hook', 'decision', { decision: 'approve', reason: 'plan_manager_escape_hatch', ptStatus: ptRow.status });
+                      console.log(JSON.stringify({ decision: 'approve' }));
+                      process.exit(0);
+                    }
+                  }
+                } catch (e) {
+                  debugLog('persistent-tasks.db check in plan gate escape hatch (non-fatal)', { error: e.message });
+                  // Fail open on this check — fall through to blocking
+                }
+              }
+
               debugLog('Decision: BLOCK (plan manager — incomplete plan tasks)', { count: incompleteTasks.count });
               gentyrDebugLog('stop-hook', 'decision', { decision: 'block', reason: 'plan_manager_incomplete', isTask: true, isPersistent: true });
               console.log(JSON.stringify({
                 decision: 'block',
-                reason: `[PLAN MANAGER] Plan has ${incompleteTasks.count} incomplete task(s). Continue executing the plan by spawning persistent tasks for each ready plan task. Only stop after all plan tasks are completed or skipped, then call mcp__persistent-task__complete_persistent_task.`,
+                reason: `[PLAN MANAGER] Plan has ${incompleteTasks.count} incomplete task(s). Continue executing the plan by spawning persistent tasks for each ready plan task. If blocked by an external dependency, pause your persistent task via mcp__persistent-task__pause_persistent_task first, then you may stop. Do NOT skip tasks to escape this gate.`,
               }));
               process.exit(0);
             }

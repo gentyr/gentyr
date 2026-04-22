@@ -101,17 +101,48 @@ async function main() {
     const totalTasks = db.prepare(
       "SELECT COUNT(*) as count FROM plan_tasks WHERE phase_id = ?"
     ).get(planTask.phase_id);
-    const completedTasks = db.prepare(
+    const resolvedTasks = db.prepare(
       "SELECT COUNT(*) as count FROM plan_tasks WHERE phase_id = ? AND status IN ('completed', 'skipped')"
     ).get(planTask.phase_id);
+    const actuallyCompletedTasks = db.prepare(
+      "SELECT COUNT(*) as count FROM plan_tasks WHERE phase_id = ? AND status = 'completed'"
+    ).get(planTask.phase_id);
 
-    const phaseProgress = `${completedTasks.count}/${totalTasks.count}`;
+    const phaseProgress = `${resolvedTasks.count}/${totalTasks.count}`;
 
-    // Auto-complete phase if all tasks done
-    if (completedTasks.count === totalTasks.count) {
-      db.prepare(
-        "UPDATE phases SET status = 'completed', completed_at = ? WHERE id = ? AND status != 'completed'"
-      ).run(now, planTask.phase_id);
+    // Auto-complete/skip phase if all tasks resolved
+    if (resolvedTasks.count === totalTasks.count) {
+      if (actuallyCompletedTasks.count > 0) {
+        // At least one task genuinely completed — phase is completed
+        db.prepare(
+          "UPDATE phases SET status = 'completed', completed_at = ? WHERE id = ? AND status NOT IN ('completed', 'skipped')"
+        ).run(now, planTask.phase_id);
+      } else {
+        // ALL tasks were skipped — phase becomes skipped
+        db.prepare(
+          "UPDATE phases SET status = 'skipped', updated_at = ? WHERE id = ? AND status NOT IN ('completed', 'skipped')"
+        ).run(now, planTask.phase_id);
+      }
+    }
+
+    // Check if plan should auto-complete
+    // Only auto-complete if ALL phases are completed (no skipped required phases)
+    const allPhases = db.prepare('SELECT status, required FROM phases WHERE plan_id = ?').all(planTask.plan_id);
+    const allPhasesResolved = allPhases.every(p => p.status === 'completed' || p.status === 'skipped');
+    const anyRequiredSkipped = allPhases.some(p => p.status === 'skipped' && p.required);
+
+    let planCompleted = false;
+    if (allPhasesResolved && !anyRequiredSkipped) {
+      const plan = db.prepare('SELECT status FROM plans WHERE id = ?').get(planTask.plan_id);
+      if (plan && plan.status === 'active') {
+        db.prepare(
+          "UPDATE plans SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?"
+        ).run(now, now, planTask.plan_id);
+        db.prepare(
+          "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'plan', ?, 'status', 'active', 'completed', ?, 'plan-merge-tracker')"
+        ).run(crypto.randomUUID(), planTask.plan_id, now);
+        planCompleted = true;
+      }
     }
 
     // Check for newly ready tasks (deps met)
@@ -180,7 +211,7 @@ async function main() {
         pr_number: prNumber,
         phase_progress: phaseProgress,
       });
-      if (completedTasks.count === totalTasks.count) {
+      if (resolvedTasks.count === totalTasks.count) {
         auditEvent('plan_phase_completed', {
           plan_id: planTask.plan_id,
           phase_id: planTask.phase_id,
