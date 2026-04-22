@@ -304,6 +304,18 @@ function initializeDatabase(): Database.Database {
     db.exec('ALTER TABLE plan_tasks ADD COLUMN category_id TEXT');
   }
 
+  // ── phases table: add gate/required columns (idempotent) ─────────────────
+  try {
+    db.prepare('SELECT required FROM phases LIMIT 0').get();
+  } catch {
+    db.exec('ALTER TABLE phases ADD COLUMN required INTEGER NOT NULL DEFAULT 1');
+  }
+  try {
+    db.prepare('SELECT gate FROM phases LIMIT 0').get();
+  } catch {
+    db.exec('ALTER TABLE phases ADD COLUMN gate INTEGER NOT NULL DEFAULT 0');
+  }
+
   return db;
 }
 
@@ -475,8 +487,8 @@ function createPlan(args: CreatePlanArgs) {
         const phase = args.phases[pi];
         const phaseId = randomUUID();
         db.prepare(
-          'INSERT INTO phases (id, plan_id, title, description, phase_order, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-        ).run(phaseId, planId, phase.title, phase.description ?? null, pi + 1, 'pending', ts, ts);
+          'INSERT INTO phases (id, plan_id, title, description, phase_order, status, required, gate, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        ).run(phaseId, planId, phase.title, phase.description ?? null, pi + 1, 'pending', phase.required ? 1 : 0, phase.gate ? 1 : 0, ts, ts);
 
         if (phase.tasks) {
           for (let ti = 0; ti < phase.tasks.length; ti++) {
@@ -556,6 +568,8 @@ function getPlan(args: GetPlanArgs) {
       description: phase.description,
       phase_order: phase.phase_order,
       status: phase.status,
+      required: !!phase.required,
+      gate: !!phase.gate,
       progress_pct: getPhaseProgress(db, phase.id),
       tasks: taskResults,
     };
@@ -617,6 +631,28 @@ function updatePlanStatus(args: UpdatePlanStatusArgs) {
   const plan = db.prepare('SELECT * FROM plans WHERE id = ?').get(args.plan_id) as PlanRecord | undefined;
   if (!plan) return { error: `Plan not found: ${args.plan_id}` } as ErrorResult;
 
+  // Completion validation: require all phases to be resolved, block if any required phase is skipped without force_complete
+  if (args.status === 'completed') {
+    const allPhases = db.prepare('SELECT id, title, status, required FROM phases WHERE plan_id = ?')
+      .all(args.plan_id) as Array<{ id: string; title: string; status: string; required: number }>;
+
+    const incompletePhases = allPhases.filter(p => !['completed', 'skipped'].includes(p.status));
+    if (incompletePhases.length > 0) {
+      return {
+        error: `Cannot complete plan: ${incompletePhases.length} phase(s) are still incomplete. Complete or skip remaining phases first.`,
+        incomplete_phases: incompletePhases.map(p => ({ id: p.id, title: p.title, status: p.status })),
+      };
+    }
+
+    const skippedRequiredPhases = allPhases.filter(p => p.status === 'skipped' && p.required);
+    if (skippedRequiredPhases.length > 0 && !args.force_complete) {
+      return {
+        error: `Cannot complete plan: ${skippedRequiredPhases.length} required phase(s) were skipped. Use force_complete: true with a completion_note to explicitly complete.`,
+        skipped_phases: skippedRequiredPhases.map(p => ({ id: p.id, title: p.title })),
+      };
+    }
+  }
+
   const ts = now();
   const updates: Record<string, string | null> = { status: args.status, updated_at: ts };
 
@@ -630,7 +666,13 @@ function updatePlanStatus(args: UpdatePlanStatusArgs) {
   const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
   db.prepare(`UPDATE plans SET ${setClauses} WHERE id = ?`).run(...Object.values(updates), args.plan_id);
 
-  recordStateChange(db, 'plan', args.plan_id, 'status', plan.status, args.status);
+  recordStateChange(db, 'plan', args.plan_id, 'status', plan.status, args.status,
+    args.force_complete ? 'force-complete-override' : undefined);
+
+  // Record force_complete note in state_changes for audit trail
+  if (args.force_complete && args.completion_note) {
+    recordStateChange(db, 'plan', args.plan_id, 'force_complete', null, args.completion_note, 'force-complete-override');
+  }
 
   // When activating, update task statuses
   if (args.status === 'active') {
@@ -642,6 +684,7 @@ function updatePlanStatus(args: UpdatePlanStatusArgs) {
     old_status: plan.status,
     new_status: args.status,
     updated_at: ts,
+    ...(args.force_complete ? { force_complete: true, completion_note: args.completion_note } : {}),
   };
 }
 
@@ -655,8 +698,8 @@ function addPhase(args: AddPhaseArgs) {
   const ts = now();
 
   db.prepare(
-    'INSERT INTO phases (id, plan_id, title, description, phase_order, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(phaseId, args.plan_id, args.title, args.description ?? null, maxOrder + 1, 'pending', ts, ts);
+    'INSERT INTO phases (id, plan_id, title, description, phase_order, status, required, gate, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(phaseId, args.plan_id, args.title, args.description ?? null, maxOrder + 1, 'pending', args.required ? 1 : 0, args.gate ? 1 : 0, ts, ts);
 
   // Add phase-level dependencies
   if (args.blocked_by) {
@@ -684,7 +727,7 @@ function updatePhase(args: UpdatePhaseArgs) {
 
   const ts = now();
   const updates: string[] = ['updated_at = ?'];
-  const values: (string | null)[] = [ts];
+  const values: (string | number | null)[] = [ts];
 
   if (args.title) {
     updates.push('title = ?');
@@ -704,6 +747,16 @@ function updatePhase(args: UpdatePhaseArgs) {
       updates.push('completed_at = ?');
       values.push(ts);
     }
+  }
+
+  if (args.required !== undefined) {
+    updates.push('required = ?');
+    values.push(args.required ? 1 : 0);
+  }
+
+  if (args.gate !== undefined) {
+    updates.push('gate = ?');
+    values.push(args.gate ? 1 : 0);
   }
 
   db.prepare(`UPDATE phases SET ${updates.join(', ')} WHERE id = ?`).run(...values, args.phase_id);
@@ -798,9 +851,30 @@ function updateTaskProgress(args: UpdateTaskProgressArgs) {
   const values: (string | number | null)[] = [ts];
 
   if (args.status) {
+    // Skip guard: enforce gate phases and record skip metadata
+    if (args.status === 'skipped') {
+      const phase = db.prepare('SELECT gate FROM phases WHERE id = ?').get(task.phase_id) as { gate: number } | undefined;
+      if (phase?.gate) {
+        return { error: 'Cannot skip task: parent phase is a gate phase. Tasks in gate phases cannot be skipped.' } as ErrorResult;
+      }
+
+      // Store skip metadata on the task (merge into existing metadata)
+      let existingMeta: Record<string, unknown> = {};
+      try { if (task.metadata) existingMeta = JSON.parse(task.metadata); } catch { /* ignore */ }
+      const mergedMeta = JSON.stringify({
+        ...existingMeta,
+        skip_reason: args.skip_reason,
+        skip_authorization: args.skip_authorization,
+        skipped_at: ts,
+      });
+      updates.push('metadata = ?');
+      values.push(mergedMeta);
+    }
+
     updates.push('status = ?');
     values.push(args.status);
-    recordStateChange(db, 'task', args.task_id, 'status', task.status, args.status);
+    recordStateChange(db, 'task', args.task_id, 'status', task.status, args.status,
+      args.status === 'skipped' ? `skip:${args.skip_authorization}` : undefined);
 
     if (args.status === 'in_progress' && !task.started_at) {
       updates.push('started_at = ?');
@@ -843,22 +917,35 @@ function updateTaskProgress(args: UpdateTaskProgressArgs) {
 
   db.prepare(`UPDATE plan_tasks SET ${updates.join(', ')} WHERE id = ?`).run(...values, args.task_id);
 
-  // Check if phase should auto-complete
-  const phase = db.prepare('SELECT * FROM phases WHERE id = ?').get(task.phase_id) as PhaseRecord;
+  // Check if phase should auto-complete (or auto-skip)
+  const phaseForCascade = db.prepare('SELECT * FROM phases WHERE id = ?').get(task.phase_id) as PhaseRecord;
   const allTasks = db.prepare('SELECT status FROM plan_tasks WHERE phase_id = ?').all(task.phase_id) as Array<{ status: string }>;
-  const allDone = allTasks.every(t => t.status === 'completed' || t.status === 'skipped');
-  if (allDone && phase.status !== 'completed') {
-    db.prepare("UPDATE phases SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?").run(ts, ts, task.phase_id);
-    recordStateChange(db, 'phase', task.phase_id, 'status', phase.status, 'completed');
+  const allTasksResolved = allTasks.every(t => t.status === 'completed' || t.status === 'skipped');
+
+  if (allTasksResolved && phaseForCascade.status !== 'completed' && phaseForCascade.status !== 'skipped') {
+    const hasAnyCompleted = allTasks.some(t => t.status === 'completed');
+    if (hasAnyCompleted) {
+      // At least one task genuinely completed — phase is completed
+      db.prepare("UPDATE phases SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?").run(ts, ts, task.phase_id);
+      recordStateChange(db, 'phase', task.phase_id, 'status', phaseForCascade.status, 'completed');
+    } else {
+      // ALL tasks were skipped — phase becomes skipped, not completed
+      db.prepare("UPDATE phases SET status = 'skipped', updated_at = ? WHERE id = ?").run(ts, task.phase_id);
+      recordStateChange(db, 'phase', task.phase_id, 'status', phaseForCascade.status, 'skipped');
+    }
   }
 
   // Update downstream tasks
   const readyTasks = updateAndGetReadyTasks(db, task.plan_id);
 
   // Check if plan should auto-complete
-  const allPhases = db.prepare('SELECT status FROM phases WHERE plan_id = ?').all(task.plan_id) as Array<{ status: string }>;
-  const planDone = allPhases.every(p => p.status === 'completed' || p.status === 'skipped');
-  if (planDone) {
+  // Only auto-complete if ALL phases are completed (no skipped phases)
+  // Plans with skipped phases require explicit update_plan_status with force_complete
+  const allPhases = db.prepare('SELECT status, required FROM phases WHERE plan_id = ?').all(task.plan_id) as Array<{ status: string; required: number }>;
+  const allPhasesResolved = allPhases.every(p => p.status === 'completed' || p.status === 'skipped');
+  const anyRequiredSkipped = allPhases.some(p => p.status === 'skipped' && p.required);
+
+  if (allPhasesResolved && !anyRequiredSkipped) {
     const plan = db.prepare('SELECT status FROM plans WHERE id = ?').get(task.plan_id) as { status: string };
     if (plan.status === 'active') {
       db.prepare("UPDATE plans SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?").run(ts, ts, task.plan_id);
@@ -1581,19 +1668,19 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'update_plan_status',
-    description: 'Update plan status (draft/active/paused/completed/archived/cancelled). Activating updates task readiness.',
+    description: 'Update plan status. Completing requires all phases completed; if any phase was skipped, requires force_complete: true with completion_note. Activating updates task readiness.',
     schema: UpdatePlanStatusArgsSchema,
     handler: updatePlanStatus,
   },
   {
     name: 'add_phase',
-    description: 'Add a phase to an existing plan. Auto-assigns order. Optional blocked_by for dependencies.',
+    description: 'Add a phase to an existing plan. Auto-assigns order. Set gate: true for verification phases whose tasks cannot be skipped. Set required: false for optional phases that do not block plan completion.',
     schema: AddPhaseArgsSchema,
     handler: addPhase,
   },
   {
     name: 'update_phase',
-    description: 'Update phase title or status. Status changes are recorded in state_changes.',
+    description: 'Update phase title, status, required, or gate flags. Status changes are recorded in state_changes.',
     schema: UpdatePhaseArgsSchema,
     handler: updatePhase,
   },
@@ -1605,7 +1692,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'update_task_progress',
-    description: 'Update task status, PR info, or branch. Auto-completes on pr_merged=true. Returns newly ready tasks.',
+    description: 'Update task status, PR info, or branch. Auto-completes on pr_merged=true. Returns newly ready tasks. Setting status to "skipped" requires skip_reason and skip_authorization fields. Tasks in gate phases cannot be skipped.',
     schema: UpdateTaskProgressArgsSchema,
     handler: updateTaskProgress,
   },

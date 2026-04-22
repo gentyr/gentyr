@@ -133,31 +133,45 @@ async function main() {
       "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'task', ?, 'status', ?, 'completed', ?, 'plan-persistent-sync')"
     ).run(randomUUID(), planTaskId, planTask.status, now);
 
-    // Check if phase should auto-complete
+    // Check if phase should auto-complete (or auto-skip)
     const allTasks = db.prepare('SELECT status FROM plan_tasks WHERE phase_id = ?')
       .all(planTask.phase_id);
-    const phaseDone = allTasks.every(t => t.status === 'completed' || t.status === 'skipped');
+    const allTasksResolved = allTasks.every(t => t.status === 'completed' || t.status === 'skipped');
 
     let phaseCompleted = false;
-    if (phaseDone) {
+    if (allTasksResolved) {
       const phase = db.prepare('SELECT status FROM phases WHERE id = ?').get(planTask.phase_id);
-      if (phase && phase.status !== 'completed') {
-        db.prepare(
-          "UPDATE phases SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?"
-        ).run(now, now, planTask.phase_id);
-        db.prepare(
-          "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'phase', ?, 'status', ?, 'completed', ?, 'plan-persistent-sync')"
-        ).run(randomUUID(), planTask.phase_id, phase.status, now);
-        phaseCompleted = true;
+      if (phase && phase.status !== 'completed' && phase.status !== 'skipped') {
+        const hasAnyCompleted = allTasks.some(t => t.status === 'completed');
+        if (hasAnyCompleted) {
+          // At least one task genuinely completed — phase is completed
+          db.prepare(
+            "UPDATE phases SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?"
+          ).run(now, now, planTask.phase_id);
+          db.prepare(
+            "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'phase', ?, 'status', ?, 'completed', ?, 'plan-persistent-sync')"
+          ).run(randomUUID(), planTask.phase_id, phase.status, now);
+          phaseCompleted = true;
+        } else {
+          // ALL tasks were skipped — phase becomes skipped, not completed
+          db.prepare(
+            "UPDATE phases SET status = 'skipped', updated_at = ? WHERE id = ?"
+          ).run(now, planTask.phase_id);
+          db.prepare(
+            "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'phase', ?, 'status', ?, 'skipped', ?, 'plan-persistent-sync')"
+          ).run(randomUUID(), planTask.phase_id, phase.status, now);
+        }
       }
     }
 
     // Check if plan should auto-complete
-    const allPhases = db.prepare('SELECT status FROM phases WHERE plan_id = ?').all(planId);
-    const planDone = allPhases.every(p => p.status === 'completed' || p.status === 'skipped');
+    // Only auto-complete if ALL phases are completed (no skipped required phases)
+    const allPhases = db.prepare('SELECT status, required FROM phases WHERE plan_id = ?').all(planId);
+    const allPhasesResolved = allPhases.every(p => p.status === 'completed' || p.status === 'skipped');
+    const anyRequiredSkipped = allPhases.some(p => p.status === 'skipped' && p.required);
 
     let planCompleted = false;
-    if (planDone) {
+    if (allPhasesResolved && !anyRequiredSkipped) {
       const plan = db.prepare('SELECT status FROM plans WHERE id = ?').get(planId);
       if (plan && plan.status === 'active') {
         db.prepare(

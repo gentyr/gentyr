@@ -26,6 +26,9 @@ export type EntityType = (typeof ENTITY_TYPES)[number];
 export const DEP_ENTITY_TYPES = ['phase', 'task'] as const;
 export type DepEntityType = (typeof DEP_ENTITY_TYPES)[number];
 
+export const SKIP_AUTHORIZATION = ['cto', 'blocked_external', 'superseded'] as const;
+export type SkipAuthorization = (typeof SKIP_AUTHORIZATION)[number];
+
 // ============================================================================
 // Inline Creation Schemas (for bulk create_plan)
 // ============================================================================
@@ -44,6 +47,8 @@ const InlineTaskSchema = z.object({
 const InlinePhaseSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().optional(),
+  required: z.boolean().optional().default(true),
+  gate: z.boolean().optional().default(false),
   tasks: z.array(InlineTaskSchema).optional(),
 });
 
@@ -70,13 +75,20 @@ export const ListPlansArgsSchema = z.object({
 export const UpdatePlanStatusArgsSchema = z.object({
   plan_id: z.string().describe('Plan UUID'),
   status: z.enum(PLAN_STATUS).describe('New plan status'),
-});
+  force_complete: z.boolean().optional().describe('Required when completing a plan that has skipped phases. Acknowledges that some phases were not executed.'),
+  completion_note: z.string().optional().describe('Required with force_complete. Explanation for completing despite skipped phases.'),
+}).refine(
+  (data) => !data.force_complete || !!data.completion_note,
+  { message: 'completion_note is required when force_complete is true' },
+);
 
 // Phase Management
 export const AddPhaseArgsSchema = z.object({
   plan_id: z.string().describe('Plan UUID'),
   title: z.string().min(1).max(200).describe('Phase title'),
   description: z.string().optional().describe('Phase description'),
+  required: z.boolean().optional().default(true).describe('Whether this phase must have completed tasks for plan completion (default: true)'),
+  gate: z.boolean().optional().default(false).describe('When true, tasks in this phase CANNOT be skipped — server-enforced verification gate'),
   blocked_by: z.array(z.string()).optional().describe('Phase IDs that must complete first'),
 });
 
@@ -84,6 +96,8 @@ export const UpdatePhaseArgsSchema = z.object({
   phase_id: z.string().describe('Phase UUID'),
   title: z.string().min(1).max(200).optional().describe('New title'),
   status: z.enum(PHASE_STATUS).optional().describe('New status'),
+  required: z.boolean().optional().describe('Whether this phase is required for plan completion'),
+  gate: z.boolean().optional().describe('Whether tasks in this phase cannot be skipped (server-enforced gate)'),
 });
 
 // Task Management
@@ -103,11 +117,21 @@ export const AddPlanTaskArgsSchema = z.object({
 export const UpdateTaskProgressArgsSchema = z.object({
   task_id: z.string().describe('Plan task UUID'),
   status: z.enum(TASK_STATUS).optional().describe('New status'),
+  skip_reason: z.string().optional().describe('Required when status is "skipped". Explanation for why the task is being skipped.'),
+  skip_authorization: z.enum(SKIP_AUTHORIZATION).optional().describe('Required when status is "skipped". Authorization level: cto (CTO directed), blocked_external (external dependency), superseded (replaced by another task).'),
   pr_number: z.coerce.number().optional().describe('Associated PR number'),
   pr_merged: z.coerce.boolean().optional().describe('Whether PR has been merged'),
   branch_name: z.string().optional().describe('Git branch name'),
   persistent_task_id: z.string().optional().describe('Persistent task UUID executing this plan task — links the plan step to its persistent task'),
-});
+}).refine(
+  (data) => {
+    if (data.status === 'skipped') {
+      return !!data.skip_reason && !!data.skip_authorization;
+    }
+    return true;
+  },
+  { message: 'skip_reason and skip_authorization are required when status is "skipped"' },
+);
 
 export const LinkTaskArgsSchema = z.object({
   plan_task_id: z.string().describe('Plan task UUID'),
@@ -206,6 +230,8 @@ export interface PhaseRecord {
   started_at: string | null;
   completed_at: string | null;
   metadata: string | null;
+  required: number;
+  gate: number;
 }
 
 export interface PlanTaskRecord {

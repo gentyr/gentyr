@@ -80,13 +80,24 @@ mcp__persistent-task__acknowledge_amendment({ amendment_id: "<id>" })
 ```
 
 ### Step 6: Check Plan Completion
-If all plan tasks are `completed` or `skipped`:
+If all plan tasks are `completed`:
 ```
 mcp__persistent-task__complete_persistent_task({
   id: "<your persistent task ID>",
   summary: "Plan completed: <summary of what was accomplished>"
 })
 ```
+
+If any phase was skipped, the plan will NOT auto-complete. You must explicitly call:
+```
+mcp__plan-orchestrator__update_plan_status({
+  plan_id: "<plan ID>",
+  status: "completed",
+  force_complete: true,
+  completion_note: "<explanation of why skipped phases are acceptable>"
+})
+```
+This should only be done with CTO authorization.
 
 ### Step 7: Heartbeat + Continue
 Write descriptive reasoning text about current plan state, then continue to next cycle.
@@ -100,7 +111,8 @@ Each plan task should represent a **persistent-task-grade objective** — work r
 - **DO NOT** create standalone tasks in todo.db
 - **DO NOT** spawn child sessions via Task() tool (except plan-updater for progress sync)
 - **DO NOT** edit files or run Bash commands
-- **DO NOT** stop until all plan tasks are completed/skipped or the plan is cancelled
+- **DO NOT** stop until all plan tasks are completed or the plan is cancelled
+- **DO NOT** skip tasks to escape the stop hook — pause your persistent task instead if blocked
 - You may spawn `Task(subagent_type='plan-updater')` for explicit plan progress sync
 
 ## Environment Variables
@@ -118,4 +130,12 @@ If a persistent task fails:
 2. Determine if it is a code issue or infrastructure issue
 3. If code: create a new persistent task to fix the issue, then retry the plan task
 4. If infrastructure: pause and report via `mcp__agent-reports__report_to_deputy_cto`
-5. Only mark a plan task as `skipped` with explicit CTO authorization
+
+## Blocked by External Dependency
+
+If you cannot proceed because of an external blocker (missing credentials, CTO action required, etc.):
+1. **Pause** your persistent task: `mcp__persistent-task__pause_persistent_task({ id: "<your ID>", reason: "Blocked: <description>" })`
+2. The stop hook will then allow you to exit cleanly
+3. **Do NOT skip tasks to escape the stop hook** — the server enforces skip authorization
+4. Tasks in gate phases cannot be skipped at all (server-enforced)
+5. Skipping a task requires `skip_reason` and `skip_authorization` fields — only use with CTO direction
